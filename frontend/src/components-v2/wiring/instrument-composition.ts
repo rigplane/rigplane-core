@@ -6,6 +6,7 @@ import type { ReceiverInstrumentHandles } from '../../semantic/ReceiverInstrumen
 import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instruments';
 import type { RfFrontEndLevelHandles } from '../../semantic/rf-front-end-instruments';
 import type { DspFiniteLayout } from '../../semantic/dsp-instruments';
+import type { DspScalarLayout } from '../../semantic/dsp-scalars';
 import type { VfoOperationHandles } from '../../semantic/VfoOperationSeatHost.svelte';
 import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
 import type { BandControlLayout } from '../../semantic/band-instruments';
@@ -35,7 +36,9 @@ export interface InstrumentComposition {
   readonly rxAudio: Snippet<[allowBare?: boolean]>;
   readonly rfFrontEnd: Snippet<[allowBare?: boolean]>;
   readonly filter: Snippet<[allowBare?: boolean, finiteLayout?: FilterFiniteLayout]>;
-  readonly dsp: Snippet<[allowBare?: boolean, finiteLayout?: DspFiniteLayout]>;
+  readonly dsp: Snippet<[
+    allowBare?: boolean, finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout,
+  ]>;
   readonly band: Snippet<[allowBare?: boolean, controlLayout?: BandControlLayout]>;
   readonly antenna: Snippet<[allowBare?: boolean, controlLayout?: Snippet]>;
   readonly antennaInstruments: AntennaInstrumentHandles;

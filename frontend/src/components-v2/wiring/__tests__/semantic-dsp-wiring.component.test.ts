@@ -84,6 +84,26 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
+// `panel-adapters.ts` reads the runtime through `$lib/runtime/frontend-runtime`,
+// not `$lib/runtime`, so the hosted NB scalars' command feedback needs this
+// second seam stubbed too; `semantic-tx-aux-wiring.component.test.ts` stubs both.
+vi.mock('$lib/runtime/frontend-runtime', () => ({
+  runtime: {
+    get state() { return h.state; },
+    get caps() { return h.caps; },
+    get controlSession() { return h.controlSession; },
+  },
+}));
+// `beginCommand` stamps each lifecycle with the radio store's `providerGeneration`,
+// and the feedback projection discards a command whose generation does not match.
+vi.mock('$lib/stores/radio.svelte', () => ({
+  radio: { get current() { return h.state; } },
+  getRadioState: () => h.state,
+  subscribeRadioState: (listener: (state: unknown) => void) => {
+    listener(h.state);
+    return () => {};
+  },
+}));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   getManagedAppTxController: () => h.txController,
 }));
@@ -179,6 +199,36 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
   };
 });
 
+/** MOR-2425 — the `createContinuousScalar` capture wrapper
+ *  `DspScalarHost.isolated.test.ts` establishes, lifted to the composed tree so
+ *  the persistence witness below can name the binding OBJECTS. Every scalar in
+ *  the tree passes through here; `command` separates the two DSP ones. */
+const scalars = vi.hoisted(() => ({
+  bindings: [] as Array<{ command: string | null; binding: unknown }>,
+  leases: [] as Array<{ binding: unknown; lease: unknown }>,
+}));
+vi.mock('../../../primitives/scalar/continuous-scalar.svelte', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../../../primitives/scalar/continuous-scalar.svelte')>();
+  return {
+    ...actual,
+    createContinuousScalar: (...args: Parameters<typeof actual.createContinuousScalar>) => {
+      const binding = actual.createContinuousScalar(...args);
+      const attachRenderer = binding.attachRenderer.bind(binding);
+      binding.attachRenderer = (...attachArgs) => {
+        const lease = attachRenderer(...attachArgs);
+        scalars.leases.push({ binding, lease });
+        return lease;
+      };
+      const source = args[0]();
+      scalars.bindings.push({
+        command: source.evidence === 'command-feedback' ? source.command : null, binding,
+      });
+      return binding;
+    },
+  };
+});
+
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import HostedRadioLayoutFixture from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
@@ -192,9 +242,18 @@ import FiniteControlRendererFixture, {
 } from '../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
 import type { FiniteControlAppearance } from '../../../primitives/control-instruments/control-instrument-renderer.svelte';
 import { beginCommand, resetCommandLifecycle } from '$lib/stores/commands.svelte';
+import type {
+  ContinuousScalarBinding, ContinuousScalarRendererLease, ContinuousScalarView,
+} from '../../../primitives/scalar/continuous-scalar.svelte';
 
 
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
+/** `lastObservedMonotonic` is what `display-observation.ts: validEvidence`
+ *  requires before a field counts as evidence, and therefore what the two
+ *  hosted NB scalars need before their command feedback reports `available`. */
+const fresh = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+  lastObservedMonotonic: 0,
+};
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
 /** Every raw dsp field the MOR-1290 adapter reads, all observed fresh. */
@@ -301,10 +360,41 @@ function publishAuthority(
 }
 
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
+const slider = (field: string) => q(`[data-testid="dsp-${field}"] [role="slider"]`)!;
+const arrowRight = (field: string) => slider(field)
+  .dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+
+/** The two DSP scalar bindings, in creation order, as OBJECTS. */
+const dspBindings = (): unknown[] => scalars.bindings
+  .filter(({ command }) => command === 'set_nb_level' || command === 'set_nb_width')
+  .map(({ binding }) => binding);
+const dspBinding = (command: string): ContinuousScalarBinding => {
+  const found = scalars.bindings.filter((entry) => entry.command === command);
+  expect(found).toHaveLength(1);
+  return found[0]!.binding as ContinuousScalarBinding;
+};
+const latestLease = (binding: unknown): ContinuousScalarRendererLease => {
+  for (let index = scalars.leases.length - 1; index >= 0; index -= 1) {
+    if (scalars.leases[index]!.binding === binding) {
+      return scalars.leases[index]!.lease as ContinuousScalarRendererLease;
+    }
+  }
+  throw new Error('renderer lease not captured');
+};
+/** The command-feedback evidence a persistent binding must carry across a switch. */
+const lifecycle = (binding: ContinuousScalarBinding) => {
+  const view = binding.view as Extract<ContinuousScalarView, { evidence: 'command-feedback' }>;
+  return {
+    requested: view.requested, confirmed: view.confirmed, phase: view.phase,
+    error: view.error, transitionId: view.feedback.transitionId,
+  };
+};
 
 beforeEach(() => {
   resetCommandLifecycle();
   resetRetainedInvocations();
+  scalars.bindings = [];
+  scalars.leases = [];
   txHarness = new ManagedAppTxHarness();
   h.txController = txHarness.controller;
   h.state = liveState(true);
@@ -421,17 +511,29 @@ describe('every dsp intent reaches its own command-bus handler', () => {
   });
 
   it.each([
-    ['nrLevel', 5, () => h.nrLevel], ['nbLevel', 30, () => h.nbLevel],
-    ['nbDepth', 3, () => h.nbDepth], ['nbWidth', 100, () => h.nbWidth],
+    ['nrLevel', 5, () => h.nrLevel],
+    ['nbDepth', 3, () => h.nbDepth],
     ['notchFreq', 128, () => h.notchFreq], ['manualNotchWidth', 2, () => h.manualNotchWidth],
     ['agcTimeConstant', 4, () => h.agcTime],
-  ] as const)('routes the "%s" level with its raw value', (field, value, spy) => {
+  ] as const)('routes the natively rendered "%s" level with its raw value', (field, value, spy) => {
     render();
     const input = q<HTMLInputElement>(`[data-testid="dsp-${field}"] input`)!;
     input.value = String(value);
     input.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
     expect(spy()).toHaveBeenCalledExactlyOnceWith(value);
+  });
+
+  /** MOR-2425: `nbLevel`/`nbWidth` are no longer native ranges — they are
+   *  `DspScalarHost` handles, stepped from their confirmed raw value
+   *  (`DSP_STATE`: 64 and 2) through the shared continuous-scalar lease. */
+  it.each([
+    ['nbLevel', 65, () => h.nbLevel], ['nbWidth', 3, () => h.nbWidth],
+  ] as const)('routes the hosted "%s" scalar with its raw value', (field, next, spy) => {
+    render();
+    arrowRight(field);
+    flushSync();
+    expect(spy()).toHaveBeenCalledExactlyOnceWith(next);
   });
 
   it('routes notchMode as its own three-way callback, not the level/toggle map', () => {
@@ -504,15 +606,13 @@ describe('carry-forward (1): caps-echo display metadata is read at this seam', (
   it('passes agcLabels/nbLevelMax/nbLevelPercent from runtime.caps down as props', () => {
     render();
     expect(q('[data-testid="dsp-agcMode-1"]')!.textContent).toBe('FAST');
-    const input = q<HTMLInputElement>('[data-testid="dsp-nbLevel"] input')!;
-    expect(input.max).toBe('200');
+    expect(slider('nbLevel').getAttribute('aria-valuemax')).toBe('200');
   });
 
   it('falls back to the toDspProps defaults when caps carries no nb_level range', () => {
     h.caps = { ...liveCaps(true), controls: undefined } as unknown as Capabilities;
     render();
-    const input = q<HTMLInputElement>('[data-testid="dsp-nbLevel"] input')!;
-    expect(input.max).toBe('10');
+    expect(slider('nbLevel').getAttribute('aria-valuemax')).toBe('10');
   });
 
   it('does not fabricate FAST/MID/SLOW labels when caps declares no agcLabels (MOR-1547 follow-up)', () => {
@@ -541,7 +641,20 @@ describe('desktop-v2 declares a real dsp zone; the cockpit does not (MOR-1368, S
 
 describe('persistent finite DSP composition and authority (MOR-2425)', () => {
   const external = ['NR', 'NB', 'Notch mode', 'AGC mode'] as const;
-  const ranges = () => target.querySelectorAll('[data-testid="dsp-surface"] input[type="range"]');
+  /**
+   * MOR-2425: the DSP levels `DspSurface` still owns natively, in
+   * `DSP_LEVELS` order. Named rather than counted — a bare cardinality is
+   * satisfied by ANY two controls going missing, including the regression
+   * where a hosted scalar renders neither natively nor as a handle.
+   */
+  const NATIVE_RANGE_FIELDS = [
+    'nrLevel', 'nbDepth', 'notchFreq', 'manualNotchWidth', 'agcTimeConstant',
+  ];
+  const rangeFields = () => [...target.querySelectorAll<HTMLInputElement>(
+    '[data-testid="dsp-surface"] input[type="range"]',
+  )].map((input) => input.closest<HTMLElement>('[data-field]')?.dataset.field);
+  const seatFields = (selector: string) => [...target.querySelectorAll<HTMLElement>(selector)]
+    .map((seat) => seat.dataset.field);
 
   it('moves one hosted set from named Standard seats to grouped SDR without replacing its host', () => {
     h.selectedFiniteAppearance = finiteAppearance;
@@ -550,10 +663,11 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     const root = q('[data-testid="semantic-radio-surfaces"]');
     const staleStandardNr = retainedInvocations.get('NR')!;
 
-    expect([...target.querySelectorAll('.dsp-finite-seat')].map(seat => seat.getAttribute('data-field')))
+    expect(seatFields('.dsp-finite-seat'))
       .toEqual(['nrActive', 'nbActive', 'notchMode', 'agcMode']);
+    expect(seatFields('.dsp-scalar-seat')).toEqual(['nbLevel', 'nbWidth']);
     for (const label of external) expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
-    expect(ranges()).toHaveLength(7);
+    expect(rangeFields()).toEqual(NATIVE_RANGE_FIELDS);
 
     (h.state as { main: Record<string, unknown> }).main.nr = false;
     props.skinId = 'sdr-test';
@@ -561,8 +675,12 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     expect(q('[data-testid="semantic-radio-surfaces"]')).toBe(root);
     expect(target.querySelectorAll('[data-testid="dsp-surface"]')).toHaveLength(1);
     expect(target.querySelectorAll('.dsp-finite-seat')).toHaveLength(0);
+    expect(target.querySelectorAll('.dsp-scalar-seat')).toHaveLength(0);
     for (const label of external) expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
-    expect(ranges()).toHaveLength(7);
+    expect(rangeFields()).toEqual(NATIVE_RANGE_FIELDS);
+    for (const field of ['nbLevel', 'nbWidth']) {
+      expect(target.querySelectorAll(`[data-testid="dsp-${field}"]`)).toHaveLength(1);
+    }
 
     staleStandardNr();
     expect(h.nrMode).not.toHaveBeenCalled();
@@ -572,13 +690,70 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     expect(h.nrMode).toHaveBeenCalledExactlyOnceWith(1);
   });
 
+  /**
+   * MOR-2425 — the witness the persistent scalar host exists for, in the
+   * order its parts must be read. A test that only drove the retained
+   * pre-switch lease and asserted `not.toHaveBeenCalled()` would be GREENER
+   * under the very defect it is meant to exclude: a host torn down and
+   * rebuilt per face loses the binding, and a destroyed binding commands
+   * nothing either. So identity comes first, then proof that the current
+   * lease still commands, then the surviving evidence — and only then the
+   * inertness claim.
+   */
+  it('keeps the nbWidth binding, its pending evidence and its live lease across Standard→SDR', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    h.state = proxy(liveState(true) as object);
+    const props = renderHosted();
+    beginCommand({
+      id: 'pending-nb-width', name: 'set_nb_width', params: { level: 7 }, originalEpoch: 1,
+    });
+    flushSync();
+    const before = dspBindings();
+    expect(before).toHaveLength(2);
+    const nbWidth = dspBinding('set_nb_width');
+    const beforeLifecycle = lifecycle(nbWidth);
+    expect(beforeLifecycle).toMatchObject({ phase: 'submitted', requested: 7, confirmed: 2 });
+    const staleLease = latestLease(nbWidth);
+
+    props.skinId = 'sdr-test';
+    flushSync();
+    const afterLifecycle = lifecycle(nbWidth);
+
+    // (i) Identity, positively: the SAME two binding objects, not rebuilt ones.
+    const after = dspBindings();
+    expect(after).toHaveLength(2);
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
+
+    // (ii) Admission proven open: the CURRENT lease emits exactly one command,
+    // stepped from the CONFIRMED raw 2 (`DSP_STATE`) — the policy dispatches
+    // canonical, so the in-flight target 7 is not the interaction base.
+    expect(latestLease(nbWidth)).not.toBe(staleLease);
+    arrowRight('nbWidth');
+    flushSync();
+    expect(h.nbWidth).toHaveBeenCalledExactlyOnceWith(3);
+
+    // (iii) Evidence survival, read at the moment after the switch.
+    expect(afterLifecycle).toEqual(beforeLifecycle);
+    expect(target.querySelectorAll('[data-feedback-lane="nbWidth"]')).toHaveLength(1);
+    expect(q('[data-testid="dsp-nbWidth"]')!.dataset.feedbackReceiver).toBe('0');
+
+    // Only now: the retained Standard lease is inert, and adds no command.
+    expect(staleLease.beginPointer()).toBeNull();
+    expect(staleLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
+    staleLease.nativeInput(200);
+    staleLease.wheel({ direction: 1, fine: false });
+    flushSync();
+    expect(h.nbWidth).toHaveBeenCalledOnce();
+  });
+
   it('keeps selected controls inert without authority and adds no DSP subscriber', () => {
     h.selectedFiniteAppearance = finiteAppearance;
     h.controlSession = { state: 'disconnected', epoch: 1 };
     render();
     expect(target.querySelectorAll('.dsp-toggle, .dsp-choice')).toHaveLength(0);
     for (const label of external) expect(q(`[data-testid="external-${label}"]`)).toBeNull();
-    expect(ranges()).toHaveLength(7);
+    expect(rangeFields()).toEqual(NATIVE_RANGE_FIELDS);
     // Receiver + AF + RF level + station meter + antenna hosts + the single
     // finite-renderer fan-in.
     expect(h.authoritySubscribers.size).toBe(6);
