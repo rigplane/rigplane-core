@@ -51,14 +51,14 @@ type Props = {
   view: RadioViewModel;
   presentation: 'grouped' | 'independent';
   scalarPresentation?: Readonly<CwContinuousPresentation>;
-  cwPitchFeedback?: Feedback;
+  pitchFeedback?: Feedback;
   keySpeedFeedback?: Feedback;
-  onLevelChange?: (field: CwContinuousField | 'pitchHz' | 'breakInDelay', value: number) => void;
+  onLevelChange?: (field: CwContinuousField | 'breakInDelay', value: number) => void;
 };
 type RendererNode = HTMLButtonElement & { readonly rendererLease: ContinuousScalarRendererLease };
 
-const initial = { keyerSpeed: 24 } as const;
-const control = { keyerSpeed: 'keyer-speed' } as const;
+const initial = { keyerSpeed: 24, pitchHz: 600 } as const;
+const control = { keyerSpeed: 'keyer-speed', pitchHz: 'cw-pitch' } as const;
 const base = (): RadioViewModel => withCwKeyer(topologyFixtures['1/single']);
 const feedback = (
   field: CwContinuousField,
@@ -110,7 +110,8 @@ function render(over: Partial<Props> = {}) {
 }
 
 function binding(field: CwContinuousField): ContinuousScalarBinding {
-  return capture.bindings[0] as ContinuousScalarBinding;
+  const index = CW_CONTINUOUS_LEVELS.findIndex(([f]) => f === field);
+  return capture.bindings[index] as ContinuousScalarBinding;
 }
 function currentLease(field: CwContinuousField): ContinuousScalarRendererLease {
   const owner = binding(field);
@@ -122,29 +123,35 @@ function currentLease(field: CwContinuousField): ContinuousScalarRendererLease {
 }
 
 describe('CwKeyerInstrumentHost', () => {
-  it('creates one persistent binding and destroys it once', () => {
+  it('creates one persistent binding per field and destroys each exactly once', () => {
     const r = render();
-    // The second owner is the unchanged native pitch binding inside the Surface.
     expect(capture.bindings).toHaveLength(2);
-    expect(target.querySelectorAll('[data-external-scalar-renderer]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-external-scalar-renderer]')).toHaveLength(2);
     expect(CW_CONTINUOUS_LEVELS).toEqual([
       ['keyerSpeed', 'Keyer speed', 6, 48, 1, 'WPM', 'set_key_speed'],
+      ['pitchHz', 'CW pitch', 300, 900, 5, 'Hz', 'set_cw_pitch'],
     ]);
-    const owner = binding('keyerSpeed');
+    const speedOwner = binding('keyerSpeed');
+    const pitchOwner = binding('pitchHz');
+    expect(speedOwner).not.toBe(pitchOwner);
     r.dispose();
-    expect(owner.destroy).toHaveBeenCalledOnce();
+    expect(speedOwner.destroy).toHaveBeenCalledOnce();
+    expect(pitchOwner.destroy).toHaveBeenCalledOnce();
   });
 
-  it('keeps binding identities across grouped-independent-grouped replacement', () => {
+  it('keeps both field binding identities across grouped-independent-grouped replacement', () => {
     const r = render();
-    const owner = binding('keyerSpeed');
+    const speedOwner = binding('keyerSpeed');
+    const pitchOwner = binding('pitchHz');
     r.props.presentation = 'independent'; flushSync();
-    expect(binding('keyerSpeed')).toBe(owner);
-    expect(target.querySelectorAll('[data-external-scalar-renderer]')).toHaveLength(1);
+    expect(binding('keyerSpeed')).toBe(speedOwner);
+    expect(binding('pitchHz')).toBe(pitchOwner);
+    expect(target.querySelectorAll('[data-external-scalar-renderer]')).toHaveLength(2);
     expect(target.querySelectorAll('[data-testid="cw-keyer-surface"]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-testid="cw-keyer-breakInDelay"]')).toHaveLength(1);
     r.props.presentation = 'grouped'; flushSync();
-    expect(binding('keyerSpeed')).toBe(owner);
+    expect(binding('keyerSpeed')).toBe(speedOwner);
+    expect(binding('pitchHz')).toBe(pitchOwner);
     expect(target.querySelectorAll('[data-testid="cw-keyer-keyerSpeed"]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-testid="cw-keyer-pitchHz"]')).toHaveLength(1);
     r.dispose();
@@ -152,7 +159,7 @@ describe('CwKeyerInstrumentHost', () => {
 
   it.each(['hbar', 'knob'] as const)(
     'uses the rendered-native lattice for every %s interaction', (form) => {
-      for (const field of ['keyerSpeed'] as const) {
+      for (const field of ['keyerSpeed', 'pitchHz'] as const) {
         const [, , min, max, step] = CW_CONTINUOUS_LEVELS.find(([name]) => name === field)!;
         const exercise = (
           invoke: (lease: ContinuousScalarRendererLease) => void,
@@ -187,26 +194,49 @@ describe('CwKeyerInstrumentHost', () => {
     },
   );
 
-  it('cancels physical drafts and makes every retained renderer operation inert', () => {
-    const r = render({ presentation: 'independent', scalarPresentation: { form: 'hbar' } });
-    const stale = currentLease('keyerSpeed');
-    const token = stale.beginPointer(); expect(token).not.toBeNull();
-    stale.pointer(token!, 31);
+  it.each(['keyerSpeed', 'pitchHz'] as const)(
+    'cancels physical drafts and makes every retained %s renderer operation inert', (field) => {
+      const [, , , max] = CW_CONTINUOUS_LEVELS.find(([name]) => name === field)!;
+      const r = render({ presentation: 'independent', scalarPresentation: { form: 'hbar' } });
+      const stale = currentLease(field);
+      const token = stale.beginPointer(); expect(token).not.toBeNull();
+      stale.pointer(token!, initial[field] + 1);
+      r.onLevelChange.mockClear();
+
+      r.props.scalarPresentation = { form: 'knob' }; flushSync();
+      expect(currentLease(field).view.draft).toBeNull();
+      expect(stale.beginPointer()).toBeNull();
+      stale.pointer(token!, initial[field] + 2); stale.endPointer(token!); stale.cancelPointer(token!);
+      stale.nativeInput(initial[field] + 3); stale.wheel({ direction: 1, fine: false });
+      expect(stale.key({ key: 'End', fine: false })).toBe(false);
+      stale.reset(); stale.dispose();
+      expect(r.onLevelChange).not.toHaveBeenCalled();
+
+      expect(currentLease(field).key({ key: 'End', fine: false })).toBe(true);
+      expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith(field, max);
+      r.props.scalarPresentation = { form: 'hbar' }; flushSync();
+      expect(stale.key({ key: 'Home', fine: false })).toBe(false);
+      r.dispose();
+    },
+  );
+
+  it('routes pitch through its own command exactly once, independently of keyerSpeed', () => {
+    const r = render();
+    currentLease('pitchHz').key({ key: 'ArrowRight', fine: false });
+    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('pitchHz', initial.pitchHz + 5);
     r.onLevelChange.mockClear();
+    currentLease('keyerSpeed').key({ key: 'ArrowRight', fine: false });
+    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('keyerSpeed', initial.keyerSpeed + 1);
+    r.dispose();
+  });
 
-    r.props.scalarPresentation = { form: 'knob' }; flushSync();
-    expect(currentLease('keyerSpeed').view.draft).toBeNull();
-    expect(stale.beginPointer()).toBeNull();
-    stale.pointer(token!, 32); stale.endPointer(token!); stale.cancelPointer(token!);
-    stale.nativeInput(33); stale.wheel({ direction: 1, fine: false });
-    expect(stale.key({ key: 'End', fine: false })).toBe(false);
-    stale.reset(); stale.dispose();
-    expect(r.onLevelChange).not.toHaveBeenCalled();
-
-    expect(currentLease('keyerSpeed').key({ key: 'End', fine: false })).toBe(true);
-    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('keyerSpeed', 48);
-    r.props.scalarPresentation = { form: 'hbar' }; flushSync();
-    expect(stale.key({ key: 'Home', fine: false })).toBe(false);
+  it('reads pitch from command feedback when supplied and falls back to the raw reading otherwise', () => {
+    const r = render({ pitchFeedback: feedback('pitchHz', { confirmed: 725 }) });
+    expect(target.querySelector('[data-testid="cw-keyer-pitchHz-value"]')?.textContent)
+      .toBe('725 Hz');
+    r.props.pitchFeedback = undefined; flushSync();
+    expect(target.querySelector('[data-testid="cw-keyer-pitchHz-value"]')?.textContent)
+      .toBe('600 Hz');
     r.dispose();
   });
 
@@ -220,8 +250,8 @@ describe('CwKeyerInstrumentHost', () => {
       presentation: 'independent', scalarPresentation: { form: 'hbar' },
       keySpeedFeedback: pending,
     });
-    expect(target.querySelector('.vc-value')?.textContent).toBe('24 WPM');
-    expect(target.querySelector('[role="slider"]')?.getAttribute('aria-valuetext'))
+    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).toBe('24 WPM');
+    expect(r.row('keyerSpeed').querySelector('[role="slider"]')?.getAttribute('aria-valuetext'))
       .toContain('requested 31 WPM');
     expect(r.row('keyerSpeed').querySelector('[data-canonical-value]')?.textContent).toBe('24 WPM');
     const before = binding('keyerSpeed').view;
@@ -251,8 +281,8 @@ describe('CwKeyerInstrumentHost', () => {
       presentation: 'independent', scalarPresentation: { form: 'hbar' },
       keySpeedFeedback: pending,
     });
-    expect(target.querySelector('.vc-value')?.textContent).toBe('24 WPM');
-    expect(target.querySelector('[role="slider"]')?.getAttribute('aria-valuetext'))
+    expect(remounted.row('keyerSpeed').querySelector('.vc-value')?.textContent).toBe('24 WPM');
+    expect(remounted.row('keyerSpeed').querySelector('[role="slider"]')?.getAttribute('aria-valuetext'))
       .toContain('requested 31 WPM');
     expect(remounted.onLevelChange).not.toHaveBeenCalled();
     remounted.dispose();
@@ -273,13 +303,13 @@ describe('CwKeyerInstrumentHost', () => {
     });
     flushSync();
     expect(slider().getAttribute('aria-disabled')).toBe('true');
-    expect(target.querySelector('.vc-value')?.textContent).toBe('—');
+    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).toBe('—');
 
     r.props.keySpeedFeedback = undefined;
     flushSync();
     expect([
       slider().getAttribute('aria-valuemin'), slider().getAttribute('aria-valuemax'),
-      slider().getAttribute('aria-valuenow'), target.querySelector('.vc-value')?.textContent,
+      slider().getAttribute('aria-valuenow'), r.row('keyerSpeed').querySelector('.vc-value')?.textContent,
     ]).toEqual(['6', '48', '24', '24 WPM']);
     currentLease('keyerSpeed').key({ key: 'ArrowRight', fine: false });
     expect(replacement).toHaveBeenCalledTimes(2);
@@ -291,7 +321,7 @@ describe('CwKeyerInstrumentHost', () => {
       } },
     };
     flushSync();
-    expect(target.querySelector('.vc-value')?.textContent).toBe('—');
+    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).toBe('—');
     expect(slider().getAttribute('aria-disabled')).toBe('true');
     expect(r.row('keyerSpeed').dataset.observed).toBe('false');
     currentLease('keyerSpeed').nativeInput(31);
@@ -322,9 +352,9 @@ describe('CwKeyerInstrumentHost', () => {
     const live = () => target.querySelectorAll('[role="status"][aria-live="polite"]');
     expect(live()).toHaveLength(1);
     expect(target.querySelector('[data-cw-feedback-status]')?.textContent).toContain('radio refused');
-    expect(target.querySelector('.vc-value')?.textContent).toBe('24 WPM');
-    expect(target.querySelector('.vc-value')?.textContent).not.toContain('31');
-    expect(target.querySelector('[role="slider"]')?.getAttribute('aria-valuenow')).toBe('24');
+    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).toBe('24 WPM');
+    expect(r.row('keyerSpeed').querySelector('.vc-value')?.textContent).not.toContain('31');
+    expect(r.row('keyerSpeed').querySelector('[role="slider"]')?.getAttribute('aria-valuenow')).toBe('24');
     const initialStatus = target.querySelector('[data-cw-feedback-status]');
     r.props.keySpeedFeedback = failed('speed-failed-hbar'); flushSync();
     expect(target.querySelector('[data-cw-feedback-status]')).toBe(initialStatus);
@@ -349,6 +379,31 @@ describe('CwKeyerInstrumentHost', () => {
     flushSync();
     expect(live()).toHaveLength(1);
     expect(target.querySelectorAll('[data-cw-feedback-status]')).toHaveLength(1);
+    r.dispose();
+  });
+
+  it('keeps each field issued-status lane independent, exactly one announcement per field', () => {
+    activation.selected = undefined;
+    const pitchFailed = feedback('pitchHz', {
+      requestedTarget: 725, phase: 'failed', lifecycleId: 'pitch-command',
+      transitionId: 'pitch-failed', outcome: { phase: 'failed', error: 'pitch rejected' },
+    });
+    const speedFailed = feedback('keyerSpeed', {
+      requestedTarget: 31, phase: 'failed', lifecycleId: 'speed-command',
+      transitionId: 'speed-failed', outcome: { phase: 'failed', error: 'speed rejected' },
+    });
+    const r = render({
+      presentation: 'independent', scalarPresentation: { form: 'hbar' },
+      keySpeedFeedback: speedFailed, pitchFeedback: pitchFailed,
+    });
+    const lanes = [...target.querySelectorAll<HTMLElement>('[data-cw-feedback-status]')];
+    expect(lanes).toHaveLength(2);
+    expect(lanes.map((node) => node.dataset.feedbackLane).sort()).toEqual(['keyerSpeed', 'pitchHz']);
+    expect(lanes.find((n) => n.dataset.feedbackLane === 'pitchHz')?.textContent)
+      .toContain('pitch rejected');
+    expect(lanes.find((n) => n.dataset.feedbackLane === 'keyerSpeed')?.textContent)
+      .toContain('speed rejected');
+    expect(lanes.every((node) => node.getAttribute('aria-live') === 'polite')).toBe(true);
     r.dispose();
   });
 
