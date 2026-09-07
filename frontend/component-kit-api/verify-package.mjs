@@ -157,6 +157,9 @@ async function assertHostedFaceSources() {
     'rfPower', 'micGain', 'driveGain', 'voxGain', 'antiVoxGain',
     'voxDelay', 'compressorLevel', 'monitorLevel',
   ];
+  const stationMeters = [
+    'signal', 'power', 'swr', 'alc', 'drainCurrent', 'drainVoltage', 'compression',
+  ];
 
   for (const [index, source] of sources.entries()) {
     const imports = [...source.matchAll(/\bfrom\s+['"]([^'"]+)['"]/gu)]
@@ -169,6 +172,7 @@ async function assertHostedFaceSources() {
     assert(source.includes('receiver.subSMeter !== null'));
     assert(source.includes('instruments.vfoOperations !== null'));
     assert(source.includes('instruments.txAux !== null'));
+    assert(source.includes('instruments.stationMeters !== null'));
     for (const field of operations) {
       assert.equal(
         [...source.matchAll(new RegExp(`operations\\.${field}\\(`, 'gu'))].length,
@@ -183,6 +187,13 @@ async function assertHostedFaceSources() {
         `${path.basename(faceFiles[index])} must arrange ${field} exactly once`,
       );
     }
+    for (const field of stationMeters) {
+      assert.equal(
+        [...source.matchAll(new RegExp(`station\\.${field}\\(\\)`, 'gu'))].length,
+        1,
+        `${path.basename(faceFiles[index])} must place ${field} exactly once`,
+      );
+    }
     for (const forbidden of [
       '$lib', '/frontend/src/', 'InstrumentComposition', 'SignalMeterFrame',
       'vfoFreqHook', 'onFreqChange',
@@ -195,6 +206,14 @@ async function assertHostedFaceSources() {
   assert(sources.every((source) => source.includes('compact:')));
   assert(sources.every((source) => source.includes('showLabel:')));
   assert(sources.every((source) => source.includes('showValue:')));
+  const stationOrder = (source) => stationMeters
+    .map((field) => source.indexOf(`station.${field}()`));
+  assert(stationOrder(sources[0]).every((index) => index >= 0));
+  assert.notDeepEqual(stationOrder(sources[0]), stationOrder(sources[1]));
+  const fixtureSource = await readFile(path.join(fixtureRoot, 'src', 'index.ts'), 'utf8');
+  assert.match(fixtureSource, /id: 'meters', surfaces: \['meters'\]/u);
+  assert.match(fixtureSource, /requiredSemanticSurfaces: \['vfo', 'txAux', 'meters'\]/u);
+  assert.match(fixtureSource, /requiredSemanticSurfaces: \['txAux', 'vfo', 'meters'\]/u);
 }
 
 async function assertFixturePublicImports() {
@@ -313,6 +332,8 @@ try {
   assert(apiDeclarationSource.includes('ReceiverFrequencyHandleV1'));
   assert(apiDeclarationSource.includes('VfoOperationHandleV1'));
   assert(apiDeclarationSource.includes('TxAuxInstrumentFamilyV1'));
+  assert(apiDeclarationSource.includes('StationMeterInstrumentFamilyV1'));
+  assert.match(apiDeclarationSource, /type StationMeterHandleV1 = Snippet<\[\]>/u);
   assert(!apiDeclarationSource.includes('ReceiverMeterHandleV1'));
   assert(!apiDeclarationSource.includes('ReceiverVfoOperationsHandleV1'));
   assert(!apiDeclarationSource.includes('SignalMeterFrame'));
@@ -351,10 +372,20 @@ try {
     { name: 'compressorLevel', optional: false },
     { name: 'monitorLevel', optional: false },
   ]);
+  assert.deepEqual(interfaceMembers(apiDeclarationSource, 'StationMeterInstrumentFamilyV1'), [
+    { name: 'signal', optional: false },
+    { name: 'power', optional: false },
+    { name: 'swr', optional: false },
+    { name: 'alc', optional: false },
+    { name: 'drainCurrent', optional: false },
+    { name: 'drainVoltage', optional: false },
+    { name: 'compression', optional: false },
+  ]);
   assert.deepEqual(interfaceMembers(apiDeclarationSource, 'HostedInstrumentFamiliesV1'), [
     { name: 'receiver', optional: false },
     { name: 'vfoOperations', optional: false },
     { name: 'txAux', optional: false },
+    { name: 'stationMeters', optional: false },
   ]);
   assert.deepEqual(interfaceMembers(apiDeclarationSource, 'HostedFaceAppearanceIdsV1'), [
     { name: 'scalar', optional: false },
@@ -453,6 +484,8 @@ export default {
   type ScalarRendererSeat,
   type SignalMeterRendererProps,
   type SignalMeterEvidence,
+  type StationMeterHandleV1,
+  type StationMeterInstrumentFamilyV1,
   type TxAuxScalarPresentationV1,
 } from '@rigplane/component-kit-api';
 import type { Component } from 'svelte';
@@ -501,13 +534,26 @@ if (hosted !== undefined && 'hostMode' in hosted) {
 const txPresentation: TxAuxScalarPresentationV1 = {
   form: 'knob', compact: true, showLabel: false, showValue: true,
 };
+declare const stationMeter: StationMeterHandleV1;
+const completeStationMeters: StationMeterInstrumentFamilyV1 = {
+  signal: stationMeter, power: stationMeter, swr: stationMeter, alc: stationMeter,
+  drainCurrent: stationMeter, drainVoltage: stationMeter, compression: stationMeter,
+};
+const nullableStationMeters: HostedFacePropsV1['instruments'] = {
+  receiver: null, vfoOperations: null, txAux: null, stationMeters: null,
+};
 function inspectHostedFace(props: HostedFacePropsV1): void {
   const receiver = props.instruments.receiver;
   const operations = props.instruments.vfoOperations;
   const txAux = props.instruments.txAux;
+  const stationMeters = props.instruments.stationMeters;
   if (receiver !== null) void [receiver.mainFrequency, receiver.subFrequency, receiver.mainSMeter];
   if (operations !== null) void [operations.split, operations.equalize, operations.speak];
   if (txAux !== null) void [txAux.rfPower, txAux.voxDelay, txAux.monitorLevel];
+  if (stationMeters !== null) void [
+    stationMeters.signal, stationMeters.power, stationMeters.swr, stationMeters.alc,
+    stationMeters.drainCurrent, stationMeters.drainVoltage, stationMeters.compression,
+  ];
 }
 // @ts-expect-error a current numeric observation always carries its value
 const invalidCurrentEvidence: MeterNumericEvidence = { state: 'current', domain: { kind: 'engineering', unit: 'w' } };
@@ -547,6 +593,8 @@ void hostedA;
 void hostedB;
 void inferredMarker;
 void txPresentation;
+void completeStationMeters;
+void nullableStationMeters;
 void inspectHostedFace;
 void invalidCurrentEvidence;
 void invalidUnknownSignal;
@@ -573,6 +621,8 @@ import type {
   ReceiverFrequencyPresentationV1,
   ReceiverInstrumentFamilyV1,
   ReceiverSignalMeterHandleV1,
+  StationMeterHandleV1,
+  StationMeterInstrumentFamilyV1,
   TxAuxInstrumentFamilyV1,
   TxAuxScalarHandleV1,
   TxAuxScalarPresentationV1,
@@ -598,6 +648,7 @@ declare const frequency: ReceiverFrequencyHandleV1;
 declare const meter: ReceiverSignalMeterHandleV1;
 declare const scalar: TxAuxScalarHandleV1;
 declare const operation: VfoOperationHandleV1;
+declare const stationMeter: StationMeterHandleV1;
 declare const face: HostedFaceComponentV1;
 // @ts-expect-error the hosted discriminator is required
 const missingHostMode = { id: 'bad', layoutId: 'bad', loader: async () => face, resources: [], appearances: { scalar: 'x', frequency: 'x', finite: 'x', meter: 'x' } } satisfies HostedFacePresentationV1;
@@ -606,9 +657,13 @@ const receiverWithRawValue: ReceiverInstrumentFamilyV1 = { mainFrequency: freque
 // @ts-expect-error SUB structural absence is represented by required null fields
 const receiverWithoutSub: ReceiverInstrumentFamilyV1 = { mainFrequency: frequency, mainSMeter: meter };
 // @ts-expect-error every family key is required even though each family is nullable
-const propsWithoutOperations: HostedInstrumentFamiliesV1 = { receiver: null, txAux: null };
+const propsWithoutOperations: HostedInstrumentFamiliesV1 = { receiver: null, txAux: null, stationMeters: null };
 // @ts-expect-error family absence is null, never undefined
-const undefinedReceiver: HostedInstrumentFamiliesV1 = { receiver: undefined, vfoOperations: null, txAux: null };
+const undefinedReceiver: HostedInstrumentFamiliesV1 = { receiver: undefined, vfoOperations: null, txAux: null, stationMeters: null };
+// @ts-expect-error every family key is required even though each family is nullable
+const missingStationFamily: HostedInstrumentFamiliesV1 = { receiver: null, vfoOperations: null, txAux: null };
+// @ts-expect-error family absence is null, never undefined
+const undefinedStationFamily: HostedInstrumentFamiliesV1 = { receiver: null, vfoOperations: null, txAux: null, stationMeters: undefined };
 // @ts-expect-error all eight named VFO operation seats are required when admitted
 const operationsWithoutSpeak: VfoOperationInstrumentFamilyV1 = { split: operation, dualWatch: operation, activeReceiver: operation, equalize: operation, swap: operation, quickSplit: operation, quickDualWatch: operation };
 // @ts-expect-error operation-seat absence is null, never undefined
@@ -620,6 +675,18 @@ declare const oldAggregateOperation: Snippet<[appearance: 'semantic' | 'sdr' | '
 const publicOperation: VfoOperationHandleV1 = oldAggregateOperation;
 // @ts-expect-error all eight named TX scalar seats are required when admitted
 const txWithoutMonitor: TxAuxInstrumentFamilyV1 = { rfPower: scalar, micGain: scalar, driveGain: scalar, voxGain: scalar, antiVoxGain: scalar, voxDelay: scalar, compressorLevel: scalar };
+// @ts-expect-error all seven named station meter handles are required when admitted
+const stationWithoutCompression: StationMeterInstrumentFamilyV1 = { signal: stationMeter, power: stationMeter, swr: stationMeter, alc: stationMeter, drainCurrent: stationMeter, drainVoltage: stationMeter };
+// @ts-expect-error station meter handle absence is not encoded as undefined
+const undefinedStationSignal: StationMeterInstrumentFamilyV1 = { signal: undefined, power: stationMeter, swr: stationMeter, alc: stationMeter, drainCurrent: stationMeter, drainVoltage: stationMeter, compression: stationMeter };
+// @ts-expect-error aggregate meter calls are not admitted in the atomic station family
+const stationWithAggregate = { signal: stationMeter, power: stationMeter, swr: stationMeter, alc: stationMeter, drainCurrent: stationMeter, drainVoltage: stationMeter, compression: stationMeter, meters: stationMeter } satisfies StationMeterInstrumentFamilyV1;
+declare const privateStationHandle: Snippet<[frame: { readonly privateFrame: true }]>;
+// @ts-expect-error opaque station meter handles take no frames or reset leases
+const publicStationHandle: StationMeterHandleV1 = privateStationHandle;
+declare const privateResetStationHandle: Snippet<[resetLease: { readonly privateReset: true }]>;
+// @ts-expect-error opaque station meter handles cannot expose private reset leases
+const publicResetStationHandle: StationMeterHandleV1 = privateResetStationHandle;
 // @ts-expect-error layoutId is required on hosted declarations
 const missingLayout = { hostMode: 'external-instruments-v1', id: 'bad', loader: async () => face, resources: [], appearances: { scalar: 'x', frequency: 'x', finite: 'x', meter: 'x' } } satisfies HostedFacePresentationV1;
 // @ts-expect-error resources are required on hosted declarations
@@ -646,8 +713,9 @@ export type PrivateRootMustStayUnavailable = [
   ReceiverSMeterRenderer,
 ];
 void [wrongHostMode, privateFrequencyHook, discreteTxControl, invocationAppearance, missingHostMode];
-void [receiverWithRawValue, receiverWithoutSub, propsWithoutOperations, undefinedReceiver];
+void [receiverWithRawValue, receiverWithoutSub, propsWithoutOperations, undefinedReceiver, missingStationFamily, undefinedStationFamily];
 void [operationsWithoutSpeak, undefinedOperation, operationsWithAggregate, publicOperation, txWithoutMonitor];
+void [stationWithoutCompression, undefinedStationSignal, stationWithAggregate, publicStationHandle, publicResetStationHandle];
 void [missingLayout, missingResources, missingScalarAppearance, missingFrequencyAppearance];
 void [missingFiniteAppearance, missingMeterAppearance, missingLoader];
 `);
@@ -903,11 +971,12 @@ mount(App, { target: document.querySelector('#app')! });
   let subPresent = $state(true);
   let operationsPresent = $state(true);
   let txPresent = $state(true);
+  let stationMetersPresent = $state(true);
   let hiddenOperation = $state<string | null>(null);
   let operationInvocations = $state(0);
   const harness = globalThis as typeof globalThis & {
     __setFace: (value: 'a' | 'b') => void;
-    __setFamily: (family: 'receiver' | 'vfoOperations' | 'txAux', present: boolean) => void;
+    __setFamily: (family: 'receiver' | 'vfoOperations' | 'txAux' | 'stationMeters', present: boolean) => void;
     __setSub: (present: boolean) => void;
     __hideOperation: (name: string | null) => void;
     __operationInvocations: () => number;
@@ -917,6 +986,7 @@ mount(App, { target: document.querySelector('#app')! });
     if (family === 'receiver') receiverPresent = present;
     if (family === 'vfoOperations') operationsPresent = present;
     if (family === 'txAux') txPresent = present;
+    if (family === 'stationMeters') stationMetersPresent = present;
   };
   harness.__setSub = (present) => { subPresent = present; };
   harness.__hideOperation = (name) => { hiddenOperation = name; };
@@ -943,6 +1013,13 @@ mount(App, { target: document.querySelector('#app')! });
 {#snippet voxDelay(p = {})}<span data-seat="voxDelay" data-form={p.form}>VOX delay</span>{/snippet}
 {#snippet compressorLevel(p = {})}<span data-seat="compressorLevel" data-form={p.form}>Compressor</span>{/snippet}
 {#snippet monitorLevel(p = {})}<span data-seat="monitorLevel" data-form={p.form}>Monitor</span>{/snippet}
+{#snippet signal()}<span data-station-meter="signal">Signal</span>{/snippet}
+{#snippet power()}<span data-station-meter="power">Power</span>{/snippet}
+{#snippet swr()}<span data-station-meter="swr">SWR</span>{/snippet}
+{#snippet alc()}<span data-station-meter="alc">ALC</span>{/snippet}
+{#snippet drainCurrent()}<span data-station-meter="drainCurrent">Drain current</span>{/snippet}
+{#snippet drainVoltage()}<span data-station-meter="drainVoltage">Drain voltage</span>{/snippet}
+{#snippet compression()}<span data-station-meter="compression">Compression</span>{/snippet}
 {#snippet hostedFace()}
   {@const instruments = {
     receiver: receiverPresent ? {
@@ -964,6 +1041,9 @@ mount(App, { target: document.querySelector('#app')! });
     txAux: txPresent ? {
       rfPower, micGain, driveGain, voxGain, antiVoxGain,
       voxDelay, compressorLevel, monitorLevel,
+    } : null,
+    stationMeters: stationMetersPresent ? {
+      signal, power, swr, alc, drainCurrent, drainVoltage, compression,
     } : null,
   }}
   {#if face === 'a'}
@@ -1039,6 +1119,9 @@ mount(App, { target: document.querySelector('#app')! });
         'rfPower', 'micGain', 'driveGain', 'voxGain', 'antiVoxGain',
         'voxDelay', 'compressorLevel', 'monitorLevel',
       ];
+      const stationMeterNames = [
+        'signal', 'power', 'swr', 'alc', 'drainCurrent', 'drainVoltage', 'compression',
+      ];
       const scalarControl = page.locator('[data-fixture-scalar]');
       assert.equal(await scalarControl.count(), 1);
       assert.equal(await scalarControl.getAttribute('data-compact'), 'true');
@@ -1079,6 +1162,11 @@ mount(App, { target: document.querySelector('#app')! });
 
       assert.equal(await page.locator('[data-external-face="a"]').count(), 1);
       assert.equal(await page.locator('[data-seat]').count(), 20);
+      assert.deepEqual(
+        await page.locator('[data-family="stationMeters"] [data-station-meter]').evaluateAll((nodes) =>
+          nodes.map((node) => node.getAttribute('data-station-meter'))),
+        stationMeterNames,
+      );
       for (const name of seatNames) {
         assert.equal(await page.locator(`[data-seat="${name}"]`).count(), 1);
       }
@@ -1089,6 +1177,11 @@ mount(App, { target: document.querySelector('#app')! });
       });
       await page.locator('[data-external-face="b"]').waitFor();
       assert.equal(await page.locator('[data-seat]').count(), 20);
+      assert.deepEqual(
+        await page.locator('[data-family="stationMeters"] [data-station-meter]').evaluateAll((nodes) =>
+          nodes.map((node) => node.getAttribute('data-station-meter'))),
+        [...stationMeterNames].reverse(),
+      );
       for (const name of seatNames) {
         assert.equal(await page.locator(`[data-seat="${name}"]`).count(), 1);
       }
@@ -1126,14 +1219,19 @@ mount(App, { target: document.querySelector('#app')! });
       await page.evaluate(() => globalThis.__setFamily('txAux', false));
       await page.locator('[data-family="txAux"]').waitFor({ state: 'detached' });
       assert.equal(await page.locator('[data-seat="rfPower"]').count(), 0);
+      await page.evaluate(() => globalThis.__setFamily('stationMeters', false));
+      await page.locator('[data-family="stationMeters"]').waitFor({ state: 'detached' });
+      assert.equal(await page.locator('[data-station-meter]').count(), 0);
       await page.evaluate(() => {
         globalThis.__setFamily('txAux', true);
+        globalThis.__setFamily('stationMeters', true);
         globalThis.__setSub(true);
         globalThis.__hideOperation(null);
       });
       await page.locator('[data-seat="subFrequency"]').waitFor();
       await page.locator('[data-seat="speak"]').waitFor();
       assert.equal(await page.locator('[data-seat]').count(), 20);
+      assert.equal(await page.locator('[data-station-meter]').count(), 7);
       const signals = page.locator('[data-fixture-signal]');
       const levels = page.locator('[data-fixture-level]');
       assert.equal(await signals.count(), 5);
@@ -1249,9 +1347,9 @@ assert.deepEqual(fixtureKit.presentations?.map(({ id }) => id), ['fixture-face-a
     path.join(consumer, 'node_modules', 'svelte', 'package.json'),
     'utf8',
   ));
-  assert.equal(installedApi.version, '0.5.0');
+  assert.equal(installedApi.version, '0.6.0');
   assert.equal(installedApi.peerDependencies.svelte, '>=5.45.2 <6');
-  assert.equal(installedFixture.peerDependencies['@rigplane/component-kit-api'], '0.5.0');
+  assert.equal(installedFixture.peerDependencies['@rigplane/component-kit-api'], '0.6.0');
 
   console.log('component-kit-api portable package verification: OK');
   console.log(`runtime exports: COMPONENT_KIT_API_VERSION, defineComponentKit`);
