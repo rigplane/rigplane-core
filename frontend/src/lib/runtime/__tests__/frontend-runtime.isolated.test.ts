@@ -78,6 +78,8 @@ vi.mock('$lib/stores/connection.svelte', () => ({
 
 vi.mock('$lib/stores/audio.svelte', () => ({
   getAudioState: vi.fn(() => ({})),
+  getRxAudioTargetSnapshot: vi.fn(() => Object.freeze({ muted: false, rxEnabled: false })),
+  subscribeRxAudioTarget: vi.fn(),
   setVolume: vi.fn(),
   setMuted: vi.fn(),
   toggleMute: vi.fn(),
@@ -119,6 +121,7 @@ import { connect, getChannel, getControlSession, onControlSessionTransition, onM
 import { getCapabilities, setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 import { radio, subscribeRadioState } from '$lib/stores/radio.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
+import { getRxAudioTargetSnapshot, subscribeRxAudioTarget } from '$lib/stores/audio.svelte';
 import { clearLegacyPendingModInputRestore } from '../adapters/mod-input-auto.svelte';
 import { PresentationResourceHost } from '../resource-host';
 import { presentationResources } from '../frontend-runtime';
@@ -164,21 +167,25 @@ describe('FrontendRuntime control-session facade (MOR-1723)', () => {
     expect(connect).not.toHaveBeenCalled(); expect(sendRaw).not.toHaveBeenCalled();
   });
 
-  it('fans in every state, capability, and session publication synchronously and disposes once', async () => {
+  it('fans in every state, capability, session, and RX target publication synchronously and disposes once', async () => {
     const runtime = await freshRuntime();
     const initialState = { stateRevision: 1 } as any;
     const initialCaps = { providerGeneration: 7 } as any;
     const initialSession = { state: 'connected' as const, epoch: 4 };
+    const initialRxAudioTarget = Object.freeze({ muted: false, rxEnabled: false });
     radio.current = initialState;
     vi.mocked(getCapabilities).mockReturnValue(initialCaps);
     vi.mocked(getControlSession).mockReturnValue(initialSession);
+    vi.mocked(getRxAudioTargetSnapshot).mockReturnValue(initialRxAudioTarget);
 
     let stateSubscriber!: Parameters<typeof subscribeRadioState>[0];
     let capabilitySubscriber!: Parameters<typeof subscribeCapabilities>[0];
     let sessionSubscriber!: (next: { state: 'connected' | 'reconnecting'; epoch: number }) => void;
+    let rxAudioTargetSubscriber!: Parameters<typeof subscribeRxAudioTarget>[0];
     const stopState = vi.fn();
     const stopCapabilities = vi.fn();
     const stopSession = vi.fn();
+    const stopRxAudioTarget = vi.fn();
     vi.mocked(subscribeRadioState).mockImplementation((subscriber) => {
       stateSubscriber = subscriber;
       subscriber(initialState);
@@ -193,6 +200,11 @@ describe('FrontendRuntime control-session facade (MOR-1723)', () => {
       sessionSubscriber = subscriber as typeof sessionSubscriber;
       return stopSession;
     });
+    vi.mocked(subscribeRxAudioTarget).mockImplementation((subscriber) => {
+      rxAudioTargetSubscriber = subscriber;
+      subscriber(initialRxAudioTarget);
+      return stopRxAudioTarget;
+    });
 
     const subscriber = vi.fn();
     const stop = runtime.subscribeControlAuthority(subscriber);
@@ -201,6 +213,7 @@ describe('FrontendRuntime control-session facade (MOR-1723)', () => {
       state: initialState,
       caps: initialCaps,
       session: initialSession,
+      rxAudioTarget: initialRxAudioTarget,
     });
 
     const middleCaps = { providerGeneration: 7, topology: 'B' } as any;
@@ -223,11 +236,33 @@ describe('FrontendRuntime control-session facade (MOR-1723)', () => {
       state: nextState,
       caps: finalCaps,
       session: initialSession,
+      rxAudioTarget: initialRxAudioTarget,
     });
     expect(subscriber).toHaveBeenNthCalledWith(5, {
       state: nextState,
       caps: finalCaps,
       session: { state: 'reconnecting', epoch: 5 },
+      rxAudioTarget: initialRxAudioTarget,
+    });
+
+    const mutedTarget = Object.freeze({ muted: true, rxEnabled: false });
+    const liveTarget = Object.freeze({ muted: false, rxEnabled: true });
+    vi.mocked(getRxAudioTargetSnapshot).mockReturnValue(mutedTarget);
+    rxAudioTargetSubscriber(mutedTarget);
+    vi.mocked(getRxAudioTargetSnapshot).mockReturnValue(liveTarget);
+    rxAudioTargetSubscriber(liveTarget);
+    vi.mocked(getRxAudioTargetSnapshot).mockReturnValue(initialRxAudioTarget);
+    rxAudioTargetSubscriber(initialRxAudioTarget);
+    expect(subscriber.mock.calls.slice(-3).map(([publication]) => publication.rxAudioTarget)).toEqual([
+      mutedTarget,
+      liveTarget,
+      initialRxAudioTarget,
+    ]);
+    expect(subscriber).toHaveBeenLastCalledWith({
+      state: nextState,
+      caps: finalCaps,
+      session: { state: 'reconnecting', epoch: 5 },
+      rxAudioTarget: initialRxAudioTarget,
     });
 
     stop();
@@ -235,13 +270,49 @@ describe('FrontendRuntime control-session facade (MOR-1723)', () => {
     expect(stopState).toHaveBeenCalledTimes(1);
     expect(stopCapabilities).toHaveBeenCalledTimes(1);
     expect(stopSession).toHaveBeenCalledTimes(1);
+    expect(stopRxAudioTarget).toHaveBeenCalledTimes(1);
     stateSubscriber(nextState);
     capabilitySubscriber(finalCaps);
     sessionSubscriber({ state: 'connected', epoch: 6 });
-    expect(subscriber).toHaveBeenCalledTimes(5);
+    rxAudioTargetSubscriber(initialRxAudioTarget);
+    expect(subscriber).toHaveBeenCalledTimes(8);
     radio.current = null;
     vi.mocked(getCapabilities).mockReturnValue(null);
     vi.mocked(getControlSession).mockReturnValue({ state: 'disconnected', epoch: 0 });
+  });
+
+  it('cleans up earlier authority sources when RX target subscription setup fails', async () => {
+    const runtime = await freshRuntime();
+    const stopState = vi.fn();
+    const stopCapabilities = vi.fn();
+    const failure = new Error('RX target subscribe failed');
+    vi.mocked(subscribeRadioState).mockReturnValue(stopState);
+    vi.mocked(subscribeCapabilities).mockReturnValue(stopCapabilities);
+    vi.mocked(subscribeRxAudioTarget).mockImplementation(() => { throw failure; });
+
+    expect(() => runtime.subscribeControlAuthority(vi.fn())).toThrow(failure);
+    expect(stopCapabilities).toHaveBeenCalledTimes(1);
+    expect(stopState).toHaveBeenCalledTimes(1);
+    vi.mocked(subscribeRadioState).mockImplementation(() => () => {});
+    vi.mocked(subscribeRxAudioTarget).mockImplementation(() => () => {});
+    vi.mocked(getCapabilities).mockReturnValue(null);
+  });
+
+  it('cleans up every authority source when the initial complete publication fails', async () => {
+    const runtime = await freshRuntime();
+    const stops = [vi.fn(), vi.fn(), vi.fn(), vi.fn()];
+    vi.mocked(subscribeRadioState).mockReturnValue(stops[0]!);
+    vi.mocked(subscribeCapabilities).mockReturnValue(stops[1]!);
+    vi.mocked(subscribeRxAudioTarget).mockReturnValue(stops[2]!);
+    vi.mocked(onControlSessionTransition).mockReturnValue(stops[3]!);
+    const failure = new Error('initial publication failed');
+
+    expect(() => runtime.subscribeControlAuthority(() => { throw failure; })).toThrow(failure);
+    expect(stops.every((stop) => stop.mock.calls.length === 1)).toBe(true);
+
+    vi.mocked(subscribeRadioState).mockImplementation(() => () => {});
+    vi.mocked(subscribeRxAudioTarget).mockImplementation(() => () => {});
+    vi.mocked(onControlSessionTransition).mockImplementation(() => () => {});
   });
 });
 
