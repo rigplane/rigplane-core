@@ -10,14 +10,15 @@
  */
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, unmount } from 'svelte';
+import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { getLocale, setLocale } from '$lib/i18n';
-import {
+import FilterSurface, {
   FILTER_PASSBAND_LEVELS, FILTER_SHAPES, type FilterPassbandLevelField,
 } from '../FilterSurface.svelte';
 import FilterInstrumentHostFixture from './fixtures/FilterInstrumentHostFixture.svelte';
 import { topologyFixtures, withFilterPassband, withModeFilter } from '../fixtures/topologies';
+import type { FilterInstrumentHandles } from '../filter-instruments';
 import type {
   Availability, FilterPassbandViewModel, ModeFilterViewModel, RadioViewModel,
 } from '../radio-view-model';
@@ -1157,5 +1158,73 @@ describe('explicit PBT display (MOR-1692)', () => {
       expect(s.input('filter-pbtInner')).toBeNull(); expect(group.querySelector('[aria-valuenow]')).toBeNull();
       group.dispatchEvent(new Event('input', { bubbles: true })); flushSync(); expect(onChange).not.toHaveBeenCalled();
     }, { onPbtInnerChange: onChange });
+  });
+});
+
+/**
+ * MOR-2425 restore — PBT reset. Mounted directly (no `modeFilter`, so
+ * `handles.mode()/filter()` are never invoked) rather than through
+ * `FilterInstrumentHostFixture`, whose fixed prop list does not forward
+ * `onPbtReset` and no other test in this file needs widening for it.
+ *
+ * The exact caps-derived CENTER value `onPbtReset` sends over
+ * `set_pbt_inner`/`set_pbt_outer` is already pinned end to end, against the
+ * REAL `makeFilterHandlers()` factory and a spied `sendCommand`, in
+ * `lib/runtime/commands/__tests__/panel-commands.intent.isolated.test.ts`
+ * (its `onPbtReset` case: `['set_pbt_inner', { value: 128, receiver: 0 }]`,
+ * `['set_pbt_outer', { value: 128, receiver: 0 }]`) — unmodified by this PR.
+ * This describe block proves the surface's OWN half of that chain: the
+ * button renders only when PBT is structural, and a click reaches whatever
+ * `onPbtReset` callback the wiring seam hands it, exactly once.
+ */
+const pbtStubHandles: FilterInstrumentHandles = {
+  mode: createRawSnippet(() => ({ render: () => '<span></span>' })),
+  filter: createRawSnippet(() => ({ render: () => '<span></span>' })),
+};
+function renderPbtOnly(view: RadioViewModel, onPbtReset?: () => void) {
+  const component = mount(FilterSurface, {
+    target, props: { view, handles: pbtStubHandles, onPbtReset },
+  });
+  flushSync();
+  return {
+    dispose: () => unmount(component),
+    button: () => target.querySelector<HTMLButtonElement>('[data-testid="filter-pbt-reset"]'),
+  };
+}
+
+describe('PBT reset (MOR-2425 restore)', () => {
+  it('renders only when BOTH pbtInner and pbtOuter are structural', () => {
+    const r = renderPbtOnly(withFilterPassband(topologyFixtures['1/single']));
+    expect(r.button()).not.toBeNull();
+    r.dispose();
+  });
+
+  it('is absent when pbtInner is not structural (e.g. no PBT capability)', () => {
+    const view = withPassbandField(
+      withFilterPassband(topologyFixtures['1/single']), 'pbtInner',
+      { availability: { structural: false, operational: false } },
+    );
+    const r = renderPbtOnly(view);
+    expect(r.button()).toBeNull();
+    r.dispose();
+  });
+
+  it('is absent when pbtOuter is not structural, even if pbtInner is', () => {
+    const view = withPassbandField(
+      withFilterPassband(topologyFixtures['1/single']), 'pbtOuter',
+      { availability: { structural: false, operational: false } },
+    );
+    const r = renderPbtOnly(view);
+    expect(r.button()).toBeNull();
+    r.dispose();
+  });
+
+  it('click calls onPbtReset exactly once', () => {
+    const onPbtReset = vi.fn();
+    const r = renderPbtOnly(withFilterPassband(topologyFixtures['1/single']), onPbtReset);
+    r.button()!.click();
+    flushSync();
+    expect(onPbtReset).toHaveBeenCalledExactlyOnceWith();
+    r.dispose();
   });
 });
