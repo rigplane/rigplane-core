@@ -49,6 +49,7 @@ export interface InstrumentComposition {
   readonly ritXitInstruments: RitXitScanInstrumentHandles;
   readonly cwKeyerInstruments: CwKeyerInstrumentHandles;
   readonly cwKeyer: Snippet<[allowBare?: boolean, showKeyerSpeed?: boolean]>;
+  readonly memory: Snippet<[allowBare?: boolean]>;
   readonly scopeDisplay: Snippet<[allowBare?: boolean]>;
   readonly scopeControls: Snippet<[allowBare?: boolean]>;
   readonly txFaultRecovery: Snippet;

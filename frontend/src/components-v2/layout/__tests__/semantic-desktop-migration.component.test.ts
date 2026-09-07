@@ -471,16 +471,17 @@ describe('desktop-v2 resolves through the v3 path (MOR-1313)', () => {
   // deliberately NOT asserted here any more (MOR-1341): it is now itself a
   // suppressed twin, not part of "the rest" — its own matrix entry is the
   // dedicated test above. `rx-audio` left this list for the same reason
-  // (MOR-1368/S9): it is a suppressed twin now, pinned by its own row in the
-  // channel describe below. `memory` stays — it has no semantic twin at all,
-  // so it is the panel that proves suppression did not widen into "the rest".
+  // (MOR-1368/S9), and `memory` (MOR-2425, phase B2) just joined it: it now
+  // has a semantic twin and a declared zone, so this test asserts its swap
+  // directly instead of using it as "the rest" witness.
   it('leaves the rest of the layout intact', () => {
     vi.mocked(hasAnyScope).mockReturnValue(true);
     const t = render('desktop-v2');
     expect(t.querySelector('.content-left .left-sidebar')).not.toBeNull();
     expect(t.querySelector('.content-right .right-sidebar')).not.toBeNull();
     expect(t.querySelector('.center-column .spectrum-slot')).not.toBeNull();
-    expect(t.querySelector('[data-panel-id="memory"]')).not.toBeNull();
+    expect(t.querySelector('[data-panel-id="memory"]')).toBeNull();
+    expect(t.querySelectorAll('[data-testid="memory-surface"]')).toHaveLength(1);
   });
 
   // The manifest declares all four canonical classes (MOR-1266) — desktop-v2
@@ -1757,6 +1758,10 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
   // `desktop-dsp`/`desktop-agc`/`desktop-cw` — ten ids, the largest single
   // retirement in the tail. Non-vacuous proof is in the dedicated "drops the
   // legacy ..." tests below, which use caps that make each evidence gate fire.
+  //
+  // MOR-2425 (Memory lane, phase B2) removes both `memory` ids too: the zone
+  // is now real on `desktop-v2`, so both sidebars' legacy `MemoryPanel`
+  // retire on the same `declared` channel.
   it('renders exactly the panel inventory desktop-v2 renders post-S9', () => {
     const ids = [...renderAll('desktop-v2').querySelectorAll('[data-panel-id]:not(.semantic-control-panel [data-panel-id])')]
       .map((el) => el.getAttribute('data-panel-id'))
@@ -1764,7 +1769,6 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     expect(ids).toEqual([
       'band',
       'desktop-language', 'desktop-vfo-ops', 'desktop-workspace',
-      'memory', 'memory',
     ]);
   });
 
@@ -1784,6 +1788,8 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
   // (filter/rfFrontEnd) and S8 (antenna/ritXitScan) — those eight panels no
   // longer render on `desktop-v2` at all, so an entry for them would be
   // exactly the stale-ledger drift the N1a check below now enforces.
+  // `memory` graduated the same way with MOR-2425 (Memory lane, phase B2):
+  // its zone is real on `desktop-v2` now, so it too dropped out of this map.
   const SURVIVING_PANEL_REASONS: Record<string, string> = {
     band: 'S10 row 10 (PERMANENT for the broadcast half): BandSelector hosts the LW/MW + SWL '
       + 'tabs and 16 presets that are deliberately not facts and have no other production host. '
@@ -1792,9 +1798,6 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     'desktop-vfo-ops': 'S10 row 7 (split row) is already gated on `semanticDeck`; the section '
       + 'itself is PERMANENT because of the band tabs above (row 10).',
     'desktop-workspace': 'S10 row 9 — PERMANENT. Workspace preferences are not a radio fact.',
-    memory: 'IN THE VOCABULARY, UNDECLARED (MOR-2425, Memory lane phase B1). `memory` joined '
-      + 'SEMANTIC_SURFACE_NAMES, but no desktop-v2 zone declares it and no semantic surface mounts '
-      + 'it yet, so the legacy panels are still the only hosts.',
     // Not in the inventory above under the default fixture, but reachable and
     // decided, so recorded here rather than discovered later:
     tx: 'R9 — the ONE key/unkey authority. It follows the semantic DECK via `hideTxPanel` '

@@ -78,7 +78,7 @@
     rxAudioInstruments, rfFrontEndInstruments,
     meters: empty, rxAudio: empty, rfFrontEnd: empty, filter: empty, dsp: empty,
     band, antenna, antennaInstruments, antennaLayout,
-    ritXitScan: empty, ritXitInstruments, cwKeyerInstruments, cwKeyer,
+    ritXitScan: empty, ritXitInstruments, cwKeyerInstruments, cwKeyer, memory: empty,
     scopeDisplay: empty, scopeControls: empty, txFaultRecovery: empty,
     modInputTxWarning: empty, managedScope: undefined,
   } satisfies FixtureInstrumentComposition;

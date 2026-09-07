@@ -24,9 +24,9 @@
  * MOR-1317 rework tail itself excused — which emptied `RECORDED_REASONS`
  * below for that program: every MOR-1317-era `SEMANTIC_SURFACE_NAMES` member
  * was zone-owned on `desktop-v2`, with the partition pin holding on zero
- * excused entries. MOR-2425 (Memory lane, phase B1) reopens the ledger with
- * one entry: `memory` joins the vocabulary here with no `desktop-v2` zone,
- * excused below until its own follow-up join declares one.
+ * excused entries. MOR-2425 (Memory lane, phase B1) reopened the ledger with
+ * one entry for `memory`; phase B2 (this join) declares its `desktop-v2`
+ * zone, so `RECORDED_REASONS` below is empty again.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -43,19 +43,13 @@ const OWNED = declaredSurfaces(desktopV2Layout);
  * this map only by gaining a `desktop-v2` zone in the same commit.
  *
  * `filter`, `rfFrontEnd` (S7), `band`, `antenna`, `ritXitScan` (S8),
- * `rxAudio`, `dsp`, `cwKeyer` (S9) and `scopeControls` (S6b-2) all graduated
- * to real zones on `desktopV2Layout` under the MOR-1317 rework tail — `OWNED`
- * covers every one of them. `memory` (MOR-2425, Memory lane phase B1) is the
- * one live entry below: admitted to `SEMANTIC_SURFACE_NAMES` with no
- * `desktop-v2` zone yet, it is excused here until its own follow-up join
- * declares one.
+ * `rxAudio`, `dsp`, `cwKeyer` (S9), `scopeControls` (S6b-2) and `memory`
+ * (MOR-2425, Memory lane phase B2) all graduated to real zones on
+ * `desktopV2Layout` — `OWNED` covers every one of them, so THE LEDGER IS
+ * EMPTY AGAIN: every `SEMANTIC_SURFACE_NAMES` member is zone-owned on
+ * `desktop-v2`, and the partition pin below holds on zero excused entries.
  */
-const RECORDED_REASONS: Partial<Record<SemanticSurfaceName, string>> = {
-  memory:
-    'MOR-2425 (Memory lane, phase B1) admits `memory` to the vocabulary ' +
-    'without declaring a desktop-v2 zone; the zone and its mount land in ' +
-    'the phase B2 follow-up join.',
-};
+const RECORDED_REASONS: Partial<Record<SemanticSurfaceName, string>> = {};
 
 describe('MOR-1317 — every semantic surface has a desktop-v2 decision', () => {
   /**

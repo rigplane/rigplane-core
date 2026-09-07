@@ -47,7 +47,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   it('declares receiver-deck:[vfo], rx-tx:[rxTx], tx-aux:[txAux], meters:[meters], '
     + 'scope-display:[scopeDisplay], filter:[filter], rf-front-end:[rfFrontEnd], '
     + 'band:[band], antenna:[antenna], rit-xit-scan:[ritXitScan], rx-audio:[rxAudio], '
-    + 'dsp:[dsp], cw-keyer:[cwKeyer] and scope-controls:[scopeControls]', () => {
+    + 'dsp:[dsp], cw-keyer:[cwKeyer], memory:[memory] and scope-controls:[scopeControls]', () => {
     expect(desktopV2Layout.zones).toEqual([
       { id: 'receiver-deck', surfaces: ['vfo'] },
       { id: 'rx-tx', surfaces: ['rxTx'] },
@@ -74,6 +74,10 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
       { id: 'rx-audio', surfaces: ['rxAudio'] },
       { id: 'dsp', surfaces: ['dsp'] },
       { id: 'cw-keyer', surfaces: ['cwKeyer'] },
+      // MOR-2425 (Memory lane, phase B2): memory becomes zone-owned too,
+      // closing the ledger entry `zone-ownership-coverage.test.ts` opened in
+      // phase B1. No RadioViewModel group backs it — it mounts unconditionally.
+      { id: 'memory', surfaces: ['memory'] },
       // MOR-1370 (S6b-2): scopeControls becomes zone-owned, the LAST surface
       // in the MOR-1262 vocabulary to graduate. Not required.
       { id: 'scope-controls', surfaces: ['scopeControls'] },
@@ -98,7 +102,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // is per-zone rather than per-manifest-first-zone.
   it('its zones flatten to the surfaces the shell suppresses legacy twins for', () => {
     expect([...declaredSurfaces(getLayout('desktop-v2'))].sort())
-      .toEqual(['antenna', 'band', 'cwKeyer', 'dsp', 'filter', 'meters', 'rfFrontEnd', 'ritXitScan', 'rxAudio', 'rxTx', 'scopeControls', 'scopeDisplay', 'txAux', 'vfo']);
+      .toEqual(['antenna', 'band', 'cwKeyer', 'dsp', 'filter', 'memory', 'meters', 'rfFrontEnd', 'ritXitScan', 'rxAudio', 'rxTx', 'scopeControls', 'scopeDisplay', 'txAux', 'vfo']);
   });
 });
 
