@@ -25,4 +25,17 @@ export type TxAuxLevelFeedback = Readonly<Record<
   Readonly<CommandScalarFeedback>
 >>;
 
-export type TxAuxScalarHandles = Readonly<Record<TxAuxLevelField, Snippet>>;
+export type TxAuxContinuousForm = 'hbar' | 'knob';
+
+export interface TxAuxScalarPresentation {
+  readonly form?: TxAuxContinuousForm;
+  readonly compact?: boolean;
+  readonly showLabel?: boolean;
+  readonly showValue?: boolean;
+}
+
+export type TxAuxScalarHandle = Snippet<[
+  presentation?: Readonly<TxAuxScalarPresentation>,
+]>;
+
+export type TxAuxScalarHandles = Readonly<Record<TxAuxLevelField, TxAuxScalarHandle>>;
