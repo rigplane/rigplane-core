@@ -218,8 +218,7 @@ class YaesuCatRadio:
         # MOR-561: poll-lane fields whose field-level CAT failure has already
         # been warned about once. Persists across poll cycles (the observation
         # adapter is rebuilt every cycle, the radio is not), so a permanently
-        # unsupported field — e.g. the FTX-1 answering ``SM1;`` with a main-form
-        # ``SM0000;`` — warns once and then demotes repeats to DEBUG.
+        # unsupported field warns once and then demotes repeats to DEBUG.
         self._poll_warned_fields: set[str] = set()
 
         # Compile response parsers once at init time (keyed by command name).

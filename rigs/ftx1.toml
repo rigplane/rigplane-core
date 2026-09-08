@@ -856,7 +856,10 @@ set_ptt        = { cat = { write = "TX{state};" } }
 
 # ── Meters ──
 get_s_meter    = { cat = { read = "SM0;", parse = "SM0{raw:03d};" } }
-get_s_meter_sub = { cat = { read = "SM1;", parse = "SM1{raw:03d};" } }
+# The radio answers the SUB query with the side digit echoed as 0; the value
+# is the SUB's. Pinned by test_ftx1_radio.py::
+# test_sub_s_meter_accepts_the_echoed_main_side_digit.
+get_s_meter_sub = { cat = { read = "SM1;", parse = "SM{receiver}{raw:03d};" } }
 get_meter      = { cat = { read = "RM{type};", parse = "RM{type}{main:03d}{sub:03d};" } }
 
 # ── Audio / RF Controls ──
