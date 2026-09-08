@@ -86,11 +86,7 @@ report and never lump them into one failure count.
 - WCAG 1.4.3 Contrast (Minimum): 4.5:1 normal text, 3:1 large text
 - WCAG 1.4.6 Contrast (Enhanced): 7:1 normal text
 - WCAG 2.5.8 Target Size (Minimum): 24x24 CSS px — pointers, mice included
-- WCAG 2.5.5 Target Size (Enhanced): 44x44 CSS px — touch
-
-Cite the one that applies. A touch standard quoted at a desktop-only
-layout is a borrowed number, and borrowed numbers get designed around for
-no reason.
+- WCAG 2.5.5 Target Size (Enhanced): 44x44 CSS px
 
 ## What you never do
 
