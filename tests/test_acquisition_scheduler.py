@@ -4322,3 +4322,26 @@ def test_fresh_dispatch_reissue_carries_the_pending_cadence_update() -> None:
     diagnostics = scheduler.diagnostics()
     assert diagnostics["cadenceByPath"][str(freq)]["currentCadenceSeconds"] == 1.0
     assert scheduler._pending_cadence_by_key == {}
+
+
+def test_fresh_dispatch_reissue_needs_only_one_incoming_path_dispatched() -> None:
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    scheduler = AcquisitionScheduler(profile=_profile([freq, mode]))
+    cadence = scheduler.ensure_fresh(
+        (freq, mode), max_age=5.0, priority="background", reason="policy-cadence"
+    )
+    assert cadence.request is not None
+    scheduler.record_dispatch(cadence.request.id, paths=(freq,), now=50.0)
+
+    # ``freq`` has gone out under that id and ``mode`` has not; the read-back
+    # asks for both, and the sent one is enough to reissue.
+    readback = scheduler.ensure_fresh(
+        (freq, mode),
+        max_age=5.0,
+        priority="user",
+        reason="post_write_readback",
+        require_fresh_dispatch=True,
+    )
+    assert readback.request is not None
+    assert readback.request.id != cadence.request.id
