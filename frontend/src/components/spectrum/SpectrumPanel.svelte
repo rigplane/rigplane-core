@@ -5,6 +5,9 @@
   import DxOverlay from './DxOverlay.svelte';
   import {
     defaultSpectrumOptions,
+    resolveSpectrumColorRoles,
+    spectrumColorRolesToOptions,
+    type SpectrumColorRoles,
     type SpectrumOptions,
   } from '../../lib/renderers/spectrum-renderer';
   import {
@@ -61,12 +64,19 @@
   // layouts that have no `applyModeDefault()` driver for the shared
   // tuning-step store. `MobileRadioLayout` passes `true`; `RadioLayout`
   // omits it (defaults `false`, toggle shown) because it owns the driver.
+  //
+  // `colorRoles` is resolved over the defaults once, and the one resolved
+  // record feeds both the canvas renderer options and the CSS custom
+  // properties the DOM overlay below reads.
   let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false, scopeControls,
-    scopeProjection, scopeDemanded = true, onScopeDemandChange }: {
+    scopeProjection, scopeDemanded = true, onScopeDemandChange, colorRoles }: {
     hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean; scopeControls?: Snippet;
     scopeProjection?: ScopeDisplayProjection | null;
     scopeDemanded?: boolean; onScopeDemandChange?: (enabled: boolean) => void;
+    colorRoles?: Partial<SpectrumColorRoles>;
   } = $props();
+
+  let resolvedColorRoles = $derived(resolveSpectrumColorRoles(colorRoles));
 
   const vfoHandlers = getVfoHandlers();
   const filterHandlers = getFilterHandlers();
@@ -217,6 +227,7 @@
 
   let spectrumOptions = $derived<SpectrumOptions>({
     ...defaultSpectrumOptions,
+    ...spectrumColorRolesToOptions(resolvedColorRoles),
     spanHz: audioFft || tuneVisible ? spanHz : 0,
     showRfOverlays: !audioFft,
     centerHz,
@@ -615,7 +626,17 @@
 -->
 {#key `${audioFft}:${managed}`}
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<div class="spectrum-panel" class:audio-fft={audioFft} class:fullscreen data-waterfall tabindex="-1" onwheel={handleWheel}>
+<div
+  class="spectrum-panel"
+  class:audio-fft={audioFft}
+  class:fullscreen
+  data-waterfall
+  tabindex="-1"
+  onwheel={handleWheel}
+  style:--scope-tune-line={resolvedColorRoles.tuneLine}
+  style:--scope-passband-fill={resolvedColorRoles.passbandFill}
+  style:--scope-passband-edge={resolvedColorRoles.passbandEdge}
+>
   {#if audioFft}
     <div class="audio-source-label">
       <span>Audio FFT · AF</span>
@@ -818,7 +839,7 @@
     top: 0;
     bottom: 0;
     width: 1px;
-    background: rgba(239, 68, 68, 0.75);
+    background: var(--scope-tune-line, rgba(239, 68, 68, 0.75));
     pointer-events: none;
     z-index: 5;
     transform: translateX(-0.5px);
@@ -828,9 +849,9 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    background: rgba(59, 130, 246, 0.15);
-    border-left: 1px dashed rgba(59, 130, 246, 0.4);
-    border-right: 1px dashed rgba(59, 130, 246, 0.4);
+    background: var(--scope-passband-fill, rgba(59, 130, 246, 0.15));
+    border-left: 1px dashed var(--scope-passband-edge, rgba(59, 130, 246, 0.4));
+    border-right: 1px dashed var(--scope-passband-edge, rgba(59, 130, 246, 0.4));
     pointer-events: none;
     z-index: 4;
   }

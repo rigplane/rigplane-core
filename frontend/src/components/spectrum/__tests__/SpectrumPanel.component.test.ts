@@ -374,6 +374,10 @@ vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => ({
 import { WaterfallRenderer } from '$lib/renderers/waterfall-renderer';
 import SpectrumPanel from '../SpectrumPanel.svelte';
 import spectrumPanelSource from '../SpectrumPanel.svelte?raw';
+import {
+  defaultSpectrumColorRoles,
+  spectrumColorRolesToOptions,
+} from '$lib/renderers/spectrum-renderer';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 const authorityPluginSource = readFileSync(
   resolve(process.cwd(), 'scripts/radio-authority-eslint-plugin.mjs'),
@@ -1572,5 +1576,85 @@ describe('managed scope projection (MOR-2367)', () => {
     setFilterWidthLifecycle({ outcome: { phase } }); flushSync();
     expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.width).toBe('24%');
     expect(input.passband).toEqual(projection().passband);
+  });
+});
+
+describe('SpectrumPanel colour roles', () => {
+  const distinct = {
+    trace: '#010101',
+    traceFill: { top: '#020202', bottom: '#030303' },
+    grid: '#040404',
+    axisText: '#050505',
+    tuneLine: '#060606',
+    passbandFill: '#070707',
+    passbandEdge: '#080808',
+  };
+
+  it('sends every role to the renderer options', async () => {
+    mountPanel({ colorRoles: distinct });
+    emitFrame();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({
+      lineColor: '#010101', fillColor: '#020202', fillColorBottom: '#030303',
+      gridColor: '#040404', textColor: '#050505', tuneLineColor: '#060606',
+      passbandFillColor: '#070707', passbandEdgeColor: '#080808',
+    });
+  });
+
+  it('publishes the DOM-overlay roles as custom properties the overlay styles read', () => {
+    const target = mountPanel({ colorRoles: distinct });
+    emitFrame();
+    const panel = target.querySelector<HTMLElement>('.spectrum-panel')!;
+    expect(panel.style.getPropertyValue('--scope-tune-line')).toBe('#060606');
+    expect(panel.style.getPropertyValue('--scope-passband-fill')).toBe('#070707');
+    expect(panel.style.getPropertyValue('--scope-passband-edge')).toBe('#080808');
+    expect(target.querySelector('.tune-line')).not.toBeNull();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    expect(spectrumPanelSource).toMatch(
+      /\.tune-line\s*\{[^}]*background:\s*var\(--scope-tune-line,\s*rgba\(239, 68, 68, 0\.75\)\)/,
+    );
+    expect(spectrumPanelSource).toMatch(
+      /\.passband-overlay\s*\{[^}]*background:\s*var\(--scope-passband-fill,\s*rgba\(59, 130, 246, 0\.15\)\)/,
+    );
+    expect(spectrumPanelSource).toMatch(
+      /\.passband-overlay\s*\{[^}]*border-left:\s*1px dashed var\(--scope-passband-edge,\s*rgba\(59, 130, 246, 0\.4\)\)/,
+    );
+    expect(spectrumPanelSource).toMatch(
+      /\.passband-overlay\s*\{[^}]*border-right:\s*1px dashed var\(--scope-passband-edge,\s*rgba\(59, 130, 246, 0\.4\)\)/,
+    );
+  });
+
+  it('leaves an omitted prop on the renderer defaults', async () => {
+    mountPanel();
+    emitFrame();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions).toMatchObject(
+      spectrumColorRolesToOptions(defaultSpectrumColorRoles),
+    );
+  });
+
+  it('keeps both paths on the default when a role is passed as undefined', async () => {
+    const target = mountPanel({
+      colorRoles: { tuneLine: undefined, traceFill: { top: undefined, bottom: undefined } },
+    });
+    emitFrame();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({
+      tuneLineColor: defaultSpectrumColorRoles.tuneLine,
+      fillColor: defaultSpectrumColorRoles.traceFill.top,
+      fillColorBottom: defaultSpectrumColorRoles.traceFill.bottom,
+    });
+    const panel = target.querySelector<HTMLElement>('.spectrum-panel')!;
+    expect(panel.style.getPropertyValue('--scope-tune-line')).toBe(defaultSpectrumColorRoles.tuneLine);
+  });
+
+  it('takes the unlisted roles from the defaults when only one is overridden', async () => {
+    mountPanel({ colorRoles: { tuneLine: '#0a0a0a' } });
+    emitFrame();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({
+      ...spectrumColorRolesToOptions(defaultSpectrumColorRoles),
+      tuneLineColor: '#0a0a0a',
+    });
   });
 });

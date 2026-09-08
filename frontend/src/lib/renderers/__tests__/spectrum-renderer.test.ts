@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   renderSpectrum, SpectrumRenderer, defaultSpectrumOptions, spectrumDisplayAmplitude,
-  type SpectrumOptions,
+  defaultSpectrumColorRoles, resolveSpectrumColorRoles, spectrumColorRolesToOptions,
+  type SpectrumColorRoles, type SpectrumOptions,
 } from '../spectrum-renderer';
 
 function createMockCtx() {
@@ -226,5 +227,144 @@ describe('spectrumDisplayAmplitude', () => {
   it('keeps the existing reference adjustment in the shared transfer', () => {
     expect(spectrumDisplayAmplitude(40, 30)).toBeCloseTo(Math.sqrt(0.75), 8);
     expect(spectrumDisplayAmplitude(40, -30)).toBe(0.5);
+  });
+});
+
+// ── Colour roles ────────────────────────────────────────────────────────────
+//
+// PREVIOUS_LITERALS is transcribed from
+// `git show 8ff079b1c:frontend/src/lib/renderers/spectrum-renderer.ts`
+// (lines 28-31, 140, 180, 184, 198) — the strings this module painted with
+// before colour roles existed. It is deliberately a duplicate of the
+// production defaults so that changing a default without changing this
+// record turns the first test below red.
+const PREVIOUS_LITERALS = {
+  line: 'rgba(210,220,230,0.85)',
+  fillTop: 'rgba(30,58,138,0.30)',
+  fillBottom: 'rgba(30,58,138,0.02)',
+  grid: 'rgba(255,255,255,0.15)',
+  text: 'rgba(180,200,220,0.6)',
+  tuneLine: 'rgba(239,68,68,0.75)',
+  passbandFill: 'rgba(59,130,246,0.15)',
+  passbandEdge: 'rgba(59,130,246,0.4)',
+} as const;
+
+/** Records every paint-affecting assignment in the order the renderer makes it. */
+function createPaintCtx() {
+  const paint = {
+    fillStyle: [] as string[],
+    strokeStyle: [] as string[],
+    gradientStops: [] as [number, string][],
+  };
+  const noop = () => {};
+  const gradient = { addColorStop: (o: number, c: string) => paint.gradientStops.push([o, c]) };
+  const ctx = {
+    clearRect: noop, closePath: noop, stroke: noop, fill: noop, beginPath: noop,
+    fillRect: noop, fillText: noop, moveTo: noop, lineTo: noop, setLineDash: noop,
+    createLinearGradient: () => gradient,
+    set fillStyle(v: unknown) { if (typeof v === 'string') paint.fillStyle.push(v); },
+    set strokeStyle(v: unknown) { if (typeof v === 'string') paint.strokeStyle.push(v); },
+    set lineWidth(_: unknown) {}, set font(_: unknown) {}, set textAlign(_: unknown) {},
+  } as unknown as CanvasRenderingContext2D;
+  return { ctx, paint };
+}
+
+const overlayOpts = (o: Partial<SpectrumOptions> = {}): SpectrumOptions => opts({
+  spanHz: 1e6, centerHz: 14_500_000, tuneHz: 14_500_000, passbandHz: 2_400, mode: 'USB', ...o,
+});
+
+describe('spectrum colour roles', () => {
+  it('resolves to the literals this renderer painted with before roles existed', () => {
+    expect(resolveSpectrumColorRoles()).toEqual({
+      trace: PREVIOUS_LITERALS.line,
+      traceFill: { top: PREVIOUS_LITERALS.fillTop, bottom: PREVIOUS_LITERALS.fillBottom },
+      grid: PREVIOUS_LITERALS.grid,
+      axisText: PREVIOUS_LITERALS.text,
+      tuneLine: PREVIOUS_LITERALS.tuneLine,
+      passbandFill: PREVIOUS_LITERALS.passbandFill,
+      passbandEdge: PREVIOUS_LITERALS.passbandEdge,
+    });
+    expect(resolveSpectrumColorRoles()).toEqual(defaultSpectrumColorRoles);
+  });
+
+  it('resolves an undefined-valued override to the default, nested fill included', () => {
+    // `Partial<SpectrumColorRoles>` admits an explicit `undefined` for every
+    // top-level role; the nested cast stands for a host record that carries
+    // one under `traceFill` too.
+    const overrides: Partial<SpectrumColorRoles> = {
+      tuneLine: undefined,
+      traceFill: { top: undefined, bottom: undefined } as unknown as SpectrumColorRoles['traceFill'],
+    };
+    expect(resolveSpectrumColorRoles(overrides)).toEqual(defaultSpectrumColorRoles);
+    expect(spectrumColorRolesToOptions(resolveSpectrumColorRoles(overrides))).toMatchObject({
+      tuneLineColor: PREVIOUS_LITERALS.tuneLine,
+      fillColor: PREVIOUS_LITERALS.fillTop,
+      fillColorBottom: PREVIOUS_LITERALS.fillBottom,
+    });
+  });
+
+  it('carries the resolved roles into the option fields of the same names', () => {
+    const roles = resolveSpectrumColorRoles({ trace: '#111111', traceFill: { top: '#222222', bottom: '#333333' } });
+    expect(spectrumColorRolesToOptions(roles)).toEqual({
+      lineColor: '#111111',
+      fillColor: '#222222',
+      fillColorBottom: '#333333',
+      gridColor: PREVIOUS_LITERALS.grid,
+      textColor: PREVIOUS_LITERALS.text,
+      tuneLineColor: PREVIOUS_LITERALS.tuneLine,
+      passbandFillColor: PREVIOUS_LITERALS.passbandFill,
+      passbandEdgeColor: PREVIOUS_LITERALS.passbandEdge,
+    });
+  });
+
+  it('keeps the default option colours equal to the previous literals', () => {
+    expect(defaultSpectrumOptions).toMatchObject({
+      lineColor: PREVIOUS_LITERALS.line,
+      fillColor: PREVIOUS_LITERALS.fillTop,
+      fillColorBottom: PREVIOUS_LITERALS.fillBottom,
+      gridColor: PREVIOUS_LITERALS.grid,
+      textColor: PREVIOUS_LITERALS.text,
+      tuneLineColor: PREVIOUS_LITERALS.tuneLine,
+      passbandFillColor: PREVIOUS_LITERALS.passbandFill,
+      passbandEdgeColor: PREVIOUS_LITERALS.passbandEdge,
+    });
+  });
+
+  it('paints the default overlay pass with the previous tune-line and passband literals', () => {
+    const { ctx, paint } = createPaintCtx();
+    renderSpectrum(ctx, data50(), 800, 400, overlayOpts());
+    expect(paint.gradientStops).toEqual([[0, PREVIOUS_LITERALS.fillTop], [1, PREVIOUS_LITERALS.fillBottom]]);
+    expect(paint.fillStyle).toEqual([PREVIOUS_LITERALS.text, PREVIOUS_LITERALS.passbandFill]);
+    expect(paint.strokeStyle).toEqual([
+      PREVIOUS_LITERALS.grid,
+      PREVIOUS_LITERALS.line,
+      PREVIOUS_LITERALS.passbandEdge,
+      PREVIOUS_LITERALS.tuneLine,
+    ]);
+  });
+
+  it('paints the overlay pass with the supplied colours instead of the previous literals', () => {
+    const { ctx, paint } = createPaintCtx();
+    renderSpectrum(ctx, data50(), 800, 400, overlayOpts({
+      ...spectrumColorRolesToOptions(resolveSpectrumColorRoles({
+        trace: '#010101', traceFill: { top: '#020202', bottom: '#030303' }, grid: '#040404',
+        axisText: '#050505', tuneLine: '#060606', passbandFill: '#070707', passbandEdge: '#080808',
+      })),
+    }));
+    expect(paint.gradientStops).toEqual([[0, '#020202'], [1, '#030303']]);
+    expect(paint.fillStyle).toEqual(['#050505', '#070707']);
+    expect(paint.strokeStyle).toEqual(['#040404', '#010101', '#080808', '#060606']);
+    for (const literal of Object.values(PREVIOUS_LITERALS)) {
+      expect([...paint.fillStyle, ...paint.strokeStyle]).not.toContain(literal);
+    }
+  });
+
+  it('rebuilds the cached gradient when only the bottom stop changes', () => {
+    const cache = { current: null } as Parameters<typeof renderSpectrum>[5];
+    const first = createPaintCtx();
+    renderSpectrum(first.ctx, data50(), 800, 400, opts(), cache);
+    const second = createPaintCtx();
+    renderSpectrum(second.ctx, data50(), 800, 400, opts({ fillColorBottom: '#090909' }), cache);
+    expect(second.paint.gradientStops).toEqual([[0, PREVIOUS_LITERALS.fillTop], [1, '#090909']]);
   });
 });
