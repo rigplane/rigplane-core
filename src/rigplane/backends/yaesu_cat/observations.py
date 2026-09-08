@@ -111,7 +111,7 @@ _MAIN_MANUAL_NOTCH_FREQ = FieldPath.receiver(
 _SPLIT = FieldPath.global_("tx_state", "split")
 _ACTIVE = FieldPath.global_("slow_state", "active")
 _ACTIVE_INDEX_TO_STR = {0: "MAIN", 1: "SUB"}
-# Dual receive (CAT ``FR``; FTX-1_CAT_OM_ENG_2508-C p.17: P1 ``00`` = dual
+# Dual receive (CAT ``FR``; FTX-1_CAT_OM_ENG_2508-C printed page 16: P1 ``00`` = dual
 # receive, ``01`` = single receive) is emitted as the canonical
 # ``global.tx_state.dual_watch`` bool — the same path and value type the Icom
 # backend publishes from CI-V 0x07 0xC2 (``runtime/_civ_rx.py``).

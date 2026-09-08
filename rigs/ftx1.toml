@@ -240,11 +240,11 @@ freshness_ttl_seconds = 2.0
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
-# Dual receive (CAT `FR`; FTX-1_CAT_OM_ENG_2508-C p.17: P1 `00` = dual
+# Dual receive (CAT `FR`; FTX-1_CAT_OM_ENG_2508-C printed page 16: P1 `00` = dual
 # receive, `01` = single receive), published on the canonical
 # `global.tx_state.dual_watch` path rigs/ic7610.toml already declares. The
 # FTX-1's second receiver exists only while dual receive is on, so the seven
-# `receiver.sub.*` paths below declare themselves absent until this one is
+# `receiver.sub.*` paths declare themselves absent until this one is
 # observed true. Read in backends/yaesu_cat/observations.py:
 # YaesuObservationAdapter.poll_slow_controls ahead of the SUB reads it gates,
 # so it rides the same YaesuCatPoller._SLOW_INTERVAL as the rest of this tier
