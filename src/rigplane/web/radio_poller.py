@@ -33,7 +33,6 @@ import asyncio
 import logging
 import time
 from collections.abc import Iterator
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 from ..exceptions import CommandError
@@ -77,6 +76,8 @@ from ..commands.command_map import CommandMap
 from ..commands.commander import Priority
 from ..core.command_service import (
     CommandService,
+    expected_observations_for_command,
+    observable_field_path,
 )
 from ..core.acquisition_drain import AcquisitionDrain
 from ..core.command_dispatch import ManagedWriteAdmission, execute_command_intent
@@ -338,6 +339,7 @@ def _should_restart_rx(mode: str) -> bool:
 # ------------------------------------------------------------------
 
 from .._poller_types import (  # noqa: E402
+    LEGACY_COMMAND_NAMES,
     Command,
     CommandQueue,
     CommandQueueEntry,
@@ -486,94 +488,6 @@ def _post_write_receiver_id(cmd: Any) -> str:
 
     return "sub" if getattr(cmd, "receiver", 0) == 1 else "main"
 
-
-_POST_WRITE_READBACK_FIELDS: dict[type, Callable[[Any], tuple[FieldPath, ...]]] = {
-    SetFreq: lambda cmd: (
-        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "freq_hz"),
-    ),
-    SetMode: lambda cmd: (
-        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "mode"),
-    ),
-    # MOR-1484 review R1: att/preamp carry the #2452 armed affordance, whose
-    # ONLY confirming path back to the StateStore is this cadence poll --
-    # ``PendingOverlay`` has no web consumer and the CI-V own-frame/transceive
-    # echo this profile relies on for other fields does not reliably cover
-    # these two (see the "read-after-write via overlays + ... observation"
-    # comments on the ``SetAttenuator``/``SetPreamp`` case arms below, which
-    # describe the mechanism but not its actual reach on this profile). This
-    # PR ALSO slows att/preamp's cadence tier from 1.5s to 3.0s
-    # (rigs/ic7300.toml) to fund the freq/mode/rf_gain/squelch tightening
-    # above -- without this entry that give-back alone would widen the
-    # armed-affordance confirm window past the 3000ms ACK_CONFIRM_GRACE for a
-    # slice of clicks (grace expires, armed clears, the button shows the
-    # stale value until the next cadence tick -- the MOR-1478 stale-flash
-    # symptom, reintroduced on a new affordance). Table entries here make the
-    # 1.5s->3.0s give-back free for the operator's own write: confirmation no
-    # longer depends on the slowed cadence tier at all.
-    SetAttenuator: lambda cmd: (
-        FieldPath.receiver(_post_write_receiver_id(cmd), "operator_controls", "att"),
-    ),
-    SetPreamp: lambda cmd: (
-        FieldPath.receiver(_post_write_receiver_id(cmd), "operator_controls", "preamp"),
-    ),
-    # MOR-1546: filter-select and DATA-mode carry the #2452 armed affordance.
-    # Both were ALREADY confirmed incidentally: ``mode``'s own 1.0s cadence
-    # poll (CI-V 0x26 selected/unselected mode readback,
-    # [state_acquisition.field_policies] in rigs/ic7300.toml) returns
-    # ``(mode, data_mode, filter)`` in one frame, and ``_civ_rx.py``'s cmd
-    # 0x26 observation branch already emits ``data_mode``/``filter_num``
-    # observations alongside ``mode`` from that same answer -- so armed was
-    # already clearing via a genuine observation within that cadence's
-    # worst case (~1.0s), comfortably inside the 3000ms ACK_CONFIRM_GRACE.
-    # What was actually missing:
-    #  (1) a DEDICATED event-driven confirm at write time, so the
-    #      operator's own click doesn't have to wait out even the 1.0s
-    #      cadence tick before confirming -- the same class of latency win
-    #      freq/mode/rf_gain/squelch/att/preamp already get from this table;
-    #  (2) an acquisition CAPABILITY declaration for these two paths
-    #      (rigs/ic7300.toml) -- without one, ``ensure_fresh`` rejects the
-    #      path as UNAVAILABLE before it ever reaches the executor, so
-    #      these table entries alone would still be unreachable.
-    # Neither entry funds or is funded by a cadence give-back -- there is no
-    # new cadence here, zero standing budget added either way.
-    #
-    # filter_num has no dedicated CI-V read; it rides the SAME 0x26
-    # selected/unselected mode readback ``SetMode`` above already requests,
-    # as the filter byte in that response (``query_for_path`` in
-    # ``acquisition_scheduler.py``, ``_civ_rx.py``'s cmd 0x26 observation
-    # branch) -- requesting the ``filter_num`` path here still costs exactly
-    # one 0x26 query, identical to what a `mode` post-write readback would
-    # send. This entry fires unconditionally for every ``SetFilter``,
-    # including on a backend without ``CAP_FILTER_WIDTH`` (whose ``case
-    # SetFilter`` arm above never calls ``radio.set_filter`` at all) --
-    # harmless, one extra 0x26 query per click on a filterless backend, not
-    # a wire write.
-    SetFilter: lambda cmd: (
-        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "filter_num"),
-    ),
-    # data_mode DOES have its own dedicated read (CI-V 0x1A 0x06,
-    # ``get_data_mode`` in every profile's ``[commands]`` table), so it gets
-    # its own one-query readback rather than piggybacking on ``mode``.
-    SetDataMode: lambda cmd: (
-        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "data_mode"),
-    ),
-    SetFilterWidth: lambda cmd: (
-        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "filter_width"),
-    ),
-    SetToneFreq: lambda cmd: (
-        FieldPath.receiver(
-            _post_write_receiver_id(cmd), "operator_controls", "tone_freq"
-        ),
-    ),
-    SetTsqlFreq: lambda cmd: (
-        FieldPath.receiver(
-            _post_write_receiver_id(cmd), "operator_controls", "tsql_freq"
-        ),
-    ),
-    SetBreakInDelay: lambda cmd: (
-        FieldPath.global_("operator_controls", "break_in_delay"),
-    ),
-}
 
 # ``ensure_fresh``'s ``max_age`` asks "how old may the CURRENT StateStore
 # observation be and still count as fresh". A write always invalidates
@@ -1473,21 +1387,29 @@ class RadioPoller:
             logger.debug("radio-poller: %s reconfirm failed", label, exc_info=True)
 
     def _request_post_write_readback(self, cmd: Command) -> None:
+        """Read back whatever the dispatched command just set (MOR-1484).
+
+        One derivation for both dispatch shapes: a ``CommandIntent`` carries
+        its ``expected_observations``, a legacy ``Command`` dataclass names
+        the command it is (``LEGACY_COMMAND_NAMES``) and the same
+        ``core/command_service.py`` derivation answers for it. The result is
+        rewritten by ``observable_field_path`` into the spelling profiles
+        declare before it reaches the scheduler.
+        """
+
         scheduler = self._acquisition_scheduler
         if scheduler is None:
             return
         if isinstance(cmd, CommandIntent):
-            paths = tuple(
-                replace(path, receiver_id="sub" if path.receiver_id == "1" else "main")
-                if path.receiver_id in ("0", "1")
-                else path
-                for path in cmd.expected_observations
-            )
+            expected = cmd.expected_observations
         else:
-            build_paths = _POST_WRITE_READBACK_FIELDS.get(type(cmd))
-            if build_paths is None:
+            name = LEGACY_COMMAND_NAMES.get(type(cmd))
+            if name is None:
                 return
-            paths = build_paths(cmd)
+            expected = expected_observations_for_command(
+                name, {"receiver": getattr(cmd, "receiver", 0)}
+            )
+        paths = tuple(observable_field_path(path) for path in expected)
         if type(cmd) is SetMode and CAP_FILTER_WIDTH in self._caps:
             filter_width = FieldPath.active(
                 _post_write_receiver_id(cmd), "freq_mode", "filter_width"
@@ -2337,9 +2259,6 @@ class RadioPoller:
                 # Hz↔index translation, profile-aware bounds + cmd29 wrapping
                 # are owned by the backend (P2-04). Issue #1101.
                 await radio.set_filter_width(width, receiver=rx)
-                # filter_width read-after-write now flows through CommandService
-                # pending overlays + the 0x1A 0x03 StateStore observation emitted
-                # by ``_civ_rx.py`` (MOR-437); no legacy RadioState mirror needed.
                 if self._on_state_event:
                     self._on_state_event(
                         "filter_width_changed", {"width": width, "receiver": rx}
@@ -2514,16 +2433,12 @@ class RadioPoller:
                 self._ensure_receiver_supported(rx, operation="set_nb")
                 if CAP_NB in self._caps:
                     await radio.set_nb(on, receiver=rx)
-                # nb read-after-write now flows through CommandService pending
-                # overlays + the 0x16 0x22 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event("nb_changed", {"on": on, "receiver": rx})
             case SetNR(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nr")
                 if CAP_NR in self._caps:
                     await radio.set_nr(on, receiver=rx)
-                # nr read-after-write now flows through CommandService pending
-                # overlays + the 0x16 0x40 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event("nr_changed", {"on": on, "receiver": rx})
             case SetDigiSel(on=on, receiver=rx):
@@ -2542,8 +2457,6 @@ class RadioPoller:
                 self._ensure_receiver_supported(rx, operation="set_attenuator")
                 if CAP_ATTENUATOR in self._caps:
                     await radio.set_attenuator_level(db, receiver=rx)
-                # att read-after-write now flows through CommandService pending
-                # overlays + the 0x11 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event(
                         "attenuator_changed", {"db": db, "receiver": rx}
@@ -2552,8 +2465,6 @@ class RadioPoller:
                 self._ensure_receiver_supported(rx, operation="set_preamp")
                 if CAP_PREAMP in self._caps:
                     await radio.set_preamp(level, receiver=rx)
-                # preamp read-after-write now flows through CommandService pending
-                # overlays + the 0x16 0x02 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event(
                         "preamp_changed", {"level": level, "receiver": rx}
@@ -2596,25 +2507,16 @@ class RadioPoller:
                         "if_shift_changed", {"offset": offset, "receiver": rx}
                     )
             case SetNRLevel(level=level, receiver=rx):
-                # nr_level read-after-write via overlays + 0x14 0x06 observation.
                 await _r.set_nr_level(level, receiver=rx)
             case SetNBLevel(level=level, receiver=rx):
-                # nb_level read-after-write via overlays + 0x14 0x12 observation.
                 await _r.set_nb_level(level, receiver=rx)
             case SetAutoNotch(on=on, receiver=rx):
-                # auto_notch read-after-write via overlays + 0x16 0x41 observation.
                 await _r.set_auto_notch(on, receiver=rx)
             case SetManualNotch(on=on, receiver=rx):
-                # manual_notch read-after-write via overlays + 0x16 0x48 observation.
                 await _r.set_manual_notch(on, receiver=rx)
             case SetNotchFilter(level=level, receiver=rx):
-                # notch_filter read-after-write via overlays + 0x14 0x0D
-                # observation (receiver-scoped since MOR-1548); the legacy
-                # global-scalar mirror write is gone with it.
                 await _r.set_notch_filter(level, receiver=rx)
             case SetAgcTimeConstant(value=value, receiver=rx):
-                # agc_time_constant read-after-write via overlays + 0x1A 0x04
-                # StateStore observation (MOR-437).
                 await _r.set_agc_time_constant(value, receiver=rx)
             case SetCwPitch(value=value):
                 await _r.set_cw_pitch(value)
@@ -2727,25 +2629,19 @@ class RadioPoller:
                 if not 0 <= mode <= 3:
                     raise CommandError(f"set_data_mode mode must be 0-3, got {mode}")
                 await radio.set_data_mode(mode, receiver=rx)
-                # data_mode read-after-write via overlays + 0x1A 0x06 observation.
                 if self._on_state_event:
                     self._on_state_event(
                         "data_mode_changed", {"mode": mode, "receiver": rx}
                     )
             case SetMicGain(level=level):
-                # mic_gain read-after-write via overlays + 0x14 0x0B observation.
                 await _r.set_mic_gain(level)
             case SetVox(on=on):
-                # vox_on read-after-write via overlays + 0x16 0x46 observation.
                 await _r.set_vox(on)
             case SetCompressorLevel(level=level):
-                # compressor_level read-after-write via overlays + 0x14 0x0E obs.
                 await _r.set_compressor_level(level)
             case SetMonitor(on=on):
-                # monitor_on read-after-write via overlays + 0x16 0x45 observation.
                 await _r.set_monitor(on)
             case SetMonitorGain(level=level):
-                # monitor_gain read-after-write via overlays + 0x14 0x15 observation.
                 await _r.set_monitor_gain(level)
             case SetDialLock(on=on):
                 await _r.set_dial_lock(on)
@@ -2765,7 +2661,6 @@ class RadioPoller:
                     agc_sent = await self._send_cmd(
                         "set_agc", bytes([mode]), receiver=rx
                     )
-                # agc read-after-write via overlays + 0x16 0x12 observation.
                 if agc_sent and self._on_state_event:
                     self._on_state_event("agc_changed", {"mode": mode, "receiver": rx})
             case SetRitStatus(on=on):
@@ -2788,8 +2683,6 @@ class RadioPoller:
                     self._on_state_event("rit_freq_changed", {"hz": freq})
             case SetSplit(on=on):
                 await _r.set_split(on)
-                # split read-after-write via overlays + 0x0F StateStore
-                # observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event("split_changed", {"on": on})
             case SetBand(band=band):
@@ -2840,7 +2733,6 @@ class RadioPoller:
                             command_service=command_service,
                             provider_generation=provider_generation,
                         )
-                        # Update local state immediately (don't wait for transceive echo)
                         if self._radio_state:
                             target = self._radio_state.main
                             if target:
@@ -3225,8 +3117,6 @@ class RadioPoller:
             case SetTunerStatus(value=value):
                 if CAP_TUNER in self._caps:
                     await radio.set_tuner_status(value)
-                    # tuner_status read-after-write via overlays + 0x1C 0x01
-                    # StateStore observation (MOR-437).
                     self._emit("tuner_changed", {"value": value})
             case SetAntenna1(on=on):
                 # IC-7610: 0x12 0x00 selects ANT1, data byte encodes RX-ANT OFF/ON.

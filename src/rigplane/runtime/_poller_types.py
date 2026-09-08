@@ -24,6 +24,7 @@ __all__ = [
     "Command",
     "CommandQueue",
     "CommandQueueEntry",
+    "LEGACY_COMMAND_NAMES",
     "execute_positive_tx_queue_entry",
     "validate_command_queue_entry_currency",
     "canonicalize_level_command",
@@ -1000,6 +1001,51 @@ def canonicalize_level_command(
         command_id=command_id,
         session_id=session_id,
     )
+
+
+# The canonical command name each legacy dataclass is the enqueued form of.
+# It is the only thing a legacy command declares about its own read-after-
+# write: the field paths come from ``core/command_service.py:
+# _command_target``, the same derivation ``CommandIntent`` uses.
+# ``web/radio_poller.py: RadioPoller._request_post_write_readback`` is the
+# consumer.
+#
+# A ``Set*`` dispatch arm absent from here gets no readback;
+# ``tests/test_post_write_readback_one_path.py`` enumerates the arms and
+# fails on any that is neither listed here nor classified there.
+LEGACY_COMMAND_NAMES: dict[type, str] = {
+    SetFreq: "set_freq",
+    SetMode: "set_mode",
+    SetFilter: "set_filter",
+    SetFilterWidth: "set_filter_width",
+    SetFilterShape: "set_filter_shape",
+    SetDataMode: "set_data_mode",
+    SetAttenuator: "set_att",
+    SetPreamp: "set_preamp",
+    SetNB: "set_nb",
+    SetNR: "set_nr",
+    SetNBLevel: "set_nb_level",
+    SetNRLevel: "set_nr_level",
+    SetAutoNotch: "set_auto_notch",
+    SetManualNotch: "set_manual_notch",
+    SetManualNotchWidth: "set_manual_notch_width",
+    SetNotchFilter: "set_notch_filter",
+    SetTwinPeak: "set_twin_peak",
+    SetAgcTimeConstant: "set_agc_time_constant",
+    SetDigiSel: "set_digisel",
+    SetIpPlus: "set_ip_plus",
+    SetPbtInner: "set_pbt_inner",
+    SetPbtOuter: "set_pbt_outer",
+    SetToneFreq: "set_tone_freq",
+    SetTsqlFreq: "set_tsql_freq",
+    SetRitFrequency: "set_rit_frequency",
+    SetRitStatus: "set_rit_status",
+    SetRitTxStatus: "set_rit_tx_status",
+    SetBreakInDelay: "set_break_in_delay",
+    SetPower: "set_rf_power",
+    SetPowerstat: "set_powerstat",
+    SetSplit: "set_split",
+}
 
 
 # ------------------------------------------------------------------
