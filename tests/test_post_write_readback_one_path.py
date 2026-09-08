@@ -447,7 +447,7 @@ _TABLE_SUCCESSION: tuple[tuple[Any, tuple[str, ...]], ...] = (
 async def test_readback_paths_the_deleted_table_used_are_unchanged(
     command: Any, paths: tuple[str, ...]
 ) -> None:
-    """The slot-bearing spellings ``_POST_WRITE_READBACK_FIELDS`` used survive.
+    """The slot-bearing spellings the deleted read-back table used survive.
 
     ``_command_target`` returns slot-less ``receiver.<n>.freq_mode.<name>``;
     the declared, observable path is ``receiver.<id>.active.freq_mode.<name>``.
