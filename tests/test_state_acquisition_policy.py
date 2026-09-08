@@ -1610,7 +1610,7 @@ def test_ftx1_declares_when_manual_notch_and_attenuator_exist() -> None:
         AvailabilityClause(
             field=FieldPath.active("main", "freq_mode", "mode"),
             operator="not_in",
-            value=("FM", "FM-N", "DATA-FM"),
+            value=("FM", "FM-N", "DATA-FM", "DATA-FM-N"),
         ),
     )
 

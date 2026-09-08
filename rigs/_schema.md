@@ -249,7 +249,7 @@ there.
 ```toml
 [state_acquisition.field_policies."receiver.main.operator_controls.manual_notch_freq"]
 available_when = [
-    { field = "receiver.main.active.freq_mode.mode", not_in = ["FM", "FM-N", "DATA-FM"] },
+    { field = "receiver.main.active.freq_mode.mode", not_in = ["FM", "FM-N", "DATA-FM", "DATA-FM-N"] },
 ]
 ```
 

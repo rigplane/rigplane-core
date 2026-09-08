@@ -311,12 +311,15 @@ freshness_ttl_seconds = 2.0
 
 # Bench probe 2026-09-08: `BP01;` answered `BP01F35;` with MAIN in FM while
 # `BP11;` answered `BP11150;` with SUB in USB, in the same session -- the
-# manual-notch frequency has no decimal answer in FM.
+# manual-notch frequency has no decimal answer in FM. FM-N, DATA-FM and
+# DATA-FM-N are the mode codec's three other reachable FM-family modes
+# (`radio._code_to_mode` codes 4/B/A/F in src/rigplane/backends/yaesu_cat) --
+# declared absent by family, not yet probed individually.
 [state_acquisition.field_policies."receiver.main.operator_controls.manual_notch_freq"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 available_when = [
-    { field = "receiver.main.active.freq_mode.mode", not_in = ["FM", "FM-N", "DATA-FM"] },
+    { field = "receiver.main.active.freq_mode.mode", not_in = ["FM", "FM-N", "DATA-FM", "DATA-FM-N"] },
 ]
 
 [state_acquisition.field_policies."global.operator_controls.power_level"]
