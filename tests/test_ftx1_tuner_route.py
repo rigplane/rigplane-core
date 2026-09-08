@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
+from rigplane.core.acquisition_scheduler import DeclaredCommandDefect
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.local_tx_work import LocalTxWorkRunner
@@ -248,20 +249,37 @@ async def test_force_receive_has_no_tuner_acquisition_dependency() -> None:
 @pytest.mark.parametrize(
     "answer, expected", (("AC103", 2), ("AC101", 1), ("AC102", None), ("AC121", None))
 )
-async def test_real_ac_observation_normalizes_or_omits_unknown(
+async def test_real_ac_observation_normalizes_or_faults_on_unknown(
     monkeypatch: pytest.MonkeyPatch,
     answer: str,
     expected: int | None,
 ) -> None:
+    """An AC answer outside the mapped domain is a defect, not an omission.
+
+    ``_read_atu_route`` raises ``ValueError`` for a src/type/state triple its
+    table does not map; that reaches ``_safe_read`` on a read naming a
+    declared path, so it raises rather than emitting nothing.
+    """
     radio = radio_with_answer(answer)
     path = FieldPath.global_("operator_controls", "tuner_status")
     monkeypatch.setattr(
         YaesuObservationAdapter, "_can_poll", lambda self, field: field == path
     )
-    observations = await YaesuObservationAdapter.from_radio(radio).poll_tx_controls()
+    # The fixture answers every query with the AC frame, so every other read
+    # in this lane would see a frame of the wrong shape. Only the tuner read
+    # is under test; leave the rest ungated.
+    monkeypatch.setattr(
+        YaesuObservationAdapter,
+        "_has_runtime_capability",
+        lambda self, capability: capability == "tuner",
+    )
+    adapter = YaesuObservationAdapter.from_radio(radio)
     if expected is None:
-        assert observations == ()
+        with pytest.raises(DeclaredCommandDefect) as caught:
+            await adapter.poll_tx_controls()
+        assert caught.value.paths == (path,)
     else:
+        observations = await adapter.poll_tx_controls()
         assert len(observations) == 1
         assert observations[0].path == path
         assert observations[0].value == expected

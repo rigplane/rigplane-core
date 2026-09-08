@@ -14,7 +14,10 @@ from rigplane.backends.yaesu_cat import (
     CatTransportError,
     YaesuCatTransport,
 )
-from rigplane.backends.yaesu_cat.transport import CatCommandRejected
+from rigplane.backends.yaesu_cat.transport import (
+    CatCommandRejected,
+    CatGarbledFrameError,
+)
 from rigplane.core.priority_exchange import ExchangeTier
 
 
@@ -420,6 +423,63 @@ class TestYaesuCatTransport:
 
         with pytest.raises(CatTransportError, match="not connected"):
             await transport.readline()
+
+    async def test_readline_rejects_a_terminated_line_carrying_control_bytes(
+        self, mock_serial_connection: Any
+    ) -> None:
+        """A ``;``-terminated line with a byte outside 0x20-0x7E is link noise.
+
+        It never reaches the parser, where it would be indistinguishable from
+        a clean frame of the wrong shape.
+        """
+        reader = FakeStreamReader([b"SM\x00048;"])
+        writer = FakeStreamWriter()
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(reader, writer)
+        )
+
+        transport = YaesuCatTransport(device="/dev/test")
+        await transport.connect()
+
+        with pytest.raises(CatGarbledFrameError) as caught:
+            await transport.readline()
+        assert isinstance(caught.value, CatTransportError)
+        assert repr(b"SM\x00048;") in str(caught.value)
+
+    async def test_readline_accepts_the_printable_ascii_edges(
+        self, mock_serial_connection: Any
+    ) -> None:
+        """0x20 and 0x7E are inside the accepted range."""
+        reader = FakeStreamReader([b" \x7e;"])
+        writer = FakeStreamWriter()
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(reader, writer)
+        )
+
+        transport = YaesuCatTransport(device="/dev/test")
+        await transport.connect()
+
+        assert await transport.readline() == " \x7e"
+
+    async def test_drained_garbled_line_after_a_write_is_discarded(
+        self, mock_serial_connection: Any
+    ) -> None:
+        """A garbled line in the post-write drain stays a discarded line.
+
+        ``write()`` drains echo/auto-info; noise there is not the SET
+        command's outcome and must not fail it.
+        """
+        reader = FakeStreamReader([b"MD\x000E;"])
+        writer = FakeStreamWriter()
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(reader, writer)
+        )
+
+        transport = YaesuCatTransport(device="/dev/test")
+        await transport.connect()
+        await transport.write("MD0E;")
+
+        assert writer.written == [b"MD0E;"]
 
     async def test_query_sends_and_reads(self, mock_serial_connection: Any) -> None:
         """query() sends command and returns response."""

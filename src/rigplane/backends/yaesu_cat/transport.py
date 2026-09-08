@@ -44,6 +44,7 @@ __all__ = [
     "CatTransportError",
     "CatTimeoutError",
     "CatCommandRejected",
+    "CatGarbledFrameError",
 ]
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,24 @@ class CatTimeoutError(CatTransportError):
 
 
 class CatCommandRejected(CatTransportError):
-    """Raised when radio returns ``?;`` (command not recognized)."""
+    """Raised when radio returns ``?;`` (command not recognized).
+
+    ``command`` is the CAT command the radio refused, verbatim, for callers
+    that report the refusal rather than only logging it.
+    """
+
+    def __init__(self, message: str, *, command: str = "") -> None:
+        super().__init__(message)
+        self.command = command
+
+
+class CatGarbledFrameError(CatTransportError):
+    """Raised for a ``;``-terminated line carrying a byte outside 0x20-0x7E.
+
+    Link noise, not an answer: corruption that leaves the prefix ``query()``
+    matches on intact would otherwise reach the parser, where it is
+    indistinguishable from a clean frame of the wrong shape.
+    """
 
 
 # ── Stats ─────────────────────────────────────────────────────────────
@@ -264,6 +282,12 @@ class YaesuCatTransport:
            External callers should prefer ``query()`` which handles serialization.
 
         Returns the line with trailing ``;`` stripped.
+
+        Raises:
+            CatGarbledFrameError: If any byte of the line falls outside
+                printable ASCII (0x20-0x7E).
+            CatTimeoutError: If no ``;`` arrives within *timeout*.
+            CatTransportError: On serial I/O failure.
         """
         self._check_connected()
         assert self._reader is not None  # for type checker
@@ -277,11 +301,6 @@ class YaesuCatTransport:
                 timeout=timeout,
             )
             line = line_bytes.decode("ascii").rstrip(";")
-
-            if self._debug_logging:
-                logger.debug("CAT RX: %r", line)
-
-            return line
         except asyncio.TimeoutError as exc:
             self._stats.timeouts += 1
             raise CatTimeoutError(
@@ -290,6 +309,15 @@ class YaesuCatTransport:
         except Exception as exc:
             self._stats.record_error(f"read failed: {exc}")
             raise CatTransportError(f"Read failed: {exc}") from exc
+
+        if any(byte < 0x20 or byte > 0x7E for byte in line_bytes):
+            self._stats.record_error(f"garbled frame: {line_bytes!r}")
+            raise CatGarbledFrameError(f"Garbled frame on the wire: {line_bytes!r}")
+
+        if self._debug_logging:
+            logger.debug("CAT RX: %r", line)
+
+        return line
 
     async def flush_rx(self) -> int:
         """Discard any bytes sitting in the receive buffer.
@@ -332,11 +360,19 @@ class YaesuCatTransport:
                 line = await self.readline(timeout=drain_timeout)
             except CatTimeoutError:
                 break  # Silence — buffer is clean
+            except CatGarbledFrameError:
+                # Noise among the echo/auto-info being discarded anyway; it is
+                # not this SET command's outcome. Pinned by
+                # ``test_drained_garbled_line_after_a_write_is_discarded``.
+                drained += 1
+                self._stats.stale_lines_skipped += 1
+                continue
             drained += 1
             if line == "?":
                 self._stats.record_error(f"rejected: {command}")
                 raise CatCommandRejected(
-                    f"Radio rejected command {command!r} (returned '?;')"
+                    f"Radio rejected command {command!r} (returned '?;')",
+                    command=command,
                 )
             self._stats.stale_lines_skipped += 1
             if self._debug_logging:
@@ -420,7 +456,8 @@ class YaesuCatTransport:
                 if response == "?":
                     self._stats.record_error(f"rejected: {command}")
                     raise CatCommandRejected(
-                        f"Radio rejected command {command!r} (returned '?;')"
+                        f"Radio rejected command {command!r} (returned '?;')",
+                        command=command,
                     )
 
                 # ── Echo suppression ──

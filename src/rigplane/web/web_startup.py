@@ -156,6 +156,22 @@ def _startup_gap_seconds(radio: object) -> float:
     return _STARTUP_GATE_POLL_SECONDS
 
 
+def _abort_on_startup_defect(scheduler: AcquisitionScheduler) -> None:
+    """Raise if a backend has recorded a declared-command defect.
+
+    The backend's own raise stays inside its poller task; the scheduler both
+    sides already hold is what carries the defect here. Bind happens strictly
+    after the gate, so raising here means no listener is created.
+    """
+
+    defect = scheduler.startup_defect
+    if defect is None:
+        return
+    raise RuntimeError(
+        f"web startup aborted: {defect}. Refusing to start a half-working server."
+    )
+
+
 async def _await_initial_state_acquisition(
     server: WebServer,
     *,
@@ -163,7 +179,9 @@ async def _await_initial_state_acquisition(
 ) -> None:
     """Block until ``AcquisitionScheduler.unobserved_startup_paths`` is empty.
 
-    The wait is indefinite by design: there is no serve-anyway timeout.
+    The wait is indefinite unless a backend records a
+    :class:`DeclaredCommandDefect` on the scheduler, which aborts it — see
+    :func:`_abort_on_startup_defect`. There is no serve-anyway timeout.
 
     ``sweep`` re-primes the scheduler while the gate is open. It is set only
     on the branch that builds a :class:`RadioPoller`, because that is the
@@ -186,6 +204,7 @@ async def _await_initial_state_acquisition(
     scheduler = _acquisition_scheduler(server)
     if scheduler is None:
         return
+    _abort_on_startup_defect(scheduler)
     outstanding = scheduler.unobserved_startup_paths(
         _observed_paths(server, scheduler),
         availability=resolve_available_when(
@@ -218,6 +237,7 @@ async def _await_initial_state_acquisition(
                 for path in request.paths:
                     primed_at[path] = queued_at
         await asyncio.sleep(gap)
+        _abort_on_startup_defect(scheduler)
         outstanding = scheduler.unobserved_startup_paths(
             _observed_paths(server, scheduler),
             availability=resolve_available_when(

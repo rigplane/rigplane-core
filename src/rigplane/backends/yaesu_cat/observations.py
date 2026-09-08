@@ -7,10 +7,11 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, TypeVar
+from typing import TYPE_CHECKING, NoReturn, Protocol, TypeVar
 
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
+    DeclaredCommandDefect,
     resolve_available_when,
 )
 from rigplane.core.observation_adapter import ProviderObservationAdapter
@@ -406,13 +407,7 @@ class YaesuObservationAdapter:
                 KeyError,
                 CatCommandRejected,
             ) as exc:
-                self._log_field_skip(
-                    "ptt",
-                    "Skipping field %s — PTT read failed: %s",
-                    exc,
-                    paths=(_PTT,),
-                )
-                reading = TxStateReading(None, failure="read-error")
+                self._raise_declared_defect("ptt", exc, (_PTT,))
             except Exception:
                 publish_ptt_error()
                 raise
@@ -1331,65 +1326,86 @@ class YaesuObservationAdapter:
         *,
         paths: tuple[FieldPath, ...] = (),
     ) -> tuple[bool, _T | None]:
-        """Await one field read, tolerating FIELD-level CAT failures (MOR-473).
+        """Await one field read, classifying a FIELD-level CAT failure.
 
-        Returns ``(ok, value)``. On a field-level malformed/unsupported answer
-        the read is skipped: the warning is logged (the field ``label`` plus the
-        exception, which already embeds the offending CAT template + frame) and
-        ``(False, None)`` is returned so the caller drops just that field (or the
-        whole derived group it feeds).
+        Returns ``(ok, value)``. A read naming declared ``paths`` that the
+        radio refuses (``?;``) or answers in another shape raises
+        :class:`DeclaredCommandDefect` — see :meth:`_raise_declared_defect`.
+        A read with no declared ``paths`` is skipped instead: the warning is
+        logged and ``(False, None)`` is returned so the caller drops just
+        that field.
 
-        CONNECTION/timeout errors are NOT caught — they RE-RAISE so the poller's
-        ``_run_poll_cycle`` reconnect/backoff still fires; a dead link must never
-        be masked as a skipped field. ``CatCommandRejected`` and
-        ``CatTimeoutError`` both subclass ``CatTransportError``, so the SPECIFIC
-        ``CatCommandRejected`` (a ``?;`` reject = unsupported command on this
-        radio) is caught while the base/timeout propagates.
-
-        MOR-561: a permanently unsupported field fails identically every poll
-        cycle, several times a second. The FIRST failure for a given field
-        warns; every repeat is demoted to DEBUG so the log is not flooded.
+        TRANSPORT errors are NOT caught — they RE-RAISE so the poller's
+        ``_run_poll_cycle`` reconnect/backoff still fires. ``CatTimeoutError``
+        and ``CatGarbledFrameError`` reach that path unchanged;
+        ``CatCommandRejected`` is caught out of the same base class because a
+        refusal is an answer, not link quality.
         """
         try:
             return True, await read
         except (CatParseError, CatFormatError, ValueError, KeyError) as exc:
             # ValueError covers _read_meter / int() malformed-frame failures;
             # CatParse/FormatError subclass ValueError but are listed for clarity.
+            if paths:
+                self._raise_declared_defect(label, exc, paths)
             self._log_field_skip(
                 label,
                 "Skipping field %s — malformed CAT response: %s",
                 exc,
-                paths=paths,
             )
             return False, None
         except CatCommandRejected as exc:
-            # ``?;`` reject = command unsupported on this radio -> skip the field.
+            if paths:
+                self._raise_declared_defect(label, exc, paths)
             self._log_field_skip(
                 label,
                 "Skipping field %s — command rejected (?;): %s",
                 exc,
-                paths=paths,
             )
             return False, None
+
+    def _raise_declared_defect(
+        self,
+        label: str,
+        exc: Exception,
+        paths: tuple[FieldPath, ...],
+    ) -> NoReturn:
+        """Record and raise the defect for a declared read that cannot answer.
+
+        The recording is what the startup gate reads: this raise itself only
+        reaches the poller task that drove the read.
+        """
+        command = ""
+        frame = ""
+        if isinstance(exc, CatParseError):
+            command, frame = exc.template, exc.response
+        elif isinstance(exc, CatFormatError):
+            command = exc.template
+        elif isinstance(exc, CatCommandRejected):
+            command, frame = exc.command, "?;"
+        defect = DeclaredCommandDefect(
+            label=label,
+            paths=paths,
+            command=command,
+            frame=frame,
+            detail=str(exc),
+        )
+        scheduler = getattr(self.radio, "_acquisition_scheduler", None)
+        if isinstance(scheduler, AcquisitionScheduler):
+            scheduler.record_startup_defect(defect)
+        raise defect from exc
 
     def _log_field_skip(
         self,
         label: str,
         message: str,
         exc: Exception,
-        *,
-        paths: tuple[FieldPath, ...] = (),
     ) -> None:
         """Warn once per field, then demote repeats to DEBUG (MOR-561).
 
         The warned-field set lives on the radio (persistent across poll cycles)
         rather than the adapter (rebuilt every cycle). A non-``set`` attribute —
         e.g. a ``MagicMock`` test double — falls back to always-warn.
-
-        ``paths`` names the declared fields the skipped read would have
-        produced; see ``AcquisitionScheduler.abandon_startup_path`` and
-        ``tests/test_yaesu_cat_observation_adapter.py::
-        test_skipped_read_abandons_every_declared_path_it_feeds``.
         """
         warned = getattr(self.radio, "_poll_warned_fields", None)
         if isinstance(warned, set):
@@ -1397,13 +1413,6 @@ class YaesuObservationAdapter:
                 logger.debug(message, label, exc)
                 return
             warned.add(label)
-        if paths:
-            scheduler = getattr(self.radio, "_acquisition_scheduler", None)
-            if isinstance(scheduler, AcquisitionScheduler):
-                for path in paths:
-                    scheduler.abandon_startup_path(
-                        path, reason=f"yaesu field read skipped: {label}"
-                    )
         logger.warning(message, label, exc)
 
     def _adapter(self) -> ProviderObservationAdapter:

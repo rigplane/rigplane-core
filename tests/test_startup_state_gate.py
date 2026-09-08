@@ -27,6 +27,7 @@ import pytest
 from rigplane.core.acquisition_scheduler import (
     AcquisitionRequest,
     AcquisitionScheduler,
+    DeclaredCommandDefect,
     resolve_available_when,
 )
 from rigplane.core.civ import CivFrame
@@ -415,6 +416,7 @@ class _RecordingScheduler:
         )
         self.prime_limits: list[int | None] = []
         self.on_prime: Callable[[], None] | None = None
+        self.startup_defect: DeclaredCommandDefect | None = None
 
     def unobserved_startup_paths(
         self,
@@ -653,7 +655,7 @@ async def test_web_ui_banner_prints_only_after_the_server_reports_started(
 
 
 # ---------------------------------------------------------------------------
-# A declared field the backend gives up on
+# A declared field the radio answers in another shape
 # ---------------------------------------------------------------------------
 
 SUB_S_METER = FieldPath.receiver("sub", "meters", "s_meter")
@@ -703,6 +705,9 @@ class _YaesuAdapterPoller:
     def bind_provider_generation(self, *, capture: object, advance: object) -> None:
         return None
 
+    def bind_managed_tx_authority(self, _authority: object) -> None:
+        return None
+
 
 class _MalformedSubMeterRadio:
     """Answers the MAIN meter and returns an unparseable SUB meter frame."""
@@ -742,16 +747,32 @@ class _MalformedSubMeterRadio:
     ) -> object:
         return _YaesuAdapterPoller(callback, self)
 
+    # -- what ``cli/__init__.py: _run`` needs before it reaches the gate ----
+
+    async def __aenter__(self) -> "_MalformedSubMeterRadio":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def actuate(
+        self, _token: object, _operation: object, *, is_current: Callable[[], bool]
+    ) -> object:
+        from rigplane.runtime.managed_tx_state import ActuationResult
+
+        return ActuationResult.ACCEPTED if is_current() else ActuationResult.REJECTED
+
+    async def set_ptt(self, _on: bool) -> None:
+        return None
+
 
 @pytest.mark.asyncio
-async def test_gate_completes_when_the_backend_abandons_a_declared_path(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """The bind happens even though one declared field never answers usably.
+async def test_gate_refuses_to_bind_when_a_declared_read_never_parses() -> None:
+    """No listener exists when a declared field is answered in another shape.
 
     ``SUB_S_METER`` is polled every cycle and every answer is unparseable, so
-    no observation for it can ever reach the store. Without the backend
-    telling the scheduler to release it, this gate never returns.
+    no observation for it can ever reach the store. The message names the
+    field, the parse template and the frame the radio sent.
     """
     radio = _MalformedSubMeterRadio()
     server = WebServer(radio, _gated_config())
@@ -763,19 +784,56 @@ async def test_gate_completes_when_the_backend_abandons_a_declared_path(
         binds.append("bind")
         return _FakeAsyncServer()
 
-    with caplog.at_level(logging.WARNING, logger="rigplane.core.acquisition_scheduler"):
-        with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
+    with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
+        with pytest.raises(RuntimeError) as caught:
             await asyncio.wait_for(server.start(), timeout=10.0)
-            await server.stop()
+        await server.stop()
 
-    assert binds == ["bind"]
-    assert scheduler.unobserved_startup_paths(_observed_paths(server, scheduler)) == ()
-    abandoned = [
-        record
-        for record in caplog.records
-        if record.levelno == logging.WARNING and str(SUB_S_METER) in record.getMessage()
-    ]
-    assert len(abandoned) == 1
+    assert binds == []
+    message = str(caught.value)
+    assert message.startswith("web startup aborted: ")
+    assert message.endswith("Refusing to start a half-working server.")
+    assert str(SUB_S_METER) in message
+    assert "SM1{raw:03d};" in message
+    assert "SM0000;" in message
+    assert SUB_S_METER in scheduler.unobserved_startup_paths(
+        _observed_paths(server, scheduler)
+    )
+
+
+@pytest.mark.asyncio
+async def test_cli_web_exits_one_and_prints_the_defect(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``rigplane web`` reports the defect on stderr and exits 1.
+
+    Same radio as the gate test above, driven through the real
+    ``cli/__init__.py: _run`` so the exit code and the ``Error:`` line come
+    from the CLI's own handling, not from a re-raise the test composed.
+    """
+    from rigplane.cli import _build_parser, _run
+
+    radio = _MalformedSubMeterRadio()
+
+    async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
+        raise AssertionError("the listener must never bind")
+
+    args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+    args.web_bridge = None  # no audio bridge; the gate is what is under test
+    with (
+        patch("rigplane.cli.create_radio", return_value=radio),
+        patch("rigplane.cli.check_ports_available"),
+        patch("rigplane.web.web_startup.asyncio.start_server", new=_bind),
+    ):
+        rc = await asyncio.wait_for(_run(args), timeout=10.0)
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error: web startup aborted: ")
+    assert str(SUB_S_METER) in err
+    assert "SM1{raw:03d};" in err
+    assert "SM0000;" in err
+    assert "Refusing to start a half-working server." in err
 
 
 # ---------------------------------------------------------------------------
