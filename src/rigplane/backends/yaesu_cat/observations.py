@@ -1390,7 +1390,7 @@ class YaesuObservationAdapter:
         return bool(capability.can_poll)
 
     def _available(self, path: FieldPath) -> bool:
-        """Return False while the profile declares this field absent.
+        """Return False while a declared clause is contradicted or unobserved.
 
         The ``available_when`` clauses are resolved against a
         :class:`StateStore` attached to the radio as ``_state_store``; with

@@ -2865,9 +2865,32 @@ async def test_slow_poll_reads_the_attenuator_below_the_declared_bound() -> None
 
 
 @pytest.mark.asyncio
-async def test_slow_poll_reads_both_conditional_fields_without_a_state_store() -> None:
-    """Outside the web seat nothing attaches a store, and nothing is gated."""
+async def test_slow_poll_withholds_a_read_whose_condition_is_unobserved() -> None:
+    radio, adapter = _availability_adapter(StateStore())
 
+    observations = await adapter.poll_slow_controls()
+    paths = [str(item.path) for item in observations]
+
+    radio.read_attenuator.assert_not_awaited()
+    radio.read_manual_notch_freq.assert_not_awaited()
+    assert _ATT_PATH not in paths
+    assert _NOTCH_FREQ_PATH not in paths
+
+    radio, adapter = _availability_adapter(
+        _availability_store(mode="USB", freq_hz=14_074_000)
+    )
+
+    observations = await adapter.poll_slow_controls()
+    paths = [str(item.path) for item in observations]
+
+    radio.read_attenuator.assert_awaited()
+    radio.read_manual_notch_freq.assert_awaited()
+    assert _ATT_PATH in paths
+    assert _NOTCH_FREQ_PATH in paths
+
+
+@pytest.mark.asyncio
+async def test_a_non_state_store_attribute_leaves_both_reads_ungated() -> None:
     radio, adapter = _availability_adapter(None)
     assert not isinstance(getattr(radio, "_state_store", None), StateStore)
 
