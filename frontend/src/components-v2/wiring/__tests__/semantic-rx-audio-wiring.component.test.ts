@@ -26,6 +26,7 @@
  * Isolated pool by name (`*.component.test.ts`), per the MOR-1272 doctrine —
  * no `vite.config.ts` edit was needed.
  */
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
@@ -189,6 +190,9 @@ const finiteAppearance = {
   toggle: FiniteControlRendererFixture as FiniteControlAppearance['toggle'],
   choice: FiniteControlRendererFixture as FiniteControlAppearance['choice'],
 } satisfies FiniteControlAppearance;
+
+const RADIO_LAYOUT_SOURCE = readFileSync('src/components-v2/layout/RadioLayout.svelte', 'utf8');
+const DESKTOP_V2_CONTROL_CSS = readFileSync('src/skins/desktop-v2/semantic-controls.css', 'utf8');
 
 /**
  * (a), half one. Read BEFORE any `mockClear()` — the only pin that can see a
@@ -751,6 +755,27 @@ describe('each finite control has exactly one owner in the composed tree', () =>
     expect(seats).toEqual([
       'monitorMode', 'routingFocus', 'routingSplit', 'modInputSource', 'setModInputLan',
     ]);
+  });
+
+  // The shipped Standard face stretches these buttons across the panel, and
+  // the only rule that does it is `skins/desktop-v2/semantic-controls.css`'s
+  // `… .rx-audio-row … > button { flex: 1 1 0 }`, which reaches the panel
+  // width only while `.rx-audio-row` is itself panel-wide. jsdom computes no
+  // layout, so the rules are pinned where they are written.
+  it('stacks the Standard seats panel-wide, so the row buttons still stretch', () => {
+    renderHostedFace('desktop-v2');
+    expect(q('.rx-audio-finite-seat[data-field="monitorMode"] > .rx-audio-row')).not.toBeNull();
+    expect(DESKTOP_V2_CONTROL_CSS)
+      .toMatch(/\.rx-audio-row[^{]*\)\s*>\s*button\s*\{\s*flex:\s*1\s+1\s+0/);
+    // A row-direction wrap grid sizes each seat to its content instead, which
+    // stops the stretch at the widest label.
+    const grid = /\.rx-audio-finite-grid\s*\{([^}]*)\}/.exec(RADIO_LAYOUT_SOURCE)?.[1] ?? '';
+    expect(grid).toMatch(/flex-direction:\s*column/);
+    expect(grid).not.toMatch(/wrap/);
+    // Box-less seats: a structurally absent handle renders nothing, and a
+    // seat box would still spend a column gap and push the rows apart.
+    expect(RADIO_LAYOUT_SOURCE)
+      .toMatch(/\.rx-audio-finite-seat\s*\{\s*display:\s*contents;\s*\}/);
   });
 
   it('has no Standard seat grid on sdr-test — the grouped surface owns placement there', () => {
