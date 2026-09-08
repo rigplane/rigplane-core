@@ -1525,7 +1525,7 @@ async def test_execute_failed_set_break_in_delay_does_not_queue_readback() -> No
 
 
 @pytest.mark.parametrize(
-    ("cmd", "field", "expected", "previous"),
+    ("cmd", "field", "written", "previous"),
     (
         (SetCwPitch(650), "cw_pitch", 650, 600),
         (SetKeySpeed(24), "key_speed", 24, 20),
@@ -1535,97 +1535,33 @@ async def test_execute_failed_set_break_in_delay_does_not_queue_readback() -> No
     ids=("cw-pitch", "key-speed", "break-in-semi", "break-in-full"),
 )
 @pytest.mark.asyncio
-async def test_cw_operator_write_requires_matching_radio_readback(
-    cmd: Any, field: str, expected: int, previous: int
+async def test_cw_operator_write_mirrors_and_leaves_no_inline_readback(
+    cmd: Any, field: str, written: int, previous: int
 ) -> None:
-    path = FieldPath.global_("operator_controls", field)
+    """MOR-2425 PR-3: the trio's readback moved to the scheduler path.
+
+    ``RadioPoller._confirm_global_operator_write`` — a direct getter whose
+    result was applied only when it equalled the requested value — is gone.
+    The arm keeps the optimistic ``RadioState`` mirror, which
+    ``web/handlers/control.py``'s ``cw_auto_tune`` reads; the confirmed value
+    now arrives as an ordinary observation.
+    """
     store = StateStore()
     store.begin_provider_generation()
     state = RadioState()
     setattr(state, field, previous)
     radio = _make_radio(model="IC-7300")
     setter = AsyncMock()
-    getter = AsyncMock(return_value=expected)
+    getter = AsyncMock(return_value=written)
     setattr(radio, f"set_{field}", setter)
     setattr(radio, f"get_{field}", getter)
     poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
 
     await poller._execute(cmd, command_id="cw-write-1")  # noqa: SLF001
 
-    setter.assert_awaited_once_with(expected)
-    getter.assert_awaited_once_with()
-    confirmed = store.snapshot().field(path)
-    assert (confirmed.value, confirmed.source.native_id) == (
-        expected,
-        f"{field}_readback",
-    )
-    assert getattr(state, field) == expected
-
-
-@pytest.mark.parametrize(
-    "outcome", ("failure", "timeout", "mismatch", "stale", "new-generation")
-)
-@pytest.mark.asyncio
-async def test_cw_operator_unconfirmed_write_preserves_radio_truth(
-    outcome: str,
-) -> None:
-    cmd, field, expected, previous = SetCwPitch(650), "cw_pitch", 650, 600
-    path = FieldPath.global_("operator_controls", field)
-    store = StateStore()
-    generation = store.begin_provider_generation()
-
-    def seed(value: int, provider_generation: int) -> None:
-        store.apply(
-            Observation(
-                path=path,
-                value=value,
-                source=SourceMetadata(source="poll_response", provider="test"),
-                timestamp_monotonic=time.monotonic(),
-                provider_generation=provider_generation,
-            )
-        )
-
-    seed(previous, generation)
-    before = store.snapshot().field(path)
-    state = RadioState()
-    setattr(state, field, previous)
-    radio = _make_radio(model="IC-7300")
-    setter = AsyncMock()
-
-    async def readback() -> int:
-        if outcome == "failure":
-            raise CommandError("readback failed")
-        if outcome == "timeout":
-            await asyncio.Event().wait()
-        if outcome == "mismatch":
-            return expected + 1
-        if outcome == "new-generation":
-            seed(previous, store.begin_provider_generation())
-        return expected
-
-    getter = AsyncMock(side_effect=readback)
-    setattr(radio, f"set_{field}", setter)
-    setattr(radio, f"get_{field}", getter)
-    poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
-    if outcome == "stale":
-        poller._provider_generation = MagicMock(  # type: ignore[method-assign] # noqa: SLF001
-            side_effect=(generation, generation + 1)
-        )
-
-    with patch("rigplane.web.radio_poller._SEND_TIMEOUT", 0.001):
-        await poller._execute(cmd)  # noqa: SLF001
-
-    setter.assert_awaited_once_with(expected)
-    getter.assert_awaited_once_with()
-    after = store.snapshot().field(path)
-    if outcome != "new-generation":
-        assert after == before
-    else:
-        assert (after.value, after.provider_generation) == (
-            previous,
-            store.provider_generation,
-        )
-    assert getattr(state, field) == previous
+    setter.assert_awaited_once_with(written)
+    getter.assert_not_awaited()
+    assert getattr(state, field) == written
 
 
 def test_ic7300_cw_operator_controls_have_paired_readback_routes() -> None:
@@ -3152,58 +3088,51 @@ async def test_execute_set_scope_rbw_updates_state() -> None:
     assert state.scope_controls.rbw == 2
 
 
+# MOR-1446/MOR-1524 gave these ten leaves an inline reconfirm GET so the
+# StateStore observation would refresh after a write; MOR-2425 PR-3 moved that
+# read onto ``RadioPoller._request_post_write_readback``'s scheduler path
+# (witnessed against the real IC-7300 profile in
+# ``tests/test_post_write_readback_one_path.py``). What this file still pins
+# is the arm itself: the setter is awaited, the optimistic
+# ``RadioState.scope_controls`` mirror is written, and no inline GET is left.
+_SCOPE_WRITE_ARMS: tuple[tuple[Any, str, str, Any], ...] = (
+    (SetScopeSpan(span=6), "scope_span", "span", 6),
+    (SetScopeSpeed(speed=2), "scope_speed", "speed", 2),
+    (SetScopeRef(ref=5), "scope_ref", "ref_db", 5.0),
+    (SetScopeMode(mode=1), "scope_mode", "mode", 1),
+    (SetScopeEdge(edge=3), "scope_edge", "edge", 3),
+    (SetScopeHold(on=True), "scope_hold", "hold", True),
+    (SetScopeDual(dual=True), "scope_dual", "dual", True),
+    (SetScopeDuringTx(on=True), "scope_during_tx", "during_tx", True),
+    (SetScopeCenterType(center_type=2), "scope_center_type", "center_type", 2),
+    (SetScopeVbw(narrow=True), "scope_vbw", "vbw_narrow", True),
+)
+
+
+@pytest.mark.parametrize(
+    ("command", "wire", "leaf", "expected"),
+    _SCOPE_WRITE_ARMS,
+    ids=[wire for _, wire, _, _ in _SCOPE_WRITE_ARMS],
+)
 @pytest.mark.asyncio
-async def test_execute_set_scope_span_updates_state_and_reconfirms() -> None:
-    """MOR-1446: a span write must re-GET so the StateStore observation for
-    ``scope_controls.span`` refreshes — otherwise the stale pre-write
-    observation (last confirmed at ``EnableScope`` time) keeps overwriting
-    the fresh optimistic value on every subsequent state snapshot, and the
-    frontend readout desyncs from the radio's real span (MOR-1446 leg 1)."""
+async def test_execute_scope_write_mirrors_and_leaves_no_inline_get(
+    command: Any, wire: str, leaf: str, expected: Any
+) -> None:
     radio = _make_radio()
     state = RadioState()
+    getter = AsyncMock(return_value=0)
+    setattr(radio, f"get_{wire}", getter)
     poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
 
-    await poller._execute(SetScopeSpan(span=6))  # noqa: SLF001
+    await poller._execute(command)  # noqa: SLF001
 
-    radio.set_scope_span.assert_awaited_once_with(6)
-    assert state.scope_controls.span == 6
-    radio.get_scope_span.assert_awaited_once_with()
+    getattr(radio, f"set_{wire}").assert_awaited_once()
+    assert getattr(state.scope_controls, leaf) == expected
+    getter.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_execute_set_scope_speed_updates_state_and_reconfirms() -> None:
-    """MOR-1446 leg 3: SPEED reads as inert without the reconfirm — the
-    dispatch reaches the radio, but the readout never advances past its
-    pre-write reading."""
-    radio = _make_radio()
-    state = RadioState()
-    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
-
-    await poller._execute(SetScopeSpeed(speed=2))  # noqa: SLF001
-
-    radio.set_scope_speed.assert_awaited_once_with(2)
-    assert state.scope_controls.speed == 2
-    radio.get_scope_speed.assert_awaited_once_with()
-
-
-@pytest.mark.asyncio
-async def test_execute_set_scope_ref_updates_state_and_reconfirms() -> None:
-    """MOR-1446 leg 2: REF stays stuck at 0 without the reconfirm — the radio
-    applies the level (waterfall visibly changes) but the readout keeps
-    replaying the stale pre-write observation."""
-    radio = _make_radio()
-    state = RadioState()
-    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
-
-    await poller._execute(SetScopeRef(ref=5))  # noqa: SLF001
-
-    radio.set_scope_ref.assert_awaited_once_with(5)
-    assert state.scope_controls.ref_db == 5.0
-    radio.get_scope_ref.assert_awaited_once_with()
-
-
-@pytest.mark.asyncio
-async def test_execute_set_scope_span_reconfirm_timeout_does_not_raise() -> None:
+async def test_execute_set_scope_rbw_reconfirm_timeout_does_not_raise() -> None:
     """A dropped confirm response (busy scope stream) must not fail the
     command — `_reconfirm_scope_field` bounds and swallows it exactly like
     `_fetch_scope_controls` already does for the same class of getter."""
@@ -3214,114 +3143,13 @@ async def test_execute_set_scope_span_reconfirm_timeout_does_not_raise() -> None
         await asyncio.sleep(10)
         return 0
 
-    radio.get_scope_span = _never_resolves
+    radio.get_scope_rbw = _never_resolves
     poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
 
-    await poller._execute(SetScopeSpan(span=6))  # noqa: SLF001
+    await poller._execute(SetScopeRbw(rbw=2))  # noqa: SLF001
 
-    radio.set_scope_span.assert_awaited_once_with(6)
-    assert state.scope_controls.span == 6
-
-
-@pytest.mark.asyncio
-async def test_execute_set_scope_mode_updates_state_and_reconfirms() -> None:
-    """MOR-1524: SetScopeMode must reconfirm exactly like SPAN/SPEED/REF
-    (MOR-1446) — without the GET the StateStore keeps replaying the stale
-    pre-write mode observation."""
-    radio = _make_radio()
-    state = RadioState()
-    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
-
-    await poller._execute(SetScopeMode(mode=1))  # noqa: SLF001
-
-    radio.set_scope_mode.assert_awaited_once_with(1)
-    assert state.scope_controls.mode == 1
-    radio.get_scope_mode.assert_awaited_once_with()
-
-
-@pytest.mark.asyncio
-async def test_execute_set_scope_edge_updates_state_and_reconfirms() -> None:
-    """MOR-1524: SetScopeEdge must reconfirm — same MOR-1446 desync class."""
-    radio = _make_radio()
-    state = RadioState()
-    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
-
-    await poller._execute(SetScopeEdge(edge=3))  # noqa: SLF001
-
-    radio.set_scope_edge.assert_awaited_once_with(3)
-    assert state.scope_controls.edge == 3
-    radio.get_scope_edge.assert_awaited_once_with()
-
-
-@pytest.mark.asyncio
-async def test_execute_set_scope_hold_updates_state_and_reconfirms() -> None:
-    """MOR-1524: SetScopeHold must reconfirm — same MOR-1446 desync class."""
-    radio = _make_radio()
-    state = RadioState()
-    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
-
-    await poller._execute(SetScopeHold(on=True))  # noqa: SLF001
-
-    radio.set_scope_hold.assert_awaited_once_with(True)
-    assert state.scope_controls.hold is True
-    radio.get_scope_hold.assert_awaited_once_with()
-
-
-@pytest.mark.asyncio
-async def test_execute_set_scope_dual_updates_state_and_reconfirms() -> None:
-    """MOR-1524: SetScopeDual must reconfirm — same MOR-1446 desync class."""
-    radio = _make_radio()
-    state = RadioState()
-    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
-
-    await poller._execute(SetScopeDual(dual=True))  # noqa: SLF001
-
-    radio.set_scope_dual.assert_awaited_once_with(True)
-    assert state.scope_controls.dual is True
-    radio.get_scope_dual.assert_awaited_once_with()
-
-
-@pytest.mark.asyncio
-async def test_execute_set_scope_during_tx_updates_state_and_reconfirms() -> None:
-    """MOR-1524: SetScopeDuringTx must reconfirm — same MOR-1446 desync class."""
-    radio = _make_radio()
-    state = RadioState()
-    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
-
-    await poller._execute(SetScopeDuringTx(on=True))  # noqa: SLF001
-
-    radio.set_scope_during_tx.assert_awaited_once_with(True)
-    assert state.scope_controls.during_tx is True
-    radio.get_scope_during_tx.assert_awaited_once_with()
-
-
-@pytest.mark.asyncio
-async def test_execute_set_scope_center_type_updates_state_and_reconfirms() -> None:
-    """MOR-1524: SetScopeCenterType must reconfirm — same MOR-1446 desync
-    class."""
-    radio = _make_radio()
-    state = RadioState()
-    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
-
-    await poller._execute(SetScopeCenterType(center_type=2))  # noqa: SLF001
-
-    radio.set_scope_center_type.assert_awaited_once_with(2)
-    assert state.scope_controls.center_type == 2
-    radio.get_scope_center_type.assert_awaited_once_with()
-
-
-@pytest.mark.asyncio
-async def test_execute_set_scope_vbw_updates_state_and_reconfirms() -> None:
-    """MOR-1524: SetScopeVbw must reconfirm — same MOR-1446 desync class."""
-    radio = _make_radio()
-    state = RadioState()
-    poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
-
-    await poller._execute(SetScopeVbw(narrow=True))  # noqa: SLF001
-
-    radio.set_scope_vbw.assert_awaited_once_with(True)
-    assert state.scope_controls.vbw_narrow is True
-    radio.get_scope_vbw.assert_awaited_once_with()
+    radio.set_scope_rbw.assert_awaited_once_with(2)
+    assert state.scope_controls.rbw == 2
 
 
 @pytest.mark.asyncio

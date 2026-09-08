@@ -1058,6 +1058,21 @@ LEGACY_COMMAND_NAMES: dict[type, str] = {
     SetVoxGain: "set_vox_gain",
     SetAntiVoxGain: "set_anti_vox_gain",
     SetVoxDelay: "set_vox_delay",
+    # MOR-2425 PR-3: the CW keyer trio and the ten scope-display leaves
+    # folded off the two bespoke confirms in ``web/radio_poller.py``.
+    SetCwPitch: "set_cw_pitch",
+    SetKeySpeed: "set_key_speed",
+    SetBreakIn: "set_break_in",
+    SetScopeDuringTx: "set_scope_during_tx",
+    SetScopeCenterType: "set_scope_center_type",
+    SetScopeEdge: "set_scope_edge",
+    SetScopeVbw: "set_scope_vbw",
+    SetScopeDual: "set_scope_dual",
+    SetScopeMode: "set_scope_mode",
+    SetScopeSpan: "set_scope_span",
+    SetScopeSpeed: "set_scope_speed",
+    SetScopeRef: "set_scope_ref",
+    SetScopeHold: "set_scope_hold",
 }
 
 

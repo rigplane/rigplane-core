@@ -1398,14 +1398,41 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.global_("operator_controls", "anti_vox_gain")
     if name == "set_vox_delay":
         return FieldPath.global_("operator_controls", "vox_delay")
-    # Scope-display settings are NOT resolved here (MOR-2425 PR-1b review,
-    # B1): a scope write is already confirmed by
-    # ``web/radio_poller.py: RadioPoller._reconfirm_scope_field``, called
-    # inline from the same ``case Set*`` arm that dispatches the write.
-    # Adding a target here would fire a second, scheduler-queued
-    # ``ensure_fresh`` for the same field -- a USER-priority query into the
-    # scope waveform stream ``_reconfirm_scope_field``'s own docstring says
-    # stays clear. Folding the two paths into one is PR-3's job.
+    # CW keyer (MOR-2425 PR-3): folded off
+    # ``web/radio_poller.py: RadioPoller._confirm_global_operator_write``,
+    # which is deleted. All three are declared
+    # ``command_response_observable`` on IC-7300.
+    if name == "set_cw_pitch":
+        return FieldPath.global_("operator_controls", "cw_pitch")
+    if name == "set_key_speed":
+        return FieldPath.global_("operator_controls", "key_speed")
+    if name == "set_break_in":
+        return FieldPath.global_("operator_controls", "break_in")
+    # Scope-display settings (MOR-2425 PR-3): ten of the twelve leaves folded
+    # off the inline ``RadioPoller._reconfirm_scope_field``. ``rbw`` and
+    # ``fixed_edge`` are NOT resolved here and keep that helper -- see the
+    # reasons recorded against them in
+    # ``tests/test_post_write_readback_one_path.py: _PENDING_LATER_PR``.
+    if name == "set_scope_during_tx":
+        return FieldPath.scope_control("display", "during_tx")
+    if name == "set_scope_center_type":
+        return FieldPath.scope_control("display", "center_type")
+    if name == "set_scope_edge":
+        return FieldPath.scope_control("display", "edge")
+    if name == "set_scope_vbw":
+        return FieldPath.scope_control("display", "vbw_narrow")
+    if name == "set_scope_dual":
+        return FieldPath.scope_control("display", "dual")
+    if name == "set_scope_mode":
+        return FieldPath.scope_control("display", "mode")
+    if name == "set_scope_span":
+        return FieldPath.scope_control("display", "span")
+    if name == "set_scope_speed":
+        return FieldPath.scope_control("display", "speed")
+    if name == "set_scope_ref":
+        return FieldPath.scope_control("display", "ref_db")
+    if name == "set_scope_hold":
+        return FieldPath.scope_control("display", "hold")
     if name == "set_rit_frequency":
         return FieldPath.global_("operator_controls", "rit_freq")
     if name == "set_rit_status":
