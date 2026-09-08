@@ -24,7 +24,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from rigplane.core.acquisition_scheduler import AcquisitionRequest, AcquisitionScheduler
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionRequest,
+    AcquisitionScheduler,
+    resolve_available_when,
+)
 from rigplane.core.civ import CivFrame
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
@@ -39,7 +43,7 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.core.state_store import StateStore
 from rigplane.core.types import bcd_encode
-from rigplane.profiles import resolve_radio_profile
+from rigplane.profiles import get_radio_profile, resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.runtime._civ_rx import _profile_path_for_observation
 from rigplane.web import web_startup
@@ -822,3 +826,67 @@ async def test_field_declared_absent_in_the_current_mode_does_not_hold_the_gate(
     await asyncio.wait_for(
         _await_initial_state_acquisition(server, sweep=False), timeout=5.0
     )
+
+
+# ---------------------------------------------------------------------------
+# The FTX-1's second receiver: in the gate only while dual receive is on
+# ---------------------------------------------------------------------------
+
+
+DUAL_WATCH = FieldPath.global_("tx_state", "dual_watch")
+FTX1_SUB_PATHS = (
+    FieldPath.active("sub", "freq_mode", "freq_hz"),
+    FieldPath.active("sub", "freq_mode", "mode"),
+    FieldPath.receiver("sub", "meters", "s_meter"),
+    FieldPath.receiver("sub", "operator_controls", "af_level"),
+    FieldPath.receiver("sub", "operator_controls", "rf_gain"),
+    FieldPath.receiver("sub", "operator_controls", "squelch"),
+    FieldPath.receiver("sub", "operator_controls", "repeater_shift"),
+)
+
+
+def _ftx1_scheduler() -> AcquisitionScheduler:
+    acquisition = get_radio_profile("FTX-1").state_acquisition
+    assert acquisition is not None
+    return AcquisitionScheduler(profile=acquisition)
+
+
+def _ftx1_outstanding(
+    store: StateStore, observed: tuple[FieldPath, ...] = ()
+) -> tuple[FieldPath, ...]:
+    scheduler = _ftx1_scheduler()
+    return scheduler.unobserved_startup_paths(
+        observed,
+        availability=resolve_available_when(scheduler._profile, store.snapshot()),
+    )
+
+
+def _dual_receive_store(on: bool) -> StateStore:
+    store = StateStore()
+    store.apply(_observation(DUAL_WATCH, on, at=1.0))
+    return store
+
+
+def test_ftx1_sub_paths_stay_out_of_the_gate_until_dual_receive_is_observed() -> None:
+    """No SUB field holds the gate open before ``FR`` has answered."""
+
+    outstanding = _ftx1_outstanding(StateStore())
+
+    assert set(FTX1_SUB_PATHS).isdisjoint(outstanding)
+    # Not vacuous: the condition source is itself in the gate, so the gate
+    # still waits for the read that resolves the clause.
+    assert DUAL_WATCH in outstanding
+
+
+def test_ftx1_sub_paths_stay_out_of_the_gate_while_dual_receive_is_off() -> None:
+    outstanding = _ftx1_outstanding(_dual_receive_store(False), (DUAL_WATCH,))
+
+    assert set(FTX1_SUB_PATHS).isdisjoint(outstanding)
+    assert DUAL_WATCH not in outstanding
+
+
+def test_ftx1_sub_paths_enter_the_gate_once_dual_receive_is_observed_on() -> None:
+    outstanding = _ftx1_outstanding(_dual_receive_store(True), (DUAL_WATCH,))
+
+    assert set(FTX1_SUB_PATHS).issubset(outstanding)
+    assert DUAL_WATCH not in outstanding

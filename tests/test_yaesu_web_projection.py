@@ -216,6 +216,8 @@ def _make_radio() -> MagicMock:
     radio.read_freq = AsyncMock(side_effect=lambda receiver=0: 14_074_000)
     radio.read_mode = AsyncMock(side_effect=lambda receiver=0: ("USB", None))
     radio.get_tx_func = AsyncMock(return_value=0)
+    # Dual receive: CAT ``FR`` P1, 0 = dual receive, 1 = single receive.
+    radio.get_rx_func = AsyncMock(return_value=0)
     radio.read_ptt = AsyncMock(return_value=False)
     radio.read_transmit_state = AsyncMock(
         return_value=TxStateReading(False, "rx", "yaesu_poll_response", True)

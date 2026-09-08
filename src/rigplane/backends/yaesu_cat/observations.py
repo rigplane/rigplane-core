@@ -107,12 +107,15 @@ _MAIN_MANUAL_NOTCH_FREQ = FieldPath.receiver(
 # str consumed by the rigctld VFOA/VFOB mapping and the dual-RX runtime. The
 # ``VS`` index (0/1) is coerced to that str; the per-receiver
 # ``receiver.<rx>.vfo.active_slot`` ("A"/"B") field is a DIFFERENT concept
-# (which VFO slot within a receiver) and is NOT the target. FR/FT routing
-# (``get_rx_func``/``get_tx_func``) has no backend-neutral FieldPath and stays
-# vendor-namespaced compat-only per the promotion-criterion ADR — not observed.
+# (which VFO slot within a receiver) and is NOT the target.
 _SPLIT = FieldPath.global_("tx_state", "split")
 _ACTIVE = FieldPath.global_("slow_state", "active")
 _ACTIVE_INDEX_TO_STR = {0: "MAIN", 1: "SUB"}
+# Dual receive (CAT ``FR``; FTX-1_CAT_OM_ENG_2508-C printed page 16: P1 ``00`` = dual
+# receive, ``01`` = single receive) is emitted as the canonical
+# ``global.tx_state.dual_watch`` bool — the same path and value type the Icom
+# backend publishes from CI-V 0x07 0xC2 (``runtime/_civ_rx.py``).
+_DUAL_WATCH = FieldPath.global_("tx_state", "dual_watch")
 # Clarifier (RIT/XIT) controls (MOR-454). GLOBAL slow-changing operator/TX
 # controls (CAT ``CF000``/``CF001``): ``rit_on``/``rit_tx`` are global tx_state
 # bools (RX/TX clarifier flags), ``rit_freq`` is the global operator-control
@@ -218,6 +221,8 @@ class YaesuObservationRadio(Protocol):
     async def read_transmit_state(self) -> TxStateReading: ...
 
     async def get_tx_func(self) -> int: ...
+
+    async def get_rx_func(self) -> int: ...
 
     async def read_af_level(self, receiver: int = 0) -> int: ...
 
@@ -346,7 +351,11 @@ class YaesuObservationAdapter:
                 observations.append(
                     adapter.observation(_MAIN_MODE, result[0], native_id="read_mode")
                 )
-        if self._has_runtime_capability("dual_rx") and self._can_poll(_SUB_FREQ):
+        if (
+            self._has_runtime_capability("dual_rx")
+            and self._can_poll(_SUB_FREQ)
+            and self._available(_SUB_FREQ)
+        ):
             ok, value = await self._safe_read(
                 "sub.freq", self.radio.read_freq(1), paths=(_SUB_FREQ,)
             )
@@ -354,7 +363,11 @@ class YaesuObservationAdapter:
                 observations.append(
                     adapter.observation(_SUB_FREQ, value, native_id="read_freq")
                 )
-        if self._has_runtime_capability("dual_rx") and self._can_poll(_SUB_MODE):
+        if (
+            self._has_runtime_capability("dual_rx")
+            and self._can_poll(_SUB_MODE)
+            and self._available(_SUB_MODE)
+        ):
             ok, result = await self._safe_read(
                 "sub.mode", self.radio.read_mode(1), paths=(_SUB_MODE,)
             )
@@ -545,6 +558,7 @@ class YaesuObservationAdapter:
             self._has_runtime_capability("meters")
             and self._has_runtime_capability("dual_rx")
             and self._can_poll(_SUB_S_METER)
+            and self._available(_SUB_S_METER)
         ):
             ok, raw = await self._safe_read(
                 "sub.s_meter", self.radio.read_s_meter(1), paths=(_SUB_S_METER,)
@@ -688,6 +702,18 @@ class YaesuObservationAdapter:
     async def poll_slow_controls(self) -> tuple[Observation, ...]:
         adapter = self._adapter()
         observations: list[Observation] = []
+        # First read of the cycle: the SUB fields below name this path in their
+        # profile ``available_when`` clauses. Pinned by
+        # ``tests/test_yaesu_cat_observation_adapter.py::
+        # test_dual_receive_is_read_before_the_sub_controls_it_gates``.
+        if self._can_poll(_DUAL_WATCH):
+            ok, mode = await self._safe_read(
+                "main.rx_func", self.radio.get_rx_func(), paths=(_DUAL_WATCH,)
+            )
+            if ok and mode is not None:
+                observations.append(
+                    adapter.observation(_DUAL_WATCH, mode == 0, native_id="get_rx_func")
+                )
         if self._has_runtime_capability("af_level") and self._can_poll(_MAIN_AF):
             ok, value = await self._safe_read(
                 "main.af_level", self.radio.read_af_level(0), paths=(_MAIN_AF,)
@@ -728,6 +754,7 @@ class YaesuObservationAdapter:
             self._has_runtime_capability("dual_rx")
             and self._has_runtime_capability("af_level")
             and self._can_poll(_SUB_AF)
+            and self._available(_SUB_AF)
         ):
             ok, value = await self._safe_read(
                 "sub.af_level", self.radio.read_af_level(1), paths=(_SUB_AF,)
@@ -744,6 +771,7 @@ class YaesuObservationAdapter:
             self._has_runtime_capability("dual_rx")
             and self._has_runtime_capability("rf_gain")
             and self._can_poll(_SUB_RF)
+            and self._available(_SUB_RF)
         ):
             ok, value = await self._safe_read(
                 "sub.rf_gain", self.radio.read_rf_gain(1), paths=(_SUB_RF,)
@@ -760,6 +788,7 @@ class YaesuObservationAdapter:
             self._has_runtime_capability("dual_rx")
             and self._has_runtime_capability("squelch")
             and self._can_poll(_SUB_SQL)
+            and self._available(_SUB_SQL)
         ):
             ok, value = await self._safe_read(
                 "sub.squelch", self.radio.read_squelch(1), paths=(_SUB_SQL,)
@@ -1029,7 +1058,7 @@ class YaesuObservationAdapter:
             if self._has_runtime_capability("dual_rx"):
                 receiver_paths += ((1, "sub", _SUB_REPEATER_SHIFT),)
             for receiver, label, path in receiver_paths:
-                if self._can_poll(path):
+                if self._can_poll(path) and self._available(path):
                     ok, shift_code = await self._safe_read(
                         f"{label}.repeater_shift",
                         self.radio.read_repeater_shift(receiver),

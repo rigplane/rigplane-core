@@ -136,8 +136,6 @@ _INHERITED_DEFAULT_OUT_OF_CLASS: dict[str, tuple[FieldPath, ...]] = {
         FieldPath.global_("tx_state", "ptt"),
         FieldPath.active("main", "freq_mode", "freq_hz"),
         FieldPath.active("main", "freq_mode", "mode"),
-        FieldPath.active("sub", "freq_mode", "freq_hz"),
-        FieldPath.active("sub", "freq_mode", "mode"),
     ),
 }
 
@@ -733,7 +731,7 @@ def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
     that instead inherits the profile's ``default_cadence_seconds`` is
     invisible to it -- see ``_INHERITED_DEFAULT_OUT_OF_CLASS`` and
     ``test_inherited_default_cadence_out_of_class_paths_are_exactly_named``
-    below for the ten such paths that are out of class today. A profile that
+    below for the eight such paths that are out of class today. A profile that
     declares no ``field_policies`` at all makes no per-field cadence claim --
     every path inherits one default -- so it is skipped; ``checked ==
     {...}`` below pins which profiles were walked, not that every classified
@@ -808,12 +806,12 @@ def _inherited_default_out_of_class() -> dict[str, tuple[FieldPath, ...]]:
 
 
 def test_inherited_default_cadence_out_of_class_paths_are_exactly_named() -> None:
-    """On the profiles the gate walks, the paths it cannot see are exactly the named ten.
+    """On the profiles the gate walks, the paths it cannot see are exactly the named eight.
 
     ``test_field_policies_obey_their_cadence_class_not_their_rig`` only
     checks a path with its own ``field_policies`` entry. This test covers
     the gap: it re-derives ``_INHERITED_DEFAULT_OUT_OF_CLASS`` from the
-    profiles that declare ``field_policies``, so fixing one of the ten (or
+    profiles that declare ``field_policies``, so fixing one of the eight (or
     introducing a new inherited-default violation on one of those profiles)
     changes the derived set and this assertion goes red, naming what
     changed. A profile with no ``field_policies`` is not walked, so a
@@ -1334,8 +1332,8 @@ def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
     assert acquisition is not None
 
     assert acquisition.provider == "yaesu_cat"
-    assert len(acquisition.capabilities) == 55
-    assert len(acquisition.field_policies) == 48
+    assert len(acquisition.capabilities) == 56
+    assert len(acquisition.field_policies) == 51
     assert acquisition.default_policy.cadence_seconds == 2.0
     assert acquisition.default_policy.freshness_ttl_seconds == 8.0
 
@@ -1625,7 +1623,7 @@ def test_ftx1_declares_when_manual_notch_and_attenuator_exist() -> None:
 
 
 def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
-    """Loading every shipped profile turns up exactly the two declarations."""
+    """Loading every shipped profile turns up exactly these declarations."""
 
     declared: set[tuple[str, str]] = set()
     for model, rig in discover_rigs(RIGS_DIR).items():
@@ -1639,4 +1637,40 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
     assert declared == {
         ("FTX-1", "receiver.main.operator_controls.att"),
         ("FTX-1", "receiver.main.operator_controls.manual_notch_freq"),
+        ("FTX-1", "receiver.sub.active.freq_mode.freq_hz"),
+        ("FTX-1", "receiver.sub.active.freq_mode.mode"),
+        ("FTX-1", "receiver.sub.meters.s_meter"),
+        ("FTX-1", "receiver.sub.operator_controls.af_level"),
+        ("FTX-1", "receiver.sub.operator_controls.rf_gain"),
+        ("FTX-1", "receiver.sub.operator_controls.repeater_shift"),
+        ("FTX-1", "receiver.sub.operator_controls.squelch"),
     }
+
+
+def test_ftx1_declares_every_sub_receiver_field_on_dual_receive() -> None:
+    """The second receiver exists only while dual receive is on."""
+
+    acquisition = get_radio_profile("FTX-1").state_acquisition
+    assert acquisition is not None
+
+    clause = AvailabilityClause(
+        field=FieldPath.global_("tx_state", "dual_watch"),
+        operator="equals",
+        value=True,
+    )
+    sub_paths = (
+        FieldPath.active("sub", "freq_mode", "freq_hz"),
+        FieldPath.active("sub", "freq_mode", "mode"),
+        FieldPath.receiver("sub", "meters", "s_meter"),
+        FieldPath.receiver("sub", "operator_controls", "af_level"),
+        FieldPath.receiver("sub", "operator_controls", "rf_gain"),
+        FieldPath.receiver("sub", "operator_controls", "squelch"),
+        FieldPath.receiver("sub", "operator_controls", "repeater_shift"),
+    )
+    for path in sub_paths:
+        assert acquisition.policy_for(path).available_when == (clause,), path
+
+    # The condition source is itself polled, or nothing would ever resolve it.
+    dual_watch = FieldPath.global_("tx_state", "dual_watch")
+    assert acquisition.capability_for(dual_watch).can_poll
+    assert acquisition.policy_for(dual_watch).available_when == ()
