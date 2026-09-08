@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import Iterable, Iterator
 from dataclasses import replace
@@ -3764,3 +3765,74 @@ def test_freshness_service_without_a_radio_still_ticks() -> None:
     service = StateFreshnessService(store=store)
 
     assert service.tick(now=100.0) is not None
+
+
+# ---------------------------------------------------------------------------
+# Startup-gate abandonment
+# ---------------------------------------------------------------------------
+
+_MAIN_S_METER = FieldPath.receiver("main", "meters", "s_meter")
+_SUB_S_METER = FieldPath.receiver("sub", "meters", "s_meter")
+
+
+def _abandon_scheduler() -> AcquisitionScheduler:
+    """Two declared, non-``tx_only`` meter paths — the FTX-1 pair's shape."""
+
+    return AcquisitionScheduler(
+        profile=RadioAcquisitionProfile(
+            provider="test_provider",
+            capabilities=(
+                FieldCapability(path=_MAIN_S_METER, polling=True),
+                FieldCapability(path=_SUB_S_METER, polling=True),
+            ),
+            field_policies={
+                _MAIN_S_METER: AcquisitionPolicy(
+                    cadence_seconds=0.2, freshness_ttl_seconds=0.8
+                ),
+                _SUB_S_METER: AcquisitionPolicy(
+                    cadence_seconds=0.2, freshness_ttl_seconds=0.8
+                ),
+            },
+        )
+    )
+
+
+def test_abandoned_startup_path_leaves_the_unobserved_set() -> None:
+    scheduler = _abandon_scheduler()
+    assert scheduler.unobserved_startup_paths(()) == (_MAIN_S_METER, _SUB_S_METER)
+
+    scheduler.abandon_startup_path(_SUB_S_METER, reason="malformed CAT response")
+
+    assert scheduler.unobserved_startup_paths(()) == (_MAIN_S_METER,)
+    assert scheduler.initial_acquisition_complete(()) is False
+    assert scheduler.initial_acquisition_complete((_MAIN_S_METER,)) is True
+
+
+def test_abandoning_an_observed_path_does_not_change_the_unobserved_set() -> None:
+    scheduler = _abandon_scheduler()
+    observed = (_SUB_S_METER,)
+    before = scheduler.unobserved_startup_paths(observed)
+
+    scheduler.abandon_startup_path(_SUB_S_METER, reason="malformed CAT response")
+
+    assert before == (_MAIN_S_METER,)
+    assert scheduler.unobserved_startup_paths(observed) == before
+
+
+def test_abandon_startup_path_warns_once_naming_the_path_and_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    scheduler = _abandon_scheduler()
+
+    with caplog.at_level(logging.WARNING, logger="rigplane.core.acquisition_scheduler"):
+        scheduler.abandon_startup_path(_SUB_S_METER, reason="malformed CAT response")
+        scheduler.abandon_startup_path(_SUB_S_METER, reason="malformed CAT response")
+
+    warnings = [
+        record for record in caplog.records if record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert str(_SUB_S_METER) in warnings[0].getMessage()
+    assert "malformed CAT response" in warnings[0].getMessage()
+    # Idempotent: the repeat leaves the filtered set as the first call left it.
+    assert scheduler.unobserved_startup_paths(()) == (_MAIN_S_METER,)

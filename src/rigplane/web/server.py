@@ -660,8 +660,7 @@ class WebConfig:
     discovery_port: int = 8470  # UDP port for discovery
     read_only: bool = False  # reject PTT and other transmit commands
     emit_startup_event: bool = False  # emit JSON runtime startup event to stdout
-    # Hold the listener closed until every declared, non-tx_only field has
-    # been observed once (see web_startup._await_initial_state_acquisition).
+    # Hold the listener closed (see web_startup._await_initial_state_acquisition).
     # The CLI sets it; embedders and tests that drive start() without a
     # backend filling the store leave it off.
     await_initial_state: bool = False

@@ -346,6 +346,7 @@ class AcquisitionScheduler:
     """Minimal priority/dedupe queue for backend-neutral acquisition reads."""
 
     __slots__ = (
+        "_abandoned_startup_paths",
         "_clock",
         "_cadence_by_key",
         "_claims_by_request_id",
@@ -381,6 +382,7 @@ class AcquisitionScheduler:
         ] = {}
         self._failed_request_count = 0
         self._failure_count_by_reason: dict[str, int] = {}
+        self._abandoned_startup_paths: set[FieldPath] = set()
         self._next_id = 1
         # Round-robin starting offset into field_policies for
         # prime_unobserved (MOR-1501, A1 from #2415 review): see that
@@ -878,6 +880,24 @@ class AcquisitionScheduler:
             return True
         return False
 
+    def abandon_startup_path(self, path: FieldPath, *, reason: str) -> None:
+        """Drop one path from :meth:`unobserved_startup_paths` for good.
+
+        For a backend that has given up on a declared field. The first call
+        for a path logs it by name, with ``reason``, at WARNING; repeats are
+        silent. Pinned by ``tests/test_acquisition_scheduler.py::
+        test_abandon_startup_path_warns_once_naming_the_path_and_reason``.
+        """
+
+        if path in self._abandoned_startup_paths:
+            return
+        self._abandoned_startup_paths.add(path)
+        logger.warning(
+            "acquisition: abandoning startup path %s (%s)",
+            path,
+            reason,
+        )
+
     def unobserved_startup_paths(
         self,
         observed_paths: Iterable[FieldPath],
@@ -890,6 +910,8 @@ class AcquisitionScheduler:
         (:attr:`AcquisitionPolicy.tx_only`), never from a list kept here;
         :meth:`due_requests` gates those cadence groups on ``tx_active``, so
         a caller that waited on them would be waiting for a transmission.
+        Paths passed to :meth:`abandon_startup_path` are filtered out the
+        same way.
 
         Unlike :meth:`has_unobserved_policy_fields`, this does not exclude
         cadence-owned paths: a path :meth:`due_requests` will poll is still
@@ -904,7 +926,9 @@ class AcquisitionScheduler:
                 (
                     path
                     for path in domain
-                    if path not in observed and not profile.policy_for(path).tx_only
+                    if path not in observed
+                    and path not in self._abandoned_startup_paths
+                    and not profile.policy_for(path).tx_only
                 ),
                 key=str,
             )

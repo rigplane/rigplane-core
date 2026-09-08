@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
+from rigplane.core.acquisition_scheduler import AcquisitionScheduler
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
@@ -509,7 +510,9 @@ class YaesuObservationAdapter:
         adapter = self._adapter()
         observations: list[Observation] = []
         if self._has_runtime_capability("meters") and self._can_poll(_MAIN_S_METER):
-            ok, raw = await self._safe_read("main.s_meter", self.radio.read_s_meter(0))
+            ok, raw = await self._safe_read(
+                "main.s_meter", self.radio.read_s_meter(0), path=_MAIN_S_METER
+            )
             if ok and raw is not None:
                 raw = smooth_s_meter(0, raw) if smooth_s_meter is not None else raw
                 value, quality = self._calibrate_s_meter(raw)
@@ -526,7 +529,9 @@ class YaesuObservationAdapter:
             and self._has_runtime_capability("dual_rx")
             and self._can_poll(_SUB_S_METER)
         ):
-            ok, raw = await self._safe_read("sub.s_meter", self.radio.read_s_meter(1))
+            ok, raw = await self._safe_read(
+                "sub.s_meter", self.radio.read_s_meter(1), path=_SUB_S_METER
+            )
             if ok and raw is not None:
                 raw = smooth_s_meter(1, raw) if smooth_s_meter is not None else raw
                 value, quality = self._calibrate_s_meter(raw)
@@ -1209,7 +1214,11 @@ class YaesuObservationAdapter:
         return tuple(observations)
 
     async def _safe_read(
-        self, label: str, read: Awaitable[_T]
+        self,
+        label: str,
+        read: Awaitable[_T],
+        *,
+        path: FieldPath | None = None,
     ) -> tuple[bool, _T | None]:
         """Await one field read, tolerating FIELD-level CAT failures (MOR-473).
 
@@ -1237,22 +1246,36 @@ class YaesuObservationAdapter:
             # ValueError covers _read_meter / int() malformed-frame failures;
             # CatParse/FormatError subclass ValueError but are listed for clarity.
             self._log_field_skip(
-                label, "Skipping field %s — malformed CAT response: %s", exc
+                label, "Skipping field %s — malformed CAT response: %s", exc, path=path
             )
             return False, None
         except CatCommandRejected as exc:
             # ``?;`` reject = command unsupported on this radio -> skip the field.
             self._log_field_skip(
-                label, "Skipping field %s — command rejected (?;): %s", exc
+                label, "Skipping field %s — command rejected (?;): %s", exc, path=path
             )
             return False, None
 
-    def _log_field_skip(self, label: str, message: str, exc: Exception) -> None:
+    def _log_field_skip(
+        self,
+        label: str,
+        message: str,
+        exc: Exception,
+        *,
+        path: FieldPath | None = None,
+    ) -> None:
         """Warn once per field, then demote repeats to DEBUG (MOR-561).
 
         The warned-field set lives on the radio (persistent across poll cycles)
         rather than the adapter (rebuilt every cycle). A non-``set`` attribute —
         e.g. a ``MagicMock`` test double — falls back to always-warn.
+
+        ``path`` names the declared field the skipped read would have produced.
+        Where it is given, the warning also releases that path from the startup
+        gate (``AcquisitionScheduler.abandon_startup_path``), so a field whose
+        answer never parses cannot hold that gate open. Pinned by
+        ``tests/test_yaesu_cat_observation_adapter.py::
+        test_first_sub_s_meter_skip_releases_the_path_from_the_startup_gate``.
         """
         warned = getattr(self.radio, "_poll_warned_fields", None)
         if isinstance(warned, set):
@@ -1260,6 +1283,12 @@ class YaesuObservationAdapter:
                 logger.debug(message, label, exc)
                 return
             warned.add(label)
+        if path is not None:
+            scheduler = getattr(self.radio, "_acquisition_scheduler", None)
+            if isinstance(scheduler, AcquisitionScheduler):
+                scheduler.abandon_startup_path(
+                    path, reason=f"yaesu field read skipped: {label}"
+                )
         logger.warning(message, label, exc)
 
     def _adapter(self) -> ProviderObservationAdapter:
