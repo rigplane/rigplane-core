@@ -22,7 +22,7 @@ from rigplane.core.state_acquisition_policy import (
     MeterCoalescingPolicy,
     RadioAcquisitionProfile,
 )
-from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_pipeline_contracts import FieldPath, FieldScope
 from rigplane.core.state_store import FreshnessState, StateStore
 from rigplane.profiles import get_radio_profile
 from rigplane.rig_loader import RigLoadError, discover_rigs, load_rig
@@ -48,6 +48,137 @@ _UNPRIMABLE_COMMAND_RESPONSE_EXEMPTIONS: dict[str, frozenset[FieldPath]] = {
         }
     ),
 }
+
+
+# --- Cadence classes -------------------------------------------------------
+# Longest a class of field may lag the front panel, in seconds. Membership is
+# by field name (or, for stream meters, by the profile's own ``stream_like``
+# flag) so the same bound applies on every rig.
+
+#: Continuously-moving readings the profile declares ``stream_like``. 0.4s is
+#: IC-7300's cadence after the S-meter gave 2.5 q/s back to fund the panel
+#: tier below; every other profile declares 0.2s or 0.25s.
+_STREAM_METER_MAX_CADENCE_SECONDS = 0.4
+#: Facts that move while the operator tunes or keys.
+_LIVE_MAX_CADENCE_SECONDS = 1.0
+#: Everything the operator reaches by turning a knob or opening a menu. 5.0s
+#: is the owner's single threshold for a panel change reaching the web.
+_OPERATOR_SET_MAX_CADENCE_SECONDS = 5.0
+
+_LIVE_FIELD_NAMES = frozenset({"freq_hz", "mode", "ptt"})
+_PANEL_ADJUSTABLE_FIELD_NAMES = frozenset(
+    {
+        "auto_notch",
+        "filter_width",
+        "if_shift",
+        "manual_notch",
+        "manual_notch_freq",
+        "manual_notch_width",
+        "nb_level",
+        "notch_filter",
+        "nr_level",
+        "pbt_inner",
+        "pbt_outer",
+        "rit_freq",
+        "split",
+    }
+)
+_ON_DEMAND_FIELD_NAMES = frozenset(
+    {
+        "agc_time_constant",
+        "break_in",
+        "break_in_delay",
+        "cw_pitch",
+        "data_mode",
+        "filter_num",
+        "filter_shape",
+        "key_speed",
+        "monitor_on",
+        "rit_on",
+        "rit_tx",
+        "tone_freq",
+        "tsql_freq",
+        "twin_peak_filter",
+        "vox_delay",
+        "vox_on",
+    }
+)
+
+#: Classified paths with no own ``field_policies`` entry, so
+#: ``test_field_policies_obey_their_cadence_class_not_their_rig`` cannot see
+#: them (it walks ``field_policies.items()``, not ``capabilities``): each
+#: inherits the profile's ``default_cadence_seconds`` instead, and that
+#: inherited cadence exceeds the path's class bound. Reproduced by
+#: ``_inherited_default_out_of_class`` below, which walks the
+#: ``capabilities`` of every profile that declares ``field_policies`` and
+#: keeps only paths where that comparison fails. Profiles declaring no
+#: ``field_policies`` (IC-705, IC-9700, X6100) are outside this list: the
+#: same walk without that skip finds 28 more such paths there (12, 12, 4),
+#: which no test bounds.
+_INHERITED_DEFAULT_OUT_OF_CLASS: dict[str, tuple[FieldPath, ...]] = {
+    "X6200": (
+        # inherits default 2.0s; live bound is 1.0s
+        FieldPath.active("main", "freq_mode", "freq_hz"),
+    ),
+    "IC-7610": (
+        # inherits default 2.0s; live bound is 1.0s
+        FieldPath.active("main", "freq_mode", "mode"),
+        FieldPath.active("sub", "freq_mode", "mode"),
+    ),
+    "IC-7300": (
+        # inherits default 1.5s; live bound is 1.0s
+        FieldPath.unselected("main", "freq_mode", "freq_hz"),
+        FieldPath.unselected("main", "freq_mode", "mode"),
+    ),
+    "FTX-1": (
+        # inherits default 2.0s; live bound is 1.0s
+        FieldPath.global_("tx_state", "ptt"),
+        FieldPath.active("main", "freq_mode", "freq_hz"),
+        FieldPath.active("main", "freq_mode", "mode"),
+        FieldPath.active("sub", "freq_mode", "freq_hz"),
+        FieldPath.active("sub", "freq_mode", "mode"),
+    ),
+}
+
+#: The ten panel knobs the owner's ruling named, on the one rig it named.
+_IC7300_PANEL_KNOB_PATHS = (
+    FieldPath.active("main", "freq_mode", "filter_width"),
+    FieldPath.global_("operator_controls", "rit_freq"),
+    FieldPath.receiver("main", "operator_controls", "manual_notch_width"),
+    FieldPath.receiver("main", "operator_controls", "nb_level"),
+    FieldPath.receiver("main", "operator_controls", "notch_filter"),
+    FieldPath.receiver("main", "operator_controls", "nr_level"),
+    FieldPath.receiver("main", "operator_controls", "pbt_inner"),
+    FieldPath.receiver("main", "operator_controls", "pbt_outer"),
+    FieldPath.receiver("main", "operator_toggles", "auto_notch"),
+    FieldPath.receiver("main", "operator_toggles", "manual_notch"),
+)
+_IC7300_PANEL_KNOB_CADENCE_SECONDS = 5.0
+#: Twice the cadence, the ratio the IC-7300 profile default carries
+#: (1.5/3.0), as do its 1.0/2.0, 3.0/6.0 and 30.0/60.0 tiers.
+_IC7300_PANEL_KNOB_TTL_SECONDS = 10.0
+
+#: The menu settings that stay on-demand: reached by
+#: ``AcquisitionScheduler.prime_unobserved`` and refreshed by their own
+#: command response, never by a cadence read.
+_IC7300_ON_DEMAND_PATHS = (
+    FieldPath.active("main", "freq_mode", "data_mode"),
+    FieldPath.active("main", "freq_mode", "filter_num"),
+    FieldPath.global_("operator_controls", "break_in"),
+    FieldPath.global_("operator_controls", "break_in_delay"),
+    FieldPath.global_("operator_controls", "cw_pitch"),
+    FieldPath.global_("operator_controls", "key_speed"),
+    FieldPath.global_("operator_controls", "vox_delay"),
+    FieldPath.global_("tx_state", "monitor_on"),
+    FieldPath.global_("tx_state", "rit_on"),
+    FieldPath.global_("tx_state", "rit_tx"),
+    FieldPath.global_("tx_state", "vox_on"),
+    FieldPath.receiver("main", "operator_controls", "agc_time_constant"),
+    FieldPath.receiver("main", "operator_controls", "filter_shape"),
+    FieldPath.receiver("main", "operator_controls", "tone_freq"),
+    FieldPath.receiver("main", "operator_controls", "tsql_freq"),
+    FieldPath.receiver("main", "operator_toggles", "twin_peak_filter"),
+)
 
 
 def _write_toml(tmp_path: Path, content: str, name: str = "test.toml") -> Path:
@@ -545,7 +676,7 @@ def test_known_profiles_stream_like_meters_use_fast_non_decaying_policies() -> N
         for capability in stream_like:
             policy = acquisition.policy_for(capability.path)
             assert policy.cadence_seconds is not None
-            assert policy.cadence_seconds <= 0.25
+            assert policy.cadence_seconds <= _STREAM_METER_MAX_CADENCE_SECONDS
             assert policy.freshness_ttl_seconds is not None
             # MOR-334 (s_meter stuck-low): a streaming meter's freshness TTL must
             # EXCEED its own cadence so the field stays FRESH between live
@@ -564,6 +695,171 @@ def test_known_profiles_stream_like_meters_use_fast_non_decaying_policies() -> N
             )
 
 
+def _cadence_class(
+    path: FieldPath,
+    capability: FieldCapability,
+) -> tuple[str, float] | None:
+    """Name the cadence class a path belongs to, or ``None`` if unclassified."""
+
+    if capability.stream_like:
+        return ("stream meter", _STREAM_METER_MAX_CADENCE_SECONDS)
+    if path.scope is FieldScope.SCOPE_CONTROLS:
+        # The spectrum-scope display settings share several names with radio
+        # state (``mode``, ``span``, ``speed``) and are not what any class
+        # below is about. No ruling covers them; they stay unclassified.
+        return None
+    if path.name in _LIVE_FIELD_NAMES:
+        return ("live", _LIVE_MAX_CADENCE_SECONDS)
+    if path.name in _PANEL_ADJUSTABLE_FIELD_NAMES:
+        return ("panel-adjustable", _OPERATOR_SET_MAX_CADENCE_SECONDS)
+    if path.name in _ON_DEMAND_FIELD_NAMES:
+        return ("on-demand", _OPERATOR_SET_MAX_CADENCE_SECONDS)
+    return None
+
+
+def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
+    """One bound per class, applied to every path with its own field_policies entry.
+
+    Owner ruling (2026-09-07): a field's cadence follows what the field is,
+    not which radio it sits on. Each class constant above is the longest the
+    web may lag a front-panel change for the fields in it; a profile may poll
+    faster, and going slower needs a measured budget for that link (the only
+    one in this repo is IC-7300's 20 q/s serial ceiling, asserted in
+    ``test_ic7300_profile_enrolls_exact_supported_observation_rows``).
+
+    This gate only checks a path that carries its own ``field_policies``
+    entry, because it walks ``field_policies.items()``. A classified path
+    that instead inherits the profile's ``default_cadence_seconds`` is
+    invisible to it -- see ``_INHERITED_DEFAULT_OUT_OF_CLASS`` and
+    ``test_inherited_default_cadence_out_of_class_paths_are_exactly_named``
+    below for the ten such paths that are out of class today. A profile that
+    declares no ``field_policies`` at all makes no per-field cadence claim --
+    every path inherits one default -- so it is skipped; ``checked ==
+    {...}`` below pins which profiles were walked, not that every classified
+    path on each one carries its own entry. A classified path whose
+    capability is not pollable is the on-demand shape instead: nothing
+    re-reads it on a cadence, so it must carry no expiry.
+    """
+
+    checked: set[str] = set()
+    failures: list[str] = []
+    for model, rig in sorted(discover_rigs(RIGS_DIR).items()):
+        acquisition = rig.to_profile().state_acquisition
+        if acquisition is None or not acquisition.field_policies:
+            continue
+        checked.add(model)
+        for path, policy in sorted(
+            acquisition.field_policies.items(), key=lambda item: str(item[0])
+        ):
+            capability = acquisition.capability_for(path)
+            classified = _cadence_class(path, capability)
+            if classified is None:
+                continue
+            class_name, bound = classified
+            if not capability.can_poll:
+                if policy.freshness_ttl_seconds is not None:
+                    failures.append(
+                        f"{model}: {path} ({class_name}) is not pollable yet "
+                        f"expires after {policy.freshness_ttl_seconds}s"
+                    )
+                continue
+            cadence = policy.cadence_seconds
+            if cadence is None or cadence > bound:
+                failures.append(
+                    f"{model}: {path} ({class_name}) cadence={cadence}s "
+                    f"exceeds the class bound of {bound}s"
+                )
+
+    assert not failures, f"field_policies entries outside their class: {failures}"
+    assert checked == {"FTX-1", "IC-7300", "IC-7610", "X6200"}
+
+
+def _inherited_default_out_of_class() -> dict[str, tuple[FieldPath, ...]]:
+    """Classified paths the gate above cannot see, that are out of class.
+
+    Walks the ``capabilities`` (not ``field_policies``, which is what the
+    gate above walks) of every profile that declares ``field_policies`` —
+    profiles declaring none are skipped, as the gate skips them — and keeps a
+    path only if it (a) has no own
+    ``field_policies`` entry, so its effective cadence is the profile's
+    inherited ``default_cadence_seconds``, and (b) that inherited cadence
+    exceeds its class bound.
+    """
+
+    found: dict[str, list[FieldPath]] = {}
+    for model, rig in sorted(discover_rigs(RIGS_DIR).items()):
+        acquisition = rig.to_profile().state_acquisition
+        if acquisition is None or not acquisition.field_policies:
+            continue
+        for capability in sorted(acquisition.capabilities, key=lambda c: str(c.path)):
+            path = capability.path
+            if path in acquisition.field_policies:
+                continue
+            classified = _cadence_class(path, capability)
+            if classified is None:
+                continue
+            _class_name, bound = classified
+            cadence = acquisition.policy_for(path).cadence_seconds
+            if cadence is not None and cadence <= bound:
+                continue
+            found.setdefault(model, []).append(path)
+    return {model: tuple(paths) for model, paths in found.items()}
+
+
+def test_inherited_default_cadence_out_of_class_paths_are_exactly_named() -> None:
+    """On the profiles the gate walks, the paths it cannot see are exactly the named ten.
+
+    ``test_field_policies_obey_their_cadence_class_not_their_rig`` only
+    checks a path with its own ``field_policies`` entry. This test covers
+    the gap: it re-derives ``_INHERITED_DEFAULT_OUT_OF_CLASS`` from the
+    profiles that declare ``field_policies``, so fixing one of the ten (or
+    introducing a new inherited-default violation on one of those profiles)
+    changes the derived set and this assertion goes red, naming what
+    changed. A profile with no ``field_policies`` is not walked, so a
+    violation introduced there is not caught here.
+    """
+
+    assert _inherited_default_out_of_class() == _INHERITED_DEFAULT_OUT_OF_CLASS
+
+
+def test_ic7300_panel_knob_fields_are_polled_at_the_panel_class_cadence() -> None:
+    """The ten knobs the ruling named must be cadence-polled, not on-demand.
+
+    Left non-polling they sit in ``command_response_observable`` only, which
+    ``AcquisitionScheduler._poll_cadence_groups`` skips -- a front-panel
+    change would never reach the web until a command happened to touch the
+    field, which is the case the 5.0s bound exists to close.
+    """
+
+    acquisition = get_radio_profile("IC-7300").state_acquisition
+    assert acquisition is not None
+
+    for path in _IC7300_PANEL_KNOB_PATHS:
+        capability = acquisition.capability_for(path)
+        assert capability.can_poll is True, f"{path} is not cadence-polled"
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == _IC7300_PANEL_KNOB_CADENCE_SECONDS, path
+        assert policy.freshness_ttl_seconds == _IC7300_PANEL_KNOB_TTL_SECONDS, path
+
+
+def test_ic7300_on_demand_fields_keep_the_never_ttl() -> None:
+    """The menu settings stay on-demand: no cadence read, so no expiry."""
+
+    acquisition = get_radio_profile("IC-7300").state_acquisition
+    assert acquisition is not None
+
+    for path in _IC7300_ON_DEMAND_PATHS:
+        assert acquisition.capability_for(path).can_poll is False, path
+        assert acquisition.policy_for(path).freshness_ttl_seconds is None, path
+
+    never_ttl = {
+        path
+        for path, policy in acquisition.field_policies.items()
+        if policy.freshness_ttl_seconds is None
+    }
+    assert never_ttl == set(_IC7300_ON_DEMAND_PATHS)
+
+
 def test_ftx1_profile_declares_slow_control_policies_for_polling_adapter() -> None:
     ftx1 = get_radio_profile("FTX-1")
     assert ftx1.state_acquisition is not None
@@ -575,8 +871,8 @@ def test_ftx1_profile_declares_slow_control_policies_for_polling_adapter() -> No
     assert ftx1.state_acquisition.capability_for(af_level).can_poll is True
     assert ftx1.state_acquisition.capability_for(squelch).can_poll is True
     assert ftx1.state_acquisition.capability_for(ptt).can_poll is True
-    assert ftx1.state_acquisition.policy_for(af_level).freshness_ttl_seconds == 120.0
-    assert ftx1.state_acquisition.policy_for(af_level).cadence_seconds == 30.0
+    assert ftx1.state_acquisition.policy_for(af_level).freshness_ttl_seconds == 2.0
+    assert ftx1.state_acquisition.policy_for(af_level).cadence_seconds == 1.0
 
 
 def test_ftx1_tx_meters_are_declared_tx_only() -> None:
@@ -623,6 +919,11 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         FieldPath.global_("tx_state", "ptt"),
         FieldPath.global_("operator_controls", "tuner_status"),
         FieldPath.global_("tx_state", "split"),
+        # MOR-2425 (owner ruling, 2026-09-07): the ten panel knobs, moved off
+        # command_response-only membership onto a 5.0s cadence -- see
+        # _IC7300_PANEL_KNOB_PATHS and
+        # test_ic7300_panel_knob_fields_are_polled_at_the_panel_class_cadence.
+        *_IC7300_PANEL_KNOB_PATHS,
         # MOR-1452: documented-readable 0x14 sub-commands (mic/monitor/VOX/
         # anti-VOX gain, docs/validation/cat-audits/ic7300.md) added to the
         # slow poll tier so the TX-aux panel stops showing a permanent "?".
@@ -754,7 +1055,7 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         for path in acquisition.pollable_paths()
         if acquisition.policy_for(path).tx_only
     )
-    # MOR-1484 baseline: pre-MOR-1484 total was 19.967 q/s. This PR moves
+    # MOR-1484 baseline: pre-MOR-1484 total was 19.967 q/s. MOR-1484 moved
     # freq_hz(active)/mode(active)/rf_gain/squelch (4 fields) from the 1.5s
     # default tier to a dedicated 1.0s tier (+2.667 -> +4.0 = +1.333 q/s) and
     # mic/monitor/VOX/anti-VOX gain (4 fields) from 15.0s to 10.0s (+0.267 ->
@@ -762,16 +1063,21 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
     # (tuner_status, power_level, compressor_on/level, att, preamp; 6 fields)
     # back from 1.5s to 3.0s (-4.0 -> -2.0 = -2.0 q/s). Net:
     # 19.967 + 1.333 + 0.133 - 2.0 = 19.433 q/s before the twelve 30s scope
-    # reads declared by MOR-1983 add 0.4 q/s. The resulting 19.833 q/s stays
-    # below the 20 q/s ceiling.
-    assert rx_state_demand_hz == pytest.approx(19.833, abs=0.001)
+    # reads declared by MOR-1983 add 0.4 q/s, for 19.833 q/s.
+    #
+    # MOR-2425 (owner ruling, 2026-09-07) enrols the ten panel knobs at 5.0s
+    # (10 x 1/5.0 = +2.0 q/s) and funds them by halving the S-meter's rate,
+    # 0.2s -> 0.4s (5.0 -> 2.5 = -2.5 q/s). Net:
+    # 19.833 + 2.0 - 2.5 = 19.333 q/s, still below the 20 q/s ceiling and
+    # 0.5 q/s further below it than before.
+    assert rx_state_demand_hz == pytest.approx(19.333, abs=0.001)
     assert rx_state_demand_hz < serial_ceiling_hz
     # Po/SWR/ALC/COMP: 4 fields / 1.0s = 4.0 q/s, ONLY while tx_only gating
     # lets them through (PTT observed true) — a transient TX-window cost, not
     # a steady-state one. Untouched by MOR-1484.
     assert tx_only_demand_hz == pytest.approx(4.0, abs=0.001)
     total_during_tx_hz = rx_state_demand_hz + tx_only_demand_hz
-    assert total_during_tx_hz == pytest.approx(23.833, abs=0.001)
+    assert total_during_tx_hz == pytest.approx(23.333, abs=0.001)
 
     assert (
         acquisition.capability_for(
@@ -1015,8 +1321,8 @@ def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
 
     sub_shift = FieldPath.receiver("sub", "operator_controls", "repeater_shift")
     assert acquisition.capability_for(sub_shift).can_poll is True
-    assert acquisition.policy_for(sub_shift).cadence_seconds == 30.0
-    assert acquisition.policy_for(sub_shift).freshness_ttl_seconds == 120.0
+    assert acquisition.policy_for(sub_shift).cadence_seconds == 1.0
+    assert acquisition.policy_for(sub_shift).freshness_ttl_seconds == 2.0
 
 
 def test_non_polling_field_policies_declare_no_freshness_expiry() -> None:
@@ -1060,7 +1366,7 @@ def test_ic7300_on_demand_field_stays_fresh_while_polled_field_expires() -> None
     CI-V ingress is not under test here.
     ``ProviderObservationAdapter`` reads each path's ``max_age`` from its
     ``field_policies`` entry, ``StateStore`` keeps it on the entry, and
-    ``StateFreshnessService.tick`` is what ages it. ``filter_width`` rides a
+    ``StateFreshnessService.tick`` is what ages it. ``cw_pitch`` rides a
     ``polling=False`` capability, so no cadence read refreshes it;
     ``freq_hz`` is cadence-polled and must still expire, so the decay
     mechanism is not disabled wholesale.
@@ -1069,7 +1375,7 @@ def test_ic7300_on_demand_field_stays_fresh_while_polled_field_expires() -> None
     profile = get_radio_profile("IC-7300")
     acquisition = profile.state_acquisition
     assert acquisition is not None
-    on_demand = FieldPath.active("main", "freq_mode", "filter_width")
+    on_demand = FieldPath.global_("operator_controls", "cw_pitch")
     polled = FieldPath.active("main", "freq_mode", "freq_hz")
     assert acquisition.capability_for(on_demand).can_poll is False
     assert acquisition.capability_for(polled).can_poll is True
@@ -1149,7 +1455,7 @@ def test_ic7300_on_demand_field_primes_with_its_cadence_as_max_age() -> None:
 
     acquisition = get_radio_profile("IC-7300").state_acquisition
     assert acquisition is not None
-    on_demand = FieldPath.active("main", "freq_mode", "filter_width")
+    on_demand = FieldPath.global_("operator_controls", "cw_pitch")
     assert acquisition.policy_for(on_demand).freshness_ttl_seconds is None
 
     scheduler = AcquisitionScheduler(profile=acquisition)

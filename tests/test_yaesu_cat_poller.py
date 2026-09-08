@@ -3991,3 +3991,23 @@ async def test_execute_command_set_power_raw_255_unit_rejected() -> None:
         await poller._execute_command(SetPower(level=200))  # default unit='raw_255'
 
     radio.set_power.assert_not_awaited()
+
+
+def test_slow_group_interval_matches_the_profile_slow_control_cadence() -> None:
+    """The FTX-1 profile's slow tier must name the interval that re-reads it.
+
+    ``YaesuCatPoller`` is what actually polls an FTX-1: the AGC, gain, notch,
+    RIT, tuner, keyer and tone paths all ride ``_SLOW_INTERVAL``. The profile's
+    ``cadence_seconds`` for those paths never reaches the CAT link (the
+    ``AcquisitionScheduler`` is not drained on this backend), so the only thing
+    keeping the declared number honest is this equality.
+    """
+    from rigplane.backends.yaesu_cat.poller import _SLOW_INTERVAL
+    from rigplane.profiles import get_radio_profile
+
+    assert _SLOW_INTERVAL == 1.0
+
+    acquisition = get_radio_profile("FTX-1").state_acquisition
+    assert acquisition is not None
+    slow_control = FieldPath.receiver("main", "operator_controls", "af_level")
+    assert acquisition.policy_for(slow_control).cadence_seconds == _SLOW_INTERVAL
