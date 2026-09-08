@@ -9,10 +9,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
-from rigplane.core.acquisition_scheduler import AcquisitionScheduler
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    resolve_available_when,
+)
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
+from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import (
     OBSERVED_PTT_PATH,
     TxStateReading,
@@ -775,7 +779,11 @@ class YaesuObservationAdapter:
         # The ``RA0`` attenuator read returns a bool; the int registry path
         # receives the coerced ``int(on_off)`` (0/1) — no scaling beyond the
         # bool→int match (cross-vendor calibration is MOR-453).
-        if self._has_runtime_capability("attenuator") and self._can_poll(_MAIN_ATT):
+        if (
+            self._has_runtime_capability("attenuator")
+            and self._can_poll(_MAIN_ATT)
+            and self._available(_MAIN_ATT)
+        ):
             ok, value = await self._safe_read(
                 "main.att", self.radio.read_attenuator(0), paths=(_MAIN_ATT,)
             )
@@ -901,8 +909,10 @@ class YaesuObservationAdapter:
                         _MAIN_MANUAL_NOTCH, value, native_id="read_manual_notch"
                     )
                 )
-        if self._has_runtime_capability("notch") and self._can_poll(
-            _MAIN_MANUAL_NOTCH_FREQ
+        if (
+            self._has_runtime_capability("notch")
+            and self._can_poll(_MAIN_MANUAL_NOTCH_FREQ)
+            and self._available(_MAIN_MANUAL_NOTCH_FREQ)
         ):
             ok, value = await self._safe_read(
                 "main.manual_notch_freq",
@@ -1378,6 +1388,20 @@ class YaesuObservationAdapter:
     def _can_poll(self, path: FieldPath) -> bool:
         capability = self.profile.capability_for(path)
         return bool(capability.can_poll)
+
+    def _available(self, path: FieldPath) -> bool:
+        """Return False while the profile declares this field absent.
+
+        The ``available_when`` clauses are resolved against a
+        :class:`StateStore` attached to the radio as ``_state_store``; with
+        none attached the read proceeds unchanged.
+        """
+
+        store = getattr(self.radio, "_state_store", None)
+        if not isinstance(store, StateStore):
+            return True
+        availability = resolve_available_when(self.profile, store.snapshot())
+        return availability.get(path, True) is True
 
     def _has_runtime_capability(self, capability: str) -> bool:
         raw: object = getattr(self.radio, "capabilities", set())

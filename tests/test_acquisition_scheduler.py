@@ -23,10 +23,12 @@ from rigplane.core.acquisition_scheduler import (
     RadioStateModelService,
     StateFreshnessService,
     derive_tx_active,
+    resolve_available_when,
 )
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     AdaptiveDecayPolicy,
+    AvailabilityClause,
     ExternalCatPauseBehavior,
     FieldAvailability,
     FieldCapability,
@@ -45,6 +47,7 @@ from rigplane.core.state_store import (
     FreshnessClock,
     FreshnessState,
     SnapshotDelta,
+    StateSnapshot,
     StateStore,
 )
 from rigplane.commands.command_map import CommandMap
@@ -3836,3 +3839,156 @@ def test_abandon_startup_path_warns_once_naming_the_path_and_reason(
     assert "malformed CAT response" in warnings[0].getMessage()
     # Idempotent: the repeat leaves the filtered set as the first call left it.
     assert scheduler.unobserved_startup_paths(()) == (_MAIN_S_METER,)
+
+
+# ---------------------------------------------------------------------------
+# available_when: the declared conditions under which a field exists at all
+# ---------------------------------------------------------------------------
+
+_AVAIL_TARGET = FieldPath.receiver("main", "operator_controls", "manual_notch_freq")
+_AVAIL_MODE = FieldPath.active("main", "freq_mode", "mode")
+
+
+def _availability_profile(*clauses: AvailabilityClause) -> RadioAcquisitionProfile:
+    return _profile(
+        (_AVAIL_MODE, _AVAIL_TARGET),
+        field_policies={_AVAIL_TARGET: AcquisitionPolicy(available_when=clauses)},
+    )
+
+
+def _snapshot_of(values: dict[FieldPath, Any]) -> StateSnapshot:
+    store = StateStore()
+    for path, value in values.items():
+        store.apply(_observation(path, value, at=1.0))
+    return store.snapshot()
+
+
+@pytest.mark.parametrize(
+    ("operator", "operand", "holds", "contradicts"),
+    [
+        ("in", ["USB", "LSB"], "USB", "FM"),
+        ("not_in", ["FM", "FM-N"], "USB", "FM"),
+        ("equals", "USB", "USB", "FM"),
+        ("max", 60_000_000, 14_074_000, 461_000_000),
+        ("min", 60_000_000, 461_000_000, 14_074_000),
+    ],
+)
+def test_resolve_available_when_separates_true_false_and_unobserved(
+    operator: str,
+    operand: Any,
+    holds: Any,
+    contradicts: Any,
+) -> None:
+    clause = AvailabilityClause(field=_AVAIL_MODE, operator=operator, value=operand)
+    profile = _availability_profile(clause)
+
+    assert resolve_available_when(profile, StateSnapshot.empty()) == {
+        _AVAIL_TARGET: None
+    }
+    assert resolve_available_when(profile, _snapshot_of({_AVAIL_MODE: holds})) == {
+        _AVAIL_TARGET: True
+    }
+    assert resolve_available_when(
+        profile, _snapshot_of({_AVAIL_MODE: contradicts})
+    ) == {_AVAIL_TARGET: False}
+
+
+def test_bound_clauses_hold_at_the_bound() -> None:
+    """``min``/``max`` are "at or above"/"at or below", per ``rigs/_schema.md``."""
+
+    at_most = _availability_profile(
+        AvailabilityClause(field=_AVAIL_MODE, operator="max", value=60_000_000)
+    )
+    at_least = _availability_profile(
+        AvailabilityClause(field=_AVAIL_MODE, operator="min", value=60_000_000)
+    )
+    snapshot = _snapshot_of({_AVAIL_MODE: 60_000_000})
+
+    assert resolve_available_when(at_most, snapshot) == {_AVAIL_TARGET: True}
+    assert resolve_available_when(at_least, snapshot) == {_AVAIL_TARGET: True}
+
+
+def test_a_bound_clause_against_a_non_numeric_value_reads_as_contradicted() -> None:
+    profile = _availability_profile(
+        AvailabilityClause(field=_AVAIL_MODE, operator="max", value=60_000_000)
+    )
+
+    assert resolve_available_when(profile, _snapshot_of({_AVAIL_MODE: "USB"})) == {
+        _AVAIL_TARGET: False
+    }
+
+
+def test_resolve_available_when_ands_every_clause() -> None:
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    profile = _profile(
+        (_AVAIL_MODE, freq, _AVAIL_TARGET),
+        field_policies={
+            _AVAIL_TARGET: AcquisitionPolicy(
+                available_when=(
+                    AvailabilityClause(
+                        field=_AVAIL_MODE, operator="not_in", value=["FM"]
+                    ),
+                    AvailabilityClause(field=freq, operator="max", value=60_000_000),
+                )
+            )
+        },
+    )
+
+    both = _snapshot_of({_AVAIL_MODE: "USB", freq: 14_074_000})
+    one_contradicted = _snapshot_of({_AVAIL_MODE: "USB", freq: 461_000_000})
+    one_unobserved = _snapshot_of({_AVAIL_MODE: "USB"})
+
+    assert resolve_available_when(profile, both) == {_AVAIL_TARGET: True}
+    assert resolve_available_when(profile, one_contradicted) == {_AVAIL_TARGET: False}
+    assert resolve_available_when(profile, one_unobserved) == {_AVAIL_TARGET: None}
+
+
+def test_a_field_without_clauses_is_absent_from_the_resolution() -> None:
+    profile = _profile(
+        (_AVAIL_MODE, _AVAIL_TARGET),
+        field_policies={_AVAIL_TARGET: AcquisitionPolicy()},
+    )
+
+    assert resolve_available_when(profile, _snapshot_of({_AVAIL_MODE: "USB"})) == {}
+
+
+def _fm_absent_scheduler() -> AcquisitionScheduler:
+    return AcquisitionScheduler(
+        profile=_availability_profile(
+            AvailabilityClause(field=_AVAIL_MODE, operator="not_in", value=["FM"])
+        )
+    )
+
+
+def test_startup_domain_drops_a_field_its_condition_contradicts() -> None:
+    scheduler = _fm_absent_scheduler()
+    availability = resolve_available_when(
+        scheduler._profile, _snapshot_of({_AVAIL_MODE: "FM"})
+    )
+
+    assert scheduler.unobserved_startup_paths((_AVAIL_MODE,)) == (_AVAIL_TARGET,)
+    assert (
+        scheduler.unobserved_startup_paths((_AVAIL_MODE,), availability=availability)
+        == ()
+    )
+
+
+def test_startup_domain_drops_a_field_whose_condition_is_unobserved() -> None:
+    scheduler = _fm_absent_scheduler()
+    availability = resolve_available_when(scheduler._profile, StateSnapshot.empty())
+
+    assert availability == {_AVAIL_TARGET: None}
+    assert scheduler.unobserved_startup_paths((), availability=availability) == (
+        _AVAIL_MODE,
+    )
+
+
+def test_startup_domain_keeps_a_field_whose_condition_holds() -> None:
+    scheduler = _fm_absent_scheduler()
+    availability = resolve_available_when(
+        scheduler._profile, _snapshot_of({_AVAIL_MODE: "USB"})
+    )
+
+    assert scheduler.unobserved_startup_paths(
+        (_AVAIL_MODE,), availability=availability
+    ) == (_AVAIL_TARGET,)

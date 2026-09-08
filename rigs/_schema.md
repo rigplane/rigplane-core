@@ -241,10 +241,7 @@ field's value, in one of three shapes:
 An unknown key, no comparison, more than one comparison, a `field` that does
 not parse, a non-list `in`/`not_in`, or a non-numeric `min`/`max` is a load
 error naming the policy path and the clause
-(`rig_loader.py: _parse_available_when`). Nothing acts on the parsed clauses
-yet: they reach
-`state_acquisition_policy.py: AcquisitionPolicy.available_when` and stop
-there.
+(`rig_loader.py: _parse_available_when`).
 
 ```toml
 [state_acquisition.field_policies."receiver.main.operator_controls.manual_notch_freq"]

@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from ..core.acquisition_scheduler import AcquisitionScheduler
+from ..core.acquisition_scheduler import AcquisitionScheduler, resolve_available_when
 from ..core.radio_protocol import ObservationPollable, StatePollable, StateStoreCapable
 from ..core.state_pipeline_contracts import FieldPath, Observation
 from ..radio_state import RadioState
@@ -186,7 +186,12 @@ async def _await_initial_state_acquisition(
     scheduler = _acquisition_scheduler(server)
     if scheduler is None:
         return
-    outstanding = scheduler.unobserved_startup_paths(_observed_paths(server, scheduler))
+    outstanding = scheduler.unobserved_startup_paths(
+        _observed_paths(server, scheduler),
+        availability=resolve_available_when(
+            scheduler._profile, server.command_state_store.snapshot()
+        ),
+    )
     if not outstanding:
         return
     logger.info(
@@ -214,7 +219,10 @@ async def _await_initial_state_acquisition(
                     primed_at[path] = queued_at
         await asyncio.sleep(gap)
         outstanding = scheduler.unobserved_startup_paths(
-            _observed_paths(server, scheduler)
+            _observed_paths(server, scheduler),
+            availability=resolve_available_when(
+                scheduler._profile, server.command_state_store.snapshot()
+            ),
         )
         now = time.monotonic()
         if len(outstanding) < fewest:

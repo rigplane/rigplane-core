@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,6 +28,7 @@ from rigplane.core.acquisition_scheduler import AcquisitionRequest, AcquisitionS
 from rigplane.core.civ import CivFrame
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
+    AvailabilityClause,
     FieldCapability,
     RadioAcquisitionProfile,
 )
@@ -412,10 +413,17 @@ class _RecordingScheduler:
         self.on_prime: Callable[[], None] | None = None
 
     def unobserved_startup_paths(
-        self, observed_paths: Iterable[FieldPath]
+        self,
+        observed_paths: Iterable[FieldPath],
+        *,
+        availability: Mapping[FieldPath, bool | None] = MappingProxyType({}),
     ) -> tuple[FieldPath, ...]:
         observed = frozenset(observed_paths)
-        return tuple(path for path in self._required if path not in observed)
+        return tuple(
+            path
+            for path in self._required
+            if path not in observed and availability.get(path, True) is True
+        )
 
     def prime_unobserved(
         self,
@@ -764,3 +772,53 @@ async def test_gate_completes_when_the_backend_abandons_a_declared_path(
         if record.levelno == logging.WARNING and str(SUB_S_METER) in record.getMessage()
     ]
     assert len(abandoned) == 1
+
+
+# ---------------------------------------------------------------------------
+# available_when: a field the profile declares absent in the current mode
+# ---------------------------------------------------------------------------
+
+
+NOTCH_FREQ = FieldPath.receiver("main", "operator_controls", "manual_notch_freq")
+
+
+def _conditional_profile() -> RadioAcquisitionProfile:
+    """``FREQ``/``MODE`` plus one field declared absent while the mode is FM."""
+
+    return RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(path=FREQ, polling=True),
+            FieldCapability(path=MODE, polling=True),
+            FieldCapability(path=NOTCH_FREQ, polling=True),
+        ),
+        field_policies={
+            NOTCH_FREQ: AcquisitionPolicy(
+                cadence_seconds=1.0,
+                freshness_ttl_seconds=2.0,
+                available_when=(
+                    AvailabilityClause(field=MODE, operator="not_in", value=["FM"]),
+                ),
+            ),
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_field_declared_absent_in_the_current_mode_does_not_hold_the_gate() -> (
+    None
+):
+    scheduler = AcquisitionScheduler(profile=_conditional_profile())
+    server = WebServer(_CivRadio(scheduler), _gated_config())
+    server.command_state_store.apply(_observation(FREQ, 14_074_000, at=1.0))
+    server.command_state_store.apply(_observation(MODE, "FM", at=1.0))
+
+    # Not vacuous: the same predicate without the availability term still
+    # reports the conditional field outstanding.
+    assert scheduler.unobserved_startup_paths(_observed_paths(server, scheduler)) == (
+        NOTCH_FREQ,
+    )
+
+    await asyncio.wait_for(
+        _await_initial_state_acquisition(server, sweep=False), timeout=5.0
+    )

@@ -5,13 +5,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
+    AvailabilityClause,
+    AvailabilityOperator,
     ExternalCatPauseBehavior,
     FieldAvailability,
     FieldCapability,
@@ -32,6 +35,7 @@ from rigplane.core.state_store import (
     FreshnessState,
     ReconciliationRequest,
     SnapshotDelta,
+    StateSnapshot,
     StateStore,
 )
 
@@ -50,15 +54,22 @@ __all__ = [
     "MeterObservationCoalescer",
     "RadioStateModelService",
     "StateFreshnessService",
+    "availability_clause_holds",
     "civ_acquisition_executor_for_provider",
     "derive_tx_active",
     "provider_uses_civ_acquisition",
+    "resolve_available_when",
 ]
 
 
 logger = logging.getLogger(__name__)
 
 AcquisitionMethod = Literal["poll", "command_response", "wait_for_unsolicited"]
+
+#: Default for :meth:`AcquisitionScheduler.unobserved_startup_paths`'s
+#: ``availability`` keyword: no field's declared conditions were resolved,
+#: so every path keeps the membership it had before ``available_when``.
+_NO_RESOLVED_AVAILABILITY: Mapping[FieldPath, bool | None] = MappingProxyType({})
 
 
 @dataclass(frozen=True, slots=True)
@@ -901,17 +912,24 @@ class AcquisitionScheduler:
     def unobserved_startup_paths(
         self,
         observed_paths: Iterable[FieldPath],
+        *,
+        availability: Mapping[FieldPath, bool | None] = _NO_RESOLVED_AVAILABILITY,
     ) -> tuple[FieldPath, ...]:
         """Return the declared paths the store has never seen, sorted by path.
 
         The domain is every pollable capability plus every explicit
-        ``field_policies`` key, minus the paths whose resolved policy carries
-        ``tx_only``. That flag is read from the profile
+        ``field_policies`` key, minus three exclusions: the paths whose
+        resolved policy carries ``tx_only``, the paths passed to
+        :meth:`abandon_startup_path`, and the paths ``availability`` maps to
+        ``False`` or ``None``. ``tx_only`` is read from the profile
         (:attr:`AcquisitionPolicy.tx_only`), never from a list kept here;
         :meth:`due_requests` gates those cadence groups on ``tx_active``, so
         a caller that waited on them would be waiting for a transmission.
-        Paths passed to :meth:`abandon_startup_path` are filtered out the
-        same way.
+
+        ``availability`` carries what :func:`resolve_available_when` made of
+        each conditional field's declared clauses. A path it omits is
+        unconditional and keeps its membership; ``None`` (no clause source
+        observed yet) excludes the same way ``False`` does.
 
         Unlike :meth:`has_unobserved_policy_fields`, this does not exclude
         cadence-owned paths: a path :meth:`due_requests` will poll is still
@@ -929,6 +947,7 @@ class AcquisitionScheduler:
                     if path not in observed
                     and path not in self._abandoned_startup_paths
                     and not profile.policy_for(path).tx_only
+                    and availability.get(path, True) is True
                 ),
                 key=str,
             )
@@ -1693,6 +1712,58 @@ def derive_tx_active(store: StateStore) -> bool:
     except KeyError:
         return False
     return ptt_field.freshness is FreshnessState.FRESH and bool(ptt_field.value)
+
+
+def availability_clause_holds(clause: AvailabilityClause, value: Any) -> bool:
+    """Return whether one ``available_when`` clause holds for ``value``.
+
+    ``min``/``max`` compare numerically and read False against a value that
+    is not a number.
+    """
+
+    operator = AvailabilityOperator(str(clause.operator))
+    if operator is AvailabilityOperator.IN:
+        return any(value == candidate for candidate in clause.value)
+    if operator is AvailabilityOperator.NOT_IN:
+        return all(value != candidate for candidate in clause.value)
+    if operator is AvailabilityOperator.EQUALS:
+        return bool(value == clause.value)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if operator is AvailabilityOperator.MIN:
+        return float(value) >= float(clause.value)
+    return float(value) <= float(clause.value)
+
+
+def resolve_available_when(
+    profile: RadioAcquisitionProfile,
+    snapshot: StateSnapshot,
+) -> dict[FieldPath, bool | None]:
+    """Resolve each conditional field's declared availability in ``snapshot``.
+
+    Keyed by the ``field_policies`` paths carrying a non-empty
+    :attr:`AcquisitionPolicy.available_when`; unconditional fields are
+    absent. ``True`` when every clause holds, ``False`` when one is
+    contradicted, ``None`` while a clause's source field has not been
+    observed and none of the others is contradicted.
+    """
+
+    resolved: dict[FieldPath, bool | None] = {}
+    for path, policy in profile.field_policies.items():
+        if not policy.available_when:
+            continue
+        state: bool | None = True
+        for clause in policy.available_when:
+            try:
+                source = snapshot.field(clause.field)
+            except KeyError:
+                state = None
+                continue
+            if not availability_clause_holds(clause, source.value):
+                state = False
+                break
+        resolved[path] = state
+    return resolved
 
 
 class StateFreshnessService:
