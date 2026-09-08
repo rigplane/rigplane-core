@@ -304,42 +304,14 @@ behavior. A subsequent exact-head CI run must confirm the new expectations.
 | FieldLine dark | compared-fail; inspected and accepted replacement | `84cc82fc887824ea3c67e0bb9a5f7302e3c091b8e11fb6eb92b2be52644c7c0d` |
 | FieldLine light | compared-fail; inspected and accepted replacement | `88e857698e07fffb52c9e92c975546b8b39274695658e666a1ab90a9212a2238` |
 
-## Linux re-pin provenance (current — 2026-09-07 MOR-2425 RX audio finite join, PR #3360)
-
-| Field | Value |
-| --- | --- |
-| Source code commit | `0ddf4573e906fc30b15589392b77c6a5621fe3a9` (PR #3360 head) |
-| CI run / artifact | [Tests (quick) #34165020806](https://github.com/rigplane/rigplane-core/actions/runs/34165020806), merge commit `2ca0c9057271508891618f603ae6c149c7c0c57b` (head merged into base `7963496229caab1ea41f57349f622b5d8485487a`) |
-| Source | Byte-identical Linux `actual.png` files extracted from the run's `mor-1400-production-visual-diagnostics` artifact (the HTML report's embedded attachment data), per the byte-identical-artifact route already used for the MOR-2384/MOR-2385 entry above; no macOS-generated baseline or image transformation. |
-| Command that produced the CI render | `npm run test:e2e:i18n` (the `Frontend i18n visual smoke (RP-ML-006)` step), unmodified `playwright.i18n.config.ts` comparator (`threshold: 0.2`, `maxDiffPixelRatio: 0.001`). |
-| Reason | **Correction to the assumption this re-pin was dispatched under:** the round was framed as "the Standard face gained five RX audio seats." That does not hold: the `RX AUDIO` monitor-mode grid rendered in these three screenshots (`local`/`live`/`mute` + AF slider — three seats) is pixel-identical between the superseded and replacement images, confirmed both by visual inspection and by the failing tests' captured accessibility snapshot (`radiogroup "Monitor mode"` lists exactly three radio options in the failing run). PR #3360's own body does describe five now-required `RxAudioInstrumentHandles` fields and "the finite five appear as `.rx-audio-finite-seat` entries ... on desktop-v2" — but the other four (routing-focus, routing-split, MOD-input) are capability-gated (`hasModInput` and similar) and stay unrendered under this suite's fixture, so none of them reach these particular pixels. PR #3360's own diff against its base (`git diff <base>..<head> --name-only`) touches only `rx-audio-instruments.ts`, `RxAudioInstrumentHost.svelte`, `RxAudioSurface.svelte` and their wiring/tests — no meter or band-select component. The actual pixel differences are (1) the MAIN/SUB VFO S-meter readouts now render a visible "unit unknown" line beneath the "?" value instead of the previously-rendered plain "S ?", and (2) the TX-band-limit chip labels reflow their line breaks. Both predate this PR: `c48d5d2bc044048a99a6104bf34366b5b77be002` (the MOR-2388 re-pin above) is not an ancestor of this PR's base, and roughly twenty commits landed on `main` in between, most plausibly `8e94ed2d5 feat(MOR-2425): keep stale readings available instead of greying controls (#3357)` for the S-meter change. This re-pin accepts that accumulated drift as the current truthful production render; it is not evidence about PR #3360's own RX-audio-hosting change. No exact pixel-diff count is recorded here — the run artifact did not retain Playwright's console diff-ratio line, and this document does not state a count it did not measure. |
-
-| Scene | Disposition | SHA-256 |
-| --- | --- | --- |
-| StudioLine dark | compared-fail; inspected and accepted replacement (drift described above, not RX audio) | `e427e99ccec630ceb4223f20a42ae1922776d8d777ce5962fe3dbfea56bc7c61` |
-| StudioLine light | compared-fail; inspected and accepted replacement (drift described above, not RX audio) | `effb6eff4876dba6ada2f35258ed1b4abdbc7c6de03cabc7c10be5f9ba21074c` |
-| FieldLine dark | not part of this run's failing set; left untouched | (unchanged — see Named expectations) |
-| FieldLine light | compared-fail; inspected and accepted replacement (drift described above, not RX audio) | `7e03e6d13d71c5e11c7418f8649911ebff31fd80a397348a2346489bebf8493c` |
-
-A subsequent exact-head CI run must confirm all four scenes.
-
-**Note on this file's own history:** while assembling this entry, `shasum -a
-256` on the pre-existing `studioline--dark--production-root.png`,
-`studioline--light--production-root.png` and `fieldline--light--production-root.png`
-did not match the hashes recorded for those files in the MOR-2388 entry above
-(both its per-scene table and the Named expectations table) — measured
-independently before this re-pin touched them. This re-pin did not
-investigate or correct those earlier rows; it is reported here so a reviewer
-can decide whether the MOR-2388 provenance record needs its own audit.
-
 ## Named expectations
 
 | File | Workspace/theme case | SHA-256 |
 | --- | --- | --- |
-| `studioline--dark--production-root.png` | clean StudioLine × dark | `e427e99ccec630ceb4223f20a42ae1922776d8d777ce5962fe3dbfea56bc7c61` |
-| `studioline--light--production-root.png` | persisted StudioLine × light | `effb6eff4876dba6ada2f35258ed1b4abdbc7c6de03cabc7c10be5f9ba21074c` |
-| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `e95e6f6a00c0231fea3b17941008df9eac4f8be74ece6ea2094d6267209e51f0` |
-| `fieldline--light--production-root.png` | persisted FieldLine × light | `7e03e6d13d71c5e11c7418f8649911ebff31fd80a397348a2346489bebf8493c` |
+| `studioline--dark--production-root.png` | clean StudioLine × dark | `0364d91633aedd4ab469fb5ab41277e5625d8b754d8cb139396d9ed79804ca40` |
+| `studioline--light--production-root.png` | persisted StudioLine × light | `9b6ef98b8aabb500ee3cecd008127ffb4cc42f4bba8a4454f4e9ac54c0143d4f` |
+| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `84cc82fc887824ea3c67e0bb9a5f7302e3c091b8e11fb6eb92b2be52644c7c0d` |
+| `fieldline--light--production-root.png` | persisted FieldLine × light | `88e857698e07fffb52c9e92c975546b8b39274695658e666a1ab90a9212a2238` |
 
 All images are RGB PNGs at 1280×800. Changes to any expected image require a
 new reviewed Linux re-pin with the same provenance record; macOS/local output
