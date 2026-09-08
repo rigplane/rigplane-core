@@ -4087,6 +4087,75 @@ def test_tick_keeps_the_attenuator_below_the_declared_band_bound() -> None:
     assert store.snapshot().field(_AVAIL_ATT).value == 12
 
 
+_AVAIL_PTT = FieldPath.global_("tx_state", "ptt")
+_TX_METERS = (
+    FieldPath.global_("meters", "alc"),
+    FieldPath.global_("meters", "power"),
+    FieldPath.global_("meters", "swr"),
+    FieldPath.global_("meters", "comp"),
+)
+
+
+def test_tick_keeps_the_transmit_meters_while_ptt_reads_true() -> None:
+    store = StateStore()
+    service = _ftx1_freshness_service(store)
+    store.apply(_observation(_AVAIL_PTT, True, at=1.0))
+    for path in _TX_METERS:
+        store.apply(_observation(path, 1.0, at=1.0))
+
+    service.tick(now=1.0)
+
+    snapshot = store.snapshot()
+    assert [snapshot.field(path).value for path in _TX_METERS] == [1.0] * 4
+
+
+def test_tick_discards_every_transmit_meter_on_dekey() -> None:
+    """Dekey removes the four TX meters; a later key-down re-populates them.
+
+    Ageing alone leaves the last reading in the store and deliverable, so
+    removal is what stops a receive-time face from drawing it.
+    """
+
+    store = StateStore()
+    service = _ftx1_freshness_service(store)
+    store.apply(_observation(_AVAIL_PTT, True, at=1.0))
+    for path in _TX_METERS:
+        store.apply(_observation(path, 1.0, at=1.0))
+    service.tick(now=1.0)
+
+    store.apply(_observation(_AVAIL_PTT, False, at=2.0))
+    revision_before = store.snapshot().state_revision
+    service.tick(now=2.0)
+
+    after_dekey = store.snapshot()
+    for path in _TX_METERS:
+        with pytest.raises(KeyError):
+            after_dekey.field(path)
+    assert after_dekey.state_revision > revision_before
+
+    store.apply(_observation(_AVAIL_PTT, True, at=3.0))
+    for path in _TX_METERS:
+        store.apply(_observation(path, 2.0, at=3.0))
+    service.tick(now=3.0)
+
+    rekeyed = store.snapshot()
+    assert [rekeyed.field(path).value for path in _TX_METERS] == [2.0] * 4
+
+
+def test_tick_keeps_the_transmit_meters_while_ptt_is_unobserved() -> None:
+    """Unknown is not false: nothing has established the rig is receiving."""
+
+    store = StateStore()
+    service = _ftx1_freshness_service(store)
+    for path in _TX_METERS:
+        store.apply(_observation(path, 1.0, at=1.0))
+
+    service.tick(now=1.0)
+
+    snapshot = store.snapshot()
+    assert [snapshot.field(path).value for path in _TX_METERS] == [1.0] * 4
+
+
 def test_a_never_dispatched_request_may_not_be_credited() -> None:
     freq = FieldPath.active("main", "freq_mode", "freq_hz")
     scheduler = AcquisitionScheduler(profile=_profile([freq]))
