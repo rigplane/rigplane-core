@@ -1006,7 +1006,8 @@ def canonicalize_level_command(
 # The canonical command name each legacy dataclass is the enqueued form of.
 # It is the only thing a legacy command declares about its own read-after-
 # write: the field paths come from ``core/command_service.py:
-# _command_target``, the same derivation ``CommandIntent`` uses.
+# expected_observations_for_command`` (descriptor-backed names such as
+# ``set_att`` carry their target from ``CommandDescriptor.target`` instead).
 # ``web/radio_poller.py: RadioPoller._request_post_write_readback`` is the
 # consumer.
 #

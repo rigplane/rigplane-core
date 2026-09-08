@@ -2935,7 +2935,7 @@ def test_ic7300_real_profile_filter_num_and_data_mode_have_capability() -> None:
     """MOR-1546: without a declared acquisition capability, ``ensure_fresh``
     rejects the path as UNAVAILABLE before it ever reaches the executor
     (``AcquisitionScheduler._availability_for``) -- so the post-write
-    readback table entries alone are not sufficient, the profile must also
+    readback alone is not sufficient, the profile must also
     declare these two fields. Both are command_response_observable-only
     (event-driven), not ``polling_only``.
 

@@ -306,9 +306,7 @@ class CommandService:
 
         Those misses are no-ops, logged rather than swallowed so that a silent
         miss cannot read as coverage. The divergence is older than this method
-        and is tracked in MOR-1897; until it is closed this does NOT subsume
-        the web poller's per-command readback table, which builds the
-        canonical paths itself.
+        and is tracked in MOR-1897.
         """
         service = self._state_model_service
         target = intent.target
@@ -1112,10 +1110,11 @@ def expected_observations_for_command(
 ) -> tuple[FieldPath, ...]:
     """Return the field paths a write named *name* is expected to change.
 
-    The single derivation shared by every ingress: ``CommandIntent``s get it
-    at construction (:func:`command_intent_from_request`), legacy ``Command``
-    dataclasses get it from ``runtime/_poller_types.py: LEGACY_COMMAND_NAMES``
-    naming the same command.
+    Answers for command names without a ``CommandDescriptor``; a
+    descriptor-backed intent carries its target from ``CommandDescriptor.target``
+    (bound in ``core/command_dispatch.py``) and this derivation returns ``()``
+    for it. Legacy ``Command`` dataclasses reach it through
+    ``runtime/_poller_types.py: LEGACY_COMMAND_NAMES``.
     """
 
     return _command_expected_observations(name, params, _command_target(name, params))
