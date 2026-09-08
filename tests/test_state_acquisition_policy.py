@@ -109,8 +109,12 @@ _ON_DEMAND_FIELD_NAMES = frozenset(
 #: them (it walks ``field_policies.items()``, not ``capabilities``): each
 #: inherits the profile's ``default_cadence_seconds`` instead, and that
 #: inherited cadence exceeds the path's class bound. Reproduced by
-#: ``_inherited_default_out_of_class`` below, which walks every profile's
-#: ``capabilities`` and keeps only paths where that comparison fails.
+#: ``_inherited_default_out_of_class`` below, which walks the
+#: ``capabilities`` of every profile that declares ``field_policies`` and
+#: keeps only paths where that comparison fails. Profiles declaring no
+#: ``field_policies`` (IC-705, IC-9700, X6100) are outside this list: the
+#: same walk without that skip finds 28 more such paths there (12, 12, 4),
+#: which no test bounds.
 _INHERITED_DEFAULT_OUT_OF_CLASS: dict[str, tuple[FieldPath, ...]] = {
     "X6200": (
         # inherits default 2.0s; live bound is 1.0s
@@ -773,8 +777,10 @@ def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
 def _inherited_default_out_of_class() -> dict[str, tuple[FieldPath, ...]]:
     """Classified paths the gate above cannot see, that are out of class.
 
-    Walks every profile's ``capabilities`` (not ``field_policies``, which is
-    what the gate above walks) and keeps a path only if it (a) has no own
+    Walks the ``capabilities`` (not ``field_policies``, which is what the
+    gate above walks) of every profile that declares ``field_policies`` —
+    profiles declaring none are skipped, as the gate skips them — and keeps a
+    path only if it (a) has no own
     ``field_policies`` entry, so its effective cadence is the profile's
     inherited ``default_cadence_seconds``, and (b) that inherited cadence
     exceeds its class bound.
@@ -801,14 +807,16 @@ def _inherited_default_out_of_class() -> dict[str, tuple[FieldPath, ...]]:
 
 
 def test_inherited_default_cadence_out_of_class_paths_are_exactly_named() -> None:
-    """The paths the cadence-class gate cannot see must be exactly the named ten.
+    """On the profiles the gate walks, the paths it cannot see are exactly the named ten.
 
     ``test_field_policies_obey_their_cadence_class_not_their_rig`` only
     checks a path with its own ``field_policies`` entry. This test covers
     the gap: it re-derives ``_INHERITED_DEFAULT_OUT_OF_CLASS`` from the
-    profiles themselves, so fixing one of the ten (or introducing a new
-    inherited-default violation) changes the derived set and this assertion
-    goes red, naming what changed.
+    profiles that declare ``field_policies``, so fixing one of the ten (or
+    introducing a new inherited-default violation on one of those profiles)
+    changes the derived set and this assertion goes red, naming what
+    changed. A profile with no ``field_policies`` is not walked, so a
+    violation introduced there is not caught here.
     """
 
     assert _inherited_default_out_of_class() == _INHERITED_DEFAULT_OUT_OF_CLASS
