@@ -273,7 +273,7 @@ candidate's natural CI result is not yet known and must confirm all four scenes.
 | FieldLine dark | compared-pass; unchanged | `ad07aeb66906aa4c761eb413fb44f2fb5c3944bd7a4f2a8a2b618229142526fc` |
 | FieldLine light | compared-fail; inspected and accepted replacement | `e2fce8500f913ab2dad19aea454825330b0cca78f164f98a5708c6d0c0357e46` |
 
-## Linux re-pin provenance (current — 2026-09-06 MOR-2388 Standard VFO)
+## Linux re-pin provenance (superseded — 2026-09-06 MOR-2388 Standard VFO)
 
 | Field | Value |
 | --- | --- |
@@ -304,14 +304,77 @@ behavior. A subsequent exact-head CI run must confirm the new expectations.
 | FieldLine dark | compared-fail; inspected and accepted replacement | `84cc82fc887824ea3c67e0bb9a5f7302e3c091b8e11fb6eb92b2be52644c7c0d` |
 | FieldLine light | compared-fail; inspected and accepted replacement | `88e857698e07fffb52c9e92c975546b8b39274695658e666a1ab90a9212a2238` |
 
+## Linux re-pin provenance (current — 2026-09-08 MOR-2425 no per-field freshness)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `d3677f0d8e70f27dd4c9044b85b2247edffc9542` |
+| CI run / job | [Tests (quick) #34205828119](https://github.com/rigplane/rigplane-core/actions/runs/34205828119) / job `101994995085` |
+| Runner | self-hosted Linux (job labels `self-hosted`, `linux`, `build`) |
+| Node / npm | `v20.20.2` / `10.8.2` |
+| Playwright | `1.58.2` |
+| Chromium | Chrome for Testing `145.0.7632.6`, Playwright revision `1208` |
+| Command | `npm run test:e2e:i18n` (`playwright test -c ./playwright.i18n.config.ts`) |
+| Context / comparator | Chromium; 1280×800; DPR 1; `en-US`; UTC; unchanged `threshold: 0.2`, `maxDiffPixelRatio: 0.001`. |
+| Source | Byte-identical `actual.png` attachments from `mor-1400-production-visual-diagnostics`; no macOS-generated baseline or image transformation. |
+| Reason | Owner ruling: the v2 face carries no pixel protection and R41 forbids painting per-field freshness. This PR deletes the `†` stale-cue markup (VFO frequency, RFG badge, PBT filter fields), the SpectrumPanel `◷ <stale>` chip container, and widens the VFO/filter "usable" gates so a held (stale) reading stays enabled; it also widens the S-meter's retained-value gate. |
+
+The run compared 87 i18n cases; 84 passed. Of the four named scenes,
+`persisted FieldLine × dark` was **compared-pass** (unchanged); the other
+three were **compared-fail** and are re-pinned below. Each flagged band was
+located by cropping the `-expected.png`/`-actual.png` pair at Playwright's
+reported coordinates and, where a shift was suspected, finding that text's
+exact row band by pixel-intensity search rather than by eye:
+
+- MAIN/SUB S-meter label (`y89-101`/`y106-111`, two ~58px-wide bands
+  symmetric left/right, 86/68/74 red px in dark/light StudioLine/FieldLine
+  light respectively): `"S ?"` becomes `"?"` plus a new `"unit unknown"`
+  line, and the calibrated scale marks disappear. Traced to the
+  domain/`scaleMode` computation in `radio-view-model-adapter.ts` /
+  `smeter-scale.ts`, downstream of this PR's S-meter retained-value
+  widening — in this captured state the meter's own value stays `null`
+  (receiver is `UNKNOWN`, not `stale`), so no value is actually held here;
+  only the label format changed.
+- Spectrum dB-scale tick labels and the "Scope disconnected —
+  reconnecting…" line (`y360`-`y483`, narrow `x261-274` and wide `x261-790`
+  bands): a uniform 15px upward shift, confirmed by locating the same
+  text's row band in both images (the disconnect line sits at `y426-436` in
+  `-expected` and `y410-420` in `-actual`). This matches the
+  `.passband-freshness` div's `min-height: 1.4em` (~15-16px) — the `◷
+  <stale>` chip container removed from `SpectrumPanel.svelte`.
+- Sidebar band-plan cards (`y619-694`, `x20-220`, identical in StudioLine
+  dark and FieldLine light): `"160M TX"` renders as `"160MTX"` with the
+  next word pulled onto the same line. Card borders and all other text rows
+  sit at unchanged y-coordinates, so this is a pure horizontal reflow, not a
+  vertical shift. None of the files behind this label
+  (`BandInstrumentHost.svelte`, `BandSurface.svelte`, `band-instruments.ts`)
+  are in this PR's diff. I could not establish the mechanism connecting it
+  to the passband-freshness removal above and do not report it as
+  explained by this PR.
+- StudioLine-only band at `y340-348`, `x746-793` (81 red px, both StudioLine
+  scenes; absent from FieldLine): a color-fringe diff on the unrelated
+  "Classic" colour-scheme dropdown text. No file behind that control is in
+  this PR's diff. I could not establish a cause and do not attribute it to
+  this PR.
+
+| Scene | Disposition | SHA-256 |
+| --- | --- | --- |
+| StudioLine dark | compared-fail (1,220 px); inspected and accepted | `382397c3276e161b047d10cc4727f711b928a88fa08a5d70a9eec1f0b736744d` |
+| StudioLine light | compared-fail (1,296 px); inspected and accepted | `422305cef245bc71348c6be01aba3863b73acdca0290f622abccd7e5ef63d352` |
+| FieldLine dark | compared-pass; unchanged | `e95e6f6a00c0231fea3b17941008df9eac4f8be74ece6ea2094d6267209e51f0` |
+| FieldLine light | compared-fail (1,265 px); inspected and accepted | `1369eca0c91fa57ceaa2f2d5055ea6635cc86c00ab23bb1b047f3694a05de121` |
+
+A subsequent exact-head CI run must confirm these expectations; this
+comparison run is not itself a visual PASS.
+
 ## Named expectations
 
 | File | Workspace/theme case | SHA-256 |
 | --- | --- | --- |
-| `studioline--dark--production-root.png` | clean StudioLine × dark | `0364d91633aedd4ab469fb5ab41277e5625d8b754d8cb139396d9ed79804ca40` |
-| `studioline--light--production-root.png` | persisted StudioLine × light | `9b6ef98b8aabb500ee3cecd008127ffb4cc42f4bba8a4454f4e9ac54c0143d4f` |
-| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `84cc82fc887824ea3c67e0bb9a5f7302e3c091b8e11fb6eb92b2be52644c7c0d` |
-| `fieldline--light--production-root.png` | persisted FieldLine × light | `88e857698e07fffb52c9e92c975546b8b39274695658e666a1ab90a9212a2238` |
+| `studioline--dark--production-root.png` | clean StudioLine × dark | `382397c3276e161b047d10cc4727f711b928a88fa08a5d70a9eec1f0b736744d` |
+| `studioline--light--production-root.png` | persisted StudioLine × light | `422305cef245bc71348c6be01aba3863b73acdca0290f622abccd7e5ef63d352` |
+| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `e95e6f6a00c0231fea3b17941008df9eac4f8be74ece6ea2094d6267209e51f0` |
+| `fieldline--light--production-root.png` | persisted FieldLine × light | `1369eca0c91fa57ceaa2f2d5055ea6635cc86c00ab23bb1b047f3694a05de121` |
 
 All images are RGB PNGs at 1280×800. Changes to any expected image require a
 new reviewed Linux re-pin with the same provenance record; macOS/local output
