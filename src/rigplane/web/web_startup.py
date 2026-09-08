@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from ..core.acquisition_scheduler import AcquisitionScheduler
 from ..core.radio_protocol import ObservationPollable, StatePollable, StateStoreCapable
-from ..core.state_pipeline_contracts import Observation
+from ..core.state_pipeline_contracts import FieldPath, Observation
 from ..radio_state import RadioState
+from ..runtime._civ_rx import _profile_path_for_observation
 from ..startup_checks import assert_radio_startup_ready
 from .discovery import DiscoveryResponder, RadioInfo  # noqa: TID251
 from .dx_cluster import DXClusterClient  # noqa: TID251
@@ -39,6 +42,16 @@ logger = logging.getLogger(__name__)
 
 _SHUTDOWN_SCOPE_RESTORE_TIMEOUT_S = 1.0
 _MANAGED_TX_FALLBACK_ADVANCED_ATTR = "_production_managed_tx_fallback_advanced"
+
+#: Poll spacing for the startup gate on a radio that declares no
+#: ``_INITIAL_STATE_GAP_*`` of its own.
+_STARTUP_GATE_POLL_SECONDS = 0.05
+_STARTUP_GATE_LOG_INTERVAL_SECONDS = 5.0
+_STARTUP_GATE_STALL_WARNING_SECONDS = 60.0
+#: Paths the startup sweep queues per ``gap``.
+_STARTUP_GATE_PRIME_LIMIT = 1
+#: Shortest spacing between two startup-sweep primes of the same path.
+_STARTUP_GATE_REPRIME_SECONDS = 1.0
 
 
 def _installed_managed_tx_composition(radio: object) -> object | None:
@@ -94,6 +107,136 @@ def _supports_scope_local(server: WebServer) -> bool:
     return "scope" in runtime_capabilities(server._radio)
 
 
+def _acquisition_scheduler(server: WebServer) -> AcquisitionScheduler | None:
+    """Return the scheduler ``WebServer._bootstrap_state_acquisition`` attached."""
+
+    scheduler = getattr(server._radio, "_acquisition_scheduler", None)
+    if scheduler is None:
+        return None
+    return cast("AcquisitionScheduler", scheduler)
+
+
+def _observed_paths(
+    server: WebServer,
+    scheduler: AcquisitionScheduler,
+) -> tuple[FieldPath, ...]:
+    """Return the store's observed paths, spelled the way the profile does.
+
+    CI-V ingress writes receiver-scoped fields as ``receiver.0`` /
+    ``receiver.1`` (``runtime/_civ_rx.py: CivRuntime._receiver_context``)
+    while the profiles spell the same receivers ``main`` / ``sub``, so a raw
+    store path never equals the profile path the predicate compares it
+    against. ``_profile_path_for_observation`` is how that same module
+    already resolves an observed path against the profile
+    (``CivRuntime._record_coalesced_meter_observation``), off the single
+    ``_RECEIVER_ALIASES`` table it also credits observations through
+    (``_field_paths_match``); reusing it keeps that table the only one.
+    Pinned by ``test_civ_ingress_counts_as_observed_against_profile_paths``.
+    """
+
+    profile = scheduler._profile
+    return tuple(
+        _profile_path_for_observation(profile, field.path)
+        for field in server.command_state_store.snapshot().fields
+    )
+
+
+def _startup_gap_seconds(radio: object) -> float:
+    """Return the per-query gap ``runtime.radio_initial_state`` uses."""
+
+    profile = getattr(radio, "_profile", None)
+    attribute = (
+        "_INITIAL_STATE_GAP_LAN"
+        if getattr(profile, "has_lan", False)
+        else "_INITIAL_STATE_GAP_SERIAL"
+    )
+    gap = getattr(radio, attribute, None)
+    if isinstance(gap, (int, float)) and not isinstance(gap, bool) and gap > 0:
+        return float(gap)
+    return _STARTUP_GATE_POLL_SECONDS
+
+
+async def _await_initial_state_acquisition(
+    server: WebServer,
+    *,
+    sweep: bool,
+) -> None:
+    """Block until every declared, non-``tx_only`` field has been observed.
+
+    The wait is indefinite by design: there is no serve-anyway timeout, and a
+    field the radio answers with NG stays outstanding because the store has
+    no negative state.
+
+    ``sweep`` re-primes the scheduler while the gate is open. It is set only
+    on the branch that builds a :class:`RadioPoller`, because that is the
+    only web branch carrying an ``AcquisitionDrain`` to execute a primed
+    request — pinned by
+    ``test_observation_pollable_path_binds_without_a_startup_sweep``.
+
+    The sweep queues at most :data:`_STARTUP_GATE_PRIME_LIMIT` path per
+    ``gap`` rather than the whole outstanding set at once, and it withholds
+    a path it primed less than :data:`_STARTUP_GATE_REPRIME_SECONDS` ago —
+    a path the radio never answers is freed by
+    ``record_acquisition_failure`` and would otherwise be re-queued on every
+    iteration. Both are pinned by
+    ``test_startup_sweep_queues_one_path_per_gap`` and
+    ``test_never_answered_path_is_reprimed_once_per_reprime_interval``.
+    """
+
+    if not server._config.await_initial_state:
+        return
+    scheduler = _acquisition_scheduler(server)
+    if scheduler is None:
+        return
+    outstanding = scheduler.unobserved_startup_paths(_observed_paths(server, scheduler))
+    if not outstanding:
+        return
+    logger.info(
+        "waiting for initial state acquisition: %d fields outstanding",
+        len(outstanding),
+    )
+    gap = _startup_gap_seconds(server._radio)
+    fewest = len(outstanding)
+    last_progress = last_log = time.monotonic()
+    primed_at: dict[FieldPath, float] = {}
+    while outstanding:
+        if sweep:
+            queued_at = time.monotonic()
+            withheld = tuple(
+                path
+                for path, at in primed_at.items()
+                if queued_at - at < _STARTUP_GATE_REPRIME_SECONDS
+            )
+            for request in scheduler.prime_unobserved(
+                _observed_paths(server, scheduler) + withheld,
+                reason="startup-gate",
+                limit=_STARTUP_GATE_PRIME_LIMIT,
+            ):
+                for path in request.paths:
+                    primed_at[path] = queued_at
+        await asyncio.sleep(gap)
+        outstanding = scheduler.unobserved_startup_paths(
+            _observed_paths(server, scheduler)
+        )
+        now = time.monotonic()
+        if len(outstanding) < fewest:
+            fewest = len(outstanding)
+            last_progress = now
+        if outstanding and now - last_log >= _STARTUP_GATE_LOG_INTERVAL_SECONDS:
+            last_log = now
+            paths = ", ".join(str(path) for path in outstanding)
+            if now - last_progress >= _STARTUP_GATE_STALL_WARNING_SECONDS:
+                logger.warning(
+                    "initial state acquisition: no new field for %.0fs, "
+                    "still waiting on %s",
+                    now - last_progress,
+                    paths,
+                )
+            else:
+                logger.info("initial state acquisition still waiting on %s", paths)
+    logger.info("initial state acquisition complete")
+
+
 async def start_web_server(server: WebServer) -> None:
     managed_tx = _validate_managed_tx(server)
     await _start_web_server(server, managed_tx)
@@ -103,10 +246,11 @@ async def _start_web_server(
     server: WebServer,
     managed_tx: ManagedTxCompositionPort | None,
 ) -> None:
-    """Start the HTTP/WS listener and RadioPoller (if radio is connected).
+    """Start the radio's poller, wait for initial state, then bind the listener.
 
-    Mirrors the original :meth:`WebServer.start` body verbatim — the method
-    now delegates here so the public API is preserved.
+    That order is pinned by
+    ``test_civ_startup_binds_only_after_the_predicate_is_satisfied`` and
+    ``test_observation_pollable_path_binds_without_a_startup_sweep``.
     """
     # Load band plan TOML files
     # Try project-level band-plans/ directory first, then package fallback
@@ -139,31 +283,8 @@ async def _start_web_server(
 
     assert_radio_startup_ready(server._radio, component="web startup")
 
-    server._server = await asyncio.start_server(
-        server._accept_client,
-        host=server._config.host,
-        port=server._config.port,
-        ssl=ssl_ctx,
-        reuse_address=True,
-        # MOR-1572: deliberately NOT reuse_port. This is an exclusive TCP
-        # listener guarding a single radio session (same rationale as
-        # rigctld's listener, see rigctld/server.py) — SO_REUSEPORT let a
-        # second rigplane instance silently bind the same web port on
-        # macOS/BSD, so two instances raced for the same radio with no
-        # error and the operator saw a half-dead UI. It also undermined the
-        # check_ports_available() preflight (MOR-1437): an orphan holding
-        # the port with SO_REUSEPORT set could let the preflight probe bind
-        # successfully right alongside it. Contrast with the UDP discovery
-        # responder (web/discovery.py), which legitimately opts into
-        # SO_REUSEPORT so multiple co-located instances can each announce
-        # their own radio on the shared discovery port — that is a
-        # best-effort broadcast responder, not an exclusive session guard.
-    )
-    server._server_was_running = True
-    addr = server._server.sockets[0].getsockname()
-    scheme = "https" if ssl_ctx else "http"
-    logger.info("web server listening on %s://%s:%d", scheme, addr[0], addr[1])
     managed_tx_authority = None if managed_tx is None else managed_tx.authority
+    startup_sweep = False
     if server._radio is not None:
         from ..radio_protocol import StateNotifyCapable
 
@@ -197,10 +318,6 @@ async def _start_web_server(
             )
             if managed_tx_authority is not None:
                 if not callable(bind_authority):
-                    server._server.close()
-                    await server._server.wait_closed()
-                    server._server = None
-                    server._server_was_running = False
                     raise RuntimeError(
                         "managed observation poller must bind transmit authority"
                     )
@@ -209,10 +326,6 @@ async def _start_web_server(
                 server._state_poller, "bind_provider_generation", None
             )
             if fallback_store and not callable(bind_generation):
-                server._server.close()
-                await server._server.wait_closed()
-                server._server = None
-                server._server_was_running = False
                 raise RuntimeError(
                     "fallback observation poller must bind provider generation"
                 )
@@ -258,10 +371,6 @@ async def _start_web_server(
             )
             if managed_tx_authority is not None:
                 if not callable(bind_authority):
-                    server._server.close()
-                    await server._server.wait_closed()
-                    server._server = None
-                    server._server_was_running = False
                     raise RuntimeError(
                         "managed state poller must bind transmit authority"
                     )
@@ -286,10 +395,43 @@ async def _start_web_server(
                 managed_tx_authority=managed_tx_authority,
             )
             server._radio_poller.start()
-        if _supports_scope_local(server):
-            server._scope_health_task = asyncio.get_running_loop().create_task(
-                server._scope_health_monitor(), name="scope-health"
-            )
+            # RadioPoller is the only web branch that builds an
+            # AcquisitionDrain, so it is the only one where a primed request
+            # is executed.
+            startup_sweep = True
+    server._state_store_freshness_task = asyncio.get_running_loop().create_task(
+        server._state_freshness_service.run(), name="web-state-freshness"
+    )
+    await _await_initial_state_acquisition(server, sweep=startup_sweep)
+
+    server._server = await asyncio.start_server(
+        server._accept_client,
+        host=server._config.host,
+        port=server._config.port,
+        ssl=ssl_ctx,
+        reuse_address=True,
+        # MOR-1572: deliberately NOT reuse_port. This is an exclusive TCP
+        # listener guarding a single radio session (same rationale as
+        # rigctld's listener, see rigctld/server.py) — SO_REUSEPORT let a
+        # second rigplane instance silently bind the same web port on
+        # macOS/BSD, so two instances raced for the same radio with no
+        # error and the operator saw a half-dead UI. It also undermined the
+        # check_ports_available() preflight (MOR-1437): an orphan holding
+        # the port with SO_REUSEPORT set could let the preflight probe bind
+        # successfully right alongside it. Contrast with the UDP discovery
+        # responder (web/discovery.py), which legitimately opts into
+        # SO_REUSEPORT so multiple co-located instances can each announce
+        # their own radio on the shared discovery port — that is a
+        # best-effort broadcast responder, not an exclusive session guard.
+    )
+    server._server_was_running = True
+    addr = server._server.sockets[0].getsockname()
+    scheme = "https" if ssl_ctx else "http"
+    logger.info("web server listening on %s://%s:%d", scheme, addr[0], addr[1])
+    if server._radio is not None and _supports_scope_local(server):
+        server._scope_health_task = asyncio.get_running_loop().create_task(
+            server._scope_health_monitor(), name="scope-health"
+        )
     server._zombie_reaper_task = asyncio.get_running_loop().create_task(
         server._zombie_reaper(), name="zombie-reaper"
     )
@@ -309,9 +451,6 @@ async def _start_web_server(
             server._config.dx_cluster_port,
             server._config.dx_callsign,
         )
-    server._state_store_freshness_task = asyncio.get_running_loop().create_task(
-        server._state_freshness_service.run(), name="web-state-freshness"
-    )
 
     # Start UDP discovery responder
     if server._config.discovery:

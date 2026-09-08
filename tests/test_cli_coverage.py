@@ -780,7 +780,8 @@ async def test_cmd_serve_and_cmd_web_paths(
             self.radio = _radio
             self.cfg = cfg
 
-        async def serve_forever(self):
+        async def serve_forever(self, *, on_started=None):
+            on_started()
             raise asyncio.CancelledError
 
     with patch("rigplane.web.server.WebServer", FakeWebServer):
@@ -893,7 +894,8 @@ async def test_web_launch_without_application_auth(command, environment, monkeyp
             captured["config"] = cfg
             self._runtime_log_path = None
 
-        async def serve_forever(self):
+        async def serve_forever(self, *, on_started=None):
+            on_started()
             raise asyncio.CancelledError
 
     with patch("rigplane.web.server.WebServer", FakeWebServer):
@@ -903,6 +905,9 @@ async def test_web_launch_without_application_auth(command, environment, monkeyp
     assert cfg.auth_token == ""
     assert cfg.host == ("127.0.0.1" if managed else "0.0.0.0")
     assert cfg.emit_startup_event is managed
+    # Both CLI routes that serve the web UI ("web" and "station") arm the
+    # startup state gate; WebConfig defaults it off for embedders and tests.
+    assert cfg.await_initial_state is True
 
 
 @pytest.mark.asyncio
@@ -918,7 +923,8 @@ async def test_cmd_web_managed_ignores_env_auth_and_keeps_loopback_rigctld(
             captured["cfg"] = cfg
             self._runtime_log_path = None
 
-        async def serve_forever(self):
+        async def serve_forever(self, *, on_started=None):
+            on_started()
             captured["runtime_log_path"] = self._runtime_log_path
             raise asyncio.CancelledError
 
@@ -963,7 +969,8 @@ async def test_cmd_web_plain_runtime_does_not_emit_startup_event() -> None:
             captured["cfg"] = cfg
             self._runtime_log_path = None
 
-        async def serve_forever(self):
+        async def serve_forever(self, *, on_started=None):
+            on_started()
             raise asyncio.CancelledError
 
     args = _web_cmd_args(web_bridge=None)
@@ -994,7 +1001,8 @@ async def test_cli_web_no_loopback_graceful(
         async def start_audio_bridge(self, **_kwargs):
             raise LoopbackNotFoundError("no loopback device found")
 
-        async def serve_forever(self):
+        async def serve_forever(self, *, on_started=None):
+            on_started()
             raise asyncio.CancelledError
 
     args = _web_cmd_args(web_bridge="auto")
@@ -1032,7 +1040,8 @@ async def test_cli_web_unrelated_bridge_failure_surfaces(
                 "audio streaming."
             )
 
-        async def serve_forever(self):
+        async def serve_forever(self, *, on_started=None):
+            on_started()
             raise asyncio.CancelledError
 
     args = _web_cmd_args(web_bridge="auto")
@@ -1072,7 +1081,8 @@ async def test_cli_web_explicit_bridge_still_fails(
         async def start_audio_bridge(self, **_kwargs):
             raise LoopbackNotFoundError("device 'NonExistent' not found")
 
-        async def serve_forever(self):
+        async def serve_forever(self, *, on_started=None):
+            on_started()
             raise asyncio.CancelledError
 
     args = _web_cmd_args(web_bridge="NonExistent")

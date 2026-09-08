@@ -3807,6 +3807,7 @@ async def _cmd_web(
     config_kwargs["discovery"] = getattr(args, "web_discovery", True)
     config_kwargs["webrtc_enabled"] = getattr(args, "webrtc_enabled", False)
     config_kwargs["radio_model"] = getattr(radio, "model", "IC-7610")
+    config_kwargs["await_initial_state"] = True
     config = WebConfig(**config_kwargs)
     server = WebServer(radio, config)
     if managed_tx_composition is not None:
@@ -3975,17 +3976,23 @@ async def _cmd_web(
     scheme = "https" if config_kwargs.get("tls") else "http"
     web_url = f"{scheme}://{args.web_host}:{args.web_port}/"
     dx_info = dx_cluster if dx_cluster else None
-    _print_startup_banner(
-        radio=radio,
-        web_url=web_url,
-        rigctld_addr=rigctld_addr,
-        bridge_info=bridge_info,
-        loopback_hint=loopback_hint,
-        dx_cluster=dx_info,
-    )
+
+    def _banner() -> None:
+        # Printed from serve_forever's started callback, not here: the
+        # listener does not exist until WebServer.start() returns, and
+        # startup now waits for the initial state acquisition before it
+        # binds. Printing the URL earlier advertises a port nothing accepts.
+        _print_startup_banner(
+            radio=radio,
+            web_url=web_url,
+            rigctld_addr=rigctld_addr,
+            bridge_info=bridge_info,
+            loopback_hint=loopback_hint,
+            dx_cluster=dx_info,
+        )
 
     try:
-        await server.serve_forever()
+        await server.serve_forever(on_started=_banner)
     except asyncio.CancelledError:
         pass
     finally:

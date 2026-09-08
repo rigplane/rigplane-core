@@ -878,6 +878,46 @@ class AcquisitionScheduler:
             return True
         return False
 
+    def unobserved_startup_paths(
+        self,
+        observed_paths: Iterable[FieldPath],
+    ) -> tuple[FieldPath, ...]:
+        """Return the declared paths the store has never seen, sorted by path.
+
+        The domain is every pollable capability plus every explicit
+        ``field_policies`` key, minus the paths whose resolved policy carries
+        ``tx_only``. That flag is read from the profile
+        (:attr:`AcquisitionPolicy.tx_only`), never from a list kept here;
+        :meth:`due_requests` gates those cadence groups on ``tx_active``, so
+        a caller that waited on them would be waiting for a transmission.
+
+        Unlike :meth:`has_unobserved_policy_fields`, this does not exclude
+        cadence-owned paths: a path :meth:`due_requests` will poll is still
+        unobserved until its first answer arrives.
+        """
+
+        observed = frozenset(observed_paths)
+        profile = self._profile
+        domain = set(profile.pollable_paths()) | set(profile.field_policies)
+        return tuple(
+            sorted(
+                (
+                    path
+                    for path in domain
+                    if path not in observed and not profile.policy_for(path).tx_only
+                ),
+                key=str,
+            )
+        )
+
+    def initial_acquisition_complete(
+        self,
+        observed_paths: Iterable[FieldPath],
+    ) -> bool:
+        """Return True when :meth:`unobserved_startup_paths` is empty."""
+
+        return not self.unobserved_startup_paths(observed_paths)
+
     def record_acquisition_result(
         self,
         request: AcquisitionRequest,
