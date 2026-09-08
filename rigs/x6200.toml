@@ -188,7 +188,7 @@ external_cat_pause = "pause_polling"
 # iterates field_policies), so it could never be observed at startup.
 [state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 

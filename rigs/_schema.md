@@ -192,8 +192,8 @@ these fields directly.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `provider` | string | no | Lowercase provider identifier such as `"icom_civ"`, `"yaesu_cat"`, `"xiegu_civ"`, or `"external_rigctld"`. Defaults to `"profile"`. |
-| `default_cadence_seconds` | float | no | Conservative default polling cadence for supported fields. Defaults to `5.0`. |
-| `default_freshness_ttl_seconds` | float | no | TTL before a value should be considered stale. Must be greater than or equal to cadence. Defaults to `15.0`. |
+| `default_cadence_seconds` | float or `"never"` | no | Conservative default polling cadence for supported fields. Defaults to `5.0`. `"never"` resolves to no cadence. |
+| `default_freshness_ttl_seconds` | float or `"never"` | no | TTL before a value should be considered stale. Must be greater than or equal to cadence. Defaults to `15.0`. `"never"` resolves to no expiry. |
 | `default_reconciliation_priority` | string | no | `"unsolicited"`, `"command_response"`, `"poll"`, or `"last_observation"`. Defaults to `"poll"`. |
 | `adaptive_decay` | bool | no | Whether a scheduler may widen cadence while idle. Defaults to `false`. |
 | `adaptive_decay_idle_multiplier` | float | no | Multiplier for idle cadence when adaptive decay is enabled. Must be greater than `1.0` when enabled. |
@@ -221,8 +221,18 @@ Each field path uses the canonical `FieldPath` strings from
 Optional per-field policy overrides. Supported keys are `cadence_seconds`,
 `freshness_ttl_seconds`, `reconciliation_priority`, `external_cat_pause`,
 `adaptive_decay`, `adaptive_decay_idle_multiplier`,
-`adaptive_decay_max_cadence_seconds`, and `meter_coalescing_window_seconds`.
+`adaptive_decay_max_cadence_seconds`, `meter_coalescing_window_seconds`, and
+`tx_only` (the set the loader accepts is `_ACQUISITION_POLICY_KEYS` in
+`rig_loader.py`; anything else is rejected).
 Field-specific `meter_coalescing_window_seconds` is valid only for meter paths.
+
+An omitted key inherits the profile-level default rather than clearing it, so
+`freshness_ttl_seconds` also accepts the string `"never"` to mean "this field
+has no expiry". Use it only for a path whose loaded capability cannot be
+polled — in neither `polling_only` nor `stream_like_meters` (either one makes
+`can_poll` true, and the loader does not reject that combination). The
+section-level `default_freshness_ttl_seconds` and both `cadence_seconds` keys
+accept the same token.
 
 Example:
 

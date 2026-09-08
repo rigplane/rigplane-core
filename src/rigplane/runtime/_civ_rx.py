@@ -106,8 +106,11 @@ _OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
     # MOR-2234 follow-up: declaring these observable in ``rigs/ic7300.toml``
     # left them with no entry here, so ``_observation`` gave them
     # ``max_age=None`` and ``state_store.py: StateStore.mark_stale_due``
-    # never aged them. The TTL is that profile's declared
-    # ``freshness_ttl_seconds``, pinned by
+    # never aged them. These two values are this table's own, independent of
+    # what any profile declares for the same paths: ``_observation`` takes
+    # every CI-V observation's ``max_age`` from this (scope, family, name)
+    # lookup — the ``tx_target`` branch there is the sole exception — and
+    # nothing in this module reads ``field_policies``. Pinned by
     # ``test_tone_and_tsql_freq_observations_can_go_stale``.
     ("receiver", "operator_controls", "tone_freq"): 25.0,
     ("receiver", "operator_controls", "tsql_freq"): 25.0,
