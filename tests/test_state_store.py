@@ -1081,3 +1081,18 @@ def test_conflicting_sources_at_equal_freshness_resolve_last_writer_wins() -> No
     assert second.observation_seq == 2
     assert field.value == 20
     assert field.source == civ_source
+
+
+def test_discarding_an_absent_path_emits_no_change_and_no_revision() -> None:
+    """The second discard of one path is a no-op, so repeat calls are safe."""
+
+    path = FieldPath.receiver("main", "operator_controls", "manual_notch_freq")
+    store = StateStore()
+    store.apply(_observation(path, 1500, at=1.0))
+
+    first = store.discard((path,))
+    second = store.discard((path,))
+
+    assert len(first.changes) == 1
+    assert second.changes == ()
+    assert second.revision == first.revision

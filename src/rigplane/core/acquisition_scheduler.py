@@ -1843,10 +1843,12 @@ class StateFreshnessService:
         """Advance freshness once and drive the profile's acquisition cadence.
 
         One tick releases due meter samples, re-primes never-observed
-        fields, ages the store, queues the reconciliations that ageing
-        produced, and calls :meth:`AcquisitionScheduler.due_requests` (when
-        a scheduler was wired) with the transmit fact
-        :func:`derive_tx_active` reads from the same store.
+        fields, discards the fields the profile declares absent in the
+        current state (:meth:`_discard_declared_absent`), ages the store,
+        queues the reconciliations that ageing produced, and calls
+        :meth:`AcquisitionScheduler.due_requests` (when a scheduler was
+        wired) with the transmit fact :func:`derive_tx_active` reads from
+        the same store.
 
         Invariant: ``now`` (explicit or defaulted) must come from the same
         monotonic domain as ``self._next_prime_monotonic`` — callers that
@@ -1859,6 +1861,7 @@ class StateFreshnessService:
         timestamp = time.monotonic() if now is None else now
         self.flush_due_meter_samples(now=timestamp)
         self._reprime_unobserved_if_due(now=timestamp)
+        self._discard_declared_absent()
         delta = self._store.mark_stale_due(now=now)
         for request in delta.reconciliation_requests:
             self._queue_reconciliation(request)
@@ -1871,6 +1874,34 @@ class StateFreshnessService:
         if (delta.freshness or delta.reconciliation_requests) and self._on_delta:
             self._on_delta(delta)
         return delta
+
+    def _discard_declared_absent(self) -> None:
+        """Remove stored fields the profile declares absent in this state.
+
+        :func:`resolve_available_when` reports ``False`` only where an
+        observed value contradicts a clause; ``None`` — a clause source
+        nobody has observed — is left alone, since nothing has established
+        the field is absent. Removal goes through
+        :meth:`StateStore.discard`, which invents no value, so the field is
+        published as unobserved and ``missing`` again (``tests/
+        test_web_runtime_helpers.py::
+        test_field_status_reports_missing_after_the_freshness_tick_discards``).
+        """
+
+        scheduler = self._scheduler
+        if scheduler is None:
+            return
+        snapshot = self._store.snapshot()
+        stored = {field.path for field in snapshot.fields}
+        absent = tuple(
+            path
+            for path, available in resolve_available_when(
+                scheduler._profile, snapshot
+            ).items()
+            if available is False and path in stored
+        )
+        if absent:
+            self._store.discard(absent)
 
     def flush_due_meter_samples(self, *, now: float | None = None) -> None:
         """Release meter samples whose coalescing window has elapsed.
