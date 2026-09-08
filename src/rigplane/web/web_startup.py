@@ -161,7 +161,7 @@ async def _await_initial_state_acquisition(
     *,
     sweep: bool,
 ) -> None:
-    """Block until every declared, non-``tx_only`` field has been observed.
+    """Block until ``AcquisitionScheduler.unobserved_startup_paths`` is empty.
 
     The wait is indefinite by design: there is no serve-anyway timeout.
 
