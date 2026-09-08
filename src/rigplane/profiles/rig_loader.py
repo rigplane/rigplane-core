@@ -1407,8 +1407,9 @@ def _strict_policy_float(
 
 
 #: TOML has no null literal, and an omitted acquisition-policy key inherits
-#: the profile default rather than clearing it, so a seconds-valued key
-#: spells "no value here" with this token. It resolves to ``None``, which
+#: the profile default rather than clearing it, so ``cadence_seconds`` and
+#: ``freshness_ttl_seconds`` (the two keys ``_policy_seconds`` parses) spell
+#: "no value here" with this token. It resolves to ``None``, which
 #: ``StateStore.mark_stale_due`` skips instead of ageing.
 _POLICY_SECONDS_NEVER = "never"
 

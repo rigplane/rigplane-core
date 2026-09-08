@@ -1024,9 +1024,7 @@ def test_non_polling_field_policies_declare_no_freshness_expiry() -> None:
 
     ``AcquisitionScheduler._poll_cadence_groups`` skips every capability
     whose ``can_poll`` is false, so no cadence read ever refreshes such a
-    field; a finite ``freshness_ttl_seconds`` on one can therefore only flip
-    it to ``STALE`` once and leave it there on a healthy, idle link. The
-    profile spells "no expiry" as ``freshness_ttl_seconds = "never"``, which
+    field. The profile spells "no expiry" as ``freshness_ttl_seconds = "never"``, which
     the loader resolves to ``None`` — the value
     ``StateStore.mark_stale_due`` skips instead of ageing.
     """
@@ -1056,8 +1054,11 @@ def test_non_polling_field_policies_declare_no_freshness_expiry() -> None:
 def test_ic7300_on_demand_field_stays_fresh_while_polled_field_expires() -> None:
     """Only the cadence-polled field ages out; the on-demand one does not.
 
-    Drives the profile-policy chain end to end for the IC-7300 profile:
-    ``ProviderObservationAdapter`` reads each path's ``max_age`` from its
+    Drives the profile-policy chain end to end over the IC-7300 profile's
+    policies through ``ProviderObservationAdapter`` — the adapter the
+    ``yaesu_cat`` and ``rigctld_client`` providers use; the Icom CI-V ingress
+    takes ``max_age`` from ``runtime/_civ_rx.py`` instead, so this is not the
+    IC-7300 wire path. ``ProviderObservationAdapter`` reads each path's ``max_age`` from its
     ``field_policies`` entry, ``StateStore`` keeps it on the entry, and
     ``StateFreshnessService.tick`` is what ages it. ``filter_width`` rides a
     ``polling=False`` capability, so no cadence read refreshes it;
