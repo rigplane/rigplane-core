@@ -269,6 +269,12 @@ def _global_slow_state_target(field: str, _params: Mapping[str, Any]) -> FieldPa
     return FieldPath.global_("slow_state", field)
 
 
+def _global_operator_controls_target(
+    field: str, _params: Mapping[str, Any]
+) -> FieldPath:
+    return FieldPath.global_("operator_controls", field)
+
+
 def _rx_antenna_target(params: Mapping[str, Any]) -> FieldPath:
     return _global_slow_state_target(f"rx_antenna_{params['antenna']}", params)
 
@@ -401,7 +407,16 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             name="set_tuner_status",
             method_name="set_tuner_status",
             bind=_bind_tuner_status,
-            target=partial(_global_slow_state_target, "tuner_status"),
+            # MOR-2425 PR-1b: was ``_global_slow_state_target`` (target
+            # ``global.slow_state.tuner_status``), which no profile's
+            # ``[state_acquisition.capabilities]`` declares and no CI-V
+            # decode (``runtime/_civ_rx.py``) ever produces. The ingress
+            # decode, ``state_pipeline_contracts.py``'s field spec, and
+            # every profile that declares this field (ic7300.toml,
+            # ic7610.toml, ic705.toml, ftx1.toml) all agree on
+            # ``global.operator_controls.tuner_status`` — the ingress is
+            # the fact the descriptor must match, not the reverse.
+            target=partial(_global_operator_controls_target, "tuner_status"),
             argument_names=("value",),
             tx_policy=DescriptorTxPolicy.TUNER_CONTROL,
             public_names=("set_tuner_status",),

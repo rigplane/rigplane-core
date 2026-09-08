@@ -1110,11 +1110,15 @@ def expected_observations_for_command(
 ) -> tuple[FieldPath, ...]:
     """Return the field paths a write named *name* is expected to change.
 
-    Answers for command names without a ``CommandDescriptor``; a
-    descriptor-backed intent carries its target from ``CommandDescriptor.target``
-    (bound in ``core/command_dispatch.py``) and this derivation returns ``()``
-    for it. Legacy ``Command`` dataclasses reach it through
-    ``runtime/_poller_types.py: LEGACY_COMMAND_NAMES``.
+    A descriptor-backed name never reaches this function through
+    ``command_intent_from_request`` -- that path returns a
+    ``CommandIntent`` whose ``target`` already comes from
+    ``CommandDescriptor.target`` there. A legacy ``Command`` dataclass has
+    no such intent, so it reaches this function through
+    ``runtime/_poller_types.py: LEGACY_COMMAND_NAMES`` instead; when its
+    canonical name also has a descriptor, ``_command_target`` binds the
+    dataclass's own params through that descriptor's ``bind``/``target``
+    (MOR-2425 PR-1b) rather than duplicating the mapping here.
     """
 
     return _command_expected_observations(name, params, _command_target(name, params))
@@ -1351,6 +1355,57 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "operator_controls", "tone_freq")
     if name == "set_tsql_freq":
         return FieldPath.receiver(receiver, "operator_controls", "tsql_freq")
+    # RX controls (MOR-2425 PR-1b): agc resolves to a declared acquisition
+    # capability on IC-7300. apf/audio_peak_filter/digisel_shift/nb_depth/
+    # nb_width have a state-model field but no acquisition capability on
+    # either profile -- left pending. if_shift is NOT resolved here (MOR-
+    # 2425 PR-1b review, B2): on a real FTX-1 the command queue is drained
+    # by ``backends/yaesu_cat/poller.py: YaesuCatPoller``, not
+    # ``RadioPoller`` (``YaesuCatRadio.create_state_poller`` returns the
+    # former) -- ``RadioPoller._execute``'s ``SetIfShift`` arm, and this
+    # target, are unreachable in production. ``IcomRadio`` has no
+    # ``set_if_shift`` method at all, so the arm cannot be reached from
+    # that side either. Left pending.
+    if name == "set_agc":
+        return FieldPath.receiver(receiver, "operator_controls", "agc")
+    # dial_lock is NOT resolved here for the same reason as if_shift above:
+    # FTX-1's real dispatcher is ``YaesuCatPoller``, which has no readback
+    # path. Icom profiles declare "dial_lock" as a write feature (they can
+    # send the CI-V command) but none declares it in
+    # ``[state_acquisition.capabilities]``, so ``ensure_fresh`` would
+    # resolve UNAVAILABLE there too. Left pending.
+    # TX audio / modulation (MOR-2425 PR-1b): all nine resolve on IC-7300;
+    # mic_gain/compressor_on/compressor_level/vox_on also resolve on
+    # FTX-1. af_mute/ssb_tx_bandwidth/drive_gain and the four mod-input
+    # names have a state-model field but no declared acquisition
+    # capability on either profile; acc1/usb/lan mod level have no field
+    # at all -- all left pending or reclassified as no-field.
+    if name == "set_mic_gain":
+        return FieldPath.global_("operator_controls", "mic_gain")
+    if name == "set_compressor":
+        return FieldPath.global_("tx_state", "compressor_on")
+    if name == "set_compressor_level":
+        return FieldPath.global_("operator_controls", "compressor_level")
+    if name == "set_monitor":
+        return FieldPath.global_("tx_state", "monitor_on")
+    if name == "set_monitor_gain":
+        return FieldPath.global_("operator_controls", "monitor_gain")
+    if name == "set_vox":
+        return FieldPath.global_("tx_state", "vox_on")
+    if name == "set_vox_gain":
+        return FieldPath.global_("operator_controls", "vox_gain")
+    if name == "set_anti_vox_gain":
+        return FieldPath.global_("operator_controls", "anti_vox_gain")
+    if name == "set_vox_delay":
+        return FieldPath.global_("operator_controls", "vox_delay")
+    # Scope-display settings are NOT resolved here (MOR-2425 PR-1b review,
+    # B1): a scope write is already confirmed by
+    # ``web/radio_poller.py: RadioPoller._reconfirm_scope_field``, called
+    # inline from the same ``case Set*`` arm that dispatches the write.
+    # Adding a target here would fire a second, scheduler-queued
+    # ``ensure_fresh`` for the same field -- a USER-priority query into the
+    # scope waveform stream ``_reconfirm_scope_field``'s own docstring says
+    # stays clear. Folding the two paths into one is PR-3's job.
     if name == "set_rit_frequency":
         return FieldPath.global_("operator_controls", "rit_freq")
     if name == "set_rit_status":
@@ -1387,6 +1442,22 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         )
     if name == "set_split_vfo":
         return FieldPath.global_("tx_state", "split")
+    # Descriptor-backed names (MOR-2425 PR-1b): a legacy dataclass whose
+    # canonical name has a ``CommandDescriptor`` has no ``CommandIntent``
+    # of its own to carry ``CommandDescriptor.target`` -- bind the
+    # dataclass's own params (passed in *params* by
+    # ``RadioPoller._request_post_write_readback``) through the
+    # descriptor's own ``bind``/``target`` instead of duplicating that
+    # mapping here. A name whose params don't satisfy the descriptor's
+    # ``bind`` (missing/invalid) resolves to no target, same as any other
+    # unrecognized name.
+    descriptor = command_descriptor(name)
+    if descriptor is not None:
+        try:
+            bound_params = descriptor.bind(params)
+        except (KeyError, ValueError, TypeError):
+            return None
+        return descriptor.target(bound_params)
     return None
 
 

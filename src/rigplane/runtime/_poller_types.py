@@ -1046,6 +1046,18 @@ LEGACY_COMMAND_NAMES: dict[type, str] = {
     SetPower: "set_rf_power",
     SetPowerstat: "set_powerstat",
     SetSplit: "set_split",
+    # MOR-2425 PR-1b.
+    SetAgc: "set_agc",
+    SetTunerStatus: "set_tuner_status",
+    SetMicGain: "set_mic_gain",
+    SetCompressor: "set_compressor",
+    SetCompressorLevel: "set_compressor_level",
+    SetMonitor: "set_monitor",
+    SetMonitorGain: "set_monitor_gain",
+    SetVox: "set_vox",
+    SetVoxGain: "set_vox_gain",
+    SetAntiVoxGain: "set_anti_vox_gain",
+    SetVoxDelay: "set_vox_delay",
 }
 
 

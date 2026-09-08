@@ -30,6 +30,7 @@ read-only post-ACK readback; it must never be used by background acquisition.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from collections.abc import Iterator
@@ -1392,8 +1393,12 @@ class RadioPoller:
         A ``CommandIntent`` carries its ``expected_observations``; a legacy
         ``Command`` dataclass names the command it is (``LEGACY_COMMAND_NAMES``)
         and ``core/command_service.py: expected_observations_for_command``
-        answers for it. The result is rewritten by ``observable_field_path``
-        into the spelling profiles declare before it reaches the scheduler.
+        answers for it, given the dataclass's own fields as params -- needed
+        so a descriptor-backed name (e.g. ``set_tuner_status``) can bind its
+        target from the value the dataclass actually carries, not just
+        ``receiver`` (MOR-2425 PR-1b). The result is rewritten by
+        ``observable_field_path`` into the spelling profiles declare before
+        it reaches the scheduler.
         """
 
         scheduler = self._acquisition_scheduler
@@ -1405,9 +1410,12 @@ class RadioPoller:
             name = LEGACY_COMMAND_NAMES.get(type(cmd))
             if name is None:
                 return
-            expected = expected_observations_for_command(
-                name, {"receiver": getattr(cmd, "receiver", 0)}
-            )
+            params = {
+                field.name: getattr(cmd, field.name)
+                for field in dataclasses.fields(cmd)
+            }
+            params.setdefault("receiver", 0)
+            expected = expected_observations_for_command(name, params)
         paths = tuple(observable_field_path(path) for path in expected)
         if type(cmd) is SetMode and CAP_FILTER_WIDTH in self._caps:
             filter_width = FieldPath.active(
