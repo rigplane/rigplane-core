@@ -261,8 +261,8 @@ command_response_observable = [
     # ``_availability_for`` (acquisition_scheduler.py) rejects any
     # ``ensure_fresh`` request for a path with no declared capability
     # (UNKNOWN availability), so their armed confirm could not even reach
-    # the post-write-readback table added here (``_POST_WRITE_READBACK_FIELDS``
-    # in radio_poller.py) without this. MOR-2425: also given a non-polling
+    # the post-write readback (``RadioPoller._request_post_write_readback``)
+    # without this. MOR-2425: also given a non-polling
     # field_policies entry below so prime_unobserved() can reach them, per
     # R36b.
     "receiver.main.active.freq_mode.filter_num",

@@ -43,8 +43,8 @@ logger = logging.getLogger(__name__)
 # it. ``ensure_fresh`` can only express that as an age no prior observation
 # can satisfy, so the request is never short-circuited by a FRESH pre-write
 # value. Same value and same reasoning as the freshness pipeline's own
-# reconciliation path and as the web poller's own per-command table
-# (``_POST_WRITE_READBACK_MAX_AGE``, MOR-1484).
+# reconciliation path and as ``_POST_WRITE_READBACK_MAX_AGE`` in
+# ``web/radio_poller.py`` (MOR-1484).
 _WRITE_CONFIRMATION_MAX_AGE = 1e-9
 
 __all__ = [
@@ -56,6 +56,8 @@ __all__ = [
     "PendingOverlay",
     "command_intent_from_request",
     "command_response_observation",
+    "expected_observations_for_command",
+    "observable_field_path",
 ]
 
 _UNSET = object()
@@ -304,9 +306,7 @@ class CommandService:
 
         Those misses are no-ops, logged rather than swallowed so that a silent
         miss cannot read as coverage. The divergence is older than this method
-        and is tracked in MOR-1897; until it is closed this does NOT subsume
-        the web poller's per-command readback table, which builds the
-        canonical paths itself.
+        and is tracked in MOR-1897.
         """
         service = self._state_model_service
         target = intent.target
@@ -1086,13 +1086,42 @@ def _is_yaesu_cat_readback(source: SourceMetadata) -> bool:
     )
 
 
-def _yaesu_receiver_alias(path: FieldPath) -> FieldPath:
+def observable_field_path(path: FieldPath) -> FieldPath:
+    """Return the spelling acquisition and the state model actually use.
+
+    A :class:`CommandIntent` target names its receiver by ingress index
+    (``"0"``/``"1"``) and leaves ``freq_mode`` slot-less. Profiles
+    (``rigs/*.toml``) and ``runtime/_civ_rx.py``'s observations use
+    ``"main"``/``"sub"`` and the relative ``active`` slot, so an
+    ``ensure_fresh`` for the intent's own spelling would name a path no
+    profile declares. Paths already in the second spelling pass through.
+    """
+
     if path.scope.value != "receiver" or path.receiver_id not in {"0", "1"}:
         return path
     receiver = "main" if path.receiver_id == "0" else "sub"
     if path.family.value == "freq_mode" and path.slot is None:
         return FieldPath.active(receiver, path.family.value, path.name)
     return FieldPath.receiver(receiver, path.family.value, path.name)
+
+
+def expected_observations_for_command(
+    name: str, params: Mapping[str, Any]
+) -> tuple[FieldPath, ...]:
+    """Return the field paths a write named *name* is expected to change.
+
+    Answers for command names without a ``CommandDescriptor``; a
+    descriptor-backed intent carries its target from ``CommandDescriptor.target``
+    (bound in ``core/command_dispatch.py``) and this derivation returns ``()``
+    for it. Legacy ``Command`` dataclasses reach it through
+    ``runtime/_poller_types.py: LEGACY_COMMAND_NAMES``.
+    """
+
+    return _command_expected_observations(name, params, _command_target(name, params))
+
+
+def _yaesu_receiver_alias(path: FieldPath) -> FieldPath:
+    return observable_field_path(path)
 
 
 def _external_rigctld_main_alias(path: FieldPath) -> FieldPath:
@@ -1298,6 +1327,38 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "operator_controls", "pbt_inner")
     if name == "set_pbt_outer":
         return FieldPath.receiver(receiver, "operator_controls", "pbt_outer")
+    if name == "set_nr_level":
+        return FieldPath.receiver(receiver, "operator_controls", "nr_level")
+    if name == "set_nb_level":
+        return FieldPath.receiver(receiver, "operator_controls", "nb_level")
+    if name == "set_notch_filter":
+        return FieldPath.receiver(receiver, "operator_controls", "notch_filter")
+    if name == "set_manual_notch_width":
+        return FieldPath.receiver(receiver, "operator_controls", "manual_notch_width")
+    if name == "set_auto_notch":
+        return FieldPath.receiver(receiver, "operator_toggles", "auto_notch")
+    if name == "set_manual_notch":
+        return FieldPath.receiver(receiver, "operator_toggles", "manual_notch")
+    if name == "set_twin_peak":
+        return FieldPath.receiver(receiver, "operator_toggles", "twin_peak_filter")
+    if name == "set_agc_time_constant":
+        return FieldPath.receiver(receiver, "operator_controls", "agc_time_constant")
+    if name == "set_filter_shape":
+        return FieldPath.receiver(receiver, "operator_controls", "filter_shape")
+    if name == "set_data_mode":
+        return FieldPath.receiver(receiver, "freq_mode", "data_mode")
+    if name == "set_tone_freq":
+        return FieldPath.receiver(receiver, "operator_controls", "tone_freq")
+    if name == "set_tsql_freq":
+        return FieldPath.receiver(receiver, "operator_controls", "tsql_freq")
+    if name == "set_rit_frequency":
+        return FieldPath.global_("operator_controls", "rit_freq")
+    if name == "set_rit_status":
+        return FieldPath.global_("tx_state", "rit_on")
+    if name == "set_rit_tx_status":
+        return FieldPath.global_("tx_state", "rit_tx")
+    if name == "set_break_in_delay":
+        return FieldPath.global_("operator_controls", "break_in_delay")
     if name == "set_powerstat":
         return FieldPath.global_("tx_state", "power_on")
     if name in ("set_rf_power", "set_power"):

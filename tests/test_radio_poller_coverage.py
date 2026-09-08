@@ -85,6 +85,7 @@ from rigplane.web.radio_poller import (
     SetIpPlus,
     SetKeySpeed,
     SetMode,
+    SetMicGain,
     SetNB,
     SetNR,
     SetPbtInner,
@@ -1791,16 +1792,17 @@ async def test_execute_failed_set_mode_keeps_width_unknown_and_skips_readback() 
 
 @pytest.mark.asyncio
 async def test_execute_unmapped_write_does_not_queue_a_readback() -> None:
-    """A write command with no entry in ``_POST_WRITE_READBACK_FIELDS`` (e.g.
-    ``SetPower``) must be a silent no-op for this mechanism -- it must not
+    """A write command absent from ``LEGACY_COMMAND_NAMES`` (e.g.
+    ``SetMicGain``) must be a silent no-op for this mechanism -- it must not
     queue any acquisition request."""
     radio = _make_radio(active="MAIN")
-    path = FieldPath.global_("operator_controls", "power_level")
+    radio.set_mic_gain = AsyncMock()
+    path = FieldPath.global_("operator_controls", "mic_gain")
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
     radio._acquisition_scheduler = scheduler
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
-    await poller._execute(SetPower(200))  # noqa: SLF001
+    await poller._execute(SetMicGain(200))  # noqa: SLF001
 
     assert scheduler.pending_requests() == ()
 
