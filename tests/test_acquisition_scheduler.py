@@ -2171,7 +2171,7 @@ def test_state_freshness_service_ic7300_non_polling_populate_completes_within_25
 ):
     """MOR-1501 acceptance criterion.
 
-    Simulates the real IC-7300 acquisition profile's 24 non-polling
+    Simulates the real IC-7300 acquisition profile's 26 non-polling
     ``field_policies`` fields populating from a cold connect (empty store).
     Before adaptive pacing, the flat 30s re-derivation interval combined
     with the unchanged 5-field burst cap gave this profile a ~120s tail
@@ -2201,9 +2201,14 @@ def test_state_freshness_service_ic7300_non_polling_populate_completes_within_25
     # shape of this regression test without anyone noticing. MOR-2144 removes
     # only the unsupported APF path; the supported NB level stays scheduled.
     # MOR-2234 adds tone_freq/tsql_freq, taking the count from 22 to 24.
+    # MOR-2425 adds filter_num/data_mode (R36b: previously declared
+    # command_response_observable with no field_policies entry, so they could
+    # never be primed), taking the count from 24 to 26 -- measured by running
+    # this test's own simulation below, which still lands its slowest field at
+    # 25.0s (see the assertion at the end of this test).
     assert apf_path not in acquisition.field_policies
     assert nb_level_path in acquisition.field_policies
-    assert len(non_polling_paths) == 24
+    assert len(non_polling_paths) == 26
 
     clock = FreshnessClock(start=2000.0)
     store = StateStore(freshness_clock=clock)
@@ -2929,10 +2934,14 @@ def test_ic7300_real_profile_filter_num_and_data_mode_have_capability() -> None:
     (``AcquisitionScheduler._availability_for``) -- so the post-write
     readback table entries alone are not sufficient, the profile must also
     declare these two fields. Both are command_response_observable-only
-    (event-driven, like ``filter_width``), not ``polling_only`` -- neither
-    field is ever added to ``[state_acquisition.field_policies]``, so this
-    adds nothing to the standing serial budget accounted for at the bottom
-    of ``rigs/ic7300.toml``.
+    (event-driven, like ``filter_width``), not ``polling_only``.
+
+    A command_response_observable field with no ``field_policies`` entry is
+    never primed by ``AcquisitionScheduler.prime_unobserved`` (it only
+    iterates ``field_policies``). Both fields now carry the same event-driven ``field_policies`` shape as
+    ``filter_width`` -- not ``polling_only``, so ``due_requests`` still never
+    touches them and the standing serial budget accounted for at the bottom
+    of ``rigs/ic7300.toml`` is unaffected.
     """
     profile = get_radio_profile("IC-7300")
     acquisition = profile.state_acquisition
@@ -2940,6 +2949,7 @@ def test_ic7300_real_profile_filter_num_and_data_mode_have_capability() -> None:
 
     filter_num = FieldPath.active("main", "freq_mode", "filter_num")
     data_mode = FieldPath.active("main", "freq_mode", "data_mode")
+    filter_width = FieldPath.active("main", "freq_mode", "filter_width")
 
     filter_cap = acquisition.capability_for(filter_num)
     data_mode_cap = acquisition.capability_for(data_mode)
@@ -2948,9 +2958,18 @@ def test_ic7300_real_profile_filter_num_and_data_mode_have_capability() -> None:
     assert data_mode_cap.command_response_observable is True
     assert data_mode_cap.polling is False
 
-    # Event-driven only: neither field is in the cadence sweep.
-    assert filter_num not in acquisition.field_policies
-    assert data_mode not in acquisition.field_policies
+    # Event-driven only, primable, same field_policies shape as filter_width.
+    filter_width_policy = acquisition.policy_for(filter_width)
+    for path in (filter_num, data_mode):
+        assert path in acquisition.field_policies
+        policy = acquisition.policy_for(path)
+        assert policy.cadence_seconds == filter_width_policy.cadence_seconds
+        assert policy.freshness_ttl_seconds == filter_width_policy.freshness_ttl_seconds
+        assert (
+            policy.reconciliation_priority
+            == filter_width_policy.reconciliation_priority
+        )
+        assert policy.adaptive_decay.enabled is False
 
 
 def test_ic7610_real_profile_filter_width_pollable_and_emit_reads() -> None:
@@ -3166,11 +3185,18 @@ def test_ic7300_real_profile_primes_tone_and_tsql_freq_and_sends_1b_reads() -> N
     # prime_unobserved caps each call at a burst limit and advances a
     # round-robin cursor, so one call need not reach every policy field.
     # len(field_policies) calls bound a full sweep from any start offset.
+    # A path already queued under a pending key is re-emitted (as a new
+    # frozen AcquisitionRequest, same id, more paths) each time another path
+    # joins that key's coalesced group -- record the LATEST object per path,
+    # not the first, so the coalescing check below compares the converged
+    # group rather than a stale mid-sweep snapshot (MOR-2425: adding two more
+    # non-polling fields elsewhere shifted how many calls this group takes to
+    # converge).
     request_by_path: dict[FieldPath, Any] = {}
     for _ in range(len(acquisition.field_policies)):
         for request in scheduler.prime_unobserved(observed_paths=()):
             for path in request.paths:
-                request_by_path.setdefault(path, request)
+                request_by_path[path] = request
     assert {tone_freq, tsql_freq} <= set(request_by_path)
 
     # Both paths coalesce into one request (same scope/family/receiver/

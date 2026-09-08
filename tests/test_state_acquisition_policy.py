@@ -28,6 +28,21 @@ from _acquisition_query_helpers import (
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 
+# Fields exempted from
+# test_command_response_observable_fields_are_reachable_by_prime_or_poll.
+# IC-9700 sub-receiver freq/mode is declared command_response_observable and
+# resolves to the unselected-VFO (selector 1) read, but no IC-9700 has been
+# on the bench to confirm the radio answers that read with SUB data, so no
+# field_policies entry is added for it here.
+_UNPRIMABLE_COMMAND_RESPONSE_EXEMPTIONS: dict[str, frozenset[FieldPath]] = {
+    "IC-9700": frozenset(
+        {
+            FieldPath.active("sub", "freq_mode", "freq_hz"),
+            FieldPath.active("sub", "freq_mode", "mode"),
+        }
+    ),
+}
+
 
 def _write_toml(tmp_path: Path, content: str, name: str = "test.toml") -> Path:
     path = tmp_path / name
@@ -471,6 +486,42 @@ def test_known_profiles_load_with_state_acquisition_compatibility() -> None:
     )
 
 
+def test_command_response_observable_fields_are_reachable_by_prime_or_poll() -> None:
+    """R36b gates the web listener on every declared field observed once.
+
+    A ``command_response_observable`` field with a non-polling capability
+    (``polling=False``) is primed only by
+    ``AcquisitionScheduler.prime_unobserved``, which iterates
+    ``field_policies`` (see that method's docstring). Every such field must
+    be in ``polling_only`` (``capability.polling``) or ``field_policies``,
+    except the named exemptions above.
+    """
+
+    failures: list[str] = []
+    for model, rig in discover_rigs(RIGS_DIR).items():
+        profile = rig.to_profile()
+        acquisition = profile.state_acquisition
+        if acquisition is None:
+            continue
+        exempt = _UNPRIMABLE_COMMAND_RESPONSE_EXEMPTIONS.get(model, frozenset())
+        for capability in acquisition.capabilities:
+            if not capability.command_response_observable:
+                continue
+            if capability.polling:
+                continue
+            if capability.path in acquisition.field_policies:
+                continue
+            if capability.path in exempt:
+                continue
+            failures.append(f"{model}: {capability.path}")
+
+    assert not failures, (
+        "command_response_observable field(s) with no polling_only or "
+        "field_policies coverage (never primable) and not in "
+        f"_UNPRIMABLE_COMMAND_RESPONSE_EXEMPTIONS: {sorted(failures)}"
+    )
+
+
 def test_known_profiles_stream_like_meters_use_fast_non_decaying_policies() -> None:
     for model in ("IC-7300", "IC-7610", "FTX-1", "X6200"):
         profile = get_radio_profile(model)
@@ -520,6 +571,24 @@ def test_ftx1_profile_declares_slow_control_policies_for_polling_adapter() -> No
     assert ftx1.state_acquisition.capability_for(ptt).can_poll is True
     assert ftx1.state_acquisition.policy_for(af_level).freshness_ttl_seconds == 120.0
     assert ftx1.state_acquisition.policy_for(af_level).cadence_seconds == 30.0
+
+
+def test_ftx1_tx_meters_are_declared_tx_only() -> None:
+    """MOR-2425/T80b: YaesuCatPoller._emit_fast_observations (poller.py) only
+    emits ALC/power/SWR/comp via ``poll_tx_meters`` while PTT observes true;
+    the profile must say so for the startup gate that treats ``tx_only`` as
+    profile-authoritative.
+    """
+    ftx1 = get_radio_profile("FTX-1")
+    assert ftx1.state_acquisition is not None
+
+    for path in (
+        FieldPath.global_("meters", "alc"),
+        FieldPath.global_("meters", "power"),
+        FieldPath.global_("meters", "swr"),
+        FieldPath.global_("meters", "comp"),
+    ):
+        assert ftx1.state_acquisition.policy_for(path).tx_only is True
 
 
 def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
@@ -711,11 +780,13 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
 # ``_observations_from_frame`` rather than one of its lookup dicts: rit_freq/
 # rit_on/rit_tx (cmd 0x21), agc_time_constant (cmd 0x1A sub 0x04),
 # filter_width (cmd 0x1A sub 0x03, profile-dependent decode), cw_pitch/
-# key_speed (cmd 0x14, non-linear decode helpers), and vox_delay (cmd 0x1A
-# sub 0x05, 2-byte ctl-mem prefix rather than a plain sub byte). Kept as an
-# explicit set -- not derivable from a dict import -- because the production
-# code itself is branch-shaped there, not table-shaped; extend this set if a
-# future field adds another such branch.
+# key_speed (cmd 0x14, non-linear decode helpers), vox_delay (cmd 0x1A
+# sub 0x05, 2-byte ctl-mem prefix rather than a plain sub byte), filter_num
+# (cmd 0x26, a selector-form query so its query sub is always None -- MOR-2425)
+# and data_mode (cmd 0x1A sub 0x06, MOR-2425). Kept as an explicit set -- not
+# derivable from a dict import -- because the production code itself is
+# branch-shaped there, not table-shaped; extend this set if a future field
+# adds another such branch.
 _HARDCODED_OBSERVABLE_FIELDS = {
     ("global", "operator_controls", "rit_freq"),
     ("global", "tx_state", "rit_on"),
@@ -725,15 +796,21 @@ _HARDCODED_OBSERVABLE_FIELDS = {
     ("global", "operator_controls", "cw_pitch"),
     ("global", "operator_controls", "key_speed"),
     ("global", "operator_controls", "vox_delay"),
+    ("receiver", "freq_mode", "filter_num"),
+    ("receiver", "freq_mode", "data_mode"),
 }
 
 # Minimal, per-field synthetic response payload for the round-trip probe
 # below. For vox_delay this is APPENDED after the 2-byte ctl-mem prefix the
-# query itself supplies (see ``_round_trip_observes``); for every other
-# field it is the frame's entire ``data``. Values are chosen only to satisfy
-# each branch's own length/shape checks (e.g. "at least 3 bytes", "at least
-# 2 bytes") -- the decoded VALUE is never asserted, only that a matching
-# observation is produced at all.
+# query itself supplies (see ``_round_trip_observes``); filter_num's query
+# similarly carries a 1-byte cmd-0x26 selector prefix, so its payload is
+# appended after that byte (mode=LSB, data_mode=0, filter_num=1, satisfying
+# the >= 4 byte length the 0x26 branch requires to emit filter_num at all).
+# For every other field the query carries no prefix, so the payload is the
+# frame's entire ``data``. Values are chosen only to satisfy each branch's
+# own length/shape checks (e.g. "at least 3 bytes", "at least 2 bytes") --
+# the decoded VALUE is never asserted, only that a matching observation is
+# produced at all.
 _HARDCODED_SYNTHETIC_PAYLOAD: dict[str, bytes] = {
     "rit_freq": b"\x00\x00\x00",
     "rit_on": b"\x01",
@@ -743,6 +820,8 @@ _HARDCODED_SYNTHETIC_PAYLOAD: dict[str, bytes] = {
     "cw_pitch": b"\x00\x00",
     "key_speed": b"\x00\x00",
     "vox_delay": b"\x00",
+    "filter_num": b"\x00\x00\x01",
+    "data_mode": b"\x00",
 }
 
 

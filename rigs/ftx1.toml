@@ -170,29 +170,37 @@ freshness_ttl_seconds = 0.8
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
 
+# MOR-2425/T80b: emitted only while transmitting -- YaesuCatPoller.
+# _emit_fast_observations (backends/yaesu_cat/poller.py) reaches
+# poll_tx_meters, the only source of these four paths, only under a truthy
+# PTT observation.
 [state_acquisition.field_policies."global.meters.alc"]
 cadence_seconds = 0.2
 freshness_ttl_seconds = 0.8
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
+tx_only = true
 
 [state_acquisition.field_policies."global.meters.power"]
 cadence_seconds = 0.2
 freshness_ttl_seconds = 0.8
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
+tx_only = true
 
 [state_acquisition.field_policies."global.meters.swr"]
 cadence_seconds = 0.2
 freshness_ttl_seconds = 0.8
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
+tx_only = true
 
 [state_acquisition.field_policies."global.meters.comp"]
 cadence_seconds = 0.2
 freshness_ttl_seconds = 0.8
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
+tx_only = true
 
 [state_acquisition.field_policies."receiver.main.operator_controls.af_level"]
 cadence_seconds = 30.0
