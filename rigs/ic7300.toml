@@ -543,14 +543,19 @@ tx_only = true
 # cadence tightening above/below this block -- see the serial-budget
 # assertion in tests/test_state_acquisition_policy.py for the current total,
 # 19.333 q/s.)
+# MOR-2425: freshness_ttl_seconds is what a CI-V observation of these two is
+# now stamped with (runtime/_civ_rx.py: _observation_max_age), so it is the
+# window a reading actually gets. 90.0 was 1.5x the cadence; 120.0 is the 2x
+# this profile's default policy (1.5/3.0) and its 1.0/2.0, 3.0/6.0, 5.0/10.0
+# and 30.0/60.0 tiers already carry.
 [state_acquisition.field_policies."global.meters.vd"]
 cadence_seconds = 60.0
-freshness_ttl_seconds = 90.0
+freshness_ttl_seconds = 120.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.meters.id"]
 cadence_seconds = 60.0
-freshness_ttl_seconds = 90.0
+freshness_ttl_seconds = 120.0
 adaptive_decay = false
 
 # MOR-2425 (owner ruling, 2026-09-07): the ten panel knobs, cadence-polled.
@@ -629,10 +634,8 @@ adaptive_decay = false
 # calls. These capabilities carry polling=False, so due_requests never
 # reaches them (_poll_cadence_groups skips any capability whose can_poll is
 # false) and freshness_ttl_seconds is "never": no cadence read refreshes
-# them, and the CI-V ingress takes each observation's max_age from
-# runtime/_civ_rx.py rather than from this key. cadence_seconds is
-# still load-bearing — with no TTL, prime_unobserved passes it as the prime
-# read's max_age.
+# them. cadence_seconds is still load-bearing — with no TTL,
+# prime_unobserved passes it as the prime read's max_age.
 [state_acquisition.field_policies."global.tx_state.vox_on"]
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"

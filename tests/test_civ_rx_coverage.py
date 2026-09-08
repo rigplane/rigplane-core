@@ -2042,9 +2042,9 @@ def test_slow_state_toggle_observation_backed(
 
     field = radio._state_store.snapshot().field(store_path)
     assert field.value == expected
-    # Slow-state toggles never expire — no max_age, so the freshness service
-    # cannot mark them stale and re-gate the frontend ``missing`` (MOR-437).
-    assert field.max_age is None
+    # A slow-state toggle expires only where the fixture's own profile declares
+    # a TTL for it (MOR-437, MOR-2425).
+    assert field.max_age == _expected_observation_max_age(radio, store_path)
     assert field.freshness is FreshnessState.FRESH
 
 
@@ -2310,14 +2310,34 @@ def _public_value_control_expected(public_path: str, value: object) -> object:
     return value
 
 
-def _expected_value_control_max_age(store_path: str) -> float | None:
-    if store_path.endswith(".af_level") or store_path.endswith(".rf_gain"):
-        return 10.0
-    if store_path == "global.operator_controls.power_level":
-        return 30.0
-    if store_path.endswith(".tone_freq") or store_path.endswith(".tsql_freq"):
-        return 25.0
-    return None
+def _expected_observation_max_age(radio: IcomRadio, store_path: str) -> float | None:
+    """What ``_observation`` stamps: the profile's declared TTL, else the table.
+
+    Written out here rather than delegated to ``_civ_rx``'s own resolver: the
+    store spells receivers ``0``/``1`` and ``[state_acquisition.field_policies]``
+    spells them ``main``/``sub``, and that translation is the part worth
+    restating independently.
+    """
+
+    from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
+
+    path = FieldPath.parse(store_path)
+    spellings = [path]
+    if path.receiver_id in ("0", "1"):
+        spellings.append(
+            dataclasses.replace(
+                path, receiver_id="main" if path.receiver_id == "0" else "sub"
+            )
+        )
+    acquisition = radio._profile.state_acquisition  # noqa: SLF001
+    if acquisition is not None:
+        for candidate in spellings:
+            declared = acquisition.field_policies.get(candidate)
+            if declared is not None:
+                return declared.freshness_ttl_seconds
+    return _OBSERVATION_MAX_AGE_SECONDS.get(
+        (path.scope.value, path.family.value, path.name)
+    )
 
 
 def _use_ctcss_fixture_profile(radio: IcomRadio, store_path: str) -> None:
@@ -2346,7 +2366,7 @@ def test_value_control_observation_value(
 
     field = radio_with_state._state_store.snapshot().field(store_path)
     assert field.value == expected
-    assert field.max_age == _expected_value_control_max_age(store_path)
+    assert field.max_age == _expected_observation_max_age(radio_with_state, store_path)
     assert field.freshness is FreshnessState.FRESH
 
 
@@ -2848,13 +2868,14 @@ def test_meter_value_survives_freshness_window_between_live_arrivals(
 
     path = FieldPath.receiver("main", "meters", "s_meter")
     # Production cadence: fast nominal cadence, short coalescing window, and the
-    # freshness TTL the shipped IC-7610 CI-V path assigns to s_meter
-    # (``_OBSERVATION_MAX_AGE_SECONDS``). The observation carries that TTL into
-    # the store, so the test asserts against the real shipped value rather than a
-    # synthetic one.
-    from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
-
-    s_meter_ttl = _OBSERVATION_MAX_AGE_SECONDS[("receiver", "meters", "s_meter")]
+    # freshness TTL the shipped IC-7610 CI-V path assigns to s_meter — the
+    # ``field_policies`` entry in ``rigs/ic7610.toml``, which is the fixture
+    # radio's own profile. The observation carries that TTL into the store, so
+    # the test asserts against the real shipped value rather than a synthetic one.
+    ic7610_acquisition = resolve_radio_profile(model="IC-7610").state_acquisition
+    assert ic7610_acquisition is not None
+    s_meter_ttl = ic7610_acquisition.field_policies[path].freshness_ttl_seconds
+    assert s_meter_ttl is not None
     policy = AcquisitionPolicy(
         cadence_seconds=0.2,
         freshness_ttl_seconds=4.0,
@@ -2909,30 +2930,33 @@ def test_meter_value_survives_freshness_window_between_live_arrivals(
         (0x01, "tsql_freq"),
     ],
 )
-def test_tone_and_tsql_freq_observations_can_go_stale(
+def test_tone_and_tsql_freq_observations_fall_back_to_the_table(
     radio: IcomRadio, sub: int, name: str
 ) -> None:
-    """MOR-2234 follow-up: a declared-observable path still needs a TTL here.
+    """The table is what a path with no declared field policy still gets.
 
-    ``_observation`` reads ``max_age`` from ``_OBSERVATION_MAX_AGE_SECONDS``
-    with no default, and ``state_store.py: StateStore.mark_stale_due`` skips
-    any entry whose ``max_age`` is ``None``. With no table entry this path
-    was observed once and then reported ``FRESH`` for the lifetime of the
-    process, whatever the front panel did afterwards.
+    ``rigs/ic705.toml`` has no ``[state_acquisition.field_policies]`` table
+    at all, so these paths reach ``_observation``'s
+    ``_OBSERVATION_MAX_AGE_SECONDS`` fallback rather than a profile TTL —
+    and ``state_store.py: StateStore.mark_stale_due`` skips any entry whose
+    ``max_age`` is ``None``, so without the fallback the field would report
+    ``FRESH`` for the lifetime of the process.
 
-    Fail-without: the observation carries ``max_age=None`` and the field is
-    still ``FRESH`` past that table's TTL.
+    The profile default TTL is deliberately NOT the fallback: it is 8.0 s on
+    this profile, which the assertion below would reject.
     """
 
     from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
 
-    radio._profile = resolve_radio_profile(model="IC-7300")  # noqa: SLF001
+    profile = resolve_radio_profile(model="IC-705")
+    radio._profile = profile  # noqa: SLF001
+    assert profile.state_acquisition is not None
+    assert profile.state_acquisition.field_policies == {}
     stored = FieldPath.receiver("0", "operator_controls", name)
-    # The TTL is not a literal here: it is read from the table that supplies
-    # it. That table is keyed by (scope, family, name) and does not consult
-    # the profile, so ``rigs/ic7300.toml``'s field_policies entry for the
-    # same path is not what lands on the observation.
     declared_ttl = _OBSERVATION_MAX_AGE_SECONDS[("receiver", "operator_controls", name)]
+    assert (
+        declared_ttl != profile.state_acquisition.default_policy.freshness_ttl_seconds
+    )
 
     observed_at = 500.0
     with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=observed_at):
@@ -2940,6 +2964,7 @@ def test_tone_and_tsql_freq_observations_can_go_stale(
             _make_frame(cmd=0x1B, sub=sub, data=_encode_tone_freq(8850), receiver=0x00)
         )
     assert radio._state_store.snapshot().field(str(stored)).value == 8850
+    assert radio._state_store.snapshot().field(str(stored)).max_age == declared_ttl
 
     # Inside the declared TTL the value is still the radio's truth.
     radio._state_store.mark_stale_due(now=observed_at + declared_ttl - 0.1)
@@ -2957,6 +2982,207 @@ def test_tone_and_tsql_freq_observations_can_go_stale(
     assert [(r.path, r.max_age) for r in delta.reconciliation_requests] == [
         (stored, declared_ttl)
     ]
+
+
+def test_s_meter_falls_back_to_the_table_on_a_profile_with_no_field_policies(
+    radio: IcomRadio,
+) -> None:
+    """Same fallback, for a streaming meter rather than an on-demand field.
+
+    ``rigs/ic705.toml``'s ``default_freshness_ttl_seconds`` is 8.0 s. If the
+    lookup answered from the default policy instead of the table, a stopped
+    S-meter would keep reporting FRESH four times longer than the shipped
+    2.0 s window MOR-334 settled on.
+    """
+
+    from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
+
+    radio._profile = resolve_radio_profile(model="IC-705")  # noqa: SLF001
+    stored = FieldPath.receiver("0", "meters", "s_meter")
+    table_ttl = _OBSERVATION_MAX_AGE_SECONDS[("receiver", "meters", "s_meter")]
+
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=700.0):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x15, sub=0x02, data=_bcd2(122))
+        )
+    assert radio._state_store.snapshot().field(str(stored)).max_age == table_ttl
+
+
+# Four IC-7300 fields under the owner's ruling R41: a field the operator has
+# not touched must not turn "stale" on a healthy link. ``pbt_inner`` and
+# ``filter_width`` are cadence-polled panel knobs (5.0 s), so they keep a
+# finite TTL of twice that; ``rit_on`` and ``tone_freq`` are on-demand and
+# ``rigs/ic7300.toml`` gives them ``freshness_ttl_seconds = "never"``.
+_R41_IC7300_EXPECTED_MAX_AGE = {
+    "receiver.0.operator_controls.pbt_inner": 10.0,
+    "receiver.0.active.freq_mode.filter_width": 10.0,
+    "global.tx_state.rit_on": None,
+    "receiver.0.operator_controls.tone_freq": None,
+}
+
+
+def test_ic7300_profile_supplies_the_civ_observation_max_age(
+    radio: IcomRadio,
+) -> None:
+    """R41: the CI-V ingress stamps the profile's TTL, not the table's.
+
+    ``rit_on`` and ``tone_freq`` took 10.0 s and 25.0 s from
+    ``_OBSERVATION_MAX_AGE_SECONDS`` before this: a finite TTL on two fields
+    no cadence read renews, so an idle link could retire them.
+    """
+
+    radio._profile = resolve_radio_profile(model="IC-7300")  # noqa: SLF001
+    observed_at = 500.0
+    frames = (
+        _make_frame(cmd=0x14, sub=0x07, data=_bcd2(128), receiver=0x00),
+        _make_frame(cmd=0x21, sub=0x01, data=b"\x01"),
+        _make_frame(cmd=0x1B, sub=0x00, data=_encode_tone_freq(8850), receiver=0x00),
+        _make_frame(cmd=0x1A, sub=0x03, data=_bcd2(31), receiver=0x00),
+    )
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=observed_at):
+        for frame in frames:
+            radio._civ_runtime._apply_state_store_observations(frame)
+
+    snapshot = radio._state_store.snapshot()
+    assert {
+        path: snapshot.field(path).max_age for path in _R41_IC7300_EXPECTED_MAX_AGE
+    } == _R41_IC7300_EXPECTED_MAX_AGE
+
+    # 60 s idle: nothing re-reads the two on-demand fields, and nothing may
+    # retire them either. (The two polled ones do decay here — no cadence read
+    # renewed them; ``..._polled_pbt_stays_fresh_across_its_own_cadence``
+    # covers the answered case.)
+    on_demand = [
+        path for path, ttl in _R41_IC7300_EXPECTED_MAX_AGE.items() if ttl is None
+    ]
+    delta = radio._state_store.mark_stale_due(now=observed_at + 60.0)
+    assert set(on_demand).isdisjoint(str(t.path) for t in delta.freshness)
+    for path in on_demand:
+        assert radio._state_store.snapshot().field(path).freshness is (
+            FreshnessState.FRESH
+        ), path
+
+
+def test_ic7300_polled_pbt_stays_fresh_across_its_own_cadence(
+    radio: IcomRadio,
+) -> None:
+    """``pbt_inner`` keeps a TTL because a cadence read renews it.
+
+    Its profile TTL (10.0 s) is twice its profile cadence (5.0 s), so a link
+    that answers every cadence read leaves the field FRESH throughout — the
+    field decays only when the reads stop.
+    """
+
+    profile = resolve_radio_profile(model="IC-7300")
+    radio._profile = profile  # noqa: SLF001
+    assert profile.state_acquisition is not None
+    policy = profile.state_acquisition.field_policies[
+        FieldPath.receiver("main", "operator_controls", "pbt_inner")
+    ]
+    assert policy.freshness_ttl_seconds == 2 * policy.cadence_seconds
+    stored = "receiver.0.operator_controls.pbt_inner"
+
+    start = 500.0
+    for step in range(13):  # 0 s .. 60 s at the profile's own 5.0 s cadence
+        now = start + step * policy.cadence_seconds
+        with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=now):
+            radio._civ_runtime._apply_state_store_observations(
+                _make_frame(cmd=0x14, sub=0x07, data=_bcd2(128), receiver=0x00)
+            )
+        radio._state_store.mark_stale_due(now=now)
+        assert radio._state_store.snapshot().field(stored).freshness is (
+            FreshnessState.FRESH
+        )
+
+    # Stop answering and it does expire — the TTL is real, not disabled.
+    radio._state_store.mark_stale_due(
+        now=start + 12 * policy.cadence_seconds + policy.freshness_ttl_seconds + 0.1
+    )
+    assert radio._state_store.snapshot().field(stored).freshness is (
+        FreshnessState.STALE
+    )
+
+
+def test_ptt_observation_max_age_matches_the_ic7300_profile_declaration(
+    radio: IcomRadio,
+) -> None:
+    """``ptt`` is 1.0 s in both the profile and the table, so this test cannot
+    tell which source answered; ``test_ic7610_pbt_takes_the_profile_ttl_including_the_sub_receiver``
+    is what pins the source.
+
+    ``rigs/ic7300.toml`` declares 1.0 s against a 0.3 s cadence, so the
+    observed-PTT window still clears its own poll interval by more than 2x.
+    """
+
+    profile = resolve_radio_profile(model="IC-7300")
+    radio._profile = profile  # noqa: SLF001
+    assert profile.state_acquisition is not None
+    policy = profile.state_acquisition.field_policies[
+        FieldPath.global_("tx_state", "ptt")
+    ]
+    assert policy.freshness_ttl_seconds == 1.0
+    assert policy.cadence_seconds == 0.3
+    assert policy.freshness_ttl_seconds >= 2 * policy.cadence_seconds
+
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=800.0):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x1C, sub=0x00, data=b"\x00")
+        )
+    field = radio._state_store.snapshot().field("global.tx_state.ptt")
+    assert field.max_age == policy.freshness_ttl_seconds
+
+
+@pytest.mark.parametrize(
+    ("receiver", "stored"),
+    [
+        (0x00, "receiver.0.operator_controls.pbt_inner"),
+        (0x01, "receiver.1.operator_controls.pbt_inner"),
+    ],
+)
+def test_ic7610_pbt_takes_the_profile_ttl_including_the_sub_receiver(
+    radio: IcomRadio, receiver: int, stored: str
+) -> None:
+    """IC-7610's own, shorter, cadence-backed TTL — for both receivers.
+
+    ``rigs/ic7610.toml`` declares 5.0 s for ``receiver.main``/
+    ``receiver.sub`` while the table's entry for the same (scope, family,
+    name) is 10.0 s.  The profile spells the receiver ``main``/``sub`` and
+    the CI-V ingress spells it ``0``/``1``, so neither case lands without
+    ``_profile_path_for_observation``'s alias resolution.
+    """
+
+    from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
+
+    profile = resolve_radio_profile(model="IC-7610")
+    radio._profile = profile  # noqa: SLF001
+    assert profile.state_acquisition is not None
+    policy = profile.state_acquisition.field_policies[
+        FieldPath.receiver(
+            "main" if receiver == 0x00 else "sub", "operator_controls", "pbt_inner"
+        )
+    ]
+    assert policy.freshness_ttl_seconds == 5.0
+    table_ttl = _OBSERVATION_MAX_AGE_SECONDS[
+        ("receiver", "operator_controls", "pbt_inner")
+    ]
+    assert table_ttl == 10.0
+
+    observed_at = 900.0
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=observed_at):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x14, sub=0x07, data=_bcd2(128), receiver=receiver)
+        )
+    field = radio._state_store.snapshot().field(stored)
+    assert field.max_age == policy.freshness_ttl_seconds
+
+    # Expiry still works where it is cadence-backed, and on the profile's
+    # schedule rather than the table's.
+    radio._state_store.mark_stale_due(
+        now=observed_at + policy.freshness_ttl_seconds + 0.1
+    )
+    assert radio._state_store.snapshot().field(stored).freshness is (
+        FreshnessState.STALE
+    )
 
 
 def test_same_value_coalesced_meter_flush_completes_scheduler_request(
@@ -4255,9 +4481,10 @@ def test_scope_control_observation_backed(
         field = snapshot.field(store_path)
         assert field.value == value
         assert field.freshness is FreshnessState.FRESH
-        # Scope controls only change on user/poller action — no decay window,
-        # matching the slow-state toggle pattern (MOR-437).
-        assert field.max_age is None
+        # The fixture's IC-7610 profile declares 60.0 s against a 30.0 s
+        # scope-control cadence, so the decay window is the poller's rather
+        # than this module's fallback table (MOR-557, MOR-2425).
+        assert field.max_age == _expected_observation_max_age(radio, store_path)
 
 
 def test_scope_waterfall_data_emits_no_observations(radio: IcomRadio) -> None:

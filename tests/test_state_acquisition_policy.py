@@ -842,6 +842,25 @@ def test_ic7300_panel_knob_fields_are_polled_at_the_panel_class_cadence() -> Non
         assert policy.freshness_ttl_seconds == _IC7300_PANEL_KNOB_TTL_SECONDS, path
 
 
+def test_ic7300_supply_meter_ttls_clear_twice_their_cadence() -> None:
+    """MOR-2425: ``vd``/``id`` are what a CI-V observation is stamped with.
+
+    Since ``runtime/_civ_rx.py: _observation_max_age`` reads this key, the
+    declared TTL is the window a supply-rail reading actually gets. These two
+    were the only IC-7300 meters whose TTL sat below twice their cadence.
+    """
+
+    acquisition = get_radio_profile("IC-7300").state_acquisition
+    assert acquisition is not None
+
+    for name in ("vd", "id"):
+        path = FieldPath.global_("meters", name)
+        policy = acquisition.policy_for(path)
+        assert acquisition.capability_for(path).can_poll is True, path
+        assert policy.cadence_seconds == 60.0, path
+        assert policy.freshness_ttl_seconds == 2 * policy.cadence_seconds, path
+
+
 def test_ic7300_on_demand_fields_keep_the_never_ttl() -> None:
     """The menu settings stay on-demand: no cadence read, so no expiry."""
 
