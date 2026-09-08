@@ -218,7 +218,6 @@ logger = logging.getLogger(__name__)
 
 _GAP: float = 0.012
 _GAP_SERIAL: float = 0.050  # serial CI-V needs more breathing room
-_SEND_TIMEOUT: float = 1.0
 _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _PTT_PATH = FieldPath.global_("tx_state", "ptt")
@@ -1373,9 +1372,9 @@ class RadioPoller:
         ``_fetch_scope_controls``: a dropped response on a busy scope stream
         must not stall the command queue.
 
-        MOR-2425 PR-3 moved the ten scope leaves that ``ensure_fresh`` can
-        reach onto ``_request_post_write_readback``. The three callers left
-        are the ones it cannot; each says why at its own call site.
+        Ten scope leaves moved onto ``_request_post_write_readback``; the
+        three callers left could not be folded, and each says why at its
+        own call site.
         """
         try:
             await asyncio.wait_for(getter(), timeout=self._SCOPE_GETTER_TIMEOUT)

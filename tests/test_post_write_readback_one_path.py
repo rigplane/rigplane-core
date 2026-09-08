@@ -764,15 +764,16 @@ async def test_cw_pitch_readback_applies_the_value_the_radio_reports() -> None:
 
     ``_confirm_global_operator_write`` compared the readback against the
     requested value and discarded anything else, so the store kept its
-    pre-write value. The generic path applies whatever the radio reports --
-    that is the assertion that discriminates here, and it fails if the
-    reported value is taken to be the requested one.
+    pre-write value. The generic path applies whatever the radio reports.
+    The readback-path assertion is what discriminates a reinstated bespoke
+    confirm; the store-value assertion pins what the generic path does with
+    the reported value.
 
     The lifecycle assertion below is a guard, not a discriminator: nothing
-    confirms ``SetCwPitch`` today either way, because ``set_cw_pitch``
-    carries its value under ``value`` while the field is named ``cw_pitch``,
-    so ``CommandService._record_intent_overlay`` finds no value for the path
-    and records no pending overlay.
+    confirms ``SetCwPitch`` today either way, because ``set_cw_pitch`` has no
+    command descriptor (``command_dispatch.py: command_descriptor`` returns
+    ``None``), so no scoped ``CommandIntent`` -- and hence no pending
+    overlay -- is ever built for it.
     """
     path = FieldPath.parse("global.operator_controls.cw_pitch")
     poller, scheduler = _poller(
