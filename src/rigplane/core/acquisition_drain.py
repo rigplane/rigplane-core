@@ -9,7 +9,8 @@ Injected, because the seats differ deliberately:
 
 * ``expired`` — rigctld expires a dispatched request at the earlier of its
   enqueue deadline and ``sent_at + timeout``; the web poller measures from
-  the send and its own comment calls the ``min`` form a false timeout.
+  ``sent_at`` alone and its own comment calls the ``min`` form a false
+  timeout.
 * ``dispatchable`` — which pending requests this seat may put on the wire
   this pass. rigctld stands the profile cadence down while an external CAT
   session owns the byte stream; no deadline rule can express that.
@@ -48,7 +49,8 @@ __all__ = [
     "InFlightLedger",
 ]
 
-#: request id -> (paths already sent for it, monotonic time of that send).
+#: request id -> (paths already sent for it, the clock reading of the pass
+#: that sent them, taken before its sends).
 InFlightLedger = MutableMapping[str, tuple[frozenset[FieldPath], float]]
 
 
