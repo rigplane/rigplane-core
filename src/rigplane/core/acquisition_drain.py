@@ -358,6 +358,10 @@ class AcquisitionDrain:
             newly_sent = tuple(result.sent_paths)
             if newly_sent:
                 self._in_flight[request.id] = (sent_paths.union(newly_sent), now)
+                # The seat-local ledger above only keeps these paths from
+                # being sent again; crediting a returning answer against
+                # this send needs the same fact on the scheduler.
+                scheduler.record_dispatch(request.id, paths=newly_sent, now=now)
                 self._report_sent(
                     request,
                     paths=newly_sent,

@@ -9,6 +9,7 @@ in ``tests/test_rigctld_server.py``.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from typing import Any, cast
 
 import pytest
@@ -70,6 +71,16 @@ class _StubScheduler:
         self.tx_active_calls: list[bool] = []
         self.claimant_by_request: dict[str, object] = {}
         self.claim_generation_by_request: dict[str, int] = {}
+        self.dispatches: list[tuple[str, tuple[FieldPath, ...], float]] = []
+
+    def record_dispatch(
+        self,
+        request_id: str,
+        *,
+        paths: Iterable[FieldPath],
+        now: float,
+    ) -> None:
+        self.dispatches.append((request_id, tuple(paths), now))
 
     def note_tx_active(self, tx_active: bool) -> None:
         self.tx_active_calls.append(tx_active)
@@ -394,6 +405,58 @@ class TestAcquisitionDrainExecutor:
         assert reports.failures == [
             (request.id, "no_civ_query_mapping", frozenset({_MODE}))
         ]
+        # Only the path that went out is dispatched; the one the executor
+        # could not map is not.
+        assert scheduler.dispatches == [
+            (request.id, (_FREQ,), in_flight[request.id][1])
+        ]
+
+    async def test_a_send_is_reported_to_the_scheduler_as_a_dispatch(self) -> None:
+        request = _request()
+        scheduler = _StubScheduler((request,))
+        drain = _drain(
+            scheduler=scheduler, reports=_Reports(), executor=_StubExecutor()
+        )
+
+        await drain.run_once()
+
+        assert [entry[:2] for entry in scheduler.dispatches] == [(request.id, (_FREQ,))]
+
+    async def test_a_request_that_sent_nothing_is_not_reported_as_dispatched(
+        self,
+    ) -> None:
+        request = _request()
+        scheduler = _StubScheduler((request,))
+        drain = _drain(
+            scheduler=scheduler,
+            reports=_Reports(),
+            executor=_StubExecutor(
+                result=AcquisitionExecutionResult(
+                    sent_paths=(),
+                    failed_paths=(_FREQ,),
+                    failure_reason="no_civ_query_mapping",
+                )
+            ),
+        )
+
+        await drain.run_once()
+
+        assert scheduler.dispatches == []
+
+    async def test_a_request_whose_executor_raised_is_not_reported_as_dispatched(
+        self,
+    ) -> None:
+        request = _request()
+        scheduler = _StubScheduler((request,))
+        drain = _drain(
+            scheduler=scheduler,
+            reports=_Reports(),
+            executor=_StubExecutor(error=RuntimeError("port closed")),
+        )
+
+        await drain.run_once()
+
+        assert scheduler.dispatches == []
 
 
 class TestAcquisitionDrainLedger:

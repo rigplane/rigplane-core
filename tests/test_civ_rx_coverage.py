@@ -2491,6 +2491,11 @@ def test_update_state_cache_records_scheduler_result_for_matching_pending_reques
     path = FieldPath.active("main", "freq_mode", "freq_hz")
     scheduler = _SpyScheduler(profile=_acquisition_profile(path))
     scheduler.due_requests(now=0.0)
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    scheduler.record_dispatch(
+        pending[0].id, paths=pending[0].paths, now=time.monotonic()
+    )
     radio._acquisition_scheduler = scheduler
 
     radio._civ_runtime._update_state_cache_from_frame(
@@ -2498,6 +2503,38 @@ def test_update_state_cache_records_scheduler_result_for_matching_pending_reques
     )
 
     assert scheduler.recorded_count == 1
+    assert scheduler.pending_requests() == ()
+
+
+def test_a_frame_decoded_before_the_request_was_dispatched_does_not_credit_it(
+    radio: IcomRadio,
+) -> None:
+    """Crediting is anchored to the request's own dispatch.
+
+    A pending request the drain has not sent is completed by no frame; once
+    it is sent, a frame decoded after that send completes it.
+    """
+
+    path = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    scheduler.due_requests(now=0.0)
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    radio._acquisition_scheduler = scheduler
+
+    radio._civ_runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x03, data=bcd_encode(14_074_000))
+    )
+
+    assert scheduler.pending_requests() == pending
+
+    scheduler.record_dispatch(
+        pending[0].id, paths=pending[0].paths, now=time.monotonic()
+    )
+    radio._civ_runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x03, data=bcd_encode(14_074_000))
+    )
+
     assert scheduler.pending_requests() == ()
 
 
@@ -2539,6 +2576,10 @@ def test_reconciliation_answer_landing_after_dekey_still_credits_pending_request
         reason="stale",
     )
     assert result.status is AcquisitionStatus.QUEUED
+    assert result.request is not None
+    scheduler.record_dispatch(
+        result.request.id, paths=result.request.paths, now=time.monotonic()
+    )
 
     # De-key before the answer arrives: the next drain caches tx_active=False.
     scheduler.due_requests(now=100.5, tx_active=False)
@@ -3205,6 +3246,9 @@ def test_same_value_coalesced_meter_flush_completes_scheduler_request(
     )
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path, policy=policy))
     scheduler.due_requests(now=100.0)
+    pending = scheduler.pending_requests()
+    assert len(pending) == 1
+    scheduler.record_dispatch(pending[0].id, paths=pending[0].paths, now=100.0)
     radio._acquisition_scheduler = scheduler
     radio._meter_observation_coalescer = MeterObservationCoalescer()
     radio._state_diagnostics = StateDiagnosticsRecorder(enabled=True)

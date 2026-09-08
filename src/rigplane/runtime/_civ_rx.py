@@ -2113,8 +2113,16 @@ class CivRuntime:
             )
             if not matched_paths:
                 continue
+            matched = _replace_dataclass(request, paths=matched_paths)
+            # Path equality alone would credit this request from a frame that
+            # was already on the wire before the request's own send.
+            if not scheduler.may_credit(
+                matched,
+                observation_timestamp=observation.timestamp_monotonic,
+            ):
+                continue
             scheduler.record_acquisition_result(
-                _replace_dataclass(request, paths=matched_paths),
+                matched,
                 _changeset_for_request_paths(
                     changeset,
                     observed_path=observation.path,
