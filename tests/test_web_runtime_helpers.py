@@ -18,6 +18,10 @@ from rigplane.web.runtime_helpers import (
     runtime_capabilities,
 )
 from rigplane.web.server import WebServer
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    StateFreshnessService,
+)
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -30,6 +34,7 @@ from rigplane.core.state_store import (
     StateSnapshot,
     StateStore,
 )
+from rigplane.profiles import get_radio_profile
 from rigplane.core.tx_target import KnownTxTarget, TxTarget, UnknownTxTarget
 from rigplane.core.types import ScopeFixedEdge
 from rigplane.radio_state import RadioState
@@ -1366,3 +1371,34 @@ def test_observed_scope_settings_popover_leaves_survive_frontend_parent_veto() -
     for suffix in _SCOPE_SETTINGS_POPOVER_SUFFIXES:
         path = f"scopeControls.{suffix}"
         assert _frontend_availability(field_status, path) == "available", suffix
+
+
+def test_field_status_reports_missing_after_the_freshness_tick_discards() -> None:
+    """A discarded path is published as unobserved and ``missing``."""
+
+    acquisition = get_radio_profile("FTX-1").state_acquisition
+    assert acquisition is not None
+    notch = FieldPath.receiver("main", "operator_controls", "manual_notch_freq")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    store = StateStore()
+    service = StateFreshnessService(
+        store=store,
+        scheduler=AcquisitionScheduler(profile=acquisition),
+    )
+    store.apply(_observation(mode, "USB", at=1.0))
+    store.apply(_observation(notch, 1500, at=1.0))
+    service.tick(now=1.0)
+    before = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=1
+    )
+    assert before["fieldStatus"]["main.manualNotchFreq"]["observed"] is True
+
+    store.apply(_observation(mode, "FM", at=2.0))
+    service.tick(now=2.0)
+
+    after = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=1
+    )
+    status = after["fieldStatus"]["main.manualNotchFreq"]
+    assert status["observed"] is False
+    assert status["availability"] == "missing"

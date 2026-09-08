@@ -3992,3 +3992,96 @@ def test_startup_domain_keeps_a_field_whose_condition_holds() -> None:
     assert scheduler.unobserved_startup_paths(
         (_AVAIL_MODE,), availability=availability
     ) == (_AVAIL_TARGET,)
+
+
+_AVAIL_FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
+_AVAIL_ATT = FieldPath.receiver("main", "operator_controls", "att")
+
+
+def _ftx1_freshness_service(store: StateStore) -> StateFreshnessService:
+    acquisition = get_radio_profile("FTX-1").state_acquisition
+    assert acquisition is not None
+    return StateFreshnessService(
+        store=store,
+        scheduler=AcquisitionScheduler(profile=acquisition),
+    )
+
+
+def test_tick_discards_a_stored_field_once_its_mode_clause_is_contradicted() -> None:
+    """Observed under a holding clause, removed when the mode flips against it.
+
+    Ageing alone leaves the entry in place, so the last reading stays
+    deliverable; removing it is what ends delivery.
+    """
+
+    store = StateStore()
+    service = _ftx1_freshness_service(store)
+    store.apply(_observation(_AVAIL_MODE, "USB", at=1.0))
+    store.apply(_observation(_AVAIL_TARGET, 1500, at=1.0))
+
+    service.tick(now=1.0)
+    assert store.snapshot().field(_AVAIL_TARGET).value == 1500
+
+    store.apply(_observation(_AVAIL_MODE, "FM", at=2.0))
+    revision_before = store.snapshot().state_revision
+    service.tick(now=2.0)
+
+    after_flip = store.snapshot()
+    with pytest.raises(KeyError):
+        after_flip.field(_AVAIL_TARGET)
+    assert after_flip.state_revision > revision_before
+
+    store.apply(_observation(_AVAIL_MODE, "USB", at=3.0))
+    service.tick(now=3.0)
+    store.apply(_observation(_AVAIL_TARGET, 1600, at=3.0))
+    service.tick(now=3.0)
+
+    assert store.snapshot().field(_AVAIL_TARGET).value == 1600
+
+
+def test_tick_keeps_a_stored_field_whose_clause_source_is_unobserved() -> None:
+    """Unknown is not absent: nothing has established the rig lacks the field."""
+
+    store = StateStore()
+    service = _ftx1_freshness_service(store)
+    store.apply(_observation(_AVAIL_TARGET, 1500, at=1.0))
+
+    service.tick(now=1.0)
+
+    assert store.snapshot().field(_AVAIL_TARGET).value == 1500
+
+
+def test_tick_never_discards_a_field_the_profile_declares_unconditionally() -> None:
+    preamp = FieldPath.receiver("main", "operator_controls", "preamp")
+    store = StateStore()
+    service = _ftx1_freshness_service(store)
+    store.apply(_observation(_AVAIL_MODE, "FM", at=1.0))
+    store.apply(_observation(_AVAIL_FREQ, 461_550_000, at=1.0))
+    store.apply(_observation(preamp, 1, at=1.0))
+
+    service.tick(now=1.0)
+
+    assert store.snapshot().field(preamp).value == 1
+
+
+def test_tick_discards_the_attenuator_above_the_declared_band_bound() -> None:
+    store = StateStore()
+    service = _ftx1_freshness_service(store)
+    store.apply(_observation(_AVAIL_FREQ, 461_550_000, at=1.0))
+    store.apply(_observation(_AVAIL_ATT, 12, at=1.0))
+
+    service.tick(now=1.0)
+
+    with pytest.raises(KeyError):
+        store.snapshot().field(_AVAIL_ATT)
+
+
+def test_tick_keeps_the_attenuator_below_the_declared_band_bound() -> None:
+    store = StateStore()
+    service = _ftx1_freshness_service(store)
+    store.apply(_observation(_AVAIL_FREQ, 14_074_000, at=1.0))
+    store.apply(_observation(_AVAIL_ATT, 12, at=1.0))
+
+    service.tick(now=1.0)
+
+    assert store.snapshot().field(_AVAIL_ATT).value == 12
