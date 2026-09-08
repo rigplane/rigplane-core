@@ -369,7 +369,7 @@ describe('DspPanel v3 DSP scalar source integration (MOR-2423)', () => {
     vi.useRealTimers();
   });
 
-  it('uses the real descriptors for submitted, ACK, exact fresh confirmation, and authority replacement', () => {
+  it('uses the real descriptors for submitted, ACK, fresh confirmation, and authority replacement', () => {
     const commands = lanes.map(([field, name, params]) => beginCommand({
       id: `dsp-${field}`, name, params, originalEpoch: 1, timeoutMs: 5_000,
     }));

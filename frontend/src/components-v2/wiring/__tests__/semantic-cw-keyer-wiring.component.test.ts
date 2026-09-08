@@ -651,7 +651,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(delayInput().getAttribute('aria-busy')).toBe('false');
     const live = q<HTMLElement>('[data-control-feedback-status]');
     expect(live?.getAttribute('aria-live')).toBe('polite');
-    expect(live?.textContent).toContain('111');
+    expect(live?.textContent).toContain('64');
   });
 
   it('restores canonical truth after transport failure and timeout', () => {

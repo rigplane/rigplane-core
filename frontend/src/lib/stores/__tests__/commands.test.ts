@@ -394,7 +394,7 @@ describe('command lifecycle store', () => {
       expect(store.isCommandLifecycleSuperseded(sqlMain)).toBe(false);
     });
 
-    it('confirms only from exact scoped truth after a finite advancing ACK marker', () => {
+    it('confirms on the first same-field observation past the ACK marker, whatever value it carries', () => {
       const snapshot = (
         rfGain: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh',
       ): ServerState => ({
