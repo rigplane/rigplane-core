@@ -109,7 +109,7 @@ export function toLevelMeterRendererView(
   const projection = frame.projection;
   const domain = displayDomain(projection.domain);
   const publicEvidence = levelEvidence(frame, domain);
-  const live = publicEvidence.state === 'current'
+  const live = (publicEvidence.state === 'current' || publicEvidence.state === 'stale')
     && projection.motionFraction !== null
     && validFraction(projection.motionFraction)
     && validFraction(frame.motion.smoothedFraction);

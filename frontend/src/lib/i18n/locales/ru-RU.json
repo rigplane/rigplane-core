@@ -205,6 +205,10 @@
   "core.vfo.state.on": "on",
   "core.vfo.state.off": "off",
   "core.vfo.state.unknown": "unknown",
+
+  "core.meter.state.idle": "не измеряется на приём",
+  "core.meter.state.noReading": "нет показаний",
+
   "core.vfo.ops.equalize": "Уравнять VFO",
   "core.vfo.ops.swap": "Поменять VFO местами",
   "core.vfo.ops.quickSplit": "Быстрый split",
