@@ -213,8 +213,10 @@ tx_only = true
 # _CIV_ACQUISITION_PROVIDERS and the Yaesu backend supplies none, so
 # AcquisitionDrain.run_once takes its executor-missing branch and sends no
 # frame. What these keys do drive is StateStore.mark_stale_due via
-# StateFreshnessService, and 120.0s let a field be labelled STALE for up to
-# two minutes after a value the poller re-reads far more often than that.
+# StateFreshnessService: a field stays FRESH until now minus its last
+# observation exceeds freshness_ttl_seconds, so on a healthy link -- the
+# poller re-reading far more often than 120.0s -- it is never STALE; if the
+# link ever truly stops, the STALE verdict arrives up to two minutes late.
 # 1.0s is YaesuCatPoller._SLOW_INTERVAL, the interval of the group
 # (YaesuCatPoller._poll_slow) that re-reads this tier; the TTL is twice
 # that. Pinned by

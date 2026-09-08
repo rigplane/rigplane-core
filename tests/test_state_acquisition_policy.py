@@ -104,6 +104,38 @@ _ON_DEMAND_FIELD_NAMES = frozenset(
     }
 )
 
+#: Classified paths with no own ``field_policies`` entry, so
+#: ``test_field_policies_obey_their_cadence_class_not_their_rig`` cannot see
+#: them (it walks ``field_policies.items()``, not ``capabilities``): each
+#: inherits the profile's ``default_cadence_seconds`` instead, and that
+#: inherited cadence exceeds the path's class bound. Reproduced by
+#: ``_inherited_default_out_of_class`` below, which walks every profile's
+#: ``capabilities`` and keeps only paths where that comparison fails.
+_INHERITED_DEFAULT_OUT_OF_CLASS: dict[str, tuple[FieldPath, ...]] = {
+    "X6200": (
+        # inherits default 2.0s; live bound is 1.0s
+        FieldPath.active("main", "freq_mode", "freq_hz"),
+    ),
+    "IC-7610": (
+        # inherits default 2.0s; live bound is 1.0s
+        FieldPath.active("main", "freq_mode", "mode"),
+        FieldPath.active("sub", "freq_mode", "mode"),
+    ),
+    "IC-7300": (
+        # inherits default 1.5s; live bound is 1.0s
+        FieldPath.unselected("main", "freq_mode", "freq_hz"),
+        FieldPath.unselected("main", "freq_mode", "mode"),
+    ),
+    "FTX-1": (
+        # inherits default 2.0s; live bound is 1.0s
+        FieldPath.global_("tx_state", "ptt"),
+        FieldPath.active("main", "freq_mode", "freq_hz"),
+        FieldPath.active("main", "freq_mode", "mode"),
+        FieldPath.active("sub", "freq_mode", "freq_hz"),
+        FieldPath.active("sub", "freq_mode", "mode"),
+    ),
+}
+
 #: The ten panel knobs the owner's ruling named, on the one rig it named.
 _IC7300_PANEL_KNOB_PATHS = (
     FieldPath.active("main", "freq_mode", "filter_width"),
@@ -682,7 +714,7 @@ def _cadence_class(
 
 
 def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
-    """One bound per class, applied to every profile that declares policies.
+    """One bound per class, applied to every path with its own field_policies entry.
 
     Owner ruling (2026-09-07): a field's cadence follows what the field is,
     not which radio it sits on. Each class constant above is the longest the
@@ -691,12 +723,18 @@ def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
     one in this repo is IC-7300's 20 q/s serial ceiling, asserted in
     ``test_ic7300_profile_enrolls_exact_supported_observation_rows``).
 
-    A profile that declares no ``field_policies`` at all makes no per-field
-    cadence claim -- every path inherits one default -- so it is skipped, and
-    the set of profiles actually exercised is pinned below so this cannot go
-    vacuous. A classified path whose capability is not pollable is the
-    on-demand shape instead: nothing re-reads it on a cadence, so it must
-    carry no expiry.
+    This gate only checks a path that carries its own ``field_policies``
+    entry, because it walks ``field_policies.items()``. A classified path
+    that instead inherits the profile's ``default_cadence_seconds`` is
+    invisible to it -- see ``_INHERITED_DEFAULT_OUT_OF_CLASS`` and
+    ``test_inherited_default_cadence_out_of_class_paths_are_exactly_named``
+    below for the ten such paths that are out of class today. A profile that
+    declares no ``field_policies`` at all makes no per-field cadence claim --
+    every path inherits one default -- so it is skipped; ``checked ==
+    {...}`` below pins which profiles were walked, not that every classified
+    path on each one carries its own entry. A classified path whose
+    capability is not pollable is the on-demand shape instead: nothing
+    re-reads it on a cadence, so it must carry no expiry.
     """
 
     checked: set[str] = set()
@@ -730,6 +768,50 @@ def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
 
     assert not failures, f"field_policies entries outside their class: {failures}"
     assert checked == {"FTX-1", "IC-7300", "IC-7610", "X6200"}
+
+
+def _inherited_default_out_of_class() -> dict[str, tuple[FieldPath, ...]]:
+    """Classified paths the gate above cannot see, that are out of class.
+
+    Walks every profile's ``capabilities`` (not ``field_policies``, which is
+    what the gate above walks) and keeps a path only if it (a) has no own
+    ``field_policies`` entry, so its effective cadence is the profile's
+    inherited ``default_cadence_seconds``, and (b) that inherited cadence
+    exceeds its class bound.
+    """
+
+    found: dict[str, list[FieldPath]] = {}
+    for model, rig in sorted(discover_rigs(RIGS_DIR).items()):
+        acquisition = rig.to_profile().state_acquisition
+        if acquisition is None or not acquisition.field_policies:
+            continue
+        for capability in sorted(acquisition.capabilities, key=lambda c: str(c.path)):
+            path = capability.path
+            if path in acquisition.field_policies:
+                continue
+            classified = _cadence_class(path, capability)
+            if classified is None:
+                continue
+            _class_name, bound = classified
+            cadence = acquisition.policy_for(path).cadence_seconds
+            if cadence is not None and cadence <= bound:
+                continue
+            found.setdefault(model, []).append(path)
+    return {model: tuple(paths) for model, paths in found.items()}
+
+
+def test_inherited_default_cadence_out_of_class_paths_are_exactly_named() -> None:
+    """The paths the cadence-class gate cannot see must be exactly the named ten.
+
+    ``test_field_policies_obey_their_cadence_class_not_their_rig`` only
+    checks a path with its own ``field_policies`` entry. This test covers
+    the gap: it re-derives ``_INHERITED_DEFAULT_OUT_OF_CLASS`` from the
+    profiles themselves, so fixing one of the ten (or introducing a new
+    inherited-default violation) changes the derived set and this assertion
+    goes red, naming what changed.
+    """
+
+    assert _inherited_default_out_of_class() == _INHERITED_DEFAULT_OUT_OF_CLASS
 
 
 def test_ic7300_panel_knob_fields_are_polled_at_the_panel_class_cadence() -> None:
