@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Spectrum panel visual witness</title>
+    <style>
+      /* A fixed box, not a viewport-relative one: the panel's own layout is
+         `height: 100%`, so every rendered length below it follows from these
+         two numbers rather than from the browser window. */
+      html, body { margin: 0; height: 100%; background: #0a0a14; }
+      #app { width: 960px; height: 540px; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./spectrum-witness.ts"></script>
+  </body>
+</html>
