@@ -27,12 +27,17 @@ DOC_EXACT = {
 }
 CI_EXACT = {"tests/test_ci_path_filters.py"}
 CORE_EXACT = {"pyproject.toml", "uv.lock", ".importlinter"}
-# Paths under docs/ that a test under tests/ reads (Path(...)/open()/
-# read_text()) at test time, not merely cites in a comment or docstring — a
-# change to any of these can break the named test(s), so they must run
-# pytest like any other test input rather than take the docs-only fast path.
-# Each comment stops being true, and the entry should be removed, once the
-# named test stops reading that file.
+# Hand-maintained list of docs/ files that a test under tests/ actually
+# reads (Path(...)/open()/read_text()) at test time, found by grepping
+# tests/ for docs/ path literals and, separately, an open-audit of test
+# runs for files opened under docs/ and .claude/. It only matters for a
+# diff that also touches a non-docs path: quick.yml's paths-ignore lists
+# "docs/**" twice (lines 7 and 34), so a docs-only diff never reaches this
+# classifier at all — docs-only-quick.yml posts a synthetic green instead.
+# This list is NOT complete: files read by tests/test_claude_instruction_
+# paths.py under .claude/, and any *.py under docs/ or .claude/ walked by
+# tests/support/command_builders.py's repository_python_paths, are not
+# listed — grepping for literal path strings cannot see either.
 CORE_DOCS_TEST_INPUT_EXACT = {
     "docs/internals/ui-radio-control-contract.toml",  # tests/architecture/test_ui_radio_control_contract.py, tests/test_mor1408_registry_projection.py
     "docs/parity/ic7610_command_matrix.json",  # tests/test_ic7610_parity_matrix.py
@@ -47,6 +52,12 @@ CORE_DOCS_TEST_INPUT_EXACT = {
     "docs/api/audio.md",  # tests/test_docs_runtime_sync.py
     "docs/guide/audio-recipes.md",  # tests/test_docs_runtime_sync.py
     "docs/guide/diagnostic-reports.md",  # tests/test_docs_runtime_sync.py
+    "docs/validation/templates/ftx1.json",  # tests/test_validation_templates.py
+    "docs/validation/templates/ic7300.json",  # tests/test_validation_templates.py
+    "docs/validation/templates/icom_ic7610.json",  # tests/test_validation_templates.py
+    "docs/validation/templates/tx500.json",  # tests/test_validation_templates.py
+    "docs/validation/templates/x6200.json",  # tests/test_validation_templates.py, tests/validation/test_hardware.py
+    "docs/validation/templates/xiegu_x6200.json",  # tests/test_validation_templates.py
     "docs/internals/audio-capture-health.md",  # tests/test_docs_runtime_sync.py
 }
 

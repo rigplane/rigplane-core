@@ -173,10 +173,9 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
 
     def test_docs_test_input_files_classify_as_core(self) -> None:
         # Every path here is read by name (Path(...)/open()/read_text()) by a
-        # test under tests/ at test time, per a grep of tests/ for `docs/`
-        # path literals cross-checked against each file's actual read calls
-        # (docstring/comment mentions of a docs/ path were excluded). A diff
-        # touching only one of these must not take the docs-only fast path.
+        # test under tests/ at test time — not merely cited in a comment or
+        # docstring. A diff touching only one of these must not take the
+        # docs-only fast path.
         test_input_paths = (
             "docs/internals/ui-radio-control-contract.toml",
             "docs/parity/ic7610_command_matrix.json",
@@ -192,6 +191,12 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             "docs/guide/audio-recipes.md",
             "docs/guide/diagnostic-reports.md",
             "docs/internals/audio-capture-health.md",
+            "docs/validation/templates/ftx1.json",
+            "docs/validation/templates/ic7300.json",
+            "docs/validation/templates/icom_ic7610.json",
+            "docs/validation/templates/tx500.json",
+            "docs/validation/templates/x6200.json",
+            "docs/validation/templates/xiegu_x6200.json",
         )
         for path in test_input_paths:
             with self.subTest(path=path):
