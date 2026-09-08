@@ -322,7 +322,9 @@ class YaesuObservationAdapter:
         adapter = self._adapter()
         observations: list[Observation] = []
         if self._can_poll(_MAIN_FREQ):
-            ok, value = await self._safe_read("main.freq", self.radio.read_freq(0))
+            ok, value = await self._safe_read(
+                "main.freq", self.radio.read_freq(0), paths=(_MAIN_FREQ,)
+            )
             if ok:
                 observations.append(
                     adapter.observation(_MAIN_FREQ, value, native_id="read_freq")
@@ -332,20 +334,26 @@ class YaesuObservationAdapter:
         # issuing a redundant CAT mode query on the hot poll path (MOR-507).
         main_mode: str | None = None
         if self._can_poll(_MAIN_MODE):
-            ok, result = await self._safe_read("main.mode", self.radio.read_mode(0))
+            ok, result = await self._safe_read(
+                "main.mode", self.radio.read_mode(0), paths=(_MAIN_MODE,)
+            )
             if ok and result is not None:
                 main_mode = result[0]
                 observations.append(
                     adapter.observation(_MAIN_MODE, result[0], native_id="read_mode")
                 )
         if self._has_runtime_capability("dual_rx") and self._can_poll(_SUB_FREQ):
-            ok, value = await self._safe_read("sub.freq", self.radio.read_freq(1))
+            ok, value = await self._safe_read(
+                "sub.freq", self.radio.read_freq(1), paths=(_SUB_FREQ,)
+            )
             if ok:
                 observations.append(
                     adapter.observation(_SUB_FREQ, value, native_id="read_freq")
                 )
         if self._has_runtime_capability("dual_rx") and self._can_poll(_SUB_MODE):
-            ok, result = await self._safe_read("sub.mode", self.radio.read_mode(1))
+            ok, result = await self._safe_read(
+                "sub.mode", self.radio.read_mode(1), paths=(_SUB_MODE,)
+            )
             if ok and result is not None:
                 observations.append(
                     adapter.observation(_SUB_MODE, result[0], native_id="read_mode")
@@ -382,7 +390,10 @@ class YaesuObservationAdapter:
                 CatCommandRejected,
             ) as exc:
                 self._log_field_skip(
-                    "ptt", "Skipping field %s — PTT read failed: %s", exc
+                    "ptt",
+                    "Skipping field %s — PTT read failed: %s",
+                    exc,
+                    paths=(_PTT,),
                 )
                 reading = TxStateReading(None, failure="read-error")
             except Exception:
@@ -426,7 +437,9 @@ class YaesuObservationAdapter:
             _MAIN_FILTER_WIDTH
         ):
             ok, value = await self._safe_read(
-                "main.filter_width", self.radio.read_filter_width(0, mode=main_mode)
+                "main.filter_width",
+                self.radio.read_filter_width(0, mode=main_mode),
+                paths=(_MAIN_FILTER_WIDTH,),
             )
             if ok:
                 observations.append(
@@ -511,7 +524,7 @@ class YaesuObservationAdapter:
         observations: list[Observation] = []
         if self._has_runtime_capability("meters") and self._can_poll(_MAIN_S_METER):
             ok, raw = await self._safe_read(
-                "main.s_meter", self.radio.read_s_meter(0), path=_MAIN_S_METER
+                "main.s_meter", self.radio.read_s_meter(0), paths=(_MAIN_S_METER,)
             )
             if ok and raw is not None:
                 raw = smooth_s_meter(0, raw) if smooth_s_meter is not None else raw
@@ -530,7 +543,7 @@ class YaesuObservationAdapter:
             and self._can_poll(_SUB_S_METER)
         ):
             ok, raw = await self._safe_read(
-                "sub.s_meter", self.radio.read_s_meter(1), path=_SUB_S_METER
+                "sub.s_meter", self.radio.read_s_meter(1), paths=(_SUB_S_METER,)
             )
             if ok and raw is not None:
                 raw = smooth_s_meter(1, raw) if smooth_s_meter is not None else raw
@@ -609,7 +622,9 @@ class YaesuObservationAdapter:
         # ALC is a stream-like TX meter (MOR-448), emitted in the same lane and
         # under the same meter freshness/coalescing policy as power/swr.
         if self._has_runtime_capability("meters") and self._can_poll(_ALC_METER):
-            ok, raw = await self._safe_read("alc", self.radio.read_alc_meter())
+            ok, raw = await self._safe_read(
+                "alc", self.radio.read_alc_meter(), paths=(_ALC_METER,)
+            )
             if ok and raw is not None:
                 value, quality = self._calibrate_meter(raw, "alc")
                 observations.append(
@@ -621,7 +636,9 @@ class YaesuObservationAdapter:
                     )
                 )
         if self._has_runtime_capability("meters") and self._can_poll(_POWER_METER):
-            ok, raw = await self._safe_read("power", self.radio.read_power_meter())
+            ok, raw = await self._safe_read(
+                "power", self.radio.read_power_meter(), paths=(_POWER_METER,)
+            )
             if ok and raw is not None:
                 value, quality = self._calibrate_meter(raw, "power")
                 observations.append(
@@ -633,7 +650,9 @@ class YaesuObservationAdapter:
                     )
                 )
         if self._has_runtime_capability("meters") and self._can_poll(_SWR_METER):
-            ok, raw = await self._safe_read("swr", self.radio.read_swr_meter())
+            ok, raw = await self._safe_read(
+                "swr", self.radio.read_swr_meter(), paths=(_SWR_METER,)
+            )
             if ok and raw is not None:
                 value, quality = self._calibrate_meter(raw, "swr")
                 observations.append(
@@ -647,7 +666,9 @@ class YaesuObservationAdapter:
         # COMP is the cross-vendor PA meter (MOR-460), emitted in the same lane
         # and under the same meter freshness/coalescing policy as alc/power/swr.
         if self._has_runtime_capability("meters") and self._can_poll(_COMP_METER):
-            ok, raw = await self._safe_read("comp", self.radio.read_comp_meter())
+            ok, raw = await self._safe_read(
+                "comp", self.radio.read_comp_meter(), paths=(_COMP_METER,)
+            )
             if ok and raw is not None:
                 value, quality = self._calibrate_meter(raw, "comp")
                 observations.append(
@@ -665,7 +686,7 @@ class YaesuObservationAdapter:
         observations: list[Observation] = []
         if self._has_runtime_capability("af_level") and self._can_poll(_MAIN_AF):
             ok, value = await self._safe_read(
-                "main.af_level", self.radio.read_af_level(0)
+                "main.af_level", self.radio.read_af_level(0), paths=(_MAIN_AF,)
             )
             if ok:
                 observations.append(
@@ -677,7 +698,7 @@ class YaesuObservationAdapter:
                 )
         if self._has_runtime_capability("rf_gain") and self._can_poll(_MAIN_RF):
             ok, value = await self._safe_read(
-                "main.rf_gain", self.radio.read_rf_gain(0)
+                "main.rf_gain", self.radio.read_rf_gain(0), paths=(_MAIN_RF,)
             )
             if ok:
                 observations.append(
@@ -689,7 +710,7 @@ class YaesuObservationAdapter:
                 )
         if self._has_runtime_capability("squelch") and self._can_poll(_MAIN_SQL):
             ok, value = await self._safe_read(
-                "main.squelch", self.radio.read_squelch(0)
+                "main.squelch", self.radio.read_squelch(0), paths=(_MAIN_SQL,)
             )
             if ok:
                 observations.append(
@@ -705,7 +726,7 @@ class YaesuObservationAdapter:
             and self._can_poll(_SUB_AF)
         ):
             ok, value = await self._safe_read(
-                "sub.af_level", self.radio.read_af_level(1)
+                "sub.af_level", self.radio.read_af_level(1), paths=(_SUB_AF,)
             )
             if ok:
                 observations.append(
@@ -720,7 +741,9 @@ class YaesuObservationAdapter:
             and self._has_runtime_capability("rf_gain")
             and self._can_poll(_SUB_RF)
         ):
-            ok, value = await self._safe_read("sub.rf_gain", self.radio.read_rf_gain(1))
+            ok, value = await self._safe_read(
+                "sub.rf_gain", self.radio.read_rf_gain(1), paths=(_SUB_RF,)
+            )
             if ok:
                 observations.append(
                     adapter.observation(
@@ -734,7 +757,9 @@ class YaesuObservationAdapter:
             and self._has_runtime_capability("squelch")
             and self._can_poll(_SUB_SQL)
         ):
-            ok, value = await self._safe_read("sub.squelch", self.radio.read_squelch(1))
+            ok, value = await self._safe_read(
+                "sub.squelch", self.radio.read_squelch(1), paths=(_SUB_SQL,)
+            )
             if ok:
                 observations.append(
                     adapter.observation(
@@ -751,7 +776,9 @@ class YaesuObservationAdapter:
         # receives the coerced ``int(on_off)`` (0/1) — no scaling beyond the
         # bool→int match (cross-vendor calibration is MOR-453).
         if self._has_runtime_capability("attenuator") and self._can_poll(_MAIN_ATT):
-            ok, value = await self._safe_read("main.att", self.radio.read_attenuator(0))
+            ok, value = await self._safe_read(
+                "main.att", self.radio.read_attenuator(0), paths=(_MAIN_ATT,)
+            )
             if ok and value is not None:
                 observations.append(
                     adapter.observation(
@@ -759,13 +786,17 @@ class YaesuObservationAdapter:
                     )
                 )
         if self._has_runtime_capability("preamp") and self._can_poll(_MAIN_PREAMP):
-            ok, value = await self._safe_read("main.preamp", self.radio.read_preamp(0))
+            ok, value = await self._safe_read(
+                "main.preamp", self.radio.read_preamp(0), paths=(_MAIN_PREAMP,)
+            )
             if ok:
                 observations.append(
                     adapter.observation(_MAIN_PREAMP, value, native_id="read_preamp")
                 )
         if self._can_poll(_MAIN_AGC):
-            ok, value = await self._safe_read("main.agc", self.radio.read_agc(0))
+            ok, value = await self._safe_read(
+                "main.agc", self.radio.read_agc(0), paths=(_MAIN_AGC,)
+            )
             if ok:
                 observations.append(
                     adapter.observation(_MAIN_AGC, value, native_id="read_agc")
@@ -777,7 +808,7 @@ class YaesuObservationAdapter:
         # "always — lightweight query" treatment, like AGC.
         if self._has_runtime_capability("if_shift") and self._can_poll(_MAIN_IF_SHIFT):
             ok, value = await self._safe_read(
-                "main.if_shift", self.radio.read_if_shift(0)
+                "main.if_shift", self.radio.read_if_shift(0), paths=(_MAIN_IF_SHIFT,)
             )
             if ok:
                 observations.append(
@@ -786,7 +817,9 @@ class YaesuObservationAdapter:
                     )
                 )
         if self._can_poll(_MAIN_NARROW):
-            ok, value = await self._safe_read("main.narrow", self.radio.read_narrow(0))
+            ok, value = await self._safe_read(
+                "main.narrow", self.radio.read_narrow(0), paths=(_MAIN_NARROW,)
+            )
             if ok:
                 observations.append(
                     adapter.observation(_MAIN_NARROW, value, native_id="read_narrow")
@@ -800,7 +833,9 @@ class YaesuObservationAdapter:
         # exactly as the legacy poller derives them; no second query.
         if self._has_runtime_capability("nb"):
             ok, nb_level = await self._safe_read(
-                "main.nb_level", self.radio.read_nb_level(0)
+                "main.nb_level",
+                self.radio.read_nb_level(0),
+                paths=(_MAIN_NB_LEVEL, _MAIN_NB),
             )
             if ok and nb_level is not None:
                 if self._can_poll(_MAIN_NB_LEVEL):
@@ -821,7 +856,9 @@ class YaesuObservationAdapter:
                     )
         if self._has_runtime_capability("nr"):
             ok, nr_level = await self._safe_read(
-                "main.nr_level", self.radio.read_nr_level(0)
+                "main.nr_level",
+                self.radio.read_nr_level(0),
+                paths=(_MAIN_NR_LEVEL, _MAIN_NR),
             )
             if ok and nr_level is not None:
                 if self._can_poll(_MAIN_NR_LEVEL):
@@ -842,7 +879,9 @@ class YaesuObservationAdapter:
                     )
         if self._has_runtime_capability("notch") and self._can_poll(_MAIN_AUTO_NOTCH):
             ok, value = await self._safe_read(
-                "main.auto_notch", self.radio.read_auto_notch(0)
+                "main.auto_notch",
+                self.radio.read_auto_notch(0),
+                paths=(_MAIN_AUTO_NOTCH,),
             )
             if ok:
                 observations.append(
@@ -852,7 +891,9 @@ class YaesuObservationAdapter:
                 )
         if self._has_runtime_capability("notch") and self._can_poll(_MAIN_MANUAL_NOTCH):
             ok, value = await self._safe_read(
-                "main.manual_notch", self.radio.read_manual_notch(0)
+                "main.manual_notch",
+                self.radio.read_manual_notch(0),
+                paths=(_MAIN_MANUAL_NOTCH,),
             )
             if ok:
                 observations.append(
@@ -864,7 +905,9 @@ class YaesuObservationAdapter:
             _MAIN_MANUAL_NOTCH_FREQ
         ):
             ok, value = await self._safe_read(
-                "main.manual_notch_freq", self.radio.read_manual_notch_freq(0)
+                "main.manual_notch_freq",
+                self.radio.read_manual_notch_freq(0),
+                paths=(_MAIN_MANUAL_NOTCH_FREQ,),
             )
             if ok:
                 observations.append(
@@ -894,7 +937,9 @@ class YaesuObservationAdapter:
         # here.
         if self._has_runtime_capability("sql_type"):
             ok, sql_type = await self._safe_read(
-                "main.sql_type", self.radio.read_sql_type(0)
+                "main.sql_type",
+                self.radio.read_sql_type(0),
+                paths=(_MAIN_REPEATER_TONE, _MAIN_REPEATER_TSQL),
             )
             if ok and sql_type is not None:
                 if self._can_poll(_MAIN_REPEATER_TONE):
@@ -933,7 +978,9 @@ class YaesuObservationAdapter:
         # NO neutral DCS path is emitted.
         if self._has_runtime_capability("sql_type"):
             ok, tone_index = await self._safe_read(
-                "main.ctcss_tone_index", self.radio.read_ctcss_tone_index(0)
+                "main.ctcss_tone_index",
+                self.radio.read_ctcss_tone_index(0),
+                paths=(_MAIN_TONE_FREQ, _MAIN_TSQL_FREQ),
             )
             if ok and tone_index is not None:
                 try:
@@ -976,6 +1023,7 @@ class YaesuObservationAdapter:
                     ok, shift_code = await self._safe_read(
                         f"{label}.repeater_shift",
                         self.radio.read_repeater_shift(receiver),
+                        paths=(path,),
                     )
                     if ok and shift_code is not None:
                         observations.append(
@@ -991,7 +1039,9 @@ class YaesuObservationAdapter:
         # ``VS`` index (0=MAIN, 1=SUB) is coerced to the neutral
         # ``global.slow_state.active`` ``"MAIN"``/``"SUB"`` str.
         if self._can_poll(_ACTIVE):
-            ok, index = await self._safe_read("active", self.radio.read_vfo_select())
+            ok, index = await self._safe_read(
+                "active", self.radio.read_vfo_select(), paths=(_ACTIVE,)
+            )
             if ok and index is not None:
                 observations.append(
                     adapter.observation(
@@ -1005,7 +1055,9 @@ class YaesuObservationAdapter:
         # key_speed/cw_pitch/break_in). Emitted in the slow-control lane beside
         # ``slow_state.active``, the only other global slow_state observation.
         if self._has_runtime_capability("cw") and self._can_poll(_CW_SPOT):
-            ok, value = await self._safe_read("cw_spot", self.radio.read_cw_spot())
+            ok, value = await self._safe_read(
+                "cw_spot", self.radio.read_cw_spot(), paths=(_CW_SPOT,)
+            )
             if ok:
                 observations.append(
                     adapter.observation(
@@ -1032,7 +1084,9 @@ class YaesuObservationAdapter:
         adapter = self._adapter()
         observations: list[Observation] = []
         if self._has_runtime_capability("tx") and self._can_poll(_POWER_LEVEL):
-            ok, result = await self._safe_read("power_level", self.radio.read_power())
+            ok, result = await self._safe_read(
+                "power_level", self.radio.read_power(), paths=(_POWER_LEVEL,)
+            )
             if ok and result is not None:
                 normalized = self._normalize_power_level(result[1])
                 if normalized is not None:
@@ -1044,7 +1098,9 @@ class YaesuObservationAdapter:
                         )
                     )
         if self._can_poll(_MIC_GAIN):
-            ok, value = await self._safe_read("mic_gain", self.radio.read_mic_gain())
+            ok, value = await self._safe_read(
+                "mic_gain", self.radio.read_mic_gain(), paths=(_MIC_GAIN,)
+            )
             if ok:
                 observations.append(
                     adapter.observation(_MIC_GAIN, value, native_id="read_mic_gain")
@@ -1053,7 +1109,7 @@ class YaesuObservationAdapter:
             _COMPRESSOR_ON
         ):
             ok, value = await self._safe_read(
-                "compressor_on", self.radio.read_processor()
+                "compressor_on", self.radio.read_processor(), paths=(_COMPRESSOR_ON,)
             )
             if ok:
                 observations.append(
@@ -1065,7 +1121,9 @@ class YaesuObservationAdapter:
             _COMPRESSOR_LEVEL
         ):
             ok, value = await self._safe_read(
-                "compressor_level", self.radio.read_processor_level()
+                "compressor_level",
+                self.radio.read_processor_level(),
+                paths=(_COMPRESSOR_LEVEL,),
             )
             if ok:
                 observations.append(
@@ -1074,7 +1132,9 @@ class YaesuObservationAdapter:
                     )
                 )
         if self._has_runtime_capability("vox") and self._can_poll(_VOX_ON):
-            ok, value = await self._safe_read("vox", self.radio.read_vox())
+            ok, value = await self._safe_read(
+                "vox", self.radio.read_vox(), paths=(_VOX_ON,)
+            )
             if ok:
                 observations.append(
                     adapter.observation(_VOX_ON, value, native_id="read_vox")
@@ -1083,7 +1143,9 @@ class YaesuObservationAdapter:
         # ``split`` runtime capability, mirroring the legacy poller's
         # ``"split" in caps`` gate.
         if self._has_runtime_capability("split") and self._can_poll(_SPLIT):
-            ok, value = await self._safe_read("split", self.radio.read_split())
+            ok, value = await self._safe_read(
+                "split", self.radio.read_split(), paths=(_SPLIT,)
+            )
             if ok:
                 observations.append(
                     adapter.observation(_SPLIT, value, native_id="read_split")
@@ -1095,7 +1157,9 @@ class YaesuObservationAdapter:
         has_rit = self._has_runtime_capability("rit")
         has_xit = self._has_runtime_capability("xit")
         if has_rit or has_xit:
-            ok, clar = await self._safe_read("clarifier", self.radio.read_clarifier(0))
+            ok, clar = await self._safe_read(
+                "clarifier", self.radio.read_clarifier(0), paths=(_RIT_ON, _RIT_TX)
+            )
             if ok and clar is not None:
                 rx_clar, tx_clar = clar
                 if has_rit and self._can_poll(_RIT_ON):
@@ -1116,7 +1180,9 @@ class YaesuObservationAdapter:
                     )
             if self._can_poll(_RIT_FREQ):
                 ok, freq = await self._safe_read(
-                    "clarifier_freq", self.radio.read_clarifier_freq(0)
+                    "clarifier_freq",
+                    self.radio.read_clarifier_freq(0),
+                    paths=(_RIT_FREQ,),
                 )
                 if ok:
                     observations.append(
@@ -1130,7 +1196,9 @@ class YaesuObservationAdapter:
         # gated on the ``tuner`` runtime capability, mirroring the legacy
         # poller's ``"tuner" in caps`` gate; the generic getter normalizes AC.
         if self._has_runtime_capability("tuner") and self._can_poll(_TUNER):
-            ok, value = await self._safe_read("tuner", self.radio.get_tuner_status())
+            ok, value = await self._safe_read(
+                "tuner", self.radio.get_tuner_status(), paths=(_TUNER,)
+            )
             if ok and value is not None:
                 observations.append(
                     adapter.observation(
@@ -1143,7 +1211,9 @@ class YaesuObservationAdapter:
         # ``dial_lock`` runtime capability, mirroring the legacy poller's
         # ``"dial_lock" in caps`` gate.
         if self._has_runtime_capability("dial_lock") and self._can_poll(_DIAL_LOCK):
-            ok, value = await self._safe_read("dial_lock", self.radio.read_lock())
+            ok, value = await self._safe_read(
+                "dial_lock", self.radio.read_lock(), paths=(_DIAL_LOCK,)
+            )
             if ok:
                 observations.append(
                     adapter.observation(
@@ -1165,7 +1235,7 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("cw"):
             if self._can_poll(_KEY_SPEED):
                 ok, value = await self._safe_read(
-                    "key_speed", self.radio.read_keyer_speed()
+                    "key_speed", self.radio.read_keyer_speed(), paths=(_KEY_SPEED,)
                 )
                 if ok and value is not None:
                     observations.append(
@@ -1177,7 +1247,7 @@ class YaesuObservationAdapter:
                     )
             if self._can_poll(_CW_PITCH):
                 ok, value = await self._safe_read(
-                    "cw_pitch", self.radio.read_cw_pitch()
+                    "cw_pitch", self.radio.read_cw_pitch(), paths=(_CW_PITCH,)
                 )
                 if ok and value is not None:
                     observations.append(
@@ -1189,7 +1259,7 @@ class YaesuObservationAdapter:
                     )
             if self._can_poll(_BREAK_IN):
                 ok, value = await self._safe_read(
-                    "break_in", self.radio.read_break_in()
+                    "break_in", self.radio.read_break_in(), paths=(_BREAK_IN,)
                 )
                 if ok and value is not None:
                     observations.append(
@@ -1201,7 +1271,9 @@ class YaesuObservationAdapter:
                     )
             if self._can_poll(_BREAK_IN_DELAY):
                 ok, value = await self._safe_read(
-                    "break_in_delay", self.radio.read_break_in_delay()
+                    "break_in_delay",
+                    self.radio.read_break_in_delay(),
+                    paths=(_BREAK_IN_DELAY,),
                 )
                 if ok and value is not None:
                     observations.append(
@@ -1218,7 +1290,7 @@ class YaesuObservationAdapter:
         label: str,
         read: Awaitable[_T],
         *,
-        path: FieldPath | None = None,
+        paths: tuple[FieldPath, ...] = (),
     ) -> tuple[bool, _T | None]:
         """Await one field read, tolerating FIELD-level CAT failures (MOR-473).
 
@@ -1246,13 +1318,19 @@ class YaesuObservationAdapter:
             # ValueError covers _read_meter / int() malformed-frame failures;
             # CatParse/FormatError subclass ValueError but are listed for clarity.
             self._log_field_skip(
-                label, "Skipping field %s — malformed CAT response: %s", exc, path=path
+                label,
+                "Skipping field %s — malformed CAT response: %s",
+                exc,
+                paths=paths,
             )
             return False, None
         except CatCommandRejected as exc:
             # ``?;`` reject = command unsupported on this radio -> skip the field.
             self._log_field_skip(
-                label, "Skipping field %s — command rejected (?;): %s", exc, path=path
+                label,
+                "Skipping field %s — command rejected (?;): %s",
+                exc,
+                paths=paths,
             )
             return False, None
 
@@ -1262,7 +1340,7 @@ class YaesuObservationAdapter:
         message: str,
         exc: Exception,
         *,
-        path: FieldPath | None = None,
+        paths: tuple[FieldPath, ...] = (),
     ) -> None:
         """Warn once per field, then demote repeats to DEBUG (MOR-561).
 
@@ -1270,12 +1348,10 @@ class YaesuObservationAdapter:
         rather than the adapter (rebuilt every cycle). A non-``set`` attribute —
         e.g. a ``MagicMock`` test double — falls back to always-warn.
 
-        ``path`` names the declared field the skipped read would have produced.
-        Where it is given, the warning also releases that path from the startup
-        gate (``AcquisitionScheduler.abandon_startup_path``), so a field whose
-        answer never parses cannot hold that gate open. Pinned by
+        ``paths`` names the declared fields the skipped read would have
+        produced; see ``AcquisitionScheduler.abandon_startup_path`` and
         ``tests/test_yaesu_cat_observation_adapter.py::
-        test_first_sub_s_meter_skip_releases_the_path_from_the_startup_gate``.
+        test_skipped_read_abandons_every_declared_path_it_feeds``.
         """
         warned = getattr(self.radio, "_poll_warned_fields", None)
         if isinstance(warned, set):
@@ -1283,12 +1359,13 @@ class YaesuObservationAdapter:
                 logger.debug(message, label, exc)
                 return
             warned.add(label)
-        if path is not None:
+        if paths:
             scheduler = getattr(self.radio, "_acquisition_scheduler", None)
             if isinstance(scheduler, AcquisitionScheduler):
-                scheduler.abandon_startup_path(
-                    path, reason=f"yaesu field read skipped: {label}"
-                )
+                for path in paths:
+                    scheduler.abandon_startup_path(
+                        path, reason=f"yaesu field read skipped: {label}"
+                    )
         logger.warning(message, label, exc)
 
     def _adapter(self) -> ProviderObservationAdapter:
