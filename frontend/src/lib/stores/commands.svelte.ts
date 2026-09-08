@@ -550,7 +550,7 @@ function reconcileStateBackedCommands(state: ServerState | null): void {
       command.ackFieldObservationTimes = { ...boundaries, [path]: marker };
       continue;
     }
-    if (marker > boundary && descriptor.matches(confirmed, target)) {
+    if (marker > boundary) {
       transition(command.id, command.originalEpoch, 'confirmed', command.eventEpoch ?? command.originalEpoch);
     }
   }

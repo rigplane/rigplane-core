@@ -734,7 +734,7 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     expect(getBreakInDelayControlFeedback()).toMatchObject({ phase: 'idle', confirmed: 52 });
   });
 
-  it('confirms only from matching fresh canonical truth newer than the ACK boundary', async () => {
+  it('confirms from the first fresh canonical truth newer than the ACK boundary, whatever value it carries', async () => {
     vi.useFakeTimers(); vi.doUnmock('$lib/stores/commands.svelte'); vi.resetModules();
     const store = await import('$lib/stores/commands.svelte');
     const { getBreakInDelayControlFeedback: getLiveFeedback } = await import('../panel-adapters');
@@ -749,10 +749,13 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     expect(getLiveFeedback()).toMatchObject({ phase: 'awaiting-confirmation', target: 64 });
     emitAcceptedState(delayState({ breakInDelay: 64 }));
     expect(store.getCommandLifecycle(record.id, 7)?.status).toBe('acknowledged');
-    emitAcceptedState(delayState({ breakInDelay: 48, fieldStatus: { breakInDelay: {
+    runtimeState.state = delayState({ breakInDelay: 48, fieldStatus: { breakInDelay: {
       observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5,
-    } } }));
-    expect(store.getCommandLifecycle(record.id, 7)?.status).toBe('acknowledged');
+    } } }); emitAcceptedState(runtimeState.state);
+    expect(store.getCommandLifecycle(record.id, 7)?.status).toBe('confirmed');
+    expect(getLiveFeedback()).toMatchObject({
+      phase: 'confirmed', confirmed: 48, target: null, outcome: { phase: 'confirmed' },
+    });
     runtimeState.state = delayState({ breakInDelay: 64, fieldStatus: { breakInDelay: {
       observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 6,
     } } }); emitAcceptedState(runtimeState.state);

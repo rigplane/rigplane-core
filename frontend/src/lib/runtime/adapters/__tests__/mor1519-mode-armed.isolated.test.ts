@@ -7,10 +7,9 @@
  * over the SAME `latestPendingParam` decision table the four MOR-1441 leg-2
  * accessors already use (`mor1441-pending-discrete.isolated.test.ts`) — not
  * a second source of truth — so it inherits that table's honesty rules
- * verbatim: pending survives the transport ack until a confirming
- * post-ack observation (or the shared grace backstop), a re-click re-arms
- * at the freshest target, and a terminal failure clears `armed` immediately
- * (it must never present a failed command as still in flight).
+ * verbatim: a re-click re-arms at the freshest target, and a terminal
+ * failure clears `armed` immediately (it must never present a failed
+ * command as still in flight).
  *
  * `getModeArmed` differs from the leg-2 accessors only in HOW it picks the
  * receiver: no `receiver` param — `ModePanel` renders a single grid for the
@@ -97,15 +96,12 @@ describe('getModeArmed (MOR-1519)', () => {
     },
   );
 
-  // A transport ack is not a confirming observation — armed survives ack
-  // until the radio's OWN observed mode confirms the target.
   it('stays armed for an acknowledged command when the confirmed mode has not caught up', () => {
     runtimeState.state = { active: 'MAIN', main: { mode: 'USB' }, sub: {} };
     state.commands = [cmd({ status: 'acknowledged', params: { mode: 'CW', receiver: 0 } })];
     expect(getModeArmed()).toEqual({ armed: true, value: 'CW' });
   });
 
-  // Confirming observation clears armed — pending is display-only.
   it('clears armed once the confirmed mode matches the target', () => {
     runtimeState.state = { active: 'MAIN', main: { mode: 'CW' }, sub: {} };
     state.commands = [cmd({ status: 'acknowledged', params: { mode: 'CW', receiver: 0 } })];

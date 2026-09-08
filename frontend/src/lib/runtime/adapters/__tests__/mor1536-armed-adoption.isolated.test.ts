@@ -10,9 +10,8 @@
  * comment in `panel-adapters.ts`). Every accessor here is a thin,
  * no-receiver-arg `ArmedFact`-shaped projection over the exact same
  * primitive `getModeArmed` uses — no re-derivation, same honesty rules
- * (pending survives ack until a confirming post-ack observation or the
- * shared grace backstop, a re-click re-arms at the freshest target, a
- * terminal failure clears armed immediately).
+ * (a re-click re-arms at the freshest target, a terminal failure clears
+ * armed immediately).
  *
  * RIT/XIT/scan/antenna are NOT covered here: their handlers
  * (`makeRitXitHandlers`/`makeScanHandlers`/`makeAntennaHandlers`,
