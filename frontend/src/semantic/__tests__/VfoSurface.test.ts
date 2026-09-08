@@ -297,6 +297,26 @@ describe('receiver-addressed indicator composition (MOR-2299 slice 1)', () => {
     expect(target.querySelectorAll('[data-vfo-dual-watch]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-indicator-fact="antenna"], [data-indicator-fact="tune"], [data-indicator-fact="rit"], [data-indicator-fact="xit"]')).toHaveLength(0);
   });
+
+  it('MOR-2425/R41: the Standard RFG badge holds a stale value with no dagger cue', () => {
+    const base = withReceiverIndicators('1/single');
+    const indicator = base.receiverIndicators![0];
+    const rfGainReading = indicator.rfGain.reading;
+    if (rfGainReading.status !== 'known') throw new Error('fixture must have a known rfGain reading');
+    const rfGainValue = rfGainReading.value;
+    const staleViewModel = validateRadioViewModel({
+      ...base,
+      receiverIndicators: [{
+        ...indicator,
+        rfGain: { ...indicator.rfGain, display: { state: 'stale' as const, value: rfGainValue } },
+      }],
+    });
+    const target = mountSurface({ viewModel: staleViewModel, appearance: 'standard' });
+    const badge = target.querySelector('[data-indicator-fact="rfg"]')!;
+    expect(badge).not.toBeNull();
+    expect(badge.textContent).not.toContain('†');
+    expect(badge.textContent).toContain(String(rfGainValue));
+  });
 });
 
 function withRadioWide(

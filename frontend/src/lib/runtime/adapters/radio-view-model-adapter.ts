@@ -180,10 +180,11 @@ function topFieldAvailable(state: ServerState | null, field: string): boolean {
   return isFieldAvailable(state, field);
 }
 
-/** MOR-2309 singleton-indicator admission: the leaf must itself be observed,
- * fresh and available, and the existing ancestor-aware gate may still veto
- * it. This is the same narrow rule MOR-2299 slice 1 uses; global absent-key
- * semantics remain unchanged. */
+/** MOR-2309 singleton-indicator admission: the leaf must itself pass `seen()`
+ * (observed, with freshness/availability admitting a held stale reading per
+ * R40) and the existing ancestor-aware `topFieldAvailable` gate may still
+ * veto it. This is the same narrow rule MOR-2299 slice 1 uses; global
+ * absent-key semantics remain unchanged. */
 function strictFieldAvailable(state: ServerState | null, field: string): boolean {
   return seen(state, field) && topFieldAvailable(state, field);
 }
@@ -872,7 +873,8 @@ function deriveRfFrontEnd(
  * `seen()` and the existing ancestor-aware `topFieldAvailable()` gate must
  * also pass. S-meter is the deliberate qualified exception: it additionally
  * requires matching provider identity, valid evidence and value, and a
- * `current` observation. Global absent-key semantics remain unchanged.
+ * retained observation — `sMeterRetained` below admits `current` or `stale`.
+ * Global absent-key semantics remain unchanged.
  */
 function deriveReceiverIndicators(
   state: ServerState | null,

@@ -9,11 +9,16 @@
  * counters); what is left must be identical but for one pinned exception.
  *
  * ARIA DIFFERENCES FOUND AND LEFT: none — accessible NAMES are compared
- * directly, past the strip. The three the class sweep found were fixed:
- * `VfoIndicatorRow`'s "(stale, last observed)" name, `bar-meter-projector`'s
- * "Stale observation" description, and the `†` cue's `aria-describedby`
- * sentence. The segmentline LCD skin still distinguishes the two and is not
- * mounted here: out of scope.
+ * directly, past the strip. Two of the three the class sweep found are
+ * exercised here and fixed: `VfoIndicatorRow`'s "(stale, last observed)"
+ * name and the `†` cue's `aria-describedby` sentence. `bar-meter-projector`'s
+ * "Stale observation" description is a third instance of the same class,
+ * also fixed, but NOT caught by this comparison: this fixture's TX meters
+ * (`ptt: false`) take the `relevance === 'idle'` early return before that
+ * description branch runs, so both mounts render the same idle text either
+ * way. That fix is pinned by `bar-meter-projector.test.ts` and
+ * `MetersSurface.test.ts` instead. The segmentline LCD skin still
+ * distinguishes the two and is not mounted here: out of scope.
  *
  * Isolated pool by name (`*.component.test.ts`), per the MOR-1272 doctrine.
  */

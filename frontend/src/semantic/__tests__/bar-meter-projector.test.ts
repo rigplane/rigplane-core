@@ -211,6 +211,18 @@ describe('projectBarMeters', () => {
       observed: true,
       gauge: true,
     });
+
+    // MOR-2425/R41: the ' ?' indeterminate glyph is symmetric — a retained
+    // stale reading gets the same text as current, not just current.
+    setDisplay(view, 'power', { state: 'stale', value: 170 });
+    expect(projectBarMeters(view)[0]).toMatchObject({
+      state: 'stale',
+      motionFraction: 170 / 255,
+      displayText: '170 raw ?',
+      accessibleDescription: 'Po: RF relevance indeterminate. Observed. 170 raw',
+      observed: true,
+      gauge: true,
+    });
   });
 
   it('keeps TX and plain rows both mounted with an empty scale when unobserved (MOR-2425)', () => {

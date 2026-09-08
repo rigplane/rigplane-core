@@ -1073,6 +1073,20 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
       expect(props.activeFreqHz).toBe(14_074_000);
       expect(props.activeMode).toBe('USB');
     });
+
+    it('MOR-2425/R40: a stale (not just fresh) observed activeSlot still resolves relative VFO identity', () => {
+      // Single-RX A/B radio declaring the provider readback contract
+      // explicitly (`vfoReadback: 'selected_unselected'`) — `activeSlot`
+      // being OBSERVED at all is what settles literal A/B identity, per
+      // `relativeVfoIdentityUnknown`'s own doc comment; `fieldObserved`
+      // (`panel-props.ts`) now admits a held-stale reading the same as a
+      // fresh one (R40), so a stale `activeSlot` must resolve identity too.
+      const state = makeState({
+        fieldStatus: { 'main.activeSlot': fieldStatus('stale', true) },
+      });
+      const caps = { capabilities: [], receivers: 1, vfoScheme: 'ab', vfoReadback: 'selected_unselected' } as any;
+      expect(toMemoryPanelProps(state, caps).vfoIdentityKnown).toBe(true);
+    });
   });
 
   describe('toTxProps — explicit non-fix (MOR-1409 A12)', () => {

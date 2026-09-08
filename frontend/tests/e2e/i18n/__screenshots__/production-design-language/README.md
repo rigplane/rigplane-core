@@ -335,27 +335,52 @@ exact row band by pixel-intensity search rather than by eye:
   widening — in this captured state the meter's own value stays `null`
   (receiver is `UNKNOWN`, not `stale`), so no value is actually held here;
   only the label format changed.
-- Spectrum dB-scale tick labels and the "Scope disconnected —
-  reconnecting…" line (`y360`-`y483`, narrow `x261-274` and wide `x261-790`
-  bands): a uniform 15px upward shift, confirmed by locating the same
-  text's row band in both images (the disconnect line sits at `y426-436` in
-  `-expected` and `y410-420` in `-actual`). This matches the
-  `.passband-freshness` div's `min-height: 1.4em` (~15-16px) — the `◷
-  <stale>` chip container removed from `SpectrumPanel.svelte`.
+- The "Scope disconnected — reconnecting…" text (`x300-790`, `y426-437`)
+  and the dB-scale tick column (`x260-276`, `y360-483`) were re-measured
+  pixel-for-pixel — `old-*`/`new-*` PNG arrays (`old` = commit `ec90170d3`,
+  byte-identical to `907609b0c`; `new` = this PR's head), numpy `abs` diff
+  swept over `dy` (`uv run --with pillow --with numpy python3` against the
+  extracted PNGs). The text block is a byte-identical **16px upward
+  translation**: mean |Δ|=0.0000, max=0 at `dy=-16`, vs. mean=9.83/9.75,
+  max=138 one pixel either side. The tick column does **not** translate as
+  a block — it is not "uniform": best `dy=-15` still leaves mean |Δ|=1.51,
+  max=124 (vs. mean=11.63, max=124 unshifted at `dy=0`); its marks re-spread
+  within the taller `.db-scale` container instead of moving together. The
+  16px figure matches the `.passband-freshness` div's `min-height: 1.4em`
+  (~15.4px at its 11px font) — the `◷ <stale>` chip container removed from
+  `SpectrumPanel.svelte`.
 - Sidebar band-plan cards (`y619-694`, `x20-220`, identical in StudioLine
-  dark and FieldLine light): `"160M TX"` renders as `"160MTX"` with the
-  next word pulled onto the same line. Card borders and all other text rows
-  sit at unchanged y-coordinates, so this is a pure horizontal reflow, not a
-  vertical shift. None of the files behind this label
-  (`BandInstrumentHost.svelte`, `BandSurface.svelte`, `band-instruments.ts`)
-  are in this PR's diff. I could not establish the mechanism connecting it
-  to the passband-freshness removal above and do not report it as
-  explained by this PR.
-- StudioLine-only band at `y340-348`, `x746-793` (81 red px, both StudioLine
-  scenes; absent from FieldLine): a color-fringe diff on the unrelated
-  "Classic" colour-scheme dropdown text. No file behind that control is in
-  this PR's diff. I could not establish a cause and do not attribute it to
-  this PR.
+  dark and FieldLine light): `"160M TX"` renders as `"160MTX"`. This **is**
+  explained, and it is main drift that predates this PR, not this PR's own
+  change: at `907609b0c` (the commit these baseline PNGs were last pinned
+  against) `frontend/src/semantic/BandSurface.svelte` wrote
+  `>{choice.name}` followed by a newline then `<small>` — HTML collapses
+  that whitespace to one space, rendering `"160M TX"`
+  (`git show 907609b0c:frontend/src/semantic/BandSurface.svelte`). By
+  `ec90170d3` (this PR's own base commit) the BandSurface→BandInstrumentHost
+  extraction (commits `186125682`..`6dc86698b`, between the two) had
+  rewritten it as `frontend/src/semantic/BandInstrumentHost.svelte`'s
+  `>{choice.name}<small>` with no whitespace between them, rendering
+  `"160MTX"` (`git show ec90170d3:frontend/src/semantic/BandInstrumentHost.svelte`).
+  Card borders and all other rows sit at unchanged y-coordinates (a pure
+  horizontal reflow), and the markup change happened before this PR's base
+  commit, so it is not attributed to this PR.
+- StudioLine-only band at `y339-347`, `x744-796` (both StudioLine scenes;
+  absent from FieldLine): re-measured the same way as above — a
+  byte-identical **1px downward translation** of the "Classic"
+  colour-scheme dropdown text (mean |Δ|=0.40, max=1 at `dy=+1`, vs.
+  mean=18.37, max=112 unshifted at `dy=0`). This region is pixel-identical
+  between StudioLine dark and StudioLine light (a native `<select>` ignores
+  the page theme), and the adjacent "BANDS" button at `x830-900` is
+  byte-identical unshifted (mean=0, max=0) — only the dropdown text moves.
+  `frontend/src/components/spectrum/SpectrumPanel.svelte` **is** in this
+  PR's diff and lays out this control's toolbar row (`SpectrumToolbar` is
+  its first child, itself untouched by this PR); the only change in that
+  file is the `.passband-freshness`/`◷` chip removal, which sits after the
+  toolbar in the DOM. I could not trace, within this pass, how removing
+  content positioned after the toolbar moves the toolbar's own text by one
+  device pixel — reported as an untraced 1px shift inside a file this PR
+  changes, not as unexplained-and-unrelated.
 
 | Scene | Disposition | SHA-256 |
 | --- | --- | --- |
