@@ -533,19 +533,31 @@ describe('the meters surface mounts only when the view model carries the group',
 
     armRetainedPeak(7, 2);
     const mountedPower = barSvg('power');
+    const preStaleFill = barFillCount('power');
+    const preStalePeakX = barPeakX('power');
     const state = h.state as ServerState;
     h.state = {
       ...state,
       fieldStatus: {
         ...state.fieldStatus,
-        powerMeter: { ...fresh, freshness: 'stale' },
+        // Keep the same calibration quality the meter already had — only
+        // freshness flips. Dropping `quality` here would hide the R29 bug
+        // this test exists to witness behind an unrelated "no calibration
+        // evidence" gap.
+        powerMeter: { ...state.fieldStatus!.powerMeter, freshness: 'stale' },
       },
     };
     push({ intent: 'transmit', observedPtt: 'on' });
-    expect(barSvg('power')).not.toBe(mountedPower);
-    expect(q('[data-testid="meter-power"]')!.dataset.observed).toBe('false');
-    expect(barFillCount('power')).toBe(0);
-    expect(barPeakX('power')).toBeNull();
+    // R29 (MOR-2425): a stale reading stays observed and keeps its value —
+    // it greys out only on a real disconnect or structural absence, neither
+    // of which applies here. The meter stays operational, so its DOM node
+    // is never torn down, and `meterField`'s calibrated domain (fixed
+    // alongside `bar-meter-projector.ts`'s own R29 fix) keeps the gauge
+    // fill and peak marker exactly where they were the instant before.
+    expect(barSvg('power')).toBe(mountedPower);
+    expect(q('[data-testid="meter-power"]')!.dataset.observed).toBe('true');
+    expect(barFillCount('power')).toBe(preStaleFill);
+    expect(barPeakX('power')).toBe(preStalePeakX);
   });
 
   // MUTATION KILLED: giving the meters surface a `data-zone-id` of its own.

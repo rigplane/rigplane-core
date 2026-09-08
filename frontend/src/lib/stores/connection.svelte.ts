@@ -35,6 +35,14 @@ if (typeof window !== 'undefined') {
   }, 1000);
 }
 
+// MOR-2425 C-R3: `wsConnected` is false before the first connect as well as
+// after a drop, so a reader of that alone cannot tell "not up yet" from "was
+// up, went down". Set on the first `setWsConnected(true)` and never cleared
+// for the page's lifetime — the same shape as the `lastStateUpdate > 0` guard
+// on the staleness interval above, which is why `staleState` likewise cannot
+// fire before the first accepted update.
+let everConnected = $state(false);
+
 // MOR-1419: "server link" honesty. The A10 HTTP-polling retirement (#2362)
 // deleted the only real producer of the legacy `httpConnected` field (the
 // HTTP state poller); the field became an orphan that only ever mirrored
@@ -51,6 +59,7 @@ let connectionStatus = $derived<'connected' | 'partial' | 'disconnected'>(
 
 export function setWsConnected(v: boolean): void {
   wsConnected = v;
+  if (v) everConnected = true;
   if (!v) factsObservedThisSession = false;
 }
 
@@ -72,6 +81,10 @@ export function isConnected(): boolean {
 
 export function getWsConnected(): boolean {
   return wsConnected;
+}
+
+export function hasEverConnected(): boolean {
+  return everConnected;
 }
 
 export function setAudioConnected(v: boolean): void {

@@ -111,9 +111,9 @@ describe('LCD display helpers', () => {
 it.each([
   [{ state: 'known', value: 12.345, relevant: false }, '12.35'],
   [{ state: 'known', value: 0, relevant: true }, '0'],
-  [{ state: 'unknown', relevant: true }, '?'],
+  [{ state: 'unknown', relevant: true }, ''],
   [{ state: 'unsupported', relevant: false }, '?'],
-] satisfies [DisplayTelemetry, string][])('keeps legacy telemetry formatting %j', (field, text) => {
+] satisfies [DisplayTelemetry, string][])('keeps legacy telemetry formatting %j (MOR-2425: no reading is an empty scale, not `?`)', (field, text) => {
   expect(telemetryText(field)).toBe(text);
 });
 
@@ -125,13 +125,15 @@ for (const relevance of ['idle', 'relevant', 'indeterminate'] as const)
         txDisplay: { supported: true, relevance, observation } };
       const text = telemetryText(field);
       const description = telemetryDescription('PWR', field);
-      expect(text).toBe(relevance === 'idle' ? 'IDLE' : observation.state === 'stale' ? 'STALE'
-        : observation.state === 'unknown' ? '?' : `${Number(observation.value.toFixed(2))}${relevance === 'indeterminate' ? ' ?' : ''}`);
+      // MOR-2425 (R29/R32): stale keeps its digits, same as current; idle
+      // and never-observed collapse to an empty scale, not a glyph.
+      expect(text).toBe(relevance === 'idle' ? '' : observation.state === 'unknown' ? ''
+        : `${Number(observation.value.toFixed(2))}${relevance === 'indeterminate' && observation.state === 'current' ? ' ?' : ''}`);
       expect(description).toContain('PWR');
       expect(description).not.toMatch(/207|87.65/);
-      if (relevance === 'idle') expect(description).toContain('Not measuring in RX');
+      if (relevance === 'idle') expect(description).toContain('Not measuring in receive');
       if (relevance === 'indeterminate') expect(description).toContain('RF relevance indeterminate');
       if (relevance !== 'idle' && observation.state === 'stale') expect(description).toContain('Stale observation');
-      if (relevance !== 'idle' && observation.state === 'unknown') expect(description).toContain('Not observed');
+      if (relevance !== 'idle' && observation.state === 'unknown') expect(description).toContain('No reading');
     });
   }
