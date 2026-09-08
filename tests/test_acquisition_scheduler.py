@@ -4085,3 +4085,82 @@ def test_tick_keeps_the_attenuator_below_the_declared_band_bound() -> None:
     service.tick(now=1.0)
 
     assert store.snapshot().field(_AVAIL_ATT).value == 12
+
+
+def test_a_never_dispatched_request_may_not_be_credited() -> None:
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_profile([freq]))
+    result = scheduler.ensure_fresh(
+        freq, max_age=5.0, priority="user", reason="post_write_readback"
+    )
+    assert result.request is not None
+
+    assert scheduler.may_credit(result.request, observation_timestamp=100.0) is False
+
+
+def test_a_dispatched_request_may_be_credited_only_from_that_dispatch_on() -> None:
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_profile([freq]))
+    result = scheduler.ensure_fresh(
+        freq, max_age=5.0, priority="user", reason="post_write_readback"
+    )
+    assert result.request is not None
+    scheduler.record_dispatch(result.request.id, paths=(freq,), now=50.0)
+
+    assert scheduler.may_credit(result.request, observation_timestamp=49.999) is False
+    assert scheduler.may_credit(result.request, observation_timestamp=50.0) is True
+    assert scheduler.may_credit(result.request, observation_timestamp=50.001) is True
+
+
+def test_re_dispatching_a_coalesced_request_advances_its_dispatch_time() -> None:
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    scheduler = AcquisitionScheduler(profile=_profile([freq, mode]))
+    first = scheduler.ensure_fresh(
+        freq, max_age=5.0, priority="background", reason="policy-cadence"
+    )
+    assert first.request is not None
+    scheduler.record_dispatch(first.request.id, paths=(freq,), now=50.0)
+    coalesced = scheduler.ensure_fresh(
+        freq, max_age=5.0, priority="user", reason="post_write_readback"
+    )
+    assert coalesced.request is not None
+    assert coalesced.request.id == first.request.id
+
+    # The coalesced request carries the first dispatch until it is sent again.
+    assert scheduler.may_credit(coalesced.request, observation_timestamp=60.0) is True
+    scheduler.record_dispatch(coalesced.request.id, paths=(freq,), now=70.0)
+    assert scheduler.may_credit(coalesced.request, observation_timestamp=60.0) is False
+    assert scheduler.may_credit(coalesced.request, observation_timestamp=70.0) is True
+
+
+def test_dispatch_time_is_tracked_per_path_of_one_request() -> None:
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    scheduler = AcquisitionScheduler(profile=_profile([freq, mode]))
+    result = scheduler.ensure_fresh(
+        (freq, mode), max_age=5.0, priority="background", reason="policy-cadence"
+    )
+    assert result.request is not None
+    scheduler.record_dispatch(result.request.id, paths=(freq,), now=50.0)
+    scheduler.record_dispatch(result.request.id, paths=(mode,), now=70.0)
+
+    freq_only = replace(result.request, paths=(freq,))
+    mode_only = replace(result.request, paths=(mode,))
+    assert scheduler.may_credit(freq_only, observation_timestamp=60.0) is True
+    assert scheduler.may_credit(mode_only, observation_timestamp=60.0) is False
+
+
+def test_completing_a_request_drops_its_dispatch_record() -> None:
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    clock = FreshnessClock(start=50.0)
+    scheduler = AcquisitionScheduler(profile=_profile([freq]), clock=clock)
+    result = scheduler.ensure_fresh(
+        freq, max_age=5.0, priority="user", reason="post_write_readback"
+    )
+    assert result.request is not None
+    scheduler.record_dispatch(result.request.id, paths=(freq,), now=50.0)
+    scheduler.record_acquisition_result(result.request, _changeset(at=51.0))
+
+    assert scheduler.pending_requests() == ()
+    assert scheduler.may_credit(result.request, observation_timestamp=52.0) is False

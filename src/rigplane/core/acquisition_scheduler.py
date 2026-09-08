@@ -398,6 +398,7 @@ class AcquisitionScheduler:
         "_cadence_by_key",
         "_claims_by_request_id",
         "_deferred",
+        "_dispatch_by_request_id",
         "_external_cat_owner",
         "_external_cat_paused",
         "_external_cat_reason",
@@ -424,6 +425,9 @@ class AcquisitionScheduler:
         self._deferred: dict[_AcquisitionRequestKey, _PendingEnsureFresh] = {}
         self._cadence_by_key: dict[_AcquisitionRequestKey, _CadenceState] = {}
         self._claims_by_request_id: dict[str, _AcquisitionClaim] = {}
+        # request id -> per-path timestamp of the drain pass that sent it,
+        # dropped where the request is removed from ``_requests_by_key``.
+        self._dispatch_by_request_id: dict[str, dict[FieldPath, float]] = {}
         self._pending_cadence_by_key: dict[
             _AcquisitionRequestKey,
             _PendingCadenceUpdate,
@@ -510,6 +514,49 @@ class AcquisitionScheduler:
             and existing.provider_generation == provider_generation
         ):
             del self._claims_by_request_id[request_id]
+
+    def record_dispatch(
+        self,
+        request_id: str,
+        *,
+        paths: Iterable[FieldPath],
+        now: float,
+    ) -> None:
+        """Record that the drain pass timestamped ``now`` sent ``paths``.
+
+        ``now`` is the pass's clock reading, taken before its sends. The
+        drain calls this with the paths a send actually covered. Times are
+        per path because a request's paths need not go out in one send.
+        """
+
+        dispatched = self._dispatch_by_request_id.setdefault(request_id, {})
+        for path in paths:
+            dispatched[path] = now
+
+    def may_credit(
+        self,
+        request: AcquisitionRequest,
+        *,
+        observation_timestamp: float,
+    ) -> bool:
+        """Return whether this observation can answer ``request``'s paths.
+
+        False for a request no send has covered, and for one whose covering
+        pass timestamp is later than the observation. ``request.paths`` is the caller's
+        matched subset, so paths of the same request that no send covered do
+        not count.
+        """
+
+        dispatched = self._dispatch_by_request_id.get(request.id)
+        if dispatched is None:
+            return False
+        return any(
+            path in dispatched and dispatched[path] <= observation_timestamp
+            for path in request.paths
+        )
+
+    def _forget_dispatch(self, request_id: str) -> None:
+        self._dispatch_by_request_id.pop(request_id, None)
 
     def ensure_fresh(
         self,
@@ -1028,6 +1075,7 @@ class AcquisitionScheduler:
             else:
                 del self._requests_by_key[key]
                 self._claims_by_request_id.pop(request.id, None)
+                self._forget_dispatch(request.id)
 
         base_cadence = request.policy.cadence_seconds
         if base_cadence is None:
@@ -1128,6 +1176,7 @@ class AcquisitionScheduler:
             else:
                 del self._requests_by_key[key]
                 self._claims_by_request_id.pop(request.id, None)
+                self._forget_dispatch(request.id)
                 self._pending_cadence_by_key.pop(key, None)
 
         if request.policy.cadence_seconds is None:
@@ -1198,6 +1247,7 @@ class AcquisitionScheduler:
                 continue
             del self._requests_by_key[key]
             self._claims_by_request_id.pop(request.id, None)
+            self._forget_dispatch(request.id)
             self._defer(
                 key,
                 _PendingEnsureFresh(
