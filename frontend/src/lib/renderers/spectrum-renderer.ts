@@ -31,10 +31,28 @@ export const defaultSpectrumColorRoles: SpectrumColorRoles = {
   passbandEdge: 'rgba(59,130,246,0.4)',
 };
 
+/**
+ * Fills in every role a host left out. An override whose value is `undefined`
+ * — including one under `traceFill` — resolves to the default, pinned by
+ * `resolves an undefined-valued override to the default, nested fill included`.
+ */
 export function resolveSpectrumColorRoles(
   overrides?: Partial<SpectrumColorRoles>,
 ): SpectrumColorRoles {
-  return { ...defaultSpectrumColorRoles, ...overrides };
+  const fallback = defaultSpectrumColorRoles;
+  const fill = overrides?.traceFill as Partial<SpectrumColorRoles['traceFill']> | undefined;
+  return {
+    trace: overrides?.trace ?? fallback.trace,
+    traceFill: {
+      top: fill?.top ?? fallback.traceFill.top,
+      bottom: fill?.bottom ?? fallback.traceFill.bottom,
+    },
+    grid: overrides?.grid ?? fallback.grid,
+    axisText: overrides?.axisText ?? fallback.axisText,
+    tuneLine: overrides?.tuneLine ?? fallback.tuneLine,
+    passbandFill: overrides?.passbandFill ?? fallback.passbandFill,
+    passbandEdge: overrides?.passbandEdge ?? fallback.passbandEdge,
+  };
 }
 
 export function spectrumColorRolesToOptions(roles: SpectrumColorRoles) {

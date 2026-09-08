@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   renderSpectrum, SpectrumRenderer, defaultSpectrumOptions, spectrumDisplayAmplitude,
   defaultSpectrumColorRoles, resolveSpectrumColorRoles, spectrumColorRolesToOptions,
-  type SpectrumOptions,
+  type SpectrumColorRoles, type SpectrumOptions,
 } from '../spectrum-renderer';
 
 function createMockCtx() {
@@ -285,6 +285,22 @@ describe('spectrum colour roles', () => {
       passbandEdge: PREVIOUS_LITERALS.passbandEdge,
     });
     expect(resolveSpectrumColorRoles()).toEqual(defaultSpectrumColorRoles);
+  });
+
+  it('resolves an undefined-valued override to the default, nested fill included', () => {
+    // `Partial<SpectrumColorRoles>` admits an explicit `undefined` for every
+    // top-level role; the nested cast stands for a host record that carries
+    // one under `traceFill` too.
+    const overrides: Partial<SpectrumColorRoles> = {
+      tuneLine: undefined,
+      traceFill: { top: undefined, bottom: undefined } as unknown as SpectrumColorRoles['traceFill'],
+    };
+    expect(resolveSpectrumColorRoles(overrides)).toEqual(defaultSpectrumColorRoles);
+    expect(spectrumColorRolesToOptions(resolveSpectrumColorRoles(overrides))).toMatchObject({
+      tuneLineColor: PREVIOUS_LITERALS.tuneLine,
+      fillColor: PREVIOUS_LITERALS.fillTop,
+      fillColorBottom: PREVIOUS_LITERALS.fillBottom,
+    });
   });
 
   it('carries the resolved roles into the option fields of the same names', () => {

@@ -1610,8 +1610,6 @@ describe('SpectrumPanel colour roles', () => {
     expect(panel.style.getPropertyValue('--scope-passband-edge')).toBe('#080808');
     expect(target.querySelector('.tune-line')).not.toBeNull();
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
-    // The overlay elements resolve their paint through those same properties,
-    // so the canvas and the DOM twin cannot be set apart.
     expect(spectrumPanelSource).toMatch(
       /\.tune-line\s*\{[^}]*background:\s*var\(--scope-tune-line,\s*rgba\(239, 68, 68, 0\.75\)\)/,
     );
@@ -1633,6 +1631,21 @@ describe('SpectrumPanel colour roles', () => {
     expect(spectrumRendererHarness.lastOptions).toMatchObject(
       spectrumColorRolesToOptions(defaultSpectrumColorRoles),
     );
+  });
+
+  it('keeps both paths on the default when a role is passed as undefined', async () => {
+    const target = mountPanel({
+      colorRoles: { tuneLine: undefined, traceFill: { top: undefined, bottom: undefined } },
+    });
+    emitFrame();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({
+      tuneLineColor: defaultSpectrumColorRoles.tuneLine,
+      fillColor: defaultSpectrumColorRoles.traceFill.top,
+      fillColorBottom: defaultSpectrumColorRoles.traceFill.bottom,
+    });
+    const panel = target.querySelector<HTMLElement>('.spectrum-panel')!;
+    expect(panel.style.getPropertyValue('--scope-tune-line')).toBe(defaultSpectrumColorRoles.tuneLine);
   });
 
   it('takes the unlisted roles from the defaults when only one is overridden', async () => {
