@@ -115,7 +115,9 @@ describe('mounted raw TX/VOX feedback recovery', () => {
 
     expect(setRadioState(radioState(3, 2, 127, 2))).toBe(true);
     flushSync();
-    expect(probe.dataset.phase).toBe('awaiting-confirmation');
+    expect(probe.dataset).toMatchObject({
+      phase: 'confirmed', confirmed: '127', target: '', outcome: 'confirmed',
+    });
     expect(setRadioState(radioState(3, 3, 128, 3))).toBe(true);
     flushSync();
     expect(probe.dataset).toMatchObject({
