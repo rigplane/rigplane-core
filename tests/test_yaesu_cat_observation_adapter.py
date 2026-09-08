@@ -164,6 +164,8 @@ def _make_radio() -> MagicMock:
     radio.get_vfo_select = AsyncMock(return_value=1)
     radio.read_vfo_select = AsyncMock(return_value=1)
     radio.get_tx_func = AsyncMock(return_value=0)
+    # Dual receive: CAT ``FR`` P1, 0 = dual receive, 1 = single receive.
+    radio.get_rx_func = AsyncMock(return_value=0)
     # Clarifier RIT/XIT observation reads (MOR-454). ``read_clarifier`` returns
     # the (rx, tx) clarifier flags; ``read_clarifier_freq`` returns the signed
     # Hz offset on the device scale.
@@ -313,6 +315,9 @@ class _SideEffectingYaesuRadio:
 
     async def get_tx_func(self) -> int:
         # Unlike legacy getters, FT readback has no RadioState side effect.
+        return 0
+
+    async def get_rx_func(self) -> int:
         return 0
 
     async def read_s_meter(self, receiver: int = 0) -> int:
@@ -813,6 +818,7 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
     # The nb/nr toggles are derived from the level read in the same cycle
     # (``level > 0``); a non-zero level → toggle ON, a single read each.
     assert [(str(item.path), item.value) for item in observations] == [
+        ("global.tx_state.dual_watch", True),
         (
             "receiver.main.operator_controls.af_level",
             pytest.approx(_normalized_255(128)),
@@ -918,6 +924,7 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
     # here); AGC and narrow have no FTX-1 capability tag and mirror the legacy
     # poller's unconditional poll, so they still emit when policy is pollable.
     assert [(str(item.path), item.value) for item in observations] == [
+        ("global.tx_state.dual_watch", True),
         (
             "receiver.main.operator_controls.af_level",
             pytest.approx(_normalized_255(128)),
@@ -1337,6 +1344,7 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         ("global.meters.power", 180),
         ("global.meters.swr", 120),
         ("global.meters.comp", 90),
+        ("global.tx_state.dual_watch", True),
         (
             "receiver.main.operator_controls.af_level",
             pytest.approx(_normalized_255(128)),
@@ -2148,6 +2156,7 @@ async def test_happy_path_slow_poll_unchanged_when_all_reads_succeed() -> None:
     observations = await adapter.poll_slow_controls()
 
     assert [(str(item.path), item.value) for item in observations] == [
+        ("global.tx_state.dual_watch", True),
         (
             "receiver.main.operator_controls.af_level",
             pytest.approx(_normalized_255(128)),
@@ -2697,6 +2706,13 @@ _ABANDON_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
         "poll_tx_controls",
         ("global.operator_controls.break_in_delay",),
     ),
+    (
+        "main.rx_func",
+        "get_rx_func",
+        None,
+        "poll_slow_controls",
+        ("global.tx_state.dual_watch",),
+    ),
 )
 
 
@@ -2901,3 +2917,173 @@ async def test_a_non_state_store_attribute_leaves_both_reads_ungated() -> None:
     radio.read_manual_notch_freq.assert_awaited()
     assert _ATT_PATH in paths
     assert _NOTCH_FREQ_PATH in paths
+
+
+# ---------------------------------------------------------------------------
+# Dual receive: the CAT ``FR`` read and the SUB fields it gates
+# ---------------------------------------------------------------------------
+
+
+_DUAL_WATCH_PATH = "global.tx_state.dual_watch"
+
+# (id, poll method, radio read method, the declared SUB path it feeds)
+_SUB_GATED_ROWS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "sub.freq",
+        "poll_medium",
+        "read_freq",
+        "receiver.sub.active.freq_mode.freq_hz",
+    ),
+    (
+        "sub.mode",
+        "poll_medium",
+        "read_mode",
+        "receiver.sub.active.freq_mode.mode",
+    ),
+    (
+        "sub.s_meter",
+        "poll_rx_meters",
+        "read_s_meter",
+        "receiver.sub.meters.s_meter",
+    ),
+    (
+        "sub.af_level",
+        "poll_slow_controls",
+        "read_af_level",
+        "receiver.sub.operator_controls.af_level",
+    ),
+    (
+        "sub.rf_gain",
+        "poll_slow_controls",
+        "read_rf_gain",
+        "receiver.sub.operator_controls.rf_gain",
+    ),
+    (
+        "sub.squelch",
+        "poll_slow_controls",
+        "read_squelch",
+        "receiver.sub.operator_controls.squelch",
+    ),
+    (
+        "sub.repeater_shift",
+        "poll_slow_controls",
+        "read_repeater_shift",
+        "receiver.sub.operator_controls.repeater_shift",
+    ),
+)
+
+
+def _dual_watch_store(*, on: bool) -> StateStore:
+    """``_availability_store`` plus an observed dual-receive state."""
+
+    store = _availability_store(mode="USB", freq_hz=14_074_000)
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "dual_watch"),
+            value=on,
+            source=SourceMetadata(source="poll_response", provider="yaesu_cat"),
+            timestamp_monotonic=_clock(),
+        )
+    )
+    return store
+
+
+def _dual_watch_adapter(*, on: bool) -> tuple[MagicMock, YaesuObservationAdapter]:
+    radio = _gate_radio()
+    radio._state_store = _dual_watch_store(on=on)
+    adapter = YaesuObservationAdapter(
+        radio, profile=_profile_state_acquisition(), clock=_clock
+    )
+    return radio, adapter
+
+
+def _sub_receiver_awaited(radio: MagicMock, method: str) -> bool:
+    return any(call.args[:1] == (1,) for call in getattr(radio, method).await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_dual_receive_on_is_observed_as_dual_watch_true() -> None:
+    """``FR00`` = dual receive, so the canonical bool reads True."""
+
+    radio, adapter = _dual_watch_adapter(on=True)
+    radio.get_rx_func = AsyncMock(return_value=0)
+
+    observations = await adapter.poll_slow_controls()
+
+    assert [
+        item.value for item in observations if str(item.path) == _DUAL_WATCH_PATH
+    ] == [True]
+
+
+@pytest.mark.asyncio
+async def test_single_receive_is_observed_as_dual_watch_false() -> None:
+    """``FR01`` = single receive, so the canonical bool reads False."""
+
+    radio, adapter = _dual_watch_adapter(on=True)
+    radio.get_rx_func = AsyncMock(return_value=1)
+
+    observations = await adapter.poll_slow_controls()
+
+    assert [
+        item.value for item in observations if str(item.path) == _DUAL_WATCH_PATH
+    ] == [False]
+
+
+@pytest.mark.asyncio
+async def test_dual_receive_is_read_before_the_sub_controls_it_gates() -> None:
+    """The gating read must precede the reads whose clauses name it."""
+
+    radio, adapter = _dual_watch_adapter(on=True)
+    order: list[str] = []
+
+    def _record(name: str) -> None:
+        original = getattr(radio, name)
+
+        async def _call(*args: object, **kwargs: object) -> object:
+            order.append(f"{name}{args[:1]}")
+            return await original(*args, **kwargs)
+
+        setattr(radio, name, _call)
+
+    for method in ("get_rx_func", "read_af_level", "read_rf_gain", "read_squelch"):
+        _record(method)
+
+    await adapter.poll_slow_controls()
+
+    assert order[0] == "get_rx_func()"
+    for method in ("read_af_level", "read_rf_gain", "read_squelch"):
+        assert order.index("get_rx_func()") < order.index(f"{method}(1,)")
+
+
+@pytest.mark.parametrize(
+    ("poll", "method", "path"),
+    [row[1:] for row in _SUB_GATED_ROWS],
+    ids=[row[0] for row in _SUB_GATED_ROWS],
+)
+@pytest.mark.asyncio
+async def test_sub_read_is_withheld_while_dual_receive_is_off(
+    poll: str, method: str, path: str
+) -> None:
+    radio, adapter = _dual_watch_adapter(on=False)
+
+    observations = await getattr(adapter, poll)()
+
+    assert not _sub_receiver_awaited(radio, method)
+    assert path not in [str(item.path) for item in observations]
+
+
+@pytest.mark.parametrize(
+    ("poll", "method", "path"),
+    [row[1:] for row in _SUB_GATED_ROWS],
+    ids=[row[0] for row in _SUB_GATED_ROWS],
+)
+@pytest.mark.asyncio
+async def test_sub_read_is_sent_while_dual_receive_is_on(
+    poll: str, method: str, path: str
+) -> None:
+    radio, adapter = _dual_watch_adapter(on=True)
+
+    observations = await getattr(adapter, poll)()
+
+    assert _sub_receiver_awaited(radio, method)
+    assert path in [str(item.path) for item in observations]

@@ -1078,6 +1078,10 @@ class _SideEffectingYaesuRadio:
         """Pure native FT0 fixture; unlike legacy getters it mutates no state."""
         return 0
 
+    async def get_rx_func(self) -> int:
+        """Pure native FR00 fixture: 0 = dual receive."""
+        return 0
+
     async def read_s_meter(self, receiver: int = 0) -> int:
         return 150 if receiver == 0 else 75
 
@@ -2712,6 +2716,7 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
         ("global.tx_state.ptt", False),
         ("receiver.main.meters.s_meter", 6),
         ("receiver.sub.meters.s_meter", -37),
+        ("global.tx_state.dual_watch", True),
         (
             "receiver.main.operator_controls.af_level",
             pytest.approx(_normalized_255(128)),
