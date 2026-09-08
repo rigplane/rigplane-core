@@ -17,6 +17,7 @@ from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     AdaptiveDecayPolicy,
+    AvailabilityClause,
     FieldAvailability,
     FieldCapability,
     MeterCoalescingPolicy,
@@ -1487,3 +1488,155 @@ def test_ic7300_on_demand_field_primes_with_its_cadence_as_max_age() -> None:
     assert request_by_path[on_demand].max_age == (
         acquisition.policy_for(on_demand).cadence_seconds
     )
+
+
+def _available_when_toml(value: str) -> str:
+    return _minimal_state_acquisition_toml(
+        f"""
+        [state_acquisition]
+        provider = "icom_civ"
+        default_cadence_seconds = 2.0
+        default_freshness_ttl_seconds = 8.0
+
+        [state_acquisition.capabilities]
+        polling_only = ["global.meters.power", "global.tx_state.vox_on"]
+
+        [state_acquisition.field_policies."global.meters.power"]
+        available_when = {value}
+        """
+    )
+
+
+def test_loader_parses_every_available_when_operator(tmp_path: Path) -> None:
+    """Each of the five clause operators reaches the parsed field policy."""
+
+    toml = _available_when_toml(
+        """[
+            { field = "receiver.main.active.freq_mode.mode", in = ["USB", "LSB"] },
+            { field = "receiver.main.active.freq_mode.mode", not_in = ["FM"] },
+            { field = "receiver.main.active.freq_mode.freq_hz", min = 1800000 },
+            { field = "receiver.main.active.freq_mode.freq_hz", max = 60000000 },
+            { field = "global.tx_state.split", equals = false },
+        ]"""
+    )
+
+    acquisition = load_rig(_write_toml(tmp_path, toml)).to_profile().state_acquisition
+    assert acquisition is not None
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    split = FieldPath.global_("tx_state", "split")
+
+    assert acquisition.policy_for(
+        FieldPath.global_("meters", "power")
+    ).available_when == (
+        AvailabilityClause(field=mode, operator="in", value=("USB", "LSB")),
+        AvailabilityClause(field=mode, operator="not_in", value=("FM",)),
+        AvailabilityClause(field=freq, operator="min", value=1800000.0),
+        AvailabilityClause(field=freq, operator="max", value=60000000.0),
+        AvailabilityClause(field=split, operator="equals", value=False),
+    )
+    # A path with no override of its own does not inherit these clauses.
+    assert (
+        acquisition.policy_for(FieldPath.global_("tx_state", "vox_on")).available_when
+        == ()
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ('"main only"', "must be a list of clauses"),
+        ('["main only"]', "must be a table"),
+        ('[{ field = "global.tx_state.split" }]', "exactly one"),
+        (
+            '[{ field = "global.tx_state.split", equals = true, min = 1 }]',
+            "exactly one",
+        ),
+        ('[{ field = "global.tx_state.split", nope = 1 }]', "unknown key"),
+        ("[{ equals = true }]", "field"),
+        ('[{ field = "global tx_state split", equals = true }]', "field"),
+        ('[{ field = "global.tx_state.split", in = "USB" }]', "must be a list"),
+        ('[{ field = "global.tx_state.split", not_in = "USB" }]', "must be a list"),
+        ('[{ field = "global.tx_state.split", min = "1" }]', "must be a number"),
+        ('[{ field = "global.tx_state.split", max = "1" }]', "must be a number"),
+    ],
+)
+def test_loader_rejects_malformed_available_when(
+    tmp_path: Path, value: str, message: str
+) -> None:
+    """Every malformed clause shape is a load error naming the policy path."""
+
+    with pytest.raises(RigLoadError) as excinfo:
+        load_rig(_write_toml(tmp_path, _available_when_toml(value)))
+
+    text = str(excinfo.value)
+    assert message in text
+    assert "field_policies.global.meters.power" in text
+
+
+def test_available_when_round_trips_through_to_dict() -> None:
+    policy = AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=2.0,
+        available_when=(
+            AvailabilityClause(
+                field=FieldPath.active("main", "freq_mode", "mode"),
+                operator="not_in",
+                value=("FM",),
+            ),
+        ),
+    )
+
+    payload = json.loads(json.dumps(policy.to_dict()))
+    assert payload["availableWhen"] == [
+        {
+            "field": "receiver.main.active.freq_mode.mode",
+            "operator": "not_in",
+            "value": ["FM"],
+        }
+    ]
+    assert AcquisitionPolicy.from_dict(payload) == policy
+    assert AcquisitionPolicy(cadence_seconds=1.0).available_when == ()
+
+
+def test_ftx1_declares_when_manual_notch_and_attenuator_exist() -> None:
+    """The two FTX-1 paths a 2026-09-08 bench probe found conditional."""
+
+    acquisition = get_radio_profile("FTX-1").state_acquisition
+    assert acquisition is not None
+
+    notch = FieldPath.receiver("main", "operator_controls", "manual_notch_freq")
+    assert acquisition.policy_for(notch).available_when == (
+        AvailabilityClause(
+            field=FieldPath.active("main", "freq_mode", "mode"),
+            operator="not_in",
+            value=("FM", "FM-N", "DATA-FM"),
+        ),
+    )
+
+    att = FieldPath.receiver("main", "operator_controls", "att")
+    assert acquisition.policy_for(att).available_when == (
+        AvailabilityClause(
+            field=FieldPath.active("main", "freq_mode", "freq_hz"),
+            operator="max",
+            value=60000000.0,
+        ),
+    )
+
+
+def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
+    """Loading every shipped profile turns up exactly the two declarations."""
+
+    declared: set[tuple[str, str]] = set()
+    for model, rig in discover_rigs(RIGS_DIR).items():
+        acquisition = rig.to_profile().state_acquisition
+        if acquisition is None:
+            continue
+        for path, policy in acquisition.field_policies.items():
+            if policy.available_when:
+                declared.add((model, str(path)))
+
+    assert declared == {
+        ("FTX-1", "receiver.main.operator_controls.att"),
+        ("FTX-1", "receiver.main.operator_controls.manual_notch_freq"),
+    }

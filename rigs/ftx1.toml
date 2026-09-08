@@ -248,9 +248,16 @@ freshness_ttl_seconds = 2.0
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
+# Bench probe 2026-09-08: `RA0;` was refused (`?;`) with MAIN on 461.550 MHz
+# FM. `RA` has a fixed P1 and no SUB form, so band and mode could not be
+# separated in that session; the 60 MHz edge below is provisional until MAIN
+# is retuned to HF and the read repeated.
 [state_acquisition.field_policies."receiver.main.operator_controls.att"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
+available_when = [
+    { field = "receiver.main.active.freq_mode.freq_hz", max = 60000000 },
+]
 
 [state_acquisition.field_policies."receiver.main.operator_controls.preamp"]
 cadence_seconds = 1.0
@@ -302,9 +309,15 @@ freshness_ttl_seconds = 2.0
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
+# Bench probe 2026-09-08: `BP01;` answered `BP01F35;` with MAIN in FM while
+# `BP11;` answered `BP11150;` with SUB in USB, in the same session -- the
+# manual-notch frequency has no decimal answer in FM.
 [state_acquisition.field_policies."receiver.main.operator_controls.manual_notch_freq"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
+available_when = [
+    { field = "receiver.main.active.freq_mode.mode", not_in = ["FM", "FM-N", "DATA-FM"] },
+]
 
 [state_acquisition.field_policies."global.operator_controls.power_level"]
 cadence_seconds = 1.0

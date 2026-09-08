@@ -221,10 +221,37 @@ Each field path uses the canonical `FieldPath` strings from
 Optional per-field policy overrides. Supported keys are `cadence_seconds`,
 `freshness_ttl_seconds`, `reconciliation_priority`, `external_cat_pause`,
 `adaptive_decay`, `adaptive_decay_idle_multiplier`,
-`adaptive_decay_max_cadence_seconds`, `meter_coalescing_window_seconds`, and
-`tx_only` (the set the loader accepts is `_ACQUISITION_POLICY_KEYS` in
-`rig_loader.py`; anything else is rejected).
+`adaptive_decay_max_cadence_seconds`, `meter_coalescing_window_seconds`,
+`tx_only`, and `available_when` (the set the loader accepts is
+`_ACQUISITION_POLICY_KEYS` in `rig_loader.py`; anything else is rejected).
 Field-specific `meter_coalescing_window_seconds` is valid only for meter paths.
+
+`available_when` declares the conditions under which the field exists on the
+radio at all — a mode, band or state in which the rig has no such function.
+It is a list of clauses, all of which must hold. Each clause names a `field`
+(a canonical `FieldPath` string) and exactly one comparison against that
+field's value, in one of three shapes:
+
+| Shape | Spelling | Holds when the source field's value |
+|-------|----------|-------------------------------------|
+| membership | `in = [...]`, `not_in = [...]` | is (is not) one of the listed values |
+| bound | `min = <number>`, `max = <number>` | is at or above (at or below) the bound |
+| equality | `equals = <value>` | equals this value |
+
+An unknown key, no comparison, more than one comparison, a `field` that does
+not parse, a non-list `in`/`not_in`, or a non-numeric `min`/`max` is a load
+error naming the policy path and the clause
+(`rig_loader.py: _parse_available_when`). Nothing acts on the parsed clauses
+yet: they reach
+`state_acquisition_policy.py: AcquisitionPolicy.available_when` and stop
+there.
+
+```toml
+[state_acquisition.field_policies."receiver.main.operator_controls.manual_notch_freq"]
+available_when = [
+    { field = "receiver.main.active.freq_mode.mode", not_in = ["FM", "FM-N", "DATA-FM"] },
+]
+```
 
 An omitted key inherits the profile-level default rather than clearing it, so
 `freshness_ttl_seconds` also accepts the string `"never"` to mean "this field
