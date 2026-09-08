@@ -1110,11 +1110,15 @@ def expected_observations_for_command(
 ) -> tuple[FieldPath, ...]:
     """Return the field paths a write named *name* is expected to change.
 
-    Answers for command names without a ``CommandDescriptor``; a
-    descriptor-backed intent carries its target from ``CommandDescriptor.target``
-    (bound in ``core/command_dispatch.py``) and this derivation returns ``()``
-    for it. Legacy ``Command`` dataclasses reach it through
-    ``runtime/_poller_types.py: LEGACY_COMMAND_NAMES``.
+    A descriptor-backed name never reaches this function through
+    ``command_intent_from_request`` -- that path returns a
+    ``CommandIntent`` whose ``target`` already comes from
+    ``CommandDescriptor.target`` there. A legacy ``Command`` dataclass has
+    no such intent, so it reaches this function through
+    ``runtime/_poller_types.py: LEGACY_COMMAND_NAMES`` instead; when its
+    canonical name also has a descriptor, ``_command_target`` binds the
+    dataclass's own params through that descriptor's ``bind``/``target``
+    (MOR-2425 PR-1b) rather than duplicating the mapping here.
     """
 
     return _command_expected_observations(name, params, _command_target(name, params))
@@ -1351,6 +1355,78 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "operator_controls", "tone_freq")
     if name == "set_tsql_freq":
         return FieldPath.receiver(receiver, "operator_controls", "tsql_freq")
+    # RX controls (MOR-2425 PR-1b): agc/if_shift resolve to a declared
+    # acquisition capability on at least one live-bench profile (agc on
+    # IC-7300; if_shift on FTX-1 -- IC-7300 does not declare "if_shift" as
+    # a feature at all, and only FTX-1's ``YaesuCatRadio`` implements the
+    # setter ``RadioPoller._execute`` calls). apf/audio_peak_filter/
+    # digisel_shift/nb_depth/nb_width have a state-model field but no
+    # acquisition capability on either profile -- left pending.
+    if name == "set_agc":
+        return FieldPath.receiver(receiver, "operator_controls", "agc")
+    if name == "set_if_shift":
+        return FieldPath.receiver(receiver, "operator_controls", "if_shift")
+    # Global panel settings (MOR-2425 PR-1b): dial_lock is declared on
+    # FTX-1 only (IC-7300 declares no acquisition capability for it, even
+    # though both profiles expose the write). tuning_step/ref_adjust/
+    # dash_ratio/main_sub_tracking/dual_watch are declared on neither
+    # profile -- left pending.
+    if name == "set_dial_lock":
+        return FieldPath.global_("tx_state", "dial_lock")
+    # TX audio / modulation (MOR-2425 PR-1b): all nine resolve on IC-7300;
+    # mic_gain/compressor_on/compressor_level/vox_on also resolve on
+    # FTX-1. af_mute/ssb_tx_bandwidth/drive_gain and the four mod-input
+    # names have a state-model field but no declared acquisition
+    # capability on either profile; acc1/usb/lan mod level have no field
+    # at all -- all left pending or reclassified as no-field.
+    if name == "set_mic_gain":
+        return FieldPath.global_("operator_controls", "mic_gain")
+    if name == "set_compressor":
+        return FieldPath.global_("tx_state", "compressor_on")
+    if name == "set_compressor_level":
+        return FieldPath.global_("operator_controls", "compressor_level")
+    if name == "set_monitor":
+        return FieldPath.global_("tx_state", "monitor_on")
+    if name == "set_monitor_gain":
+        return FieldPath.global_("operator_controls", "monitor_gain")
+    if name == "set_vox":
+        return FieldPath.global_("tx_state", "vox_on")
+    if name == "set_vox_gain":
+        return FieldPath.global_("operator_controls", "vox_gain")
+    if name == "set_anti_vox_gain":
+        return FieldPath.global_("operator_controls", "anti_vox_gain")
+    if name == "set_vox_delay":
+        return FieldPath.global_("operator_controls", "vox_delay")
+    # Scope-display settings (MOR-2425 PR-1b): eleven of the twelve
+    # ``Set*`` names are declared ``polling_only`` on IC-7300
+    # (``scope_controls.global.display.*``) -- read-only in
+    # ``state_pipeline_contracts.py`` (writes go through this command
+    # path, not a generic state-pipeline write), which does not bear on
+    # whether ``ensure_fresh`` can poll them. ``rbw`` is the one exception
+    # -- absent from ic7300.toml's declared capabilities -- left pending.
+    # FTX-1 has no scope.
+    if name == "set_scope_during_tx":
+        return FieldPath.scope_control("display", "during_tx")
+    if name == "set_scope_center_type":
+        return FieldPath.scope_control("display", "center_type")
+    if name == "set_scope_edge":
+        return FieldPath.scope_control("display", "edge")
+    if name == "set_scope_fixed_edge":
+        return FieldPath.scope_control("display", "fixed_edge")
+    if name == "set_scope_vbw":
+        return FieldPath.scope_control("display", "vbw_narrow")
+    if name == "set_scope_dual":
+        return FieldPath.scope_control("display", "dual")
+    if name == "set_scope_mode":
+        return FieldPath.scope_control("display", "mode")
+    if name == "set_scope_span":
+        return FieldPath.scope_control("display", "span")
+    if name == "set_scope_speed":
+        return FieldPath.scope_control("display", "speed")
+    if name == "set_scope_ref":
+        return FieldPath.scope_control("display", "ref_db")
+    if name == "set_scope_hold":
+        return FieldPath.scope_control("display", "hold")
     if name == "set_rit_frequency":
         return FieldPath.global_("operator_controls", "rit_freq")
     if name == "set_rit_status":
@@ -1387,6 +1463,22 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         )
     if name == "set_split_vfo":
         return FieldPath.global_("tx_state", "split")
+    # Descriptor-backed names (MOR-2425 PR-1b): a legacy dataclass whose
+    # canonical name has a ``CommandDescriptor`` has no ``CommandIntent``
+    # of its own to carry ``CommandDescriptor.target`` -- bind the
+    # dataclass's own params (passed in *params* by
+    # ``RadioPoller._request_post_write_readback``) through the
+    # descriptor's own ``bind``/``target`` instead of duplicating that
+    # mapping here. A name whose params don't satisfy the descriptor's
+    # ``bind`` (missing/invalid) resolves to no target, same as any other
+    # unrecognized name.
+    descriptor = command_descriptor(name)
+    if descriptor is not None:
+        try:
+            bound_params = descriptor.bind(params)
+        except (KeyError, ValueError, TypeError):
+            return None
+        return descriptor.target(bound_params)
     return None
 
 
