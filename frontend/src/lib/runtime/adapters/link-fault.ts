@@ -7,8 +7,8 @@
  * `controlState === 'disconnected'` — `getConnectionStatus()` off the same
  * `wsConnected`. `radio-silent` implies its bad-link chip (MOR-2425 R29(3),
  * `getWsConnected() && runtime.connectionStale`), on the same two facts.
- * Neither implication reverses. The bar, in particular, is also up before the
- * first connect — `wsConnected` is false then too — where this returns `none`.
+ * The bar is also up before the first connect — `wsConnected` is false then
+ * too — where this returns `none`.
  *
  * The facts come from `connection.svelte.ts` — `getWsConnected()`,
  * `hasEverConnected()`, and the staleness `isStale()` exposes as
