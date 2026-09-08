@@ -35,6 +35,7 @@
   import type { DspFiniteHandles } from '../../semantic/dsp-instruments';
   import type { DspScalarHandles } from '../../semantic/dsp-scalars';
   import type { RfFrontEndFiniteHandles } from '../../semantic/rf-front-end-instruments';
+  import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instruments';
   import type { FilterInstrumentHandles } from '../../semantic/filter-instruments';
   import type { BandInstrumentHandles } from '../../semantic/band-instruments';
   import { ANTENNA_BLOCKED_LABEL } from '../../semantic/AntennaInstrumentHost.svelte';
@@ -353,6 +354,16 @@
   </div>
 {/snippet}
 
+{#snippet rxAudioFiniteLayout(rxAudioInstruments: RxAudioInstrumentHandles)}
+  <div class="rx-audio-finite-grid">
+    <div class="rx-audio-finite-seat" data-field="monitorMode">{@render rxAudioInstruments.monitorMode()}</div>
+    <div class="rx-audio-finite-seat" data-field="routingFocus">{@render rxAudioInstruments.routingFocus()}</div>
+    <div class="rx-audio-finite-seat" data-field="routingSplit">{@render rxAudioInstruments.routingSplit()}</div>
+    <div class="rx-audio-finite-seat" data-field="modInputSource">{@render rxAudioInstruments.modInputSource()}</div>
+    <div class="rx-audio-finite-seat" data-field="setModInputLan">{@render rxAudioInstruments.setModInputLan()}</div>
+  </div>
+{/snippet}
+
 {#snippet dspScalarLayout(dspScalars: DspScalarHandles)}
   <div class="dsp-scalar-grid">
     <div class="dsp-scalar-seat" data-field="nbLevel">{@render dspScalars.nbLevel()}</div>
@@ -485,7 +496,11 @@
         {@render instruments.rxTx()}
         {@render instruments.txFaultRecovery()}
         {@render instruments.modInputTxWarning()}
-        {@render instruments.rxAudio()}
+        {#if skinId === 'desktop-v2'}
+          {@render instruments.rxAudio(undefined, rxAudioFiniteLayout)}
+        {:else}
+          {@render instruments.rxAudio()}
+        {/if}
         {#if skinId === 'desktop-v2'}
           {@render instruments.dsp(undefined, dspFiniteLayout, dspScalarLayout)}
         {:else}
@@ -813,6 +828,15 @@
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .dsp-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .rf-front-end-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  /* The `.filter-finite-*` shape, not the siblings' wrap row: a wrap row let
+     each seat shrink to its content, and the desktop-v2 skin stretches
+     `.rx-audio-row` buttons with `flex: 1 1 0`, which needs the row to span
+     the panel. Box-less seats keep a structurally absent handle from
+     spending a gap.
+     0.25rem is the gap `RxAudioSurface.svelte` puts between these same rows
+     when it groups them itself. */
+  .rx-audio-finite-grid { display: flex; flex-direction: column; gap: 0.25rem; }
+  .rx-audio-finite-seat { display: contents; }
   .dsp-scalar-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

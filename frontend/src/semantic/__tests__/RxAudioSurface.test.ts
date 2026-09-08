@@ -113,16 +113,10 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
   /** The whole static import closure of the file, allow-listed. Kills: adding
    *  ANY import that could reach transport or the audio manager — including
    *  through a relative specifier, which a `$lib/...` regex would miss. */
-  it('imports only facts, MOD-input vocabulary, localization and control behavior', () => {
+  it('imports only facts and the RxAudioInstrumentHost handle contract', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
-    expect([...new Set(specifiers)].sort()).toEqual([
-      '$lib/i18n', '$lib/radio/mod-input',
-      '../primitives/control-instruments/control-instrument-behavior', './radio-view-model',
-      './rx-audio-instruments',
-    ]);
-    expect(CODE).toContain('bindAbsoluteChoiceInstrument');
-    expect(CODE).toContain('bindChoiceInstrument');
+    expect([...new Set(specifiers)].sort()).toEqual(['./radio-view-model', './rx-audio-instruments']);
   });
 
   // Kills: `onMount(() => audioManager.startRx())` and every relative of it.
@@ -142,13 +136,13 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
     }
   });
 
-  // Kills: the surface reading live state or restoring a private AF owner.
-  it('takes one state prop, the required instrument handles, and finite intent callbacks', () => {
+  // Kills: the surface reading live state, restoring a private AF owner, or
+  // regrowing a second owner of a finite control `RxAudioInstrumentHost`
+  // already owns.
+  it('takes one state prop, the required instrument handles and an optional finiteLayout', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
-    expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1])).toEqual([
-      'view', 'handles', 'onMonitorMode', 'onRoutingFocus', 'onRoutingSplit',
-      'onSetModInputLan', 'onModInputChange',
-    ]);
+    expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1]))
+      .toEqual(['view', 'handles', 'finiteLayout']);
   });
 
   // Kills: rendering an empty audio panel for a radio that has no audio chain.
@@ -158,6 +152,29 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
     const r = render(view);
     expect(r.root()).toBeNull();
     expect(target.textContent).toBe('');
+    r.dispose();
+  });
+});
+
+/**
+ * MOR-2425 RX-B/RX-C. The default grouped order — pinned so the
+ * `finiteLayout` branch (which replaces the finite five with one call) can
+ * never silently reorder the DEFAULT rendering, which stays what
+ * `RxAudioInstrumentHost`'s phase A hand-off documented: monitor mode BEFORE
+ * the AF scalar, the remaining four AFTER it.
+ */
+describe('the default (no finiteLayout) order is fixed by testid sequence', () => {
+  it('renders monitor, AF, focus, split, MOD input, then Set LAN — in that order', () => {
+    const r = render(withRx({ modInputReadiness: { status: 'mismatch', source: 0 } }));
+    const testids = [...target.querySelectorAll('[data-testid^="rx-audio-"]')]
+      .map((node) => node.getAttribute('data-testid'));
+    const order = [
+      'rx-audio-monitor', 'rx-audio-af', 'rx-audio-focus', 'rx-audio-split',
+      'rx-audio-mod-input', 'rx-audio-mod-set-lan',
+    ];
+    const indices = order.map((id) => testids.indexOf(id));
+    expect(indices.every((index) => index >= 0)).toBe(true);
+    expect(indices).toEqual([...indices].sort((a, b) => a - b));
     r.dispose();
   });
 });

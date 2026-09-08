@@ -3,7 +3,9 @@ import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-pro
 import type { TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
 import type { TxAuxFiniteHandles } from '../../semantic/tx-aux-finite';
 import type { ReceiverInstrumentHandles } from '../../semantic/ReceiverInstrumentHost.svelte';
-import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instruments';
+import type {
+  RxAudioFiniteLayout, RxAudioInstrumentHandles,
+} from '../../semantic/rx-audio-instruments';
 import type {
   RfFrontEndFiniteLayout, RfFrontEndLevelHandles,
 } from '../../semantic/rf-front-end-instruments';
@@ -35,7 +37,7 @@ export interface InstrumentComposition {
   readonly rxAudioInstruments: RxAudioInstrumentHandles;
   readonly rfFrontEndInstruments: RfFrontEndLevelHandles;
   readonly meters: Snippet<[allowBare?: boolean]>;
-  readonly rxAudio: Snippet<[allowBare?: boolean]>;
+  readonly rxAudio: Snippet<[allowBare?: boolean, finiteLayout?: RxAudioFiniteLayout]>;
   readonly rfFrontEnd: Snippet<[allowBare?: boolean, finiteLayout?: RfFrontEndFiniteLayout]>;
   readonly filter: Snippet<[allowBare?: boolean, finiteLayout?: FilterFiniteLayout]>;
   readonly dsp: Snippet<[
