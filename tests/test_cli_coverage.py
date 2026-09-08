@@ -905,6 +905,9 @@ async def test_web_launch_without_application_auth(command, environment, monkeyp
     assert cfg.auth_token == ""
     assert cfg.host == ("127.0.0.1" if managed else "0.0.0.0")
     assert cfg.emit_startup_event is managed
+    # Both CLI routes that serve the web UI ("web" and "station") arm the
+    # startup state gate; WebConfig defaults it off for embedders and tests.
+    assert cfg.await_initial_state is True
 
 
 @pytest.mark.asyncio

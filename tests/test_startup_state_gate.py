@@ -1,10 +1,12 @@
 """The web UI is served only after the initial state acquisition completes.
 
-Covers the three pieces of that gate:
+Covers the four pieces of that gate:
 
 * ``AcquisitionScheduler.unobserved_startup_paths`` /
   ``initial_acquisition_complete`` — the completion predicate over the
   declared, non-``tx_only`` paths;
+* ``web/web_startup.py: _observed_paths`` — the receiver-id alias between
+  what CI-V ingress writes and what the profile declares;
 * ``web/web_startup.py: _start_web_server`` — poller and freshness task
   first, then the gate, then the bind;
 * ``cli/__init__.py: _cmd_web`` — the ``Web UI:`` banner line prints only
@@ -14,12 +16,16 @@ Covers the three pieces of that gate:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable, Sequence
+import logging
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from rigplane.core.acquisition_scheduler import AcquisitionScheduler
+from rigplane.core.acquisition_scheduler import AcquisitionRequest, AcquisitionScheduler
+from rigplane.core.civ import CivFrame
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     FieldCapability,
@@ -31,13 +37,24 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
+from rigplane.core.types import bcd_encode
+from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
+from rigplane.runtime._civ_rx import _profile_path_for_observation
+from rigplane.web import web_startup
 from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.web_startup import (
+    _acquisition_scheduler,
+    _await_initial_state_acquisition,
+    _observed_paths,
+)
 
 FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
 MODE = FieldPath.active("main", "freq_mode", "mode")
 S_METER = FieldPath.receiver("main", "meters", "s_meter")
 POWER = FieldPath.global_("meters", "power")
+
+_REAL_SLEEP = asyncio.sleep
 
 
 def _source() -> SourceMetadata:
@@ -160,20 +177,218 @@ def _sweep_profile(count: int) -> RadioAcquisitionProfile:
     )
 
 
-def test_uncapped_prime_queues_every_unobserved_policy_field_in_one_pass() -> None:
-    scheduler = AcquisitionScheduler(profile=_sweep_profile(8))
+class _GateClock:
+    """Fake monotonic clock the gate's own ``sleep`` advances.
 
-    queued = scheduler.prime_unobserved(observed_paths=(), limit=None)
+    ``stop_at`` ends the run by raising out of the sleep, so a test can
+    bound a fake window without waiting for it.
+    """
 
-    assert len({path for request in queued for path in request.paths}) == 8
+    def __init__(self, *, stop_at: float) -> None:
+        self.now = 0.0
+        self._stop_at = stop_at
+        self.on_tick: Callable[[float], None] | None = None
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.now += delay
+        if self.on_tick is not None:
+            self.on_tick(self.now)
+        if self.now >= self._stop_at:
+            raise _GateWindowClosed
+        await _REAL_SLEEP(0)
 
 
-def test_default_prime_burst_cap_is_unchanged() -> None:
-    scheduler = AcquisitionScheduler(profile=_sweep_profile(8))
+class _GateWindowClosed(Exception):
+    pass
 
-    queued = scheduler.prime_unobserved(observed_paths=())
 
-    assert len({path for request in queued for path in request.paths}) == 5
+@contextmanager
+def _fake_gate_clock(clock: _GateClock) -> Iterator[None]:
+    """Rebind ``web_startup``'s own ``time``/``asyncio`` names, not the modules.
+
+    ``_await_initial_state_acquisition`` reads ``time.monotonic`` and
+    ``asyncio.sleep`` and nothing else from those two names, so swapping the
+    module-level names keeps the fake out of every other caller's way.
+    """
+
+    with (
+        patch.object(web_startup, "time", SimpleNamespace(monotonic=clock.monotonic)),
+        patch.object(web_startup, "asyncio", SimpleNamespace(sleep=clock.sleep)),
+    ):
+        yield
+
+
+class _PacingScheduler(AcquisitionScheduler):
+    """Real scheduler that records when each prime queued which paths."""
+
+    def __init__(self, profile: RadioAcquisitionProfile, clock: _GateClock) -> None:
+        super().__init__(profile=profile)
+        self._gate_clock = clock
+        self.primes: list[tuple[float, tuple[FieldPath, ...]]] = []
+
+    def prime_unobserved(
+        self,
+        observed_paths: Iterable[FieldPath],
+        *,
+        reason: str = "prime-unobserved",
+        limit: int = 5,
+    ) -> tuple[AcquisitionRequest, ...]:
+        queued = super().prime_unobserved(observed_paths, reason=reason, limit=limit)
+        for request in queued:
+            self.primes.append((self._gate_clock.now, request.paths))
+        return queued
+
+
+_PACING_GAP = 0.125  # exact in binary, so the asserted instants are exact
+
+
+def _pacing_server(scheduler: AcquisitionScheduler) -> WebServer:
+    radio = _CivRadio(scheduler)
+    radio._INITIAL_STATE_GAP_SERIAL = _PACING_GAP
+    return WebServer(radio, _gated_config())
+
+
+@pytest.mark.asyncio
+async def test_startup_sweep_queues_one_path_per_gap() -> None:
+    """One prime per ``_INITIAL_STATE_GAP_SERIAL``, not a whole-profile burst."""
+
+    clock = _GateClock(stop_at=10 * _PACING_GAP)
+    scheduler = _PacingScheduler(_sweep_profile(8), clock)
+    server = _pacing_server(scheduler)
+
+    with _fake_gate_clock(clock), pytest.raises(_GateWindowClosed):
+        await _await_initial_state_acquisition(server, sweep=True)
+
+    assert [instant for instant, _ in scheduler.primes] == [
+        index * _PACING_GAP for index in range(8)
+    ]
+    assert all(len(paths) == 1 for _, paths in scheduler.primes)
+    assert len({path for _, paths in scheduler.primes for path in paths}) == 8
+
+
+@pytest.mark.asyncio
+async def test_never_answered_path_is_reprimed_once_per_reprime_interval() -> None:
+    """A path the radio never answers is re-requested at most once a second."""
+
+    clock = _GateClock(stop_at=10.0)
+    scheduler = _PacingScheduler(_sweep_profile(1), clock)
+    server = _pacing_server(scheduler)
+
+    def _answer_nothing(now: float) -> None:
+        # What AcquisitionDrain does on a request that times out: the path is
+        # freed back to "not observed, not pending" and becomes re-primeable.
+        for request in scheduler.pending_requests():
+            scheduler.record_acquisition_failure(
+                request, reason="test_no_answer", now=now
+            )
+
+    clock.on_tick = _answer_nothing
+
+    with _fake_gate_clock(clock), pytest.raises(_GateWindowClosed):
+        await _await_initial_state_acquisition(server, sweep=True)
+
+    # 80 gate iterations in the 10 s window; one prime per whole second.
+    assert [instant for instant, _ in scheduler.primes] == [
+        float(second) for second in range(10)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_outstanding_paths_are_logged_then_warned_when_nothing_arrives(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    clock = _GateClock(stop_at=65.0 + _PACING_GAP)
+    scheduler = AcquisitionScheduler(profile=_sweep_profile(1))
+    server = _pacing_server(scheduler)
+    (outstanding,) = scheduler.unobserved_startup_paths(())
+
+    with caplog.at_level(logging.INFO, logger="rigplane.web.web_startup"):
+        with _fake_gate_clock(clock), pytest.raises(_GateWindowClosed):
+            await _await_initial_state_acquisition(server, sweep=False)
+
+    waiting = [
+        record for record in caplog.records if "still waiting on" in record.getMessage()
+    ]
+    infos = [record for record in waiting if record.levelno == logging.INFO]
+    warnings = [record for record in waiting if record.levelno == logging.WARNING]
+    # Every 5 s from t=5 to t=65; the last two are past the 60 s no-progress
+    # threshold and escalate.
+    assert len(infos) == 11
+    assert len(warnings) == 2
+    assert str(outstanding) in infos[0].getMessage()
+    assert str(outstanding) in warnings[0].getMessage()
+    assert "no new field for 60s" in warnings[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# Receiver-id alias between store spelling and profile spelling
+# ---------------------------------------------------------------------------
+
+
+def test_civ_ingress_counts_as_observed_against_profile_paths() -> None:
+    """CI-V writes ``receiver.0``; the IC-7300 profile declares ``receiver.main``.
+
+    Without the alias resolution in ``_observed_paths`` a receiver-scoped
+    answer never credits the path the profile declares for it.
+    """
+
+    from rigplane.runtime.radio import IcomRadio
+
+    radio = IcomRadio("192.168.1.100", model="IC-7300")
+    server = WebServer(radio, _gated_config())
+    scheduler = _acquisition_scheduler(server)
+    assert scheduler is not None
+    # Not a vacuous assertion below: both paths are in the predicate's domain.
+    assert {MODE, FREQ} <= set(scheduler.unobserved_startup_paths(()))
+
+    runtime = radio._civ_runtime
+    runtime._apply_state_store_observations(
+        CivFrame(
+            to_addr=0xE0,
+            from_addr=0x94,
+            command=0x26,
+            sub=None,
+            data=bytes([0x00, 0x01, 0x01, 0x02]),
+        )
+    )
+    runtime._apply_state_store_observations(
+        CivFrame(
+            to_addr=0xE0,
+            from_addr=0x94,
+            command=0x25,
+            sub=None,
+            data=bytes([0x00]) + bcd_encode(14_074_000),
+        )
+    )
+
+    stored = {str(field.path) for field in server.command_state_store.snapshot().fields}
+    assert {
+        "receiver.0.active.freq_mode.mode",
+        "receiver.0.active.freq_mode.data_mode",
+        "receiver.0.active.freq_mode.filter_num",
+        "receiver.0.active.freq_mode.freq_hz",
+    } <= stored
+
+    outstanding = scheduler.unobserved_startup_paths(_observed_paths(server, scheduler))
+    assert MODE not in outstanding
+    assert FREQ not in outstanding
+
+
+def test_yaesu_observation_paths_need_no_receiver_alias() -> None:
+    """FTX-1's adapter already spells receivers the way its profile does."""
+
+    from rigplane.backends.yaesu_cat.observations import _MAIN_FREQ
+
+    profile = resolve_radio_profile(model="FTX-1").state_acquisition
+    assert profile is not None
+    scheduler = AcquisitionScheduler(profile=profile)
+
+    assert _profile_path_for_observation(profile, _MAIN_FREQ) == _MAIN_FREQ
+    assert _MAIN_FREQ in scheduler.unobserved_startup_paths(())
+    assert _MAIN_FREQ not in scheduler.unobserved_startup_paths((_MAIN_FREQ,))
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +401,15 @@ class _RecordingScheduler:
 
     def __init__(self, required: Sequence[FieldPath]) -> None:
         self._required = tuple(required)
+        # ``_observed_paths`` resolves store paths against this profile.
+        self._profile = RadioAcquisitionProfile(
+            provider="test_provider",
+            capabilities=tuple(
+                FieldCapability(path=path, polling=True) for path in required
+            ),
+        )
         self.prime_limits: list[int | None] = []
+        self.on_prime: Callable[[], None] | None = None
 
     def unobserved_startup_paths(
         self, observed_paths: Iterable[FieldPath]
@@ -202,6 +425,8 @@ class _RecordingScheduler:
         limit: int | None = 5,
     ) -> tuple[object, ...]:
         self.prime_limits.append(limit)
+        if self.on_prime is not None:
+            self.on_prime()
         return ()
 
 
@@ -313,11 +538,14 @@ async def test_civ_startup_binds_only_after_the_predicate_is_satisfied() -> None
     server = WebServer(radio, _gated_config())
     binds: list[dict[str, object]] = []
     fake_poller = MagicMock(drain_tx_safety_commands=AsyncMock())
+    started_when_primed: list[bool] = []
+    scheduler.on_prime = lambda: started_when_primed.append(fake_poller.start.called)
 
     async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
         binds.append(
             {
                 "poller": server._radio_poller,
+                "poller_started": fake_poller.start.called,
                 "freshness": server._state_store_freshness_task,
             }
         )
@@ -337,11 +565,18 @@ async def test_civ_startup_binds_only_after_the_predicate_is_satisfied() -> None
         await server.stop()
 
     assert len(binds) == 1
-    assert binds[0]["poller"] is fake_poller, "poller must start before the bind"
+    assert binds[0]["poller"] is fake_poller, "poller must be built before the bind"
+    assert binds[0]["poller_started"] is True, "poller must start before the bind"
+    # Stronger than start-before-bind: nothing answers a primed request until
+    # the poller's drain is running, so it must be running before the gate
+    # queues the first one.
+    assert started_when_primed and all(started_when_primed), (
+        "poller must start before the gate primes"
+    )
     assert binds[0]["freshness"] is not None, "freshness task must start before bind"
-    # Uncapped while the gate is open (spec: the startup sweep is not
-    # subject to _PRIME_UNOBSERVED_BURST_LIMIT).
-    assert set(scheduler.prime_limits) == {None}
+    # One path per gap while the gate is open — see
+    # test_startup_sweep_queues_one_path_per_gap.
+    assert set(scheduler.prime_limits) == {web_startup._STARTUP_GATE_PRIME_LIMIT}
 
 
 @pytest.mark.asyncio

@@ -706,7 +706,7 @@ class AcquisitionScheduler:
         observed_paths: Iterable[FieldPath],
         *,
         reason: str = "prime-unobserved",
-        limit: int | None = _PRIME_UNOBSERVED_BURST_LIMIT,
+        limit: int = _PRIME_UNOBSERVED_BURST_LIMIT,
     ) -> tuple[AcquisitionRequest, ...]:
         """Queue BACKGROUND reads for never-observed fields with a policy.
 
@@ -788,11 +788,7 @@ class AcquisitionScheduler:
           (profile-declaration order) that this method advances past
           whatever it scanned, wrapping at the end of the mapping (MOR-1501,
           A1 from #2415 review) — rather than always restarting the scan at
-          index 0. ``limit=None`` removes the cap for one call; the startup
-          gate in ``web/web_startup.py`` uses it so a cold store is not
-          primed five paths at a time (pinned by
-          ``test_uncapped_prime_queues_every_unobserved_policy_field_in_one_pass``).
-          A fixed scan-from-zero would let five or more
+          index 0. A fixed scan-from-zero would let five or more
           *permanently* unanswerable non-polling fields ahead of a reachable
           one in declaration order starve that reachable one indefinitely:
           each call would re-queue the same unanswerable leaders (freed back
@@ -820,7 +816,7 @@ class AcquisitionScheduler:
         cursor = self._prime_cursor % total if total else 0
         visited = 0
         for offset in range(total):
-            if limit is not None and queued_path_count >= limit:
+            if queued_path_count >= limit:
                 break
             visited = offset + 1
             path, policy = items[(cursor + offset) % total]
