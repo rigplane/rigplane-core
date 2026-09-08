@@ -65,8 +65,7 @@
   // tuning-step store. `MobileRadioLayout` passes `true`; `RadioLayout`
   // omits it (defaults `false`, toggle shown) because it owns the driver.
   //
-  // `colorRoles` lets a host restyle the panorama without editing this shared
-  // component. It is resolved over the defaults once, and the one resolved
+  // `colorRoles` is resolved over the defaults once, and the one resolved
   // record feeds both the canvas renderer options and the CSS custom
   // properties the DOM overlay below reads.
   let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false, scopeControls,
