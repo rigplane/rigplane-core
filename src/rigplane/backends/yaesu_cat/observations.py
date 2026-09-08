@@ -378,6 +378,7 @@ class YaesuObservationAdapter:
                     except (Exception, asyncio.CancelledError):
                         logger.warning("Yaesu PTT error callback failed", exc_info=True)
 
+            read_error: Exception | None = None
             try:
                 reading = await self.radio.read_transmit_state()
             except asyncio.CancelledError:
@@ -389,17 +390,24 @@ class YaesuObservationAdapter:
                 KeyError,
                 CatCommandRejected,
             ) as exc:
-                self._log_field_skip(
-                    "ptt",
-                    "Skipping field %s — PTT read failed: %s",
-                    exc,
-                    paths=(_PTT,),
-                )
+                read_error = exc
                 reading = TxStateReading(None, failure="read-error")
             except Exception:
                 publish_ptt_error()
                 raise
             if reading.failure is not None:
+                # ``read-error`` is a field the radio cannot answer, whether it
+                # raised here or ``read_transmit_state`` absorbed it into the
+                # reading; ``timeout``/``transport`` re-raise below instead.
+                if reading.failure == "read-error":
+                    self._log_field_skip(
+                        "ptt",
+                        "Skipping field %s — PTT read failed: %s",
+                        read_error
+                        if read_error is not None
+                        else ValueError("read_transmit_state reported read-error"),
+                        paths=(_PTT,),
+                    )
                 publish_ptt_error()
                 if reading.failure == "timeout":
                     raise CatTimeoutError("PTT read failed: timeout")
@@ -598,6 +606,7 @@ class YaesuObservationAdapter:
                 "power_level",
                 "Skipping field %s — invalid power metadata: %s",
                 ValueError(f"max_watts must be a positive number, got {max_watts!r}"),
+                paths=(_POWER_LEVEL,),
             )
             return None
         if max_watts <= 0:
@@ -605,6 +614,7 @@ class YaesuObservationAdapter:
                 "power_level",
                 "Skipping field %s — invalid power metadata: %s",
                 ValueError(f"max_watts must be > 0, got {max_watts!r}"),
+                paths=(_POWER_LEVEL,),
             )
             return None
         if isinstance(watts, bool) or not isinstance(watts, (int, float)):
@@ -612,6 +622,7 @@ class YaesuObservationAdapter:
                 "power_level",
                 "Skipping field %s — invalid CAT value: %s",
                 ValueError(f"watts must be numeric, got {watts!r}"),
+                paths=(_POWER_LEVEL,),
             )
             return None
         return float(watts) / float(max_watts)
@@ -989,9 +1000,12 @@ class YaesuObservationAdapter:
                         domain=self.radio.profile.ctcss_tones_centihz,
                     )
                 except ValueError as exc:
-                    logger.warning(
-                        "Skipping CTCSS observations for invalid profile domain: %s",
+                    self._log_field_skip(
+                        "ctcss_tone_index",
+                        "Skipping field %s — CTCSS index outside the profile "
+                        "domain: %s",
                         exc,
+                        paths=(_MAIN_TONE_FREQ, _MAIN_TSQL_FREQ),
                     )
                     tone_centihz = None
                 if tone_centihz is not None:
@@ -1350,14 +1364,11 @@ class YaesuObservationAdapter:
         ``paths`` names the declared fields the skipped read would have
         produced; see ``AcquisitionScheduler.abandon_startup_path`` and
         ``tests/test_yaesu_cat_observation_adapter.py::
-        test_skipped_read_abandons_every_declared_path_it_feeds``.
+        test_skipped_read_abandons_every_declared_path_it_feeds``. They are
+        abandoned on every skip, not only the first for a ``label``, because the
+        warned-field set rate-limits the log alone
+        (``test_every_sub_s_meter_skip_releases_the_path_from_the_startup_gate``).
         """
-        warned = getattr(self.radio, "_poll_warned_fields", None)
-        if isinstance(warned, set):
-            if label in warned:
-                logger.debug(message, label, exc)
-                return
-            warned.add(label)
         if paths:
             scheduler = getattr(self.radio, "_acquisition_scheduler", None)
             if isinstance(scheduler, AcquisitionScheduler):
@@ -1365,6 +1376,12 @@ class YaesuObservationAdapter:
                     scheduler.abandon_startup_path(
                         path, reason=f"yaesu field read skipped: {label}"
                     )
+        warned = getattr(self.radio, "_poll_warned_fields", None)
+        if isinstance(warned, set):
+            if label in warned:
+                logger.debug(message, label, exc)
+                return
+            warned.add(label)
         logger.warning(message, label, exc)
 
     def _adapter(self) -> ProviderObservationAdapter:

@@ -22,7 +22,11 @@ from rigplane.radio_state import RadioState
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.radio import RadioConnectionError, YaesuCatRadio
-from rigplane.backends.yaesu_cat.transport import CatCommandRejected, CatTransportError
+from rigplane.backends.yaesu_cat.transport import (
+    CatCommandRejected,
+    CatTimeoutError,
+    CatTransportError,
+)
 
 
 def _clock() -> float:
@@ -2259,13 +2263,16 @@ class _AbandonRecordingScheduler(AcquisitionScheduler):
 
 
 @pytest.mark.asyncio
-async def test_first_sub_s_meter_skip_releases_the_path_from_the_startup_gate() -> None:
+async def test_every_sub_s_meter_skip_releases_the_path_from_the_startup_gate(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """The skipped field must not leave the startup gate waiting for it.
 
     Same frame as ``test_sub_s_meter_parse_warning_logged_once_then_suppressed``:
     the sub ``SM1;`` answer fails to parse every cycle, so no
-    ``receiver.sub.meters.s_meter`` observation ever arrives. The first skip
-    tells the scheduler; the repeats that demote to DEBUG do not tell it again.
+    ``receiver.sub.meters.s_meter`` observation ever arrives. Every skip tells
+    the scheduler, including the repeats the field log demotes to DEBUG; the
+    scheduler's own warning for the path still fires once.
     """
     profile = _profile_state_acquisition()
     scheduler = _AbandonRecordingScheduler(profile)
@@ -2289,19 +2296,25 @@ async def test_first_sub_s_meter_skip_releases_the_path_from_the_startup_gate() 
         )
     )
 
-    for _ in range(3):
-        await YaesuObservationAdapter(
-            radio,
-            profile=profile,
-            clock=_clock,
-        ).poll_rx_meters()
+    with caplog.at_level("WARNING"):
+        for _ in range(3):
+            await YaesuObservationAdapter(
+                radio,
+                profile=profile,
+                clock=_clock,
+            ).poll_rx_meters()
 
-    assert [path for path, _ in scheduler.abandoned] == [sub_path]
+    assert [path for path, _ in scheduler.abandoned] == [sub_path] * 3
     assert sub_path not in scheduler.unobserved_startup_paths(())
     # The MAIN meter, whose answer parses, is not abandoned.
     assert FieldPath.receiver(
         "main", "meters", "s_meter"
     ) in scheduler.unobserved_startup_paths(())
+    messages = [record.getMessage() for record in caplog.records]
+    skips = [text for text in messages if text.startswith("Skipping field")]
+    assert len(skips) == 1
+    assert "sub.s_meter" in skips[0]
+    assert len([text for text in messages if "abandoning startup path" in text]) == 1
 
 
 @pytest.mark.asyncio
@@ -2754,3 +2767,216 @@ async def test_tx_target_frequency_read_abandons_nothing() -> None:
     assert len(emitted) == 1
     assert isinstance(emitted[0], KnownTxTarget)
     assert emitted[0].frequency_hz is None
+
+
+_POWER_LEVEL_PATH = FieldPath.global_("operator_controls", "power_level")
+
+# (id, radio.profile stand-in, read_power answer)
+_POWER_LEVEL_FAULTS: tuple[tuple[str, object, tuple[int, object]], ...] = (
+    ("max-watts-not-a-number", SimpleNamespace(max_watts=None), (2, 55)),
+    ("max-watts-not-positive", SimpleNamespace(max_watts=0), (2, 55)),
+    ("watts-not-numeric", SimpleNamespace(max_watts=100), (2, "55")),
+)
+
+
+@pytest.mark.parametrize(
+    ("radio_profile", "power"),
+    [row[1:] for row in _POWER_LEVEL_FAULTS],
+    ids=[row[0] for row in _POWER_LEVEL_FAULTS],
+)
+@pytest.mark.asyncio
+async def test_power_level_normalisation_fault_abandons_the_declared_path(
+    radio_profile: object, power: tuple[int, object]
+) -> None:
+    """Each normalisation fault drops the field, so each must release its path.
+
+    ``_normalize_power_level`` returning ``None`` means no
+    ``global.operator_controls.power_level`` observation is appended, and the
+    ``PC`` read itself succeeded, so nothing else will release it.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = _AbandonRecordingScheduler(profile)
+    radio = _gate_radio()
+    radio._acquisition_scheduler = scheduler
+    radio.profile = radio_profile
+    radio.read_power = AsyncMock(return_value=power)
+
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_tx_controls()
+
+    assert [path for path, _ in scheduler.abandoned] == [_POWER_LEVEL_PATH]
+    assert _POWER_LEVEL_PATH not in scheduler.unobserved_startup_paths(())
+    assert _POWER_LEVEL_PATH not in {item.path for item in observations}
+
+
+@pytest.mark.asyncio
+async def test_power_level_metadata_fault_does_not_disarm_the_read_failure() -> None:
+    """The two ``power_level`` skip sites share one warned-field label.
+
+    A normalisation fault on the first cycle marks the label warned; the ``PC``
+    read failing on a later cycle must still release the path.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = _AbandonRecordingScheduler(profile)
+    radio = _gate_radio()
+    radio._acquisition_scheduler = scheduler
+    radio.profile = SimpleNamespace(max_watts=None)
+    adapter = YaesuObservationAdapter(radio, profile=profile, clock=_clock)
+
+    await adapter.poll_tx_controls()
+    _break_read(radio, "read_power", None)
+    await adapter.poll_tx_controls()
+
+    assert [path for path, _ in scheduler.abandoned] == [_POWER_LEVEL_PATH] * 2
+    assert _POWER_LEVEL_PATH not in scheduler.unobserved_startup_paths(())
+
+
+@pytest.mark.asyncio
+async def test_ctcss_index_outside_the_profile_domain_abandons_both_tone_paths(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A well-formed ``CN`` answer can still name a tone the profile lacks.
+
+    The FTX-1 resolves a 50-entry tone domain (asserted below), so index 50
+    parses but has no centihertz value; neither tone path can be emitted and
+    the ``CN`` read itself succeeded, so nothing else will release them.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = _AbandonRecordingScheduler(profile)
+    radio = _gate_radio()
+    radio._acquisition_scheduler = scheduler
+    assert len(radio.profile.ctcss_tones_centihz) == 50
+    radio.read_ctcss_tone_index = AsyncMock(return_value=50)
+
+    tone = FieldPath.receiver("main", "operator_controls", "tone_freq")
+    tsql = FieldPath.receiver("main", "operator_controls", "tsql_freq")
+    with caplog.at_level("WARNING"):
+        observations = await YaesuObservationAdapter(
+            radio, profile=profile, clock=_clock
+        ).poll_slow_controls()
+
+    assert sorted(str(path) for path, _ in scheduler.abandoned) == sorted(
+        [str(tone), str(tsql)]
+    )
+    assert {item.path for item in observations} & {tone, tsql} == set()
+    assert tone not in scheduler.unobserved_startup_paths(())
+    assert tsql not in scheduler.unobserved_startup_paths(())
+    messages = [record.getMessage() for record in caplog.records]
+    assert len([text for text in messages if "CTCSS" in text]) == 1
+
+
+@pytest.mark.asyncio
+async def test_ptt_read_error_reading_abandons_the_gated_ptt_path() -> None:
+    """``read_transmit_state`` absorbs reject/parse faults into ``read-error``.
+
+    That reading publishes only ``global.tx_state.observed_ptt``, which the
+    FTX-1 gate does not hold; the gated ``global.tx_state.ptt`` gets no
+    observation and must be released instead.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = _AbandonRecordingScheduler(profile)
+    radio = _gate_radio()
+    radio._acquisition_scheduler = scheduler
+    radio.read_transmit_state = AsyncMock(
+        return_value=TxStateReading(None, failure="read-error")
+    )
+
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_medium()
+
+    ptt = FieldPath.global_("tx_state", "ptt")
+    assert [path for path, _ in scheduler.abandoned] == [ptt]
+    assert ptt not in scheduler.unobserved_startup_paths(())
+    emitted = {item.path for item in observations}
+    assert OBSERVED_PTT_PATH in emitted
+    assert ptt not in emitted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [("timeout", CatTimeoutError), ("transport", CatTransportError)],
+)
+async def test_ptt_transport_failures_raise_without_abandoning(
+    failure: str, expected: type[Exception]
+) -> None:
+    """A dead link is not a field the backend has given up on.
+
+    ``timeout`` and ``transport`` re-raise so the poller reconnects; the path
+    stays in the gate for the next connection to answer.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = _AbandonRecordingScheduler(profile)
+    radio = _gate_radio()
+    radio._acquisition_scheduler = scheduler
+    radio.read_transmit_state = AsyncMock(
+        return_value=TxStateReading(None, failure=failure)
+    )
+
+    with pytest.raises(expected):
+        await YaesuObservationAdapter(
+            radio, profile=profile, clock=_clock
+        ).poll_medium()
+
+    assert scheduler.abandoned == []
+    assert FieldPath.global_("tx_state", "ptt") in scheduler.unobserved_startup_paths(
+        ()
+    )
+
+
+class _AllReadsFail:
+    """Delegate to ``radio`` but answer every CAT read with a bad frame."""
+
+    def __init__(self, radio: MagicMock) -> None:
+        self._radio = radio
+
+    def __getattr__(self, name: str) -> object:
+        attribute = getattr(self._radio, name)
+        if not isinstance(attribute, AsyncMock):
+            return attribute
+
+        async def _fail(*args: object, **kwargs: object) -> object:
+            raise CatParseError("XX{p};", "??;", "Response does not match pattern")
+
+        return _fail
+
+
+def _gated_startup_paths(profile: RadioAcquisitionProfile) -> set[FieldPath]:
+    """The domain of ``AcquisitionScheduler.unobserved_startup_paths``."""
+    domain = set(profile.pollable_paths()) | set(profile.field_policies)
+    return {path for path in domain if not profile.policy_for(path).tx_only}
+
+
+@pytest.mark.asyncio
+async def test_every_gated_path_is_released_when_every_read_fails() -> None:
+    """No gated field may be reachable only through an unannotated skip.
+
+    Every read answers with an unparseable frame, so every skip site in the
+    adapter runs; the paths the scheduler is then still waiting for are the
+    ones no site names. Only ``global.tx_state.tx_target`` may remain: its
+    observation is appended whether or not its sub-read parses.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = _AbandonRecordingScheduler(profile)
+    radio = _gate_radio()
+    radio._acquisition_scheduler = scheduler
+    adapter = YaesuObservationAdapter(
+        _AllReadsFail(radio), profile=profile, clock=_clock
+    )
+
+    for poll in (
+        "poll_medium",
+        "poll_rx_meters",
+        "poll_tx_meters",
+        "poll_slow_controls",
+        "poll_tx_controls",
+    ):
+        await getattr(adapter, poll)()
+
+    tx_target = FieldPath.global_("tx_state", "tx_target")
+    gated = _gated_startup_paths(profile)
+    assert tx_target in gated
+    assert gated - {tx_target} <= {path for path, _ in scheduler.abandoned}
+    assert scheduler.unobserved_startup_paths(()) == (tx_target,)
