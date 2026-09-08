@@ -146,8 +146,8 @@ could not check them.
 Below 578 px the deck scrolls sideways rather than crushing, because the two
 receivers stay side by side. That last point is a standing owner ruling; I found
 no record of it under `docs/` (`git grep -in "side by side\|side-by-side" --
-docs/` returns only unrelated mobile-tab and prior-art lines), so its only
-provenance is the owner.
+docs/` returns five lines, none of which records it), so its only provenance is
+the owner.
 
 ## 5. Side panel width
 
@@ -257,10 +257,7 @@ ReceiverIndicatorViewModel`.
 correction.** `git grep -rn "MOX" origin/main -- 'frontend/src/**'` exits 1, so
 no `*ViewModel` declares such a field. But the string is **not** absent from
 `frontend/`: `frontend/scripts/i18n-check.mjs` lists `MOX` in its allowlist of
-radio and operating abbreviations. `git grep` also reports a byte match in
-`frontend/fixtures/approved-baselines/unified-instrument--1100x800.png`; a byte
-match inside a compressed PNG is not evidence that the label is rendered there,
-and I did not open the image. Consequence worth acting on separately: removing
+radio and operating abbreviations. Consequence worth acting on separately: removing
 the label leaves an allowlist entry with no referent.
 
 ## 10. What is testable, and how
