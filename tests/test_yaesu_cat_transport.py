@@ -438,8 +438,7 @@ class TestYaesuCatTransport:
         """A ``;``-terminated line with a byte outside 0x20-0x7E is link noise.
 
         It never reaches the parser, where it would be indistinguishable from
-        a clean frame of the wrong shape.  Bytes >= 0x80 are the commonest
-        UART corruption and are classified the same way as control bytes.
+        a clean frame of the wrong shape.  Bytes >= 0x80 are classified the same way as control bytes.
         """
         reader = FakeStreamReader([garbled])
         writer = FakeStreamWriter()
