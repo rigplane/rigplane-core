@@ -41,7 +41,7 @@ describe('pure ControlFeedback presentation contract (MOR-1711)', () => {
 
   it.each(PHASES)('maps phase %s deterministically', (phase) => {
     const result = projectControlFeedbackPresentation(
-      feedback<number>(phase, { target: 2400, requestedTarget: 2400 }), EMPTY, String,
+      feedback<number>(phase, { confirmed: 2400, target: 2400, requestedTarget: 2400 }), EMPTY, String,
     );
     expect(result.attributes).toEqual({
       'data-command-phase': phase, 'aria-busy': BUSY.has(phase) ? 'true' : 'false',
@@ -56,7 +56,9 @@ describe('pure ControlFeedback presentation contract (MOR-1711)', () => {
   it.each(['confirmed', 'failed', 'timed-out', 'cancelled', 'superseded'] as const)(
     'maps terminal outcome %s without a busy ARIA state', (phase) => {
       const result = projectControlFeedbackPresentation(
-        feedback<number>(phase, { requestedTarget: 1800, outcome: { phase, error: 'bounded' } }),
+        feedback<number>(phase, {
+          confirmed: 1800, requestedTarget: 1800, outcome: { phase, error: 'bounded' },
+        }),
         EMPTY, (value) => `${value} Hz`,
       );
       expect(result.attributes['aria-busy']).toBe('false');
@@ -109,6 +111,21 @@ describe('pure ControlFeedback presentation contract (MOR-1711)', () => {
     );
     expect(idle.currentStatus).toBeNull();
     expect(idle.politeAnnouncement).toBeNull();
+  });
+
+  it('names the observed value once confirmed, the requested value when nothing was observed', () => {
+    const confirmed = projectControlFeedbackPresentation(
+      feedback<number>('confirmed', { confirmed: 64, requestedTarget: 111 }), EMPTY, String,
+    );
+    expect(confirmed.targetDescription).toBe('64');
+    expect(confirmed.currentStatus).toBe('Confirmed: 64');
+    expect(confirmed.politeAnnouncement?.message).toBe('Confirmed: 64');
+
+    const failed = projectControlFeedbackPresentation(
+      feedback<number>('failed', { confirmed: 64, requestedTarget: 111 }), EMPTY, String,
+    );
+    expect(failed.currentStatus).toBe('Failed: 111');
+    expect(failed.politeAnnouncement?.message).toBe('Failed: 111');
   });
 
   it('derives toggle and choice ARIA only from confirmed truth', () => {

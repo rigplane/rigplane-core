@@ -55,8 +55,10 @@ export function projectControlFeedbackPresentation<T>(
   previous: Readonly<ControlFeedbackPresentationState>,
   describeTarget: (target: T) => string,
 ): Readonly<ControlFeedbackPresentation> {
-  const target = feedback.target ?? feedback.requestedTarget;
-  const targetDescription = target === null ? null : describeTarget(target);
+  const described = feedback.phase === 'confirmed'
+    ? feedback.confirmed
+    : feedback.target ?? feedback.requestedTarget;
+  const targetDescription = described === null ? null : describeTarget(described);
   const statusMessage = targetDescription === null
     ? PHASE_TEXT[feedback.phase]
     : `${PHASE_TEXT[feedback.phase]}: ${targetDescription}`;

@@ -394,7 +394,7 @@ describe('command lifecycle store', () => {
       expect(store.isCommandLifecycleSuperseded(sqlMain)).toBe(false);
     });
 
-    it('confirms only from exact scoped truth after a finite advancing ACK marker', () => {
+    it('confirms on the first same-field observation past the ACK marker, whatever value it carries', () => {
       const snapshot = (
         rfGain: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh',
       ): ServerState => ({
@@ -418,10 +418,32 @@ describe('command lifecycle store', () => {
       emitState(snapshot(128 / 255, 4));
       expect(current().status).toBe('acknowledged');
       emitState(snapshot(0.5, 5));
-      expect(current().status).toBe('acknowledged');
-      // MOR-2425/R40: marker 6 is newer than the ACK boundary and matches.
+      expect(current().status).toBe('confirmed');
       emitState(snapshot(128 / 255, 6, 'stale'));
       expect(current().status).toBe('confirmed');
+    });
+
+    it('keeps a clamped read-back confirmed instead of letting the deadline expire', () => {
+      const snapshot = (rfGain: number, marker: number): ServerState => ({
+        providerGeneration: 3, main: { rfGain }, sub: {},
+        fieldStatus: { 'main.rfGain': {
+          storePath: 'fixture', observed: true, freshness: 'fresh',
+          availability: 'available', lastObservedMonotonic: marker,
+        } },
+      } as unknown as ServerState);
+      emitState(snapshot(128 / 255, 4));
+      const command = store.beginCommand({
+        id: 'rf-clamped', name: 'set_rf_gain', params: { level: 128, receiver: 0 },
+        originalEpoch: 7, timeoutMs: 25,
+      });
+      store.acknowledgeCommand(command.id, 7, 7);
+      const status = () => store.getCommandLifecycle(command.id, 7)?.status;
+      expect(status()).toBe('acknowledged');
+
+      emitState(snapshot(0.5, 5));
+      expect(status()).toBe('confirmed');
+      vi.advanceTimersByTime(25);
+      expect(status()).toBe('confirmed');
     });
   });
 
@@ -473,7 +495,7 @@ describe('command lifecycle store', () => {
     it.each([
       ['set_cw_pitch', 'cwPitch', 'value', 640, 650],
       ['set_key_speed', 'keySpeed', 'speed', 27, 28],
-    ] as const)('confirms %s only after a newer matching exact field observation', (
+    ] as const)('confirms %s from the first newer exact field observation, whatever value it carries', (
       name, field, param, target, mismatch,
     ) => {
       const observed = (value: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh') => ({
@@ -491,7 +513,7 @@ describe('command lifecycle store', () => {
       expect(status()).toBe('acknowledged');
       emitState(observed(target, 4));
       emitState(observed(mismatch, 5));
-      // MOR-2425/R40: marker 6 is newer than the ACK boundary and matches.
+      expect(status()).toBe('confirmed');
       emitState(observed(target, 6, 'stale'));
       expect(status()).toBe('confirmed');
     });
@@ -560,7 +582,7 @@ describe('command lifecycle store', () => {
       expect(store.isCommandLifecycleSuperseded(drive)).toBe(false);
     });
 
-    it.each(registrations)('confirms %s only from a newer matching exact raw observation', (
+    it.each(registrations)('confirms %s from the first newer exact raw observation, whatever value it carries', (
       field, intentName, _control, target,
     ) => {
       const observed = (
@@ -580,7 +602,7 @@ describe('command lifecycle store', () => {
       expect(status()).toBe('acknowledged');
       emitState(observed(target, 4));
       emitState(observed(target - 1, 5));
-      // MOR-2425/R40: marker 6 is newer than the ACK boundary and matches.
+      expect(status()).toBe('confirmed');
       emitState(observed(target, 6, 'stale'));
       expect(status()).toBe('confirmed');
     });
@@ -670,7 +692,7 @@ describe('command lifecycle store', () => {
       ['set_agc_time_constant', 'sub.agcTimeConstant', 'value', 900, 899, 1],
       ['set_nb_width', 'nbWidth', 'level', 64, 63, null],
       ['set_nb_depth', 'nbDepth', 'level', 9, 8, null],
-    ] as const)('confirms %s only from a newer matching exact field observation', (
+    ] as const)('confirms %s from the first newer exact field observation, whatever value it carries', (
       name, path, param, target, mismatch, receiver,
     ) => {
       const observed = (value: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh') => ({
@@ -690,7 +712,7 @@ describe('command lifecycle store', () => {
       expect(status()).toBe('acknowledged');
       emitState(observed(target, 4));
       emitState(observed(mismatch, 5));
-      // MOR-2425/R40: marker 6 is newer than the ACK boundary and matches.
+      expect(status()).toBe('confirmed');
       emitState(observed(target, 6, 'stale'));
       expect(status()).toBe('confirmed');
     });
@@ -749,11 +771,11 @@ describe('command lifecycle store', () => {
         providerGeneration: 3, active: 'MAIN', nbWidth: 20, nbDepth: 4,
         main: { nbLevel: 40, nrLevel: 136 }, sub: { nbLevel: 30, nrLevel: 128 },
         fieldStatus: {
-          nbWidth: { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 },
-          nbDepth: { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 },
+          nbWidth: { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
+          nbDepth: { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
           'main.nbLevel': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 },
           'sub.nbLevel': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
-          'main.nrLevel': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 },
+          'main.nrLevel': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
           'sub.nrLevel': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
         },
       } as unknown as ServerState);
@@ -806,7 +828,7 @@ describe('command lifecycle store', () => {
       ['pbtInner', 'set_pbt_inner', 'value', 131, 130],
       ['pbtOuter', 'set_pbt_outer', 'value', 131, 130],
       ['ifShift', 'set_if_shift', 'offset', 500, 480],
-    ] as const)('confirms %s only from a newer matching exact raw field observation', (
+    ] as const)('confirms %s from the first newer exact raw field observation, whatever value it carries', (
       field, name, param, target, mismatch,
     ) => {
       const observed = (value: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh') => ({
@@ -825,7 +847,7 @@ describe('command lifecycle store', () => {
       expect(status()).toBe('acknowledged');
       emitState(observed(target, 4));
       emitState(observed(mismatch, 5));
-      // MOR-2425/R40: marker 6 is newer than the ACK boundary and matches.
+      expect(status()).toBe('confirmed');
       emitState(observed(target, 6, 'stale'));
       expect(status()).toBe('confirmed');
     });

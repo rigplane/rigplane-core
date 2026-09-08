@@ -344,7 +344,9 @@ function advanceDelay(value: number, marker: number): void {
   flushSync();
 }
 
-function advanceCw(cwPitch: number, keySpeed: number, marker: number): void {
+function advanceCw(
+  cwPitch: number, keySpeed: number, marker: number, speedMarker = marker,
+): void {
   const state = liveState({
     cwPitch, keySpeed, revision: marker, stateRevision: marker,
     freshnessRevision: marker, observationSeq: marker,
@@ -354,7 +356,7 @@ function advanceCw(cwPitch: number, keySpeed: number, marker: number): void {
     cwPitch: { ...fresh, freshness: 'fresh' as const, availability: 'available' as const,
       lastObservedMonotonic: marker },
     keySpeed: { ...fresh, freshness: 'fresh' as const, availability: 'available' as const,
-      lastObservedMonotonic: marker },
+      lastObservedMonotonic: speedMarker },
   };
   h.state = state;
   setRadioState(state);
@@ -498,7 +500,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(cwInput('pitchHz').dataset.commandPhase).toBe('awaiting-confirmation');
     expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('awaiting-confirmation');
 
-    advanceCw(725, 24, 11);
+    advanceCw(725, 24, 11, 10);
     expect(cwInput('pitchHz').dataset.commandPhase).toBe('confirmed');
     expect(cwValue('pitchHz')).toBe('725');
     expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('awaiting-confirmation');
@@ -636,7 +638,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(txHarness.trace()).toEqual([]);
   });
 
-  it('projects acknowledgement and only newer matching radio truth as confirmed', () => {
+  it('projects acknowledgement and the first newer radio truth as confirmed, whatever value it carries', () => {
     render();
     const commandId = submitDelay(111);
     deliver(commandId, 'ack');
@@ -644,14 +646,12 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(delayInput().value).toBe('111');
 
     advanceDelay(64, 11);
-    expect(delayInput().dataset.commandPhase).toBe('awaiting-confirmation');
-    advanceDelay(111, 12);
     expect(delayInput().dataset.commandPhase).toBe('confirmed');
-    expect(delayInput().value).toBe('111');
+    expect(delayInput().value).toBe('64');
     expect(delayInput().getAttribute('aria-busy')).toBe('false');
     const live = q<HTMLElement>('[data-control-feedback-status]');
     expect(live?.getAttribute('aria-live')).toBe('polite');
-    expect(live?.textContent).toContain('111');
+    expect(live?.textContent).toContain('64');
   });
 
   it('restores canonical truth after transport failure and timeout', () => {

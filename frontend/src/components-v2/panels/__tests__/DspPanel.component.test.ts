@@ -369,7 +369,7 @@ describe('DspPanel v3 DSP scalar source integration (MOR-2423)', () => {
     vi.useRealTimers();
   });
 
-  it('uses the real descriptors for submitted, ACK, exact fresh confirmation, and authority replacement', () => {
+  it('uses the real descriptors for submitted, ACK, fresh confirmation, and authority replacement', () => {
     const commands = lanes.map(([field, name, params]) => beginCommand({
       id: `dsp-${field}`, name, params, originalEpoch: 1, timeoutMs: 5_000,
     }));
@@ -445,16 +445,16 @@ describe('DspPanel v3 DSP scalar source integration (MOR-2423)', () => {
     assertModalFeedback(t, 'failed', 'new');
   });
 
-  it('requires the exact same-field observation to be newer than ACK', () => {
+  it('requires the same-field observation to be newer than ACK', () => {
     const command = beginCommand({
       id: 'exact-nb-level', name: 'set_nb_level', params: { level: 129, receiver: 0 },
       originalEpoch: 1, timeoutMs: 5_000,
     });
     acknowledgeCommand(command.id, command.originalEpoch, 1);
 
-    const wrongValue = qualifiedState(2);
-    wrongValue.main!.nbLevel = 130;
-    runtimeState.state = wrongValue;
+    const staleWrong = qualifiedState(1);
+    staleWrong.main!.nbLevel = 130;
+    runtimeState.state = staleWrong;
     runtimeState.notify();
     expect(getDspControlFeedback('nbLevel').phase).toBe('awaiting-confirmation');
 
@@ -464,9 +464,9 @@ describe('DspPanel v3 DSP scalar source integration (MOR-2423)', () => {
     runtimeState.notify();
     expect(getDspControlFeedback('nbLevel').phase).toBe('awaiting-confirmation');
 
-    const freshExact = qualifiedState(2);
-    freshExact.main!.nbLevel = 129;
-    runtimeState.state = freshExact;
+    const freshWrong = qualifiedState(2);
+    freshWrong.main!.nbLevel = 130;
+    runtimeState.state = freshWrong;
     runtimeState.notify();
     expect(getDspControlFeedback('nbLevel').phase).toBe('confirmed');
   });
