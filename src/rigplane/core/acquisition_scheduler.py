@@ -425,7 +425,7 @@ class AcquisitionScheduler:
         self._deferred: dict[_AcquisitionRequestKey, _PendingEnsureFresh] = {}
         self._cadence_by_key: dict[_AcquisitionRequestKey, _CadenceState] = {}
         self._claims_by_request_id: dict[str, _AcquisitionClaim] = {}
-        # request id -> per-path monotonic time of the send that covered it,
+        # request id -> per-path timestamp of the drain pass that sent it,
         # dropped where the request is removed from ``_requests_by_key``.
         self._dispatch_by_request_id: dict[str, dict[FieldPath, float]] = {}
         self._pending_cadence_by_key: dict[
@@ -522,10 +522,11 @@ class AcquisitionScheduler:
         paths: Iterable[FieldPath],
         now: float,
     ) -> None:
-        """Record that ``paths`` of one request went on the wire at ``now``.
+        """Record that the drain pass timestamped ``now`` sent ``paths``.
 
-        The drain calls this with the paths a send actually covered. Times
-        are per path because a request's paths need not go out in one send.
+        ``now`` is the pass's clock reading, taken before its sends. The
+        drain calls this with the paths a send actually covered. Times are
+        per path because a request's paths need not go out in one send.
         """
 
         dispatched = self._dispatch_by_request_id.setdefault(request_id, {})
@@ -541,7 +542,7 @@ class AcquisitionScheduler:
         """Return whether this observation can answer ``request``'s paths.
 
         False for a request no send has covered, and for one whose covering
-        send is later than the observation. ``request.paths`` is the caller's
+        pass timestamp is later than the observation. ``request.paths`` is the caller's
         matched subset, so paths of the same request that no send covered do
         not count.
         """
