@@ -49,8 +49,8 @@ __all__ = [
     "InFlightLedger",
 ]
 
-#: request id -> (paths already sent for it, the clock reading of the pass
-#: that sent them, taken before its sends).
+#: request id -> (paths already sent for it, the clock reading of the latest
+#: pass that sent any of them, taken before its sends).
 InFlightLedger = MutableMapping[str, tuple[frozenset[FieldPath], float]]
 
 

@@ -578,9 +578,8 @@ class AcquisitionScheduler:
 
         A drain keys its in-flight ledger by request id and skips a request
         whose paths it has already sent, so a new id is what makes the next
-        pass send them again. The old id's dispatch record goes with it, or
-        :meth:`may_credit` would answer the new request from the old send;
-        so does its claim, which no longer names a pending request.
+        pass send them again. The old id's dispatch record and claim are
+        dropped with it.
         """
 
         request_id = f"acq-{self._next_id}"
