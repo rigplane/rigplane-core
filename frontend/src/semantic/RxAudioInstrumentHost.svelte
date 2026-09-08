@@ -83,7 +83,7 @@
   let lastAuthority: AfAuthority | null | undefined;
   let stop: (() => void) | null = null;
   let rx = $derived(presentation.rxAudio);
-  /** Rule (3), MOR-1279: the FACT, never a capability re-derivation. */
+  /** MOR-1279: the FACT, never a capability re-derivation. */
   let liveOffered = $derived(rx?.liveAudio.structural === true);
   /** MOR-1384 — the v2 `RxAudioPanel` link-lost readout, restored from the SAME
    *  underlying fact (`liveAudio.operational` is `runtime.connectionAudio`, the
