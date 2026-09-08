@@ -108,6 +108,7 @@
 
   let modeFilter = $derived(view.modeFilter);
   let filterPassband = $derived(view.filterPassband);
+  let fixedWidth = $derived(modeFilter?.activeFilterConfiguration?.fixed === true);
 
   function filterWidthInput(): Readonly<ContinuousScalarInput> {
     const field = modeFilter?.filterWidth;
@@ -213,16 +214,18 @@
       {#if modeFilter.filterWidth.availability.structural}
         <label class="filter-level" data-testid="filter-width" data-disabled-reason={reasonOf(modeFilter.filterWidth)}>
           <span class="filter-level-name">Width</span>
-          <input
-            type="range"
-            {...feedbackIntegratedRange}
-            min={numberOf(modeFilter.filterWidthMin, 50)} max={numberOf(modeFilter.filterWidthMax, 9999)} step={50}
-            value={filterWidthView.displayed ?? numberOf(modeFilter.filterWidth, 0)}
-            disabled={!filterWidthView.editable}
-            data-command-phase={filterWidthView.phase ?? undefined}
-            aria-busy={filterWidthView.busy}
-            oninput={(event) => filterWidthLease?.nativeInput(event.currentTarget.valueAsNumber)}
-          />
+          {#if !fixedWidth}
+            <input
+              type="range"
+              {...feedbackIntegratedRange}
+              min={numberOf(modeFilter.filterWidthMin, 50)} max={numberOf(modeFilter.filterWidthMax, 9999)} step={50}
+              value={filterWidthView.displayed ?? numberOf(modeFilter.filterWidth, 0)}
+              disabled={!filterWidthView.editable}
+              data-command-phase={filterWidthView.phase ?? undefined}
+              aria-busy={filterWidthView.busy}
+              oninput={(event) => filterWidthLease?.nativeInput(event.currentTarget.valueAsNumber)}
+            />
+          {/if}
           <output>{textOf(modeFilter.filterWidth)}</output>
           {#if filterWidthAnnouncement !== null}
             {#key filterWidthAnnouncement.eventKey}
