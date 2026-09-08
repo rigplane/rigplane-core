@@ -90,24 +90,13 @@ dual composition had no path for any of the four.
 `peer-split`'s `fallbackLayoutId` names `unified-instrument`. Retarget it to
 `lcd-cockpit`, where the persisted amber preference already routes.
 
-## 5. The second receiver before MOR-2144
+## 5. The second receiver
 
-`rigs/ftx1.toml` declares `dual_rx`; the web layer discards it because
-`YaesuCatRadio` does not satisfy `DualReceiverCapable`. Tracked as MOR-2144,
-not fixed here.
-
-The consequence is **not** that `peer-split` cannot render.
-`derivePresentationCapabilities` keeps both receivers structurally present and
-sets `operationalReceivers = ['MAIN']` with a `dual-rx-unavailable`
-diagnostic; `toRadioViewModel` emits a `receiver.SUB` /
-`capability-unavailable` disabled reason, and `isOperationalStrip` reads it
-back onto the strip. `radio-view-model-adapter.ts` records this as the
-intended behaviour: a structurally dual radio without the tag keeps SUB in
-`vfos`, "correct: MOR-977 renders it PRESENT".
-
-**Owner decision, 2026-09-01:** ship it that way. The SUB column renders
-present and marked not-operational, and becomes live when MOR-2144 lands with
-no change in this layout.
+**Owner ruling, 2026-09-08:** structural existence of the second receiver
+follows the rig profile — `runtime_helpers.py: runtime_capabilities` no longer
+discards a profile-declared `dual_rx` — while the swap and equalize actions
+stay gated by their own capability tags
+(`runtime_helpers.py: projected_vfo_capability_tags`).
 
 ## 6. Architecture placement
 
