@@ -16,6 +16,8 @@ from rigplane.core.state_pipeline_contracts import FieldFamily, FieldPath
 __all__ = [
     "AcquisitionPolicy",
     "AdaptiveDecayPolicy",
+    "AvailabilityClause",
+    "AvailabilityOperator",
     "ExternalCatPauseBehavior",
     "FieldAvailability",
     "FieldCapability",
@@ -216,6 +218,70 @@ class MeterCoalescingPolicy:
         )
 
 
+class AvailabilityOperator(StrEnum):
+    """Comparison an availability clause applies to its source field."""
+
+    IN = "in"
+    NOT_IN = "not_in"
+    MIN = "min"
+    MAX = "max"
+    EQUALS = "equals"
+
+
+_SEQUENCE_AVAILABILITY_OPERATORS = frozenset(
+    {AvailabilityOperator.IN, AvailabilityOperator.NOT_IN}
+)
+_NUMERIC_AVAILABILITY_OPERATORS = frozenset(
+    {AvailabilityOperator.MIN, AvailabilityOperator.MAX}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class AvailabilityClause:
+    """One condition on another field's current value."""
+
+    field: FieldPath
+    operator: AvailabilityOperator | str
+    value: Any
+
+    def __post_init__(self) -> None:
+        operator = AvailabilityOperator(str(self.operator))
+        value = self.value
+        if operator in _SEQUENCE_AVAILABILITY_OPERATORS:
+            if isinstance(value, str) or not isinstance(value, Sequence):
+                raise ValueError(f"{operator.value} must be a sequence of values")
+            value = tuple(value)
+        elif operator in _NUMERIC_AVAILABILITY_OPERATORS:
+            value = _strict_float(value, label=operator.value)
+        object.__setattr__(self, "operator", operator)
+        object.__setattr__(self, "value", value)
+
+    def to_dict(self) -> dict[str, Any]:
+        operator = AvailabilityOperator(str(self.operator))
+        return {
+            "field": str(self.field),
+            "operator": operator.value,
+            "value": (
+                list(self.value)
+                if operator in _SEQUENCE_AVAILABILITY_OPERATORS
+                else self.value
+            ),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> AvailabilityClause:
+        _reject_unknown_keys(
+            value,
+            allowed=frozenset({"field", "operator", "value"}),
+            label="availability clause",
+        )
+        return cls(
+            field=FieldPath.parse(str(value["field"])),
+            operator=AvailabilityOperator(str(value["operator"])),
+            value=value["value"],
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class AcquisitionPolicy:
     """Scheduler-facing policy for acquiring one or more fields."""
@@ -235,6 +301,9 @@ class AcquisitionPolicy:
     #: triggered read is never blocked by this flag). Inert when
     #: ``cadence_seconds`` is ``None`` (nothing left for it to gate).
     tx_only: bool = False
+    #: Declared conditions, all of which must hold, for this field to exist
+    #: on the radio in its current mode, band or state.
+    available_when: tuple[AvailabilityClause, ...] = ()
 
     def __post_init__(self) -> None:
         cadence = _optional_positive_float(
@@ -264,6 +333,11 @@ class AcquisitionPolicy:
             "tx_only",
             _strict_bool(self.tx_only, label="tx_only"),
         )
+        clauses = tuple(self.available_when)
+        for clause in clauses:
+            if not isinstance(clause, AvailabilityClause):
+                raise ValueError("available_when must hold AvailabilityClause entries")
+        object.__setattr__(self, "available_when", clauses)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -282,6 +356,7 @@ class AcquisitionPolicy:
                 else self.meter_coalescing.to_dict()
             ),
             "txOnly": self.tx_only,
+            "availableWhen": [clause.to_dict() for clause in self.available_when],
         }
 
     @classmethod
@@ -297,6 +372,7 @@ class AcquisitionPolicy:
                     "externalCatPause",
                     "meterCoalescing",
                     "txOnly",
+                    "availableWhen",
                 }
             ),
             label="acquisition policy",
@@ -333,6 +409,10 @@ class AcquisitionPolicy:
                 value.get("meterCoalescing")
             ),
             tx_only=bool(value.get("txOnly", False)),
+            available_when=tuple(
+                AvailabilityClause.from_dict(clause)
+                for clause in value.get("availableWhen", ())
+            ),
         )
 
 

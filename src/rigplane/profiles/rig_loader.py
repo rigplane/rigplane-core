@@ -17,6 +17,7 @@ from rigplane.core.capabilities import KNOWN_CAPABILITIES
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     AdaptiveDecayPolicy,
+    AvailabilityClause,
     ExternalCatPauseBehavior,
     FieldAvailability,
     FieldCapability,
@@ -1451,8 +1452,59 @@ _ACQUISITION_POLICY_KEYS = frozenset(
         "external_cat_pause",
         "meter_coalescing_window_seconds",
         "tx_only",
+        "available_when",
     }
 )
+
+#: Operator keys an ``available_when`` clause may carry; a clause must use
+#: exactly one of them alongside its ``field``.
+_AVAILABILITY_OPERATOR_KEYS = ("in", "not_in", "min", "max", "equals")
+_AVAILABILITY_CLAUSE_KEYS = frozenset({"field", *_AVAILABILITY_OPERATOR_KEYS})
+
+
+def _parse_available_when(
+    filename: str,
+    prefix: str,
+    value: Any,
+) -> tuple[AvailabilityClause, ...]:
+    if not isinstance(value, list):
+        raise RigLoadError(
+            f"{filename}: {prefix}.available_when must be a list of clauses"
+        )
+    clauses: list[AvailabilityClause] = []
+    for index, raw_clause in enumerate(value):
+        label = f"{prefix}.available_when[{index}]"
+        if not isinstance(raw_clause, dict):
+            raise RigLoadError(f"{filename}: {label} must be a table")
+        _reject_unknown_keys(filename, label, raw_clause, _AVAILABILITY_CLAUSE_KEYS)
+        if not isinstance(raw_clause.get("field"), str):
+            raise RigLoadError(f"{filename}: {label}.field must be a field path string")
+        try:
+            path = FieldPath.parse(raw_clause["field"])
+        except ValueError as exc:
+            raise RigLoadError(
+                f"{filename}: {label}.field is not a field path: {exc}"
+            ) from exc
+        present = [key for key in _AVAILABILITY_OPERATOR_KEYS if key in raw_clause]
+        if len(present) != 1:
+            raise RigLoadError(
+                f"{filename}: {label} must use exactly one of "
+                f"{list(_AVAILABILITY_OPERATOR_KEYS)}, got {present}"
+            )
+        operator = present[0]
+        operand = raw_clause[operator]
+        if operator in ("in", "not_in") and not isinstance(operand, list):
+            raise RigLoadError(f"{filename}: {label}.{operator} must be a list")
+        if operator in ("min", "max"):
+            operand = _strict_policy_float(filename, label, operator, operand)
+        try:
+            clauses.append(
+                AvailabilityClause(field=path, operator=operator, value=operand)
+            )
+        except ValueError as exc:
+            raise RigLoadError(f"{filename}: {label} invalid: {exc}") from exc
+    return tuple(clauses)
+
 
 _STATE_ACQUISITION_KEYS = frozenset(
     {
@@ -1493,6 +1545,11 @@ def _parse_acquisition_policy(
 ) -> AcquisitionPolicy:
     _reject_unknown_keys(filename, prefix, raw, _ACQUISITION_POLICY_KEYS)
     labels = key_labels or {}
+    available_when = (
+        _parse_available_when(filename, prefix, raw["available_when"])
+        if "available_when" in raw
+        else ()
+    )
     try:
         return AcquisitionPolicy(
             cadence_seconds=_policy_seconds(
@@ -1608,6 +1665,7 @@ def _parse_acquisition_policy(
                     defaults.tx_only if defaults is not None else False,
                 ),
             ),
+            available_when=available_when,
         )
     except (TypeError, ValueError) as exc:
         raise RigLoadError(
