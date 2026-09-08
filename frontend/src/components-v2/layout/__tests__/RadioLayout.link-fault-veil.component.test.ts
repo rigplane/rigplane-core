@@ -100,11 +100,36 @@ const runtimeMock = vi.hoisted(() => async () => {
 vi.mock('$lib/runtime', runtimeMock);
 vi.mock('$lib/runtime/frontend-runtime', runtimeMock);
 
+/**
+ * Splits a CSS selector list on the commas that are not inside parentheses,
+ * so a `:not(a, b)` argument list survives intact.
+ */
+function splitSelectorList(text: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '(') depth++;
+    else if (text[i] === ')') depth--;
+    else if (text[i] === ',' && depth === 0) {
+      out.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(text.slice(start));
+  return out.map((s) => s.trim()).filter((s) => s !== '');
+}
+
+function stripGlobal(selector: string): string {
+  const prefix = ':global(';
+  if (!selector.startsWith(prefix) || !selector.endsWith(')')) return selector;
+  return selector.slice(prefix.length, -1);
+}
+
 describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
   let target: HTMLElement | null = null;
   let instance: object | null = null;
   let conn: typeof import('$lib/stores/connection.svelte');
-  let t: typeof import('$lib/i18n')['t'];
   let mount: typeof import('svelte')['mount'];
   let unmount: typeof import('svelte')['unmount'];
   let flushSync: typeof import('svelte')['flushSync'];
@@ -116,7 +141,6 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
   beforeAll(async () => {
     vi.useFakeTimers();
     conn = await import('$lib/stores/connection.svelte');
-    ({ t } = await import('$lib/i18n'));
     ({ mount, unmount, flushSync } = await import('svelte'));
     ({ default: Fixture } = await import('./fixtures/HostedRadioLayoutFixture.svelte'));
   }, 30_000);
@@ -135,12 +159,23 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
     if (txHarness.listenerCount() === 0) txHarness.reset({ stale: true });
   });
 
-  function mountFace(): void {
+  /**
+   * "The link has been up at least once", which every case below except the
+   * cold-start one needs: `hasEverConnected()` latches on the first
+   * `setWsConnected(true)` and is never cleared, so a case that wants the
+   * veil must establish it explicitly rather than inherit it from whichever
+   * test happened to run first.
+   */
+  function linkHasBeenUp(): void {
+    conn.setWsConnected(true);
+  }
+
+  function mountFace(skinId: 'desktop-v2' | 'sdr-test' = 'desktop-v2'): void {
     rt.state = structuredClone(stateFixture);
     rt.caps = structuredClone(capsFixture);
     target = document.createElement('div');
     document.body.appendChild(target);
-    instance = mount(Fixture, { target, props: { skinId: 'desktop-v2' } }) as object;
+    instance = mount(Fixture, { target, props: { skinId } }) as object;
     flushSync();
   }
 
@@ -150,17 +185,41 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
     return root!;
   }
 
-  function statement(): Element {
-    const el = target!.querySelector('[data-link-fault-statement]');
-    expect(el, 'the statement slot is always present').not.toBeNull();
-    return el!;
+  function controlLinkLostBar(): Element | null {
+    return faceRoot().querySelector('.control-link-lost');
+  }
+
+  function badLinkChip(): Element | null {
+    return faceRoot().querySelector('[data-testid="bad-link-chip"]');
+  }
+
+  async function layoutSource(): Promise<string> {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    return readFileSync(
+      resolve(process.cwd(), 'src/components-v2/layout/RadioLayout.svelte'), 'utf-8',
+    );
+  }
+
+  /** The selectors of the one rule carrying the veil `filter`, unwrapped. */
+  async function veilSelectors(): Promise<string[]> {
+    const source = await layoutSource();
+    const decl = source.indexOf('filter: saturate(');
+    expect(decl, 'the veil declaration must be present').toBeGreaterThan(-1);
+    const brace = source.lastIndexOf('{', decl);
+    const prelude = source.slice(0, brace);
+    // The rule is preceded by its explanatory comment; the selector list is
+    // whatever follows that comment's terminator.
+    const selectorText = prelude.slice(prelude.lastIndexOf('*/') + 2);
+    return splitSelectorList(selectorText).map(stripGlobal);
   }
 
   /**
    * Every element under the face root except the StatusBar's own subtree.
-   * The StatusBar is excluded because its bad-link chip (#3354) is
-   * deliberately `{#if}`-mounted — that is the status bar's statement of the
-   * same condition, and this count is about the face not moving.
+   * The StatusBar is excluded because its bad-link chip (#3354) and its
+   * `.control-link-lost` bar are deliberately `{#if}`-mounted — that is the
+   * status bar's statement of the same condition, and this count is about
+   * the face not moving.
    */
   function faceElementCount(): number {
     const chrome = [...faceRoot().querySelectorAll('.status-bar, .control-link-lost')];
@@ -169,17 +228,44 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
       .length;
   }
 
-  it('veils nothing while the WS is up and state updates are current', () => {
-    conn.setWsConnected(true);
+  /**
+   * All the text the face itself renders, on the same exclusion. The veil
+   * says nothing in words — the status bar carries both sentences — so this
+   * string is invariant across the fault, and a sentence the veil put on the
+   * face would change it.
+   */
+  function faceText(): string {
+    return [...faceRoot().children]
+      .filter((el) => !el.matches('.status-bar, .control-link-lost'))
+      .map((el) => el.textContent)
+      .join(' ');
+  }
+
+  // MUST be the first case in this file: `hasEverConnected()` is module-scoped
+  // and never cleared, so any earlier case that connects the store would latch
+  // it. The precondition below fails loudly if that ever stops holding.
+  it('veils nothing before the first connect, though the WS is down', () => {
+    expect(
+      conn.hasEverConnected(),
+      'precondition: this case must run before any case connects the store',
+    ).toBe(false);
+    conn.setWsConnected(false);
     conn.markStateUpdated();
     mountFace();
 
     expect(faceRoot().hasAttribute('data-link-fault')).toBe(false);
-    expect(statement().textContent).toBe('');
+  });
+
+  it('veils nothing while the WS is up and state updates are current', () => {
+    linkHasBeenUp();
+    conn.markStateUpdated();
+    mountFace();
+
+    expect(faceRoot().hasAttribute('data-link-fault')).toBe(false);
   });
 
   it('veils the face as radio-silent once state updates stall past the threshold', () => {
-    conn.setWsConnected(true);
+    linkHasBeenUp();
     conn.markStateUpdated();
     mountFace();
     expect(faceRoot().hasAttribute('data-link-fault'), 'must not veil before the threshold').toBe(false);
@@ -188,11 +274,10 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
     flushSync();
 
     expect(faceRoot().getAttribute('data-link-fault')).toBe('radio-silent');
-    expect(statement().textContent).toBe(t('core.linkFault.radioSilent'));
   });
 
   it('lifts the veil within one tick when a state_update lands', () => {
-    conn.setWsConnected(true);
+    linkHasBeenUp();
     conn.markStateUpdated();
     mountFace();
     vi.advanceTimersByTime(6000);
@@ -203,19 +288,19 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
     flushSync();
 
     expect(faceRoot().hasAttribute('data-link-fault')).toBe(false);
-    expect(statement().textContent).toBe('');
   });
 
-  it('veils the face as ws-down when the transport itself is down', () => {
+  it('veils the face as ws-down when a link that was up goes down', () => {
+    linkHasBeenUp();
     conn.setWsConnected(false);
     conn.markStateUpdated();
     mountFace();
 
     expect(faceRoot().getAttribute('data-link-fault')).toBe('ws-down');
-    expect(statement().textContent).toBe(t('core.linkFault.wsDown'));
   });
 
   it('states ws-down, not radio-silent, when the transport is down and updates are also stale', () => {
+    linkHasBeenUp();
     conn.setWsConnected(false);
     conn.markStateUpdated();
     mountFace();
@@ -223,11 +308,10 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
     flushSync();
 
     expect(faceRoot().getAttribute('data-link-fault')).toBe('ws-down');
-    expect(statement().textContent).toBe(t('core.linkFault.wsDown'));
   });
 
-  it('carries the fault on the face root, with the statement as its own child', () => {
-    conn.setWsConnected(true);
+  it('carries the fault on the face root and nowhere else', () => {
+    linkHasBeenUp();
     conn.markStateUpdated();
     mountFace();
     vi.advanceTimersByTime(6000);
@@ -236,19 +320,41 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
     const faulted = target!.querySelectorAll('[data-link-fault]');
     expect(faulted).toHaveLength(1);
     expect(faulted[0]).toBe(faceRoot());
-    // The statement is a CHILD of the element the attribute sits on: a CSS
-    // filter applies to the whole subtree of the box carrying it, so the
-    // statement can only stay unfiltered by being excluded at this level.
-    expect(statement().parentElement).toBe(faceRoot());
     // …and the rest of the face really is under that same element.
     expect(faceRoot().querySelector('.receiver-deck')).not.toBeNull();
   });
 
-  it('keeps the rendered values and the element count unchanged across the fault', () => {
-    conn.setWsConnected(true);
+  // The veil says nothing itself; these two pin that whichever arm it reports,
+  // the status bar is carrying the words for that same arm at that moment.
+  it('shows the control-link-lost bar, and no chip, while the veil says ws-down', () => {
+    linkHasBeenUp();
+    conn.setWsConnected(false);
+    conn.markStateUpdated();
+    mountFace();
+
+    expect(faceRoot().getAttribute('data-link-fault'), 'precondition').toBe('ws-down');
+    expect(controlLinkLostBar(), 'the bar states the ws-down arm').not.toBeNull();
+    expect(badLinkChip()).toBeNull();
+  });
+
+  it('shows the bad-link chip, and no bar, while the veil says radio-silent', () => {
+    linkHasBeenUp();
+    conn.markStateUpdated();
+    mountFace();
+    vi.advanceTimersByTime(6000);
+    flushSync();
+
+    expect(faceRoot().getAttribute('data-link-fault'), 'precondition').toBe('radio-silent');
+    expect(badLinkChip(), 'the chip states the radio-silent arm').not.toBeNull();
+    expect(controlLinkLostBar()).toBeNull();
+  });
+
+  it('keeps the rendered values, the text and the element count unchanged across the fault', () => {
+    linkHasBeenUp();
     conn.markStateUpdated();
     mountFace();
     const before = faceElementCount();
+    const textBefore = faceText();
     const valuesBefore = faceRoot().querySelector('.receiver-deck')!.textContent;
     expect(valuesBefore, 'precondition: the deck must render some value text').not.toBe('');
 
@@ -256,28 +362,76 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
     flushSync();
     expect(faceRoot().getAttribute('data-link-fault'), 'precondition').toBe('radio-silent');
     expect(faceElementCount()).toBe(before);
+    expect(faceText()).toBe(textBefore);
     expect(faceRoot().querySelector('.receiver-deck')!.textContent).toBe(valuesBefore);
 
     conn.markStateUpdated();
     flushSync();
     expect(faceElementCount()).toBe(before);
+    expect(faceText()).toBe(textBefore);
     expect(faceRoot().querySelector('.receiver-deck')!.textContent).toBe(valuesBefore);
   });
 
-  it('declares one veil rule that filters the face contents and exempts the statement', async () => {
+  it('declares one veil rule, keyed on the face root attribute', async () => {
     // jsdom computes no filter, so this pins the rule's presence by reading
     // the component source — a guard against the CSS being dropped, not a
     // check of how strong the veil looks. The AD judges the rendering.
-    const { readFileSync } = await import('node:fs');
-    const { resolve } = await import('node:path');
-    const source = readFileSync(
-      resolve(process.cwd(), 'src/components-v2/layout/RadioLayout.svelte'), 'utf-8',
+    const selectors = await veilSelectors();
+    expect(selectors.length).toBe(2);
+    for (const selector of selectors) {
+      expect(selector).toContain('.radio-layout[data-link-fault]');
+    }
+    expect(await layoutSource())
+      .toMatch(/filter:\s*saturate\([^)]*\)\s*contrast\([^)]*\)\s*brightness\(/);
+  });
+
+  it('exempts the status-bar chrome from both veil selectors', async () => {
+    const selectors = await veilSelectors();
+    const root = document.createElement('div');
+    root.className = 'radio-layout desktop-control-face semantic-deck standard-face';
+    root.setAttribute('data-link-fault', 'ws-down');
+    root.innerHTML = '<div class="control-link-lost"></div>'
+      + '<div class="status-bar"><div class="np-backdrop"></div></div>'
+      + '<section class="receiver-deck"><div class="desktop-controls-left"></div></section>';
+    document.body.appendChild(root);
+    try {
+      const matchesVeil = (el: Element): boolean => selectors.some((s) => el.matches(s));
+
+      // The exempt chrome: a filter here would re-anchor the `position: fixed`
+      // popovers it hosts to the 28px strip.
+      expect(matchesVeil(root.querySelector('.status-bar')!)).toBe(false);
+      expect(matchesVeil(root.querySelector('.control-link-lost')!)).toBe(false);
+      // The root itself is never filtered — only its children are.
+      expect(matchesVeil(root)).toBe(false);
+      // The deck is skipped so that its children, not it, carry the filter.
+      expect(matchesVeil(root.querySelector('.receiver-deck')!)).toBe(false);
+      expect(matchesVeil(root.querySelector('.desktop-controls-left')!)).toBe(true);
+    } finally {
+      root.remove();
+    }
+  });
+
+  // Both desktop faces share the `.desktop-control-face` root class, and the
+  // bar's placement rule is written against exactly that class — so the bar
+  // is the first row on Standard and on SDR alike.
+  it.each(['desktop-v2', 'sdr-test'] as const)(
+    'roots %s on .desktop-control-face, which is what places the bar first',
+    (skinId) => {
+      linkHasBeenUp();
+      conn.setWsConnected(false);
+      conn.markStateUpdated();
+      mountFace(skinId);
+
+      const root = faceRoot();
+      expect(root.classList.contains('desktop-control-face')).toBe(true);
+      expect(root.classList.contains(skinId === 'sdr-test' ? 'sdr-test' : 'standard-face')).toBe(true);
+      expect(controlLinkLostBar()?.parentElement).toBe(root);
+    },
+  );
+
+  it('places the control-link-lost bar in the first grid row of that root', async () => {
+    expect(await layoutSource()).toMatch(
+      /\.desktop-control-face > :global\(\.control-link-lost\)\s*\{\s*grid-area:\s*1 \/ 1 \/ 2 \/ -1;/,
     );
-    const rule = source.match(
-      /:global\(\.radio-layout\[data-link-fault\][^}]*\{[^}]*\}/,
-    );
-    expect(rule, 'the veil rule must be keyed on the face root attribute').not.toBeNull();
-    expect(rule![0]).toContain(':not([data-link-fault-statement]');
-    expect(rule![0]).toMatch(/filter:\s*saturate\([^)]*\)\s*contrast\(/);
   });
 });

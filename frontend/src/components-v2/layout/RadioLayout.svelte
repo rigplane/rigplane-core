@@ -13,7 +13,7 @@
   }
   
   import { runtime } from '$lib/runtime';
-  import { getWsConnected } from '$lib/stores/connection.svelte';
+  import { getWsConnected, hasEverConnected } from '$lib/stores/connection.svelte';
   import { deriveLinkFault } from '$lib/runtime/adapters/link-fault';
   import { applyModeDefault } from '$lib/stores/tuning.svelte';
   import { getKeyboardConfig, getScopeSource, hasAnyScope, hasSpectrum } from '$lib/stores/capabilities.svelte';
@@ -69,21 +69,19 @@
 
   let { skinId = 'desktop-v2', instruments }: { skinId?: SkinId; instruments: InstrumentComposition } = $props();
 
-  // MOR-2425 C-R3 — the link-fault veil. Same condition as StatusBar's
-  // bad-link chip, widened to the WS-down case: the chip is the status bar's
-  // statement of it, this is the face's. Not a state reset — no code path
-  // clears frontend state on a radio-side reconnect, so the veil covers
-  // values that are still on screen and can no longer be trusted.
+  // MOR-2425 C-R3 — the link-fault veil. It carries no words of its own: the
+  // status bar already states both arms, and the veil's own selectors exempt
+  // that chrome so it keeps its colour while the face loses its.
+  //   ws-down      → StatusBar's `.control-link-lost` bar, on the same
+  //                  `wsConnected` fact through `getConnectionStatus()`.
+  //   radio-silent → StatusBar's bad-link chip, on the same staleness fact
+  //                  at the same threshold.
   let linkFault = $derived(deriveLinkFault({
+    everConnected: hasEverConnected(),
     wsConnected: getWsConnected(),
     connectionStale: runtime.connectionStale,
   }));
   let linkFaultAttribute = $derived(linkFault === 'none' ? undefined : linkFault);
-  let linkFaultSentence = $derived(
-    linkFault === 'ws-down' ? t('core.linkFault.wsDown')
-      : linkFault === 'radio-silent' ? t('core.linkFault.radioSilent')
-        : '',
-  );
 
   // MOR-1313 (v3-rework slice S2) — PER-ZONE suppression, replacing the
   // MOR-1065 `skinId === 'sdr-test'` boolean. This shell hosts two areas that
@@ -415,10 +413,6 @@
   </div>
 {/snippet}
 
-{#snippet linkFaultStatement()}
-  <div class="link-fault-statement" data-link-fault-statement role="status">{linkFaultSentence}</div>
-{/snippet}
-
 {#snippet semanticDeckContent(appearance: 'standard' | 'sdr' | 'semantic', allowBare = false)}
   {@render instruments.vfo(appearance, allowBare, vfoOperationControls)}
   {@render instruments.rxTx(allowBare)}
@@ -448,7 +442,6 @@
   <div class="radio-layout desktop-control-face semantic-deck"
     class:standard-face={skinId === 'desktop-v2'} class:sdr-test={skinId === 'sdr-test'}
     data-link-fault={linkFaultAttribute}>
-    {@render linkFaultStatement()}
     <StatusBar onSettings={() => (settingsOpen = true)} {declared} showManagedTotControl={true} />
     <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
@@ -524,7 +517,6 @@
 {:else}
 <div class="radio-layout" class:sdr-test={skinId === 'sdr-test'} class:semantic-deck={semanticDeck}
   data-link-fault={linkFaultAttribute}>
-  {@render linkFaultStatement()}
   <StatusBar onSettings={() => (settingsOpen = true)} {declared} showManagedTotControl={true} />
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
@@ -729,54 +721,27 @@
      brightness term is there because reducing contrast on a dark face raises
      its blacks — without it the veiled face reads as brighter, not deader.
 
-     It covers the face's contents but never the statement. A CSS filter
-     applies to the entire subtree of the box it is set on and no descendant
-     can opt out, so the statement has to sit outside every filtered box —
-     hence the children of the root, not the root itself. The receiver deck
-     is skipped on its own line and its children taken instead: on the two
-     desktop faces the deck is `display: contents` (see below), where a
-     filter would generate no box at all and veil nothing. */
-  :global(.radio-layout[data-link-fault] > *:not([data-link-fault-statement], .receiver-deck)),
+     `.status-bar` and `.control-link-lost` are exempt, for two reasons that
+     point the same way. They carry the words for both arms of the fault —
+     the disconnect bar for ws-down, the bad-link chip inside the bar for
+     radio-silent — so they must keep their colour while the face loses its.
+     And a CSS filter makes the element it is set on a containing block for
+     its `position: fixed` descendants: filtering `.status-bar` re-anchors
+     the popovers it hosts to that 28px strip (row 2 of the grid below).
+
+     The receiver deck is skipped on its own line and its children taken
+     instead, because on the two desktop faces the deck is `display: contents`
+     (`.desktop-control-face > .receiver-deck` below), where a filter would
+     generate no box at all and veil nothing. On the generic root the deck IS
+     a box, so skipping it leaves that box's own background and border
+     unveiled; that root is reached only when the active manifest declares no
+     `vfo` surface, and the manifests of the two skins that mount this shell
+     (`desktop-v2`, `sdr-test`) both declare it. */
+  :global(.radio-layout[data-link-fault] > *:not(.status-bar, .control-link-lost, .receiver-deck)),
   :global(.radio-layout[data-link-fault] > .receiver-deck > *) {
     filter: saturate(0.08) contrast(0.5) brightness(0.62);
   }
 
-  /* Always present, never mounted conditionally, and out of flow: an
-     absolutely positioned child of a grid container is not a grid item, so
-     no sibling moves when the sentence appears. `grid-area` still places it,
-     which is what puts it at the receiver deck — the band the frequency
-     readout occupies — rather than in a corner or a centred box. */
-  .link-fault-statement {
-    grid-area: 2 / 1 / 3 / -1;
-    position: absolute;
-    align-self: start;
-    justify-self: start;
-    z-index: 5;
-    margin: 6px 0 0 8px;
-    max-width: calc(100% - 16px);
-    padding: 3px 10px;
-    border: 1px solid rgba(255, 255, 255, 0.6);
-    border-radius: 3px;
-    background: rgba(6, 8, 10, 0.94);
-    color: #fff;
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 0.8125rem;
-    line-height: 1.3;
-    letter-spacing: 0.02em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    pointer-events: none;
-    visibility: hidden;
-  }
-  /* Both desktop faces put the receiver-deck zone in row 3 — the same row
-     the `[data-zone-id='receiver-deck']` rule below uses. */
-  .radio-layout.desktop-control-face > .link-fault-statement {
-    grid-area: 3 / 1 / 4 / -1;
-  }
-  .radio-layout[data-link-fault] > .link-fault-statement {
-    visibility: visible;
-  }
   .radio-layout.semantic-deck:not(.desktop-control-face) {
     grid-template-rows: 28px minmax(240px, auto) minmax(320px, 1fr) auto;
   }
@@ -797,7 +762,6 @@
     }
     .radio-layout.semantic-deck:not(.desktop-control-face) > :global(.status-bar) { grid-area: status; }
     .radio-layout.semantic-deck:not(.desktop-control-face) > .receiver-deck { grid-area: deck; }
-    .radio-layout.semantic-deck:not(.desktop-control-face) > .link-fault-statement { grid-area: deck; }
     .radio-layout.semantic-deck:not(.desktop-control-face) > .bottom-dock { grid-area: dock; }
     /* Flatten content-row so its children become direct grid items. */
     .radio-layout.semantic-deck:not(.desktop-control-face) > .content-row {

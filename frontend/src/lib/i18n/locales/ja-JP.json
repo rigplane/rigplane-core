@@ -28,8 +28,6 @@
   "core.statusbar.indicator.http": "状態 HTTP: {state}",
   "core.statusbar.badLink.label": "接続不良",
   "core.statusbar.badLink.tooltip": "制御 WebSocket は接続していますが、状態の更新がしばらく届いていません。",
-  "core.linkFault.wsDown": "RigPlane との接続が失われました",
-  "core.linkFault.radioSilent": "トランシーバーが応答していません",
   "core.statusbar.health.radioLinkLost": "トランシーバーとの通信が切断されました",
   "core.statusbar.health.radioResponseDelayed": "トランシーバーの応答が遅延しています",
   "core.statusbar.health.radioNotResponding": "トランシーバーが応答しません",
