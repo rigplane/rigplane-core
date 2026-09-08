@@ -24,9 +24,12 @@ import pytest
 
 from rigplane.capabilities import (
     CAP_AGC,
+    CAP_BREAK_IN,
     CAP_COMPRESSOR,
+    CAP_CW,
     CAP_FILTER_SHAPE,
     CAP_NOTCH,
+    CAP_SCOPE,
     CAP_TUNER,
     CAP_VOX,
 )
@@ -34,8 +37,17 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
     AcquisitionScheduler,
 )
-from rigplane.core.command_service import expected_observations_for_command
-from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
+from rigplane.core.command_service import (
+    CommandExecutionResult,
+    CommandService,
+    expected_observations_for_command,
+)
+from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.runtime._poller_types import LEGACY_COMMAND_NAMES
@@ -47,11 +59,14 @@ from rigplane.web.radio_poller import (
     SetAgcTimeConstant,
     SetAntiVoxGain,
     SetAutoNotch,
+    SetBreakIn,
     SetCompressor,
     SetCompressorLevel,
+    SetCwPitch,
     SetDataMode,
     SetFilterShape,
     SetFreq,
+    SetKeySpeed,
     SetManualNotch,
     SetManualNotchWidth,
     SetMicGain,
@@ -66,6 +81,16 @@ from rigplane.web.radio_poller import (
     SetRitFrequency,
     SetRitStatus,
     SetRitTxStatus,
+    SetScopeCenterType,
+    SetScopeDual,
+    SetScopeDuringTx,
+    SetScopeEdge,
+    SetScopeHold,
+    SetScopeMode,
+    SetScopeRef,
+    SetScopeSpan,
+    SetScopeSpeed,
+    SetScopeVbw,
     SetToneFreq,
     SetTsqlFreq,
     SetTunerStatus,
@@ -78,6 +103,12 @@ from rigplane.web.radio_poller import (
 pytestmark = pytest.mark.usefixtures("observed_rx_dispatch_premise")
 
 _SRC = Path(__file__).resolve().parents[1] / "src" / "rigplane"
+
+
+class _NoopCommandExecutor:
+    async def execute(self, intent: object) -> CommandExecutionResult:
+        del intent
+        return CommandExecutionResult()
 
 
 # ---------------------------------------------------------------------------
@@ -124,34 +155,27 @@ _NO_OBSERVABLE_FIELD: dict[str, str] = {
 # is covered by ``LEGACY_COMMAND_NAMES``.
 _PENDING_LATER_PR: frozenset[str] = frozenset(
     {
-        # Confirmed instead by RadioPoller._confirm_global_operator_write
-        # (direct getter, apply-if-match). Folding that into this path is
-        # PR-3.
-        "SetCwPitch",
-        "SetKeySpeed",
-        "SetBreakIn",
-        # Scope-display settings (review B1, MOR-2425 PR-1b): all twelve
-        # are confirmed instead by
-        # ``RadioPoller._reconfirm_scope_field``, called inline from the
-        # same ``case Set*`` arm that dispatches the write -- adding a
-        # target for these to ``_command_target`` made
-        # ``_request_post_write_readback`` fire a SECOND, scheduler-queued
-        # USER-priority ``ensure_fresh`` for the same field on every scope
-        # write, unbudgeted against the scope waveform stream
-        # ``_reconfirm_scope_field``'s own docstring says stays clear.
-        # Folding the two paths into one is PR-3's job.
+        # The two scope-display leaves MOR-2425 PR-3 could not fold into the
+        # one read-back path; the other ten, and the CW keyer trio, are
+        # covered below.
+        #
+        # rbw: ``rigs/ic7300.toml``'s ``[state_acquisition.capabilities]``
+        # declares twelve ``scope_controls.global.display.*`` leaves, and
+        # ``rbw`` is not one of them (of the profiles in ``rigs/``, only
+        # ``ic7610.toml`` declares it), so ``AcquisitionScheduler
+        # .ensure_fresh`` answers UNAVAILABLE and queues nothing on the
+        # live-bench profile.
+        #
+        # fixed_edge: the shared acquisition resolver (``runtime/
+        # _state_queries.py: acquisition_query_resolver_for_profile``) builds
+        # ``commands/scope.py: get_scope_fixed_edge`` with its
+        # ``range_index=1, edge=1`` defaults -- the slot-less re-read the
+        # ``SetScopeFixedEdge`` arm's own MOR-662 comment says comes back
+        # with an unrelated slot's data.
+        #
+        # Both arms keep their inline ``RadioPoller._reconfirm_scope_field``.
         "SetScopeRbw",
-        "SetScopeDuringTx",
-        "SetScopeCenterType",
-        "SetScopeEdge",
         "SetScopeFixedEdge",
-        "SetScopeVbw",
-        "SetScopeDual",
-        "SetScopeMode",
-        "SetScopeSpan",
-        "SetScopeSpeed",
-        "SetScopeRef",
-        "SetScopeHold",
         # TX audio / modulation family: mic_gain, monitor(_gain),
         # compressor(_level), vox(_gain/_delay/anti) are covered (see
         # below). These seven have a state-model field but no declared
@@ -399,11 +423,7 @@ _SETTERS: tuple[str, ...] = (
 
 
 # IC-7300-witnessed additions (MOR-2425 PR-1b): agc, tuner_status, and the
-# TX audio/modulation nine dispatch through ``IcomRadio``. Scope-display
-# setters are excluded -- their readback stays on
-# ``RadioPoller._reconfirm_scope_field`` (review B1); see
-# ``tests/test_radio_poller_coverage.py`` for scope-specific dispatch
-# coverage.
+# TX audio/modulation nine dispatch through ``IcomRadio``.
 _IC7300_SETTERS: tuple[str, ...] = (
     "set_agc",
     "set_tuner_status",
@@ -419,12 +439,44 @@ _IC7300_SETTERS: tuple[str, ...] = (
 )
 
 
+# MOR-2425 PR-3: the CW keyer trio and the ten scope-display leaves folded off
+# the two bespoke confirms (``RadioPoller._confirm_global_operator_write``,
+# deleted, and ``RadioPoller._reconfirm_scope_field``, kept only for
+# fixed_edge/rbw and the scope-receiver switch). Each entry pairs the arm's
+# setter with the getter the bespoke confirm used to await, so a witness can
+# assert the inline read is gone.
+_FOLDED_SETTER_GETTER: tuple[tuple[str, str], ...] = (
+    ("set_cw_pitch", "get_cw_pitch"),
+    ("set_key_speed", "get_key_speed"),
+    ("set_break_in", "get_break_in"),
+    ("set_scope_during_tx", "get_scope_during_tx"),
+    ("set_scope_center_type", "get_scope_center_type"),
+    ("set_scope_edge", "get_scope_edge"),
+    ("set_scope_vbw", "get_scope_vbw"),
+    ("set_scope_dual", "get_scope_dual"),
+    ("set_scope_mode", "get_scope_mode"),
+    ("set_scope_span", "get_scope_span"),
+    ("set_scope_speed", "get_scope_speed"),
+    ("set_scope_ref", "get_scope_ref"),
+    ("set_scope_hold", "get_scope_hold"),
+)
+_FOLDED_SETTERS: tuple[str, ...] = tuple(setter for setter, _ in _FOLDED_SETTER_GETTER)
+_FOLDED_GETTERS: tuple[str, ...] = tuple(getter for _, getter in _FOLDED_SETTER_GETTER)
+
+
 def test_mocked_setters_exist_on_the_real_backend() -> None:
-    """A renamed backend setter must not survive as a silent mock attribute."""
+    """A renamed backend method must not survive as a silent mock attribute."""
     from rigplane.runtime.radio import IcomRadio
 
     missing = [
-        name for name in (*_SETTERS, *_IC7300_SETTERS) if not hasattr(IcomRadio, name)
+        name
+        for name in (
+            *_SETTERS,
+            *_IC7300_SETTERS,
+            *_FOLDED_SETTERS,
+            *_FOLDED_GETTERS,
+        )
+        if not hasattr(IcomRadio, name)
     ]
     assert missing == []
 
@@ -433,6 +485,7 @@ def _poller(
     model: str = "IC-7300",
     *,
     setters: tuple[str, ...] = _SETTERS,
+    getters: tuple[str, ...] = (),
     capabilities: frozenset[str] = frozenset({CAP_NOTCH, CAP_FILTER_SHAPE}),
 ) -> tuple[RadioPoller, AcquisitionScheduler]:
     profile = resolve_radio_profile(model=model)
@@ -444,6 +497,12 @@ def _poller(
     radio._radio_state = SimpleNamespace(active="MAIN")
     for setter in setters:
         setattr(radio, setter, AsyncMock())
+    # Explicit AsyncMocks, not MagicMock's auto-attributes: an awaited
+    # MagicMock() result raises TypeError, which the deleted confirm helpers
+    # swallowed -- so a bare MagicMock getter would let a surviving inline
+    # read pass as "not called".
+    for getter in getters:
+        setattr(radio, getter, AsyncMock(return_value=0))
     scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
     radio._acquisition_scheduler = scheduler
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
@@ -606,6 +665,152 @@ async def test_ic7300_family_dispatch_requests_exactly_one_user_readback(
 
     assert _readback_paths(scheduler) == {FieldPath.parse(path)}
     assert _readback_priorities(scheduler) == {AcquisitionPriority.USER}
+
+
+# ---------------------------------------------------------------------------
+# MOR-2425 PR-3: the two bespoke confirms, folded into the one path
+# ---------------------------------------------------------------------------
+
+
+_FOLDED_FAMILY: tuple[tuple[Any, str], ...] = (
+    (SetCwPitch(value=650), "global.operator_controls.cw_pitch"),
+    (SetKeySpeed(speed=24), "global.operator_controls.key_speed"),
+    (SetBreakIn(mode=1), "global.operator_controls.break_in"),
+    (SetScopeDuringTx(on=True), "scope_controls.global.display.during_tx"),
+    (
+        SetScopeCenterType(center_type=1),
+        "scope_controls.global.display.center_type",
+    ),
+    (SetScopeEdge(edge=2), "scope_controls.global.display.edge"),
+    (SetScopeVbw(narrow=True), "scope_controls.global.display.vbw_narrow"),
+    (SetScopeDual(dual=True), "scope_controls.global.display.dual"),
+    (SetScopeMode(mode=1), "scope_controls.global.display.mode"),
+    (SetScopeSpan(span=6), "scope_controls.global.display.span"),
+    (SetScopeSpeed(speed=2), "scope_controls.global.display.speed"),
+    (SetScopeRef(ref=5), "scope_controls.global.display.ref_db"),
+    (SetScopeHold(on=True), "scope_controls.global.display.hold"),
+)
+
+_FOLDED_CAPABILITIES = frozenset({CAP_CW, CAP_BREAK_IN, CAP_SCOPE})
+
+
+@pytest.mark.parametrize(
+    ("command", "path"),
+    _FOLDED_FAMILY,
+    ids=[type(c).__name__ for c, _ in _FOLDED_FAMILY],
+)
+@pytest.mark.asyncio
+async def test_folded_family_dispatch_requests_exactly_one_user_readback(
+    command: Any, path: str
+) -> None:
+    """One scheduler readback, the right path, USER -- and no inline GET.
+
+    The CW keyer trio used to await ``RadioPoller._confirm_global_operator_write``'s
+    direct backend getter and these ten scope leaves
+    ``RadioPoller._reconfirm_scope_field``'s. Both are gone from these arms:
+    the getters must not be awaited during ``_execute``.
+    """
+    poller, scheduler = _poller(
+        setters=_FOLDED_SETTERS,
+        getters=_FOLDED_GETTERS,
+        capabilities=_FOLDED_CAPABILITIES,
+    )
+
+    await poller._execute(command)  # noqa: SLF001
+
+    assert _readback_paths(scheduler) == {FieldPath.parse(path)}
+    assert _readback_priorities(scheduler) == {AcquisitionPriority.USER}
+    awaited = [
+        getter
+        for getter in _FOLDED_GETTERS
+        if getattr(poller._radio, getter).await_count  # noqa: SLF001
+    ]
+    assert awaited == []
+
+
+@pytest.mark.parametrize(
+    ("command", "path"),
+    _FOLDED_FAMILY,
+    ids=[type(c).__name__ for c, _ in _FOLDED_FAMILY],
+)
+@pytest.mark.asyncio
+async def test_folded_family_queues_the_written_path_exactly_once(
+    command: Any, path: str
+) -> None:
+    """The written path appears once across every queued request.
+
+    Guards the double-read the PR-1b review found: a second, scheduler-queued
+    ``ensure_fresh`` alongside an inline confirm for the same field.
+    """
+    poller, scheduler = _poller(
+        setters=_FOLDED_SETTERS,
+        getters=_FOLDED_GETTERS,
+        capabilities=_FOLDED_CAPABILITIES,
+    )
+
+    await poller._execute(command)  # noqa: SLF001
+
+    queued = [
+        queued_path
+        for request in scheduler.pending_requests()
+        for queued_path in request.paths
+    ]
+    assert queued == [FieldPath.parse(path)]
+
+
+@pytest.mark.asyncio
+async def test_cw_pitch_readback_applies_the_value_the_radio_reports() -> None:
+    """A mismatched readback now lands in the store.
+
+    ``_confirm_global_operator_write`` compared the readback against the
+    requested value and discarded anything else, so the store kept its
+    pre-write value. The generic path applies whatever the radio reports.
+    The readback-path assertion is what discriminates a reinstated bespoke
+    confirm; the store-value assertion pins what the generic path does with
+    the reported value.
+
+    The lifecycle assertion below is a guard, not a discriminator: nothing
+    confirms ``SetCwPitch`` today either way.
+    """
+    path = FieldPath.parse("global.operator_controls.cw_pitch")
+    poller, scheduler = _poller(
+        setters=_FOLDED_SETTERS,
+        getters=_FOLDED_GETTERS,
+        capabilities=_FOLDED_CAPABILITIES,
+    )
+    store = poller._state_store  # noqa: SLF001
+    generation = store.begin_provider_generation()
+    store.apply(
+        Observation(
+            path=path,
+            value=600,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=time.monotonic(),
+            provider_generation=generation,
+        )
+    )
+    command_service = CommandService(executor=_NoopCommandExecutor(), state_store=store)
+
+    await poller._execute(SetCwPitch(value=600))  # noqa: SLF001
+
+    assert _readback_paths(scheduler) == {path}
+    # The radio answers 650, not the 600 that was asked for.
+    command_service.apply_observation(
+        Observation(
+            path=path,
+            value=650,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=time.monotonic(),
+            provider_generation=generation,
+        )
+    )
+
+    assert store.snapshot().field(path).value == 650
+    assert [
+        event.state
+        for event in command_service.lifecycle_events()
+        if event.state in ("confirmed", "reconciled")
+    ] == []
 
 
 @pytest.mark.asyncio

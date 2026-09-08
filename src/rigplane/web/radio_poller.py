@@ -34,7 +34,7 @@ import dataclasses
 import logging
 import time
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
@@ -218,7 +218,6 @@ logger = logging.getLogger(__name__)
 
 _GAP: float = 0.012
 _GAP_SERIAL: float = 0.050  # serial CI-V needs more breathing room
-_SEND_TIMEOUT: float = 1.0
 _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
 _PTT_PATH = FieldPath.global_("tx_state", "ptt")
@@ -1362,10 +1361,7 @@ class RadioPoller:
     async def _reconfirm_scope_field(self, label: str, getter: Any) -> None:
         """Force a fresh confirmed observation for one scope-control leaf.
 
-        Scope-control fields are fetched once, at ``EnableScope`` time
-        (``_fetch_scope_controls`` above) and never touched again by the main
-        poll loop — by design, to avoid interfering with the high-rate scope
-        waveform stream. A ``Set*`` write only mutates the optimistic
+        A ``Set*`` write only mutates the optimistic
         ``RadioState.scope_controls`` mirror below; without a follow-up GET,
         the StateStore's confirmed observation for that leaf is never
         refreshed, so the public snapshot keeps re-applying the STALE
@@ -1375,6 +1371,10 @@ class RadioPoller:
         ``_SCOPE_GETTER_TIMEOUT`` for the same reason as
         ``_fetch_scope_controls``: a dropped response on a busy scope stream
         must not stall the command queue.
+
+        Ten scope leaves moved onto ``_request_post_write_readback``; the
+        three callers left could not be folded, and each says why at its
+        own call site.
         """
         try:
             await asyncio.wait_for(getter(), timeout=self._SCOPE_GETTER_TIMEOUT)
@@ -1473,46 +1473,6 @@ class RadioPoller:
             command_service.apply_observation(observation)
         else:
             self._state_store.apply(observation)
-
-    async def _confirm_global_operator_write(
-        self,
-        name: str,
-        expected: int,
-        getter: Callable[[], Awaitable[int]],
-        *,
-        command_id: str | None,
-        source: CommandSource,
-        session_id: str | None,
-        command_service: CommandService | None,
-        provider_generation: int,
-    ) -> None:
-        """Apply a global operator write only after a matching fresh readback."""
-
-        try:
-            confirmed = await asyncio.wait_for(getter(), timeout=_SEND_TIMEOUT)
-        except Exception:
-            logger.debug(
-                "radio-poller: %s post-write readback failed",
-                name,
-                exc_info=True,
-            )
-            return
-        if provider_generation != self._provider_generation():
-            logger.debug("radio-poller: discarded stale %s readback", name)
-            return
-        if confirmed != expected:
-            logger.warning("radio-poller: %s write readback mismatch", name)
-            return
-        self._apply_global_control_observation(
-            name,
-            confirmed,
-            command_id=command_id,
-            source=source,
-            session_id=session_id,
-            command_service=command_service,
-            provider_generation=provider_generation,
-        )
-        self._apply_compatibility_mirror(lambda state: setattr(state, name, confirmed))
 
     def _apply_global_command_echo_observation(
         self,
@@ -2525,42 +2485,25 @@ class RadioPoller:
                 await _r.set_notch_filter(level, receiver=rx)
             case SetAgcTimeConstant(value=value, receiver=rx):
                 await _r.set_agc_time_constant(value, receiver=rx)
+            # MOR-2425 PR-3: the readback is
+            # ``_request_post_write_readback``'s, like every other covered
+            # arm. These optimistic mirror writes are the only writers of the
+            # three ``RadioState`` attributes on this seat --
+            # ``runtime/_civ_rx.py`` publishes cw_pitch as a StateStore
+            # observation without mirroring it, and ``cw_auto_tune``
+            # (``web/handlers/control.py``) reads ``state.cw_pitch``.
             case SetCwPitch(value=value):
                 await _r.set_cw_pitch(value)
-                await self._confirm_global_operator_write(
-                    "cw_pitch",
-                    value,
-                    _r.get_cw_pitch,
-                    command_id=command_id,
-                    source=command_source,
-                    session_id=session_id,
-                    command_service=command_service,
-                    provider_generation=provider_generation,
-                )
+                if self._radio_state:
+                    self._radio_state.cw_pitch = value
             case SetKeySpeed(speed=speed):
                 await _r.set_key_speed(speed)
-                await self._confirm_global_operator_write(
-                    "key_speed",
-                    speed,
-                    _r.get_key_speed,
-                    command_id=command_id,
-                    source=command_source,
-                    session_id=session_id,
-                    command_service=command_service,
-                    provider_generation=provider_generation,
-                )
+                if self._radio_state:
+                    self._radio_state.key_speed = speed
             case SetBreakIn(mode=mode):
                 await _r.set_break_in(mode)
-                await self._confirm_global_operator_write(
-                    "break_in",
-                    mode,
-                    _r.get_break_in,
-                    command_id=command_id,
-                    source=command_source,
-                    session_id=session_id,
-                    command_service=command_service,
-                    provider_generation=provider_generation,
-                )
+                if self._radio_state:
+                    self._radio_state.break_in = mode
             case SetApf(mode=mode, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_apf")
                 await _r.set_audio_peak_filter(mode, receiver=rx)
@@ -2978,6 +2921,16 @@ class RadioPoller:
                 # nothing, on a miss; the mirror/reconfirm/log below are
                 # gated on that return the same way the MOR-2004 SetAgc
                 # branch above gates its state event on ``agc_sent``.
+                #
+                # MOR-2425 PR-3 left this reconfirm inline for that reason:
+                # ``_request_post_write_readback`` runs after the whole
+                # ``match``, unconditionally, so a readback fired from there
+                # would also fire on the refusal branch. IC-7300 is such a
+                # profile -- its command map declares no
+                # ``set_scope_main_sub`` -- while its
+                # ``[state_acquisition.capabilities]`` does declare
+                # ``scope_controls.global.display.receiver``, so the read
+                # would be queued and sent.
                 self._ensure_receiver_supported(
                     receiver,
                     operation="switch_scope_receiver",
@@ -2999,17 +2952,11 @@ class RadioPoller:
                     await radio.set_scope_during_tx(on)
                     if self._radio_state:
                         self._radio_state.scope_controls.during_tx = on
-                    await self._reconfirm_scope_field(
-                        "get_scope_during_tx", radio.get_scope_during_tx
-                    )
             case SetScopeCenterType(center_type=center_type):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_center_type(center_type)
                     if self._radio_state:
                         self._radio_state.scope_controls.center_type = center_type
-                    await self._reconfirm_scope_field(
-                        "get_scope_center_type", radio.get_scope_center_type
-                    )
             case SetScopeFixedEdge(edge=edge, start_hz=start_hz, end_hz=end_hz):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_fixed_edge(
@@ -3029,6 +2976,12 @@ class RadioPoller:
                     # selector addresses ONE specific slot (MOR-662), so a
                     # bare re-read would default back to range 1/edge 1 and
                     # clobber the mirror with an unrelated slot's data.
+                    #
+                    # That is why MOR-2425 PR-3 did not fold this arm onto
+                    # ``_request_post_write_readback``: the shared acquisition
+                    # resolver (``runtime/_state_queries.py``) builds
+                    # ``get_scope_fixed_edge`` with its ``range_index=1,
+                    # edge=1`` defaults, i.e. the bare re-read above.
                     if self._radio_state:
                         written = self._radio_state.scope_controls.fixed_edge
                         await self._reconfirm_scope_field(
@@ -3046,70 +2999,53 @@ class RadioPoller:
                     await radio.set_scope_dual(dual)
                     if self._radio_state:
                         self._radio_state.scope_controls.dual = dual
-                    await self._reconfirm_scope_field(
-                        "get_scope_dual", radio.get_scope_dual
-                    )
             case SetScopeMode(mode=mode):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_mode(mode)
                     if self._radio_state:
                         self._radio_state.scope_controls.mode = mode
-                    await self._reconfirm_scope_field(
-                        "get_scope_mode", radio.get_scope_mode
-                    )
             case SetScopeSpan(span=span):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_span(span)
                     if self._radio_state:
                         self._radio_state.scope_controls.span = span
-                    await self._reconfirm_scope_field(
-                        "get_scope_span", radio.get_scope_span
-                    )
             case SetScopeSpeed(speed=speed):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_speed(speed)
                     if self._radio_state:
                         self._radio_state.scope_controls.speed = speed
-                    await self._reconfirm_scope_field(
-                        "get_scope_speed", radio.get_scope_speed
-                    )
             case SetScopeRef(ref=ref):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_ref(ref)
                     if self._radio_state:
                         self._radio_state.scope_controls.ref_db = float(ref)
-                    await self._reconfirm_scope_field(
-                        "get_scope_ref", radio.get_scope_ref
-                    )
             case SetScopeHold(on=on):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_hold(on)
                     if self._radio_state:
                         self._radio_state.scope_controls.hold = on
-                    await self._reconfirm_scope_field(
-                        "get_scope_hold", radio.get_scope_hold
-                    )
             case SetScopeEdge(edge=edge):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_edge(edge)
                     if self._radio_state:
                         self._radio_state.scope_controls.edge = edge
-                    await self._reconfirm_scope_field(
-                        "get_scope_edge", radio.get_scope_edge
-                    )
             case SetScopeVbw(narrow=narrow):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_vbw(narrow)
                     if self._radio_state:
                         self._radio_state.scope_controls.vbw_narrow = narrow
-                    await self._reconfirm_scope_field(
-                        "get_scope_vbw", radio.get_scope_vbw
-                    )
             case SetScopeRbw(rbw=rbw):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_rbw(rbw)
                     if self._radio_state:
                         self._radio_state.scope_controls.rbw = rbw
+                    # Not folded onto ``_request_post_write_readback``
+                    # (MOR-2425 PR-3): of the profiles in ``rigs/``, only
+                    # ic7610.toml declares
+                    # ``scope_controls.global.display.rbw`` in
+                    # ``[state_acquisition.capabilities]``, so on the
+                    # live-bench IC-7300 ``ensure_fresh`` would answer
+                    # UNAVAILABLE and queue nothing.
                     await self._reconfirm_scope_field(
                         "get_scope_rbw", radio.get_scope_rbw
                     )
