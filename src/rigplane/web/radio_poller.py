@@ -1431,6 +1431,10 @@ class RadioPoller:
             max_age=_POST_WRITE_READBACK_MAX_AGE,
             priority=AcquisitionPriority.USER,
             reason="post_write_readback",
+            # The answer must come from a query sent after this write. Merged
+            # into the cadence poll's already-sent request, this read-back
+            # would be answered by the query that went out before it.
+            require_fresh_dispatch=True,
         )
 
     def _apply_global_control_observation(

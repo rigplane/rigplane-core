@@ -71,6 +71,7 @@ from rigplane.core.tx_observation import (
     project_observed_ptt,
 )
 from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
     FieldPath,
     Observation,
     SourceMetadata,
@@ -2682,6 +2683,87 @@ async def test_scheduler_active_freq_mode_request_completes_from_civ_rx_loop(
 
     assert scheduler.pending_requests() == ()
     assert radio._state_store.snapshot().field(stored_path).value == expected
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_post_write_readback_is_sent_after_the_ack_and_credited_by_its_answer(
+    radio: IcomRadio,
+) -> None:
+    """Owner ruling R39: the read-back's answer is the one it asked for.
+
+    The whole chain, through the real scheduler, the real drain and the real
+    CI-V receive path: the cadence poll's query goes out, a write is acked and
+    ``RadioPoller._request_post_write_readback`` runs, and the next drain pass
+    must put the same query on the wire a second time. Until then the
+    pre-write query's answer, decoded before that second send, must leave the
+    read-back pending.
+    """
+
+    path = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler  # noqa: SLF001
+    sent: list[tuple[int, bytes]] = []
+
+    async def _record_send(cmd: int, **kwargs: Any) -> None:
+        sent.append((cmd, bytes(kwargs.get("data") or b"")))
+
+    radio.send_civ = _record_send  # type: ignore[method-assign,assignment]
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    StateFreshnessService(
+        store=poller._state_store,  # noqa: SLF001
+        scheduler=scheduler,
+    ).tick()
+    await poller._send_query()  # noqa: SLF001
+
+    assert len(sent) == 1
+    assert scheduler.pending_requests()[0].paths == (path,)
+
+    before_the_readback_send = time.monotonic()
+
+    poller._request_post_write_readback(  # noqa: SLF001
+        CommandIntent(
+            id="cmd-1",
+            name="set_freq",
+            params={"freq_hz": 14_074_000, "receiver": 0},
+            source="websocket",
+            target=path,
+            expected_observations=(path,),
+        )
+    )
+
+    await poller._send_query()  # noqa: SLF001
+
+    assert sent == [sent[0], sent[0]], (
+        "the drain must put the read-back's query on the wire after the ack; "
+        "instead the pass sent nothing new"
+    )
+
+    # The pre-write query's answer, decoded before the read-back's own query
+    # went out.
+    with patch(
+        "rigplane.runtime._civ_rx.time.monotonic",
+        return_value=before_the_readback_send,
+    ):
+        radio._civ_runtime._apply_state_store_observations(  # noqa: SLF001
+            _make_frame(cmd=0x25, data=b"\x00" + bcd_encode(14_000_000))
+        )
+
+    assert scheduler.pending_requests() != (), (
+        "a reply decoded before the read-back's own query went out must not complete it"
+    )
+
+    radio._civ_runtime._apply_state_store_observations(  # noqa: SLF001
+        _make_frame(cmd=0x25, data=b"\x00" + bcd_encode(14_074_000))
+    )
+
+    assert scheduler.pending_requests() == ()
+    assert (
+        radio._state_store.snapshot()  # noqa: SLF001
+        .field("receiver.0.active.freq_mode.freq_hz")
+        .value
+        == 14_074_000
+    )
 
 
 def test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics(

@@ -4164,3 +4164,114 @@ def test_completing_a_request_drops_its_dispatch_record() -> None:
 
     assert scheduler.pending_requests() == ()
     assert scheduler.may_credit(result.request, observation_timestamp=52.0) is False
+
+
+def test_fresh_dispatch_request_is_reissued_out_of_an_already_sent_request() -> None:
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_profile([freq]))
+    cadence = scheduler.ensure_fresh(
+        freq, max_age=5.0, priority="background", reason="policy-cadence"
+    )
+    assert cadence.request is not None
+    scheduler.record_dispatch(cadence.request.id, paths=(freq,), now=50.0)
+
+    readback = scheduler.ensure_fresh(
+        freq,
+        max_age=5.0,
+        priority="user",
+        reason="post_write_readback",
+        require_fresh_dispatch=True,
+    )
+    assert readback.request is not None
+
+    assert readback.request.id != cadence.request.id
+    assert readback.request.priority is AcquisitionPriority.USER
+    assert readback.request.reasons == ("policy-cadence", "post_write_readback")
+    assert scheduler.pending_requests() == (readback.request,)
+    # No send has covered the reissued id, so the answer to the send at 50.0
+    # cannot complete it.
+    assert scheduler.may_credit(readback.request, observation_timestamp=60.0) is False
+
+
+def test_fresh_dispatch_request_merges_into_a_request_no_send_covered() -> None:
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_profile([freq]))
+    cadence = scheduler.ensure_fresh(
+        freq, max_age=5.0, priority="background", reason="policy-cadence"
+    )
+    assert cadence.request is not None
+
+    readback = scheduler.ensure_fresh(
+        freq,
+        max_age=5.0,
+        priority="user",
+        reason="post_write_readback",
+        require_fresh_dispatch=True,
+    )
+    assert readback.request is not None
+    assert readback.request.id == cadence.request.id
+
+
+def test_fresh_dispatch_reissue_is_per_path_of_the_incoming_request() -> None:
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    scheduler = AcquisitionScheduler(profile=_profile([freq, mode]))
+    cadence = scheduler.ensure_fresh(
+        (freq, mode), max_age=5.0, priority="background", reason="policy-cadence"
+    )
+    assert cadence.request is not None
+    scheduler.record_dispatch(cadence.request.id, paths=(freq,), now=50.0)
+
+    # ``mode`` never went out under that id, so the pass that has yet to send
+    # it is already the fresh send this caller needs.
+    mode_readback = scheduler.ensure_fresh(
+        mode,
+        max_age=5.0,
+        priority="user",
+        reason="post_write_readback",
+        require_fresh_dispatch=True,
+    )
+    assert mode_readback.request is not None
+    assert mode_readback.request.id == cadence.request.id
+
+    freq_readback = scheduler.ensure_fresh(
+        freq,
+        max_age=5.0,
+        priority="user",
+        reason="post_write_readback",
+        require_fresh_dispatch=True,
+    )
+    assert freq_readback.request is not None
+    assert freq_readback.request.id != cadence.request.id
+
+
+def test_fresh_dispatch_reissue_drops_the_previous_id_dispatch_and_claim() -> None:
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    scheduler = AcquisitionScheduler(profile=_profile([freq]))
+    cadence = scheduler.ensure_fresh(
+        freq, max_age=5.0, priority="background", reason="policy-cadence"
+    )
+    assert cadence.request is not None
+    seat = object()
+    assert (
+        scheduler.try_claim(cadence.request, claimant=seat, provider_generation=0)
+        is True
+    )
+    scheduler.record_dispatch(cadence.request.id, paths=(freq,), now=50.0)
+
+    readback = scheduler.ensure_fresh(
+        freq,
+        max_age=5.0,
+        priority="user",
+        reason="post_write_readback",
+        require_fresh_dispatch=True,
+    )
+    assert readback.request is not None
+
+    assert scheduler.may_credit(cadence.request, observation_timestamp=60.0) is False
+    assert (
+        scheduler.claim_is_current(
+            cadence.request, claimant=seat, provider_generation=0
+        )
+        is False
+    )
