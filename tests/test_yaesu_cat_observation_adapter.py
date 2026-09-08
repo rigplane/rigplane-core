@@ -11,7 +11,10 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
-from rigplane.core.acquisition_scheduler import AcquisitionScheduler
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    DeclaredCommandDefect,
+)
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
@@ -28,7 +31,12 @@ from rigplane.radio_state import RadioState
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.radio import RadioConnectionError, YaesuCatRadio
-from rigplane.backends.yaesu_cat.transport import CatCommandRejected, CatTransportError
+from rigplane.backends.yaesu_cat.transport import (
+    CatCommandRejected,
+    CatGarbledFrameError,
+    CatTimeoutError,
+    CatTransportError,
+)
 
 
 def _clock() -> float:
@@ -1737,38 +1745,39 @@ async def test_repeater_shift_emits_both_receivers_directly(code: int) -> None:
 
 
 @pytest.mark.parametrize(
-    ("side_effect", "expected_path", "expected_value"),
+    ("side_effect", "defective_path", "awaited"),
     [
         (
             [ValueError("MAIN failed"), 2],
-            "receiver.sub.operator_controls.repeater_shift",
-            2,
+            "receiver.main.operator_controls.repeater_shift",
+            [call(0)],
         ),
         (
             [1, ValueError("SUB failed")],
-            "receiver.main.operator_controls.repeater_shift",
-            1,
+            "receiver.sub.operator_controls.repeater_shift",
+            [call(0), call(1)],
         ),
     ],
 )
 @pytest.mark.asyncio
-async def test_repeater_shift_receiver_failures_are_isolated(
-    side_effect: list[object], expected_path: str, expected_value: int
+async def test_repeater_shift_receiver_failures_name_only_their_own_side(
+    side_effect: list[object], defective_path: str, awaited: list[object]
 ) -> None:
+    """OS0 and OS1 are read independently, so one side's defect names one path.
+
+    The read that fails raises where it fails; a side already read stays read
+    and a side not yet reached is not queried.
+    """
     radio = _make_radio()
     radio.capabilities.add("repeater_shift")
     radio.read_repeater_shift = AsyncMock(side_effect=side_effect)
     adapter = YaesuObservationAdapter(radio, profile=_profile_state_acquisition())
 
-    observations = await adapter.poll_slow_controls()
-    shifts = {
-        str(item.path): item.value
-        for item in observations
-        if str(item.path).endswith("repeater_shift")
-    }
+    with pytest.raises(DeclaredCommandDefect) as caught:
+        await adapter.poll_slow_controls()
 
-    assert shifts == {expected_path: expected_value}
-    assert radio.read_repeater_shift.await_args_list == [call(0), call(1)]
+    assert [str(path) for path in caught.value.paths] == [defective_path]
+    assert radio.read_repeater_shift.await_args_list == awaited
 
 
 @pytest.mark.asyncio
@@ -2051,68 +2060,8 @@ async def test_read_if_shift_and_narrow_are_pure_reads() -> None:
 
 
 # ---------------------------------------------------------------------------
-# MOR-473: per-field poll-lane resilience (_safe_read)
+# MOR-473: transport failures still propagate out of the poll lanes
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_rx_meters_emit_main_when_sub_s_meter_raises_parse_error() -> None:
-    """MOR-473: a malformed SUB ``SM1;`` answer must not drop the MAIN meter.
-
-    A ``CatParseError`` from the SUB s-meter read must skip that single field
-    and still emit the MAIN s-meter.
-    """
-    radio = _make_radio()
-    radio.read_s_meter = AsyncMock(
-        side_effect=lambda receiver=0: (
-            120
-            if receiver == 0
-            else _raise(CatParseError("SM{receiver}{raw:03d};", "SM?;", "x"))
-        )
-    )
-    adapter = YaesuObservationAdapter(
-        radio,
-        profile=_profile_state_acquisition(),
-        clock=_clock,
-    )
-
-    observations = await adapter.poll_rx_meters()
-
-    assert [(str(item.path), item.value) for item in observations] == [
-        ("receiver.main.meters.s_meter", -7),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_slow_poll_skips_raising_sql_type_but_emits_rest() -> None:
-    """MOR-473: a raising ``read_sql_type`` must not abort the whole slow lane.
-
-    A field-level malformed/unsupported answer (``CatParseError``) skips the
-    derived CTCSS toggle group but leaves af_level/rf_gain/agc/etc. intact.
-    """
-    radio = _make_radio()
-    radio.read_sql_type = AsyncMock(
-        side_effect=CatParseError("CT0{type};", "?;", "rejected")
-    )
-    adapter = YaesuObservationAdapter(
-        radio,
-        profile=_profile_state_acquisition(),
-        clock=_clock,
-    )
-
-    observations = await adapter.poll_slow_controls()
-    paths = [str(item.path) for item in observations]
-
-    # The whole derived CTCSS-toggle group is skipped together (one read,
-    # N observations invariant).
-    assert "receiver.main.operator_toggles.repeater_tone" not in paths
-    assert "receiver.main.operator_toggles.repeater_tsql" not in paths
-    # Everything else in the lane still emits.
-    assert "receiver.main.operator_controls.af_level" in paths
-    assert "receiver.main.operator_controls.rf_gain" in paths
-    assert "receiver.main.operator_controls.agc" in paths
-    assert "receiver.main.operator_controls.tone_freq" in paths
-    assert "global.slow_state.active" in paths
 
 
 @pytest.mark.asyncio
@@ -2196,94 +2145,61 @@ async def test_happy_path_slow_poll_unchanged_when_all_reads_succeed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sub_s_meter_parse_warning_logged_once_then_suppressed(
+async def test_tx_target_frequency_skip_warns_once_then_suppresses(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """MOR-561: a SUB ``SM1;`` answer that never parses must not flood the log.
+    """MOR-561: the remaining skip surface must not flood the log.
 
-    The poller queries the field several times per second, so a per-cycle
-    WARNING floods the log. The first occurrence must WARN once; every repeat
-    for the same field must demote to DEBUG (no repeated WARNING).
+    ``tx_target.freq`` is the read that feeds no declared path of its own, so
+    it is skipped rather than treated as a defect. The poller runs it several
+    times a second: the first occurrence WARNs, every repeat demotes to DEBUG.
     """
-    radio = _make_radio()
-    # The real YaesuCatRadio owns this persistent set; the MagicMock double
-    # must too, so the once-then-suppress dedup has somewhere to record the
-    # already-warned field across poll cycles (MOR-561).
-    radio._poll_warned_fields = set()
-    radio.read_s_meter = AsyncMock(
-        side_effect=lambda receiver=0: (
-            120
-            if receiver == 0
-            else _raise(
-                CatParseError(
-                    "SM{receiver}{raw:03d};",
-                    "SM?;",
-                    "Response does not match pattern",
-                )
-            )
-        )
-    )
+    radio = _gate_radio()
+    radio.capabilities = radio.capabilities - {"dual_rx"}
+    radio.get_tx_func = AsyncMock(return_value=1)
+    _break_read(radio, "read_freq", 1)
 
-    def _poll_meters() -> "object":
+    def _poll() -> "object":
         # Fresh adapter per cycle (matches the poller, which rebuilds the
         # adapter every poll cycle via YaesuObservationAdapter.from_radio).
         return YaesuObservationAdapter(
             radio,
             profile=_profile_state_acquisition(),
             clock=_clock,
-        ).poll_rx_meters()
+        ).poll_medium()
 
     with caplog.at_level("DEBUG"):
         for _ in range(5):
-            await _poll_meters()
+            await _poll()
 
-    sub_warnings = [
+    warnings = [
         rec
         for rec in caplog.records
-        if rec.levelname == "WARNING" and "sub.s_meter" in rec.getMessage()
+        if rec.levelname == "WARNING" and "tx_target.freq" in rec.getMessage()
     ]
-    sub_debugs = [
+    debugs = [
         rec
         for rec in caplog.records
-        if rec.levelname == "DEBUG" and "sub.s_meter" in rec.getMessage()
+        if rec.levelname == "DEBUG" and "tx_target.freq" in rec.getMessage()
     ]
-    # Exactly one WARNING across all five cycles; repeats demoted to DEBUG.
-    assert len(sub_warnings) == 1
-    assert len(sub_debugs) == 4
-    # The MAIN meter still emits every cycle (sub failure is isolated).
-    observations = await _poll_meters()
-    assert ("receiver.main.meters.s_meter", -7) in [
-        (str(item.path), item.value) for item in observations
-    ]
+    assert len(warnings) == 1
+    assert len(debugs) == 4
 
 
 def _raise(exc: Exception) -> object:
     raise exc
 
 
-class _AbandonRecordingScheduler(AcquisitionScheduler):
-    """Real scheduler that records every ``abandon_startup_path`` call."""
-
-    def __init__(self, profile: RadioAcquisitionProfile) -> None:
-        super().__init__(profile=profile)
-        self.abandoned: list[tuple[FieldPath, str]] = []
-
-    def abandon_startup_path(self, path: FieldPath, *, reason: str) -> None:
-        self.abandoned.append((path, reason))
-        super().abandon_startup_path(path, reason=reason)
-
-
 @pytest.mark.asyncio
-async def test_first_sub_s_meter_skip_releases_the_path_from_the_startup_gate() -> None:
-    """The skipped field must not leave the startup gate waiting for it.
+async def test_unparseable_sub_s_meter_is_a_startup_defect() -> None:
+    """A declared read answered in another shape stops the cycle, not the gate.
 
-    Same frame as ``test_sub_s_meter_parse_warning_logged_once_then_suppressed``:
-    the sub ``SM1;`` answer fails to parse every cycle, so no
-    ``receiver.sub.meters.s_meter`` observation ever arrives. The first skip
-    tells the scheduler; the repeats that demote to DEBUG do not tell it again.
+    The sub ``SM1;`` answer fails to parse, so no
+    ``receiver.sub.meters.s_meter`` observation can ever arrive. The defect is
+    raised and recorded, and the path stays outstanding — nothing releases it.
     """
     profile = _profile_state_acquisition()
-    scheduler = _AbandonRecordingScheduler(profile)
+    scheduler = AcquisitionScheduler(profile=profile)
     sub_path = FieldPath.receiver("sub", "meters", "s_meter")
     assert sub_path in scheduler.unobserved_startup_paths(())
 
@@ -2297,26 +2213,29 @@ async def test_first_sub_s_meter_skip_releases_the_path_from_the_startup_gate() 
             else _raise(
                 CatParseError(
                     "SM{receiver}{raw:03d};",
-                    "SM?;",
+                    "SM0048;",
                     "Response does not match pattern",
                 )
             )
         )
     )
 
-    for _ in range(3):
+    with pytest.raises(DeclaredCommandDefect) as caught:
         await YaesuObservationAdapter(
             radio,
             profile=profile,
             clock=_clock,
         ).poll_rx_meters()
 
-    assert [path for path, _ in scheduler.abandoned] == [sub_path]
-    assert sub_path not in scheduler.unobserved_startup_paths(())
-    # The MAIN meter, whose answer parses, is not abandoned.
-    assert FieldPath.receiver(
-        "main", "meters", "s_meter"
-    ) in scheduler.unobserved_startup_paths(())
+    assert caught.value.paths == (sub_path,)
+    assert caught.value.command == "SM{receiver}{raw:03d};"
+    assert caught.value.frame == "SM0048;"
+    assert scheduler.startup_defect is caught.value
+    message = str(caught.value)
+    assert str(sub_path) in message
+    assert "SM{receiver}{raw:03d};" in message
+    assert "SM0048;" in message
+    assert sub_path in scheduler.unobserved_startup_paths(())
 
 
 @pytest.mark.asyncio
@@ -2343,7 +2262,7 @@ async def test_sub_s_meter_reads_through_the_profile_despite_the_echoed_side(
         return {str(item.path): item.value for item in observations}
 
     radio = _radio()
-    scheduler = _AbandonRecordingScheduler(_profile_state_acquisition())
+    scheduler = AcquisitionScheduler(profile=_profile_state_acquisition())
     radio._acquisition_scheduler = scheduler
 
     with caplog.at_level("DEBUG"):
@@ -2369,7 +2288,7 @@ async def test_sub_s_meter_reads_through_the_profile_despite_the_echoed_side(
     assert [
         rec.getMessage() for rec in caplog.records if "s_meter" in rec.getMessage()
     ] == []
-    assert scheduler.abandoned == []
+    assert scheduler.startup_defect is None
 
 
 def _gate_radio() -> MagicMock:
@@ -2381,25 +2300,37 @@ def _gate_radio() -> MagicMock:
     return radio
 
 
-def _break_read(radio: MagicMock, method: str, receiver: int | None) -> None:
-    """Make ``method`` answer with an unparseable frame.
+def _break_read(
+    radio: MagicMock,
+    method: str,
+    receiver: int | None,
+    *,
+    failure: str = "parse",
+) -> None:
+    """Make ``method`` answer with an unparseable frame, or refuse the command.
 
     ``receiver`` selects which call fails: ``None`` fails every call, an int
     fails only the call whose first positional argument equals it, so a read
-    shared by MAIN and SUB can be broken on one side alone.
+    shared by MAIN and SUB can be broken on one side alone. ``failure``
+    picks the R48 class: ``"parse"`` is a clean frame of another shape,
+    ``"reject"`` is the radio's ``?;``.
     """
     original = getattr(radio, method)
 
     async def _answer(*args: object, **kwargs: object) -> object:
         if receiver is None or (args and args[0] == receiver):
+            if failure == "reject":
+                raise CatCommandRejected(
+                    "Radio rejected command 'XX;' (returned '?;')", command="XX;"
+                )
             raise CatParseError("XX{p};", "??;", "Response does not match pattern")
         return await original(*args, **kwargs)
 
     setattr(radio, method, _answer)
 
 
-# (id, radio method, failing receiver, poll method, declared paths abandoned)
-_ABANDON_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
+# (id, radio method, failing receiver, poll method, declared paths the defect names)
+_DEFECT_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
     (
         "main.freq",
         "read_freq",
@@ -2716,47 +2647,53 @@ _ABANDON_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
 )
 
 
+@pytest.mark.parametrize("failure", ["parse", "reject"])
 @pytest.mark.parametrize(
     ("method", "receiver", "poll", "expected"),
-    [row[1:] for row in _ABANDON_ROWS],
-    ids=[row[0] for row in _ABANDON_ROWS],
+    [row[1:] for row in _DEFECT_ROWS],
+    ids=[row[0] for row in _DEFECT_ROWS],
 )
 @pytest.mark.asyncio
-async def test_skipped_read_abandons_every_declared_path_it_feeds(
+async def test_defective_read_names_every_declared_path_it_feeds(
     method: str,
     receiver: int | None,
     poll: str,
     expected: tuple[str, ...],
+    failure: str,
 ) -> None:
-    """One unparseable read releases the declared paths it feeds, and no others.
+    """One refused or wrong-shape read raises naming the paths it feeds.
 
-    A path the backend can never observe must not hold the startup gate open;
-    a path some other read still supplies must not be released with it.
+    A path the backend can never observe must not be released from the
+    startup gate, and the defect must not name a path some other read still
+    supplies.
     """
     profile = _profile_state_acquisition()
-    scheduler = _AbandonRecordingScheduler(profile)
+    scheduler = AcquisitionScheduler(profile=profile)
     radio = _gate_radio()
     radio._acquisition_scheduler = scheduler
-    _break_read(radio, method, receiver)
+    before = scheduler.unobserved_startup_paths(())
+    _break_read(radio, method, receiver, failure=failure)
 
     adapter = YaesuObservationAdapter(radio, profile=profile, clock=_clock)
-    await getattr(adapter, poll)()
+    with pytest.raises(DeclaredCommandDefect) as caught:
+        await getattr(adapter, poll)()
 
-    assert sorted(str(path) for path, _ in scheduler.abandoned) == sorted(expected)
-    for name in expected:
-        assert FieldPath.parse(name) not in scheduler.unobserved_startup_paths(())
+    assert sorted(str(path) for path in caught.value.paths) == sorted(expected)
+    assert scheduler.startup_defect is caught.value
+    # Nothing is released: the gate's outstanding set is exactly what it was.
+    assert scheduler.unobserved_startup_paths(()) == before
 
 
 @pytest.mark.asyncio
-async def test_tx_target_frequency_read_abandons_nothing() -> None:
+async def test_tx_target_frequency_read_raises_no_defect() -> None:
     """The TX-target frequency is a sub-read of a field emitted either way.
 
     ``global.tx_state.tx_target`` is appended whether or not that frequency
-    parses (the frequency degrades to ``None``), so a skip there releases no
-    path from the gate.
+    parses (the frequency degrades to ``None``), so that read names no
+    declared path and stays a skip.
     """
     profile = _profile_state_acquisition()
-    scheduler = _AbandonRecordingScheduler(profile)
+    scheduler = AcquisitionScheduler(profile=profile)
     radio = _gate_radio()
     radio._acquisition_scheduler = scheduler
     radio.capabilities = radio.capabilities - {"dual_rx"}
@@ -2767,7 +2704,7 @@ async def test_tx_target_frequency_read_abandons_nothing() -> None:
         radio, profile=profile, clock=_clock
     ).poll_medium()
 
-    assert scheduler.abandoned == []
+    assert scheduler.startup_defect is None
     emitted = [
         item.value
         for item in observations
@@ -2776,6 +2713,66 @@ async def test_tx_target_frequency_read_abandons_nothing() -> None:
     assert len(emitted) == 1
     assert isinstance(emitted[0], KnownTxTarget)
     assert emitted[0].frequency_hz is None
+
+
+@pytest.mark.parametrize(
+    "noise",
+    [
+        CatTimeoutError("Read timeout (1.0s) waiting for ';' terminator"),
+        CatTransportError("Read failed: device disappeared"),
+    ],
+    ids=("timeout", "transport"),
+)
+@pytest.mark.asyncio
+async def test_transport_noise_re_raises_without_recording_a_defect(
+    noise: Exception,
+) -> None:
+    """Link quality is not a product defect: no defect, no gate abort.
+
+    The exception reaches ``YaesuCatPoller._run_poll_cycle``, which is what
+    drives reconnect/backoff.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _gate_radio()
+    radio._acquisition_scheduler = scheduler
+    radio.read_s_meter = AsyncMock(
+        side_effect=lambda receiver=0: 120 if receiver == 0 else _raise(noise)
+    )
+
+    with pytest.raises(type(noise)):
+        await YaesuObservationAdapter(
+            radio, profile=profile, clock=_clock
+        ).poll_rx_meters()
+
+    assert scheduler.startup_defect is None
+    assert FieldPath.receiver(
+        "sub", "meters", "s_meter"
+    ) in scheduler.unobserved_startup_paths(())
+
+
+@pytest.mark.asyncio
+async def test_a_garbled_frame_on_the_wire_is_noise_not_a_defect() -> None:
+    """Real transport, real profile: the corrupt byte never reaches the parser.
+
+    ``b"SM\\x00048;"`` keeps the ``SM`` prefix, so the query's stale-line
+    filter passes it through. Without the transport's printability check it
+    would reach the parse template and be recorded as a defect, which is what
+    this row exists to deny.
+    """
+    scheduler = AcquisitionScheduler(profile=_profile_state_acquisition())
+    radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
+    radio._acquisition_scheduler = scheduler
+    radio._transport._connected = True
+    radio._transport._writer = MagicMock(drain=AsyncMock())
+    radio._transport._reader = MagicMock(
+        readuntil=AsyncMock(return_value=b"SM\x00048;")
+    )
+
+    with pytest.raises(CatGarbledFrameError):
+        await YaesuObservationAdapter.from_radio(radio, clock=_clock).poll_rx_meters()
+
+    assert scheduler.startup_defect is None
 
 
 # ---------------------------------------------------------------------------

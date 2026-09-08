@@ -19,6 +19,7 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
     AcquisitionScheduler,
     AcquisitionStatus,
+    DeclaredCommandDefect,
     MeterObservationCoalescer,
     RadioStateModelService,
     StateFreshnessService,
@@ -3771,14 +3772,14 @@ def test_freshness_service_without_a_radio_still_ticks() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Startup-gate abandonment
+# Startup-gate defects
 # ---------------------------------------------------------------------------
 
 _MAIN_S_METER = FieldPath.receiver("main", "meters", "s_meter")
 _SUB_S_METER = FieldPath.receiver("sub", "meters", "s_meter")
 
 
-def _abandon_scheduler() -> AcquisitionScheduler:
+def _defect_scheduler() -> AcquisitionScheduler:
     """Two declared, non-``tx_only`` meter paths — the FTX-1 pair's shape."""
 
     return AcquisitionScheduler(
@@ -3800,45 +3801,44 @@ def _abandon_scheduler() -> AcquisitionScheduler:
     )
 
 
-def test_abandoned_startup_path_leaves_the_unobserved_set() -> None:
-    scheduler = _abandon_scheduler()
+def _defect(label: str = "sub.s_meter") -> DeclaredCommandDefect:
+    return DeclaredCommandDefect(
+        label=label,
+        paths=(_SUB_S_METER,),
+        command="SM1{raw:03d};",
+        frame="SM0048;",
+        detail="Parse error",
+    )
+
+
+def test_a_recorded_defect_releases_no_path_from_the_unobserved_set() -> None:
+    scheduler = _defect_scheduler()
     assert scheduler.unobserved_startup_paths(()) == (_MAIN_S_METER, _SUB_S_METER)
 
-    scheduler.abandon_startup_path(_SUB_S_METER, reason="malformed CAT response")
+    scheduler.record_startup_defect(_defect())
 
-    assert scheduler.unobserved_startup_paths(()) == (_MAIN_S_METER,)
-    assert scheduler.initial_acquisition_complete(()) is False
-    assert scheduler.initial_acquisition_complete((_MAIN_S_METER,)) is True
-
-
-def test_abandoning_an_observed_path_does_not_change_the_unobserved_set() -> None:
-    scheduler = _abandon_scheduler()
-    observed = (_SUB_S_METER,)
-    before = scheduler.unobserved_startup_paths(observed)
-
-    scheduler.abandon_startup_path(_SUB_S_METER, reason="malformed CAT response")
-
-    assert before == (_MAIN_S_METER,)
-    assert scheduler.unobserved_startup_paths(observed) == before
+    assert scheduler.unobserved_startup_paths(()) == (_MAIN_S_METER, _SUB_S_METER)
+    assert scheduler.initial_acquisition_complete((_MAIN_S_METER,)) is False
 
 
-def test_abandon_startup_path_warns_once_naming_the_path_and_reason(
+def test_record_startup_defect_keeps_and_logs_the_first_only(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    scheduler = _abandon_scheduler()
+    scheduler = _defect_scheduler()
+    assert scheduler.startup_defect is None
+    first = _defect()
 
-    with caplog.at_level(logging.WARNING, logger="rigplane.core.acquisition_scheduler"):
-        scheduler.abandon_startup_path(_SUB_S_METER, reason="malformed CAT response")
-        scheduler.abandon_startup_path(_SUB_S_METER, reason="malformed CAT response")
+    with caplog.at_level(logging.ERROR, logger="rigplane.core.acquisition_scheduler"):
+        scheduler.record_startup_defect(first)
+        scheduler.record_startup_defect(_defect("main.s_meter"))
 
-    warnings = [
-        record for record in caplog.records if record.levelno == logging.WARNING
-    ]
-    assert len(warnings) == 1
-    assert str(_SUB_S_METER) in warnings[0].getMessage()
-    assert "malformed CAT response" in warnings[0].getMessage()
-    # Idempotent: the repeat leaves the filtered set as the first call left it.
-    assert scheduler.unobserved_startup_paths(()) == (_MAIN_S_METER,)
+    assert scheduler.startup_defect is first
+    errors = [record for record in caplog.records if record.levelno == logging.ERROR]
+    assert len(errors) == 1
+    message = errors[0].getMessage()
+    assert str(_SUB_S_METER) in message
+    assert "SM1{raw:03d};" in message
+    assert "SM0048;" in message
 
 
 # ---------------------------------------------------------------------------

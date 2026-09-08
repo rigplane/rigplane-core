@@ -49,6 +49,7 @@ __all__ = [
     "AcquisitionRequest",
     "AcquisitionScheduler",
     "AcquisitionStatus",
+    "DeclaredCommandDefect",
     "EnsureFreshResult",
     "IcomCivAcquisitionExecutor",
     "MeterObservationCoalescer",
@@ -63,6 +64,42 @@ __all__ = [
 
 
 logger = logging.getLogger(__name__)
+
+
+class DeclaredCommandDefect(RuntimeError):
+    """A declared read the radio refused, or answered in another shape.
+
+    A product defect — profile, parser or firmware mismatch — as opposed to
+    link quality, which reaches a backend as a transport error and never
+    builds one of these.
+
+    ``str()`` is the detail clause the startup gate puts between ``aborted:``
+    and ``Refusing to start a half-working server.``; it names the declared
+    paths and, for a refusal or a parse failure, the command or parse template
+    and the frame received verbatim.
+    """
+
+    def __init__(
+        self,
+        *,
+        label: str,
+        paths: tuple[FieldPath, ...],
+        command: str,
+        frame: str,
+        detail: str,
+    ) -> None:
+        self.label = label
+        self.paths = paths
+        self.command = command
+        self.frame = frame
+        self.detail = detail
+        parts = [f"declared read {label!r} ({', '.join(str(p) for p in paths)})"]
+        if command:
+            parts.append(f"command {command!r}")
+        if frame:
+            parts.append(f"frame {frame!r}")
+        super().__init__(f"{'; '.join(parts)}: {detail}")
+
 
 AcquisitionMethod = Literal["poll", "command_response", "wait_for_unsolicited"]
 
@@ -357,7 +394,6 @@ class AcquisitionScheduler:
     """Minimal priority/dedupe queue for backend-neutral acquisition reads."""
 
     __slots__ = (
-        "_abandoned_startup_paths",
         "_clock",
         "_cadence_by_key",
         "_claims_by_request_id",
@@ -372,6 +408,7 @@ class AcquisitionScheduler:
         "_prime_cursor",
         "_profile",
         "_requests_by_key",
+        "_startup_defect",
         "_tx_active",
     )
 
@@ -393,7 +430,7 @@ class AcquisitionScheduler:
         ] = {}
         self._failed_request_count = 0
         self._failure_count_by_reason: dict[str, int] = {}
-        self._abandoned_startup_paths: set[FieldPath] = set()
+        self._startup_defect: DeclaredCommandDefect | None = None
         self._next_id = 1
         # Round-robin starting offset into field_policies for
         # prime_unobserved (MOR-1501, A1 from #2415 review): see that
@@ -891,23 +928,25 @@ class AcquisitionScheduler:
             return True
         return False
 
-    def abandon_startup_path(self, path: FieldPath, *, reason: str) -> None:
-        """Drop one path from :meth:`unobserved_startup_paths` for good.
+    def record_startup_defect(self, defect: DeclaredCommandDefect) -> None:
+        """Keep the first declared-command defect a backend reports.
 
-        For a backend that has given up on a declared field. The first call
-        for a path logs it by name, with ``reason``, at WARNING; repeats are
-        silent. Pinned by ``tests/test_acquisition_scheduler.py::
-        test_abandon_startup_path_warns_once_naming_the_path_and_reason``.
+        The first is kept and logged at ERROR; later ones are dropped
+        silently, because the read that produced this one repeats every poll
+        cycle. Pinned by ``tests/test_acquisition_scheduler.py::
+        test_record_startup_defect_keeps_and_logs_the_first_only``.
         """
 
-        if path in self._abandoned_startup_paths:
+        if self._startup_defect is not None:
             return
-        self._abandoned_startup_paths.add(path)
-        logger.warning(
-            "acquisition: abandoning startup path %s (%s)",
-            path,
-            reason,
-        )
+        self._startup_defect = defect
+        logger.error("acquisition: declared read defect — %s", defect)
+
+    @property
+    def startup_defect(self) -> DeclaredCommandDefect | None:
+        """Return the first recorded defect, or ``None`` if there is none."""
+
+        return self._startup_defect
 
     def unobserved_startup_paths(
         self,
@@ -918,10 +957,9 @@ class AcquisitionScheduler:
         """Return the declared paths the store has never seen, sorted by path.
 
         The domain is every pollable capability plus every explicit
-        ``field_policies`` key, minus three exclusions: the paths whose
-        resolved policy carries ``tx_only``, the paths passed to
-        :meth:`abandon_startup_path`, and the paths ``availability`` maps to
-        ``False`` or ``None``. ``tx_only`` is read from the profile
+        ``field_policies`` key, minus two exclusions: the paths whose
+        resolved policy carries ``tx_only``, and the paths ``availability``
+        maps to ``False`` or ``None``. ``tx_only`` is read from the profile
         (:attr:`AcquisitionPolicy.tx_only`), never from a list kept here;
         :meth:`due_requests` gates those cadence groups on ``tx_active``, so
         a caller that waited on them would be waiting for a transmission.
@@ -945,7 +983,6 @@ class AcquisitionScheduler:
                     path
                     for path in domain
                     if path not in observed
-                    and path not in self._abandoned_startup_paths
                     and not profile.policy_for(path).tx_only
                     and availability.get(path, True) is True
                 ),

@@ -10,6 +10,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import fields
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fake_rigctld import FakeRigctldBehavior, FakeRigctldServer
@@ -27,6 +28,7 @@ from tx_observation_fakes import (
 
 from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 from rigplane.backends.yaesu_cat import YaesuCatRadio
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.tx_observation import RADIO_READBACK_SOURCES, TxStateReading
 
 # ---------------------------------------------------------------------------
@@ -354,7 +356,19 @@ async def test_a_set_ptt_write_alone_produces_no_observation(
 
     poller = harness.extras["poller"]
     if harness.name == "yaesu-ftx1":
-        await poller._emit_medium_observations()
+        # ``ScriptedCatTransport`` answers every query with the transmit-state
+        # frame, so any other declared read in this lane would see a frame of
+        # the wrong shape and raise. Narrow the lane to the field this row is
+        # about; the PTT read still goes over the same scripted wire.
+        from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
+
+        ptt_only = FieldPath.global_("tx_state", "ptt")
+        with patch.object(
+            YaesuObservationAdapter,
+            "_can_poll",
+            lambda _self, path: path == ptt_only,
+        ):
+            await poller._emit_medium_observations()
     else:
         await poller._poll_medium()
 
