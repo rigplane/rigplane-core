@@ -10,10 +10,10 @@
  * rule (MOR-1488): a terminal-without-further-meaning command (failed,
  * cancelled, timed-out) must never be read as still pending, but a merely
  * `'acknowledged'` one (the transport ack) stays pending until the radio's
- * OWN observed state confirms the target — an ack proves only that the
- * radio received the command, typically milliseconds before the next state
- * poll actually echoes it back, and presenting that ack as confirmation is
- * the exact live-bench fabrication MOR-1488 fixes.
+ * OWN observed state answers for the commanded field — an ack proves only
+ * that the radio received the command, typically milliseconds before the
+ * next state poll actually echoes it back, and presenting that ack as
+ * confirmation is the exact live-bench fabrication MOR-1488 fixes.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,11 +22,16 @@ type FakeCommand = {
   status: string;
   createdAt: number;
   params: Record<string, unknown>;
+  updatedAt?: number;
+  ackFieldObservationTimes?: Record<string, number>;
 };
 type FakeReceiverState = Record<string, unknown>;
+type FakeFieldStatus = Record<string, { lastObservedMonotonic?: number }>;
 
 const state: { commands: FakeCommand[] } = { commands: [] };
-const runtimeState: { state: { main: FakeReceiverState; sub: FakeReceiverState } | null } = { state: null };
+const runtimeState: {
+  state: { main: FakeReceiverState; sub: FakeReceiverState; fieldStatus?: FakeFieldStatus } | null;
+} = { state: null };
 
 vi.mock('$lib/stores/commands.svelte', () => ({
   getCommandLifecycles: () => state.commands,
@@ -127,6 +132,43 @@ describe.each(CASES)('$label (MOR-1441 leg 2, MOR-1488)', (
   it('ignores an acknowledged command once the confirmed state matches the target', () => {
     runtimeState.state = { main: { [confirmedField]: value }, sub: {} };
     state.commands = [cmd({ name: intentName, status: 'acknowledged', params: { [paramKey]: value, receiver: 0 } })];
+    expect(accessor(0)).toBeNull();
+  });
+
+  /**
+   * After the write the core re-reads the commanded field at USER
+   * priority, so that field's own observation is what ends the marker —
+   * whatever value it carries. The per-field marker is
+   * `lastObservedMonotonic` (`runtime_helpers.py: _observed_field_status`),
+   * captured at ack into `ackFieldObservationTimes`
+   * (`commands.svelte.ts: transition`).
+   */
+  const fieldPath = `main.${confirmedField}`;
+  const acked = (over: Partial<FakeCommand> = {}): FakeCommand => cmd({
+    name: intentName, status: 'acknowledged', params: { [paramKey]: value, receiver: 0 },
+    ackFieldObservationTimes: { [fieldPath]: 4 }, ...over,
+  });
+
+  it('ends the marker when the commanded field is re-observed after the ack reporting a value other than the target', () => {
+    runtimeState.state = { main: { [confirmedField]: otherValue }, sub: {},
+      fieldStatus: { [fieldPath]: { lastObservedMonotonic: 5 } } };
+    state.commands = [acked()];
+    expect(accessor(0)).toBeNull();
+  });
+
+  it('stays pending when only another field is observed after the ack', () => {
+    runtimeState.state = { main: { [confirmedField]: otherValue }, sub: {},
+      fieldStatus: { [fieldPath]: { lastObservedMonotonic: 4 }, 'main.sMeter': { lastObservedMonotonic: 9 } } };
+    state.commands = [acked()];
+    expect(accessor(0)).toBe(value);
+  });
+
+  it('stays pending while the commanded field is never re-observed, until the grace backstop retires it', () => {
+    runtimeState.state = { main: { [confirmedField]: otherValue }, sub: {},
+      fieldStatus: { [fieldPath]: { lastObservedMonotonic: 4 } } };
+    state.commands = [acked({ updatedAt: Date.now() })];
+    expect(accessor(0)).toBe(value);
+    state.commands = [acked({ updatedAt: Date.now() - 3_001 })];
     expect(accessor(0)).toBeNull();
   });
 
