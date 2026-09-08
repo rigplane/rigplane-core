@@ -1307,10 +1307,9 @@ class YaesuObservationAdapter:
         ``CatCommandRejected`` (a ``?;`` reject = unsupported command on this
         radio) is caught while the base/timeout propagates.
 
-        MOR-561: a permanently unsupported field (e.g. the FTX-1 answering the
-        SUB ``SM1;`` query with a main-form ``SM0000;`` frame) fails identically
-        every poll cycle, several times a second. The FIRST failure for a given
-        field warns; every repeat is demoted to DEBUG so the log is not flooded.
+        MOR-561: a permanently unsupported field fails identically every poll
+        cycle, several times a second. The FIRST failure for a given field
+        warns; every repeat is demoted to DEBUG so the log is not flooded.
         """
         try:
             return True, await read

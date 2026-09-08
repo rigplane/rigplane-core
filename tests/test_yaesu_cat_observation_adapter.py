@@ -2045,14 +2045,15 @@ async def test_read_if_shift_and_narrow_are_pure_reads() -> None:
 async def test_rx_meters_emit_main_when_sub_s_meter_raises_parse_error() -> None:
     """MOR-473: a malformed SUB ``SM1;`` answer must not drop the MAIN meter.
 
-    The live FTX-1 can answer ``SM1;`` with a non-SM1 frame (no dual-RX), which
-    raises ``CatParseError`` from the SUB s-meter read. The fast lane must skip
-    that single field and still emit the MAIN s-meter.
+    A ``CatParseError`` from the SUB s-meter read must skip that single field
+    and still emit the MAIN s-meter.
     """
     radio = _make_radio()
     radio.read_s_meter = AsyncMock(
         side_effect=lambda receiver=0: (
-            120 if receiver == 0 else _raise(CatParseError("SM1{...};", "SM0000;", "x"))
+            120
+            if receiver == 0
+            else _raise(CatParseError("SM{receiver}{raw:03d};", "SM?;", "x"))
         )
     )
     adapter = YaesuObservationAdapter(
@@ -2183,10 +2184,9 @@ async def test_happy_path_slow_poll_unchanged_when_all_reads_succeed() -> None:
 async def test_sub_s_meter_parse_warning_logged_once_then_suppressed(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """MOR-561: the FTX-1 answers ``SM1;`` (sub) with a main-form ``SM0000;``.
+    """MOR-561: a SUB ``SM1;`` answer that never parses must not flood the log.
 
-    That well-formed-but-wrong-form frame raises ``CatParseError`` every poll
-    cycle. The poller queries it several times per second, so a per-cycle
+    The poller queries the field several times per second, so a per-cycle
     WARNING floods the log. The first occurrence must WARN once; every repeat
     for the same field must demote to DEBUG (no repeated WARNING).
     """
@@ -2201,8 +2201,8 @@ async def test_sub_s_meter_parse_warning_logged_once_then_suppressed(
             if receiver == 0
             else _raise(
                 CatParseError(
-                    "SM1{raw:03d};",
-                    "SM0000;",
+                    "SM{receiver}{raw:03d};",
+                    "SM?;",
                     "Response does not match pattern",
                 )
             )
@@ -2263,7 +2263,7 @@ async def test_first_sub_s_meter_skip_releases_the_path_from_the_startup_gate() 
     """The skipped field must not leave the startup gate waiting for it.
 
     Same frame as ``test_sub_s_meter_parse_warning_logged_once_then_suppressed``:
-    the FTX-1 answers the sub ``SM1;`` query in main form every cycle, so no
+    the sub ``SM1;`` answer fails to parse every cycle, so no
     ``receiver.sub.meters.s_meter`` observation ever arrives. The first skip
     tells the scheduler; the repeats that demote to DEBUG do not tell it again.
     """
@@ -2281,8 +2281,8 @@ async def test_first_sub_s_meter_skip_releases_the_path_from_the_startup_gate() 
             if receiver == 0
             else _raise(
                 CatParseError(
-                    "SM1{raw:03d};",
-                    "SM0000;",
+                    "SM{receiver}{raw:03d};",
+                    "SM?;",
                     "Response does not match pattern",
                 )
             )
@@ -2302,6 +2302,59 @@ async def test_first_sub_s_meter_skip_releases_the_path_from_the_startup_gate() 
     assert FieldPath.receiver(
         "main", "meters", "s_meter"
     ) in scheduler.unobserved_startup_paths(())
+
+
+@pytest.mark.asyncio
+async def test_sub_s_meter_reads_through_the_profile_despite_the_echoed_side(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The recorded FTX-1 frames reach ``receiver.sub.meters.s_meter``.
+
+    Real ``YaesuCatRadio`` on the bundled ``ftx1`` profile, so the frames go
+    through the profile's own parse templates. Swapping which side carries the
+    signal swaps the two readings.
+    """
+
+    def _radio() -> YaesuCatRadio:
+        radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
+        radio._transport._connected = True
+        return radio
+
+    async def _poll(radio: YaesuCatRadio, frames: dict[str, str]) -> dict[str, object]:
+        radio._transport.query = AsyncMock(side_effect=lambda cmd: frames[cmd])
+        observations = await YaesuObservationAdapter.from_radio(
+            radio, clock=_clock
+        ).poll_rx_meters()
+        return {str(item.path): item.value for item in observations}
+
+    radio = _radio()
+    scheduler = _AbandonRecordingScheduler(_profile_state_acquisition())
+    radio._acquisition_scheduler = scheduler
+
+    with caplog.at_level("DEBUG"):
+        signal_on_sub = await _poll(radio, {"SM0;": "SM0000", "SM1;": "SM0052"})
+    signal_on_main = await _poll(_radio(), {"SM0;": "SM0052", "SM1;": "SM0000"})
+
+    assert set(signal_on_sub) == {
+        "receiver.main.meters.s_meter",
+        "receiver.sub.meters.s_meter",
+    }
+    assert (
+        signal_on_sub["receiver.sub.meters.s_meter"]
+        != signal_on_sub["receiver.main.meters.s_meter"]
+    )
+    assert (
+        signal_on_sub["receiver.sub.meters.s_meter"]
+        == signal_on_main["receiver.main.meters.s_meter"]
+    )
+    assert (
+        signal_on_sub["receiver.main.meters.s_meter"]
+        == signal_on_main["receiver.sub.meters.s_meter"]
+    )
+    assert [
+        rec.getMessage() for rec in caplog.records if "s_meter" in rec.getMessage()
+    ] == []
+    assert scheduler.abandoned == []
 
 
 def _gate_radio() -> MagicMock:

@@ -236,7 +236,8 @@ class YaesuStateExtension:
     consumers (e.g. a Yaesu-specific panel).
 
     Fields:
-        rx_func_mode: ``FR`` command — 0=dual RX off, 1=single RX.
+        rx_func_mode: ``FR`` command — 0=Dual receive, 1=Single receive
+            (FTX-1 CAT manual, edition 2508-C, FR FUNCTION RX).
         tx_func_mode: ``FT`` command — 0=MAIN TX, 1=SUB TX.
 
     ``None`` for any field means "not yet polled / unknown".

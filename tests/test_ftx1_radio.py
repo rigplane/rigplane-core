@@ -548,6 +548,31 @@ async def test_get_s_meter_sub(connected_radio):
 
 
 @pytest.mark.asyncio
+async def test_sub_s_meter_accepts_the_echoed_main_side_digit(connected_radio):
+    """Recorded FTX-1 frame pair: ``SM1;`` -> ``SM0052;`` and ``SM0;`` -> ``SM0000;``.
+
+    The radio echoes P1 as ``0`` for the SUB query while the value is the
+    SUB's, so the SUB read attributes the value to the side it queried.
+    """
+    frames = {"SM0;": "SM0000", "SM1;": "SM0052"}
+    connected_radio._transport.query = AsyncMock(side_effect=lambda cmd: frames[cmd])
+
+    assert await connected_radio.get_s_meter(receiver=1) == 52
+    assert await connected_radio.get_s_meter(receiver=0) == 0
+    assert connected_radio.radio_state.sub.s_meter == 52
+    assert connected_radio.radio_state.main.s_meter == 0
+
+
+@pytest.mark.asyncio
+async def test_main_s_meter_rejects_a_sub_side_digit(connected_radio):
+    """The MAIN read stays strict: an ``SM1`` frame is not a MAIN reading."""
+    connected_radio._transport.query = AsyncMock(return_value="SM1052")
+
+    with pytest.raises(CatParseError):
+        await connected_radio.get_s_meter(receiver=0)
+
+
+@pytest.mark.asyncio
 async def test_get_s_meter_zero(connected_radio):
     connected_radio._transport.query = AsyncMock(return_value="SM0000")
     raw = await connected_radio.get_s_meter()
