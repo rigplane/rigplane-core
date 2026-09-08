@@ -93,6 +93,7 @@ vi.mock('$lib/runtime', () => ({
 vi.mock('$lib/stores/connection.svelte', () => ({
   getConnectionStatus: vi.fn(() => ({ connected: false })),
   getWsConnected: vi.fn(() => false),
+  hasEverConnected: vi.fn(() => false),
   getRadioPowerOn: vi.fn(() => null),
   getRadioStatus: vi.fn(() => 'disconnected'),
   getRadioLinkState: vi.fn(() => 'disconnected'),

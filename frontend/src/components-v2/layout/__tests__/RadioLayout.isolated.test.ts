@@ -8,6 +8,7 @@ import type { ContinuousScalarBinding, ContinuousScalarRendererLease } from '../
 import stateFixture from '$lib/runtime/adapters/__tests__/fixtures/ic7300-state.json';
 import capsFixture from '$lib/runtime/adapters/__tests__/fixtures/ic7300-capabilities.json';
 import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
+import { hasEverConnected } from '$lib/stores/connection.svelte';
 
 const txHarness = new ManagedAppTxHarness({ stale: true });
 import { mount, unmount, flushSync } from 'svelte';
@@ -168,6 +169,7 @@ vi.mock('$lib/runtime', () => ({
 vi.mock('$lib/stores/connection.svelte', () => ({
   getConnectionStatus: vi.fn(() => ({ connected: false })),
   getWsConnected: vi.fn(() => false),
+  hasEverConnected: vi.fn(() => false),
   getRadioPowerOn: vi.fn(() => null),
   getRadioStatus: vi.fn(() => 'disconnected'),
   getRadioLinkState: vi.fn(() => 'disconnected'),
@@ -455,6 +457,9 @@ function mountLayout(skinId: SkinId = 'desktop-v2', plan?: SurfacePlan) {
 
 beforeEach(() => {
   resetCommandLifecycle();
+  // Nothing in this file resets mocks between tests, and the link-fault
+  // cases below flip this one; restore its module-level default.
+  vi.mocked(hasEverConnected).mockReturnValue(false);
   txHarness.reset({ stale: true });
   components = [];
   radio.current = null;
@@ -595,6 +600,27 @@ describe('RadioLayout structure', () => {
     const t = mountLayout(UNDECLARED);
     expect(t.querySelector('.receiver-deck .vfo-header')).not.toBeNull();
   });
+
+  // MOR-2425 C-R3: `getWsConnected` is mocked false for this whole file, so
+  // without the "has been up at least once" guard every branch this shell
+  // renders would mount already veiled — which is what a page load looks
+  // like before the WS opens.
+  it.each(['desktop-v2', 'sdr-test', UNDECLARED] as const)(
+    'does not veil %s before the first connect, though the WS is down',
+    (skinId) => {
+      const t = mountLayout(skinId);
+      expect(t.querySelector('.radio-layout')?.hasAttribute('data-link-fault')).toBe(false);
+    },
+  );
+
+  it.each(['desktop-v2', 'sdr-test', UNDECLARED] as const)(
+    'veils %s as ws-down once the WS has been up and gone down again',
+    (skinId) => {
+      vi.mocked(hasEverConnected).mockReturnValue(true);
+      const t = mountLayout(skinId);
+      expect(t.querySelector('.radio-layout')?.getAttribute('data-link-fault')).toBe('ws-down');
+    },
+  );
 });
 
 describe('Band instrument placement', () => {
