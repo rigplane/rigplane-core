@@ -75,7 +75,8 @@ class DeclaredCommandDefect(RuntimeError):
 
     ``str()`` is the detail clause the startup gate puts between ``aborted:``
     and ``Refusing to start a half-working server.``; it names the declared
-    paths, the command or parse template, and the frame received verbatim.
+    paths and, for a refusal or a parse failure, the command or parse template
+    and the frame received verbatim.
     """
 
     def __init__(
