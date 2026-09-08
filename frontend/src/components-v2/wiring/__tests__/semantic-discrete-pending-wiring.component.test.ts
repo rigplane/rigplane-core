@@ -76,6 +76,21 @@ const fresh = {
 };
 
 /**
+ * One field's own observation marker advanced — `lastObservedMonotonic`
+ * (`runtime_helpers.py: _observed_field_status`), the per-field "the radio
+ * answered for THIS field" signal. Every fixture below starts from
+ * `fresh`'s marker of 1, so any value above it is a post-ack re-read of
+ * that one field.
+ */
+function observedAgain(base: ServerState, path: string, marker: number): ServerState {
+  return {
+    ...base,
+    observationSeq: marker, freshnessRevision: marker,
+    fieldStatus: { ...base.fieldStatus, [path]: { ...fresh, lastObservedMonotonic: marker } },
+  } as unknown as ServerState;
+}
+
+/**
  * Single-receiver (IC-7300/FTX-1-shaped) fixture — the live-bench topology
  * the MOR-1488 symptom was reported against — with filter, preamp and nb/nr
  * all evidenced, so `FilterSurface`/`RfFrontEndSurface`/`DspSurface` all
@@ -127,32 +142,21 @@ function liveState(): ServerState {
  */
 function nbConfirmedState(): ServerState {
   const base = liveState();
-  return {
+  return observedAgain({
     ...base,
-    revision: 2, stateRevision: 2, freshnessRevision: 2, observationSeq: 2,
+    revision: 2, stateRevision: 2,
     main: { ...base.main, nb: true },
-  } as unknown as ServerState;
+  } as unknown as ServerState, 'main.nb', 2);
 }
 
 /**
- * A non-transitioning observation (MOR-1488 review R2, F2 test-theatre
- * fix; reused for review R3): `liveState()` with `main.nb` left at `false`
- * (unchanged) but `observationSeq`/`freshnessRevision` advanced past the
- * fixture's initial value — `stateRevision`/`revision` deliberately stay
- * put. This is "the radio was freshly re-polled (or an unrelated field's
- * meter poll landed) and nb is still off": no field value moved, so
- * `core.state_store._apply_one` would never bump `stateRevision` for a
- * push like this (it only bumps on `semantic_changed`), but `observationSeq`
- * bumps unconditionally, on every applied observation.
- *
- * Dual role by test: whether this push CONFIRMS or MISMATCHES depends only
- * on what the in-flight command's own target is at each call site — this
- * fixture always reports `nb: false`.
- *   - R2's double-toggle test targets OFF (`false`): this push MATCHES and
- *     is the genuine confirming observation that settles the record.
- *   - R3's tests target ON (`true`, a single click): this push MISMATCHES
- *     — proving a mismatched post-ack push must NOT retire the record (R3's
- *     asymmetric settle), only a matching one or the grace backstop can.
+ * A push that observed something OTHER than `main.nb`: `liveState()` with
+ * `main.nb` left at `false` and every field's own `lastObservedMonotonic`
+ * left at the fixture's initial value, while `observationSeq`/
+ * `freshnessRevision` advance. `core.state_store._apply_one` bumps
+ * `observationSeq` on every applied observation but only touches the
+ * observed field's own marker, so this is the shape of an unrelated meter
+ * poll landing while the commanded field has not been re-read yet.
  */
 function nbReobservedState(): ServerState {
   const base = liveState();
@@ -170,17 +174,17 @@ function nbReobservedState(): ServerState {
  */
 function freqConfirmedState(freqHz: number): ServerState {
   const base = liveState();
-  return {
+  return observedAgain({
     ...base,
-    revision: 2, stateRevision: 2, freshnessRevision: 2, observationSeq: 2,
+    revision: 2, stateRevision: 2,
     main: { ...base.main, freqHz },
-  } as unknown as ServerState;
+  } as unknown as ServerState, 'main.freqHz', 2);
 }
 
 /**
  * Leg-1 sibling of `nbReobservedState`: a post-ack push that advances
- * `observationSeq` (an unrelated meter poll) without confirming `freqHz` —
- * `main.freqHz` stays at the ORIGINAL `liveState()` value.
+ * `observationSeq` (an unrelated meter poll) while `main.freqHz` is neither
+ * re-observed (its own marker stays put) nor changed.
  */
 function freqReobservedState(seq = 2): ServerState {
   const base = liveState();
@@ -268,9 +272,9 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     flushSync();
     expect(on.dataset.pending).toBe('true');
     const receiver = active === 'MAIN' ? 'main' : 'sub';
-    expect(setRadioState({ ...state, revision: 2, stateRevision: 2, freshnessRevision: 2, observationSeq: 2,
+    expect(setRadioState(observedAgain({ ...state, revision: 2, stateRevision: 2,
       [receiver]: { ...state[receiver], dataMode: 1 },
-    })).toBe(true);
+    } as unknown as ServerState, `${receiver}.dataMode`, 2))).toBe(true);
     flushSync();
     expect(on.dataset.pending).toBe('false');
     expect(off.getAttribute('aria-pressed')).toBe('false');
@@ -445,13 +449,12 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
   });
 
   /**
-   * MOR-1478 (leg-1 parity with the leg-2 R3 finding above): a post-ack
-   * push that advances `observationSeq` without confirming `freqHz` (an
-   * unrelated meter poll landing before the commanded field's own
-   * round-robin slot) must not clear the marker — that would collapse the
-   * pending window right back to the reported symptom.
+   * A post-ack push that observed a DIFFERENT field (an unrelated meter
+   * poll landing before the commanded field's own read-back) must not clear
+   * the marker — that would collapse the pending window right back to the
+   * MOR-1478 symptom.
    */
-  it('does not clear the VFO frequency marker on a post-ack push that advances observationSeq without confirming the target (MOR-1478)', () => {
+  it('does not clear the VFO frequency marker on a post-ack push that observed another field (MOR-1478)', () => {
     render();
     const freqEl = () => target.querySelector('[data-vfo-receiver="MAIN"] [data-freq-status]') as HTMLElement | null;
 
@@ -465,12 +468,37 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     flushSync();
     expect(freqEl()?.dataset.freqStatus).toBe('pending');
 
-    // A post-ack push arrives (observationSeq advances) but `main.freqHz`
-    // is still the pre-spin value — NOT the commanded target.
-    expect(setRadioState(freqReobservedState())).toBe(true);
+    expect(setRadioState(observedAgain(liveState(), 'main.mode', 2))).toBe(true);
     flushSync();
 
     expect(freqEl()?.dataset.freqStatus).toBe('pending');
+  });
+
+  /**
+   * The read-back the core issues at USER priority for the commanded field
+   * ends the marker on arrival, whatever it reports. Here
+   * `main.freqHz` is re-observed still holding the pre-spin value (the
+   * radio refused the tune) — the marker must end anyway, because the field
+   * now shows what the radio reports.
+   */
+  it('clears the VFO frequency marker when main.freqHz is re-observed after the ack still holding the old value', () => {
+    render();
+    const freqEl = () => target.querySelector('[data-vfo-receiver="MAIN"] [data-freq-status]') as HTMLElement | null;
+
+    dispatchRadioIntent({ name: 'set_freq', params: { freq: 14260000, receiver: 0 } });
+    flushSync();
+    const command = getCommandLifecycles().find(
+      (candidate) => candidate.name === 'set_freq' && candidate.status === 'pending',
+    );
+    expect(command).toBeDefined();
+    acknowledgeCommand(command!.id, command!.originalEpoch, command!.originalEpoch);
+    flushSync();
+    expect(freqEl()?.dataset.freqStatus).toBe('pending');
+
+    expect(setRadioState(observedAgain(liveState(), 'main.freqHz', 2))).toBe(true);
+    flushSync();
+
+    expect(freqEl()?.dataset.freqStatus).toBe('confirmed');
   });
 
   /**
@@ -506,7 +534,7 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
       expect(freqEl()?.dataset.freqStatus).toBe('pending');
 
       vi.advanceTimersByTime(501); // now past 3000ms
-      // Still non-confirming (`main.freqHz` stays at the pre-spin value) —
+      // `main.freqHz` was never re-observed (its own marker never moves) —
       // only the elapsed grace window retires it. (seq advances again so the
       // second push is accepted by the store.)
       expect(setRadioState(freqReobservedState(3))).toBe(true);
@@ -552,9 +580,7 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
    * confirmed"). This drives the command to 'acknowledged' directly
    * (`acknowledgeCommand`, the same primitive `radio-intents.ts`'s
    * `onCommandDelivery` ack handler calls) WITHOUT changing the confirmed
-   * radio state, and requires the marker to survive that ack — only a
-   * `setRadioState` observation that actually confirms the target
-   * (`main.nb === true`) may clear it.
+   * radio state, and requires the marker to survive that ack.
    */
   it('keeps the NB marker pending across a transport ack until a confirming state observation arrives (MOR-1488)', () => {
     render();
@@ -589,13 +615,11 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
    * plain "does the target match the current confirmed reading" comparison
    * (the pre-R2 implementation) would clear the marker the instant OFF
    * acks, even though nothing has actually been re-observed since either
-   * click. This proves the sequence guard blocks exactly that, and that the
-   * FIRST genuine post-ack push (even one that only reconfirms the
-   * already-correct value, never advancing `stateRevision`) is what
-   * actually settles it — the counters `nbConfirmedState()`'s sibling
-   * `nbReobservedState()` bumps are not decorative.
+   * click. This proves that coincidence alone does not settle it, and that
+   * the field's OWN post-ack re-read does — even one that only reconfirms
+   * the already-correct value and never advances `stateRevision`.
    */
-  it('does not clear the marker from a stale pre-ack snapshot on a fast double-toggle, only on the next real push (MOR-1488 review R2, closes F2)', () => {
+  it('does not clear the marker from a stale pre-ack snapshot on a fast double-toggle, only on the field\'s own re-read (MOR-1488 review R2, closes F2)', () => {
     render();
     expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('confirmed');
 
@@ -616,28 +640,21 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     // must NOT clear from that coincidence alone.
     expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
 
-    // The first real post-ack push, even a non-transitioning reconfirmation.
-    expect(setRadioState(nbReobservedState())).toBe(true);
+    // The field's own post-ack re-read, even a non-transitioning one.
+    expect(setRadioState(observedAgain(liveState(), 'main.nb', 2))).toBe(true);
     flushSync();
 
     expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('confirmed');
   });
 
   /**
-   * MOR-1488 review R3: `observationSeq` bumps on EVERY applied field
-   * observation, not just a re-read of THIS command's field — a 25ms meter
-   * poll advances it exactly as much as the commanded field's own confirming
-   * re-read would, but that confirming re-read is a full poll round-robin
-   * away (~1.3s worst case), not the very next push. R2 settled the record
-   * on the first post-ack push regardless of match, which fired on the next
-   * unrelated meter poll (~50ms after ack) — collapsing the pending window
-   * right back to a few frames, the original bench symptom. `nbReobservedState()`
-   * (defined above, `main.nb` still `false`) doubles here as a stand-in for
-   * exactly that unrelated meter-poll push: it advances `observationSeq` but
-   * does not confirm THIS command's target (`true`). It must not clear the
-   * marker.
+   * `observationSeq` bumps on EVERY applied field observation, not just a
+   * re-read of THIS command's field — a 25ms meter poll advances it exactly
+   * as much as the commanded field's own read-back would. Only the field's
+   * own `lastObservedMonotonic` separates the two, so a push that observed
+   * some other field must leave the marker pending.
    */
-  it('does not clear the marker on a post-ack push that advances observationSeq without confirming the target (MOR-1488 review R3)', () => {
+  it('does not clear the marker on a post-ack push that observed another field (MOR-1488 review R3)', () => {
     render();
     q<HTMLButtonElement>('[data-testid="dsp-nbActive"]')!.click();
     flushSync();
@@ -651,14 +668,36 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     flushSync();
     expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
 
-    // A post-ack push arrives (observationSeq advances) but `main.nb` is
-    // still `false` — NOT the commanded `true`. Not evidence of failure,
-    // just an observation that has not reached this field's round-robin
-    // slot yet.
-    expect(setRadioState(nbReobservedState())).toBe(true);
+    expect(setRadioState(observedAgain(liveState(), 'main.freqHz', 2))).toBe(true);
     flushSync();
 
     expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
+  });
+
+  /**
+   * The commanded field's own post-ack observation ends the marker
+   * whatever it reports. `main.nb` is re-observed still `false`
+   * while the click commanded `true` — the radio refused, or has not
+   * applied it — and the operator is shown what the radio reports rather
+   * than a marker that outlives the answer.
+   */
+  it('clears the marker when main.nb is re-observed after the ack still holding the old value', () => {
+    render();
+    q<HTMLButtonElement>('[data-testid="dsp-nbActive"]')!.click();
+    flushSync();
+
+    const command = getCommandLifecycles().find(
+      (candidate) => candidate.name === 'set_nb' && candidate.status === 'pending',
+    );
+    expect(command).toBeDefined();
+    acknowledgeCommand(command!.id, command!.originalEpoch, command!.originalEpoch);
+    flushSync();
+    expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
+
+    expect(setRadioState(observedAgain(liveState(), 'main.nb', 2))).toBe(true);
+    flushSync();
+
+    expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('confirmed');
   });
 
   /**
@@ -684,9 +723,8 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
       expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
 
       vi.advanceTimersByTime(3_001);
-      // Still non-confirming (`main.nb` stays `false`, target is `true`) —
-      // the sequence guard alone would leave this pending forever; only the
-      // elapsed grace window retires it.
+      // `main.nb` was never re-observed (its own marker never moves), so
+      // only the elapsed grace window retires the marker.
       expect(setRadioState(nbReobservedState())).toBe(true);
       flushSync();
 

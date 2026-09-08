@@ -394,6 +394,27 @@ export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, Stat
 export const getStateBackedCommandDescriptor = (intentName: string): StateBackedCommandDescriptor<unknown> | undefined =>
   (STATE_BACKED_COMMAND_DESCRIPTORS as ReadonlyMap<string, StateBackedCommandDescriptor<unknown>>).get(intentName);
 
+/**
+ * The `ServerState` receiver field each pending-marker intent is confirmed
+ * against — the same `confirmedField` `panel-adapters.ts`'s pending
+ * accessors pass to `latestPendingParam` for that intent. Used here only to
+ * capture that field's ack-time observation marker; an intent absent from
+ * this table simply captures no marker.
+ */
+const PENDING_CONFIRM_FIELDS: Readonly<Record<string, keyof ServerState['main']>> = Object.freeze({
+  set_freq: 'freqHz',
+  set_mode: 'mode',
+  set_filter: 'filter',
+  set_agc: 'agc',
+  set_preamp: 'preamp',
+  set_attenuator: 'att',
+  set_nb: 'nb',
+  set_nr: 'nr',
+  set_data_mode: 'dataMode',
+  set_auto_notch: 'autoNotch',
+  set_manual_notch: 'manualNotch',
+});
+
 const DEFAULT_TIMEOUT_MS = 5_000;
 /**
  * Terminal outcomes remain available for a five-second bounded presentation
@@ -481,13 +502,17 @@ function transition(
   if (status === 'acknowledged') {
     const radio = getRadioState(); command.ackObservationSeq = radio?.observationSeq;
     const observations: Record<string, number> = {};
+    const captureBoundary = (path: string | null | undefined): void => {
+      if (path === null || path === undefined) return;
+      const marker = radio?.fieldStatus?.[path]?.lastObservedMonotonic;
+      if (typeof marker === 'number' && Number.isFinite(marker)) observations[path] = marker;
+    };
     const descriptor = getStateBackedCommandDescriptor(command.name);
     const scope = descriptor?.scope(command);
-    const path = scope === null || scope === undefined ? null : descriptor?.fieldPath(scope);
-    if (path !== null && path !== undefined) {
-      const field = radio?.fieldStatus?.[path];
-      const marker = field?.lastObservedMonotonic;
-      if (typeof marker === 'number' && Number.isFinite(marker)) observations[path] = marker;
+    captureBoundary(scope === null || scope === undefined ? null : descriptor?.fieldPath(scope));
+    const pendingField = PENDING_CONFIRM_FIELDS[command.name];
+    if (pendingField !== undefined) {
+      captureBoundary(`${receiverScope(command) === 1 ? 'sub' : 'main'}.${pendingField}`);
     }
     command.ackFieldObservationTimes = observations;
     startLiveDeadline(command);
