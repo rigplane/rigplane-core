@@ -20,7 +20,8 @@ import FilterInstrumentHostFixture from './fixtures/FilterInstrumentHostFixture.
 import { topologyFixtures, withFilterPassband, withModeFilter } from '../fixtures/topologies';
 import { FILTER_SHAPES, type FilterInstrumentHandles } from '../filter-instruments';
 import type {
-  Availability, FilterPassbandViewModel, ModeFilterViewModel, RadioViewModel,
+  ActiveFilterConfiguration, Availability, FilterPassbandViewModel, ModeFilterViewModel,
+  RadioViewModel,
 } from '../radio-view-model';
 import type { CommandScalarFeedback } from '../../primitives/scalar/continuous-scalar.svelte';
 
@@ -977,6 +978,53 @@ describe('filterWidth and its bounds carry independent availability', () => {
     withSurface(view, (s) => {
       expect(s.input('filter-width')!.min).toBe('50');
       expect(s.input('filter-width')!.max).toBe('9999');
+    });
+  });
+});
+
+// ── 6b. a fixed-width mode gets no width slider ─────────────────────────────
+
+describe('a fixed-width configuration hides the width slider', () => {
+  const configured = (fixed: boolean): RadioViewModel => {
+    const view = base();
+    const activeFilterConfiguration: ActiveFilterConfiguration = {
+      slots: [15000, 10000, 7000].map((factoryWidthHz, i) =>
+        ({ filter: i + 1, label: `FIL${i + 1}`, factoryWidthHz })),
+      fixed, minHz: null, maxHz: null, stepHz: null, segments: [], table: [],
+    };
+    return { ...view, modeFilter: { ...view.modeFilter!, activeFilterConfiguration } };
+  };
+
+  it('renders no width range input and keeps the width readout', () => {
+    withSurface(configured(true), (s) => {
+      expect(s.group('filter-width')).not.toBeNull();
+      expect(s.input('filter-width')).toBeNull();
+      expect(s.output('filter-width')!.textContent).toBe('2400');
+      expect(s.group('filter-width')!.querySelector('.filter-level-name')!.textContent).toBe('Width');
+    });
+  });
+
+  it('leaves every other filter control untouched', () => {
+    withSurface(configured(true), (s) => {
+      for (const testId of ['filter-mode', 'filter-select', 'filter-shape', 'filter-data-mode']) {
+        expect(s.group(testId)).not.toBeNull();
+      }
+      for (const field of ['ifShift', 'pbtInner', 'pbtOuter']) {
+        expect(s.group(`filter-${field}`)).not.toBeNull();
+        expect(s.input(`filter-${field}`)).not.toBeNull();
+      }
+      expect(s.group('filter-pbt-reset')).not.toBeNull();
+    });
+  });
+
+  it('renders the width range input for a non-fixed configuration', () => {
+    withSurface(configured(false), (s) => {
+      const input = s.input('filter-width')!;
+      expect(input.type).toBe('range');
+      expect(input.min).toBe('50');
+      expect(input.max).toBe('3600');
+      expect(input.disabled).toBe(false);
+      expect(s.output('filter-width')!.textContent).toBe('2400');
     });
   });
 });

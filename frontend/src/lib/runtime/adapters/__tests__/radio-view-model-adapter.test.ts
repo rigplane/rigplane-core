@@ -1219,6 +1219,14 @@ describe('MOR-2374 shared DATA and filter configuration', () => {
     ], fixed: resolved.fixed, minHz: resolved.minHz, maxHz: resolved.maxHz, stepHz: resolved.stepHz,
     segments: resolved.segments, table: resolved.table } : null);
   });
+  it('projects fixed = true for a defaults-only fixed configuration', () => {
+    const c = dataCaps({ filterConfig: { FM: { defaults: [15000, 10000, 7000], fixed: true } } });
+    const s = state(); s.main.mode = 'FM'; s.main.dataMode = 0;
+    const projected = toRadioViewModel(s, c)!.modeFilter!.activeFilterConfiguration!;
+    expect(projected.fixed).toBe(true);
+    expect(projected.table).toEqual([]);
+    expect(projected.minHz).toBeNull();
+  });
   it('copies nested configuration and never fills missing defaults from current width', () => {
     const c = dataCaps({ filterConfig: { USB: structuredClone(config) } });
     const s = state(); s.main.filterWidth = 999;
