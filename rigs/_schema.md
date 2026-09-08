@@ -221,8 +221,16 @@ Each field path uses the canonical `FieldPath` strings from
 Optional per-field policy overrides. Supported keys are `cadence_seconds`,
 `freshness_ttl_seconds`, `reconciliation_priority`, `external_cat_pause`,
 `adaptive_decay`, `adaptive_decay_idle_multiplier`,
-`adaptive_decay_max_cadence_seconds`, and `meter_coalescing_window_seconds`.
+`adaptive_decay_max_cadence_seconds`, `meter_coalescing_window_seconds`, and
+`tx_only` (the set the loader accepts is `_ACQUISITION_POLICY_KEYS` in
+`rig_loader.py`; anything else is rejected).
 Field-specific `meter_coalescing_window_seconds` is valid only for meter paths.
+
+An omitted key inherits the profile-level default rather than clearing it, so
+`freshness_ttl_seconds` also accepts the string `"never"` to mean "this field
+has no expiry". Use it for a path whose capability is not in `polling_only`:
+nothing re-reads such a field on a cadence, so any TTL would age it to stale
+once and leave it there.
 
 Example:
 

@@ -1646,13 +1646,16 @@ class StateFreshnessService:
 
     #: Fast re-derivation spacing used WHILE at least one explicit
     #: ``field_policies`` field remains unobserved (MOR-1501, verifier-
-    #: prescribed on #2421's review). The flat 30s interval below left a
-    #: real IC-7300 connect with a ~120s populate tail for its 23 non-polling
-    #: policy fields: ``ceil(23 / _PRIME_UNOBSERVED_BURST_LIMIT) == 5`` waves
-    #: at 30s apart, even though each field's true CI-V round-trip cost is
-    #: ~1.1s. At 5s spacing the same 5 waves complete in ~20-25s — the burst
-    #: cap (unchanged, still the lane-protection knob) is what still bounds
-    #: each wave's size, this constant only bounds how long a capped-out
+    #: prescribed on #2421's review). :meth:`prime_unobserved` queues at
+    #: most ``_PRIME_UNOBSERVED_BURST_LIMIT`` (5) new paths per call, and
+    #: ``rigs/ic7300.toml`` leaves 26 of its 60 ``field_policies`` paths
+    #: unskipped by that method's cadence-owned test (``sum(1 for path,
+    #: policy in field_policies.items() if not (capability_for(path).can_poll
+    #: and policy.cadence_seconds is not None))``), so queueing them all
+    #: takes at least ``ceil(26 / 5) == 6`` calls — the sixth lands ~150s in
+    #: at the 30s interval below, ~25s in at this one. The burst cap
+    #: (unchanged, still the lane-protection knob) is what still bounds each
+    #: wave's size, this constant only bounds how long a capped-out
     #: straggler waits between waves. See
     #: :meth:`_reprime_unobserved_if_due` for the dead-link write-rate
     #: consequence of shortening this interval.
@@ -1781,8 +1784,9 @@ class StateFreshnessService:
         backs off to the slower :data:`PRIME_REDERIVE_INTERVAL_SECONDS` the
         moment that set empties — cheap either way (one ``store.snapshot()``
         plus a loop over ``field_policies``), so paying it more often while
-        fields are still missing is a fine trade against the ~120s populate
-        tail the flat 30s interval produced.
+        fields are still missing is a fine trade against the populate tail
+        the flat 30s interval produced (see
+        :data:`PRIME_ADAPTIVE_INTERVAL_SECONDS` for that arithmetic).
 
         Dead-link write-rate honesty (R3 lesson from MOR-1490's own review,
         applies again here): a capped-out straggler left short of the burst

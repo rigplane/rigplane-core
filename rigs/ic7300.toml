@@ -535,18 +535,22 @@ adaptive_decay = false
 # lands its first observation — worst case a few re-derive windows if the
 # scheduler's 5-path-per-call burst cap (prime_unobserved's
 # _PRIME_UNOBSERVED_BURST_LIMIT) paces this whole group across multiple
-# calls. cadence_seconds is pinned equal to freshness_ttl_seconds purely so
-# diagnostics don't show a misleadingly fast number — it is otherwise inert
-# here because these capabilities carry polling=False.
+# calls. These capabilities carry polling=False, so due_requests never
+# reaches them (_poll_cadence_groups skips any capability whose can_poll is
+# false) and freshness_ttl_seconds is "never": nothing re-reads them on a
+# cadence, so an expiry would flip each one to STALE once after its single
+# observation and leave it there on a healthy, idle link. cadence_seconds is
+# still load-bearing — with no TTL, prime_unobserved passes it as the prime
+# read's max_age.
 [state_acquisition.field_policies."global.tx_state.vox_on"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.tx_state.monitor_on"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
@@ -554,13 +558,13 @@ adaptive_decay = false
 # VOX/MON toggles above.
 [state_acquisition.field_policies."global.operator_controls.vox_delay"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
@@ -569,136 +573,135 @@ adaptive_decay = false
 # never primed.
 [state_acquisition.field_policies."receiver.main.active.freq_mode.filter_num"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.active.freq_mode.data_mode"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.filter_shape"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.pbt_inner"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.pbt_outer"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.nr_level"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.nb_level"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_toggles.auto_notch"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_toggles.manual_notch"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.notch_filter"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.manual_notch_width"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.agc_time_constant"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.rit_freq"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.tx_state.rit_on"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.tx_state.rit_tx"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.break_in"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.break_in_delay"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.key_speed"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."global.operator_controls.cw_pitch"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_toggles.twin_peak_filter"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 # MOR-2234 group B: tone/TSQL frequency join the same non-polling
-# command_response membership as the CW keyer setpoints above, and copy
-# their 25.0s cadence/TTL pair verbatim.
+# command_response membership as the CW keyer setpoints above.
 [state_acquisition.field_policies."receiver.main.operator_controls.tone_freq"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
 cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
+freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
 

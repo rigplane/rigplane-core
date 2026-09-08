@@ -2921,20 +2921,18 @@ def test_tone_and_tsql_freq_observations_can_go_stale(
     process, whatever the front panel did afterwards.
 
     Fail-without: the observation carries ``max_age=None`` and the field is
-    still ``FRESH`` past the TTL ``rigs/ic7300.toml`` declares for it.
+    still ``FRESH`` past that table's TTL.
     """
+
+    from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
 
     radio._profile = resolve_radio_profile(model="IC-7300")  # noqa: SLF001
     stored = FieldPath.receiver("0", "operator_controls", name)
-    # The TTL is not a literal here: it is read from the IC-7300 profile,
-    # which is what declared this path observable (e0558fea).
-    declared_ttl = (
-        resolve_radio_profile(model="IC-7300")
-        .state_acquisition.field_policies[
-            FieldPath.receiver("main", "operator_controls", name)
-        ]
-        .freshness_ttl_seconds
-    )
+    # The TTL is not a literal here: it is read from the table that supplies
+    # it. That table is keyed by (scope, family, name) and does not consult
+    # the profile, so ``rigs/ic7300.toml``'s field_policies entry for the
+    # same path is not what lands on the observation.
+    declared_ttl = _OBSERVATION_MAX_AGE_SECONDS[("receiver", "operator_controls", name)]
 
     observed_at = 500.0
     with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=observed_at):

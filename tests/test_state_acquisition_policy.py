@@ -9,6 +9,11 @@ from typing import Any, cast
 
 import pytest
 
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    StateFreshnessService,
+)
+from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     AdaptiveDecayPolicy,
@@ -18,6 +23,7 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_store import FreshnessState, StateStore
 from rigplane.profiles import get_radio_profile
 from rigplane.rig_loader import RigLoadError, discover_rigs, load_rig
 from _acquisition_query_helpers import (
@@ -1011,3 +1017,147 @@ def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
     assert acquisition.capability_for(sub_shift).can_poll is True
     assert acquisition.policy_for(sub_shift).cadence_seconds == 30.0
     assert acquisition.policy_for(sub_shift).freshness_ttl_seconds == 120.0
+
+
+def test_non_polling_field_policies_declare_no_freshness_expiry() -> None:
+    """A field nothing re-reads on a cadence must not expire on its own.
+
+    ``AcquisitionScheduler._poll_cadence_groups`` skips every capability
+    whose ``can_poll`` is false, so no cadence read ever refreshes such a
+    field; a finite ``freshness_ttl_seconds`` on one can therefore only flip
+    it to ``STALE`` once and leave it there on a healthy, idle link. The
+    profile spells "no expiry" as ``freshness_ttl_seconds = "never"``, which
+    the loader resolves to ``None`` — the value
+    ``StateStore.mark_stale_due`` skips instead of ageing.
+    """
+
+    failures: list[str] = []
+    for model, rig in discover_rigs(RIGS_DIR).items():
+        acquisition = rig.to_profile().state_acquisition
+        if acquisition is None:
+            continue
+        for path, policy in sorted(
+            acquisition.field_policies.items(), key=lambda item: str(item[0])
+        ):
+            if acquisition.capability_for(path).can_poll:
+                continue
+            if policy.freshness_ttl_seconds is None:
+                continue
+            failures.append(
+                f"{model}: {path} freshness_ttl_seconds={policy.freshness_ttl_seconds}"
+            )
+
+    assert not failures, (
+        "field_policies entry on a non-polling capability with a finite "
+        f"freshness_ttl_seconds (nothing will ever refresh it): {failures}"
+    )
+
+
+def test_ic7300_on_demand_field_stays_fresh_while_polled_field_expires() -> None:
+    """Only the cadence-polled field ages out; the on-demand one does not.
+
+    Drives the profile-policy chain end to end for the IC-7300 profile:
+    ``ProviderObservationAdapter`` reads each path's ``max_age`` from its
+    ``field_policies`` entry, ``StateStore`` keeps it on the entry, and
+    ``StateFreshnessService.tick`` is what ages it. ``filter_width`` rides a
+    ``polling=False`` capability, so no cadence read refreshes it;
+    ``freq_hz`` is cadence-polled and must still expire, so the decay
+    mechanism is not disabled wholesale.
+    """
+
+    profile = get_radio_profile("IC-7300")
+    acquisition = profile.state_acquisition
+    assert acquisition is not None
+    on_demand = FieldPath.active("main", "freq_mode", "filter_width")
+    polled = FieldPath.active("main", "freq_mode", "freq_hz")
+    assert acquisition.capability_for(on_demand).can_poll is False
+    assert acquisition.capability_for(polled).can_poll is True
+    polled_ttl = acquisition.policy_for(polled).freshness_ttl_seconds
+    assert polled_ttl is not None and polled_ttl < 60.0
+
+    observed_at = 1_000.0
+    adapter = ProviderObservationAdapter(
+        profile=acquisition,
+        source="poll_response",
+        clock=lambda: observed_at,
+    )
+    store = StateStore()
+    store.apply(adapter.observation(on_demand, 2_400))
+    store.apply(adapter.observation(polled, 14_074_000))
+    service = StateFreshnessService(store=store)
+
+    delta = service.tick(now=observed_at + 60.0)
+
+    stale_paths = {
+        request.path
+        for request in delta.reconciliation_requests
+        if request.reason == "stale"
+    }
+    assert polled in stale_paths
+    assert on_demand not in stale_paths
+    freshness = {field.path: field.freshness for field in store.snapshot().fields}
+    assert freshness[polled] is FreshnessState.STALE
+    assert freshness[on_demand] is FreshnessState.FRESH
+
+
+def test_loader_parses_never_as_absent_freshness_ttl(tmp_path: Path) -> None:
+    """``"never"`` is the TOML spelling of a ``None`` seconds value.
+
+    TOML has no null literal, and an omitted key inherits the profile
+    default rather than clearing it, so a policy that must carry no expiry
+    needs an explicit token.
+    """
+
+    toml = _minimal_state_acquisition_toml(
+        """
+        [state_acquisition]
+        provider = "icom_civ"
+        default_cadence_seconds = 2.0
+        default_freshness_ttl_seconds = 8.0
+
+        [state_acquisition.capabilities]
+        polling_only = ["global.meters.power"]
+        command_response_observable = ["global.tx_state.vox_on"]
+
+        [state_acquisition.field_policies."global.tx_state.vox_on"]
+        cadence_seconds = 25.0
+        freshness_ttl_seconds = "never"
+        reconciliation_priority = "command_response"
+        """
+    )
+
+    acquisition = load_rig(_write_toml(tmp_path, toml)).to_profile().state_acquisition
+    vox_on = FieldPath.global_("tx_state", "vox_on")
+    power = FieldPath.global_("meters", "power")
+
+    assert acquisition is not None
+    assert acquisition.policy_for(vox_on).freshness_ttl_seconds is None
+    assert acquisition.policy_for(vox_on).cadence_seconds == 25.0
+    # A path with no override still inherits the numeric profile default.
+    assert acquisition.policy_for(power).freshness_ttl_seconds == 8.0
+
+
+def test_ic7300_on_demand_field_primes_with_its_cadence_as_max_age() -> None:
+    """A no-expiry entry's ``cadence_seconds`` becomes the prime's max_age.
+
+    ``AcquisitionScheduler.prime_unobserved`` falls back to
+    ``policy.cadence_seconds`` for the prime read's ``max_age`` whenever
+    ``freshness_ttl_seconds`` is ``None``, so ``cadence_seconds`` is
+    load-bearing on these entries even though nothing polls them.
+    """
+
+    acquisition = get_radio_profile("IC-7300").state_acquisition
+    assert acquisition is not None
+    on_demand = FieldPath.active("main", "freq_mode", "filter_width")
+    assert acquisition.policy_for(on_demand).freshness_ttl_seconds is None
+
+    scheduler = AcquisitionScheduler(profile=acquisition)
+    request_by_path: dict[FieldPath, Any] = {}
+    for _ in range(len(acquisition.field_policies)):
+        for request in scheduler.prime_unobserved(observed_paths=()):
+            for path in request.paths:
+                request_by_path[path] = request
+
+    assert request_by_path[on_demand].max_age == (
+        acquisition.policy_for(on_demand).cadence_seconds
+    )

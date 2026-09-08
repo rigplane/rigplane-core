@@ -1406,6 +1406,13 @@ def _strict_policy_float(
     return float(value)
 
 
+#: TOML has no null literal, and an omitted acquisition-policy key inherits
+#: the profile default rather than clearing it, so a seconds-valued key
+#: spells "no value here" with this token. It resolves to ``None``, which
+#: ``StateStore.mark_stale_due`` skips instead of ageing.
+_POLICY_SECONDS_NEVER = "never"
+
+
 def _policy_seconds(
     filename: str,
     prefix: str,
@@ -1423,6 +1430,8 @@ def _policy_seconds(
     else:
         value = fallback
     key_label = label if label is not None else key
+    if value == _POLICY_SECONDS_NEVER:
+        return None
     return (
         None
         if value is None
