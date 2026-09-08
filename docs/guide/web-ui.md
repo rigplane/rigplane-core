@@ -525,10 +525,13 @@ direction is documented in the [v3 architecture decision](../plans/2026-07-25-ui
 
 ### Backend CI-V poll cadence (state freshness)
 
-Poll interval is backend-specific:
-
-- LAN backends: `25ms` fast cycle (`_FAST_INTERVAL`)
-- serial backends: `100ms` fast cycle (`_FAST_INTERVAL_SERIAL`)
+`_FAST_INTERVAL` (LAN) and `_FAST_INTERVAL_SERIAL` (serial) in
+`web/radio_poller.py: RadioPoller` are how often the poller loop wakes, not
+how often any field is read: a pass dispatches whatever the acquisition
+scheduler already has queued. What puts a request there is the field's own
+`cadence_seconds` in `rigs/*.toml` (`[state_acquisition.field_policies]`,
+falling back to that profile's `default_cadence_seconds`), emitted by
+`core/acquisition_scheduler.py: StateFreshnessService.tick`.
 
 ### State polling and conditional requests
 

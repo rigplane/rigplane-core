@@ -2203,12 +2203,15 @@ def test_state_freshness_service_ic7300_non_polling_populate_completes_within_25
     # MOR-2234 adds tone_freq/tsql_freq, taking the count from 22 to 24.
     # MOR-2425 adds filter_num/data_mode (R36b: previously declared
     # command_response_observable with no field_policies entry, so they could
-    # never be primed), taking the count from 24 to 26 -- measured by running
-    # this test's own simulation below, which still lands its slowest field at
-    # 25.0s (see the assertion at the end of this test).
+    # never be primed), taking the count from 24 to 26, and then moves the ten
+    # panel knobs onto a 5.0s cadence (R46), which drops them out of this
+    # non-polling set and takes the count from 26 to 16. ``nb_level`` is one
+    # of the ten: it keeps its field_policies entry but is now cadence-polled,
+    # so it is asserted for membership in field_policies only.
     assert apf_path not in acquisition.field_policies
     assert nb_level_path in acquisition.field_policies
-    assert len(non_polling_paths) == 26
+    assert nb_level_path not in non_polling_paths
+    assert len(non_polling_paths) == 16
 
     clock = FreshnessClock(start=2000.0)
     store = StateStore(freshness_clock=clock)
@@ -2934,14 +2937,14 @@ def test_ic7300_real_profile_filter_num_and_data_mode_have_capability() -> None:
     (``AcquisitionScheduler._availability_for``) -- so the post-write
     readback table entries alone are not sufficient, the profile must also
     declare these two fields. Both are command_response_observable-only
-    (event-driven, like ``filter_width``), not ``polling_only``.
+    (event-driven), not ``polling_only``.
 
     A command_response_observable field with no ``field_policies`` entry is
     never primed by ``AcquisitionScheduler.prime_unobserved`` (it only
-    iterates ``field_policies``). Both fields now carry the same event-driven ``field_policies`` shape as
-    ``filter_width`` -- not ``polling_only``, so ``due_requests`` still never
-    touches them and the standing serial budget accounted for at the bottom
-    of ``rigs/ic7300.toml`` is unaffected.
+    iterates ``field_policies``). Both fields carry the on-demand
+    ``field_policies`` shape ``vox_on`` carries -- not ``polling_only``, so
+    ``due_requests`` still never touches them and the standing serial budget
+    accounted for at the bottom of ``rigs/ic7300.toml`` is unaffected.
     """
     profile = get_radio_profile("IC-7300")
     acquisition = profile.state_acquisition
@@ -2949,7 +2952,7 @@ def test_ic7300_real_profile_filter_num_and_data_mode_have_capability() -> None:
 
     filter_num = FieldPath.active("main", "freq_mode", "filter_num")
     data_mode = FieldPath.active("main", "freq_mode", "data_mode")
-    filter_width = FieldPath.active("main", "freq_mode", "filter_width")
+    on_demand = FieldPath.global_("tx_state", "vox_on")
 
     filter_cap = acquisition.capability_for(filter_num)
     data_mode_cap = acquisition.capability_for(data_mode)
@@ -2958,16 +2961,15 @@ def test_ic7300_real_profile_filter_num_and_data_mode_have_capability() -> None:
     assert data_mode_cap.command_response_observable is True
     assert data_mode_cap.polling is False
 
-    # Event-driven only, primable, same field_policies shape as filter_width.
-    filter_width_policy = acquisition.policy_for(filter_width)
+    # Event-driven only, primable, same field_policies shape as vox_on.
+    on_demand_policy = acquisition.policy_for(on_demand)
     for path in (filter_num, data_mode):
         assert path in acquisition.field_policies
         policy = acquisition.policy_for(path)
-        assert policy.cadence_seconds == filter_width_policy.cadence_seconds
-        assert policy.freshness_ttl_seconds == filter_width_policy.freshness_ttl_seconds
+        assert policy.cadence_seconds == on_demand_policy.cadence_seconds
+        assert policy.freshness_ttl_seconds == on_demand_policy.freshness_ttl_seconds
         assert (
-            policy.reconciliation_priority
-            == filter_width_policy.reconciliation_priority
+            policy.reconciliation_priority == on_demand_policy.reconciliation_priority
         )
         assert policy.adaptive_decay.enabled is False
 

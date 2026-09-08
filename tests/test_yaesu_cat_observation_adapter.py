@@ -609,13 +609,13 @@ async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
     assert {item.source.transport for item in observations} == {"serial"}
     assert all(item.timestamp_monotonic == 123.456 for item in observations)
     # freq/mode/ptt use the default 8.0s freshness TTL; filter_width carries
-    # its own slow-control TTL (120.0s) from the per-field policy, even though
+    # its own slow-control TTL (2.0s) from the per-field policy, even though
     # it shares the freq/mode lane (MOR-445).
     by_path = {str(item.path): item for item in observations}
     assert by_path["global.tx_state.ptt"].max_age == 8.0
     assert by_path["global.tx_state.tx_target"].max_age == 8.0
     assert by_path["receiver.main.active.freq_mode.freq_hz"].max_age == 8.0
-    assert by_path["receiver.main.active.freq_mode.filter_width"].max_age == 120.0
+    assert by_path["receiver.main.active.freq_mode.filter_width"].max_age == 2.0
     assert all(item.source.capability_id == str(item.path) for item in observations)
 
 
@@ -853,7 +853,7 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
         ("global.slow_state.cw_spot", True),
     ]
     assert all(item.source.source == "yaesu_poll_response" for item in observations)
-    assert all(item.max_age == 120.0 for item in observations)
+    assert all(item.max_age == 2.0 for item in observations)
     assert radio.read_vfo_select.await_count == 1
     radio.get_vfo_select.assert_not_awaited()
     assert radio.read_cw_spot.await_count == 1
@@ -1133,7 +1133,7 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
         ("global.operator_controls.break_in_delay", 300),
     ]
     assert all(item.source.source == "yaesu_poll_response" for item in observations)
-    assert all(item.max_age == 120.0 for item in observations)
+    assert all(item.max_age == 2.0 for item in observations)
     # Power emits the watt SETPOINT (read_power), never the RM5 meter.
     radio.read_power.assert_awaited_once()
     radio.read_mic_gain.assert_awaited_once()

@@ -442,6 +442,41 @@ async def test_start_routes_observation_pollable_radio_through_observation_store
 
 
 @pytest.mark.asyncio
+async def test_observation_pollable_web_path_builds_no_radio_poller() -> None:
+    """An ObservationPollable radio's web path carries no AcquisitionDrain.
+
+    ``RadioPoller`` is the only web-side builder of an ``AcquisitionDrain``,
+    and ``start_web_server`` builds it only on its trailing Icom CI-V branch.
+    An ``ObservationPollable`` radio (FTX-1 via ``YaesuCatRadio``) takes the
+    observation-poller branch instead, so the ``AcquisitionScheduler`` is
+    never drained for it and the ``cadence_seconds`` values in
+    ``rigs/ftx1.toml`` cannot reach the CAT link -- they drive
+    ``StateStore.mark_stale_due`` bookkeeping and nothing else.
+    """
+    radio = _ObservationStatePollableRadio()
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0, discovery=False))
+
+    with (
+        patch(
+            "rigplane.web.web_startup.asyncio.start_server",
+            new=AsyncMock(return_value=_FakeAsyncServer()),
+        ),
+        patch(
+            "rigplane.web.web_startup.RadioPoller",
+            side_effect=AssertionError(
+                "an ObservationPollable radio must not get a RadioPoller"
+            ),
+        ),
+    ):
+        await srv.start()
+        await asyncio.sleep(0)
+        await srv.stop()
+
+    assert srv._radio_poller is None  # noqa: SLF001
+    assert radio.observation_poller is not None
+
+
+@pytest.mark.asyncio
 async def test_web_fallback_observation_store_advances_before_attach_and_detach() -> (
     None
 ):

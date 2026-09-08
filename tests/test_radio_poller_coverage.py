@@ -6583,13 +6583,15 @@ def test_scan_facts_seed_labelled_command_response_not_poll_response() -> None:
 # ---------------------------------------------------------------------------
 
 #: ``(command, sub, data)`` of every frame one IC-7300 drain cycle emits.
-#: MOR-2425: re-recorded after ic7300.toml gained field_policies entries for
-#: filter_num/data_mode (R36b, so prime_unobserved() can reach them) --
-#: filter_num now falls inside this cycle's 5-field prime burst (0x26/None,
-#: the get_selected_mode selector read) where filter_shape's 0x16/0x56 read
-#: used to, since filter_num sits earlier in field_policies declaration
-#: order. filter_shape and data_mode still populate, just on a later burst
-#: this one-tick test doesn't drive. No frame count changed (still 42).
+#: MOR-2425: re-recorded after the ten panel knobs moved from
+#: command_response-only membership onto a 5.0s cadence (owner ruling,
+#: 2026-09-07). 42 -> 52 frames, one cadence read per newly-polled field:
+#: 0x1A 03 filter_width, 0x14 07/08 PBT inner/outer, 0x14 06 NR level,
+#: 0x14 12 NB level, 0x14 0D notch position, 0x16 57 notch width,
+#: 0x16 41/48 auto/manual notch, 0x21 00 RIT offset. The prime burst is
+#: still 5 paths (_PRIME_UNOBSERVED_BURST_LIMIT); filter_width left the
+#: never-observed set it is drawn from, so data_mode (0x1A 06) takes its
+#: slot in this one-tick cycle.
 _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x1C, 0x00, b""),
     (0x25, None, b"\x00"),
@@ -6597,19 +6599,29 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x15, 0x02, b""),
     (0x14, 0x02, b""),
     (0x14, 0x03, b""),
+    (0x0F, None, b""),
     (0x14, 0x01, b""),
     (0x16, 0x12, b""),
     (0x16, 0x22, b""),
     (0x16, 0x40, b""),
     (0x25, None, b"\x01"),
     (0x26, None, b"\x01"),
-    (0x0F, None, b""),
     (0x11, None, b""),
     (0x16, 0x02, b""),
     (0x14, 0x0E, b""),
     (0x14, 0x0A, b""),
     (0x1C, 0x01, b""),
     (0x16, 0x44, b""),
+    (0x1A, 0x03, b""),
+    (0x16, 0x57, b""),
+    (0x14, 0x12, b""),
+    (0x14, 0x0D, b""),
+    (0x14, 0x06, b""),
+    (0x14, 0x07, b""),
+    (0x14, 0x08, b""),
+    (0x16, 0x41, b""),
+    (0x16, 0x48, b""),
+    (0x21, 0x00, b""),
     (0x14, 0x17, b""),
     (0x14, 0x0B, b""),
     (0x14, 0x15, b""),
@@ -6617,8 +6629,8 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x16, 0x45, b""),
     (0x16, 0x46, b""),
     (0x1A, 0x05, b"\x01\x91"),
+    (0x1A, 0x06, b""),
     (0x26, None, b"\x00"),
-    (0x1A, 0x03, b""),
     (0x27, 0x1C, b""),
     (0x27, 0x13, b""),
     (0x27, 0x1B, b""),
