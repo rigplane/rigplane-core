@@ -778,10 +778,11 @@
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .dsp-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .rf-front-end-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-  /* The `.filter-finite-*` shape, not the siblings' wrap row: each RX-audio
-     handle is a full-width `.rx-audio-row` whose buttons the desktop-v2 skin
-     stretches with `flex: 1 1 0`, which needs the row to span the panel.
-     Box-less seats keep a structurally absent handle from spending a gap.
+  /* The `.filter-finite-*` shape, not the siblings' wrap row: a wrap row let
+     each seat shrink to its content, and the desktop-v2 skin stretches
+     `.rx-audio-row` buttons with `flex: 1 1 0`, which needs the row to span
+     the panel. Box-less seats keep a structurally absent handle from
+     spending a gap.
      0.25rem is the gap `RxAudioSurface.svelte` puts between these same rows
      when it groups them itself. */
   .rx-audio-finite-grid { display: flex; flex-direction: column; gap: 0.25rem; }
