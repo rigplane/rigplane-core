@@ -638,3 +638,129 @@ async def test_web_ui_banner_prints_only_after_the_server_reports_started(
     assert rc == 0
     assert "Web UI:" not in before_start[0]
     assert "Web UI:" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# A declared field the backend gives up on
+# ---------------------------------------------------------------------------
+
+SUB_S_METER = FieldPath.receiver("sub", "meters", "s_meter")
+
+
+def _dual_meter_profile() -> RadioAcquisitionProfile:
+    """Two declared, non-``tx_only`` meter paths — the FTX-1 pair's shape."""
+
+    return RadioAcquisitionProfile(
+        provider="yaesu_cat",
+        capabilities=(
+            FieldCapability(path=S_METER, polling=True, stream_like=True),
+            FieldCapability(path=SUB_S_METER, polling=True, stream_like=True),
+        ),
+        field_policies={
+            S_METER: AcquisitionPolicy(cadence_seconds=0.2, freshness_ttl_seconds=0.8),
+            SUB_S_METER: AcquisitionPolicy(
+                cadence_seconds=0.2, freshness_ttl_seconds=0.8
+            ),
+        },
+    )
+
+
+class _YaesuAdapterPoller:
+    """Drives the real Yaesu adapter on a loop, like ``YaesuCatPoller``."""
+
+    def __init__(
+        self, callback: Callable[[Sequence[Observation]], None], radio: object
+    ):
+        self._callback = callback
+        self._radio = radio
+
+    async def start(self) -> None:
+        from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
+
+        while True:
+            adapter = YaesuObservationAdapter(
+                self._radio,  # type: ignore[arg-type]
+                profile=self._radio._acquisition_scheduler._profile,  # type: ignore[attr-defined]
+            )
+            self._callback(await adapter.poll_rx_meters())
+            await asyncio.sleep(0.001)
+
+    async def stop(self) -> None:
+        return None
+
+    def bind_provider_generation(self, *, capture: object, advance: object) -> None:
+        return None
+
+
+class _MalformedSubMeterRadio:
+    """Answers the MAIN meter and returns an unparseable SUB meter frame."""
+
+    backend_id = "yaesu_cat"
+    model = "FAKE-OBS"
+    capabilities = {"meters", "dual_rx"}
+    connected = control_connected = radio_ready = True
+
+    def __init__(self) -> None:
+        self.radio_state = RadioState()
+        self._state_store = StateStore()
+        self._acquisition_scheduler = AcquisitionScheduler(
+            profile=_dual_meter_profile()
+        )
+        self._poll_warned_fields: set[str] = set()
+        self._INITIAL_STATE_GAP_SERIAL = 0.005
+
+    @property
+    def state_store(self) -> StateStore:
+        return self._state_store
+
+    def supports_command(self, _command: str) -> bool:
+        return False
+
+    async def read_s_meter(self, receiver: int = 0) -> int:
+        from rigplane.backends.yaesu_cat.parser import CatParseError
+
+        if receiver == 0:
+            return 120
+        raise CatParseError(
+            "SM1{raw:03d};", "SM0000;", "Response does not match pattern"
+        )
+
+    def create_observation_poller(
+        self, *, callback: Callable[[Sequence[Observation]], None], **_kwargs: object
+    ) -> object:
+        return _YaesuAdapterPoller(callback, self)
+
+
+@pytest.mark.asyncio
+async def test_gate_completes_when_the_backend_abandons_a_declared_path(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The bind happens even though one declared field never answers usably.
+
+    ``SUB_S_METER`` is polled every cycle and every answer is unparseable, so
+    no observation for it can ever reach the store. Without the backend
+    telling the scheduler to release it, this gate never returns.
+    """
+    radio = _MalformedSubMeterRadio()
+    server = WebServer(radio, _gated_config())
+    scheduler = radio._acquisition_scheduler
+    assert set(scheduler.unobserved_startup_paths(())) == {S_METER, SUB_S_METER}
+    binds: list[str] = []
+
+    async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
+        binds.append("bind")
+        return _FakeAsyncServer()
+
+    with caplog.at_level(logging.WARNING, logger="rigplane.core.acquisition_scheduler"):
+        with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
+            await asyncio.wait_for(server.start(), timeout=10.0)
+            await server.stop()
+
+    assert binds == ["bind"]
+    assert scheduler.unobserved_startup_paths(_observed_paths(server, scheduler)) == ()
+    abandoned = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING and str(SUB_S_METER) in record.getMessage()
+    ]
+    assert len(abandoned) == 1

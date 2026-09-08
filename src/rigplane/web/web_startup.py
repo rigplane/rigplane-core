@@ -163,9 +163,7 @@ async def _await_initial_state_acquisition(
 ) -> None:
     """Block until every declared, non-``tx_only`` field has been observed.
 
-    The wait is indefinite by design: there is no serve-anyway timeout, and a
-    field the radio answers with NG stays outstanding because the store has
-    no negative state.
+    The wait is indefinite by design: there is no serve-anyway timeout.
 
     ``sweep`` re-primes the scheduler while the gate is open. It is set only
     on the branch that builds a :class:`RadioPoller`, because that is the

@@ -10,7 +10,9 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
+from rigplane.core.acquisition_scheduler import AcquisitionScheduler
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH, ObservedPtt, TxStateReading
 from rigplane.core.tx_target import KnownTxTarget, TxReceiver, UnknownTxTarget
 from rigplane.core.types import BreakInMode
@@ -2242,3 +2244,61 @@ async def test_sub_s_meter_parse_warning_logged_once_then_suppressed(
 
 def _raise(exc: Exception) -> object:
     raise exc
+
+
+class _AbandonRecordingScheduler(AcquisitionScheduler):
+    """Real scheduler that records every ``abandon_startup_path`` call."""
+
+    def __init__(self, profile: RadioAcquisitionProfile) -> None:
+        super().__init__(profile=profile)
+        self.abandoned: list[tuple[FieldPath, str]] = []
+
+    def abandon_startup_path(self, path: FieldPath, *, reason: str) -> None:
+        self.abandoned.append((path, reason))
+        super().abandon_startup_path(path, reason=reason)
+
+
+@pytest.mark.asyncio
+async def test_first_sub_s_meter_skip_releases_the_path_from_the_startup_gate() -> None:
+    """The skipped field must not leave the startup gate waiting for it.
+
+    Same frame as ``test_sub_s_meter_parse_warning_logged_once_then_suppressed``:
+    the FTX-1 answers the sub ``SM1;`` query in main form every cycle, so no
+    ``receiver.sub.meters.s_meter`` observation ever arrives. The first skip
+    tells the scheduler; the repeats that demote to DEBUG do not tell it again.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = _AbandonRecordingScheduler(profile)
+    sub_path = FieldPath.receiver("sub", "meters", "s_meter")
+    assert sub_path in scheduler.unobserved_startup_paths(())
+
+    radio = _make_radio()
+    radio._poll_warned_fields = set()
+    radio._acquisition_scheduler = scheduler
+    radio.read_s_meter = AsyncMock(
+        side_effect=lambda receiver=0: (
+            120
+            if receiver == 0
+            else _raise(
+                CatParseError(
+                    "SM1{raw:03d};",
+                    "SM0000;",
+                    "Response does not match pattern",
+                )
+            )
+        )
+    )
+
+    for _ in range(3):
+        await YaesuObservationAdapter(
+            radio,
+            profile=profile,
+            clock=_clock,
+        ).poll_rx_meters()
+
+    assert [path for path, _ in scheduler.abandoned] == [sub_path]
+    assert sub_path not in scheduler.unobserved_startup_paths(())
+    # The MAIN meter, whose answer parses, is not abandoned.
+    assert FieldPath.receiver(
+        "main", "meters", "s_meter"
+    ) in scheduler.unobserved_startup_paths(())
