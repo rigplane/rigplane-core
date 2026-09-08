@@ -3103,10 +3103,12 @@ def test_ic7300_polled_pbt_stays_fresh_across_its_own_cadence(
     )
 
 
-def test_ptt_observation_max_age_comes_from_the_ic7300_profile(
+def test_ptt_observation_max_age_matches_the_ic7300_profile_declaration(
     radio: IcomRadio,
 ) -> None:
-    """``ptt`` is 1.0 s in both sources; pin which one now answers.
+    """``ptt`` is 1.0 s in both the profile and the table, so this test cannot
+    tell which source answered; ``test_ic7610_pbt_takes_the_profile_ttl_including_the_sub_receiver``
+    is what pins the source.
 
     ``rigs/ic7300.toml`` declares 1.0 s against a 0.3 s cadence, so the
     observed-PTT window still clears its own poll interval by more than 2x.
