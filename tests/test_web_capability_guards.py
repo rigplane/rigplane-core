@@ -745,3 +745,75 @@ class TestCommandGuards:
         # Should not raise
         handler._ensure_capability("dual_rx", "set_dual_watch")
         handler._ensure_capability("dual_rx", "set_dual_watch")
+
+
+# ── Profile-declared second receiver (owner ruling, 2026-09-08) ─
+
+
+class TestProfileDeclaredSecondReceiver:
+    """A profile-declared ``dual_rx`` reaches the served surface.
+
+    Owner ruling, 2026-09-08: structural existence of the second receiver
+    follows the rig profile, not the swap-and-equalize protocol. The swap
+    and equalize *actions* keep their own gates, so a backend that declares
+    ``dual_rx`` without implementing the MAIN/SUB primitives serves the
+    receiver and refuses the actions.
+
+    The radio here is a real :class:`YaesuCatRadio` on the bundled ``ftx1``
+    profile — a ``MagicMock`` would satisfy every Protocol check trivially
+    and could not distinguish the two behaviours.
+    """
+
+    def test_runtime_capabilities_keeps_dual_rx_without_the_protocol(self) -> None:
+        from rigplane.radio_protocol import DualReceiverCapable
+        from rigplane.web.runtime_helpers import runtime_capabilities
+
+        radio = _yaesu()
+        assert "dual_rx" in radio.capabilities
+        assert not isinstance(radio, DualReceiverCapable)
+        assert "dual_rx" in runtime_capabilities(radio)
+
+    @pytest.mark.asyncio
+    async def test_info_reports_the_second_receiver(self) -> None:
+        radio = _yaesu()
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+        await srv._serve_info(writer)  # noqa: SLF001
+        data = _parse_json_body(writer)
+        assert data["capabilities"]["hasDualReceiver"] is True
+        assert data["capabilities"]["maxReceivers"] == 2
+        assert "dual_rx" in data["capabilities"]["tags"]
+
+    @pytest.mark.asyncio
+    async def test_capabilities_endpoint_reports_the_second_receiver(self) -> None:
+        radio = _yaesu()
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+        data = _parse_json_body(writer)
+        assert "dual_rx" in data["capabilities"]
+        assert data["receivers"] == 2
+
+    def test_swap_and_equalize_tags_absent_without_the_primitives(self) -> None:
+        from rigplane.web.runtime_helpers import projected_vfo_capability_tags
+
+        radio = _yaesu()
+        assert not hasattr(radio, "swap_main_sub")
+        assert not hasattr(radio, "equalize_main_sub")
+        assert projected_vfo_capability_tags(radio, None) == frozenset()
+
+    @pytest.mark.parametrize("name", ["vfo_swap", "vfo_equalize"])
+    def test_swap_and_equalize_commands_are_refused(self, name: str) -> None:
+        from rigplane.web.handlers import ControlHandler
+
+        radio = _yaesu()
+        handler = ControlHandler.__new__(ControlHandler)
+        handler._radio = radio
+        queue: list[object] = []
+
+        expected = f"command '{name}' is not supported by active profile"
+        with pytest.raises(ValueError, match=expected):
+            handler._enqueue_rc_frequency(  # noqa: SLF001
+                name, {}, SimpleNamespace(put=queue.append), radio
+            )
+        assert queue == []

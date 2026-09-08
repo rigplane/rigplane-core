@@ -577,8 +577,10 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
             # frontend — drop the tag so the UI doesn't render dead
             # controls.
             caps.discard("audio")
-        if "dual_rx" in caps and not isinstance(radio, DualReceiverCapable):
-            caps.discard("dual_rx")
+        # ``dual_rx`` is deliberately not gated on ``DualReceiverCapable``:
+        # owner ruling, 2026-09-08. Structural existence of the second
+        # receiver follows the rig profile; the swap and equalize actions
+        # are gated separately, by ``projected_vfo_capability_tags``.
         if "repeater_shift" in caps and not isinstance(radio, RepeaterShiftCapable):
             caps.discard("repeater_shift")
         return caps

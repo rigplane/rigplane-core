@@ -741,7 +741,7 @@ class ControlHandler:
             return
         caps = self._capabilities()
         # Also check profile capabilities (runtime_capabilities may strip
-        # protocol-gated tags like dual_rx even when the profile supports them).
+        # protocol-gated tags even when the profile supports them).
         raw_profile = getattr(self._radio, "profile", None)
         if isinstance(raw_profile, RadioProfile):
             if capability in raw_profile.capabilities:

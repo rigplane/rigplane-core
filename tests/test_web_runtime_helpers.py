@@ -552,8 +552,11 @@ def test_runtime_capabilities_fallback_recognises_usb_audio_only() -> None:
 def test_runtime_capabilities_filters_incompatible_tags() -> None:
     radio = _FakeRadio(caps={"scope", "audio", "dual_rx", "repeater_shift", "tx"})
     caps = runtime_capabilities(radio)
-    # No Protocols implemented -> scope/audio/dual_rx/repeater_shift dropped, tx preserved
-    assert caps == {"tx"}
+    # No Protocols implemented -> scope/audio/repeater_shift dropped; tx and
+    # dual_rx preserved. ``dual_rx`` is not gated on ``DualReceiverCapable``
+    # (owner ruling, 2026-09-08): the second receiver's structural existence
+    # follows the rig profile, not the swap-and-equalize protocol.
+    assert caps == {"tx", "dual_rx"}
 
 
 def test_runtime_capabilities_drops_repeater_shift_without_both_methods() -> None:

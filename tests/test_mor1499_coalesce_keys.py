@@ -175,9 +175,6 @@ async def test_set_filter_same_target_still_coalesces() -> None:
 async def test_set_nb_cross_receiver_both_reach_radio() -> None:
     ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
-    # Canonical dual-RX VFO methods (DualReceiverCapable) so the "dual_rx"
-    # capability tag isn't stripped by runtime_capabilities()'s isinstance
-    # check, and receiver=1 (SUB) passes _ensure_receiver_supported.
     radio = SimpleNamespace(
         connected=True,
         capabilities={"nb", "dual_rx"},
