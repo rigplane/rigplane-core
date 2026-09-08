@@ -2302,3 +2302,402 @@ async def test_first_sub_s_meter_skip_releases_the_path_from_the_startup_gate() 
     assert FieldPath.receiver(
         "main", "meters", "s_meter"
     ) in scheduler.unobserved_startup_paths(())
+
+
+def _gate_radio() -> MagicMock:
+    """``_make_radio`` plus the ``repeater_shift`` capability and its read."""
+    radio = _make_radio()
+    radio._poll_warned_fields = set()
+    radio.capabilities = radio.capabilities | {"repeater_shift"}
+    radio.read_repeater_shift = AsyncMock(side_effect=lambda receiver=0: receiver)
+    return radio
+
+
+def _break_read(radio: MagicMock, method: str, receiver: int | None) -> None:
+    """Make ``method`` answer with an unparseable frame.
+
+    ``receiver`` selects which call fails: ``None`` fails every call, an int
+    fails only the call whose first positional argument equals it, so a read
+    shared by MAIN and SUB can be broken on one side alone.
+    """
+    original = getattr(radio, method)
+
+    async def _answer(*args: object, **kwargs: object) -> object:
+        if receiver is None or (args and args[0] == receiver):
+            raise CatParseError("XX{p};", "??;", "Response does not match pattern")
+        return await original(*args, **kwargs)
+
+    setattr(radio, method, _answer)
+
+
+# (id, radio method, failing receiver, poll method, declared paths abandoned)
+_ABANDON_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
+    (
+        "main.freq",
+        "read_freq",
+        0,
+        "poll_medium",
+        ("receiver.main.active.freq_mode.freq_hz",),
+    ),
+    (
+        "main.mode",
+        "read_mode",
+        0,
+        "poll_medium",
+        ("receiver.main.active.freq_mode.mode",),
+    ),
+    (
+        "sub.freq",
+        "read_freq",
+        1,
+        "poll_medium",
+        ("receiver.sub.active.freq_mode.freq_hz",),
+    ),
+    (
+        "sub.mode",
+        "read_mode",
+        1,
+        "poll_medium",
+        ("receiver.sub.active.freq_mode.mode",),
+    ),
+    ("ptt", "read_transmit_state", None, "poll_medium", ("global.tx_state.ptt",)),
+    (
+        "main.filter_width",
+        "read_filter_width",
+        0,
+        "poll_medium",
+        ("receiver.main.active.freq_mode.filter_width",),
+    ),
+    (
+        "main.s_meter",
+        "read_s_meter",
+        0,
+        "poll_rx_meters",
+        ("receiver.main.meters.s_meter",),
+    ),
+    (
+        "sub.s_meter",
+        "read_s_meter",
+        1,
+        "poll_rx_meters",
+        ("receiver.sub.meters.s_meter",),
+    ),
+    ("alc", "read_alc_meter", None, "poll_tx_meters", ("global.meters.alc",)),
+    ("power", "read_power_meter", None, "poll_tx_meters", ("global.meters.power",)),
+    ("swr", "read_swr_meter", None, "poll_tx_meters", ("global.meters.swr",)),
+    ("comp", "read_comp_meter", None, "poll_tx_meters", ("global.meters.comp",)),
+    (
+        "main.af_level",
+        "read_af_level",
+        0,
+        "poll_slow_controls",
+        ("receiver.main.operator_controls.af_level",),
+    ),
+    (
+        "main.rf_gain",
+        "read_rf_gain",
+        0,
+        "poll_slow_controls",
+        ("receiver.main.operator_controls.rf_gain",),
+    ),
+    (
+        "main.squelch",
+        "read_squelch",
+        0,
+        "poll_slow_controls",
+        ("receiver.main.operator_controls.squelch",),
+    ),
+    (
+        "sub.af_level",
+        "read_af_level",
+        1,
+        "poll_slow_controls",
+        ("receiver.sub.operator_controls.af_level",),
+    ),
+    (
+        "sub.rf_gain",
+        "read_rf_gain",
+        1,
+        "poll_slow_controls",
+        ("receiver.sub.operator_controls.rf_gain",),
+    ),
+    (
+        "sub.squelch",
+        "read_squelch",
+        1,
+        "poll_slow_controls",
+        ("receiver.sub.operator_controls.squelch",),
+    ),
+    (
+        "main.att",
+        "read_attenuator",
+        0,
+        "poll_slow_controls",
+        ("receiver.main.operator_controls.att",),
+    ),
+    (
+        "main.preamp",
+        "read_preamp",
+        0,
+        "poll_slow_controls",
+        ("receiver.main.operator_controls.preamp",),
+    ),
+    (
+        "main.agc",
+        "read_agc",
+        0,
+        "poll_slow_controls",
+        ("receiver.main.operator_controls.agc",),
+    ),
+    (
+        "main.if_shift",
+        "read_if_shift",
+        0,
+        "poll_slow_controls",
+        ("receiver.main.operator_controls.if_shift",),
+    ),
+    (
+        "main.narrow",
+        "read_narrow",
+        0,
+        "poll_slow_controls",
+        ("receiver.main.operator_toggles.narrow",),
+    ),
+    (
+        "main.nb_level",
+        "read_nb_level",
+        0,
+        "poll_slow_controls",
+        (
+            "receiver.main.operator_controls.nb_level",
+            "receiver.main.operator_toggles.nb",
+        ),
+    ),
+    (
+        "main.nr_level",
+        "read_nr_level",
+        0,
+        "poll_slow_controls",
+        (
+            "receiver.main.operator_controls.nr_level",
+            "receiver.main.operator_toggles.nr",
+        ),
+    ),
+    (
+        "main.auto_notch",
+        "read_auto_notch",
+        0,
+        "poll_slow_controls",
+        ("receiver.main.operator_toggles.auto_notch",),
+    ),
+    (
+        "main.manual_notch",
+        "read_manual_notch",
+        0,
+        "poll_slow_controls",
+        ("receiver.main.operator_toggles.manual_notch",),
+    ),
+    (
+        "main.manual_notch_freq",
+        "read_manual_notch_freq",
+        0,
+        "poll_slow_controls",
+        ("receiver.main.operator_controls.manual_notch_freq",),
+    ),
+    (
+        "main.sql_type",
+        "read_sql_type",
+        0,
+        "poll_slow_controls",
+        (
+            "receiver.main.operator_toggles.repeater_tone",
+            "receiver.main.operator_toggles.repeater_tsql",
+        ),
+    ),
+    (
+        "main.ctcss_tone_index",
+        "read_ctcss_tone_index",
+        0,
+        "poll_slow_controls",
+        (
+            "receiver.main.operator_controls.tone_freq",
+            "receiver.main.operator_controls.tsql_freq",
+        ),
+    ),
+    (
+        "main.repeater_shift",
+        "read_repeater_shift",
+        0,
+        "poll_slow_controls",
+        ("receiver.main.operator_controls.repeater_shift",),
+    ),
+    (
+        "sub.repeater_shift",
+        "read_repeater_shift",
+        1,
+        "poll_slow_controls",
+        ("receiver.sub.operator_controls.repeater_shift",),
+    ),
+    (
+        "active",
+        "read_vfo_select",
+        None,
+        "poll_slow_controls",
+        ("global.slow_state.active",),
+    ),
+    (
+        "cw_spot",
+        "read_cw_spot",
+        None,
+        "poll_slow_controls",
+        ("global.slow_state.cw_spot",),
+    ),
+    (
+        "power_level",
+        "read_power",
+        None,
+        "poll_tx_controls",
+        ("global.operator_controls.power_level",),
+    ),
+    (
+        "mic_gain",
+        "read_mic_gain",
+        None,
+        "poll_tx_controls",
+        ("global.operator_controls.mic_gain",),
+    ),
+    (
+        "compressor_on",
+        "read_processor",
+        None,
+        "poll_tx_controls",
+        ("global.tx_state.compressor_on",),
+    ),
+    (
+        "compressor_level",
+        "read_processor_level",
+        None,
+        "poll_tx_controls",
+        ("global.operator_controls.compressor_level",),
+    ),
+    ("vox", "read_vox", None, "poll_tx_controls", ("global.tx_state.vox_on",)),
+    ("split", "read_split", None, "poll_tx_controls", ("global.tx_state.split",)),
+    (
+        "clarifier",
+        "read_clarifier",
+        0,
+        "poll_tx_controls",
+        ("global.tx_state.rit_on", "global.tx_state.rit_tx"),
+    ),
+    (
+        "clarifier_freq",
+        "read_clarifier_freq",
+        0,
+        "poll_tx_controls",
+        ("global.operator_controls.rit_freq",),
+    ),
+    (
+        "tuner",
+        "get_tuner_status",
+        None,
+        "poll_tx_controls",
+        ("global.operator_controls.tuner_status",),
+    ),
+    (
+        "dial_lock",
+        "read_lock",
+        None,
+        "poll_tx_controls",
+        ("global.tx_state.dial_lock",),
+    ),
+    (
+        "key_speed",
+        "read_keyer_speed",
+        None,
+        "poll_tx_controls",
+        ("global.operator_controls.key_speed",),
+    ),
+    (
+        "cw_pitch",
+        "read_cw_pitch",
+        None,
+        "poll_tx_controls",
+        ("global.operator_controls.cw_pitch",),
+    ),
+    (
+        "break_in",
+        "read_break_in",
+        None,
+        "poll_tx_controls",
+        ("global.operator_controls.break_in",),
+    ),
+    (
+        "break_in_delay",
+        "read_break_in_delay",
+        None,
+        "poll_tx_controls",
+        ("global.operator_controls.break_in_delay",),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("method", "receiver", "poll", "expected"),
+    [row[1:] for row in _ABANDON_ROWS],
+    ids=[row[0] for row in _ABANDON_ROWS],
+)
+@pytest.mark.asyncio
+async def test_skipped_read_abandons_every_declared_path_it_feeds(
+    method: str,
+    receiver: int | None,
+    poll: str,
+    expected: tuple[str, ...],
+) -> None:
+    """One unparseable read releases the declared paths it feeds, and no others.
+
+    A path the backend can never observe must not hold the startup gate open;
+    a path some other read still supplies must not be released with it.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = _AbandonRecordingScheduler(profile)
+    radio = _gate_radio()
+    radio._acquisition_scheduler = scheduler
+    _break_read(radio, method, receiver)
+
+    adapter = YaesuObservationAdapter(radio, profile=profile, clock=_clock)
+    await getattr(adapter, poll)()
+
+    assert sorted(str(path) for path, _ in scheduler.abandoned) == sorted(expected)
+    for name in expected:
+        assert FieldPath.parse(name) not in scheduler.unobserved_startup_paths(())
+
+
+@pytest.mark.asyncio
+async def test_tx_target_frequency_read_abandons_nothing() -> None:
+    """The TX-target frequency is a sub-read of a field emitted either way.
+
+    ``global.tx_state.tx_target`` is appended whether or not that frequency
+    parses (the frequency degrades to ``None``), so a skip there releases no
+    path from the gate.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = _AbandonRecordingScheduler(profile)
+    radio = _gate_radio()
+    radio._acquisition_scheduler = scheduler
+    radio.capabilities = radio.capabilities - {"dual_rx"}
+    radio.get_tx_func = AsyncMock(return_value=1)
+    _break_read(radio, "read_freq", 1)
+
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_medium()
+
+    assert scheduler.abandoned == []
+    emitted = [
+        item.value
+        for item in observations
+        if str(item.path) == "global.tx_state.tx_target"
+    ]
+    assert len(emitted) == 1
+    assert isinstance(emitted[0], KnownTxTarget)
+    assert emitted[0].frequency_hz is None
