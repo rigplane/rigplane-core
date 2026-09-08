@@ -90,11 +90,17 @@ type Position = { slot: Slot; base: string; filterKey: 'filter' | 'filterNum'; s
 const RECEIVER_KEY = { MAIN: 'main', SUB: 'sub' } as const;
 const SLOT_KEY = { A: 'vfoA', B: 'vfoB' } as const;
 
-/** Observed + fresh + available — the same three-part gate the TX authority uses. */
+/**
+ * Observed, with usable evidence. MOR-2425/R40: an observed field that has
+ * aged past its TTL still carries its last reading, so it stays available —
+ * the same rule `field-status.ts: getFieldAvailability` applies. Only
+ * never-observed and structurally missing fields are withheld.
+ */
 function seen(state: ServerState | null, path: string): boolean {
   const status = state?.fieldStatus?.[path];
-  return status?.observed === true && status.freshness === 'fresh'
-    && status.availability === 'available';
+  return status?.observed === true
+    && (status.freshness === 'fresh' || status.freshness === 'stale')
+    && (status.availability === 'available' || status.availability === 'stale');
 }
 
 /**
@@ -174,10 +180,11 @@ function topFieldAvailable(state: ServerState | null, field: string): boolean {
   return isFieldAvailable(state, field);
 }
 
-/** MOR-2309 singleton-indicator admission: the leaf must itself be observed,
- * fresh and available, and the existing ancestor-aware gate may still veto
- * it. This is the same narrow rule MOR-2299 slice 1 uses; global absent-key
- * semantics remain unchanged. */
+/** MOR-2309 singleton-indicator admission: the leaf must itself pass `seen()`
+ * (observed, with freshness/availability admitting a held stale reading per
+ * R40) and the existing ancestor-aware `topFieldAvailable` gate may still
+ * veto it. This is the same narrow rule MOR-2299 slice 1 uses; global
+ * absent-key semantics remain unchanged. */
 function strictFieldAvailable(state: ServerState | null, field: string): boolean {
   return seen(state, field) && topFieldAvailable(state, field);
 }
@@ -866,7 +873,8 @@ function deriveRfFrontEnd(
  * `seen()` and the existing ancestor-aware `topFieldAvailable()` gate must
  * also pass. S-meter is the deliberate qualified exception: it additionally
  * requires matching provider identity, valid evidence and value, and a
- * `current` observation. Global absent-key semantics remain unchanged.
+ * retained observation — `sMeterRetained` below admits `current` or `stale`.
+ * Global absent-key semantics remain unchanged.
  */
 function deriveReceiverIndicators(
   state: ServerState | null,
@@ -916,7 +924,8 @@ function deriveReceiverIndicators(
       state, caps, receiver, path: path('sMeter'), structural: true,
       value: numOrUndef(rx?.sMeter),
     });
-    const sMeterOperational = receiverOperational && sMeterObservation.state === 'current';
+    const sMeterRetained = sMeterObservation.state === 'current' || sMeterObservation.state === 'stale';
+    const sMeterOperational = receiverOperational && sMeterRetained;
     const providerGeneration = state?.providerGeneration;
 
     return {
@@ -928,7 +937,7 @@ function deriveReceiverIndicators(
       sMeter: {
         ...txAuxField(
           true, sMeterOperational,
-          sMeterObservation.state === 'current' ? sMeterObservation.value : undefined,
+          sMeterRetained ? sMeterObservation.value : undefined,
         ),
         domain: meterValueDomain(
           state, receiver === 'MAIN' ? 'main.sMeter' : 'sub.sMeter', sMeterOperational,
@@ -1644,11 +1653,7 @@ export function toRadioViewModel(
   // controller about what the radio would key.
   const observedTarget = seen(state, 'txTarget') && state
     ? state.txTarget
-    : {
-      status: 'unknown' as const,
-      reason: state?.fieldStatus?.txTarget?.availability === 'stale'
-        ? 'stale' as const : 'not-observed' as const,
-    };
+    : { status: 'unknown' as const, reason: 'not-observed' as const };
   // MOR-1274: the REAL projected MOD-input source, not a stub — it is the sole
   // input to `modInputReadiness`, the "web voice TX = noise" guard the rxAudio
   // group exposes. No other fact this call returns depends on it.

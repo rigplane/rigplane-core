@@ -120,7 +120,7 @@ describe('projectBarMeters', () => {
     expect(projected[0]).toMatchObject({
       motionFraction: 128 / 255,
       displayText: '128 raw',
-      accessibleDescription: 'Po: Current observation. 128 raw',
+      accessibleDescription: 'Po: Observed. 128 raw',
       observed: true,
       gauge: true,
       showPeak: true,
@@ -160,6 +160,7 @@ describe('projectBarMeters', () => {
     });
   });
 
+  // MOR-2425/R41: the description says 'Observed' for BOTH stale and current.
   it('keeps stale, unknown, idle, and indeterminate TX observations distinct (R29/R32: stale keeps its value; idle/unknown are an empty scale)', () => {
     const view = base();
     setDisplay(view, 'power', { state: 'stale', value: 170 });
@@ -170,7 +171,7 @@ describe('projectBarMeters', () => {
       domain: { kind: 'raw' },
       motionFraction: 170 / 255,
       displayText: '170 raw',
-      accessibleDescription: 'Po: Stale observation. 170 raw',
+      accessibleDescription: 'Po: Observed. 170 raw',
       observed: true,
       gauge: true,
       showPeak: false,
@@ -206,7 +207,19 @@ describe('projectBarMeters', () => {
       state: 'current',
       motionFraction: 170 / 255,
       displayText: '170 raw ?',
-      accessibleDescription: 'Po: RF relevance indeterminate. Current observation. 170 raw',
+      accessibleDescription: 'Po: RF relevance indeterminate. Observed. 170 raw',
+      observed: true,
+      gauge: true,
+    });
+
+    // MOR-2425/R41: the ' ?' indeterminate glyph is symmetric — a retained
+    // stale reading gets the same text as current, not just current.
+    setDisplay(view, 'power', { state: 'stale', value: 170 });
+    expect(projectBarMeters(view)[0]).toMatchObject({
+      state: 'stale',
+      motionFraction: 170 / 255,
+      displayText: '170 raw ?',
+      accessibleDescription: 'Po: RF relevance indeterminate. Observed. 170 raw',
       observed: true,
       gauge: true,
     });

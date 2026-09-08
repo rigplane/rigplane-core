@@ -426,6 +426,27 @@ describe('explicit presentation contract', () => {
     expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_074_001);
   });
 
+  // MOR-2425/R29+R40: a HELD frequency stays tunable. `frequencyState` alone
+  // no longer disables the arithmetic control; a display carrying no value
+  // ('unknown'/'unsupported') still does, as does `frequencyDisabled`.
+  it.each(['current', 'stale'] as const)('keeps the frequency control tunable while the display is %s', (frequencyState) => {
+    const onFreqChange = vi.fn();
+    const t = mountPanel({ ...explicit, frequencyState, onFreqChange });
+    const digits = t.querySelectorAll<HTMLElement>('.digit');
+    digits[digits.length - 1]?.click();
+    digits[digits.length - 1]?.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_074_001);
+  });
+
+  it.each(['unknown', 'unsupported'] as const)('locks the frequency control while the display is %s', (frequencyState) => {
+    const onFreqChange = vi.fn();
+    const t = mountPanel({ ...explicit, frequencyState, onFreqChange });
+    const digits = t.querySelectorAll<HTMLElement>('.digit');
+    digits[digits.length - 1]?.click();
+    digits[digits.length - 1]?.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onFreqChange).not.toHaveBeenCalled();
+  });
+
   it('does not mount an arithmetic frequency control when confirmed truth is unknown', () => {
     const t = mountPanel({ ...explicit, freq: null, displayHz: null, pendingDisplayHz: null });
     expect(t.querySelector('.digit')).toBeNull();

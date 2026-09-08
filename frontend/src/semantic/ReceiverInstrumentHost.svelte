@@ -126,7 +126,11 @@
       || indicator?.availability.operational !== true
       || record.frequencyHz === null
       || !Number.isFinite(record.frequencyHz)
-      || record.display?.frequencyHz.state !== 'current';
+      // MOR-2425/R29+R40: a HELD frequency stays tunable — the same rule
+      // `VfoSurface.svelte: readoutDisabled` applies to its own readout;
+      // the other clauses above still lock it.
+      || (record.display?.frequencyHz.state !== 'current'
+        && record.display?.frequencyHz.state !== 'stale');
   }
 
   function slotIdentity(record: VfoViewModel): string {

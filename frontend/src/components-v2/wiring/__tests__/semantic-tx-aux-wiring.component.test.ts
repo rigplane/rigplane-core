@@ -981,14 +981,12 @@ describe('the txAux surface mounts only when the view model carries the group', 
    * RECEIVER instead of per radio. MAIN B and SUB B keep their text nodes — the
    * intra-receiver hazard B1 found stays closed.
    */
-  // Four VFO tiles now reserve a cue container, marker and accessible reason.
-  const DEFAULT_PATH_OUTLINE = 'div p div div span span div span span span span span span span span span span span span span span span span '
-    + 'div span span span span span span button div span span div span span span span span span span span span span span span span span button '
-    + 'div span span span span span span button div section header strong div div div '
-    + 'section header strong div div div section div span '
-    + 'div button button div div button button p span span section p span span span p div button button '
-    + 'ul section div button button button label span div div div div div div output div button button button output '
-    + 'div button button output';
+  const DEFAULT_PATH_OUTLINE = 'div p div div span span div span span span span span span span span span span span span span div '
+    + 'span span span button div span span div span span span span span span span span span span span '
+    + 'button div span span span button div section header strong div div div section header strong div '
+    + 'div div section div span div button button div div button button p span span section p span span '
+    + 'span p div button button ul section div button button button label span div div div div div div '
+    + 'output div button button button output div button button output';
 
   it.each(['single', 'dual'] as const)('renders no txAux surface at all without the group (%s)', (strips) => {
     h.state = liveState(false);
@@ -1004,12 +1002,8 @@ describe('the txAux surface mounts only when the view model carries the group', 
     h.caps = liveCaps(false);
     render();
     expect(testids()).toEqual(DEFAULT_PATH_TESTIDS);
-    const cues = target.querySelectorAll('[data-vfo-stale-cue]');
-    expect(cues).toHaveLength(4);
-    for (const cue of cues) {
-      expect(cue.children).toHaveLength(2);
-      expect(cue.getAttribute('aria-hidden')).toBe('true');
-    }
+    // MOR-2425/R41: the VFO stale cues are gone from the default path.
+    expect(target.querySelectorAll('[data-vfo-stale-cue]')).toHaveLength(0);
     const receiverGroup = target.querySelector('[role="radiogroup"][aria-label="Active receiver"]');
     expect(receiverGroup).not.toBeNull();
     expect(receiverGroup?.querySelectorAll('[role="radio"]')).toHaveLength(2);
@@ -1254,7 +1248,7 @@ describe('the composed TX/VOX controls consume the real feedback lifecycle', () 
     },
   );
 
-  it('keeps ACK pending through unrelated, mismatched and stale readback, then confirms fresh exact truth', () => {
+  it('keeps ACK pending through unrelated and mismatched readback, then confirms a held exact truth', () => {
     const descriptor = TX_AUX_COMMAND_DESCRIPTORS.micGain;
     const command = beginCommand({
       id: 'mic-feedback', name: descriptor.intentName, params: { level: 200 }, originalEpoch: 7,
@@ -1278,20 +1272,11 @@ describe('the composed TX/VOX controls consume the real feedback lifecycle', () 
     pushRadioState(observed(1, 199, 'fresh'));
     pushSession({ state: 'connected', epoch: 7 });
     expect(input().dataset.commandPhase).toBe('awaiting-confirmation');
-    // R29: a stale readback no longer fails the control closed, even one
-    // that happens to match the requested target exactly — availability and
-    // confirmation are separate axes. `reconcileStateBackedCommands`
-    // (`commands.svelte.ts`) still requires `freshness === 'fresh'` before
-    // marking a command confirmed (untouched by this PR), so the lifecycle
-    // stays 'acknowledged' and the control stays in 'awaiting-confirmation'.
+    // MOR-2425/R40: a HELD readback past the ACK boundary that matches confirms.
     pushRadioState(observed(2, 200, 'stale'));
     pushSession({ state: 'connected', epoch: 7 });
-    expect(input().dataset.commandPhase).toBe('awaiting-confirmation');
     expect(input().getAttribute('aria-disabled')).toBe('false');
-    expect(getCommandLifecycles()[0]?.status).toBe('acknowledged');
-    pushRadioState(observed(3, 200, 'fresh'));
     expect(getCommandLifecycles()[0]?.status).toBe('confirmed');
-    pushSession({ state: 'connected', epoch: 7 });
     expect(input().dataset.commandPhase).toBe('confirmed');
     expect(input().getAttribute('aria-valuenow')).toBe('200');
     expect(input().closest('[data-testid]')?.querySelector('[data-command-status]')?.textContent)

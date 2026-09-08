@@ -43,7 +43,6 @@
     displayHz?: number | null;
     pendingDisplayHz?: number | null;
     frequencyState?: 'current' | 'stale' | 'unknown' | 'unsupported';
-    staleReason?: string;
     contextKey?: string;
     frequencyDisabled?: boolean;
     mode: string | null;
@@ -67,7 +66,7 @@
 
   let {
     receiver, receiverLabel, slotTag, frequency, freq, displayHz, pendingDisplayHz = null,
-    frequencyState = 'current', staleReason, contextKey, frequencyDisabled = false,
+    frequencyState = 'current', contextKey, frequencyDisabled = false,
     mode, filter, sMeter, sValue, meterPresent = true, meterOperational, meterSource, continuitySession,
     isActive,
     badgeItems, bandText, rit, slotChoices = [],
@@ -78,7 +77,6 @@
   }: Props = $props();
 
   let meterVariant = $derived(layoutProfile === 'wide' ? 'vfo-wide' : 'vfo');
-  let staleDisplay = $derived(frequencyState === 'stale');
   const staleId = `vfo-panel-stale-${++sequence}`;
   let receiverChromeVars = $derived({
     '--receiver-accent': `var(--v2-receiver-${receiver}-accent)`,
@@ -131,22 +129,19 @@
       <div class="freq-row">
         <span class="vfo-freq" data-vfo-freq data-freq-tunable={!frequencyDisabled}
           data-display-state={frequencyState} class:display-unknown={displayHz === null}
-          aria-describedby={staleDisplay ? staleId : undefined}>
+          >
           {#if frequency}
             {@render frequency()}
           {:else if freq !== null && freq !== undefined && Number.isFinite(freq)}
             <FrequencyDisplayInteractive
               {freq} {displayHz} {pendingDisplayHz} {contextKey}
-              disabled={frequencyDisabled || frequencyState !== 'current'}
+              disabled={frequencyDisabled
+                || (frequencyState !== 'current' && frequencyState !== 'stale')}
               active={isActive} {receiver} {onFreqChange} vfoFreqHook={false}
             />
           {:else}
             <span class="freq unknown-frequency">{formatFrequency(pendingDisplayHz ?? displayHz)}</span>
           {/if}
-        </span>
-        <span id={staleId} data-vfo-stale-cue class="stale-cue" aria-hidden={!staleDisplay}
-          class:stale={staleDisplay} title={staleDisplay ? staleReason : undefined}>
-          <span aria-hidden="true">†</span><span class="sr-only">{staleReason}</span>
         </span>
       </div>
 
@@ -310,8 +305,6 @@
 
   .panel-meter > div { width: 100%; height: 100%; }
 
-  .stale-cue { visibility: hidden; inline-size: 1ch; font-size: 10px; }
-  .stale-cue.stale { visibility: visible; }
 
   .sr-only {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;

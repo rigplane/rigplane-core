@@ -198,8 +198,10 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
     expect(toSpectrumAuthority(s, c)).toBeNull();
   });
 
-  it('rejects unknown active identity and physical SUB without valid dual topology', () => {
-    expect(toSpectrumAuthority(withStatus(state(), 'active', stale), caps())).toBeNull();
+  it('rejects physical SUB without valid dual topology, but reads a HELD active identity', () => {
+    // MOR-2425/R40: staleness alone no longer unmakes the active receiver.
+    expect(toSpectrumAuthority(withStatus(state(), 'active', stale), caps()))
+      .toMatchObject({ receiver: 0 });
     const sub = state({ active: 'SUB' });
     expect(toSpectrumAuthority(sub, caps({ capabilities: ['scope', 'filter_width', 'data_mode'] }))).toBeNull();
   });
@@ -274,22 +276,23 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
     expect(toSpectrumAuthority(state(), caps())).toBeNull();
   });
 
-  it('degrades an independently stale frequency to null without losing receiver identity', () => {
+  it('holds an independently stale frequency without losing receiver identity', () => {
     const result = toSpectrumAuthority(withStatus(state(), 'main.freqHz', stale), caps());
-    expect(result).toMatchObject({ receiver: 0, frequencyHz: null, mode: 'USB' });
+    expect(result).toMatchObject({ receiver: 0, frequencyHz: 14_074_000, mode: 'USB' });
   });
 
+  // MOR-2425/R40: each used to degrade its fact, and three of them the rule.
   it.each([
     ['main.mode', 'mode'], ['main.filterWidth', 'filterWidthHz'],
     ['main.dataMode', 'dataMode'], ['main.filterShape', 'filterShape'],
     ['main.ifShift', 'ifShiftHz'], ['main.pbtInner', 'pbtInnerHz'], ['main.pbtOuter', 'pbtOuterHz'],
-  ] as const)('degrades stale %s only through its projected fact/rule', (path, key) => {
+  ] as const)('holds stale %s at the fresh authority value, rule included', (path, key) => {
+    const live = toSpectrumAuthority(state(), caps());
     const result = toSpectrumAuthority(withStatus(state(), path, stale), caps());
     expect(result).not.toBeNull();
-    expect(result?.[key]).toBeNull();
-    if (path === 'main.mode' || path === 'main.filterWidth' || path === 'main.dataMode') {
-      expect(result?.rule).toBeNull();
-    }
+    expect(live?.[key]).not.toBeNull();
+    expect(result?.[key]).toEqual(live?.[key]);
+    expect(result?.rule).toEqual(live?.rule);
   });
 
   it('requires active-VFO and modeFilter parity before constructing a rule', () => {
@@ -334,7 +337,8 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
       filterConfig: { USB: STEP_RULE },
     });
     expect(toSpectrumAuthority(s, withoutData)).toMatchObject({ dataMode: null, rule: { kind: 'step' } });
-    expect(toSpectrumAuthority(s, caps({ filterConfig: { USB: STEP_RULE } }))).toMatchObject({ rule: null });
+    expect(toSpectrumAuthority(s, caps({ filterConfig: { USB: STEP_RULE } })))
+      .toMatchObject({ dataMode: 1, rule: { kind: 'step' } });
   });
 
   it('changes the digest with canonical facts but not with mutable input identity', () => {
@@ -383,16 +387,24 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
     });
   });
 
-  it.each([
-    ['main.pbtInner', stale], ['main.pbtOuter', stale],
-    ['main.pbtInner', undefined], ['main.pbtOuter', undefined],
-  ] as const)('hides PBT-derived shift when %s is stale or missing (MOR-1649)', (path, status) => {
-    const result = toSpectrumAuthority(
-      withStatus(freshPbtOnlyIc7300State(), path, status), IC7300_CAPABILITIES,
-    );
+  it.each(['main.pbtInner', 'main.pbtOuter'] as const)(
+    'hides PBT-derived shift when %s was never observed (MOR-1649)', (path) => {
+      const result = toSpectrumAuthority(
+        withStatus(freshPbtOnlyIc7300State(), path, undefined), IC7300_CAPABILITIES,
+      );
 
-    expect(result?.ifShiftHz).toBeNull();
-  });
+      expect(result?.ifShiftHz).toBeNull();
+    });
+
+  // MOR-2425/R40 overturns the STALE half of MOR-1649: a derived held value holds.
+  it.each(['main.pbtInner', 'main.pbtOuter'] as const)(
+    'keeps the PBT-derived shift when %s is held (stale)', (path) => {
+      const result = toSpectrumAuthority(
+        withStatus(freshPbtOnlyIc7300State(), path, stale), IC7300_CAPABILITIES,
+      );
+
+      expect(result?.ifShiftHz).toBe(0);
+    });
 
   it('keeps native FTX-1-style IF shift gated by its own raw observation (MOR-1649)', () => {
     const nativeCaps = caps({

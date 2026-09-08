@@ -328,7 +328,9 @@ describe('coherent RF passband display', () => {
       authority: { ...f.authority, nowMonotonic: 100_001 } };
     const result = project(input, current);
     expect(result.display.state).toBe('stale'); expect(tuple(result)).toBe(tuple(current));
-    expect(toSpectrumAuthority(input.state, input.caps)!.filterWidthHz).toBeNull();
+    // MOR-2425/R40: the strict authority holds the last observed width too.
+    // 2400 is this fixture's own `main.filterWidth` (see `fixture()` above).
+    expect(toSpectrumAuthority(input.state, input.caps)!.filterWidthHz).toBe(2400);
   });
 
   it.each(['main.pbtInner', 'main.pbtOuter'])('requires observed, current %s to seed derived shift', (path) => {

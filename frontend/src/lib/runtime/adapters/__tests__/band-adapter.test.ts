@@ -403,10 +403,6 @@ describe('currentBandTx fails closed on an unconfirmed active receiver (MOR-1356
       () => bareState({ fieldStatus: { ...bareState().fieldStatus, active: unobserved } }),
     ],
     [
-      'the active-receiver reading is stale',
-      () => bareState({ fieldStatus: { ...bareState().fieldStatus, active: stale } }),
-    ],
-    [
       'the active-receiver field is observed and fresh but not available',
       () => bareState({ fieldStatus: { ...bareState().fieldStatus, active: missing } }),
     ],
@@ -421,6 +417,16 @@ describe('currentBandTx fails closed on an unconfirmed active receiver (MOR-1356
     expect(view.activeReceiver).toEqual({ status: 'known', receiver: 'MAIN' });
     expect(view.band!.currentBandTx).toBe('allowed');
     expect(getTxPermit(LIVE_HZ, HAM_TX_BANDS)).toBe('allowed');
+  });
+
+  // MOR-2425/R40: a HELD active-receiver reading is a reading. Staleness alone
+  // no longer joins the UNCONFIRMED table above.
+  it('reads allowed when the active-receiver reading is held (stale)', () => {
+    const view = model(
+      bareState({ fieldStatus: { ...bareState().fieldStatus, active: stale } }), dualCaps,
+    );
+    expect(view.activeReceiver).toEqual({ status: 'known', receiver: 'MAIN' });
+    expect(view.band!.currentBandTx).toBe('allowed');
   });
 
   it.each(UNCONFIRMED)('reads denied when %s', (_label, makeState) => {

@@ -514,7 +514,8 @@ function reconcileStateBackedCommands(state: ServerState | null): void {
     const field = state.fieldStatus?.[path];
     const marker = field?.lastObservedMonotonic;
     const confirmed = descriptor.confirmed(state, scope);
-    if (field?.observed !== true || field.freshness !== 'fresh' || field.availability !== 'available' || typeof marker !== 'number' || !Number.isFinite(marker)
+    if (field?.observed !== true || field.freshness === 'unknown' || field.availability === 'missing'
+      || typeof marker !== 'number' || !Number.isFinite(marker)
       || confirmed === null) continue;
 
     const boundaries = command.ackFieldObservationTimes;

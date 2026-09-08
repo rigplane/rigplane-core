@@ -64,15 +64,14 @@ describe('VFO qualified display continuity', () => {
       mode: state === 'current' ? 'USB' : null, filter: state === 'current' ? 'FIL1' : null,
     })) };
   }
-  it.each(['semantic', 'sdr'] as const)('%s retains primitive/digits/cue through freshness-only transitions', (appearance) => {
+  it.each(['semantic', 'sdr'] as const)('%s retains primitive/digits through display-state transitions and paints no cue', (appearance) => {
     const model = writable(view('current'));
     const live = fromStore(model);
     const onTuneFrequency = vi.fn();
     const root = mountSurface({ get viewModel() { return live.current; }, appearance, onTuneFrequency });
     const primitive = root.querySelector('.freq')!;
     const digits = [...primitive.querySelectorAll('.digit')];
-    const cue = root.querySelector('[data-vfo-stale-cue]')!;
-    expect(cue).not.toBeNull();
+    expect(root.querySelector('[data-vfo-stale-cue]')).toBeNull();
     digits.at(-1)!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     flushSync();
     for (const state of ['stale', 'current'] as const) {
@@ -80,12 +79,10 @@ describe('VFO qualified display continuity', () => {
       expect(root.querySelector('.freq')).toBe(primitive);
       expect(primitive.querySelectorAll('.digit')).toHaveLength(digits.length);
       digits.forEach((digit, index) => expect(primitive.querySelectorAll('.digit')[index]).toBe(digit));
-      expect(root.querySelector('[data-vfo-stale-cue]')).toBe(cue);
       expect(primitive.textContent?.replace(/\s/g, '')).toBe('14.250.000');
       expect(root.querySelector('.vfo-mode')!.textContent).toBe('USB / FIL1');
       expect(primitive.getAttribute('aria-disabled')).toBe(String(state === 'stale'));
-      expect(cue.getAttribute('aria-hidden')).toBe(String(state !== 'stale'));
-      expect(cue.textContent).not.toBe('');
+      expect(root.querySelector('[data-vfo-stale-cue]')).toBeNull();
       const wheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true, bubbles: true });
       digits.at(-1)!.dispatchEvent(wheel);
       primitive.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
@@ -102,7 +99,7 @@ describe('VFO qualified display continuity', () => {
     const root = mountSurface({ viewModel: view('stale'), appearance: 'standard', onTuneFrequency });
     expect(root.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('14.250.000');
     expect(root.querySelector('.digit')).toBeNull();
-    expect(root.querySelector('[data-vfo-stale-cue]')?.getAttribute('aria-hidden')).toBe('false');
+    expect(root.querySelector('[data-vfo-stale-cue]')).toBeNull();
     expect(onTuneFrequency).not.toHaveBeenCalled();
   });
   it('renders first stale, unknown, unsupported and readonly slots without fabricating frequency', () => {
@@ -116,16 +113,16 @@ describe('VFO qualified display continuity', () => {
     unsupported.vfos = unsupported.vfos.map((vfo) => ({ ...vfo, display: { frequencyHz: { state: 'unsupported' }, mode: { state: 'unsupported' }, filter: { state: 'unsupported' } } }));
     expect(mountSurface({ viewModel: unsupported }).querySelector('.vfo-freq')!.textContent?.trim()).toBe('—');
   });
-  it.each(['en-US', 'ru-RU'] as const)('exposes the localized stale reason with a reserved non-color marker in %s', (locale) => {
+  // MOR-2425/R41 replaces the MOR-1692-era marker/sentence pin, in any locale.
+  it.each(['en-US', 'ru-RU'] as const)('paints no freshness marker, sentence or description for a held reading in %s', (locale) => {
     setLocale(locale);
     try {
       const root = mountSurface({ viewModel: view('stale'), onTuneFrequency: vi.fn() });
-      const cue = root.querySelector<HTMLElement>('[data-vfo-stale-cue]')!;
-      expect(cue.querySelector('[aria-hidden="true"]')!.textContent).toBe('†');
-      expect(cue.querySelector('.sr-only')!.textContent).toBe(cue.title);
-      expect(cue.title).toBe(locale === 'en-US' ? 'the last reading is too old to trust'
+      expect(root.querySelector('[data-vfo-stale-cue]')).toBeNull();
+      expect(root.textContent).not.toContain('†');
+      expect(root.textContent).not.toContain(locale === 'en-US' ? 'the last reading is too old to trust'
         : 'последние данные устарели и не заслуживают доверия');
-      expect(root.querySelector('[data-vfo-freq]')!.getAttribute('aria-describedby')).toBe(cue.id);
+      expect(root.querySelector('[data-vfo-freq]')!.getAttribute('aria-describedby')).toBeNull();
     } finally { _resetLocale(); }
   });
   it('keeps pending feedback separate and computes renewed gestures from strict frequency', () => {
@@ -151,7 +148,8 @@ describe('VFO qualified display continuity', () => {
     invoke(false, view('current').vfos[0], 14250001, tune);
     expect(tune).toHaveBeenCalledExactlyOnceWith('MAIN', 14250001);
   });
-  it('a stale ancestor disables the local readout while a fresh leaf keeps its strict frequency', () => {
+  // MOR-2425/R29+R40: a stale ancestor no longer disables the readout.
+  it('a stale ancestor keeps the local readout live on its strict frequency', () => {
     const caps = { receivers: 1, vfoScheme: 'single', capabilities: [],
       stateContractVersion: 1, providerGeneration: 1 } as unknown as Capabilities;
     const state = { stateContractVersion: 1, providerGeneration: 1, active: 'MAIN',
@@ -173,15 +171,7 @@ describe('VFO qualified display continuity', () => {
     expect(staleView.vfos[0].display?.frequencyHz.state).toBe('stale');
     model.set(staleView); flushSync();
     expect(root.querySelector('.freq')).toBe(primitive);
-    digit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
-    primitive.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
-    expect(onTuneFrequency).not.toHaveBeenCalled();
-    expect(primitive.getAttribute('aria-disabled')).toBe('true');
-    state.fieldStatus!.main.freshness = 'fresh';
-    model.set(toRadioViewModel(state, caps)!); flushSync();
-    digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
-    expect(onTuneFrequency).not.toHaveBeenCalled();
+    expect(primitive.getAttribute('aria-disabled')).toBe('false');
     digit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
     expect(onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 14250001);
@@ -306,6 +296,26 @@ describe('receiver-addressed indicator composition (MOR-2299 slice 1)', () => {
     expect(target.querySelectorAll('[data-vfo-split]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-vfo-dual-watch]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-indicator-fact="antenna"], [data-indicator-fact="tune"], [data-indicator-fact="rit"], [data-indicator-fact="xit"]')).toHaveLength(0);
+  });
+
+  it('MOR-2425/R41: the Standard RFG badge holds a stale value with no dagger cue', () => {
+    const base = withReceiverIndicators('1/single');
+    const indicator = base.receiverIndicators![0];
+    const rfGainReading = indicator.rfGain.reading;
+    if (rfGainReading.status !== 'known') throw new Error('fixture must have a known rfGain reading');
+    const rfGainValue = rfGainReading.value;
+    const staleViewModel = validateRadioViewModel({
+      ...base,
+      receiverIndicators: [{
+        ...indicator,
+        rfGain: { ...indicator.rfGain, display: { state: 'stale' as const, value: rfGainValue } },
+      }],
+    });
+    const target = mountSurface({ viewModel: staleViewModel, appearance: 'standard' });
+    const badge = target.querySelector('[data-indicator-fact="rfg"]')!;
+    expect(badge).not.toBeNull();
+    expect(badge.textContent).not.toContain('†');
+    expect(badge.textContent).toContain(String(rfGainValue));
   });
 });
 

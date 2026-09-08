@@ -134,7 +134,7 @@ describe('KeyboardHandler', () => {
       };
       return { set, key, frequency, input, onAction, onTuneFrequency, handler };
     }
-    it.each(['null', 'ancestor-stale', 'disabled'] as const)('blocks direct and leader tuning/digits while %s, then restores current routing', (kind) => {
+    it.each(['null', 'disabled'] as const)('blocks direct and leader tuning/digits while %s, then restores current routing', (kind) => {
       const h = harness(); h.set(kind);
       expect(document.activeElement).toBe(h.frequency);
       for (const key of ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'j', 'b', '7']) h.key(key);
@@ -146,8 +146,17 @@ describe('KeyboardHandler', () => {
       expect(h.onAction).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ action: 'tune' }));
       h.key('7'); expect(h.input.value).toBe('7'); expect(document.activeElement).toBe(h.input);
     });
+    // MOR-2425/R29+R40: 'ancestor-stale' left the inert set.
+    it('routes direct and leader tuning while ancestor-stale', () => {
+      const h = harness(); h.set('ancestor-stale');
+      h.key('ArrowUp');
+      expect(h.onAction).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ action: 'tune' }));
+      h.key('g'); h.key('t');
+      expect(h.onAction).toHaveBeenCalledTimes(2);
+    });
+
     it('checks a leader continuation against the current inert state', () => {
-      const h = harness(); h.key('g'); h.set('ancestor-stale'); h.key('t');
+      const h = harness(); h.key('g'); h.set('null'); h.key('t');
       expect(h.onAction).not.toHaveBeenCalled(); expect(h.handler.querySelector('.keyboard-leader-pill')).toBeNull();
       h.set('current'); h.key('g'); h.key('t');
       expect(h.onAction).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ action: 'tune' }));

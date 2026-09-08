@@ -144,17 +144,26 @@ describe('MOD-input readiness mirrors the shipped derivation (web-voice-TX guard
       .toEqual({ status: 'mismatch', source: 0 });
   });
 
-  it.each([
-    ['unobserved', missing],
-    ['stale', stale],
-  ])('degrades a %s source to unknown readiness — never assumed ready', (_label, status) => {
+  it('degrades an unobserved source to unknown readiness — never assumed ready', () => {
     const state = audioState({
-      fieldStatus: { ...audioState().fieldStatus, dataOffModInput: status },
+      fieldStatus: { ...audioState().fieldStatus, dataOffModInput: missing },
     });
     const rxAudio = model(state, caps(), SNAP).rxAudio!;
     expect(rxAudio.modInputReadiness).toEqual({ status: 'unknown' });
     expect(rxAudio.modInputSource.reading).toEqual({ status: 'unknown' });
     expect(rxAudio.modInputSource.availability).toEqual({ structural: true, operational: false });
+  });
+
+  // MOR-2425/R40: a held source still answers "which input", so readiness derives.
+  it('holds a stale source and keeps deriving readiness from it', () => {
+    const state = audioState({
+      fieldStatus: { ...audioState().fieldStatus, dataOffModInput: stale },
+    });
+    const rxAudio = model(state, caps(), SNAP).rxAudio!;
+    const fresh = model(audioState(), caps(), SNAP).rxAudio!;
+    expect(rxAudio.modInputSource.reading).toEqual(fresh.modInputSource.reading);
+    expect(rxAudio.modInputSource.availability).toEqual({ structural: true, operational: true });
+    expect(rxAudio.modInputReadiness).toEqual(fresh.modInputReadiness);
   });
 
   it('marks the source structurally absent on a radio without MOD-input routing', () => {

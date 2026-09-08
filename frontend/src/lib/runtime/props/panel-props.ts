@@ -62,8 +62,8 @@ function activeFieldShown(state: ServerState | null, field: string): boolean {
 function fieldObserved(state: ServerState | null, field: string): boolean {
   const status = state?.fieldStatus?.[field];
   return status?.observed === true
-    && status.freshness === 'fresh'
-    && status.availability === 'available';
+    && (status.freshness === 'fresh' || status.freshness === 'stale')
+    && (status.availability === 'available' || status.availability === 'stale');
 }
 
 /**

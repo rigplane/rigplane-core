@@ -147,6 +147,15 @@ function toggleVox(): void {
 
 type MemorySnapshot = { frequencyHz: number | null; mode: string | null };
 
+/**
+ * Fresh-only, deliberately — the one such gate MOR-2425/R40 does not widen.
+ * This predicate resolves the identity a command is DISPATCHED against
+ * (which receiver is active, which slot, its frequency and mode), never a
+ * value the web paints. MOR-1601 pins the refusal: the "toggles only a
+ * fresh observed active receiver" case in
+ * `__tests__/panel-commands.intent.isolated.test.ts` sets
+ * `fieldStatus.active.freshness` to `'stale'` and requires no command.
+ */
 function observedAvailableField(
   state: NonNullable<ReturnType<typeof getRadioState>>,
   path: string,

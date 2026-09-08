@@ -129,7 +129,7 @@ describe('ritXit per-field derivation (MOR-1295)', () => {
   ];
 
   it.each(STALE_FIELDS)(
-    'degrades a stale %s field to unknown while keeping structural availability true',
+    'holds a stale %s field at its last observed value (MOR-2425/R40)',
     (rawField, viewField) => {
       const state = bareState({
         [rawField]: rawField === 'ritFreq' ? 500 : true,
@@ -137,7 +137,8 @@ describe('ritXit per-field derivation (MOR-1295)', () => {
       });
       const view = model(state, fullCaps);
       expect(view.ritXit![viewField]).toEqual({
-        reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+        reading: { status: 'known', value: rawField === 'ritFreq' ? 500 : true },
+        availability: { structural: true, operational: true },
       });
     },
   );

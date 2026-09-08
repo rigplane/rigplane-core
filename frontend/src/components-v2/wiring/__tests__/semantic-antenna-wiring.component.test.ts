@@ -426,7 +426,6 @@ describe('the persistent host admits on CURRENT facts, not on rendered props', (
   it.each([
     ['tuning', 2, fresh],
     ['never observed', undefined, { ...fresh, observed: false }],
-    ['stale', 0, { ...fresh, freshness: 'stale' }],
   ] as const)(
     'refuses both controls after a same-session ATU %s publication, before the flush',
     (_label, value, status) => {
@@ -448,6 +447,23 @@ describe('the persistent host admits on CURRENT facts, not on rendered props', (
       expect(rx.disabled).toBe(true);
     },
   );
+
+  // MOR-2425/R40: a HELD idle ATU publication carries a reading, so it admits.
+  it('admits both controls after a same-session HELD idle ATU publication', () => {
+    render();
+    const port = btn('port-2')!;
+    const rx = btn('rx-toggle')!;
+
+    h.state = withTunerStatus(0, { ...fresh, freshness: 'stale', availability: 'stale' });
+    publishAuthority();
+    clickWithoutFlush(port);
+    clickWithoutFlush(rx);
+    expect(sendCommand).toHaveBeenCalledTimes(2);
+
+    flushSync();
+    expect(port.disabled).toBe(false);
+    expect(rx.disabled).toBe(false);
+  });
 
   /**
    * The two guards are DIFFERENT guards, and this row proves it in both

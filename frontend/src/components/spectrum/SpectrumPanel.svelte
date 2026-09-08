@@ -626,11 +626,6 @@
   {:else}
   <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} />
   {/if}
-  {#if managed}
-    <div class="passband-freshness" aria-label={displayStale ? t('core.rxTx.target.reason.stale') : undefined}>
-      {displayStale ? `◷ ${t('core.rxTx.target.reason.stale')}` : ''}
-    </div>
-  {/if}
   <div class="spectrum-with-scales">
     <div class="db-scale">
       {#each audioFft ? [] : DB_TICKS as tick}
@@ -700,7 +695,6 @@
 {/key}
 
 <style>
-  .passband-freshness { min-height: 1.4em; padding: 0 8px; font-size: 11px; color: var(--text-muted); }
   .audio-source-label { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; color: var(--text-muted); font-size: 12px; }
   .audio-fft :global(canvas) { cursor: default; }
   .spectrum-panel {

@@ -162,16 +162,8 @@
         role="img"
         data-state={indicator.rfGain.reading.status}
         data-display-state={indicator.rfGain.display?.state ?? (indicator.rfGain.reading.status === 'known' ? 'current' : 'unknown')}
-        aria-label={`RF gain ${rfGainNumber(indicator.rfGain)}${indicator.rfGain.display?.state === 'stale' ? ' (stale, last observed)' : ''}`}
-      >RFG {rfGainNumber(indicator.rfGain)}<span
-          class="stale-cue"
-          style:display="inline-block"
-          style:width="1ch"
-          style:margin-inline-start="0.25ch"
-          aria-hidden="true"
-          title="Stale: last observed value"
-          style:visibility={indicator.rfGain.display?.state === 'stale' ? 'visible' : 'hidden'}
-        >◷</span></span>
+        aria-label={`RF gain ${rfGainNumber(indicator.rfGain)}`}
+      >RFG {rfGainNumber(indicator.rfGain)}</span>
     {/if}
   </div>
 </section>

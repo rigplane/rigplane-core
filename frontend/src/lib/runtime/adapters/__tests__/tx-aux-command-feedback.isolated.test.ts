@@ -124,7 +124,7 @@ describe('imperative qualified raw TX/VOX command feedback', () => {
     expect(h.sessionReads).toBe(0);
   });
 
-  it('keeps ACK awaiting across active-receiver, other-field, stale, and mismatch observations', () => {
+  it('keeps ACK awaiting across active-receiver, other-field and mismatch observations, then confirms a held exact one', () => {
     h.state = state({ micGain: 100 });
     const command = begin('micGain', 128, 'mic');
     expect(getTxAuxControlFeedback('micGain', connected).phase).toBe('submitted');
@@ -141,13 +141,15 @@ describe('imperative qualified raw TX/VOX command feedback', () => {
     expect(getTxAuxControlFeedback('micGain', connected).scope.receiver).toBe(0);
 
     emitState(state({ micGain: 127, fieldStatus: { ...state().fieldStatus, micGain: fresh(2) } }));
+    expect(getCommandLifecycle(command.id, 7)?.status).toBe('acknowledged');
+
+    // MOR-2425/R40: marker 3 is newer than the ACK boundary and the value
+    // matches, so this HELD observation confirms — it is a genuinely newer
+    // reading, only an older one than the TTL calls fresh.
     emitState(state({
       micGain: 128,
       fieldStatus: { ...state().fieldStatus, micGain: { ...fresh(3), freshness: 'stale' } },
     }));
-    expect(getCommandLifecycle(command.id, 7)?.status).toBe('acknowledged');
-
-    emitState(state({ micGain: 128, fieldStatus: { ...state().fieldStatus, micGain: fresh(4) } }));
     expect(getCommandLifecycle(command.id, 7)?.status).toBe('confirmed');
     expect(getTxAuxControlFeedback('micGain', connected)).toMatchObject({
       confirmed: 128, target: null, requestedTarget: 128,

@@ -360,11 +360,6 @@ describe('MOR-1731 exact RIT domain', () => {
     ['unknown receiver', liveState({ active: undefined } as Partial<ServerState>)],
     ['wrong VFO', liveState({ active: 'OTHER' } as never)],
     ['unread offset', (() => { const state = liveState({ ritFreq: undefined }); return state; })()],
-    ['stale offset', (() => {
-      const state = liveState();
-      return { ...state, fieldStatus: { ...state.fieldStatus,
-        ritFreq: { ...fresh, freshness: 'stale', availability: 'stale' } } } as ServerState;
-    })()],
   ] as const)('%s emits no exact-domain offset intent', (_name, state) => {
     const input = renderExact(state);
     expect(input.disabled).toBe(true);
@@ -374,6 +369,19 @@ describe('MOR-1731 exact RIT domain', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
     expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  // MOR-2425/R40: a HELD offset is an offset, not a refusal.
+  it('a held (stale) offset stays adjustable and emits an exact-domain intent', () => {
+    const base = liveState();
+    const input = renderExact({ ...base, fieldStatus: { ...base.fieldStatus,
+      ritFreq: { ...fresh, freshness: 'stale', availability: 'stale' } } } as ServerState);
+    expect(input.disabled).toBe(false);
+    input.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'ArrowRight', bubbles: true, cancelable: true,
+    }));
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledOnce();
   });
 });
 

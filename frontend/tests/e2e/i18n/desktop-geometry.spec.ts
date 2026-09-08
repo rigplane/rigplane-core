@@ -492,9 +492,11 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
   }
 }
 
-// The cue must share existing instrument space, including while it is hidden.
+// MOR-2425/R41: the freshness cue is gone, so the claim is now the stronger
+// one it used to approximate — the instrument's geometry does not move at all
+// through a current → stale → current recovery, and no cue comes back.
 for (const layout of ['standard', 'sdr-test']) for (const language of ['studioline', 'fieldline']) {
-  test(`${layout} ${language} instrument cue adds no tracks through recovery`, async ({ page }, info) => {
+  test(`${layout} ${language} instrument geometry is fixed through recovery`, async ({ page }, info) => {
     await boot(page, layout, 1440, false, language, true);
     // SDR opts out of the selected design language; assert the actual production state.
     if (layout === 'standard') await expect(page.locator('html')).toHaveAttribute('data-design-language', language);
@@ -509,16 +511,13 @@ for (const layout of ['standard', 'sdr-test']) for (const language of ['studioli
     expect(paint.inner).toEqual(paint.outer);
     const measure = () => page.locator('.receiver-instrument').evaluateAll(instruments => {
       const rect = (e: Element) => e.getBoundingClientRect().toJSON();
-      return instruments.map(instrument => {
-        const cues = [...instrument.querySelectorAll<HTMLElement>('[data-vfo-stale-cue]')];
-        const geometry = () => [...instrument.querySelectorAll('.vfo-tile,.vfo-role,.vfo-freq,.vfo-mode,.vfo-select')].map(rect);
-        const present = geometry();
-        cues.forEach(cue => { cue.style.display = 'none'; }); const absent = geometry();
-        cues.forEach(cue => { cue.style.display = ''; });
-        return { present, absent };
-      });
+      return instruments.map(instrument =>
+        [...instrument.querySelectorAll('.vfo-tile,.vfo-role,.vfo-freq,.vfo-mode,.vfo-select')].map(rect));
     });
-    const unknown = await measure(); unknown.forEach(box => expect(box.present).toEqual(box.absent));
+    const cueCount = () => page.locator('.receiver-instrument [data-vfo-stale-cue]').count();
+    const unknown = await measure();
+    expect(unknown.length).toBeGreaterThan(0);
+    expect(await cueCount()).toBe(0);
     await info.attach('unknown-bounds', { body: JSON.stringify(unknown), contentType: 'application/json' });
     // The shared production unknown fixture remains evidence-free; recovery uses the IC fixture.
     await boot(page, layout, 1440, false, language);
@@ -534,23 +533,11 @@ for (const layout of ['standard', 'sdr-test']) for (const language of ['studioli
       await page.evaluate(state => window.dispatchEvent(new CustomEvent('geometry-state', { detail: state })), state);
       await expect(frequency).toHaveAttribute('data-display-state', stateName);
       await expect(frequency).toContainText('035');
-      const boxes = await measure(); boxes.forEach(box => expect(box.present).toEqual(box.absent));
+      const boxes = await measure();
       await info.attach(`${stateName}-${index}-bounds`, { body: JSON.stringify(boxes), contentType: 'application/json' });
       if (current) expect(boxes).toEqual(current); else current = boxes;
+      expect(await cueCount()).toBe(0);
       if (stateName === 'stale') {
-        const cues = page.locator('.receiver-instrument [data-vfo-stale-cue]');
-        expect(await cues.count()).toBeGreaterThan(0);
-        for (const cue of await cues.all()) {
-          await expect(cue).toHaveAttribute('aria-hidden', 'false');
-          await expect(cue).toBeVisible();
-          expect(await cue.evaluate(cue => {
-            const marker = cue.firstElementChild!.getBoundingClientRect();
-            return [...cue.parentElement!.children].filter(e => e !== cue).every(e => {
-              const b = e.getBoundingClientRect();
-              return marker.right <= b.left || marker.left >= b.right || marker.bottom <= b.top || marker.top >= b.bottom;
-            });
-          })).toBe(true);
-        }
         await page.screenshot({ path: info.outputPath('instrument-stale.png'), fullPage: true });
       }
     }

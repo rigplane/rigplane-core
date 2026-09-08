@@ -126,9 +126,8 @@ export function projectTxMeterPresentation(
     state: observation.state,
     evidence,
     value: retained ? observation.value : null,
-    text: observation.state === 'current' && relevance === 'indeterminate' ? ' ?' : '',
-    description: cue + (observation.state === 'stale' ? 'Stale observation'
-      : observation.state === 'current' ? 'Current observation' : t('core.meter.state.noReading')),
+    text: retained && relevance === 'indeterminate' ? ' ?' : '',
+    description: cue + (retained ? 'Observed' : t('core.meter.state.noReading')),
   };
 }
 
