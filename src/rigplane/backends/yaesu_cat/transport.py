@@ -300,19 +300,22 @@ class YaesuCatTransport:
                 self._reader.readuntil(b";"),
                 timeout=timeout,
             )
+            # Classify before decoding: a byte >= 0x80 would otherwise raise
+            # UnicodeDecodeError and be caught below as CatTransportError.
+            if any(byte < 0x20 or byte > 0x7E for byte in line_bytes):
+                self._stats.record_error(f"garbled frame: {line_bytes!r}")
+                raise CatGarbledFrameError(f"Garbled frame on the wire: {line_bytes!r}")
             line = line_bytes.decode("ascii").rstrip(";")
         except asyncio.TimeoutError as exc:
             self._stats.timeouts += 1
             raise CatTimeoutError(
                 f"Read timeout ({timeout}s) waiting for ';' terminator"
             ) from exc
+        except CatGarbledFrameError:
+            raise
         except Exception as exc:
             self._stats.record_error(f"read failed: {exc}")
             raise CatTransportError(f"Read failed: {exc}") from exc
-
-        if any(byte < 0x20 or byte > 0x7E for byte in line_bytes):
-            self._stats.record_error(f"garbled frame: {line_bytes!r}")
-            raise CatGarbledFrameError(f"Garbled frame on the wire: {line_bytes!r}")
 
         if self._debug_logging:
             logger.debug("CAT RX: %r", line)
