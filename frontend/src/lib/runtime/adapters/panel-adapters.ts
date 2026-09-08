@@ -1025,10 +1025,7 @@ function confirmedReceiverState(receiver: 0 | 1): ServerState['main'] | undefine
  * recompute), not the instant the clock crosses the threshold.
  *
  * 3000ms (MOR-1478): `tuning-accumulator.ts:6,44` records the observed
- * `set_freq` confirm round trip at 0.5–2s on live hardware, so a shorter
- * budget expires inside the documented worst case and drops the readout
- * back to the stale pre-spin value for the remainder — the MOR-1478
- * symptom itself.
+ * `set_freq` confirm round trip at 0.5–2s on live hardware.
  */
 const ACK_CONFIRM_GRACE_MS = 3_000;
 
@@ -1215,8 +1212,6 @@ export function getPendingNrOn(receiver: 0 | 1): boolean | null {
  * drift. Left as-is; do not refactor without a concrete reason.
  */
 export interface ArmedFact<T> {
-  /** True from command dispatch until a confirming observation (or grace
-   *  expiry) clears the pending record — see the contract above. */
   armed: boolean;
   /** The in-flight target while `armed`; `null` otherwise. Pending is
    *  display-only (leg-1 doctrine) — never read this as an arithmetic base
