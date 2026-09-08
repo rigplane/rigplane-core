@@ -1349,9 +1349,7 @@ class YaesuObservationAdapter:
         e.g. a ``MagicMock`` test double — falls back to always-warn.
 
         ``paths`` names the declared fields the skipped read would have
-        produced. Each is released from the startup gate
-        (``AcquisitionScheduler.abandon_startup_path``), so a field whose
-        answer never parses cannot hold that gate open. Pinned by
+        produced; see ``AcquisitionScheduler.abandon_startup_path`` and
         ``tests/test_yaesu_cat_observation_adapter.py::
         test_skipped_read_abandons_every_declared_path_it_feeds``.
         """
