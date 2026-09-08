@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
@@ -12,7 +13,12 @@ import pytest
 
 from rigplane.core.acquisition_scheduler import AcquisitionScheduler
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
-from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH, ObservedPtt, TxStateReading
 from rigplane.core.tx_target import KnownTxTarget, TxReceiver, UnknownTxTarget
 from rigplane.core.types import BreakInMode
@@ -2754,3 +2760,144 @@ async def test_tx_target_frequency_read_abandons_nothing() -> None:
     assert len(emitted) == 1
     assert isinstance(emitted[0], KnownTxTarget)
     assert emitted[0].frequency_hz is None
+
+
+# ---------------------------------------------------------------------------
+# available_when: the two fields ``rigs/ftx1.toml`` declares conditional
+# ---------------------------------------------------------------------------
+
+
+_ATT_PATH = "receiver.main.operator_controls.att"
+_NOTCH_FREQ_PATH = "receiver.main.operator_controls.manual_notch_freq"
+
+
+def _availability_store(*, mode: str, freq_hz: int) -> StateStore:
+    store = StateStore()
+    for path, value in (
+        (FieldPath.active("main", "freq_mode", "mode"), mode),
+        (FieldPath.active("main", "freq_mode", "freq_hz"), freq_hz),
+    ):
+        store.apply(
+            Observation(
+                path=path,
+                value=value,
+                source=SourceMetadata(source="poll_response", provider="yaesu_cat"),
+                timestamp_monotonic=_clock(),
+            )
+        )
+    return store
+
+
+def _availability_adapter(store: StateStore | None) -> tuple[MagicMock, object]:
+    radio = _make_radio()
+    if store is not None:
+        radio._state_store = store
+    adapter = YaesuObservationAdapter(
+        radio, profile=_profile_state_acquisition(), clock=_clock
+    )
+    return radio, adapter
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_does_not_read_manual_notch_freq_in_fm(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    radio, adapter = _availability_adapter(
+        _availability_store(mode="FM", freq_hz=14_074_000)
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger="rigplane.backends.yaesu_cat.observations"
+    ):
+        observations = await adapter.poll_slow_controls()
+
+    radio.read_manual_notch_freq.assert_not_awaited()
+    assert _NOTCH_FREQ_PATH not in [str(item.path) for item in observations]
+    # A read never sent is not a failed read: it does not go through
+    # ``_log_field_skip``, so nothing warns about the field.
+    assert [
+        record
+        for record in caplog.records
+        if "manual_notch_freq" in record.getMessage()
+    ] == []
+    # The band-conditional sibling is unaffected in this snapshot.
+    radio.read_attenuator.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_reads_manual_notch_freq_in_usb() -> None:
+    radio, adapter = _availability_adapter(
+        _availability_store(mode="USB", freq_hz=14_074_000)
+    )
+
+    observations = await adapter.poll_slow_controls()
+
+    radio.read_manual_notch_freq.assert_awaited()
+    assert _NOTCH_FREQ_PATH in [str(item.path) for item in observations]
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_does_not_read_the_attenuator_above_the_declared_bound() -> (
+    None
+):
+    radio, adapter = _availability_adapter(
+        _availability_store(mode="USB", freq_hz=461_000_000)
+    )
+
+    observations = await adapter.poll_slow_controls()
+
+    radio.read_attenuator.assert_not_awaited()
+    assert _ATT_PATH not in [str(item.path) for item in observations]
+    # The mode-conditional sibling is unaffected in this snapshot.
+    radio.read_manual_notch_freq.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_reads_the_attenuator_below_the_declared_bound() -> None:
+    radio, adapter = _availability_adapter(
+        _availability_store(mode="USB", freq_hz=14_074_000)
+    )
+
+    observations = await adapter.poll_slow_controls()
+
+    radio.read_attenuator.assert_awaited()
+    assert _ATT_PATH in [str(item.path) for item in observations]
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_withholds_a_read_whose_condition_is_unobserved() -> None:
+    radio, adapter = _availability_adapter(StateStore())
+
+    observations = await adapter.poll_slow_controls()
+    paths = [str(item.path) for item in observations]
+
+    radio.read_attenuator.assert_not_awaited()
+    radio.read_manual_notch_freq.assert_not_awaited()
+    assert _ATT_PATH not in paths
+    assert _NOTCH_FREQ_PATH not in paths
+
+    radio, adapter = _availability_adapter(
+        _availability_store(mode="USB", freq_hz=14_074_000)
+    )
+
+    observations = await adapter.poll_slow_controls()
+    paths = [str(item.path) for item in observations]
+
+    radio.read_attenuator.assert_awaited()
+    radio.read_manual_notch_freq.assert_awaited()
+    assert _ATT_PATH in paths
+    assert _NOTCH_FREQ_PATH in paths
+
+
+@pytest.mark.asyncio
+async def test_a_non_state_store_attribute_leaves_both_reads_ungated() -> None:
+    radio, adapter = _availability_adapter(None)
+    assert not isinstance(getattr(radio, "_state_store", None), StateStore)
+
+    observations = await adapter.poll_slow_controls()
+    paths = [str(item.path) for item in observations]
+
+    radio.read_attenuator.assert_awaited()
+    radio.read_manual_notch_freq.assert_awaited()
+    assert _ATT_PATH in paths
+    assert _NOTCH_FREQ_PATH in paths

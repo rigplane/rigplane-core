@@ -1057,6 +1057,7 @@ class WebServer:
             setattr(radio, "_state_freshness_service", freshness_service)
             setattr(radio, "_acquisition_scheduler", scheduler)
             setattr(radio, "_meter_observation_coalescer", coalescer)
+            setattr(radio, "_state_store", self.command_state_store)
         except Exception:
             logger.debug("state acquisition: failed to attach services", exc_info=True)
 
