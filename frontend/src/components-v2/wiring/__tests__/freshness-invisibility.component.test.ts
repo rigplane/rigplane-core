@@ -13,10 +13,10 @@
  * exercised here and fixed: `VfoIndicatorRow`'s "(stale, last observed)"
  * name and the `†` cue's `aria-describedby` sentence. `bar-meter-projector`'s
  * "Stale observation" description is a third instance of the same class,
- * also fixed, but NOT caught by this comparison: this fixture's TX meters
- * (`ptt: false`) take the `relevance === 'idle'` early return before that
- * description branch runs, so both mounts render the same idle text either
- * way. That fix is pinned by `bar-meter-projector.test.ts` and
+ * also fixed, but NOT caught by this comparison: the TX harness's default
+ * RX authority snapshot makes the TX meters not relevant in receive, so
+ * they take the `relevance === 'idle'` early return before that description
+ * branch runs, and both mounts render the same idle text either way. That fix is pinned by `bar-meter-projector.test.ts` and
  * `MetersSurface.test.ts` instead. The segmentline LCD skin still
  * distinguishes the two and is not mounted here: out of scope.
  *

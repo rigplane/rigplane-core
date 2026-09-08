@@ -286,7 +286,8 @@ export function toSpectrumAuthority(
   const dataMode = nonnegativeInteger(dataFact) ? dataFact : null;
   // Native IF shift remains an independently observed raw fact. PBT-only
   // radios instead expose a semantic shift derived from their two
-  // `strictlySeen` PBT facts (fresh or held stale, MOR-1649); no raw
+  // `strictlySeen` PBT facts (fresh or held stale; R40 overturns the
+  // stale half of MOR-1649); no raw
   // IF-shift observation exists for that radio shape.
   const ifShiftFact = caps.capabilities.includes('if_shift')
     ? knownReading(state, `${key}.ifShift`, passband?.ifShift)

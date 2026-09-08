@@ -326,7 +326,8 @@ located by cropping the `-expected.png`/`-actual.png` pair at Playwright's
 reported coordinates and, where a shift was suspected, finding that text's
 exact row band by pixel-intensity search rather than by eye:
 
-- MAIN/SUB S-meter label (`y89-101`/`y106-111`, two ~58px-wide bands
+- MAIN/SUB S-meter label (`y89-101`/`y106-111` in the two StudioLine scenes,
+  `y100-121` in FieldLine light; two ~58px-wide bands
   symmetric left/right, 86/68/74 red px in dark/light StudioLine/FieldLine
   light respectively): `"S ?"` becomes `"?"` plus a new `"unit unknown"`
   line, and the calibrated scale marks disappear. Traced to the
@@ -349,8 +350,8 @@ exact row band by pixel-intensity search rather than by eye:
   16px figure matches the `.passband-freshness` div's `min-height: 1.4em`
   (~15.4px at its 11px font) — the `◷ <stale>` chip container removed from
   `SpectrumPanel.svelte`.
-- Sidebar band-plan cards (`y619-694`, `x20-220`, identical in StudioLine
-  dark and FieldLine light): `"160M TX"` renders as `"160MTX"`. This **is**
+- Sidebar band-plan cards (`y619-694`, `x20-220`, the same reflow in all
+  three scenes): `"160M TX"` renders as `"160MTX"`. This **is**
   explained, and it is main drift that predates this PR, not this PR's own
   change: at `907609b0c` (the commit these baseline PNGs were last pinned
   against) `frontend/src/semantic/BandSurface.svelte` wrote
@@ -358,14 +359,15 @@ exact row band by pixel-intensity search rather than by eye:
   that whitespace to one space, rendering `"160M TX"`
   (`git show 907609b0c:frontend/src/semantic/BandSurface.svelte`). By
   `ec90170d3` (this PR's own base commit) the BandSurface→BandInstrumentHost
-  extraction (commits `186125682`..`6dc86698b`, between the two) had
+  extraction (`3536ae765`, #3334, between the two) had
   rewritten it as `frontend/src/semantic/BandInstrumentHost.svelte`'s
   `>{choice.name}<small>` with no whitespace between them, rendering
   `"160MTX"` (`git show ec90170d3:frontend/src/semantic/BandInstrumentHost.svelte`).
   Card borders and all other rows sit at unchanged y-coordinates (a pure
   horizontal reflow), and the markup change happened before this PR's base
   commit, so it is not attributed to this PR.
-- StudioLine-only band at `y339-347`, `x744-796` (both StudioLine scenes;
+- StudioLine-only band flagged at `y340-348`, `x747-793`, swept over
+  `y339-347`, `x744-796` (both StudioLine scenes;
   absent from FieldLine): re-measured the same way as above — a
   byte-identical **1px downward translation** of the "Classic"
   colour-scheme dropdown text (mean |Δ|=0.40, max=1 at `dy=+1`, vs.
