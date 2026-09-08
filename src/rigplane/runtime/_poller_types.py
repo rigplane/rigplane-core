@@ -1048,8 +1048,6 @@ LEGACY_COMMAND_NAMES: dict[type, str] = {
     SetSplit: "set_split",
     # MOR-2425 PR-1b.
     SetAgc: "set_agc",
-    SetIfShift: "set_if_shift",
-    SetDialLock: "set_dial_lock",
     SetTunerStatus: "set_tuner_status",
     SetMicGain: "set_mic_gain",
     SetCompressor: "set_compressor",
@@ -1060,17 +1058,6 @@ LEGACY_COMMAND_NAMES: dict[type, str] = {
     SetVoxGain: "set_vox_gain",
     SetAntiVoxGain: "set_anti_vox_gain",
     SetVoxDelay: "set_vox_delay",
-    SetScopeDuringTx: "set_scope_during_tx",
-    SetScopeCenterType: "set_scope_center_type",
-    SetScopeEdge: "set_scope_edge",
-    SetScopeFixedEdge: "set_scope_fixed_edge",
-    SetScopeVbw: "set_scope_vbw",
-    SetScopeDual: "set_scope_dual",
-    SetScopeMode: "set_scope_mode",
-    SetScopeSpan: "set_scope_span",
-    SetScopeSpeed: "set_scope_speed",
-    SetScopeRef: "set_scope_ref",
-    SetScopeHold: "set_scope_hold",
 }
 
 

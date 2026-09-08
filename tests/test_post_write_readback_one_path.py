@@ -27,7 +27,6 @@ from rigplane.capabilities import (
     CAP_COMPRESSOR,
     CAP_FILTER_SHAPE,
     CAP_NOTCH,
-    CAP_SCOPE,
     CAP_TUNER,
     CAP_VOX,
 )
@@ -51,10 +50,8 @@ from rigplane.web.radio_poller import (
     SetCompressor,
     SetCompressorLevel,
     SetDataMode,
-    SetDialLock,
     SetFilterShape,
     SetFreq,
-    SetIfShift,
     SetManualNotch,
     SetManualNotchWidth,
     SetMicGain,
@@ -69,17 +66,6 @@ from rigplane.web.radio_poller import (
     SetRitFrequency,
     SetRitStatus,
     SetRitTxStatus,
-    SetScopeCenterType,
-    SetScopeDual,
-    SetScopeDuringTx,
-    SetScopeEdge,
-    SetScopeFixedEdge,
-    SetScopeHold,
-    SetScopeMode,
-    SetScopeRef,
-    SetScopeSpan,
-    SetScopeSpeed,
-    SetScopeVbw,
     SetToneFreq,
     SetTsqlFreq,
     SetTunerStatus,
@@ -144,10 +130,28 @@ _PENDING_LATER_PR: frozenset[str] = frozenset(
         "SetCwPitch",
         "SetKeySpeed",
         "SetBreakIn",
-        # Scope-display settings: eleven of twelve are covered (see below).
-        # rbw is the one exception -- absent from ic7300.toml's declared
-        # acquisition capabilities, unlike its eleven siblings.
+        # Scope-display settings (review B1, MOR-2425 PR-1b): all twelve
+        # are confirmed instead by
+        # ``RadioPoller._reconfirm_scope_field``, called inline from the
+        # same ``case Set*`` arm that dispatches the write -- adding a
+        # target for these to ``_command_target`` made
+        # ``_request_post_write_readback`` fire a SECOND, scheduler-queued
+        # USER-priority ``ensure_fresh`` for the same field on every scope
+        # write, unbudgeted against the scope waveform stream
+        # ``_reconfirm_scope_field``'s own docstring says stays clear.
+        # Folding the two paths into one is PR-3's job.
         "SetScopeRbw",
+        "SetScopeDuringTx",
+        "SetScopeCenterType",
+        "SetScopeEdge",
+        "SetScopeFixedEdge",
+        "SetScopeVbw",
+        "SetScopeDual",
+        "SetScopeMode",
+        "SetScopeSpan",
+        "SetScopeSpeed",
+        "SetScopeRef",
+        "SetScopeHold",
         # TX audio / modulation family: mic_gain, monitor(_gain),
         # compressor(_level), vox(_gain/_delay/anti) are covered (see
         # below). These seven have a state-model field but no declared
@@ -172,7 +176,15 @@ _PENDING_LATER_PR: frozenset[str] = frozenset(
         "SetRxAntenna",
         "SetRxAntennaAnt1",
         "SetRxAntennaAnt2",
-        # Remaining RX controls: agc and if_shift are covered (see below).
+        # Remaining RX controls: agc is covered (see below). if_shift is
+        # NOT (review B2, MOR-2425 PR-1b): on a real FTX-1 the command
+        # queue is drained by ``backends/yaesu_cat/poller.py:
+        # YaesuCatPoller`` (``YaesuCatRadio.create_state_poller`` returns
+        # it), not ``RadioPoller`` -- ``YaesuCatPoller`` has its own
+        # ``match cmd:`` with no ``ensure_fresh`` call anywhere in the
+        # file, so ``RadioPoller._execute``'s ``SetIfShift`` arm is never
+        # reached in production. ``IcomRadio`` has no ``set_if_shift``
+        # method, so the arm cannot be reached from that side either.
         # apf/audio_peak_filter, digisel_shift, nb_depth, nb_width have a
         # state-model field but no declared acquisition capability on
         # IC-7300 or FTX-1. repeater_tone/repeater_tsql are the one case
@@ -182,6 +194,7 @@ _PENDING_LATER_PR: frozenset[str] = frozenset(
         # the write feature, and ``YaesuCatRadio`` has no
         # ``set_repeater_tone``/``set_repeater_tsql`` method for
         # ``RadioPoller._execute`` to call.
+        "SetIfShift",
         "SetApf",
         "SetAudioPeakFilter",
         "SetDigiselShift",
@@ -189,10 +202,15 @@ _PENDING_LATER_PR: frozenset[str] = frozenset(
         "SetNbWidth",
         "SetRepeaterTone",
         "SetRepeaterTsql",
-        # Global/panel settings: dial_lock is covered (see below).
-        # tuning_step/ref_adjust/dash_ratio/main_sub_tracking/dual_watch
-        # have a state-model field but no declared acquisition capability
-        # on IC-7300 or FTX-1.
+        # Global/panel settings: dial_lock is NOT covered, for the same
+        # reason as if_shift above -- FTX-1's real dispatcher is
+        # ``YaesuCatPoller``, which has no readback path, and no Icom
+        # profile declares "dial_lock" as a feature or an acquisition
+        # capability (checked ic705/ic7300/ic7610/ic9700/x6100/x6200/tx500
+        # -- only ftx1.toml declares it). tuning_step/ref_adjust/
+        # dash_ratio/main_sub_tracking/dual_watch have a state-model field
+        # but no declared acquisition capability on IC-7300 or FTX-1.
+        "SetDialLock",
         "SetTuningStep",
         "SetRefAdjust",
         "SetDashRatio",
@@ -379,9 +397,12 @@ _SETTERS: tuple[str, ...] = (
 )
 
 
-# IC-7300-witnessed additions (MOR-2425 PR-1b): agc, tuner_status, the TX
-# audio/modulation nine, and the scope-display twelve all dispatch through
-# ``IcomRadio``.
+# IC-7300-witnessed additions (MOR-2425 PR-1b): agc, tuner_status, and the
+# TX audio/modulation nine dispatch through ``IcomRadio``. Scope-display
+# setters are excluded -- their readback stays on
+# ``RadioPoller._reconfirm_scope_field`` (review B1); see
+# ``tests/test_radio_poller_coverage.py`` for scope-specific dispatch
+# coverage.
 _IC7300_SETTERS: tuple[str, ...] = (
     "set_agc",
     "set_tuner_status",
@@ -394,26 +415,6 @@ _IC7300_SETTERS: tuple[str, ...] = (
     "set_vox_gain",
     "set_anti_vox_gain",
     "set_vox_delay",
-    "set_scope_during_tx",
-    "set_scope_center_type",
-    "set_scope_edge",
-    "set_scope_fixed_edge",
-    "set_scope_vbw",
-    "set_scope_dual",
-    "set_scope_mode",
-    "set_scope_span",
-    "set_scope_speed",
-    "set_scope_ref",
-    "set_scope_hold",
-)
-
-# FTX-1-witnessed additions: if_shift and dial_lock dispatch through
-# ``YaesuCatRadio`` -- IcomRadio has no ``set_if_shift`` at all (IC-7300
-# declares no "if_shift" feature, so the web ingress capability gate never
-# lets that arm reach a real Icom radio).
-_YAESU_SETTERS: tuple[str, ...] = (
-    "set_if_shift",
-    "set_dial_lock",
 )
 
 
@@ -424,14 +425,6 @@ def test_mocked_setters_exist_on_the_real_backend() -> None:
     missing = [
         name for name in (*_SETTERS, *_IC7300_SETTERS) if not hasattr(IcomRadio, name)
     ]
-    assert missing == []
-
-
-def test_yaesu_mocked_setters_exist_on_the_real_backend() -> None:
-    """Same guarantee as above, for the setters witnessed on FTX-1."""
-    from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
-
-    missing = [name for name in _YAESU_SETTERS if not hasattr(YaesuCatRadio, name)]
     assert missing == []
 
 
@@ -590,20 +583,6 @@ _IC7300_FAMILY: tuple[tuple[Any, str], ...] = (
     (SetVoxGain(level=128), "global.operator_controls.vox_gain"),
     (SetAntiVoxGain(level=128), "global.operator_controls.anti_vox_gain"),
     (SetVoxDelay(level=5), "global.operator_controls.vox_delay"),
-    (SetScopeDuringTx(on=True), "scope_controls.global.display.during_tx"),
-    (SetScopeCenterType(center_type=1), "scope_controls.global.display.center_type"),
-    (SetScopeEdge(edge=1), "scope_controls.global.display.edge"),
-    (
-        SetScopeFixedEdge(edge=1, start_hz=7_000_000, end_hz=7_300_000),
-        "scope_controls.global.display.fixed_edge",
-    ),
-    (SetScopeVbw(narrow=True), "scope_controls.global.display.vbw_narrow"),
-    (SetScopeDual(dual=True), "scope_controls.global.display.dual"),
-    (SetScopeMode(mode=1), "scope_controls.global.display.mode"),
-    (SetScopeSpan(span=25_000), "scope_controls.global.display.span"),
-    (SetScopeSpeed(speed=1), "scope_controls.global.display.speed"),
-    (SetScopeRef(ref=0), "scope_controls.global.display.ref_db"),
-    (SetScopeHold(on=True), "scope_controls.global.display.hold"),
 )
 
 
@@ -616,42 +595,10 @@ _IC7300_FAMILY: tuple[tuple[Any, str], ...] = (
 async def test_ic7300_family_dispatch_requests_exactly_one_user_readback(
     command: Any, path: str
 ) -> None:
-    """agc, tuner_status, TX audio, and scope-display, on the real IC-7300 profile."""
+    """agc, tuner_status, and TX audio, on the real IC-7300 profile."""
     poller, scheduler = _poller(
         setters=_IC7300_SETTERS,
-        capabilities=frozenset(
-            {CAP_AGC, CAP_TUNER, CAP_COMPRESSOR, CAP_VOX, CAP_SCOPE}
-        ),
-    )
-
-    await poller._execute(command)  # noqa: SLF001
-
-    assert _readback_paths(scheduler) == {FieldPath.parse(path)}
-    assert _readback_priorities(scheduler) == {AcquisitionPriority.USER}
-
-
-_FTX1_FAMILY: tuple[tuple[Any, str], ...] = (
-    (SetIfShift(offset=100, receiver=0), "receiver.main.operator_controls.if_shift"),
-    (SetDialLock(on=True), "global.tx_state.dial_lock"),
-)
-
-
-@pytest.mark.parametrize(
-    ("command", "path"),
-    _FTX1_FAMILY,
-    ids=[type(c).__name__ for c, _ in _FTX1_FAMILY],
-)
-@pytest.mark.asyncio
-async def test_ftx1_family_dispatch_requests_exactly_one_user_readback(
-    command: Any, path: str
-) -> None:
-    """if_shift and dial_lock: declared on FTX-1, not on IC-7300.
-
-    Both dispatch arms call the setter unconditionally (no capability
-    gate), so no ``radio.capabilities`` entry is needed to reach it.
-    """
-    poller, scheduler = _poller(
-        model="FTX-1", setters=_YAESU_SETTERS, capabilities=frozenset()
+        capabilities=frozenset({CAP_AGC, CAP_TUNER, CAP_COMPRESSOR, CAP_VOX}),
     )
 
     await poller._execute(command)  # noqa: SLF001

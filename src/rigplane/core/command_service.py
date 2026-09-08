@@ -1355,24 +1355,23 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "operator_controls", "tone_freq")
     if name == "set_tsql_freq":
         return FieldPath.receiver(receiver, "operator_controls", "tsql_freq")
-    # RX controls (MOR-2425 PR-1b): agc/if_shift resolve to a declared
-    # acquisition capability on at least one live-bench profile (agc on
-    # IC-7300; if_shift on FTX-1 -- IC-7300 does not declare "if_shift" as
-    # a feature at all, and only FTX-1's ``YaesuCatRadio`` implements the
-    # setter ``RadioPoller._execute`` calls). apf/audio_peak_filter/
-    # digisel_shift/nb_depth/nb_width have a state-model field but no
-    # acquisition capability on either profile -- left pending.
+    # RX controls (MOR-2425 PR-1b): agc resolves to a declared acquisition
+    # capability on IC-7300. apf/audio_peak_filter/digisel_shift/nb_depth/
+    # nb_width have a state-model field but no acquisition capability on
+    # either profile -- left pending. if_shift is NOT resolved here (MOR-
+    # 2425 PR-1b review, B2): on a real FTX-1 the command queue is drained
+    # by ``backends/yaesu_cat/poller.py: YaesuCatPoller``, not
+    # ``RadioPoller`` (``YaesuCatRadio.create_state_poller`` returns the
+    # former) -- ``RadioPoller._execute``'s ``SetIfShift`` arm, and this
+    # target, are unreachable in production. ``IcomRadio`` has no
+    # ``set_if_shift`` method at all, so the arm cannot be reached from
+    # that side either. Left pending.
     if name == "set_agc":
         return FieldPath.receiver(receiver, "operator_controls", "agc")
-    if name == "set_if_shift":
-        return FieldPath.receiver(receiver, "operator_controls", "if_shift")
-    # Global panel settings (MOR-2425 PR-1b): dial_lock is declared on
-    # FTX-1 only (IC-7300 declares no acquisition capability for it, even
-    # though both profiles expose the write). tuning_step/ref_adjust/
-    # dash_ratio/main_sub_tracking/dual_watch are declared on neither
-    # profile -- left pending.
-    if name == "set_dial_lock":
-        return FieldPath.global_("tx_state", "dial_lock")
+    # dial_lock is NOT resolved here for the same reason as if_shift above:
+    # FTX-1's real dispatcher is ``YaesuCatPoller``, which has no readback
+    # path, and no Icom profile declares "dial_lock" as a feature or an
+    # acquisition capability. Left pending.
     # TX audio / modulation (MOR-2425 PR-1b): all nine resolve on IC-7300;
     # mic_gain/compressor_on/compressor_level/vox_on also resolve on
     # FTX-1. af_mute/ssb_tx_bandwidth/drive_gain and the four mod-input
@@ -1397,36 +1396,14 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.global_("operator_controls", "anti_vox_gain")
     if name == "set_vox_delay":
         return FieldPath.global_("operator_controls", "vox_delay")
-    # Scope-display settings (MOR-2425 PR-1b): eleven of the twelve
-    # ``Set*`` names are declared ``polling_only`` on IC-7300
-    # (``scope_controls.global.display.*``) -- read-only in
-    # ``state_pipeline_contracts.py`` (writes go through this command
-    # path, not a generic state-pipeline write), which does not bear on
-    # whether ``ensure_fresh`` can poll them. ``rbw`` is the one exception
-    # -- absent from ic7300.toml's declared capabilities -- left pending.
-    # FTX-1 has no scope.
-    if name == "set_scope_during_tx":
-        return FieldPath.scope_control("display", "during_tx")
-    if name == "set_scope_center_type":
-        return FieldPath.scope_control("display", "center_type")
-    if name == "set_scope_edge":
-        return FieldPath.scope_control("display", "edge")
-    if name == "set_scope_fixed_edge":
-        return FieldPath.scope_control("display", "fixed_edge")
-    if name == "set_scope_vbw":
-        return FieldPath.scope_control("display", "vbw_narrow")
-    if name == "set_scope_dual":
-        return FieldPath.scope_control("display", "dual")
-    if name == "set_scope_mode":
-        return FieldPath.scope_control("display", "mode")
-    if name == "set_scope_span":
-        return FieldPath.scope_control("display", "span")
-    if name == "set_scope_speed":
-        return FieldPath.scope_control("display", "speed")
-    if name == "set_scope_ref":
-        return FieldPath.scope_control("display", "ref_db")
-    if name == "set_scope_hold":
-        return FieldPath.scope_control("display", "hold")
+    # Scope-display settings are NOT resolved here (MOR-2425 PR-1b review,
+    # B1): a scope write is already confirmed by
+    # ``web/radio_poller.py: RadioPoller._reconfirm_scope_field``, called
+    # inline from the same ``case Set*`` arm that dispatches the write.
+    # Adding a target here would fire a second, scheduler-queued
+    # ``ensure_fresh`` for the same field -- a USER-priority query into the
+    # scope waveform stream ``_reconfirm_scope_field``'s own docstring says
+    # stays clear. Folding the two paths into one is PR-3's job.
     if name == "set_rit_frequency":
         return FieldPath.global_("operator_controls", "rit_freq")
     if name == "set_rit_status":
