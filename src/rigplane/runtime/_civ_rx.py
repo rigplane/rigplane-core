@@ -85,6 +85,9 @@ _SCOPE_BACKLOG_SHED_THRESHOLD = 256
 _SCOPE_BACKLOG_KEEP_LATEST = 64
 _RAW_RECEIVED_FRAME_BYTES_LIMIT = 256
 
+#: Fallback freshness TTLs for CI-V observations, keyed ``(scope, family,
+#: name)`` — rig-blind, and read by ``_observation_max_age`` only for a path
+#: the loaded profile declares no ``field_policies`` entry for.
 _OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
     ("receiver", "freq_mode", "freq_hz"): 5.0,
     ("receiver", "freq_mode", "mode"): 5.0,
@@ -106,12 +109,11 @@ _OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
     # MOR-2234 follow-up: declaring these observable in ``rigs/ic7300.toml``
     # left them with no entry here, so ``_observation`` gave them
     # ``max_age=None`` and ``state_store.py: StateStore.mark_stale_due``
-    # never aged them. These two values are this table's own, independent of
-    # what any profile declares for the same paths: ``_observation`` takes
-    # every CI-V observation's ``max_age`` from this (scope, family, name)
-    # lookup — the ``tx_target`` branch there is the sole exception — and
-    # nothing in this module reads ``field_policies``. Pinned by
-    # ``test_tone_and_tsql_freq_observations_can_go_stale``.
+    # never aged them. IC-7300 no longer reaches these two rows — it declares
+    # a field policy for both — but ``rigs/ic705.toml`` and
+    # ``rigs/ic9700.toml`` bind ``get_tone_freq``/``get_tsql_freq`` with no
+    # ``field_policies`` table at all, and still do. Pinned by
+    # ``test_tone_and_tsql_freq_observations_fall_back_to_the_table``.
     ("receiver", "operator_controls", "tone_freq"): 25.0,
     ("receiver", "operator_controls", "tsql_freq"): 25.0,
     ("global", "slow_state", "active"): 5.0,
@@ -513,6 +515,33 @@ def _profile_path_for_observation(profile: Any, path: FieldPath) -> FieldPath:
         if capability.availability.value != "unknown":
             return candidate
     return path
+
+
+def _observation_max_age(profile: Any, path: FieldPath) -> float | None:
+    """Freshness TTL to stamp on one CI-V observation of ``path``.
+
+    The rig's own ``[state_acquisition.field_policies]`` entry wins where the
+    profile declares one — including ``freshness_ttl_seconds = "never"``,
+    which loads as ``None`` and leaves ``state_store.py:
+    StateStore.mark_stale_due`` unable to age the field at all. Everything
+    else falls back to :data:`_OBSERVATION_MAX_AGE_SECONDS`.
+
+    Only a *declared* policy counts, not ``policy_for``'s ``default_policy``
+    answer: a profile's default applies to every path in the rig, including
+    the ones no author considered when writing it.
+    """
+
+    acquisition = getattr(profile, "state_acquisition", None)
+    if acquisition is not None:
+        declared = acquisition.field_policies.get(
+            _profile_path_for_observation(acquisition, path)
+        )
+        if declared is not None:
+            ttl: float | None = declared.freshness_ttl_seconds
+            return ttl
+    return _OBSERVATION_MAX_AGE_SECONDS.get(
+        (path.scope.value, path.family.value, path.name)
+    )
 
 
 def _changeset_for_request_paths(
@@ -2779,9 +2808,7 @@ class CivRuntime:
         max_age_path = (
             FieldPath.global_("tx_state", "ptt") if path == OBSERVED_PTT_PATH else path
         )
-        max_age = _OBSERVATION_MAX_AGE_SECONDS.get(
-            (max_age_path.scope.value, max_age_path.family.value, max_age_path.name)
-        )
+        max_age = _observation_max_age(self._host._profile, max_age_path)
         if path == FieldPath.global_("tx_state", "tx_target"):
             # MOR-2223: single source shared with
             # ``RadioPoller._tx_target_max_age`` — see
