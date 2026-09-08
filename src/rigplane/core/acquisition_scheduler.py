@@ -572,20 +572,29 @@ class AcquisitionScheduler:
         self,
         request: AcquisitionRequest,
         *,
+        key: _AcquisitionRequestKey,
         previous_id: str,
     ) -> AcquisitionRequest:
-        """Return ``request`` under a new id, dropping the old id's state.
+        """Return ``request`` under a new id, moving the old id's state to it.
 
         A drain keys its in-flight ledger by request id and skips a request
         whose paths it has already sent, so a new id is what makes the next
         pass send them again. The old id's dispatch record and claim are
-        dropped with it.
+        dropped with it; a pending cadence update naming it is re-pointed at
+        the new id, which is what carries a part-completed group's
+        ``semantic_changed`` to the completion that consumes it.
         """
 
         request_id = f"acq-{self._next_id}"
         self._next_id += 1
         self._forget_dispatch(previous_id)
         self._claims_by_request_id.pop(previous_id, None)
+        pending_cadence = self._pending_cadence_by_key.get(key)
+        if pending_cadence is not None and pending_cadence.request_id == previous_id:
+            self._pending_cadence_by_key[key] = replace(
+                pending_cadence,
+                request_id=request_id,
+            )
         return replace(request, id=request_id)
 
     def ensure_fresh(
@@ -1406,7 +1415,11 @@ class AcquisitionScheduler:
                     existing.id,
                     grouped_paths,
                 ):
-                    request = self._reissue(request, previous_id=existing.id)
+                    request = self._reissue(
+                        request,
+                        key=key,
+                        previous_id=existing.id,
+                    )
                 self._requests_by_key[key] = request
                 queued.append(request)
                 continue

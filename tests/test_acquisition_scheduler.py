@@ -4275,3 +4275,50 @@ def test_fresh_dispatch_reissue_drops_the_previous_id_dispatch_and_claim() -> No
         )
         is False
     )
+
+
+def test_fresh_dispatch_reissue_carries_the_pending_cadence_update() -> None:
+    policy = AcquisitionPolicy(
+        cadence_seconds=1.0,
+        freshness_ttl_seconds=10.0,
+        adaptive_decay=AdaptiveDecayPolicy(
+            enabled=True,
+            idle_multiplier=2.0,
+            max_cadence_seconds=8.0,
+        ),
+    )
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    clock = FreshnessClock(start=230.0)
+    scheduler = AcquisitionScheduler(
+        profile=_profile([freq, mode], default_policy=policy),
+        clock=clock,
+    )
+
+    grouped = scheduler.due_requests()[0]
+    scheduler.record_dispatch(grouped.id, paths=(freq,), now=clock.now())
+    scheduler.record_acquisition_result(
+        replace(grouped, paths=(mode,), capability_ids=(str(mode),)),
+        _changeset(
+            changes=(FieldChange(path=mode, previous="USB", current="LSB"),),
+            at=clock.now(),
+        ),
+    )
+
+    readback = scheduler.ensure_fresh(
+        freq,
+        max_age=5.0,
+        priority="user",
+        reason="post_write_readback",
+        require_fresh_dispatch=True,
+    )
+    assert readback.request is not None
+    assert readback.request.id != grouped.id
+
+    scheduler.record_acquisition_result(readback.request, _changeset(at=clock.now()))
+
+    # The change on ``mode`` was carried across the reissue, so the group's
+    # cadence resets to its base rather than decaying by idle_multiplier.
+    diagnostics = scheduler.diagnostics()
+    assert diagnostics["cadenceByPath"][str(freq)]["currentCadenceSeconds"] == 1.0
+    assert scheduler._pending_cadence_by_key == {}
