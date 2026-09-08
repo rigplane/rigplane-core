@@ -677,13 +677,16 @@ describe('SDR hosted semantic scope controls (MOR-2358)', () => {
     if (mode === null) expect((el('scope-mode-0') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it.each(['stale', 'unobserved'] as const)('keeps a supported %s leaf disabled and rejects a synthetic click', (status) => {
+  it.each(['stale', 'unobserved'] as const)('keeps a supported %s leaf disabled only when unobserved (R29); a stale click dispatches its last value, an unobserved one is rejected', (status) => {
     const source = liveState();
     source.fieldStatus!['scopeControls.hold'] = { ...fresh, observed: status !== 'unobserved', freshness: status === 'stale' ? 'stale' : 'unknown', availability: status === 'stale' ? 'stale' : 'missing' };
     useState(source); hosted();
     const hold = el('scope-hold') as HTMLButtonElement;
-    expect(hold.closest('[data-testid="scope-toolbar-host"]')).not.toBeNull(); expect(hold.disabled).toBe(true);
-    hold.dispatchEvent(new MouseEvent('click', { bubbles: true })); flushSync(); expect(sendCommand).not.toHaveBeenCalled();
+    expect(hold.closest('[data-testid="scope-toolbar-host"]')).not.toBeNull();
+    expect(hold.disabled).toBe(status === 'unobserved');
+    hold.dispatchEvent(new MouseEvent('click', { bubbles: true })); flushSync();
+    if (status === 'unobserved') expect(sendCommand).not.toHaveBeenCalled();
+    else expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_scope_hold', { on: true });
   });
 
   it('removes unsupported receiver leaves while keeping the supported surface hosted', () => {

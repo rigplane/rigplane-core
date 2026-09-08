@@ -37,21 +37,24 @@
 {#snippet independent(handles: FilterInstrumentHandles)}
   <div data-slot="mode">{@render handles.mode()}</div>
   <div data-slot="filter">{@render handles.filter()}</div>
+  <div data-slot="shape">{@render handles.shape()}</div>
+  <div data-slot="data-mode">{@render handles.dataMode()}</div>
 {/snippet}
 
-<FilterInstrumentHost {view} {pendingFilter} {onModeChange} {onFilterChange} {...selection}>
+<FilterInstrumentHost {view} {pendingFilter} {pendingDataMode} {onModeChange} {onFilterChange}
+  {onFilterShapeChange} {onDataModeChange} {...selection}>
   {#snippet children(handles: FilterInstrumentHandles)}
     {#if renderSurface && view !== null}
       <FilterSurface
         {view} {handles} finiteLayout={presentation === 'independent' ? independent : undefined}
-        {pendingDataMode} {filterWidthFeedback} {onDataModeChange} {onFilterWidthChange}
-        {onFilterShapeChange} {onIfShiftChange} {onPbtInnerChange} {onPbtOuterChange}
+        {filterWidthFeedback} {onFilterWidthChange}
+        {onIfShiftChange} {onPbtInnerChange} {onPbtOuterChange}
       />
     {:else}
       {#key presentation}
         <section data-testid={`${presentation}-filter-composition`}>
           {#if presentation === 'grouped'}
-            {@render handles.mode()}{@render handles.filter()}
+            {@render handles.mode()}{@render handles.filter()}{@render handles.shape()}{@render handles.dataMode()}
           {:else}
             {@render independent(handles)}
           {/if}

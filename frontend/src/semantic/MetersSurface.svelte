@@ -36,7 +36,8 @@
       valueFraction: frame.motion.smoothedFraction,
       fault: projection.fault,
       relevant: projection.relevant,
-      stateText: projection.state === 'current' && !projection.ratioScale
+      stateText: (projection.state === 'current' || projection.state === 'stale')
+        && !projection.ratioScale
         ? projection.displayText : projection.stateText,
       accessibleDescription: projection.accessibleDescription ?? 'SWR: Not observed',
     };
@@ -96,6 +97,7 @@
     {@const bar = frame.projection}
     <div class="meter-tile" data-meter-tile data-meter={bar.key} data-testid={`meter-${bar.key}`}
       data-relevant={bar.relevant} data-observed={bar.observed} data-fault={bar.fault}
+      data-meter-state={bar.state}
       role="group" aria-label={`${bar.label} meter`}>
       {#if bar.gauge}
         {#key resetPeakSeat}<StationMeterBarPlacement {frame} label={bar.label}

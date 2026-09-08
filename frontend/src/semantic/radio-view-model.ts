@@ -389,7 +389,7 @@ export interface FilterPassbandViewModel {
    * The FTX-1 has none — showing its SHARP/SOFT shape CONTROL permanently
    * disabled is a dead control (same class of defect `ifShiftControlStructural`
    * fixed, MOR-1494 ruling: hide capability-absent controls, don't show them
-   * dead). `FilterSurface.svelte` gates the filter-shape ROW on this flag,
+   * dead). `FilterInstrumentHost.svelte` gates the filter-shape ROW on this flag,
    * and ONLY this flag — never on `filterShape.availability.structural`,
    * which stays reserved for consumers of the derived fact itself (see
    * `deriveFilterPassband`'s doc comment). A plain boolean, not
@@ -527,7 +527,7 @@ export type RfFrontEndField<T> = TxAuxField<T>;
  * `'mutually-exclusive-control'` code. See
  * `radio-view-model-adapter.ts`'s `deriveRfFrontEnd` for the derivation,
  * which reads the mutex condition off THIS group's own `digiSel` fact —
- * never off raw state again — so a stale/unobserved DIGI-SEL reading FAILS
+ * never off raw state again — so an unobserved DIGI-SEL reading FAILS
  * CLOSED (the reason is present, disabling PRE) rather than silently
  * re-enabling the control the way a naive `rawDigisel ?? false` would.
  */
@@ -639,7 +639,7 @@ export interface BandViewModel {
    * the tri-state (`$lib/utils/tx-permit`: "unknown fails closed").
    * `'allowed'` requires ALL of: a POSITIVELY known current band, a choice
    * entry for it, and a POSITIVELY `allowed` live-frequency permit. An
-   * unobserved/stale/malformed frequency, an out-of-plan frequency, a band
+   * unobserved/malformed frequency, an out-of-plan frequency, a band
    * absent from the choice set, an out-of-segment frequency and unconfigured
    * TX ranges all read `'denied'`. An unknown input must never enable a
    * TX-adjacent affordance — see `radio-view-model-adapter.ts`'s `deriveBand`,

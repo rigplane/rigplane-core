@@ -703,16 +703,16 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
 
     // R29: a stale-but-observed field no longer fails the control closed —
     // `projectControlFeedback` presents the last value with phase 'idle',
-    // never a blanked 'unavailable' placeholder. `disabled` stays `true`
-    // here regardless: `CwKeyerSurface`'s own `usable(cw.breakInDelay)` gate
-    // reads `field.availability.operational` from the SEPARATE, unfixed
-    // `field-status.ts: getFieldAvailability` chokepoint (still 'stale' !==
-    // 'available' there) — a second doctrine site the census flagged and
-    // this PR defers (see PR body's field-status follow-up paragraph), not
-    // a regression introduced here.
+    // never a blanked 'unavailable' placeholder. `disabled` now flips to
+    // `false` too: MOR-2425's follow-up PR fixes `field-status.ts:
+    // getFieldAvailability`, the second doctrine site #3357 (the commit that
+    // wrote this test) named and deliberately deferred — `CwKeyerSurface`'s
+    // `usable(cw.breakInDelay)` gate reads THAT primitive, confirmed by the
+    // flipped `STALE_FIELDS` row for `breakInDelay` in
+    // `cw-keyer-adapter.test.ts`.
     unmount(component!); component = null;
     useState(delayState(72, 12, { freshness: 'stale' })); render();
-    expect(delayInput().disabled).toBe(true);
+    expect(delayInput().disabled).toBe(false);
     expect(delayInput().dataset.commandPhase).toBe('idle');
     expect(delayInput().value).toBe('72');
     expect(delayInput().hasAttribute('aria-valuenow')).toBe(true);

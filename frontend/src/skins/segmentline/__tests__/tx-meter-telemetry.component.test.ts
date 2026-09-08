@@ -45,16 +45,18 @@ for (const [index, Component] of variants.entries()) describe(names[index], () =
             expect(el).toBeDefined();
             const idle = rf === 'receiving' && !relevant;
             const indeterminate = !idle && !(rf === 'transmitting' && relevant);
-            const expected = idle ? 'IDLE' : observation.state === 'stale' ? 'STALE'
-              : observation.state === 'unknown' ? '?' : `12.35${indeterminate ? ' ?' : ''}`;
-            expect(el!.textContent?.trim()).toBe(`${label} ${expected}`);
+            // MOR-2425 (R29/R32): stale shows its own digits, same as current;
+            // idle and never-observed are an empty scale — no text token.
+            const expected = idle || observation.state === 'unknown' ? ''
+              : `${Number(observation.value.toFixed(2))}${indeterminate && observation.state === 'current' ? ' ?' : ''}`;
+            expect(el!.textContent?.trim()).toBe(`${label} ${expected}`.trim());
             const description = el!.getAttribute('aria-label') ?? '';
             expect(description).toContain(label);
             expect(description).not.toMatch(/87.65/);
-            if (idle) expect(description).toContain('Not measuring in RX');
+            if (idle) expect(description).toContain('Not measuring in receive');
             if (indeterminate) expect(description).toContain('RF relevance indeterminate');
             if (!idle && observation.state === 'stale') expect(description).toContain('Stale observation');
-            if (!idle && observation.state === 'unknown') expect(description).toContain('Not observed');
+            if (!idle && observation.state === 'unknown') expect(description).toContain('No reading');
             if (!idle && observation.state === 'current') expect(description).toContain('12.35');
           }
           expect(root.querySelectorAll('button,input,select,textarea')).toHaveLength(0);
@@ -69,12 +71,12 @@ for (const [index, Component] of variants.entries()) describe(names[index], () =
       const nodes = targets.map((label) => slot(root, label)!);
       const other = ['VD', 'ID', 'COMP'].map((label) => slot(root, label)!.textContent);
       for (const [rf, relevant, observation, text] of [
-        ['receiving', false, observations[0], 'IDLE'], ['transmitting', true, observations[1], 'STALE'],
-        ['transmitting', true, observations[2], '?'], ['transmitting', true, { state: 'current', value: 0 }, '0'],
+        ['receiving', false, observations[0], ''], ['transmitting', true, observations[1], '87.65'],
+        ['transmitting', true, observations[2], ''], ['transmitting', true, { state: 'current', value: 0 }, '0'],
       ] as const) {
         props.model = model(rf, relevant, observation); flushSync();
         expect(nodes.every((node, i) => node === slot(root, targets[i]) && node.isConnected)).toBe(true);
-        expect(nodes.map((node) => node.textContent?.trim())).toEqual(targets.map((label) => `${label} ${text}`));
+        expect(nodes.map((node) => node.textContent?.trim())).toEqual(targets.map((label) => `${label} ${text}`.trim()));
         expect(['VD', 'ID', 'COMP'].map((label) => slot(root, label)!.textContent)).toEqual(other);
       }
     } finally { unmount(component); root.remove(); }

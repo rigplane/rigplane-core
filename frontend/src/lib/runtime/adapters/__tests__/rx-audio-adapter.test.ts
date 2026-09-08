@@ -288,11 +288,13 @@ describe('rxAudio degrades honestly rather than to the shipped panel defaults', 
     });
     expect(model(onSub, caps(), local).rxAudio!.afLevel.reading)
       .toEqual({ status: 'known', value: 0.77 });
+    // MOR-2425/R29: a stale-but-observed afLevel carries its last value
+    // (`onSub`'s `sub.afLevel` is 0.77) and is `available`, not degraded.
     const staleSub = audioState({
       ...onSub,
       fieldStatus: { ...audioState().fieldStatus, 'sub.afLevel': stale },
     });
-    expect(model(staleSub, caps(), local).rxAudio!.afLevel.reading).toEqual({ status: 'unknown' });
+    expect(model(staleSub, caps(), local).rxAudio!.afLevel.reading).toEqual({ status: 'known', value: 0.77 });
   });
 });
 

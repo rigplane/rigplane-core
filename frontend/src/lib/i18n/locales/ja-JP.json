@@ -184,6 +184,10 @@
   "core.vfo.state.on": "on",
   "core.vfo.state.off": "off",
   "core.vfo.state.unknown": "unknown",
+
+  "core.meter.state.idle": "受信中は測定していません",
+  "core.meter.state.noReading": "測定値なし",
+
   "core.vfo.ops.equalize": "VFO を等しくする",
   "core.vfo.ops.swap": "VFO を入れ替え",
   "core.vfo.ops.quickSplit": "クイック split",

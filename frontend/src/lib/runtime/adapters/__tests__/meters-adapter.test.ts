@@ -141,7 +141,7 @@ describe('canonical meter source identity (MOR-2400)', () => {
     });
   });
 
-  it('follows the active signal receiver and emits null for every noncurrent field', () => {
+  it('follows the active signal receiver and keeps its source for stale evidence too (R29)', () => {
     const dualCaps = caps({
       receivers: 2, vfoScheme: 'main_sub',
       capabilities: ['scope', 'audio', 'tx', 'dual_rx'],
@@ -154,8 +154,22 @@ describe('canonical meter source identity (MOR-2400)', () => {
       providerGeneration: 1, scope: 'receiver', receiver: 'SUB', path: 'sub.sMeter',
     });
 
+    // A stale leaf still carries a real observed value (R29), so its source
+    // identity is retained just like a current one — only a genuinely
+    // unresolved evidence state (see the next test) drops it.
     const state = meterState();
     const fieldStatus = Object.fromEntries(METER_PATHS.map((path) => [path, stale]));
+    const meters = model({ ...state, fieldStatus }, caps(), TX).meters!;
+    for (const field of [
+      meters.signal, meters.power, meters.swr, meters.alc, meters.compression,
+      meters.drainVoltage, meters.drainCurrent,
+    ]) expect(field.source).not.toBeNull();
+  });
+
+  it('emits null source for every field that was never observed', () => {
+    const state = meterState();
+    const neverObserved = { ...fresh, observed: false };
+    const fieldStatus = Object.fromEntries(METER_PATHS.map((path) => [path, neverObserved]));
     const meters = model({ ...state, fieldStatus }, caps(), TX).meters!;
     for (const field of [
       meters.signal, meters.power, meters.swr, meters.alc, meters.compression,
@@ -179,9 +193,15 @@ describe('canonical meter source identity (MOR-2400)', () => {
     expect(model(state, caps(), RX).meters!.signal.domain).toEqual(domain);
   });
 
-  it('emits unknown domain when a calibrated marker is not current', () => {
+  it('keeps the calibrated domain for a stale meter (R29 — meterField parity with the projector)', () => {
     const state = meterState();
     state.fieldStatus!['main.sMeter'] = { ...stale, quality: ['calibrated'] };
+    expect(model(state, caps(), RX).meters!.signal.domain).toEqual({ kind: 'engineering', unit: 'db' });
+  });
+
+  it('still drops the domain to unknown when the meter was never observed', () => {
+    const state = meterState();
+    state.fieldStatus!['main.sMeter'] = { ...fresh, observed: false, quality: ['calibrated'] };
     expect(model(state, caps(), RX).meters!.signal.domain).toEqual({ kind: 'unknown' });
   });
 
@@ -260,8 +280,9 @@ describe('target meter display provenance (MOR-2359)', () => {
         for (const [meter, path] of targets) {
           const { display, ...strict } = meters[meter];
           expect(display).toBeDefined();
-          const operational = status.observed !== false
-            && !('freshness' in status && status.freshness === 'stale');
+          // R29: a stale leaf is still operational — only a leaf that was
+          // never observed at all degrades the reading.
+          const operational = status.observed !== false;
           expect(strict).toEqual({
             reading: operational ? { status: 'known', value: state[path] } : { status: 'unknown' },
             availability: { structural: true, operational }, relevant,
@@ -332,13 +353,14 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
     });
   });
 
-  it('degrades a stale meter to unknown while keeping structural availability', () => {
+  it('keeps a stale meter\'s reading known and its structural/operational availability true (R29)', () => {
     const meters = model(meterState({
       fieldStatus: { ...meterState().fieldStatus, swrMeter: stale },
     }), caps(), TX).meters!;
     expect(meters.swr).toEqual({
-      reading: { status: 'unknown' }, availability: { structural: true, operational: false }, relevant: true,
-      display: { state: 'stale', value: 20 }, domain: { kind: 'unknown' }, source: null,
+      reading: { status: 'known', value: 20 }, availability: { structural: true, operational: true }, relevant: true,
+      display: { state: 'stale', value: 20 }, domain: { kind: 'unknown' },
+      source: { providerGeneration: 1, scope: 'radio', receiver: null, path: 'swrMeter' },
     });
   });
 
@@ -357,7 +379,8 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
       sub: { freqHz: 7100000, mode: 'LSB', filter: 1, sMeter: 60 } as ServerState['main'],
       fieldStatus: { ...meterState().fieldStatus, 'sub.sMeter': stale },
     });
-    expect(model(staleSub, dualCaps, RX).meters!.signal.reading).toEqual({ status: 'unknown' });
+    // R29: a stale S-meter still carries its last observed value.
+    expect(model(staleSub, dualCaps, RX).meters!.signal.reading).toEqual({ status: 'known', value: 60 });
   });
 
   it.each(METER_PATHS.filter((path) => path !== 'sub.sMeter'))(
@@ -378,7 +401,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
   );
 
   it.each(METER_PATHS.filter((path) => path !== 'sub.sMeter'))(
-    'keeps stale %s structurally present but non-operational', (path) => {
+    'keeps stale %s structurally present and operational, with its value retained (R29)', (path) => {
       const state = meterState({
         fieldStatus: { ...meterState().fieldStatus, [path]: stale },
       });
@@ -389,8 +412,9 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
             : path === 'alcMeter' ? meters.alc
               : path === 'compMeter' ? meters.compression
                 : path === 'vdMeter' ? meters.drainVoltage : meters.drainCurrent;
-      expect(field.reading).toEqual({ status: 'unknown' });
-      expect(field.availability).toEqual({ structural: true, operational: false });
+      const rawValue = path === 'main.sMeter' ? state.main!.sMeter : state[path];
+      expect(field.reading).toEqual({ status: 'known', value: rawValue });
+      expect(field.availability).toEqual({ structural: true, operational: true });
     },
   );
 

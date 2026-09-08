@@ -789,7 +789,10 @@
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
     const model = toRadioViewModel(state, caps);
-    if (model?.modeFilter === undefined) return null;
+    // MOR-2425 F1-C2: widened from `model?.modeFilter === undefined` alone so
+    // a passband-only radio (Filter Shape/DATA, no mode/filter group) still
+    // gets a valid Filter authority — the same lane now serves both groups.
+    if (model?.modeFilter === undefined && model?.filterPassband === undefined) return null;
     return Object.freeze({
       sessionEpoch: session.epoch,
       providerGeneration: stateGeneration as number,
@@ -1499,9 +1502,11 @@
   {#snippet children(rfFrontEndInstruments)}
   {#snippet vfoInstrumentComposition(vfoOperations: VfoOperationHandles)}
   <FilterInstrumentHost
-    {...filterFiniteRendererSelection} {view} {pendingFilter}
+    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingDataMode}
     onModeChange={filterIntents.onModeChange}
     onFilterChange={filterIntents.onFilterChange}
+    onFilterShapeChange={filterIntents.onFilterShapeChange}
+    onDataModeChange={filterIntents.onDataModeChange}
   >
   {#snippet children(filterInstruments)}
   <BandInstrumentHost
@@ -1885,11 +1890,8 @@
     {#if view?.modeFilter || view?.filterPassband}
       <FilterSurface
         {view} handles={filterInstruments} {finiteLayout}
-        {pendingDataMode}
         {filterWidthFeedback}
-        onDataModeChange={filterIntents.onDataModeChange}
         onFilterWidthChange={filterIntents.onFilterWidthChange}
-        onFilterShapeChange={filterIntents.onFilterShapeChange}
         onIfShiftChange={filterIntents.onIfShiftChange}
         onPbtInnerChange={filterIntents.onPbtInnerChange}
         onPbtOuterChange={filterIntents.onPbtOuterChange}

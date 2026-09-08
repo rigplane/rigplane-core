@@ -41,6 +41,8 @@ const h = vi.hoisted(() => ({
   monLevel: vi.fn(),
   modeChange: vi.fn(),
   filterChange: vi.fn(),
+  filterShapeChange: vi.fn(),
+  dataModeChange: vi.fn(),
   split: vi.fn(),
   dualWatch: vi.fn(),
   mainReceiver: vi.fn(),
@@ -65,6 +67,28 @@ const h = vi.hoisted(() => ({
 vi.mock('../../../component-kits/activation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../component-kits/activation')>();
   return { ...actual, getSelectedFiniteControlAppearance: () => h.selectedFiniteAppearance };
+});
+
+/** MOR-2425 F1-C2 — the `createContinuousScalar` capture wrapper
+ *  `semantic-dsp-wiring.component.test.ts`'s `dspBindings()` recipe
+ *  establishes, transplanted for `createChoiceRendererSeat`: every finite
+ *  seat this file mounts (Mode/Filter/Filter shape/DATA mode included, plus
+ *  every other family's choice seats) is recorded by its OWN label so the
+ *  Filter shape/DATA persistence witness below can name the host-owned seat
+ *  OBJECT — a DOM testid is re-created by the layout switch on both sides
+ *  and proves nothing about whether the underlying seat survived it. */
+const finiteSeats = vi.hoisted(() => ({ seats: [] as Array<{ label: string; seat: unknown }> }));
+vi.mock('../../../primitives/control-instruments/control-instrument-renderer.svelte', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../../../primitives/control-instruments/control-instrument-renderer.svelte')>();
+  return {
+    ...actual,
+    createChoiceRendererSeat: (...args: Parameters<typeof actual.createChoiceRendererSeat>) => {
+      const seat = actual.createChoiceRendererSeat(...args);
+      finiteSeats.seats.push({ label: args[0]().label, seat });
+      return seat;
+    },
+  };
 });
 
 vi.mock('$lib/runtime', () => ({
@@ -180,10 +204,10 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
     // intent vocabulary; `makeModeHandlers` is composed at both call sites
     // (rxAudio's MOD-input remedy and filterIntents), so the stub carries both.
     makeModeHandlers: () => ({
-      onModInputChange: h.noop, onModeChange: h.modeChange, onDataModeChange: h.noop,
+      onModInputChange: h.noop, onModeChange: h.modeChange, onDataModeChange: h.dataModeChange,
     }),
     makeFilterHandlers: () => ({
-      onFilterChange: h.filterChange, onFilterWidthChange: h.noop, onFilterShapeChange: h.noop,
+      onFilterChange: h.filterChange, onFilterWidthChange: h.noop, onFilterShapeChange: h.filterShapeChange,
       onIfShiftChange: h.noop, onPbtInnerChange: h.noop, onPbtOuterChange: h.noop,
     }),
     // MOR-1305 — the wiring now also composes the dsp intent vocabulary. This
@@ -418,6 +442,7 @@ beforeEach(() => {
   h.sessionSubscriber = null;
   h.selectedFiniteAppearance = undefined;
   resetRetainedInvocations();
+  finiteSeats.seats.length = 0;
   for (const value of Object.values(h)) {
     if (typeof value === 'function' && 'mockReset' in value) (value as ReturnType<typeof vi.fn>).mockReset();
   }
@@ -726,25 +751,28 @@ describe('selected finite TX auxiliary authority lifetime', () => {
   });
 });
 
-describe('hosted Filter Mode and Filter ownership', () => {
-  const residual = [
-    'filter-width', 'filter-shape', 'filter-ifShift',
-    'filter-pbtInner', 'filter-pbtOuter', 'filter-data-mode',
-  ] as const;
+describe('hosted Filter Mode/Filter/Shape/DATA ownership', () => {
+  const residual = ['filter-width', 'filter-ifShift', 'filter-pbtInner', 'filter-pbtOuter'] as const;
+  const externalLabels = ['Mode', 'Filter', 'Filter shape', 'DATA mode'] as const;
 
   it('places named Standard and grouped SDR seats once while residual owners stay single', () => {
     h.state = filterState(); h.caps = filterCaps(); h.selectedFiniteAppearance = finiteAppearance;
     const layout = renderHostedLayout('desktop-v2');
     const subscribers = [...h.authoritySubscribers];
     const grid = q('[data-testid="filter-finite-grid"]')!;
-    expect([...grid.children].map(node => node.getAttribute('data-field'))).toEqual(['mode', 'filter']);
-    expect(target.querySelectorAll('[data-testid="external-Mode"]')).toHaveLength(1);
-    expect(target.querySelectorAll('[data-testid="external-Filter"]')).toHaveLength(1);
+    expect([...grid.children].map(node => node.getAttribute('data-field')))
+      .toEqual(['mode', 'filter', 'shape', 'dataMode']);
+    for (const label of externalLabels) {
+      expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
+    }
     expect(q('[data-testid="external-Mode"]')?.getAttribute('data-reading')).toBe('USB');
     for (const id of residual) expect(target.querySelectorAll(`[data-testid="${id}"]`)).toHaveLength(1);
     retainedInvocations.get('Mode')?.('CW'); retainedInvocations.get('Filter')?.(2);
+    retainedInvocations.get('Filter shape')?.(1); retainedInvocations.get('DATA mode')?.(1);
     expect(h.modeChange).toHaveBeenCalledExactlyOnceWith('CW');
     expect(h.filterChange).toHaveBeenCalledExactlyOnceWith(2);
+    expect(h.filterShapeChange).toHaveBeenCalledExactlyOnceWith(1);
+    expect(h.dataModeChange).toHaveBeenCalledExactlyOnceWith(1);
     const standardMode = retainedInvocations.get('Mode')!;
 
     publishAuthority(); flushSync();
@@ -753,8 +781,9 @@ describe('hosted Filter Mode and Filter ownership', () => {
     layout.skinId = 'sdr-test'; flushSync();
 
     expect(q('[data-testid="filter-finite-grid"]')).toBeNull();
-    expect(target.querySelectorAll('[data-testid="external-Mode"]')).toHaveLength(1);
-    expect(target.querySelectorAll('[data-testid="external-Filter"]')).toHaveLength(1);
+    for (const label of externalLabels) {
+      expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
+    }
     for (const id of residual) expect(target.querySelectorAll(`[data-testid="${id}"]`)).toHaveLength(1);
     expect([...h.authoritySubscribers]).toEqual(subscribers);
     const sdrMode = retainedInvocations.get('Mode')!;
@@ -768,8 +797,7 @@ describe('hosted Filter Mode and Filter ownership', () => {
     h.session = { state: 'disconnected', epoch: 7 };
     renderHostedDesktop();
 
-    expect(q('[data-testid="external-Mode"]')).toBeNull();
-    expect(q('[data-testid="external-Filter"]')).toBeNull();
+    for (const label of externalLabels) expect(q(`[data-testid="external-${label}"]`)).toBeNull();
     expect(q('[data-testid="filter-mode"]')).toBeNull();
     expect(q('[data-testid="filter-select"]')).toBeNull();
     for (const id of residual) expect(target.querySelectorAll(`[data-testid="${id}"]`)).toHaveLength(1);
@@ -806,6 +834,82 @@ describe('hosted Filter Mode and Filter ownership', () => {
       retainedA1('FM'); expect(h.modeChange).toHaveBeenCalledTimes(1);
     },
   );
+
+  /**
+   * MOR-2425 F1-C2 — the weakest witness: request DATA in Standard, switch
+   * to SDR BEFORE any echo updates the confirmed reading, and prove — in
+   * this order — (i) the SAME host-owned DATA-mode seat object survives the
+   * switch (`finiteSeats`, the `createChoiceRendererSeat` capture wrapper
+   * above — a DOM testid alone is re-created by the layout swap on both
+   * sides and proves nothing), (ii) the fresh SDR invocation still commands
+   * exactly once, (iii) the unconfirmed reading is unaffected by the switch
+   * itself, and only then (iv) the stale pre-switch invocation is inert.
+   * Counting `filter-data-mode`/`external-DATA mode` occurrences before and
+   * after the switch (the vacuous form) would pass unchanged even if the
+   * host were torn down and rebuilt, since the grouped SDR surface renders
+   * its own DATA seat regardless of which host produced it.
+   */
+  it('keeps the DATA-mode seat, commands once, and detaches the stale Standard invocation across Standard→SDR', () => {
+    h.state = filterState(); h.caps = filterCaps(); h.selectedFiniteAppearance = finiteAppearance;
+    const layout = renderHostedLayout('desktop-v2');
+    const dataSeatsBefore = finiteSeats.seats.filter(entry => entry.label === 'DATA mode');
+    expect(dataSeatsBefore).toHaveLength(1);
+    const dataSeat = dataSeatsBefore[0].seat;
+    const staleStandardData = retainedInvocations.get('DATA mode')!;
+    const beforeReading = q('[data-testid="external-DATA mode"]')?.getAttribute('data-reading');
+
+    layout.skinId = 'sdr-test'; flushSync();
+
+    // (i) Identity, positively: the SAME host-owned seat, not rebuilt.
+    const dataSeatsAfter = finiteSeats.seats.filter(entry => entry.label === 'DATA mode');
+    expect(dataSeatsAfter).toHaveLength(1);
+    expect(dataSeatsAfter[0].seat).toBe(dataSeat);
+
+    // (ii) A fresh, CURRENT invocation exists for the grouped SDR placement
+    // and commands exactly once.
+    const freshSdrData = retainedInvocations.get('DATA mode')!;
+    expect(freshSdrData).not.toBe(staleStandardData);
+    freshSdrData(1);
+    expect(h.dataModeChange).toHaveBeenCalledExactlyOnceWith(1);
+
+    // (iii) The unconfirmed reading is unaffected by the switch itself —
+    // only the click above changes anything downstream.
+    expect(q('[data-testid="external-DATA mode"]')?.getAttribute('data-reading')).toBe(beforeReading);
+
+    // (iv) Only now: the stale pre-switch invocation is DETACHED.
+    staleStandardData(1);
+    expect(h.dataModeChange).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * MOR-2425 F1-C2 — `filterFiniteAuthority`'s group-presence gate widened
+ * from `model?.modeFilter === undefined` alone to `modeFilter === undefined
+ * && filterPassband === undefined`, so a passband-only radio (Shape/DATA
+ * capability, no mode/filter group at all) still gets a valid Filter
+ * authority context. Left at the old gate, authority stays null forever for
+ * such a radio, so a Filter finite seat's `createChoiceRendererSeat` lease
+ * captures a null context and starts permanently revoked (`createSeat`'s
+ * `attachRenderer`, `control-instrument-renderer.svelte.ts`) — the external
+ * renderer's `view` is `undefined` and nothing with `data-testid="external-
+ * DATA mode"` ever renders, even though the field itself is structurally
+ * present.
+ */
+describe('MOR-2425 F1-C2 — Filter authority admits a passband-only radio', () => {
+  function passbandOnlyCaps(): Capabilities {
+    return {
+      ...liveCaps(true), modes: [], filters: [],
+      capabilities: [...liveCaps(true).capabilities, 'data_mode'],
+      dataModeCount: 1,
+    } as unknown as Capabilities;
+  }
+
+  it('renders the DATA-mode seat for a radio with no modeFilter group at all', () => {
+    h.state = liveState(true); h.caps = passbandOnlyCaps(); h.selectedFiniteAppearance = finiteAppearance;
+    renderHostedDesktop();
+    expect(q('[data-testid="filter-finite-grid"]')).not.toBeNull();
+    expect(q('[data-testid="external-DATA mode"]')).not.toBeNull();
+  });
 });
 
 // ── 1. The structural gate: absent group ⇒ no surface, no element drift ────

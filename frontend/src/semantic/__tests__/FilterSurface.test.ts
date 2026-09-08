@@ -14,11 +14,11 @@ import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { getLocale, setLocale } from '$lib/i18n';
 import FilterSurface, {
-  FILTER_PASSBAND_LEVELS, FILTER_SHAPES, type FilterPassbandLevelField,
+  FILTER_PASSBAND_LEVELS, type FilterPassbandLevelField,
 } from '../FilterSurface.svelte';
 import FilterInstrumentHostFixture from './fixtures/FilterInstrumentHostFixture.svelte';
 import { topologyFixtures, withFilterPassband, withModeFilter } from '../fixtures/topologies';
-import type { FilterInstrumentHandles } from '../filter-instruments';
+import { FILTER_SHAPES, type FilterInstrumentHandles } from '../filter-instruments';
 import type {
   Availability, FilterPassbandViewModel, ModeFilterViewModel, RadioViewModel,
 } from '../radio-view-model';
@@ -1180,6 +1180,8 @@ describe('explicit PBT display (MOR-1692)', () => {
 const pbtStubHandles: FilterInstrumentHandles = {
   mode: createRawSnippet(() => ({ render: () => '<span></span>' })),
   filter: createRawSnippet(() => ({ render: () => '<span></span>' })),
+  shape: createRawSnippet(() => ({ render: () => '<span></span>' })),
+  dataMode: createRawSnippet(() => ({ render: () => '<span></span>' })),
 };
 function renderPbtOnly(view: RadioViewModel, onPbtReset?: () => void) {
   const component = mount(FilterSurface, {

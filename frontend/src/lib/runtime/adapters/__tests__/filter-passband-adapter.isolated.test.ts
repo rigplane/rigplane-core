@@ -524,7 +524,7 @@ describe('ifShiftControlStructural — the presentation-only IF-shift control ga
 
 /**
  * `filterShapeControlStructural` (MOR-1502) — a SEPARATE, presentation-only
- * flag `FilterSurface.svelte` uses to decide whether to show the SHARP/SOFT
+ * flag `FilterInstrumentHost.svelte` uses to decide whether to show the SHARP/SOFT
  * shape ROW, deliberately independent of `filterShape.availability.
  * structural` above (which is `hasFilters` alone — see the "per-field
  * structural gates" block — because `scope-adapter.ts` still needs the
@@ -570,15 +570,16 @@ describe('filterShapeControlStructural — the presentation-only filter-shape co
 describe('filterPassband honesty gate — no derivation from a half-observed input (MOR-1284, F2 lesson)', () => {
   const pbtCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE } });
 
-  it('pbtInner observed, pbtOuter UNOBSERVED — ifShift must NOT derive from a fabricated pbtOuter default', () => {
+  it('pbtInner fresh, pbtOuter stale-but-observed — ifShift derives from its last value (MOR-2425/R29)', () => {
     const view = model(bareState({
       main: { ...bareState().main, pbtInner: 200, pbtOuter: 128 },
       fieldStatus: { ...bareState().fieldStatus, 'main.pbtInner': fresh, 'main.pbtOuter': stale },
     }), pbtCaps);
     expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: pbtRawToHz(200) });
-    expect(view.filterPassband!.pbtOuter.reading).toEqual({ status: 'unknown' });
+    expect(view.filterPassband!.pbtOuter.reading).toEqual({ status: 'known', value: pbtRawToHz(128) });
     expect(view.filterPassband!.ifShift).toEqual({
-      reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+      reading: { status: 'known', value: deriveIfShift(pbtRawToHz(200), pbtRawToHz(128)) },
+      availability: { structural: true, operational: true },
     });
   });
 
@@ -636,18 +637,21 @@ describe('PBT display observations (MOR-1692)', () => {
     fieldStatus: { ...bareState().fieldStatus, ...(status ? { 'main.pbtInner': status } : {}), 'main.pbtOuter': observed },
   });
 
-  it.each(['fresh', 'stale'] as const)('adds %s scaled display without changing strict facts', (freshness) => {
+  it.each(['fresh', 'stale'] as const)('adds %s scaled display; a stale-but-observed reading is available too (MOR-2425/R29)', (freshness) => {
     const input = source({ ...observed, freshness, availability: freshness === 'fresh' ? 'available' : 'stale' });
     const result = model(input, ownCaps).filterPassband!;
     const { display, ...strict } = result.pbtInner;
     expect(display).toEqual({ state: freshness === 'fresh' ? 'current' : 'stale', value: 450 });
-    expect(strict).toEqual({ reading: freshness === 'fresh' ? { status: 'known', value: 450 } : { status: 'unknown' }, availability: { structural: true, operational: freshness === 'fresh' } });
+    // A stale-but-observed reading still carries its last value and is
+    // `available` (R29) — freshness no longer distinguishes the strict facts,
+    // only the `display` cue above does.
+    expect(strict).toEqual({ reading: { status: 'known', value: 450 }, availability: { structural: true, operational: true } });
     expect(result.pbtOuter.display).toEqual({ state: 'current', value: 0 });
     const { display: outerDisplay, ...strictOuter } = result.pbtOuter;
     const absent = { reading: { status: 'unknown' }, availability: { structural: false, operational: false } };
     expect({ ...result, pbtInner: strict, pbtOuter: strictOuter }).toEqual({
       filterShape: absent, filterShapeControlStructural: false, ifShiftControlStructural: false, dataMode: absent, dataModeChoices: [],
-      ifShift: { reading: freshness === 'fresh' ? { status: 'known', value: 225 } : { status: 'unknown' }, availability: { structural: true, operational: freshness === 'fresh' } },
+      ifShift: { reading: { status: 'known', value: 225 }, availability: { structural: true, operational: true } },
       pbtInner: strict,
       pbtOuter: { reading: { status: 'known', value: 0 }, availability: { structural: true, operational: true } },
     });

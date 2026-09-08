@@ -171,6 +171,47 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             ):
                 CLASSIFIER.classify([unsafe])
 
+    def test_docs_test_input_files_classify_as_core(self) -> None:
+        # Every path here is read by name (Path(...)/open()/read_text()) by a
+        # test under tests/ at test time — not merely cited in a comment or
+        # docstring. A diff touching only one of these must not take the
+        # docs-only fast path.
+        test_input_paths = (
+            "docs/internals/ui-radio-control-contract.toml",
+            "docs/parity/ic7610_command_matrix.json",
+            "docs/PROJECT.md",
+            "docs/parity/README.md",
+            "docs/operations/managed-runtime-packaging.md",
+            "docs/api/web.md",
+            "docs/guide/web-ui.md",
+            "docs/api/command-catalog.md",
+            "docs/api/radio.md",
+            "docs/guide/connection.md",
+            "docs/api/audio.md",
+            "docs/guide/audio-recipes.md",
+            "docs/guide/diagnostic-reports.md",
+            "docs/internals/audio-capture-health.md",
+            "docs/validation/templates/ftx1.json",
+            "docs/validation/templates/ic7300.json",
+            "docs/validation/templates/icom_ic7610.json",
+            "docs/validation/templates/tx500.json",
+            "docs/validation/templates/x6200.json",
+            "docs/validation/templates/xiegu_x6200.json",
+        )
+        for path in test_input_paths:
+            with self.subTest(path=path):
+                self.assertEqual(
+                    CLASSIFIER.classify([path]),
+                    {"core": True, "frontend": False, "ci": False, "docs": False},
+                )
+        # A mix with an unrelated doc must not fall back to docs-only either.
+        self.assertEqual(
+            CLASSIFIER.classify(
+                ["docs/internals/ui-radio-control-contract.toml", "docs/guide.md"]
+            ),
+            {"core": True, "frontend": False, "ci": False, "docs": False},
+        )
+
     def test_workflows_pin_docs_skip_ready_guard_and_visual_exclusions(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
         visual = VISUAL_YML.read_text(encoding="utf-8")

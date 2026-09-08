@@ -185,7 +185,7 @@ describe('AmberScope availability gating (MOR-429)', () => {
     expect(agcChip(target)).toBeUndefined();
   });
 
-  it('suppresses the AGC indicator when agc is stale', () => {
+  it('presents the AGC indicator with its last value when agc is stale (R29)', () => {
     const state = {
       active: 'MAIN',
       main: baseReceiver(),
@@ -201,6 +201,8 @@ describe('AmberScope availability gating (MOR-429)', () => {
     } as unknown as ServerState;
 
     const target = mountScope(state);
-    expect(agcChip(target)).toBeUndefined();
+    const chip = agcChip(target);
+    expect(chip).toBeDefined();
+    expect(chip?.classList.contains('active')).toBe(true);
   });
 });

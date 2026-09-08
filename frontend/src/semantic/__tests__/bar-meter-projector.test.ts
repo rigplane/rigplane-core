@@ -74,7 +74,7 @@ function calibratedCaps(): Capabilities {
 afterEach(() => clearCapabilities());
 
 describe('projectBarMeters', () => {
-  it('retains standardized TX evidence without changing live-value admission', () => {
+  it('retains TX evidence and the live value for both current and stale (R29/R32)', () => {
     const current = base();
     setDisplay(current, 'power', { state: 'current', value: 75 });
     expect(projectTxMeterPresentation(current.meters!.power, 'transmitting')).toMatchObject({
@@ -83,7 +83,7 @@ describe('projectBarMeters', () => {
 
     setDisplay(current, 'power', { state: 'stale', value: 75 });
     expect(projectTxMeterPresentation(current.meters!.power, 'transmitting')).toMatchObject({
-      state: 'stale', evidence: { state: 'stale', value: 75 }, value: null,
+      state: 'stale', evidence: { state: 'stale', value: 75 }, value: 75,
     });
     expect(projectTxMeterPresentation({
       ...current.meters!.power,
@@ -160,7 +160,7 @@ describe('projectBarMeters', () => {
     });
   });
 
-  it('keeps stale, unknown, idle, and indeterminate TX observations distinct', () => {
+  it('keeps stale, unknown, idle, and indeterminate TX observations distinct (R29/R32: stale keeps its value; idle/unknown are an empty scale)', () => {
     const view = base();
     setDisplay(view, 'power', { state: 'stale', value: 170 });
     setMeter(view, 'power', { domain: { kind: 'raw' } });
@@ -168,10 +168,10 @@ describe('projectBarMeters', () => {
       evidence: { state: 'stale', value: 170 },
       state: 'stale',
       domain: { kind: 'raw' },
-      motionFraction: null,
-      displayText: 'STALE',
-      accessibleDescription: 'Po: Stale observation',
-      observed: false,
+      motionFraction: 170 / 255,
+      displayText: '170 raw',
+      accessibleDescription: 'Po: Stale observation. 170 raw',
+      observed: true,
       gauge: true,
       showPeak: false,
     });
@@ -181,8 +181,8 @@ describe('projectBarMeters', () => {
       evidence: { state: 'unknown' },
       state: 'unknown',
       motionFraction: null,
-      displayText: '?',
-      accessibleDescription: 'Po: Not observed',
+      displayText: '',
+      accessibleDescription: 'Po: No reading',
       observed: false,
       gauge: true,
     });
@@ -194,8 +194,8 @@ describe('projectBarMeters', () => {
       evidence: { state: 'idle' },
       state: 'idle',
       motionFraction: null,
-      displayText: 'IDLE',
-      accessibleDescription: 'Po: Not measuring in RX',
+      displayText: '',
+      accessibleDescription: 'Po: Not measuring in receive',
       observed: false,
       gauge: true,
     });
@@ -212,7 +212,7 @@ describe('projectBarMeters', () => {
     });
   });
 
-  it('keeps TX rows mounted while plain unknown rows use the unknown span', () => {
+  it('keeps TX and plain rows both mounted with an empty scale when unobserved (MOR-2425)', () => {
     const view = base();
     for (const key of ['power', 'drainCurrent'] as const) {
       setMeter(view, key, {
@@ -225,14 +225,14 @@ describe('projectBarMeters', () => {
       gauge: true,
       observed: false,
       motionFraction: null,
-      displayText: '?',
+      displayText: '',
     });
     expect(projectBarMeters(view).find(({ key }) => key === 'drainCurrent')).toMatchObject({
       evidence: { state: 'unknown' },
-      gauge: false,
+      gauge: true,
       observed: false,
       motionFraction: null,
-      displayText: 'Id ?',
+      displayText: '',
     });
   });
 
@@ -244,7 +244,7 @@ describe('projectBarMeters', () => {
     });
     expect(projectBarMeters(view).find(({ key }) => key === 'drainVoltage')).toMatchObject({
       evidence: { state: 'unknown' }, state: 'unknown', observed: false,
-      motionFraction: null, displayText: 'Vd ?',
+      motionFraction: null, displayText: '',
     });
   });
 
@@ -268,7 +268,7 @@ describe('projectBarMeters', () => {
     expect(projectBarMeters(view).some(({ key }) => key === 'compression')).toBe(false);
   });
 
-  it('asserts an ALC fault only for an observed relevant calibrated reading', () => {
+  it('asserts an ALC fault for an observed relevant calibrated reading, current or stale (R29)', () => {
     setCapabilities(calibratedCaps());
     const view = base();
     setDisplay(view, 'alc', { state: 'current', value: 0.95 });
@@ -279,7 +279,7 @@ describe('projectBarMeters', () => {
 
     setMeter(view, 'alc', { relevant: true });
     setDisplay(view, 'alc', { state: 'stale', value: 0.95 });
-    expect(projectBarMeters(view).find(({ key }) => key === 'alc')?.fault).toBe(false);
+    expect(projectBarMeters(view).find(({ key }) => key === 'alc')?.fault).toBe(true);
   });
 
   it('arbitrates identical current values by each field\'s explicit domain', () => {
