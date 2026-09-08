@@ -1370,8 +1370,10 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "operator_controls", "agc")
     # dial_lock is NOT resolved here for the same reason as if_shift above:
     # FTX-1's real dispatcher is ``YaesuCatPoller``, which has no readback
-    # path, and no Icom profile declares "dial_lock" as a feature or an
-    # acquisition capability. Left pending.
+    # path. Icom profiles declare "dial_lock" as a write feature (they can
+    # send the CI-V command) but none declares it in
+    # ``[state_acquisition.capabilities]``, so ``ensure_fresh`` would
+    # resolve UNAVAILABLE there too. Left pending.
     # TX audio / modulation (MOR-2425 PR-1b): all nine resolve on IC-7300;
     # mic_gain/compressor_on/compressor_level/vox_on also resolve on
     # FTX-1. af_mute/ssb_tx_bandwidth/drive_gain and the four mod-input

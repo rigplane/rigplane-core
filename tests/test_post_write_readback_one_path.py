@@ -204,12 +204,13 @@ _PENDING_LATER_PR: frozenset[str] = frozenset(
         "SetRepeaterTsql",
         # Global/panel settings: dial_lock is NOT covered, for the same
         # reason as if_shift above -- FTX-1's real dispatcher is
-        # ``YaesuCatPoller``, which has no readback path, and no Icom
-        # profile declares "dial_lock" as a feature or an acquisition
-        # capability (checked ic705/ic7300/ic7610/ic9700/x6100/x6200/tx500
-        # -- only ftx1.toml declares it). tuning_step/ref_adjust/
-        # dash_ratio/main_sub_tracking/dual_watch have a state-model field
-        # but no declared acquisition capability on IC-7300 or FTX-1.
+        # ``YaesuCatPoller``, which has no readback path. Icom profiles
+        # (checked ic705/ic7300/ic7610/ic9700/x6100/x6200/tx500) declare
+        # "dial_lock" as a write feature, but none declares it in
+        # ``[state_acquisition.capabilities]`` -- only ftx1.toml does.
+        # tuning_step/ref_adjust/dash_ratio/main_sub_tracking/dual_watch
+        # have a state-model field but no declared acquisition capability
+        # on IC-7300 or FTX-1.
         "SetDialLock",
         "SetTuningStep",
         "SetRefAdjust",
