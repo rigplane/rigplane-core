@@ -4,13 +4,63 @@
 
 import { getPassbandGeometry } from '../../components/spectrum/passband-geometry';
 
+/**
+ * The colour vocabulary a host may restyle. `renderSpectrum` paints every
+ * role on the canvas; `tuneLine`, `passbandFill` and `passbandEdge` are also
+ * painted by SpectrumPanel's DOM overlay over the waterfall, which reads them
+ * from the same resolved record through CSS custom properties.
+ */
+export interface SpectrumColorRoles {
+  trace: string;
+  /** Vertical gradient under the trace: `top` at y=0, `bottom` at y=height. */
+  traceFill: { top: string; bottom: string };
+  grid: string;
+  axisText: string;
+  tuneLine: string;
+  passbandFill: string;
+  passbandEdge: string;
+}
+
+export const defaultSpectrumColorRoles: SpectrumColorRoles = {
+  trace: 'rgba(210,220,230,0.85)',
+  traceFill: { top: 'rgba(30,58,138,0.30)', bottom: 'rgba(30,58,138,0.02)' },
+  grid: 'rgba(255,255,255,0.15)',
+  axisText: 'rgba(180,200,220,0.6)',
+  tuneLine: 'rgba(239,68,68,0.75)',
+  passbandFill: 'rgba(59,130,246,0.15)',
+  passbandEdge: 'rgba(59,130,246,0.4)',
+};
+
+export function resolveSpectrumColorRoles(
+  overrides?: Partial<SpectrumColorRoles>,
+): SpectrumColorRoles {
+  return { ...defaultSpectrumColorRoles, ...overrides };
+}
+
+export function spectrumColorRolesToOptions(roles: SpectrumColorRoles) {
+  return {
+    lineColor: roles.trace,
+    fillColor: roles.traceFill.top,
+    fillColorBottom: roles.traceFill.bottom,
+    gridColor: roles.grid,
+    textColor: roles.axisText,
+    tuneLineColor: roles.tuneLine,
+    passbandFillColor: roles.passbandFill,
+    passbandEdgeColor: roles.passbandEdge,
+  };
+}
+
 export interface SpectrumOptions {
   showRfOverlays?: boolean;
   bgColor: string;
   lineColor: string;
   fillColor: string;
+  fillColorBottom: string;
   gridColor: string;
   textColor: string;
+  tuneLineColor: string;
+  passbandFillColor: string;
+  passbandEdgeColor: string;
   refLevel: number;   // dB reference (reserved for future dB axis labels)
   spanHz: number;     // frequency span in Hz
   centerHz: number;   // center frequency in Hz
@@ -25,10 +75,7 @@ export interface SpectrumOptions {
 
 export const defaultSpectrumOptions: SpectrumOptions = {
   bgColor: 'transparent',
-  lineColor: 'rgba(210,220,230,0.85)',
-  fillColor: 'rgba(30,58,138,0.30)',
-  gridColor: 'rgba(255,255,255,0.15)',
-  textColor: 'rgba(180,200,220,0.6)',
+  ...spectrumColorRolesToOptions(defaultSpectrumColorRoles),
   refLevel: 0,
   spanHz: 0,
   centerHz: 0,
@@ -52,7 +99,9 @@ export function spectrumDisplayAmplitude(sample: number, refLevel: number): numb
   return Math.sqrt(adjusted / SPECTRUM_AMPLITUDE_MAX);
 }
 
-type GradCache = { grad: CanvasGradient; height: number; fillColor: string };
+type GradCache = {
+  grad: CanvasGradient; height: number; fillColor: string; fillColorBottom: string;
+};
 
 /**
  * Render a spectrum line chart onto an existing 2D canvas context.
@@ -78,7 +127,7 @@ export function renderSpectrum(
   const n = data.length;
   if (!n || width <= 0 || height <= 0) return;
 
-  const { bgColor, lineColor, fillColor, gridColor, textColor, spanHz, centerHz, lineWidth, tuneHz, passbandHz, passbandShiftHz } =
+  const { bgColor, lineColor, fillColor, fillColorBottom, gridColor, textColor, spanHz, centerHz, lineWidth, tuneHz, passbandHz, passbandShiftHz } =
     options;
 
   ctx.clearRect(0, 0, width, height);
@@ -132,13 +181,14 @@ export function renderSpectrum(
     yPoints[x] = height * (1 - amplitude);
   }
 
-  // Filled area under spectrum (gradient cached per-instance; recreated only when height or fillColor changes)
+  // Filled area under spectrum (gradient cached per-instance; recreated only when height or either stop changes)
   const cache = gradCache ?? { current: null };
-  if (!cache.current || cache.current.height !== height || cache.current.fillColor !== fillColor) {
+  if (!cache.current || cache.current.height !== height
+    || cache.current.fillColor !== fillColor || cache.current.fillColorBottom !== fillColorBottom) {
     const grad = ctx.createLinearGradient(0, 0, 0, height);
     grad.addColorStop(0, fillColor);
-    grad.addColorStop(1, 'rgba(30,58,138,0.02)');
-    cache.current = { grad, height, fillColor };
+    grad.addColorStop(1, fillColorBottom);
+    cache.current = { grad, height, fillColor, fillColorBottom };
   }
   ctx.fillStyle = cache.current.grad;
   ctx.beginPath();
@@ -177,11 +227,11 @@ export function renderSpectrum(
         const pbLeft = geometry.leftPx;
         const pbRight = geometry.rightPx;
 
-        ctx.fillStyle = 'rgba(59,130,246,0.15)';
+        ctx.fillStyle = options.passbandFillColor;
         ctx.fillRect(pbLeft, 0, pbRight - pbLeft, height);
 
         // Passband edges
-        ctx.strokeStyle = 'rgba(59,130,246,0.4)';
+        ctx.strokeStyle = options.passbandEdgeColor;
         ctx.lineWidth = 1;
         ctx.setLineDash([3, 3]);
         ctx.beginPath();
@@ -195,7 +245,7 @@ export function renderSpectrum(
     }
 
     // Center frequency line (carrier)
-    ctx.strokeStyle = 'rgba(239,68,68,0.75)';
+    ctx.strokeStyle = options.tuneLineColor;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(tunePx, 0);
