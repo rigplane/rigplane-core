@@ -65,7 +65,12 @@
       ? { state: usable(f) ? 'current' as const : 'stale' as const, value: f.reading.value }
       : { state: 'unknown' as const, reason: 'not-observed' as const }
   );
-  const pbtUsable = (f: DisplayObservedField<number>): boolean => usable(f) && pbtDisplay(f).state === 'current';
+  /** MOR-2425/R40: a held reading is a reading — a PBT slider whose last
+   *  observed value has aged past its TTL stays enabled and dispatching.
+   *  Freshness alone no longer refuses; `usable` and a display carrying an
+   *  actual value still do. */
+  const pbtUsable = (f: DisplayObservedField<number>): boolean =>
+    usable(f) && (pbtDisplay(f).state === 'current' || pbtDisplay(f).state === 'stale');
   const numberOf = (f: DisplayObservedField<number>, fallback: number): number =>
     f.display?.state === 'current' || f.display?.state === 'stale' ? f.display.value
       : f.reading.status === 'known' ? f.reading.value : fallback;
@@ -236,7 +241,6 @@
           <input
             id={`${pendingFilterId}-${field}-input`} type="range" {min} {max} {step}
             value={numberOf(filterPassband[field], min)}
-            aria-describedby={display?.state === 'stale' ? `${pendingFilterId}-${field}-description` : undefined}
             disabled={field === 'ifShift' ? !usable(filterPassband[field]) : !pbtUsable(filterPassband[field])}
             oninput={(event) => changePassband(field, event.currentTarget.valueAsNumber)}
           />
@@ -250,7 +254,6 @@
           {#if field === 'pbtInner' || field === 'pbtOuter'}
             {@const display = pbtDisplay(filterPassband[field])}
             {@const measured = display.state === 'current' || display.state === 'stale'}
-            {@const descriptionId = `${pendingFilterId}-${field}-description`}
             <div
               class="filter-level" data-testid={`filter-${field}`} role="group" aria-label={label}
               data-disabled-reason={reasonOf(filterPassband[field])}
@@ -265,12 +268,6 @@
                 {/if}
               </span>
               <output class="pbt-value" aria-live="off">{measured && 'value' in display ? display.value : '—'}</output>
-              <span class="pbt-cue" data-stale-cue title={display.state === 'stale' ? t('core.rxTx.target.reason.stale') : undefined}>
-                {#if display.state === 'stale'}<span aria-hidden="true">†</span>{/if}
-              </span>
-              {#if display.state === 'stale'}
-                <span class="sr-only" id={descriptionId}>{t('core.rxTx.target.reason.stale')}</span>
-              {/if}
             </div>
           {:else}
             <label
@@ -307,7 +304,6 @@
   .pbt-slot input { width: 100%; margin-inline: 0; }
   .pbt-unknown { width: 100%; text-align: center; }
   .pbt-value { min-width: 6ch; font-variant-numeric: tabular-nums; }
-  .pbt-cue { width: 1ch; }
   .pbt-reset-button { align-self: flex-start; }
   .sr-only {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;

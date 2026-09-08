@@ -77,13 +77,20 @@ describe('persistent antenna handles', () => {
       expect(r.onSelectPort).not.toHaveBeenCalled(); expect(r.onToggleRxAnt).not.toHaveBeenCalled();
     }
     r.tx(idle);
-    for (const freshness of ['fresh', 'stale', 'unknown']) {
-      const p = source(); p.state!.tunerStatus = freshness === 'fresh' ? 2 : 0;
+    for (const observed of [true, false]) {
+      const p = source(); p.state!.tunerStatus = observed ? 2 : 0;
       p.state!.fieldStatus!.tunerStatus = { ...p.state!.fieldStatus!.tunerStatus!,
-        freshness: freshness === 'stale' ? 'stale' : 'fresh', observed: freshness !== 'unknown' };
+        freshness: 'fresh', observed };
       r.publish(p); invoke(callbacks);
       expect(r.onSelectPort).not.toHaveBeenCalled(); expect(r.onToggleRxAnt).not.toHaveBeenCalled();
     }
+    // MOR-2425/R40: a HELD idle ATU reading admits, exactly as a fresh one does.
+    const held = source(); held.state!.tunerStatus = 0;
+    held.state!.fieldStatus!.tunerStatus = {
+      ...held.state!.fieldStatus!.tunerStatus!, freshness: 'stale', observed: true };
+    r.publish(held); invoke(callbacks);
+    expect(r.onSelectPort).toHaveBeenCalledOnce(); expect(r.onToggleRxAnt).toHaveBeenCalledOnce();
+    r.onSelectPort.mockClear(); r.onToggleRxAnt.mockClear();
     const p = source(); p.state!.txAntenna = 2; r.publish(p); invoke(callbacks);
     expect(r.onSelectPort).toHaveBeenCalledOnce(); expect(r.onToggleRxAnt).toHaveBeenCalledOnce();
     flushSync(); expect(r.captures.every(handles => handles === r.captures[0])).toBe(true);

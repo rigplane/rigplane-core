@@ -226,36 +226,32 @@ describe('MOR-2342 addressed meter appearance', () => {
 
 
 describe('RF gain display observation', () => {
-  it.each(['semantic', 'standard', 'sdr'] as const)('keeps the same text and DOM footprint through current/stale/current for %s', (appearance) => {
+  // MOR-2425/R41: no `◷`, and one accessible name for both provenances.
+  it.each(['semantic', 'standard', 'sdr'] as const)('keeps the same text, accessible name and DOM footprint through current/stale/current for %s', (appearance) => {
     const current = indicator({ rfGain: { ...known(0.75), display: { state: 'current', value: 0.75 } } });
     const state = new SvelteMap([['indicator', current]]);
     render({ appearance, get indicator() { return state.get('indicator'); } });
     const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
-    const marker = node.querySelector('.stale-cue')!;
     const text = node.textContent;
     expect(text).toContain('RFG 0.75');
     expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
     expect(node.hasAttribute('tabindex')).toBe(false);
-    expect(getComputedStyle(marker).visibility).toBe('hidden');
-    expect(getComputedStyle(marker).width).toBe('1ch');
+    expect(node.querySelector('.stale-cue')).toBeNull();
     flushSync(() => state.set('indicator', indicator({ rfGain: {
       ...unknown<number>(), display: { state: 'stale', value: 0.75 },
     } })));
     expect(target.querySelector('[data-indicator-fact="rf-gain"]')).toBe(node);
-    expect(node.querySelector('.stale-cue')).toBe(marker);
+    expect(node.querySelector('.stale-cue')).toBeNull();
     expect(node.textContent).toBe(text);
     expect(node.getAttribute('data-state')).toBe('unknown');
     expect(node.getAttribute('data-display-state')).toBe('stale');
-    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75 (stale, last observed)"]')).toBe(node);
-    expect(getComputedStyle(marker).visibility).toBe('visible');
-    expect(marker.textContent?.trim()).not.toBe('');
+    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
+    expect(target.querySelector('[role="img"][aria-label*="stale"]')).toBeNull();
     expect(target.querySelector('[aria-live], button, input')).toBeNull();
     flushSync(() => state.set('indicator', current));
     expect(node.textContent).toBe(text);
     expect(node.getAttribute('data-display-state')).toBe('current');
     expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
-    expect(target.querySelector('[role="img"][aria-label*="stale"]')).toBeNull();
-    expect(getComputedStyle(marker).visibility).toBe('hidden');
   });
   it('does not display a strict fallback default when explicit observation is unknown', () => {
     render({ indicator: indicator({ rfGain: {

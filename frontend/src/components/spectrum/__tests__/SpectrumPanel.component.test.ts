@@ -1481,13 +1481,14 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(target.querySelector('.passband-overlay')).toBeNull();
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
   });
-  it('retains whole stale geometry with a non-color cue while strict fresh frequency still pans', () => {
+  it('retains whole stale geometry with no cue while strict fresh frequency still pans', () => {
     const { target, props } = managed(projection()); const original = target.querySelector('.passband-overlay')!.getAttribute('style');
     authorityHarness.state.current = authority({ filterWidthHz: null, ifShiftHz: null }); refreshSpectrumAuthority();
     props.set('projection', projection('stale')); flushSync();
     expect(target.querySelector('.passband-overlay')!.getAttribute('style')).toBe(original);
-    const cue = target.querySelector('.passband-freshness')!;
-    expect(cue.textContent?.trim()).not.toBe(''); expect(cue.getAttribute('aria-label')).toBeTruthy();
+    // MOR-2425/R41: the geometry is retained with NO cue at all.
+    expect(target.querySelector('.passband-freshness')).toBeNull();
+    expect(target.textContent).not.toContain('◷');
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
     const { spectrum } = prepareGeometry(target);
     pointer(spectrum, 'pointerdown', 82, 100); pointer(spectrum, 'pointermove', 82, 120); pointer(spectrum, 'pointerup', 82, 120);
@@ -1497,7 +1498,7 @@ describe('managed scope projection (MOR-2367)', () => {
     pointer(spectrum, 'pointerdown', 83, 100); pointer(spectrum, 'pointermove', 83, 120); pointer(spectrum, 'pointerup', 83, 120);
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
     props.set('projection', projection()); flushSync();
-    expect(target.querySelector('.passband-freshness')!.textContent?.trim()).toBe('');
+    expect(target.querySelector('.passband-freshness')).toBeNull();
   });
   it('does not grant stale resize even if a separate strict snapshot is current', () => {
     const { target, props } = managed(projection()); const { waterfall } = prepareGeometry(target);

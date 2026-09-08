@@ -169,8 +169,9 @@ const finiteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
 const strictlySeen = (state: ServerState, path: string): boolean => {
   const status = state.fieldStatus?.[path];
-  return status?.observed === true && status.freshness === 'fresh'
-    && status.availability === 'available';
+  return status?.observed === true
+    && (status.freshness === 'fresh' || status.freshness === 'stale')
+    && (status.availability === 'available' || status.availability === 'stale');
 };
 
 function immutableClone<T>(value: T): DeepReadonly<T> {

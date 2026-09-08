@@ -277,7 +277,7 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     expect(on.getAttribute('aria-pressed')).toBe('true');
   });
 
-  it.each(['active', 'dataMode', 'staleDataMode'] as const)('DATA with unavailable %s emits nothing on mount or forced click', unavailable => {
+  it.each(['active', 'dataMode'] as const)('DATA with unavailable %s emits nothing on mount or forced click', unavailable => {
     seedData('SUB', unavailable);
     render();
     const on = q<HTMLButtonElement>('[data-testid="filter-data-mode-1"]')!;
@@ -289,6 +289,17 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     flushSync();
     expect(sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  // MOR-2425/R40: a HELD dataMode leaves the control live.
+  it('DATA with a held (stale) dataMode stays enabled and emits on click', () => {
+    seedData('SUB', 'staleDataMode');
+    render();
+    const on = q<HTMLButtonElement>('[data-testid="filter-data-mode-1"]')!;
+    expect(on.disabled).toBe(false);
+    on.click();
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledOnce();
   });
 
   it('marks the clicked filter choice pending while set_filter is in flight (FilterSurface)', () => {

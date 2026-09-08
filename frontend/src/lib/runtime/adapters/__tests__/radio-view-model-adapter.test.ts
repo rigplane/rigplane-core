@@ -112,28 +112,31 @@ describe('qualified VFO display observations', () => {
     return state;
   }
   const display = (state: ServerState | null, c: Capabilities = dc) => toRadioViewModel(state, c)!.vfos[0].display;
+  // MOR-2425/R40: the `:true` (stale) rows are IDENTICAL to their `:false`
+  // twins — a held reading is a reading, so the strict model a stale
+  // snapshot projects is byte-for-byte the fresh one.
   const strictBaselines: Record<string, unknown> = {
     '1/single:false': [
       {"receiver":"MAIN","slot":{"kind":"unslotted"},"label":"MAIN","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":false},
     ],
     '1/single:true': [
-      {"receiver":"MAIN","slot":{"kind":"unslotted"},"label":"MAIN","frequencyHz":null,"mode":null,"filter":null,"isActive":true,"isActiveSlot":true,"isTxTarget":false},
+      {"receiver":"MAIN","slot":{"kind":"unslotted"},"label":"MAIN","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":false},
     ],
     '1/ab:false': [
       {"receiver":"MAIN","slot":{"kind":"slotted","id":"A"},"label":"MAIN A","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":true},
       {"receiver":"MAIN","slot":{"kind":"slotted","id":"B"},"label":"MAIN B","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":false,"isTxTarget":false},
     ],
     '1/ab:true': [
-      {"receiver":"MAIN","slot":{"kind":"slotted","id":"A"},"label":"MAIN A","frequencyHz":null,"mode":null,"filter":null,"isActive":true,"isActiveSlot":true,"isTxTarget":true},
-      {"receiver":"MAIN","slot":{"kind":"slotted","id":"B"},"label":"MAIN B","frequencyHz":null,"mode":null,"filter":null,"isActive":false,"isActiveSlot":false,"isTxTarget":false},
+      {"receiver":"MAIN","slot":{"kind":"slotted","id":"A"},"label":"MAIN A","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":true},
+      {"receiver":"MAIN","slot":{"kind":"slotted","id":"B"},"label":"MAIN B","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":false,"isTxTarget":false},
     ],
     '2/ab_shared:false': [
       {"receiver":"MAIN","slot":{"kind":"unslotted"},"label":"MAIN","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":false},
       {"receiver":"SUB","slot":{"kind":"unslotted"},"label":"SUB","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":true,"isTxTarget":false},
     ],
     '2/ab_shared:true': [
-      {"receiver":"MAIN","slot":{"kind":"unslotted"},"label":"MAIN","frequencyHz":null,"mode":null,"filter":null,"isActive":true,"isActiveSlot":true,"isTxTarget":false},
-      {"receiver":"SUB","slot":{"kind":"unslotted"},"label":"SUB","frequencyHz":null,"mode":null,"filter":null,"isActive":false,"isActiveSlot":true,"isTxTarget":false},
+      {"receiver":"MAIN","slot":{"kind":"unslotted"},"label":"MAIN","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":false},
+      {"receiver":"SUB","slot":{"kind":"unslotted"},"label":"SUB","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":true,"isTxTarget":false},
     ],
     '2/main_sub:false': [
       {"receiver":"MAIN","slot":{"kind":"slotted","id":"A"},"label":"MAIN A","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":true},
@@ -142,10 +145,10 @@ describe('qualified VFO display observations', () => {
       {"receiver":"SUB","slot":{"kind":"slotted","id":"B"},"label":"SUB B","frequencyHz":14350000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":false,"isTxTarget":false},
     ],
     '2/main_sub:true': [
-      {"receiver":"MAIN","slot":{"kind":"slotted","id":"A"},"label":"MAIN A","frequencyHz":null,"mode":null,"filter":null,"isActive":true,"isActiveSlot":true,"isTxTarget":true},
-      {"receiver":"MAIN","slot":{"kind":"slotted","id":"B"},"label":"MAIN B","frequencyHz":null,"mode":null,"filter":null,"isActive":false,"isActiveSlot":false,"isTxTarget":false},
-      {"receiver":"SUB","slot":{"kind":"slotted","id":"A"},"label":"SUB A","frequencyHz":null,"mode":null,"filter":null,"isActive":false,"isActiveSlot":true,"isTxTarget":false},
-      {"receiver":"SUB","slot":{"kind":"slotted","id":"B"},"label":"SUB B","frequencyHz":null,"mode":null,"filter":null,"isActive":false,"isActiveSlot":false,"isTxTarget":false},
+      {"receiver":"MAIN","slot":{"kind":"slotted","id":"A"},"label":"MAIN A","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":true},
+      {"receiver":"MAIN","slot":{"kind":"slotted","id":"B"},"label":"MAIN B","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":false,"isTxTarget":false},
+      {"receiver":"SUB","slot":{"kind":"slotted","id":"A"},"label":"SUB A","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":true,"isTxTarget":false},
+      {"receiver":"SUB","slot":{"kind":"slotted","id":"B"},"label":"SUB B","frequencyHz":14350000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":false,"isTxTarget":false},
     ],
   };
 
@@ -495,11 +498,10 @@ describe('radio-wide indicators and DUAL actions are singleton contract facts (M
   const rejectedStatuses = [
     ['missing', undefined],
     ['observed false', { ...fresh, observed: false }],
-    ['stale', stale],
     ['explicit unavailable', { ...fresh, availability: 'missing' as const }],
   ] as const;
 
-  it.each(sharedLeafCases)('%s requires its own observed/fresh/available leaf', (path, select) => {
+  it.each(sharedLeafCases)('%s requires its own observed and available leaf', (path, select) => {
     for (const [label, rejected] of rejectedStatuses) {
       const state = radioWideState();
       const fieldStatus = { ...state.fieldStatus } as Record<string, FieldStatus>;
@@ -509,6 +511,16 @@ describe('radio-wide indicators and DUAL actions are singleton contract facts (M
       expect(field.reading, label).toEqual({ status: 'unknown' });
       expect(field.availability.operational, label).toBe(false);
     }
+  });
+
+  // MOR-2425/R40+R41: indicators hold too — a stale leaf is no longer rejected.
+  it.each(sharedLeafCases)('%s holds its last observed value when its leaf goes stale', (path, select) => {
+    const state = radioWideState();
+    const fieldStatus = { ...state.fieldStatus, [path]: stale } as Record<string, FieldStatus>;
+    const held = select(model({ ...state, fieldStatus }, RADIO_WIDE_CAPS).radioWideIndicators!);
+    const live = select(model(state, RADIO_WIDE_CAPS).radioWideIndicators!);
+    expect(held.reading).toEqual(live.reading);
+    expect(held.availability).toEqual(live.availability);
   });
 
   it('the shared RIT offset gate applies independently to both displayed aggregates', () => {
@@ -845,15 +857,16 @@ describe('unobserved facts survive as the explicit unknown branch', () => {
     }
   });
 
-  // MUTATION KILLED: reading `state.txTarget` without the freshness gate — a
-  // stale target keys the wrong VFO.
-  it('reports a stale TX target as unknown/stale and blocks the permit', () => {
+  // MOR-2425/R40: a HELD TX target is a target. Staleness alone no longer
+  // demotes it; the never-observed fixture below still does.
+  it('holds a stale TX target, permit and flags exactly as the fresh one', () => {
     const view = model(observedState({
       fieldStatus: { ...observedState().fieldStatus, txTarget: stale },
     }), TOPOLOGY_CAPS['2/main_sub']);
-    expect(view.txTarget).toEqual({ status: 'unknown', reason: 'stale' });
-    expect(view.txPermit.status).not.toBe('allowed');
-    expect(view.vfos.some((v) => v.isTxTarget)).toBe(false);
+    const live = model(observedState(), TOPOLOGY_CAPS['2/main_sub']);
+    expect(view.txTarget).toEqual(live.txTarget);
+    expect(view.txPermit).toEqual(live.txPermit);
+    expect(view.vfos.map((v) => v.isTxTarget)).toEqual(live.vfos.map((v) => v.isTxTarget));
   });
 
   // MUTATION KILLED: `frequencyHz: rx.freqHz ?? 14074000` (the legacy
@@ -1105,19 +1118,15 @@ describe('RF gain additive display observation', () => {
     }
     const strictJson = JSON.stringify(legacyView, (key, value) => ['display', 'activeFilterConfiguration', 'dataModeChoices'].includes(key) ? undefined : value);
     const digest = createHash('sha256').update(strictJson).digest('hex');
-    // MOR-2425/R29: a stale-but-observed rfGain now resolves `available`
-    // (operational: true) instead of `stale` (operational: false), which
-    // changes the serialized legacy view and therefore this digest. The
-    // stale=true digest below was read off this test's own failure diff
-    // (`expected … to be … received …`) when run against the fixed
-    // `field-status.ts`, not computed by hand.
-    expect(digest).toBe(stale ? 'f5bbe4001f523e4393feacdf07d670fa99d74da8a100b8914f31acefdab31429' : '379a5f00e3bebae780e4215af4e014351df2a07fc067d412f97df6aeadca840f');
+    // MOR-2425/R40+R41: ONE digest for both freshness values. Read off this
+    // test's own failure diff for stale=true, not computed by hand.
+    expect(digest).toBe('379a5f00e3bebae780e4215af4e014351df2a07fc067d412f97df6aeadca840f');
   });
-  it.each([false, true])('projects explicit display without admitting stale RFgain, stale=%s', (stale) => {
+  it.each([false, true])('projects the explicit display and HOLDS RF gain, stale=%s', (stale) => {
     const view = model(displayState(stale), displayCaps, RECEIVING);
     expect(view.receiverIndicators![0].rfGain).toEqual({
-      reading: stale ? { status: 'unknown' } : { status: 'known', value: 0 },
-      availability: { structural: true, operational: !stale },
+      reading: { status: 'known', value: 0 },
+      availability: { structural: true, operational: true },
       display: { state: stale ? 'stale' : 'current', value: 0 },
     });
   });
@@ -1172,8 +1181,8 @@ describe('MOR-2374 shared DATA and filter configuration', () => {
     expect(model.filterPassband!.dataMode.reading).toEqual({ status: 'known', value: 2 });
     expect(model.modeFilter!.activeFilterConfiguration!.slots[0].factoryWidthHz).toBe(500);
   });
-  it.each(['active', 'main.dataMode', 'main.mode'])('requires current evidence for %s', (path) => {
-    for (const status of [undefined, stale, { ...fresh, observed: false }]) {
+  it.each(['active', 'main.dataMode', 'main.mode'])('requires observed evidence for %s', (path) => {
+    for (const status of [undefined, { ...fresh, observed: false }]) {
       const s = state(); s.fieldStatus = { ...s.fieldStatus, [path]: status } as ServerState['fieldStatus'];
       const model = toRadioViewModel(s, dataCaps())!;
       expect(model.modeFilter!.activeFilterConfiguration).toBeNull();
@@ -1183,6 +1192,15 @@ describe('MOR-2374 shared DATA and filter configuration', () => {
         expect(model.filterPassband!.dataModeChoices).toHaveLength(4);
       }
     }
+  });
+  // MOR-2425/R40: staleness alone is no longer one of the statuses above.
+  it.each(['active', 'main.dataMode', 'main.mode'])('holds %s through staleness', (path) => {
+    const s = state(); s.fieldStatus = { ...s.fieldStatus, [path]: stale } as ServerState['fieldStatus'];
+    const held = toRadioViewModel(s, dataCaps())!;
+    const live = toRadioViewModel(state(), dataCaps())!;
+    expect(held.modeFilter!.activeFilterConfiguration)
+      .toEqual(live.modeFilter!.activeFilterConfiguration);
+    expect(held.filterPassband!.dataMode.reading).toEqual(live.filterPassband!.dataMode.reading);
   });
   it.each([
     ['USB', 0, 'USB'], ['USB', 1, 'USB-D'], ['LSB', 0, 'SSB'], ['LSB', 1, 'SSB-D'],

@@ -1121,21 +1121,22 @@ describe('the surface never re-derives what the adapter already computed', () =>
 
 
 describe('explicit PBT display (MOR-1692)', () => {
-  it.each(['pbtInner', 'pbtOuter'] as const)('renders stale %s numerically with a non-live description and guarded input', (field) => {
+  // MOR-2425/R40+R41 overturns MOR-1692's guarded input and sr-only sentence.
+  // The fixture is what the adapter now projects for a held field.
+  it.each(['pbtInner', 'pbtOuter'] as const)('keeps a stale %s enabled, dispatching and unmarked', (field) => {
     const current = base(), onChange = vi.fn();
-    current.filterPassband![field] = { reading: { status: 'unknown' }, availability: { structural: true, operational: false }, display: { state: 'stale', value: 425 } };
+    current.filterPassband![field] = { reading: { status: 'known', value: 425 }, availability: { structural: true, operational: true }, display: { state: 'stale', value: 425 } };
     withSurface(current, (s) => {
       const group = s.group(`filter-${field}`)!, input = s.input(`filter-${field}`)!;
-      expect(input).not.toBeNull(); expect(input.disabled).toBe(true); expect(input.value).toBe('425');
+      expect(input).not.toBeNull(); expect(input.disabled).toBe(false); expect(input.value).toBe('425');
       expect(Array.from(input.labels ?? []).map((label) => label.textContent)).toContain(field === 'pbtInner' ? 'PBT inner' : 'PBT outer');
       expect(s.output(`filter-${field}`)?.textContent).toBe('425');
       expect(s.output(`filter-${field}`)?.getAttribute('aria-live')).toBe('off');
-      const description = document.getElementById(input.getAttribute('aria-describedby')!);
-      expect(description?.textContent).toContain('the last reading is too old to trust');
-      expect(description?.getAttribute('role')).toBeNull(); expect(description?.getAttribute('aria-live')).toBeNull();
-      expect(group.querySelector('[data-stale-cue]')?.textContent).toContain('†');
+      expect(input.getAttribute('aria-describedby')).toBeNull();
+      expect(group.querySelector('[data-stale-cue]')).toBeNull();
+      expect(group.textContent).not.toContain('†');
       input.value = '900'; input.dispatchEvent(new Event('input', { bubbles: true })); flushSync();
-      expect(onChange).not.toHaveBeenCalled();
+      expect(onChange).toHaveBeenCalledWith(900);
     }, { [field === 'pbtInner' ? 'onPbtInnerChange' : 'onPbtOuterChange']: onChange });
   });
 
@@ -1146,7 +1147,7 @@ describe('explicit PBT display (MOR-1692)', () => {
       expect(s.group('filter-pbtInner')!.dataset.presentation).toBe('confirmed');
       expect(s.input('filter-pbtInner')!.disabled).toBe(true);
       expect(s.output('filter-pbtInner')!.textContent).toBe('0');
-      expect(s.group('filter-pbtInner')!.querySelector('[data-stale-cue]')?.textContent?.trim()).toBe('');
+      expect(s.group('filter-pbtInner')!.querySelector('[data-stale-cue]')).toBeNull();
     });
   });
 

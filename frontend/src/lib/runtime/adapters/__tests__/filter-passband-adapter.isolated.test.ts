@@ -201,12 +201,13 @@ describe('dataMode derivation (MOR-1284)', () => {
     expect(view.filterPassband!.dataMode.reading).toEqual({ status: 'known', value: 1 });
   });
 
-  it('degrades a stale dataMode field to unknown while structural availability stays true', () => {
+  it('holds a stale dataMode field at its last observed value (MOR-2425/R40)', () => {
     const view = model(bareState({
       fieldStatus: { ...bareState().fieldStatus, 'main.dataMode': stale },
     }), dmCaps);
     expect(view.filterPassband!.dataMode).toEqual({
-      reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+      reading: { status: 'known', value: 0 },
+      availability: { structural: true, operational: true },
     });
   });
 });

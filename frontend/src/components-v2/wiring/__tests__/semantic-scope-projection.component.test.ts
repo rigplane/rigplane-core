@@ -164,7 +164,7 @@ describe('one managed scope owner through the real region and panel', () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     await render(); expect(push).toHaveBeenCalledTimes(1);
     renew(10, true); expect(push).toHaveBeenCalledTimes(1);
-    expect(target.querySelector('.passband-freshness')!.textContent).toContain('◷');
+    expect(target.querySelector('.passband-freshness')).toBeNull();
     renew(10); expect(push).toHaveBeenCalledTimes(1);
     radio.current!.ptt = true; publishAuthority(); flushSync(); expect(push).toHaveBeenCalledTimes(1);
     wire.frame(); expect(push).toHaveBeenCalledTimes(2);
@@ -176,15 +176,14 @@ describe('one managed scope owner through the real region and panel', () => {
     wire.frame(); expect(push).toHaveBeenCalledTimes(4);
     h.resources.release(shared);
   });
-  it('keeps freshness text readable without effective live-region semantics', async () => {
+  // MOR-2425/R41: the panel paints no per-field freshness — the `◷` chip and
+  // its aria-label are gone, in both states.
+  it('paints no passband freshness chip in either state', async () => {
     await render();
     for (const stale of [true, false, true]) {
       renew(10, stale);
-      const cue = target.querySelector('.passband-freshness')!;
-      const implicitLive = ({ status: 'polite', log: 'polite', alert: 'assertive' } as Record<string, string>)[cue.getAttribute('role') ?? ''];
-      expect(cue.getAttribute('aria-live') ?? implicitLive ?? 'off').toBe('off');
-      expect(cue.textContent?.includes('◷')).toBe(stale);
-      if (stale) expect(cue.getAttribute('aria-label')).toBeTruthy();
+      expect(target.querySelector('.passband-freshness')).toBeNull();
+      expect(target.textContent).not.toContain('◷');
     }
   });
   it('recovers when an independent hardware lease predates managed authority', async () => {
@@ -216,7 +215,7 @@ describe('one managed scope owner through the real region and panel', () => {
   });
   it('retains whole stale geometry and sends frequency-only pan while resize remains denied', async () => {
     await render(); const edges = overlay()!.getAttribute('style'); renew(10, true); wire.frame();
-    expect(overlay()!.getAttribute('style')).toBe(edges); expect(target.querySelector('.passband-freshness')!.textContent).toContain('◷');
+    expect(overlay()!.getAttribute('style')).toBe(edges); expect(target.querySelector('.passband-freshness')).toBeNull();
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
     const surface = target.querySelector<HTMLElement>('.spectrum-area')!;
     surface.getBoundingClientRect = () => ({ left: 0, width: 200 } as DOMRect);
@@ -225,7 +224,7 @@ describe('one managed scope owner through the real region and panel', () => {
     }
     expect(h.frequency).toHaveBeenCalledOnce(); expect(h.width).not.toHaveBeenCalled();
     renew(11); wire.frame(); expect(overlay()!.getAttribute('style')).toBe(edges);
-    expect(target.querySelector('.passband-freshness')!.textContent?.trim()).toBe('');
+    expect(target.querySelector('.passband-freshness')).toBeNull();
   });
   it('keeps one host/evidence subscription and resets display state on controller lifetime disposal', async () => {
     const watch = vi.spyOn(h.scope, 'subscribeFrameEvidence'), dispose = vi.spyOn(ScopeFrameHost.prototype, 'dispose');

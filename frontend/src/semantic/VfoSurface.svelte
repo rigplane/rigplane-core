@@ -371,8 +371,12 @@
   }
 
   function readoutDisabled(vfo: VfoViewModel): boolean {
+    // MOR-2425/R29+R40: a HELD frequency stays tunable. Freshness alone no
+    // longer locks the readout; a display carrying no value still does.
     return disabled || !hasTunableFrequency(vfo)
-      || (vfo.display !== undefined && vfo.display.frequencyHz.state !== 'current');
+      || (vfo.display !== undefined
+        && vfo.display.frequencyHz.state !== 'current'
+        && vfo.display.frequencyHz.state !== 'stale');
   }
 
   function tuneFrequency(vfo: VfoViewModel, frequencyHz: number): void {
@@ -467,7 +471,7 @@
     toggle('IP+', indicator.ipPlus); toggle('DIGI-SEL', indicator.digiSel);
     if (indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported') {
       const shown = displayValue(indicator.rfGain.display, indicator.rfGain.reading.status === 'known' ? indicator.rfGain.reading.value : null);
-      badges.push({ label: `RFG ${shown ?? '—'}${indicator.rfGain.display?.state === 'stale' ? ' †' : ''}`, active: shown !== null, color: shown === null ? 'muted' : 'cyan', state: indicator.rfGain.display?.state ?? indicator.rfGain.reading.status });
+      badges.push({ label: `RFG ${shown ?? '—'}`, active: shown !== null, color: shown === null ? 'muted' : 'cyan', state: indicator.rfGain.display?.state ?? indicator.rfGain.reading.status });
     }
     return badges;
   }
@@ -512,8 +516,6 @@
       {@const displayHz = displayValue(vfo.display?.frequencyHz, vfo.frequencyHz)}
       {@const displayMode = displayValue(vfo.display?.mode, vfo.mode)}
       {@const displayFilter = displayValue(vfo.display?.filter, vfo.filter)}
-      {@const staleDisplay = Object.values(vfo.display ?? {}).some((field) => field.state === 'stale')}
-      {@const staleId = `${reasonIdPrefix}-display-${i}`}
       {#snippet hostedFrequency()}
         {#if vfo.receiver === 'MAIN'}
           {@render receiverInstruments!.mainFrequency({ compact: appearance === 'semantic', vfoFreqHook: false })}
@@ -541,7 +543,6 @@
           data-freq-tunable={!readoutDisabled(vfo)}
           data-display-state={vfo.display?.frequencyHz.state}
           aria-disabled={hasDigitReadout(vfo) && readoutDisabled(vfo) ? 'true' : undefined}
-          aria-describedby={staleDisplay ? staleId : undefined}
         >
           {#if receiverInstruments !== undefined && hasDigitReadout(vfo)}
             {@render hostedFrequency()}
@@ -601,11 +602,6 @@
           {/if}
         </span>
         <span class="vfo-mode">{displayMode ?? '—'}{displayFilter ? ` / ${displayFilter}` : ''}</span>
-        <span id={staleId} class="vfo-stale-cue" class:stale={staleDisplay}
-          data-vfo-stale-cue aria-hidden={!staleDisplay}
-          title={staleDisplay ? t('core.rxTx.target.reason.stale') : undefined}>
-          <span aria-hidden="true">†</span><span class="sr-only">{t('core.rxTx.target.reason.stale')}</span>
-        </span>
         {#if vfo.isTxTarget}
           <span class="vfo-badge" data-vfo-tx-badge>{t('core.vfo.txTarget.label')}</span>
         {/if}
@@ -772,7 +768,6 @@
           pendingDisplayHz={receiverInstruments === undefined && dominant
             ? pendingFrequencyHz?.[receiver] ?? null : undefined}
           frequencyState={dominant?.display?.frequencyHz.state ?? (dominant?.frequencyHz == null ? 'unknown' : 'current')}
-          staleReason={t('core.rxTx.target.reason.stale')}
           contextKey={receiverInstruments === undefined
             ? `${frequencyLifetimeKey ?? 'unscoped'}:${viewModel.topologyId}:${receiver}:${dominant ? slotKey(dominant.slot) : 'unknown'}`
             : undefined}
@@ -855,15 +850,7 @@
   .vfo-tile { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: var(--v2-bg-panel, rgba(255, 255, 255, 0.03)); }
   .vfo-tile.is-active { border-color: var(--v2-accent-cyan, #00d4ff); }
   .vfo-role { font-weight: 700; color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); }
-  .vfo-stale-cue { visibility: hidden; font-size: 10px; inline-size: 1ch; flex: 0 0 1ch; }
-  .vfo-stale-cue.stale { visibility: visible; }
-  /* Reserve the semantic tile's upper trailing corner, not another flex gap.
-     A flow slot can wrap a 375px phone row even while its cue is hidden. */
   [data-vfo-appearance='semantic'] .vfo-tile { position: relative; }
-  [data-vfo-appearance='semantic'] .vfo-stale-cue {
-    position: absolute; inset-inline-end: 1px; inset-block-start: 1px;
-    line-height: 1; letter-spacing: normal;
-  }
   .vfo-badge { padding: 1px 4px; border-radius: 3px; font-size: 10px; color: var(--v2-accent-red, #ff2020); border: 1px solid var(--v2-accent-red, #ff2020); }
   .vfo-select { border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; padding: 3px 6px; }
   .vfo-select:disabled { color: var(--v2-text-disabled, rgba(255, 255, 255, 0.3)); cursor: not-allowed; }
@@ -890,11 +877,6 @@
   .receiver-instrument :where(.vfo-tile) {
     display: grid; grid-template-columns: 1fr auto; gap: 6px;
     padding: 0; border: 0; background: transparent;
-  }
-  /* Share the role cell and its following gap; auto placement would add a row. */
-  .receiver-instrument .vfo-stale-cue {
-    grid-column: 1; grid-row: 1; justify-self: end; align-self: start;
-    transform: translateX(100%); line-height: 1; letter-spacing: normal;
   }
   .receiver-instrument .vfo-role { grid-column: 1; grid-row: 1; font-size: 12px; letter-spacing: .1em; }
   .receiver-instrument .vfo-mode { font-size: 12px; grid-column: 1; }

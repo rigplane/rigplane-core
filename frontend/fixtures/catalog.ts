@@ -726,13 +726,16 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
   },
   {
     id: 'connection-loss-stale',
-    what: 'radio link lost, values retained but every field STALE — every fact degrades to unknown.',
+    what: 'radio link lost, values retained but every field STALE — every fact HOLDS its last value.',
     state: () => mainSubState('MAIN', stale), caps: mainSubCaps,
     tx: tx({ fresh: false, radioTx: 'unknown' }),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
+    // MOR-2425/R40: the held facts make the active receiver known again — the
+    // MAIN strip reads active, its tile loses its select button (3, not 4) and
+    // the radio-wide switches are live. `keyDisabled` reads the TX snapshot.
     expect: mainSubExpect({
-      stripActive: [false, false], selectsEnabled: 4, selectsDisabled: 0,
-      radioWideSwitchesDisabled: true, keyDisabled: true, rfLabel: 'RF ?',
+      stripActive: [true, false], selectsEnabled: 3, selectsDisabled: 0,
+      radioWideSwitchesDisabled: false, keyDisabled: true, rfLabel: 'RF ?',
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },

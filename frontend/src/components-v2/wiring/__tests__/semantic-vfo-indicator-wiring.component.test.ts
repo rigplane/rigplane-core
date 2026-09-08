@@ -277,14 +277,15 @@ describe('production receiver-indicator partitioning', () => {
     const currentCalls = h.noop.mock.calls.length;
     expect(currentCalls).toBeGreaterThan(0);
 
+    // MOR-2425/R29+R40: a HELD readout stays live — same renderer instance,
+    // same value, still enabled, and the gesture still reaches the tuning path.
     pushState(frequencyState('stale'));
     expect(target.querySelector(selector)).toBe(renderer);
     expect(renderer.textContent).toContain('14200000');
     const staleWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
     renderer.querySelector<HTMLButtonElement>('[data-multiplier="1"]')!.dispatchEvent(staleWheel);
-    expect(renderer.getAttribute('aria-disabled')).toBe('true');
-    expect(staleWheel.defaultPrevented).toBe(false);
-    expect(h.noop).toHaveBeenCalledTimes(currentCalls);
+    expect(renderer.getAttribute('aria-disabled')).toBe('false');
+    expect(h.noop.mock.calls.length).toBeGreaterThan(currentCalls);
     expect(cardinality()).toEqual(initialCardinality);
 
     pushState(frequencyState('current'));

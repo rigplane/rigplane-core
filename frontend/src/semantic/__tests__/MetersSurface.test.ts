@@ -1583,7 +1583,7 @@ it('a current calibrated zero remains a measurement, distinct from RX idle', () 
     withSurface(view, (s) => {
       expect(s.tile('power')?.textContent).toContain('0W');
       expect(s.tile('power')?.textContent).not.toContain('IDLE');
-      expect(s.tile('power')?.querySelector('svg')?.getAttribute('aria-label')).toContain('Current observation. 0W');
+      expect(s.tile('power')?.querySelector('svg')?.getAttribute('aria-label')).toContain('Observed. 0W');
     });
   } finally { clearCapabilities(); }
 });
