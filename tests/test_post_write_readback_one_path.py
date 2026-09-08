@@ -770,10 +770,9 @@ async def test_cw_pitch_readback_applies_the_value_the_radio_reports() -> None:
     the reported value.
 
     The lifecycle assertion below is a guard, not a discriminator: nothing
-    confirms ``SetCwPitch`` today either way, because ``set_cw_pitch`` has no
-    command descriptor (``command_dispatch.py: command_descriptor`` returns
-    ``None``), so no scoped ``CommandIntent`` -- and hence no pending
-    overlay -- is ever built for it.
+    confirms ``SetCwPitch`` today either way (no confirmed or reconciled
+    event is emitted whether the radio reports the requested value or
+    another one).
     """
     path = FieldPath.parse("global.operator_controls.cw_pitch")
     poller, scheduler = _poller(
