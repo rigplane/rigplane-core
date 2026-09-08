@@ -64,8 +64,6 @@ def _always_expired(request: AcquisitionRequest, *, sent_at: float, now: float) 
 
 
 class _StubScheduler:
-    """Only the two methods the drain calls on a scheduler."""
-
     def __init__(self, pending: tuple[AcquisitionRequest, ...]) -> None:
         self.pending = pending
         self.tx_active_calls: list[bool] = []
