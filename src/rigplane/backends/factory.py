@@ -65,8 +65,7 @@ def create_radio(config: BackendConfig) -> Radio:
         # Route to model-specific serial backend
         if config.model is None or not config.model.strip():
             # R59/MOR-2425: the default this replaced drove an IC-7300 as an
-            # IC-7610. Not resolved from ``radio_addr`` either — R59 rejected
-            # identifying the rig by anything but the caller naming it.
+            # IC-7610. Not resolved from ``radio_addr`` either.
             raise ValueError(
                 "Serial backend needs an explicit radio model: pass --model "
                 "(e.g. --model IC-7300); rigplane does not guess a default rig."
