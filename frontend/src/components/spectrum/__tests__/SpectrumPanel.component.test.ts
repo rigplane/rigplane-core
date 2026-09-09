@@ -160,6 +160,16 @@ const runtimeHarness = vi.hoisted(() => {
 
 const mockRuntime = runtimeHarness.runtime;
 
+// SvelteMap-backed so that a write to `state.mockScopeConnected` during a
+// mounted test re-runs the panel's `$derived` chain; the plain-property
+// writes the rest of this file makes keep working through the setter.
+const hardwareScopeTransport = new SvelteMap<string, boolean>([['connected', true]]);
+Object.defineProperty(runtimeHarness.state, 'mockScopeConnected', {
+  configurable: true,
+  get: () => hardwareScopeTransport.get('connected')!,
+  set: (value: boolean) => hardwareScopeTransport.set('connected', value),
+});
+
 const authorityHarness = vi.hoisted(() => {
   const state = { current: null as any, useProductionSelector: false };
   return {
@@ -256,6 +266,7 @@ const passbandHarness = vi.hoisted(() => ({
 
 const spectrumRendererHarness = vi.hoisted(() => ({
   lastOptions: null as any,
+  constructed: 0,
   render: vi.fn((_ctx: unknown, _data: Uint8Array, _width: number, _height: number, options: any) => {
     spectrumRendererHarness.lastOptions = options;
   }),
@@ -299,6 +310,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
 vi.mock('$lib/renderers/spectrum-renderer', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/renderers/spectrum-renderer')>();
   class SpectrumRenderer {
+    constructor() { spectrumRendererHarness.constructed++; }
     setAvgEnabled = spectrumRendererHarness.setAvgEnabled;
     setPeakHoldEnabled = spectrumRendererHarness.setPeakHoldEnabled;
     render = spectrumRendererHarness.render;
@@ -1656,5 +1668,40 @@ describe('SpectrumPanel colour roles', () => {
       ...spectrumColorRolesToOptions(defaultSpectrumColorRoles),
       tuneLineColor: '#0a0a0a',
     });
+  });
+});
+
+describe('hardware scope drop clears the trace (R53)', () => {
+  it('stops painting on drop and repaints only from a post-reconnect frame', async () => {
+    const target = mountPanel();
+    const spectrum = target.querySelector('.spectrum-area')!;
+    emitFrame({ pixels: new Uint8Array(475).fill(64) });
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.render.mock.calls.at(-1)![1][0]).toBe(64);
+    const renderersBeforeDrop = spectrumRendererHarness.constructed;
+
+    runtimeHarness.state.mockScopeConnected = false;
+    flushSync();
+
+    // No paint surface while the scope is down: the pre-drop frame cannot be
+    // repainted, and the peak-hold/average state held by the SpectrumRenderer
+    // instance is discarded with it.
+    expect(spectrum.querySelector('canvas')).toBeNull();
+    spectrumRendererHarness.render.mockClear();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(spectrumRendererHarness.render).not.toHaveBeenCalled();
+
+    runtimeHarness.state.mockScopeConnected = true;
+    flushSync();
+    expect(spectrum.querySelector('canvas')).not.toBeNull();
+    expect(spectrumRendererHarness.constructed).toBe(renderersBeforeDrop + 1);
+
+    // Reconnecting alone paints nothing — the panel kept no pixels to repaint.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(spectrumRendererHarness.render).not.toHaveBeenCalled();
+
+    emitFrame({ pixels: new Uint8Array(475).fill(100) });
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.render.mock.calls.at(-1)![1][0]).toBe(100);
   });
 });

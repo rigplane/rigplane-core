@@ -540,6 +540,21 @@
     if (managed) { spectrumPush = null; waterfallPush = null; }
   }
 
+  // R53: when the scope drops the trace goes dark instead of freezing under
+  // the disconnect overlay. Pinned by `stops painting on drop and repaints
+  // only from a post-reconnect frame`.
+  //
+  // The unmanaged audio-FFT source keeps its canvas: there `scopeConnected`
+  // reads `runtime.defaultScopeStatus`, a different observation than the
+  // frames this panel paints, and `preserves distinct 80/120/160 producer
+  // levels in the trace, peak hold and waterfall` paints frames while that
+  // observation reads `disconnected`.
+  let scopeTraceLive = $derived(scopeConnected || (!managed && audioFft));
+  $effect(() => {
+    if (scopeTraceLive) return;
+    untrack(() => clearSample());
+  });
+
   $effect(() => { if (managed) scopeDemandOn = scopeDemanded; });
   $effect(() => {
     if (!managed) return;
@@ -660,7 +675,7 @@
         <div class="scope-disconnected-overlay">{t('core.overlay.scopeDisconnected')}</div>
       {/if}
       {#if !audioFft}<BandPlanOverlay {startFreq} {endFreq} visible={showBandPlan} {hiddenLayers} />{/if}
-      {#if !managedUnavailable}
+      {#if scopeTraceLive}
       <SpectrumCanvas data={scopePixels} options={spectrumOptions} {spanHz} {enableAvg} {enablePeakHold} onRegisterPush={(fn) => { spectrumPush = fn; if (managed && scopePixels) fn(scopePixels); }} />
       {/if}
       {#if tuneVisible && spanHz > 0 && pbWidthPct > 0 && canResizePassband}
