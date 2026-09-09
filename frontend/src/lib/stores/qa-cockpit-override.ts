@@ -1,14 +1,15 @@
 /**
- * Interim QA reachability for the dual-receiver cockpit (MOR-1257).
+ * Interim QA reachability for the dual-receiver cockpit (MOR-1257) and, on
+ * the same terms, the flagship geometry probe (T160 PR-1).
  *
  * Staple reachability arrives with the MOR-1081 workspace-owned layout
  * chain (layout selection migrates there). Until then, the ONLY way to
- * reach the cockpit skin is the exact `?layout=dual-receiver-cockpit`
- * query param — it is not a `CanonicalLayoutMode` (see
- * `lib/stores/layout.svelte.ts`), so it can never be persisted via
- * `setLayoutMode`/localStorage, and it is deliberately absent from
- * `components-v2/layout/StatusBar.svelte`'s hardcoded skin-selector
- * options, so it never appears as a normal layout choice.
+ * reach either skin is the exact `?layout=<id>` query param naming it —
+ * neither id is a `CanonicalLayoutMode` (see
+ * `lib/stores/layout.svelte.ts`), so neither can be persisted via
+ * `setLayoutMode`/localStorage, and `components-v2/layout/StatusBar.svelte`
+ * types its hardcoded skin-selector options `CanonicalLayoutMode`, so
+ * listing either one there is a compile error rather than an omission.
  *
  * Kept in its own module — not `layout.svelte.ts` or `skins/registry.ts` —
  * so `App.svelte` importing it cannot be shadowed by the partial
@@ -32,19 +33,23 @@
  * `console.warn` makes that non-obvious no-op self-explaining.
  */
 const QA_COCKPIT_QUERY_PARAM = 'layout';
-const QA_COCKPIT_QUERY_VALUE = 'dual-receiver-cockpit';
+export type QaLayoutOverride = 'dual-receiver-cockpit' | 'flagship-probe';
+/** Exact match only: anything not in this list falls through to the normal
+ *  preference, so a guessed `?layout=...` cannot reach a QA-only skin. */
+const QA_QUERY_VALUES: readonly QaLayoutOverride[] = ['dual-receiver-cockpit', 'flagship-probe'];
 const MOBILE_MIN_DIMENSION_PX = 640;
 
-export function readQaCockpitLayoutOverride(search?: string): 'dual-receiver-cockpit' | null {
+export function readQaCockpitLayoutOverride(search?: string): QaLayoutOverride | null {
   const raw = search ?? (typeof window !== 'undefined' ? window.location.search : '');
-  const matched = new URLSearchParams(raw).get(QA_COCKPIT_QUERY_PARAM) === QA_COCKPIT_QUERY_VALUE;
-  if (matched && typeof window !== 'undefined'
+  const value = new URLSearchParams(raw).get(QA_COCKPIT_QUERY_PARAM);
+  const matched = QA_QUERY_VALUES.find((id) => id === value) ?? null;
+  if (matched !== null && typeof window !== 'undefined'
     && Math.min(window.innerWidth, window.innerHeight) < MOBILE_MIN_DIMENSION_PX) {
     console.warn(
-      '[rigplane] ?layout=dual-receiver-cockpit is set, but the viewport is under '
-      + `${MOBILE_MIN_DIMENSION_PX}px — the mobile skin takes precedence and the cockpit will `
+      `[rigplane] ?layout=${matched} is set, but the viewport is under `
+      + `${MOBILE_MIN_DIMENSION_PX}px — the mobile skin takes precedence and that skin will `
       + 'not show. Widen the window to at least 640x640 to view it.',
     );
   }
-  return matched ? 'dual-receiver-cockpit' : null;
+  return matched;
 }

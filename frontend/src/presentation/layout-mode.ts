@@ -25,12 +25,16 @@
  *                 through to 'auto'. It can therefore never be persisted via
  *                 setLayoutMode/the workspace and never appears in the
  *                 StatusBar skin selector.
+ * 'flagship-probe' = QA-ONLY (T160 PR-1), on exactly those terms and through
+ *                 the same module: `?layout=flagship-probe`, excluded from
+ *                 CanonicalLayoutMode below.
  */
 export type LayoutMode =
   | 'auto' | 'lcd' | 'lcd-cockpit' | 'lcd-scope' | 'standard' | 'sdr-test'
   | 'peer-split' | 'unified-instrument' | 'panadapter-first'
-  | 'dual-sdr-face' | 'dual-receiver-cockpit';
-export type CanonicalLayoutMode = Exclude<LayoutMode, 'lcd' | 'dual-receiver-cockpit'>;
+  | 'dual-sdr-face' | 'dual-receiver-cockpit' | 'flagship-probe';
+export type CanonicalLayoutMode =
+  Exclude<LayoutMode, 'lcd' | 'dual-receiver-cockpit' | 'flagship-probe'>;
 
 export const CANONICAL_LAYOUT_MODES = new Set<CanonicalLayoutMode>([
   'auto',
