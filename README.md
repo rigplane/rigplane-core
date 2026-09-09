@@ -27,7 +27,7 @@ Tested in production against WSJT-X, fldigi, and JS8Call.
 
 ```bash
 pip install rigplane
-rigplane web                # auto-discovers a radio on the LAN
+rigplane --model IC-7610 web   # discovers the radio's IP on the LAN
 # open http://localhost:8080
 ```
 

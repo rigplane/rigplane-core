@@ -56,7 +56,8 @@ types. **Do not hoist it to module top-level** (plan §6.2 no-touch list).
   `tests/test_rig_loader*.py`.
 - **Change the registry resolution policy** → edit `resolve_radio_profile`
   in `profiles/__init__.py`; the docstring documents the precedence
-  order (explicit > model > civ_addr > IC-7610 default).
+  order (explicit profile > model > radio_addr), and the `ValueError`
+  raised when none of the three identifies the radio.
 
 ## See also
 

@@ -533,7 +533,7 @@ pip install rigplane
 2. **Override** (use with caution for debugging only):
    ```bash
    export ICOM_SERIAL_SCOPE_ALLOW_LOW_BAUD=1
-   rigplane --backend serial --serial-baud 19200 scope
+   rigplane --backend serial --model IC-7610 --serial-baud 19200 scope
    ```
    Python API:
    ```python
@@ -553,7 +553,7 @@ pip install rigplane
 ```bash
 # Increase serial CI-V pacing interval (default 50 ms)
 export ICOM_SERIAL_CIV_MIN_INTERVAL_MS=80
-rigplane --backend serial status
+rigplane --backend serial --model IC-7610 status
 
 # Or use higher baud rate (radio setting)
 # Menu → Set → Connectors → CI-V → CI-V USB Baud Rate → 115200
@@ -577,7 +577,7 @@ rigplane --backend serial status
 rigplane --list-audio-devices
 
 # Explicitly set TX device
-rigplane --backend serial --tx-device "IC-7610 USB Audio" audio tx --in test.wav
+rigplane --backend serial --model IC-7610 --tx-device "IC-7610 USB Audio" audio tx --in test.wav
 
 # Ensure PTT is active during TX (library handles this automatically for audio tx)
 ```

@@ -581,12 +581,12 @@ def _build_parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
         epilog=(
             "examples:\n"
-            "  rigplane web                          # auto-discover radio, start web UI\n"
-            "  rigplane web --radio-host 192.168.55.40  # explicit radio IP\n"
-            "  rigplane web --preset digimode        # bridge + rigctld + WSJT-X compat\n"
-            "  rigplane web --bridge                 # web UI + audio bridge\n"
-            "  rigplane serve                        # rigctld server only\n"
-            "  rigplane discover                     # find radios on the network\n"
+            "  rigplane --model IC-7610 web                    # discover radio IP, start web UI\n"
+            "  rigplane --model IC-7610 web --radio-host 192.168.55.40  # explicit radio IP\n"
+            "  rigplane --model IC-7610 web --preset digimode  # bridge + rigctld + WSJT-X compat\n"
+            "  rigplane --model IC-7610 web --bridge           # web UI + audio bridge\n"
+            "  rigplane --model IC-7610 serve                  # rigctld server only\n"
+            "  rigplane discover                               # find radios on the network\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
