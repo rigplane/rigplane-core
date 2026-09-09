@@ -33,12 +33,39 @@ import {
   getCalibratedScaleMaxRaw,
   isSmeterCalibrated,
 } from '../../primitives/meters/s-meter-scale';
+import { valueToPosition } from '../../primitives/scalar/value-control-core';
 import type {
   MeterEngineeringUnit,
   MeterValueDomain,
 } from '../../semantic/radio-view-model';
 
 export type MeterSource = 'S' | 'SWR' | 'POWER' | 'po';
+
+/**
+ * The two values a bar's ends stand for: `min` at empty, `max` at full.
+ * Every `*Scale` function below returns the domain its matching `*Level`
+ * function positions against; null means that function is not positioning
+ * against a scale at all (an explicit raw domain, a domain it cannot serve,
+ * or no usable calibration data).
+ */
+export interface MeterScaleDomain {
+  readonly min: number;
+  readonly max: number;
+}
+
+/**
+ * The scale the supply-voltage bar is drawn against, in volts — a fixed
+ * window rather than the profile's calibration range, so a sag moves the
+ * bar by the same amount on every radio. The art-direction line chose these
+ * ends on 2026-09-08 (11 V = a 12 V supply in trouble, 15 V = faulty); they
+ * are an instrument choice, not a rating read off a radio.
+ *
+ * `vdScale` returns this and `vdLevel` positions against it, so a face
+ * labelling the scale from `BarMeterProjection.scale` prints the numbers
+ * the fill was computed from. Pinned by meter-utils.test.ts
+ * "SUPPLY_VOLTAGE_WINDOW" and the three profile ladders that follow it.
+ */
+export const SUPPLY_VOLTAGE_WINDOW: MeterScaleDomain = { min: 11, max: 15 };
 
 /** Raw device-scale ceiling (CI-V meter byte range). Used only as the
  *  neutral bar-geometry edge for uncalibrated meters — never a claimed
@@ -64,6 +91,18 @@ function getCal(meterType: string): MeterCalPoint[] | null {
 
 function topActual(cal: MeterCalPoint[]): number {
   return cal[cal.length - 1].actual;
+}
+
+/** Zero to the table's top knot. Null when the profile declares no table. */
+function topScale(meterType: string): MeterScaleDomain | null {
+  const cal = getCal(meterType);
+  return cal ? { min: 0, max: topActual(cal) } : null;
+}
+
+/** A reading's place on its own scale: 0 at `min`, 1 at `max`, clamped to
+ *  that interval. A scale with no positive span yields 0. */
+function positionIn(value: number, scale: MeterScaleDomain): number {
+  return scale.max > scale.min ? valueToPosition(value, scale.min, scale.max) : 0;
 }
 
 /**
@@ -136,15 +175,21 @@ export function formatPowerWatts(value: number, domain?: MeterValueDomain): stri
   return `${Math.round(watts)}W`;
 }
 
+/** The watt scale the power bar is drawn against, or null when there is none. */
+export function powerScale(domain?: MeterValueDomain): MeterScaleDomain | null {
+  if (domain?.kind === 'raw') return null;
+  if (domain !== undefined && !matchesEngineering(domain, 'w')) return null;
+  return topScale('power');
+}
+
 export function normalizePower(value: number): number;
 export function normalizePower(value: number, domain: MeterValueDomain): number | null;
 export function normalizePower(value: number, domain?: MeterValueDomain): number | null {
   if (domain?.kind === 'raw') return normalize(value);
   if (domain !== undefined && !matchesEngineering(domain, 'w')) return null;
-  const cal = getCal('power');
-  if (!cal) return domain === undefined ? normalize(value) : null;
-  const max = topActual(cal);
-  return max > 0 ? clamp01(value / max) : 0;
+  const scale = powerScale(domain);
+  if (!scale) return domain === undefined ? normalize(value) : null;
+  return positionIn(value, scale);
 }
 
 // ---- SWR (ratio when calibrated) ----
@@ -181,16 +226,22 @@ export function formatSwr(value: number, domain?: MeterValueDomain): string {
   return Math.max(cal[0].actual, value).toFixed(1);
 }
 
+/** The ratio scale the SWR bar is drawn against, or null when there is none. */
+export function swrScale(domain?: MeterValueDomain): MeterScaleDomain | null {
+  if (domain?.kind === 'raw') return null;
+  if (domain !== undefined && !matchesEngineering(domain, 'ratio')) return null;
+  return topScale('swr');
+}
+
 /** SWR level in its explicit raw domain or against a declared ratio scale. */
 export function swrLevel(value: number): number;
 export function swrLevel(value: number, domain: MeterValueDomain): number | null;
 export function swrLevel(value: number, domain?: MeterValueDomain): number | null {
   if (domain?.kind === 'raw') return normalize(value);
   if (domain !== undefined && !matchesEngineering(domain, 'ratio')) return null;
-  const cal = getCal('swr');
-  if (!cal) return domain === undefined ? normalize(value) : null;
-  const max = topActual(cal);
-  return max > 0 ? clamp01(value / max) : 0;
+  const scale = swrScale(domain);
+  if (!scale) return domain === undefined ? normalize(value) : null;
+  return positionIn(value, scale);
 }
 
 /** True when SWR exceeds 2.0 in an explicit or legacy-qualified ratio domain. */
@@ -218,18 +269,28 @@ export function formatAlc(value: number, domain?: MeterValueDomain): string {
   return formatRaw(value);
 }
 
+/** ALC's calibrated scale — the value arrives normalized 0-1 (file header). */
+const NORMALIZED_FULL_SCALE: MeterScaleDomain = { min: 0, max: 1 };
+
+/** The ALC bar's scale: the normalized unit interval when calibrated, zero
+ *  to the declared redline otherwise. Null when the profile declares
+ *  neither. */
+export function alcScale(domain?: MeterValueDomain): MeterScaleDomain | null {
+  if (domain?.kind === 'raw') return null;
+  if (domain !== undefined && !matchesEngineering(domain, 'normalized')) return null;
+  if (getCal('alc') || matchesEngineering(domain, 'normalized')) return NORMALIZED_FULL_SCALE;
+  const redline = getMeterRedline('alc');
+  return redline !== null && redline > 0 ? { min: 0, max: redline } : null;
+}
+
 /** Redline-relative ALC level, neutral raw geometry, or no supported motion. */
 export function alcLevel(value: number): number;
 export function alcLevel(value: number, domain: MeterValueDomain): number | null;
 export function alcLevel(value: number, domain?: MeterValueDomain): number | null {
   if (domain?.kind === 'raw') return normalize(value);
   if (domain !== undefined && !matchesEngineering(domain, 'normalized')) return null;
-  if (getCal('alc') || matchesEngineering(domain, 'normalized')) return clamp01(value);
-  const redline = getMeterRedline('alc');
-  if (redline !== null && redline > 0) {
-    return Math.max(0, Math.min(redline, value)) / redline;
-  }
-  return normalize(value);
+  const scale = alcScale(domain);
+  return scale ? positionIn(value, scale) : normalize(value);
 }
 
 /** True when ALC is past 90% in an explicit normalized or legacy-qualified domain. */
@@ -253,15 +314,24 @@ export function formatVolts(value: number, domain?: MeterValueDomain): string {
   return formatAgainstTop(value, cal, 'V');
 }
 
+/**
+ * The supply-voltage bar's scale: `SUPPLY_VOLTAGE_WINDOW`, not this profile's
+ * calibration range. Null when the profile declares no vd table.
+ */
+export function vdScale(domain?: MeterValueDomain): MeterScaleDomain | null {
+  if (domain?.kind === 'raw') return null;
+  if (domain !== undefined && !matchesEngineering(domain, 'v')) return null;
+  return getCal('vd') ? SUPPLY_VOLTAGE_WINDOW : null;
+}
+
 export function vdLevel(value: number): number;
 export function vdLevel(value: number, domain: MeterValueDomain): number | null;
 export function vdLevel(value: number, domain?: MeterValueDomain): number | null {
   if (domain?.kind === 'raw') return normalize(value);
   if (domain !== undefined && !matchesEngineering(domain, 'v')) return null;
-  const cal = getCal('vd');
-  if (!cal) return domain === undefined ? normalize(value) : null;
-  const max = topActual(cal);
-  return max > 0 ? clamp01(value / max) : 0;
+  const scale = vdScale(domain);
+  if (!scale) return domain === undefined ? normalize(value) : null;
+  return positionIn(value, scale);
 }
 
 export function formatAmps(value: number, domain?: MeterValueDomain): string {
@@ -275,15 +345,21 @@ export function formatAmps(value: number, domain?: MeterValueDomain): string {
   return formatAgainstTop(value, cal, 'A');
 }
 
+/** The drain-current bar's scale: zero to the profile table's top, unwindowed. */
+export function idScale(domain?: MeterValueDomain): MeterScaleDomain | null {
+  if (domain?.kind === 'raw') return null;
+  if (domain !== undefined && !matchesEngineering(domain, 'a')) return null;
+  return topScale('id');
+}
+
 export function idLevel(value: number): number;
 export function idLevel(value: number, domain: MeterValueDomain): number | null;
 export function idLevel(value: number, domain?: MeterValueDomain): number | null {
   if (domain?.kind === 'raw') return normalize(value);
   if (domain !== undefined && !matchesEngineering(domain, 'a')) return null;
-  const cal = getCal('id');
-  if (!cal) return domain === undefined ? normalize(value) : null;
-  const max = topActual(cal);
-  return max > 0 ? clamp01(value / max) : 0;
+  const scale = idScale(domain);
+  if (!scale) return domain === undefined ? normalize(value) : null;
+  return positionIn(value, scale);
 }
 
 export function formatCompDb(value: number, domain?: MeterValueDomain): string {
@@ -297,15 +373,21 @@ export function formatCompDb(value: number, domain?: MeterValueDomain): string {
   return `${Math.round(Math.max(0, cal ? Math.min(topActual(cal), value) : value))} dB`;
 }
 
+/** The compression bar's scale: zero to the profile table's top, in dB. */
+export function compScale(domain?: MeterValueDomain): MeterScaleDomain | null {
+  if (domain?.kind === 'raw') return null;
+  if (domain !== undefined && !matchesEngineering(domain, 'db')) return null;
+  return topScale('comp');
+}
+
 export function compLevel(value: number): number;
 export function compLevel(value: number, domain: MeterValueDomain): number | null;
 export function compLevel(value: number, domain?: MeterValueDomain): number | null {
   if (domain?.kind === 'raw') return normalize(value);
   if (domain !== undefined && !matchesEngineering(domain, 'db')) return null;
-  const cal = getCal('comp');
-  if (!cal) return domain === undefined ? normalize(value) : null;
-  const max = topActual(cal);
-  return max > 0 ? clamp01(value / max) : 0;
+  const scale = compScale(domain);
+  if (!scale) return domain === undefined ? normalize(value) : null;
+  return positionIn(value, scale);
 }
 
 // ---- S-meter (dB-rel-S9 when calibrated; MOR-1451) ----

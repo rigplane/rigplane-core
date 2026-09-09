@@ -114,7 +114,7 @@ describe('projectBarMeters', () => {
     ]);
     expect(Object.keys(projected[0]).sort()).toEqual([
       'accessibleDescription', 'displayText', 'domain', 'evidence', 'fault', 'gauge', 'key',
-      'label', 'motionFraction', 'observed', 'relevant', 'showPeak', 'source',
+      'label', 'motionFraction', 'observed', 'relevant', 'scale', 'showPeak', 'source',
       'state', 'stateText',
     ]);
     expect(projected[0]).toMatchObject({
@@ -377,5 +377,121 @@ describe('projectBarMeters', () => {
       ratioScale: false,
       fault: true,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bar scale domains (T168). The product owns value-to-position, so it must
+// also publish the two numbers the position was computed from — otherwise a
+// face labelling the scale from anywhere else prints ends the fill does not
+// agree with. Wherever a case has both a scale and a reading it asserts the
+// scale AND that `motionFraction` is that scale's own position of the
+// reading; a scale that diverged from the level function fails the second
+// assertion even when the first still passes.
+// ---------------------------------------------------------------------------
+
+const FTX1_DRAIN_CALS = {
+  vd: [
+    { raw: 0, actual: 0.0, label: '0' },
+    { raw: 210, actual: 13.8, label: '13.8' },
+  ],
+  id: [
+    { raw: 0, actual: 0.0, label: '0' },
+    { raw: 29, actual: 1.0, label: '1.0' },
+  ],
+};
+
+function drainCaps(): Capabilities {
+  const base = calibratedCaps();
+  return { ...base, meterCalibrations: { ...base.meterCalibrations, ...FTX1_DRAIN_CALS } };
+}
+
+function positionOn(scale: { min: number; max: number } | null, value: number): number {
+  if (!scale) throw new Error('no scale to position against');
+  return (value - scale.min) / (scale.max - scale.min);
+}
+
+describe('projectBarMeters — scale domains (T168)', () => {
+  it('draws the supply-voltage bar against the fixed 11-15 V window, fill included', () => {
+    setCapabilities(drainCaps());
+    const view = base();
+    setMeter(view, 'drainVoltage', {
+      reading: { status: 'known', value: 12.0 },
+      domain: { kind: 'engineering', unit: 'v' },
+    });
+
+    const vd = projectBarMeters(view).find(({ key }) => key === 'drainVoltage')!;
+    expect(vd.scale).toEqual({ min: 11, max: 15 });
+    expect(vd.motionFraction).toBeCloseTo(positionOn(vd.scale, 12.0));
+    expect(vd.motionFraction).toBeCloseTo(0.25);
+  });
+
+  it('publishes the window even with nothing to show on it, so an empty bar can still be labelled', () => {
+    setCapabilities(drainCaps());
+    const view = base();
+    setMeter(view, 'drainVoltage', {
+      reading: { status: 'unknown' },
+      availability: { structural: true, operational: false },
+      domain: { kind: 'engineering', unit: 'v' },
+    });
+
+    const vd = projectBarMeters(view).find(({ key }) => key === 'drainVoltage')!;
+    expect(vd.motionFraction).toBeNull();
+    expect(vd.scale).toEqual({ min: 11, max: 15 });
+  });
+
+  it('leaves the drain-current bar unwindowed: zero to the profile table top', () => {
+    setCapabilities(drainCaps());
+    const view = base();
+    setMeter(view, 'drainCurrent', {
+      reading: { status: 'known', value: 0.5 },
+      relevant: true,
+      domain: { kind: 'engineering', unit: 'a' },
+    });
+
+    const id = projectBarMeters(view).find(({ key }) => key === 'drainCurrent')!;
+    expect(id.scale).toEqual({ min: 0, max: 1.0 });
+    expect(id.motionFraction).toBeCloseTo(positionOn(id.scale, 0.5));
+    expect(id.motionFraction).toBeCloseTo(0.5);
+  });
+
+  it('gives the power bar zero to its own table top', () => {
+    setCapabilities(drainCaps());
+    const view = base();
+    setDisplay(view, 'power', { state: 'current', value: 50 });
+    setMeter(view, 'power', { domain: { kind: 'engineering', unit: 'w' } });
+
+    const power = projectBarMeters(view)[0];
+    expect(power.scale).toEqual({ min: 0, max: 200 });
+    expect(power.motionFraction).toBeCloseTo(positionOn(power.scale, 50));
+  });
+
+  it('carries no scale for a raw-domain meter — raw/255 is bar geometry, not a scale', () => {
+    setCapabilities(drainCaps());
+    const view = base();
+    setDisplay(view, 'power', { state: 'current', value: 50 });
+    setMeter(view, 'power', { domain: { kind: 'raw' } });
+
+    const power = projectBarMeters(view)[0];
+    expect(power.scale).toBeNull();
+    expect(power.motionFraction).toBeCloseTo(50 / 255);
+  });
+
+  it('carries no scale for an unknown domain, nor when the profile declares no table', () => {
+    setCapabilities(drainCaps());
+    const unknown = base();
+    setDisplay(unknown, 'power', { state: 'current', value: 50 });
+    setMeter(unknown, 'power', { domain: { kind: 'unknown' } });
+    expect(projectBarMeters(unknown)[0].scale).toBeNull();
+
+    clearCapabilities();
+    const uncalibrated = base();
+    setMeter(uncalibrated, 'drainVoltage', {
+      reading: { status: 'known', value: 12.0 },
+      domain: { kind: 'engineering', unit: 'v' },
+    });
+    const vd = projectBarMeters(uncalibrated).find(({ key }) => key === 'drainVoltage')!;
+    expect(vd.scale).toBeNull();
+    expect(vd.motionFraction).toBeNull();
   });
 });
