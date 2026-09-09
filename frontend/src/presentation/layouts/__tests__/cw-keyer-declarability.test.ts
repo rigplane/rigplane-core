@@ -65,7 +65,8 @@ describe('exactly the reviewed manifests declare a cwKeyer zone (MOR-1368)', () 
    * adding `cwKeyer` there would put break-in controls in the cockpit with no
    * updated sequence pin.
    */
-  const DECLARES_CW_KEYER = ['desktop-v2', 'sdr-test'];
+  // T160 PR-1 added `flagship-probe`, which places this surface in its right rail.
+  const DECLARES_CW_KEYER = ['desktop-v2', 'flagship-probe', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

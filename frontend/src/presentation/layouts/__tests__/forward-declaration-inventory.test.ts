@@ -70,6 +70,7 @@ const cockpitShellSource = readFileSync('src/skins/dual-receiver-cockpit/DualRec
 const peerSplitShellSource = readFileSync('src/skins/segmentline/PeerSplitLayout.svelte', 'utf8');
 const unifiedInstrumentShellSource = readFileSync('src/skins/lcd-unified-instrument/LcdUnifiedInstrumentSkin.svelte', 'utf8');
 const panadapterFirstShellSource = readFileSync('src/skins/lcd-panadapter-first/LcdPanadapterFirstSkin.svelte', 'utf8');
+const flagshipProbeShellSource = readFileSync('src/skins/flagship-probe/FlagshipProbeSkin.svelte', 'utf8');
 
 /**
  * L1 hosted path. App owns one semantic host and passes its named composition
@@ -125,6 +126,10 @@ const DOM_BACKED: Readonly<Record<string, () => boolean>> = {
   'lcd-scope': () => /<SemanticRadioSurfaces\s*\/>/.test(lcdLayoutSource),
   'mobile': () => /<SemanticRadioSurfaces\s*\/>/.test(mobileLayoutSource),
   'dual-receiver-cockpit': () => /<SemanticRadioSurfaces strips="dual"\s*\/>/.test(cockpitShellSource),
+  // T160 PR-1: the geometry probe mounts the same dual-receiver composition
+  // unconditionally, so every surface its manifest declares has a real DOM
+  // path rather than a forward declaration.
+  'flagship-probe': () => /<SemanticRadioSurfaces strips="dual"\s*\/>/.test(flagshipProbeShellSource),
   // MOR-2151: PeerSplitLayout.svelte mounts the same dual-receiver
   // composition unconditionally, so its manifest-declared VFO/RX-TX
   // surfaces have a real DOM path rather than a forward declaration.

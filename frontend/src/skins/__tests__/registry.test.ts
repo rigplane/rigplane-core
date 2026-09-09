@@ -35,6 +35,7 @@ const entrypoints = vi.hoisted(() => {
     'sdr-test': { name: 'sdr-test' },
     'dual-receiver-cockpit': { name: 'dual-receiver-cockpit' },
     'dual-sdr-face': { name: 'dual-sdr-face' },
+    'flagship-probe': { name: 'flagship-probe' },
   };
   return table;
 });
@@ -51,6 +52,7 @@ const lazyImports = vi.hoisted(() => {
     'sdr-test': vi.fn(() => ({ default: entrypoints['sdr-test'] })),
     'dual-receiver-cockpit': vi.fn(() => ({ default: entrypoints['dual-receiver-cockpit'] })),
     'dual-sdr-face': vi.fn(() => ({ default: entrypoints['dual-sdr-face'] })),
+    'flagship-probe': vi.fn(() => ({ default: entrypoints['flagship-probe'] })),
   };
   return table;
 });
@@ -65,6 +67,7 @@ vi.mock('../lcd-panadapter-first/LcdPanadapterFirstSkin.svelte', () => lazyImpor
 vi.mock('../sdr-test/SdrTestSkin.svelte', () => lazyImports['sdr-test']());
 vi.mock('../dual-receiver-cockpit/DualReceiverCockpit.svelte', () => lazyImports['dual-receiver-cockpit']());
 vi.mock('../dual-sdr-face/DualSdrFaceSkin.svelte', () => lazyImports['dual-sdr-face']());
+vi.mock('../flagship-probe/FlagshipProbeSkin.svelte', () => lazyImports['flagship-probe']());
 
 import {
   commitExternalPresentationBatch, getPresentationRecord, isPresentationIdReserved,
@@ -161,6 +164,7 @@ describe('skin registry', () => {
     ['panadapter-first', entrypoints['panadapter-first'], lazyImports['panadapter-first']],
     ['sdr-test', entrypoints['sdr-test'], lazyImports['sdr-test']],
     ['dual-sdr-face', entrypoints['dual-sdr-face'], lazyImports['dual-sdr-face']],
+    ['flagship-probe', entrypoints['flagship-probe'], lazyImports['flagship-probe']],
   ] as const;
 
   it.each(LAZY_LOAD_TABLE)('lazily loads the %s entrypoint', async (skinId: SkinId, entrypoint, lazyImport) => {
@@ -276,6 +280,9 @@ describe('presentation resource plan', () => {
     // The mobile layout mounts SpectrumPanel but no audio-FFT surface.
     'mobile': ['hardware-scope'],
     'dual-sdr-face': ['hardware-scope'],
+    // T160 PR-1: the geometry probe's one resource-demanding component is a
+    // SpectrumPanel, the same reason `mobile` above names this alone.
+    'flagship-probe': ['hardware-scope'],
   };
 
   it('keeps panadapter-first resource order hardware-selected, with the LCD shell AF consumer retained', () => {
@@ -313,6 +320,7 @@ describe('presentation host mode', () => {
     'unified-instrument': 'self-contained',
     'panadapter-first': 'self-contained',
     'dual-sdr-face': 'self-contained',
+    'flagship-probe': 'self-contained',
   };
 
   it.each(Object.entries(EXPECTED_HOST_MODE) as Array<[SkinId, PresentationHostMode]>) (

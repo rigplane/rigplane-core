@@ -25,7 +25,8 @@ import {
 
 export type SkinId =
   | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'peer-split'
-  | 'sdr-test' | 'dual-sdr-face' | 'unified-instrument' | 'panadapter-first';
+  | 'sdr-test' | 'dual-sdr-face' | 'unified-instrument' | 'panadapter-first'
+  | 'flagship-probe';
 
 export type PresentationId = string;
 export type PresentationHostMode =
@@ -198,6 +199,20 @@ const SKIN_LOADERS = {
     kind: 'built-in-instrument-layout',
     loader: () => import('./sdr-test/SdrTestSkin.svelte'),
     resources: ['hardware-scope', 'audio-fft'],
+  },
+  // T160 PR-1 — the flagship geometry probe. Self-contained, like the
+  // cockpit: it mounts `SemanticRadioSurfaces` itself and owns its own grid.
+  // No `resolveSkinId` branch below returns it and `StatusBar`'s picker does
+  // not list it, so this entry is what makes the id addressable at all.
+  //
+  // `hardware-scope` alone: the shell mounts one `SpectrumPanel` and no
+  // audio-FFT surface — the same plan, for the same reason, that `mobile`
+  // and `dual-sdr-face` carry.
+  'flagship-probe': {
+    id: 'flagship-probe',
+    kind: 'built-in-self-contained',
+    loader: () => import('./flagship-probe/FlagshipProbeSkin.svelte'),
+    resources: ['hardware-scope'],
   },
   'dual-sdr-face': {
     id: 'dual-sdr-face',

@@ -137,3 +137,57 @@ export {
   peerSplitLayout,
   unifiedInstrumentLayout,
 } from './segmentline-declarations';
+
+/**
+ * The flagship geometry probe's manifest (T160 PR-1), declared inline here as
+ * `sdrTestLayout` above is.
+ *
+ * Every zone id below is one this repository already uses for that surface:
+ * the twelve control zones take `sdr-test`'s and `desktop-v2`'s ids, and the
+ * deck takes the cockpit's four. Two of those four are not a free choice —
+ * `SemanticRadioSurfaces.svelte: visibleStrips` writes `primary-vfo` and
+ * `secondary-vfo` into the DOM itself.
+ *
+ * WHY ALL FOURTEEN ARE DECLARED. In the dual composition nine of these
+ * surfaces mount with `allowBare={false}` — without a declared zone they
+ * render nothing at all, which is what an undeclared rail would be here.
+ * `memory` is the one declarable surface this layout leaves out.
+ *
+ * `compatibleTopologies` names the two dual-receiver pairs only: the
+ * arrangement puts two receivers side by side in both of its arrangements,
+ * and a single-receiver radio has no second one to place.
+ */
+export const flagshipProbeLayout: LayoutManifest = {
+  schemaVersion: 1,
+  id: 'flagship-probe',
+  displayName: 'Flagship geometry probe',
+  zones: [
+    { id: 'primary-vfo', surfaces: ['vfo'] },
+    { id: 'secondary-vfo', surfaces: ['vfo'] },
+    { id: 'global', surfaces: ['vfo'] },
+    { id: 'rx-tx', surfaces: ['rxTx'] },
+    { id: 'rf-front-end', surfaces: ['rfFrontEnd'] },
+    { id: 'dsp', surfaces: ['dsp'] },
+    { id: 'filter', surfaces: ['filter'] },
+    { id: 'rx-audio', surfaces: ['rxAudio'] },
+    { id: 'antenna', surfaces: ['antenna'] },
+    { id: 'band', surfaces: ['band'] },
+    { id: 'tx-aux', surfaces: ['txAux'] },
+    { id: 'cw-keyer', surfaces: ['cwKeyer'] },
+    { id: 'rit-xit-scan', surfaces: ['ritXitScan'] },
+    { id: 'scope-controls', surfaces: ['scopeControls'] },
+    { id: 'scope-display', surfaces: ['scopeDisplay'] },
+    { id: 'meters', surfaces: ['meters'] },
+  ],
+  compatibleTopologies: ['2/ab_shared', '2/main_sub'],
+  requiredSemanticSurfaces: ['vfo', 'rxTx'],
+  // The one threshold the shell implements, recorded here as the cockpit's
+  // pair is: the number is the skin's `--flagship-probe-switch-width`, and
+  // `skins/flagship-probe/__tests__/FlagshipProbe.component.test.ts` requires
+  // this declaration, that custom property and the `@container` literal to
+  // name the same width.
+  stageSizing: { mode: 'fluid', responsiveBreakpoints: [1440] },
+  fallbackLayoutId: 'sdr-test',
+};
+
+registerLayout(flagshipProbeLayout);

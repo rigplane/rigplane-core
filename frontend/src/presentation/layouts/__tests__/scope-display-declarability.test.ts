@@ -61,7 +61,8 @@ describe('exactly the reviewed manifests declare a scopeDisplay zone (MOR-1365)'
   // face's status-bar scope indicator through the `declared.has(...)` channel
   // (`StatusBar.svelte`'s `{#if hasAnyScope() && !declared.has('scopeDisplay')}`).
   // That is the only host it retires.
-  const DECLARES_SCOPE_DISPLAY = ['desktop-v2', 'sdr-test'];
+  // T160 PR-1 added `flagship-probe`, which places this surface in its centre column, under the panorama.
+  const DECLARES_SCOPE_DISPLAY = ['desktop-v2', 'flagship-probe', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

@@ -54,7 +54,8 @@ describe('exactly the reviewed manifests declare an rxAudio zone (MOR-1368)', ()
   // review this literal exists to force: the same declaration retires that
   // face's RX AUDIO panel in BOTH sidebars through the `declared.has(...)`
   // channel. It retires no settings-modal section — this family has none.
-  const DECLARES_RX_AUDIO = ['desktop-v2', 'sdr-test'];
+  // T160 PR-1 added `flagship-probe`, which places this surface in its left rail.
+  const DECLARES_RX_AUDIO = ['desktop-v2', 'flagship-probe', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

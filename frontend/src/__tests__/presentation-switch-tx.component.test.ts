@@ -148,6 +148,10 @@ const WIDTH_FOR: Record<SkinId, number> = {
   'panadapter-first': 1281,
   // Production entrypoint is readonly and receives no command callback.
   'dual-sdr-face': 1700,
+  // T160 PR-1: same as `peer-split` above — no picker/resolveSkinId path, so
+  // this entry exists only for `Record<SkinId, number>` exhaustiveness. 1800
+  // is unused by every other entry in this table.
+  'flagship-probe': 1800,
 };
 function widthToSkin(): SkinId {
   const width = window.innerWidth;

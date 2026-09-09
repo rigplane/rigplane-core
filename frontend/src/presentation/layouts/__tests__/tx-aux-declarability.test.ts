@@ -58,7 +58,8 @@ describe('exactly the reviewed manifests declare a txAux zone (MOR-1336)', () =>
   // predicate exists on any host, so the zone only places `TxAuxSurface`.
   // The sidebars' `<TxPanel>` is a different channel (`hideTxPanel`, which
   // follows the semantic deck for R9), already suppressed on that face.
-  const DECLARES_TX_AUX = ['desktop-v2', 'dual-receiver-cockpit', 'sdr-test'];
+  // T160 PR-1 added `flagship-probe`, which places this surface in its right rail.
+  const DECLARES_TX_AUX = ['desktop-v2', 'dual-receiver-cockpit', 'flagship-probe', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.
