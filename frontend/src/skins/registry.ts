@@ -94,11 +94,26 @@ export interface SkinResolutionContext {
   hasAnyScope: boolean;
 }
 
-/** Layout id + live topology class pairs already reported, so a repeated
+/** Refused layout + live topology class pairs already reported, so a repeated
  *  resolution (every capability revision re-runs `App.svelte`'s `$derived`)
- *  reports once rather than per evaluation. Report state only: never read by
- *  `admitsLiveTopology`, so it cannot change which preferences are refused. */
+ *  reports once rather than per evaluation. */
 const reportedRefusals = new Set<string>();
+
+/** The skin an unresolvable preference lands on (MOR-1097 cutover). */
+const DEFAULT_SKIN_ID: SkinId = 'desktop-v2';
+
+/**
+ * The live receiver topology class, `${structuralCount}/${scheme}` — the same
+ * string `lib/runtime/adapters/radio-view-model-adapter.ts` composes for its
+ * `topologyId`, over the same `TOPOLOGY_CLASSES` vocabulary a manifest
+ * declares against. `null` when nothing establishes one: no capabilities yet,
+ * or a `vfoScheme`/`receivers` pair `derivePresentationCapabilities` reports
+ * as `invalid-topology`.
+ */
+function liveTopologyClass(capabilities: Capabilities | null): string | null {
+  const topology = capabilities ? derivePresentationCapabilities(capabilities).topology : null;
+  return topology === null ? null : `${topology.structuralCount}/${topology.scheme}`;
+}
 
 /**
  * T198 — whether the layout manifest registered under `id` accepts the radio
@@ -109,37 +124,67 @@ const reportedRefusals = new Set<string>();
  * path read it: `?layout=flagship-probe` mounted the probe on an IC-7300,
  * whose `1/ab` class that manifest does not declare.
  *
- * The live class is `${structuralCount}/${scheme}` — the same string
- * `lib/runtime/adapters/radio-view-model-adapter.ts` composes for its
- * `topologyId`, over the same `TOPOLOGY_CLASSES` vocabulary a manifest
- * declares against.
- *
  * Two shapes are admitted without deriving anything: an id with no registered
  * manifest, and a manifest that declares every class in `TOPOLOGY_CLASSES`.
  * Neither can exclude a radio, so neither needs to see one — which is what
  * keeps an unrestricted preference resolving before capabilities arrive. A
  * manifest that DOES exclude a class must see its own: an underivable
- * topology (no capabilities yet, or a `vfoScheme`/`receivers` pair
- * `derivePresentationCapabilities` reports as `invalid-topology`) is refused,
- * because nothing establishes that the manifest covers it.
+ * topology is refused, because nothing establishes that the manifest covers
+ * it.
  */
-function admitsLiveTopology(id: SkinId, capabilities: Capabilities | null): boolean {
+function admitsLiveTopology(id: string, capabilities: Capabilities | null): boolean {
   const manifest = getLayout(id);
   if (manifest === undefined) return true;
   const declared = manifest.compatibleTopologies;
   if (TOPOLOGY_CLASSES.every((topologyClass) => declared.includes(topologyClass))) return true;
-  const topology = capabilities ? derivePresentationCapabilities(capabilities).topology : null;
-  const live = topology === null ? null : `${topology.structuralCount}/${topology.scheme}`;
-  if (live !== null && declared.some((topologyClass) => topologyClass === live)) return true;
+  const live = liveTopologyClass(capabilities);
+  return live !== null && declared.some((topologyClass) => topologyClass === live);
+}
+
+function reportRefusal(id: SkinId, capabilities: Capabilities | null, mounted: SkinId): void {
+  const live = liveTopologyClass(capabilities);
   const key = `${id} ${live ?? ''}`;
-  if (!reportedRefusals.has(key)) {
-    reportedRefusals.add(key);
-    console.warn(
-      `[rigplane] layout "${id}" declares compatibleTopologies [${declared.join(', ')}], and the `
-      + `live receiver topology is ${live ?? 'not derivable yet'} — not selecting that skin.`,
-    );
+  if (reportedRefusals.has(key)) return;
+  reportedRefusals.add(key);
+  const declared = getLayout(id)?.compatibleTopologies ?? [];
+  console.warn(
+    `[rigplane] layout "${id}" declares compatibleTopologies [${declared.join(', ')}], and the `
+    + `live receiver topology is ${live ?? 'not derivable yet'} — mounting "${mounted}" instead.`,
+  );
+}
+
+/**
+ * T198 — the skin actually mounted for a preferred `id`: `id` itself when its
+ * manifest admits the live topology, otherwise the first hop down the
+ * `fallbackLayoutId` chain that is a built-in skin admitting it, and
+ * `DEFAULT_SKIN_ID` when the chain runs out. `LayoutManifest.fallbackLayoutId`
+ * was declared and validated but read by no runtime path before this.
+ *
+ * A hop is taken only when it is both a built-in skin and admitted; any other
+ * candidate — an id no manifest is registered under, one registered but not
+ * loadable, one whose own manifest also excludes the radio — continues down
+ * that candidate's own chain. `visited` bounds the walk: a chain that names an
+ * id already seen stops there instead of looping.
+ *
+ * One report per refused (preference, live class) pair, naming the skin the
+ * walk actually mounted — `console.warn`, the channel
+ * `lib/stores/qa-cockpit-override.ts` already uses to explain its own no-op.
+ */
+function resolveWithFallback(id: SkinId, capabilities: Capabilities | null): SkinId {
+  if (admitsLiveTopology(id, capabilities)) return id;
+  const visited = new Set<string>([id]);
+  let mounted: SkinId = DEFAULT_SKIN_ID;
+  let candidate = getLayout(id)?.fallbackLayoutId ?? null;
+  while (candidate !== null && !visited.has(candidate)) {
+    visited.add(candidate);
+    if (BUILT_IN_SKIN_IDS.has(candidate) && admitsLiveTopology(candidate, capabilities)) {
+      mounted = candidate as SkinId;
+      break;
+    }
+    candidate = getLayout(candidate)?.fallbackLayoutId ?? null;
   }
-  return false;
+  reportRefusal(id, capabilities, mounted);
+  return mounted;
 }
 
 /**
@@ -159,12 +204,12 @@ function admitsLiveTopology(id: SkinId, capabilities: Capabilities | null): bool
  * - User forced 'peer-split' → peer-split
  * - Auto: use desktop-v2 (the v3 default); explicit LCD choices are the
  *   recoverable compatibility-window opt-out
- * - T198: each forced branch above requires `admitsLiveTopology` for the
- *   skin it would return, and a refused preference falls through to the
- *   default exactly as an unrecognised one does. The 'standard' branch and
- *   the auto default are the two that do not carry the term: both return
- *   'desktop-v2', which is what a refusal falls through TO, so refusing it
- *   could only report a refusal and then return it anyway
+ * - T198: a forced preference resolves through `resolveWithFallback`, which
+ *   returns the preferred skin only while its manifest admits the live
+ *   receiver topology and otherwise walks that manifest's `fallbackLayoutId`
+ *   chain, ending at `DEFAULT_SKIN_ID`. The 'standard' branch returns
+ *   'desktop-v2' directly — the walk's own endpoint, so routing it through
+ *   the walker could only report a refusal and return the same id
  */
 export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
   if (ctx.isMobile) return 'mobile';
@@ -174,32 +219,23 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
   // `CanonicalLayoutMode` (lib/stores/layout.svelte.ts), so
   // `normalizeLayoutMode` below would fall it straight through to 'auto'.
   // Checked here, before normalization, for that reason.
-  if (ctx.layoutPreference === 'dual-receiver-cockpit'
-    && admitsLiveTopology('dual-receiver-cockpit', ctx.capabilities)) return 'dual-receiver-cockpit';
+  if (ctx.layoutPreference === 'dual-receiver-cockpit') return resolveWithFallback('dual-receiver-cockpit', ctx.capabilities);
   // T160 PR-1: the geometry probe is gated the same way and checked here for
   // the same reason — it is not a `CanonicalLayoutMode` either.
-  if (ctx.layoutPreference === 'flagship-probe'
-    && admitsLiveTopology('flagship-probe', ctx.capabilities)) return 'flagship-probe';
+  if (ctx.layoutPreference === 'flagship-probe') return resolveWithFallback('flagship-probe', ctx.capabilities);
   const layoutPreference = normalizeLayoutMode(ctx.layoutPreference);
-  if (layoutPreference === 'sdr-test'
-    && admitsLiveTopology('sdr-test', ctx.capabilities)) return 'sdr-test';
-  if (layoutPreference === 'lcd-cockpit'
-    && admitsLiveTopology('lcd-cockpit', ctx.capabilities)) return 'lcd-cockpit';
-  if (layoutPreference === 'lcd-scope'
-    && admitsLiveTopology('lcd-scope', ctx.capabilities)) return 'lcd-scope';
+  if (layoutPreference === 'sdr-test') return resolveWithFallback('sdr-test', ctx.capabilities);
+  if (layoutPreference === 'lcd-cockpit') return resolveWithFallback('lcd-cockpit', ctx.capabilities);
+  if (layoutPreference === 'lcd-scope') return resolveWithFallback('lcd-scope', ctx.capabilities);
   if (layoutPreference === 'standard') return 'desktop-v2';
-  if (layoutPreference === 'peer-split'
-    && admitsLiveTopology('peer-split', ctx.capabilities)) return 'peer-split';
-  if (layoutPreference === 'unified-instrument'
-    && admitsLiveTopology('unified-instrument', ctx.capabilities)) return 'unified-instrument';
-  if (layoutPreference === 'panadapter-first'
-    && admitsLiveTopology('panadapter-first', ctx.capabilities)) return 'panadapter-first';
-  if (layoutPreference === 'dual-sdr-face'
-    && admitsLiveTopology('dual-sdr-face', ctx.capabilities)) return 'dual-sdr-face';
+  if (layoutPreference === 'peer-split') return resolveWithFallback('peer-split', ctx.capabilities);
+  if (layoutPreference === 'unified-instrument') return resolveWithFallback('unified-instrument', ctx.capabilities);
+  if (layoutPreference === 'panadapter-first') return resolveWithFallback('panadapter-first', ctx.capabilities);
+  if (layoutPreference === 'dual-sdr-face') return resolveWithFallback('dual-sdr-face', ctx.capabilities);
   // MOR-1097 cutover: every non-mobile auto start uses the reworked
   // desktop-v2 composition. Scope availability remains presentation data, not
   // default-selection policy; explicit LCD preferences stay selectable.
-  return 'desktop-v2';
+  return DEFAULT_SKIN_ID;
 }
 
 /**
@@ -299,6 +335,11 @@ const SKIN_LOADERS = {
     resources: ['hardware-scope'],
   },
 } satisfies BuiltInPresentationCatalog;
+
+/** The catalog's built-in ids, captured before `commitExternalPresentationBatch`
+ *  can add an externally authored presentation to the same object: a fallback
+ *  hop must land on a `SkinId`, which an external presentation id is not. */
+const BUILT_IN_SKIN_IDS: ReadonlySet<string> = new Set(Object.keys(SKIN_LOADERS));
 
 const hasOwn = (value: object, key: PropertyKey): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);

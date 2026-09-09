@@ -580,7 +580,11 @@ test.describe('T185 transmit key pair', () => {
 
   test('stacks when its column is narrower than the pair', async ({ page }, info) => {
     // `layout` is the workspace value; `qaLayout` is what actually selects the skin.
-    await boot(page, 'standard', 1440, true, 'studioline', false, undefined,
+    // The probe's manifest declares only the two dual-receiver topology classes
+    // and `resolveSkinId` refuses the preference outside them (T198), so both
+    // cases boot the two-receiver catalog fixture: on the single-receiver
+    // default the probe never mounts and its transmit zone never appears.
+    await boot(page, 'standard', 1440, true, 'studioline', false, 'topology-2-main-sub',
       { qaLayout: 'flagship-probe' });
     // Both cases set the rail column they measure in, rather than inheriting
     // whatever the skin declares: the two custom properties its grid templates
@@ -604,7 +608,7 @@ test.describe('T185 transmit key pair', () => {
   });
 
   test('stays on one line when its column is wider than the pair', async ({ page }, info) => {
-    await boot(page, 'standard', 1440, true, 'studioline', false, undefined,
+    await boot(page, 'standard', 1440, true, 'studioline', false, 'topology-2-main-sub',
       { qaLayout: 'flagship-probe' });
     // The mirror of the case above: 400px is wider than the pair. The skin's
     // own rail is one key wide, so this column has to be set here too.
