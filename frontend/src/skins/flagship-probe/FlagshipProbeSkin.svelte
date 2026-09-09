@@ -18,25 +18,34 @@
     wide   — left rail | (deck over panorama) | right rail
     narrow — deck across the top, then left rail | panorama | right rail
 
+  THE TRANSMIT KEY IS NOT IN THE DECK. The art-direction line's rule of
+  2026-09-09: nothing that keys the transmitter may live in a scrolling or
+  clipped column. `semantic/RxTxSurface.svelte` renders that key, so its
+  `rx-tx` zone is placed FIRST in the right rail, above the other transmit
+  controls, in both arrangements — `__tests__/FlagshipProbe.component.test.ts`
+  requires the rail column, that position and the rail's declared width
+  together. Nothing then stands between the two receivers, and the deck's
+  middle track is gone rather than empty: the same test requires every track
+  in both column templates to be a column some area names.
+
   The switch is a container query on `.flagship-probe`, so it follows the
   width this skin is GIVEN rather than the viewport's. Its threshold is
-  `--flagship-probe-switch-width`: the five widths the wide arrangement's
-  column template declares — a rail twice, a receiver strip's minimum twice,
-  the RX/TX column once — PLUS the four gutters between them, which is the
-  width below which that template cannot give every track its declared size.
+  `--flagship-probe-switch-width`: the four widths the wide arrangement's
+  column template declares — a rail twice and a receiver strip's minimum
+  twice — PLUS the three gutters between them, which is the width below which
+  that template cannot give every track its declared size.
   `__tests__/FlagshipProbe.component.test.ts` recomputes the sum from the
   parsed column template and requires the `@container` literal to equal it;
   `presentation/layouts/__tests__/flagship-probe-registration.test.ts`
   requires the manifest's declared reflow width to equal it too.
 
   NO SURFACE MAY SIZE A TRACK. Every track in both column templates is a
-  declared size: the rails are `minmax(0, <rail>)`, RX/TX is a fixed width,
-  and the two receiver strips are the flexible tracks that take the
-  remainder. None is `auto`, `min-content`, `max-content` or `fit-content`,
-  in either direction. A surface wider than its column overflows inside that
-  column. The component test parses both templates and fails on any
-  content-sized track, on a rail written any other way, and on a grid item
-  left without `min-width: 0`.
+  declared size: the rails are `minmax(0, <rail>)` and the two receiver
+  strips are the flexible tracks that take the remainder. None is `auto`,
+  `min-content`, `max-content` or `fit-content`, in either direction. A
+  surface wider than its column overflows inside that column. The component
+  test parses both templates and fails on any content-sized track, on a rail
+  written any other way, and on a grid item left without `min-width: 0`.
 
   R52. This shell renders no control and no readout, so it announces nothing
   it does not know: it contributes no dash, no glyph and no disabled
@@ -85,14 +94,13 @@
     height: 100%;
 
     /*
-      The declared track widths — a rail's width, a receiver strip's minimum,
-      the RX/TX column's width — and their sum with the four gutters
-      `.probe-stage` puts between the five columns.
+      The declared track widths — a rail's width and a receiver strip's
+      minimum — and their sum with the three gutters `.probe-stage` puts
+      between the four columns.
     */
     --flagship-probe-rail-width: 280px;
     --flagship-probe-strip-min-width: 360px;
-    --flagship-probe-rx-tx-width: 160px;
-    --flagship-probe-switch-width: 1472px;
+    --flagship-probe-switch-width: 1304px;
   }
 
   /*
@@ -100,16 +108,16 @@
     adds the wide one: a container too small for the wide arrangement is also
     a container whose query has not matched.
 
-    Five tracks in both arrangements. Columns 1 and 5 are the rails, and the
-    panorama lives across columns 2-4 in both — which is what keeps it
-    between them. The deck spans all five columns in the narrow arrangement
-    and columns 2-4 in the wide one; that is the whole of the switch.
+    Four tracks in both arrangements. Columns 1 and 4 are the rails, and the
+    panorama lives across columns 2-3 in both — which is what keeps it
+    between them. The deck spans all four columns in the narrow arrangement
+    and columns 2-3 in the wide one; that is the whole of the switch.
 
-    Both templates size the rails and RX/TX to declared widths and give the
-    remainder to columns 2 and 4. The wide one alone floors those two at the
-    declared strip minimum, because it is the arrangement in which a
-    receiver strip occupies one of them on its own — in the narrow one each
-    strip spans a rail column and its neighbour.
+    Both templates size the rails to a declared width and give the remainder
+    to columns 2 and 3. The wide one alone floors those two at the declared
+    strip minimum, because it is the arrangement in which a receiver strip
+    occupies one of them on its own — in the narrow one each strip spans a
+    rail column and its neighbour.
   */
   .probe-stage {
     display: grid;
@@ -118,38 +126,36 @@
     grid-template-columns:
       minmax(0, var(--flagship-probe-rail-width))
       minmax(0, 1fr)
-      var(--flagship-probe-rx-tx-width)
       minmax(0, 1fr)
       minmax(0, var(--flagship-probe-rail-width));
     grid-template-areas:
-      'rx-main   rx-main    rx-mid     rx-sub     rx-sub'
-      'vfo-ops   vfo-ops    vfo-ops    vfo-ops    vfo-ops'
-      'rf        panorama   panorama   panorama   tx-aux'
-      'dsp       panorama   panorama   panorama   cw-keyer'
-      'filter    panorama   panorama   panorama   rit-xit'
-      'rx-audio  panorama   panorama   panorama   .'
-      'antenna   scope-ctl  scope-ctl  scope-ctl  .'
-      'band      scope-disp scope-disp scope-disp .'
-      'meters    meters     meters     meters     meters';
+      'rx-main   rx-main    rx-sub     rx-sub'
+      'vfo-ops   vfo-ops    vfo-ops    vfo-ops'
+      'rf        panorama   panorama   rx-tx'
+      'dsp       panorama   panorama   tx-aux'
+      'filter    panorama   panorama   cw-keyer'
+      'rx-audio  panorama   panorama   rit-xit'
+      'antenna   scope-ctl  scope-ctl  .'
+      'band      scope-disp scope-disp .'
+      'meters    meters     meters     meters';
   }
 
-  @container (min-width: 1472px) {
+  @container (min-width: 1304px) {
     .probe-stage {
       grid-template-columns:
         minmax(0, var(--flagship-probe-rail-width))
         minmax(var(--flagship-probe-strip-min-width), 1fr)
-        var(--flagship-probe-rx-tx-width)
         minmax(var(--flagship-probe-strip-min-width), 1fr)
         minmax(0, var(--flagship-probe-rail-width));
       grid-template-areas:
-        'rf        rx-main    rx-mid     rx-sub     tx-aux'
-        'dsp       vfo-ops    vfo-ops    vfo-ops    cw-keyer'
-        'filter    panorama   panorama   panorama   rit-xit'
-        'rx-audio  panorama   panorama   panorama   .'
-        'antenna   panorama   panorama   panorama   .'
-        'band      scope-ctl  scope-ctl  scope-ctl  .'
-        '.         scope-disp scope-disp scope-disp .'
-        'meters    meters     meters     meters     meters';
+        'rf        rx-main    rx-sub     rx-tx'
+        'dsp       vfo-ops    vfo-ops    tx-aux'
+        'filter    panorama   panorama   cw-keyer'
+        'rx-audio  panorama   panorama   rit-xit'
+        'antenna   panorama   panorama   .'
+        'band      scope-ctl  scope-ctl  .'
+        '.         scope-disp scope-disp .'
+        'meters    meters     meters     meters';
     }
   }
 
@@ -172,7 +178,6 @@
 
   .probe-stage :global([data-strip-receiver='MAIN']) { grid-area: rx-main; }
   .probe-stage :global([data-strip-receiver='SUB']) { grid-area: rx-sub; }
-  .probe-stage :global([data-zone-id='rx-tx']) { grid-area: rx-mid; }
   .probe-stage :global([data-zone-id='global']) { grid-area: vfo-ops; }
   .probe-stage :global([data-zone-id='rf-front-end']) { grid-area: rf; }
   .probe-stage :global([data-zone-id='dsp']) { grid-area: dsp; }
@@ -180,6 +185,7 @@
   .probe-stage :global([data-zone-id='rx-audio']) { grid-area: rx-audio; }
   .probe-stage :global([data-zone-id='antenna']) { grid-area: antenna; }
   .probe-stage :global([data-zone-id='band']) { grid-area: band; }
+  .probe-stage :global([data-zone-id='rx-tx']) { grid-area: rx-tx; }
   .probe-stage :global([data-zone-id='tx-aux']) { grid-area: tx-aux; }
   .probe-stage :global([data-zone-id='cw-keyer']) { grid-area: cw-keyer; }
   .probe-stage :global([data-zone-id='rit-xit-scan']) { grid-area: rit-xit; }
