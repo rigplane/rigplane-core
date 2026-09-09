@@ -455,10 +455,10 @@ describe('no surface may size a track', () => {
   });
 
   // Kills: a rail whose maximum is anything but the declared rail width, and
-  // a rail whose minimum is anything but the transmit-key floor — including
+  // a rail whose minimum is anything but the rail floor — including
   // the `minmax(0, …)` this rail carried before the floor existed, which let
   // it compress to any width at all.
-  it.each([[0, 'narrow'], [1, 'wide']])('column template %i (%s) floors both rails at the transmit-key floor and caps them at the declared rail width', (index) => {
+  it.each([[0, 'narrow'], [1, 'wide']])('column template %i (%s) floors both rails at the rail floor and caps them at the declared rail width', (index) => {
     const tracks = columnTemplates()[index as number];
     expect(tracks[0]).toBe(RAIL_TRACK);
     expect(tracks[3]).toBe(tracks[0]);
@@ -512,16 +512,27 @@ describe('no surface may size a track', () => {
   });
 });
 
-describe('the transmit-key floor', () => {
+describe('the rail floor', () => {
   /**
-   * The floor was measured in Chromium on 2026-09-09, on the real
+   * Both numbers were measured in Chromium on 2026-09-09, on the real
    * `FlagshipProbeSkin` mounted through the fixture-stub seam
-   * (`vite.fixtures.config.ts`, fixture `topology-2-main-sub`), with the two
-   * transmit-key labels replaced in the DOM by `lib/i18n/pseudo.ts`'s
-   * `pseudoize()` output. The `.rx-tx-actions` row's min-content came to
-   * 378.09px there — 379 is that measurement rounded up to a whole pixel.
-   * The rail width equals it because that floor came out above the 280px the
-   * rail carried before. The PR body carries the full table.
+   * (`vite.fixtures.config.ts`, fixture `topology-2-main-sub`), with every
+   * rail key's text replaced in the DOM by `lib/i18n/pseudo.ts`'s
+   * `pseudoize()` output.
+   *
+   * The FLOOR is one key: the larger of the widest single key in any of the
+   * ten rail surfaces — the CW keyer's reverse-paddle key, 191.77px at a
+   * computed font-size of 13.3333px — and the transmit zone's min-content,
+   * 185.20px, which is that zone's own key button now that
+   * `semantic/RxTxSurface.svelte`'s `.rx-tx-actions` row may wrap. 192 is
+   * 191.77 rounded up to a whole pixel. The earlier 379 was the same pair,
+   * measured as one unwrappable row.
+   *
+   * The WIDTH is two keys: the transmit pair abreast, 185.20 + 8 + 184.89 =
+   * 378.09px, rounded up. Sweeping the rail width one pixel at a time, that
+   * is the widest two-key row of the ten — the next widest surface still
+   * puts two keys on a line at a rail of 177px. The PR body carries the full
+   * table.
    *
    * Kills: lowering the floor to make some layout fit, which is exactly what
    * the comment on the declaration forbids and what no other test here would
@@ -529,8 +540,8 @@ describe('the transmit-key floor', () => {
    * track, and `minmax(var(--floor), var(--width))` keeps its form at any
    * value of either.
    */
-  it('declares the measured floor, and a rail width raised to it', () => {
-    expect(px('--flagship-probe-rail-floor')).toBe(379);
+  it('declares the measured one-key floor and the measured two-key rail width', () => {
+    expect(px('--flagship-probe-rail-floor')).toBe(192);
     expect(px('--flagship-probe-rail-width')).toBe(379);
   });
 
