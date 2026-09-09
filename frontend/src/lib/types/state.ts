@@ -259,9 +259,11 @@ export interface WsClientsPublic {
  * carry it, ``unavailable`` when the caller's resolved availability map
  * reads its ``available_when`` clauses as ``False`` or ``None``
  * (``acquisition_scheduler.resolve_available_when``), ``missing``
- * otherwise. Those last two need both of those arguments at
- * ``runtime_helpers.build_public_state_payload_from_snapshot``; a caller
- * that passes neither gets ``missing``.
+ * otherwise. ``unavailable`` needs the availability argument and
+ * ``undeclared`` needs the declared argument at
+ * ``runtime_helpers.build_public_state_payload_from_snapshot``; either can
+ * be emitted when its corresponding argument is passed alone. A caller that
+ * passes neither gets ``missing``.
  */
 export interface FieldStatusPublic {
   storePath: string;

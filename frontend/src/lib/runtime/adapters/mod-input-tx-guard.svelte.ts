@@ -13,8 +13,9 @@
  * Visibility is derived reactively from live state, so the warning clears
  * as soon as the source becomes LAN (optimistic patch or readback) and
  * reappears if the radio rejects the change and readback reverts it. The
- * same gating as the ModePanel control applies (data_mode capability + the
- * group read, `isFieldRead`), so radios without MOD-input routing never warn.
+ * same compatibility gate as the ModePanel control applies (data_mode
+ * capability + `isFieldRead`): it rejects the three explicit absence values
+ * while preserving the legacy no-entry fallback.
  */
 
 import { getRadioState } from '$lib/stores/radio.svelte';

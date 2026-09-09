@@ -76,12 +76,13 @@ export function isFieldAvailable(
 }
 
 /**
- * Whether the resolved availability is `available` or `stale` — the two
- * values that carry a reading (`stale` carries the last one, R29).
+ * Whether resolved availability is `available` or `stale`.
  *
- * `missing`, `unavailable` and `undeclared` all resolve to false. Use this,
- * not `!== 'missing'`, wherever a control is shown only once the backend
- * has read the field; `isFieldAvailable` is the stricter test.
+ * `missing`, `unavailable` and `undeclared` all resolve to false. This
+ * preserves `getFieldAvailability`'s legacy no-entry fallback, so a true
+ * result is compatibility eligibility, not proof that the backend observed
+ * the field. Callers that need observation evidence must inspect
+ * `fieldStatus.observed`.
  */
 export function isFieldRead(
   state: ServerState | null,
