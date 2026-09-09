@@ -46,8 +46,9 @@
           aria-describedby={reasonId} title={option.disabledReason}
           disabled={!view.available || option.disabled === true}
           data-testid={`external-${view.label}-${option.value}`}
+          data-option-label={option.label} data-option-caption={option.caption}
           onclick={() => invoke(option.value)}
-        >{option.label}</button>
+        >{option.caption === undefined ? option.label : `${option.label} ${option.caption}`}</button>
         {#if reasonId}<span id={reasonId} class="sr-only">{option.disabledReason}</span>{/if}
       {/each}
     </div>
