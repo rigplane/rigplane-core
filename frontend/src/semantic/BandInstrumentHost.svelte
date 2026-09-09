@@ -25,6 +25,9 @@
     onEnterFrequency?: (frequencyHz: number) => void;
     entryRendererContext?: FiniteRendererContext | null;
     entryRenderer?: Component<FrequencyEntryRendererProps>;
+    /** Whether the fallback key PRINTS its permit sentence. Its accessible name
+     *  carries that sentence, and `data-default-permit` the status, either way. */
+    showPermitCaption?: boolean;
     children: Snippet<[BandInstrumentHandles]>;
   }
   type RendererSelection = { finiteAppearance?: undefined; rendererContext?: undefined } | {
@@ -35,7 +38,7 @@
 
   let {
     view, onSelectBand, onEnterFrequency, finiteAppearance, rendererContext,
-    entryRendererContext, entryRenderer, children,
+    entryRendererContext, entryRenderer, showPermitCaption = true, children,
   }: Props = $props();
   let band = $derived(view?.band);
   let receiverKnown = $derived(view?.activeReceiver.status === 'known');
@@ -87,7 +90,8 @@
     available: receiverKnown && band !== undefined,
     options: (band?.bandChoices ?? []).map(choice => ({
       value: choice.name,
-      label: `${choice.name} ${defaultPermitLabel(choice)}`,
+      label: choice.name,
+      caption: defaultPermitLabel(choice),
     })),
     invoke: selectBand,
   }));
@@ -162,11 +166,13 @@
           <button
             type="button" class="band-choice" data-testid={`band-choice-${choice.name}`}
             data-default-permit={choice.defaultHzTxPermit.status}
+            aria-label={`${choice.name} — ${defaultPermitLabel(choice)}`}
             aria-pressed={bandChoiceBehavior.isSelected(choice.name)}
             disabled={!bandChoiceBehavior.available}
             onclick={() => bandChoiceBehavior.invoke(choice.name)}
-          >{choice.name}<small data-testid={`band-choice-permit-${choice.name}`}
-          >{defaultPermitLabel(choice)}</small></button>
+          >{choice.name}{#if showPermitCaption}<small
+            data-testid={`band-choice-permit-${choice.name}`}
+          >{defaultPermitLabel(choice)}</small>{/if}</button>
         {/each}
       </div>
     {/if}

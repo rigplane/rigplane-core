@@ -18,19 +18,21 @@
     rendererContext?: FiniteRendererContext | null;
     entryRendererContext?: FiniteRendererContext | null;
     entryRenderer?: Component<FrequencyEntryRendererProps>;
+    showPermitCaption?: boolean;
     onSelectBand?: (name: string) => void;
     onEnterFrequency?: (frequencyHz: number) => void;
   }
   let {
     view, presentation = 'grouped', finiteAppearance, rendererContext,
-    entryRendererContext, entryRenderer, onSelectBand, onEnterFrequency,
+    entryRendererContext, entryRenderer, showPermitCaption, onSelectBand, onEnterFrequency,
   }: Props = $props();
   let selection = $derived(finiteAppearance === undefined
     ? {} : { finiteAppearance, rendererContext: rendererContext ?? null });
 </script>
 
 <BandInstrumentHost
-  {view} {onSelectBand} {onEnterFrequency} {entryRendererContext} {entryRenderer} {...selection}
+  {view} {onSelectBand} {onEnterFrequency} {entryRendererContext} {entryRenderer}
+  {showPermitCaption} {...selection}
 >
   {#snippet children(handles: BandInstrumentHandles)}
     {#if presentation === 'surface'}
