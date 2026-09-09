@@ -250,12 +250,24 @@ export interface WsClientsPublic {
  * ``quality``. All five extras are therefore optional. ``quality`` (a
  * ``string[]``) is emitted at runtime but was absent from the old TS
  * interface (MOR-881 contract correction).
+ *
+ * ``available`` and ``stale`` come from an observed entry's freshness
+ * (``runtime_helpers._freshness_availability``). ``missing``,
+ * ``unavailable`` and ``undeclared`` are what
+ * ``runtime_helpers._absence_availability`` makes of a path with no
+ * observation: ``undeclared`` when the caller's declared set does not
+ * carry it, ``unavailable`` when the caller's resolved availability map
+ * reads its ``available_when`` clauses as ``False`` or ``None``
+ * (``acquisition_scheduler.resolve_available_when``), ``missing``
+ * otherwise. Those last two need both of those arguments at
+ * ``runtime_helpers.build_public_state_payload_from_snapshot``; a caller
+ * that passes neither gets ``missing``.
  */
 export interface FieldStatusPublic {
   storePath: string;
   observed: boolean;
   freshness: "unknown" | "fresh" | "stale";
-  availability: "missing" | "available" | "stale";
+  availability: "missing" | "available" | "stale" | "unavailable" | "undeclared";
   lastObservedMonotonic?: number | null;
   maxAge?: number | null;
   source?: {
