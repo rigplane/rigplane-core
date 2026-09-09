@@ -5,16 +5,22 @@ import type { HostedFaceComponentV1 } from '../../../component-kit-api/src/index
 import type { SkinId } from '../registry';
 
 // MOR-2074: which SkinId is QA-gated, read off `resolveSkinId`'s actual
-// early-return branch in `../registry.ts` (`if (ctx.layoutPreference ===
-// 'X') return 'X';`, checked on the RAW `ctx.layoutPreference` before
-// `normalizeLayoutMode` runs — the regex requires the `ctx.` prefix
-// specifically so it does not also match the normal forced-preference
-// branches further down, which check the normalized local instead) rather
-// than hand-copied, so this list cannot silently drift from the production
-// branch that actually makes an id reachable only through the QA-only param.
+// early-return branch in `../registry.ts`, checked on the RAW
+// `ctx.layoutPreference` before `normalizeLayoutMode` runs — the regex
+// requires the `ctx.` prefix specifically so it does not also match the
+// normal forced-preference branches further down, which check the normalized
+// local instead — rather than hand-copied, so this list cannot silently
+// drift from the production branch that actually makes an id reachable only
+// through the QA-only param.
+//
+// T198 extended the matched branch shape with the topology gate's own term
+// (`&& admitsLiveTopology('X', ctx.capabilities)`). Both QA-only ids stay
+// derivable here only while both branches still carry that term: drop the
+// gate from one and this list loses that id, which the "pins a lazy-load
+// case for every skin" completeness test below then fails on.
 const registrySource = readFileSync('src/skins/registry.ts', 'utf8');
 const QA_GATED_LAZY_LOAD_IDS = [...registrySource.matchAll(
-  /if \(ctx\.layoutPreference === '([a-z0-9-]+)'\) return '\1';/g,
+  /if \(ctx\.layoutPreference === '([a-z0-9-]+)'\s+&& admitsLiveTopology\('\1', ctx\.capabilities\)\) return '\1';/g,
 )].map((m) => m[1]) as SkinId[];
 
 // MOR-2074: keyed by the literal `SkinId` itself (not an arbitrary local
@@ -76,6 +82,21 @@ import {
   type ExternalPresentationRecord,
   type PresentationHostMode,
 } from '../registry';
+// T198: the real manifest registry. `../registry` pulls
+// `presentation/layouts/declarations` in for its side effect, so these
+// resolve the shipped declarations rather than a fixture.
+import { getLayout, TOPOLOGY_CLASSES } from '../../presentation/layouts/contract';
+import type { LayoutMode } from '$lib/runtime/adapters/layout-mode-adapter';
+import type { Capabilities, VfoScheme } from '$lib/types/capabilities';
+
+/** Only `vfoScheme`/`receivers`/`capabilities` reach the topology half of
+ *  `derivePresentationCapabilities`; the rest of `Capabilities` only feeds
+ *  its scope/audio diagnostics, which this gate never reads. */
+const capsFor = (vfoScheme: VfoScheme, receivers: 1 | 2): Capabilities =>
+  ({ vfoScheme, receivers, capabilities: ['dual_rx'] }) as unknown as Capabilities;
+const SINGLE_AB = capsFor('ab', 1);
+const AB_SHARED = capsFor('ab_shared', 2);
+const MAIN_SUB = capsFor('main_sub', 2);
 
 const resolve = (overrides: Partial<Parameters<typeof resolveSkinId>[0]> = {}) =>
   resolveSkinId({
@@ -126,7 +147,22 @@ describe('skin registry', () => {
     ['panadapter-first', 'panadapter-first'],
     ['dual-sdr-face', 'dual-sdr-face'],
   ] as const)('resolves forced %s preference to %s', (layoutPreference, skinId) => {
-    expect(resolve({ layoutPreference, hasAnyScope: false })).toBe(skinId);
+    expect(resolve({ layoutPreference, hasAnyScope: false, capabilities: MAIN_SUB })).toBe(skinId);
+  });
+
+  // T198: the same table minus the three `segmentline` preferences, whose
+  // manifests exclude a single-receiver radio. Every preference here resolves
+  // with no live capabilities at all, because the manifest registered under
+  // its id (or, for `dual-sdr-face`, the absence of one) excludes nothing.
+  it.each([
+    ['standard', 'desktop-v2'],
+    ['lcd', 'lcd-cockpit'],
+    ['lcd-cockpit', 'lcd-cockpit'],
+    ['lcd-scope', 'lcd-scope'],
+    ['sdr-test', 'sdr-test'],
+    ['dual-sdr-face', 'dual-sdr-face'],
+  ] as const)('resolves forced %s preference to %s before capabilities arrive', (layoutPreference, skinId) => {
+    expect(resolve({ layoutPreference, capabilities: null })).toBe(skinId);
   });
 
   it.each([
@@ -194,15 +230,19 @@ describe('QA-only layout reachability', () => {
   // which resolves to 'desktop-v2' unconditionally (MOR-1097 cutover) —
   // never the cockpit.
   it('resolves the QA-only preference to the cockpit skin', () => {
-    expect(resolve({ layoutPreference: 'dual-receiver-cockpit' })).toBe('dual-receiver-cockpit');
-    expect(resolve({ layoutPreference: 'dual-receiver-cockpit', hasAnyScope: true })).toBe('dual-receiver-cockpit');
+    expect(resolve({ layoutPreference: 'dual-receiver-cockpit', capabilities: MAIN_SUB })).toBe('dual-receiver-cockpit');
+    expect(resolve({
+      layoutPreference: 'dual-receiver-cockpit', hasAnyScope: true, capabilities: MAIN_SUB,
+    })).toBe('dual-receiver-cockpit');
   });
 
   // Kill-test: removing the T160 branch leaves 'flagship-probe' falling
   // through `normalizeLayoutMode` to 'auto', hence to 'desktop-v2'.
   it('resolves the QA-only preference to the flagship geometry probe', () => {
-    expect(resolve({ layoutPreference: 'flagship-probe' })).toBe('flagship-probe');
-    expect(resolve({ layoutPreference: 'flagship-probe', hasAnyScope: true })).toBe('flagship-probe');
+    expect(resolve({ layoutPreference: 'flagship-probe', capabilities: MAIN_SUB })).toBe('flagship-probe');
+    expect(resolve({
+      layoutPreference: 'flagship-probe', hasAnyScope: true, capabilities: MAIN_SUB,
+    })).toBe('flagship-probe');
   });
 
   // Default-path pin (ticket acceptance): every OTHER forced preference is
@@ -430,5 +470,80 @@ describe('external presentation records share the built-in catalog', () => {
     expect(registrySource.match(/export async function loadSkin/g)).toHaveLength(1);
     expect(registrySource).not.toContain('EXTERNAL_SKIN_LOADERS');
     expect(registrySource).not.toContain('EXTERNAL_PRESENTATION_CATALOG');
+  });
+});
+
+// T198 — a layout manifest's `compatibleTopologies` is a restriction on which
+// radios its skin may mount, and until this block it was validated, documented
+// and read by nothing. `resolveSkinId` now refuses a layout preference whose
+// registered manifest excludes the live receiver topology class.
+describe('layout-manifest topology gate', () => {
+  /** Read off the shipped manifests, not hand-listed: a skin id is gated iff
+   *  a manifest is registered under it AND that manifest leaves at least one
+   *  class out of `TOPOLOGY_CLASSES`. */
+  const GATED = (Object.keys(entrypoints) as SkinId[]).filter((id) => {
+    const manifest = getLayout(id);
+    return manifest !== undefined
+      && !TOPOLOGY_CLASSES.every((c) => manifest.compatibleTopologies.includes(c));
+  });
+
+  // Runs first in this block: the refusal report is throttled per (layout,
+  // live class), and the cases below consume the pairs it counts.
+  it('reports a refusal once per layout and live topology class', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(resolve({ layoutPreference: 'flagship-probe', capabilities: SINGLE_AB })).toBe('desktop-v2');
+      expect(resolve({ layoutPreference: 'flagship-probe', capabilities: SINGLE_AB })).toBe('desktop-v2');
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [message] = warn.mock.calls[0] as [string];
+      expect(message).toContain('flagship-probe');
+      expect(message).toContain('1/ab');
+      expect(message).toContain('2/ab_shared, 2/main_sub');
+      // Same layout, a class not yet reported.
+      expect(resolve({ layoutPreference: 'flagship-probe', capabilities: capsFor('single', 1) })).toBe('desktop-v2');
+      expect(warn).toHaveBeenCalledTimes(2);
+      // Same class, a layout not yet reported.
+      expect(resolve({ layoutPreference: 'peer-split', capabilities: SINGLE_AB })).toBe('desktop-v2');
+      expect(warn).toHaveBeenCalledTimes(3);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('gates exactly the loadable skins whose manifest excludes a topology class', () => {
+    expect([...GATED].sort()).toEqual([
+      'dual-receiver-cockpit', 'flagship-probe', 'panadapter-first', 'peer-split',
+      'unified-instrument',
+    ]);
+  });
+
+  // The defect this block exists for: the probe mounted on an IC-7300 (1/ab),
+  // a radio its own manifest excludes.
+  it.each(GATED)('refuses the %s preference on a 1/ab radio', (skinId) => {
+    expect(resolve({ layoutPreference: skinId as LayoutMode, capabilities: SINGLE_AB })).toBe('desktop-v2');
+  });
+
+  it.each(GATED)('admits the %s preference on both topology classes it declares', (skinId) => {
+    expect(resolve({ layoutPreference: skinId as LayoutMode, capabilities: AB_SHARED })).toBe(skinId);
+    expect(resolve({ layoutPreference: skinId as LayoutMode, capabilities: MAIN_SUB })).toBe(skinId);
+  });
+
+  it.each(GATED)('never admits %s while the live topology is underivable', (skinId) => {
+    expect(resolve({ layoutPreference: skinId as LayoutMode, capabilities: null })).toBe('desktop-v2');
+    expect(resolve({
+      layoutPreference: skinId as LayoutMode, capabilities: undefined as unknown as null,
+    })).toBe('desktop-v2');
+    // `receivers` disagreeing with `vfoScheme` is what
+    // `derivePresentationCapabilities` reports as `invalid-topology`, and it
+    // yields no class either.
+    expect(resolve({
+      layoutPreference: skinId as LayoutMode, capabilities: capsFor('main_sub', 1),
+    })).toBe('desktop-v2');
+  });
+
+  it('leaves a preference with no registered manifest unaffected', () => {
+    expect(getLayout('dual-sdr-face')).toBeUndefined();
+    expect(resolve({ layoutPreference: 'dual-sdr-face', capabilities: SINGLE_AB })).toBe('dual-sdr-face');
+    expect(resolve({ layoutPreference: 'dual-sdr-face', capabilities: null })).toBe('dual-sdr-face');
   });
 });

@@ -81,7 +81,15 @@ vi.mock('../lib/runtime/frontend-runtime', () => ({
   runtime: {
     onTxAudioDied: () => () => {},
     get state() { return { stateRevision: 1, freshnessRevision: 1, observationSeq: 1, ptt: false }; },
-    get caps() { return { tx: true, capabilities: ['tx'] }; },
+    // T198: `peer-split`'s manifest declares only the two dual-receiver
+    // topology classes, and `resolveSkinId` now refuses the preference on a
+    // radio outside them — so this stub has to name one. `2/main_sub` is the
+    // FTX-1's MAIN/SUB pair, the radio `peer-split` exists for.
+    get caps() {
+      return {
+        tx: true, capabilities: ['tx', 'dual_rx'], receivers: 2, vfoScheme: 'main_sub',
+      };
+    },
     bootstrap: h.bootstrap,
   },
   presentationResources: {

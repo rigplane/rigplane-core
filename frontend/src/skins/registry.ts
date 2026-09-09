@@ -22,6 +22,17 @@ import {
   normalizeLayoutMode,
   type LayoutMode,
 } from '$lib/runtime/adapters/layout-mode-adapter';
+import {
+  derivePresentationCapabilities,
+} from '$lib/runtime/adapters/presentation-capabilities';
+import { getLayout, TOPOLOGY_CLASSES } from '../presentation/layouts/contract';
+// Side-effect import, the same idiom `App.svelte` uses for the same registry:
+// it populates the layout manifests `getLayout` resolves against. Imported
+// here as well so `admitsLiveTopology` below cannot depend on the composition
+// root having pulled the barrel in first — an unregistered id is admitted, so
+// without this the gate would silently disappear wherever the barrel was not
+// already loaded.
+import '../presentation/layouts/declarations';
 
 export type SkinId =
   | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'peer-split'
@@ -83,6 +94,54 @@ export interface SkinResolutionContext {
   hasAnyScope: boolean;
 }
 
+/** Layout id + live topology class pairs already reported, so a repeated
+ *  resolution (every capability revision re-runs `App.svelte`'s `$derived`)
+ *  reports once rather than per evaluation. Report state only: never read by
+ *  `admitsLiveTopology`, so it cannot change which preferences are refused. */
+const reportedRefusals = new Set<string>();
+
+/**
+ * T198 — whether the layout manifest registered under `id` accepts the radio
+ * `capabilities` describes.
+ *
+ * `compatibleTopologies` was validated (`presentation/layouts/contract.ts:
+ * validateLayoutManifest`) and documented as a restriction, but no runtime
+ * path read it: `?layout=flagship-probe` mounted the probe on an IC-7300,
+ * whose `1/ab` class that manifest does not declare.
+ *
+ * The live class is `${structuralCount}/${scheme}` — the same string
+ * `lib/runtime/adapters/radio-view-model-adapter.ts` composes for its
+ * `topologyId`, over the same `TOPOLOGY_CLASSES` vocabulary a manifest
+ * declares against.
+ *
+ * Two shapes are admitted without deriving anything: an id with no registered
+ * manifest, and a manifest that declares every class in `TOPOLOGY_CLASSES`.
+ * Neither can exclude a radio, so neither needs to see one — which is what
+ * keeps an unrestricted preference resolving before capabilities arrive. A
+ * manifest that DOES exclude a class must see its own: an underivable
+ * topology (no capabilities yet, or a `vfoScheme`/`receivers` pair
+ * `derivePresentationCapabilities` reports as `invalid-topology`) is refused,
+ * because nothing establishes that the manifest covers it.
+ */
+function admitsLiveTopology(id: SkinId, capabilities: Capabilities | null): boolean {
+  const manifest = getLayout(id);
+  if (manifest === undefined) return true;
+  const declared = manifest.compatibleTopologies;
+  if (TOPOLOGY_CLASSES.every((topologyClass) => declared.includes(topologyClass))) return true;
+  const topology = capabilities ? derivePresentationCapabilities(capabilities).topology : null;
+  const live = topology === null ? null : `${topology.structuralCount}/${topology.scheme}`;
+  if (live !== null && declared.some((topologyClass) => topologyClass === live)) return true;
+  const key = `${id} ${live ?? ''}`;
+  if (!reportedRefusals.has(key)) {
+    reportedRefusals.add(key);
+    console.warn(
+      `[rigplane] layout "${id}" declares compatibleTopologies [${declared.join(', ')}], and the `
+      + `live receiver topology is ${live ?? 'not derivable yet'} — not selecting that skin.`,
+    );
+  }
+  return false;
+}
+
 /**
  * Determine which skin to use based on context.
  *
@@ -100,6 +159,12 @@ export interface SkinResolutionContext {
  * - User forced 'peer-split' → peer-split
  * - Auto: use desktop-v2 (the v3 default); explicit LCD choices are the
  *   recoverable compatibility-window opt-out
+ * - T198: each forced branch above requires `admitsLiveTopology` for the
+ *   skin it would return, and a refused preference falls through to the
+ *   default exactly as an unrecognised one does. The 'standard' branch and
+ *   the auto default are the two that do not carry the term: both return
+ *   'desktop-v2', which is what a refusal falls through TO, so refusing it
+ *   could only report a refusal and then return it anyway
  */
 export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
   if (ctx.isMobile) return 'mobile';
@@ -109,19 +174,28 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
   // `CanonicalLayoutMode` (lib/stores/layout.svelte.ts), so
   // `normalizeLayoutMode` below would fall it straight through to 'auto'.
   // Checked here, before normalization, for that reason.
-  if (ctx.layoutPreference === 'dual-receiver-cockpit') return 'dual-receiver-cockpit';
+  if (ctx.layoutPreference === 'dual-receiver-cockpit'
+    && admitsLiveTopology('dual-receiver-cockpit', ctx.capabilities)) return 'dual-receiver-cockpit';
   // T160 PR-1: the geometry probe is gated the same way and checked here for
   // the same reason — it is not a `CanonicalLayoutMode` either.
-  if (ctx.layoutPreference === 'flagship-probe') return 'flagship-probe';
+  if (ctx.layoutPreference === 'flagship-probe'
+    && admitsLiveTopology('flagship-probe', ctx.capabilities)) return 'flagship-probe';
   const layoutPreference = normalizeLayoutMode(ctx.layoutPreference);
-  if (layoutPreference === 'sdr-test') return 'sdr-test';
-  if (layoutPreference === 'lcd-cockpit') return 'lcd-cockpit';
-  if (layoutPreference === 'lcd-scope') return 'lcd-scope';
+  if (layoutPreference === 'sdr-test'
+    && admitsLiveTopology('sdr-test', ctx.capabilities)) return 'sdr-test';
+  if (layoutPreference === 'lcd-cockpit'
+    && admitsLiveTopology('lcd-cockpit', ctx.capabilities)) return 'lcd-cockpit';
+  if (layoutPreference === 'lcd-scope'
+    && admitsLiveTopology('lcd-scope', ctx.capabilities)) return 'lcd-scope';
   if (layoutPreference === 'standard') return 'desktop-v2';
-  if (layoutPreference === 'peer-split') return 'peer-split';
-  if (layoutPreference === 'unified-instrument') return 'unified-instrument';
-  if (layoutPreference === 'panadapter-first') return 'panadapter-first';
-  if (layoutPreference === 'dual-sdr-face') return 'dual-sdr-face';
+  if (layoutPreference === 'peer-split'
+    && admitsLiveTopology('peer-split', ctx.capabilities)) return 'peer-split';
+  if (layoutPreference === 'unified-instrument'
+    && admitsLiveTopology('unified-instrument', ctx.capabilities)) return 'unified-instrument';
+  if (layoutPreference === 'panadapter-first'
+    && admitsLiveTopology('panadapter-first', ctx.capabilities)) return 'panadapter-first';
+  if (layoutPreference === 'dual-sdr-face'
+    && admitsLiveTopology('dual-sdr-face', ctx.capabilities)) return 'dual-sdr-face';
   // MOR-1097 cutover: every non-mobile auto start uses the reworked
   // desktop-v2 composition. Scope availability remains presentation data, not
   // default-selection policy; explicit LCD preferences stay selectable.
