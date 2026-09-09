@@ -140,6 +140,36 @@ it('keeps the SWR-only caption on its independent relevance and projected value'
   });
 });
 
+it('keeps paired S and SWR captions independently relevant through SWR updates', () => {
+  let view = withField(base('transmitting'), 'signal', { relevant: false });
+  view = withMeterDomain(withRaw(view, 'swr', 1.5), 'swr', { kind: 'engineering', unit: 'ratio' });
+  view = { ...view, meters: { ...view.meters!, swr: { ...view.meters!.swr, relevant: true } } };
+  const props: { view: RadioViewModel } = proxy({ view });
+  const component = mount(MetersSurface, { target, props });
+  const caption = (label: string) => [...target.querySelectorAll('.meter-native-caption')]
+    .find((node) => node.querySelector('.meter-native-label')?.textContent === label);
+  try {
+    flushSync();
+    expect(caption('S')?.getAttribute('data-relevant')).toBe('false');
+    expect(caption('SWR')?.getAttribute('data-relevant')).toBe('true');
+    expect(caption('SWR')?.querySelector('.meter-native-value')?.textContent).toBe('1.5');
+    props.view = withRaw(props.view, 'swr', 2.5);
+    flushSync();
+    expect(caption('SWR')?.querySelector('.meter-native-value')?.textContent)
+      .toBe(projectSwrMeter(props.view)!.displayText);
+    props.view = withField(props.view, 'swr', { relevant: false, unknown: true });
+    flushSync();
+    expect(caption('SWR')?.getAttribute('data-relevant')).toBe('false');
+    expect(caption('SWR')?.querySelector('.meter-native-value')?.textContent)
+      .toBe(projectSwrMeter(props.view)!.displayText);
+    expect(caption('S')?.getAttribute('data-relevant')).toBe('false');
+    props.view = withField(props.view, 'swr', { availability: { structural: false, operational: false } });
+    flushSync();
+    expect(caption('SWR')).toBeUndefined();
+    expect(caption('S')).toBeDefined();
+  } finally { unmount(component); }
+});
+
 it('leaves selected external meter renderers free of native captions', () => {
   selectedMeter.current = fixtureMeterAppearance;
   try {

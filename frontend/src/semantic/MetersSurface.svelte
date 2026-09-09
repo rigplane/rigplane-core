@@ -144,15 +144,21 @@
           role="group" aria-label={present(field) ? "S meter" : "SWR meter"}
           {...signalDisplay?.attributes ?? {}}
         >
-          <div class="meter-native-caption" aria-hidden="true"
-            data-relevant={present(field) ? field.relevant : swrFrame?.projection.relevant}>
-            <span class="meter-native-label">{present(field) ? 'S' : 'SWR'}</span>
-            <span class="meter-native-value">{present(field)
-              ? signalProjection?.primaryText ?? '' : swrFrame?.projection.displayText ?? ''}</span>
-            {#if present(field) && signalProjection?.secondaryText}
-              <span class="meter-native-secondary">{signalProjection.secondaryText}</span>
-            {/if}
-          </div>
+          {#if present(field)}
+            <div class="meter-native-caption" aria-hidden="true" data-relevant={field.relevant}>
+              <span class="meter-native-label">S</span>
+              <span class="meter-native-value">{signalProjection?.primaryText ?? ''}</span>
+              {#if signalProjection?.secondaryText}
+                <span class="meter-native-secondary">{signalProjection.secondaryText}</span>
+              {/if}
+            </div>
+          {/if}
+          {#if swrFrame}
+            <div class="meter-native-caption" aria-hidden="true" data-relevant={swrFrame.projection.relevant}>
+              <span class="meter-native-label">SWR</span>
+              <span class="meter-native-value">{swrFrame.projection.displayText}</span>
+            </div>
+          {/if}
           <LinearSMeter
             frame={signalFrame.motion} label="S" compact
             mainPresent={present(field)}

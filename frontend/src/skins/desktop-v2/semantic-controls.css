@@ -270,6 +270,10 @@
   border-radius: 3px;
 }
 
+.desktop-control-face .desktop-station-meters .meter-tile > svg:not(.sdr-meter) {
+  height: auto;
+}
+
 .desktop-control-face .desktop-station-meters .meter-native-caption {
   display: flex;
   align-items: baseline;
