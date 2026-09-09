@@ -270,6 +270,48 @@
   border-radius: 3px;
 }
 
+.desktop-control-face.standard-face .desktop-station-meters .meter-tile > svg:not(.sdr-meter) {
+  height: auto;
+}
+
+.desktop-control-face.standard-face .desktop-station-meters .meter-native-caption {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding-bottom: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.desktop-control-face.standard-face .desktop-station-meters .meter-native-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--v2-text-secondary);
+}
+
+.desktop-control-face.standard-face .desktop-station-meters .meter-native-value {
+  margin-left: auto;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  color: var(--v2-text-bright);
+}
+
+.desktop-control-face.standard-face .desktop-station-meters .meter-native-secondary {
+  font-size: 11px;
+  color: var(--v2-text-secondary);
+}
+
+.desktop-control-face.standard-face .desktop-station-meters .meter-native-caption[data-relevant='false'] {
+  opacity: 0.4;
+}
+
+.desktop-control-face.standard-face .desktop-station-meters
+  .meter-tile:not([data-meter='signal']):not([data-meter='swr']) > svg > text {
+  display: none;
+}
+
 @media (forced-colors: active) {
   .desktop-control-face .semantic-control-panel section :is(button, input, select) {
     border-color: ButtonText;
