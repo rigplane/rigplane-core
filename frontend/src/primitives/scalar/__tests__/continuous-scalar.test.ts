@@ -554,7 +554,7 @@ describe('continuous scalar source policies', () => {
     const pendingToken = pendingLease.beginPointer()!;
     pendingLease.pointer(pendingToken, 2_700);
     pendingLease.pointer(pendingToken, 2_700);
-    expect(pending.request.mock.calls).toEqual([[2_700], [2_700]]);
+    expect(pending.request.mock.calls).toEqual([[2_700]]);
     pendingLease.dispose();
   });
 
@@ -1560,4 +1560,122 @@ describe('continuous scalar renderer leases and cleanup', () => {
     expect(scalar.attachRenderer().beginPointer()).toBeNull();
     vi.useRealTimers();
   });
+});
+
+const NB_LEVEL_DOMAIN: ScalarDomain = {
+  min: 0,
+  max: 255,
+  step: 1,
+  defaultValue: null,
+  fineStepDivisor: 1,
+};
+
+const DEDUPE_FIXTURES = [
+  [
+    'rendered-native-range command feedback'
+    + ' (DspScalarHost, RfFrontEndInstrumentHost, CwKeyerInstrumentHost)',
+    () => {
+      const setup = commandSetup(createRenderedNativeRangeContinuousScalarPolicy(), {
+        domain: NB_LEVEL_DOMAIN,
+        feedback: feedback('idle', { confirmed: 100 }),
+      });
+      return {
+        scalar: setup.scalar,
+        request: setup.request,
+        setCanonical: (value: number) =>
+          setup.update({ feedback: feedback('idle', { confirmed: value }) }),
+      };
+    },
+  ],
+  [
+    'hbar-optimistic reading (RxAudioInstrumentHost, TxAuxScalarHost)',
+    () => {
+      const setup = readingSetup(
+        createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs: 0 }),
+        { domain: NB_LEVEL_DOMAIN, reading: { status: 'known', value: 100 } },
+      );
+      return {
+        scalar: setup.scalar,
+        request: setup.request,
+        setCanonical: (value: number) => setup.update({ reading: { status: 'known', value } }),
+      };
+    },
+  ],
+] as const;
+
+describe('continuous scalar dispatch deduplication', () => {
+  it.each(DEDUPE_FIXTURES)('sends one command per distinct pointer value with %s', (_name, make) => {
+    const { scalar, request } = make();
+    const lease = scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+
+    for (let index = 0; index < 25; index += 1) lease.pointer(token, 138);
+    expect(request.mock.calls).toEqual([[138]]);
+
+    for (let index = 0; index < 3; index += 1) lease.pointer(token, 139);
+    expect(request.mock.calls).toEqual([[138], [139]]);
+
+    lease.pointer(token, 138);
+    expect(request.mock.calls).toEqual([[138], [139], [138]]);
+  });
+
+  it.each(DEDUPE_FIXTURES)('re-sends a repeated value in a later gesture with %s', (_name, make) => {
+    const { scalar, request } = make();
+    const lease = scalar.attachRenderer();
+    const first = lease.beginPointer()!;
+    lease.pointer(first, 138);
+    lease.pointer(first, 138);
+    lease.endPointer(first);
+    const second = lease.beginPointer()!;
+    lease.pointer(second, 138);
+
+    expect(request.mock.calls).toEqual([[138], [138]]);
+  });
+
+  it.each(DEDUPE_FIXTURES)(
+    're-sends a repeated value after the canonical value changes from outside with %s',
+    (_name, make) => {
+      const { scalar, request, setCanonical } = make();
+      const lease = scalar.attachRenderer();
+      const token = lease.beginPointer()!;
+      lease.pointer(token, 138);
+      lease.pointer(token, 138);
+      setCanonical(140);
+      lease.pointer(token, 138);
+
+      expect(request.mock.calls).toEqual([[138], [138]]);
+    },
+  );
+
+  it.each(DEDUPE_FIXTURES)(
+    're-sends a repeated value after another source dispatched a different one with %s',
+    (_name, make) => {
+      const { scalar, request } = make();
+      const lease = scalar.attachRenderer();
+      const token = lease.beginPointer()!;
+      lease.pointer(token, 138);
+      lease.wheel({ direction: 1, fine: false });
+      lease.pointer(token, 138);
+
+      expect(request).toHaveBeenCalledTimes(3);
+      expect(request.mock.calls[1]![0]).not.toBe(138);
+      expect(request).toHaveBeenLastCalledWith(138);
+      lease.dispose();
+    },
+  );
+
+  it('keeps the first gesture candidate equal to canonical dispatching under dispatchesCanonical',
+    () => {
+      const setup = commandSetup(createRenderedNativeRangeContinuousScalarPolicy(), {
+        domain: NB_LEVEL_DOMAIN,
+        feedback: feedback('idle', { confirmed: 100 }),
+      });
+      const lease = setup.scalar.attachRenderer();
+      const token = lease.beginPointer()!;
+
+      lease.pointer(token, 100);
+      expect(setup.request.mock.calls).toEqual([[100]]);
+      lease.pointer(token, 100);
+      expect(setup.request.mock.calls).toEqual([[100]]);
+    });
 });
