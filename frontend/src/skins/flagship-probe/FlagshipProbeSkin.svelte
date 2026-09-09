@@ -20,8 +20,12 @@
   that split at the surface, and `__tests__/FlagshipProbe.component.test.ts`
   requires it of the keys this shell mounts.
 
-  ARRANGEMENT. Two receivers side by side in BOTH arrangements, and the
-  panorama always between the two rails, never under one:
+  ARRANGEMENT. Two DECK SLOTS side by side in BOTH arrangements, and the
+  panorama always between the two rails, never under one. `stripBy="slot"`
+  is what makes a column a slot rather than a receiver (owner ruling R58,
+  2026-09-09): on a two-receiver radio a column is still a receiver, and on
+  a single-receiver one the right column holds the unselected VFO —
+  `__tests__/FlagshipProbe.component.test.ts` requires both:
 
     wide   — left rail | (deck over panorama) | right rail
     narrow — deck across the top, then left rail | panorama | right rail
@@ -34,7 +38,7 @@
   requires the rail column, that position and the rail's declared track
   together. The rail's own minimum is the width one key needs — see
   `--flagship-probe-rail-floor` below. Nothing then stands between the two
-  receivers, and the deck's middle track is gone rather than empty: the same
+  slots, and the deck's middle track is gone rather than empty: the same
   test requires every track in both column templates to be a column some area
   names.
 
@@ -75,7 +79,7 @@
 
 <div class="flagship-probe" data-testid="flagship-geometry-probe">
   <div class="probe-stage" data-testid="probe-stage">
-    <SemanticRadioSurfaces strips="dual" bandPermitCaption={false} />
+    <SemanticRadioSurfaces strips="dual" stripBy="slot" bandPermitCaption={false} />
     <!--
       `hideScopeControls`: the fact-backed half of the spectrum toolbar is
       suppressed because the semantic `scopeControls` surface renders it,
@@ -220,8 +224,8 @@
     display: contents;
   }
 
-  .probe-stage :global([data-strip-receiver='MAIN']) { grid-area: rx-main; }
-  .probe-stage :global([data-strip-receiver='SUB']) { grid-area: rx-sub; }
+  .probe-stage :global([data-strip-slot='primary']) { grid-area: rx-main; }
+  .probe-stage :global([data-strip-slot='secondary']) { grid-area: rx-sub; }
   .probe-stage :global([data-zone-id='global']) { grid-area: vfo-ops; }
   .probe-stage :global([data-zone-id='rf-front-end']) { grid-area: rf; }
   .probe-stage :global([data-zone-id='dsp']) { grid-area: dsp; }
