@@ -514,39 +514,42 @@ describe('no surface may size a track', () => {
 
 describe('the rail floor', () => {
   /**
-   * Both numbers were measured in Chromium, on the real `FlagshipProbeSkin`
-   * mounted through the fixture-stub seam (`vite.fixtures.config.ts`) from a
-   * harness entry written for the measurement — `fixtures/main.ts` mounts no
-   * flagship-probe fixture.
+   * THE RAIL RULE (art direction, 2026-09-09): a rail is as wide as the
+   * widest thing that must be readable in ONE column of controls — never a
+   * two-key row, and never the transmit pair, which may wrap.
+   * Pseudo-localisation is a stress model, not a width source, so it fixes a
+   * number only where clipping would be a safety failure — the transmit
+   * key — and every other rail key is measured in English.
    *
-   * The FLOOR, measured 2026-09-09 with every rail key's text replaced by
-   * `lib/i18n/pseudo.ts`'s `pseudoize()` output, is one key: the larger of
-   * the widest single key in any of the ten rail surfaces — the CW keyer's
-   * reverse-paddle key, 191.77px at a computed font-size of 13.3333px — and
-   * the transmit zone's own key button, 185.20px, now that
-   * `semantic/RxTxSurface.svelte`'s `.rx-tx-actions` row may wrap. 192 is
-   * 191.77 rounded up to a whole pixel.
+   * Both properties are that one rule, measured 2026-09-09 in Chromium on
+   * the real `FlagshipProbeSkin` mounted through the fixture-stub seam
+   * (`vite.fixtures.config.ts`) from a harness entry written for the
+   * measurement — `fixtures/main.ts` mounts no flagship-probe fixture. Every
+   * `<button>` the ten rail zones mount was taken alone at
+   * `width: max-content` plus the padding and border between its border box
+   * and its zone box, and taken again with `on` and with `off` in place of
+   * an unread fact:
    *
-   * The WIDTH is that same one key, re-derived 2026-09-09 under the
-   * art-direction ruling that a rail is as wide as the widest thing that
-   * must be readable in ONE column — never a two-key row, and never the
-   * transmit pair, which wraps. That ruling confines pseudo-localisation to
-   * the transmit key, where clipping is a safety failure, and measures every
-   * other rail key in English: over every key the ten rail surfaces mount on
-   * the harness's dual-receiver fixture, each toggle taken at both values
-   * its own fact renders, the widest English key is the CW keyer's
-   * `Reverse paddle: on` at 131.61px. That is below the floor, so the width
-   * IS the floor. The PR body carries the full table.
+   *   safety term  — the transmit key, pseudo-localised with
+   *                  `lib/i18n/pseudo.ts`'s `pseudoize()`, 185.20px. 186 is
+   *                  that rounded up, and it governs both properties.
+   *   English term — the widest rail key in English is the CW keyer's
+   *                  `Reverse paddle: on`, 131.61px at a computed font-size
+   *                  of 13.3333px, which is below 186.
    *
-   * Kills: lowering the floor to make some layout fit, or letting the width
-   * drift off it — what no other test here would notice, because every other
-   * assertion in this file is about the FORM of the track, and
+   * Pseudo-localised, that CW key is 191.77px with its fact unread and
+   * 201.05 / 208.47 at `on` / `off`; the rule excludes all three, it being no
+   * safety key. The PR body carries the full table.
+   *
+   * Kills: lowering the floor to make some layout fit. With the floor at 180
+   * and the width left at 186, this is the only assertion in the file that
+   * fails — every other one is about the FORM of the track, and
    * `minmax(var(--floor), var(--width))` keeps its form at any value of
    * either.
    */
   it('declares the measured one-key floor, and a rail width equal to it', () => {
-    expect(px('--flagship-probe-rail-floor')).toBe(192);
-    expect(px('--flagship-probe-rail-width')).toBe(192);
+    expect(px('--flagship-probe-rail-floor')).toBe(186);
+    expect(px('--flagship-probe-rail-width')).toBe(186);
   });
 
   // Kills: a rail width below its own floor, which would make `minmax()`

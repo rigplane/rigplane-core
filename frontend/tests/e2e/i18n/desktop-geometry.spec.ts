@@ -607,7 +607,7 @@ test.describe('T185 transmit key pair', () => {
     await boot(page, 'standard', 1440, true, 'studioline', false, undefined,
       { qaLayout: 'flagship-probe' });
     // The mirror of the case above: 400px is wider than the pair. The skin's
-    // own rail is one key wide (T194), so this column has to be set here too.
+    // own rail is one key wide, so this column has to be set here too.
     await page.addStyleTag({ content: '.flagship-probe { --flagship-probe-rail-floor: 400px !important;'
       + ' --flagship-probe-rail-width: 400px !important; }' });
     const geometry = await measurePair(page);
