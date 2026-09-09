@@ -135,6 +135,13 @@ polling_only = [
     "receiver.main.operator_controls.repeater_shift",
     "receiver.sub.operator_controls.repeater_shift",
     "global.tx_state.dual_watch",
+    # MOR-2425/T147: drain voltage/current (CAT RM P1 8 = VDD, 7 = IDD). Plain
+    # polling_only, not stream_like_meters: the stream class is pinned to a
+    # fast cadence and a <= 2.0s TTL by
+    # test_known_profiles_stream_like_meters_use_fast_non_decaying_policies,
+    # and these two ride the 1.0s slow-control group below instead.
+    "global.meters.vd",
+    "global.meters.id",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -227,6 +234,33 @@ tx_only = true
 available_when = [
     { field = "global.tx_state.ptt", equals = true },
 ]
+
+# MOR-2425/T147: drain voltage and current (CAT RM P1 8 = VDD, 7 = IDD).
+# Neither `tx_only` nor `available_when`, unlike the four blocks above: a
+# read-only bench probe on 2026-09-08 sent `RM7;` and `RM8;` ten times each
+# with the FTX-1 receiving and got an answer to every one -- IDD raw 000, VDD
+# raw 212, no refusal, no timeout, no parse error, 8.3-14.4 ms per read. So
+# they join AcquisitionScheduler.unobserved_startup_paths (a tx_only path is
+# excluded from it) and that probe is the evidence the gate can be satisfied
+# without transmitting.
+#
+# 1.0s/2.0s is the slow-control tier's pair, described under its own header
+# below: these two are read by YaesuObservationAdapter.poll_slow_controls, so
+# 1.0s is YaesuCatPoller._SLOW_INTERVAL, the interval of the group that
+# actually re-reads them, and the TTL is twice the cadence -- the same pair
+# `receiver.main.operator_controls.af_level` carries, which
+# tests/test_yaesu_cat_poller.py::
+# test_slow_group_interval_matches_the_profile_slow_control_cadence pins to
+# `_SLOW_INTERVAL`. Pinned for these two paths by
+# tests/test_state_acquisition_policy.py::
+# test_ftx1_drain_meters_poll_in_receive_at_the_slow_control_cadence.
+[state_acquisition.field_policies."global.meters.vd"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."global.meters.id"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
 
 # --- Slow-control tier ------------------------------------------------------
 # MOR-2425 (owner ruling, 2026-09-07): 30.0s/120.0s -> 1.0s/2.0s. These
@@ -883,6 +917,54 @@ label = "S9+20"
 raw = 240
 actual = 40.0
 label = "S9+40"
+
+# MOR-2425/T147 -- drain voltage (CAT RM8, VDD). TWO POINTS, and the bench run
+# they come from establishes nothing about the curve between or beyond them:
+# the straight line is what `runtime/meter_cal.py: interpolate_meter` draws
+# through two points, not a measured property of this meter. Outside the
+# endpoints that function clamps, so raw 212 -- the value the radio answers
+# while receiving -- yields 13.8, not more.
+#
+# raw 210 -> 13.8 V: bench 2026-09-08. During a 3.007 s transmit at 5 W on
+# 14.113 MHz with the radio's MAIN display meter switched to VDD (`MS35;`), the
+# owner read 13.8 V off that display while `RM8;`, polled 190 times in the same
+# window from the same process, answered raw 210 on all 159 reads at
+# t >= 500 ms after key-down.
+#
+# raw 0 -> 0.0 V is an ASSUMED origin, not a measurement: no bench reading
+# below raw 210 exists for this meter, and the probe never took the supply
+# rail down.
+[[meters.vd.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.vd.calibration]]
+raw = 210
+actual = 13.8
+label = "13.8"
+
+# MOR-2425/T147 -- drain current (CAT RM7, IDD). Two points, same caveat: the
+# line between them is interpolate_meter's, not a measured property.
+#
+# raw 29 -> 1.0 A: bench 2026-09-08, the second keyed window (3.001 s, 5 W,
+# 14.113 MHz) with the display switched to ID (`MS45;`). `RM7;` answered raw 29
+# on all 163 reads at t >= 500 ms after key-down. The owner's display reading
+# was reported as "just above 1" A -- the display's granularity is coarse and
+# no finer figure was taken -- and 1.0 is what this table records for it.
+#
+# raw 0 -> 0.0 A: `RM7;` answered raw 000 on all ten receive reads of the
+# read-only probe run the same day, and on the two receive baselines of this
+# run.
+[[meters.id.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.id.calibration]]
+raw = 29
+actual = 1.0
+label = "1.0"
 
 [agc]
 modes = [0, 1, 2, 3, 4, 5, 6]

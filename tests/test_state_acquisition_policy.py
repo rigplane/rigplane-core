@@ -911,6 +911,41 @@ def test_ftx1_tx_meters_are_declared_tx_only() -> None:
         assert ftx1.state_acquisition.policy_for(path).tx_only is True
 
 
+def test_ftx1_drain_meters_poll_in_receive_at_the_slow_control_cadence() -> None:
+    """MOR-2425/T147: VDD/IDD are declared, pollable, and NOT ``tx_only``.
+
+    A read-only bench probe on 2026-09-08 got an answer to all ten ``RM7;``
+    and all ten ``RM8;`` reads with the FTX-1 receiving, so these two carry
+    neither ``tx_only`` nor an ``available_when`` clause -- unlike the four
+    transmit meters above. They are read by
+    ``YaesuObservationAdapter.poll_slow_controls``, so their cadence is the
+    slow-control tier's 1.0s, the same number
+    ``YaesuCatPoller._SLOW_INTERVAL`` carries, with the TTL at twice that.
+    """
+    ftx1 = get_radio_profile("FTX-1")
+    assert ftx1.state_acquisition is not None
+    acquisition = ftx1.state_acquisition
+
+    af_level = FieldPath.receiver("main", "operator_controls", "af_level")
+    for path in (
+        FieldPath.global_("meters", "vd"),
+        FieldPath.global_("meters", "id"),
+    ):
+        capability = acquisition.capability_for(path)
+        policy = acquisition.policy_for(path)
+        assert capability.can_poll is True, path
+        # Not the stream-meter class: that class is bound to a fast cadence by
+        # test_known_profiles_stream_like_meters_use_fast_non_decaying_policies.
+        assert capability.stream_like is False, path
+        assert policy.tx_only is False, path
+        assert policy.available_when == (), path
+        assert policy.cadence_seconds == 1.0, path
+        assert policy.freshness_ttl_seconds == 2.0, path
+        assert (
+            policy.cadence_seconds == acquisition.policy_for(af_level).cadence_seconds
+        )
+
+
 def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
     profile = get_radio_profile("IC-7300")
     acquisition = profile.state_acquisition
@@ -1332,8 +1367,8 @@ def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
     assert acquisition is not None
 
     assert acquisition.provider == "yaesu_cat"
-    assert len(acquisition.capabilities) == 56
-    assert len(acquisition.field_policies) == 51
+    assert len(acquisition.capabilities) == 58
+    assert len(acquisition.field_policies) == 53
     assert acquisition.default_policy.cadence_seconds == 2.0
     assert acquisition.default_policy.freshness_ttl_seconds == 8.0
 

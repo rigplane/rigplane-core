@@ -153,6 +153,10 @@ def _make_radio() -> MagicMock:
     radio.read_power_meter = AsyncMock(return_value=180)
     radio.get_swr_meter = AsyncMock(return_value=120)
     radio.read_swr_meter = AsyncMock(return_value=120)
+    # Drain meters (MOR-2425/T147): the raw values a read-only bench probe read
+    # off the FTX-1 on 2026-09-08 while receiving — VDD 212, IDD 0.
+    radio.get_vd_meter = AsyncMock(return_value=212)
+    radio.get_id_meter = AsyncMock(return_value=0)
     # Global TX / operator-control setpoints (MOR-447).
     radio.get_power = AsyncMock(return_value=(2, 55))
     radio.read_power = AsyncMock(return_value=(2, 55))
@@ -253,6 +257,9 @@ class _SideEffectingYaesuRadio:
         self.radio_state.comp_meter = 5
         self.radio_state.power_meter = 5
         self.radio_state.swr_meter = 6
+        # Sentinels for the pure drain reads (MOR-2425/T147).
+        self.radio_state.vd_meter = 23
+        self.radio_state.id_meter = 24
         self.radio_state.main.af_level = 7
         self.radio_state.main.rf_gain = 8
         self.radio_state.main.squelch = 9
@@ -368,6 +375,16 @@ class _SideEffectingYaesuRadio:
         value = await self.read_swr_meter()
         self.radio_state.swr_meter = value
         return value
+
+    # Drain meters (MOR-2425/T147): unlike the meters above, the FTX-1 backend
+    # has no ``read_*`` twin for these — ``get_vd_meter``/``get_id_meter`` are
+    # already pure ``_read_meter`` calls that never touch legacy state, which
+    # is what the sentinels seeded in ``__init__`` are here to prove.
+    async def get_vd_meter(self) -> int:
+        return 212
+
+    async def get_id_meter(self) -> int:
+        return 0
 
     async def read_af_level(self, receiver: int = 0) -> int:
         return 128 if receiver == 0 else 64
@@ -870,9 +887,16 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
         # like the legacy poller's always-on ``get_vfo_select`` read. The int
         # receiver index (1=SUB) coerces to the neutral "MAIN"/"SUB" str.
         ("global.slow_state.active", "SUB"),
-        # cw_spot (MOR-456): global slow_state bool (CAT ``CS``), closes the
-        # slow-control lane, gated on the legacy poller's ``"cw" in caps`` gate.
+        # cw_spot (MOR-456): global slow_state bool (CAT ``CS``), gated on the
+        # legacy poller's ``"cw" in caps`` gate.
         ("global.slow_state.cw_spot", True),
+        # Drain voltage/current (MOR-2425/T147): supply telemetry read in this
+        # always-running lane, not the PTT-gated ``poll_tx_meters``. Raw 212/0
+        # are scaled through the FTX-1 profile's two-point tables; the clamp
+        # at raw 212 is pinned by
+        # ``test_slow_poll_clamps_the_receive_drain_voltage_to_the_last_point``.
+        ("global.meters.vd", 13.8),
+        ("global.meters.id", 0.0),
     ]
     assert all(item.source.source == "yaesu_poll_response" for item in observations)
     assert all(item.max_age == 2.0 for item in observations)
@@ -1108,6 +1132,91 @@ async def test_tx_meters_poll_skips_alc_comp_without_meters_capability() -> None
     radio.read_power_meter.assert_not_awaited()
     radio.read_swr_meter.assert_not_awaited()
     radio.read_comp_meter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_drain_meters_ride_the_slow_lane_and_not_the_tx_meter_lane() -> None:
+    """RM8/RM7 are read by ``poll_slow_controls``, never ``poll_tx_meters``.
+
+    ``poll_tx_meters`` runs only under a truthy PTT observation
+    (``poller.py: YaesuCatPoller._emit_fast_observations``), so a drain read
+    placed there would never fire on a receiving radio — and the profile
+    declares these two paths without ``tx_only``, which puts them in the
+    startup gate.
+    """
+    radio = _make_radio()
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    tx_meters = await adapter.poll_tx_meters()
+
+    assert [str(item.path) for item in tx_meters] == [
+        "global.meters.alc",
+        "global.meters.power",
+        "global.meters.swr",
+        "global.meters.comp",
+    ]
+    radio.get_vd_meter.assert_not_awaited()
+    radio.get_id_meter.assert_not_awaited()
+
+    slow = await adapter.poll_slow_controls()
+
+    assert [str(item.path) for item in slow][-2:] == [
+        "global.meters.vd",
+        "global.meters.id",
+    ]
+    radio.get_vd_meter.assert_awaited_once()
+    radio.get_id_meter.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_clamps_the_receive_drain_voltage_to_the_last_point() -> None:
+    """Raw 212 yields 13.8 V, not an extrapolation above it (MOR-2425/T147).
+
+    ``runtime/meter_cal.py: interpolate_meter`` clamps outside its endpoints,
+    and the FTX-1 profile's last ``vd`` point is raw 210 -> 13.8, so the raw
+    212 the radio answers while receiving lands exactly on that endpoint.
+    """
+    radio = _make_radio()
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    by_path = {str(item.path): item for item in await adapter.poll_slow_controls()}
+
+    assert by_path["global.meters.vd"].value == 13.8
+    assert by_path["global.meters.vd"].quality == ("confirmed", "calibrated")
+    assert by_path["global.meters.id"].value == 0.0
+    assert by_path["global.meters.id"].quality == ("confirmed", "calibrated")
+
+
+@pytest.mark.asyncio
+async def test_slow_poll_interpolates_a_drain_reading_between_the_two_points() -> None:
+    """A raw between the two ``id`` points is the line through them.
+
+    Raw 29 -> 1.0 A is the profile's transmit point, so half of it is half an
+    amp. This is what fails if either calibration point moves.
+    """
+    radio = _make_radio()
+    radio.get_id_meter = AsyncMock(return_value=29)
+    radio.get_vd_meter = AsyncMock(return_value=105)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    by_path = {
+        str(item.path): item.value for item in await adapter.poll_slow_controls()
+    }
+
+    assert by_path["global.meters.id"] == 1.0
+    assert by_path["global.meters.vd"] == pytest.approx(6.9)
 
 
 @pytest.mark.asyncio
@@ -1401,6 +1510,11 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         # cw_spot (MOR-456) — global slow_state bool, gated on the ``cw`` cap
         # (present here); ``read_cw_spot`` does not mutate legacy state.
         ("global.slow_state.cw_spot", True),
+        # Drain meters (MOR-2425/T147) close the slow-control lane; the raw
+        # counts are emitted because this double's profile carries no
+        # ``meter_calibrations`` dict.
+        ("global.meters.vd", 212),
+        ("global.meters.id", 0),
         (
             "global.operator_controls.power_level",
             pytest.approx(_normalized_power(55)),
@@ -1442,6 +1556,10 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     assert radio.radio_state.comp_meter == 5
     assert radio.radio_state.power_meter == 5
     assert radio.radio_state.swr_meter == 6
+    # The drain reads have no ``read_*`` twin: ``get_vd_meter``/``get_id_meter``
+    # are themselves pure, so the sentinels survive the poll (MOR-2425/T147).
+    assert radio.radio_state.vd_meter == 23
+    assert radio.radio_state.id_meter == 24
     assert radio.radio_state.main.af_level == 7
     assert radio.radio_state.main.rf_gain == 8
     assert radio.radio_state.main.squelch == 9
@@ -2136,6 +2254,8 @@ async def test_happy_path_slow_poll_unchanged_when_all_reads_succeed() -> None:
         ("receiver.main.operator_controls.tsql_freq", 8850),
         ("global.slow_state.active", "SUB"),
         ("global.slow_state.cw_spot", True),
+        ("global.meters.vd", 13.8),
+        ("global.meters.id", 0.0),
     ]
 
 
@@ -2550,6 +2670,20 @@ _DEFECT_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
         None,
         "poll_slow_controls",
         ("global.slow_state.cw_spot",),
+    ),
+    (
+        "vd",
+        "get_vd_meter",
+        None,
+        "poll_slow_controls",
+        ("global.meters.vd",),
+    ),
+    (
+        "id",
+        "get_id_meter",
+        None,
+        "poll_slow_controls",
+        ("global.meters.id",),
     ),
     (
         "power_level",

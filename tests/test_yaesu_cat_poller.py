@@ -1082,6 +1082,14 @@ class _SideEffectingYaesuRadio:
         """Pure native FR00 fixture: 0 = dual receive."""
         return 0
 
+    # Drain meters (MOR-2425/T147): pure ``_read_meter`` calls on the real
+    # backend — no legacy mirror, so no ``legacy_getter_calls`` bump here.
+    async def get_vd_meter(self) -> int:
+        return 212
+
+    async def get_id_meter(self) -> int:
+        return 0
+
     async def read_s_meter(self, receiver: int = 0) -> int:
         return 150 if receiver == 0 else 75
 
@@ -2747,10 +2755,15 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
         # filter_width/if_shift need their runtime caps (absent here); narrow
         # is unconditional and MAIN-only, like AGC (MOR-445).
         ("receiver.main.operator_toggles.narrow", True),
-        # active-slot (MOR-446) closes the slow-control lane; unconditional like
-        # AGC/narrow, the SUB index coerces to the neutral "SUB" str. split is
-        # skipped: this radio lacks the ``split`` runtime cap.
+        # active-slot (MOR-446): unconditional like AGC/narrow, the SUB index
+        # coerces to the neutral "SUB" str. split is skipped: this radio lacks
+        # the ``split`` runtime cap.
         ("global.slow_state.active", "SUB"),
+        # Drain voltage/current (MOR-2425/T147) close the slow-control lane,
+        # scaled through the FTX-1 profile's two-point tables. cw_spot is
+        # skipped: this radio lacks the ``cw`` runtime cap.
+        ("global.meters.vd", 13.8),
+        ("global.meters.id", 0.0),
         (
             "global.operator_controls.power_level",
             pytest.approx(_normalized_power(55)),

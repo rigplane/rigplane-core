@@ -403,24 +403,46 @@ class TestMultiVendorProfiles:
         assert len(rig.meter_calibrations["s_meter"]) >= 6
 
     def test_ftx1_pa_meters_declare_no_calibration_table(self):
-        """MOR-1527: power/ALC/COMP/Vd/Id have no trustworthy source for the
+        """MOR-1527: power/ALC/COMP have no trustworthy source for the
         FTX-1. Unlike the IC-7300 (hamlib's ic7300.c driver documents its
         PA-meter scales, see rigs/ic7300.toml), no equivalent published
         table exists for the FTX-1 — it postdates hamlib's own FTX-1
         support (Hamlib#1600, "waiting for CAT manual" as of this ticket)
         and the pre-existing [meters.swr] table on this profile is itself
         labelled a best-effort approximation pending bench calibration, not
-        a citable source for the other five meters. Per MOR-1291 doctrine
+        a citable source for the other meters. Per MOR-1291 doctrine
         (no invented defaults), the honest choice is to declare nothing:
-        these five meters stay uncalibrated and render the raw device byte
+        these three meters stay uncalibrated and render the raw device byte
         (tagged "raw" — see meter-utils.ts's formatRaw) until a real
         source (live bench measurement or a matured hamlib driver) exists.
         This test pins that absence so a future change does not
-        accidentally invent unsourced anchors."""
+        accidentally invent unsourced anchors.
+
+        Vd/Id left this list under MOR-2425/T147: the bench measurement the
+        docstring above names as the qualifying source was taken on
+        2026-09-08, and rigs/ftx1.toml now carries a two-point table for
+        each, provenance in the comment above the blocks. They are pinned
+        instead by ``test_ftx1_drain_meters_declare_the_bench_two_point_table``
+        below."""
         rig = load_rig(RIGS_DIR / "ftx1.toml")
         assert rig.meter_calibrations is not None
-        for meter_key in ("power", "alc", "comp", "vd", "id"):
+        for meter_key in ("power", "alc", "comp"):
             assert meter_key not in rig.meter_calibrations
+
+    def test_ftx1_drain_meters_declare_the_bench_two_point_table(self):
+        """MOR-2425/T147: Vd/Id carry exactly the two bench points each.
+
+        Two points, no more: the 2026-09-08 run took one display reading per
+        meter during transmit, and nothing in it establishes the shape of the
+        curve away from those anchors."""
+        rig = load_rig(RIGS_DIR / "ftx1.toml")
+        assert rig.meter_calibrations is not None
+        assert [
+            (point["raw"], point["actual"]) for point in rig.meter_calibrations["vd"]
+        ] == [(0, 0.0), (210, 13.8)]
+        assert [
+            (point["raw"], point["actual"]) for point in rig.meter_calibrations["id"]
+        ] == [(0, 0.0), (29, 1.0)]
 
     def test_ftx1_nb_level_is_toggle(self):
         rig = load_rig(RIGS_DIR / "ftx1.toml")

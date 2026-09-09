@@ -69,6 +69,13 @@ _SWR_METER = FieldPath.global_("meters", "swr")
 # 0x15 0x14); the FTX-1 reads it via RM3. Emitted as a stream-like TX meter in
 # the same lane and under the same freshness/coalescing policy as alc/power/swr.
 _COMP_METER = FieldPath.global_("meters", "comp")
+# Drain voltage / current (MOR-2425/T147; CAT RM P1 8 = VDD, 7 = IDD). Read in
+# ``poll_slow_controls``, NOT ``poll_tx_meters``: a read-only bench probe on
+# 2026-09-08 got an answer to all ten ``RM7;`` and all ten ``RM8;`` reads with
+# the radio receiving, so these are supply telemetry rather than TX readings
+# and the profile declares them without ``tx_only``.
+_VD_METER = FieldPath.global_("meters", "vd")
+_ID_METER = FieldPath.global_("meters", "id")
 # Global TX / operator-control setpoints (MOR-447). ``power_level`` is the
 # watt SETPOINT (CAT ``PC``), distinct from the ``global.meters.power`` meter.
 _POWER_LEVEL = FieldPath.global_("operator_controls", "power_level")
@@ -264,6 +271,10 @@ class YaesuObservationRadio(Protocol):
     async def read_power_meter(self) -> int: ...
 
     async def read_swr_meter(self) -> int: ...
+
+    async def get_vd_meter(self) -> int: ...
+
+    async def get_id_meter(self) -> int: ...
 
     async def read_power(self) -> tuple[int, int]: ...
 
@@ -1098,6 +1109,41 @@ class YaesuObservationAdapter:
                         _CW_SPOT,
                         bool(value),
                         native_id="read_cw_spot",
+                    )
+                )
+        # Drain voltage / current (MOR-2425/T147; CAT ``RM8``/``RM7``). Read in
+        # this always-running lane rather than the PTT-gated ``poll_tx_meters``
+        # — the 2026-09-08 bench probe got an answer to both while receiving.
+        # ``get_vd_meter``/``get_id_meter`` route through ``_read_meter`` and do
+        # not mutate legacy state, so no ``read_*`` twin is needed. Scaled by
+        # the profile's ``[[meters.vd|id.calibration]]`` tables under the same
+        # ``_calibrate_meter`` the other meters use.
+        if self._has_runtime_capability("meters") and self._can_poll(_VD_METER):
+            ok, raw = await self._safe_read(
+                "vd", self.radio.get_vd_meter(), paths=(_VD_METER,)
+            )
+            if ok and raw is not None:
+                value, quality = self._calibrate_meter(raw, "vd")
+                observations.append(
+                    adapter.observation(
+                        _VD_METER,
+                        value,
+                        native_id="get_vd_meter",
+                        quality=quality,
+                    )
+                )
+        if self._has_runtime_capability("meters") and self._can_poll(_ID_METER):
+            ok, raw = await self._safe_read(
+                "id", self.radio.get_id_meter(), paths=(_ID_METER,)
+            )
+            if ok and raw is not None:
+                value, quality = self._calibrate_meter(raw, "id")
+                observations.append(
+                    adapter.observation(
+                        _ID_METER,
+                        value,
+                        native_id="get_id_meter",
+                        quality=quality,
                     )
                 )
         return tuple(observations)
