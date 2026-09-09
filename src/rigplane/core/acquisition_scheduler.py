@@ -558,6 +558,45 @@ class AcquisitionScheduler:
     def _forget_dispatch(self, request_id: str) -> None:
         self._dispatch_by_request_id.pop(request_id, None)
 
+    def _dispatch_covers(
+        self,
+        request_id: str,
+        paths: Iterable[FieldPath],
+    ) -> bool:
+        dispatched = self._dispatch_by_request_id.get(request_id)
+        if dispatched is None:
+            return False
+        return any(path in dispatched for path in paths)
+
+    def _reissue(
+        self,
+        request: AcquisitionRequest,
+        *,
+        key: _AcquisitionRequestKey,
+        previous_id: str,
+    ) -> AcquisitionRequest:
+        """Return ``request`` under a new id.
+
+        A drain keys its in-flight ledger by request id and skips a request
+        whose paths it has already sent, so a new id is what makes the next
+        pass send them again. The old id's dispatch record and claim are
+        dropped with it; a pending cadence update naming it is re-pointed at
+        the new id, which is what carries a part-completed group's
+        ``semantic_changed`` to the completion that consumes it.
+        """
+
+        request_id = f"acq-{self._next_id}"
+        self._next_id += 1
+        self._forget_dispatch(previous_id)
+        self._claims_by_request_id.pop(previous_id, None)
+        pending_cadence = self._pending_cadence_by_key.get(key)
+        if pending_cadence is not None and pending_cadence.request_id == previous_id:
+            self._pending_cadence_by_key[key] = replace(
+                pending_cadence,
+                request_id=request_id,
+            )
+        return replace(request, id=request_id)
+
     def ensure_fresh(
         self,
         paths: FieldPath | str | Iterable[FieldPath | str],
@@ -566,6 +605,7 @@ class AcquisitionScheduler:
         priority: AcquisitionPriority | str,
         reason: str,
         timeout: float | None = None,
+        require_fresh_dispatch: bool = False,
     ) -> EnsureFreshResult:
         """Queue acquisition for one or more field paths if policy allows it.
 
@@ -573,6 +613,13 @@ class AcquisitionScheduler:
         defers it under external CAT ownership) and returns immediately. The
         enqueued :class:`AcquisitionRequest` carries ``timeout`` for the
         backend executor's later in-flight read; nothing here awaits it.
+
+        ``require_fresh_dispatch`` is for a caller whose answer must come from
+        a send made after this call. Without it these paths merge into the
+        request already queued under their key and keep its id, which a drain
+        that has already sent them skips. With it, such a merge is issued
+        under a new id instead. It is not carried through the external-CAT
+        deferral (:class:`_PendingEnsureFresh`).
         """
 
         normalized_paths = _normalize_paths(paths)
@@ -614,6 +661,7 @@ class AcquisitionScheduler:
                         timeout=timeout,
                         requested_at=now,
                         external_cat_owner=self._external_cat_owner,
+                        require_fresh_dispatch=require_fresh_dispatch,
                     )
                 )
             if queued:
@@ -636,6 +684,7 @@ class AcquisitionScheduler:
             timeout=timeout,
             requested_at=now,
             external_cat_owner=None,
+            require_fresh_dispatch=require_fresh_dispatch,
         )
         if not queued_requests:
             return EnsureFreshResult(
@@ -1310,6 +1359,7 @@ class AcquisitionScheduler:
         external_cat_owner: str | None,
         reasons: tuple[str, ...] | None = None,
         deadline_monotonic: float | None = None,
+        require_fresh_dispatch: bool = False,
     ) -> tuple[AcquisitionRequest, ...]:
         request_reasons = (reason,) if reasons is None else reasons
         request_deadline = (
@@ -1325,6 +1375,7 @@ class AcquisitionScheduler:
             external_cat_owner=external_cat_owner,
             reasons=request_reasons,
             deadline_monotonic=request_deadline,
+            require_fresh_dispatch=require_fresh_dispatch,
         )
 
     def _queue_grouped(
@@ -1339,6 +1390,7 @@ class AcquisitionScheduler:
         external_cat_owner: str | None,
         reasons: tuple[str, ...] | None = None,
         deadline_monotonic: float | None = None,
+        require_fresh_dispatch: bool = False,
     ) -> tuple[AcquisitionRequest, ...]:
         request_reasons = (reason,) if reasons is None else reasons
         request_deadline = (
@@ -1359,6 +1411,15 @@ class AcquisitionScheduler:
                     requested_at=requested_at,
                     deadline_monotonic=request_deadline,
                 )
+                if require_fresh_dispatch and self._dispatch_covers(
+                    existing.id,
+                    grouped_paths,
+                ):
+                    request = self._reissue(
+                        request,
+                        key=key,
+                        previous_id=existing.id,
+                    )
                 self._requests_by_key[key] = request
                 queued.append(request)
                 continue
