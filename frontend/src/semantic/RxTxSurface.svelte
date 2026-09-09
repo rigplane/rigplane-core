@@ -159,7 +159,7 @@
   .rx-tx-state { display: flex; align-items: baseline; gap: 0.4ch; margin: 0; }
   .rx-tx-label { font-weight: 700; letter-spacing: 0.08em; }
   .rx-tx-fault { margin: 0; font-weight: 700; }
-  .rx-tx-actions { display: flex; gap: 0.5rem; }
+  .rx-tx-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .rx-tx-blocked { margin: 0; padding-inline-start: 1.2em; }
   .rx-tx-blocked:empty { display: none; }
 </style>
