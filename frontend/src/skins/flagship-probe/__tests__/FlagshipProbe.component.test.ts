@@ -642,3 +642,30 @@ describe('R52 — this shell announces nothing it does not know', () => {
     expect(markup).not.toContain('{#each');
   });
 });
+
+describe('the band key prints its name only', () => {
+  /**
+   * Kills: this shell omitting `bandPermitCaption` or passing `true`, and the
+   * wiring not threading it to the band surface — either leaves the caption
+   * printed. Also kills a suppression that takes the permit away with the
+   * print: the key's accessible name and `data-default-permit` still carry
+   * it, which is the same split
+   * `semantic/__tests__/BandInstrumentHost.isolated.test.ts`'s "suppresses
+   * only the printed caption, keeping the accessible name and the attribute"
+   * pins at the surface.
+   */
+  it('mounts band keys with no printed permit, each still naming its permit', () => {
+    render();
+    const keys = qa<HTMLButtonElement>('button[data-testid^="band-choice-"]');
+    expect(keys.length).toBeGreaterThan(0);
+    expect(qa('[data-testid^="band-choice-permit-"]')).toEqual([]);
+    for (const key of keys) {
+      const name = key.dataset.testid!.slice('band-choice-'.length);
+      expect(key.textContent).toBe(name);
+      const label = key.getAttribute('aria-label') ?? '';
+      expect(label.startsWith(`${name} — `)).toBe(true);
+      expect(label.length).toBeGreaterThan(`${name} — `.length);
+      expect(key.dataset.defaultPermit).toBeTruthy();
+    }
+  });
+});

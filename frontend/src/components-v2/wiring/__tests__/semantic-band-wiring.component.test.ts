@@ -204,7 +204,9 @@ function publishAuthority(): void {
   }
 }
 
-function render(props: { strips?: 'single' | 'dual' } = {}): void {
+function render(props: {
+  strips?: 'single' | 'dual'; bandPermitCaption?: boolean;
+} = {}): void {
   target = document.createElement('div');
   document.body.appendChild(target);
   component = mount(SemanticRadioSurfaces, { target, props });
@@ -711,5 +713,75 @@ describe('a split TX target surfaces the caveat, end to end (fix-round F1)', () 
     expect(el('tx-caveat')!.textContent).toBe(t('core.band.tx.caveat.denied', {
       reason: t('core.band.tx.reason.outOfBand'),
     }));
+  });
+});
+
+/* ── the face decides whether the key PRINTS the permit ─────────── */
+
+describe('the layout decides whether the band key prints its permit', () => {
+  /** The three bands `BAND_PLAN` declares, in its own order. */
+  const NAMES = BAND_PLAN[0]!.bands.map((choice) => choice.name);
+
+  interface Key {
+    readonly name: string;
+    readonly text: string;
+    readonly ariaLabel: string;
+    readonly permit: string | null;
+    readonly defaultPermit: string | undefined;
+  }
+
+  /** Mounts the single composition, reads every band key, and unmounts —
+   *  so one test can compare two renders without leaving a live tree behind
+   *  for the `afterEach` teardown assertions. */
+  function readKeys(props: Parameters<typeof render>[0]): {
+    keys: Key[]; permitElements: number;
+  } {
+    render(props);
+    const permitElements =
+      target.querySelectorAll('[data-testid^="band-choice-permit-"]').length;
+    const keys = NAMES.map((name): Key => {
+      const button = btn(`choice-${name}`)!;
+      expect(button).not.toBeNull();
+      return {
+        name,
+        text: button.textContent ?? '',
+        ariaLabel: button.getAttribute('aria-label') ?? '',
+        permit: el(`choice-permit-${name}`)?.textContent ?? null,
+        defaultPermit: button.dataset.defaultPermit,
+      };
+    });
+    unmount(component!);
+    component = null;
+    return { keys, permitElements };
+  }
+
+  // MUTATION KILLED: a default that suppresses the caption. Every caller in
+  // the tree omits this prop, so the default is what they all render.
+  it('prints a caption on every key when the prop is omitted', () => {
+    const { keys, permitElements } = readKeys({});
+    expect(permitElements).toBe(NAMES.length);
+    for (const key of keys) {
+      expect(key.permit).not.toBeNull();
+      expect(key.permit).not.toBe('');
+      expect(key.text).toBe(`${key.name}${key.permit}`);
+      expect(key.ariaLabel).toBe(`${key.name} — ${key.permit}`);
+    }
+  });
+
+  // MUTATION KILLED: the prop left unthreaded by the wiring, which leaves the
+  // caption printed; and a suppression that takes the FACT away with the
+  // print — the accessible name and `data-default-permit` still carry it.
+  it('prints none with bandPermitCaption={false}, keeping every name and permit attribute', () => {
+    const printed = readKeys({}).keys;
+    const { keys, permitElements } = readKeys({ bandPermitCaption: false });
+    expect(permitElements).toBe(0);
+    expect(keys).toHaveLength(printed.length);
+    for (const [index, key] of keys.entries()) {
+      const before = printed[index]!;
+      expect(key.permit).toBeNull();
+      expect(key.text).toBe(key.name);
+      expect(key.ariaLabel).toBe(before.ariaLabel);
+      expect(key.defaultPermit).toBe(before.defaultPermit);
+    }
   });
 });

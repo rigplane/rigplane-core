@@ -162,6 +162,11 @@
     scopeControlsInRegionContent?: boolean;
     regionExtras?: Snippet<['left' | 'right']>;
     vfoAppearance?: 'semantic' | 'sdr' | 'standard';
+    /** Whether the fallback band key PRINTS its permit sentence. The key's
+     *  accessible name and its `data-default-permit` carry that fact either
+     *  way — `semantic/BandInstrumentHost.svelte` owns the fact, the face
+     *  owns the print. */
+    bandPermitCaption?: boolean;
     displayFrameSource?: LcdSpectrumSource;
     readonlyDisplay?: Snippet<[RadioViewModel, LcdSpectrumFrame?]>;
   }
@@ -186,7 +191,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    children: hostedChildren, externalPresentation = null, strips = 'single', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', displayFrameSource, readonlyDisplay,
+    children: hostedChildren, externalPresentation = null, strips = 'single', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', bandPermitCaption = true, displayFrameSource, readonlyDisplay,
   }: Props = $props();
 
   /**
@@ -1580,6 +1585,7 @@
   <BandInstrumentHost
     {...bandFiniteRendererSelection} {view} entryRendererContext={bandFiniteRendererContext}
     onSelectBand={selectBand} onEnterFrequency={enterFrequency}
+    showPermitCaption={bandPermitCaption}
   >
   {#snippet children(bandInstruments)}
   <AntennaInstrumentHost
