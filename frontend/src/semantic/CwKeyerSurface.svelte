@@ -351,7 +351,7 @@
   >
     {#if cw.breakIn.availability.structural}
       <div
-        data-testid="cw-keyer-break-in"
+        class="cw-keyer-block" data-testid="cw-keyer-break-in"
         data-posture={breakInPosture(cw.breakIn)}
         data-permitted={permitAllowed}
       >
@@ -459,40 +459,49 @@
            ordinal and the ordinal itself is shown verbatim; "which type" would
            need an `apfOn`/`apfType` fact that slice 9A deliberately did not
            promote (MOR-1296 open question 2) — flagged, not guessed. -->
-      <div
-        class="cw-keyer-row" role="radiogroup" aria-label="Audio peak filter"
-        data-testid="cw-keyer-apf" data-observed={usable(cw.apf)}
-      >
-        {#each APF_CHOICES as [label, on] (label)}
-          <button
-            type="button" role="radio" class="cw-keyer-choice"
-            data-testid={`cw-keyer-apf-${label}`}
-            aria-checked={apfChoice.isSelected(on)}
-            disabled={!apfChoice.available}
-            onclick={() => apfChoice.invoke(on)}
-          >APF {label}</button>
-        {/each}
-        <output data-testid="cw-keyer-apf-value">{textOf(cw.apf)}</output>
+      <div class="cw-keyer-block">
+        <div
+          class="cw-keyer-row" role="radiogroup" aria-label="Audio peak filter"
+          data-testid="cw-keyer-apf" data-observed={usable(cw.apf)}
+        >
+          {#each APF_CHOICES as [label, on] (label)}
+            <button
+              type="button" role="radio" class="cw-keyer-choice"
+              data-testid={`cw-keyer-apf-${label}`}
+              aria-checked={apfChoice.isSelected(on)}
+              disabled={!apfChoice.available}
+              onclick={() => apfChoice.invoke(on)}
+            >APF {label}</button>
+          {/each}
+          <output data-testid="cw-keyer-apf-value">{textOf(cw.apf)}</output>
+        </div>
         {#if mutexed('apf')}
-          <output data-testid="cw-keyer-apf-mutex" data-reason="mutually-exclusive-control"
-          >{MUTEX_LABEL.apf}</output>
+          <p class="cw-keyer-sentence">
+            <output data-testid="cw-keyer-apf-mutex" data-reason="mutually-exclusive-control"
+            >{MUTEX_LABEL.apf}</output>
+          </p>
         {/if}
       </div>
     {/if}
 
     {#if cw.twinPeak.availability.structural}
-      <div class="cw-keyer-row" data-testid="cw-keyer-twin-peak" data-observed={usable(cw.twinPeak)}>
-        <button
-          type="button" class="cw-keyer-toggle" data-testid="cw-keyer-twin-peak-toggle"
-          aria-pressed={pressedOf(cw.twinPeak)}
-          disabled={!twinPeakToggle.available}
-          onclick={() => twinPeakToggle.invoke()}
-        >TPF: {textOf(cw.twinPeak)}</button>
+      <div class="cw-keyer-block">
+        <div class="cw-keyer-row" data-testid="cw-keyer-twin-peak" data-observed={usable(cw.twinPeak)}>
+          <button
+            type="button" class="cw-keyer-toggle" data-testid="cw-keyer-twin-peak-toggle"
+            aria-pressed={pressedOf(cw.twinPeak)}
+            disabled={!twinPeakToggle.available}
+            onclick={() => twinPeakToggle.invoke()}
+          >TPF: {textOf(cw.twinPeak)}</button>
+        </div>
         {#if mutexed('twinPeak')}
           <!-- Rule 4: RTTY is named, so a permanently-disabled control in a
-               block the operator reads as "CW" is never unexplained. -->
-          <output data-testid="cw-keyer-twin-peak-mutex" data-reason="mutually-exclusive-control"
-          >{MUTEX_LABEL.twinPeak}</output>
+               block the operator reads as "CW" is never unexplained. It is a
+               SENTENCE, so it leaves the keys row for its own line. -->
+          <p class="cw-keyer-sentence">
+            <output data-testid="cw-keyer-twin-peak-mutex" data-reason="mutually-exclusive-control"
+            >{MUTEX_LABEL.twinPeak}</output>
+          </p>
         {/if}
       </div>
     {/if}
@@ -511,7 +520,7 @@
 <style>
   /* Structure only — a design language owns colour and must never become the
      sole state channel (MOR-977, forced-colors). Nothing here animates. */
-  .cw-keyer-surface { display: flex; flex-direction: column; gap: 0.25rem; }
+  .cw-keyer-surface, .cw-keyer-block { display: flex; flex-direction: column; gap: 0.25rem; }
   .cw-keyer-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
   .cw-keyer-sentence { margin: 0; }
   .cw-keyer-level { display: flex; align-items: baseline; gap: 0.5rem; }
