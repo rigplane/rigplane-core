@@ -558,8 +558,8 @@ async function assertProductionLanguageAccessibility(
   await expect(txLabel).toBeVisible();
   await expect(txState).toHaveAttribute('data-rf', 'unknown');
   await expect(txState).toHaveAttribute('data-session', 'idle');
-  await expect(txMark).toHaveText('◇');
-  await expect(txLabel).toHaveText('RF ?');
+  await expect(txMark).toBeEmpty();
+  await expect(txLabel).toBeEmpty();
   await expect(txState).toContainText('ready');
 
   // A real keyboard-caused focus target, rather than a programmatic focus,

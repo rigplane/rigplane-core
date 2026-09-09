@@ -556,11 +556,11 @@ describe('the cold-start unknown window renders fail-closed', () => {
    *  adapter's own fail-closed choice: unknown is treated as "may be on"),
    *  and the S meter NOT relevant. What matters here is that the surface
    *  renders the unknown state as unknown — never as RX. */
-  it('never presents an unknown RF state as receiving', () => {
+  it('keeps unknown optically quiet without changing its state to receiving', () => {
     withSurface(base('unknown'), (s) => {
       expect(s.root()!.dataset.rfState).toBe('unknown');
-      expect(s.rfLabel()).not.toBe(RF_LABEL.receiving);
-      expect(s.rfMark()).not.toBe(RF_MARK.receiving);
+      expect(s.rfLabel()).toBe(RF_LABEL.receiving);
+      expect(s.rfMark()).toBe(RF_MARK.receiving);
       expect(target.innerHTML).not.toContain('data-rf-state="receiving"');
     });
   });

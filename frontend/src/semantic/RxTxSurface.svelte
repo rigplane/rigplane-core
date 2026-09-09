@@ -7,9 +7,8 @@
   invariant 11. The authoritative global TX lamp stays in `AppGlobalHost`
   (MOR-1059); this surface is polite status, not a second alert.
 
-  Colour is not a state channel here: every RF state carries distinct text and
-  a distinct shape so it survives forced-colors (MOR-977). A design language
-  may restyle any of this; it may not change which facts appear.
+  Confirmed and uncertain TX carry text and shape so they survive forced
+  colors. Passive RX and unknown reserve the same quiet space.
 -->
 <script lang="ts">
   import '../components-v2/controls/control-button.css';
@@ -27,19 +26,13 @@
    *  an extra span, and `semantic-tx-aux-wiring.component.test.ts`'s
    *  `DEFAULT_PATH_OUTLINE` pins this subtree's element sequence).
    *
-   *  Colour is a SECOND channel only: `RF_LABEL` and `RF_MARK` still carry the
-   *  state as text and shape, which `rx-tx-surface.component.test.ts`'s
-   *  'encodes RX/TX structurally, not by colour or class alone' case pins.
-   *
-   *  Every state is `active: true`. The base (non-active) `.v2-status-indicator`
-   *  rule paints text in `--v2-badge-inactive-text` over a transparent
-   *  background, which fails the fixture harness's 4.5:1
-   *  `contrast-text-rx-tx-rf-label` check (`fixtures/assertions.ts`). */
+   *  Confirmed and uncertain TX remain active and explicit. Receiving and
+   *  unknown share the quiet, inactive treatment. */
   const RF_BADGE: Record<RfState, { color: 'green' | 'red' | 'amber' | 'muted'; active: boolean }> = {
-    receiving: { color: 'green', active: true },
+    receiving: { color: 'muted', active: false },
     transmitting: { color: 'red', active: true },
     uncertain: { color: 'amber', active: true },
-    unknown: { color: 'muted', active: true },
+    unknown: { color: 'muted', active: false },
   };
 
   interface Props {
@@ -54,6 +47,7 @@
   let rf = $derived(rfState(tx));
   let session = $derived(txSessionState(tx));
   let blocked = $derived(keyBlockedReasons(view, tx));
+  let visibleBlocked = $derived(blocked.filter((code) => code !== 'rf-state-unknown'));
   let viewBlocked = $derived(txDisabledReasons(view));
   // Canonical server state may refuse a new ON before the request reaches
   // admission. Keep that fail-closed affordance separate from view-model
@@ -146,7 +140,7 @@
   </div>
 
   <ul class="rx-tx-blocked" id={blockedId} data-testid="rx-tx-blocked">
-    {#each blocked as code (code)}<li data-reason={code}>{blockedLabel(code)}</li>{/each}
+    {#each visibleBlocked as code (code)}<li data-reason={code}>{blockedLabel(code)}</li>{/each}
     {#each viewBlocked as item (item.field + item.code)}
       <li data-reason={item.code} data-field={item.field}>{item.field}: {item.code}</li>
     {/each}
@@ -157,7 +151,8 @@
   /* Structure only — a design language owns colour and must never become the sole state channel. */
   .rx-tx-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .rx-tx-state { display: flex; align-items: baseline; gap: 0.4ch; margin: 0; }
-  .rx-tx-label { font-weight: 700; letter-spacing: 0.08em; }
+  .rx-tx-mark { display: inline-block; min-inline-size: 1ch; }
+  .rx-tx-label { min-inline-size: 3ch; font-weight: 700; letter-spacing: 0.08em; }
   .rx-tx-fault { margin: 0; font-weight: 700; }
   .rx-tx-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .rx-tx-blocked { margin: 0; padding-inline-start: 1.2em; }

@@ -36,9 +36,9 @@ export type KeyBlockedReason =
   | 'tx-target-unknown' | 'tx-permit-denied' | 'tx-permit-unknown'
   | 'tx-fault' | 'tx-busy' | 'radio-transmitting' | 'rf-state-unknown';
 
-/** Text AND shape — never colour alone, so the state survives forced-colors (MOR-977). */
-export const RF_LABEL: Record<RfState, string> = { receiving: 'RX', transmitting: 'TX', uncertain: 'TX?', unknown: 'RF ?' };
-export const RF_MARK: Record<RfState, string> = { receiving: '▼', transmitting: '▲', uncertain: '△', unknown: '◇' };
+/** Passive RX/unknown stay quiet; confirmed and uncertain TX remain explicit without relying on colour. */
+export const RF_LABEL: Record<RfState, string> = { receiving: '', transmitting: 'TX', uncertain: 'TX?', unknown: '' };
+export const RF_MARK: Record<RfState, string> = { receiving: '', transmitting: '▲', uncertain: '△', unknown: '' };
 export const SESSION_LABEL: Record<TxSessionState, string> = { idle: 'ready', pending: 'keying', keyed: 'key down', releasing: 'releasing', failed: 'fault' };
 /**
  * MOR-1474: pre-i18n literal English, kept ONLY for `AntennaSurface.svelte`'s
