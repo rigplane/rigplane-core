@@ -20,15 +20,23 @@
 
   The switch is a container query on `.flagship-probe`, so it follows the
   width this skin is GIVEN rather than the viewport's. Its threshold is
-  `--flagship-probe-switch-width` — two rails, two receiver strips and the
-  RX/TX column, each at the minimum width declared below, PLUS the four
-  gutters the grid puts between those five columns. Those minimums are
-  DECLARED, not measured: nothing here measures what a surface actually
-  renders at.
-  `__tests__/FlagshipProbe.component.test.ts` recomputes the sum and requires
-  the `@container` literal to equal it;
+  `--flagship-probe-switch-width`: the five widths the wide arrangement's
+  column template declares — a rail twice, a receiver strip's minimum twice,
+  the RX/TX column once — PLUS the four gutters between them, which is the
+  width below which that template cannot give every track its declared size.
+  `__tests__/FlagshipProbe.component.test.ts` recomputes the sum from the
+  parsed column template and requires the `@container` literal to equal it;
   `presentation/layouts/__tests__/flagship-probe-registration.test.ts`
   requires the manifest's declared reflow width to equal it too.
+
+  NO SURFACE MAY SIZE A TRACK. Every track in both column templates is a
+  declared size: the rails are `minmax(0, <rail>)`, RX/TX is a fixed width,
+  and the two receiver strips are the flexible tracks that take the
+  remainder. None is `auto`, `min-content`, `max-content` or `fit-content`,
+  in either direction. A surface wider than its column overflows inside that
+  column. The component test parses both templates and fails on any
+  content-sized track, on a rail written any other way, and on a grid item
+  left without `min-width: 0`.
 
   R52. This shell renders no control and no readout, so it announces nothing
   it does not know: it contributes no dash, no glyph and no disabled
@@ -77,12 +85,13 @@
     height: 100%;
 
     /*
-      The declared minimum track widths, and their sum with the four gutters
+      The declared track widths — a rail's width, a receiver strip's minimum,
+      the RX/TX column's width — and their sum with the four gutters
       `.probe-stage` puts between the five columns.
     */
     --flagship-probe-rail-width: 280px;
     --flagship-probe-strip-min-width: 360px;
-    --flagship-probe-rx-tx-min-width: 160px;
+    --flagship-probe-rx-tx-width: 160px;
     --flagship-probe-switch-width: 1472px;
   }
 
@@ -95,17 +104,23 @@
     panorama lives across columns 2-4 in both — which is what keeps it
     between them. The deck spans all five columns in the narrow arrangement
     and columns 2-4 in the wide one; that is the whole of the switch.
+
+    Both templates size the rails and RX/TX to declared widths and give the
+    remainder to columns 2 and 4. The wide one alone floors those two at the
+    declared strip minimum, because it is the arrangement in which a
+    receiver strip occupies one of them on its own — in the narrow one each
+    strip spans a rail column and its neighbour.
   */
   .probe-stage {
     display: grid;
     gap: 8px;
     align-content: start;
     grid-template-columns:
-      minmax(var(--flagship-probe-rail-width), auto)
+      minmax(0, var(--flagship-probe-rail-width))
       minmax(0, 1fr)
-      auto
+      var(--flagship-probe-rx-tx-width)
       minmax(0, 1fr)
-      minmax(var(--flagship-probe-rail-width), auto);
+      minmax(0, var(--flagship-probe-rail-width));
     grid-template-areas:
       'rx-main   rx-main    rx-mid     rx-sub     rx-sub'
       'vfo-ops   vfo-ops    vfo-ops    vfo-ops    vfo-ops'
@@ -120,6 +135,12 @@
 
   @container (min-width: 1472px) {
     .probe-stage {
+      grid-template-columns:
+        minmax(0, var(--flagship-probe-rail-width))
+        minmax(var(--flagship-probe-strip-min-width), 1fr)
+        var(--flagship-probe-rx-tx-width)
+        minmax(var(--flagship-probe-strip-min-width), 1fr)
+        minmax(0, var(--flagship-probe-rail-width));
       grid-template-areas:
         'rf        rx-main    rx-mid     rx-sub     tx-aux'
         'dsp       vfo-ops    vfo-ops    vfo-ops    cw-keyer'
@@ -149,18 +170,9 @@
     display: contents;
   }
 
-  .probe-stage :global([data-strip-receiver='MAIN']) {
-    grid-area: rx-main;
-    min-width: var(--flagship-probe-strip-min-width);
-  }
-  .probe-stage :global([data-strip-receiver='SUB']) {
-    grid-area: rx-sub;
-    min-width: var(--flagship-probe-strip-min-width);
-  }
-  .probe-stage :global([data-zone-id='rx-tx']) {
-    grid-area: rx-mid;
-    min-width: var(--flagship-probe-rx-tx-min-width);
-  }
+  .probe-stage :global([data-strip-receiver='MAIN']) { grid-area: rx-main; }
+  .probe-stage :global([data-strip-receiver='SUB']) { grid-area: rx-sub; }
+  .probe-stage :global([data-zone-id='rx-tx']) { grid-area: rx-mid; }
   .probe-stage :global([data-zone-id='global']) { grid-area: vfo-ops; }
   .probe-stage :global([data-zone-id='rf-front-end']) { grid-area: rf; }
   .probe-stage :global([data-zone-id='dsp']) { grid-area: dsp; }
@@ -175,8 +187,26 @@
   .probe-stage :global([data-zone-id='scope-display']) { grid-area: scope-disp; }
   .probe-stage :global([data-zone-id='meters']) { grid-area: meters; }
 
+  /*
+    CONTAINMENT. `min-width: 0` replaces the automatic minimum size a grid
+    item carries by default — its min-content width — which is the one
+    remaining path by which a surface could push its own box past its column.
+    Overflow decides what then happens to the part that does not fit, and
+    every region here gets the same answer, `auto`: a clip removes content
+    without a trace, and a clipped control is an unreachable one. The
+    panorama is not the exception it looks like — `SpectrumPanel` mounts its
+    toolbar inside it. A scroll container leaves what does not fit reachable
+    and makes the too-wide surface look wrong inside its own column, which
+    is where that fix belongs.
+  */
+  .probe-stage :global([data-zone-id]) {
+    min-width: 0;
+    overflow: auto;
+  }
+
   .probe-panorama {
     grid-area: panorama;
     min-width: 0;
+    overflow: auto;
   }
 </style>
