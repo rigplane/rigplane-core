@@ -132,8 +132,7 @@
       and 201.05 / 208.47 at `on` / `off`. The rule excludes all three: it is
       no safety key. Its value sits inside its own label —
       `semantic/CwKeyerSurface.svelte`'s `cw-keyer-reverse-paddle` prints the
-      state after the name — which is a labelling defect to fix, not 6px of
-      rail to buy.
+      state after the name — which is a labelling defect to fix.
 
       Two properties, one number: the templates below stay written as
       `minmax(floor, width)`, and `tests/e2e/i18n/desktop-geometry.spec.ts`
@@ -143,7 +142,8 @@
       `--flagship-probe-switch-width` is the wide template's four declared
       widths plus the three gutters `.probe-stage` puts between its columns:
       2*186 + 2*360 + 3*8 = 1116. `__tests__/FlagshipProbe.component.test.ts`
-      pins these values and the shape of the two rail tracks.
+      requires the `@container` literal and the manifest breakpoint to equal
+      this sum, and pins the shape of the two rail tracks.
     */
     --flagship-probe-rail-floor: 186px;
     --flagship-probe-rail-width: 186px;

@@ -539,13 +539,11 @@ describe('the rail floor', () => {
    *
    * Pseudo-localised, that CW key is 191.77px with its fact unread and
    * 201.05 / 208.47 at `on` / `off`; the rule excludes all three, it being no
-   * safety key. The PR body carries the full table.
+   * safety key.
    *
    * Kills: lowering the floor to make some layout fit. With the floor at 180
    * and the width left at 186, this is the only assertion in the file that
-   * fails — every other one is about the FORM of the track, and
-   * `minmax(var(--floor), var(--width))` keeps its form at any value of
-   * either.
+   * fails.
    */
   it('declares the measured one-key floor, and a rail width equal to it', () => {
     expect(px('--flagship-probe-rail-floor')).toBe(186);
