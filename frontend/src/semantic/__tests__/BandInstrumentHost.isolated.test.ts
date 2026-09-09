@@ -12,6 +12,7 @@ import FiniteControlRendererFixture, {
   resetRetainedInvocations, retainedInvocations,
 } from '../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
 import { topologyFixtures, withBand } from '../fixtures/topologies';
+import { defaultPermitLabel } from '../band-instruments';
 import type { BandViewModel, RadioViewModel } from '../radio-view-model';
 import BandInstrumentHostFixture from './fixtures/BandInstrumentHostFixture.svelte';
 
@@ -90,6 +91,65 @@ describe('BandInstrumentHost', () => {
     expect(option?.textContent).toContain('denied');
     retainedInvocations.get('Band')?.('20m');
     expect(onSelectBand).toHaveBeenCalledExactlyOnceWith('20m');
+    unmount(component);
+  });
+
+  // The seat option carries the band name and the permit sentence as two
+  // fields. Kills: folding the sentence back into `label`, which is what made
+  // an unwrappable key label carry a wrappable sentence.
+  it('publishes the band name as the option label and the permit sentence as its caption', () => {
+    const view = base();
+    const component = mount(BandInstrumentHostFixture, {
+      target,
+      props: {
+        view, finiteAppearance: appearance, rendererContext: createFiniteRendererContext(),
+      },
+    });
+    flushSync();
+    for (const choice of (view.band as BandViewModel).bandChoices) {
+      const option = target.querySelector<HTMLElement>(`[data-testid="external-Band-${choice.name}"]`)!;
+      expect(option.dataset.optionLabel).toBe(choice.name);
+      expect(option.dataset.optionCaption).toBe(defaultPermitLabel(choice));
+      // This renderer prints both, so its text is what the combined label
+      // rendered before the split.
+      expect(option.textContent).toBe(`${choice.name} ${defaultPermitLabel(choice)}`);
+    }
+    unmount(component);
+  });
+
+  // Kills: dropping the printed caption from the fallback key, and an
+  // accessible name that reads the two facts as one run-on sentence.
+  it('prints name and permit on the fallback key and names both to a screen reader', () => {
+    const view = base();
+    const component = mount(BandInstrumentHostFixture, { target, props: { view } });
+    flushSync();
+    for (const choice of (view.band as BandViewModel).bandChoices) {
+      const button = target.querySelector<HTMLButtonElement>(`[data-testid="band-choice-${choice.name}"]`)!;
+      const permit = defaultPermitLabel(choice);
+      expect(button.textContent).toBe(`${choice.name}${permit}`);
+      expect(target.querySelector(`[data-testid="band-choice-permit-${choice.name}"]`)?.textContent)
+        .toBe(permit);
+      expect(button.getAttribute('aria-label')).toBe(`${choice.name} — ${permit}`);
+      expect(button.dataset.defaultPermit).toBe(choice.defaultHzTxPermit.status);
+    }
+    unmount(component);
+  });
+
+  // Kills: a suppression that either does nothing or takes the fact away with
+  // the print — the accessible name and the permit attribute are the fact.
+  it('suppresses only the printed caption, keeping the accessible name and the attribute', () => {
+    const view = base();
+    const component = mount(BandInstrumentHostFixture, {
+      target, props: { view, showPermitCaption: false },
+    });
+    flushSync();
+    for (const choice of (view.band as BandViewModel).bandChoices) {
+      const button = target.querySelector<HTMLButtonElement>(`[data-testid="band-choice-${choice.name}"]`)!;
+      expect(target.querySelector(`[data-testid="band-choice-permit-${choice.name}"]`)).toBeNull();
+      expect(button.textContent).toBe(choice.name);
+      expect(button.getAttribute('aria-label')).toBe(`${choice.name} — ${defaultPermitLabel(choice)}`);
+      expect(button.dataset.defaultPermit).toBe(choice.defaultHzTxPermit.status);
+    }
     unmount(component);
   });
 

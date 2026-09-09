@@ -708,6 +708,31 @@ describe('break-in POSTURE distinguishes armed from off, and unknown from both',
     expect(POSTURE_LABEL[p]).toMatch(/key/);
   });
 
+  // Kills: the posture sentence back inside the keys' row, where a sentence
+  // can only stretch the row or wrap between the keys.
+  it('gives the posture sentence its own line under the break-in keys', () => {
+    const r = render(base());
+    const keys = target.querySelector<HTMLElement>(
+      '[data-testid="cw-keyer-break-in"] [role="radiogroup"]',
+    )!;
+    const posture = target.querySelector<HTMLElement>('[data-testid="cw-keyer-posture"]')!;
+    expect(keys.querySelectorAll('button')).toHaveLength(BREAK_IN_CHOICES.length);
+    expect(keys.contains(posture)).toBe(false);
+    expect(posture.closest('[role="radiogroup"]')).toBeNull();
+    expect(keys.compareDocumentPosition(posture) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    r.dispose();
+  });
+
+  // Kills: a rule in this file that would clip the sentence or hold it on one
+  // line. Scoped to this stylesheet, which is what this file controls.
+  it('clips text in exactly one rule of its own stylesheet, the screen-reader one', () => {
+    const sheet = /<style>([\s\S]*?)<\/style>/.exec(CODE)![1];
+    const clipping = [...sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(([, , body]) => /white-space:\s*nowrap|text-overflow/.test(body))
+      .map(([, selector]) => selector.trim());
+    expect(clipping).toEqual(['.sr-only']);
+  });
+
   // The two "not permitted" states are visibly different, which is the whole
   // point of the decision above.
   it('renders armed-and-not-permitted differently from off-and-not-permitted', () => {
