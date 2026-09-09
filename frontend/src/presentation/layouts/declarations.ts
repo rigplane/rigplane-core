@@ -151,6 +151,9 @@ export {
  * WHY ALL FOURTEEN ARE DECLARED. In the dual composition nine of these
  * surfaces mount with `allowBare={false}` — without a declared zone they
  * render nothing at all, which is what an undeclared rail would be here.
+ * The other five are declared so the arrangement has a `data-zone-id` to
+ * place them by: `__tests__/flagship-probe-registration.test.ts` requires
+ * every id the skin's style block places to be a zone declared here.
  * `memory` is the one declarable surface this layout leaves out.
  *
  * `compatibleTopologies` names the two dual-receiver pairs only: the
@@ -183,10 +186,10 @@ export const flagshipProbeLayout: LayoutManifest = {
   requiredSemanticSurfaces: ['vfo', 'rxTx'],
   // The one threshold the shell implements, recorded here as the cockpit's
   // pair is: the number is the skin's `--flagship-probe-switch-width`, and
-  // `skins/flagship-probe/__tests__/FlagshipProbe.component.test.ts` requires
-  // this declaration, that custom property and the `@container` literal to
-  // name the same width.
-  stageSizing: { mode: 'fluid', responsiveBreakpoints: [1440] },
+  // `__tests__/flagship-probe-registration.test.ts` requires this
+  // declaration, that custom property and the `@container` literal to name
+  // the same width.
+  stageSizing: { mode: 'fluid', responsiveBreakpoints: [1472] },
   fallbackLayoutId: 'sdr-test',
 };
 
