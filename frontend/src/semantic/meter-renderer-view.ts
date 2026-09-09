@@ -2,6 +2,7 @@ import type {
   LevelMeterRendererView,
   MeterNumericEvidence,
   MeterDisplayDomain,
+  MeterScaleDomain,
   SignalMeterEvidence,
   SignalMeterMark,
   SignalMeterRendererView,
@@ -86,6 +87,11 @@ export function toSignalMeterRendererView(
   });
 }
 
+/** A fresh frozen copy, so the public graph never aliases a projector constant. */
+function scaleDomain(scale: MeterScaleDomain | null): MeterScaleDomain | null {
+  return scale === null ? null : Object.freeze({ min: scale.min, max: scale.max });
+}
+
 function levelEvidence(
   frame: StationLevelMeterFrame,
   domain: MeterDisplayDomain,
@@ -123,6 +129,7 @@ export function toLevelMeterRendererView(
     displayedFraction: live ? frame.motion.smoothedFraction : null,
     peakFraction: live && projection.showPeak && validFraction(frame.motion.peakFraction)
       ? frame.motion.peakFraction : null,
+    scale: scaleDomain(projection.scale),
     displayText: projection.displayText,
     stateText: projection.stateText,
     ...(projection.accessibleDescription === undefined

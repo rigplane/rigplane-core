@@ -477,8 +477,10 @@ export default {
   type HostedFacePropsV1,
   type LayoutManifest,
   type LevelMeterRendererProps,
+  type LevelMeterRendererView,
   type MeterAppearance,
   type MeterNumericEvidence,
+  type MeterScaleDomain,
   type PresentationDeclaration,
   type ScalarAppearance,
   type ScalarRendererSeat,
@@ -559,6 +561,11 @@ function inspectHostedFace(props: HostedFacePropsV1): void {
 const invalidCurrentEvidence: MeterNumericEvidence = { state: 'current', domain: { kind: 'engineering', unit: 'w' } };
 // @ts-expect-error unknown signal evidence cannot smuggle a numeric value
 const invalidUnknownSignal: SignalMeterEvidence = { state: 'unknown', value: 0, domain: { kind: 'unknown' } };
+declare const levelView: LevelMeterRendererView;
+const levelScale: MeterScaleDomain | null = levelView.scale;
+const levelScaleEnds: readonly [number, number] | null =
+  levelScale === null ? null : [levelScale.min, levelScale.max];
+void levelScaleEnds;
 const oldChoiceOption: ControlOption<'OFF'> = { value: 'OFF', label: 'Off' };
 const reasonedChoiceOption: ControlOption<'DATA1'> = {
   value: 'DATA1', label: 'Data 1', disabled: true, disabledReason: 'Not available',
@@ -906,6 +913,7 @@ mount(App, { target: document.querySelector('#app')! });
       kind: 'level', key: 'power', label: 'Po',
       evidence: { state: 'current', value: 50, domain: { kind: 'engineering', unit: 'w' } },
       relevant: true, observed: true, displayedFraction: 0.5, peakFraction: 0.7,
+      scale: { min: 0, max: 200 },
       displayText: '50 W', stateText: '', accessibleDescription: 'Po: Current observation. 50 W',
       gauge: true, fault: false, peakEnabled: true,
     },
@@ -913,6 +921,7 @@ mount(App, { target: document.querySelector('#app')! });
       kind: 'level', key: 'alc', label: 'ALC',
       evidence: { state: 'stale', value: 0.2, domain: { kind: 'engineering', unit: 'normalized' } },
       relevant: true, observed: false, displayedFraction: null, peakFraction: null,
+      scale: { min: 0, max: 1 },
       displayText: 'STALE', stateText: 'STALE', accessibleDescription: 'ALC: Stale observation',
       gauge: true, fault: false, peakEnabled: false,
     },
@@ -920,24 +929,28 @@ mount(App, { target: document.querySelector('#app')! });
       kind: 'level', key: 'drainCurrent', label: 'Id',
       evidence: { state: 'idle', domain: { kind: 'engineering', unit: 'a' } },
       relevant: false, observed: false, displayedFraction: null, peakFraction: null,
+      scale: null,
       displayText: 'IDLE', stateText: 'IDLE', gauge: true, fault: false, peakEnabled: false,
     },
     {
       kind: 'level', key: 'drainVoltage', label: 'Vd',
       evidence: { state: 'unknown', domain: { kind: 'unknown' } },
       relevant: true, observed: false, displayedFraction: null, peakFraction: null,
+      scale: null,
       displayText: 'Vd ?', stateText: '', gauge: false, fault: false, peakEnabled: false,
     },
     {
       kind: 'level', key: 'compression', label: 'COMP',
       evidence: { state: 'unsupported', domain: { kind: 'engineering', unit: 'db' } },
       relevant: true, observed: false, displayedFraction: null, peakFraction: null,
+      scale: { min: 0, max: 20 },
       displayText: '?', stateText: '?', gauge: false, fault: false, peakEnabled: false,
     },
     {
       kind: 'level', key: 'swr', label: 'SWR',
       evidence: { state: 'current', value: 1.5, domain: { kind: 'engineering', unit: 'ratio' } },
       relevant: true, observed: true, displayedFraction: 0.2, peakFraction: null,
+      scale: { min: 0, max: 6 },
       displayText: '1.5', stateText: '', accessibleDescription: 'SWR: Current observation. 1.5',
       gauge: true, fault: false, peakEnabled: false, ratioScale: true,
     },
@@ -945,6 +958,7 @@ mount(App, { target: document.querySelector('#app')! });
       kind: 'level', key: 'swr', label: 'SWR',
       evidence: { state: 'current', value: 120, domain: { kind: 'raw' } },
       relevant: true, observed: true, displayedFraction: 0.47, peakFraction: null,
+      scale: null,
       displayText: '120 raw', stateText: '', accessibleDescription: 'SWR: 120 raw',
       gauge: true, fault: false, peakEnabled: false, ratioScale: false,
     },
