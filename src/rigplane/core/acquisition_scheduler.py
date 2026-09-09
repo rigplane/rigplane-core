@@ -575,7 +575,7 @@ class AcquisitionScheduler:
         key: _AcquisitionRequestKey,
         previous_id: str,
     ) -> AcquisitionRequest:
-        """Return ``request`` under a new id, moving the old id's state to it.
+        """Return ``request`` under a new id.
 
         A drain keys its in-flight ledger by request id and skips a request
         whose paths it has already sent, so a new id is what makes the next
