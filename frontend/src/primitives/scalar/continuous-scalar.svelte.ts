@@ -511,6 +511,7 @@ export function createContinuousScalar(
     announcedTransitionIds: [],
   };
   let localCommandRequest: LocalCommandRequest | null = null;
+  let lastDispatch: Readonly<{ value: number; canonical: number }> | null = null;
   let destroyed = false;
 
   function clearTimers(): void {
@@ -528,6 +529,7 @@ export function createContinuousScalar(
     interaction = 'idle';
     activeGesture = null;
     localCommandRequest = null;
+    lastDispatch = null;
   }
 
   function reconcile(input: Readonly<ContinuousScalarInput>): void {
@@ -538,6 +540,14 @@ export function createContinuousScalar(
       presentationState = { announcedTransitionIds: [] };
     }
     lastAuthority = authority;
+    if (lastDispatch !== null) {
+      const canonical = canonicalOf(input);
+      if (!Object.is(canonical, lastDispatch.canonical)) {
+        lastDispatch = Object.is(canonical, lastDispatch.value)
+          ? { value: lastDispatch.value, canonical: lastDispatch.value }
+          : null;
+      }
+    }
     const requestSnapshot = localCommandRequest;
     const representedLifecycleId = requestSnapshot !== null
       && requestSnapshot.dispatched
@@ -567,6 +577,7 @@ export function createContinuousScalar(
         || (feedback.lifecycleId !== null
           && feedback.lifecycleId !== representedLifecycle
           && feedback.lifecycleId !== representedRequest?.observedLifecycleId));
+    if (representedLifecycleIsGone) lastDispatch = null;
     const representationRetiresDraft = representedRequest !== null
       && representedRequest.representedLifecycleId !== null
       && (representedRequest.source === 'native-input'
@@ -647,6 +658,8 @@ export function createContinuousScalar(
           representedLifecycleId: null,
         }
         : null;
+      const canonical = canonicalOf(input);
+      if (canonical !== null) lastDispatch = { value: candidate, canonical };
       input.request(candidate);
     }
   }
@@ -673,14 +686,6 @@ export function createContinuousScalar(
     draft = normalized;
     draftCanonical = canonical;
     interaction = source;
-    localCommandRequest = input.evidence === 'command-feedback'
-      ? {
-        source,
-        observedLifecycleId: input.feedback.lifecycleId,
-        dispatched: false,
-        representedLifecycleId: null,
-      }
-      : null;
     if (!policy.dispatchesCanonical(source, {
       canonical,
       interactionBase: base,
@@ -691,6 +696,16 @@ export function createContinuousScalar(
       if (source !== 'pointer') interaction = 'idle';
       return true;
     }
+    if (source === 'pointer' && lastDispatch !== null
+      && Object.is(normalized, lastDispatch.value)) return true;
+    localCommandRequest = input.evidence === 'command-feedback'
+      ? {
+        source,
+        observedLifecycleId: input.feedback.lifecycleId,
+        dispatched: false,
+        representedLifecycleId: null,
+      }
+      : null;
     const mode = policy.dispatch(source);
     if (mode === 'immediate') {
       dispatch(normalized, source, authority, generation, renderer, isCurrent);
@@ -764,6 +779,7 @@ export function createContinuousScalar(
         const input = current();
         if (!rendererIsCurrent(renderer, isCurrent) || !editable(input)) return null;
         localCommandRequest = null;
+        lastDispatch = null;
         const token = ++gestureSequence;
         activeGesture = { renderer, token };
         interaction = 'pointer';

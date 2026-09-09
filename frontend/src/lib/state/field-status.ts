@@ -54,8 +54,7 @@ export function getFieldAvailability(
     return parentAvailability(state, publicPath) ?? 'available';
   }
   if (status.freshness === 'stale') {
-    // A real disconnect/structural absence shows up as `missing`; a
-    // stale-but-observed entry still carries its last value (R29), so it
+    // A stale-but-observed entry still carries its last value (R29), so it
     // resolves to `available` rather than being blocked.
     if (status.observed) return 'available';
     return status.availability;
@@ -74,6 +73,23 @@ export function isFieldAvailable(
   publicPath: string,
 ): boolean {
   return getFieldAvailability(state, publicPath) === 'available';
+}
+
+/**
+ * Whether resolved availability is `available` or `stale`.
+ *
+ * `missing`, `unavailable` and `undeclared` all resolve to false. This
+ * preserves `getFieldAvailability`'s legacy no-entry fallback, so a true
+ * result is compatibility eligibility, not proof that the backend observed
+ * the field. Callers that need observation evidence must inspect
+ * `fieldStatus.observed`.
+ */
+export function isFieldRead(
+  state: ServerState | null,
+  publicPath: string,
+): boolean {
+  const availability = getFieldAvailability(state, publicPath);
+  return availability === 'available' || availability === 'stale';
 }
 
 export function areFieldsAvailable(

@@ -23,13 +23,14 @@ import { findActiveBand } from '$lib/radio/band-plan';
 import type { FreqRange } from '$lib/types/capabilities';
 
 function fieldStatus(
-  availability: 'available' | 'missing' | 'stale',
+  availability: 'available' | 'missing' | 'stale' | 'unavailable' | 'undeclared',
   observed = availability === 'available',
 ) {
   return {
     storePath: 'test.path',
     observed,
-    freshness: availability === 'stale' ? 'stale' : availability === 'missing' ? 'unknown' : 'fresh',
+    freshness:
+      availability === 'stale' ? 'stale' : availability === 'available' ? 'fresh' : 'unknown',
     availability,
   };
 }
@@ -299,6 +300,37 @@ describe('panel prop field availability', () => {
     expect(props.showAtt).toBe(false);
     expect(props.showPre).toBe(false);
   });
+
+  // MOR-2425/T201: `unavailable` (declared, absent in this state) and
+  // `undeclared` (not declared for this radio) are absences too, and the
+  // backend now emits both. `activeFieldShown` gated on `!== 'missing'`
+  // before this change, which showed the control for either.
+  it.each(['unavailable', 'undeclared'] as const)(
+    'hides operator controls the backend has not read (%s)',
+    (availability) => {
+      const props = toRfFrontEndProps(
+        makeState({
+          fieldStatus: {
+            'main.rfGain': fieldStatus(availability, false),
+            'main.att': fieldStatus(availability, false),
+            'main.preamp': fieldStatus(availability, false),
+            'main.squelch': fieldStatus('available'),
+          },
+        }),
+        {
+          capabilities: ['rf_gain', 'squelch', 'attenuator', 'preamp'],
+          attValues: [0, 6, 12],
+          preValues: [0, 1, 2],
+        } as any,
+      );
+
+      expect(props.showRfGain).toBe(false);
+      expect(props.showAtt).toBe(false);
+      expect(props.showPre).toBe(false);
+      // Same call, same shape: the gate is not simply false for everything.
+      expect(props.showSquelch).toBe(true);
+    },
+  );
 
   it('does not present missing AGC as the default MID mode', () => {
     // A11 (MOR-1409): this assertion previously pinned the exact bug its own
@@ -575,6 +607,25 @@ describe('Mode panel MOD-input source (MOR-616)', () => {
     expect(props.hasModInput).toBe(true);
     expect(props.modInputSource).toBe(0);
   });
+
+  // MOR-2425/T201: the same two new absences. On each of the seven
+  // `rigs/*.toml` profiles that carry a `[state_acquisition]` block the four
+  // `data*ModInput` paths project `undeclared` over an empty snapshot, so
+  // this gate is what stops a dead dropdown appearing.
+  it.each(['unavailable', 'undeclared'] as const)(
+    'hides the control while the active group is %s',
+    (availability) => {
+      const props = toModeProps(
+        modInputState({
+          dataOffModInput: null,
+          fieldStatus: { dataOffModInput: fieldStatus(availability, false) },
+        }),
+        caps,
+      );
+      expect(props.hasModInput).toBe(false);
+      expect(props.modInputSource).toBeNull();
+    },
+  );
 
   it('defaults to hidden/null when state is missing', () => {
     const props = toModeProps(null, caps);

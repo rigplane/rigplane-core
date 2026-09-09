@@ -27,9 +27,11 @@ from rigplane.core.state_pipeline_contracts import (  # noqa: E402
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, StateStore  # noqa: E402
+from rigplane.profiles import get_radio_profile  # noqa: E402
 from rigplane.web.runtime_helpers import (  # noqa: E402
     build_public_state_payload,
     build_public_state_payload_from_snapshot,
+    snapshot_field_status_inputs,
 )
 from rigplane.web.state_schema import ServerStatePublic  # noqa: E402
 
@@ -332,4 +334,34 @@ def test_snapshot_path_normalized_level_fields_conform() -> None:
 
     # The payload must validate against ServerStatePublic (would raise
     # int_from_float ValidationError under old int typing).
+    ServerStatePublic.model_validate(payload)
+
+
+def test_profile_gated_field_status_conforms() -> None:
+    """A profile-gated payload emits — and validates — the two new literals.
+
+    On an empty snapshot ``rigs/ic7300.toml`` gives one of each: its
+    ``global.meters.power`` clause on ``global.tx_state.ptt`` resolves to
+    ``None`` with nothing observed, it names ``global.operator_controls.
+    drive_gain`` nowhere under ``[state_acquisition]`` ("no drive_gain on
+    IC-7300"), and ``global.meters.vd`` is declared with no
+    ``available_when``.
+    """
+
+    acquisition = get_radio_profile("IC-7300").state_acquisition
+    assert acquisition is not None
+    snapshot = StateStore().snapshot()
+    availability, declared = snapshot_field_status_inputs(acquisition, snapshot)
+    payload = build_public_state_payload_from_snapshot(
+        snapshot,
+        radio=None,
+        receiver_count=1,
+        availability=availability,
+        declared=declared,
+    )
+    field_status = payload["fieldStatus"]
+    assert field_status["powerMeter"]["availability"] == "unavailable"
+    assert field_status["driveGain"]["availability"] == "undeclared"
+    assert field_status["vdMeter"]["availability"] == "missing"
+
     ServerStatePublic.model_validate(payload)
