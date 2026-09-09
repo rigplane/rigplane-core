@@ -570,12 +570,21 @@ const oldChoiceOption: ControlOption<'OFF'> = { value: 'OFF', label: 'Off' };
 const reasonedChoiceOption: ControlOption<'DATA1'> = {
   value: 'DATA1', label: 'Data 1', disabled: true, disabledReason: 'Not available',
 };
+const captionedChoiceOption: ControlOption<'20m'> = {
+  value: '20m', label: '20m', caption: 'TX at 14.195 MHz: allowed',
+};
+const captionPrinted: string = captionedChoiceOption.caption === undefined
+  ? captionedChoiceOption.label
+  : captionedChoiceOption.label + ' ' + captionedChoiceOption.caption;
+void captionPrinted;
 function inspectChoice(props: ChoiceRendererProps<'OFF' | 'DATA1'>):
   FiniteControlReading<'OFF' | 'DATA1'> | undefined {
   const view = props.lease.view;
   if (view === undefined) return undefined;
   const option = view.options[0]?.value;
   const disabledReason: string | undefined = view.options[0]?.disabledReason;
+  const caption: string | undefined = view.options[0]?.caption;
+  void caption;
   const supported: FiniteChoiceValue | undefined = option;
   const optionalEvidence = [view.defaultValue, view.requested, view.feedback] as const;
   const request = option === undefined ? undefined : () => props.lease.invoke(option);

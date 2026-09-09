@@ -24,6 +24,9 @@ export interface ControlLabel {
 export interface ControlOption<T> {
   readonly value: T;
   readonly label: string;
+  /** A sentence about this option, carried apart from `label` so a renderer
+   *  decides whether to print it. */
+  readonly caption?: string;
   readonly disabled?: boolean;
   readonly disabledReason?: string;
 }
