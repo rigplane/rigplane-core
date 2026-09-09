@@ -255,7 +255,7 @@
 
 .desktop-control-face .desktop-station-meters .meters-surface {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   align-items: stretch;
 }
 
@@ -270,11 +270,11 @@
   border-radius: 3px;
 }
 
-.desktop-control-face .desktop-station-meters .meter-tile > svg:not(.sdr-meter) {
+.desktop-control-face.standard-face .desktop-station-meters .meter-tile > svg:not(.sdr-meter) {
   height: auto;
 }
 
-.desktop-control-face .desktop-station-meters .meter-native-caption {
+.desktop-control-face.standard-face .desktop-station-meters .meter-native-caption {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
@@ -283,13 +283,13 @@
   font-variant-numeric: tabular-nums;
 }
 
-.desktop-control-face .desktop-station-meters .meter-native-label {
+.desktop-control-face.standard-face .desktop-station-meters .meter-native-label {
   font-size: 12px;
   font-weight: 700;
   color: var(--v2-text-secondary);
 }
 
-.desktop-control-face .desktop-station-meters .meter-native-value {
+.desktop-control-face.standard-face .desktop-station-meters .meter-native-value {
   margin-left: auto;
   min-width: 0;
   font-size: 14px;
@@ -298,16 +298,16 @@
   color: var(--v2-text-bright);
 }
 
-.desktop-control-face .desktop-station-meters .meter-native-secondary {
+.desktop-control-face.standard-face .desktop-station-meters .meter-native-secondary {
   font-size: 11px;
   color: var(--v2-text-secondary);
 }
 
-.desktop-control-face .desktop-station-meters .meter-native-caption[data-relevant='false'] {
+.desktop-control-face.standard-face .desktop-station-meters .meter-native-caption[data-relevant='false'] {
   opacity: 0.4;
 }
 
-.desktop-control-face .desktop-station-meters
+.desktop-control-face.standard-face .desktop-station-meters
   .meter-tile:not([data-meter='signal']):not([data-meter='swr']) > svg > text {
   display: none;
 }
