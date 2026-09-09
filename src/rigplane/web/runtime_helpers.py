@@ -209,9 +209,9 @@ _HEALTH_PUBLIC_PATHS = {
 }
 # Public ``scopeControls.<suffix>`` leaves the toolbar/LCD gate on, mapped to
 # their backend scope-control field name. The whole group is unobserved until
-# a real scope-control observation lands, so every leaf is seeded ``missing``
-# in the default snapshot — otherwise an absent leaf would resolve to
-# ``available`` on the frontend and render its default (CTR / MID / …) as
+# a real scope-control observation lands, so every leaf is seeded as
+# unobserved in the default snapshot — otherwise an absent leaf would resolve
+# to ``available`` on the frontend and render its default (CTR / MID / …) as
 # confirmed (MOR-429).
 _SCOPE_CONTROL_PUBLIC_FIELDS = {
     "mode": "mode",
@@ -482,8 +482,9 @@ def _default_receiver_field_status(
         )
         if name == "dcd":
             # DEPRECATED alias (MOR-466): remove after migration window. Seed the
-            # legacy ``sMeterSqlOpen`` public key ``missing`` from the same ``dcd``
-            # FieldPath so an absent observation does not resolve to ``available``.
+            # legacy ``sMeterSqlOpen`` public key as unobserved from the same
+            # ``dcd`` FieldPath so an absent observation does not resolve to
+            # ``available``.
             _set_missing_field_status(
                 statuses,
                 _public_field_path(receiver_key, "sMeterSqlOpen"),
@@ -539,7 +540,7 @@ def _default_snapshot_field_status(
             # No observation ever writes ``global.slow_state.scope_controls``
             # (scope-control observations land under
             # ``scope_controls.global.display.*``), so a group-level
-            # ``scopeControls`` entry would stay ``missing`` forever and the
+            # ``scopeControls`` entry would stay unobserved forever and the
             # frontend MOR-429 parent-veto rule would disable every observed
             # ``scopeControls.<leaf>`` (MOR-557). The eight per-leaf entries
             # seeded below are the real gate.

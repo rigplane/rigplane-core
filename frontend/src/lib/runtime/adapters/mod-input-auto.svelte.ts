@@ -22,7 +22,7 @@
 
 import { getRadioState } from '$lib/stores/radio.svelte';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
-import { getFieldAvailability } from '$lib/state/field-status';
+import { isFieldRead } from '$lib/state/field-status';
 import {
   LAN_MOD_INPUT_SOURCE,
   modInputCommand,
@@ -87,7 +87,7 @@ export function deriveAutoLanModInputProps(): AutoLanModInputProps {
   const available =
     state !== null &&
     (caps?.capabilities?.includes('data_mode') ?? false) &&
-    getFieldAvailability(state, key) !== 'missing';
+    isFieldRead(state, key);
   return { available, enabled };
 }
 
@@ -126,7 +126,7 @@ export function autoSetLanModInputForTx(): void {
   if (!(caps?.capabilities?.includes('data_mode') ?? false)) return;
   const dataMode = activeDataMode(state);
   const key = modInputStateKey(dataMode);
-  if (getFieldAvailability(state, key) === 'missing') return;
+  if (!isFieldRead(state, key)) return;
   const source = state[key] ?? null;
   if (source === null || source === LAN_MOD_INPUT_SOURCE) return;
 

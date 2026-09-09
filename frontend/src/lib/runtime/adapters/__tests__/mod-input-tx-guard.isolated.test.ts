@@ -6,7 +6,8 @@
  * with a one-click "Set LAN" fix. It must:
  *   - fire on TX-start when the active group's source is known and != LAN;
  *   - NOT fire when the source is LAN, unknown (null), gated off by a
- *     missing fieldStatus, or the radio lacks the data_mode capability;
+ *     fieldStatus the backend has not read, or the radio lacks the
+ *     data_mode capability;
  *   - send the active group's SET command with source=5 on one-click;
  *   - clear reactively when the source becomes LAN (readback);
  *   - never block or alter the TX path (tx-adapter still delegates).
@@ -122,12 +123,13 @@ function useDualReceiverCapabilities(): void {
   } as never);
 }
 
-function missingStatus() {
+/** An unobserved entry carrying one of the three absence values. */
+function unreadStatus(availability = 'missing') {
   return {
     storePath: 'test.path',
     observed: false,
     freshness: 'unknown',
-    availability: 'missing',
+    availability,
   };
 }
 
@@ -231,13 +233,38 @@ describe('armModInputTxGuard (MOR-617)', () => {
     setState({
       main: receiver(1),
       data1ModInput: 0,
-      fieldStatus: { data1ModInput: missingStatus() },
+      fieldStatus: { data1ModInput: unreadStatus() },
     });
 
     armModInputTxGuard();
 
     expect(deriveModInputTxGuardProps().visible).toBe(false);
   });
+
+  // MOR-2425/T201: `unavailable` and `undeclared` are absences too. The
+  // gate compared `=== 'missing'`, so under either the guard read the
+  // group's stored value and warned about a source nobody had observed.
+  it.each(['unavailable', 'undeclared'] as const)(
+    'does not fire when fieldStatus marks the group %s',
+    (availability) => {
+      setState({ main: receiver(1), data1ModInput: 0 });
+      armModInputTxGuard();
+      expect(deriveModInputTxGuardProps().visible).toBe(true);
+
+      // `makeState` pins `revision` at 1 unless overridden, and
+      // `setRadioState` drops a non-newer revision.
+      setState({
+        revision: 2,
+        main: receiver(1),
+        data1ModInput: 0,
+        fieldStatus: { data1ModInput: unreadStatus(availability) },
+      });
+
+      armModInputTxGuard();
+
+      expect(deriveModInputTxGuardProps().visible).toBe(false);
+    },
+  );
 
   it('does not fire without the data_mode capability', () => {
     setCapabilities({ capabilities: [], stateContractVersion: 1, providerGeneration: 0 } as never);

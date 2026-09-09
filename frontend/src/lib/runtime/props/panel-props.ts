@@ -22,7 +22,7 @@ import {
 } from '$lib/radio/filter-controls';
 import type { NrLevelProjection } from '$lib/radio/filter-controls';
 import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
-import { isFieldAvailable, getFieldAvailability } from '$lib/state/field-status';
+import { isFieldAvailable, isFieldRead } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 
 /* ── Private helpers ─────────────────────────────────────────── */
@@ -54,9 +54,7 @@ function activeFieldAvailable(state: ServerState | null, field: string): boolean
 
 function activeFieldShown(state: ServerState | null, field: string): boolean {
   if (!state) return false;
-  return (
-    getFieldAvailability(state, `${activeReceiverKey(state)}.${field}`) !== 'missing'
-  );
+  return isFieldRead(state, `${activeReceiverKey(state)}.${field}`);
 }
 
 function fieldObserved(state: ServerState | null, field: string): boolean {
@@ -568,9 +566,9 @@ export function toModeProps(
   const rx = state ? activeRx(state) : null;
   // MOR-616: surface the MOD-input source of the active receiver's DATA
   // group (data_mode 0→DATA OFF, 1→D1, 2→D2, 3→D3). The control is hidden
-  // until the backend has actually read the group (fieldStatus !== missing),
-  // so radios with a data_mode capability but no MOD-input routing (e.g.
-  // IC-7300) never render a dead dropdown.
+  // until the backend has actually read the group (`isFieldRead`), so radios
+  // with a data_mode capability but no MOD-input routing (e.g. IC-7300)
+  // never render a dead dropdown.
   const modInputKey = modInputStateKey(rx?.dataMode ?? 0);
   return {
     // MOR-1409 A11: no fabricated USB stand-in for an unobserved mode.
@@ -587,9 +585,7 @@ export function toModeProps(
     dataModeLabels: caps?.dataModeLabels ?? { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' },
     modInputSource: state?.[modInputKey] ?? null,
     hasModInput:
-      hasCap(caps, 'data_mode') &&
-      state !== null &&
-      getFieldAvailability(state, modInputKey) !== 'missing',
+      hasCap(caps, 'data_mode') && state !== null && isFieldRead(state, modInputKey),
   };
 }
 

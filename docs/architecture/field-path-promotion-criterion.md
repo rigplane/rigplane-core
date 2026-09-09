@@ -36,13 +36,14 @@ A neutral FieldPath imposes ZERO work on a backend that lacks the feature:
 - The rig declares no acquisition for it (or lists it `unsupported`).
 - `capability_for()` returns an UNKNOWN capability → the scheduler never polls
   it (`acquisition_scheduler`: `can_poll` requires SUPPORTED).
-- The Web payload seeds it `missing` (`_default_snapshot_field_status`); it
+- The Web payload seeds it as unobserved (`_default_snapshot_field_status`); it
   never becomes `available`/`stale` without a real observation.
 - The fieldStatus-honoring v2 UI hides unobserved fields (MOR-429).
 
-Note: `unsupported` is an acquisition-policy concept; the web `fieldStatus` is
-three-valued (`missing | available | stale`) and `unsupported` collapses to
-`missing` there.
+Note: `unsupported` is an acquisition-policy concept. On the web wire it is
+one of the reasons `availability` reads `undeclared`
+(`web/runtime_helpers.py: snapshot_field_status_inputs`); the full value set
+is `state_schema.py: FieldStatusPublic.availability`.
 
 The only hard requirement is therefore SEMANTIC coherence, not implementation
 cost across backends.
