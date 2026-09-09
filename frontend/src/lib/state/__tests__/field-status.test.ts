@@ -63,6 +63,23 @@ describe('field-status parent/child resolution', () => {
     expect(getFieldAvailability(state, 'scopeControls.span')).toBe('available');
     expect(isFieldAvailable(state, 'scopeControls.span')).toBe(true);
   });
+
+  // MOR-2425/T201: the backend now distinguishes `unavailable` (declared,
+  // absent in this state) and `undeclared` (not declared for this radio)
+  // from `missing`. Neither is a reading, so neither may pass as available.
+  it.each(['unavailable', 'undeclared'] as const)(
+    'does not treat %s as an available reading',
+    (availability) => {
+      const state = stateWith({
+        'global.powerMeter': { availability, freshness: 'unknown', observed: false },
+      });
+      expect(getFieldAvailability(state, 'global.powerMeter')).toBe(availability);
+      expect(isFieldAvailable(state, 'global.powerMeter')).toBe(false);
+      expect(areFieldsAvailable(state, ['global.powerMeter'])).toBe(false);
+      // A child with no own entry inherits it, and is not available either.
+      expect(isFieldAvailable(state, 'global.powerMeter.value')).toBe(false);
+    },
+  );
 });
 
 describe('field-status anchored to the real backend payload', () => {

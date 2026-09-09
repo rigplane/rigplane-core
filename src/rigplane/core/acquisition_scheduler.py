@@ -2031,9 +2031,9 @@ class StateFreshnessService:
         nobody has observed — is left alone, since nothing has established
         the field is absent. Removal goes through
         :meth:`StateStore.discard`, which invents no value, so the field is
-        published as unobserved and ``missing`` again (``tests/
-        test_web_runtime_helpers.py::
-        test_field_status_reports_missing_after_the_freshness_tick_discards``).
+        published as unobserved again — ``unavailable`` where the web
+        projection is given the profile (``tests/test_web_runtime_helpers.py::
+        test_field_status_reports_unavailable_after_the_freshness_tick_discards``).
         """
 
         scheduler = self._scheduler

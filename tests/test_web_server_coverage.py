@@ -2047,7 +2047,16 @@ async def test_same_value_observation_metadata_updates_http_and_initial_ws_full_
     )
 
 
-def test_empty_state_store_marks_legacy_defaults_as_missing() -> None:
+def test_empty_state_store_marks_legacy_defaults_as_unread() -> None:
+    """No observation, so no legacy default is presented as confirmed state.
+
+    ``powerOn`` reads ``undeclared`` rather than ``missing``:
+    ``rigs/ic7610.toml`` names ``global.tx_state.power_on`` in neither
+    ``[state_acquisition.field_policies]`` nor
+    ``[state_acquisition.capabilities]`` (MOR-2425/T201; the value was
+    ``missing`` before, when the projection had no other answer).
+    """
+
     srv = WebServer(None, WebConfig(radio_model="IC-7610"))
 
     public_state = srv.build_public_state()
@@ -2059,7 +2068,7 @@ def test_empty_state_store_marks_legacy_defaults_as_missing() -> None:
         "storePath": "global.tx_state.power_on",
         "observed": False,
         "freshness": "unknown",
-        "availability": "missing",
+        "availability": "undeclared",
     }
     assert public_state["fieldStatus"]["main.freqHz"] == {
         "storePath": "receiver.main.active.freq_mode.freq_hz",
@@ -2075,7 +2084,13 @@ def test_empty_state_store_marks_legacy_defaults_as_missing() -> None:
     }
 
 
-def test_partial_state_store_marks_observed_and_missing_fields_separately() -> None:
+def test_partial_state_store_marks_observed_and_unread_fields_separately() -> None:
+    """One observed path; the rest keep whichever absence the profile gives.
+
+    ``main.mode`` is declared and simply unobserved (``missing``);
+    ``powerOn`` is undeclared for the IC-7610 (see the test above).
+    """
+
     srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     srv.command_state_store.apply(
         _store_observation(
@@ -2108,7 +2123,7 @@ def test_partial_state_store_marks_observed_and_missing_fields_separately() -> N
         "storePath": "global.tx_state.power_on",
         "observed": False,
         "freshness": "unknown",
-        "availability": "missing",
+        "availability": "undeclared",
     }
 
 
