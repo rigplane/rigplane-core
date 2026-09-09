@@ -195,7 +195,8 @@
     every region here gets the same answer, `auto`: a clip removes content
     without a trace, and a clipped control is an unreachable one. The
     panorama is not the exception it looks like — `SpectrumPanel` mounts its
-    toolbar inside it. A scroll container leaves what does not fit reachable
+    toolbar inside it in every scope mode but audio FFT. A scroll container
+    leaves what does not fit reachable
     and makes the too-wide surface look wrong inside its own column, which
     is where that fix belongs.
   */
