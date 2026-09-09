@@ -432,10 +432,11 @@ def _print_common_cli_hint(argv: list[str]) -> None:
     if "discover" in argv and "web" in argv:
         print(
             "\nHint: do not combine 'discover' and 'web'. "
-            "'web' can auto-discover the radio, or you can pass the radio explicitly:\n"
-            "  rigplane web\n"
-            "  rigplane web --radio-host 192.168.55.40 --radio-user USER "
-            "--radio-pass-file /path/to/password\n",
+            "'web' can discover the radio's IP, but the model must be named; "
+            "you can also pass the radio explicitly:\n"
+            "  rigplane --model IC-7610 web\n"
+            "  rigplane --model IC-7610 web --radio-host 192.168.55.40 "
+            "--radio-user USER --radio-pass-file /path/to/password\n",
             file=sys.stderr,
         )
         return
@@ -443,11 +444,11 @@ def _print_common_cli_hint(argv: list[str]) -> None:
     if _has_global_connection_options_after_command(argv):
         print(
             "\nHint: radio connection options normally go before the command:\n"
-            "  rigplane --backend lan --host 192.168.55.40 --user USER "
-            "--pass-file /path/to/password web\n\n"
+            "  rigplane --model IC-7610 --backend lan --host 192.168.55.40 "
+            "--user USER --pass-file /path/to/password web\n\n"
             "For the web UI, the more readable form is also supported:\n"
-            "  rigplane web --radio-host 192.168.55.40 --radio-user USER "
-            "--radio-pass-file /path/to/password\n",
+            "  rigplane --model IC-7610 web --radio-host 192.168.55.40 "
+            "--radio-user USER --radio-pass-file /path/to/password\n",
             file=sys.stderr,
         )
 

@@ -40,7 +40,8 @@ from rigplane import create_radio, LanBackendConfig
 async def main():
     async with create_radio(LanBackendConfig(host="192.168.1.100",
                                              username="user",
-                                             password="pass")) as radio:
+                                             password="pass",
+                                             model="IC-7610")) as radio:
         await radio.set_frequency(14_074_000)
         await radio.set_mode("USB")
         print(await radio.get_s_meter())
