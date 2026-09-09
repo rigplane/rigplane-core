@@ -813,6 +813,78 @@ describe('the mutex reasons are rendered with the other mode NAMED (MOR-1296 O1)
   });
 });
 
+/* ── a sentence never sits in a keys row ──────────────────────── */
+
+describe('every sentence gets its own line, and the keys keep their gap', () => {
+  /** Each sentence this surface can render, with a selector for the keys row
+   *  it explains. `cw-keyer-apf-value` is NOT here: it is the APF ordinal
+   *  read back, a reading beside its keys, not a sentence. */
+  const SENTENCES = [
+    ['posture', '[data-testid="cw-keyer-break-in"] .cw-keyer-row'],
+    ['break-in-blocked', '[data-testid="cw-keyer-break-in"] .cw-keyer-row'],
+    ['apf-mutex', '[data-testid="cw-keyer-apf"]'],
+    ['twin-peak-mutex', '[data-testid="cw-keyer-twin-peak"]'],
+  ] as const;
+
+  /** One view carrying all four at once: `2/ab_shared` denies the permit and
+   *  records the break-in reason, and both mutex reasons are added on top. */
+  const everySentence = (): RadioViewModel => withReasons(
+    withCwKeyer(topologyFixtures['2/ab_shared']),
+    { field: 'cwKeyer.apf', code: 'mutually-exclusive-control' },
+    { field: 'cwKeyer.twinPeak', code: 'mutually-exclusive-control' },
+  );
+
+  // Kills: any sentence left inside `.cw-keyer-row`, where it can only
+  // stretch the row or wrap between the keys.
+  it('renders all four sentences, none of them inside a keys row', () => {
+    const r = render(everySentence());
+    const rows = [...target.querySelectorAll<HTMLElement>('.cw-keyer-row')];
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.querySelector('.cw-keyer-sentence')).toBeNull();
+    for (const [id] of SENTENCES) {
+      const el = r.el(id);
+      expect(el).not.toBeNull();
+      expect(el!.closest('.cw-keyer-row')).toBeNull();
+      expect(el!.closest('.cw-keyer-sentence')).not.toBeNull();
+    }
+    r.dispose();
+  });
+
+  // Kills: a sentence hoisted above its keys, or parked in a different block.
+  it.each(SENTENCES)('puts %s on its own line directly below its keys row', (id, rowSelector) => {
+    const r = render(everySentence());
+    const row = target.querySelector<HTMLElement>(rowSelector)!;
+    const sentence = r.el(id)!.closest<HTMLElement>('.cw-keyer-sentence')!;
+    expect(row.contains(sentence)).toBe(false);
+    expect(row.compareDocumentPosition(sentence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(sentence.parentElement).toBe(row.closest('.cw-keyer-block'));
+    r.dispose();
+  });
+
+  // Kills: the #3402 wrapper shipped with no class, which left the keys and
+  // the sentences flush because nothing gave that wrapper the surface's gap.
+  it('wraps every keys row that owns a sentence in a gapped block', () => {
+    const r = render(everySentence());
+    for (const [, rowSelector] of SENTENCES) {
+      const row = target.querySelector<HTMLElement>(rowSelector)!;
+      expect(row.closest('.cw-keyer-block')).not.toBeNull();
+    }
+    r.dispose();
+  });
+
+  // Kills: a second gap number for the blocks. The block reuses the ONE
+  // declaration `.cw-keyer-surface` already had, in that same rule.
+  it('takes the block gap from the surface rule itself, not a second number', () => {
+    const sheet = /<style>([\s\S]*?)<\/style>/.exec(CODE)![1];
+    const withBlock = [...sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(([, selector]) => selector.includes('.cw-keyer-block'));
+    expect(withBlock).toHaveLength(1);
+    const [, selector, body] = withBlock[0];
+    expect(selector).toContain('.cw-keyer-surface');
+    expect(body).toMatch(/gap:\s*0\.25rem/);
+  });
+});
+
 /* ── facts render honestly ─────────────────────────────────────── */
 
 describe('every unread fact renders honestly, never as a v2 default', () => {
