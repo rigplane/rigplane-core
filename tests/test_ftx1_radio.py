@@ -15,6 +15,7 @@ from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat import radio as yaesu_radio
 from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.transport import CatTimeoutError
+from rigplane.commands.command_spec import CatCommandSpec
 from rigplane.exceptions import CommandError
 from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.profiles import TxPolicy
@@ -1039,6 +1040,57 @@ async def test_set_cross_band_split_rejects_out_of_range_tx(connected_radio):
     with pytest.raises(ValueError, match="tx_xcvr"):
         await connected_radio.set_cross_band_split(rx_xcvr=0, tx_xcvr=2)
     connected_radio._transport.write.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# set_dual_watch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_dual_watch_on_sends_fr00(connected_radio):
+    """On the bundled FTX-1 profile, set_dual_watch(True) sends exactly FR00;."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_dual_watch(True)
+    assert connected_radio._transport.write.call_args_list == [call("FR00;")]
+
+
+@pytest.mark.asyncio
+async def test_set_dual_watch_off_sends_fr01(connected_radio):
+    """On the bundled FTX-1 profile, set_dual_watch(False) sends exactly FR01;."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_dual_watch(False)
+    assert connected_radio._transport.write.call_args_list == [call("FR01;")]
+
+
+@pytest.mark.asyncio
+async def test_set_dual_watch_prefers_a_declared_set_dual_watch_command(config):
+    """A declared ``set_dual_watch`` write is used instead of the FR fallback."""
+    config.commands["set_dual_watch"] = CatCommandSpec(write="DW{state};")
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    await radio.set_dual_watch(True)
+    await radio.set_dual_watch(False)
+    assert radio._transport.write.call_args_list == [call("DW1;"), call("DW0;")]
+
+
+@pytest.mark.asyncio
+async def test_set_dual_watch_without_either_command_warns_and_writes_nothing(
+    config, caplog
+):
+    """With neither ``set_dual_watch`` nor ``set_rx_func``, nothing is written."""
+    del config.commands["set_rx_func"]
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    with caplog.at_level("WARNING"):
+        await radio.set_dual_watch(True)
+    radio._transport.write.assert_not_called()
+    assert any(
+        record.levelname == "WARNING" and "set_dual_watch" in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
@@ -2500,7 +2552,6 @@ class TestProfileSourcedCommands:
 
 
 from rigplane.backends.yaesu_cat.parser import CatCommandParser  # noqa: E402
-from rigplane.command_spec import CatCommandSpec  # noqa: E402
 from rigplane.radio_protocol import (  # noqa: E402
     ReceiverBankCapable,
     VfoSlotCapable,

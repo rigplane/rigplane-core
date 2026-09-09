@@ -662,11 +662,15 @@ class YaesuCatRadio:
     async def set_dual_watch(self, on: bool) -> None:
         """Enable or disable dual watch.
 
-        No-op with warning if the rig profile does not define a
-        ``set_dual_watch`` command.
+        Uses the profile's ``set_dual_watch`` write when it declares one.
+        Otherwise falls back to ``set_rx_func``, whose mode is inverted
+        relative to ``on``: 0 = dual receive, 1 = single receive. No-op
+        with warning if the profile declares neither.
         """
         if self._has_write_command("set_dual_watch"):
             await self._write("set_dual_watch", state="1" if on else "0")
+        elif self._has_write_command("set_rx_func"):
+            await self.set_rx_func(0 if on else 1)
         else:
             logger.warning("set_dual_watch: no CAT command defined for %s", self.model)
 

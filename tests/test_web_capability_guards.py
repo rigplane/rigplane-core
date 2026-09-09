@@ -817,3 +817,40 @@ class TestProfileDeclaredSecondReceiver:
                 name, {}, SimpleNamespace(put=queue.append), radio
             )
         assert queue == []
+
+
+# ── Profile-declared dual watch (MOR-2425) ─────────────────────
+
+
+class TestProfileDeclaredDualWatch:
+    """The bundled FTX-1 profile's ``dual_watch`` tag reaches the served surface.
+
+    The radio here is a real :class:`YaesuCatRadio` on the bundled ``ftx1``
+    profile, so the tag is read from the shipped TOML rather than from a
+    hand-built capability set.
+    """
+
+    def test_runtime_capabilities_serve_dual_watch(self) -> None:
+        from rigplane.web.runtime_helpers import runtime_capabilities
+
+        radio = _yaesu()
+        assert "dual_watch" in radio.capabilities
+        assert "dual_watch" in runtime_capabilities(radio)
+
+    @pytest.mark.asyncio
+    async def test_capabilities_endpoint_serves_dual_watch(self) -> None:
+        radio = _yaesu()
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+        data = _parse_json_body(writer)
+        assert "dual_watch" in data["capabilities"]
+
+    @pytest.mark.asyncio
+    async def test_info_endpoint_serves_dual_watch(self) -> None:
+        radio = _yaesu()
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+        await srv._serve_info(writer)  # noqa: SLF001
+        data = _parse_json_body(writer)
+        assert "dual_watch" in data["capabilities"]["tags"]

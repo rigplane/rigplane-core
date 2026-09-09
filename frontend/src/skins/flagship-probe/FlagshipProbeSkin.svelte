@@ -104,39 +104,51 @@
     height: 100%;
 
     /*
-      ONE-KEY floor: re-measured 2026-09-09 with every rail key's text
-      replaced by `lib/i18n/pseudo.ts`'s `pseudoize()` output, on the
-      fixture-stub harness — `vite.fixtures.config.ts`, fixture
-      `topology-2-main-sub`, headless Chromium; do not lower it to make a
-      layout fit.
+      THE RAIL RULE (art direction, 2026-09-09). A rail is as wide as the
+      widest thing that must be READABLE in one column of controls, which is
+      ONE key — not a row of two, and not the transmit pair, whose
+      `.rx-tx-actions` row may wrap (`semantic/RxTxSurface.svelte`).
+      Pseudo-localisation is a stress model, not a width source: it fixes a
+      number only where clipping would be a SAFETY failure — the transmit
+      key — and every other rail key is measured in English.
 
-      192 is the larger of two measured terms rounded up: the widest single
-      key in any of the ten rail surfaces — the CW keyer's
-      `⟦Ŕéṽéŕšé þáđđłé: — ~~~~~~⟧`, 191.77px at a computed font-size of
-      13.3333px, with no padding between its border box and its zone box —
-      and the transmit zone's min-content, 185.20px, which is that zone's own
-      `⟦Ķéý ťŕáñšɱíťťéŕ ~~~~~~⟧` button now that
-      `semantic/RxTxSurface.svelte`'s `.rx-tx-actions` row may wrap.
+      Both terms below are that one rule. Measured 2026-09-09 in headless
+      Chromium on this skin, mounted through the fixture-stub seam
+      (`vite.fixtures.config.ts`) from an entry written for the measurement:
+      every `<button>` the ten rail zones mount, each taken alone at
+      `width: max-content` plus the padding and border between its border box
+      and its zone box, and taken again with `on` and with `off` in place of
+      an unread fact. Pseudo text is `lib/i18n/pseudo.ts`'s `pseudoize()`
+      applied to the rendered string.
 
-      Derived from labels that CAN grow, not from the ones shipped today.
-      `__tests__/FlagshipProbe.component.test.ts` pins this value and the
-      shape of the two rail tracks below.
+        safety term  — the transmit key, pseudo-localised, 185.20px. 186 is
+                       that rounded up, and it GOVERNS both properties.
+        English term — the widest rail key in English is the CW keyer's
+                       `Reverse paddle: on`, 131.61px at a computed
+                       font-size of 13.3333px. Below 186, so it does not
+                       bind.
+
+      Pseudo-localised, that CW key measures 191.77px with its fact unread
+      and 201.05 / 208.47 at `on` / `off`. The rule excludes all three: it is
+      no safety key. Its value sits inside its own label —
+      `semantic/CwKeyerSurface.svelte`'s `cw-keyer-reverse-paddle` prints the
+      state after the name — which is a labelling defect to fix.
+
+      Two properties, one number: the templates below stay written as
+      `minmax(floor, width)`, and `tests/e2e/i18n/desktop-geometry.spec.ts`
+      overrides BOTH to set the rail column it measures the transmit pair in.
+      Do not lower either to make a layout fit.
+
+      `--flagship-probe-switch-width` is the wide template's four declared
+      widths plus the three gutters `.probe-stage` puts between its columns:
+      2*186 + 2*360 + 3*8 = 1116. `__tests__/FlagshipProbe.component.test.ts`
+      requires the `@container` literal and the manifest breakpoint to equal
+      this sum, and pins the shape of the two rail tracks.
     */
-    --flagship-probe-rail-floor: 192px;
-
-    /*
-      The declared track widths — a rail's width and a receiver strip's
-      minimum — and their sum with the three gutters `.probe-stage` puts
-      between the four columns. The rail's width is TWO keys, under the same
-      pseudo-localised labels: the transmit key and unkey standing abreast,
-      185.20 + 8 + 184.89 = 378.09px, rounded up. Sweeping the rail width one
-      pixel at a time, that is the widest two-key row of the ten rail
-      surfaces — the next widest still puts two keys on a line at a rail of
-      177px.
-    */
-    --flagship-probe-rail-width: 379px;
+    --flagship-probe-rail-floor: 186px;
+    --flagship-probe-rail-width: 186px;
     --flagship-probe-strip-min-width: 360px;
-    --flagship-probe-switch-width: 1502px;
+    --flagship-probe-switch-width: 1116px;
   }
 
   /*
@@ -184,7 +196,7 @@
       'meters    meters     meters     meters';
   }
 
-  @container (min-width: 1502px) {
+  @container (min-width: 1116px) {
     .probe-stage {
       grid-template-columns:
         minmax(var(--flagship-probe-rail-floor), var(--flagship-probe-rail-width))

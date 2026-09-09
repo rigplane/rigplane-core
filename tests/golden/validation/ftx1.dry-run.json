@@ -84,8 +84,8 @@
     },
     {
       "check_id": "dual_watch.set",
-      "status": "unsupported",
-      "declaration": "unsupported"
+      "status": "skip",
+      "declaration": "supported"
     },
     {
       "check_id": "filter_width.set",
