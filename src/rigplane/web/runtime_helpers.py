@@ -3,10 +3,12 @@ from __future__ import annotations
 import copy
 import datetime
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
+from ..core.acquisition_scheduler import resolve_available_when
+from ..core.state_acquisition_policy import RadioAcquisitionProfile
 from ..core.state_pipeline_contracts import FieldFamily, FieldScope, FieldPath, VfoSlot
 from ..core.state_store import FieldSnapshot, FreshnessState, StateSnapshot
 from ..core.tx_target import TxTarget, tx_target_from_dict, validate_tx_target
@@ -29,6 +31,7 @@ __all__ = [
     "classify_radio_health",
     "build_public_state_payload",
     "build_public_state_payload_from_snapshot",
+    "snapshot_field_status_inputs",
     "primary_receiver_snapshot_ids",
     "VFO_CAPABILITY_TAGS",
     "projected_vfo_capability_tags",
@@ -206,9 +209,9 @@ _HEALTH_PUBLIC_PATHS = {
 }
 # Public ``scopeControls.<suffix>`` leaves the toolbar/LCD gate on, mapped to
 # their backend scope-control field name. The whole group is unobserved until
-# a real scope-control observation lands, so every leaf is seeded ``missing``
-# in the default snapshot — otherwise an absent leaf would resolve to
-# ``available`` on the frontend and render its default (CTR / MID / …) as
+# a real scope-control observation lands, so every leaf is seeded as
+# unobserved in the default snapshot — otherwise an absent leaf would resolve
+# to ``available`` on the frontend and render its default (CTR / MID / …) as
 # confirmed (MOR-429).
 _SCOPE_CONTROL_PUBLIC_FIELDS = {
     "mode": "mode",
@@ -361,12 +364,36 @@ def _freshness_availability(freshness: FreshnessState) -> str:
     return "missing"
 
 
-def _missing_field_status(path: FieldPath) -> dict[str, Any]:
+def _absence_availability(
+    path: FieldPath,
+    *,
+    availability: Mapping[FieldPath, bool | None] | None,
+    declared: Collection[FieldPath] | None,
+) -> str:
+    """Return why an unobserved ``path`` carries no reading.
+
+    ``undeclared`` when ``declared`` does not carry the path,
+    ``unavailable`` when ``availability`` reads the path's clauses as
+    ``False`` or ``None``, ``missing`` otherwise. Both arguments are
+    ``None`` for a caller with no profile acquisition metadata, and every
+    entry is then ``missing`` — the only value this returned before
+    MOR-2425/T201.
+    """
+
+    if declared is not None and path not in declared:
+        return "undeclared"
+    if availability is not None and path in availability:
+        if availability[path] is not True:
+            return "unavailable"
+    return "missing"
+
+
+def _missing_field_status(path: FieldPath, absence: str) -> dict[str, Any]:
     return {
         "storePath": str(path),
         "observed": False,
         "freshness": FreshnessState.UNKNOWN.value,
-        "availability": "missing",
+        "availability": absence,
     }
 
 
@@ -387,19 +414,22 @@ def _set_missing_field_status(
     statuses: dict[str, dict[str, Any]],
     public_path: str,
     path: FieldPath,
+    absence: Callable[[FieldPath], str],
 ) -> None:
-    statuses.setdefault(public_path, _missing_field_status(path))
+    statuses.setdefault(public_path, _missing_field_status(path, absence(path)))
 
 
 def _default_receiver_field_status(
     statuses: dict[str, dict[str, Any]],
     receiver_key: str,
+    absence: Callable[[FieldPath], str],
 ) -> None:
     for name, state_key in _RECEIVER_FREQ_MODE_FIELDS.items():
         _set_missing_field_status(
             statuses,
             _public_field_path(receiver_key, _receiver_public_key(state_key)),
             FieldPath.active(receiver_key, "freq_mode", name),
+            absence,
         )
     for slot_name, slot_key in (("A", "vfoA"), ("B", "vfoB")):
         for name, state_key in _VFO_SLOT_FIELDS.items():
@@ -411,6 +441,7 @@ def _default_receiver_field_status(
                     _receiver_public_key(state_key),
                 ),
                 FieldPath.vfo_slot(receiver_key, slot_name, "freq_mode", name),
+                absence,
             )
     for name, state_key in _VFO_SLOT_FIELDS.items():
         _set_missing_field_status(
@@ -421,37 +452,44 @@ def _default_receiver_field_status(
                 _receiver_public_key(state_key),
             ),
             FieldPath.unselected(receiver_key, "freq_mode", name),
+            absence,
         )
     _set_missing_field_status(
         statuses,
         _public_field_path(receiver_key, "activeSlot"),
         FieldPath.active_slot(receiver_key),
+        absence,
     )
     _set_missing_field_status(
         statuses,
         _public_field_path(receiver_key, "sMeter"),
         FieldPath.receiver(receiver_key, "meters", "s_meter"),
+        absence,
     )
     for name in _RECEIVER_OPERATOR_CONTROL_FIELDS:
         _set_missing_field_status(
             statuses,
             _public_field_path(receiver_key, _receiver_public_key(name)),
             FieldPath.receiver(receiver_key, "operator_controls", name),
+            absence,
         )
     for name in _RECEIVER_OPERATOR_TOGGLE_FIELDS:
         _set_missing_field_status(
             statuses,
             _public_field_path(receiver_key, _receiver_public_key(name)),
             FieldPath.receiver(receiver_key, "operator_toggles", name),
+            absence,
         )
         if name == "dcd":
             # DEPRECATED alias (MOR-466): remove after migration window. Seed the
-            # legacy ``sMeterSqlOpen`` public key ``missing`` from the same ``dcd``
-            # FieldPath so an absent observation does not resolve to ``available``.
+            # legacy ``sMeterSqlOpen`` public key as unobserved from the same
+            # ``dcd`` FieldPath so an absent observation does not resolve to
+            # ``available``.
             _set_missing_field_status(
                 statuses,
                 _public_field_path(receiver_key, "sMeterSqlOpen"),
                 FieldPath.receiver(receiver_key, "operator_toggles", "dcd"),
+                absence,
             )
     for name in _RECEIVER_SLOW_STATE_FIELDS:
         if name in {"vfo_a", "vfo_b"}:
@@ -464,38 +502,45 @@ def _default_receiver_field_status(
             statuses,
             _public_field_path(receiver_key, _receiver_public_key(name)),
             FieldPath.receiver(receiver_key, "slow_state", name),
+            absence,
         )
 
 
-def _default_snapshot_field_status(receiver_count: int) -> dict[str, dict[str, Any]]:
+def _default_snapshot_field_status(
+    receiver_count: int,
+    absence: Callable[[FieldPath], str],
+) -> dict[str, dict[str, Any]]:
     statuses: dict[str, dict[str, Any]] = {}
-    _default_receiver_field_status(statuses, "main")
+    _default_receiver_field_status(statuses, "main", absence)
     if receiver_count >= 2:
-        _default_receiver_field_status(statuses, "sub")
+        _default_receiver_field_status(statuses, "sub", absence)
     for name in _GLOBAL_TX_FIELDS:
         _set_missing_field_status(
             statuses,
             _to_camel(name),
             FieldPath.global_("tx_state", name),
+            absence,
         )
     for name in _GLOBAL_OPERATOR_CONTROL_FIELDS:
         _set_missing_field_status(
             statuses,
             _to_camel(name),
             FieldPath.global_("operator_controls", name),
+            absence,
         )
     for name in _GLOBAL_METER_FIELDS:
         _set_missing_field_status(
             statuses,
             _to_camel(f"{name}_meter"),
             FieldPath.global_("meters", name),
+            absence,
         )
     for name in _GLOBAL_SLOW_STATE_FIELDS:
         if name == "scope_controls":
             # No observation ever writes ``global.slow_state.scope_controls``
             # (scope-control observations land under
             # ``scope_controls.global.display.*``), so a group-level
-            # ``scopeControls`` entry would stay ``missing`` forever and the
+            # ``scopeControls`` entry would stay unobserved forever and the
             # frontend MOR-429 parent-veto rule would disable every observed
             # ``scopeControls.<leaf>`` (MOR-557). The eight per-leaf entries
             # seeded below are the real gate.
@@ -504,6 +549,7 @@ def _default_snapshot_field_status(receiver_count: int) -> dict[str, dict[str, A
             statuses,
             _to_camel(name),
             FieldPath.global_("slow_state", name),
+            absence,
         )
     # PR-A compatibility fallback: until PR B publishes lifecycle observations,
     # an empty snapshot keeps the legacy alias seed. An observed canonical
@@ -512,12 +558,14 @@ def _default_snapshot_field_status(receiver_count: int) -> dict[str, dict[str, A
         statuses,
         "vfoSelect",
         FieldPath.global_("slow_state", "vfo_select"),
+        absence,
     )
     for public_suffix, control_name in _SCOPE_CONTROL_PUBLIC_FIELDS.items():
         _set_missing_field_status(
             statuses,
             f"scopeControls.{public_suffix}",
             FieldPath.scope_control("display", control_name),
+            absence,
         )
     return statuses
 
@@ -526,8 +574,20 @@ def _build_snapshot_field_status(
     snapshot: StateSnapshot,
     *,
     receiver_count: int,
+    availability: Mapping[FieldPath, bool | None] | None = None,
+    declared: Collection[FieldPath] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    statuses = _default_snapshot_field_status(receiver_count)
+    def absence(path: FieldPath) -> str:
+        return _absence_availability(path, availability=availability, declared=declared)
+
+    statuses = _default_snapshot_field_status(receiver_count, absence)
+    # An OBSERVED field keeps the availability its freshness gives it, even
+    # where ``availability`` reads its clauses as False: removing it is
+    # ``acquisition_scheduler.StateFreshnessService._discard_declared_absent``'s
+    # job, and only then does this seed the absence again (``tests/
+    # test_web_runtime_helpers.py::
+    # test_field_status_reports_unavailable_after_the_freshness_tick_discards``,
+    # ``::test_observed_meter_stays_available_while_its_clause_reads_false``).
     for field in snapshot.fields:
         observed_status = _observed_field_status(field)
         for public_path in _snapshot_field_public_paths(field.path):
@@ -1287,11 +1347,37 @@ def build_public_state_payload(
     )
 
 
+def snapshot_field_status_inputs(
+    acquisition: RadioAcquisitionProfile,
+    snapshot: StateSnapshot,
+) -> tuple[dict[FieldPath, bool | None], frozenset[FieldPath]]:
+    """Return the ``availability`` / ``declared`` pair for one profile.
+
+    ``declared`` is every ``field_policies`` key plus every capability path
+    the profile does NOT mark unavailable
+    (:attr:`~rigplane.core.state_acquisition_policy.FieldCapability.is_unavailable`,
+    which covers both ``unsupported`` and ``unknown``). ``field_policies``
+    alone would not do: ``rigs/ic705.toml`` has no
+    ``[state_acquisition.field_policies]`` table, so every one of the 133
+    entries this projection emits for it — ``main.freqHz`` included —
+    would read ``undeclared``.
+    """
+
+    declared = frozenset(acquisition.field_policies) | frozenset(
+        capability.path
+        for capability in acquisition.capabilities
+        if not capability.is_unavailable
+    )
+    return resolve_available_when(acquisition, snapshot), declared
+
+
 def build_public_state_payload_from_snapshot(
     snapshot: StateSnapshot,
     *,
     radio: "Radio | None",
     receiver_count: int,
+    availability: Mapping[FieldPath, bool | None] | None = None,
+    declared: Collection[FieldPath] | None = None,
     updated_at: str | None = None,
     scope_clients: int = 0,
     control_clients: int = 0,
@@ -1306,6 +1392,8 @@ def build_public_state_payload_from_snapshot(
     state["field_status"] = _build_snapshot_field_status(
         snapshot,
         receiver_count=receiver_count,
+        availability=availability,
+        declared=declared,
     )
     return _build_public_state_payload_from_dict(
         state,

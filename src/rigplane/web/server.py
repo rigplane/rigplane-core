@@ -32,7 +32,7 @@ import signal as _signal
 import sys
 import time
 import urllib.parse
-from collections.abc import Callable, Collection, Coroutine
+from collections.abc import Callable, Collection, Coroutine, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from inspect import getattr_static
@@ -110,6 +110,7 @@ from .runtime_helpers import (  # noqa: TID251
     projected_vfo_capability_tags,
     radio_ready,
     runtime_capabilities,
+    snapshot_field_status_inputs,
 )
 from .tx_safety_view import build_tx_safety_payload  # noqa: TID251
 from .websocket import (  # noqa: TID251
@@ -154,6 +155,8 @@ class _PublicStatePayloadFromSnapshotFn(Protocol):
         *,
         radio: "Radio | None",
         receiver_count: int,
+        availability: Mapping[FieldPath, bool | None] | None = None,
+        declared: Collection[FieldPath] | None = None,
         updated_at: str | None = None,
         scope_clients: int = 0,
         control_clients: int = 0,
@@ -1656,10 +1659,20 @@ class WebServer:
         ):
             return copy.deepcopy(self._cached_public_state_payload)
         public_state_seq = self._public_state_seq_for_key(cache_key)
+        profile = self._get_profile()
+        # A profile with no ``[state_acquisition]`` block (``rigs/tx500.toml``)
+        # passes neither, and every unobserved entry stays ``missing``.
+        acquisition = profile.state_acquisition
+        availability: Mapping[FieldPath, bool | None] | None = None
+        declared: Collection[FieldPath] | None = None
+        if acquisition is not None:
+            availability, declared = snapshot_field_status_inputs(acquisition, snapshot)
         payload = _build_public_state_payload_from_snapshot_impl(
             snapshot,
             radio=self._radio,
-            receiver_count=self._get_profile().receiver_count,
+            receiver_count=profile.receiver_count,
+            availability=availability,
+            declared=declared,
             updated_at=updated_at,
             scope_clients=len(self._scope_handlers),
             control_clients=len(self._control_event_queues),
