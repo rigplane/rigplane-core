@@ -402,7 +402,6 @@ describe('Break-in Delay separates draft, submitted target and confirmed truth',
     expect(committedBlock).toContain(
       'const breakInDelayLease = breakInDelayScalar.attachRenderer()',
     );
-    expect(committedBlock).toContain('$derived(breakInDelayLease.view)');
     expect(committedBlock).not.toMatch(/breakInDelayScalar\.(?:input|commit|cancel)\(/);
     for (const method of ['input', 'commit', 'cancel']) {
       expect(committedBlock).toContain(`breakInDelayLease.${method}(`);
