@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { FieldStatus, ServerState } from '$lib/types/state';
 import { validateRadioViewModel, type RadioViewModel } from '../../../../semantic/radio-view-model';
+import { projectBarMeters, projectSwrMeter } from '../../../../semantic/bar-meter-projector';
 import { toRadioViewModel, type MetersTxAuthority } from '../radio-view-model-adapter';
 
 function caps(overrides: Partial<Capabilities> = {}): Capabilities {
@@ -241,10 +242,12 @@ describe('target meter display provenance (MOR-2359)', () => {
     for (const status of [{ freshness: 'stale' }, { availability: 'stale' }] as const) {
       expect(model(stateWith(status), capabilities, TX).meters![meter].display).toEqual({ state: 'stale', value: state[path] });
     }
+    // MOR-2425: a never-observed meter is no instrument at all, so there is
+    // no tile whose reading could be unknown — the display reads `unsupported`.
     expect(model(stateWith({ observed: false }), capabilities, TX).meters![meter].display)
-      .toEqual({ state: 'unknown', reason: 'not-observed' });
+      .toEqual({ state: 'unsupported' });
     expect(model({ ...state, fieldStatus: {} }, capabilities, TX).meters![meter].display)
-      .toEqual({ state: 'unknown', reason: 'not-observed' });
+      .toEqual({ state: 'unsupported' });
   });
   it.each(targets)('preserves valid zero and rejects invalid %s scalars', (meter, path) => {
     expect(model({ ...stateWith(), [path]: 0 }, capabilities, TX).meters![meter].display)
@@ -280,12 +283,13 @@ describe('target meter display provenance (MOR-2359)', () => {
         for (const [meter, path] of targets) {
           const { display, ...strict } = meters[meter];
           expect(display).toBeDefined();
-          // R29: a stale leaf is still operational — only a leaf that was
-          // never observed at all degrades the reading.
+          // R29: a stale leaf is still operational. MOR-2425: a leaf that was
+          // never observed withdraws the instrument itself, so `structural`
+          // and `operational` fall together rather than leaving an empty tile.
           const operational = status.observed !== false;
           expect(strict).toEqual({
             reading: operational ? { status: 'known', value: state[path] } : { status: 'unknown' },
-            availability: { structural: true, operational }, relevant,
+            availability: { structural: operational, operational }, relevant,
             domain: { kind: 'unknown' },
             source: operational
               ? { providerGeneration: 1, scope: 'radio', receiver: null, path }
@@ -384,7 +388,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
   });
 
   it.each(METER_PATHS.filter((path) => path !== 'sub.sMeter'))(
-    'requires current leaf evidence for %s while preserving its structural shell', (path) => {
+    'withdraws %s entirely when its field status is absent (MOR-2425)', (path) => {
       const state = meterState();
       const fieldStatus = { ...state.fieldStatus };
       delete fieldStatus[path];
@@ -396,7 +400,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
               : path === 'compMeter' ? meters.compression
                 : path === 'vdMeter' ? meters.drainVoltage : meters.drainCurrent;
       expect(field.reading).toEqual({ status: 'unknown' });
-      expect(field.availability).toEqual({ structural: true, operational: false });
+      expect(field.availability).toEqual({ structural: false, operational: false });
     },
   );
 
@@ -518,5 +522,100 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
     const view = model(meterState(), caps(), TX);
     expect(view.topologyId).toBe('1/single');
     expect(view.txAux).toBeUndefined();
+  });
+});
+
+/**
+ * MOR-2425 / T201 — a meter is structural only once its OWN field has been
+ * observed.
+ *
+ * `state_schema.py` declares `powerMeter/swrMeter/alcMeter/compMeter/vdMeter/
+ * idMeter: int = 0` and `sMeter: int = 0`, so every one of the seven raw
+ * numbers is on the wire unconditionally: `raw !== undefined` separates no
+ * radio from any other and is therefore not evidence that the instrument is
+ * there. `fieldStatus` is: `runtime_helpers.py: _missing_field_status` is what
+ * the server publishes for a field it is withholding, and `rigs/ic7300.toml`
+ * puts power/swr/alc/comp under `tx_only` + `available_when ptt = true`, so
+ * those four carry exactly that status in receive.
+ */
+describe('a meter is structural only once its own field has been observed (MOR-2425)', () => {
+  /** Verbatim `runtime_helpers.py: _missing_field_status` — what the server
+   *  publishes for a `tx_only` meter while not transmitting. */
+  const withheld: FieldStatus = {
+    storePath: 'x', observed: false, freshness: 'unknown', availability: 'missing',
+  };
+  const METERS = [
+    ['signal', 'main.sMeter'], ['power', 'powerMeter'], ['swr', 'swrMeter'],
+    ['alc', 'alcMeter'], ['compression', 'compMeter'], ['drainVoltage', 'vdMeter'],
+    ['drainCurrent', 'idMeter'],
+  ] as const;
+
+  function withStatus(path: string, status: FieldStatus): ServerState {
+    return meterState({ fieldStatus: { ...meterState().fieldStatus, [path]: status } });
+  }
+
+  it.each(METERS)('withholds the %s tile while its field is withheld, raw number and all', (meter, path) => {
+    const state = withStatus(path, withheld);
+    // The defaulted number is still on the wire — presence is not the evidence.
+    expect(path === 'main.sMeter' ? state.main!.sMeter : state[path]).toBeTypeOf('number');
+    const field = model(state, caps(), TX).meters![meter];
+    expect(field.availability).toEqual({ structural: false, operational: false });
+    expect(field.reading).toEqual({ status: 'unknown' });
+  });
+
+  it.each(METERS)('withholds the %s tile while its field was simply never observed', (meter, path) => {
+    const field = model(withStatus(path, { ...fresh, observed: false }), caps(), TX).meters![meter];
+    expect(field.availability.structural).toBe(false);
+  });
+
+  it.each(METERS)('keeps the %s tile structural once its field is observed', (meter) => {
+    const field = model(meterState(), caps(), TX).meters![meter];
+    expect(field.availability).toEqual({ structural: true, operational: true });
+  });
+
+  it.each(METERS)('keeps the %s tile structural on a held stale reading (R40)', (meter, path) => {
+    expect(model(withStatus(path, stale), caps(), TX).meters![meter].availability.structural).toBe(true);
+  });
+
+  /**
+   * IC-7300 in receive, never keyed. `rigs/ic7300.toml` marks power/swr/alc/
+   * comp `tx_only` with `available_when global.tx_state.ptt = true`, and
+   * declares Vd/Id polled unconditionally, so the four TX meters carry the
+   * withheld status above while Vd/Id stay observed. The compressor is ON,
+   * which is what would otherwise admit the COMP tile.
+   */
+  it('draws exactly signal + Id + Vd for an IC-7300 in receive, never keyed', () => {
+    const state = meterState({
+      compressorOn: true,
+      fieldStatus: {
+        ...meterState().fieldStatus, compressorOn: fresh,
+        powerMeter: withheld, swrMeter: withheld, alcMeter: withheld, compMeter: withheld,
+      },
+    });
+    const view = model(state, caps({ capabilities: ['scope', 'audio', 'tx', 'compressor'] }), RX);
+    expect(view.txAux!.compressor.reading).toEqual({ status: 'known', value: true });
+    const tiles = [
+      ...(view.meters!.signal.availability.structural ? ['signal'] : []),
+      ...projectBarMeters(view).map(({ key }) => key),
+      ...(projectSwrMeter(view) === null ? [] : ['swr']),
+    ];
+    expect(tiles).toEqual(['signal', 'drainCurrent', 'drainVoltage']);
+    expect(tiles).toHaveLength(3);
+  });
+
+  it('draws all seven once the key goes down and the TX meters are observed', () => {
+    const state = meterState({
+      compressorOn: true,
+      fieldStatus: { ...meterState().fieldStatus, compressorOn: fresh },
+    });
+    const view = model(state, caps({ capabilities: ['scope', 'audio', 'tx', 'compressor'] }), TX);
+    const tiles = [
+      ...(view.meters!.signal.availability.structural ? ['signal'] : []),
+      ...projectBarMeters(view).map(({ key }) => key),
+      ...(projectSwrMeter(view) === null ? [] : ['swr']),
+    ];
+    expect(tiles).toEqual([
+      'signal', 'power', 'alc', 'drainCurrent', 'drainVoltage', 'compression', 'swr',
+    ]);
   });
 });

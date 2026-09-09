@@ -272,12 +272,18 @@ const fullPlan = () => new Map([['receiver-zone', ['vfo']], ['tx-zone', ['txAux'
 const planWithoutMeters = () =>
   new Map([['receiver-zone', ['vfo']], ['tx-zone', ['txAux']]]) as SurfacePlan;
 /** The six station LEVEL meters are structural only where `deriveMeters` sees
- *  their raw field, and `projectBarMeters` additionally drops `compression`
- *  while the compressor reads off. The signal meter needs none of these — it
- *  comes from `state()`'s own `main.sMeter`. */
+ *  BOTH their raw field and an observed `fieldStatus` for it (MOR-2425), and
+ *  `projectBarMeters` additionally drops `compression` while the compressor
+ *  reads off. The signal meter comes from `state()`'s own observed
+ *  `main.sMeter`. */
+const STATION_METERS = ['powerMeter', 'swrMeter', 'alcMeter', 'compMeter', 'vdMeter', 'idMeter'] as const;
 function stationState(): ServerState {
-  return { ...state(), compressorOn: true, powerMeter: 40, swrMeter: 30, alcMeter: 20,
-    compMeter: 10, vdMeter: 60, idMeter: 50 } as unknown as ServerState;
+  const base = state();
+  return { ...base, compressorOn: true, powerMeter: 40, swrMeter: 30, alcMeter: 20,
+    compMeter: 10, vdMeter: 60, idMeter: 50,
+    fieldStatus: { ...(base.fieldStatus as Record<string, unknown>),
+      ...Object.fromEntries(STATION_METERS.map((path) => [path, fresh])) },
+  } as unknown as ServerState;
 }
 /** Drops the active receiver's S meter, leaving SWR the only structural
  *  member of the host's signal-or-SWR composite. */

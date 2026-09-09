@@ -340,11 +340,16 @@ function meterField(
  *    no honest TX relevance to state, and inventing one from `state.ptt` is
  *    exactly what R9 forbids; a caller that has not wired the controller gets
  *    a structurally-absent family, not a guess.
- *  - `raw !== undefined` IS the shipped capability gate for meters. There is
- *    no per-meter capability tag anywhere in v2 — `MetersDockPanel.svelte`'s
- *    own doc comment says "capability gating by `!== undefined`" — so that
- *    gate is copied rather than replaced. TX meters additionally require the
- *    radio to be able to transmit at all (`caps.tx`, `toMeterProps`'s `hasTx`).
+ *  - A meter is structurally present only where its raw field is defined AND
+ *    `seen()` says the backend has actually observed that field (MOR-2425).
+ *    Raw presence alone is not evidence: `state_schema.py` declares
+ *    `sMeter/powerMeter/swrMeter/alcMeter/compMeter/vdMeter/idMeter` as
+ *    non-optional ints defaulting to 0, so the number is on the wire for
+ *    every radio in every state, and a rig that withholds a meter — the
+ *    IC-7300's `tx_only` power/SWR/ALC/COMP while not transmitting — is
+ *    distinguishable only by its `fieldStatus`. TX meters additionally
+ *    require the radio to be able to transmit at all (`caps.tx`,
+ *    `toMeterProps`'s `hasTx`). One rule, all seven meters.
  *
  * Relevance fails CLOSED: TX meters read as relevant in every state that is
  * not a positively observed RX, so an 'uncertain'/'unknown' window keeps the
@@ -368,7 +373,7 @@ function deriveMeters(
     raw: unknown,
     path: Exclude<MeterSourcePath, 'main.sMeter' | 'sub.sMeter' | 'compMeter' | 'vdMeter' | 'idMeter'>,
   ) => {
-    const structural = hasTx && raw !== undefined;
+    const structural = hasTx && raw !== undefined && seen(state, path);
     const display = qualifyRadioDisplayObservation({
       state, caps, path, structural, value: numOrUndef(raw),
     });
@@ -377,9 +382,12 @@ function deriveMeters(
       display,
     };
   };
+  const signalSeen = (receiver: ReceiverId): boolean =>
+    state[RECEIVER_KEY[receiver]]?.sMeter !== undefined
+    && seen(state, `${RECEIVER_KEY[receiver]}.sMeter`);
   const signalStructural = activeId === null
-    ? signalRaws.some((raw) => raw !== undefined)
-    : structuralReceivers.includes(activeId) && state[RECEIVER_KEY[activeId]]?.sMeter !== undefined;
+    ? structuralReceivers.some(signalSeen)
+    : structuralReceivers.includes(activeId) && signalSeen(activeId);
   const signalRaw = activeId === null ? undefined : state[RECEIVER_KEY[activeId]]?.sMeter;
   const signalObservation: DisplayObservation<number> = activeId === null
     ? { state: 'unknown', reason: 'identity-unresolved' }
@@ -387,17 +395,17 @@ function deriveMeters(
       state, caps, receiver: activeId, path: `${RECEIVER_KEY[activeId]}.sMeter`,
       structural: signalStructural, value: numOrUndef(signalRaw),
     });
-  const compressionStructural = hasTx && compMeter !== undefined;
+  const compressionStructural = hasTx && compMeter !== undefined && seen(state, 'compMeter');
   const compressionObservation = qualifyRadioDisplayObservation({
     state, caps, path: 'compMeter', structural: compressionStructural,
     value: numOrUndef(compMeter),
   });
-  const drainVoltageStructural = vdMeter !== undefined;
+  const drainVoltageStructural = vdMeter !== undefined && seen(state, 'vdMeter');
   const drainVoltageObservation = qualifyRadioDisplayObservation({
     state, caps, path: 'vdMeter', structural: drainVoltageStructural,
     value: numOrUndef(vdMeter),
   });
-  const drainCurrentStructural = hasTx && idMeter !== undefined;
+  const drainCurrentStructural = hasTx && idMeter !== undefined && seen(state, 'idMeter');
   const drainCurrentObservation = qualifyRadioDisplayObservation({
     state, caps, path: 'idMeter', structural: drainCurrentStructural,
     value: numOrUndef(idMeter),
