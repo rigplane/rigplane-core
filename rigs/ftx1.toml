@@ -45,6 +45,14 @@ max_watts = 100
 features = [
     "audio",
     "dual_rx",
+    # set_dual_watch reaches the radio through the FR receive-function write
+    # (`set_rx_func`): YaesuCatRadio.set_dual_watch falls back to it when the
+    # profile declares no `set_dual_watch` — pinned by
+    # tests/test_ftx1_radio.py::test_set_dual_watch_on_sends_fr00.
+    # YaesuCatRadio.get_dual_watch raises NotImplementedError; the observed
+    # value comes from the FR read the `global.tx_state.dual_watch` field
+    # policy below declares.
+    "dual_watch",
     "af_level",
     "rf_gain",
     "squelch",
