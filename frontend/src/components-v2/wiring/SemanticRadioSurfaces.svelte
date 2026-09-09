@@ -1702,9 +1702,7 @@
         {#each renderedStrips(view) as { key, receiverId, zoneId, slotPosition, sliced, active, groupLabel } (key)}
           <!--
             `data-zone-id`: the first strip is `primary-vfo` and every later
-            one `secondary-vfo`. A degraded single-receiver view model renders
-            `primary-vfo` and NO `secondary-vfo` — an absent zone, never an
-            empty promise.
+            one `secondary-vfo`.
             `data-strip-slot` is emitted on the `slot` path only: on the
             `receiver` path `slotPosition` is undefined and the attribute is
             absent, which is what keeps the shipped decks unchanged.

@@ -52,9 +52,7 @@ describe('the flagship-probe registration', () => {
     expect(declared.has('memory' as SemanticSurfaceName)).toBe(false);
   });
 
-  // Kills: admitting a single-receiver topology — the arrangement puts two
-  // receivers side by side in both of its arrangements, and there would be
-  // nothing to put in the second.
+  // Kills: admitting a single-receiver topology.
   it('is compatible with the dual-receiver topologies only', () => {
     expect([...flagshipProbeLayout.compatibleTopologies].sort())
       .toEqual(['2/ab_shared', '2/main_sub']);

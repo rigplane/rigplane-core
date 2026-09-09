@@ -513,9 +513,9 @@ describe('the panorama sits between the two rails, in both arrangements', () => 
     expect(Math.max(...panorama)).toBeLessThan(lastColumn);
   });
 
-  // Kills: stacking the receivers, and putting any third area — the transmit
+  // Kills: stacking the slots, and putting any third area — the transmit
   // key's old `rx-mid` track among them — back between them.
-  it.each([[0, 'narrow'], [1, 'wide']])('template %i (%s) keeps the two receivers side by side', (index) => {
+  it.each([[0, 'narrow'], [1, 'wide']])('template %i (%s) keeps the two slots side by side', (index) => {
     const template = templates()[index as number];
     const deckRow = rowOf(template, 'rx-main');
     expect(rowOf(template, 'rx-sub')).toBe(deckRow);

@@ -4,9 +4,8 @@
  * slicing beside it (`slotsOf`/`forSlot`). Carries none of the TX-lease weight
  * `SemanticRadioSurfaces.svelte` owns — filtering only, never touched by or
  * touching TX state, so this is not a second TX code path. `receiversOf`
- * never fabricates a receiver absent from `view.vfos` (MOR-988 §3.2): a
- * single-receiver view model yields exactly one strip, an empty one yields
- * none. `isActiveStrip` is true only on a POSITIVELY observed match — an
+ * never fabricates a receiver absent from `view.vfos` (MOR-988 §3.2): an
+ * empty view model yields none. `isActiveStrip` is true only on a POSITIVELY observed match — an
  * `unknown` activeReceiver marks every strip inactive, never a guessed one.
  * `isOperationalStrip` (MOR-1256) is the structural/operational counterpart:
  * a receiver stays in `receiversOf`/`vfos` when only STRUCTURALLY present
