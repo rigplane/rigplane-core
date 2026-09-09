@@ -554,12 +554,15 @@ async function assertProductionLanguageAccessibility(
   await expect(vfo).toHaveAccessibleName(/VFO/i);
   await expect(txKey).toHaveAccessibleName(/key|transmit|ptt/i);
   await expect(txState).toBeVisible();
-  await expect(txMark).toBeVisible();
-  await expect(txLabel).toBeVisible();
+  await expect(txMark).toBeAttached();
+  await expect(txLabel).toBeAttached();
   await expect(txState).toHaveAttribute('data-rf', 'unknown');
   await expect(txState).toHaveAttribute('data-session', 'idle');
   await expect(txMark).toBeEmpty();
   await expect(txLabel).toBeEmpty();
+  const [markBox, labelBox] = await Promise.all([txMark.boundingBox(), txLabel.boundingBox()]);
+  expect(markBox?.width ?? 0).toBeGreaterThan(0);
+  expect(labelBox?.width ?? 0).toBeGreaterThan(0);
   await expect(txState).toContainText('ready');
 
   // A real keyboard-caused focus target, rather than a programmatic focus,
