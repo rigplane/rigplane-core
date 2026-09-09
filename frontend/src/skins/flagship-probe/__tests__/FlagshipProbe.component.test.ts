@@ -377,13 +377,149 @@ describe('the container-width switch', () => {
   it('the threshold is the sum of the declared minimum track widths and the gutters', () => {
     const rail = px('--flagship-probe-rail-width');
     const strip = px('--flagship-probe-strip-min-width');
-    const rxTx = px('--flagship-probe-rx-tx-min-width');
+    const rxTx = px('--flagship-probe-rx-tx-width');
     // Five columns, four gutters. Read from the same style block as the
     // widths, so the gap and the threshold cannot drift apart either.
     const sum = 2 * rail + 2 * strip + rxTx + 4 * px('gap');
 
     expect(px('--flagship-probe-switch-width')).toBe(sum);
     expect(Number(style.match(/@container \(min-width: (\d+)px\)/)![1])).toBe(sum);
+  });
+});
+
+// ── The tracks ─────────────────────────────────────────────────────────────
+//
+// One `grid-template-columns` per arrangement, parsed out of the same style
+// block and split into its track sizing functions at paren depth 0.
+
+function splitTracks(body: string): string[] {
+  const tracks: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const character of body) {
+    if (character === '(') depth += 1;
+    if (character === ')') depth -= 1;
+    if (depth === 0 && /\s/.test(character)) {
+      if (current !== '') tracks.push(current);
+      current = '';
+    } else current += character;
+  }
+  if (current !== '') tracks.push(current);
+  return tracks.map((track) => track.replace(/\s+/g, ' '));
+}
+
+function columnTemplates(): string[][] {
+  return [...style.matchAll(/grid-template-columns:([^;]*);/g)]
+    .map(([, body]) => splitTracks(body));
+}
+
+/** The one px length a track sizing function declares, after substituting the
+ *  custom properties it is written with. */
+function declaredPx(track: string): number {
+  const resolved = track.replace(/var\((--[a-z-]+)\)/g, (_match, name: string) => `${px(name)}px`);
+  const lengths = [...resolved.matchAll(/(\d+)px/g)].map(([, value]) => Number(value));
+  expect(lengths).toHaveLength(1);
+  return lengths[0];
+}
+
+const CONTENT_SIZED = /\b(auto|min-content|max-content|fit-content)\b/;
+
+describe('no surface may size a track', () => {
+  // Kills: a track written `auto` — the shape the left rail carried, which
+  // grew it to the band surface's max-content width and left the two
+  // receiver strips' flexible columns at 0 — or written `min-content`,
+  // `max-content` or `fit-content`, in either direction.
+  it.each([[0, 'narrow'], [1, 'wide']])('column template %i (%s) declares no content-sized track', (index) => {
+    const tracks = columnTemplates()[index as number];
+    expect(tracks).toHaveLength(5);
+    for (const track of tracks) expect(track).not.toMatch(CONTENT_SIZED);
+  });
+
+  // Kills: a rail whose maximum is anything but the declared rail width, and
+  // a rail whose minimum is anything but 0.
+  it.each([[0, 'narrow'], [1, 'wide']])('column template %i (%s) caps both rails at the declared rail width', (index) => {
+    const tracks = columnTemplates()[index as number];
+    expect(tracks[0]).toBe('minmax(0, var(--flagship-probe-rail-width))');
+    expect(tracks[4]).toBe(tracks[0]);
+  });
+
+  // Kills: the strip columns losing their declared floor, which is the half
+  // of the threshold arithmetic below that makes it true of the layout
+  // rather than only of the variables.
+  it('gives the wide arrangement its strip minimum as a track minimum', () => {
+    const [, wide] = columnTemplates();
+    expect(wide[1]).toBe('minmax(var(--flagship-probe-strip-min-width), 1fr)');
+    expect(wide[3]).toBe(wide[1]);
+  });
+
+  // Kills: the threshold drifting away from the widths the wide column
+  // template actually declares — the `@container` literal must be the sum of
+  // those five and the four gutters between them.
+  it('switches at the sum of the wide template\'s five declared widths and the gutters', () => {
+    const [, wide] = columnTemplates();
+    const sum = wide.reduce((total, track) => total + declaredPx(track), 0) + 4 * px('gap');
+    expect(px('--flagship-probe-switch-width')).toBe(sum);
+    expect(Number(style.match(/@container \(min-width: (\d+)px\)/)![1])).toBe(sum);
+  });
+
+  // Kills: dropping `min-width: 0` from a grid item, which restores the
+  // item's automatic minimum size — its min-content width — and lets a
+  // surface push its own box past its column; and any `width`, `min-width`
+  // or `max-width` other than zero in a grid-item rule, each of which is a
+  // surface claiming track width again. Scanned over the rules whose
+  // selector names a grid item — `[data-zone-id`, `[data-strip-receiver`,
+  // `.probe-panorama` — so a width on `.flagship-probe`, the query
+  // container, is out of scope rather than a failure.
+  it('caps every grid item at its column: no grid-item rule declares a width, min-width or max-width other than zero', () => {
+    expect(style).toMatch(/:global\(\[data-zone-id\]\)\s*\{[^}]*min-width:\s*0/);
+    expect(style).toMatch(/\.probe-panorama\s*\{[^}]*min-width:\s*0/);
+    // Innermost rules only: `[^{}]` on both sides skips the `@container`
+    // prelude and cannot span a nested block.
+    const declared = [...style.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(([, selector]) => /\[data-zone-id|\[data-strip-receiver|\.probe-panorama/.test(selector))
+      .flatMap(([, , body]) => [...body.matchAll(/(?<![-\w(])(?:min-|max-)?width:\s*([^;{}]+)/g)])
+      .map(([, value]) => value.trim());
+    expect(declared.length).toBeGreaterThan(1);
+    expect(declared.filter((value) => !/^0(px)?$/.test(value))).toEqual([]);
+  });
+
+  // Kills: leaving a grid item's overflow visible, which puts the part that
+  // does not fit over the neighbouring column instead of inside its own.
+  it('contains what does not fit inside the column it belongs to', () => {
+    expect(style).toMatch(/:global\(\[data-zone-id\]\)\s*\{[^}]*overflow:\s*auto/);
+    expect(style).toMatch(/\.probe-panorama\s*\{[^}]*overflow:\s*auto/);
+  });
+});
+
+describe('a zone whose surface does not mount reserves nothing', () => {
+  // Kills: a row sizing function or an item height, either of which would
+  // keep a row open at a height of its own when the zones on it do not
+  // mount. jsdom performs no layout, so this is asserted on the CSS that
+  // leaves every row `auto`; the browser measurement is in the PR body.
+  it('declares no row sizing and no item height', () => {
+    const grid = style.slice(style.indexOf('.probe-stage'));
+    expect(grid).not.toMatch(/grid-template-rows|grid-auto-rows/);
+    expect(grid).not.toMatch(/(?<![-\w])(min-|max-)?height:/);
+  });
+
+  // Kills: mounting an empty box for a surface the radio does not carry,
+  // which is a hole the arrangement would then hold a row open for.
+  it('mounts no element for a zone whose surface the radio does not carry', () => {
+    const base = mainSubCaps();
+    const dropped = ['antenna', 'rx_antenna', 'scope'];
+    h.caps = {
+      ...base,
+      scope: false,
+      antennas: 0,
+      capabilities: (base.capabilities as readonly string[]).filter((name) => !dropped.includes(name)),
+    } as unknown as Capabilities;
+    render();
+    expect(q('[data-zone-id="antenna"]')).toBeNull();
+    expect(q('[data-zone-id="scope-controls"]')).toBeNull();
+    // The rails they sat on are still there, so the absence above is the
+    // surface's own gate and not a collapsed mount.
+    expect(q('[data-zone-id="band"]')).not.toBeNull();
+    expect(q('[data-zone-id="rf-front-end"]')).not.toBeNull();
   });
 });
 
