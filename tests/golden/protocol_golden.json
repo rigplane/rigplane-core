@@ -233,11 +233,11 @@
   },
   {
     "id": "get_info",
-    "description": "get_info — returns IC-7610 description string",
+    "description": "get_info — the fixture radio declares no model, so no rig is named",
     "input": "\\get_info",
     "mock": {},
-    "expected_output": "Icom IC-7610 (rigplane)\n",
-    "extended_output": "get_info:\nIcom IC-7610 (rigplane)\nRPRT 0\n"
+    "expected_output": "Icom unspecified (rigplane)\n",
+    "extended_output": "get_info:\nIcom unspecified (rigplane)\nRPRT 0\n"
   },
   {
     "id": "chk_vfo",

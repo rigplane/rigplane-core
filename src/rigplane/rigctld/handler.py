@@ -3130,8 +3130,12 @@ class RigctldHandler:
     async def _cmd_get_info(self, cmd: RigctldCommand) -> RigctldResponse:
         if self._routing is not None:
             return RigctldResponse(values=[self._routing.get_info()])
-        raw_model = getattr(self._radio, "model", "IC-7610")
-        model = raw_model if isinstance(raw_model, str) and raw_model else "IC-7610"
+        # R59/MOR-2425: a radio that does not name itself is reported to the
+        # client as unspecified rather than as an IC-7610. ``Radio.model``
+        # (``core/radio_protocol.py``) is declared ``str``; this fallback
+        # covers a radio object with no ``model``, or an empty one.
+        raw_model = getattr(self._radio, "model", None)
+        model = raw_model if isinstance(raw_model, str) and raw_model else "unspecified"
         return RigctldResponse(values=[f"Icom {model} (rigplane)"])
 
     async def _cmd_chk_vfo(self, cmd: RigctldCommand) -> RigctldResponse:
