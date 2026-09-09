@@ -514,35 +514,40 @@ describe('no surface may size a track', () => {
 
 describe('the rail floor', () => {
   /**
-   * Both numbers were measured in Chromium on 2026-09-09, on the real
-   * `FlagshipProbeSkin` mounted through the fixture-stub seam
-   * (`vite.fixtures.config.ts`, fixture `topology-2-main-sub`), with every
-   * rail key's text replaced in the DOM by `lib/i18n/pseudo.ts`'s
-   * `pseudoize()` output.
+   * THE RAIL RULE (art direction, 2026-09-09): a rail is as wide as the
+   * widest thing that must be readable in ONE column of controls — never a
+   * two-key row, and never the transmit pair, which may wrap.
+   * Pseudo-localisation is a stress model, not a width source, so it fixes a
+   * number only where clipping would be a safety failure — the transmit
+   * key — and every other rail key is measured in English.
    *
-   * The FLOOR is one key: the larger of the widest single key in any of the
-   * ten rail surfaces — the CW keyer's reverse-paddle key, 191.77px at a
-   * computed font-size of 13.3333px — and the transmit zone's min-content,
-   * 185.20px, which is that zone's own key button now that
-   * `semantic/RxTxSurface.svelte`'s `.rx-tx-actions` row may wrap. 192 is
-   * 191.77 rounded up to a whole pixel. The earlier 379 was the same pair,
-   * measured as one unwrappable row.
+   * Both properties are that one rule, measured 2026-09-09 in Chromium on
+   * the real `FlagshipProbeSkin` mounted through the fixture-stub seam
+   * (`vite.fixtures.config.ts`) from a harness entry written for the
+   * measurement — `fixtures/main.ts` mounts no flagship-probe fixture. Every
+   * `<button>` the ten rail zones mount was taken alone at
+   * `width: max-content` plus the padding and border between its border box
+   * and its zone box, and taken again with `on` and with `off` in place of
+   * an unread fact:
    *
-   * The WIDTH is two keys: the transmit pair abreast, 185.20 + 8 + 184.89 =
-   * 378.09px, rounded up. Sweeping the rail width one pixel at a time, that
-   * is the widest two-key row of the ten — the next widest surface still
-   * puts two keys on a line at a rail of 177px. The PR body carries the full
-   * table.
+   *   safety term  — the transmit key, pseudo-localised with
+   *                  `lib/i18n/pseudo.ts`'s `pseudoize()`, 185.20px. 186 is
+   *                  that rounded up, and it governs both properties.
+   *   English term — the widest rail key in English is the CW keyer's
+   *                  `Reverse paddle: on`, 131.61px at a computed font-size
+   *                  of 13.3333px, which is below 186.
    *
-   * Kills: lowering the floor to make some layout fit, which is exactly what
-   * the comment on the declaration forbids and what no other test here would
-   * notice — every other assertion in this file is about the FORM of the
-   * track, and `minmax(var(--floor), var(--width))` keeps its form at any
-   * value of either.
+   * Pseudo-localised, that CW key is 191.77px with its fact unread and
+   * 201.05 / 208.47 at `on` / `off`; the rule excludes all three, it being no
+   * safety key.
+   *
+   * Kills: lowering the floor to make some layout fit. With the floor at 180
+   * and the width left at 186, this is the only assertion in the file that
+   * fails.
    */
-  it('declares the measured one-key floor and the measured two-key rail width', () => {
-    expect(px('--flagship-probe-rail-floor')).toBe(192);
-    expect(px('--flagship-probe-rail-width')).toBe(379);
+  it('declares the measured one-key floor, and a rail width equal to it', () => {
+    expect(px('--flagship-probe-rail-floor')).toBe(186);
+    expect(px('--flagship-probe-rail-width')).toBe(186);
   });
 
   // Kills: a rail width below its own floor, which would make `minmax()`
