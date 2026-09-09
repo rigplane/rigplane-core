@@ -32,7 +32,7 @@
   `rx-tx` zone is placed FIRST in the right rail, above the other transmit
   controls, in both arrangements — `__tests__/FlagshipProbe.component.test.ts`
   requires the rail column, that position and the rail's declared track
-  together. The rail's own minimum is the width that key pair needs — see
+  together. The rail's own minimum is the width one key needs — see
   `--flagship-probe-rail-floor` below. Nothing then stands between the two
   receivers, and the deck's middle track is gone rather than empty: the same
   test requires every track in both column templates to be a column some area
@@ -104,29 +104,35 @@
     height: 100%;
 
     /*
-      TRANSMIT-KEY floor: measured 2026-09-09 with pseudo-localised key
-      labels (`⟦Ķéý ťŕáñšɱíťťéŕ ~~~~~~⟧` and `⟦Úñķéý ťŕáñšɱíťťéŕ ~~~~~~⟧`,
-      `lib/i18n/pseudo.ts`'s `pseudoize()` applied to the two hard-coded
-      English strings `semantic/RxTxSurface.svelte` renders) on the
+      ONE-KEY floor: re-measured 2026-09-09 with every rail key's text
+      replaced by `lib/i18n/pseudo.ts`'s `pseudoize()` output, on the
       fixture-stub harness — `vite.fixtures.config.ts`, fixture
-      `topology-2-main-sub`, Chromium; do not lower it to make a layout fit.
+      `topology-2-main-sub`, headless Chromium; do not lower it to make a
+      layout fit.
 
-      Derived from labels that CAN grow, not from the ones shipped today: the
-      key and unkey buttons are `white-space: nowrap`, and when this floor
-      was measured they sat on one non-wrapping flex row, so the pair could
-      not stack. Those two strings are hard-coded English, so nothing can grow
-      them today.
+      192 is the larger of two measured terms rounded up: the widest single
+      key in any of the ten rail surfaces — the CW keyer's
+      `⟦Ŕéṽéŕšé þáđđłé: — ~~~~~~⟧`, 191.77px at a computed font-size of
+      13.3333px, with no padding between its border box and its zone box —
+      and the transmit zone's min-content, 185.20px, which is that zone's own
+      `⟦Ķéý ťŕáñšɱíťťéŕ ~~~~~~⟧` button now that
+      `semantic/RxTxSurface.svelte`'s `.rx-tx-actions` row may wrap.
+
+      Derived from labels that CAN grow, not from the ones shipped today.
       `__tests__/FlagshipProbe.component.test.ts` pins this value and the
       shape of the two rail tracks below.
     */
-    --flagship-probe-rail-floor: 379px;
+    --flagship-probe-rail-floor: 192px;
 
     /*
       The declared track widths — a rail's width and a receiver strip's
       minimum — and their sum with the three gutters `.probe-stage` puts
-      between the four columns. The rail's width is the floor: the measured
-      floor came out above the 280px this rail carried before it, and a rail
-      narrower than its own floor is not a rail.
+      between the four columns. The rail's width is TWO keys, under the same
+      pseudo-localised labels: the transmit key and unkey standing abreast,
+      185.20 + 8 + 184.89 = 378.09px, rounded up. Sweeping the rail width one
+      pixel at a time, that is the widest two-key row of the ten rail
+      surfaces — the next widest still puts two keys on a line at a rail of
+      177px.
     */
     --flagship-probe-rail-width: 379px;
     --flagship-probe-strip-min-width: 360px;
@@ -143,7 +149,7 @@
     between them. The deck spans all four columns in the narrow arrangement
     and columns 2-3 in the wide one; that is the whole of the switch.
 
-    Both templates floor the rails at the transmit-key floor, cap them at the
+    Both templates floor the rails at the one-key floor, cap them at the
     declared rail width and give the remainder to columns 2 and 3. The wide
     one alone floors those two at the declared strip minimum, because it is
     the arrangement in which a receiver strip occupies one of them on its own
