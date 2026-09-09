@@ -1683,6 +1683,10 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("FTX-1", "receiver.sub.operator_controls.rf_gain"),
         ("FTX-1", "receiver.sub.operator_controls.repeater_shift"),
         ("FTX-1", "receiver.sub.operator_controls.squelch"),
+        ("IC-7300", "global.meters.alc"),
+        ("IC-7300", "global.meters.comp"),
+        ("IC-7300", "global.meters.power"),
+        ("IC-7300", "global.meters.swr"),
     }
 
 
@@ -1690,6 +1694,30 @@ def test_ftx1_declares_the_transmit_meters_absent_outside_transmit() -> None:
     """The four tx_only meters exist only while the canonical PTT reads true."""
 
     acquisition = get_radio_profile("FTX-1").state_acquisition
+    assert acquisition is not None
+
+    ptt = FieldPath.global_("tx_state", "ptt")
+    clause = AvailabilityClause(field=ptt, operator="equals", value=True)
+    tx_meters = (
+        FieldPath.global_("meters", "alc"),
+        FieldPath.global_("meters", "power"),
+        FieldPath.global_("meters", "swr"),
+        FieldPath.global_("meters", "comp"),
+    )
+    for path in tx_meters:
+        policy = acquisition.policy_for(path)
+        assert policy.available_when == (clause,), path
+        assert policy.tx_only is True, path
+
+    # The condition source is itself polled, or nothing would ever resolve it.
+    assert acquisition.capability_for(ptt).can_poll
+    assert acquisition.policy_for(ptt).available_when == ()
+
+
+def test_ic7300_declares_the_transmit_meters_absent_outside_transmit() -> None:
+    """The four tx_only meters exist only while the canonical PTT reads true."""
+
+    acquisition = get_radio_profile("IC-7300").state_acquisition
     assert acquisition is not None
 
     ptt = FieldPath.global_("tx_state", "ptt")
