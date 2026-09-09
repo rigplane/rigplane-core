@@ -504,29 +504,52 @@ adaptive_decay = false
 # cadence changes)
 # for as long as the key is down -- an accepted, TX-scoped tradeoff, not a
 # steady-state regression of the MOR-1484 serial medians.
+#
+# MOR-2425/T141: observed on the bench 2026-09-08 -- after dekey the four
+# stayed in the store carrying their last transmit values instead of leaving
+# it. The clause below declares them absent while `global.tx_state.ptt` reads
+# false, so StateFreshnessService.tick discards them (tests/
+# test_acquisition_scheduler.py::
+# test_tick_discards_every_ic7300_transmit_meter_on_dekey). `tx_only` stays
+# and gains nothing from the clause: AcquisitionScheduler.
+# unobserved_startup_paths already excludes a tx_only path (tests/
+# test_startup_state_gate.py::
+# test_unobserved_tx_only_path_does_not_keep_the_predicate_incomplete).
 [state_acquisition.field_policies."global.meters.power"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
 
 [state_acquisition.field_policies."global.meters.swr"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
 
 [state_acquisition.field_policies."global.meters.alc"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
 
 [state_acquisition.field_policies."global.meters.comp"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
 
 # Vd/Id are supply telemetry, not TX readings -- the radio answers them in RX
 # too (proven: rigctld's ``_OBSERVABLE_CMD15_FIELDS`` one-shots already flip
