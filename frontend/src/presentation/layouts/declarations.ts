@@ -189,7 +189,7 @@ export const flagshipProbeLayout: LayoutManifest = {
   // `__tests__/flagship-probe-registration.test.ts` requires this
   // declaration, that custom property and the `@container` literal to name
   // the same width.
-  stageSizing: { mode: 'fluid', responsiveBreakpoints: [1304] },
+  stageSizing: { mode: 'fluid', responsiveBreakpoints: [1502] },
   fallbackLayoutId: 'sdr-test',
 };
 
