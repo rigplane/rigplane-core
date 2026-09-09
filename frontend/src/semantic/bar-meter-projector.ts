@@ -1,7 +1,9 @@
 import { t } from '$lib/i18n';
 import {
   alcLevel,
+  alcScale,
   compLevel,
+  compScale,
   formatAlc,
   formatAmps,
   formatCompDb,
@@ -10,12 +12,17 @@ import {
   formatVolts,
   hasSwrRatioScale,
   idLevel,
+  idScale,
   isAlcFault,
   isSwrFault,
   normalizePower,
+  powerScale,
   swrLevel,
+  swrScale,
   vdLevel,
+  vdScale,
 } from '../components-v2/panels/meter-utils';
+import type { MeterScaleDomain } from '../components-v2/panels/meter-utils';
 import { projectTxMeterDisplay } from './tx-meter-display';
 import type {
   DisplayObservedMeterField,
@@ -41,6 +48,15 @@ export interface LevelMeterProjection<Key extends LevelMeterKey = LevelMeterKey>
   readonly state: LevelMeterState;
   readonly evidence: LevelMeterEvidence;
   readonly domain: MeterValueDomain | undefined;
+  /**
+   * What the bar's empty and full ends stand for, in the meter's own unit,
+   * for a face to draw labels from — the same domain `motionFraction` was
+   * positioned against. Null where there is no such scale; the `*Scale`
+   * functions in `meter-utils.ts` decide that per meter. Set independently
+   * of whether there is anything to show, so a mounted-but-empty bar can
+   * still be labelled.
+   */
+  readonly scale: MeterScaleDomain | null;
   readonly motionFraction: number | null;
   readonly displayText: string;
   readonly stateText: string;
@@ -56,24 +72,28 @@ export type SwrMeterProjection = LevelMeterProjection<'swr'> & {
   readonly ratioScale: boolean;
 };
 
+// The scale function sits next to the level function it belongs to, so the
+// domain a bar is labelled from and the domain its fill is computed from are
+// chosen on one row.
 type MeterDefinition<Key extends LevelMeterKey> = readonly [
   Key,
   string,
   (value: number, domain?: MeterValueDomain) => number | null,
   (value: number, domain?: MeterValueDomain) => string,
   boolean,
+  (domain?: MeterValueDomain) => MeterScaleDomain | null,
 ];
 
 const BAR_DEFINITIONS = [
-  ['power', 'Po', normalizePower, formatPowerWatts, true],
-  ['alc', 'ALC', alcLevel, formatAlc, true],
-  ['drainCurrent', 'Id', idLevel, formatAmps, true],
-  ['drainVoltage', 'Vd', vdLevel, formatVolts, false],
-  ['compression', 'COMP', compLevel, formatCompDb, false],
+  ['power', 'Po', normalizePower, formatPowerWatts, true, powerScale],
+  ['alc', 'ALC', alcLevel, formatAlc, true, alcScale],
+  ['drainCurrent', 'Id', idLevel, formatAmps, true, idScale],
+  ['drainVoltage', 'Vd', vdLevel, formatVolts, false, vdScale],
+  ['compression', 'COMP', compLevel, formatCompDb, false, compScale],
 ] as const satisfies readonly MeterDefinition<BarMeterKey>[];
 
 const SWR_DEFINITION = [
-  'swr', 'SWR', swrLevel, formatSwr, false,
+  'swr', 'SWR', swrLevel, formatSwr, false, swrScale,
 ] as const satisfies MeterDefinition<'swr'>;
 
 const FAULT_CHECKS: Partial<
@@ -137,7 +157,7 @@ function projectLevelMeter<Key extends LevelMeterKey>(
   rfState: MeterRfState,
   txObserved: boolean,
 ): LevelMeterProjection<Key> {
-  const [key, label, level, format, peakEligible] = definition;
+  const [key, label, level, format, peakEligible, scaleOf] = definition;
   const tx = txObserved ? projectTxMeterPresentation(field, rfState) : null;
   const isObserved = tx ? tx.value !== null : observed(field);
   const value = tx ? tx.value ?? 0 : reading(field);
@@ -161,6 +181,7 @@ function projectLevelMeter<Key extends LevelMeterKey>(
     state,
     evidence,
     domain: field.domain,
+    scale: scaleOf(field.domain),
     motionFraction,
     displayText,
     stateText,

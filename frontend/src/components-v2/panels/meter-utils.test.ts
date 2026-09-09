@@ -117,6 +117,8 @@ import {
   isAlcFault,
   updatePeakHold,
   peakHoldDisplay,
+  vdScale,
+  SUPPLY_VOLTAGE_WINDOW,
   type PeakHoldState,
 } from './meter-utils';
 import { calibratedToRaw as calibratedToRawFromFacade, isSmeterCalibrated } from '../meters/smeter-scale';
@@ -320,6 +322,35 @@ describe('explicit meter domains override capability metadata (MOR-2425)', () =>
   });
 });
 
+// ---------------------------------------------------------------------------
+// The supply-voltage window (T168; the art direction chose 11-15 V on
+// 2026-09-08). `vdLevel`'s calibrated branch maps against this window and not
+// against the profile's calibration top, so a voltage lands in the same place
+// whatever table the profile declares. This ladder is asserted verbatim under
+// the three vd tables below — top 16 V twice, top 13.8 V once; the rows are
+// [volts, expected vdLevel].
+// ---------------------------------------------------------------------------
+const SUPPLY_VOLTAGE_WINDOW_LADDER: readonly (readonly [number, number])[] = [
+  [10.5, 0],
+  [11, 0],
+  [12.0, 0.25],
+  [13.8, 0.7],
+  [15, 1],
+  [16, 1],
+];
+
+function expectWindowedVdLevel(): void {
+  for (const [volts, fraction] of SUPPLY_VOLTAGE_WINDOW_LADDER) {
+    expect(vdLevel(volts), `vdLevel(${volts})`).toBeCloseTo(fraction);
+  }
+}
+
+describe('SUPPLY_VOLTAGE_WINDOW', () => {
+  it('is the 11-15 V window the level function and every face label share', () => {
+    expect(SUPPLY_VOLTAGE_WINDOW).toEqual({ min: 11, max: 15 });
+  });
+});
+
 describe('formatVolts / vdLevel (calibrated: input is volts)', () => {
   it('renders the bench supply voltage as-is', () => {
     expect(formatVolts(13.8)).toBe('13.8 V');
@@ -327,9 +358,11 @@ describe('formatVolts / vdLevel (calibrated: input is volts)', () => {
   it('renders 0 V', () => {
     expect(formatVolts(0)).toBe('0.0 V');
   });
-  it('vdLevel normalizes against the 16 V top knot', () => {
-    expect(vdLevel(13.8)).toBeCloseTo(13.8 / 16);
-    expect(vdLevel(16)).toBeCloseTo(1.0);
+  it('vdLevel maps into the fixed window, not against this table top of 16 V', () => {
+    expectWindowedVdLevel();
+  });
+  it('vdScale reports the window this profile\'s bar is drawn against', () => {
+    expect(vdScale()).toEqual(SUPPLY_VOLTAGE_WINDOW);
   });
 });
 
@@ -508,8 +541,8 @@ describe('TX meters — IC-7300 profile anchors (MOR-1527)', () => {
     expect(formatAmps(10)).toBe('10.0 A');
   });
 
-  it('vdLevel normalizes against the 16 V top knot from this profile', () => {
-    expect(vdLevel(13.8)).toBeCloseTo(13.8 / 16);
+  it('vdLevel maps into the fixed window, not against this profile\'s 16 V top knot', () => {
+    expectWindowedVdLevel();
   });
 
   it('marks a reading at this profile’s own drain tops with "+" (T164)', () => {
@@ -564,6 +597,10 @@ describe('formatVolts / formatAmps — clamped at the calibration top (T164)', (
     expect(formatVolts(12.4)).toBe('12.4 V');
     expect(formatAmps(0)).toBe('0.0 A');
     expect(formatAmps(0.5)).toBe('0.5 A');
+  });
+
+  it('maps vdLevel into the same window as every other profile, though this table tops out at 13.8 V (T168)', () => {
+    expectWindowedVdLevel();
   });
 
   it('mirrors the drain tables rigs/ftx1.toml declares', () => {
