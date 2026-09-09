@@ -28,9 +28,8 @@
 
   const rfLabel = (state: RadioWideIndicatorsViewModel['rfState']): string =>
     state === 'transmitting' ? 'TX'
-      : state === 'receiving' ? 'RX'
-        : state === 'uncertain' ? 'TX?'
-          : 'RF ?';
+      : state === 'uncertain' ? 'TX?'
+        : '';
 
   function numeric(field: ReceiverIndicatorField<number>): string {
     return field.reading.status === 'known' ? String(field.reading.value) : '—';
@@ -181,7 +180,6 @@
     <div class="facts" aria-label="Radio-wide facts">
       <span
         class:tx={radioWide.rfState === 'transmitting'}
-        class:rx={radioWide.rfState === 'receiving'}
         class="rf-lamp"
         data-indicator-fact="rf-authority"
         data-indicator-rf={radioWide.rfState}
@@ -230,8 +228,8 @@
     font-size: 10px;
     line-height: 1.4;
   }
+  .rf-lamp { min-inline-size: 3ch; box-sizing: content-box; }
   .rf-lamp.tx { color: var(--v2-accent-red, #ff4545); border-color: currentColor; }
-  .rf-lamp.rx { color: var(--v2-accent-cyan, #00d4ff); border-color: currentColor; }
   .fact[data-state='on'], .fact[data-state='known'] { color: var(--v2-text-primary, #e8e8e8); }
   .fact[data-state='off'], .fact[data-state='unknown'] { color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
   .s-meter { min-width: 0; overflow: hidden; }
