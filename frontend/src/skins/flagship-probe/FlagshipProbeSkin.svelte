@@ -12,6 +12,14 @@
   What it deliberately does NOT do: the `memory` surface is not declared, the
   type ladder is not applied, and no key is given a lamp.
 
+  THE BAND KEY PRINTS ITS NAME ONLY: `bandPermitCaption={false}` suppresses
+  the key's printed permit caption and nothing else, the permit itself
+  staying in the key's accessible name and its `data-default-permit` —
+  `semantic/__tests__/BandInstrumentHost.isolated.test.ts`'s "suppresses only
+  the printed caption, keeping the accessible name and the attribute" pins
+  that split at the surface, and `__tests__/FlagshipProbe.component.test.ts`
+  requires it of the keys this shell mounts.
+
   ARRANGEMENT. Two receivers side by side in BOTH arrangements, and the
   panorama always between the two rails, never under one:
 
@@ -67,7 +75,7 @@
 
 <div class="flagship-probe" data-testid="flagship-geometry-probe">
   <div class="probe-stage" data-testid="probe-stage">
-    <SemanticRadioSurfaces strips="dual" />
+    <SemanticRadioSurfaces strips="dual" bandPermitCaption={false} />
     <!--
       `hideScopeControls`: the fact-backed half of the spectrum toolbar is
       suppressed because the semantic `scopeControls` surface renders it,

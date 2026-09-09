@@ -128,8 +128,11 @@ const DOM_BACKED: Readonly<Record<string, () => boolean>> = {
   'dual-receiver-cockpit': () => /<SemanticRadioSurfaces strips="dual"\s*\/>/.test(cockpitShellSource),
   // T160 PR-1: the geometry probe mounts the same dual-receiver composition
   // unconditionally, so every surface its manifest declares has a real DOM
-  // path rather than a forward declaration.
-  'flagship-probe': () => /<SemanticRadioSurfaces strips="dual"\s*\/>/.test(flagshipProbeShellSource),
+  // path rather than a forward declaration. Written in `peer-split`'s
+  // attribute-order-free form below, because this shell now passes a
+  // presentation prop beside `strips` — what is asserted is the dual mount,
+  // not the rest of the attribute list.
+  'flagship-probe': () => /<SemanticRadioSurfaces(?=[^>]*\bstrips\s*=\s*"dual")[^>]*\/>/.test(flagshipProbeShellSource),
   // MOR-2151: PeerSplitLayout.svelte mounts the same dual-receiver
   // composition unconditionally, so its manifest-declared VFO/RX-TX
   // surfaces have a real DOM path rather than a forward declaration.
