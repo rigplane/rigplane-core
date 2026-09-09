@@ -139,18 +139,19 @@ const WIDTH_FOR: Record<SkinId, number> = {
   'lcd-scope': 900,
   'sdr-test': 1400,
   'mobile': 390,
-  // MOR-2155: `peer-split` has no picker/resolveSkinId path (MOR-2152), so
-  // this file's TX-authority sweeps never request it directly — it is here
-  // only to satisfy `Record<SkinId, number>` exhaustiveness. 1600 is unused
-  // by every other entry in this table.
+  // MOR-2155: this file's TX-authority sweeps never request `peer-split`
+  // directly, so this entry is here only to satisfy `Record<SkinId, number>`
+  // exhaustiveness. 1600 is unused by every other entry in this table.
   'peer-split': 1600,
   'unified-instrument': 1280,
   'panadapter-first': 1281,
   // Production entrypoint is readonly and receives no command callback.
   'dual-sdr-face': 1700,
-  // T160 PR-1: same as `peer-split` above — no picker/resolveSkinId path, so
-  // this entry exists only for `Record<SkinId, number>` exhaustiveness. 1800
-  // is unused by every other entry in this table.
+  // T160 PR-1: `flagship-probe` is reached only through the QA
+  // `?layout=flagship-probe` override (`lib/stores/qa-cockpit-override.ts`),
+  // which this file's width knob does not set, so this entry exists only for
+  // `Record<SkinId, number>` exhaustiveness. 1800 is unused by every other
+  // entry in this table.
   'flagship-probe': 1800,
 };
 function widthToSkin(): SkinId {

@@ -244,9 +244,11 @@ const WIDTH_FOR: Record<SkinId, number> = {
   'unified-instrument': 1280,
   'panadapter-first': 1281,
   'dual-sdr-face': 1700,
-  // T160 PR-1: no picker or `resolveSkinId` path reaches this skin, so this
-  // entry only satisfies `Record<SkinId, number>` exhaustiveness. 1800 is
-  // unused by every other entry in this table.
+  // T160 PR-1: `flagship-probe` is reached only through the QA
+  // `?layout=flagship-probe` override (`lib/stores/qa-cockpit-override.ts`),
+  // which this file's width knob does not set, so this entry only satisfies
+  // `Record<SkinId, number>` exhaustiveness. 1800 is unused by every other
+  // entry in this table.
   'flagship-probe': 1800,
 };
 function widthToSkin(): SkinId {
