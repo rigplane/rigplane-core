@@ -511,6 +511,66 @@ describe('TX meters — IC-7300 profile anchors (MOR-1527)', () => {
   it('vdLevel normalizes against the 16 V top knot from this profile', () => {
     expect(vdLevel(13.8)).toBeCloseTo(13.8 / 16);
   });
+
+  it('marks a reading at this profile’s own drain tops with "+" (T164)', () => {
+    expect(formatVolts(16)).toBe('16.0+ V');
+    expect(formatAmps(25)).toBe('25.0+ A');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Drain readings clamped at the calibration top (T164, owner ruling R57
+// 2026-09-08).
+//
+// `src/rigplane/runtime/meter_cal.py: interpolate_meter` returns the last
+// knot's `actual` for every raw at or above that knot's `raw`. The FTX-1
+// drain tables mirrored below top out at raw 210 and raw 29 — both under the
+// 255 device-scale ceiling — so any larger raw publishes exactly the top
+// value. Rendering that as an exact reading would state a number the table
+// cannot support, so the top is rendered with a trailing "+" instead.
+// ---------------------------------------------------------------------------
+
+const FTX1_DRAIN_METER_CALS = {
+  vd: [
+    { raw: 0, actual: 0.0, label: '0' },
+    { raw: 210, actual: 13.8, label: '13.8' },
+  ],
+  id: [
+    { raw: 0, actual: 0.0, label: '0' },
+    { raw: 29, actual: 1.0, label: '1.0' },
+  ],
+};
+
+describe('formatVolts / formatAmps — clamped at the calibration top (T164)', () => {
+  beforeEach(() => {
+    setCapabilities(makeCaps({
+      model: 'FTX-1',
+      meterCalibrations: FTX1_DRAIN_METER_CALS,
+    }));
+  });
+
+  it('renders the drain voltage top as "13.8+ V", at the top and beyond it', () => {
+    expect(formatVolts(13.8)).toBe('13.8+ V');
+    expect(formatVolts(20)).toBe('13.8+ V');
+  });
+
+  it('renders the drain current top as "1.0+ A", at the top and beyond it', () => {
+    expect(formatAmps(1.0)).toBe('1.0+ A');
+    expect(formatAmps(5)).toBe('1.0+ A');
+  });
+
+  it('leaves readings below the top as plain numbers', () => {
+    expect(formatVolts(0)).toBe('0.0 V');
+    expect(formatVolts(12.4)).toBe('12.4 V');
+    expect(formatAmps(0)).toBe('0.0 A');
+    expect(formatAmps(0.5)).toBe('0.5 A');
+  });
+
+  it('mirrors the drain tables rigs/ftx1.toml declares', () => {
+    const tomlSource = readFileSync('../rigs/ftx1.toml', 'utf8');
+    expect(parseTomlCalibrationTable(tomlSource, 'vd')).toEqual(FTX1_DRAIN_METER_CALS.vd);
+    expect(parseTomlCalibrationTable(tomlSource, 'id')).toEqual(FTX1_DRAIN_METER_CALS.id);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -540,7 +600,7 @@ function parseTomlCalibrationTable(tomlSource: string, meterKey: string): TomlCa
       const actual = body.match(/actual\s*=\s*(-?[\d.]+)/)?.[1];
       const label = body.match(/label\s*=\s*"([^"]*)"/)?.[1];
       if (raw === undefined || actual === undefined || label === undefined) {
-        throw new Error(`Unparseable [[meters.${meterKey}.calibration]] knot while reading rigs/ic7300.toml`);
+        throw new Error(`Unparseable [[meters.${meterKey}.calibration]] knot`);
       }
       return { raw: Number(raw), actual: Number(actual), label };
     });
