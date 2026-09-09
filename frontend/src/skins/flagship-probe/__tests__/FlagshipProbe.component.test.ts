@@ -129,6 +129,7 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
 });
 
 import FlagshipProbeSkin from '../FlagshipProbeSkin.svelte';
+import SemanticRadioSurfaces from '../../../components-v2/wiring/SemanticRadioSurfaces.svelte';
 // Read through the app-wide registration barrel, never through a direct
 // module import, so the zone ids asserted below are the ids the app registers.
 import { flagshipProbeLayout } from '../../../presentation/layouts/declarations';
@@ -202,6 +203,54 @@ const mainSubCaps = (): Capabilities => ({
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: null, audioFftAvailable: false,
 } as unknown as Capabilities);
+
+/**
+ * IC-7300 shaped: ONE receiver whose A/B identity the radio never confirms,
+ * so the adapter emits a selected and an unselected RELATIVE position on the
+ * single MAIN receiver (`relativeVfoIdentityUnknown` in
+ * `lib/runtime/props/panel-props.ts`). Meter readings for the same reason
+ * `mainSubState` carries them.
+ */
+function abState(): ServerState {
+  const paths = ['split', 'dualWatch', 'txTarget', 'powerMeter', 'swrMeter', 'alcMeter',
+    'main.freqHz', 'main.mode', 'main.filter', 'main.sMeter',
+    'main.unselectedVfo.freqHz', 'main.unselectedVfo.mode', 'main.unselectedVfo.filterNum'];
+  return {
+    split: false, dualWatch: false, ptt: false,
+    txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
+    main: {
+      freqHz: 14250000, mode: 'USB', filter: 1, sMeter: 42,
+      unselectedVfo: { freqHz: 14300000, mode: 'LSB', filterNum: 2 },
+    },
+    powerMeter: 0, swrMeter: 0, alcMeter: 0,
+    fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
+  } as unknown as ServerState;
+}
+
+const abCaps = (): Capabilities => ({
+  ...mainSubCaps(),
+  model: 'fixture-1ab', receivers: 1, vfoScheme: 'ab', vfoReadback: 'selected_unselected',
+  capabilities: (mainSubCaps().capabilities as readonly string[])
+    .filter((tag) => tag !== 'dual_rx' && tag !== 'lan_dual_rx_audio_routing'),
+} as unknown as Capabilities);
+
+/** FTX-1 shaped: two receivers, one unslotted VFO each. */
+function abSharedState(): ServerState {
+  const paths = ['active', 'split', 'dualWatch', 'txTarget', 'powerMeter', 'swrMeter', 'alcMeter',
+    'main.freqHz', 'main.mode', 'main.filter', 'main.sMeter',
+    'sub.freqHz', 'sub.mode', 'sub.filter', 'sub.sMeter'];
+  return {
+    active: 'MAIN', split: false, dualWatch: false, ptt: false,
+    txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
+    main: { freqHz: 14250000, mode: 'USB', filter: 1, sMeter: 42 },
+    sub: { freqHz: 7100000, mode: 'LSB', filter: 1, sMeter: 7 },
+    powerMeter: 0, swrMeter: 0, alcMeter: 0,
+    fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
+  } as unknown as ServerState;
+}
+
+const abSharedCaps = (): Capabilities =>
+  ({ ...mainSubCaps(), model: 'fixture-ab-shared', vfoScheme: 'ab_shared' } as unknown as Capabilities);
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -292,8 +341,8 @@ describe('the arrangement mounts the surfaces the manifest declares', () => {
     const placed = [...source.matchAll(/\[data-zone-id='([a-z-]+)'\]/g)].map(([, id]) => id);
     for (const id of new Set(placed)) expect(qa(`[data-zone-id="${id}"]`)).toHaveLength(1);
     // Total in both directions: the mounted zones are exactly the placed ones
-    // plus the deck's two receiver strips, which this skin places by
-    // `data-strip-receiver` instead — so a declared zone that mounts nothing,
+    // plus the deck's two slot strips, which this skin places by
+    // `data-strip-slot` instead — so a declared zone that mounts nothing,
     // and a mounted zone this arrangement never places, both fail here.
     expect(qa('[data-zone-id]').map((el) => el.dataset.zoneId).sort())
       .toEqual([...new Set([...placed, 'primary-vfo', 'secondary-vfo'])].sort());
@@ -307,6 +356,146 @@ describe('the arrangement mounts the surfaces the manifest declares', () => {
     const panorama = q('[data-testid="probe-panorama"]')!;
     expect(panorama).not.toBeNull();
     expect(panorama.querySelector('[data-hide-scope-controls="true"]')).not.toBeNull();
+  });
+});
+
+describe('the deck is stripped by SLOT, not by receiver (owner ruling R58)', () => {
+  const strips = () => qa('[data-testid^="channel-strip-"]');
+  const slot = (position: 'primary' | 'secondary') => q(`[data-strip-slot="${position}"]`)!;
+  const tiles = (el: HTMLElement) =>
+    [...el.querySelectorAll<HTMLElement>('[data-vfo-tile]')].map((tile) => tile.dataset.vfoSlot);
+  const indicatorRows = (el: HTMLElement) =>
+    [...el.querySelectorAll<HTMLElement>('[data-testid="vfo-indicator-row"]')];
+  const surfaceName = (el: HTMLElement) =>
+    el.querySelector('[data-testid="vfo-surface"]')!.getAttribute('aria-label');
+
+  // Kills: the probe left on the default `stripBy="receiver"`, which gives a
+  // single-receiver radio ONE strip — both its VFO tiles inside it — and
+  // leaves the deck's `rx-sub` area with nothing to place.
+  it('gives a one-receiver radio two slots: the selected VFO, then the unselected one', () => {
+    h.state = abState();
+    h.caps = abCaps();
+    render();
+    expect(strips()).toHaveLength(2);
+    expect([slot('primary'), slot('secondary')].map((el) => el.dataset.stripReceiver))
+      .toEqual(['MAIN', 'MAIN']);
+    expect(tiles(slot('primary'))).toEqual(['selected']);
+    expect(tiles(slot('secondary'))).toEqual(['unselected']);
+  });
+
+  // R58: the IC-7300 has ONE receiver, so its second slot carries no receiver
+  // instruments. Kills: handing the second slot the receiver's indicators —
+  // by slicing them in, or by omitting `indicatorReceiver`, which means
+  // "every indicator" to `VfoSurface` rather than none.
+  it('draws the one receiver\'s indicator row once, in the first slot', () => {
+    h.state = abState();
+    h.caps = abCaps();
+    render();
+    expect(indicatorRows(slot('primary'))).toHaveLength(1);
+    expect(indicatorRows(slot('secondary'))).toEqual([]);
+  });
+
+  // R58: on a two-receiver radio the second slot IS the SUB receiver, and it
+  // keeps its own instruments. Kills: the slot path collapsing a
+  // two-receiver deck to one receiver's positions, and SUB losing its row.
+  it('gives a two-receiver radio MAIN then SUB, each with its own indicator row', () => {
+    h.state = abSharedState();
+    h.caps = abSharedCaps();
+    render();
+    expect(strips()).toHaveLength(2);
+    expect([slot('primary'), slot('secondary')].map((el) => el.dataset.stripReceiver))
+      .toEqual(['MAIN', 'SUB']);
+    for (const position of ['primary', 'secondary'] as const) {
+      expect(indicatorRows(slot(position))).toHaveLength(1);
+    }
+  });
+
+  // R58: the left column IS the active slot, so at most ONE column may say
+  // so. Kills: marking a column from `isActiveStrip(view, receiverId)`, which
+  // is true of BOTH columns here — one receiver, two columns — and paints the
+  // accent border on a column the operator is not working in.
+  it('marks the active slot alone on a one-receiver deck', () => {
+    h.state = abState();
+    h.caps = abCaps();
+    render();
+    expect([slot('primary'), slot('secondary')].map((el) => el.dataset.stripActive))
+      .toEqual(['true', 'false']);
+  });
+
+  // The other half of the same mark: a two-receiver deck's column IS a
+  // receiver, so the mark follows the ACTIVE RECEIVER, as it did before this
+  // ticket. Kills: marking the primary column unconditionally, and reading
+  // the active slot instead of the active receiver — each receiver's only
+  // position is its own active one here.
+  it.each([
+    ['MAIN', ['true', 'false']],
+    ['SUB', ['false', 'true']],
+  ] as const)('follows the active receiver on a two-receiver deck (%s active)', (active, marks) => {
+    h.state = { ...abSharedState(), active } as unknown as ServerState;
+    h.caps = abSharedCaps();
+    render();
+    expect([slot('primary'), slot('secondary')].map((el) => el.dataset.stripActive))
+      .toEqual([...marks]);
+  });
+
+  // `groupLabel` exists so assistive tech can tell the mounted surfaces apart
+  // (`SemanticRadioSurfaces.svelte`, the strip's own comment). Naming a slot
+  // column by its receiver gave a one-receiver deck two identical names.
+  // Kills: taking every slot column's name from its receiver id.
+  it('names the two columns of a one-receiver deck differently', () => {
+    h.state = abState();
+    h.caps = abCaps();
+    render();
+    expect([slot('primary'), slot('secondary')].map(surfaceName))
+      .toEqual(['Receiver MAIN', 'Unselected VFO']);
+  });
+
+  // A column that carries its receiver's instruments keeps the receiver name.
+  // Kills: naming every slot column by its VFO position, which on this deck
+  // gives the two bare receiver ids.
+  it('keeps the receiver name on a two-receiver deck', () => {
+    h.state = abSharedState();
+    h.caps = abSharedCaps();
+    render();
+    expect([slot('primary'), slot('secondary')].map(surfaceName))
+      .toEqual(['Receiver MAIN', 'Receiver SUB']);
+  });
+
+  // T207, STOPGAP: "Select VFO A / Select VFO B" resolves which of the deck's
+  // two columns is A and which is B — a relation BETWEEN the columns, drawn
+  // until now inside each of them, twice. Withheld from the slot path until
+  // the between-columns surface exists (T183): a missing control is honest,
+  // one drawn inside a column reads as belonging to that column. Kills:
+  // leaving the selectors in the slot-stripped deck.
+  it('withholds the A/B identity selectors from a slot-stripped deck', () => {
+    h.state = abState();
+    h.caps = abCaps();
+    render();
+    expect(qa('[data-testid="vfo-identity-selectors"]')).toEqual([]);
+  });
+
+  // The control for the claim above: the WIRING still strips by receiver
+  // unless a face asks otherwise, so the same one-receiver fixture that gives
+  // the probe two slots gives the default deck one strip and no
+  // `data-strip-slot` attribute at all, and its A/B identity selectors —
+  // withheld on the slot path above — still rendered. Kills: a `stripBy`
+  // default of `'slot'`, and a suppression that reaches the default deck.
+  it('leaves the wiring default at one strip per receiver', () => {
+    h.state = abState();
+    h.caps = abCaps();
+    target = document.createElement('div');
+    document.body.appendChild(target);
+    const plan = defaultPlan();
+    component = mount(SemanticRadioSurfaces, {
+      target,
+      props: { strips: 'dual' as const },
+      context: new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]),
+    });
+    flushSync();
+    expect(strips()).toHaveLength(1);
+    expect(qa('[data-strip-slot]')).toEqual([]);
+    expect(tiles(strips()[0])).toEqual(['selected', 'unselected']);
+    expect(qa('[data-testid="vfo-identity-selectors"]')).toHaveLength(1);
   });
 });
 
@@ -324,9 +513,9 @@ describe('the panorama sits between the two rails, in both arrangements', () => 
     expect(Math.max(...panorama)).toBeLessThan(lastColumn);
   });
 
-  // Kills: stacking the receivers, and putting any third area — the transmit
+  // Kills: stacking the slots, and putting any third area — the transmit
   // key's old `rx-mid` track among them — back between them.
-  it.each([[0, 'narrow'], [1, 'wide']])('template %i (%s) keeps the two receivers side by side', (index) => {
+  it.each([[0, 'narrow'], [1, 'wide']])('template %i (%s) keeps the two slots side by side', (index) => {
     const template = templates()[index as number];
     const deckRow = rowOf(template, 'rx-main');
     expect(rowOf(template, 'rx-sub')).toBe(deckRow);
@@ -488,7 +677,7 @@ describe('no surface may size a track', () => {
   // surface push its own box past its column; and any `width`, `min-width`
   // or `max-width` other than zero in a grid-item rule, each of which is a
   // surface claiming track width again. Scanned over the rules whose
-  // selector names a grid item — `[data-zone-id`, `[data-strip-receiver`,
+  // selector names a grid item — `[data-zone-id`, `[data-strip-slot`,
   // `.probe-panorama` — so a width on `.flagship-probe`, the query
   // container, is out of scope rather than a failure.
   it('caps every grid item at its column: no grid-item rule declares a width, min-width or max-width other than zero', () => {
@@ -497,7 +686,7 @@ describe('no surface may size a track', () => {
     // Innermost rules only: `[^{}]` on both sides skips the `@container`
     // prelude and cannot span a nested block.
     const declared = [...style.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
-      .filter(([, selector]) => /\[data-zone-id|\[data-strip-receiver|\.probe-panorama/.test(selector))
+      .filter(([, selector]) => /\[data-zone-id|\[data-strip-slot|\.probe-panorama/.test(selector))
       .flatMap(([, , body]) => [...body.matchAll(/(?<![-\w(])(?:min-|max-)?width:\s*([^;{}]+)/g)])
       .map(([, value]) => value.trim());
     expect(declared.length).toBeGreaterThan(1);

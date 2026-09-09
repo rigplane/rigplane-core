@@ -89,7 +89,7 @@
     createFiniteRendererContext,
     type FiniteRendererContext,
   } from '../../primitives/control-instruments/control-instrument-renderer.svelte';
-  import type { RadioViewModel, VfoSlot } from '../../semantic/radio-view-model';
+  import type { ReceiverId, RadioViewModel, VfoSlot } from '../../semantic/radio-view-model';
   import RfFrontEndSurface, {
     type RfFrontEndLevelField,
   } from '../../semantic/RfFrontEndSurface.svelte';
@@ -133,7 +133,9 @@
     type ScopeChoiceField, type ScopeToggleField,
   } from '../../semantic/ScopeControlsSurface.svelte';
   import {
-    forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
+    forReceiver, forSlot, receiversOf, slotsOf,
+    isActiveStrip, isActiveSlotStrip, isOperationalStrip,
+    type StripSlot,
   } from './dual-receiver-strips';
   import { guardRadioViewModel } from './radio-view-model-guard';
   import type {
@@ -157,6 +159,14 @@
     children?: Snippet<[InstrumentComposition]>;
     externalPresentation?: ExternalPresentation | null;
     strips?: 'single' | 'dual';
+    /**
+     * What ONE strip of the `dual` composition is. `'receiver'` (default) is
+     * the shipped deck: one strip per structural receiver. `'slot'` is owner
+     * ruling R58's deck: one strip per DECK SLOT, so a single-receiver radio
+     * gets its unselected VFO in the second column. Read only under
+     * `strips === 'dual'`.
+     */
+    stripBy?: 'receiver' | 'slot';
     regions?: boolean;
     regionContent?: Snippet<[Snippet | undefined, ManagedScopeRegion | undefined]>;
     scopeControlsInRegionContent?: boolean;
@@ -191,7 +201,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    children: hostedChildren, externalPresentation = null, strips = 'single', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', bandPermitCaption = true, displayFrameSource, readonlyDisplay,
+    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', bandPermitCaption = true, displayFrameSource, readonlyDisplay,
   }: Props = $props();
 
   /**
@@ -263,6 +273,65 @@
         receiverId, zoneId: index === 0 ? 'primary-vfo' : 'secondary-vfo',
       }))
       .filter(({ zoneId }) => zoneShows(zoneId, 'vfo'));
+  }
+  interface RenderedStrip {
+    key: string;
+    receiverId: ReceiverId;
+    zoneId: string;
+    /** Omitted on the `receiver` path, so its `.channel-strip` carries no
+     *  `data-strip-slot` attribute at all. */
+    slotPosition?: 'primary' | 'secondary';
+    sliced: RadioViewModel;
+    /** Whether this column carries the deck's active mark. Per RECEIVER on the
+     *  `receiver` path; per SLOT on the `slot` path, where two columns can
+     *  share one receiver (`isActiveSlotStrip`). */
+    active: boolean;
+    /** This column's accessible group name. */
+    groupLabel: string;
+  }
+  /**
+   * A slot column's accessible name. The column carrying the receiver's
+   * instruments takes the receiver name the shipped decks use; a column
+   * carrying none is named by its own VFO position, so the two columns of a
+   * one-receiver deck are not one name twice (MOR-2425).
+   */
+  function slotGroupLabel(slot: StripSlot, sliced: RadioViewModel): string {
+    const positionLabel = sliced.vfos[0]?.label;
+    return slot.ownsReceiverInstruments || positionLabel === undefined
+      ? t('core.vfo.receiverGroupLabel', { receiver: slot.receiver })
+      : positionLabel;
+  }
+  /**
+   * MOR-2425 / R58: the same two zones, sliced by DECK SLOT instead of by
+   * receiver. On a two-receiver radio the two agree entry for entry; on a
+   * one-receiver radio the slot path gives the unselected VFO the second
+   * column, with no receiver instruments of its own (`forSlot`).
+   */
+  function renderedStrips(model: RadioViewModel): RenderedStrip[] {
+    if (stripBy === 'slot') {
+      return slotsOf(model)
+        .map((slot, index): RenderedStrip => {
+          const sliced = forSlot(model, slot);
+          return {
+            key: slot.key,
+            receiverId: slot.receiver,
+            zoneId: index === 0 ? 'primary-vfo' : 'secondary-vfo',
+            slotPosition: index === 0 ? 'primary' : 'secondary',
+            sliced,
+            active: isActiveSlotStrip(model, slot),
+            groupLabel: slotGroupLabel(slot, sliced),
+          };
+        })
+        .filter(({ zoneId }) => zoneShows(zoneId, 'vfo'));
+    }
+    return visibleStrips(model).map(({ receiverId, zoneId }): RenderedStrip => ({
+      key: receiverId,
+      receiverId,
+      zoneId,
+      sliced: forReceiver(model, receiverId),
+      active: isActiveStrip(model, receiverId),
+      groupLabel: t('core.vfo.receiverGroupLabel', { receiver: receiverId }),
+    }));
   }
 
   const semanticHandlers = bindSemanticSurfaceHandlers();
@@ -1630,19 +1699,21 @@
   {#if view}
     {#if strips === 'dual'}
       <div class="channel-strips" data-testid="channel-strips">
-        {#each visibleStrips(view) as { receiverId, zoneId } (receiverId)}
+        {#each renderedStrips(view) as { key, receiverId, zoneId, slotPosition, sliced, active, groupLabel } (key)}
           <!--
-            `data-zone-id`: `ReceiverId` is `'MAIN' | 'SUB'`, so the index is
-            total over the manifest's two per-receiver zones. A degraded
-            single-receiver view model renders `primary-vfo` and NO
-            `secondary-vfo` — an absent zone, never an empty promise.
+            `data-zone-id`: the first strip is `primary-vfo` and every later
+            one `secondary-vfo`.
+            `data-strip-slot` is emitted on the `slot` path only: on the
+            `receiver` path `slotPosition` is undefined and the attribute is
+            absent, which is what keeps the shipped decks unchanged.
           -->
           <div
             class="channel-strip"
-            data-testid={`channel-strip-${receiverId}`}
+            data-testid={`channel-strip-${key}`}
             data-zone-id={zoneId}
             data-strip-receiver={receiverId}
-            data-strip-active={isActiveStrip(view, receiverId)}
+            data-strip-slot={slotPosition}
+            data-strip-active={active}
             data-strip-operational={isOperationalStrip(view, receiverId)}
           >
             <!--
@@ -1656,7 +1727,14 @@
               a strip owns nothing but its own receiver.
               `groupLabel`: without it all three mounted surfaces share one
               generic accessible name and assistive tech cannot tell the
-              strips apart.
+              strips apart. On the `slot` path two columns can share one
+              receiver, so the one carrying no receiver instruments is named
+              by its own VFO position instead (`slotGroupLabel`).
+              `suppressIdentitySelectors` (T207, STOPGAP): the A/B identity
+              selectors resolve which COLUMN is A and which is B — a relation
+              between the two, not a fact of either — so the slot path
+              withholds them until that relation has a surface of its own
+              (T183).
               `disabled` (MOR-1256): a structurally-dual, operationally-
               degraded receiver (`dual-rx-unavailable`) keeps its strip
               PRESENT but forces its select controls inert — the shared
@@ -1664,14 +1742,15 @@
               radio-wide regardless of which strip this gates.
             -->
             <VfoSurface
-              viewModel={forReceiver(view, receiverId)}
+              viewModel={sliced}
               selectionPoolSize={view.vfos.length}
               showRadioWideFacts={false}
-              groupLabel={t('core.vfo.receiverGroupLabel', { receiver: receiverId })}
+              {groupLabel}
               onSelectVfo={selectVfo}
               onTuneFrequency={tuneFrequency}
               disabled={!isOperationalStrip(view, receiverId)}
               indicatorReceiver={receiverId}
+              suppressIdentitySelectors={stripBy === 'slot'}
               {receiverInstruments}
               continuitySession={meterContinuitySession}
               {pendingFrequencyHz}
