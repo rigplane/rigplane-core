@@ -46,6 +46,9 @@ export interface StripSlot {
   /** Whether this is the FIRST slot backed by `receiver`, and so the one
    *  that carries that receiver's indicator row and S-meter. */
   readonly ownsReceiverInstruments: boolean;
+  /** Whether another slot of this deck is backed by the same receiver — true
+   *  only where one receiver backs more than one column. */
+  readonly sharesReceiver: boolean;
 }
 
 function slotIdentity(slot: VfoSlot): string {
@@ -73,6 +76,7 @@ export function slotsOf(view: RadioViewModel): readonly StripSlot[] {
       receiver,
       entries: view.vfos.flatMap((vfo, index) => (vfo.receiver === receiver ? [index] : [])),
       ownsReceiverInstruments: true,
+      sharesReceiver: false,
     }));
   }
   const indices = view.vfos.map((_vfo, index) => index);
@@ -85,6 +89,7 @@ export function slotsOf(view: RadioViewModel): readonly StripSlot[] {
     receiver: view.vfos[index].receiver,
     entries: [index],
     ownsReceiverInstruments: position === 0,
+    sharesReceiver: ordered.length > 1,
   }));
 }
 
@@ -106,6 +111,18 @@ export function forSlot(view: RadioViewModel, slot: StripSlot): RadioViewModel {
       ? view.receiverIndicators.filter((indicator) => indicator.receiver === slot.receiver)
       : [],
   };
+}
+
+/**
+ * `isActiveStrip`'s per-slot counterpart: at most ONE column carries the
+ * active mark (R58). A column whose receiver backs no other column keeps
+ * today's rule — the mark follows the active RECEIVER, so a two-receiver deck
+ * is unchanged; where two columns share a receiver, the mark goes to the one
+ * holding that receiver's active position.
+ */
+export function isActiveSlotStrip(view: RadioViewModel, slot: StripSlot): boolean {
+  if (!isActiveStrip(view, slot.receiver)) return false;
+  return !slot.sharesReceiver || slot.entries.some((index) => view.vfos[index].isActiveSlot);
 }
 
 export function isActiveStrip(view: RadioViewModel, receiver: ReceiverId): boolean {

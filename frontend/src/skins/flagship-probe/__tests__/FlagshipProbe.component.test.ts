@@ -341,7 +341,7 @@ describe('the arrangement mounts the surfaces the manifest declares', () => {
     const placed = [...source.matchAll(/\[data-zone-id='([a-z-]+)'\]/g)].map(([, id]) => id);
     for (const id of new Set(placed)) expect(qa(`[data-zone-id="${id}"]`)).toHaveLength(1);
     // Total in both directions: the mounted zones are exactly the placed ones
-    // plus the deck's two receiver strips, which this skin places by
+    // plus the deck's two slot strips, which this skin places by
     // `data-strip-slot` instead — so a declared zone that mounts nothing,
     // and a mounted zone this arrangement never places, both fail here.
     expect(qa('[data-zone-id]').map((el) => el.dataset.zoneId).sort())
@@ -366,6 +366,8 @@ describe('the deck is stripped by SLOT, not by receiver (owner ruling R58)', () 
     [...el.querySelectorAll<HTMLElement>('[data-vfo-tile]')].map((tile) => tile.dataset.vfoSlot);
   const indicatorRows = (el: HTMLElement) =>
     [...el.querySelectorAll<HTMLElement>('[data-testid="vfo-indicator-row"]')];
+  const surfaceName = (el: HTMLElement) =>
+    el.querySelector('[data-testid="vfo-surface"]')!.getAttribute('aria-label');
 
   // Kills: the probe left on the default `stripBy="receiver"`, which gives a
   // single-receiver radio ONE strip — both its VFO tiles inside it — and
@@ -408,11 +410,76 @@ describe('the deck is stripped by SLOT, not by receiver (owner ruling R58)', () 
     }
   });
 
+  // R58: the left column IS the active slot, so at most ONE column may say
+  // so. Kills: marking a column from `isActiveStrip(view, receiverId)`, which
+  // is true of BOTH columns here — one receiver, two columns — and paints the
+  // accent border on a column the operator is not working in.
+  it('marks the active slot alone on a one-receiver deck', () => {
+    h.state = abState();
+    h.caps = abCaps();
+    render();
+    expect([slot('primary'), slot('secondary')].map((el) => el.dataset.stripActive))
+      .toEqual(['true', 'false']);
+  });
+
+  // The other half of the same mark: a two-receiver deck's column IS a
+  // receiver, so the mark follows the ACTIVE RECEIVER, as it did before this
+  // ticket. Kills: marking the primary column unconditionally, and reading
+  // the active slot instead of the active receiver — each receiver's only
+  // position is its own active one here.
+  it.each([
+    ['MAIN', ['true', 'false']],
+    ['SUB', ['false', 'true']],
+  ] as const)('follows the active receiver on a two-receiver deck (%s active)', (active, marks) => {
+    h.state = { ...abSharedState(), active } as unknown as ServerState;
+    h.caps = abSharedCaps();
+    render();
+    expect([slot('primary'), slot('secondary')].map((el) => el.dataset.stripActive))
+      .toEqual([...marks]);
+  });
+
+  // `groupLabel` exists so assistive tech can tell the mounted surfaces apart
+  // (`SemanticRadioSurfaces.svelte`, the strip's own comment). Naming a slot
+  // column by its receiver gave a one-receiver deck two identical names.
+  // Kills: taking every slot column's name from its receiver id.
+  it('names the two columns of a one-receiver deck differently', () => {
+    h.state = abState();
+    h.caps = abCaps();
+    render();
+    expect([slot('primary'), slot('secondary')].map(surfaceName))
+      .toEqual(['Receiver MAIN', 'Unselected VFO']);
+  });
+
+  // A column that carries its receiver's instruments keeps the receiver name.
+  // Kills: naming every slot column by its VFO position, which on this deck
+  // gives the two bare receiver ids.
+  it('keeps the receiver name on a two-receiver deck', () => {
+    h.state = abSharedState();
+    h.caps = abSharedCaps();
+    render();
+    expect([slot('primary'), slot('secondary')].map(surfaceName))
+      .toEqual(['Receiver MAIN', 'Receiver SUB']);
+  });
+
+  // T207, STOPGAP: "Select VFO A / Select VFO B" resolves which of the deck's
+  // two columns is A and which is B — a relation BETWEEN the columns, drawn
+  // until now inside each of them, twice. Withheld from the slot path until
+  // the between-columns surface exists (T183): a missing control is honest,
+  // one drawn inside a column reads as belonging to that column. Kills:
+  // leaving the selectors in the slot-stripped deck.
+  it('withholds the A/B identity selectors from a slot-stripped deck', () => {
+    h.state = abState();
+    h.caps = abCaps();
+    render();
+    expect(qa('[data-testid="vfo-identity-selectors"]')).toEqual([]);
+  });
+
   // The control for the claim above: the WIRING still strips by receiver
   // unless a face asks otherwise, so the same one-receiver fixture that gives
   // the probe two slots gives the default deck one strip and no
-  // `data-strip-slot` attribute at all. Kills: a `stripBy` default of
-  // `'slot'`, which would change every shipped `strips="dual"` face.
+  // `data-strip-slot` attribute at all, and its A/B identity selectors —
+  // withheld on the slot path above — still rendered. Kills: a `stripBy`
+  // default of `'slot'`, and a suppression that reaches the default deck.
   it('leaves the wiring default at one strip per receiver', () => {
     h.state = abState();
     h.caps = abCaps();
@@ -428,6 +495,7 @@ describe('the deck is stripped by SLOT, not by receiver (owner ruling R58)', () 
     expect(strips()).toHaveLength(1);
     expect(qa('[data-strip-slot]')).toEqual([]);
     expect(tiles(strips()[0])).toEqual(['selected', 'unselected']);
+    expect(qa('[data-testid="vfo-identity-selectors"]')).toHaveLength(1);
   });
 });
 

@@ -29,8 +29,8 @@ describe('the flagship-probe registration', () => {
     const placed = new Set(
       [...skinSource.matchAll(/\[data-zone-id='([a-z-]+)'\]/g)].map(([, id]) => id),
     );
-    // The deck's two receiver strips are placed by `data-strip-receiver`, so
-    // their zone ids are the only declared ones the style block does not name.
+    // The deck's two slot strips are placed by `data-strip-slot`, so their
+    // zone ids are the only declared ones the style block does not name.
     const deck = new Set(['primary-vfo', 'secondary-vfo']);
     for (const zone of flagshipProbeLayout.zones) {
       expect(zone.surfaces).toHaveLength(1);
