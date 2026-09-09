@@ -577,6 +577,7 @@ export function createContinuousScalar(
         || (feedback.lifecycleId !== null
           && feedback.lifecycleId !== representedLifecycle
           && feedback.lifecycleId !== representedRequest?.observedLifecycleId));
+    if (representedLifecycleIsGone) lastDispatch = null;
     const representationRetiresDraft = representedRequest !== null
       && representedRequest.representedLifecycleId !== null
       && (representedRequest.source === 'native-input'
@@ -695,8 +696,6 @@ export function createContinuousScalar(
       if (source !== 'pointer') interaction = 'idle';
       return true;
     }
-    // A drag re-offers the same candidate on every pointermove; our own standing
-    // dispatch already put it on the radio.
     if (source === 'pointer' && lastDispatch !== null
       && Object.is(normalized, lastDispatch.value)) return true;
     localCommandRequest = input.evidence === 'command-feedback'

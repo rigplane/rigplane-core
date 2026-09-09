@@ -1604,6 +1604,78 @@ const DEDUPE_FIXTURES = [
 ] as const;
 
 describe('continuous scalar dispatch deduplication', () => {
+  it.each(['replaced', 'lost'] as const)(
+    'reoffers the pointer candidate before pointerup when its pending lifecycle is %s',
+    (change) => {
+      const { scalar, request, update } = commandSetup(
+        createRenderedNativeRangeContinuousScalarPolicy(), {
+          domain: NB_LEVEL_DOMAIN,
+          feedback: feedback('idle', { confirmed: 100 }),
+        },
+      );
+      const lease = scalar.attachRenderer();
+      const token = lease.beginPointer()!;
+      lease.pointer(token, 138);
+      update({ feedback: feedback('queued', {
+        confirmed: 100, target: 138, requestedTarget: 138, lifecycleId: 'A',
+      }) });
+      lease.pointer(token, 138);
+      expect(request.mock.calls).toEqual([[138]]);
+
+      update({ feedback: change === 'replaced'
+        ? feedback('queued', {
+          confirmed: 100, target: 140, requestedTarget: 140, lifecycleId: 'B',
+        })
+        : feedback('idle', { confirmed: 100 }) });
+      lease.pointer(token, 138);
+      lease.pointer(token, 138);
+      lease.endPointer(token);
+      lease.pointer(token, 140);
+
+      expect(request.mock.calls).toEqual([[138], [138]]);
+      expect(scalar.view.canonical).toBe(100);
+      expect(scalar.view.interaction).toBe('idle');
+    },
+  );
+
+  it('keeps pointer deduplication through own lifecycle progress and delayed older feedback', () => {
+    const older = feedback('queued', {
+      confirmed: 100, target: 120, requestedTarget: 120, lifecycleId: 'older',
+    });
+    const { scalar, request, update } = commandSetup(
+      createRenderedNativeRangeContinuousScalarPolicy(), {
+        domain: NB_LEVEL_DOMAIN, feedback: older,
+      },
+    );
+    const lease = scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+    lease.pointer(token, 138);
+
+    for (const phase of ['queued', 'dispatched', 'awaiting-confirmation'] as const) {
+      update({ feedback: feedback(phase, {
+        confirmed: 100, target: 138, requestedTarget: 138, lifecycleId: 'A',
+      }) });
+      lease.pointer(token, 138);
+      update({ feedback: older });
+      lease.pointer(token, 138);
+    }
+    update({ feedback: feedback('failed', {
+      ...older, phase: 'failed', busy: false, outcome: { phase: 'failed' },
+    }) });
+    lease.pointer(token, 138);
+    update({ feedback: feedback('confirmed', {
+      confirmed: 138, requestedTarget: 138, lifecycleId: 'A',
+      outcome: { phase: 'confirmed' },
+    }) });
+    lease.pointer(token, 138);
+    update({ feedback: feedback('idle', { confirmed: 138 }) });
+    lease.pointer(token, 138);
+    lease.endPointer(token);
+
+    expect(request.mock.calls).toEqual([[138]]);
+    expect(scalar.view.canonical).toBe(138);
+  });
+
   it.each(DEDUPE_FIXTURES)('sends one command per distinct pointer value with %s', (_name, make) => {
     const { scalar, request } = make();
     const lease = scalar.attachRenderer();
