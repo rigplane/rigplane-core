@@ -228,6 +228,9 @@ const SKIN_PLAN: Record<SkinId, readonly AppResource[]> = {
   'panadapter-first': ['hardware-scope', 'audio-fft'],
   'sdr-test': ['hardware-scope', 'audio-fft'],
   'dual-sdr-face': ['hardware-scope'],
+  // T160 PR-1: one SpectrumPanel and no audio-FFT surface — the same plan
+  // `mobile` above carries, for the same reason.
+  'flagship-probe': ['hardware-scope'],
 };
 
 const WIDTH_FOR: Record<SkinId, number> = {
@@ -241,6 +244,12 @@ const WIDTH_FOR: Record<SkinId, number> = {
   'unified-instrument': 1280,
   'panadapter-first': 1281,
   'dual-sdr-face': 1700,
+  // T160 PR-1: `flagship-probe` is reached only through the QA
+  // `?layout=flagship-probe` override (`lib/stores/qa-cockpit-override.ts`),
+  // which this file's width knob does not set, so this entry only satisfies
+  // `Record<SkinId, number>` exhaustiveness. 1800 is unused by every other
+  // entry in this table.
+  'flagship-probe': 1800,
 };
 function widthToSkin(): SkinId {
   const width = window.innerWidth;

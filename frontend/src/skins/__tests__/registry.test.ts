@@ -35,6 +35,7 @@ const entrypoints = vi.hoisted(() => {
     'sdr-test': { name: 'sdr-test' },
     'dual-receiver-cockpit': { name: 'dual-receiver-cockpit' },
     'dual-sdr-face': { name: 'dual-sdr-face' },
+    'flagship-probe': { name: 'flagship-probe' },
   };
   return table;
 });
@@ -51,6 +52,7 @@ const lazyImports = vi.hoisted(() => {
     'sdr-test': vi.fn(() => ({ default: entrypoints['sdr-test'] })),
     'dual-receiver-cockpit': vi.fn(() => ({ default: entrypoints['dual-receiver-cockpit'] })),
     'dual-sdr-face': vi.fn(() => ({ default: entrypoints['dual-sdr-face'] })),
+    'flagship-probe': vi.fn(() => ({ default: entrypoints['flagship-probe'] })),
   };
   return table;
 });
@@ -65,6 +67,7 @@ vi.mock('../lcd-panadapter-first/LcdPanadapterFirstSkin.svelte', () => lazyImpor
 vi.mock('../sdr-test/SdrTestSkin.svelte', () => lazyImports['sdr-test']());
 vi.mock('../dual-receiver-cockpit/DualReceiverCockpit.svelte', () => lazyImports['dual-receiver-cockpit']());
 vi.mock('../dual-sdr-face/DualSdrFaceSkin.svelte', () => lazyImports['dual-sdr-face']());
+vi.mock('../flagship-probe/FlagshipProbeSkin.svelte', () => lazyImports['flagship-probe']());
 
 import {
   commitExternalPresentationBatch, getPresentationRecord, isPresentationIdReserved,
@@ -146,11 +149,12 @@ describe('skin registry', () => {
     }
   });
 
-  // `dual-receiver-cockpit` is deliberately absent from this table: its own
-  // lazy-load pin lives in the QA-only describe block below and must run
-  // AFTER this table (see that block's call-order comment) — this file has
-  // no per-test mock reset, so merging it here would double-invoke its
-  // loader before that block's "not called merely by resolving" assertion.
+  // `dual-receiver-cockpit` and `flagship-probe` are deliberately absent from
+  // this table: their lazy-load pins live in the QA-only describe block below
+  // and must run AFTER this table (see that block's call-order comment) —
+  // this file has no per-test mock reset, so merging them here would
+  // double-invoke their loaders before that block's "not called merely by
+  // resolving" assertion.
   const LAZY_LOAD_TABLE = [
     ['desktop-v2', entrypoints['desktop-v2'], lazyImports['desktop-v2']],
     ['lcd-cockpit', entrypoints['lcd-cockpit'], lazyImports['lcd-cockpit']],
@@ -179,12 +183,12 @@ describe('skin registry', () => {
   });
 });
 
-// MOR-1257 — interim QA reachability for the dual-receiver cockpit, gated
-// behind the exact `?layout=dual-receiver-cockpit` query param (the URL ->
+// MOR-1257 (cockpit) and T160 PR-1 (flagship probe) — interim QA
+// reachability, gated behind the exact `?layout=<id>` query param (the URL ->
 // LayoutMode translation itself is `readQaCockpitLayoutOverride`, pinned
 // separately in lib/stores/__tests__/qa-cockpit-override.test.ts). These
 // tests pin resolveSkinId's half of the contract only.
-describe('MOR-1257: QA-only dual-receiver-cockpit reachability', () => {
+describe('QA-only layout reachability', () => {
   // Kill-test: removing this branch (or mistyping the literal) leaves the
   // QA-only preference falling through `normalizeLayoutMode` to 'auto',
   // which resolves to 'desktop-v2' unconditionally (MOR-1097 cutover) —
@@ -192,6 +196,13 @@ describe('MOR-1257: QA-only dual-receiver-cockpit reachability', () => {
   it('resolves the QA-only preference to the cockpit skin', () => {
     expect(resolve({ layoutPreference: 'dual-receiver-cockpit' })).toBe('dual-receiver-cockpit');
     expect(resolve({ layoutPreference: 'dual-receiver-cockpit', hasAnyScope: true })).toBe('dual-receiver-cockpit');
+  });
+
+  // Kill-test: removing the T160 branch leaves 'flagship-probe' falling
+  // through `normalizeLayoutMode` to 'auto', hence to 'desktop-v2'.
+  it('resolves the QA-only preference to the flagship geometry probe', () => {
+    expect(resolve({ layoutPreference: 'flagship-probe' })).toBe('flagship-probe');
+    expect(resolve({ layoutPreference: 'flagship-probe', hasAnyScope: true })).toBe('flagship-probe');
   });
 
   // Default-path pin (ticket acceptance): every OTHER forced preference is
@@ -206,20 +217,20 @@ describe('MOR-1257: QA-only dual-receiver-cockpit reachability', () => {
   // tension: the mobile short-circuit stays first, so an actual phone
   // viewport keeps the mobile skin even with the QA param present. QA is
   // expected to open the URL on a desktop-sized viewport.
-  it('still gives mobile precedence over the QA-only preference', () => {
-    expect(resolve({ isMobile: true, layoutPreference: 'dual-receiver-cockpit', hasAnyScope: true }))
-      .toBe('mobile');
-  });
+  it.each(['dual-receiver-cockpit', 'flagship-probe'] as const)(
+    'still gives mobile precedence over the QA-only %s preference', (layoutPreference) => {
+      expect(resolve({ isMobile: true, layoutPreference, hasAnyScope: true })).toBe('mobile');
+    });
 
   // Must run before the lazy-load test below actually triggers the import —
   // this file has no per-test mock reset, so call order is significant here
   // (mirrors "does not import a skin entrypoint while the registry is
   // initialized" above, which runs before every "lazily loads" case).
-  it('does not import the dual-receiver-cockpit entrypoint merely by resolving other preferences', () => {
+  it('does not import a QA-gated entrypoint merely by resolving other preferences', () => {
     for (const layoutPreference of ['auto', 'standard', 'lcd-cockpit', 'lcd-scope', 'sdr-test'] as const) {
       resolve({ layoutPreference });
     }
-    expect(lazyImports['dual-receiver-cockpit']).not.toHaveBeenCalled();
+    for (const id of QA_GATED_LAZY_LOAD_IDS) expect(lazyImports[id]).not.toHaveBeenCalled();
   });
 
   // MOR-2074 review: unlike `LAZY_LOAD_TABLE` above, whose "has a pin"
@@ -276,6 +287,9 @@ describe('presentation resource plan', () => {
     // The mobile layout mounts SpectrumPanel but no audio-FFT surface.
     'mobile': ['hardware-scope'],
     'dual-sdr-face': ['hardware-scope'],
+    // T160 PR-1: the geometry probe's one resource-demanding component is a
+    // SpectrumPanel, the same reason `mobile` above names this alone.
+    'flagship-probe': ['hardware-scope'],
   };
 
   it('keeps panadapter-first resource order hardware-selected, with the LCD shell AF consumer retained', () => {
@@ -313,6 +327,7 @@ describe('presentation host mode', () => {
     'unified-instrument': 'self-contained',
     'panadapter-first': 'self-contained',
     'dual-sdr-face': 'self-contained',
+    'flagship-probe': 'self-contained',
   };
 
   it.each(Object.entries(EXPECTED_HOST_MODE) as Array<[SkinId, PresentationHostMode]>) (

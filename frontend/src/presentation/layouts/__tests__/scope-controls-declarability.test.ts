@@ -71,7 +71,8 @@ describe('exactly the reviewed manifests declare a scopeControls zone (MOR-1370)
   // `hideScopeControls={declared.has('scopeControls')}`, which `RadioLayout`
   // forwards to a `SpectrumPanel` that keeps rendering and drops the
   // toolbar's fact-backed half.
-  const DECLARES_SCOPE_CONTROLS = ['desktop-v2', 'sdr-test'];
+  // T160 PR-1 added `flagship-probe`, which places this surface in its centre column, under the panorama.
+  const DECLARES_SCOPE_CONTROLS = ['desktop-v2', 'flagship-probe', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

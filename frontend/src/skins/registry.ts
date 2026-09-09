@@ -25,7 +25,8 @@ import {
 
 export type SkinId =
   | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'peer-split'
-  | 'sdr-test' | 'dual-sdr-face' | 'unified-instrument' | 'panadapter-first';
+  | 'sdr-test' | 'dual-sdr-face' | 'unified-instrument' | 'panadapter-first'
+  | 'flagship-probe';
 
 export type PresentationId = string;
 export type PresentationHostMode =
@@ -90,6 +91,8 @@ export interface SkinResolutionContext {
  * - QA-only: layoutPreference === 'dual-receiver-cockpit' → dual-receiver-cockpit
  *   (MOR-1257 — only reachable via the exact `?layout=dual-receiver-cockpit`
  *   query param; see `lib/stores/qa-cockpit-override.ts`)
+ * - QA-only: layoutPreference === 'flagship-probe' → flagship-probe
+ *   (T160 PR-1 — same module, same terms, `?layout=flagship-probe`)
  * - User forced 'sdr-test' → sdr-test
  * - User forced 'lcd' or 'lcd-cockpit' → lcd-cockpit
  * - User forced 'lcd-scope' → lcd-scope
@@ -107,6 +110,9 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
   // `normalizeLayoutMode` below would fall it straight through to 'auto'.
   // Checked here, before normalization, for that reason.
   if (ctx.layoutPreference === 'dual-receiver-cockpit') return 'dual-receiver-cockpit';
+  // T160 PR-1: the geometry probe is gated the same way and checked here for
+  // the same reason — it is not a `CanonicalLayoutMode` either.
+  if (ctx.layoutPreference === 'flagship-probe') return 'flagship-probe';
   const layoutPreference = normalizeLayoutMode(ctx.layoutPreference);
   if (layoutPreference === 'sdr-test') return 'sdr-test';
   if (layoutPreference === 'lcd-cockpit') return 'lcd-cockpit';
@@ -141,9 +147,8 @@ const SKIN_LOADERS = {
   },
   // MOR-1068 (F8): the cockpit's layout manifest registers under this exact
   // id, so it needs the matching loadable SkinId — it was the only registered
-  // manifest the App had no way to load. `resolveSkinId` does not yet return
-  // it (that needs a `LayoutMode` preference and a picker affordance, tracked
-  // separately); the entry here is what makes the id addressable at all.
+  // manifest the App had no way to load. MOR-1257 later added the QA branch
+  // in `resolveSkinId` above that returns it.
   'dual-receiver-cockpit': {
     id: 'dual-receiver-cockpit',
     kind: 'built-in-self-contained',
@@ -198,6 +203,20 @@ const SKIN_LOADERS = {
     kind: 'built-in-instrument-layout',
     loader: () => import('./sdr-test/SdrTestSkin.svelte'),
     resources: ['hardware-scope', 'audio-fft'],
+  },
+  // T160 PR-1 — the flagship geometry probe. Self-contained, like the
+  // cockpit: it mounts `SemanticRadioSurfaces` itself and owns its own grid.
+  // Reached only through the QA branch in `resolveSkinId` above; `StatusBar`'s
+  // picker cannot list it, because that array is typed `CanonicalLayoutMode`.
+  //
+  // `hardware-scope` alone: the shell mounts one `SpectrumPanel` and no
+  // audio-FFT surface — the same plan, for the same reason, that `mobile`
+  // and `dual-sdr-face` carry.
+  'flagship-probe': {
+    id: 'flagship-probe',
+    kind: 'built-in-self-contained',
+    loader: () => import('./flagship-probe/FlagshipProbeSkin.svelte'),
+    resources: ['hardware-scope'],
   },
   'dual-sdr-face': {
     id: 'dual-sdr-face',

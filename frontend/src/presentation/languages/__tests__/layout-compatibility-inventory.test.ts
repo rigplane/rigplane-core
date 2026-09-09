@@ -165,6 +165,12 @@ describe('every barrel-exported layout is design-language-listed or explicitly e
       layoutId: 'sdr-test',
       reason: 'minimal teaching example; no design-language chrome by design (owner ruling 2026-08-31, MOR-2070)',
     },
+    {
+      layoutId: 'flagship-probe',
+      reason:
+        'geometry probe: it places the semantic surfaces and adds no chrome, colour or type scale of '
+        + 'its own, so it has nothing for a design language to dress (T160 PR-1)',
+    },
   ];
   const EXEMPT_LAYOUT_IDS = new Set(LAYOUT_EXEMPTIONS.map((exemption) => exemption.layoutId));
 

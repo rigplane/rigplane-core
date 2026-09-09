@@ -141,6 +141,11 @@ const SKIN_ENTRYPOINT_COVERAGE: Readonly<Record<SkinId, EntrypointCoverage>> = {
     testFile: 'src/skins/dual-sdr-face/__tests__/DualSdrFaceSkin.component.test.ts',
     entryComponentFile: 'DualSdrFaceSkin.svelte',
   },
+  'flagship-probe': {
+    kind: 'covered-elsewhere',
+    testFile: 'src/skins/flagship-probe/__tests__/FlagshipProbe.component.test.ts',
+    entryComponentFile: 'FlagshipProbeSkin.svelte',
+  },
 };
 
 const allSkinIds = Object.keys(SKIN_ENTRYPOINT_COVERAGE) as SkinId[];
