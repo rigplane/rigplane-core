@@ -112,10 +112,10 @@
       `topology-2-main-sub`, Chromium; do not lower it to make a layout fit.
 
       Derived from labels that CAN grow, not from the ones shipped today: the
-      key and unkey buttons are `white-space: nowrap` on one non-wrapping
-      flex row, so the pair is atomic — neither key is reachable without room
-      for both. Those two strings are hard-coded English, so nothing can grow
-      them today; the day they are localised they grow together.
+      key and unkey buttons are `white-space: nowrap`, and when this floor
+      was measured they sat on one non-wrapping flex row, so the pair could
+      not stack. Those two strings are hard-coded English, so nothing can grow
+      them today.
       `__tests__/FlagshipProbe.component.test.ts` pins this value and the
       shape of the two rail tracks below.
     */

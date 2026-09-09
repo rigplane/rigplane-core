@@ -84,6 +84,10 @@ interface BootOptions {
   theme?: 'nord' | 'github-light';
   locale?: 'en-US' | 'ru-RU';
   extraCapabilities?: string[];
+  /** The QA-only skin `?layout=flagship-probe` selects
+   *  (`lib/stores/qa-cockpit-override.ts`). It is not a `CanonicalLayoutMode`,
+   *  so the workspace `layout` this helper writes cannot carry it. */
+  qaLayout?: 'flagship-probe';
 }
 
 async function boot(page: Page, layout: string, width: number, known: boolean, language = 'studioline', productionUnknown = false, topology?: TopologyId, options: BootOptions = {}) {
@@ -144,8 +148,10 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
         txObservation: { observedPtt: 'off' } } : {};
     return route.fulfill({ json: body });
   });
-  await page.goto(`/?locale=${locale}`, { waitUntil: 'networkidle' });
-  const shell = width <= 640 ? '.m-layout, .m-landscape'
+  const qaLayout = options.qaLayout;
+  await page.goto(`/?locale=${locale}${qaLayout ? `&layout=${qaLayout}` : ''}`, { waitUntil: 'networkidle' });
+  const shell = qaLayout ? '[data-testid="flagship-geometry-probe"]'
+    : width <= 640 ? '.m-layout, .m-landscape'
     : layout.startsWith('lcd') ? '.lcd-layout' : '.desktop-control-face';
   await expect(page.locator(shell).first()).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
@@ -544,3 +550,67 @@ for (const layout of ['standard', 'sdr-test']) for (const language of ['studioli
     expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] }).geometryCommands.filter(c => c.type === 'cmd'))).toEqual([]);
   });
 }
+
+// T185 — the transmit key pair wraps when its column is narrower than the pair.
+// Measured in the flagship probe because it leaves `semantic/RxTxSurface.svelte`'s
+// `.rx-tx-actions` row as that surface declares it, while
+// `skins/desktop-v2/semantic-controls.css`, `components-v2/layout/LcdLayout.svelte`
+// and `presentation/languages/fieldline/fieldline.css` each replace that row with a
+// single column, where there is no line for a second button to share.
+test.describe('T185 transmit key pair', () => {
+  async function measurePair(page: Page) {
+    const zone = page.locator('[data-zone-id="rx-tx"]').first();
+    await expect(zone, 'the probe paints a transmit zone').toBeVisible();
+    return zone.evaluate(element => {
+      const actions = element.querySelector<HTMLElement>('.rx-tx-actions')!;
+      const rect = (selector: string) =>
+        element.querySelector(selector)!.getBoundingClientRect().toJSON();
+      return {
+        zone: element.getBoundingClientRect().toJSON(),
+        actions: actions.getBoundingClientRect().toJSON(),
+        key: rect('[data-testid="rx-tx-key"]'),
+        unkey: rect('[data-testid="rx-tx-unkey"]'),
+        gap: Number.parseFloat(getComputedStyle(actions).columnGap),
+      };
+    });
+  }
+
+  type Box = { left: number; right: number };
+  const contained = (box: Box, zone: Box) => box.left >= zone.left - 1 && box.right <= zone.right + 1;
+
+  test('stacks when its column is narrower than the pair', async ({ page }, info) => {
+    // `layout` is the workspace value; `qaLayout` is what actually selects the skin.
+    await boot(page, 'standard', 1440, true, 'studioline', false, undefined,
+      { qaLayout: 'flagship-probe' });
+    // The probe's own rail is wider than the pair (the case below measures that),
+    // so the narrow column comes from narrowing the rail. Both of the custom
+    // properties the skin's two grid templates size a rail track from — the
+    // `minmax()` floor and its width — have to come down, or the floor holds the
+    // track open. `!important` because the skin's own declarations are
+    // Svelte-scoped, and a plain `.flagship-probe` selector loses to that class.
+    await page.addStyleTag({ content: '.flagship-probe { --flagship-probe-rail-floor: 200px !important;'
+      + ' --flagship-probe-rail-width: 200px !important; }' });
+    const geometry = await measurePair(page);
+    await info.attach('narrow', { body: JSON.stringify(geometry), contentType: 'application/json' });
+    expect(geometry.unkey.top, 'the unkey button starts below the key button')
+      .toBeGreaterThan(geometry.key.bottom - 1);
+    expect(contained(geometry.key, geometry.zone), 'the key stays inside its column').toBe(true);
+    expect(contained(geometry.unkey, geometry.zone), 'the unkey stays inside its column').toBe(true);
+    // With each button on its own line, the widths measured are the pair's own,
+    // and their sum exceeds the line the two were given.
+    expect(geometry.key.width + geometry.gap + geometry.unkey.width,
+      'the column under test is narrower than the pair').toBeGreaterThan(geometry.actions.width);
+  });
+
+  test('stays on one line when its column is wider than the pair', async ({ page }, info) => {
+    await boot(page, 'standard', 1440, true, 'studioline', false, undefined,
+      { qaLayout: 'flagship-probe' });
+    const geometry = await measurePair(page);
+    await info.attach('wide', { body: JSON.stringify(geometry), contentType: 'application/json' });
+    expect(geometry.key.width + geometry.gap + geometry.unkey.width,
+      'the probe rail is wider than the pair').toBeLessThanOrEqual(geometry.actions.width);
+    expect(geometry.unkey.top, 'both buttons share one line').toBe(geometry.key.top);
+    expect(contained(geometry.key, geometry.zone), 'the key stays inside its column').toBe(true);
+    expect(contained(geometry.unkey, geometry.zone), 'the unkey stays inside its column').toBe(true);
+  });
+});
