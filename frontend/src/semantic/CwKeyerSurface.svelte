@@ -351,29 +351,35 @@
   >
     {#if cw.breakIn.availability.structural}
       <div
-        class="cw-keyer-row" role="radiogroup" aria-label="Break-in"
         data-testid="cw-keyer-break-in"
         data-posture={breakInPosture(cw.breakIn)}
         data-permitted={permitAllowed}
       >
-        {#each BREAK_IN_CHOICES as [label, mode] (mode)}
-          <button
-            type="button" role="radio" class="cw-keyer-choice"
-            data-testid={`cw-keyer-break-in-${label}`}
-            aria-checked={cw.breakIn.reading.status === 'known'
-              && cw.breakIn.reading.value === label}
-            disabled={!usable(cw.breakIn) || !permitAllowed}
-            onclick={() => setBreakIn(mode)}
-          >{label}</button>
-        {/each}
+        <div class="cw-keyer-row" role="radiogroup" aria-label="Break-in">
+          {#each BREAK_IN_CHOICES as [label, mode] (mode)}
+            <button
+              type="button" role="radio" class="cw-keyer-choice"
+              data-testid={`cw-keyer-break-in-${label}`}
+              aria-checked={cw.breakIn.reading.status === 'known'
+                && cw.breakIn.reading.value === label}
+              disabled={!usable(cw.breakIn) || !permitAllowed}
+              onclick={() => setBreakIn(mode)}
+            >{label}</button>
+          {/each}
+        </div>
         <!-- Rule 5: the posture is TEXT, so it survives forced-colors and so
              "armed but not permitted" reads differently from "off and not
              permitted" — the operator's radio can still key from its own
-             paddle while this UI refuses to change the setting. -->
-        <output data-testid="cw-keyer-posture">{POSTURE_LABEL[breakInPosture(cw.breakIn)]}</output>
+             paddle while this UI refuses to change the setting. It is a
+             SENTENCE, so it gets its own line below the keys and may wrap. -->
+        <p class="cw-keyer-sentence">
+          <output data-testid="cw-keyer-posture">{POSTURE_LABEL[breakInPosture(cw.breakIn)]}</output>
+        </p>
         {#if !permitAllowed && breakInReason}
-          <output data-testid="cw-keyer-break-in-blocked" data-reason={breakInReason}
-          >{breakInBlockedLabel(breakInReason)}</output>
+          <p class="cw-keyer-sentence">
+            <output data-testid="cw-keyer-break-in-blocked" data-reason={breakInReason}
+            >{breakInBlockedLabel(breakInReason)}</output>
+          </p>
         {/if}
       </div>
     {/if}
@@ -507,6 +513,7 @@
      sole state channel (MOR-977, forced-colors). Nothing here animates. */
   .cw-keyer-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .cw-keyer-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
+  .cw-keyer-sentence { margin: 0; }
   .cw-keyer-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .cw-keyer-name { min-width: 12ch; }
   .cw-keyer-choice[aria-checked='true'], .cw-keyer-toggle[aria-pressed='true'] { font-weight: 700; }
