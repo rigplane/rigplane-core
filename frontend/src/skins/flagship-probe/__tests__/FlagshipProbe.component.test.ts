@@ -259,7 +259,7 @@ function px(name: string): number {
 }
 
 const LEFT_RAIL = ['rf', 'dsp', 'filter', 'rx-audio', 'antenna', 'band'];
-const RIGHT_RAIL = ['tx-aux', 'cw-keyer', 'rit-xit'];
+const RIGHT_RAIL = ['rx-tx', 'tx-aux', 'cw-keyer', 'rit-xit'];
 
 /** Every column index at which `area` appears in `template`. */
 function columnsOf(template: Template, area: string): number[] {
@@ -324,17 +324,33 @@ describe('the panorama sits between the two rails, in both arrangements', () => 
     expect(Math.max(...panorama)).toBeLessThan(lastColumn);
   });
 
-  // Kills: stacking the receivers, or letting the RX/TX column drift out from
-  // between them.
+  // Kills: stacking the receivers, and putting any third area — the transmit
+  // key's old `rx-mid` track among them — back between them.
   it.each([[0, 'narrow'], [1, 'wide']])('template %i (%s) keeps the two receivers side by side', (index) => {
     const template = templates()[index as number];
     const deckRow = rowOf(template, 'rx-main');
-    expect(rowOf(template, 'rx-mid')).toBe(deckRow);
     expect(rowOf(template, 'rx-sub')).toBe(deckRow);
+    // Between the two rail columns the deck row is one cell per strip.
+    expect(template[deckRow].slice(1, template[0].length - 1)).toEqual(['rx-main', 'rx-sub']);
     expect(Math.max(...columnsOf(template, 'rx-main')))
-      .toBeLessThan(Math.min(...columnsOf(template, 'rx-mid')));
-    expect(Math.max(...columnsOf(template, 'rx-mid')))
       .toBeLessThan(Math.min(...columnsOf(template, 'rx-sub')));
+  });
+
+  // Kills: the transmit key going back into the deck, or anywhere but first
+  // in the right rail. The art-direction line's rule of 2026-09-09: nothing
+  // that keys the transmitter may live in a scrolling or clipped column. The
+  // rail column's declared width is asserted here rather than assumed,
+  // because that width is the whole of the key's room.
+  it.each([[0, 'narrow'], [1, 'wide']])('template %i (%s) puts rx-tx first in the right rail', (index) => {
+    const template = templates()[index as number];
+    const lastColumn = template[0].length - 1;
+    expect(columnsOf(template, 'rx-tx')).toEqual([lastColumn]);
+    expect(columnTemplates()[index as number][lastColumn])
+      .toBe('minmax(0, var(--flagship-probe-rail-width))');
+    // First in the rail: no other transmit control comes between the top of
+    // the transmit column and the key.
+    const rows = RIGHT_RAIL.map((area) => rowOf(template, area));
+    expect(rows).toEqual([...rows].sort((a, b) => a - b));
   });
 });
 
@@ -359,7 +375,7 @@ describe('the container-width switch', () => {
   // leave the rails' columns to it, which is the whole reason it moves.
   it('narrow gives the deck the full width; wide shares its row with both rails', () => {
     const [narrow, wide] = templates();
-    const deck = ['rx-main', 'rx-mid', 'rx-sub'];
+    const deck = ['rx-main', 'rx-sub'];
     const narrowDeckRow = narrow[rowOf(narrow, 'rx-main')];
     expect(new Set(narrowDeckRow)).toEqual(new Set(deck));
     const wideDeckRow = wide[rowOf(wide, 'rx-main')];
@@ -369,7 +385,7 @@ describe('the container-width switch', () => {
 
   // Kills: changing the threshold in one place and not the other two — the
   // number is the sum of the arrangement's own declared minimum widths and
-  // the four gutters between the five columns they size. The
+  // the three gutters between the four columns they size. The
   // manifest declares that same width, and
   // `presentation/layouts/__tests__/flagship-probe-registration.test.ts` is
   // where the two are required to agree (this directory may not name the
@@ -377,10 +393,9 @@ describe('the container-width switch', () => {
   it('the threshold is the sum of the declared minimum track widths and the gutters', () => {
     const rail = px('--flagship-probe-rail-width');
     const strip = px('--flagship-probe-strip-min-width');
-    const rxTx = px('--flagship-probe-rx-tx-width');
-    // Five columns, four gutters. Read from the same style block as the
+    // Four columns, three gutters. Read from the same style block as the
     // widths, so the gap and the threshold cannot drift apart either.
-    const sum = 2 * rail + 2 * strip + rxTx + 4 * px('gap');
+    const sum = 2 * rail + 2 * strip + 3 * px('gap');
 
     expect(px('--flagship-probe-switch-width')).toBe(sum);
     expect(Number(style.match(/@container \(min-width: (\d+)px\)/)![1])).toBe(sum);
@@ -431,7 +446,7 @@ describe('no surface may size a track', () => {
   // `max-content` or `fit-content`, in either direction.
   it.each([[0, 'narrow'], [1, 'wide']])('column template %i (%s) declares no content-sized track', (index) => {
     const tracks = columnTemplates()[index as number];
-    expect(tracks).toHaveLength(5);
+    expect(tracks).toHaveLength(4);
     for (const track of tracks) expect(track).not.toMatch(CONTENT_SIZED);
   });
 
@@ -440,7 +455,7 @@ describe('no surface may size a track', () => {
   it.each([[0, 'narrow'], [1, 'wide']])('column template %i (%s) caps both rails at the declared rail width', (index) => {
     const tracks = columnTemplates()[index as number];
     expect(tracks[0]).toBe('minmax(0, var(--flagship-probe-rail-width))');
-    expect(tracks[4]).toBe(tracks[0]);
+    expect(tracks[3]).toBe(tracks[0]);
   });
 
   // Kills: the strip columns losing their declared floor, which is the half
@@ -449,15 +464,15 @@ describe('no surface may size a track', () => {
   it('gives the wide arrangement its strip minimum as a track minimum', () => {
     const [, wide] = columnTemplates();
     expect(wide[1]).toBe('minmax(var(--flagship-probe-strip-min-width), 1fr)');
-    expect(wide[3]).toBe(wide[1]);
+    expect(wide[2]).toBe(wide[1]);
   });
 
   // Kills: the threshold drifting away from the widths the wide column
   // template actually declares — the `@container` literal must be the sum of
-  // those five and the four gutters between them.
-  it('switches at the sum of the wide template\'s five declared widths and the gutters', () => {
+  // those four and the three gutters between them.
+  it('switches at the sum of the wide template\'s four declared widths and the gutters', () => {
     const [, wide] = columnTemplates();
-    const sum = wide.reduce((total, track) => total + declaredPx(track), 0) + 4 * px('gap');
+    const sum = wide.reduce((total, track) => total + declaredPx(track), 0) + 3 * px('gap');
     expect(px('--flagship-probe-switch-width')).toBe(sum);
     expect(Number(style.match(/@container \(min-width: (\d+)px\)/)![1])).toBe(sum);
   });
@@ -488,6 +503,21 @@ describe('no surface may size a track', () => {
   it('contains what does not fit inside the column it belongs to', () => {
     expect(style).toMatch(/:global\(\[data-zone-id\]\)\s*\{[^}]*overflow:\s*auto/);
     expect(style).toMatch(/\.probe-panorama\s*\{[^}]*overflow:\s*auto/);
+  });
+});
+
+describe('the collapsed middle track leaves no gutter behind', () => {
+  // Kills: leaving the deck's former 160px RX/TX track in either column
+  // template now that the transmit key has moved to the rail. A track no
+  // area names is an empty column, and the two gaps on either side of it are
+  // the reserved gutter this arrangement must not hold open.
+  it.each([[0, 'narrow'], [1, 'wide']])('column template %i (%s) declares one track per named column, none of them empty', (index) => {
+    const template = templates()[index as number];
+    const tracks = columnTemplates()[index as number];
+    expect(tracks).toHaveLength(template[0].length);
+    for (let column = 0; column < tracks.length; column += 1) {
+      expect(template.some((row) => row[column] !== '.')).toBe(true);
+    }
   });
 });
 

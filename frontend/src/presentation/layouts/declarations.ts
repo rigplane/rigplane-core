@@ -168,13 +168,13 @@ export const flagshipProbeLayout: LayoutManifest = {
     { id: 'primary-vfo', surfaces: ['vfo'] },
     { id: 'secondary-vfo', surfaces: ['vfo'] },
     { id: 'global', surfaces: ['vfo'] },
-    { id: 'rx-tx', surfaces: ['rxTx'] },
     { id: 'rf-front-end', surfaces: ['rfFrontEnd'] },
     { id: 'dsp', surfaces: ['dsp'] },
     { id: 'filter', surfaces: ['filter'] },
     { id: 'rx-audio', surfaces: ['rxAudio'] },
     { id: 'antenna', surfaces: ['antenna'] },
     { id: 'band', surfaces: ['band'] },
+    { id: 'rx-tx', surfaces: ['rxTx'] },
     { id: 'tx-aux', surfaces: ['txAux'] },
     { id: 'cw-keyer', surfaces: ['cwKeyer'] },
     { id: 'rit-xit-scan', surfaces: ['ritXitScan'] },
@@ -189,7 +189,7 @@ export const flagshipProbeLayout: LayoutManifest = {
   // `__tests__/flagship-probe-registration.test.ts` requires this
   // declaration, that custom property and the `@container` literal to name
   // the same width.
-  stageSizing: { mode: 'fluid', responsiveBreakpoints: [1472] },
+  stageSizing: { mode: 'fluid', responsiveBreakpoints: [1304] },
   fallbackLayoutId: 'sdr-test',
 };
 
