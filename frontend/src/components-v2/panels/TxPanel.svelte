@@ -243,7 +243,7 @@
   <div class="tx-panel" bind:this={modalAnchor}>
     <!-- TX indicator strip -->
     <div class="tx-strip" class:tx-active={rf === 'on'} data-testid="tx-strip" data-rf={rf}>
-      {rf === 'on' ? '● TX' : rf === 'off' ? '○ RX' : '○ ---'}
+      {rf === 'on' ? '● TX' : ''}
     </div>
 
     <button
