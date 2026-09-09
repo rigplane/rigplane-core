@@ -464,15 +464,23 @@ describe('no surface may size a track', () => {
 
   // Kills: dropping `min-width: 0` from a grid item, which restores the
   // item's automatic minimum size — its min-content width — and lets a
-  // surface push its own box past its column; and giving an item a declared
-  // width of its own, which is a surface claiming track width again.
-  it('caps every grid item at its column, and no item declares a width of its own', () => {
+  // surface push its own box past its column; and any `width`, `min-width`
+  // or `max-width` other than zero in a grid-item rule, each of which is a
+  // surface claiming track width again. Scanned over the rules whose
+  // selector names a grid item — `[data-zone-id`, `[data-strip-receiver`,
+  // `.probe-panorama` — so a width on `.flagship-probe`, the query
+  // container, is out of scope rather than a failure.
+  it('caps every grid item at its column: no grid-item rule declares a width, min-width or max-width other than zero', () => {
     expect(style).toMatch(/:global\(\[data-zone-id\]\)\s*\{[^}]*min-width:\s*0/);
     expect(style).toMatch(/\.probe-panorama\s*\{[^}]*min-width:\s*0/);
-    const declared = [...style.matchAll(/(?<![-\w(])min-width:\s*([^;{}]+);/g)]
+    // Innermost rules only: `[^{}]` on both sides skips the `@container`
+    // prelude and cannot span a nested block.
+    const declared = [...style.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(([, selector]) => /\[data-zone-id|\[data-strip-receiver|\.probe-panorama/.test(selector))
+      .flatMap(([, , body]) => [...body.matchAll(/(?<![-\w(])(?:min-|max-)?width:\s*([^;{}]+)/g)])
       .map(([, value]) => value.trim());
     expect(declared.length).toBeGreaterThan(1);
-    expect([...new Set(declared)]).toEqual(['0']);
+    expect(declared.filter((value) => !/^0(px)?$/.test(value))).toEqual([]);
   });
 
   // Kills: leaving a grid item's overflow visible, which puts the part that
