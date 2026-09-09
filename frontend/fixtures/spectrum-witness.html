@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Spectrum panel visual witness</title>
+    <style>
+      /* `src/app.css`, imported by `spectrum-witness.ts`, also declares
+         `#app { min-height: 100dvh }`, and Vite injects that sheet after
+         this block — an equal-specificity `#app` rule here would lose to it.
+         `html body #app` outranks it. The resulting box is asserted as
+         960x540 in `spectrum-baselines.spec.ts`, under that spec's 1280x800
+         viewport. */
+      html, body { margin: 0; height: 100%; background: #0a0a14; }
+      html body #app { width: 960px; height: 540px; min-height: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./spectrum-witness.ts"></script>
+  </body>
+</html>
