@@ -105,10 +105,9 @@
 
     /*
       ONE-KEY floor: re-measured 2026-09-09 with every rail key's text
-      replaced by `lib/i18n/pseudo.ts`'s `pseudoize()` output, on the
-      fixture-stub harness — `vite.fixtures.config.ts`, fixture
-      `topology-2-main-sub`, headless Chromium; do not lower it to make a
-      layout fit.
+      replaced by `lib/i18n/pseudo.ts`'s `pseudoize()` output, on the real
+      skin through the fixture-stub seam (`vite.fixtures.config.ts`) in
+      headless Chromium; do not lower it to make a layout fit.
 
       192 is the larger of two measured terms rounded up: the widest single
       key in any of the ten rail surfaces — the CW keyer's
@@ -127,16 +126,29 @@
     /*
       The declared track widths — a rail's width and a receiver strip's
       minimum — and their sum with the three gutters `.probe-stage` puts
-      between the four columns. The rail's width is TWO keys, under the same
-      pseudo-localised labels: the transmit key and unkey standing abreast,
-      185.20 + 8 + 184.89 = 378.09px, rounded up. Sweeping the rail width one
-      pixel at a time, that is the widest two-key row of the ten rail
-      surfaces — the next widest still puts two keys on a line at a rail of
-      177px.
+      between the four columns.
+
+      THE WIDTH IS THE FLOOR. Art-direction ruling of 2026-09-09: a rail is
+      as wide as the widest thing that must be READABLE in one column of
+      controls, which is ONE key — not a row of two, and not the transmit
+      pair, whose `.rx-tx-actions` row may wrap
+      (`semantic/RxTxSurface.svelte`). That ruling also confines
+      pseudo-localisation to the key whose clipping would be a SAFETY
+      failure, the transmit key; every other rail key is measured in
+      English. Measured 2026-09-09 the same way as the floor above, over
+      every key the ten rail surfaces mount on that harness's dual-receiver
+      fixture, each toggle taken at both values its own fact renders: the
+      widest English key is the CW keyer's `Reverse paddle: on`, 131.61px —
+      below the floor. So the floor is the binding term and this track is a
+      fixed 192px.
+
+      Two properties for one number, not one: the tracks below stay written
+      as `minmax(floor, width)`, and `tests/e2e/i18n/desktop-geometry.spec.ts`
+      overrides BOTH to set the rail column it measures the transmit pair in.
     */
-    --flagship-probe-rail-width: 379px;
+    --flagship-probe-rail-width: 192px;
     --flagship-probe-strip-min-width: 360px;
-    --flagship-probe-switch-width: 1502px;
+    --flagship-probe-switch-width: 1128px;
   }
 
   /*
@@ -184,7 +196,7 @@
       'meters    meters     meters     meters';
   }
 
-  @container (min-width: 1502px) {
+  @container (min-width: 1128px) {
     .probe-stage {
       grid-template-columns:
         minmax(var(--flagship-probe-rail-floor), var(--flagship-probe-rail-width))

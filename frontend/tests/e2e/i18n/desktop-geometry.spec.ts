@@ -582,12 +582,13 @@ test.describe('T185 transmit key pair', () => {
     // `layout` is the workspace value; `qaLayout` is what actually selects the skin.
     await boot(page, 'standard', 1440, true, 'studioline', false, undefined,
       { qaLayout: 'flagship-probe' });
-    // The probe's own rail is wider than the pair (the case below measures that),
-    // so the narrow column comes from narrowing the rail. Both of the custom
-    // properties the skin's two grid templates size a rail track from — the
-    // `minmax()` floor and its width — have to come down, or the floor holds the
-    // track open. `!important` because the skin's own declarations are
-    // Svelte-scoped, and a plain `.flagship-probe` selector loses to that class.
+    // Both cases set the rail column they measure in, rather than inheriting
+    // whatever the skin declares: the two custom properties its grid templates
+    // size a rail track from are the `minmax()` floor and its width, and BOTH
+    // have to be pinned or the one left alone decides the track. 200px is
+    // narrower than the pair, which is the column this case needs.
+    // `!important` because the skin's own declarations are Svelte-scoped, and
+    // a plain `.flagship-probe` selector loses to that class.
     await page.addStyleTag({ content: '.flagship-probe { --flagship-probe-rail-floor: 200px !important;'
       + ' --flagship-probe-rail-width: 200px !important; }' });
     const geometry = await measurePair(page);
@@ -605,10 +606,14 @@ test.describe('T185 transmit key pair', () => {
   test('stays on one line when its column is wider than the pair', async ({ page }, info) => {
     await boot(page, 'standard', 1440, true, 'studioline', false, undefined,
       { qaLayout: 'flagship-probe' });
+    // The mirror of the case above: 400px is wider than the pair. The skin's
+    // own rail is one key wide (T194), so this column has to be set here too.
+    await page.addStyleTag({ content: '.flagship-probe { --flagship-probe-rail-floor: 400px !important;'
+      + ' --flagship-probe-rail-width: 400px !important; }' });
     const geometry = await measurePair(page);
     await info.attach('wide', { body: JSON.stringify(geometry), contentType: 'application/json' });
     expect(geometry.key.width + geometry.gap + geometry.unkey.width,
-      'the probe rail is wider than the pair').toBeLessThanOrEqual(geometry.actions.width);
+      'the column under test is wider than the pair').toBeLessThanOrEqual(geometry.actions.width);
     expect(geometry.unkey.top, 'both buttons share one line').toBe(geometry.key.top);
     expect(contained(geometry.key, geometry.zone), 'the key stays inside its column').toBe(true);
     expect(contained(geometry.unkey, geometry.zone), 'the unkey stays inside its column').toBe(true);
