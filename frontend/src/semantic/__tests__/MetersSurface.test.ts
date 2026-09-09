@@ -28,8 +28,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
 import { proxy } from 'svelte/internal/client';
-import MetersSurface from './fixtures/StationMeterInstrumentHostFixture.svelte';
-import { projectBarMeters, type BarMeterKey } from '../bar-meter-projector';
+import MetersSurface, { fixtureMeterAppearance } from './fixtures/StationMeterInstrumentHostFixture.svelte';
+import type { MeterAppearance } from '../../../component-kit-api/src/index';
+const selectedMeter = vi.hoisted(() => ({ current: undefined as MeterAppearance | undefined }));
+vi.mock('../../component-kits/activation', () => ({
+  getSelectedMeterAppearance: () => selectedMeter.current,
+}));
+import { projectBarMeters, projectSwrMeter, type BarMeterKey } from '../bar-meter-projector';
 import { topologyFixtures, withMeters, withTxAux } from '../fixtures/topologies';
 import type {
   Availability, MeterField, MeterRfState, MetersViewModel, MeterValueDomain, RadioViewModel,
@@ -93,6 +98,59 @@ type MeterKey = Exclude<keyof MetersViewModel, 'rfState'>;
 const BAR_KEYS = [
   'power', 'alc', 'drainCurrent', 'drainVoltage', 'compression',
 ] as const satisfies readonly BarMeterKey[];
+
+it('keeps native station readouts synchronized with projected values and availability', () => {
+  const initial = base('transmitting');
+  initial.meters!.drainVoltage = {
+    ...initial.meters!.drainVoltage,
+    reading: { status: 'known', value: 13.8 },
+    domain: { kind: 'engineering', unit: 'v' },
+  };
+  const props: { view: RadioViewModel } = proxy({ view: initial });
+  const component = mount(MetersSurface, { target, props });
+  const readout = () => target.querySelector('[data-meter="drainVoltage"] .meter-native-value');
+  try {
+    flushSync();
+    const projected = () => projectBarMeters(props.view).find(({ key }) => key === 'drainVoltage')!;
+    expect(readout()?.textContent).toBe(projected().displayText);
+    expect(readout()?.textContent).toBe('13.8 V');
+    expect(target.querySelector('[data-meter="drainVoltage"] .meter-native-label')?.textContent).toBe('Vd');
+    props.view = withRaw(props.view, 'drainVoltage', 14.2);
+    flushSync();
+    expect(readout()?.textContent).toBe(projected().displayText);
+    props.view = withField(props.view, 'drainVoltage', { unknown: true });
+    flushSync();
+    expect(readout()?.textContent).toBe(projected().displayText);
+    props.view = withField(props.view, 'drainVoltage', { availability: { structural: false, operational: false } });
+    flushSync();
+    expect(target.querySelector('[data-meter="drainVoltage"]')).toBeNull();
+  } finally { unmount(component); }
+});
+it('keeps the SWR-only caption on its independent relevance and projected value', () => {
+  let view = withField(base(), 'signal', { availability: { structural: false, operational: false }, relevant: false });
+  view = withMeterDomain(withRaw(view, 'swr', 1.5), 'swr', { kind: 'engineering', unit: 'ratio' });
+  view = { ...view, meters: { ...view.meters!, swr: { ...view.meters!.swr, relevant: true } } };
+  withSurface(view, (surface) => {
+    const caption = surface.tile('swr')!.querySelector('.meter-native-caption')!;
+    expect(caption.getAttribute('data-relevant')).toBe('true');
+    expect(caption.querySelector('.meter-native-label')!.textContent).toBe('SWR');
+    expect(caption.querySelector('.meter-native-value')!.textContent)
+      .toBe(projectSwrMeter(view)!.displayText);
+    expect(surface.tile('swr')!.querySelectorAll('[data-lower-relevant] text').length).toBeGreaterThan(0);
+  });
+});
+
+it('leaves selected external meter renderers free of native captions', () => {
+  selectedMeter.current = fixtureMeterAppearance;
+  try {
+    withSurface(base(), () => {
+      expect(target.querySelector('[data-fixture-signal]')).not.toBeNull();
+      expect(target.querySelector('[data-fixture-level]')).not.toBeNull();
+      expect(target.querySelector('.meter-native-caption')).toBeNull();
+    });
+  } finally { selectedMeter.current = undefined; }
+});
+
 const ALL_KEYS: readonly MeterKey[] = ['signal', ...BAR_KEYS] as readonly MeterKey[];
 
 /** `1/single` + a fully-observed meters group + a fully-observed txAux group,
