@@ -565,8 +565,8 @@ export function toModeProps(
 ): ModeProps {
   const rx = state ? activeRx(state) : null;
   // MOR-616: surface the MOD-input source of the active receiver's DATA
-  // group (data_mode 0→DATA OFF, 1→D1, 2→D2, 3→D3). The control is hidden
-  // while `isFieldRead` admits its resolved availability. The helper rejects
+  // group (data_mode 0→DATA OFF, 1→D1, 2→D2, 3→D3). The control uses
+  // `isFieldRead` as its availability compatibility gate. The helper rejects
   // the three explicit absence values while preserving the legacy no-entry
   // fallback; it does not establish observation evidence.
   const modInputKey = modInputStateKey(rx?.dataMode ?? 0);
