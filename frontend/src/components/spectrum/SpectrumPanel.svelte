@@ -66,8 +66,10 @@
   // omits it (defaults `false`, toggle shown) because it owns the driver.
   //
   // `colorRoles` is resolved over the defaults once, and the one resolved
-  // record feeds both the canvas renderer options and the CSS custom
-  // properties the DOM overlay below reads.
+  // record feeds the canvas renderer options, the CSS custom properties the
+  // DOM overlay below reads, and the `data-scope-color-roles` JSON on the
+  // panel root — one resolution for all three, pinned by `resolves the roles
+  // once per mount for both the root attribute and the renderer options`.
   let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false, scopeControls,
     scopeProjection, scopeDemanded = true, onScopeDemandChange, colorRoles }: {
     hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean; scopeControls?: Snippet;
@@ -646,6 +648,7 @@
   class:audio-fft={audioFft}
   class:fullscreen
   data-waterfall
+  data-scope-color-roles={JSON.stringify(resolvedColorRoles)}
   tabindex="-1"
   onwheel={handleWheel}
   style:--scope-tune-line={resolvedColorRoles.tuneLine}

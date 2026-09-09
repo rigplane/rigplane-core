@@ -267,6 +267,7 @@ const passbandHarness = vi.hoisted(() => ({
 const spectrumRendererHarness = vi.hoisted(() => ({
   lastOptions: null as any,
   constructed: 0,
+  resolveColorRolesCalls: 0,
   render: vi.fn((_ctx: unknown, _data: Uint8Array, _width: number, _height: number, options: any) => {
     spectrumRendererHarness.lastOptions = options;
   }),
@@ -315,7 +316,14 @@ vi.mock('$lib/renderers/spectrum-renderer', async (importOriginal) => {
     setPeakHoldEnabled = spectrumRendererHarness.setPeakHoldEnabled;
     render = spectrumRendererHarness.render;
   }
-  return { ...actual, SpectrumRenderer };
+  return {
+    ...actual,
+    resolveSpectrumColorRoles: (...args: Parameters<typeof actual.resolveSpectrumColorRoles>) => {
+      spectrumRendererHarness.resolveColorRolesCalls++;
+      return actual.resolveSpectrumColorRoles(...args);
+    },
+    SpectrumRenderer,
+  };
 });
 
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
@@ -1668,6 +1676,40 @@ describe('SpectrumPanel colour roles', () => {
       ...spectrumColorRolesToOptions(defaultSpectrumColorRoles),
       tuneLineColor: '#0a0a0a',
     });
+  });
+
+  function publishedRoles(target: HTMLElement) {
+    const panel = target.querySelector<HTMLElement>('.spectrum-panel')!;
+    return JSON.parse(panel.dataset.scopeColorRoles!);
+  }
+
+  it('publishes on the root the same seven resolved roles it sends to the renderer', async () => {
+    const target = mountPanel({ colorRoles: distinct });
+    emitFrame();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    const published = publishedRoles(target);
+    expect(published).toEqual(distinct);
+    expect(spectrumRendererHarness.lastOptions).toMatchObject(spectrumColorRolesToOptions(published));
+  });
+
+  it('publishes the defaults on the root when no roles are passed', () => {
+    expect(publishedRoles(mountPanel())).toEqual(defaultSpectrumColorRoles);
+  });
+
+  it('publishes the default on the root for an explicit undefined override', () => {
+    const target = mountPanel({
+      colorRoles: { tuneLine: undefined, traceFill: { top: undefined, bottom: undefined } },
+    });
+    expect(publishedRoles(target)).toEqual(defaultSpectrumColorRoles);
+  });
+
+  it('resolves the roles once per mount for both the root attribute and the renderer options', async () => {
+    spectrumRendererHarness.resolveColorRolesCalls = 0;
+    const target = mountPanel({ colorRoles: distinct });
+    emitFrame();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(publishedRoles(target)).toEqual(distinct);
+    expect(spectrumRendererHarness.resolveColorRolesCalls).toBe(1);
   });
 });
 
