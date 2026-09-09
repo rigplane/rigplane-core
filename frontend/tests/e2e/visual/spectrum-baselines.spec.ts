@@ -23,6 +23,13 @@ test('spectrum-panel--managed-frame', async ({ page }) => {
   await page.waitForSelector('body[data-harness-ready="true"]');
   await page.evaluate(() => document.fonts.ready);
   const panel = page.locator('[data-waterfall]');
+  // The captured box, asserted rather than assumed: `src/app.css` declares
+  // `#app { min-height: 100dvh }` too, and when that rule wins the panel is
+  // as tall as the viewport (960x800 here) with nothing else in this file
+  // noticing.
+  const box = await panel.boundingBox();
+  expect({ width: box?.width, height: box?.height })
+    .toEqual({ width: 960, height: 540 });
   // The overlay elements the fixed projection is there to place. Asserted
   // before the pixel comparison so a baseline can never be approved over a
   // frame in which they are absent.

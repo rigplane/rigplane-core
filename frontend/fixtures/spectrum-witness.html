@@ -5,11 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Spectrum panel visual witness</title>
     <style>
-      /* A fixed box, not a viewport-relative one: the panel's own layout is
-         `height: 100%`, so every rendered length below it follows from these
-         two numbers rather than from the browser window. */
+      /* `src/app.css`, imported by `spectrum-witness.ts`, also declares
+         `#app { min-height: 100dvh }`, and Vite injects that sheet after
+         this block — an equal-specificity `#app` rule here would lose to it.
+         `html body #app` outranks it. The resulting box is asserted as
+         960x540 in `spectrum-baselines.spec.ts`, under that spec's 1280x800
+         viewport. */
       html, body { margin: 0; height: 100%; background: #0a0a14; }
-      #app { width: 960px; height: 540px; }
+      html body #app { width: 960px; height: 540px; min-height: 0; }
     </style>
   </head>
   <body>
