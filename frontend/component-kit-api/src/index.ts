@@ -76,6 +76,12 @@ export type MeterDisplayDomain =
   | Readonly<{ kind: 'raw' }>
   | Readonly<{ kind: 'unknown' }>;
 
+/** The two values a level bar's ends stand for: `min` at empty, `max` at full. */
+export interface MeterScaleDomain {
+  readonly min: number;
+  readonly max: number;
+}
+
 /** Stale evidence may retain its numeric value while live projected geometry is unavailable. */
 export type MeterNumericEvidence =
   | Readonly<{
@@ -126,6 +132,11 @@ interface LevelMeterRendererViewBase<Key extends LevelMeterKey> {
   readonly observed: boolean;
   readonly displayedFraction: number | null;
   readonly peakFraction: number | null;
+  /**
+   * What this bar's empty and full ends stand for, in the meter's own unit.
+   * Null where the level is not positioned against such a scale.
+   */
+  readonly scale: MeterScaleDomain | null;
   readonly displayText: string;
   readonly stateText: string;
   readonly accessibleDescription?: string;

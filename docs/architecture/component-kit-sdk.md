@@ -256,11 +256,7 @@ what it covers.
 ## 7. Compatibility matrix
 
 Every SDK version to date is a `frontend/component-kit-api` commit on this
-branch's history; only version-bumping commits are listed (a handful of
-other `MOR-2425` commits touched the package without bumping the version:
-`7081cd1c4` "persist hosted radio composition" and `0aaabbbeb` "expose
-finite option disabled reasons" both stayed at `0.2.0`; `1ffd2a68c` "add
-concrete component-kit fixture renderers" stayed at `0.5.0`).
+branch's history; only version-bumping commits are listed.
 
 | SDK version | Commit / PR | What it added | Known consumers |
 |---|---|---|---|

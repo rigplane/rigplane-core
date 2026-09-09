@@ -6,6 +6,7 @@ import type {
   DisplayObservation,
   MeterRfState,
   MeterSourceIdentity,
+  MeterValueDomain,
   MetersViewModel,
   RadioViewModel,
 } from '../radio-view-model';
@@ -14,6 +15,9 @@ import {
   projectSwrMeter,
   projectTxMeterPresentation,
   type BarMeterKey,
+  type BarMeterProjection,
+  type LevelMeterKey,
+  type SwrMeterProjection,
 } from '../bar-meter-projector';
 
 function base(rfState: MeterRfState = 'transmitting'): RadioViewModel {
@@ -494,4 +498,135 @@ describe('projectBarMeters — scale domains (T168)', () => {
     expect(vd.scale).toBeNull();
     expect(vd.motionFraction).toBeNull();
   });
+});
+
+// ---------------------------------------------------------------------------
+// Level/scale pairing per definition row (T172). `BAR_DEFINITIONS` and
+// `SWR_DEFINITION` pair a level function with a scale function on one row.
+// Each `*Scale` returns null for a unit it does not serve, so a row wired to
+// another row's scale function publishes a null scale while its level function
+// still returns a position. Every row is projected with a reading inside its
+// own domain and asserted against its own published scale, so such a pairing
+// fails here.
+// ---------------------------------------------------------------------------
+
+const PAIRING_CALS = {
+  power: [
+    { raw: 0, actual: 0, label: '0' },
+    { raw: 255, actual: 200, label: '200' },
+  ],
+  alc: [
+    { raw: 0, actual: 0, label: '0' },
+    { raw: 120, actual: 1, label: '1' },
+  ],
+  vd: [
+    { raw: 0, actual: 0.0, label: '0' },
+    { raw: 210, actual: 13.8, label: '13.8' },
+  ],
+  id: [
+    { raw: 0, actual: 0.0, label: '0' },
+    { raw: 29, actual: 1.0, label: '1.0' },
+  ],
+  comp: [
+    { raw: 0, actual: 0, label: '0' },
+    { raw: 255, actual: 20, label: '20' },
+  ],
+  swr: [
+    { raw: 0, actual: 1.0, label: '1.0' },
+    { raw: 255, actual: 6.0, label: '6.0+' },
+  ],
+};
+
+type PairingCase = {
+  readonly domain: MeterValueDomain;
+  readonly value: number;
+  readonly scale: { min: number; max: number };
+  readonly position: number;
+};
+
+const PAIRING_CASES: Readonly<Record<LevelMeterKey, PairingCase>> = {
+  power: {
+    domain: { kind: 'engineering', unit: 'w' },
+    value: 50, scale: { min: 0, max: 200 }, position: 0.25,
+  },
+  alc: {
+    domain: { kind: 'engineering', unit: 'normalized' },
+    value: 0.4, scale: { min: 0, max: 1 }, position: 0.4,
+  },
+  drainCurrent: {
+    domain: { kind: 'engineering', unit: 'a' },
+    value: 0.5, scale: { min: 0, max: 1.0 }, position: 0.5,
+  },
+  drainVoltage: {
+    domain: { kind: 'engineering', unit: 'v' },
+    value: 12.0, scale: { min: 11, max: 15 }, position: 0.25,
+  },
+  compression: {
+    domain: { kind: 'engineering', unit: 'db' },
+    value: 5, scale: { min: 0, max: 20 }, position: 0.25,
+  },
+  swr: {
+    domain: { kind: 'engineering', unit: 'ratio' },
+    value: 2.0, scale: { min: 0, max: 6.0 }, position: 2.0 / 6.0,
+  },
+};
+
+function pairingCaps(): Capabilities {
+  return { ...calibratedCaps(), meterCalibrations: PAIRING_CALS };
+}
+
+/** Every row projected at once, each with a reading inside its own domain. */
+function pairingRows(domainOf: (key: LevelMeterKey) => MeterValueDomain): Map<
+  LevelMeterKey, BarMeterProjection | SwrMeterProjection
+> {
+  const view = base();
+  for (const [key, { value }] of Object.entries(PAIRING_CASES) as [
+    LevelMeterKey, PairingCase,
+  ][]) {
+    view.meters![key] = {
+      ...view.meters![key],
+      reading: { status: 'known', value },
+      relevant: true,
+      domain: domainOf(key),
+    };
+  }
+  const rows = new Map<LevelMeterKey, BarMeterProjection | SwrMeterProjection>(
+    projectBarMeters(view).map((row) => [row.key, row]),
+  );
+  rows.set('swr', projectSwrMeter(view)!);
+  return rows;
+}
+
+describe('projectBarMeters/projectSwrMeter — level and scale come from one row (T172)', () => {
+  afterEach(() => clearCapabilities());
+
+  it('covers every projected row', () => {
+    setCapabilities(pairingCaps());
+    expect([...pairingRows((key) => PAIRING_CASES[key].domain).keys()].sort())
+      .toEqual(Object.keys(PAIRING_CASES).sort());
+  });
+
+  it.each(Object.keys(PAIRING_CASES) as LevelMeterKey[])(
+    'positions %s on the scale that row publishes',
+    (key) => {
+      setCapabilities(pairingCaps());
+      const { value, scale, position } = PAIRING_CASES[key];
+      const row = pairingRows((rowKey) => PAIRING_CASES[rowKey].domain).get(key)!;
+
+      expect(row.scale).toEqual(scale);
+      expect(row.motionFraction).toBeCloseTo(positionOn(row.scale, value), 10);
+      expect(row.motionFraction).toBeCloseTo(position, 10);
+    },
+  );
+
+  it.each(Object.keys(PAIRING_CASES) as LevelMeterKey[])(
+    'leaves %s with neither a scale nor a position in a domain its row cannot serve',
+    (key) => {
+      setCapabilities(pairingCaps());
+      const row = pairingRows(() => ({ kind: 'unknown' })).get(key)!;
+
+      expect(row.scale).toBeNull();
+      expect(row.motionFraction).toBeNull();
+    },
+  );
 });

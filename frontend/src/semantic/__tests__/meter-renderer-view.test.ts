@@ -3,6 +3,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import type { SignalMeterFrame } from '../../components-v2/meters/signal-meter-motion.svelte';
 import type { SignalMeterProjection } from '../../components-v2/meters/smeter-scale';
+import { SUPPLY_VOLTAGE_WINDOW } from '../../components-v2/panels/meter-utils';
 import type { LevelMeterKey } from '../bar-meter-projector';
 import type { StationLevelMeterFrame } from '../StationMeterInstrumentHost.svelte';
 import { toLevelMeterRendererView, toSignalMeterRendererView } from '../meter-renderer-view';
@@ -50,7 +51,7 @@ function levelFrame(
       key, label: key === 'power' ? 'Po' : key, evidence: { state: 'current', value: 50 },
       relevant: true, observed: true, state: 'current',
       domain: { kind: 'engineering', unit: key === 'swr' ? 'ratio' : 'w' },
-      motionFraction: 0.25, displayText: '50W', stateText: '',
+      motionFraction: 0.25, scale: null, displayText: '50W', stateText: '',
       accessibleDescription: 'Po: Current observation. 50W', fault: false,
       showPeak: true, gauge: true,
       ...(key === 'swr' ? { ratioScale: true } : {}),
@@ -225,7 +226,7 @@ describe('toLevelMeterRendererView', () => {
     const view = toLevelMeterRendererView(source);
     expect(Reflect.ownKeys(view)).toEqual([
       'kind', 'key', 'label', 'evidence', 'relevant', 'observed',
-      'displayedFraction', 'peakFraction', 'displayText', 'stateText',
+      'displayedFraction', 'peakFraction', 'scale', 'displayText', 'stateText',
       'accessibleDescription', 'gauge', 'fault', 'peakEnabled',
     ]);
     expect(view).toMatchObject({
@@ -246,7 +247,7 @@ describe('toLevelMeterRendererView', () => {
     const expected = [
       'accessibleDescription', 'displayText', 'displayedFraction', 'evidence', 'fault',
       'gauge', 'key', 'kind', 'label', 'observed', 'peakEnabled', 'peakFraction',
-      'relevant', 'stateText', ...(key === 'swr' ? ['ratioScale'] : []),
+      'relevant', 'scale', 'stateText', ...(key === 'swr' ? ['ratioScale'] : []),
     ].sort();
     expect(Reflect.ownKeys(view).sort()).toEqual(expected);
     expect(view.evidence.domain).toEqual({ kind: 'unknown' });
@@ -319,6 +320,28 @@ describe('toLevelMeterRendererView', () => {
     expect(toLevelMeterRendererView(levelFrame('power', projection, motion))).toMatchObject({
       displayedFraction: fill, peakFraction: peak,
     });
+  });
+
+  // T171: `MeterRendererSeat.svelte` passes an external level renderer this
+  // view plus a reset-peak lease, and nothing else of the frame — so a scale
+  // left out of the copy is unreachable from a face however faithfully
+  // `LevelMeterProjection.scale` is derived.
+  it.each([
+    ['drainVoltage', { kind: 'engineering', unit: 'v' }, SUPPLY_VOLTAGE_WINDOW],
+    ['drainCurrent', { kind: 'engineering', unit: 'a' }, { min: 0, max: 1.0 }],
+    ['power', { kind: 'raw' }, null],
+  ] as const)('carries the %s projection scale into the public view', (key, domain, scale) => {
+    const view = toLevelMeterRendererView(levelFrame(key, { domain, scale }));
+    expect(view.scale).toEqual(scale);
+    expectFrozenDataGraph(view);
+  });
+
+  it('copies the scale rather than publishing the projection object itself', () => {
+    const view = toLevelMeterRendererView(levelFrame('drainVoltage', {
+      domain: { kind: 'engineering', unit: 'v' }, scale: SUPPLY_VOLTAGE_WINDOW,
+    }));
+    expect(view.scale).not.toBe(SUPPLY_VOLTAGE_WINDOW);
+    expect(Object.isFrozen(view.scale)).toBe(true);
   });
 
   it('emits ratioScale only for the SWR discriminant', () => {
