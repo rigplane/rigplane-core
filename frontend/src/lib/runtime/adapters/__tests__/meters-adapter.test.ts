@@ -242,12 +242,9 @@ describe('target meter display provenance (MOR-2359)', () => {
     for (const status of [{ freshness: 'stale' }, { availability: 'stale' }] as const) {
       expect(model(stateWith(status), capabilities, TX).meters![meter].display).toEqual({ state: 'stale', value: state[path] });
     }
-    // MOR-2425: a never-observed meter is no instrument at all, so there is
-    // no tile whose reading could be unknown — the display reads `unsupported`.
     expect(model(stateWith({ observed: false }), capabilities, TX).meters![meter].display)
-      .toEqual({ state: 'unsupported' });
-    expect(model({ ...state, fieldStatus: {} }, capabilities, TX).meters![meter].display)
-      .toEqual({ state: 'unsupported' });
+      .toEqual({ state: 'unknown', reason: 'not-observed' });
+    expect(model({ ...state, fieldStatus: {} }, capabilities, TX).meters).toBeUndefined();
   });
   it.each(targets)('preserves valid zero and rejects invalid %s scalars', (meter, path) => {
     expect(model({ ...stateWith(), [path]: 0 }, capabilities, TX).meters![meter].display)
@@ -257,7 +254,7 @@ describe('target meter display provenance (MOR-2359)', () => {
         .toEqual({ state: 'unknown', reason: 'invalid-value' });
     }
     expect(model({ ...stateWith(), [path]: undefined }, capabilities, TX).meters![meter].display)
-      .toEqual({ state: 'unsupported' });
+      .toEqual({ state: 'unknown', reason: 'invalid-value' });
     expect(model(stateWith(), { ...capabilities, tx: false }, TX).meters![meter].display)
       .toEqual({ state: 'unsupported' });
   });
@@ -283,13 +280,13 @@ describe('target meter display provenance (MOR-2359)', () => {
         for (const [meter, path] of targets) {
           const { display, ...strict } = meters[meter];
           expect(display).toBeDefined();
-          // R29: a stale leaf is still operational. MOR-2425: a leaf that was
-          // never observed withdraws the instrument itself, so `structural`
-          // and `operational` fall together rather than leaving an empty tile.
+          // R29: a stale leaf is still operational — only a leaf that was
+          // never observed at all degrades the reading.
           const operational = status.observed !== false;
           expect(strict).toEqual({
+            presence: 'present',
             reading: operational ? { status: 'known', value: state[path] } : { status: 'unknown' },
-            availability: { structural: operational, operational }, relevant,
+            availability: { structural: true, operational }, relevant,
             domain: { kind: 'unknown' },
             source: operational
               ? { providerGeneration: 1, scope: 'radio', receiver: null, path }
@@ -315,6 +312,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
       compMeter: undefined, vdMeter: undefined, idMeter: undefined,
       main: { freqHz: 14195000, mode: 'USB', filter: 1 } as ServerState['main'],
     });
+    bare.fieldStatus = {};
     expect(model(bare, caps(), RX).meters).toBeUndefined();
   });
 
@@ -349,11 +347,12 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
     expect(meters.drainVoltage.availability.structural).toBe(true);
   });
 
-  it('marks an unreported meter structurally absent rather than zero', () => {
+  it('keeps a declared meter without a raw reading empty', () => {
     const meters = model(meterState({ alcMeter: undefined }), caps(), TX).meters!;
     expect(meters.alc).toEqual({
-      reading: { status: 'unknown' }, availability: { structural: false, operational: false }, relevant: true,
-      display: { state: 'unsupported' }, domain: { kind: 'unknown' }, source: null,
+      presence: 'present',
+      reading: { status: 'unknown' }, availability: { structural: true, operational: false }, relevant: true,
+      display: { state: 'unknown', reason: 'invalid-value' }, domain: { kind: 'unknown' }, source: null,
     });
   });
 
@@ -362,6 +361,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
       fieldStatus: { ...meterState().fieldStatus, swrMeter: stale },
     }), caps(), TX).meters!;
     expect(meters.swr).toEqual({
+      presence: 'present',
       reading: { status: 'known', value: 20 }, availability: { structural: true, operational: true }, relevant: true,
       display: { state: 'stale', value: 20 }, domain: { kind: 'unknown' },
       source: { providerGeneration: 1, scope: 'radio', receiver: null, path: 'swrMeter' },
@@ -388,7 +388,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
   });
 
   it.each(METER_PATHS.filter((path) => path !== 'sub.sMeter'))(
-    'withdraws %s entirely when its field status is absent (MOR-2425)', (path) => {
+    'withdraws %s when its own declaration status is absent', (path) => {
       const state = meterState();
       const fieldStatus = { ...state.fieldStatus };
       delete fieldStatus[path];
@@ -472,6 +472,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
       capabilities: ['scope', 'audio', 'tx', 'dual_rx'],
     });
     expect(model(state, dualCaps, RX).meters!.signal).toEqual({
+      presence: 'present',
       reading: { status: 'unknown' },
       availability: { structural: true, operational: false },
       relevant: true,
@@ -487,6 +488,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
     });
     const signal = model(state, caps({ receivers: 2, vfoScheme: 'main_sub' }), RX).meters!.signal;
     expect(signal).toEqual({
+      presence: 'present',
       reading: { status: 'unknown' },
       availability: { structural: true, operational: false },
       relevant: true,
@@ -503,6 +505,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
       powerMeter: undefined, swrMeter: undefined, alcMeter: undefined,
       compMeter: undefined, vdMeter: undefined, idMeter: undefined,
     });
+    state.fieldStatus = { 'sub.sMeter': fresh };
     expect(model(state, caps(), RX).meters).toBeUndefined();
   });
 
@@ -525,97 +528,67 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
   });
 });
 
-/**
- * MOR-2425 / T201 — a meter is structural only once its OWN field has been
- * observed.
- *
- * `state_schema.py` declares `powerMeter/swrMeter/alcMeter/compMeter/vdMeter/
- * idMeter: int = 0` and `sMeter: int = 0`, so every one of the seven raw
- * numbers is on the wire unconditionally: `raw !== undefined` separates no
- * radio from any other and is therefore not evidence that the instrument is
- * there. `fieldStatus` is: `runtime_helpers.py: _missing_field_status` is what
- * the server publishes for a field it is withholding, and `rigs/ic7300.toml`
- * puts power/swr/alc/comp under `tx_only` + `available_when ptt = true`, so
- * those four carry exactly that status in receive.
- */
-describe('a meter is structural only once its own field has been observed (MOR-2425)', () => {
-  /** Verbatim `runtime_helpers.py: _missing_field_status` — what the server
-   *  publishes for a `tx_only` meter while not transmitting. */
-  const withheld: FieldStatus = {
-    storePath: 'x', observed: false, freshness: 'unknown', availability: 'missing',
-  };
-  const METERS = [
+
+describe('served meter presence (MOR-2425 / T201)', () => {
+  const entries = [
     ['signal', 'main.sMeter'], ['power', 'powerMeter'], ['swr', 'swrMeter'],
     ['alc', 'alcMeter'], ['compression', 'compMeter'], ['drainVoltage', 'vdMeter'],
     ['drainCurrent', 'idMeter'],
   ] as const;
-
-  function withStatus(path: string, status: FieldStatus): ServerState {
-    return meterState({ fieldStatus: { ...meterState().fieldStatus, [path]: status } });
-  }
-
-  it.each(METERS)('withholds the %s tile while its field is withheld, raw number and all', (meter, path) => {
-    const state = withStatus(path, withheld);
-    // The defaulted number is still on the wire — presence is not the evidence.
-    expect(path === 'main.sMeter' ? state.main!.sMeter : state[path]).toBeTypeOf('number');
-    const field = model(state, caps(), TX).meters![meter];
-    expect(field.availability).toEqual({ structural: false, operational: false });
+  it.each(entries)('separates %s declaration, current presence, and reading', (key, path) => {
+    for (const availability of ['undeclared', 'unavailable', 'missing', 'available', 'stale', undefined] as const) {
+      const state = meterState({ main: { ...meterState().main, sMeter: 0 },
+        powerMeter: 0, swrMeter: 0, alcMeter: 0, compMeter: 0, vdMeter: 0, idMeter: 0 });
+      if (availability === undefined) delete state.fieldStatus![path];
+      else state.fieldStatus![path] = { ...fresh, availability,
+        observed: availability === 'available' || availability === 'stale',
+        freshness: availability === 'stale' ? 'stale' : 'fresh' };
+      const field = model(state, caps(), TX).meters![key];
+      const presence = availability === undefined || availability === 'undeclared'
+        ? 'absent' : availability === 'unavailable' ? 'unavailable' : 'present';
+      const operational = availability === 'available' || availability === 'stale';
+      expect(field.presence).toBe(presence);
+      expect(field.availability).toEqual({ structural: presence !== 'absent', operational });
+      expect(field.reading).toEqual(operational ? { status: 'known', value: 0 } : { status: 'unknown' });
+    }
+  });
+  it.each(entries)('requires an OWN status for %s declaration', (key, path) => {
+    const state = meterState();
+    delete state.fieldStatus![path];
+    Object.setPrototypeOf(state.fieldStatus!, { [path]: fresh });
+    expect(model(state, caps(), TX).meters![key].presence).toBe('absent');
+  });
+  it('keeps a declared missing raw value as an empty shell', () => {
+    const field = model(meterState({ alcMeter: undefined }), caps(), TX).meters!.alc;
+    expect(field.presence).toBe('present');
+    expect(field.availability).toEqual({ structural: true, operational: false });
     expect(field.reading).toEqual({ status: 'unknown' });
   });
+});
 
-  it.each(METERS)('withholds the %s tile while its field was simply never observed', (meter, path) => {
-    const field = model(withStatus(path, { ...fresh, observed: false }), caps(), TX).meters![meter];
-    expect(field.availability.structural).toBe(false);
-  });
 
-  it.each(METERS)('keeps the %s tile structural once its field is observed', (meter) => {
-    const field = model(meterState(), caps(), TX).meters![meter];
-    expect(field.availability).toEqual({ structural: true, operational: true });
-  });
-
-  it.each(METERS)('keeps the %s tile structural on a held stale reading (R40)', (meter, path) => {
-    expect(model(withStatus(path, stale), caps(), TX).meters![meter].availability.structural).toBe(true);
-  });
-
-  /**
-   * IC-7300 in receive, never keyed. `rigs/ic7300.toml` marks power/swr/alc/
-   * comp `tx_only` with `available_when global.tx_state.ptt = true`, and
-   * declares Vd/Id polled unconditionally, so the four TX meters carry the
-   * withheld status above while Vd/Id stay observed. The compressor is ON,
-   * which is what would otherwise admit the COMP tile.
-   */
-  it('draws exactly signal + Id + Vd for an IC-7300 in receive, never keyed', () => {
-    const state = meterState({
-      compressorOn: true,
-      fieldStatus: {
-        ...meterState().fieldStatus, compressorOn: fresh,
-        powerMeter: withheld, swrMeter: withheld, alcMeter: withheld, compMeter: withheld,
-      },
-    });
-    const view = model(state, caps({ capabilities: ['scope', 'audio', 'tx', 'compressor'] }), RX);
-    expect(view.txAux!.compressor.reading).toEqual({ status: 'known', value: true });
-    const tiles = [
-      ...(view.meters!.signal.availability.structural ? ['signal'] : []),
-      ...projectBarMeters(view).map(({ key }) => key),
-      ...(projectSwrMeter(view) === null ? [] : ['swr']),
-    ];
-    expect(tiles).toEqual(['signal', 'drainCurrent', 'drainVoltage']);
-    expect(tiles).toHaveLength(3);
-  });
-
-  it('draws all seven once the key goes down and the TX meters are observed', () => {
-    const state = meterState({
-      compressorOn: true,
-      fieldStatus: { ...meterState().fieldStatus, compressorOn: fresh },
-    });
-    const view = model(state, caps({ capabilities: ['scope', 'audio', 'tx', 'compressor'] }), TX);
-    const tiles = [
-      ...(view.meters!.signal.availability.structural ? ['signal'] : []),
-      ...projectBarMeters(view).map(({ key }) => key),
-      ...(projectSwrMeter(view) === null ? [] : ['swr']),
-    ];
-    expect(tiles).toEqual([
-      'signal', 'power', 'alc', 'drainCurrent', 'drainVoltage', 'compression', 'swr',
-    ]);
-  });
+it('preserves IC-7300-shaped RX, unobserved TX, observed zero, held stale and served discard', () => {
+  const state = meterState({ compressorOn: true, powerMeter: 0, swrMeter: 0, alcMeter: 0, compMeter: 0 });
+  state.fieldStatus!.compressorOn = fresh;
+  const capabilities = caps({ model: 'IC-7300', capabilities: ['scope', 'audio', 'tx', 'compressor'] });
+  for (const [availability, observed, tx] of [
+    ['unavailable', false, RX], ['missing', false, TX], ['available', true, TX],
+    ['stale', true, RX], ['unavailable', false, RX],
+  ] as const) {
+    for (const path of ['powerMeter', 'swrMeter', 'alcMeter', 'compMeter']) {
+      state.fieldStatus![path] = { ...fresh, availability, observed, quality: ['calibrated'],
+        freshness: availability === 'stale' ? 'stale' : 'fresh' };
+    }
+    const view = model(state, capabilities, tx);
+    const projected = [...projectBarMeters(view), projectSwrMeter(view)!];
+    expect(projected).toHaveLength(6);
+    expect(projectSwrMeter(view)).toMatchObject({ presence: availability === 'unavailable'
+      ? 'unavailable' : 'present', observed: observed && tx === TX });
+    const visible = ['signal', ...projected.filter(p => p.presence !== 'unavailable').map(p => p.key)];
+    expect(visible).toHaveLength(availability === 'unavailable' ? 3 : 7);
+    for (const key of ['power', 'swr', 'alc', 'compression'] as const) {
+      expect(view.meters![key].reading).toEqual(observed
+        ? { status: 'known', value: 0 } : { status: 'unknown' });
+    }
+  }
 });

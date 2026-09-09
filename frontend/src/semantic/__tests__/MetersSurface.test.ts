@@ -1675,3 +1675,34 @@ it('a current calibrated zero remains a measurement, distinct from RX idle', () 
     });
   } finally { clearCapabilities(); }
 });
+
+
+describe('station-local presence selection', () => {
+  it.each([
+    ['present', 'unavailable'], ['unavailable', 'present'], ['unavailable', 'unavailable'],
+    ['present', 'present'], ['absent', 'present'],
+  ] as const)('keeps signal=%s and SWR=%s independently', (signal, swr) => {
+    const view = base();
+    for (const [key, presence] of [['signal', signal], ['swr', swr]] as const) {
+      view.meters![key] = { ...view.meters![key], presence,
+        availability: { structural: presence !== 'absent', operational: false },
+        reading: { status: 'unknown' } };
+    }
+    render(view);
+    expect(target.querySelector('[data-testid="meter-signal"]') !== null).toBe(signal === 'present');
+    expect(target.querySelector('[data-testid="meter-swr"]') !== null)
+      .toBe(signal !== 'present' && swr === 'present');
+    const captions = [...target.querySelectorAll('.meter-native-label')].map(n => n.textContent);
+    expect(captions.includes('S')).toBe(signal === 'present');
+    expect(captions.includes('SWR')).toBe(swr === 'present');
+    expect(target.querySelector('[data-lower-relevant]') !== null).toBe(swr === 'present');
+  });
+  it('omits unavailable level seats while preserving declared missing empty seats', () => {
+    const view = base();
+    for (const key of BAR_KEYS) view.meters![key] = { ...view.meters![key],
+      presence: 'unavailable', availability: { structural: true, operational: false },
+      reading: { status: 'unknown' } };
+    render(view);
+    for (const key of BAR_KEYS) expect(target.querySelector('[data-testid="meter-' + key + '"]')).toBeNull();
+  });
+});

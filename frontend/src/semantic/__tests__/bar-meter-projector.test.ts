@@ -118,7 +118,7 @@ describe('projectBarMeters', () => {
     ]);
     expect(Object.keys(projected[0]).sort()).toEqual([
       'accessibleDescription', 'displayText', 'domain', 'evidence', 'fault', 'gauge', 'key',
-      'label', 'motionFraction', 'observed', 'relevant', 'scale', 'showPeak', 'source',
+      'label', 'motionFraction', 'observed', 'presence', 'relevant', 'scale', 'showPeak', 'source',
       'state', 'stateText',
     ]);
     expect(projected[0]).toMatchObject({
@@ -629,4 +629,18 @@ describe('projectBarMeters/projectSwrMeter — level and scale come from one row
       expect(row.motionFraction).toBeNull();
     },
   );
+});
+
+
+it('retains unavailable declared projections for other zones', () => {
+  const view = base();
+  for (const key of ['power', 'swr', 'alc', 'compression', 'drainVoltage', 'drainCurrent'] as const) {
+    view.meters![key] = { ...view.meters![key], presence: 'unavailable',
+      availability: { structural: true, operational: false }, reading: { status: 'unknown' } };
+  }
+  const projections = [...projectBarMeters(view), projectSwrMeter(view)!];
+  expect(projections).toHaveLength(6);
+  for (const projection of projections) expect(projection).toMatchObject({
+    presence: 'unavailable', gauge: true, observed: false, motionFraction: null, displayText: '',
+  });
 });

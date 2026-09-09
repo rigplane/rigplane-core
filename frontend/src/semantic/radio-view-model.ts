@@ -198,7 +198,9 @@ export type MeterSourcePath =
 export type MeterSourceIdentity = Readonly<
   Omit<PrimitiveMeterSourceIdentity, 'path'> & { readonly path: MeterSourcePath }
 >;
+export type MeterPresence = 'present' | 'unavailable' | 'absent';
 export interface MeterField {
+  presence?: MeterPresence;
   reading: MeterReading;
   availability: Availability;
   relevant: boolean;
@@ -1450,7 +1452,7 @@ function validateMeterField(
   value: unknown, path: string, expectedSource: MeterSourceExpectation,
 ): MeterField {
   const v = record(value, path);
-  exactKeys(v, ['reading', 'availability', 'relevant', 'domain', 'source'], path);
+  exactKeys(v, ['reading', 'availability', 'relevant', 'domain', 'source', 'presence'], path);
   const r = record(v.reading, `${path}.reading`);
   let reading: MeterReading;
   if (r.status === 'known') {
@@ -1464,6 +1466,8 @@ function validateMeterField(
   }
   return {
     reading,
+    ...(v.presence !== undefined ? { presence: oneOf(v.presence,
+      ['present', 'unavailable', 'absent'] as const, `${path}.presence`) } : {}),
     availability: validateAvailability(v.availability, `${path}.availability`),
     relevant: bool(v.relevant, `${path}.relevant`),
     ...(v.domain !== undefined
@@ -1479,9 +1483,10 @@ function validateDisplayObservedMeterField(
   value: unknown, path: string, expectedSource: MeterSourceExpectation,
 ): DisplayObservedMeterField {
   const v = record(value, path);
-  exactKeys(v, ['reading', 'availability', 'relevant', 'display', 'domain', 'source'], path);
+  exactKeys(v, ['reading', 'availability', 'relevant', 'display', 'domain', 'source', 'presence'], path);
   const strict = validateMeterField({
     reading: v.reading, availability: v.availability, relevant: v.relevant,
+    ...(v.presence !== undefined ? { presence: v.presence } : {}),
     ...(v.domain !== undefined ? { domain: v.domain } : {}),
     ...(v.source !== undefined ? { source: v.source } : {}),
   }, path, expectedSource);
