@@ -23,10 +23,12 @@
   clipped column. `semantic/RxTxSurface.svelte` renders that key, so its
   `rx-tx` zone is placed FIRST in the right rail, above the other transmit
   controls, in both arrangements — `__tests__/FlagshipProbe.component.test.ts`
-  requires the rail column, that position and the rail's declared width
-  together. Nothing then stands between the two receivers, and the deck's
-  middle track is gone rather than empty: the same test requires every track
-  in both column templates to be a column some area names.
+  requires the rail column, that position and the rail's declared track
+  together. The rail's own minimum is the width that key pair needs — see
+  `--flagship-probe-rail-floor` below. Nothing then stands between the two
+  receivers, and the deck's middle track is gone rather than empty: the same
+  test requires every track in both column templates to be a column some area
+  names.
 
   The switch is a container query on `.flagship-probe`, so it follows the
   width this skin is GIVEN rather than the viewport's. Its threshold is
@@ -40,7 +42,7 @@
   requires the manifest's declared reflow width to equal it too.
 
   NO SURFACE MAY SIZE A TRACK. Every track in both column templates is a
-  declared size: the rails are `minmax(0, <rail>)` and the two receiver
+  declared size: the rails are `minmax(<floor>, <rail>)` and the two receiver
   strips are the flexible tracks that take the remainder. None is `auto`,
   `min-content`, `max-content` or `fit-content`, in either direction. A
   surface wider than its column overflows inside that column. The component
@@ -94,13 +96,33 @@
     height: 100%;
 
     /*
+      TRANSMIT-KEY floor: measured 2026-09-09 with pseudo-localised key
+      labels (`⟦Ķéý ťŕáñšɱíťťéŕ ~~~~~~⟧` and `⟦Úñķéý ťŕáñšɱíťťéŕ ~~~~~~⟧`,
+      `lib/i18n/pseudo.ts`'s `pseudoize()` applied to the two hard-coded
+      English strings `semantic/RxTxSurface.svelte` renders) on the
+      fixture-stub harness — `vite.fixtures.config.ts`, fixture
+      `topology-2-main-sub`, Chromium; do not lower it to make a layout fit.
+
+      Derived from labels that CAN grow, not from the ones shipped today: the
+      key and unkey buttons are `white-space: nowrap` on one non-wrapping
+      flex row, so the pair is atomic — neither key is reachable without room
+      for both. Those two strings are hard-coded English, so nothing can grow
+      them today; the day they are localised they grow together.
+      `__tests__/FlagshipProbe.component.test.ts` pins this value and the
+      shape of the two rail tracks below.
+    */
+    --flagship-probe-rail-floor: 379px;
+
+    /*
       The declared track widths — a rail's width and a receiver strip's
       minimum — and their sum with the three gutters `.probe-stage` puts
-      between the four columns.
+      between the four columns. The rail's width is the floor: the measured
+      floor came out above the 280px this rail carried before it, and a rail
+      narrower than its own floor is not a rail.
     */
-    --flagship-probe-rail-width: 280px;
+    --flagship-probe-rail-width: 379px;
     --flagship-probe-strip-min-width: 360px;
-    --flagship-probe-switch-width: 1304px;
+    --flagship-probe-switch-width: 1502px;
   }
 
   /*
@@ -113,21 +135,29 @@
     between them. The deck spans all four columns in the narrow arrangement
     and columns 2-3 in the wide one; that is the whole of the switch.
 
-    Both templates size the rails to a declared width and give the remainder
-    to columns 2 and 3. The wide one alone floors those two at the declared
-    strip minimum, because it is the arrangement in which a receiver strip
-    occupies one of them on its own — in the narrow one each strip spans a
-    rail column and its neighbour.
+    Both templates floor the rails at the transmit-key floor, cap them at the
+    declared rail width and give the remainder to columns 2 and 3. The wide
+    one alone floors those two at the declared strip minimum, because it is
+    the arrangement in which a receiver strip occupies one of them on its own
+    — in the narrow one each strip spans a rail column and its neighbour.
+
+    The rail floor is a hard track minimum, so the two flexible columns are
+    what gives first: at a container narrower than both rails and the three
+    gutters together they reach 0, and this grid then overflows its container
+    rather than compressing a rail. That is the intended answer — below this
+    arrangement is the mobile skin, which `skins/registry.ts: resolveSkinId`
+    returns ahead of this one whenever the app reports a mobile viewport, and
+    which is a separate design rather than this one squeezed.
   */
   .probe-stage {
     display: grid;
     gap: 8px;
     align-content: start;
     grid-template-columns:
-      minmax(0, var(--flagship-probe-rail-width))
+      minmax(var(--flagship-probe-rail-floor), var(--flagship-probe-rail-width))
       minmax(0, 1fr)
       minmax(0, 1fr)
-      minmax(0, var(--flagship-probe-rail-width));
+      minmax(var(--flagship-probe-rail-floor), var(--flagship-probe-rail-width));
     grid-template-areas:
       'rx-main   rx-main    rx-sub     rx-sub'
       'vfo-ops   vfo-ops    vfo-ops    vfo-ops'
@@ -140,13 +170,13 @@
       'meters    meters     meters     meters';
   }
 
-  @container (min-width: 1304px) {
+  @container (min-width: 1502px) {
     .probe-stage {
       grid-template-columns:
-        minmax(0, var(--flagship-probe-rail-width))
+        minmax(var(--flagship-probe-rail-floor), var(--flagship-probe-rail-width))
         minmax(var(--flagship-probe-strip-min-width), 1fr)
         minmax(var(--flagship-probe-strip-min-width), 1fr)
-        minmax(0, var(--flagship-probe-rail-width));
+        minmax(var(--flagship-probe-rail-floor), var(--flagship-probe-rail-width));
       grid-template-areas:
         'rf        rx-main    rx-sub     rx-tx'
         'dsp       vfo-ops    vfo-ops    tx-aux'

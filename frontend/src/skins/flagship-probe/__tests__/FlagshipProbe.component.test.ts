@@ -345,8 +345,7 @@ describe('the panorama sits between the two rails, in both arrangements', () => 
     const template = templates()[index as number];
     const lastColumn = template[0].length - 1;
     expect(columnsOf(template, 'rx-tx')).toEqual([lastColumn]);
-    expect(columnTemplates()[index as number][lastColumn])
-      .toBe('minmax(0, var(--flagship-probe-rail-width))');
+    expect(columnTemplates()[index as number][lastColumn]).toBe(RAIL_TRACK);
     // First in the rail: no other transmit control comes between the top of
     // the transmit column and the key.
     const rows = RIGHT_RAIL.map((area) => rowOf(template, area));
@@ -428,14 +427,19 @@ function columnTemplates(): string[][] {
     .map(([, body]) => splitTracks(body));
 }
 
-/** The one px length a track sizing function declares, after substituting the
- *  custom properties it is written with. */
+/** The largest px length a track sizing function declares, after substituting
+ *  the custom properties it is written with: a rail's maximum (its declared
+ *  width, the minimum being the floor), and a strip's minimum (its maximum
+ *  being `1fr`, which declares no length). */
 function declaredPx(track: string): number {
   const resolved = track.replace(/var\((--[a-z-]+)\)/g, (_match, name: string) => `${px(name)}px`);
   const lengths = [...resolved.matchAll(/(\d+)px/g)].map(([, value]) => Number(value));
-  expect(lengths).toHaveLength(1);
-  return lengths[0];
+  expect(lengths.length).toBeGreaterThan(0);
+  return Math.max(...lengths);
 }
+
+/** The one shape a rail track may take. */
+const RAIL_TRACK = 'minmax(var(--flagship-probe-rail-floor), var(--flagship-probe-rail-width))';
 
 const CONTENT_SIZED = /\b(auto|min-content|max-content|fit-content)\b/;
 
@@ -451,10 +455,12 @@ describe('no surface may size a track', () => {
   });
 
   // Kills: a rail whose maximum is anything but the declared rail width, and
-  // a rail whose minimum is anything but 0.
-  it.each([[0, 'narrow'], [1, 'wide']])('column template %i (%s) caps both rails at the declared rail width', (index) => {
+  // a rail whose minimum is anything but the transmit-key floor — including
+  // the `minmax(0, …)` this rail carried before the floor existed, which let
+  // it compress to any width at all.
+  it.each([[0, 'narrow'], [1, 'wide']])('column template %i (%s) floors both rails at the transmit-key floor and caps them at the declared rail width', (index) => {
     const tracks = columnTemplates()[index as number];
-    expect(tracks[0]).toBe('minmax(0, var(--flagship-probe-rail-width))');
+    expect(tracks[0]).toBe(RAIL_TRACK);
     expect(tracks[3]).toBe(tracks[0]);
   });
 
@@ -503,6 +509,36 @@ describe('no surface may size a track', () => {
   it('contains what does not fit inside the column it belongs to', () => {
     expect(style).toMatch(/:global\(\[data-zone-id\]\)\s*\{[^}]*overflow:\s*auto/);
     expect(style).toMatch(/\.probe-panorama\s*\{[^}]*overflow:\s*auto/);
+  });
+});
+
+describe('the transmit-key floor', () => {
+  /**
+   * The floor was measured in Chromium on 2026-09-09, on the real
+   * `FlagshipProbeSkin` mounted through the fixture-stub seam
+   * (`vite.fixtures.config.ts`, fixture `topology-2-main-sub`), with the two
+   * transmit-key labels replaced in the DOM by `lib/i18n/pseudo.ts`'s
+   * `pseudoize()` output. The `.rx-tx-actions` row's min-content came to
+   * 378.09px there — 379 is that measurement rounded up to a whole pixel.
+   * The rail width equals it because that floor came out above the 280px the
+   * rail carried before. The PR body carries the full table.
+   *
+   * Kills: lowering the floor to make some layout fit, which is exactly what
+   * the comment on the declaration forbids and what no other test here would
+   * notice — every other assertion in this file is about the FORM of the
+   * track, and `minmax(var(--floor), var(--width))` keeps its form at any
+   * value of either.
+   */
+  it('declares the measured floor, and a rail width raised to it', () => {
+    expect(px('--flagship-probe-rail-floor')).toBe(379);
+    expect(px('--flagship-probe-rail-width')).toBe(379);
+  });
+
+  // Kills: a rail width below its own floor, which would make `minmax()`
+  // resolve to the floor and leave the declared width a dead number.
+  it('never declares a rail width below the floor', () => {
+    expect(px('--flagship-probe-rail-floor'))
+      .toBeLessThanOrEqual(px('--flagship-probe-rail-width'));
   });
 });
 
