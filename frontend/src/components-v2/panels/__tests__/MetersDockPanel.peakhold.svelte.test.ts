@@ -163,7 +163,8 @@ describe('MetersDockPanel TX peak-hold ballistics (MOR-498)', () => {
     });
     vi.advanceTimersByTime(100);
     flushSync();
-    expect(t.querySelector('[data-meter="id"] .tile-value')?.textContent).toBe('25.0 A');
+    // 25 A is this fixture's Id top knot, so it renders with the T164 "+".
+    expect(t.querySelector('[data-meter="id"] .tile-value')?.textContent).toBe('25.0+ A');
 
     state.idMeter = 0;
     vi.advanceTimersByTime(100); // shortly into decay
@@ -180,12 +181,12 @@ describe('MetersDockPanel TX peak-hold ballistics (MOR-498)', () => {
   it('leaves the Vd NUMBER instantaneous (no peak-hold on the supply rail)', () => {
     const { t, state } = mountReactive({
       powerMeter: 0,
-      vdMeter: 16, // 16.0 V
+      vdMeter: 16, // this fixture's Vd top knot, so "16.0+ V" (T164)
       txActive: false,
     });
     vi.advanceTimersByTime(100);
     flushSync();
-    expect(t.querySelector('[data-meter="vd"] .tile-value')?.textContent).toBe('16.0 V');
+    expect(t.querySelector('[data-meter="vd"] .tile-value')?.textContent).toBe('16.0+ V');
 
     // A drop in supply voltage must be reflected immediately, not held.
     state.vdMeter = 13.8;

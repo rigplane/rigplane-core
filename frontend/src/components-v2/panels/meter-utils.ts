@@ -66,6 +66,30 @@ function topActual(cal: MeterCalPoint[]): number {
   return cal[cal.length - 1].actual;
 }
 
+/**
+ * Renders a one-decimal drain reading against its calibration table.
+ *
+ * `src/rigplane/runtime/meter_cal.py: interpolate_meter` returns the last
+ * knot's `actual` for every raw at or above that knot's `raw`, so a value
+ * that has reached the top is a clamp, not a reading — how far past the top
+ * the rail actually went is not in the table. Such a value is rendered as
+ * the top with a trailing "+" (the shape `formatSwr` already shows through
+ * its top knot's own label); below the top, and with no table at all, the
+ * value is rendered as itself.
+ */
+function formatAgainstTop(
+  value: number,
+  cal: MeterCalPoint[] | null,
+  unit: string,
+): string {
+  const floored = Math.max(0, value);
+  if (cal) {
+    const top = topActual(cal);
+    if (floored >= top) return `${top.toFixed(1)}+ ${unit}`;
+  }
+  return `${floored.toFixed(1)} ${unit}`;
+}
+
 /** Honest raw readout for an uncalibrated meter — the device-scale number
  *  tagged "raw" so it is never mistaken for an engineering-unit claim
  *  (MOR-1527: the pre-fix bug rendered this as a naked number, e.g. a Vd
@@ -226,7 +250,7 @@ export function formatVolts(value: number, domain?: MeterValueDomain): string {
   }
   const cal = getCal('vd');
   if (!cal && domain === undefined) return formatRaw(value);
-  return `${Math.max(0, cal ? Math.min(topActual(cal), value) : value).toFixed(1)} V`;
+  return formatAgainstTop(value, cal, 'V');
 }
 
 export function vdLevel(value: number): number;
@@ -248,7 +272,7 @@ export function formatAmps(value: number, domain?: MeterValueDomain): string {
   }
   const cal = getCal('id');
   if (!cal && domain === undefined) return formatRaw(value);
-  return `${Math.max(0, cal ? Math.min(topActual(cal), value) : value).toFixed(1)} A`;
+  return formatAgainstTop(value, cal, 'A');
 }
 
 export function idLevel(value: number): number;
