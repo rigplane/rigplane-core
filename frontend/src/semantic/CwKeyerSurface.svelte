@@ -295,7 +295,8 @@
     (value) => setLevel('breakInDelay', value),
   );
   const breakInDelayLease = breakInDelayScalar.attachRenderer();
-  let breakInDelayView = $derived(breakInDelayLease.view);
+  let breakInDelayView = $state(untrack(() => breakInDelayLease.view));
+  $effect.pre(() => { breakInDelayView = breakInDelayLease.view; });
   let breakInDelayBusy = $derived(
     breakInDelayView.presentation.attributes['aria-busy'] === 'true',
   );

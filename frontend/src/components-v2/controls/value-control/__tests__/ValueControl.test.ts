@@ -13,6 +13,7 @@ import {
   createDiscreteContinuousScalarPolicy,
   createHBarContinuousScalarPolicy,
   createKnobContinuousScalarPolicy,
+  createRenderedNativeRangeContinuousScalarPolicy,
 } from '../../../../primitives/scalar/continuous-scalar.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
@@ -410,6 +411,44 @@ describe('HBarRenderer', () => {
     const slider = getSlider(target);
     slider?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(onchange).toHaveBeenCalledWith(60);
+  });
+
+  it('sends one command per distinct value while a drag jitters inside one step', () => {
+    const request = vi.fn<(value: number) => void>();
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading' as const,
+        reading: { status: 'known' as const, value: 100 },
+        ownerKey: 'nb-level',
+        domain: { min: 0, max: 255, step: 1, defaultValue: null, fineStepDivisor: 1 },
+        enabled: true,
+        request,
+      }),
+      createRenderedNativeRangeContinuousScalarPolicy(),
+    );
+    const target = mountControl({ binding, label: 'NB level', renderer: 'hbar' });
+    const slider = getSlider(target);
+    const container = target.querySelector('.vc-hbar') as HTMLDivElement;
+    vi.spyOn(container, 'getBoundingClientRect')
+      .mockReturnValue({ left: 0, width: 255 } as DOMRect);
+    Object.assign(slider, {
+      setPointerCapture: vi.fn(),
+      releasePointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+    });
+
+    slider.dispatchEvent(new PointerEvent('pointerdown', {
+      pointerId: 1, clientX: 138, bubbles: true,
+    }));
+    for (const clientX of [138.1, 137.9, 138.4, 138.05, 137.6]) {
+      slider.dispatchEvent(new PointerEvent('pointermove', {
+        pointerId: 1, clientX, bubbles: true,
+      }));
+    }
+    slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, bubbles: true }));
+
+    expect(request.mock.calls).toEqual([[138]]);
+    binding.destroy();
   });
 });
 

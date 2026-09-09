@@ -99,6 +99,10 @@
       data-relevant={bar.relevant} data-observed={bar.observed} data-fault={bar.fault}
       data-meter-state={bar.state}
       role="group" aria-label={`${bar.label} meter`}>
+      <div class="meter-native-caption" aria-hidden="true">
+        <span class="meter-native-label">{bar.label}</span>
+        <span class="meter-native-value">{bar.displayText}</span>
+      </div>
       {#if bar.gauge}
         {#key resetPeakSeat}<StationMeterBarPlacement {frame} label={bar.label}
           displayValue={bar.displayText} accessibleDescription={bar.accessibleDescription}
@@ -140,6 +144,21 @@
           role="group" aria-label={present(field) ? "S meter" : "SWR meter"}
           {...signalDisplay?.attributes ?? {}}
         >
+          {#if present(field)}
+            <div class="meter-native-caption" aria-hidden="true" data-relevant={field.relevant}>
+              <span class="meter-native-label">S</span>
+              <span class="meter-native-value">{signalProjection?.primaryText ?? ''}</span>
+              {#if signalProjection?.secondaryText}
+                <span class="meter-native-secondary">{signalProjection.secondaryText}</span>
+              {/if}
+            </div>
+          {/if}
+          {#if swrFrame}
+            <div class="meter-native-caption" aria-hidden="true" data-relevant={swrFrame.projection.relevant}>
+              <span class="meter-native-label">SWR</span>
+              <span class="meter-native-value">{swrFrame.projection.displayText}</span>
+            </div>
+          {/if}
           <LinearSMeter
             frame={signalFrame.motion} label="S" compact
             mainPresent={present(field)}
@@ -171,6 +190,7 @@
   .meters-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .meters-rf { display: flex; align-items: baseline; gap: 0.4ch; margin: 0; font-weight: 700; }
   .meter-tile { display: block; }
+  .meter-native-caption { display: none; }
   .meter-tile[data-relevant='false']:not([data-meter='signal']):not([data-meter='swr']) {
     opacity: 0.4;
   }

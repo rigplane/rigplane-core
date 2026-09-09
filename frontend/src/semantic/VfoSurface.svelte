@@ -151,6 +151,16 @@
      * once; the radio-wide `showVfoList={false}` mount renders no rows.
      */
     indicatorReceiver?: ReceiverId;
+    /**
+     * MOR-2425 / T207 — a STOPGAP. `true` withholds the "Select VFO A /
+     * Select VFO B" pair. It resolves which of a one-receiver radio's two VFO
+     * POSITIONS is A and which is B: on a deck that gives each position its
+     * own column that is a relation BETWEEN the columns, and drawn inside one
+     * column it reads as that column's own control. The slot-stripped deck
+     * sets this until the relation has a surface of its own (T183). Defaults
+     * to `false`: every other caller renders exactly as before.
+     */
+    suppressIdentitySelectors?: boolean;
     continuitySession?: MeterContinuitySession | null;
     frequencyLifetimeKey?: string;
     receiverInstruments?: ReceiverInstrumentHandles;
@@ -193,6 +203,7 @@
     onTuneFrequency,
     pendingFrequencyHz,
     indicatorReceiver,
+    suppressIdentitySelectors = false,
     continuitySession,
     frequencyLifetimeKey,
     receiverInstruments,
@@ -638,7 +649,7 @@
       </div>
   {/snippet}
   {#snippet identitySelectors()}
-  {#if relativeIdentityUnknown && relativeReceiver !== null}
+  {#if !suppressIdentitySelectors && relativeIdentityUnknown && relativeReceiver !== null}
     {@const absoluteReason = disabled
       ? t('core.vfo.select.receiverUnavailableReason')
       : relativeSelectionPending
