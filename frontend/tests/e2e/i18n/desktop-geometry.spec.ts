@@ -5,6 +5,12 @@ import { mockCapabilities, mockInfo, mockState } from './fixtures';
 
 type TopologyId = 'topology-1-single' | 'topology-2-main-sub';
 
+const METER_PATHS = ['main.sMeter', 'sub.sMeter', 'powerMeter', 'swrMeter',
+  'alcMeter', 'compMeter', 'vdMeter', 'idMeter'] as const;
+const unobservedMeters = (paths: readonly string[]) => Object.fromEntries(paths.map(path => [path, {
+  storePath: path, observed: false, freshness: 'unknown' as const, availability: 'missing' as const,
+}]));
+
 function catalogFixture(id: TopologyId, known = true) {
   const fixture = fixtureById(id);
   if (!fixture) throw new Error(`Missing catalog fixture: ${id}`);
@@ -25,7 +31,8 @@ function catalogFixture(id: TopologyId, known = true) {
   } else {
     delete (state as unknown as { sub?: unknown }).sub;
   }
-  if (!known) state.fieldStatus = {};
+  if (!known) state.fieldStatus = unobservedMeters(METER_PATHS.filter(path =>
+    Object.prototype.hasOwnProperty.call(topologyState.fieldStatus, path)));
   return {
     state,
     caps: { ...structuredClone(mockCapabilities), ...structuredClone(topologyCaps) },
@@ -59,6 +66,7 @@ function fixture(known: boolean) {
     }
   }
   if (known) observe(state);
+  else Object.assign(fields, unobservedMeters(METER_PATHS.filter(path => path !== 'sub.sMeter')));
   // IC-7300 reports selected/unselected readback without proving A/B identity.
   delete fields['main.activeSlot'];
   delete fields.active;
