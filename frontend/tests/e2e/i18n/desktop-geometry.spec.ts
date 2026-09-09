@@ -286,6 +286,8 @@ async function standardGeometry(page: Page) {
         + '[data-instrument-bridge] [data-split-tx]',
     ));
     const textFailures = textTargets.flatMap(element => {
+      if (element.matches('[data-indicator-fact="rf-authority"]')
+        && ['receiving', 'unknown'].includes(element.dataset.indicatorRf ?? '')) return [];
       const range = document.createRange(); range.selectNodeContents(element);
       const text = range.getBoundingClientRect(); const owner = element.getBoundingClientRect();
       return text.width <= 0 || text.height <= 0 || text.left < owner.left - tolerance
@@ -294,6 +296,16 @@ async function standardGeometry(page: Page) {
         || text.bottom > zone.bottom + tolerance
         ? [{ target: describe(element), text: text.toJSON(), owner: owner.toJSON() }] : [];
     });
+    const rfAuthorityFailures = [...receiver.querySelectorAll<HTMLElement>('[data-indicator-fact="rf-authority"]')]
+      .flatMap(element => {
+        const state = element.dataset.indicatorRf;
+        const expected = state === 'transmitting' ? 'TX' : state === 'uncertain' ? 'TX?'
+          : state === 'receiving' || state === 'unknown' ? '' : null;
+        const owner = element.getBoundingClientRect();
+        const actual = element.textContent?.trim() ?? '';
+        return expected !== null && actual === expected && owner.width > 0 && owner.height > 0
+          ? [] : [{ state, expected, actual, owner: owner.toJSON() }];
+      });
     const hitFailures = descendants.filter(element => element.matches('[data-instrument-bridge] button'))
       .flatMap(element => {
         const box = element.getBoundingClientRect();
@@ -304,7 +316,7 @@ async function standardGeometry(page: Page) {
     const actionNames = descendants.filter(element => element.matches('[data-dual-action]'))
       .map(element => element.getAttribute('data-dual-action'));
     return {
-      outsideZone, ancestorClips, textFailures, hitFailures, actionNames,
+      outsideZone, ancestorClips, textFailures, rfAuthorityFailures, hitFailures, actionNames,
       maxBottom: Math.max(zone.top, ...descendants.map(element => element.getBoundingClientRect().bottom)),
     };
   });
@@ -317,6 +329,8 @@ function expectStandardReceiverIntegrity(
   expect.soft(geometry.receiverIntegrity.outsideZone, 'painted receiver descendants stay in their zone').toEqual([]);
   expect.soft(geometry.receiverIntegrity.ancestorClips, 'receiver descendants survive clipping ancestors').toEqual([]);
   expect.soft(geometry.receiverIntegrity.textFailures, 'bridge text ranges are painted and contained').toEqual([]);
+  expect.soft(geometry.receiverIntegrity.rfAuthorityFailures, 'RF authority slots reserve space and show only TX states')
+    .toEqual([]);
   expect.soft(geometry.receiverIntegrity.hitFailures, 'bridge controls are center-point hit-testable').toEqual([]);
   if (bodyTop !== undefined) {
     expect.soft(geometry.receiverIntegrity.maxBottom, 'receiver paint ends before the body row')
