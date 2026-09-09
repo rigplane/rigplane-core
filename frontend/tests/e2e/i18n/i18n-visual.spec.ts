@@ -626,7 +626,12 @@ test.describe('MOR-1400 production design-language contract', () => {
   for (const item of PRODUCTION_LANGUAGE_CASES) {
     test(`${item.label} activates from production dist`, async ({ page }) => {
       await page.emulateMedia({ reducedMotion: 'reduce' });
-      await preparePage(page, 'en-US', VIEWPORTS[0], { workspace: item.workspace });
+      await preparePage(page, 'en-US', VIEWPORTS[0], {
+        workspace: item.workspace,
+        state: { ...mockState, fieldStatus: Object.fromEntries(['main.sMeter', 'sub.sMeter']
+          .map(path => [path, { storePath: path, observed: false,
+            freshness: 'unknown' as const, availability: 'missing' as const }])) },
+      });
       await gotoApp(page, 'en-US');
       await waitForAppShell(page);
       await assertProductionLanguageCss(page, item);

@@ -271,20 +271,22 @@ const fullPlan = () => new Map([['receiver-zone', ['vfo']], ['tx-zone', ['txAux'
   ['meters-zone', ['meters']]]) as SurfacePlan;
 const planWithoutMeters = () =>
   new Map([['receiver-zone', ['vfo']], ['tx-zone', ['txAux']]]) as SurfacePlan;
-/** The six station LEVEL meters are structural only where `deriveMeters` sees
- *  their raw field, and `projectBarMeters` additionally drops `compression`
- *  while the compressor reads off. The signal meter needs none of these — it
- *  comes from `state()`'s own `main.sMeter`. */
+/** Explicit station observations exercise the hosted reading path. */
+const STATION_METERS = ['powerMeter', 'swrMeter', 'alcMeter', 'compMeter', 'vdMeter', 'idMeter'] as const;
 function stationState(): ServerState {
-  return { ...state(), compressorOn: true, powerMeter: 40, swrMeter: 30, alcMeter: 20,
-    compMeter: 10, vdMeter: 60, idMeter: 50 } as unknown as ServerState;
+  const base = state();
+  return { ...base, compressorOn: true, powerMeter: 40, swrMeter: 30, alcMeter: 20,
+    compMeter: 10, vdMeter: 60, idMeter: 50,
+    fieldStatus: { ...(base.fieldStatus as Record<string, unknown>),
+      ...Object.fromEntries(STATION_METERS.map((path) => [path, fresh])) },
+  } as unknown as ServerState;
 }
 /** Drops the active receiver's S meter, leaving SWR the only structural
  *  member of the host's signal-or-SWR composite. */
 function stationStateWithoutSignal(): ServerState {
   const base = stationState();
-  const { sMeter: _sMeter, ...main } = base.main as unknown as Record<string, unknown>;
-  return { ...base, main } as unknown as ServerState;
+  return { ...base, fieldStatus: { ...base.fieldStatus, 'main.sMeter': { ...fresh,
+    observed: false, availability: 'undeclared' } } } as unknown as ServerState;
 }
 const stationSection = () => target.querySelector('[data-family="stationMeters"]');
 const stationKeys = () => Array.from(
@@ -561,6 +563,21 @@ describe('external hosted face chain', () => {
     expect(stationKeys()).toEqual(STATION_ORDER);
     const b = occurrence(loadedB, current); current.value = b; props.externalPresentation = b; flushSync();
     expect(stationKeys()).toEqual([...STATION_ORDER].reverse());
+  });
+
+  it('retains unavailable empty SWR for a hosted face that chooses to render it', async () => {
+    const initial = stationState();
+    initial.fieldStatus!.swrMeter = { ...fresh, observed: false, availability: 'unavailable' } as never;
+    h.state = proxy(initial);
+    const current = { value: {} };
+    const a = occurrence(await loadedRecord('station-unavailable', FaceA), current); current.value = a;
+    target = document.createElement('div'); document.body.appendChild(target);
+    mountStation(a, writable<SurfacePlan | null>(fullPlan()));
+    const swr = stationSection()!.querySelector<HTMLElement>('[data-fixture-level="swr"]')!;
+    expect(swr).not.toBeNull();
+    expect(swr.dataset.state).toBe('unknown');
+    expect(swr.hasAttribute('data-value')).toBe(false);
+    expect(h.barMeterOwners).toHaveLength(6);
   });
 
   it('renders station meters from the record appearance when the global selection is absent', async () => {

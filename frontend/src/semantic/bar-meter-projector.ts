@@ -26,6 +26,7 @@ import type { MeterScaleDomain } from '../components-v2/panels/meter-utils';
 import { projectTxMeterDisplay } from './tx-meter-display';
 import type {
   DisplayObservedMeterField,
+  MeterField,
   MeterRfState,
   MeterSourceIdentity,
   MeterValueDomain,
@@ -41,6 +42,7 @@ export type LevelMeterEvidence =
   | Readonly<{ state: 'unsupported' | 'idle' | 'unknown' }>;
 
 export interface LevelMeterProjection<Key extends LevelMeterKey = LevelMeterKey> {
+  readonly presence?: MeterField['presence'];
   readonly key: Key;
   readonly label: string;
   readonly relevant: boolean;
@@ -176,6 +178,7 @@ function projectLevelMeter<Key extends LevelMeterKey>(
   return {
     key,
     label,
+    presence: field.presence,
     relevant: field.relevant,
     observed: isObserved,
     state,

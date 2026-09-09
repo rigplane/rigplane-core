@@ -1583,8 +1583,9 @@ describe('MOR-1304 fix round — filter never mounts bare in the dual compositio
 // .ts`) and the one `RadioLayout.svelte` reads to retire the legacy dock.
 describe('MOR-1341 — desktop-v2 mounts a real meters zone when the group is present', () => {
   it('binds [data-zone-id="meters"] around the meters surface, alone in its zone', () => {
-    const base = liveState(false) as unknown as { main: Record<string, unknown> };
-    h.state = { ...base, main: { ...base.main, sMeter: 120 } };
+    const base = liveState(false);
+    h.state = { ...base, main: { ...base.main, sMeter: 120 },
+      fieldStatus: { ...base.fieldStatus, 'main.sMeter': fresh } };
     h.caps = liveCaps(false);
     const plan = resolveSurfacePlan(desktopV2Layout, readWorkspace({ version: 1 }).workspace);
     render({ strips: 'single' }, plan);
@@ -1593,6 +1594,7 @@ describe('MOR-1341 — desktop-v2 mounts a real meters zone when the group is pr
     expect(zone).not.toBeNull();
     expect(zone!.classList.contains('surface-zone')).toBe(true);
     expect(q('[data-testid="meters-surface"]')!.parentElement).toBe(zone);
+    expect(q('[data-testid="meter-signal"]')!.getAttribute('data-observed')).toBe('true');
     // R9 sanity: a readout-only zone adds no key/unkey affordance.
     expect(zone!.querySelector('[data-testid="rx-tx-key"]')).toBeNull();
     expect(zone!.querySelector('[data-testid="rx-tx-unkey"]')).toBeNull();

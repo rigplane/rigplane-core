@@ -1105,12 +1105,17 @@ describe('RF gain additive display observation', () => {
   }
   it.each([false, true])('preserves legacy strict model members for stale=%s', (stale) => {
     const view = toRadioViewModel(displayState(stale), displayCaps, RECEIVING)!;
+    expect(Object.fromEntries(Object.entries(view.meters!).filter(([key]) => key !== 'rfState')
+      .map(([key, field]) => [key, typeof field === 'object' ? field.presence : undefined])))
+      .toEqual({ signal: 'present', power: 'absent', swr: 'absent', alc: 'absent',
+        compression: 'absent', drainVoltage: 'absent', drainCurrent: 'absent' });
     const legacyView = structuredClone(view);
     for (const field of [
       'signal', 'power', 'swr', 'alc', 'compression', 'drainVoltage', 'drainCurrent',
     ] as const) {
       delete legacyView.meters?.[field].source;
       delete legacyView.meters?.[field].domain;
+      delete legacyView.meters?.[field].presence;
     }
     for (const indicator of legacyView.receiverIndicators ?? []) {
       delete indicator.sMeter.source;
