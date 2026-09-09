@@ -21,10 +21,10 @@
   The switch is a container query on `.flagship-probe`, so it follows the
   width this skin is GIVEN rather than the viewport's. Its threshold is
   `--flagship-probe-switch-width` — two rails, two receiver strips and the
-  RX/TX column, each at the minimum width declared below, which makes it the
-  narrowest container in which the wide arrangement can meet all five of
-  those minimums at once. Those minimums are DECLARED, not measured: nothing
-  here measures what a surface actually renders at.
+  RX/TX column, each at the minimum width declared below, PLUS the four
+  gutters the grid puts between those five columns. Those minimums are
+  DECLARED, not measured: nothing here measures what a surface actually
+  renders at.
   `__tests__/FlagshipProbe.component.test.ts` recomputes the sum and requires
   the `@container` literal to equal it;
   `presentation/layouts/__tests__/flagship-probe-registration.test.ts`
@@ -76,11 +76,14 @@
     container-type: inline-size;
     height: 100%;
 
-    /* The declared minimum track widths, and their sum. */
+    /*
+      The declared minimum track widths, and their sum with the four gutters
+      `.probe-stage` puts between the five columns.
+    */
     --flagship-probe-rail-width: 280px;
     --flagship-probe-strip-min-width: 360px;
     --flagship-probe-rx-tx-min-width: 160px;
-    --flagship-probe-switch-width: 1440px;
+    --flagship-probe-switch-width: 1472px;
   }
 
   /*
@@ -115,7 +118,7 @@
       'meters    meters     meters     meters     meters';
   }
 
-  @container (min-width: 1440px) {
+  @container (min-width: 1472px) {
     .probe-stage {
       grid-template-areas:
         'rf        rx-main    rx-mid     rx-sub     tx-aux'

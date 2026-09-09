@@ -139,6 +139,10 @@ import {
 
 const SKIN_PATH = 'src/skins/flagship-probe/FlagshipProbeSkin.svelte';
 const source = readFileSync(SKIN_PATH, 'utf8');
+/** The style block alone, comments stripped — so no assertion below can be
+ *  satisfied by the header comment quoting the CSS it describes. */
+const style = source.slice(source.indexOf('<style>'), source.indexOf('</style>'))
+  .replace(/\/\*[\s\S]*?\*\//g, '');
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 
@@ -247,9 +251,9 @@ function templates(): Template[] {
     [...body.matchAll(/'([^']*)'/g)].map(([, row]) => row.trim().split(/\s+/)));
 }
 
-/** A pixel-valued custom property declared in the skin's own style block. */
+/** A pixel-valued declaration in the skin's own style block. */
 function px(name: string): number {
-  const hit = source.match(new RegExp(`${name}:\\s*(\\d+)px`));
+  const hit = style.match(new RegExp(`${name}:\\s*(\\d+)px`));
   expect(hit).not.toBeNull();
   return Number(hit![1]);
 }
@@ -339,9 +343,16 @@ describe('the container-width switch', () => {
   // arrangement in force at every width.
   it('declares exactly two arrangements, and the wide one is inside a container query', () => {
     expect(templates()).toHaveLength(2);
-    const container = source.slice(source.indexOf('@container'));
+    const container = style.slice(style.indexOf('@container'));
     expect(container).toContain('grid-template-areas');
-    expect(source.indexOf('@container')).toBeLessThan(source.lastIndexOf('grid-template-areas'));
+    expect(style.indexOf('@container')).toBeLessThan(style.lastIndexOf('grid-template-areas'));
+  });
+
+  // Kills: dropping `container-type` from the skin root, which leaves the
+  // query above resolving against some ancestor's width — or, with no
+  // container anywhere above, never matching at all.
+  it('declares the query container on the skin root itself', () => {
+    expect(style).toMatch(/\.flagship-probe\s*\{[^}]*container-type:\s*inline-size/);
   });
 
   // Kills: a "narrow" template that is really the wide one — the deck must
@@ -357,26 +368,26 @@ describe('the container-width switch', () => {
   });
 
   // Kills: changing the threshold in one place and not the other two — the
-  // number is the sum of the arrangement's own declared minimum widths. The
+  // number is the sum of the arrangement's own declared minimum widths and
+  // the four gutters between the five columns they size. The
   // manifest declares that same width, and
   // `presentation/layouts/__tests__/flagship-probe-registration.test.ts` is
   // where the two are required to agree (this directory may not name the
   // manifest field: `stage-sizing-boundary.test.ts`).
-  it('the threshold is the sum of the declared minimum track widths', () => {
+  it('the threshold is the sum of the declared minimum track widths and the gutters', () => {
     const rail = px('--flagship-probe-rail-width');
     const strip = px('--flagship-probe-strip-min-width');
     const rxTx = px('--flagship-probe-rx-tx-min-width');
-    const sum = 2 * rail + 2 * strip + rxTx;
+    // Five columns, four gutters. Read from the same style block as the
+    // widths, so the gap and the threshold cannot drift apart either.
+    const sum = 2 * rail + 2 * strip + rxTx + 4 * px('gap');
 
     expect(px('--flagship-probe-switch-width')).toBe(sum);
-    expect(Number(source.match(/@container \(min-width: (\d+)px\)/)![1])).toBe(sum);
+    expect(Number(style.match(/@container \(min-width: (\d+)px\)/)![1])).toBe(sum);
   });
 });
 
 describe('geometry only — the shell draws nothing', () => {
-  const style = source.slice(source.indexOf('<style>'), source.indexOf('</style>'))
-    .replace(/\/\*[\s\S]*?\*\//g, '');
-
   // Kills: the shell acquiring a look of its own — a colour, a font size, a
   // border or a lamp — which is exactly what this PR is not allowed to add
   // and what its design-language exemption
