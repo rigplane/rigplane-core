@@ -948,3 +948,30 @@ def test_ftx1_sub_paths_enter_the_gate_once_dual_receive_is_observed_on() -> Non
 
     assert set(FTX1_SUB_PATHS).issubset(outstanding)
     assert DUAL_WATCH not in outstanding
+
+
+FTX1_DRAIN_PATHS = (
+    FieldPath.global_("meters", "vd"),
+    FieldPath.global_("meters", "id"),
+)
+
+
+def test_ftx1_drain_meters_hold_the_gate_open_until_they_are_observed() -> None:
+    """MOR-2425/T147: declaring VDD/IDD without ``tx_only`` enrols them.
+
+    ``AcquisitionScheduler.unobserved_startup_paths`` drops a ``tx_only``
+    path, which is why the four transmit meters never hold the gate. These
+    two are not ``tx_only``, so the web start-up wait covers them -- the
+    2026-09-08 bench probe is the evidence that a receiving FTX-1 answers
+    both, in 8.3-14.4 ms per read.
+    """
+    outstanding = _ftx1_outstanding(StateStore())
+
+    assert set(FTX1_DRAIN_PATHS).issubset(outstanding)
+    # Not vacuous: the transmit meters sharing the same CAT command are
+    # excluded from the same set by their ``tx_only``.
+    assert FieldPath.global_("meters", "swr") not in outstanding
+
+    observed = _ftx1_outstanding(StateStore(), FTX1_DRAIN_PATHS)
+
+    assert set(FTX1_DRAIN_PATHS).isdisjoint(observed)

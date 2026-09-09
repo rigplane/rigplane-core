@@ -209,6 +209,10 @@ def _make_radio() -> MagicMock:
     radio.read_comp_meter = AsyncMock(return_value=30)
     radio.read_power_meter = AsyncMock(return_value=180)
     radio.read_swr_meter = AsyncMock(return_value=120)
+    # Drain meters (MOR-2425/T147), read in the slow lane: the raw values the
+    # 2026-09-08 read-only bench probe got from a receiving FTX-1.
+    radio.get_vd_meter = AsyncMock(return_value=212)
+    radio.get_id_meter = AsyncMock(return_value=0)
     # An unrelated RX-meter read used to prove no snap-back.
     radio.read_s_meter = AsyncMock(return_value=150)
     # Filter / IF-shift / narrow DSP controls (MOR-445). filter_width is read
