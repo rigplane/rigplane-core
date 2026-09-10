@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { runtime } from '$lib/runtime';
   import { hasCapability } from '$lib/stores/capabilities.svelte';
   import RfFrontEnd from '../panels/RfFrontEnd.svelte';
@@ -17,6 +18,7 @@
   import CollapsiblePanel from '../controls/CollapsiblePanel.svelte';
   import { createDragReorder } from '$lib/drag-reorder.svelte';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
+  import type { PanelDragOwner } from '../wiring/instrument-composition';
 
   /** MOR-1065: mirrors RightSidebar. The TX panel is not in this sidebar's
    *  defaults, but a cross-sidebar drag can move it here, so the semantic
@@ -42,20 +44,30 @@
   let {
     hideTxPanel = false,
     declared = new Set<SemanticSurfaceName>(),
-  }: { hideTxPanel?: boolean; declared?: ReadonlySet<SemanticSurfaceName> } = $props();
+    dragOwner,
+    showReset = true,
+  }: {
+    hideTxPanel?: boolean;
+    declared?: ReadonlySet<SemanticSurfaceName>;
+    dragOwner?: PanelDragOwner;
+    showReset?: boolean;
+  } = $props();
 
   // Reactive state + capabilities — via runtime
   let caps = $derived(runtime.caps);
 
   // --- Panel reorder (shared logic) ---
-  const drag = createDragReorder({
+  const drag = untrack(() => dragOwner ?? createDragReorder({
     storageKey: 'rigplane:panel-order',
     defaults: ['rf-front-end', 'mode', 'filter', 'agc', 'rit-xit', 'band', 'antenna', 'scan'],
     containerSelector: '.left-sidebar',
-  });
+  }));
 </script>
 
-<aside class="left-sidebar" class:cross-drop-target={drag.isDropTarget}>
+<aside
+  class="left-sidebar" class:shared-drag-owner={dragOwner !== undefined}
+  class:cross-drop-target={drag.isDropTarget}
+>
   {#if drag.order.includes('rf-front-end') && !declared.has('rfFrontEnd')}
     <CollapsiblePanel title="RF FRONT END" panelId="rf-front-end" dataPanel="rf-frontend"
       draggable={true} onDragStart={drag.handleDragStart}
@@ -158,11 +170,13 @@
     </CollapsiblePanel>
   {/if}
 
-  <div class="sidebar-footer" style="order:99">
-    <button type="button" class="reset-order-btn" onclick={drag.resetAll}>
-      Reset panel order
-    </button>
-  </div>
+  {#if showReset}
+    <div class="sidebar-footer" style="order:99">
+      <button type="button" class="reset-order-btn" onclick={drag.resetAll}>
+        Reset panel order
+      </button>
+    </div>
+  {/if}
 </aside>
 
 <style>
@@ -180,6 +194,8 @@
     outline: 2px solid var(--v2-accent, #4af);
     outline-offset: -2px;
   }
+
+  .left-sidebar.shared-drag-owner { display: contents; }
 
   .sidebar-footer {
     display: flex;

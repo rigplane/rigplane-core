@@ -18,6 +18,7 @@
   export type {
     InstrumentComposition,
     InstrumentVfoAppearance,
+    PanelChrome,
   } from './instrument-composition';
 
   export interface ExternalPresentation {
@@ -32,6 +33,7 @@
   import type {
     InstrumentComposition,
     InstrumentVfoAppearance,
+    PanelChrome,
   } from './instrument-composition';
   import { t } from '$lib/i18n';
   import { getScopeSource, hasCapability } from '$lib/stores/capabilities.svelte';
@@ -1913,19 +1915,20 @@
     not a second mount mechanism, a different answer to "and if nobody owns
     it?".
   -->
-  {#snippet presented(surface: SemanticSurfaceName, body: Snippet)}
+  {#snippet presented(surface: SemanticSurfaceName, body: Snippet, chrome?: PanelChrome)}
     {#if vfoAppearance === 'semantic' && hostedChildren === undefined}{@render body()}
-    {:else}<SemanticControlPanel {surface}>{@render body()}</SemanticControlPanel>{/if}
+    {:else}<SemanticControlPanel {surface} {...chrome}>{@render body()}</SemanticControlPanel>{/if}
   {/snippet}
 
   {#snippet zoned(
     surface: SemanticSurfaceName, present: boolean, body: Snippet, allowBare = true,
+    chrome?: PanelChrome,
   )}
     {#if present}
       {@const zoneId = zoneOwning(surface)}
       {#if zoneId !== null}
-        <div class="surface-zone" data-zone-id={zoneId}>{@render presented(surface, body)}</div>
-      {:else if allowBare}{@render presented(surface, body)}{/if}
+        <div class="surface-zone" data-zone-id={zoneId}>{@render presented(surface, body, chrome)}</div>
+      {:else if allowBare}{@render presented(surface, body, chrome)}{/if}
     {/if}
   {/snippet}
 
@@ -2341,69 +2344,79 @@
     )}{/snippet}
     {@render zoned('vfo', view !== null && singleOrder.includes('vfo'), body, allowBare)}
   {/snippet}
-  {#snippet hostedRxTx(allowBare = allowBareSurfaces)}
-    {@render zoned('rxTx', view !== null && singleOrder.includes('rxTx'), rxTxSurface, allowBare)}
+  {#snippet hostedRxTx(allowBare = allowBareSurfaces, chrome?: PanelChrome)}
+    {@render zoned('rxTx', view !== null && singleOrder.includes('rxTx'), rxTxSurface, allowBare, chrome)}
   {/snippet}
-  {#snippet hostedTxAux(instrumentLayout: Snippet, allowBare = allowBareSurfaces)}
+  {#snippet hostedTxAux(
+    instrumentLayout: Snippet, allowBare = allowBareSurfaces, chrome?: PanelChrome,
+  )}
     {#snippet body()}
       {@render instrumentLayout()}
       {@render txAuxSurface(txAuxInstruments, txAuxScalars, false, false)}
     {/snippet}
-    {@render zoned('txAux', view?.txAux !== undefined, body, allowBare)}
+    {@render zoned('txAux', view?.txAux !== undefined, body, allowBare, chrome)}
   {/snippet}
-  {#snippet hostedMeters(allowBare = allowBareSurfaces)}
-    {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBare)}
+  {#snippet hostedMeters(allowBare = allowBareSurfaces, chrome?: PanelChrome)}
+    {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBare, chrome)}
   {/snippet}
   {#snippet hostedRxAudio(
-    allowBare = allowBareSurfaces, finiteLayout?: RxAudioFiniteLayout,
+    allowBare = allowBareSurfaces, finiteLayout?: RxAudioFiniteLayout, chrome?: PanelChrome,
   )}
     {#snippet body()}{@render rxAudioSurface(finiteLayout)}{/snippet}
-    {@render zoned('rxAudio', view?.rxAudio !== undefined, body, allowBare)}
+    {@render zoned('rxAudio', view?.rxAudio !== undefined, body, allowBare, chrome)}
   {/snippet}
   {#snippet hostedRfFrontEnd(
-    allowBare = allowBareSurfaces, finiteLayout?: RfFrontEndFiniteLayout,
+    allowBare = allowBareSurfaces, finiteLayout?: RfFrontEndFiniteLayout, chrome?: PanelChrome,
   )}
     {#snippet body()}{@render rfFrontEndSurface(finiteLayout)}{/snippet}
-    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, body, allowBare)}
+    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, body, allowBare, chrome)}
   {/snippet}
   {#snippet hostedFilter(
-    allowBare = allowBareSurfaces, finiteLayout?: FilterFiniteLayout,
+    allowBare = allowBareSurfaces, finiteLayout?: FilterFiniteLayout, chrome?: PanelChrome,
   )}
     {#snippet body()}{@render filterSurface(finiteLayout)}{/snippet}
     {@render zoned(
       'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined,
-      body, allowBare,
+      body, allowBare, chrome,
     )}
   {/snippet}
   {#snippet hostedDsp(
     allowBare = allowBareSurfaces, finiteLayout?: DspFiniteLayout,
-    scalarLayout?: DspScalarLayout,
+    scalarLayout?: DspScalarLayout, chrome?: PanelChrome,
   )}
     {#snippet body()}{@render dspSurface(finiteLayout, scalarLayout)}{/snippet}
-    {@render zoned('dsp', view?.dsp !== undefined, body, allowBare)}
+    {@render zoned('dsp', view?.dsp !== undefined, body, allowBare, chrome)}
   {/snippet}
-  {#snippet hostedBand(allowBare = allowBareSurfaces, controlLayout?: BandControlLayout)}
+  {#snippet hostedBand(
+    allowBare = allowBareSurfaces, controlLayout?: BandControlLayout, chrome?: PanelChrome,
+  )}
     {#snippet body()}{@render bandSurface(controlLayout)}{/snippet}
-    {@render zoned('band', view?.band !== undefined, body, allowBare)}
+    {@render zoned('band', view?.band !== undefined, body, allowBare, chrome)}
   {/snippet}
-  {#snippet hostedAntenna(allowBare = allowBareSurfaces, controlLayout?: Snippet)}
+  {#snippet hostedAntenna(
+    allowBare = allowBareSurfaces, controlLayout?: Snippet, chrome?: PanelChrome,
+  )}
     {#snippet body()}{@render antennaSurface(controlLayout)}{/snippet}
-    {@render zoned('antenna', view?.antenna !== undefined, body, allowBare)}
+    {@render zoned('antenna', view?.antenna !== undefined, body, allowBare, chrome)}
   {/snippet}
-  {#snippet hostedRitXitScan(allowBare = allowBareSurfaces)}
+  {#snippet hostedRitXitScan(allowBare = allowBareSurfaces, chrome?: PanelChrome)}
     {@render zoned(
       'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined,
-      ritXitScanSurface, allowBare,
+      ritXitScanSurface, allowBare, chrome,
     )}
   {/snippet}
   {#snippet hostedCwKeyer(
-    allowBare = allowBareSurfaces, showKeyerSpeed = true,
+    allowBare = allowBareSurfaces, showKeyerSpeed = true, chrome?: PanelChrome,
+    instrumentLayout?: Snippet,
   )}
-    {#snippet body()}{@render cwKeyerSurface(showKeyerSpeed, showKeyerSpeed)}{/snippet}
-    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, body, allowBare)}
+    {#snippet body()}
+      {#if instrumentLayout}{@render instrumentLayout()}{/if}
+      {@render cwKeyerSurface(showKeyerSpeed, showKeyerSpeed)}
+    {/snippet}
+    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, body, allowBare, chrome)}
   {/snippet}
-  {#snippet hostedMemory(allowBare = allowBareSurfaces)}
-    {@render zoned('memory', true, memorySurface, allowBare)}
+  {#snippet hostedMemory(allowBare = allowBareSurfaces, chrome?: PanelChrome)}
+    {@render zoned('memory', true, memorySurface, allowBare, chrome)}
   {/snippet}
   {#snippet hostedScopeDisplay(allowBare = allowBareSurfaces)}
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBare)}

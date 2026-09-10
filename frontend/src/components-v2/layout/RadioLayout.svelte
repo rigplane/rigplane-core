@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, type Snippet } from 'svelte';
+  import { onDestroy, onMount, untrack, type Snippet } from 'svelte';
   import '../theme/index';
   import { setTheme, getTheme, setVfoTheme, getVfoTheme } from '../theme/theme-switcher';
   
@@ -31,7 +31,10 @@
   import LeftSidebar from './LeftSidebar.svelte';
   import RightSidebar from './RightSidebar.svelte';
   import VfoHeader from './VfoHeader.svelte';
-  import type { InstrumentComposition } from '../wiring/instrument-composition';
+  import type {
+    InstrumentComposition, PanelChrome, PanelDragOwner,
+  } from '../wiring/instrument-composition';
+  import { createDragReorder } from '$lib/drag-reorder.svelte';
   import type { DspFiniteHandles } from '../../semantic/dsp-instruments';
   import type { DspScalarHandles } from '../../semantic/dsp-scalars';
   import type { RfFrontEndFiniteHandles } from '../../semantic/rf-front-end-instruments';
@@ -69,6 +72,38 @@
   import { HardwareButton } from '$lib/Button';
 
   let { skinId = 'desktop-v2', instruments }: { skinId?: SkinId; instruments: InstrumentComposition } = $props();
+
+  const standardFaceAtMount = untrack(() => skinId === 'desktop-v2');
+  const standardLeftDrag: PanelDragOwner | null = standardFaceAtMount ? createDragReorder({
+    storageKey: 'rigplane:panel-order',
+    defaults: [
+      'semantic-rf-front-end', 'semantic-filter', 'semantic-band', 'semantic-antenna',
+      'semantic-rit-xit-scan', 'band',
+    ],
+    containerSelector: '.standard-panel-owner-left',
+  }) : null;
+  const standardRightDrag: PanelDragOwner | null = standardFaceAtMount ? createDragReorder({
+    storageKey: 'rigplane:right-panel-order',
+    defaults: [
+      'semantic-rx-tx', 'semantic-rx-audio', 'semantic-dsp', 'semantic-cw',
+      'semantic-memory', 'semantic-tx-aux', 'audio-scope',
+    ],
+    containerSelector: '.standard-panel-owner-right',
+  }) : null;
+  const standardBottomDrag: PanelDragOwner | null = standardFaceAtMount ? createDragReorder({
+    storageKey: 'rigplane:bottom-panel-order',
+    defaults: ['semantic-meters'],
+    containerSelector: '.standard-bottom-dock',
+  }) : null;
+
+  function panelChrome(owner: PanelDragOwner, panelId: string): PanelChrome {
+    return {
+      panelId,
+      draggable: true,
+      onDragStart: owner.handleDragStart,
+      style: owner.dragStyle(panelId),
+    };
+  }
 
   // MOR-2425 C-R3 — the link-fault veil. It carries no words of its own: the
   // status bar already states both arms, and the veil's own selectors exempt
@@ -389,6 +424,19 @@
   </div>
 {/snippet}
 
+{#snippet cwKeyerInstrumentLayout()}
+  <div class="cw-keyer-instrument-seat" data-cw-keyer-seat="keyerSpeed">
+    {@render instruments.cwKeyerInstruments.keyerSpeed({
+      form: 'hbar', compact: false, showLabel: true, showValue: true,
+    })}
+  </div>
+  <div class="cw-keyer-instrument-seat" data-cw-keyer-seat="pitchHz" data-field="pitchHz">
+    {@render instruments.cwKeyerInstruments.pitchHz({
+      form: 'hbar', compact: false, showLabel: true, showValue: true,
+    })}
+  </div>
+{/snippet}
+
 <!--
   MOR-2425. The Standard face arranges the two persistent antenna seats itself
   instead of mounting the grouped `AntennaSurface`, so the blocked-reason list
@@ -421,6 +469,71 @@
     {#if instruments.vfoOperations.quickSplit}<div class="vfo-operation-instrument-seat" data-field="quickSplit">{@render instruments.vfoOperations.quickSplit()}</div>{/if}
     {#if instruments.vfoOperations.quickDualWatch}<div class="vfo-operation-instrument-seat" data-field="quickDualWatch">{@render instruments.vfoOperations.quickDualWatch()}</div>{/if}
     {#if instruments.vfoOperations.speak}<div class="vfo-operation-instrument-seat" data-field="speak">{@render instruments.vfoOperations.speak()}</div>{/if}
+  </div>
+{/snippet}
+
+{#snippet standardServicePanels(owner: PanelDragOwner, showReset = false)}
+  {#if owner.order.includes('semantic-rf-front-end')}
+    {@render instruments.rfFrontEnd(
+      undefined, rfFrontEndFiniteLayout, panelChrome(owner, 'semantic-rf-front-end'),
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-filter')}
+    {@render instruments.filter(
+      undefined, filterFiniteLayout, panelChrome(owner, 'semantic-filter'),
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-band')}
+    {@render instruments.band(
+      undefined, bandControlLayout, panelChrome(owner, 'semantic-band'),
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-antenna')}
+    {@render instruments.antenna(
+      undefined, antennaControlLayout, panelChrome(owner, 'semantic-antenna'),
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-rit-xit-scan')}
+    {@render instruments.ritXitScan(
+      undefined, panelChrome(owner, 'semantic-rit-xit-scan'),
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-rx-tx')}
+    {@render instruments.rxTx(undefined, panelChrome(owner, 'semantic-rx-tx'))}
+  {/if}
+  {#if owner.order.includes('semantic-rx-audio')}
+    {@render instruments.rxAudio(
+      undefined, rxAudioFiniteLayout, panelChrome(owner, 'semantic-rx-audio'),
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-dsp')}
+    {@render instruments.dsp(
+      undefined, dspFiniteLayout, dspScalarLayout, panelChrome(owner, 'semantic-dsp'),
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-cw')}
+    {@render instruments.cwKeyer(
+      undefined, false, panelChrome(owner, 'semantic-cw'), cwKeyerInstrumentLayout,
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-memory')}
+    {@render instruments.memory(undefined, panelChrome(owner, 'semantic-memory'))}
+  {/if}
+  {#if owner.order.includes('semantic-tx-aux')}
+    {@render instruments.txAuxControls(
+      txAuxInstrumentLayout, undefined, panelChrome(owner, 'semantic-tx-aux'),
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-meters')}
+    {@render instruments.meters(undefined, panelChrome(owner, 'semantic-meters'))}
+  {/if}
+  <div class="content-left">
+    <LeftSidebar
+      hideTxPanel={semanticRxTx} {declared} dragOwner={owner} {showReset}
+    />
+  </div>
+  <div class="content-right">
+    <RightSidebar hideTxPanel={semanticRxTx} {declared} dragOwner={owner} />
   </div>
 {/snippet}
 
@@ -461,29 +574,22 @@
         skinId === 'sdr-test' ? 'sdr' : 'standard', undefined, vfoOperationControls,
       )}
 
-      <div class="desktop-controls-left">
-        {#if skinId === 'desktop-v2'}
-          {@render instruments.rfFrontEnd(undefined, rfFrontEndFiniteLayout)}
+      <div
+        class="desktop-controls-left"
+        class:standard-panel-owner={skinId === 'desktop-v2'}
+        class:standard-panel-owner-left={skinId === 'desktop-v2'}
+        class:cross-drop-target={standardLeftDrag?.isDropTarget}
+      >
+        {#if skinId === 'desktop-v2' && standardLeftDrag}
+          {@render standardServicePanels(standardLeftDrag, true)}
         {:else}
           {@render instruments.rfFrontEnd()}
-        {/if}
-        {#if skinId === 'desktop-v2'}
-          {@render instruments.filter(undefined, filterFiniteLayout)}
-        {:else}
           {@render instruments.filter()}
-        {/if}
-        {#if skinId === 'desktop-v2'}
-          {@render instruments.band(undefined, bandControlLayout)}
-        {:else}
           {@render instruments.band()}
-        {/if}
-        {#if skinId === 'desktop-v2'}
-          {@render instruments.antenna(undefined, antennaControlLayout)}
-        {:else}
           {@render instruments.antenna()}
+          {@render instruments.ritXitScan()}
+          <div class="content-left"><LeftSidebar hideTxPanel={semanticRxTx} {declared} /></div>
         {/if}
-        {@render instruments.ritXitScan()}
-        <div class="content-left"><LeftSidebar hideTxPanel={semanticRxTx} {declared} /></div>
       </div>
 
       <div class="desktop-controls-center">
@@ -492,41 +598,38 @@
         {@render scopeRegion(scopeControlsInRegionContent ? instruments.scopeControls : undefined, instruments.managedScope)}
       </div>
 
-      <div class="desktop-controls-right">
-        {@render instruments.rxTx()}
-        {@render instruments.txFaultRecovery()}
-        {@render instruments.modInputTxWarning()}
-        {#if skinId === 'desktop-v2'}
-          {@render instruments.rxAudio(undefined, rxAudioFiniteLayout)}
+      <div
+        class="desktop-controls-right"
+        class:standard-panel-owner={skinId === 'desktop-v2'}
+        class:standard-panel-owner-right={skinId === 'desktop-v2'}
+        class:cross-drop-target={standardRightDrag?.isDropTarget}
+      >
+        {#if skinId === 'desktop-v2' && standardRightDrag}
+          {@render instruments.txFaultRecovery()}
+          {@render instruments.modInputTxWarning()}
+          {@render standardServicePanels(standardRightDrag)}
         {:else}
+          {@render instruments.rxTx()}
+          {@render instruments.txFaultRecovery()}
+          {@render instruments.modInputTxWarning()}
           {@render instruments.rxAudio()}
-        {/if}
-        {#if skinId === 'desktop-v2'}
-          {@render instruments.dsp(undefined, dspFiniteLayout, dspScalarLayout)}
-        {:else}
           {@render instruments.dsp()}
-        {/if}
-        {#if skinId === 'desktop-v2'}
-          <div class="cw-keyer-instrument-seat" data-cw-keyer-seat="keyerSpeed">
-            {@render instruments.cwKeyerInstruments.keyerSpeed({
-              form: 'hbar', compact: false, showLabel: true, showValue: true,
-            })}
-          </div>
-          <div class="cw-keyer-instrument-seat" data-cw-keyer-seat="pitchHz" data-field="pitchHz">
-            {@render instruments.cwKeyerInstruments.pitchHz({
-              form: 'hbar', compact: false, showLabel: true, showValue: true,
-            })}
-          </div>
-          {@render instruments.cwKeyer(undefined, false)}
-          {@render instruments.memory()}
-        {:else}
           {@render instruments.cwKeyer()}
+          {@render instruments.txAuxControls(txAuxInstrumentLayout)}
+          <div class="content-right"><RightSidebar hideTxPanel={semanticRxTx} {declared} /></div>
         {/if}
-        {@render instruments.txAuxControls(txAuxInstrumentLayout)}
-        <div class="content-right"><RightSidebar hideTxPanel={semanticRxTx} {declared} /></div>
       </div>
 
-      {@render instruments.meters()}
+      {#if skinId === 'desktop-v2' && standardBottomDrag}
+        <div
+          class="standard-bottom-dock"
+          class:cross-drop-target={standardBottomDrag.isDropTarget}
+        >
+          {@render standardServicePanels(standardBottomDrag)}
+        </div>
+      {:else}
+        {@render instruments.meters()}
+      {/if}
     </section>
   </div>
 {:else}
@@ -824,7 +927,27 @@
   .desktop-control-face .content-row { display: flex; flex: 1; min-height: 280px; contain: size; }
   .desktop-control-face .content-center { width: 100%; }
   .desktop-control-face :global(.spectrum-toolbar) { height: auto; min-height: 32px; flex-wrap: wrap; }
-  .desktop-control-face :global([data-zone-id='meters']) { grid-area: 5 / 1 / 6 / -1; }
+  .desktop-control-face :global([data-zone-id='meters']),
+  .desktop-control-face .standard-bottom-dock { grid-area: 5 / 1 / 6 / -1; }
+  .standard-panel-owner,
+  .standard-bottom-dock {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  }
+  .standard-bottom-dock { min-height: 48px; }
+  .standard-panel-owner.cross-drop-target,
+  .standard-bottom-dock.cross-drop-target {
+    outline: 2px solid var(--v2-accent, #4af);
+    outline-offset: -2px;
+  }
+  .standard-panel-owner > :global(.surface-zone),
+  .standard-bottom-dock > :global(.surface-zone),
+  .standard-panel-owner > .content-left,
+  .standard-panel-owner > .content-right,
+  .standard-bottom-dock > .content-left,
+  .standard-bottom-dock > .content-right { display: contents; }
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .dsp-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .rf-front-end-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
@@ -1002,7 +1125,8 @@
     .desktop-control-face.standard-face :global(.desktop-controls-right) {
       grid-area: 6 / 1 / 7 / 2;
     }
-    .desktop-control-face.standard-face :global([data-zone-id='meters']) {
+    .desktop-control-face.standard-face :global([data-zone-id='meters']),
+    .desktop-control-face.standard-face .standard-bottom-dock {
       grid-area: 7 / 1 / 8 / 2;
     }
     .desktop-control-face.standard-face :global(.desktop-controls-left),
