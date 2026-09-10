@@ -919,8 +919,8 @@
     min-height: 320px;
   }
   .desktop-control-face :global(.desktop-controls-right) { grid-area: 4 / 3 / 5 / 4; }
-  .desktop-control-face.standard-face :global(.desktop-controls-left),
-  .desktop-control-face.standard-face :global(.desktop-controls-right) {
+  .desktop-control-face :global(.desktop-controls-left),
+  .desktop-control-face :global(.desktop-controls-right) {
     overflow-y: auto; min-height: 0;
     /* Scrollable sidebars must not contribute their full content height. */
     contain: size;
@@ -1039,8 +1039,8 @@
 
   .content-left,
   .content-right,
-  .desktop-control-face :global(.desktop-controls-left),
-  .desktop-control-face :global(.desktop-controls-right) {
+  .desktop-control-face.standard-face :global(.desktop-controls-left),
+  .desktop-control-face.standard-face :global(.desktop-controls-right) {
     min-height: 0;
     max-height: 100%;
     overflow-y: auto;
