@@ -10,8 +10,8 @@
  *   });
  *
  * Cross-sidebar linking happens automatically via module-level registry.
- * When two instances exist, dragging a panel over the peer sidebar
- * triggers cross-sidebar drop detection and panel transfer.
+ * Dragging a panel over another registered container triggers cross-container
+ * drop detection and panel transfer.
  */
 
 // --- Pure helpers (exported for testing) ---
@@ -164,7 +164,7 @@ export function createDragReorder(options: DragReorderOptions): DragInstance {
   }
 
   function _acceptPanel(panelId: string, atIndex: number) {
-    const newOrder = [...order];
+    const newOrder = order.filter((id) => id !== panelId);
     newOrder.splice(Math.min(atIndex, newOrder.length), 0, panelId);
     order = newOrder;
   }
@@ -207,61 +207,63 @@ export function createDragReorder(options: DragReorderOptions): DragInstance {
       rects.set(p.dataset.panelId!, p.getBoundingClientRect());
     }
 
-    // Find peer from registry and cache its rects
-    const peer = _registry.find((r) => r !== instance);
-    let peerRect: DOMRect | null = null;
-    let peerRects: Map<string, DOMRect> | null = null;
-    if (peer) {
+    // Cache every registered peer container and its panel rects.
+    const peers: Array<{
+      instance: DragInstance;
+      rect: DOMRect;
+      panelRects: Map<string, DOMRect>;
+    }> = [];
+    for (const peer of _registry) {
+      if (peer === instance) continue;
       const peerEl = document.querySelector(peer.containerSelector) as HTMLElement;
       if (peerEl) {
-        peerRect = peerEl.getBoundingClientRect();
-        peerRects = new Map();
+        const panelRects = new Map<string, DOMRect>();
         for (const p of peerEl.querySelectorAll<HTMLElement>('[data-panel-id]')) {
-          peerRects.set(p.dataset.panelId!, p.getBoundingClientRect());
+          panelRects.set(p.dataset.panelId!, p.getBoundingClientRect());
         }
+        peers.push({ instance: peer, rect: peerEl.getBoundingClientRect(), panelRects });
       }
     }
 
-    let isOverPeer = false;
+    let activePeer: (typeof peers)[number] | null = null;
 
     function onMove(e: PointerEvent) {
-      if (
-        peer &&
-        peerRect &&
-        peerRects &&
-        e.clientX >= peerRect.left &&
-        e.clientX <= peerRect.right &&
-        e.clientY >= peerRect.top &&
-        e.clientY <= peerRect.bottom
-      ) {
-        // Cursor is over peer sidebar
-        if (!isOverPeer) {
+      const target = peers.find(({ rect }) =>
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom
+      ) ?? null;
+
+      if (target) {
+        if (activePeer?.instance !== target.instance) {
+          activePeer?.instance._setIncoming(null, -1);
           dropTargetIndex = -1;
         }
-        isOverPeer = true;
-        const peerOrder = peer.order;
-        const idx = peerOrder.length === 0 ? 0 : findDropIndex(peerOrder, peerRects, e.clientY);
-        peer._setIncoming(panelId, idx);
+        activePeer = target;
+        const targetOrder = target.instance.order;
+        const idx = targetOrder.length === 0
+          ? 0
+          : findDropIndex(targetOrder, target.panelRects, e.clientY);
+        target.instance._setIncoming(panelId, idx);
       } else {
-        // Cursor is over own sidebar (or between)
-        if (isOverPeer && peer) {
-          peer._setIncoming(null, -1);
-        }
-        isOverPeer = false;
+        activePeer?.instance._setIncoming(null, -1);
+        activePeer = null;
         dropTargetIndex = findDropIndex(order, rects, e.clientY);
       }
     }
 
     function onUp() {
-      if (isOverPeer && peer && dragPanelId) {
-        const targetIdx = peer._incomingDropIndex;
-        peer._acceptPanel(dragPanelId, targetIdx >= 0 ? targetIdx : 0);
+      if (activePeer && dragPanelId) {
+        const targetIdx = activePeer.instance._incomingDropIndex;
+        activePeer.instance._acceptPanel(dragPanelId, targetIdx >= 0 ? targetIdx : 0);
         _removePanel(dragPanelId);
-        peer._setIncoming(null, -1);
       } else if (dragPanelId && dropTargetIndex >= 0) {
         const newOrder = reorderPanels(order, dragPanelId, dropTargetIndex);
         if (newOrder !== order) order = newOrder;
       }
+      activePeer?.instance._setIncoming(null, -1);
+      activePeer = null;
       dragPanelId = null;
       dropTargetIndex = -1;
       handle.removeEventListener('pointermove', onMove);
