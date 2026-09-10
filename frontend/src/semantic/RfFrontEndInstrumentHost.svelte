@@ -338,18 +338,11 @@
       ?? view.canonical;
   }
   function status(view: Readonly<ContinuousScalarView>): string {
-    if (view.evidence !== 'command-feedback' || view.phase === 'idle') return '';
-    const target = view.feedback.target ?? view.feedback.requestedTarget;
-    return `${view.phase.replaceAll('-', ' ')}${target === null ? '' : `; requested ${valueText(target)}`}`
-      + `; confirmed ${valueText(view.canonical)}${view.error === null ? '' : `; ${view.error}`}`;
+    return view.evidence === 'command-feedback' ? view.error ?? '' : '';
   }
   function pairStatus(view: Readonly<ContinuousPairView>, lane: DualParamLane): string {
     const laneView = view.lanes[lane];
-    if (laneView.evidence !== 'command-feedback' || laneView.phase === 'idle') return '';
-    const target = laneView.feedback.target ?? laneView.feedback.requestedTarget;
-    return `${laneView.phase.replaceAll('-', ' ')}${target === null ? '' : `; requested ${valueText(target)}`}`
-      + `; confirmed ${valueText(laneView.canonical)}`
-      + `${laneView.error === null ? '' : `; ${laneView.error}`}`;
+    return laneView.evidence === 'command-feedback' ? laneView.error ?? '' : '';
   }
 
   const preampChoices = (): readonly number[] => rf?.preValues ?? [];

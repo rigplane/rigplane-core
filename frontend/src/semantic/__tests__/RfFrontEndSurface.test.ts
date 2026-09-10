@@ -434,6 +434,7 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     expect(rfInput.value()).toBe(0.5);
     expect(rfInput.range()).toEqual(['0', '1']);
     expect(rfGroup.querySelector('output')?.textContent).toBe('75%');
+    expect(r.el('rfGain-status')).toBeNull();
     expect(rfInput.disabled()).toBe(false);
     expect(sqlGroup.dataset.commandPhase).toBe('unavailable');
     expect(sqlGroup.dataset.observed).toBe('false');
@@ -627,7 +628,7 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     r.dispose();
   });
 
-  it('renders independent lane phases, errors, busy state, and announcements', () => {
+  it('keeps routine lane phases out of view while showing concise failures and announcements', () => {
     const values = new SvelteMap<string, PairFeedback>([['feedback', pairFeedback()]]);
     const publication = rfTestAuthorityPublication('combined');
     target = document.createElement('div'); document.body.appendChild(target);
@@ -652,12 +653,12 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     expect(group.dataset.rfCommandPhase).toBe('confirmed');
     expect(group.dataset.sqlCommandPhase).toBe('failed');
     expect(group.getAttribute('aria-busy')).toBe('false');
-    expect(group.querySelector('[data-testid="rf-front-end-rf-sql-rf-status"]')?.textContent)
-      .toContain('confirmed; requested 50%; confirmed 50%');
+    expect(group.querySelector('[data-testid="rf-front-end-rf-sql-rf-status"]')).toBeNull();
     expect(group.querySelector('[data-testid="rf-front-end-rf-sql-sql-status"]')?.textContent)
-      .toContain('failed; requested 40%; confirmed 20%');
+      .toBe('denied');
     expect(target.querySelectorAll('[data-control-feedback-status]')).toHaveLength(2);
-    expect(group.textContent).toContain('denied');
+    expect(group.textContent).not.toContain('requested');
+    expect(group.textContent).not.toContain('confirmed;');
     unmount(component); target.remove();
   });
 
@@ -668,8 +669,7 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     } });
     const r = render(base(), { controlModel: 'combined', rfSqlFeedback: feedback });
     expect(r.text('rf-sql-rf-value')).toBe('75%');
-    expect(r.text('rf-sql-rf-status'))
-      .toContain('awaiting confirmation; requested 75%; confirmed 50%');
+    expect(r.el('rf-sql-rf-status')).toBeNull();
     expect(r.el('rf-sql')!.getAttribute('aria-busy')).toBe('true');
     r.dispose();
   });

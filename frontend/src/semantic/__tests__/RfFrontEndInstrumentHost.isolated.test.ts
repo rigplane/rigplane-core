@@ -402,8 +402,7 @@ describe('RfFrontEndInstrumentHost', () => {
     const statuses = () => target.querySelectorAll<HTMLElement>('[data-control-feedback-status]');
     expect(statuses()).toHaveLength(1);
     expect(statuses()[0].textContent).toContain('Awaiting confirmation: 0.75');
-    expect(target.querySelector('[data-testid="rf-front-end-rf-sql-rf-status"]')?.textContent)
-      .toContain('requested 75%; confirmed 50%');
+    expect(target.querySelector('[data-testid="rf-front-end-rf-sql-rf-status"]')).toBeNull();
 
     r.props.layout = 'independent'; flushSync();
     expect(statuses()).toHaveLength(1);
@@ -423,7 +422,7 @@ describe('RfFrontEndInstrumentHost', () => {
     expect(statuses()).toHaveLength(1);
     expect(statuses()[0].textContent).toContain('Failed: 0.4: denied');
     expect(target.querySelector('[data-testid="rf-front-end-rfGain-status"]')?.textContent)
-      .toContain('requested 40%; confirmed 50%; denied');
+      .toBe('denied');
 
     r.props.layout = 'independent'; flushSync();
     expect(statuses()).toHaveLength(1);
