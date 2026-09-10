@@ -45,6 +45,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 }));
 
 vi.mock('$lib/state/field-status', () => ({
+  getFieldStatus: vi.fn(() => undefined),
   isFieldAvailable: vi.fn(() => true),
 }));
 

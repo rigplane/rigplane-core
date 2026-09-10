@@ -5,7 +5,10 @@ vi.mock('$lib/transport/ws-client', () => ({
 }));
 vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
-  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
+  return {
+    dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params),
+    currentControlSessionEpoch: () => 0,
+  };
 });
 
 vi.mock('$lib/stores/radio.svelte', () => ({

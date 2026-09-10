@@ -1943,7 +1943,7 @@ describe('pending-target affordance (MOR-1441)', () => {
         let requested: number | null = null;
         const onTuneFrequency = (_receiver: 'MAIN' | 'SUB', hz: number) => {
           requested = hz;
-          accumulator.step(0, CONFIRMED, hz);
+          accumulator.step(0, CONFIRMED, hz, 1);
         };
         const el = document.createElement('div');
         document.body.appendChild(el);

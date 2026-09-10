@@ -117,10 +117,17 @@ import {
   makeKeyboardHandlers,
   dispatchKeyboardRadioAction,
 } from '../panel-commands';
-import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
+import {
+  acknowledgeCommand,
+  failCommand,
+  getCommandLifecycles,
+  resetCommandLifecycle,
+} from '$lib/stores/commands.svelte';
 import { setPendingFocus } from '$lib/radio/pending-focus';
 
-const freshStatus = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
+const freshStatus = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+} as const;
 
 function state(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
   const receiver = {
@@ -195,6 +202,8 @@ function state(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
     scanResumeMode: 2,
     fieldStatus: {
       active: freshStatus,
+      'main.freqHz': { ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: 1 },
+      'sub.freqHz': { ...freshStatus, storePath: 'sub.freqHz', lastObservedMonotonic: 1 },
       'main.dataMode': freshStatus,
       'sub.dataMode': freshStatus,
       data1ModInput: freshStatus,
@@ -1252,6 +1261,153 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     // The pre-reset paced flush must never fire and emit a stray 3rd call.
     vi.advanceTimersByTime(60);
     expect(h.sendCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it('MOR-1864: associates delayed accepted echoes by exact target and marker across a reversal', () => {
+    const vfo = makeVfoHandlers();
+    const start = h.state!.main!.freqHz;
+    const setObservation = (frequency: number, marker: number) => {
+      h.state = {
+        ...h.state!,
+        main: { ...h.state!.main!, freqHz: frequency },
+        fieldStatus: {
+          ...h.state!.fieldStatus,
+          'main.freqHz': {
+            ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: marker,
+          },
+        },
+      };
+    };
+    const acknowledgeLatest = () => {
+      const command = getCommandLifecycles().at(-1)!;
+      acknowledgeCommand(command.id, command.originalEpoch, command.originalEpoch);
+    };
+
+    vfo.onMainFreqChange(start + 1_000); // R -> S+1
+    expect(getCommandLifecycles()[0]?.params).toEqual({ freq: start + 1_000, receiver: 0 });
+    acknowledgeLatest();
+    vi.advanceTimersByTime(250);
+    vfo.onMainFreqChange(start - 1_000); // L -> net S
+    vi.advanceTimersByTime(0);
+    acknowledgeLatest();
+
+    setObservation(start + 1_000, 2); // delayed echo of the older, obsolete R
+    vi.advanceTimersByTime(250);
+    vfo.onMainFreqChange(start + 2_000); // R -> net S+1, never S+2
+    vi.advanceTimersByTime(0);
+    acknowledgeLatest();
+
+    setObservation(start, 3); // delayed echo of L
+    vi.advanceTimersByTime(250);
+    vfo.onMainFreqChange(start - 1_000); // L -> net S
+    vi.advanceTimersByTime(0);
+
+    expect(exactCalls().filter(([name]) => name === 'set_freq')).toEqual([
+      ['set_freq', { freq: start + 1_000, receiver: 0 }],
+      ['set_freq', { freq: start, receiver: 0 }],
+      ['set_freq', { freq: start + 1_000, receiver: 0 }],
+      ['set_freq', { freq: start, receiver: 0 }],
+    ]);
+    expect(getCommandLifecycles()[0]?.locallyObsolete).toBe(true);
+  });
+
+  it('MOR-1864: preserves all 70 delayed alternating pairs without target drift', () => {
+    const vfo = makeVfoHandlers();
+    const start = h.state!.main!.freqHz;
+    const observed = (frequency: number, marker: number) => {
+      h.state = {
+        ...h.state!, main: { ...h.state!.main!, freqHz: frequency },
+        fieldStatus: { ...h.state!.fieldStatus, 'main.freqHz': {
+          ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: marker,
+        } },
+      };
+    };
+
+    for (let index = 0; index < 140; index++) {
+      if (index > 0) vi.advanceTimersByTime(250);
+      if (index >= 2) observed(index % 2 === 0 ? start + 1_000 : start, index);
+      const shown = h.state!.main!.freqHz;
+      vfo.onMainFreqChange(shown + (index % 2 === 0 ? 1_000 : -1_000));
+      vi.advanceTimersByTime(0);
+      const command = getCommandLifecycles().at(-1)!;
+      acknowledgeCommand(command.id, command.originalEpoch, command.originalEpoch);
+    }
+
+    expect(exactCalls().filter(([name]) => name === 'set_freq').map(([, params]) => params.freq))
+      .toEqual(Array.from({ length: 140 }, (_, index) => index % 2 === 0 ? start + 1_000 : start));
+  });
+
+  it('MOR-1864: stale TTL preserves a known marker, while pending targets cannot explain changed truth', () => {
+    const vfo = makeVfoHandlers();
+    const start = h.state!.main!.freqHz;
+    vfo.onMainFreqChange(start + 1_000);
+    h.state = { ...h.state!, fieldStatus: { ...h.state!.fieldStatus, 'main.freqHz': {
+      ...freshStatus, storePath: 'main.freqHz', freshness: 'stale', availability: 'stale',
+      lastObservedMonotonic: 1, quality: ['confirmed'],
+    } } };
+    vfo.onMainFreqChange(start + 1_000);
+    vi.advanceTimersByTime(60);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 2_000, receiver: 0 }]);
+
+    // The latest target is still merely pending. A changed field value cannot
+    // be attributed to it and therefore starts cold, immediately.
+    h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: start + 2_000 }, fieldStatus: {
+      ...h.state!.fieldStatus, 'main.freqHz': {
+        ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: 2,
+      },
+    } };
+    const count = h.sendCommand.mock.calls.length;
+    vfo.onMainFreqChange(start + 3_000);
+    expect(h.sendCommand).toHaveBeenCalledTimes(count + 1);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 3_000, receiver: 0 }]);
+  });
+
+  it('MOR-1864: explicit A/B selection fences an already queued old-slot flush', () => {
+    h.state = oneReceiverAbState();
+    h.state = { ...h.state, fieldStatus: { ...h.state.fieldStatus,
+      'main.freqHz': { ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: 1 },
+      'main.activeSlot': { ...freshStatus, storePath: 'main.activeSlot', lastObservedMonotonic: 1 },
+    } };
+    h.caps = { ...h.caps!, receivers: 1, vfoScheme: 'ab' };
+    const vfo = makeVfoHandlers();
+    const start = h.state!.main!.freqHz;
+    vfo.onMainFreqChange(start + 1_000);
+    vfo.onMainFreqChange(start + 1_000);
+    vfo.onVfoSelect('MAIN', 'B');
+    vi.advanceTimersByTime(60);
+    expect(exactCalls()).toEqual([
+      ['set_freq', { freq: start + 1_000, receiver: 0 }],
+      ['set_vfo', { vfo: 'B' }],
+    ]);
+  });
+
+  it('MOR-1864: excludes pre-burst, pending, and failed records from changed-value association', () => {
+    const vfo = makeVfoHandlers();
+    const start = h.state!.main!.freqHz;
+    const setObservation = (frequency: number, marker: number) => {
+      h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: frequency }, fieldStatus: {
+        ...h.state!.fieldStatus, 'main.freqHz': {
+          ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: marker,
+        },
+      } };
+    };
+
+    // Same fake-clock millisecond as the later burst anchor: registry order,
+    // not timestamp alone, keeps this accepted historical target out.
+    vfo.onFreqChange(start + 500, 0, 'jump');
+    let record = getCommandLifecycles().at(-1)!;
+    acknowledgeCommand(record.id, record.originalEpoch, record.originalEpoch);
+    vfo.onMainFreqChange(start + 1_000);
+    setObservation(start + 500, 2);
+    vfo.onMainFreqChange(start + 1_500);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 1_500, receiver: 0 }]);
+
+    // A failed current record is equally unable to explain a later change.
+    record = getCommandLifecycles().at(-1)!;
+    failCommand(record.id, record.originalEpoch, record.originalEpoch, 'NAK');
+    setObservation(start + 1_500, 3);
+    vfo.onMainFreqChange(start + 2_500);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 2_500, receiver: 0 }]);
   });
 
   it("MOR-1425 review B1: onFreqChange(freq, receiver, 'step') opts a relative gesture into the accumulate path instead of the 'jump' default", () => {

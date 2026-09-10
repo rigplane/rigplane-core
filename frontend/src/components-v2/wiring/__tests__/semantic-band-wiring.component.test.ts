@@ -139,7 +139,10 @@ import {
   resetRetainedInvocations, retainedInvocations,
 } from '../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
 
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
+const fresh = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+  lastObservedMonotonic: 1,
+};
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
 /** MAIN sits at 14.250 (inside the 20m TX segment), SUB at 7.100 (inside 40m). */
