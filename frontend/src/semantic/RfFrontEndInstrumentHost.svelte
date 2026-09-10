@@ -338,22 +338,17 @@
       ?? view.canonical;
   }
   function status(view: Readonly<ContinuousScalarView>): string {
-    if (view.evidence !== 'command-feedback' || view.phase === 'idle') return '';
-    const target = view.feedback.target ?? view.feedback.requestedTarget;
-    return `${view.phase.replaceAll('-', ' ')}${target === null ? '' : `; requested ${valueText(target)}`}`
-      + `; confirmed ${valueText(view.canonical)}${view.error === null ? '' : `; ${view.error}`}`;
+    return view.evidence === 'command-feedback' ? view.error ?? '' : '';
   }
   function pairStatus(view: Readonly<ContinuousPairView>, lane: DualParamLane): string {
     const laneView = view.lanes[lane];
-    if (laneView.evidence !== 'command-feedback' || laneView.phase === 'idle') return '';
-    const target = laneView.feedback.target ?? laneView.feedback.requestedTarget;
-    return `${laneView.phase.replaceAll('-', ' ')}${target === null ? '' : `; requested ${valueText(target)}`}`
-      + `; confirmed ${valueText(laneView.canonical)}`
-      + `${laneView.error === null ? '' : `; ${laneView.error}`}`;
+    return laneView.evidence === 'command-feedback' ? laneView.error ?? '' : '';
   }
 
   const preampChoices = (): readonly number[] => rf?.preValues ?? [];
   const attenuatorChoices = (): readonly number[] => rf?.attValues ?? [];
+  const preampChoiceText = (value: number): string => value === 0 ? 'OFF' : `P${value}`;
+  const attenuatorChoiceText = (value: number): string => value === 0 ? 'OFF' : `${value} dB`;
   const preampBehavior = bindChoiceInstrument<number>(() => ({
     field: rf?.preamp, choices: preampChoices(), blocked: preMutex !== null,
     invoke: (level) => onPreChange?.(level),
@@ -374,7 +369,7 @@
   const preampSeat = createChoiceRendererSeat<number>(() => ({
     context: rendererContext ?? null, field: rf?.preamp, label: 'Preamp', blocked: preMutex !== null,
     options: preampChoices().map((value) => ({
-      value, label: String(value),
+      value, label: preampChoiceText(value),
       ...(preampMutexReason() === undefined ? {} : { disabledReason: preampMutexReason() }),
     })),
     ...(pendingPreamp === null ? {} : {
@@ -384,7 +379,7 @@
   }));
   const attenuatorSeat = createChoiceRendererSeat<number>(() => ({
     context: rendererContext ?? null, field: rf?.attenuator, label: 'Attenuator',
-    options: attenuatorChoices().map((value) => ({ value, label: `${value} dB` })),
+    options: attenuatorChoices().map((value) => ({ value, label: attenuatorChoiceText(value) })),
     invoke: (db) => onAttChange?.(db),
   }));
   const digiSelSeat = createToggleRendererSeat(() => ({
@@ -438,14 +433,16 @@
     data-sql-command-phase={view.lanes.sql.phase ?? undefined}
     aria-busy={view.busy}
   >
-    <span class="rf-front-end-name">RF/SQL</span>
-    {#key rendererEpoch}
-      <DualParamRenderer binding={pair} showValues={false}
-        issuedStatusPresentation={pairIssuedStatus} />
-    {/key}
-    <output data-testid="rf-front-end-rf-sql-rf-value">{valueText(pairLaneValue(view, 'rf'))}</output>
-    /
-    <output data-testid="rf-front-end-rf-sql-sql-value">{valueText(pairLaneValue(view, 'sql'))}</output>
+    <div class="rf-front-end-heading">
+      <span class="rf-front-end-reading">RF <output data-testid="rf-front-end-rf-sql-rf-value">{valueText(pairLaneValue(view, 'rf'))}</output></span>
+      <span class="rf-front-end-reading">SQL <output data-testid="rf-front-end-rf-sql-sql-value">{valueText(pairLaneValue(view, 'sql'))}</output></span>
+    </div>
+    <div class="rf-front-end-slider">
+      {#key rendererEpoch}
+        <DualParamRenderer binding={pair} showValues={false}
+          issuedStatusPresentation={pairIssuedStatus} />
+      {/key}
+    </div>
     {#each PAIR_LANES as lane (lane)}
       {@const currentStatus = pairStatus(view, lane)}
       {#if currentStatus !== ''}
@@ -469,15 +466,18 @@
       data-command-phase={view.phase ?? undefined}
       aria-busy={view.busy}
     >
-      <span class="rf-front-end-name">{label}</span>
-      {#key rendererEpoch}
-        <ValueControl
-          {...feedbackIntegratedControl}
-          binding={binding} {label} renderer="hbar" showLabel={false} showValue={false} compact={true}
-          displayFn={valueText} issuedStatusPresentation={scalarIssuedStatuses[field]}
-        />
-      {/key}
-      <output>{valueText(scalarValue(view))}</output>
+      <div class="rf-front-end-heading">
+        <span class="rf-front-end-reading">{label} <output>{valueText(scalarValue(view))}</output></span>
+      </div>
+      <div class="rf-front-end-slider">
+        {#key rendererEpoch}
+          <ValueControl
+            {...feedbackIntegratedControl}
+            binding={binding} {label} renderer="hbar" showLabel={false} showValue={false} compact={true}
+            displayFn={valueText} issuedStatusPresentation={scalarIssuedStatuses[field]}
+          />
+        {/key}
+      </div>
       {#if currentStatus !== ''}
         <output data-testid={`rf-front-end-${field}-status`}>{currentStatus}</output>
       {/if}
@@ -503,17 +503,24 @@
         data-preamp-status={pendingPreamp !== null ? 'pending' : 'confirmed'}
         aria-describedby={pendingPreamp !== null ? pendingPreampId : undefined}
       >
-        {#each rf.preValues as value (value)}
-          <button
-            type="button" role="radio" class="rf-front-end-choice"
-            data-testid={`rf-front-end-preamp-${value}`}
-            aria-checked={preampBehavior.isSelected(value)}
-            data-pending={pendingPreamp === value}
-            disabled={!preampBehavior.available}
-            onclick={() => preampBehavior.invoke(value)}
-          >{value}</button>
-        {/each}
-        <output data-testid="rf-front-end-preamp-value">{finiteText(rf.preamp)}</output>
+        <span class="rf-front-end-row-label">PRE</span>
+        <div class="rf-front-end-choices">
+          {#each rf.preValues as value (value)}
+            <button
+              type="button" role="radio" class="rf-front-end-choice"
+              data-testid={`rf-front-end-preamp-${value}`}
+              aria-checked={preampBehavior.isSelected(value)}
+              data-pending={pendingPreamp === value}
+              disabled={!preampBehavior.available}
+              onclick={() => preampBehavior.invoke(value)}
+            >{preampChoiceText(value)}</button>
+          {/each}
+        </div>
+        {#if rf.preamp.reading.status === 'known' && rf.preValues.includes(rf.preamp.reading.value)}
+          <output class="sr-only" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{preampChoiceText(rf.preamp.reading.value)}</output>
+        {:else}
+          <output class="rf-front-end-unknown" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{rf.preamp.reading.status === 'known' ? preampChoiceText(rf.preamp.reading.value) : '?'}</output>
+        {/if}
         {#if preMutex}
           <p data-testid="rf-front-end-preamp-mutex-reason">{DISABLED_REASON_LABEL[preMutex.code]}</p>
         {/if}
@@ -536,16 +543,23 @@
         class="rf-front-end-row" role="radiogroup" aria-label="Attenuator"
         data-testid="rf-front-end-attenuator" data-observed={usable(rf.attenuator)}
       >
-        {#each rf.attValues as value (value)}
-          <button
-            type="button" role="radio" class="rf-front-end-choice"
-            data-testid={`rf-front-end-attenuator-${value}`}
-            aria-checked={attenuatorBehavior.isSelected(value)}
-            disabled={!attenuatorBehavior.available}
-            onclick={() => attenuatorBehavior.invoke(value)}
-          >{value} dB</button>
-        {/each}
-        <output data-testid="rf-front-end-attenuator-value">{finiteText(rf.attenuator)}</output>
+        <span class="rf-front-end-row-label">ATT</span>
+        <div class="rf-front-end-choices">
+          {#each rf.attValues as value (value)}
+            <button
+              type="button" role="radio" class="rf-front-end-choice"
+              data-testid={`rf-front-end-attenuator-${value}`}
+              aria-checked={attenuatorBehavior.isSelected(value)}
+              disabled={!attenuatorBehavior.available}
+              onclick={() => attenuatorBehavior.invoke(value)}
+            >{attenuatorChoiceText(value)}</button>
+          {/each}
+        </div>
+        {#if rf.attenuator.reading.status === 'known' && rf.attValues.includes(rf.attenuator.reading.value)}
+          <output class="sr-only" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{attenuatorChoiceText(rf.attenuator.reading.value)}</output>
+        {:else}
+          <output class="rf-front-end-unknown" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{rf.attenuator.reading.status === 'known' ? attenuatorChoiceText(rf.attenuator.reading.value) : '?'}</output>
+        {/if}
       </div>
     {/if}
   {/if}
@@ -588,11 +602,18 @@
 {/each}
 
 <style>
-  .rf-front-end-level { display: flex; align-items: baseline; gap: 0.5rem; }
-  .rf-front-end-name { min-width: 6ch; }
+  .rf-front-end-level { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.25rem; min-width: 0; }
+  .rf-front-end-heading { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 1rem; min-width: 0; }
+  .rf-front-end-reading { color: var(--v2-text-dim); font-size: 9px; text-transform: uppercase; }
+  .rf-front-end-reading output { color: var(--v2-text-primary); font-size: 10px; }
+  .rf-front-end-slider { grid-column: 1 / -1; width: 100%; min-width: 0; }
   .rf-front-end-level :global(.vc-hbar),
   .rf-front-end-level :global(.vc-dual) { width: 100%; min-width: 0; }
-  .rf-front-end-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
+  .rf-front-end-row { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 0.5rem; margin: 0; min-width: 0; }
+  .rf-front-end-row-label { color: var(--v2-text-dim); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; }
+  .rf-front-end-choices { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+  .rf-front-end-choices > button { flex: 1 1 4.5ch; }
+  .rf-front-end-unknown { grid-column: 2; color: var(--v2-text-primary); }
   .rf-front-end-choice[aria-checked='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }
   button:disabled { cursor: not-allowed; }
