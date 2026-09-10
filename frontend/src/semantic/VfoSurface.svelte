@@ -983,11 +983,43 @@
   [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
     flex: 1 1 0;
     padding: 6px;
+    --btn-compact-min-height: 18px;
+    --btn-compact-padding-block: 1px;
+    --btn-compact-padding-inline: 4px;
+    --btn-compact-font-size: 8px;
+    --vfo-control-strip-gap: 2px;
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge {
-    flex: 0 0 clamp(124px, 11vw, 152px);
-    padding: 6px;
-    gap: 6px;
+    flex: 0 0 clamp(190px, 14vw, 220px);
+    padding: 4px;
+    gap: 3px;
+    --vfo-ops-gap: 3px;
+    --vfo-ops-badge-padding-x: 3px;
+    --vfo-ops-badge-font-size: 9px;
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .facts) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3px;
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .fact) {
+    min-width: 0;
+    text-align: center;
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .rf-lamp:empty) {
+    display: none;
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.vfo-ops) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.split-digest) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3px;
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.split-digest > span) {
+    min-width: 0;
+    text-align: center;
   }
   .standard-vfo-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
   .standard-vfo-selectors .vfo-select {
