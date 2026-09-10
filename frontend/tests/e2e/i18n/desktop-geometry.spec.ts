@@ -359,7 +359,7 @@ function expectStandardReceiverIntegrity(
 }
 
 test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
-  for (const width of [1200, 1700] as const) {
+  for (const width of [900, 1024, 1200, 1700] as const) {
     test(`Standard ${width} compact absolute VFO pair keeps every bridge control`, async ({ page }, info) => {
       await boot(page, 'standard', width, true, 'studioline', false, undefined, {
         height: 1000, extraCapabilities: ALL_STRUCTURAL_ACTION_CAPS, absoluteVfoPair: true,
@@ -394,9 +394,11 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
         };
       });
       await info.attach('compact-vfo-pair', { body: JSON.stringify(geometry), contentType: 'application/json' });
-      expect.soft(geometry.panel.height, 'the full Standard VFO row stays compact').toBeLessThanOrEqual(190);
-      expect.soft(geometry.cards[0].top, 'A and B cards start together').toBeCloseTo(geometry.cards[1].top, 0);
-      expect.soft(geometry.cards[0].bottom, 'A and B cards end together').toBeCloseTo(geometry.cards[1].bottom, 0);
+      if (width > 1050) {
+        expect.soft(geometry.panel.height, 'the full Standard VFO row stays compact').toBeLessThanOrEqual(190);
+        expect.soft(geometry.cards[0].top, 'A and B cards start together').toBeCloseTo(geometry.cards[1].top, 0);
+        expect.soft(geometry.cards[0].bottom, 'A and B cards end together').toBeCloseTo(geometry.cards[1].bottom, 0);
+      }
       expect.soft(geometry.overflow, 'the VFO pair does not overflow its row').toBe(false);
       expect.soft(geometry.cardOverflow, 'both full card strips fit without clipped descendants').toEqual([[], []]);
       expect.soft(geometry.bridgeOverflow, 'every bridge item fits its assigned cell').toEqual([]);
@@ -549,6 +551,18 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
     test(`${layout} ${width} ${known ? 'observed IC' : 'unknown'} geometry`, async ({ page }, info) => {
       const errors: string[] = []; page.on('pageerror', e => errors.push(String(e)));
       await boot(page, layout, width, known);
+      if (layout === 'standard' && width === 900) {
+        const stripFailures = await page.locator('.receiver-instrument .control-strip').evaluateAll(strips =>
+          strips.flatMap(strip => {
+            const card = strip.closest('.receiver-instrument')!.getBoundingClientRect();
+            const box = strip.getBoundingClientRect();
+            return strip.scrollWidth > strip.clientWidth + 1 || box.left < card.left - 1
+              || box.right > card.right + 1 || box.top < card.top - 1 || box.bottom > card.bottom + 1
+              ? [{ scrollWidth: strip.scrollWidth, clientWidth: strip.clientWidth,
+                strip: box.toJSON(), card: card.toJSON() }] : [];
+          }));
+        expect.soft(stripFailures, '900px Standard cards keep every status chip contained').toEqual([]);
+      }
       const unkey = page.getByTestId('rx-tx-unkey');
       await expect(unkey).toHaveCount(1);
       await expect(page.getByTestId('rx-tx-key')).toHaveCount(1);

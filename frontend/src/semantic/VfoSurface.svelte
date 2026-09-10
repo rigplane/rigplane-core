@@ -1082,6 +1082,19 @@
     .bridge { flex-basis: 150px; }
     .receiver-instrument .vfo-freq { font-size: 26px; }
   }
+  @media (max-width: 950px) {
+    [data-vfo-appearance='standard'] .standard-pair-bridge {
+      padding: 2px;
+      gap: 1px;
+    }
+    [data-vfo-appearance='standard'] .standard-receiver {
+      --vfo-panel-body-height: 64px;
+      --vfo-control-strip-height: 22px;
+    }
+    [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
+      flex-basis: calc(100% - 192px);
+    }
+  }
   @media (max-width: 760px) {
     .instrument-panel { flex-direction: column; }
     .receiver-instrument, .bridge { flex-basis: auto; }
