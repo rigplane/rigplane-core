@@ -379,7 +379,8 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
                 const style = getComputedStyle(target);
                 return style.display !== 'none' && style.visibility !== 'hidden'
                   && target.scrollWidth > target.clientWidth + 1;
-              }).map(target => target.className ?? target.tagName)),
+              }).map(target => ({ target: target.className ?? target.tagName,
+                scrollWidth: target.scrollWidth, clientWidth: target.clientWidth }))),
           bridgeOverflow: [...element.querySelectorAll<HTMLElement>('[data-instrument-bridge] *')]
             .filter(target => target.scrollWidth > target.clientWidth + 1)
             .map(target => target.getAttribute('data-dual-action') ?? target.className ?? target.tagName),

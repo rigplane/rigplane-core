@@ -988,6 +988,14 @@
     --btn-compact-padding-inline: 4px;
     --btn-compact-font-size: 8px;
     --vfo-control-strip-gap: 2px;
+    --vfo-panel-body-height: 82px;
+    --vfo-control-strip-height: 40px;
+  }
+  [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] :global(.control-strip) {
+    align-content: center;
+    flex-wrap: wrap;
+    overflow: visible;
+    white-space: normal;
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge {
     flex: 0 0 clamp(190px, 14vw, 220px);
