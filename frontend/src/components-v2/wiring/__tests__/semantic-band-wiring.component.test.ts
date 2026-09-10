@@ -74,6 +74,7 @@ vi.mock('$lib/runtime/commands/radio-intents', async () => {
 });
 vi.mock('$lib/stores/radio.svelte', () => ({
   getRadioState: vi.fn(() => h.state),
+  subscribeRadioState: vi.fn(() => () => {}),
   getActiveReceiver: vi.fn(() => {
     const state = h.state as ServerState | null;
     return state?.active === 'SUB' ? state.sub ?? null : state?.main ?? null;
@@ -141,6 +142,9 @@ import { makeBandHandlers, makeVfoHandlers } from '$lib/runtime/commands/panel-c
 import {
   resetRetainedInvocations, retainedInvocations,
 } from '../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
+import {
+  acknowledgeCommand, beginCommand, confirmCommand, failCommand, resetCommandLifecycle,
+} from '$lib/stores/commands.svelte';
 
 const fresh = {
   storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
@@ -241,6 +245,7 @@ beforeEach(() => {
   h.controlSession = { state: 'connected', epoch: 1 };
   h.finiteAppearance = false;
   resetRetainedInvocations();
+  resetCommandLifecycle();
   vi.mocked(sendCommand).mockClear();
 });
 
@@ -259,13 +264,23 @@ describe('fixed-slot frequency entry overlay', () => {
       receivers: 1, vfoScheme: 'ab' };
   }
 
-  it('opens from inactive B digits and dispatches B without selecting it', () => {
+  function beginSubmittedDirectCommand() {
+    const [, params] = setDirectFreqCalls().at(-1)!;
+    if (params === undefined) throw new Error('direct frequency params missing');
+    return beginCommand({
+      id: 'test-set_vfo_freq', name: 'set_vfo_freq', params,
+      originalEpoch: h.controlSession.epoch,
+    });
+  }
+
+  it('opens from inactive B separator and dispatches B without selecting it', () => {
     h.state = directState(true); h.caps = directCaps(true);
     render({ vfoAppearance: 'standard' });
-    const digit = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq] .digit')!;
-    expect(digit).not.toBeNull();
-    digit.click();
+    const separator = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq] .sep')!;
+    expect(separator).not.toBeNull();
+    separator.click();
     flushSync();
+    expect(vi.mocked(sendCommand)).not.toHaveBeenCalled();
     const dialog = q<HTMLElement>('[data-testid="frequency-entry-dialog-panel"]')!;
     expect(dialog.textContent).toContain('MAIN VFO B');
     const input = dialog.querySelector<HTMLInputElement>('[data-testid="band-entry-input"]')!;
@@ -312,6 +327,44 @@ describe('fixed-slot frequency entry overlay', () => {
       expect(vi.mocked(sendCommand)).not.toHaveBeenCalled();
     },
   );
+
+  it('closes and restores focus only after exact-readback confirmation', async () => {
+    h.state = directState(true); h.caps = directCaps(true);
+    render({ vfoAppearance: 'standard' });
+    const trigger = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!;
+    trigger.querySelector<HTMLElement>('.freq')!.click();
+    flushSync();
+    typeFrequency('7.075');
+    btn('entry-set')!.click();
+    const command = beginSubmittedDirectCommand();
+    flushSync();
+
+    expect(q<HTMLElement>('[role="dialog"]')).not.toBeNull();
+    acknowledgeCommand(command.id, command.originalEpoch, command.originalEpoch);
+    flushSync();
+    expect(q<HTMLElement>('[role="dialog"]')?.textContent)
+      .toContain('Waiting for the selected VFO readback');
+
+    confirmCommand(command.id, command.originalEpoch, command.originalEpoch);
+    flushSync();
+    await Promise.resolve();
+    expect(q<HTMLElement>('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('keeps a failed submission open with its error', () => {
+    h.state = directState(true); h.caps = directCaps(true);
+    render({ vfoAppearance: 'standard' });
+    q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq] .freq')!.click();
+    flushSync();
+    typeFrequency('7.075');
+    btn('entry-set')!.click();
+    const command = beginSubmittedDirectCommand();
+    failCommand(command.id, command.originalEpoch, command.originalEpoch, 'Radio rejected frequency');
+    flushSync();
+
+    expect(q<HTMLElement>('[role="dialog"]')?.textContent).toContain('Radio rejected frequency');
+  });
 
   it.each(['Enter', ' '] as const)(
     'opens real inactive B entry with %s without tuning or selecting',
@@ -374,6 +427,7 @@ afterEach(() => {
   expect(h.authoritySubscribers.size).toBe(0);
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
+  resetCommandLifecycle();
   document.body.innerHTML = '';
 });
 

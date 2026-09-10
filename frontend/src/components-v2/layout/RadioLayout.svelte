@@ -202,6 +202,11 @@
   // Reactive state + capabilities — via runtime
   let radioState = $derived(runtime.state);
   let caps = $derived(runtime.caps);
+  let directFrequencyEntrySupported = $derived(
+    caps?.capabilities.includes('vfo_freq_direct') === true
+      && caps.receivers === 1
+      && caps.vfoScheme === 'ab',
+  );
 
   // MOR-1235. The meters dock's TX chrome takes its truth from the App-owned
   // TX controller — the SAME source as the authoritative global lamp
@@ -483,7 +488,7 @@
       undefined, filterFiniteLayout, panelChrome(owner, 'semantic-filter'),
     )}
   {/if}
-  {#if owner.order.includes('semantic-band')}
+  {#if owner.order.includes('semantic-band') && !directFrequencyEntrySupported}
     {@render instruments.band(
       undefined, bandControlLayout, panelChrome(owner, 'semantic-band'),
     )}

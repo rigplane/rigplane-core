@@ -471,7 +471,7 @@ describe('explicit presentation contract', () => {
     expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_074_001);
   });
 
-  it('reports a digit click once without tuning and preserves deliberate wheel tuning', () => {
+  it('opens from the whole readout without tuning and preserves deliberate wheel tuning', () => {
     const onFrequencyClick = vi.fn();
     const onFreqChange = vi.fn();
     const t = mountPanel({ ...explicit, onFrequencyClick, onFreqChange });
@@ -485,7 +485,9 @@ describe('explicit presentation contract', () => {
     digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
     expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_075_000);
     t.querySelector<HTMLElement>('.sep')?.click();
-    expect(onFrequencyClick).toHaveBeenCalledTimes(1);
+    readout.click();
+    expect(onFrequencyClick).toHaveBeenCalledTimes(3);
+    expect(onFreqChange).toHaveBeenCalledOnce();
   });
 
   it.each(['Enter', ' '] as const)(

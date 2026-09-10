@@ -107,10 +107,12 @@
   }
 
   function handleFrequencyClick(event: MouseEvent): void {
-    if (onFrequencyClick === undefined || !(event.target instanceof Element)
-      || event.target.closest('.digit') === null) return;
+    if (onFrequencyClick === undefined || !(event.target instanceof Element)) return;
+    const readout = event.target.closest('.freq');
+    if (readout === null || !(event.currentTarget instanceof HTMLElement)
+      || !event.currentTarget.contains(readout)) return;
     const trigger = frequencyEntryButton
-      ? event.currentTarget : event.target.closest('.freq');
+      ? event.currentTarget : readout;
     if (trigger instanceof HTMLElement) {
       if (frequencyEntryButton) event.stopPropagation();
       onFrequencyClick(trigger);

@@ -421,6 +421,11 @@
     && frequencyEntryCommand?.status !== 'pending'
     && frequencyEntryCommand?.status !== 'acknowledged'
     && frequencyEntryCommand?.status !== 'confirmed');
+  $effect(() => {
+    if (frequencyEntryCommand?.status !== 'confirmed') return;
+    frequencyEntryCapture = null;
+    frequencyEntryLifecycle = null;
+  });
   const systemIntents = getSystemHandlers();
   /** MOR-1307: the shipped band vocabulary, composed rather than forked. */
   const band = semanticHandlers.band;
