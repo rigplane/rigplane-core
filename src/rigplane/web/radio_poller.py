@@ -1391,7 +1391,9 @@ class RadioPoller:
         except Exception:
             logger.debug("radio-poller: %s reconfirm failed", label, exc_info=True)
 
-    def _request_post_write_readback(self, cmd: Command) -> None:
+    def _request_post_write_readback(
+        self, cmd: Command, *, selected_receiver: int | None = None
+    ) -> None:
         """Read back whatever the dispatched command just set (MOR-1484).
 
         A ``CommandIntent`` carries its ``expected_observations``; a legacy
@@ -1410,6 +1412,8 @@ class RadioPoller:
             return
         if isinstance(cmd, CommandIntent):
             expected = cmd.expected_observations
+        elif type(cmd) is SelectVfo and selected_receiver is not None:
+            expected = ()
         else:
             name = LEGACY_COMMAND_NAMES.get(type(cmd))
             if name is None:
@@ -1421,6 +1425,21 @@ class RadioPoller:
             params.setdefault("receiver", 0)
             expected = expected_observations_for_command(name, params)
         paths = tuple(observable_field_path(path) for path in expected)
+        if type(cmd) is SelectVfo and selected_receiver is not None:
+            receiver_id = str(selected_receiver)
+            geometry = (
+                FieldPath.active(receiver_id, "freq_mode", "filter_width"),
+                *(
+                    FieldPath.receiver(receiver_id, "operator_controls", leaf)
+                    for leaf in ("if_shift", "pbt_inner", "pbt_outer")
+                ),
+            )
+            paths = tuple(
+                path
+                for path in (*paths, *geometry)
+                if (capability := scheduler._profile.capability_for(path)).can_poll
+                or capability.command_response_observable
+            )
         if type(cmd) is SetMode and CAP_FILTER_WIDTH in self._caps:
             filter_width = FieldPath.active(
                 _post_write_receiver_id(cmd), "freq_mode", "filter_width"
@@ -4064,6 +4083,9 @@ class RadioPoller:
                         else FieldPath.unselected(receiver_id, "freq_mode", name)
                     )
                     apply(relative_path, value)
+            self._request_post_write_readback(
+                SelectVfo(slot), selected_receiver=receiver
+            )
             logger.info(
                 "radio-poller: confirmed VFO slot=%s receiver=%d generation=%d",
                 slot,

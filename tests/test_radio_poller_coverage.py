@@ -2249,6 +2249,82 @@ async def test_single_receiver_vfo_b_selects_slot_without_sub_receiver() -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("native_shift", [False, True])
+async def test_confirmed_vfo_selection_requests_supported_geometry(
+    native_shift: bool,
+) -> None:
+    radio = _make_radio(model="IC-7300")
+    radio._radio_state = RadioState()
+    width = FieldPath.active("0", "freq_mode", "filter_width")
+    inner = FieldPath.receiver("0", "operator_controls", "pbt_inner")
+    outer = FieldPath.receiver("0", "operator_controls", "pbt_outer")
+    shift = FieldPath.receiver("0", "operator_controls", "if_shift")
+    paths = (width, shift) if native_shift else (width, inner, outer)
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(*paths))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue())
+    with patch.object(
+        AcquisitionScheduler, "ensure_fresh", wraps=scheduler.ensure_fresh
+    ) as request:
+        await poller._execute(SelectVfo("B"))  # noqa: SLF001
+    request.assert_called_once()
+    assert set(request.call_args.args[0]) == set(paths)
+    assert request.call_args.kwargs["require_fresh_dispatch"] is True
+    assert request.call_args.kwargs["priority"] == AcquisitionPriority.USER
+    radio._set_vfo_slot_confirmed.assert_awaited_once_with("B", receiver=0)
+    assert radio.read_relative_vfo.await_count == 2
+
+    pending = scheduler.pending_requests()
+    radio.read_relative_vfo.side_effect = (
+        RelativeVfoState(7_100_000, "LSB", 2, 0),
+        RelativeVfoState(14_200_000, "USB", 1, 0),
+    )
+    await poller._execute(SelectVfo("A"))  # noqa: SLF001
+    assert len(scheduler.pending_requests()) == len(pending)
+    assert {
+        path for item in scheduler.pending_requests() for path in item.paths
+    } == set(paths)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "interruption", ["select", "readback", "provider", "selection"]
+)
+async def test_interrupted_vfo_selection_does_not_request_geometry(
+    interruption: str,
+) -> None:
+    radio = _make_radio(model="IC-7300")
+    scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(FieldPath.active("0", "freq_mode", "filter_width"))
+    )
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue())
+    if interruption == "select":
+        radio._set_vfo_slot_confirmed.side_effect = CommandError("selection rejected")
+    else:
+
+        async def interrupted_read(*, selected: bool) -> RelativeVfoState:
+            if interruption == "readback":
+                raise CommandError("readback failed")
+            if interruption == "provider":
+                poller._state_store.begin_provider_generation()  # noqa: SLF001
+            else:
+                poller._vfo_binding_generation += 1  # noqa: SLF001
+            return RelativeVfoState(14_200_000, "USB", 1, 0)
+
+        radio.read_relative_vfo.side_effect = interrupted_read
+    with patch.object(
+        AcquisitionScheduler, "ensure_fresh", wraps=scheduler.ensure_fresh
+    ) as request:
+        if interruption in ("select", "readback"):
+            with pytest.raises(CommandError):
+                await poller._execute(SelectVfo("B"))  # noqa: SLF001
+        else:
+            await poller._execute(SelectVfo("B"))  # noqa: SLF001
+    request.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_relative_vfo_ack_maps_selected_and_complement_then_rebinds() -> None:
     state = RadioState()
     state.active = "MAIN"
