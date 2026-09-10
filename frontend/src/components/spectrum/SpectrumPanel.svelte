@@ -157,17 +157,19 @@
     spectrumAuthority !== null && spectrumAuthority.frequencyHz !== null && spanHz > 0,
   );
   let scopeMode = $derived(frameScopeMode);
-  // Tuning indicator: center for CTR/SCROLL-C, proportional for FIX/SCROLL-F
   let isFixedScope = $derived(isFixedScopeFn(scopeMode));
   let displayTuple = $derived(!managedUnavailable && scopeProjection
     && (scopeProjection.passband.state === 'current' || scopeProjection.passband.state === 'stale')
     ? scopeProjection.passband.tuple : null);
   let displayStale = $derived(displayTuple !== null && scopeProjection?.passband.state === 'stale');
+  let translatedStale = $derived(scopeProjection?.passband.state === 'stale'
+    && scopeProjection.passband.translated === true);
+  let proportionalIndicator = $derived(isFixedScope || translatedStale);
   let displayFrequencyHz = $derived(managed ? displayTuple?.frequencyHz : spectrumAuthority?.frequencyHz);
   let tuneVisible = $derived(
     displayFrequencyHz !== null
       && displayFrequencyHz !== undefined
-      && (!isFixedScope || (
+      && (!proportionalIndicator || (
         displayFrequencyHz >= startFreq
         && displayFrequencyHz <= endFreq
       )),
@@ -217,7 +219,7 @@
       && canResizeFromRightEdge(spectrumAuthority.mode!),
   );
   let tuneLinePct = $derived(
-    isFixedScope && spanHz > 0 && tuneVisible
+    proportionalIndicator && spanHz > 0 && tuneVisible
       ? ((tuneHz - startFreq) / spanHz) * 100
       : 50
   );
@@ -238,7 +240,7 @@
     passbandShiftHz,
     refLevel,
     mode: rxMode,
-    scopeMode,
+    scopeMode: translatedStale ? 1 : scopeMode,
   });
 
   let waterfallOptions = $derived<WaterfallOptions>({
@@ -264,10 +266,9 @@
     : deriveFreqTicks(spanHz));
 
   // Passband overlay position derived from the same geometry as the spectrum renderer.
-  // In FIX mode pass tuneLinePct so passband follows the carrier indicator.
   let passbandOverlay = $derived(
     getPassbandGeometry(rxMode, passbandHz, passbandShiftHz, spanHz, 100,
-      isFixedScope ? tuneLinePct : undefined),
+      proportionalIndicator ? tuneLinePct : undefined),
   );
   let pbWidthPct = $derived(passbandOverlay?.widthPx ?? 0);
   let pbLeftPct = $derived(passbandOverlay?.leftPx ?? 0);
