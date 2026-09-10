@@ -36,6 +36,7 @@
 -->
 <script module lang="ts">
   import type { RxAudioField } from './radio-view-model';
+  import { formatKnownLevel } from './format-level';
   import { UNKNOWN_TEXT } from './rx-audio-instruments';
 
   export {
@@ -48,6 +49,8 @@
   /** Honest text: an unread fact reads as unknown, never as a default. */
   export const textOf = (f: RxAudioField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
+  const afText = (f: RxAudioField<number>): string =>
+    f.reading.status === 'known' ? formatKnownLevel(f.reading.value, 0, 1) : UNKNOWN_TEXT;
 </script>
 
 <script lang="ts">
@@ -91,7 +94,7 @@
         <!-- 0..1 — the contract's OWN unit. No rescale in either
              direction: the value in is the fact, the value out is the intent. -->
         {@render handles.afLevel()}
-        <output data-testid="rx-audio-af-value">{textOf(rx.afLevel)}</output>
+        <output data-testid="rx-audio-af-value">{afText(rx.afLevel)}</output>
       </label>
     {/if}
 
