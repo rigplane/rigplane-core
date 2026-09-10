@@ -4327,3 +4327,61 @@ class TestCodecProfileOverride:
             audio_codec=AudioCodec.PCM_2CH_16BIT,
         )
         assert radio._audio_codec == AudioCodec.PCM_1CH_16BIT
+
+
+@pytest.mark.parametrize("selector", [0, 1])
+@pytest.mark.parametrize("reply", [0xFB, 0xFA])
+@pytest.mark.parametrize(
+    "opcode,data", [(0x25, bcd_encode(14_074_000)), (0x26, b"\x01\x00\x01")]
+)
+async def test_direct_vfo_set_uses_real_ack_tracker(
+    radio, mock_transport, selector, reply, opcode, data
+):
+    """Actual send_civ/runtime/transport matcher, without mocking send_civ."""
+    mock_transport.queue_response_on_send(
+        1,
+        _wrap_civ_in_udp(
+            build_civ_frame(
+                CONTROLLER_ADDR,
+                IC_7610_ADDR,
+                reply,
+            )
+        ),
+    )
+    response = await radio.send_civ(opcode, data=bytes([selector]) + data)
+    assert response.command == reply
+    assert radio._civ_request_tracker.pending_count == 0
+    assert radio._civ_request_tracker.timeout_count == 0
+    frames = [
+        packet[packet.index(b"\xfe\xfe") :] for packet in mock_transport.sent_packets
+    ]
+    assert frames == [
+        build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, opcode, data=bytes([selector]) + data
+        )
+    ]
+
+
+@pytest.mark.parametrize("selector", [0, 1])
+@pytest.mark.parametrize(
+    "opcode,data", [(0x25, bcd_encode(14_074_000)), (0x26, b"\x01\x00\x01")]
+)
+async def test_direct_vfo_get_still_uses_real_response_tracker(
+    radio, mock_transport, selector, opcode, data
+):
+    payload = bytes([selector]) + data
+    mock_transport.queue_response_on_send(
+        1,
+        _wrap_civ_in_udp(
+            build_civ_frame(
+                CONTROLLER_ADDR,
+                IC_7610_ADDR,
+                opcode,
+                data=payload,
+            )
+        ),
+    )
+    response = await radio.send_civ(opcode, data=bytes([selector]))
+    assert response.command == opcode and response.data == payload
+    assert radio._civ_request_tracker.pending_count == 0
+    assert radio._civ_request_tracker.timeout_count == 0

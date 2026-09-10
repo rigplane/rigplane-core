@@ -32,6 +32,7 @@ from rigplane.runtime._poller_types import (
     SetData1ModInput,
     SetDualWatch,
     SetFreq,
+    SetVfoFreq,
     SetMainSubTracking,
     SetMode,
     SetPowerstat,
@@ -167,6 +168,7 @@ def test_authority_approved_control_families_are_tx_safe_in_every_rf_state() -> 
 def test_profile_overrides_cannot_restore_observed_rf_admission() -> None:
     cases = (
         (SetFreq(7_100_000), TxInterlockCommandFamily.FREQUENCY),
+        (SetVfoFreq(7_100_000, 0, "B", "A", 1), TxInterlockCommandFamily.FREQUENCY),
         (SetMode("USB"), TxInterlockCommandFamily.MODE),
         (SetBand(4), TxInterlockCommandFamily.BAND),
         (SelectVfo("MAIN"), TxInterlockCommandFamily.VFO_SELECT),
@@ -275,6 +277,7 @@ def test_command_family_metadata_pins_typed_policy_without_classifying_defaults(
         (SetTunerStatus(1), TxInterlockCommandFamily.TUNER_ENGAGE),
         (SetTunerStatus(2), TxInterlockCommandFamily.TUNER_ENGAGE),
         (SetFreq(7_100_000), TxInterlockCommandFamily.FREQUENCY),
+        (SetVfoFreq(7_100_000, 0, "B", "A", 1), TxInterlockCommandFamily.FREQUENCY),
         (SetMode("USB"), TxInterlockCommandFamily.MODE),
         (SetBand(4), TxInterlockCommandFamily.BAND),
         (SelectVfo("MAIN"), TxInterlockCommandFamily.VFO_SELECT),

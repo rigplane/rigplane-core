@@ -399,6 +399,7 @@ from .._poller_types import (  # noqa: E402
     SetFilterShape,
     SetFilterWidth,
     SetFreq,
+    SetVfoFreq,
     SetIfShift,
     SetIpPlus,
     SetKeySpeed,
@@ -597,6 +598,7 @@ class RadioPoller:
         self._scope_demand_generation = queue.latest_scope_demand_generation
         self._scope_session_state: tuple[bool, bool] | None = None
         self._scope_session_active = False
+        self._vfo_command_lock = asyncio.Lock()
         self._vfo_binding_generation = 0
         self._vfo_connect_attempt: tuple[int, object] | None = None
         self._vfo_recovery_generation: tuple[int, object] | None = None
@@ -788,7 +790,9 @@ class RadioPoller:
     async def _execute_queued_entry(self, entry: CommandQueueEntry) -> None:
         await execute_command_queue_entry(entry, self._execute_queued_entry_action)
 
-    async def _execute_queued_entry_action(self, entry: CommandQueueEntry) -> None:
+    async def _execute_queued_entry_action(
+        self, entry: CommandQueueEntry
+    ) -> Observation | None:
         def validate_currency() -> None:
             validate_command_queue_entry_currency(
                 entry,
@@ -808,12 +812,12 @@ class RadioPoller:
         validate_currency()
         if entry.positive_tx_submission is not None:
             await execute_positive_tx_queue_entry(entry)
-            return
+            return None
         if entry.command is None:
             raise CommandError("queued command has no dispatch payload")
         # MOR-1884: the interlock seat lives at the head of ``_execute`` now,
         # so queued commands and uncommanded internal emits share one seat.
-        await self._execute(
+        return await self._execute(
             entry.command,
             command_id=entry.command_id,
             source=entry.source or "websocket",
@@ -1725,9 +1729,9 @@ class RadioPoller:
                 )
             yield from self._stage_tx_interlocked_entries([])
 
-        async def execute_entry(entry: CommandQueueEntry) -> None:
+        async def execute_entry(entry: CommandQueueEntry) -> Observation | None:
             try:
-                await self._execute_queued_entry_action(entry)
+                return await self._execute_queued_entry_action(entry)
             except Exception as exc:
                 self._mark_queued_command_failed(
                     entry,
@@ -2104,7 +2108,7 @@ class RadioPoller:
         session_id: str | None = None,
         command_service: CommandService | None = None,
         validate_currency: Callable[[], None] | None = None,
-    ) -> None:
+    ) -> Observation | None:
         cmd = canonicalize_level_command(
             cmd,
             self._radio,
@@ -2122,7 +2126,40 @@ class RadioPoller:
                 validate_currency=validate_currency,
             )
             self._request_post_write_readback(cmd)
-            return
+            return None
+        # Includes internal connect selection, which bypasses the normal queue.
+        if isinstance(cmd, (SetVfoFreq, SelectVfo, VfoSwap, VfoEqualize, SendCiv)):
+            async with self._vfo_command_lock:
+                if validate_currency is not None:
+                    validate_currency()
+                return await self._execute_unlocked(
+                    cmd,
+                    command_id=command_id,
+                    source=source,
+                    session_id=session_id,
+                    command_service=command_service,
+                    validate_currency=validate_currency,
+                )
+        else:
+            return await self._execute_unlocked(
+                cmd,
+                command_id=command_id,
+                source=source,
+                session_id=session_id,
+                command_service=command_service,
+                validate_currency=validate_currency,
+            )
+
+    async def _execute_unlocked(
+        self,
+        cmd: Command,
+        *,
+        command_id: str | None = None,
+        source: CommandSource = "websocket",
+        session_id: str | None = None,
+        command_service: CommandService | None = None,
+        validate_currency: Callable[[], None] | None = None,
+    ) -> Observation | None:
         # MOR-1884 (MOR-1626 criterion 7): the enforcement seat guards EVERY
         # write this poller issues — queued commands and uncommanded internal
         # emits alike. Emergency commands need no exemption —
@@ -2143,8 +2180,6 @@ class RadioPoller:
 
         match cmd:
             case SendCiv(command=command, sub=sub, data=data):
-                from ..radio_protocol import CivCommandCapable
-
                 if not isinstance(radio, CivCommandCapable):
                     raise CommandError("send_civ is not supported by this backend")
                 await radio.send_civ(
@@ -2153,6 +2188,97 @@ class RadioPoller:
                     data=data,
                     wait_response=False,
                 )
+            case SetVfoFreq():
+                from ..commands import parse_ack_nak, parse_selected_freq_response
+                from ..types import bcd_encode
+                from .runtime_helpers import projected_vfo_capability_tags  # noqa: TID251
+
+                if "vfo_freq_direct" not in projected_vfo_capability_tags(radio, None):
+                    raise CommandError("direct VFO frequency is unavailable")
+                if cmd.provider_generation != provider_generation:
+                    raise CommandError("VFO target provider generation changed")
+                if not any(
+                    r.start <= cmd.freq <= r.end for r in self._profile.freq_ranges
+                ):
+                    raise CommandError("VFO frequency outside profile receive ranges")
+                try:
+                    field = self._state_store.snapshot().field(
+                        FieldPath.active_slot("0")
+                    )
+                except KeyError as exc:
+                    raise CommandError("VFO target identity is unknown") from exc
+                if (
+                    field.freshness is not FreshnessState.FRESH
+                    or (
+                        field.max_age is not None
+                        and time.monotonic() - field.last_observed_monotonic
+                        > field.max_age
+                    )
+                    or field.provider_generation != provider_generation
+                    or field.value != cmd.expected_active_slot
+                ):
+                    raise CommandError(
+                        "VFO target identity is unknown, stale, or changed"
+                    )
+                assert isinstance(radio, CivCommandCapable)
+                cmd_map = self._profile.command_map
+                assert cmd_map is not None
+                selected = cmd.slot == field.value
+                role = "selected" if selected else "unselected"
+                opcode, sub, prefix = decode_wire_tuple(cmd_map.get(f"set_{role}_freq"))
+                generation = self._vfo_binding_generation
+                response = await radio.send_civ(
+                    opcode,
+                    sub,
+                    data=prefix + bcd_encode(cmd.freq),
+                    wait_response=True,
+                )
+                if response is None or parse_ack_nak(response) is not True:
+                    raise CommandError("direct VFO frequency was not acknowledged")
+                if validate_currency is not None:
+                    validate_currency()
+                if (
+                    generation != self._vfo_binding_generation
+                    or provider_generation != self._provider_generation()
+                ):
+                    raise CommandError("VFO target changed during write")
+                opcode, sub, data = decode_wire_tuple(cmd_map.get(f"get_{role}_freq"))
+                readback = await radio.send_civ(
+                    opcode, sub, data=data, wait_response=True
+                )
+                if validate_currency is not None:
+                    validate_currency()
+                if (
+                    generation != self._vfo_binding_generation
+                    or provider_generation != self._provider_generation()
+                ):
+                    raise CommandError("VFO target changed during readback")
+                if readback is None:
+                    raise CommandError("direct VFO frequency readback unavailable")
+                selector, observed_freq = parse_selected_freq_response(readback)
+                if selector != (0 if selected else 1):
+                    raise CommandError("direct VFO readback selector mismatch")
+                # Only actual transaction readback carries the command correlation.
+                path = (FieldPath.active if selected else FieldPath.unselected)(
+                    "0", "freq_mode", "freq_hz"
+                )
+                observation = Observation(
+                    path=path,
+                    value=observed_freq,
+                    source=SourceMetadata(
+                        source="command_response",
+                        provider="icom_civ",
+                        command_source=command_source,
+                        session_id=session_id,
+                        native_id="direct_vfo_frequency_readback",
+                    ),
+                    timestamp_monotonic=time.monotonic(),
+                    correlation_id=command_id,
+                    provider_generation=provider_generation,
+                )
+                # CommandService applies this only after its executor returns,
+                # so readback cannot retire an in-flight lifecycle entry.
+                return observation
             case SetFreq(freq=freq, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_freq")
                 current = self._current_active()
@@ -2786,7 +2912,7 @@ class RadioPoller:
                                     "set_vfo_slot and set_vfo; skipping",
                                     vfo,
                                 )
-                                return
+                                return None
                             await legacy_set_vfo(slot)
                         if self._radio_state is not None:
                             self._radio_state.receiver(active_name).active_slot = slot
@@ -2794,7 +2920,7 @@ class RadioPoller:
                             self._on_state_event(
                                 "vfo_changed", {"vfo": slot, "receiver": receiver}
                             )
-                    return
+                    return None
 
                 if vfo_upper in ("SUB", "1") or (
                     self._profile.receiver_count > 1 and vfo_upper == "VFOB"
@@ -2842,7 +2968,7 @@ class RadioPoller:
                                 "lacks select_receiver and set_vfo; skipping",
                                 vfo,
                             )
-                            return
+                            return None
                         await legacy_set_vfo(target_name)
                         logger.info(
                             "radio-poller: legacy set_vfo=%s "
@@ -2922,7 +3048,7 @@ class RadioPoller:
                     # CI-V packet queue overflow (scope data + fetch).
                     if not self._initial_fetch_done.is_set():
                         if self._scope_demand_is_stale(generation):
-                            return
+                            return None
                         if not self._scope_enable_deferred:
                             logger.info(
                                 "radio-poller: deferring scope enable until initial fetch completes"
@@ -2933,14 +3059,14 @@ class RadioPoller:
                         )
                     else:
                         if self._scope_demand_is_stale(generation):
-                            return
+                            return None
                         await self._enable_scope_session(policy=policy)
                         logger.info("radio-poller: scope enabled")
                         await self._fetch_scope_controls()
             case DisableScope(generation=generation):
                 if CAP_SCOPE in self._caps:
                     if self._scope_demand_is_stale(generation):
-                        return
+                        return None
                     await self.restore_scope_session()
                     logger.info("radio-poller: scope session state restored")
             case SwitchScopeReceiver(receiver=receiver):
@@ -3407,6 +3533,7 @@ class RadioPoller:
                 await _r.get_speech(what)
 
         self._request_post_write_readback(cmd)
+        return None
 
     def _acquisition_request_expired(
         self,

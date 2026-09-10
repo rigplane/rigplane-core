@@ -55,8 +55,8 @@ def test_ic7300_exposes_one_command_name_for_all_data_values() -> None:
     assert profile.supports_command("set_data_mode")
     assert not profile.supports_command("set_data_mode_off")
     assert not profile.supports_command("set_data_mode_data1")
-    assert len(profile.command_names) == 320
-    assert len(profile.command_map) == 320
+    assert len(profile.command_names) == 322
+    assert len(profile.command_map) == 322
     assert list(profile.command_map).count("set_data_mode") == 1
     assert all(not name.startswith("set_data_mode_") for name in profile.command_map)
 

@@ -40,7 +40,9 @@ __all__ = [
 # Reserved runtime capability tags for the VFO-primitive commands
 # (``vfo_swap``, ``vfo_equalize``). These are never trusted from
 # ``radio.capabilities`` directly — see ``projected_vfo_capability_tags``.
-VFO_CAPABILITY_TAGS: frozenset[str] = frozenset({"vfo_swap", "vfo_equalize"})
+VFO_CAPABILITY_TAGS: frozenset[str] = frozenset(
+    {"vfo_swap", "vfo_equalize", "vfo_freq_direct"}
+)
 
 _RECEIVER_KEY_MAP = {"freq": "freqHz"}
 _SNAPSHOT_RECEIVER_IDS = {
@@ -718,7 +720,24 @@ def projected_vfo_capability_tags(
         )
     else:
         primitives = ()
-    return frozenset(tag for tag, primitive in primitives if primitive is not None)
+    tags = {tag for tag, primitive in primitives if primitive is not None}
+    from ..core.radio_protocol import CivCommandCapable
+
+    cmd_map = profile.command_map
+    if (
+        isinstance(getattr(radio, "profile", None), RadioProfile)
+        and isinstance(radio, CivCommandCapable)
+        and profile.id == "icom_ic7300"
+        and profile.receiver_count == 1
+        and profile.vfo_scheme == "ab"
+        and profile.vfo_readback == "selected_unselected"
+        and cmd_map is not None
+        and all(
+            cmd_map.has(key) for key in ("set_selected_freq", "set_unselected_freq")
+        )
+    ):
+        tags.add("vfo_freq_direct")
+    return frozenset(tags)
 
 
 def radio_ready(radio: "Radio | None") -> bool:

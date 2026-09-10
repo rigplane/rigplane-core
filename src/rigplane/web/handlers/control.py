@@ -66,6 +66,7 @@ from ..radio_poller import (  # noqa: TID251
     SetFilterShape,
     SetFilterWidth,
     SetFreq,
+    SetVfoFreq,
     SetIfShift,
     SetIpPlus,
     SetLanModLevel,
@@ -324,6 +325,7 @@ class ControlHandler:
     _COMMANDS = frozenset(
         [
             "set_freq",
+            "set_vfo_freq",
             "set_band",
             "set_mode",
             "send_civ",
@@ -1055,7 +1057,7 @@ class ControlHandler:
         # read-only commands pass through. MOR-1427: a command arriving
         # inside the pacing window is coalesced (last-value-wins) instead
         # of hard-dropped — see _coalesce_command / _flush_coalesced_command.
-        if name.startswith("set_"):
+        if name.startswith("set_") and name != "set_vfo_freq":
             now = time.monotonic()
             key = self._coalesce_key(name, params)
             last = self._cmd_last.get(key, 0.0)
@@ -1594,6 +1596,59 @@ class ControlHandler:
     async def _execute_intent(
         self, intent: CommandIntent, *, wait_for_completion: bool = True
     ) -> CommandExecutionResult:
+        if intent.name == "set_vfo_freq":
+            if self._read_only:
+                raise PermissionError("read-only mode: set_vfo_freq rejected")
+            if "vfo_freq_direct" not in self._capabilities():
+                raise CommandUnsupportedError("direct VFO frequency is unavailable")
+            params = dict(intent.params)
+            if self._server is None:
+                raise RuntimeError("no command queue available")
+            queue = self._server.command_queue
+            vfo_future = asyncio.get_running_loop().create_future()
+            vfo_generation = queue.capture_connection_generation()
+            result = self._enqueue_rc_frequency(
+                intent.name,
+                params,
+                queue,
+                self._radio,
+                ordered_context=dict(
+                    future=vfo_future,
+                    command_id=intent.id,
+                    source=intent.source,
+                    session_id=params.get("session_id"),
+                    command_service=self._command_service,
+                    provider_generation=params["provider_generation"],
+                    connection_generation=vfo_generation,
+                    expires_at_monotonic=time.monotonic() + (intent.timeout or 2.0),
+                ),
+            )
+            observation = await asyncio.wait_for(
+                vfo_future, timeout=intent.timeout or 2.0
+            )
+            # No await between this guard and executor-result delivery: another
+            # selection may have run after the poller's transaction lock released.
+            store = self._server.command_state_store
+            try:
+                field = store.snapshot().field(FieldPath.active_slot("0"))
+            except KeyError as exc:
+                raise CommandRejectedError(
+                    "VFO identity lost before readback delivery"
+                ) from exc
+            if (
+                queue.capture_connection_generation() != vfo_generation
+                or store.provider_generation != params["provider_generation"]
+                or field.provider_generation != params["provider_generation"]
+                or field.freshness is not FreshnessState.FRESH
+                or field.value != params["expected_active_slot"]
+            ):
+                raise CommandRejectedError(
+                    "VFO identity changed before readback delivery"
+                )
+            return CommandExecutionResult(
+                observations=() if observation is None else (observation,),
+                details=result,
+            )
         descriptor = command_descriptor(intent.name)
         if (
             descriptor is not None
@@ -2159,8 +2214,35 @@ class ControlHandler:
         params: dict[str, Any],
         q: Any,
         radio: "Radio | None",
+        *,
+        ordered_context: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         match name:
+            case "set_vfo_freq":
+                if ordered_context is None:
+                    raise CommandRejectedError(
+                        "direct VFO write requires completion context"
+                    )
+                q.put_ordered(
+                    SetVfoFreq(
+                        freq=params["freq"],
+                        receiver=params["receiver"],
+                        slot=params["slot"],
+                        expected_active_slot=params["expected_active_slot"],
+                        provider_generation=params["provider_generation"],
+                    ),
+                    **ordered_context,
+                )
+                return {
+                    key: params[key]
+                    for key in (
+                        "freq",
+                        "receiver",
+                        "slot",
+                        "expected_active_slot",
+                        "provider_generation",
+                    )
+                }
             case "send_civ":
                 if radio is None or not isinstance(radio, CivCommandCapable):
                     raise RuntimeError("radio does not support send_civ")
