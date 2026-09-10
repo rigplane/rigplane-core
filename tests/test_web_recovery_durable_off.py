@@ -744,3 +744,43 @@ async def test_explicit_disconnect_connect_uses_the_same_new_epoch_policy() -> N
     assert len(radio.wire.sent_frames) == 5
     assert radio.selected == "A"
     assert radio.refetches == 1
+
+
+async def test_reconnect_with_ptt_aged_by_refetch_reads_rx_before_selecting_a() -> None:
+    from unittest.mock import AsyncMock
+    from test_radio_poller_tx_interlock import (
+        connect_vfo_poller,
+        _observe_ptt,
+        observe_connect_ptt_read,
+    )
+    from rigplane.core.state_pipeline_contracts import FieldPath
+
+    poller, radio, store = connect_vfo_poller()
+    server = WebServer(radio)
+    server._radio_poller = poller
+    radio._civ_epoch += 1
+    store.begin_provider_generation()
+
+    async def refetch() -> None:
+        _observe_ptt(store, False, observed_at=time.monotonic() - 2.0)
+
+    async def read(*args: object, **kwargs: object) -> None:
+        await observe_connect_ptt_read(radio, False)
+
+    radio._fetch_initial_state = refetch
+    radio.send_civ = AsyncMock(side_effect=read)
+    await _recover(server)
+    assert store.snapshot().field(FieldPath.active_slot("0")).value == "A"
+    assert radio.wire.sent_frames == [
+        bytes.fromhex(frame)
+        for frame in (
+            "fefe94e01c00fd",
+            "fefe94e00700fd",
+            "fefe94e02500fd",
+            "fefe94e02600fd",
+            "fefe94e02501fd",
+            "fefe94e02601fd",
+        )
+    ]
+    await _recover(server)
+    radio.send_civ.assert_awaited_once()
