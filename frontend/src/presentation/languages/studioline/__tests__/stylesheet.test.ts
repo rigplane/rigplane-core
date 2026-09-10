@@ -116,14 +116,14 @@ describe('the sheet parses into something worth asserting against', () => {
   });
 });
 
-describe('F1 — the fault rail WINS over the RF-doubt rail, it does not merely exist', () => {
+describe('F1 — passive unknown stays quiet while active TX doubt remains visible', () => {
   it('renders a fault red, not the amber of the doubt rail it overlaps with', () => {
     expect(winner('border-top', FAULT)).toBe('3px solid var(--dl-studioline-tx-active)');
     expect(winner('border-top', FAULT)).not.toContain('tx-tuning');
   });
 
-  it('still leaves RF doubt amber when the session has NOT failed', () => {
-    expect(winner('border-top', RF_UNKNOWN)).toBe('3px solid var(--dl-studioline-tx-tuning)');
+  it('uses the RX baseline for passive unknown and amber for uncertain TX', () => {
+    expect(winner('border-top', RF_UNKNOWN)).toBe(winner('border-top', RX));
     expect(winner('border-top', { session: 'idle', rf: 'uncertain' }))
       .toBe('3px solid var(--dl-studioline-tx-tuning)');
   });

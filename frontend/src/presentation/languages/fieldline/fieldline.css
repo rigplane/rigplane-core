@@ -207,8 +207,7 @@
 [data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-session='releasing']) {
   border-inline-start: 16px solid var(--dl-fieldline-tx-active);
 }
-/* Unknown RF is a THIRD thing, never RX (MOR-977 §1.2.1). */
-[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-rf='unknown']),
+/* An uncertain key transition stays explicit; passive unknown uses the quiet baseline. */
 [data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-rf='uncertain']) {
   border-inline-start: 16px solid var(--dl-fieldline-tx-tuning);
 }
@@ -229,7 +228,6 @@
   color: var(--dl-fieldline-text);
 }
 [data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-session='pending']) .rx-tx-state,
-[data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-rf='unknown']) .rx-tx-state,
 [data-design-language='fieldline'][data-design-language] .rx-tx-surface:has([data-rf='uncertain']) .rx-tx-state {
   border-color: var(--dl-fieldline-tx-tuning);
 }

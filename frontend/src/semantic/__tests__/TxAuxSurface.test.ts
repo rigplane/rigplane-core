@@ -347,6 +347,8 @@ const BLOCKING: readonly (readonly [string, Partial<TxAuthoritySnapshot>])[] = [
   ['TX risk is uncertain', { txRisk: 'uncertain' }],
   ['TX risk is confirmed-on', { txRisk: 'confirmed-on' }],
 ];
+const visibleTuneReasons = (view: RadioViewModel, tx: TxAuthoritySnapshot) =>
+  keyBlockedReasons(view, tx).filter((code) => code !== 'rf-state-unknown');
 
 describe('ATU TUNE is gated by the server TX projection, exactly like the key intent', () => {
   it('offers TUNE when the authority is idle and the permit allows', () => {
@@ -357,16 +359,15 @@ describe('ATU TUNE is gated by the server TX projection, exactly like the key in
     });
   });
 
-  // MUTATION KILLED: gating TUNE on anything weaker than the key intent's own
-  // predicate (or on nothing at all). Asserted against the SHARED
-  // `keyBlockedReasons` so the two can never drift apart.
+  // The shared predicate still gates TUNE. Its passive list omits only RF
+  // unknown so observation churn cannot move the surrounding layout.
   it.each(BLOCKING)('disables TUNE while %s', (_label, over) => {
     const view = base();
     const tx = snap(over);
     expect(keyBlockedReasons(view, tx).length).toBeGreaterThan(0);
     withSurface(view, tx, (s) => {
       expect(s.tune()!.disabled).toBe(true);
-      expect(s.tuneReasons()).toEqual([...keyBlockedReasons(view, tx)]);
+      expect(s.tuneReasons()).toEqual(visibleTuneReasons(view, tx));
     });
   });
 
