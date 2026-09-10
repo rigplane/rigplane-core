@@ -1499,7 +1499,9 @@ def test_ic7300_ipplus_is_missing_until_a_canonical_observation_arrives() -> Non
 
     # 0x16/0x65 is decoded into this canonical StateStore observation by the
     # CI-V runtime; the profile's 10-second TTL is stamped on that ingress.
-    store.apply(_observation(ipplus, True, at=clock.now(), max_age=10.0, provider="icom_civ"))
+    store.apply(
+        _observation(ipplus, True, at=clock.now(), max_age=10.0, provider="icom_civ")
+    )
 
     after = _profile_field_status("IC-7300", store.snapshot())
     assert after["main.ipplus"]["observed"] is True

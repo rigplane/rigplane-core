@@ -2997,7 +2997,9 @@ def test_ic7300_real_profile_ipplus_is_polled_as_plain_cmd16_read() -> None:
     scheduler = AcquisitionScheduler(
         profile=acquisition, clock=FreshnessClock(start=300.0)
     )
-    request = next(request for request in scheduler.due_requests() if ipplus in request.paths)
+    request = next(
+        request for request in scheduler.due_requests() if ipplus in request.paths
+    )
 
     executor, sent = recording_executor(profile)
     execution = asyncio.run(executor.execute(request, already_sent_paths=frozenset()))
