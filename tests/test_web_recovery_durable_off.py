@@ -685,3 +685,62 @@ async def test_a_re_arm_that_raises_does_not_fail_the_reconnect(
     assert order == ["on_reconnect"]
     assert host._civ_transport is not None
     assert _warned(caplog, "re-arm failed")
+
+
+@pytest.mark.parametrize("read_only", (False, True))
+async def test_reconnect_selects_a_after_refetch_once_per_real_epoch(
+    read_only: bool,
+) -> None:
+    from test_radio_poller_tx_interlock import connect_vfo_poller, _observe_ptt
+    from rigplane.core.state_pipeline_contracts import FieldPath
+
+    poller, radio, store = connect_vfo_poller()
+    server = WebServer(radio)
+    server._radio_poller = poller
+    server._config.read_only = read_only
+    _observe_ptt(store, False)
+    await poller.select_vfo_a_on_connect(read_only=read_only)
+    for iteration in (1, 2):
+        radio._civ_epoch += 1
+        store.begin_provider_generation()
+        radio.selected = "B"
+        radio.wire.sent_frames.clear()
+        server._on_radio_reconnect()
+        server._on_radio_reconnect()
+        await asyncio.gather(*list(server._bg_tasks))
+        assert radio.refetches == iteration * 3 - 1
+        assert poller._initial_fetch_done.is_set()
+        assert len(radio.wire.sent_frames) == (0 if read_only else 5)
+        if not read_only:
+            assert store.snapshot().field(FieldPath.active_slot("0")).value == "A"
+        await _recover(server)
+        assert len(radio.wire.sent_frames) == (0 if read_only else 5)
+        if not read_only:
+            assert store.snapshot().field(FieldPath.active_slot("0")).value == "A"
+
+
+async def test_explicit_disconnect_connect_uses_the_same_new_epoch_policy() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+    from test_radio_poller_tx_interlock import connect_vfo_poller, _observe_ptt
+
+    poller, radio, store = connect_vfo_poller()
+    server = WebServer(radio)
+    server._radio_poller = poller
+    _observe_ptt(store, False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+
+    async def connect() -> None:
+        radio._civ_epoch += 1
+        store.begin_provider_generation()
+        radio.selected = "B"
+
+    radio.connect = connect
+    radio.disconnect = AsyncMock()
+    writer = MagicMock(drain=AsyncMock())
+    radio.wire.sent_frames.clear()
+    await server._handle_radio_control("/api/v1/radio/disconnect", writer)
+    await server._handle_radio_control("/api/v1/radio/connect", writer)
+    await asyncio.gather(*list(server._bg_tasks))
+    assert len(radio.wire.sent_frames) == 5
+    assert radio.selected == "A"
+    assert radio.refetches == 1

@@ -35,6 +35,7 @@ from rigplane.runtime._poller_types import (
     VfoSwap,
     validate_command_queue_entry_currency,
 )
+from rigplane.runtime.radio import CoreRadio
 from rigplane.runtime.tx_interlock import (
     RfState,
     TxInterlockCommandFamily,
@@ -658,13 +659,169 @@ async def test_vfo_selection_is_not_observed_rf_gated() -> None:
     assert "VFO selection" in str(dispatched.value)
 
 
-def test_connection_epoch_bootstrap_exemption_is_absent_from_production() -> None:
-    from pathlib import Path
+class ConnectVfoRadio(CoreRadio):
+    connected = True
+    radio_ready = True
+    control_connected = True
 
-    import rigplane.web.radio_poller as radio_poller_module
+    def __init__(self, *, selected: str = "B") -> None:
+        from serial_stub import DeterministicSerialCivLink
 
-    source = Path(radio_poller_module.__file__).read_text()
-    assert "connection_epoch_bootstrap" not in source
+        super().__init__("127.0.0.1", model="IC-7300")
+        self.wire = DeterministicSerialCivLink()
+        self.selected = selected
+        self.ack = asyncio.Event()
+        self.ack.set()
+        self.reject = False
+        self.refetches = 0
+
+    def _check_connected(self) -> None:
+        pass
+
+    async def _send_civ_expect(self, frame: bytes, **kwargs: object) -> object:
+        from rigplane.core.civ import CivFrame
+        from rigplane.core.types import bcd_encode
+
+        await self.wire.send(frame)
+        command, data = frame[4], frame[5:-1]
+        if command == 0x07:
+            await self.ack.wait()
+            if self.reject:
+                return CivFrame(0xE0, 0x94, 0xFA)
+            self.selected = "A" if data == b"\x00" else "B"
+            return CivFrame(0xE0, 0x94, 0xFB)
+        slot = self.selected if data[0] == 0 else ("B" if self.selected == "A" else "A")
+        if command == 0x25:
+            payload = data + bcd_encode(14_200_000 if slot == "A" else 7_100_000)
+        elif command == 0x26:
+            payload = data + (b"\x01\x00\x01" if slot == "A" else b"\x00\x00\x02")
+        else:
+            raise AssertionError(f"Unexpected write/read: {frame.hex()}")
+        return CivFrame(0xE0, 0x94, command, data=payload)
+
+    async def _fetch_initial_state(self) -> None:
+        self.refetches += 1
+        _observe_ptt(self.state_store, False)
+
+
+def connect_vfo_poller(
+    *, selected: str = "B"
+) -> tuple[RadioPoller, ConnectVfoRadio, StateStore]:
+    radio = ConnectVfoRadio(selected=selected)
+    store = radio.state_store
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    return poller, radio, store
+
+
+@pytest.mark.parametrize("selected", ("A", "B"))
+async def test_application_connect_selects_a_once_and_binds_real_wire(
+    selected: str,
+) -> None:
+    poller, radio, store = connect_vfo_poller(selected=selected)
+    _observe_ptt(store, False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    await poller._send_query()
+    assert radio.wire.sent_frames == [
+        bytes.fromhex(frame)
+        for frame in (
+            "fefe94e00700fd",
+            "fefe94e02500fd",
+            "fefe94e02600fd",
+            "fefe94e02501fd",
+            "fefe94e02601fd",
+        )
+    ]
+    assert radio.selected == "A"
+    snapshot = store.snapshot()
+    assert snapshot.field(FieldPath.active_slot("0")).value == "A"
+    assert (
+        snapshot.field(FieldPath.vfo_slot("0", "A", "freq_mode", "freq_hz")).value
+        == 14_200_000
+    )
+    assert (
+        snapshot.field(FieldPath.vfo_slot("0", "B", "freq_mode", "freq_hz")).value
+        == 7_100_000
+    )
+
+
+@pytest.mark.parametrize(
+    "state", ("read_only", "tx", "unknown", "stale", "old_generation")
+)
+async def test_application_connect_refuses_without_fresh_rx(state: str) -> None:
+    poller, radio, store = connect_vfo_poller()
+    if state != "unknown":
+        _observe_ptt(
+            store,
+            state == "tx",
+            observed_at=time.monotonic() - (5 if state == "stale" else 0),
+        )
+    if state == "old_generation":
+        store.begin_provider_generation()
+    await poller.select_vfo_a_on_connect(read_only=state == "read_only")
+    _observe_ptt(store, False)
+    await poller._send_query()
+    assert radio.wire.sent_frames == []
+    assert str(FieldPath.active_slot("0")) not in store.snapshot().as_dict()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    ({"receiver_count": 2}, {"vfo_scheme": "main_sub"}, {"vfo_readback": "absolute"}),
+)
+async def test_application_connect_leaves_other_topologies_alone(
+    overrides: dict,
+) -> None:
+    from dataclasses import replace
+
+    poller, radio, store = connect_vfo_poller()
+    poller._profile = replace(poller._profile, **overrides)
+    _observe_ptt(store, False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    assert radio.wire.sent_frames == []
+
+
+@pytest.mark.parametrize("reject", (False, True))
+async def test_application_connect_ack_is_honest_and_inflight_calls_do_not_resend(
+    reject: bool,
+) -> None:
+    poller, radio, store = connect_vfo_poller()
+    _observe_ptt(store, False)
+    radio.ack.clear()
+    radio.reject = reject
+    task = asyncio.create_task(poller.select_vfo_a_on_connect(read_only=False))
+    await asyncio.sleep(0)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    assert str(FieldPath.active_slot("0")) not in store.snapshot().as_dict()
+    assert len(radio.wire.sent_frames) == 1
+    radio.ack.set()
+    await task
+    await poller.select_vfo_a_on_connect(read_only=False)
+    assert sum(frame[4] == 0x07 for frame in radio.wire.sent_frames) == 1
+    assert (str(FieldPath.active_slot("0")) in store.snapshot().as_dict()) is not reject
+
+
+async def test_connection_reset_requires_new_rx_and_allows_one_new_select() -> None:
+    poller, radio, store = connect_vfo_poller()
+    _observe_ptt(store, False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    radio._civ_epoch += 1
+    poller.reset_vfo_session(connection_recovery=True)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    assert len(radio.wire.sent_frames) == 5
+    # An unsafe connection attempt has no automatic retry, even after RX arrives.
+    _observe_ptt(store, False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    assert len(radio.wire.sent_frames) == 5
+    radio._civ_epoch += 1
+    poller.reset_vfo_session(connection_recovery=True)
+    _observe_ptt(store, False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    poller.reset_vfo_session(connection_recovery=True)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    assert len(radio.wire.sent_frames) == 10
+    assert store.snapshot().field(FieldPath.active_slot("0")).value == "A"
 
 
 async def test_teardown_drain_unkey_stays_outside_the_execute_seat() -> None:

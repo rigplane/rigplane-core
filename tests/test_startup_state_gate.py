@@ -551,7 +551,9 @@ async def test_civ_startup_binds_only_after_the_predicate_is_satisfied() -> None
     radio = _CivRadio(scheduler)
     server = WebServer(radio, _gated_config())
     binds: list[dict[str, object]] = []
-    fake_poller = MagicMock(drain_tx_safety_commands=AsyncMock())
+    fake_poller = MagicMock(
+        drain_tx_safety_commands=AsyncMock(), select_vfo_a_on_connect=AsyncMock()
+    )
     started_when_primed: list[bool] = []
     scheduler.on_prime = lambda: started_when_primed.append(fake_poller.start.called)
 
@@ -975,3 +977,43 @@ def test_ftx1_drain_meters_hold_the_gate_open_until_they_are_observed() -> None:
     observed = _ftx1_outstanding(StateStore(), FTX1_DRAIN_PATHS)
 
     assert set(FTX1_DRAIN_PATHS).isdisjoint(observed)
+
+
+@pytest.mark.parametrize("read_only", (False, True))
+async def test_application_connection_selection_follows_acquisition_before_listener(
+    read_only: bool,
+) -> None:
+    from test_radio_poller_tx_interlock import ConnectVfoRadio, _observe_ptt
+    from rigplane.web.radio_poller import RadioPoller
+
+    radio = ConnectVfoRadio()
+    config = _gated_config()
+    config.read_only = read_only
+    server = WebServer(radio, config)
+    events: list[str] = []
+
+    async def acquire(*args: object, **kwargs: object) -> None:
+        assert radio.wire.sent_frames == []
+        events.append("acquire")
+        _observe_ptt(server.command_state_store, False)
+
+    async def bind(*args: object, **kwargs: object) -> _FakeAsyncServer:
+        events.append("bind")
+        assert len(radio.wire.sent_frames) == (0 if read_only else 5)
+        if not read_only:
+            assert (
+                server.command_state_store.snapshot()
+                .field(FieldPath.active_slot("0"))
+                .value
+                == "A"
+            )
+        return _FakeAsyncServer()
+
+    with (
+        patch.object(RadioPoller, "start"),
+        patch.object(web_startup, "_await_initial_state_acquisition", new=acquire),
+        patch.object(web_startup.asyncio, "start_server", new=bind),
+    ):
+        await server.start()
+        await server.stop()
+    assert events == ["acquire", "bind"]

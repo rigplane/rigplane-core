@@ -2425,7 +2425,7 @@ class WebServer:
         # them before any new-epoch read can arrive; the topology-derived MAIN
         # fact is independently valid and is reasserted without touching TX.
         if isinstance(self._radio_poller, RadioPoller):
-            self._radio_poller.reset_vfo_session()
+            self._radio_poller.reset_vfo_session(connection_recovery=True)
         self._publish_single_receiver_topology()
         # Clear poller readiness so scope waits for refetch to complete
         if self._radio_poller is not None:
@@ -2448,6 +2448,10 @@ class WebServer:
                         self._radio, "_fetch_initial_state"
                     ):
                         await self._radio._fetch_initial_state()
+                    if isinstance(self._radio_poller, RadioPoller):
+                        await self._radio_poller.select_vfo_a_on_connect(
+                            read_only=self._config.read_only
+                        )
                 except Exception:
                     logger.warning("reconnect: refetch failed", exc_info=True)
             finally:
@@ -5186,7 +5190,18 @@ class WebServer:
                 await radio.disconnect()
                 resp = {"status": "disconnected"}
             elif path == "/api/v1/radio/connect":
+                poller = self._radio_poller
+                generation = (
+                    poller._vfo_connection_generation()
+                    if isinstance(poller, RadioPoller)
+                    else None
+                )
                 await radio.connect()
+                if (
+                    isinstance(poller, RadioPoller)
+                    and generation != poller._vfo_connection_generation()
+                ):
+                    self._on_radio_reconnect()
                 resp = {"status": "connecting"}
             elif path == "/api/v1/radio/power":
                 # Read JSON body for power state
