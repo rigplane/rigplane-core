@@ -342,6 +342,12 @@
   const semanticHandlers = bindSemanticSurfaceHandlers();
   const vfo = semanticHandlers.vfo;
 
+  let directFrequencyEntrySupported = $derived(
+    runtime.caps?.capabilities.includes('vfo_freq_direct') === true
+      && runtime.caps.receivers === 1
+      && runtime.caps.vfoScheme === 'ab',
+  );
+
   type FrequencyEntryCapture = Readonly<{
     target: { receiver: 'MAIN'; slot: 'A' | 'B' };
     expectedActiveSlot: 'A' | 'B';
@@ -1858,7 +1864,7 @@
               {groupLabel}
               onSelectVfo={selectVfo}
               onTuneFrequency={tuneFrequency}
-              onOpenFrequencyEntry={openFrequencyEntry}
+              onOpenFrequencyEntry={directFrequencyEntrySupported ? openFrequencyEntry : undefined}
               disabled={!isOperationalStrip(view, receiverId)}
               indicatorReceiver={receiverId}
               suppressIdentitySelectors={stripBy === 'slot'}
@@ -1912,7 +1918,7 @@
         {operationControls}
         onSelectVfo={selectVfo}
         onTuneFrequency={tuneFrequency}
-        onOpenFrequencyEntry={openFrequencyEntry}
+        onOpenFrequencyEntry={directFrequencyEntrySupported ? openFrequencyEntry : undefined}
         {hasDualReceiver}
         {receiverInstruments}
         continuitySession={meterContinuitySession}

@@ -330,6 +330,24 @@ describe('fixed-slot frequency entry overlay', () => {
     },
   );
 
+  it('leaves unsupported inactive B on its original non-entry digit path', () => {
+    h.state = directState(true);
+    h.caps = { ...directCaps(true), capabilities: ['audio', 'tx'] };
+    render({ vfoAppearance: 'standard' });
+    const wrapper = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!;
+    const digit = wrapper.querySelector<HTMLElement>('.digit')!;
+    const bubbled = vi.fn();
+    wrapper.addEventListener('click', bubbled);
+
+    expect(wrapper.getAttribute('role')).toBeNull();
+    expect(wrapper.getAttribute('tabindex')).toBeNull();
+    digit.click();
+
+    expect(bubbled).toHaveBeenCalledOnce();
+    expect(q<HTMLElement>('[role="dialog"]')).toBeNull();
+    expect(vi.mocked(sendCommand)).not.toHaveBeenCalled();
+  });
+
   it('keeps an open draft inert after the captured session changes', () => {
     h.state = directState(); h.caps = directCaps();
     render({ vfoAppearance: 'standard' });
