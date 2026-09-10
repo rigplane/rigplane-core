@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mount, unmount, flushSync } from 'svelte';
+import { createRawSnippet, mount, unmount, flushSync, type Snippet } from 'svelte';
 import { flattenBands, findActiveBand } from '../band-utils';
 import type { FreqRange } from '$lib/types/capabilities';
 
@@ -57,7 +57,10 @@ import BandSelector from '../BandSelector.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 
-function mountPanel(overrides?: Partial<typeof mockProps>, props?: { hamBands?: boolean }) {
+function mountPanel(
+  overrides?: Partial<typeof mockProps>,
+  props?: { hamBands?: boolean; semanticHamBands?: Snippet<[compact?: boolean]> },
+) {
   if (overrides) Object.assign(mockProps, overrides);
   const target = document.createElement('div');
   document.body.appendChild(target);
@@ -238,8 +241,8 @@ describe('BandSelector component', () => {
  * and this component is their only production consumer, so they are permanent
  * on every manifest. Hence a prop, and hosts that never unmount the component.
  *
- * The composed-tree half of this contract (both hosts, the real desktop-v2
- * manifest) lives in
+ * MOR-2445 adds a semantic snippet that can restore HAM without reviving the
+ * legacy command path. The composed-tree contract lives in
  * `components-v2/layout/__tests__/semantic-desktop-migration.component.test.ts`.
  */
 describe('BandSelector HAM/broadcast split (hamBands prop)', () => {
@@ -262,6 +265,20 @@ describe('BandSelector HAM/broadcast split (hamBands prop)', () => {
     const t = mountPanel(undefined, { hamBands: false });
     expect(tabs(t)).toEqual(['LW/MW', 'SWL']);
     expect(grid(t)).not.toContain('20m');
+  });
+
+  it('hosts semantic HAM controls in the compact grid without reviving the legacy path', () => {
+    let compact: boolean | undefined;
+    const semanticHamBands = createRawSnippet<[compact?: boolean]>((requestedCompact) => {
+      compact = requestedCompact?.();
+      return { render: () => '<button data-testid="semantic-ham">20m</button>' };
+    });
+    const t = mountPanel(undefined, { hamBands: false, semanticHamBands });
+    expect(tabs(t)).toEqual(['HAM', 'LW/MW', 'SWL']);
+    expect(grid(t)).toEqual(['20m']);
+    expect(compact).toBe(true);
+    (t.querySelector('[data-testid="semantic-ham"]') as HTMLElement).click();
+    expect(mockBandHandlers.onBandSelect).not.toHaveBeenCalled();
   });
 
   // Kills: gating the tab/grid but leaving `bandMode`'s `'ham'` initial value

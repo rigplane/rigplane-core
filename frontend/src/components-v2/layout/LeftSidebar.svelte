@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { untrack, type Snippet } from 'svelte';
   import { runtime } from '$lib/runtime';
   import { hasCapability } from '$lib/stores/capabilities.svelte';
   import RfFrontEnd from '../panels/RfFrontEnd.svelte';
@@ -46,11 +46,13 @@
     declared = new Set<SemanticSurfaceName>(),
     dragOwner,
     showReset = true,
+    semanticHamBands,
   }: {
     hideTxPanel?: boolean;
     declared?: ReadonlySet<SemanticSurfaceName>;
     dragOwner?: PanelDragOwner;
     showReset?: boolean;
+    semanticHamBands?: Snippet<[compact?: boolean]>;
   } = $props();
 
   // Reactive state + capabilities — via runtime
@@ -108,19 +110,16 @@
     </CollapsiblePanel>
   {/if}
 
-  <!-- MOR-1367 (S8): the BAND twin joins the channel by PROP, not by mount.
-       `BandSelector` hosts three tabs (HAM / LW-MW / SWL) and 16 broadcast
-       presets; only the HAM half is duplicated by `BandSurface`, and the
-       broadcast presets are deliberately NOT facts
-       (`semantic/radio-view-model.ts:494-496`) and have no other production
-       host. So the panel keeps mounting unconditionally and the component
-       drops only its HAM half (S10 §4a) — a `{#if !declared.has('band')}` here
-       would orphan the presets. -->
+  <!-- MOR-2445: Standard supplies `semanticHamBands`, placing the retained
+       semantic choice authority beside the 16 broadcast presets. Other
+       declared layouts keep the MOR-1367 suppression behavior; undeclared
+       layouts keep the legacy HAM fallback. The panel remains unconditional
+       because no semantic vocabulary owns the broadcast presets. -->
   {#if drag.order.includes('band')}
-    <CollapsiblePanel title="BAND" panelId="band"
+    <CollapsiblePanel title="BANDS" panelId="band"
       draggable={true} onDragStart={drag.handleDragStart}
       style={drag.dragStyle('band')}>
-      <BandSelector hamBands={!declared.has('band')} />
+      <BandSelector hamBands={!declared.has('band')} {semanticHamBands} />
     </CollapsiblePanel>
   {/if}
 

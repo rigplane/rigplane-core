@@ -2388,30 +2388,22 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   });
 
   /**
-   * THE SPLIT (S10 §4a, rows 6 and 10) — the one asymmetric retirement in the
-   * wave. `BandSelector` keeps its mount in BOTH hosts; only its HAM tab and
-   * HAM grid go, because `BandSurface` duplicates those and nothing duplicates
-   * the broadcast presets (`semantic/radio-view-model.ts:494-496` excludes them
-   * from the vocabulary BY NAME) and `BandSelector` is their only production
-   * consumer.
+   * MOR-2445 stage A keeps both selectors mounted, restores HAM only in the
+   * upper Standard panel through the semantic instrument handle, and leaves
+   * settings on the two broadcast tabs. The lower semantic block is retained
+   * until the separate owner-present acceptance gate.
    */
-  it('retires the HAM half of BandSelector in BOTH hosts and keeps the broadcast half', () => {
+  it('moves semantic HAM choices into the upper BAND selector and keeps settings broadcast-only', () => {
     const t = renderAll('desktop-v2');
-    for (const [host, root] of [
-      ['left sidebar', t.querySelector('.left-sidebar [data-panel-id="band"]')],
-      ['settings modal', t.querySelector('[data-panel-id="desktop-vfo-ops"]')],
-    ] as const) {
-      expect(root, `${host} still hosts BandSelector`).not.toBeNull();
-      // The HAM tab is gone; the two broadcast tabs are not.
-      expect(texts(root, '.band-tab'), `${host} tabs`).toEqual(['LW/MW', 'SWL']);
-      // …and so is the HAM grid's content — the default landed on LW/MW, which
-      // is the other half of §4a's instruction ("gate the `bandMode === 'ham'`
-      // DEFAULT too"): without it the component would open on an empty grid.
-      expect(texts(root, '.grid button'), `${host} grid`).toEqual(LW_MW_PRESETS);
-      expect(texts(root, '.grid button')).not.toContain('20m');
-    }
-    // The semantic replacement really is on screen where the HAM grid went.
-    expect(t.querySelector('[data-testid="band-choices"]')).not.toBeNull();
+    const upper = t.querySelector('.left-sidebar [data-panel-id="band"]');
+    const settings = t.querySelector('[data-panel-id="desktop-vfo-ops"]');
+    expect(texts(upper, '.band-tab')).toEqual(['HAM', 'LW/MW', 'SWL']);
+    expect(texts(upper, '.grid button')).toEqual(['40m', '20m']);
+    expect(upper?.querySelector('[data-testid="band-choices-compact"]')).not.toBeNull();
+    expect(texts(settings, '.band-tab')).toEqual(['LW/MW', 'SWL']);
+    expect(texts(settings, '.grid button')).toEqual(LW_MW_PRESETS);
+    // Stage A deliberately retains the lower semantic block until owner acceptance.
+    expect(t.querySelector('[data-testid="band-surface"] [data-testid="band-choices"]')).not.toBeNull();
   });
 
   // PRESET SURVIVAL. Both broadcast tabs remain reachable and every preset is
@@ -2422,10 +2414,10 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   it('keeps all 16 broadcast presets reachable after the split', () => {
     const t = renderAll('desktop-v2');
     const panel = t.querySelector('.left-sidebar [data-panel-id="band"]')!;
+    (panel.querySelectorAll('.band-tab')[1] as HTMLElement).click();
+    flushSync();
     expect(texts(panel, '.grid button')).toEqual(LW_MW_PRESETS);
-    (texts(panel, '.band-tab').indexOf('SWL') >= 0
-      ? (panel.querySelectorAll('.band-tab')[1] as HTMLElement)
-      : null)?.click();
+    (panel.querySelectorAll('.band-tab')[2] as HTMLElement).click();
     flushSync();
     expect(texts(panel, '.grid button')).toEqual(SW_PRESETS);
     expect(LW_MW_PRESETS.length + SW_PRESETS.length).toBe(16);
@@ -2457,11 +2449,11 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     ]) {
       expect(t.querySelectorAll(selector).length, selector).toBe(0);
     }
-    // The band family's "exactly once" is tab-shaped, not panel-shaped: one
-    // semantic band grid, and zero HAM tabs anywhere on the flagship skin.
+    // Stage A has one retained lower semantic grid plus the compact upper host.
     expect(t.querySelectorAll('[data-testid="band-choices"]').length).toBe(1);
+    expect(t.querySelectorAll('[data-testid="band-choices-compact"]').length).toBe(1);
     expect([...t.querySelectorAll('.band-tab')].filter((b) => b.textContent?.trim() === 'HAM').length)
-      .toBe(0);
+      .toBe(1);
   });
 
   // R9, over the real manifest rather than a probe: three more declared zones
