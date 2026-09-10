@@ -297,7 +297,7 @@ describe('preamp and attenuator render as choice groups from the capability-deri
     for (const value of [0, 1, 2]) {
       expect(r.el(`preamp-${value}`)!.getAttribute('aria-checked')).toBe(String(value === 2));
     }
-    expect(r.text('preamp-value')).toBe('2');
+    expect(r.text('preamp-value')).toBe('P2');
     r.dispose();
   });
 
@@ -314,7 +314,9 @@ describe('preamp and attenuator render as choice groups from the capability-deri
     const onPreampChange = vi.fn();
     const r = render(withRf({ preamp: known(3) }), { onPreampChange });
     for (const value of [0, 1, 2]) expect(r.el(`preamp-${value}`)!.getAttribute('aria-checked')).toBe('false');
-    expect(r.text('preamp-value')).toBe('3');
+    const unmatched = r.el('preamp-value')!;
+    expect(unmatched.textContent).toBe('P3');
+    expect(unmatched.classList.contains('sr-only')).toBe(false);
     r.el('preamp-1')!.click();
     flushSync();
     expect(onPreampChange).toHaveBeenCalledExactlyOnceWith(1);
@@ -329,6 +331,17 @@ describe('preamp and attenuator render as choice groups from the capability-deri
     r.el('attenuator-18')!.click();
     flushSync();
     expect(onAttenuatorChange).toHaveBeenCalledExactlyOnceWith(18);
+    r.dispose();
+  });
+
+  it('keeps a known out-of-offered attenuator reading visible without selecting an offered step', () => {
+    const r = render(withRf({ attenuator: known(30) }));
+    for (const value of [0, 6, 12, 18]) {
+      expect(r.el(`attenuator-${value}`)!.getAttribute('aria-checked')).toBe('false');
+    }
+    const unmatched = r.el('attenuator-value')!;
+    expect(unmatched.textContent).toBe('30 dB');
+    expect(unmatched.classList.contains('sr-only')).toBe(false);
     r.dispose();
   });
 });
@@ -879,10 +892,12 @@ describe('pending-target affordance (MOR-1441 leg 2)', () => {
 
   it('renders a screen-reader announcement only while pending', () => {
     const pending = render(base(), { pendingPreamp: 1 });
-    expect(pending.el('preamp')!.querySelector('.sr-only')).not.toBeNull();
+    const describedBy = pending.el('preamp')!.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(pending.el('preamp')!.querySelector(`#${describedBy}`)).not.toBeNull();
     pending.dispose();
     const confirmed = render(base());
-    expect(confirmed.el('preamp')!.querySelector('.sr-only')).toBeNull();
+    expect(confirmed.el('preamp')!.getAttribute('aria-describedby')).toBeNull();
     confirmed.dispose();
   });
 

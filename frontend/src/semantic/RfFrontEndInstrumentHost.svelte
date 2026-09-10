@@ -523,10 +523,10 @@
             >{preampChoiceText(value)}</button>
           {/each}
         </div>
-        {#if rf.preamp.reading.status !== 'known'}
-          <output class="rf-front-end-unknown" aria-label="PRE value" data-testid="rf-front-end-preamp-value">?</output>
-        {:else}
+        {#if rf.preamp.reading.status === 'known' && rf.preValues.includes(rf.preamp.reading.value)}
           <output class="sr-only" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{preampChoiceText(rf.preamp.reading.value)}</output>
+        {:else}
+          <output class="rf-front-end-unknown" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{rf.preamp.reading.status === 'known' ? preampChoiceText(rf.preamp.reading.value) : '?'}</output>
         {/if}
         {#if preMutex}
           <p data-testid="rf-front-end-preamp-mutex-reason">{DISABLED_REASON_LABEL[preMutex.code]}</p>
@@ -562,10 +562,10 @@
             >{attenuatorChoiceText(value)}</button>
           {/each}
         </div>
-        {#if rf.attenuator.reading.status !== 'known'}
-          <output class="rf-front-end-unknown" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">?</output>
-        {:else}
+        {#if rf.attenuator.reading.status === 'known' && rf.attValues.includes(rf.attenuator.reading.value)}
           <output class="sr-only" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{attenuatorChoiceText(rf.attenuator.reading.value)}</output>
+        {:else}
+          <output class="rf-front-end-unknown" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{rf.attenuator.reading.status === 'known' ? attenuatorChoiceText(rf.attenuator.reading.value) : '?'}</output>
         {/if}
       </div>
     {/if}
