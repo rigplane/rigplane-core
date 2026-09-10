@@ -81,4 +81,52 @@ describe('managed transmit store', () => {
       expect(snapshot.managedTransmit.tot.configuredSeconds).toBe(180);
     }
   });
+
+  it('keeps an available projection fresh while a background refresh is pending', async () => {
+    const store = await import('../managed-transmit.svelte');
+    store.receiveManagedTransmitSnapshot(document(180));
+    let resolveRead!: (value: ManagedTransmitDocument) => void;
+    const client = { snapshot: vi.fn(() => new Promise<ManagedTransmitDocument>((resolve) => { resolveRead = resolve; })) };
+
+    const pending = store.refreshManagedTransmit(client);
+
+    expect(store.managedTransmitIsStale()).toBe(false);
+    expect(store.managedTransmitSnapshot()?.txObservation.observedPtt).toBe('off');
+    expect(client.snapshot).toHaveBeenCalledTimes(1);
+    resolveRead(document(180, '2026-09-04T00:00:01Z'));
+    await pending;
+    expect(store.managedTransmitIsStale()).toBe(false);
+  });
+
+  it('fences a late refresh after hard invalidation', async () => {
+    const store = await import('../managed-transmit.svelte');
+    store.receiveManagedTransmitSnapshot(document(180));
+    let resolveRead!: (value: ManagedTransmitDocument) => void;
+    const client = { snapshot: vi.fn(() => new Promise<ManagedTransmitDocument>((resolve) => { resolveRead = resolve; })) };
+
+    const pending = store.refreshManagedTransmit(client);
+    store.invalidateManagedTransmit();
+    resolveRead(document(240, '2026-09-04T00:00:01Z'));
+    await pending;
+
+    expect(store.managedTransmitIsStale()).toBe(true);
+    expect(store.managedTransmitSnapshot()?.managedTransmit.status).toBe('available');
+    expect(store.managedTransmitSnapshot()?.sampledAt).toBe('2026-09-04T00:00:00Z');
+  });
+
+  it.each([
+    ['HTTP failure', async () => { throw new Error('read failed'); }],
+    ['unavailable document', async (): Promise<ManagedTransmitDocument> => ({
+      schemaVersion: 1 as const, sampledAt: '2026-09-04T00:00:01Z',
+      managedTransmit: { status: 'unavailable' as const, reason: 'authority_not_composed' },
+      txObservation: { observedPtt: 'unknown' as const },
+    })],
+  ])('%s retires the cached available projection', async (_label, snapshot) => {
+    const store = await import('../managed-transmit.svelte');
+    store.receiveManagedTransmitSnapshot(document(180));
+    const pending = store.refreshManagedTransmit({ snapshot });
+    if (_label === 'HTTP failure') await expect(pending).rejects.toThrow('read failed');
+    else await pending;
+    expect(store.managedTransmitIsStale()).toBe(true);
+  });
 });

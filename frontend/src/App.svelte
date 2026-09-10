@@ -302,7 +302,7 @@
       state?.active, state?.main?.dataMode, state?.sub?.dataMode, state?.txTarget, state?.fieldStatus,
       caps?.tx, caps?.audioTx, caps?.audioTxRequiredModInputSource, caps?.capabilities, caps?.vfoScheme, caps?.txBands,
     ]);
-    if (txAuthorityReady) txHost.refreshAuthority();
+    if (txAuthorityReady) txHost.refreshAuthority(state?.providerGeneration ?? null);
   });
 
   onMount(() => {
