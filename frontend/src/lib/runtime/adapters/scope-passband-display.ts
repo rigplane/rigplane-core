@@ -33,6 +33,8 @@ export interface ScopePassbandDisplayState {
   readonly geometryPaths: readonly string[];
   readonly receipt: number;
   readonly floors: Readonly<{ domain: string | null; geometry: Markers; receipt: number }> | null;
+  /** Keeps one hold-entry evidence floor pinned until fresh frequency recovery completes. */
+  readonly frequencyHoldRecovery: boolean;
 }
 export interface ScopePassbandDisplayInput {
   state: ServerState | null;
@@ -46,7 +48,7 @@ const EMPTY_PATHS: readonly string[] = Object.freeze([]);
 export const EMPTY_SCOPE_PASSBAND_DISPLAY: ScopePassbandDisplayState = Object.freeze({
   display: Object.freeze({ state: 'unknown', reason: 'not-observed' }),
   identity: null, continuityIdentity: null, domain: null, observations: EMPTY_OBSERVATIONS,
-  geometryPaths: EMPTY_PATHS, receipt: 0, floors: null,
+  geometryPaths: EMPTY_PATHS, receipt: 0, floors: null, frequencyHoldRecovery: false,
 });
 const nonnegative = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
 const positive = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0;
@@ -245,17 +247,25 @@ export function projectScopePassbandDisplay(
   const receiptRegression = candidate !== null && next.receipt < previous.receipt;
   const hasTuple = active(previous.display);
   const wasTranslated = hasTuple && previous.display.translated === true;
+  const holdingFrequency = hasTuple && candidate !== null && candidate.continuityIdentity !== null
+    && candidate.continuityIdentity === previous.continuityIdentity
+    && !candidate.frequencyCurrent && candidate.frequencyAligned
+    && !regression && !receiptRegression && !changedGeometry;
   const invalid = !candidate || regression || receiptRegression || (!candidate.stale && !candidate.strict)
-    || ((candidate.stale || wasTranslated) && changedGeometry) || (wasTranslated && !candidate.frequencyCurrent);
+    || ((candidate.stale || wasTranslated) && changedGeometry)
+    || (wasTranslated && !candidate.frequencyCurrent && !holdingFrequency);
   const canTranslate = hasTuple && candidate !== null && candidate.continuityIdentity !== null
     && candidate.continuityIdentity === previous.continuityIdentity
     && candidate.frequencyCurrent && !regression && !receiptRegression && !changedGeometry
     && (candidate.stale || candidate.strict || !candidate.frequencyAligned);
   const translating = canTranslate && (changedIdentity || wasTranslated);
   const domainChange = previous.floors !== null && next.domain !== null && previous.floors.domain !== next.domain;
-  const retire = ((hasTuple && (invalid || changedIdentity)) || changedIdentity) && !translating || domainChange;
+  const retire = (((hasTuple && (invalid || changedIdentity)) || changedIdentity)
+    && !translating && !holdingFrequency) || domainChange;
   let floors = previous.floors;
-  if (retire || (translating && (!wasTranslated || candidate.tuple.frequencyHz !== tupleOf(previous.display).frequencyHz))) {
+  if (retire || (holdingFrequency && !previous.frequencyHoldRecovery)
+    || (translating && !previous.frequencyHoldRecovery
+      && (!wasTranslated || candidate.tuple.frequencyHz !== tupleOf(previous.display).frequencyHz))) {
     const domain = next.domain ?? previous.domain;
     floors = Object.freeze({ domain, receipt: Math.max(previous.receipt, next.receipt),
       geometry: mergeMarkers(
@@ -272,7 +282,12 @@ export function projectScopePassbandDisplay(
   const canRetain = hasTuple && !retire && !invalid && !translating;
   const canCapture = candidate && !candidate.stale && candidate.strict && !regression
     && !receiptRegression && !retire && crossedFloors;
-  const display: ScopePassbandDisplay = translating
+  const display: ScopePassbandDisplay = holdingFrequency
+    ? { state: 'stale', translated: true, tuple: {
+      ...tupleOf(previous.display), frameMode: candidate!.tuple.frameMode,
+      startHz: candidate!.tuple.startHz, endHz: candidate!.tuple.endHz,
+    } }
+    : translating
     ? crossedFloors && axisAligned && !candidate.stale && candidate.strict
       ? { state: 'current', tuple: candidate.tuple }
       : { state: 'stale', tuple: candidate.tuple, translated: true }
@@ -295,6 +310,8 @@ export function projectScopePassbandDisplay(
     observations: Object.freeze(observations),
     geometryPaths: Object.freeze([...next.geometryPaths]), receipt: Math.max(previous.receipt, next.receipt),
     floors: active(display) && !display.translated ? null : floors,
+    frequencyHoldRecovery: (holdingFrequency || previous.frequencyHoldRecovery)
+      && active(display) && display.translated === true,
   });
 }
 function tupleOf(display: ScopePassbandDisplay): ScopePassbandTuple {

@@ -1564,7 +1564,7 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
   });
-  it('keeps projector-produced overlays through five seconds of fresh frames and staggered geometry readback', () => {
+  it('keeps projector-produced overlays through a stale frequency gap and staggered recovery while tuning', () => {
     authorityHarness.state.useProductionSelector = true;
     const state = structuredClone(IC7300_STATE); const caps = structuredClone(IC7300_CAPABILITIES);
     const rx = state.main!;
@@ -1610,6 +1610,41 @@ describe('managed scope projection (MOR-2367)', () => {
       present(5100 + index * 100, 14_075_000);
       expect(result.display.state).toBe(index === 2 ? 'current' : 'stale');
       expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    }
+
+    for (const path of ['main.freqHz', 'main.vfoA.freqHz', 'main.mode', 'main.vfoA.mode']) {
+      Object.assign(state.fieldStatus[path], { freshness: 'stale', availability: 'stale' });
+    }
+    for (let step = 0; step < 10; step += 1) {
+      const frequency = step % 2 === 0 ? 14_076_000 : 14_075_000;
+      rx.freqHz = frequency; rx.vfoA!.freqHz = frequency;
+      state.fieldStatus['main.freqHz'].lastObservedMonotonic = 20 + step;
+      state.fieldStatus['main.vfoA.freqHz'].lastObservedMonotonic = 20 + step;
+      if (step === 3) state.fieldStatus['main.filterWidth'].lastObservedMonotonic = 24;
+      if (step === 7) state.fieldStatus['main.pbtInner'].lastObservedMonotonic = 28;
+      present(6000 + step * 250, frequency);
+      expect(result.display).toMatchObject({ state: 'stale', translated: true,
+        tuple: { frequencyHz: 14_075_000 } });
+      expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
+      expect(target.querySelectorAll('.passband-overlay')).toHaveLength(1);
+      expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    }
+
+    for (const path of ['main.freqHz', 'main.vfoA.freqHz', 'main.mode', 'main.vfoA.mode']) {
+      Object.assign(state.fieldStatus[path], { freshness: 'fresh', availability: 'available',
+        lastObservedMonotonic: 40 });
+    }
+    for (let step = 0; step < 8; step += 1) {
+      const frequency = step % 2 === 0 ? 14_076_000 : 14_075_000;
+      rx.freqHz = frequency; rx.vfoA!.freqHz = frequency;
+      state.fieldStatus['main.freqHz'].lastObservedMonotonic = 41 + step;
+      state.fieldStatus['main.vfoA.freqHz'].lastObservedMonotonic = 41 + step;
+      if (step === 7) state.fieldStatus['main.pbtOuter'].lastObservedMonotonic = 48;
+      present(9000 + step * 250, frequency);
+      expect(result.display.state).toBe(step === 7 ? 'current' : 'stale');
+      expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
+      expect(target.querySelectorAll('.passband-overlay')).toHaveLength(1);
+      if (step < 7) expect(target.querySelector('.passband-resize-zone')).toBeNull();
     }
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
