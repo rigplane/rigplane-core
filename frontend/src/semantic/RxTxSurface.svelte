@@ -8,7 +8,7 @@
   (MOR-1059); this surface is polite status, not a second alert.
 
   Confirmed and uncertain TX carry text and shape so they survive forced
-  colors. Passive RX and unknown reserve the same quiet space.
+  colors. Idle receiving and unknown states do not reserve an indicator row.
 -->
 <script lang="ts">
   import '../components-v2/controls/control-button.css';
@@ -60,6 +60,9 @@
     tx.fresh === false || tx.phase !== 'idle',
   );
   let pressed = $derived(tx.phase !== 'idle' && tx.phase !== 'failed');
+  let showTxState = $derived(
+    tx.phase !== 'idle' || rf === 'transmitting' || rf === 'uncertain' || tx.fault !== null,
+  );
   let known = $derived(view.txTarget.status === 'known');
   let receiver = $derived(view.txTarget.status === 'known' ? view.txTarget.receiver : undefined);
   let slot = $derived(view.txTarget.status === 'known'
@@ -92,7 +95,7 @@
   {...stateFeedback?.attributes ?? {}}
 >
   <p
-    class="rx-tx-state" role="status" data-testid="rx-tx-state"
+    class="rx-tx-state" role="status" data-testid="rx-tx-state" hidden={!showTxState}
     data-rf={rf} data-session={session} data-intent={tx.intent ?? undefined}
   >
     <span class="rx-tx-mark" data-testid="rx-tx-rf-mark" aria-hidden="true">{RF_MARK[rf]}</span>
@@ -100,7 +103,7 @@
       class="rx-tx-label v2-status-indicator" data-testid="rx-tx-rf-label"
       data-color={RF_BADGE[rf].color} data-active={RF_BADGE[rf].active}
     >{RF_LABEL[rf]}</span>
-    <span class="rx-tx-session">{SESSION_LABEL[session]}</span>
+    {#if session !== 'idle'}<span class="rx-tx-session">{SESSION_LABEL[session]}</span>{/if}
     {#if tx.intent}<span class="rx-tx-intent">· {tx.intent}</span>{/if}
   </p>
 
@@ -157,6 +160,7 @@
   /* Structure only — a design language owns colour and must never become the sole state channel. */
   .rx-tx-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .rx-tx-state { display: flex; align-items: baseline; gap: 0.4ch; margin: 0; }
+  .rx-tx-state[hidden] { display: none !important; }
   .rx-tx-mark { display: inline-block; min-inline-size: 1ch; }
   .rx-tx-label { min-inline-size: 3ch; font-weight: 700; letter-spacing: 0.08em; }
   .rx-tx-fault { margin: 0; font-weight: 700; }

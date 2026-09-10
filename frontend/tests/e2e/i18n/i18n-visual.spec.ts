@@ -553,17 +553,18 @@ async function assertProductionLanguageAccessibility(
   const txLabel = page.getByTestId('rx-tx-rf-label').first();
   await expect(vfo).toHaveAccessibleName(/VFO/i);
   await expect(txKey).toHaveAccessibleName(/key|transmit|ptt/i);
-  await expect(txState).toBeVisible();
+  await expect(txState).toBeHidden();
   await expect(txMark).toBeAttached();
   await expect(txLabel).toBeAttached();
   await expect(txState).toHaveAttribute('data-rf', 'unknown');
   await expect(txState).toHaveAttribute('data-session', 'idle');
   await expect(txMark).toBeEmpty();
   await expect(txLabel).toBeEmpty();
-  const [markBox, labelBox] = await Promise.all([txMark.boundingBox(), txLabel.boundingBox()]);
-  expect(markBox?.width ?? 0).toBeGreaterThan(0);
-  expect(labelBox?.width ?? 0).toBeGreaterThan(0);
-  await expect(txState).toContainText('ready');
+  const [stateBox, markBox, labelBox] = await Promise.all([
+    txState.boundingBox(), txMark.boundingBox(), txLabel.boundingBox(),
+  ]);
+  expect([stateBox, markBox, labelBox]).toEqual([null, null, null]);
+  await expect(txState).not.toContainText(/ready/i);
 
   // A real keyboard-caused focus target, rather than a programmatic focus,
   // proves the active production family has a visible focus treatment.

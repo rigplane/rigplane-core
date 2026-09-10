@@ -66,10 +66,12 @@ function withSurface(
 // ── 1. TX state display mirrors the AUTHORITY snapshot, and only it ─────────
 
 describe('RX/TX status mirrors the server TX projection', () => {
-  it.each(IDS)('%s: an observed OFF radio stays quiet but retains receiving state', (id) => {
+  it.each(IDS)('%s: an observed OFF radio removes the idle READY row and its space', (id) => {
     withSurface(topologyFixtures[id], IDLE_RX, (s) => {
       expect(s.state().dataset.rf).toBe('receiving');
       expect(s.state().querySelector('[data-testid="rx-tx-rf-label"]')?.textContent).toBe('');
+      expect(s.state().hidden).toBe(true);
+      expect(getComputedStyle(s.state()).display).toBe('none');
     });
   });
 
@@ -101,6 +103,7 @@ describe('RX/TX status mirrors the server TX projection', () => {
     withSurface(topologyFixtures[id], snap({ radioTx: 'unknown' }), (s) => {
       expect(s.state().dataset.rf).toBe('unknown');
       expect(s.state().textContent).not.toContain('RX');
+      expect(s.state().hidden).toBe(true);
     });
   });
 
@@ -334,7 +337,9 @@ describe('key intent gating', () => {
     try {
       expect(tx).toMatchObject({ fresh: true, phase: 'idle', intent: null, releaseRequired: false });
       expect(s.state().dataset.rf).toBe(rf);
+      expect(s.state().hidden).toBe(rf === 'unknown');
       expect(s.root().querySelector('[data-testid="rx-tx-rf-label"]')?.textContent).toBe(label);
+      expect(s.state().textContent).not.toContain('READY');
       expect(s.reasons().includes(reason)).toBe(showsReason);
       expect(s.key().disabled).toBe(false);
       s.key().click();
