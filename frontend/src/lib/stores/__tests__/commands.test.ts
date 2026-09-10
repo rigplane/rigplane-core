@@ -304,6 +304,47 @@ describe('command lifecycle store', () => {
     expect(store.getCommandLifecycle('overflow', 9)).toBeUndefined();
   });
 
+  describe('direct VFO frequency state-backed descriptor', () => {
+    const params = (slot: 'A' | 'B', freq: number) => ({
+      freq, receiver: 0, slot, expected_active_slot: 'A', provider_generation: 31,
+    });
+    const radio = (a: number, b: number, aObserved: number, bObserved: number) => ({
+      providerGeneration: 31,
+      main: { vfoA: { freqHz: a }, vfoB: { freqHz: b } },
+      fieldStatus: {
+        'main.vfoA.freqHz': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: aObserved },
+        'main.vfoB.freqHz': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: bObserved },
+      },
+    } as unknown as ServerState);
+
+    it('keys supersession and confirmation by exact receiver slot', () => {
+      acceptedState = radio(14_074_000, 7_074_000, 1, 1);
+      const a = store.beginCommand({ id: 'a', name: 'set_vfo_freq', params: params('A', 14_075_000), originalEpoch: 7 });
+      const b = store.beginCommand({ id: 'b', name: 'set_vfo_freq', params: params('B', 7_075_000), originalEpoch: 7 });
+      expect(a.locallyObsolete).toBeUndefined();
+      expect(b.locallyObsolete).toBeUndefined();
+      store.acknowledgeCommand(a.id, 7, 7);
+      store.acknowledgeCommand(b.id, 7, 7);
+
+      emitState(radio(14_075_000, 7_075_000, 2, 2));
+      expect(store.getCommandLifecycle(a.id, 7)?.status).toBe('confirmed');
+      expect(store.getCommandLifecycle(b.id, 7)?.status).toBe('confirmed');
+    });
+
+    it('does not confirm from acknowledgement or the other slot readback', () => {
+      acceptedState = radio(14_074_000, 7_074_000, 1, 1);
+      const command = store.beginCommand({
+        id: 'target-b', name: 'set_vfo_freq', params: params('B', 7_075_000), originalEpoch: 7,
+      });
+      store.acknowledgeCommand(command.id, 7, 7);
+      expect(store.getCommandLifecycle(command.id, 7)?.status).toBe('acknowledged');
+      emitState(radio(14_075_000, 7_074_000, 2, 1));
+      expect(store.getCommandLifecycle(command.id, 7)?.status).toBe('acknowledged');
+      emitState(radio(14_075_000, 7_073_000, 2, 2));
+      expect(store.getCommandLifecycle(command.id, 7)?.status).toBe('acknowledged');
+    });
+  });
+
   describe('RF/SQL state-backed descriptors', () => {
     it('uses exact receiver scopes and normalized 0..1 targets', () => {
       const rfMain = store.RF_GAIN_COMMAND_DESCRIPTOR.scope({ params: { level: 128, receiver: 0 } })!;
@@ -312,7 +353,7 @@ describe('command lifecycle store', () => {
       const sqlSub = store.SQUELCH_COMMAND_DESCRIPTOR.scope({ params: { level: 64, receiver: 1 } })!;
 
       expect([...store.STATE_BACKED_COMMAND_DESCRIPTORS.keys()]).toEqual([
-        'set_filter_width', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
+        'set_filter_width', 'set_vfo_freq', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
         'set_cw_pitch', 'set_key_speed', 'set_mic_gain', 'set_drive_gain',
         'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
         'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
@@ -450,7 +491,7 @@ describe('command lifecycle store', () => {
   describe('global CW state-backed descriptors', () => {
     it('registers exact global scopes, fields, targets, and canonical values', () => {
       expect([...store.STATE_BACKED_COMMAND_DESCRIPTORS.keys()]).toEqual([
-        'set_filter_width', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
+        'set_filter_width', 'set_vfo_freq', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
         'set_cw_pitch', 'set_key_speed', 'set_mic_gain', 'set_drive_gain',
         'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
         'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',

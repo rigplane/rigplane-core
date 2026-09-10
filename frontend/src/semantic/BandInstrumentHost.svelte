@@ -26,6 +26,8 @@
     onEnterFrequency?: (frequencyHz: number) => void;
     entryRendererContext?: FiniteRendererContext | null;
     entryRenderer?: Component<FrequencyEntryRendererProps>;
+    frequencyEntryEnabled?: boolean;
+    frequencyEntryUnavailableReason?: string;
     /** Whether the fallback key PRINTS its permit sentence. Its accessible name
      *  carries that sentence, and `data-default-permit` the status, either way. */
     showPermitCaption?: boolean;
@@ -39,7 +41,8 @@
 
   let {
     view, onSelectBand, onEnterFrequency, finiteAppearance, rendererContext,
-    entryRendererContext, entryRenderer, showPermitCaption = true, children,
+    entryRendererContext, entryRenderer, frequencyEntryEnabled = true,
+    frequencyEntryUnavailableReason, showPermitCaption = true, children,
   }: Props = $props();
   let band = $derived(view?.band);
   let receiverKnown = $derived(view?.activeReceiver.status === 'known');
@@ -54,19 +57,19 @@
       ? interpretFrequencyEntry(entryText, band.tuneMinHz, band.tuneMaxHz) : null,
   );
   let entryReady = $derived(
-    entryAuthorityAvailable && receiverKnown && boundsKnown && interpretedHz !== null,
+    entryAuthorityAvailable && frequencyEntryEnabled && receiverKnown && boundsKnown && interpretedHz !== null,
   );
   let entryValidation = $derived(
-    !entryAuthorityAvailable || !receiverKnown || !boundsKnown ? 'unavailable' as const
+    !entryAuthorityAvailable || !frequencyEntryEnabled || !receiverKnown || !boundsKnown ? 'unavailable' as const
       : entryText.trim() === '' ? 'empty' as const
         : interpretedHz === null ? 'rejected' as const : 'accepted' as const,
   );
   let entryHint = $derived(entryReady && interpretedHz !== null ? `→ ${mhz(interpretedHz)}` : '');
   let entryRangeText = $derived(boundsKnown && band?.tuneMinHz != null && band?.tuneMaxHz != null
     ? `${mhz(band.tuneMinHz)} … ${mhz(band.tuneMaxHz)}` : UNKNOWN_TEXT);
-  let entryUnavailableReason = $derived(!boundsKnown
+  let entryUnavailableReason = $derived(frequencyEntryUnavailableReason ?? (!boundsKnown
     ? t('core.band.entry.reason.boundsUnknown')
-    : !receiverKnown ? t('core.band.entry.reason.receiverUnconfirmed') : undefined);
+    : !receiverKnown ? t('core.band.entry.reason.receiverUnconfirmed') : undefined));
 
   $effect(() => {
     const present = band !== undefined;
@@ -104,7 +107,7 @@
     view: {
       label: 'FREQ', draft: entryText, validation: entryValidation,
       boundsAvailable: boundsKnown, interpretedHz,
-      inputAvailable: entryAuthorityAvailable && receiverKnown && boundsKnown,
+      inputAvailable: entryAuthorityAvailable && frequencyEntryEnabled && receiverKnown && boundsKnown,
       submitAvailable: entryReady,
       hint: entryHint, rangeText: entryRangeText,
       ...(entryUnavailableReason === undefined ? {} : { unavailableReason: entryUnavailableReason }),
@@ -121,7 +124,7 @@
 
   function entryIsAvailable(): boolean {
     const currentBand = view?.band;
-    return entryRendererContext !== null && view?.activeReceiver.status === 'known'
+    return entryRendererContext !== null && frequencyEntryEnabled && view?.activeReceiver.status === 'known'
       && currentBand !== undefined
       && currentBand.tuneMinHz !== null && currentBand.tuneMaxHz !== null;
   }
@@ -207,7 +210,7 @@
   {/if}
 {/snippet}
 
-{@render children({ bandChoice, frequencyEntry })}
+{@render children({ bandChoice, frequencyEntry, cancelFrequencyEntry: cancelEntry })}
 
 <style>
   .band-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }

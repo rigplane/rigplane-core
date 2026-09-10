@@ -65,8 +65,11 @@ vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
 vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
   return {
-    dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params),
-    currentControlSessionEpoch: () => 0,
+    dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => {
+      sendCommand(name, params);
+      return { id: `test-${name}`, name, params, originalEpoch: h.controlSession.epoch, status: 'pending' };
+    },
+    currentControlSessionEpoch: () => h.controlSession.epoch,
   };
 });
 vi.mock('$lib/stores/radio.svelte', () => ({
@@ -209,6 +212,7 @@ function publishAuthority(): void {
 
 function render(props: {
   strips?: 'single' | 'dual'; bandPermitCaption?: boolean;
+  vfoAppearance?: 'semantic' | 'sdr' | 'standard';
 } = {}): void {
   target = document.createElement('div');
   document.body.appendChild(target);
@@ -220,6 +224,7 @@ const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T
 const el = (id: string) => q<HTMLElement>(`[data-testid="band-${id}"]`);
 const btn = (id: string) => q<HTMLButtonElement>(`[data-testid="band-${id}"]`);
 const setFreqCalls = () => vi.mocked(sendCommand).mock.calls.filter(([n]) => n === 'set_freq');
+const setDirectFreqCalls = () => vi.mocked(sendCommand).mock.calls.filter(([n]) => n === 'set_vfo_freq');
 
 function typeFrequency(value: string): void {
   const input = q<HTMLInputElement>('[data-testid="band-entry-input"]')!;
@@ -237,6 +242,58 @@ beforeEach(() => {
   h.finiteAppearance = false;
   resetRetainedInvocations();
   vi.mocked(sendCommand).mockClear();
+});
+
+describe('fixed-slot frequency entry overlay', () => {
+  function directState(): ServerState {
+    const current = liveState();
+    return { ...current, sub: undefined, main: {
+      ...current.main!, activeSlot: 'A',
+      vfoA: slot(14_250_000), vfoB: slot(7_074_000),
+    } } as unknown as ServerState;
+  }
+  function directCaps(): Capabilities {
+    return { ...liveCaps(BAND_PLAN), capabilities: ['audio', 'tx', 'vfo_freq_direct'],
+      receivers: 1, vfoScheme: 'ab' };
+  }
+
+  it('opens from inactive B digits and dispatches B without selecting it', () => {
+    h.state = directState(); h.caps = directCaps();
+    render({ vfoAppearance: 'standard' });
+    const digit = document.createElement('span'); digit.className = 'digit';
+    q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!.append(digit);
+    digit.click();
+    flushSync();
+    const dialog = q<HTMLElement>('[data-testid="frequency-entry-dialog-panel"]')!;
+    expect(dialog.textContent).toContain('MAIN VFO B');
+    const input = dialog.querySelector<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    input.value = '7.075'; input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    dialog.querySelector<HTMLButtonElement>('[data-testid="band-entry-set"]')!.click();
+    expect(setDirectFreqCalls()).toEqual([['set_vfo_freq', {
+      freq: 7_075_000, receiver: 0, slot: 'B', expected_active_slot: 'A', provider_generation: 1,
+    }]]);
+    expect(vi.mocked(sendCommand).mock.calls.some(([name]) => name === 'set_vfo')).toBe(false);
+  });
+
+  it('keeps an open draft inert after the captured session changes', () => {
+    h.state = directState(); h.caps = directCaps();
+    render({ vfoAppearance: 'standard' });
+    const digit = document.createElement('span'); digit.className = 'digit';
+    q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!.append(digit);
+    digit.click();
+    flushSync();
+    h.controlSession = { state: 'connected', epoch: 2 };
+    h.state = { ...(h.state as ServerState), providerGeneration: 2 };
+    h.caps = { ...(h.caps as Capabilities), providerGeneration: 2 };
+    publishAuthority(); flushSync();
+    const dialog = q<HTMLElement>('[data-testid="frequency-entry-dialog-panel"]')!;
+    const input = dialog.querySelector<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    input.value = '7.075'; input.dispatchEvent(new Event('input', { bubbles: true })); flushSync();
+    dialog.querySelector<HTMLButtonElement>('[data-testid="band-entry-set"]')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(setDirectFreqCalls()).toEqual([]);
+  });
 });
 
 afterEach(() => {

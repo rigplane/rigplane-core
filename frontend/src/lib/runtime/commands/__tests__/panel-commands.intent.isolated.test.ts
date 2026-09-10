@@ -1205,6 +1205,59 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
+  it('writes the captured fixed A/B slot without selecting it', () => {
+    h.state = oneReceiverAbState();
+    h.state.fieldStatus = {
+      ...h.state.fieldStatus,
+      'main.activeSlot': { ...freshStatus, storePath: 'main.activeSlot' },
+    };
+    h.caps = {
+      capabilities: ['vfo_freq_direct'], receivers: 1, vfoScheme: 'ab',
+      stateContractVersion: 1, providerGeneration: 31,
+      freqRanges: [{ start: 30_000, end: 74_800_000, label: 'HF' }],
+    };
+
+    const lifecycle = makeVfoHandlers().onDirectFrequencyChange({
+      frequencyHz: 7_075_000, receiver: 'MAIN', slot: 'B', expectedActiveSlot: 'A',
+      providerGeneration: 31, sessionEpoch: 31,
+    });
+
+    expect(lifecycle).toMatchObject({ name: 'set_vfo_freq', status: 'pending' });
+    expect(exactCalls()).toEqual([['set_vfo_freq', {
+      freq: 7_075_000, receiver: 0, slot: 'B', expected_active_slot: 'A', provider_generation: 31,
+    }]]);
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(h.patchReceiver).not.toHaveBeenCalled();
+  });
+
+  it('refuses direct slot writes after any captured authority changes', () => {
+    const request = {
+      frequencyHz: 7_075_000, receiver: 'MAIN' as const, slot: 'B' as const,
+      expectedActiveSlot: 'A' as const, providerGeneration: 31, sessionEpoch: 31,
+    };
+    const reset = () => {
+      h.state = oneReceiverAbState();
+      h.state.fieldStatus = { ...h.state.fieldStatus,
+        'main.activeSlot': { ...freshStatus, storePath: 'main.activeSlot' } };
+      h.caps = { capabilities: ['vfo_freq_direct'], receivers: 1, vfoScheme: 'ab',
+        stateContractVersion: 1, providerGeneration: 31,
+        freqRanges: [{ start: 30_000, end: 74_800_000, label: 'HF' }] };
+      h.sendCommand.mockClear(); resetCommandLifecycle(); h.unavailable.clear();
+    };
+    const refuse = (mutate: () => void) => {
+      reset(); mutate();
+      expect(makeVfoHandlers().onDirectFrequencyChange(request)).toBeNull();
+      expect(h.sendCommand).not.toHaveBeenCalled();
+    };
+    refuse(() => { h.state!.main!.activeSlot = 'B'; });
+    refuse(() => { h.state = { ...h.state!, providerGeneration: 32 }; });
+    refuse(() => { h.caps = { ...h.caps!, capabilities: [] }; });
+    refuse(() => { h.unavailable.add('main.activeSlot'); });
+    refuse(() => { h.caps = { ...h.caps!, vfoScheme: 'main_sub' }; });
+    refuse(() => { h.caps = { ...h.caps!, receivers: 2 }; });
+  });
+
   it('MOR-1425: a burst of rapid steps within one round trip accumulates onto the pending target, not the stale confirmed value', () => {
     const vfo = makeVfoHandlers();
     const confirmed = h.state!.main!.freqHz; // 14_074_000, unchanged for the whole burst

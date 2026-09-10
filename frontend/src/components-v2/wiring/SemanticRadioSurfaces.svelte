@@ -36,6 +36,8 @@
     PanelChrome,
   } from './instrument-composition';
   import { t } from '$lib/i18n';
+  import { getFieldStatus } from '$lib/state/field-status';
+  import { getCommandLifecycle } from '$lib/stores/commands.svelte';
   import { getScopeSource, hasCapability } from '$lib/stores/capabilities.svelte';
   import { presentationResources, runtime } from '$lib/runtime';
   import * as componentKitActivation from '../../component-kits/activation';
@@ -68,6 +70,7 @@
   import AntennaInstrumentHost from '../../semantic/AntennaInstrumentHost.svelte';
   import BandSurface from '../../semantic/BandSurface.svelte';
   import BandInstrumentHost from '../../semantic/BandInstrumentHost.svelte';
+  import FrequencyEntryDialog from '../../semantic/FrequencyEntryDialog.svelte';
   import type { BandControlLayout } from '../../semantic/band-instruments';
   import DspSurface, {
     type DspLevelField, type DspToggleField,
@@ -338,6 +341,80 @@
 
   const semanticHandlers = bindSemanticSurfaceHandlers();
   const vfo = semanticHandlers.vfo;
+
+  type FrequencyEntryCapture = Readonly<{
+    target: { receiver: 'MAIN'; slot: 'A' | 'B' };
+    expectedActiveSlot: 'A' | 'B';
+    providerGeneration: number;
+    sessionEpoch: number;
+    topologyId: string;
+    trigger: HTMLElement;
+  }>;
+  let frequencyEntryCapture = $state<FrequencyEntryCapture | null>(null);
+  let frequencyEntryLifecycle = $state<{ id: string; epoch: number } | null>(null);
+
+  function directFrequencyAuthorityMatches(capture: FrequencyEntryCapture): boolean {
+    const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
+    const activeSlot = state?.main?.activeSlot;
+    const slotStatus = state ? getFieldStatus(state, 'main.activeSlot') : undefined;
+    const model = toRadioViewModel(state, caps);
+    return session.state === 'connected' && session.epoch === capture.sessionEpoch
+      && state?.providerGeneration === capture.providerGeneration
+      && caps?.providerGeneration === capture.providerGeneration
+      && caps.capabilities.includes('vfo_freq_direct')
+      && caps.receivers === 1 && caps.vfoScheme === 'ab'
+      && model?.topologyId === capture.topologyId
+      && slotStatus?.observed === true && slotStatus.freshness === 'fresh'
+      && slotStatus.availability === 'available'
+      && activeSlot === capture.expectedActiveSlot
+      && model.vfos.some((candidate) => candidate.receiver === capture.target.receiver
+        && candidate.slot.kind === 'slotted' && candidate.slot.id === capture.target.slot);
+  }
+
+  function openFrequencyEntry(target: VfoSelection, trigger: HTMLElement): void {
+    if (target.receiver !== 'MAIN' || target.slot.kind !== 'slotted') return;
+    const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
+    const stateGeneration = state?.providerGeneration;
+    const model = toRadioViewModel(state, caps);
+    const activeSlot = state?.main?.activeSlot;
+    const slotStatus = state ? getFieldStatus(state, 'main.activeSlot') : undefined;
+    if (session.state !== 'connected' || !Number.isSafeInteger(stateGeneration)
+      || stateGeneration !== caps?.providerGeneration
+      || !caps?.capabilities.includes('vfo_freq_direct')
+      || caps.receivers !== 1 || caps.vfoScheme !== 'ab' || model === null
+      || slotStatus?.observed !== true || slotStatus.freshness !== 'fresh'
+      || slotStatus.availability !== 'available'
+      || (activeSlot !== 'A' && activeSlot !== 'B')) return;
+    frequencyEntryLifecycle = null;
+    const capture = Object.freeze<FrequencyEntryCapture>({
+      target: { receiver: 'MAIN', slot: target.slot.id }, expectedActiveSlot: activeSlot,
+      providerGeneration: stateGeneration as number, sessionEpoch: session.epoch,
+      topologyId: model.topologyId, trigger,
+    });
+    frequencyEntryCapture = capture;
+  }
+
+  let frequencyEntryAuthorityValid = $derived(
+    frequencyEntryCapture !== null && directFrequencyAuthorityMatches(frequencyEntryCapture),
+  );
+  let frequencyEntryCommand = $derived(frequencyEntryLifecycle === null ? undefined
+    : getCommandLifecycle(frequencyEntryLifecycle.id, frequencyEntryLifecycle.epoch));
+  let frequencyEntryStatus = $derived.by(() => {
+    if (frequencyEntryCapture !== null && !frequencyEntryAuthorityValid) {
+      return 'Radio authority changed. Close this dialog and open it again.';
+    }
+    const command = frequencyEntryCommand;
+    if (command?.status === 'pending') return 'Sending frequency…';
+    if (command?.status === 'acknowledged') return 'Waiting for the selected VFO readback…';
+    if (command?.status === 'confirmed') return 'Frequency confirmed.';
+    if (command?.status === 'failed' || command?.status === 'timed-out'
+      || command?.status === 'cancelled') return command.error ?? 'Frequency change was not confirmed.';
+    return undefined;
+  });
+  let frequencyEntrySubmitEnabled = $derived(frequencyEntryAuthorityValid
+    && frequencyEntryCommand?.status !== 'pending'
+    && frequencyEntryCommand?.status !== 'acknowledged'
+    && frequencyEntryCommand?.status !== 'confirmed');
   const systemIntents = getSystemHandlers();
   /** MOR-1307: the shipped band vocabulary, composed rather than forked. */
   const band = semanticHandlers.band;
@@ -1546,13 +1623,27 @@
     const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
     const model = toRadioViewModel(state, caps);
     const authority = bandFiniteAuthority(state, caps, session);
-    const active = model?.activeReceiver;
     const currentBand = model?.band;
-    if (authority === null || active?.status !== 'known'
-      || authority.activeReceiver !== active.receiver || currentBand === undefined
+    if (currentBand === undefined
       || currentBand.tuneMinHz === null || currentBand.tuneMaxHz === null
       || !Number.isFinite(frequencyHz)
       || frequencyHz < currentBand.tuneMinHz || frequencyHz > currentBand.tuneMaxHz) return;
+    const capture = frequencyEntryCapture;
+    if (capture !== null) {
+      if (!directFrequencyAuthorityMatches(capture)) return;
+      const lifecycle = vfo.onDirectFrequencyChange({
+        frequencyHz, receiver: capture.target.receiver, slot: capture.target.slot,
+        expectedActiveSlot: capture.expectedActiveSlot,
+        providerGeneration: capture.providerGeneration, sessionEpoch: capture.sessionEpoch,
+      });
+      if (lifecycle !== null) frequencyEntryLifecycle = {
+        id: lifecycle.id, epoch: lifecycle.originalEpoch,
+      };
+      return;
+    }
+    const active = model?.activeReceiver;
+    if (authority === null || active?.status !== 'known'
+      || authority.activeReceiver !== active.receiver) return;
     // MOR-1425 review round 2 (B1 residual): a typed frequency is the most
     // explicitly ABSOLUTE gesture in the UI — 'jump', same reasoning as
     // `selectBand` above.
@@ -1656,9 +1747,26 @@
   <BandInstrumentHost
     {...bandFiniteRendererSelection} {view} entryRendererContext={bandFiniteRendererContext}
     onSelectBand={selectBand} onEnterFrequency={enterFrequency}
+    frequencyEntryEnabled={frequencyEntryCapture === null || frequencyEntrySubmitEnabled}
+    frequencyEntryUnavailableReason={frequencyEntryCapture !== null && !frequencyEntryAuthorityValid
+      ? frequencyEntryStatus : undefined}
     showPermitCaption={bandPermitCaption}
   >
   {#snippet children(bandInstruments)}
+  <FrequencyEntryDialog
+    open={frequencyEntryCapture !== null}
+    targetLabel={frequencyEntryCapture
+      ? `${frequencyEntryCapture.target.receiver} VFO ${frequencyEntryCapture.target.slot}` : ''}
+    returnFocus={frequencyEntryCapture?.trigger}
+    status={frequencyEntryStatus}
+    onclose={() => {
+      bandInstruments.cancelFrequencyEntry();
+      frequencyEntryCapture = null;
+      frequencyEntryLifecycle = null;
+    }}
+  >
+    {#snippet children()}{@render bandInstruments.frequencyEntry()}{/snippet}
+  </FrequencyEntryDialog>
   <AntennaInstrumentHost
     {view} tx={txState} readTx={() => tx.snapshot()}
     subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
@@ -1750,6 +1858,7 @@
               {groupLabel}
               onSelectVfo={selectVfo}
               onTuneFrequency={tuneFrequency}
+              onOpenFrequencyEntry={openFrequencyEntry}
               disabled={!isOperationalStrip(view, receiverId)}
               indicatorReceiver={receiverId}
               suppressIdentitySelectors={stripBy === 'slot'}
@@ -1803,6 +1912,7 @@
         {operationControls}
         onSelectVfo={selectVfo}
         onTuneFrequency={tuneFrequency}
+        onOpenFrequencyEntry={openFrequencyEntry}
         {hasDualReceiver}
         {receiverInstruments}
         continuitySession={meterContinuitySession}

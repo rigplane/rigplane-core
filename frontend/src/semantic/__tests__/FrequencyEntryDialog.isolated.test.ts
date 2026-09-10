@@ -56,4 +56,17 @@ describe('FrequencyEntryDialog', () => {
     expect(onclose).toHaveBeenCalledOnce();
     unmount(component);
   });
+
+  it('announces command lifecycle feedback', () => {
+    const props = proxy({
+      open: true, targetLabel: 'VFO B', status: 'Waiting for readback', children: content,
+    });
+    const component = mount(FrequencyEntryDialog, { target, props });
+    flushSync();
+    expect(target.querySelector('[role="status"]')?.textContent).toBe('Waiting for readback');
+    props.status = 'Frequency confirmed.';
+    flushSync();
+    expect(target.querySelector('[role="status"]')?.textContent).toBe('Frequency confirmed.');
+    unmount(component);
+  });
 });

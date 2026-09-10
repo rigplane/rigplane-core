@@ -5,11 +5,12 @@
     open: boolean;
     targetLabel: string;
     returnFocus?: HTMLElement | null;
+    status?: string;
     onclose?: () => void;
     children: Snippet;
   }
 
-  let { open, targetLabel, returnFocus = null, onclose, children }: Props = $props();
+  let { open, targetLabel, returnFocus = null, status, onclose, children }: Props = $props();
   const titleId = $props.id();
   let panel: HTMLElement | undefined = $state();
   let wasOpen = false;
@@ -77,6 +78,7 @@
           onclick={requestClose}>×</button>
       </header>
       <div class="content">{@render children()}</div>
+      {#if status}<p class="status" role="status">{status}</p>{/if}
     </div>
   </div>
 {/if}
@@ -97,4 +99,5 @@
   .close { border: 0; background: transparent; color: inherit; padding: 4px 8px;
     font-size: 22px; cursor: pointer; }
   .content { padding: 16px; }
+  .status { margin: 0; padding: 0 16px 16px; color: var(--v2-text-muted, #aeb5c2); }
 </style>

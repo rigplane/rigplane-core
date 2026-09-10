@@ -3,7 +3,7 @@ import { makeCommandId } from '$lib/types/protocol';
 import * as controlTransport from '$lib/transport/ws-client';
 import { getControlSession, onCommandDelivery, onControlSessionTransition, sendCommand } from '$lib/transport/ws-client';
 
-type FieldKind = 'boolean' | 'integer' | 'normalized' | 'normalized-unit' | 'number' | 'receiver' | 'string' | 'vfo';
+type FieldKind = 'boolean' | 'integer' | 'normalized' | 'normalized-unit' | 'number' | 'receiver' | 'string' | 'vfo' | 'vfo-slot';
 type FieldSpec = FieldKind | `${FieldKind}?`;
 type IntentSpec = { names: readonly string[]; params: Readonly<Record<string, FieldSpec>> };
 
@@ -38,6 +38,10 @@ const intentSpecs = [
   { names: ['set_filter_shape'], params: { shape: 'integer', receiver: 'receiver' } },
   { names: ['set_filter_width'], params: { width: 'integer', receiver: 'receiver?' } },
   { names: ['set_freq'], params: { freq: 'integer', receiver: 'receiver?' } },
+  { names: ['set_vfo_freq'], params: {
+    freq: 'integer', receiver: 'receiver', slot: 'vfo-slot',
+    expected_active_slot: 'vfo-slot', provider_generation: 'integer',
+  } },
   { names: ['set_if_shift'], params: { offset: 'integer', receiver: 'receiver' } },
   { names: ['set_mode'], params: { mode: 'string', filter: 'integer?', receiver: 'receiver?' } },
   { names: ['set_rit_frequency'], params: { freq: 'integer' } },
@@ -53,7 +57,8 @@ const intentSpecs = [
 
 type Spec = (typeof intentSpecs)[number];
 type KindValue<K extends FieldKind> = K extends 'boolean' ? boolean : K extends 'normalized-unit' ? 'normalized' : K extends 'receiver' ? 0 | 1
-  : K extends 'string' ? string : K extends 'vfo' ? 'A' | 'B' | 'MAIN' | 'SUB' : number;
+  : K extends 'string' ? string : K extends 'vfo-slot' ? 'A' | 'B'
+    : K extends 'vfo' ? 'A' | 'B' | 'MAIN' | 'SUB' : number;
 type RequiredKeys<S extends Readonly<Record<string, FieldSpec>>> = {
   [K in keyof S]-?: S[K] extends `${FieldKind}?` ? never : K
 }[keyof S];
@@ -82,6 +87,7 @@ function matchesValue(kind: FieldKind, value: unknown): boolean {
   if (kind === 'number') return typeof value === 'number' && Number.isFinite(value);
   if (kind === 'boolean') return typeof value === 'boolean';
   if (kind === 'receiver') return value === 0 || value === 1;
+  if (kind === 'vfo-slot') return value === 'A' || value === 'B';
   if (kind === 'vfo') return value === 'A' || value === 'B' || value === 'MAIN' || value === 'SUB';
   return typeof value === 'string' && value.length > 0;
 }
