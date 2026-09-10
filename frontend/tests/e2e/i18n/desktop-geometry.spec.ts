@@ -214,7 +214,8 @@ async function standardGeometry(page: Page) {
     left: '.desktop-control-face.standard-face .desktop-controls-left',
     center: '.desktop-control-face.standard-face .desktop-controls-center',
     right: '.desktop-control-face.standard-face .desktop-controls-right',
-    meters: '.desktop-control-face.standard-face [data-zone-id="meters"]',
+    bottom: '.desktop-control-face.standard-face .standard-bottom-dock',
+    meters: '.desktop-control-face.standard-face [data-panel-id="semantic-meters"]',
   } as const;
   const entries = await Promise.all(Object.entries(selectors).map(async ([name, selector]) => {
     const target = page.locator(selector).first();
@@ -443,6 +444,8 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       );
       expect.soft(bodyTop, 'outer-grid body follows the receiver deck').toBeGreaterThanOrEqual(boxes.receiver.y + boxes.receiver.height - 1);
       expect.soft(boxes.meters.y, 'meters follow the outer-grid body').toBeGreaterThanOrEqual(bodyBottom - 1);
+      expect.soft(boxes.meters.x, 'meters start at the full-width bottom dock').toBeCloseTo(boxes.bottom.x, 0);
+      expect.soft(boxes.meters.width, 'meters span the full-width bottom dock').toBeCloseTo(boxes.bottom.width, 0);
       if (width > 1024) {
         const sideWidth = width <= 1200 ? 208 : 228;
         expect.soft(boxes.receiver.height, 'wide Standard receiver row keeps its 200px floor').toBeGreaterThanOrEqual(199);
@@ -600,12 +603,15 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
         await page.locator('.lcd-layout .content-right').evaluate(e => { e.scrollTop = e.scrollHeight; });
       } else {
         const center = await page.locator('.desktop-controls-center .content-row').boundingBox();
-        const meters = await page.locator('[data-zone-id="meters"]').boundingBox();
+        const metersLocator = layout === 'standard'
+          ? page.locator('[data-panel-id="semantic-meters"]')
+          : page.locator('[data-zone-id="meters"]');
+        const meters = await metersLocator.boundingBox();
         expect.soft(center!.height, 'scope uses available space or its existing 280px floor')
           .toBeLessThanOrEqual(Math.max(280, page.viewportSize()!.height - center!.y - meters!.height));
         expect.soft(center!.y + center!.height, 'scope ends before station meters').toBeLessThanOrEqual(meters!.y + 1);
-        await page.locator('[data-zone-id="meters"]').scrollIntoViewIfNeeded();
-        await expect(page.locator('[data-zone-id="meters"]')).toBeInViewport();
+        await metersLocator.scrollIntoViewIfNeeded();
+        await expect(metersLocator).toBeInViewport();
         await page.locator('.desktop-controls-right').evaluate(e => { e.scrollTop = e.scrollHeight; });
       }
       await focusWithoutActivation(page, unkey);

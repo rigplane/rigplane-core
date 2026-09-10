@@ -22,6 +22,21 @@ import type { RitXitScanInstrumentHandles } from '../../semantic/RitXitScanInstr
 
 export type InstrumentVfoAppearance = 'semantic' | 'sdr' | 'standard';
 
+export interface PanelChrome {
+  readonly panelId: string;
+  readonly draggable: boolean;
+  readonly onDragStart: (panelId: string, event: PointerEvent) => void;
+  readonly style: string;
+}
+
+export interface PanelDragOwner {
+  readonly order: string[];
+  readonly isDropTarget: boolean;
+  dragStyle(panelId: string): string;
+  handleDragStart(panelId: string, event: PointerEvent): void;
+  resetAll(): void;
+}
+
 export interface InstrumentComposition {
   readonly vfo: Snippet<[
     appearance: InstrumentVfoAppearance,
@@ -29,29 +44,45 @@ export interface InstrumentComposition {
     operationControls?: Snippet,
   ]>;
   readonly vfoOperations: VfoOperationHandles;
-  readonly rxTx: Snippet<[allowBare?: boolean]>;
-  readonly txAuxControls: Snippet<[scalarLayout: Snippet, allowBare?: boolean]>;
+  readonly rxTx: Snippet<[allowBare?: boolean, chrome?: PanelChrome]>;
+  readonly txAuxControls: Snippet<[
+    scalarLayout: Snippet, allowBare?: boolean, chrome?: PanelChrome,
+  ]>;
   readonly txAuxScalars: TxAuxScalarHandles;
   readonly txAuxInstruments: TxAuxFiniteHandles;
   readonly receiverInstruments: ReceiverInstrumentHandles;
   readonly rxAudioInstruments: RxAudioInstrumentHandles;
   readonly rfFrontEndInstruments: RfFrontEndLevelHandles;
-  readonly meters: Snippet<[allowBare?: boolean]>;
-  readonly rxAudio: Snippet<[allowBare?: boolean, finiteLayout?: RxAudioFiniteLayout]>;
-  readonly rfFrontEnd: Snippet<[allowBare?: boolean, finiteLayout?: RfFrontEndFiniteLayout]>;
-  readonly filter: Snippet<[allowBare?: boolean, finiteLayout?: FilterFiniteLayout]>;
+  readonly meters: Snippet<[allowBare?: boolean, chrome?: PanelChrome]>;
+  readonly rxAudio: Snippet<[
+    allowBare?: boolean, finiteLayout?: RxAudioFiniteLayout, chrome?: PanelChrome,
+  ]>;
+  readonly rfFrontEnd: Snippet<[
+    allowBare?: boolean, finiteLayout?: RfFrontEndFiniteLayout, chrome?: PanelChrome,
+  ]>;
+  readonly filter: Snippet<[
+    allowBare?: boolean, finiteLayout?: FilterFiniteLayout, chrome?: PanelChrome,
+  ]>;
   readonly dsp: Snippet<[
     allowBare?: boolean, finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout,
+    chrome?: PanelChrome,
   ]>;
-  readonly band: Snippet<[allowBare?: boolean, controlLayout?: BandControlLayout]>;
-  readonly antenna: Snippet<[allowBare?: boolean, controlLayout?: Snippet]>;
+  readonly band: Snippet<[
+    allowBare?: boolean, controlLayout?: BandControlLayout, chrome?: PanelChrome,
+  ]>;
+  readonly antenna: Snippet<[
+    allowBare?: boolean, controlLayout?: Snippet, chrome?: PanelChrome,
+  ]>;
   readonly antennaInstruments: AntennaInstrumentHandles;
   readonly antennaLayout: AntennaInstrumentLayout;
-  readonly ritXitScan: Snippet<[allowBare?: boolean]>;
+  readonly ritXitScan: Snippet<[allowBare?: boolean, chrome?: PanelChrome]>;
   readonly ritXitInstruments: RitXitScanInstrumentHandles;
   readonly cwKeyerInstruments: CwKeyerInstrumentHandles;
-  readonly cwKeyer: Snippet<[allowBare?: boolean, showKeyerSpeed?: boolean]>;
-  readonly memory: Snippet<[allowBare?: boolean]>;
+  readonly cwKeyer: Snippet<[
+    allowBare?: boolean, showKeyerSpeed?: boolean, chrome?: PanelChrome,
+    instrumentLayout?: Snippet,
+  ]>;
+  readonly memory: Snippet<[allowBare?: boolean, chrome?: PanelChrome]>;
   readonly scopeDisplay: Snippet<[allowBare?: boolean]>;
   readonly scopeControls: Snippet<[allowBare?: boolean]>;
   readonly txFaultRecovery: Snippet;

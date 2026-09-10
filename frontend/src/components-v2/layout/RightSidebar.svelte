@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { hasCapability, hasAudioFft } from '$lib/stores/capabilities.svelte';
   import RxAudioPanel from '../panels/RxAudioPanel.svelte';
   import DspPanel from '../panels/DspPanel.svelte';
@@ -9,6 +10,7 @@
   import CollapsiblePanel from '../controls/CollapsiblePanel.svelte';
   import { createDragReorder } from '$lib/drag-reorder.svelte';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
+  import type { PanelDragOwner } from '../wiring/instrument-composition';
 
   type RightSidebarMode = 'all' | 'rx' | 'tx';
 
@@ -26,22 +28,28 @@
      *  not plan; safe only while `zoned()` degrades to bare; `hideTxPanel`
      *  stays separate for R9). */
     declared?: ReadonlySet<SemanticSurfaceName>;
+    dragOwner?: PanelDragOwner;
   }
 
-  let { mode = 'all', hideTxPanel = false, declared = new Set<SemanticSurfaceName>() }: Props = $props();
+  let {
+    mode = 'all', hideTxPanel = false, declared = new Set<SemanticSurfaceName>(), dragOwner,
+  }: Props = $props();
 
   let showRx = $derived(mode === 'all' || mode === 'rx');
   let showTx = $derived(mode === 'all' || mode === 'tx');
 
   // --- Panel reorder (shared logic) ---
-  const drag = createDragReorder({
+  const drag = untrack(() => dragOwner ?? createDragReorder({
     storageKey: 'rigplane:right-panel-order',
     defaults: ['rx-audio', 'audio-scope', 'dsp', 'tx', 'cw', 'memory'],
     containerSelector: '.right-sidebar',
-  });
+  }));
 </script>
 
-<aside class="right-sidebar" class:cross-drop-target={drag.isDropTarget}>
+<aside
+  class="right-sidebar" class:shared-drag-owner={dragOwner !== undefined}
+  class:cross-drop-target={drag.isDropTarget}
+>
   {#if showRx && drag.order.includes('rx-audio') && !declared.has('rxAudio')}
     <CollapsiblePanel title="RX AUDIO" panelId="rx-audio" draggable onDragStart={drag.handleDragStart} style={drag.dragStyle('rx-audio')}>
       <RxAudioPanel />
@@ -95,4 +103,6 @@
     outline: 2px solid var(--v2-accent, #4af);
     outline-offset: -2px;
   }
+
+  .right-sidebar.shared-drag-owner { display: contents; }
 </style>

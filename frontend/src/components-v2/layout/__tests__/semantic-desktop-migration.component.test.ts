@@ -162,6 +162,7 @@ import { desktopV2Layout, sdrTestLayout } from '../../../presentation/layouts/de
 // — see `renderWithPlan` in the S8 describe for why `render()` cannot show one.
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../../../presentation/workspace/resolution';
 import { DEFAULT_WORKSPACE, readWorkspace } from '../../../presentation/workspace/contract';
+import { getCommandLifecycles } from '$lib/stores/commands.svelte';
 
 /**
  * MOR-1313 fix round — PARTIALLY DECLARING manifests, the quadrants no shipped
@@ -282,6 +283,7 @@ function render(skinId: SkinId): HTMLElement {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   vi.mocked(hasAnyScope).mockReturnValue(false);
   txHarness.reset();
   mounted = [];
@@ -2282,7 +2284,30 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   const texts = (root: Element | null, selector: string) =>
     [...(root?.querySelectorAll(selector) ?? [])].map((el) => el.textContent?.trim());
 
+  function enableAllServiceSurfaces(): void {
+    h.caps = {
+      ...(capsFor('2/main_sub') as object),
+      antennas: 2,
+      capabilities: [
+        'scope', 'audio', 'tx', 'dual_rx', 'rit', 'xit', 'preamp', 'attenuator',
+        'rf_gain', 'af_level', 'nr', 'nb', 'notch', 'agc', 'cw', 'break_in',
+        'apf', 'tuner', 'vox', 'compressor', 'monitor', 'drive_gain',
+      ],
+      modes: ['LSB', 'USB', 'CW'],
+      filters: ['FIL1', 'FIL2', 'FIL3'],
+      freqRanges: HAM_RANGES,
+    } as Capabilities;
+    const state = liveState() as Record<string, unknown>;
+    h.state = {
+      ...state,
+      scanning: false, scanType: 0x34, scanResumeMode: 1,
+      txAntenna: 1, rxAntenna1: 0, ritOn: false, ritTx: false, ritFreq: 0,
+    };
+    useQualifiedMainSMeter(h.state);
+  }
+
   beforeEach(() => {
+    localStorage.clear();
     h.caps = {
       ...(capsFor('2/main_sub') as object),
       antennas: 2,
@@ -2444,6 +2469,103 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   // still follows the semantic DECK and stays a separate prop (§1.4).
   it('leaves exactly one key authority with all three zones declared', () => {
     expect(renderAll('desktop-v2').querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
+  });
+
+  it('places each Standard service panel once in its default drag owner', () => {
+    enableAllServiceSurfaces();
+    const t = renderAll('desktop-v2');
+    for (const panelId of [
+      'semantic-rf-front-end', 'semantic-filter', 'semantic-band', 'semantic-antenna',
+      'semantic-rit-xit-scan', 'band',
+    ]) {
+      const renderedIds = [...t.querySelectorAll('[data-panel-id]')]
+        .map((panel) => panel.getAttribute('data-panel-id'));
+      expect(t.querySelectorAll(`[data-panel-id="${panelId}"]`), `${panelId}: ${renderedIds.join(',')}`)
+        .toHaveLength(1);
+      expect(t.querySelector(`.desktop-controls-left [data-panel-id="${panelId}"]`), panelId)
+        .not.toBeNull();
+    }
+    for (const panelId of [
+      'semantic-rx-tx', 'semantic-rx-audio', 'semantic-dsp', 'semantic-cw',
+      'semantic-memory', 'semantic-tx-aux',
+    ]) {
+      expect(t.querySelectorAll(`[data-panel-id="${panelId}"]`), panelId).toHaveLength(1);
+      expect(t.querySelector(`.desktop-controls-right [data-panel-id="${panelId}"]`), panelId)
+        .not.toBeNull();
+    }
+    expect(t.querySelector('.standard-bottom-dock [data-panel-id="semantic-meters"]'))
+      .not.toBeNull();
+  });
+
+  it('groups both bare CW instruments inside the one movable CW shell', () => {
+    enableAllServiceSurfaces();
+    const t = renderAll('desktop-v2');
+    const cw = t.querySelector('[data-panel-id="semantic-cw"]')!;
+    expect(cw.querySelector('[data-testid="cw-keyer-surface"]')).not.toBeNull();
+    expect(cw.querySelectorAll('[data-cw-keyer-seat]')).toHaveLength(2);
+    expect(t.querySelectorAll('[data-cw-keyer-seat]')).toHaveLength(2);
+  });
+
+  it('moves one service panel through all Standard owners, persists, and resets without commands', () => {
+    enableAllServiceSurfaces();
+    const commandCount = getCommandLifecycles().length;
+    const t = renderAll('desktop-v2');
+    const left = t.querySelector<HTMLElement>('.desktop-controls-left')!;
+    const right = t.querySelector<HTMLElement>('.desktop-controls-right')!;
+    const bottom = t.querySelector<HTMLElement>('.standard-bottom-dock')!;
+    const boxes = [
+      [left, { left: 0, top: 0, right: 100, bottom: 500 }],
+      [right, { left: 300, top: 0, right: 400, bottom: 500 }],
+      [bottom, { left: 0, top: 600, right: 400, bottom: 750 }],
+    ] as const;
+    for (const [container, box] of boxes) {
+      container.getBoundingClientRect = () => ({
+        ...box, x: box.left, y: box.top, width: box.right - box.left,
+        height: box.bottom - box.top, toJSON: () => ({}),
+      });
+      [...container.querySelectorAll<HTMLElement>('[data-panel-id]')].forEach((panel, index) => {
+        panel.getBoundingClientRect = () => ({
+          left: box.left, right: box.right, top: box.top + index * 40,
+          bottom: box.top + (index + 1) * 40, x: box.left, y: box.top + index * 40,
+          width: box.right - box.left, height: 40, toJSON: () => ({}),
+        });
+      });
+    }
+    const handle = t.querySelector<HTMLElement>(
+      '[data-panel-id="semantic-rx-audio"] .drag-handle',
+    )!;
+    Object.assign(handle, { setPointerCapture: vi.fn() });
+    const pointer = (type: string, clientX: number, clientY: number) => {
+      handle.dispatchEvent(new PointerEvent(type, {
+        bubbles: true, pointerId: 1, clientX, clientY,
+      }));
+      flushSync();
+    };
+
+    pointer('pointerdown', 350, 100);
+    pointer('pointermove', 50, 650);
+    expect(bottom.classList.contains('cross-drop-target')).toBe(true);
+    pointer('pointermove', 50, 100);
+    expect(bottom.classList.contains('cross-drop-target')).toBe(false);
+    pointer('pointermove', 50, 650);
+    pointer('pointerup', 50, 650);
+
+    expect(t.querySelectorAll('[data-panel-id="semantic-rx-audio"]')).toHaveLength(1);
+    expect(bottom.querySelector('[data-panel-id="semantic-rx-audio"]')).not.toBeNull();
+    expect(JSON.parse(localStorage.getItem('rigplane:bottom-panel-order')!))
+      .toContain('semantic-rx-audio');
+    expect(getCommandLifecycles()).toHaveLength(commandCount);
+    expect(txHarness.trace()).toEqual([]);
+
+    t.querySelector<HTMLButtonElement>('.reset-order-btn')!.click();
+    flushSync();
+    expect(right.querySelector('[data-panel-id="semantic-rx-audio"]')).not.toBeNull();
+    expect(bottom.querySelector('[data-panel-id="semantic-meters"]')).not.toBeNull();
+    expect(bottom.querySelector('[data-panel-id="semantic-rx-audio"]')).toBeNull();
+    expect(JSON.parse(localStorage.getItem('rigplane:bottom-panel-order')!))
+      .toEqual(['semantic-meters']);
+    expect(getCommandLifecycles()).toHaveLength(commandCount);
+    expect(txHarness.trace()).toEqual([]);
   });
 });
 
