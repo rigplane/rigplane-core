@@ -2979,6 +2979,39 @@ def test_ic7300_real_profile_filter_num_and_data_mode_have_capability() -> None:
         assert policy.adaptive_decay.enabled is False
 
 
+def test_ic7300_real_profile_ipplus_is_polled_as_plain_cmd16_read() -> None:
+    """MOR-2449: IP+ uses the single-RX 0x16/0x65 query, never cmd29."""
+    profile = get_radio_profile("IC-7300")
+    acquisition = profile.state_acquisition
+    assert acquisition is not None
+    ipplus = FieldPath.receiver("main", "operator_toggles", "ipplus")
+
+    capability = acquisition.capability_for(ipplus)
+    assert capability.can_poll is True
+    assert ipplus in acquisition.pollable_paths()
+    policy = acquisition.policy_for(ipplus)
+    assert policy.cadence_seconds == 5.0
+    assert policy.freshness_ttl_seconds == 10.0
+    assert policy.adaptive_decay.enabled is False
+
+    scheduler = AcquisitionScheduler(
+        profile=acquisition, clock=FreshnessClock(start=300.0)
+    )
+    request = next(
+        request for request in scheduler.due_requests() if ipplus in request.paths
+    )
+
+    executor, sent = recording_executor(profile, supports_cmd29=profile.supports_cmd29)
+    execution = asyncio.run(executor.execute(request, already_sent_paths=frozenset()))
+
+    assert execution.failed_paths == ()
+    assert executor.query_for_path(ipplus) == acquisition_query(
+        0x16, sub=0x65, receiver=0
+    )
+    assert acquisition_query(0x16, sub=0x65) in sent
+    assert profile.cmd29_routes == frozenset()
+
+
 def test_ic7610_real_profile_filter_width_pollable_and_emit_reads() -> None:
     acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
     assert acquisition is not None
