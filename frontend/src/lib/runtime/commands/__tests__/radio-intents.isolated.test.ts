@@ -146,6 +146,26 @@ describe('typed non-PTT radio intents', () => {
     expect(lifecycle.getCommandLifecycle('freq-1', 7)?.status).toBe('pending');
   });
 
+  it('accepts only the exact fixed-slot frequency envelope', () => {
+    const params = {
+      freq: 14_074_000, receiver: 0 as const, slot: 'B' as const,
+      expected_active_slot: 'A' as const, provider_generation: 31,
+    };
+    intents.dispatchRadioIntent({ id: 'slot-freq', name: 'set_vfo_freq', params });
+    expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith('set_vfo_freq', params, 'slot-freq');
+
+    for (const malformed of [
+      { ...params, slot: 'MAIN' },
+      { ...params, expected_active_slot: 'SUB' },
+      { ...params, provider_generation: 31.5 },
+      { ...params, receiver: 2 },
+      { ...params, extra: true },
+    ]) expect(() => intents.dispatchRadioIntent({
+      name: 'set_vfo_freq', params: malformed,
+    } as unknown as RadioIntent)).toThrow(/invalid radio intent/i);
+    expect(harness.sendCommand).toHaveBeenCalledTimes(1);
+  });
+
   it('correlates delivery without turning acknowledgement into radio truth', () => {
     intents.dispatchRadioIntent({ id: 'mode-1', name: 'set_mode', params: { mode: 'CW', receiver: 1 } });
     harness.delivery?.({
@@ -465,8 +485,9 @@ describe('typed non-PTT radio intents', () => {
       const invalidRit: RadioIntent = { name: 'set_rit_frequency', params: { value: 300 } };
       expect(invalidRit).toBeDefined();
     }
-    expect(intents.RADIO_INTENT_NAMES).toHaveLength(91);
-    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(91);
+    expect(intents.RADIO_INTENT_NAMES).toHaveLength(92);
+    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(92);
+    expect(intents.RADIO_INTENT_NAMES).toContain('set_vfo_freq');
     expect(intents.RADIO_INTENT_NAMES).toContain('set_data3_mod_input');
     expect(intents.RADIO_INTENT_NAMES).not.toContain('ptt');
     expect(intents.RADIO_INTENT_NAMES).not.toContain('ptt_on');

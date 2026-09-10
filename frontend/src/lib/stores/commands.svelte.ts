@@ -58,6 +58,8 @@ export type StateBackedRepeatPolicy = 'latest-target-wins';
 export interface StateBackedCommandDescriptor<T> {
   readonly intentName: RadioIntentName;
   readonly repeatPolicy: StateBackedRepeatPolicy;
+  /** Keep awaiting radio truth when a post-ack observation reports another value. */
+  readonly requireTargetMatch?: boolean;
   scope(command: Pick<CommandLifecycle, 'params'>): ControlFeedbackScope | null;
   fieldPath(scope: ControlFeedbackScope): string;
   target(command: Pick<CommandLifecycle, 'params'>): T | null;
@@ -142,6 +144,43 @@ export const FILTER_WIDTH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<numbe
   ),
   matches: (confirmed: number, target: number) => confirmed === target,
 });
+
+type DirectVfoFrequencyCommand = Readonly<{
+  receiver: 0 | 1;
+  slot: 'A' | 'B';
+  target: number;
+}>;
+function directVfoFrequencyCommand(
+  command: Pick<CommandLifecycle, 'params'>,
+): DirectVfoFrequencyCommand | null {
+  const params = command.params;
+  if (Reflect.ownKeys(params).length !== 5) return null;
+  const target = safeInteger(params.freq);
+  const receiver = params.receiver;
+  const slot = params.slot;
+  const expected = params.expected_active_slot;
+  const generation = providerGeneration(params.provider_generation);
+  return target !== null && target > 0 && (receiver === 0 || receiver === 1)
+    && (slot === 'A' || slot === 'B') && (expected === 'A' || expected === 'B')
+    && generation !== null
+    ? Object.freeze({ receiver, slot, target }) : null;
+}
+
+export const DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_vfo_freq', repeatPolicy: 'latest-target-wins', requireTargetMatch: true,
+  scope: (command) => {
+    const parsed = directVfoFrequencyCommand(command);
+    return parsed === null ? null : Object.freeze({
+      control: 'vfo-frequency', receiver: parsed.receiver, slot: parsed.slot,
+    });
+  },
+  fieldPath: (scope) => `${scope.receiver === 1 ? 'sub' : 'main'}.vfo${scope.slot}.freqHz`,
+  target: (command) => directVfoFrequencyCommand(command)?.target ?? null,
+  confirmed: (state, scope) => safeInteger(
+    (scope.receiver === 1 ? state.sub : state.main)?.[scope.slot === 'B' ? 'vfoB' : 'vfoA']?.freqHz,
+  ),
+  matches: (confirmed, target) => confirmed === target,
+} satisfies StateBackedCommandDescriptor<number>);
 
 const breakInDelayTarget = (command: Pick<CommandLifecycle, 'params'>): number | null =>
   Reflect.ownKeys(command.params).length === 1
@@ -376,6 +415,7 @@ export const IF_SHIFT_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> =
 export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, StateBackedCommandDescriptor<unknown>> =
   new Map([
     [FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName, FILTER_WIDTH_COMMAND_DESCRIPTOR],
+    [DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR.intentName, DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR],
     [BREAK_IN_DELAY_COMMAND_DESCRIPTOR.intentName, BREAK_IN_DELAY_COMMAND_DESCRIPTOR],
     [RF_GAIN_COMMAND_DESCRIPTOR.intentName, RF_GAIN_COMMAND_DESCRIPTOR],
     [SQUELCH_COMMAND_DESCRIPTOR.intentName, SQUELCH_COMMAND_DESCRIPTOR],
@@ -550,7 +590,7 @@ function reconcileStateBackedCommands(state: ServerState | null): void {
       command.ackFieldObservationTimes = { ...boundaries, [path]: marker };
       continue;
     }
-    if (marker > boundary) {
+    if (marker > boundary && (!descriptor.requireTargetMatch || descriptor.matches(confirmed, target))) {
       transition(command.id, command.originalEpoch, 'confirmed', command.eventEpoch ?? command.originalEpoch);
     }
   }
