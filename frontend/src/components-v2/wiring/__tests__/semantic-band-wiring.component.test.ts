@@ -283,9 +283,12 @@ describe('fixed-slot frequency entry overlay', () => {
     async (closeWith) => {
       h.state = directState(true); h.caps = directCaps(true);
       render({ vfoAppearance: 'standard' });
-      const readout = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq] .freq')!;
+      const trigger = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!;
+      const readout = trigger.querySelector<HTMLElement>('.freq')!;
       const digit = readout.querySelector<HTMLElement>('.digit')!;
 
+      expect(trigger.getAttribute('role')).toBe('button');
+      expect(trigger.getAttribute('aria-label')).toBe('Set frequency — MAIN B');
       expect(readout).not.toBeNull();
       expect(digit).not.toBeNull();
       digit.click();
@@ -305,8 +308,25 @@ describe('fixed-slot frequency entry overlay', () => {
       await Promise.resolve();
 
       expect(q<HTMLElement>('[role="dialog"]')).toBeNull();
-      expect(document.activeElement).toBe(readout);
+      expect(document.activeElement).toBe(trigger);
       expect(vi.mocked(sendCommand)).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['Enter', ' '] as const)(
+    'opens real inactive B entry with %s without tuning or selecting',
+    async (key) => {
+      h.state = directState(true); h.caps = directCaps(true);
+      render({ vfoAppearance: 'standard' });
+      const trigger = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!;
+      trigger.focus();
+      trigger.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+      flushSync();
+      await Promise.resolve();
+
+      expect(q<HTMLElement>('[data-testid="frequency-entry-dialog-panel"]')).not.toBeNull();
+      expect(vi.mocked(sendCommand)).not.toHaveBeenCalled();
+      expect(q<HTMLElement>('[data-vfo-slot="B"]')?.getAttribute('data-vfo-active-slot')).toBe('false');
     },
   );
 

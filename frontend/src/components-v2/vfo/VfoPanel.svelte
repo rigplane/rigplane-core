@@ -88,6 +88,9 @@
   }: Props = $props();
 
   let meterVariant = $derived(layoutProfile === 'wide' ? 'vfo-wide' : 'vfo');
+  let frequencyEntryButton = $derived(onFrequencyClick !== undefined && controlsDisabled
+    && (frequencyState === 'current' || frequencyState === 'stale')
+    && freq !== null && freq !== undefined && Number.isFinite(freq));
   const staleId = `vfo-panel-stale-${++sequence}`;
   let receiverChromeVars = $derived({
     '--receiver-accent': `var(--v2-receiver-${receiver}-accent)`,
@@ -106,8 +109,21 @@
   function handleFrequencyClick(event: MouseEvent): void {
     if (onFrequencyClick === undefined || !(event.target instanceof Element)
       || event.target.closest('.digit') === null) return;
-    const readout = event.target.closest('.freq');
-    if (readout instanceof HTMLElement) onFrequencyClick(readout);
+    const trigger = frequencyEntryButton
+      ? event.currentTarget : event.target.closest('.freq');
+    if (trigger instanceof HTMLElement) {
+      if (frequencyEntryButton) event.stopPropagation();
+      onFrequencyClick(trigger);
+    }
+  }
+
+  function handleFrequencyKeydown(event: KeyboardEvent): void {
+    if (!frequencyEntryButton || onFrequencyClick === undefined
+      || (event.key !== 'Enter' && event.key !== ' ')
+      || !(event.currentTarget instanceof HTMLElement)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onFrequencyClick(event.currentTarget);
   }
 </script>
 
@@ -151,22 +167,29 @@
   <div class="panel-body">
     <div class="display-row">
       <div class="freq-row">
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
         <span class="vfo-freq" data-vfo-freq data-freq-tunable={!frequencyDisabled}
           data-display-state={frequencyState} class:display-unknown={displayHz === null}
+          role={frequencyEntryButton ? 'button' : undefined}
+          aria-label={frequencyEntryButton ? `Set frequency — ${receiverLabel}` : undefined}
+          tabindex={frequencyEntryButton ? 0 : undefined}
           onclickcapture={handleFrequencyClick}
+          onkeydowncapture={handleFrequencyKeydown}
           >
-          {#if frequency}
-            {@render frequency()}
-          {:else if freq !== null && freq !== undefined && Number.isFinite(freq)}
-            <FrequencyDisplayInteractive
-              {freq} {displayHz} {pendingDisplayHz} {contextKey}
-              disabled={frequencyDisabled
-                || (frequencyState !== 'current' && frequencyState !== 'stale')}
-              active={isActive} {receiver} {onFreqChange} vfoFreqHook={false}
-            />
-          {:else}
-            <span class="freq unknown-frequency">{formatFrequency(pendingDisplayHz ?? displayHz)}</span>
-          {/if}
+          <span class="frequency-readout-content" aria-hidden={frequencyEntryButton ? 'true' : undefined}>
+            {#if frequency}
+              {@render frequency()}
+            {:else if freq !== null && freq !== undefined && Number.isFinite(freq)}
+              <FrequencyDisplayInteractive
+                {freq} {displayHz} {pendingDisplayHz} {contextKey}
+                disabled={frequencyDisabled
+                  || (frequencyState !== 'current' && frequencyState !== 'stale')}
+                active={isActive} {receiver} {onFreqChange} vfoFreqHook={false}
+              />
+            {:else}
+              <span class="freq unknown-frequency">{formatFrequency(pendingDisplayHz ?? displayHz)}</span>
+            {/if}
+          </span>
         </span>
       </div>
 
@@ -417,6 +440,15 @@
     max-inline-size: 100%;
     font-size: var(--vfo-frequency-size, 24px);
     letter-spacing: var(--vfo-frequency-letter-spacing, 0.03em);
+  }
+
+  .frequency-readout-content { display: contents; }
+
+  .vfo-freq[role='button'], .vfo-freq[role='button'] :global(.digit) { cursor: pointer; }
+  .vfo-freq[role='button']:focus-visible {
+    outline: 2px solid var(--v2-accent-cyan-bright);
+    outline-offset: 3px;
+    border-radius: 4px;
   }
 
   .vfo-freq :global(.freq.interactive) {
