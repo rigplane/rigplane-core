@@ -2255,10 +2255,10 @@ async def test_confirmed_vfo_selection_requests_supported_geometry(
 ) -> None:
     radio = _make_radio(model="IC-7300")
     radio._radio_state = RadioState()
-    width = FieldPath.active("0", "freq_mode", "filter_width")
-    inner = FieldPath.receiver("0", "operator_controls", "pbt_inner")
-    outer = FieldPath.receiver("0", "operator_controls", "pbt_outer")
-    shift = FieldPath.receiver("0", "operator_controls", "if_shift")
+    width = FieldPath.active("main", "freq_mode", "filter_width")
+    inner = FieldPath.receiver("main", "operator_controls", "pbt_inner")
+    outer = FieldPath.receiver("main", "operator_controls", "pbt_outer")
+    shift = FieldPath.receiver("main", "operator_controls", "if_shift")
     paths = (width, shift) if native_shift else (width, inner, outer)
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(*paths))
     radio._acquisition_scheduler = scheduler
@@ -2284,6 +2284,53 @@ async def test_confirmed_vfo_selection_requests_supported_geometry(
     assert {
         path for item in scheduler.pending_requests() for path in item.paths
     } == set(paths)
+
+
+@pytest.mark.asyncio
+async def test_confirmed_vfo_selection_dispatches_real_ic7300_geometry() -> None:
+    """A/B selection jumps the shipped geometry reads ahead of 5 s cadence."""
+
+    radio = _make_radio(model="IC-7300")
+    radio._radio_state = RadioState()
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.state_acquisition is not None
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue())
+    expected = {
+        FieldPath.active("main", "freq_mode", "filter_width"),
+        FieldPath.receiver("main", "operator_controls", "pbt_inner"),
+        FieldPath.receiver("main", "operator_controls", "pbt_outer"),
+    }
+    scheduler.ensure_fresh(
+        expected,
+        max_age=5.0,
+        priority=AcquisitionPriority.BACKGROUND,
+        reason="policy-cadence",
+    )
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    cadence_frames = tuple(
+        (call_.args[0], call_.kwargs["sub"]) for call_ in radio.send_civ.await_args_list
+    )
+    assert set(cadence_frames) == {(0x14, 0x07), (0x14, 0x08), (0x1A, 0x03)}
+
+    await poller._execute(SelectVfo("B"))  # noqa: SLF001
+
+    assert {
+        path for request in scheduler.pending_requests() for path in request.paths
+    } == expected
+    assert all(
+        request.priority is AcquisitionPriority.USER
+        for request in scheduler.pending_requests()
+    )
+
+    await poller._send_scheduler_requests()  # noqa: SLF001
+
+    readback_frames = tuple(
+        (call_.args[0], call_.kwargs["sub"])
+        for call_ in radio.send_civ.await_args_list[len(cadence_frames) :]
+    )
+    assert readback_frames == cadence_frames
 
 
 @pytest.mark.asyncio
