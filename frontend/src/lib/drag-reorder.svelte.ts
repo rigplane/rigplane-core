@@ -52,7 +52,7 @@ export function loadPanelOrder(storageKey: string, defaults: string[]): string[]
     const stored = localStorage.getItem(storageKey);
     if (stored) {
       const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed)) {
         // Accept variable-length orders (cross-sidebar moves change panel count).
         // Filter to strings only, deduplicate, ignore unknowns at render time.
         const seen = new Set<string>();
@@ -63,22 +63,20 @@ export function loadPanelOrder(storageKey: string, defaults: string[]): string[]
             unique.push(id);
           }
         }
-        if (unique.length > 0) {
-          // Append ONLY defaults that the app has never presented to this
-          // sidebar before (i.e. newly introduced panels). Defaults that are
-          // already in `known` but absent from the stored order were
-          // deliberately removed by the user (e.g. dragged to the peer
-          // sidebar) — re-adding them would duplicate the panel across both
-          // sidebars. Unknown (peer-owned) ids stay untouched.
-          for (const id of defaults) {
-            if (!seen.has(id) && !known.has(id)) {
-              seen.add(id);
-              unique.push(id);
-            }
+        // Append ONLY defaults that the app has never presented to this
+        // sidebar before (i.e. newly introduced panels). Defaults that are
+        // already in `known` but absent from the stored order were
+        // deliberately removed by the user (e.g. dragged to the peer
+        // sidebar) — re-adding them would duplicate the panel across both
+        // sidebars. Unknown (peer-owned) ids stay untouched.
+        for (const id of defaults) {
+          if (!seen.has(id) && !known.has(id)) {
+            seen.add(id);
+            unique.push(id);
           }
-          saveKnownDefaults(storageKey, nextKnown);
-          return unique;
         }
+        saveKnownDefaults(storageKey, nextKnown);
+        return unique;
       }
     }
   } catch {
