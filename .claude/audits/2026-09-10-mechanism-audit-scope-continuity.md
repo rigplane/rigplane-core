@@ -33,3 +33,31 @@ None required. `projectScopePassbandDisplay` is **C — legitimately local**; di
 ## Weakest link
 
 The consumer census is lexical/AST plus inspected callers, not proof against arbitrary downstream dynamic access. Inspect any newly supplied extension consumer before extending the no-duplication verdict beyond this revision.
+
+## Subsequent installed evidence and follow-up
+
+The PASS above remains the point-in-time mechanism verdict for the audited
+revision. It established that the implementation met the then-reviewed
+frequency-current display contract. It did not establish installed acceptance
+under sustained alternating tuning.
+
+A later installed IC-7300 acceptance run kept one arrow visible for all 80
+sampled observations. A longer run with 140 alternating key actions instead
+entered a continuous missing-marker/passband tail after about 25 seconds.
+Recorded producer evidence changed to stale 23 ms before the first missing DOM
+sample, which strongly aligns the observed-frequency freshness boundary with
+the disappearance. Frequency freshness returned 2.49 seconds later, while the
+DOM remained absent for at least another 10.059 seconds. Inspection of
+`scope-passband-display.ts:projectScopePassbandDisplay` found that continued
+same-context frequency/axis changes can keep advancing recovery floors after
+the initial retirement, preventing recapture while alternation continues.
+
+MOR-2439 separately owns the producer readback gap that allowed the qualified
+frequency/mode/filter/DATA tuple to become stale. An in-progress MOR-2437
+frontend proposal would retain the last qualified tuple as an explicitly stale
+display value during that bounded same-context gap. It preserves the existing
+provider, capability, session epoch, receiver, slot, mode, filter, DATA,
+frame-mode, span, band, null/OFF and 500 ms frame fences; it does not change TX,
+command or resize authority. That proposal is not yet implemented, reviewed,
+or accepted on an installed build, so it does not amend the archived PASS or
+clear the subsequent installed failure.
