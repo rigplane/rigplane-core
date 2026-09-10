@@ -61,3 +61,34 @@ frame-mode, span, band, null/OFF and 500 ms frame fences; it does not change TX,
 command or resize authority. That proposal is not yet implemented, reviewed,
 or accepted on an installed build, so it does not amend the archived PASS or
 clear the subsequent installed failure.
+
+That historical proposal subsequently completed its gates in PR #3433. Exact
+head `9758269e32ca74d855357cf8ba614218dec23d57` passed independent review
+and merged as `4503010041e3e35949e18eb0522fbd2f87356d8e`; the reviewed and
+merged trees both resolve to
+`ae65825c110052e8a6df1f0d941d3ad79ddaaa94`. The implementation adds one
+live `frequencyHoldRecovery` flag to the existing projector. It holds only
+the last qualified tuple as explicitly stale and prevents recovery floors from
+ratcheting while fresh evidence catches up. It adds no cache or authority
+owner, changes no Core TTL, and changes no TX, command or resize authority.
+The independent exact-head review passed, 302 focused projector and mounted
+component tests passed, canonical quick run `34480785976` passed in 5m16s,
+and the required blocking visual check passed in 1m12s.
+
+Installed acceptance then exercised 140 native Right/Left key actions at
+250 ms intervals. Across 604 DOM samples there were zero missing markers or
+passbands. The paired API stream contained 264 samples during tuning,
+including 37 stale-frequency samples. The accepted run also kept PTT false,
+the KEY control enabled at full opacity, and the removed READY row at zero
+height. A separate wheel run recorded nine samples with zero missing overlays
+or errors. This closes the installed MOR-2437 display-continuity regression
+for the exercised keyboard and wheel scenarios.
+
+This evidence does not establish fully accepted tuning UX or causal physical
+input provenance. The same 140 balanced key actions produced 140 enqueues with
+zero command errors, but the initial 14,101,000 Hz became a final target and
+readback of 14,102,000 Hz; the first wrong absolute target was command 7.
+That numeric intent drift is the existing MOR-1864 issue, still In Progress
+and High priority, rather than a change to this audit's original mechanism
+verdict. MOR-2439 still owns producer freshness coverage, and MOR-2440
+separately owns recovery after a genuine hard retirement.
