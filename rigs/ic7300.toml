@@ -153,6 +153,9 @@ polling_only = [
     "receiver.main.operator_controls.agc",
     "receiver.main.operator_toggles.nb",
     "receiver.main.operator_toggles.nr",
+    # MOR-2449: IP+ has the same plain CI-V 0x16/0x65 read path as IC-7610,
+    # but this single-RX profile had omitted it from acquisition entirely.
+    "receiver.main.operator_toggles.ipplus",
     "global.operator_controls.power_level",
     "global.tx_state.compressor_on",
     "global.operator_controls.compressor_level",
@@ -634,6 +637,14 @@ freshness_ttl_seconds = 10.0
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_toggles.manual_notch"]
+cadence_seconds = 5.0
+freshness_ttl_seconds = 10.0
+adaptive_decay = false
+
+# MOR-2449: a front-panel IP+ change must converge through canonical
+# acquisition. The 5.0s/10.0s panel tier adds 0.2 q/s and retains serial
+# headroom below the IC-7300's 20 q/s ceiling (pinned in the policy test).
+[state_acquisition.field_policies."receiver.main.operator_toggles.ipplus"]
 cadence_seconds = 5.0
 freshness_ttl_seconds = 10.0
 adaptive_decay = false
