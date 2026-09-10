@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, type Component, type Snippet } from 'svelte';
+  import { HardwareButton } from '$lib/Button';
   import { t } from '$lib/i18n';
   import { bindAbsoluteChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
@@ -158,9 +159,28 @@
   {/if}
 {/snippet}
 
-{#snippet bandChoice()}
+{#snippet bandChoice(compact = false)}
   {#if band?.bandChoices.length}
-    {#if finiteAppearance}{@render externalChoice()}{:else}
+    {#if compact}
+      <div role="group" aria-label="Band select" data-testid="band-choices-compact">
+        {#each band.bandChoices as choice, index (choice.name)}
+          {@const permit = defaultPermitLabel(choice)}
+          {@const descriptionId = `band-choice-compact-permit-${index}`}
+          <HardwareButton
+            active={bandChoiceBehavior.isSelected(choice.name)}
+            disabled={!bandChoiceBehavior.available}
+            indicator="edge-left"
+            color="cyan"
+            title={permit}
+            describedBy={descriptionId}
+            onclick={() => bandChoiceBehavior.invoke(choice.name)}
+          >{choice.name}</HardwareButton>
+          <span id={descriptionId} class="visually-hidden" data-default-permit={choice.defaultHzTxPermit.status}>
+            {permit}
+          </span>
+        {/each}
+      </div>
+    {:else if finiteAppearance}{@render externalChoice()}{:else}
       <div class="band-row" role="group" aria-label="Band select" data-testid="band-choices">
         {#each band.bandChoices as choice (choice.name)}
           <button
@@ -193,4 +213,15 @@
   .band-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
   .band-choice[aria-pressed='true'] { font-weight: 700; }
   button:disabled { cursor: not-allowed; }
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
 </style>

@@ -530,6 +530,7 @@
   <div class="content-left">
     <LeftSidebar
       hideTxPanel={semanticRxTx} {declared} dragOwner={owner} {showReset}
+      semanticHamBands={instruments.bandInstruments?.bandChoice}
     />
   </div>
   <div class="content-right">
@@ -1037,7 +1038,9 @@
   }
 
   .content-left,
-  .content-right {
+  .content-right,
+  .desktop-control-face.standard-face :global(.desktop-controls-left),
+  .desktop-control-face.standard-face :global(.desktop-controls-right) {
     min-height: 0;
     max-height: 100%;
     overflow-y: auto;
@@ -1049,7 +1052,9 @@
   }
 
   .content-left::-webkit-scrollbar,
-  .content-right::-webkit-scrollbar {
+  .content-right::-webkit-scrollbar,
+  .desktop-control-face.standard-face :global(.desktop-controls-left)::-webkit-scrollbar,
+  .desktop-control-face.standard-face :global(.desktop-controls-right)::-webkit-scrollbar {
     display: none; /* Chrome/Safari/Opera */
   }
 
