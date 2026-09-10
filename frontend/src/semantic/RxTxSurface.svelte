@@ -139,8 +139,13 @@
     >Unkey transmitter</button>
   </div>
 
-  <ul class="rx-tx-blocked" id={blockedId} data-testid="rx-tx-blocked">
-    {#each visibleBlocked as code (code)}<li data-reason={code}>{blockedLabel(code)}</li>{/each}
+  <ul
+    class="rx-tx-blocked" class:sr-only={visibleBlocked.length === 0 && viewBlocked.length === 0}
+    id={blockedId} data-testid="rx-tx-blocked"
+  >
+    {#each blocked as code (code)}
+      <li class:sr-only={code === 'rf-state-unknown'} data-reason={code}>{blockedLabel(code)}</li>
+    {/each}
     {#each viewBlocked as item (item.field + item.code)}
       <li data-reason={item.code} data-field={item.field}>{item.field}: {item.code}</li>
     {/each}
@@ -157,4 +162,5 @@
   .rx-tx-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .rx-tx-blocked { margin: 0; padding-inline-start: 1.2em; }
   .rx-tx-blocked:empty { display: none; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 </style>

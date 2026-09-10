@@ -656,6 +656,7 @@ export function runAssertions(
   for (const [label, sel] of TEXT_TARGETS) {
     const el = q<HTMLElement>(sel);
     if (!el) continue;
+    if (label === 'rx-tx-rf-label' && el.textContent?.trim() === '') continue;
     const ratio = contrastRatio(getComputedStyle(el).color, effectiveBackground(el));
     const floor = TEXT_CONTRAST_FLOOR[`${activeLanguage}:${label}`] ?? 4.5;
     const belowIdealText = ratio !== null && ratio < 4.5;

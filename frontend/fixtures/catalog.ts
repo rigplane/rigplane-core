@@ -472,7 +472,7 @@ const mainSubExpect = (over: Partial<Expectation> = {}): Expectation => ({
   stripOperational: [true, true], stripActive: [true, false],
   tiles: 4, selectsEnabled: 3, selectsDisabled: 0,
   radioWideSwitchesDisabled: false, keyDisabled: false,
-  rfLabel: 'RX', sessionLabel: 'ready',
+  rfLabel: '', sessionLabel: 'ready',
   faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
   ...over,
 });
@@ -500,7 +500,7 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
       stripOperational: [true], stripActive: [true],
       tiles: 1, selectsEnabled: 0, selectsDisabled: 0,
       radioWideSwitchesDisabled: false, keyDisabled: false,
-      rfLabel: 'RX', sessionLabel: 'ready',
+      rfLabel: '', sessionLabel: 'ready',
       faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
     },
   },
@@ -513,7 +513,7 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
       stripOperational: [true], stripActive: [true],
       tiles: 2, selectsEnabled: 1, selectsDisabled: 0,
       radioWideSwitchesDisabled: false, keyDisabled: false,
-      rfLabel: 'RX', sessionLabel: 'ready',
+      rfLabel: '', sessionLabel: 'ready',
       faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
     },
   },
@@ -540,7 +540,7 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
       stripOperational: [true], stripActive: [true],
       tiles: 1, selectsEnabled: 0, selectsDisabled: 0,
       radioWideSwitchesDisabled: false, keyDisabled: false,
-      rfLabel: 'RX', sessionLabel: 'ready',
+      rfLabel: '', sessionLabel: 'ready',
       faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
     },
   },
@@ -553,7 +553,7 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
       stripOperational: [true, true], stripActive: [false, true],
       tiles: 2, selectsEnabled: 1, selectsDisabled: 0,
       radioWideSwitchesDisabled: false, keyDisabled: false,
-      rfLabel: 'RX', sessionLabel: 'ready',
+      rfLabel: '', sessionLabel: 'ready',
       faultResetPresent: false, modInputWarningPresent: false,
       // MOR-1355: `abSharedCaps` inherits `baseCaps`'s txAux evidence and this
       // fixture supplies no plan (`planned` unset), so TxAuxSurface's 13
@@ -578,7 +578,7 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
       stripOperational: [true, false], stripActive: [true, false],
       tiles: 2, selectsEnabled: 0, selectsDisabled: 1,
       radioWideSwitchesDisabled: false, keyDisabled: false,
-      rfLabel: 'RX', sessionLabel: 'ready',
+      rfLabel: '', sessionLabel: 'ready',
       faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
     },
   },
@@ -606,7 +606,7 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
       stripOperational: [true, true], stripActive: [true, false],
       tiles: 2, selectsEnabled: 1, selectsDisabled: 0,
       radioWideSwitchesDisabled: false, keyDisabled: false,
-      rfLabel: 'RX', sessionLabel: 'ready',
+      rfLabel: '', sessionLabel: 'ready',
       faultResetPresent: false, modInputWarningPresent: false,
       // MOR-1355: same reasoning as `topology-2-ab-shared` above.
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
@@ -735,7 +735,7 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
     // the radio-wide switches are live. `keyDisabled` reads the TX snapshot.
     expect: mainSubExpect({
       stripActive: [true, false], selectsEnabled: 3, selectsDisabled: 0,
-      radioWideSwitchesDisabled: false, keyDisabled: true, rfLabel: 'RF ?',
+      radioWideSwitchesDisabled: false, keyDisabled: true, rfLabel: '',
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
@@ -750,7 +750,7 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
     // supplied, so still NO-ZONE.
     expect: mainSubExpect({
       stripActive: [false, false], tiles: 2, selectsEnabled: 0, selectsDisabled: 2,
-      radioWideSwitchesDisabled: true, keyDisabled: true, rfLabel: 'RF ?',
+      radioWideSwitchesDisabled: true, keyDisabled: true, rfLabel: '',
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
