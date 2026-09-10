@@ -49,6 +49,10 @@
   let blocked = $derived(keyBlockedReasons(view, tx));
   let visibleBlocked = $derived(blocked.filter((code) => code !== 'rf-state-unknown'));
   let viewBlocked = $derived(txDisabledReasons(view));
+  let blockedDescription = $derived([
+    ...blocked.map((code) => blockedLabel(code)),
+    ...viewBlocked.map((item) => `${item.field}: ${item.code}`),
+  ].join('; '));
   // Canonical server state may refuse a new ON before the request reaches
   // admission. Keep that fail-closed affordance separate from view-model
   // permit/target hints, which remain advisory and server-owned.
@@ -128,7 +132,8 @@
     <button
       type="button" class="rx-tx-key v2-control-button v2-control-button--pill" data-testid="rx-tx-key"
       data-surface="hardware" data-indicator-style="dot" data-indicator-color="red" data-active={pressed}
-      disabled={keyUnavailable} aria-pressed={pressed} aria-describedby={blockedId}
+      disabled={keyUnavailable} aria-pressed={pressed}
+      aria-describedby={blockedDescription ? blockedId : undefined}
       onclick={onRequestKey}
     >Key transmitter</button>
     <!-- Never gated: no `disabled`, no `{#if}`, no guard in the handler. -->
@@ -139,13 +144,9 @@
     >Unkey transmitter</button>
   </div>
 
-  <ul
-    class="rx-tx-blocked" class:sr-only={visibleBlocked.length === 0 && viewBlocked.length === 0}
-    id={blockedId} data-testid="rx-tx-blocked"
-  >
-    {#each blocked as code (code)}
-      <li class:sr-only={code === 'rf-state-unknown'} data-reason={code}>{blockedLabel(code)}</li>
-    {/each}
+  {#if blockedDescription}<span id={blockedId} class="sr-only">{blockedDescription}</span>{/if}
+  <ul class="rx-tx-blocked" data-testid="rx-tx-blocked">
+    {#each visibleBlocked as code (code)}<li data-reason={code}>{blockedLabel(code)}</li>{/each}
     {#each viewBlocked as item (item.field + item.code)}
       <li data-reason={item.code} data-field={item.field}>{item.field}: {item.code}</li>
     {/each}

@@ -50,7 +50,7 @@ function render(view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handler
     state: () => q('[data-testid="rx-tx-state"]') as HTMLElement,
     key: () => q('[data-testid="rx-tx-key"]') as HTMLButtonElement,
     unkey: () => q('[data-testid="rx-tx-unkey"]') as HTMLButtonElement,
-    reasons: () => [...target.querySelectorAll('[data-testid="rx-tx-blocked"] [data-reason]:not(.sr-only)')]
+    reasons: () => [...target.querySelectorAll('[data-testid="rx-tx-blocked"] [data-reason]')]
       .map((el) => el.getAttribute('data-reason')),
     root: () => q('[data-testid="rx-tx-surface"]') as HTMLElement,
   };
@@ -517,11 +517,9 @@ describe('accessibility', () => {
     withSurface(topologyFixtures['1/single'], snap({ fresh: false, radioTx: 'unknown' }), (s) => {
       const describedBy = s.key().getAttribute('aria-describedby');
       const description = target.querySelector<HTMLElement>(`#${describedBy}`);
-      const rfReason = description?.querySelector<HTMLElement>('[data-reason="rf-state-unknown"]');
       expect(s.key().disabled).toBe(true);
       expect(s.reasons()).not.toContain('rf-state-unknown');
       expect(description?.classList.contains('sr-only')).toBe(true);
-      expect(rfReason?.classList.contains('sr-only')).toBe(true);
       expect(description?.textContent?.trim()).toContain(blockedLabel('rf-state-unknown'));
     });
   });
