@@ -2457,6 +2457,7 @@
       filter: hostedFilter,
       dsp: hostedDsp,
       band: hostedBand,
+      bandInstruments,
       antenna: hostedAntenna,
       antennaInstruments,
       antennaLayout,

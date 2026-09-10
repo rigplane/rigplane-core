@@ -530,6 +530,7 @@
   <div class="content-left">
     <LeftSidebar
       hideTxPanel={semanticRxTx} {declared} dragOwner={owner} {showReset}
+      semanticHamBands={instruments.bandInstruments?.bandChoice}
     />
   </div>
   <div class="content-right">

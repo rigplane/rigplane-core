@@ -13,7 +13,7 @@ import type { DspFiniteLayout } from '../../semantic/dsp-instruments';
 import type { DspScalarLayout } from '../../semantic/dsp-scalars';
 import type { VfoOperationHandles } from '../../semantic/VfoOperationSeatHost.svelte';
 import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
-import type { BandControlLayout } from '../../semantic/band-instruments';
+import type { BandControlLayout, BandInstrumentHandles } from '../../semantic/band-instruments';
 import type { CwKeyerInstrumentHandles } from '../../semantic/CwKeyerInstrumentHost.svelte';
 import type {
   AntennaInstrumentHandles, AntennaInstrumentLayout,
@@ -70,6 +70,7 @@ export interface InstrumentComposition {
   readonly band: Snippet<[
     allowBare?: boolean, controlLayout?: BandControlLayout, chrome?: PanelChrome,
   ]>;
+  readonly bandInstruments?: BandInstrumentHandles;
   readonly antenna: Snippet<[
     allowBare?: boolean, controlLayout?: Snippet, chrome?: PanelChrome,
   ]>;
