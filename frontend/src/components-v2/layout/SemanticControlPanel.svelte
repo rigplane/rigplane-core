@@ -6,6 +6,7 @@
   interface Props {
     surface: SemanticSurfaceName;
     children: Snippet;
+    title?: string;
     panelId?: string;
     draggable?: boolean;
     onDragStart?: (panelId: string, event: PointerEvent) => void;
@@ -13,7 +14,7 @@
   }
 
   let {
-    surface, children, panelId, draggable = false, onDragStart, style,
+    surface, children, title, panelId, draggable = false, onDragStart, style,
   }: Props = $props();
   const generatedPanelId = $props.id();
   let resolvedPanelId = $derived(panelId ?? generatedPanelId);
@@ -23,6 +24,7 @@
     dsp: 'DSP', cwKeyer: 'CW', rxTx: 'TX', txAux: 'TX CONTROLS', meters: 'STATION METERS',
     memory: 'MEMORY',
   };
+  let resolvedTitle = $derived(title ?? titles[surface]);
 </script>
 
 {#if surface === 'vfo'}
@@ -36,9 +38,9 @@
     data-control-surface={surface}
     {style}
   >
-    {#if titles[surface]}
+    {#if resolvedTitle}
       <CollapsiblePanel
-        title={titles[surface]!} panelId={resolvedPanelId} collapsible={panelId !== undefined}
+        title={resolvedTitle} panelId={resolvedPanelId} collapsible={panelId !== undefined}
         {draggable} {onDragStart}
       >
         {@render children()}

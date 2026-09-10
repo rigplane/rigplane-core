@@ -411,12 +411,19 @@
   </div>
 {/snippet}
 
-{#snippet filterFiniteLayout(filterInstruments: FilterInstrumentHandles)}
+{#snippet standardModeLayout(filterInstruments: FilterInstrumentHandles)}
+  {#if filterInstruments.standardMode && filterInstruments.standardDataMode}
+    <div class="standard-mode-layout" data-testid="standard-mode-layout">
+      {@render filterInstruments.standardMode()}
+      {@render filterInstruments.standardDataMode()}
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet standardFilterLayout(filterInstruments: FilterInstrumentHandles)}
   <div class="filter-finite-grid" data-testid="filter-finite-grid">
-    <div class="filter-finite-seat" data-field="mode">{@render filterInstruments.mode()}</div>
     <div class="filter-finite-seat" data-field="filter">{@render filterInstruments.filter()}</div>
     <div class="filter-finite-seat" data-field="shape">{@render filterInstruments.shape()}</div>
-    <div class="filter-finite-seat" data-field="dataMode">{@render filterInstruments.dataMode()}</div>
   </div>
 {/snippet}
 
@@ -485,7 +492,11 @@
   {/if}
   {#if owner.order.includes('semantic-filter')}
     {@render instruments.filter(
-      undefined, filterFiniteLayout, panelChrome(owner, 'semantic-filter'),
+      undefined, standardModeLayout, panelChrome(owner, 'semantic-filter'),
+      standardFilterLayout, {
+        panelId: 'semantic-filter-controls', draggable: false,
+        onDragStart: owner.handleDragStart, style: owner.dragStyle('semantic-filter'),
+      },
     )}
   {/if}
   {#if owner.order.includes('semantic-band') && !directFrequencyEntrySupported}
@@ -980,10 +991,7 @@
   .dsp-scalar-seat { min-width: 0; }
   .filter-finite-grid { display: flex; flex-direction: column; gap: 0.5rem; }
   .filter-finite-seat { display: contents; }
-  .filter-finite-grid .filter-finite-seat[data-field='mode'] :global(.filter-choice-group) {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+  .standard-mode-layout { display: flex; flex-direction: column; gap: 0.75rem; }
   .filter-finite-grid .filter-finite-seat[data-field='filter'] :global(.filter-choice-group) {
     display: flex;
   }

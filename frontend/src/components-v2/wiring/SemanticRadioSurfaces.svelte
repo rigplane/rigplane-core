@@ -80,6 +80,7 @@
   import DspScalarHost from '../../semantic/DspScalarHost.svelte';
   import type { DspScalarLayout } from '../../semantic/dsp-scalars';
   import FilterSurface from '../../semantic/FilterSurface.svelte';
+  import ModeSurface from '../../semantic/ModeSurface.svelte';
   import FilterInstrumentHost from '../../semantic/FilterInstrumentHost.svelte';
   import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
   import MetersSurface from '../../semantic/MetersSurface.svelte';
@@ -2043,13 +2044,13 @@
 
   {#snippet zoned(
     surface: SemanticSurfaceName, present: boolean, body: Snippet, allowBare = true,
-    chrome?: PanelChrome,
+    chrome?: PanelChrome, frame = true,
   )}
     {#if present}
       {@const zoneId = zoneOwning(surface)}
       {#if zoneId !== null}
-        <div class="surface-zone" data-zone-id={zoneId}>{@render presented(surface, body, chrome)}</div>
-      {:else if allowBare}{@render presented(surface, body, chrome)}{/if}
+        <div class="surface-zone" data-zone-id={zoneId}>{#if frame}{@render presented(surface, body, chrome)}{:else}{@render body()}{/if}</div>
+      {:else if allowBare}{#if frame}{@render presented(surface, body, chrome)}{:else}{@render body()}{/if}{/if}
     {/if}
   {/snippet}
 
@@ -2494,12 +2495,36 @@
   {/snippet}
   {#snippet hostedFilter(
     allowBare = allowBareSurfaces, finiteLayout?: FilterFiniteLayout, chrome?: PanelChrome,
+    filterLayout?: FilterFiniteLayout, filterChrome?: PanelChrome,
   )}
-    {#snippet body()}{@render filterSurface(finiteLayout)}{/snippet}
-    {@render zoned(
-      'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined,
-      body, allowBare, chrome,
-    )}
+    {#if filterLayout && filterChrome}
+      {#snippet splitBody()}
+        <SemanticControlPanel surface="filter" title="MODE" {...chrome}>
+          <ModeSurface handles={filterInstruments} finiteLayout={finiteLayout} />
+        </SemanticControlPanel>
+        <SemanticControlPanel surface="filter" title="FILTER" {...filterChrome}>
+          {#if view}<FilterSurface
+            {view} handles={filterInstruments} finiteLayout={filterLayout} part="filter"
+            {filterWidthFeedback}
+            onFilterWidthChange={filterIntents.onFilterWidthChange}
+            onIfShiftChange={filterIntents.onIfShiftChange}
+            onPbtInnerChange={filterIntents.onPbtInnerChange}
+            onPbtOuterChange={filterIntents.onPbtOuterChange}
+            onPbtReset={filterIntents.onPbtReset}
+          />{/if}
+        </SemanticControlPanel>
+      {/snippet}
+      {@render zoned(
+        'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined,
+        splitBody, allowBare, undefined, false,
+      )}
+    {:else}
+      {#snippet body()}{@render filterSurface(finiteLayout)}{/snippet}
+      {@render zoned(
+        'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined,
+        body, allowBare, chrome,
+      )}
+    {/if}
   {/snippet}
   {#snippet hostedDsp(
     allowBare = allowBareSurfaces, finiteLayout?: DspFiniteLayout,

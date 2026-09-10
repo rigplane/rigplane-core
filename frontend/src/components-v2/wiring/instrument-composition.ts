@@ -62,6 +62,7 @@ export interface InstrumentComposition {
   ]>;
   readonly filter: Snippet<[
     allowBare?: boolean, finiteLayout?: FilterFiniteLayout, chrome?: PanelChrome,
+    filterLayout?: FilterFiniteLayout, filterChrome?: PanelChrome,
   ]>;
   readonly dsp: Snippet<[
     allowBare?: boolean, finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout,

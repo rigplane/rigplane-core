@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, type Snippet } from 'svelte';
+  import { HardwareButton } from '$lib/Button';
   import { t } from '$lib/i18n';
   import { bindChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
@@ -47,6 +48,23 @@
     field.reading.status === 'known' ? String(field.reading.value) : '?';
   const requested = <T,>(target: T | null) => target === null
     ? undefined : { kind: 'requested-target' as const, target };
+
+  const STANDARD_MODE_ORDER = [
+    'USB', 'LSB',
+    'CW', 'CW-R', 'CW-U', 'CW-L',
+    'RTTY', 'RTTY-R', 'RTTY-L', 'RTTY-U',
+    'PSK', 'PSK-R',
+    'DATA-U', 'DATA-L', 'DATA-FM', 'DATA-FM-N',
+    'AM', 'AM-N', 'FM', 'FM-N',
+    'C4FM-DN', 'C4FM-VW',
+  ] as const;
+  let standardModeChoices = $derived.by(() => {
+    const choices = modeFilter?.modeChoices ?? [];
+    return [
+      ...STANDARD_MODE_ORDER.filter(mode => choices.includes(mode)),
+      ...choices.filter(mode => !(STANDARD_MODE_ORDER as readonly string[]).includes(mode)),
+    ];
+  });
 
   const modeBehavior = bindChoiceInstrument(() => ({
     field: modeFilter?.currentMode, choices: modeFilter?.modeChoices ?? [],
@@ -160,7 +178,56 @@
   {/if}
 {/snippet}
 
-{@render children({ mode, filter, shape, dataMode })}
+{#snippet standardMode()}
+  {#if modeFilter?.currentMode.availability.structural}
+    {#if finiteAppearance}
+      {@render external(modeSeat)}
+    {:else}
+      <div class="standard-choice-grid" data-testid="standard-mode-choices"
+        role="group" aria-label="Mode" data-disabled-reason={reason(modeFilter.currentMode)}>
+        {#each standardModeChoices as choice (choice)}
+          <span data-testid={`standard-mode-${choice}`}>
+            <HardwareButton
+              active={modeBehavior.available && modeBehavior.isSelected(choice)}
+              disabled={!modeBehavior.available} indicator="edge-left" color="cyan"
+              onclick={() => modeBehavior.invoke(choice)}
+            >{choice}</HardwareButton>
+          </span>
+        {/each}
+      </div>
+    {/if}
+  {/if}
+{/snippet}
+
+{#snippet standardDataMode()}
+  {#if filterPassband?.dataMode.availability.structural && filterPassband.dataModeChoices.length > 1}
+    {#if finiteAppearance}
+      {@render external(dataSeat)}
+    {:else}
+      <div class="standard-data-block" data-testid="standard-data-mode"
+        data-disabled-reason={reason(filterPassband.dataMode)}
+        data-data-mode-status={pendingDataMode !== null ? 'pending' : usable(filterPassband.dataMode) ? 'confirmed' : filterPassband.dataMode.reading.status === 'known' ? 'retained' : 'unknown'}>
+        <div class="standard-section-label">DATA</div>
+        <div class="standard-choice-grid" role="group" aria-label={t('core.mobile.sheet.dataMode')}>
+          {#each filterPassband.dataModeChoices as choice (choice.value)}
+            {@const isPending = pendingDataMode === choice.value}
+            <span data-testid={`standard-data-mode-${choice.value}`} data-pending={isPending}>
+              <HardwareButton
+                active={dataBehavior.available && dataBehavior.isSelected(choice.value)}
+                disabled={!dataBehavior.available} indicator="edge-left" color="cyan"
+                armed={isPending} describedBy={isPending ? pendingDataModeId : undefined}
+                onclick={() => dataBehavior.invoke(choice.value)}
+              >{choice.label ?? (choice.value === 0 ? 'OFF' : `D${choice.value}`)}</HardwareButton>
+            </span>
+          {/each}
+        </div>
+        {#if pendingDataMode !== null}<span id={pendingDataModeId} class="sr-only">{t('core.modePanel.dataMode.pendingAnnouncement')}</span>{/if}
+      </div>
+    {/if}
+  {/if}
+{/snippet}
+
+{@render children({ mode, filter, shape, dataMode, standardMode, standardDataMode })}
 
 <style>
   .filter-choice-group, .filter-readout { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }
@@ -168,6 +235,12 @@
   .filter-choice[aria-pressed='true'] { font-weight: 700; }
   .filter-choice:disabled { cursor: not-allowed; }
   .filter-choice[data-pending='true'] { font-style: italic; opacity: 0.75; }
+  .standard-data-block { display: flex; flex-direction: column; gap: 0.5rem; }
+  .standard-choice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+  .standard-choice-grid > span { min-width: 0; }
+  .standard-choice-grid > span > :global(button) { width: 100%; min-width: 0; min-height: 36px; }
+  .standard-section-label { color: var(--v2-text-dim); font-family: 'Roboto Mono', monospace;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.08em; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 </style>

@@ -761,7 +761,9 @@ describe('hosted Filter Mode/Filter/Shape/DATA ownership', () => {
     const subscribers = [...h.authoritySubscribers];
     const grid = q('[data-testid="filter-finite-grid"]')!;
     expect([...grid.children].map(node => node.getAttribute('data-field')))
-      .toEqual(['mode', 'filter', 'shape', 'dataMode']);
+      .toEqual(['filter', 'shape']);
+    expect(q('[data-panel-id="semantic-filter"] .panel-header .title')?.textContent).toBe('MODE');
+    expect(q('[data-panel-id="semantic-filter-controls"] .panel-header .title')?.textContent).toBe('FILTER');
     for (const label of externalLabels) {
       expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
     }
@@ -782,7 +784,7 @@ describe('hosted Filter Mode/Filter/Shape/DATA ownership', () => {
 
     expect(q('[data-testid="filter-finite-grid"]')).toBeNull();
     for (const label of externalLabels) {
-      expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
+      expect(target.querySelectorAll(`[data-testid="external-${label}"]`), label).toHaveLength(1);
     }
     for (const id of residual) expect(target.querySelectorAll(`[data-testid="${id}"]`)).toHaveLength(1);
     expect([...h.authoritySubscribers]).toEqual(subscribers);
