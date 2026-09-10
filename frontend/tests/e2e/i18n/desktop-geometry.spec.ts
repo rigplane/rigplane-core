@@ -487,6 +487,32 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     });
   }
 
+  test('keeps legacy side-panel headers inside their scrollable panel boxes', async ({ page }) => {
+    await boot(page, 'standard', 1440, true, 'studioline', false, undefined, {
+      height: 800,
+    });
+
+    for (const [ownerClass, panelId] of [
+      ['standard-panel-owner-left', 'band'],
+      ['standard-panel-owner-right', 'audio-scope'],
+    ] as const) {
+      const panel = page.locator(`.${ownerClass} [data-panel-id="${panelId}"]`);
+      await expect(panel).toHaveCount(1);
+      const geometry = await panel.evaluate(element => {
+        const panelRect = element.getBoundingClientRect();
+        const headerRect = element.querySelector('.panel-header-row')!.getBoundingClientRect();
+        return { panel: panelRect.toJSON(), header: headerRect.toJSON() };
+      });
+
+      expect(geometry.panel.height, `${panelId} panel contains its header`)
+        .toBeGreaterThanOrEqual(geometry.header.height);
+      expect(geometry.header.top, `${panelId} header starts inside its panel`)
+        .toBeGreaterThanOrEqual(geometry.panel.top - 1);
+      expect(geometry.header.bottom, `${panelId} header ends inside its panel`)
+        .toBeLessThanOrEqual(geometry.panel.bottom + 1);
+    }
+  });
+
   test('crosses the 1200 and 1024 Standard thresholds without changing routes', async ({ page }) => {
     await boot(page, 'standard', 1201, true, 'studioline', false, 'topology-1-single');
     const root = page.locator('.desktop-control-face.standard-face');

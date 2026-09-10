@@ -942,6 +942,11 @@
     outline: 2px solid var(--v2-accent, #4af);
     outline-offset: -2px;
   }
+  .standard-panel-owner :global(.semantic-control-panel),
+  .standard-panel-owner :global(.left-sidebar > .collapsible-panel),
+  .standard-panel-owner :global(.right-sidebar > .collapsible-panel) {
+    flex-shrink: 0;
+  }
   .standard-panel-owner > :global(.surface-zone),
   .standard-bottom-dock > :global(.surface-zone),
   .standard-panel-owner > .content-left,
