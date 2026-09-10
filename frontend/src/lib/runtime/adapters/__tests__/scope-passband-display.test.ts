@@ -105,6 +105,55 @@ function tune(input: ScopePassbandDisplayInput, frequency: number, marker: numbe
 }
 
 describe('confirmed tuning display continuity (MOR-2437)', () => {
+  it('holds the last qualified tuple through a stale frequency gap and recovers while tuning continues', () => {
+    const input = banded();
+    let result = project(input);
+    tune(input, 14_100_000, 11);
+    receipt(input, 2, { startFreq: 14_050_000, endFreq: 14_150_000 });
+    result = project(input, result);
+    renew(input, 16, 3);
+    result = project(input, result);
+    expect(result.display.state).toBe('current');
+    expect(tuple(result).frequencyHz).toBe(14_100_000);
+
+    for (const path of ['main.freqHz', 'main.vfoA.freqHz', 'main.mode', 'main.vfoA.mode']) stale(input, path);
+    let sequence = 3;
+    let holdFloors: ScopePassbandDisplayState['floors'] = null;
+    for (let step = 0; step < 10; step += 1) {
+      const frequency = step % 2 === 0 ? 14_101_000 : 14_100_000;
+      tune(input, frequency, 20 + step);
+      if (step === 3) status(input, 'main.filterWidth', { lastObservedMonotonic: 24 });
+      if (step === 7) status(input, 'main.pbtInner', { lastObservedMonotonic: 28 });
+      receipt(input, ++sequence, { startFreq: frequency - 50_000, endFreq: frequency + 50_000 });
+      result = project(input, result);
+      expect(result.display).toMatchObject({ state: 'stale', translated: true,
+        tuple: { frequencyHz: 14_100_000, startHz: frequency - 50_000, endHz: frequency + 50_000 } });
+      if (step === 0) {
+        holdFloors = result.floors;
+        const disconnected = structuredClone(input);
+        disconnected.session = { state: 'disconnected', epoch: 1 };
+        expect(project(disconnected, result).display.state).toBe('unknown');
+        const frameLost = structuredClone(input); frameLost.frame = null;
+        expect(project(frameLost, result).display.state).toBe('unknown');
+      } else expect(result.floors).toEqual(holdFloors);
+    }
+
+    for (const path of ['main.freqHz', 'main.vfoA.freqHz', 'main.mode', 'main.vfoA.mode']) {
+      status(input, path, { freshness: 'fresh', availability: 'available', lastObservedMonotonic: 40 });
+    }
+    for (let step = 0; step < 8; step += 1) {
+      const frequency = step % 2 === 0 ? 14_101_000 : 14_100_000;
+      tune(input, frequency, 41 + step);
+      if (step === 7) status(input, 'main.pbtOuter', { lastObservedMonotonic: 48 });
+      receipt(input, ++sequence, { startFreq: frequency - 50_000, endFreq: frequency + 50_000 });
+      result = project(input, result);
+      expect(result.display.state).toBe(step === 7 ? 'current' : 'stale');
+      expect(tuple(result).frequencyHz).toBe(frequency);
+      if (step < 7) expect(result.floors).toEqual(holdFloors);
+    }
+    expect(result.floors).toBeNull();
+  });
+
   it('keeps one translated stale shape through repeated steps and staggered 5s geometry observations', () => {
     const input = banded(); let result = project(input);
     for (const [frequency, marker] of [[14_075_000, 11], [14_076_000, 12]]) {
@@ -133,12 +182,14 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
     expect(result.display.state).toBe('stale'); expect(tuple(result).frequencyHz).toBe(14_075_000);
     renew(input, 16, 3); expect(project(input, result).display.state).toBe('current');
   });
-  it('does not use pending targets or stale frequency observations to translate', () => {
+  it('ignores pending targets and holds rather than follows a stale frequency observation', () => {
     const input = banded(); const current = project(input);
     Object.assign(input.state!, { pending: { frequencyHz: 14_090_000 } });
     expect(tuple(project(input, current)).frequencyHz).toBe(14_074_000);
     tune(input, 14_075_000, 11); stale(input, 'main.vfoA.freqHz');
-    expect(project(input, current).display.state).toBe('unknown');
+    const held = project(input, current);
+    expect(held.display).toMatchObject({ state: 'stale', translated: true });
+    expect(tuple(held).frequencyHz).toBe(14_074_000);
   });
   const hard: [string, (i: ScopePassbandDisplayInput) => void][] = [
     ['provider', (i) => { i.state!.providerGeneration = 2; i.caps!.providerGeneration = 2; receipt(i, 3); }],
@@ -155,7 +206,6 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
     ['band', (i) => tune(i, 18_100_000, 12)],
     ['outside profile bands', (i) => tune(i, 15_000_000, 12)],
     ['band definitions', (i) => { i.caps!.freqRanges[0].bands![5].end += 100; }],
-    ['stale frequency', (i) => stale(i, 'main.vfoA.freqHz')],
     ['null frame', (i) => { i.frame = null; }],
     ['500ms frame silence', (i) => { i.frame = { ...i.frame!, authority: { ...i.frame!.authority, nowMonotonic: 500 } }; }],
     ['off', (i) => { i.frame = { ...i.frame!, authority: { ...i.frame!.authority, demanded: false } }; }],
