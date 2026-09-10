@@ -4,6 +4,7 @@
 
 Independent definition/consumer collection followed by architectural adjudication, with source revisions pinned in each report:
 
+- [Desktop and mobile scope consumers](2026-09-10-mechanism-audit-scope-consumers.md): shared controller, adapters and renderer; incomplete mobile adoption leaves divergent passband recovery policies. MOR-2441 owns the A/B delay and MOR-2442 the separate mobile composition cutover. No deletion cleared.
 - [Scope continuity](2026-09-10-mechanism-audit-scope-continuity.md): PASS for
   the audited frequency-current display contract; subsequent installed
   sustained-alternation failure, the completed MOR-2437 stale-hold repair, and
