@@ -1051,6 +1051,11 @@
     -ms-overflow-style: none; /* IE/Edge */
   }
 
+  .radio-layout.desktop-control-face.standard-face {
+    scrollbar-width: none;
+  }
+
+  .radio-layout.desktop-control-face.standard-face::-webkit-scrollbar,
   .content-left::-webkit-scrollbar,
   .content-right::-webkit-scrollbar,
   .desktop-control-face.standard-face :global(.desktop-controls-left)::-webkit-scrollbar,
