@@ -399,6 +399,7 @@ from .._poller_types import (  # noqa: E402
     SetFilterShape,
     SetFilterWidth,
     SetFreq,
+    SetVfoFreq,
     SetIfShift,
     SetIpPlus,
     SetKeySpeed,
@@ -597,6 +598,7 @@ class RadioPoller:
         self._scope_demand_generation = queue.latest_scope_demand_generation
         self._scope_session_state: tuple[bool, bool] | None = None
         self._scope_session_active = False
+        self._vfo_command_lock = asyncio.Lock()
         self._vfo_binding_generation = 0
         self._vfo_connect_attempt: tuple[int, object] | None = None
         self._vfo_recovery_generation: tuple[int, object] | None = None
@@ -2105,6 +2107,39 @@ class RadioPoller:
         command_service: CommandService | None = None,
         validate_currency: Callable[[], None] | None = None,
     ) -> None:
+        # Includes internal connect selection, which bypasses the normal queue.
+        if isinstance(cmd, (SetVfoFreq, SelectVfo, VfoSwap, VfoEqualize, SendCiv)):
+            async with self._vfo_command_lock:
+                if validate_currency is not None:
+                    validate_currency()
+                await self._execute_unlocked(
+                    cmd,
+                    command_id=command_id,
+                    source=source,
+                    session_id=session_id,
+                    command_service=command_service,
+                    validate_currency=validate_currency,
+                )
+        else:
+            await self._execute_unlocked(
+                cmd,
+                command_id=command_id,
+                source=source,
+                session_id=session_id,
+                command_service=command_service,
+                validate_currency=validate_currency,
+            )
+
+    async def _execute_unlocked(
+        self,
+        cmd: Command,
+        *,
+        command_id: str | None = None,
+        source: CommandSource = "websocket",
+        session_id: str | None = None,
+        command_service: CommandService | None = None,
+        validate_currency: Callable[[], None] | None = None,
+    ) -> None:
         cmd = canonicalize_level_command(
             cmd,
             self._radio,
@@ -2143,8 +2178,6 @@ class RadioPoller:
 
         match cmd:
             case SendCiv(command=command, sub=sub, data=data):
-                from ..radio_protocol import CivCommandCapable
-
                 if not isinstance(radio, CivCommandCapable):
                     raise CommandError("send_civ is not supported by this backend")
                 await radio.send_civ(
@@ -2153,6 +2186,99 @@ class RadioPoller:
                     data=data,
                     wait_response=False,
                 )
+            case SetVfoFreq():
+                from ..commands import parse_ack_nak, parse_selected_freq_response
+                from ..types import bcd_encode
+                from .runtime_helpers import projected_vfo_capability_tags  # noqa: TID251
+
+                if "vfo_freq_direct" not in projected_vfo_capability_tags(radio, None):
+                    raise CommandError("direct VFO frequency is unavailable")
+                if cmd.provider_generation != provider_generation:
+                    raise CommandError("VFO target provider generation changed")
+                if not any(
+                    r.start <= cmd.freq <= r.end for r in self._profile.freq_ranges
+                ):
+                    raise CommandError("VFO frequency outside profile receive ranges")
+                try:
+                    field = self._state_store.snapshot().field(
+                        FieldPath.active_slot("0")
+                    )
+                except KeyError as exc:
+                    raise CommandError("VFO target identity is unknown") from exc
+                if (
+                    field.freshness is not FreshnessState.FRESH
+                    or (
+                        field.max_age is not None
+                        and time.monotonic() - field.last_observed_monotonic
+                        > field.max_age
+                    )
+                    or field.provider_generation != provider_generation
+                    or field.value != cmd.expected_active_slot
+                ):
+                    raise CommandError(
+                        "VFO target identity is unknown, stale, or changed"
+                    )
+                assert isinstance(radio, CivCommandCapable)
+                cmd_map = self._profile.command_map
+                assert cmd_map is not None
+                selected = cmd.slot == field.value
+                role = "selected" if selected else "unselected"
+                opcode, sub, prefix = decode_wire_tuple(cmd_map.get(f"set_{role}_freq"))
+                generation = self._vfo_binding_generation
+                response = await radio.send_civ(
+                    opcode,
+                    sub,
+                    data=prefix + bcd_encode(cmd.freq),
+                    wait_response=True,
+                )
+                if response is None or parse_ack_nak(response) is not True:
+                    raise CommandError("direct VFO frequency was not acknowledged")
+                if validate_currency is not None:
+                    validate_currency()
+                if (
+                    generation != self._vfo_binding_generation
+                    or provider_generation != self._provider_generation()
+                ):
+                    raise CommandError("VFO target changed during write")
+                opcode, sub, data = decode_wire_tuple(cmd_map.get(f"get_{role}_freq"))
+                readback = await radio.send_civ(
+                    opcode, sub, data=data, wait_response=True
+                )
+                if validate_currency is not None:
+                    validate_currency()
+                if (
+                    generation != self._vfo_binding_generation
+                    or provider_generation != self._provider_generation()
+                ):
+                    raise CommandError("VFO target changed during readback")
+                if readback is None:
+                    raise CommandError("direct VFO frequency readback unavailable")
+                selector, observed_freq = parse_selected_freq_response(readback)
+                if selector != (0 if selected else 1):
+                    raise CommandError("direct VFO readback selector mismatch")
+                # Only actual transaction readback carries the command correlation.
+                path = (FieldPath.active if selected else FieldPath.unselected)(
+                    "0", "freq_mode", "freq_hz"
+                )
+                observation = Observation(
+                    path=path,
+                    value=observed_freq,
+                    source=SourceMetadata(
+                        source="command_response",
+                        provider="icom_civ",
+                        command_source=command_source,
+                        session_id=session_id,
+                        native_id="direct_vfo_frequency_readback",
+                    ),
+                    timestamp_monotonic=time.monotonic(),
+                    correlation_id=command_id,
+                    provider_generation=provider_generation,
+                )
+                if command_service is not None:
+                    command_service.apply_observation(observation)
+                else:
+                    self._state_store.apply(observation)
+                return
             case SetFreq(freq=freq, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_freq")
                 current = self._current_active()

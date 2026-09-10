@@ -36,6 +36,7 @@ from rigplane.runtime._poller_types import (
     SetCivOutputAnt,
     SetDualWatch,
     SetFreq,
+    SetVfoFreq,
     SetMainSubTracking,
     SetMemoryMode,
     SetMode,
@@ -321,7 +322,7 @@ def get_tx_interlock_command_family_metadata(
         family = TxInterlockCommandFamily.ANTENNA_SWITCH
     elif isinstance(command, SetTunerStatus) and command.value in (1, 2):
         family = TxInterlockCommandFamily.TUNER_ENGAGE
-    elif isinstance(command, SetFreq):
+    elif isinstance(command, (SetFreq, SetVfoFreq)):
         family = TxInterlockCommandFamily.FREQUENCY
     elif isinstance(command, SetMode):
         family = TxInterlockCommandFamily.MODE

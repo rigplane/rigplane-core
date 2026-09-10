@@ -1184,7 +1184,9 @@ def command_intent_from_request(
     if session_id is not None:
         normalized["session_id"] = session_id
     command_name = str(name)
-    if command_name == "set_freq":
+    if command_name == "set_vfo_freq":
+        normalized["freq_hz"] = normalized["freq"]
+    elif command_name == "set_freq":
         raw_freq = (
             normalized["freq_hz"] if "freq_hz" in normalized else normalized["freq"]
         )
@@ -1327,6 +1329,17 @@ def command_response_observation(
 
 def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
     receiver = str(int(params.get("receiver", 0)))
+    if name == "set_vfo_freq":
+        if params.get("slot") not in ("A", "B") or params.get(
+            "expected_active_slot"
+        ) not in ("A", "B"):
+            raise ValueError("direct VFO frequency requires explicit A/B identity")
+        factory = (
+            FieldPath.active
+            if params["slot"] == params["expected_active_slot"]
+            else FieldPath.unselected
+        )
+        return factory(receiver, "freq_mode", "freq_hz")
     if name == "set_freq":
         return FieldPath.receiver(receiver, "freq_mode", "freq_hz")
     if name == "set_mode":

@@ -66,6 +66,7 @@ from ..radio_poller import (  # noqa: TID251
     SetFilterShape,
     SetFilterWidth,
     SetFreq,
+    SetVfoFreq,
     SetIfShift,
     SetIpPlus,
     SetLanModLevel,
@@ -324,6 +325,7 @@ class ControlHandler:
     _COMMANDS = frozenset(
         [
             "set_freq",
+            "set_vfo_freq",
             "set_band",
             "set_mode",
             "send_civ",
@@ -1055,7 +1057,7 @@ class ControlHandler:
         # read-only commands pass through. MOR-1427: a command arriving
         # inside the pacing window is coalesced (last-value-wins) instead
         # of hard-dropped — see _coalesce_command / _flush_coalesced_command.
-        if name.startswith("set_"):
+        if name.startswith("set_") and name != "set_vfo_freq":
             now = time.monotonic()
             key = self._coalesce_key(name, params)
             last = self._cmd_last.get(key, 0.0)
@@ -1594,6 +1596,52 @@ class ControlHandler:
     async def _execute_intent(
         self, intent: CommandIntent, *, wait_for_completion: bool = True
     ) -> CommandExecutionResult:
+        if intent.name == "set_vfo_freq":
+            if self._read_only:
+                raise PermissionError("read-only mode: set_vfo_freq rejected")
+            if "vfo_freq_direct" not in self._capabilities():
+                raise CommandUnsupportedError("direct VFO frequency is unavailable")
+            params = dict(intent.params)
+            command = SetVfoFreq(
+                **{
+                    key: params[key]
+                    for key in (
+                        "freq",
+                        "receiver",
+                        "slot",
+                        "expected_active_slot",
+                        "provider_generation",
+                    )
+                }
+            )
+            if self._server is None:
+                raise RuntimeError("no command queue available")
+            queue = self._server.command_queue
+            vfo_future = asyncio.get_running_loop().create_future()
+            queue.put_ordered(
+                command,
+                future=vfo_future,
+                command_id=intent.id,
+                source=intent.source,
+                session_id=params.get("session_id"),
+                command_service=self._command_service,
+                provider_generation=command.provider_generation,
+                connection_generation=queue.capture_connection_generation(),
+                expires_at_monotonic=time.monotonic() + (intent.timeout or 2.0),
+            )
+            await asyncio.wait_for(vfo_future, timeout=intent.timeout or 2.0)
+            return CommandExecutionResult(
+                details={
+                    key: params[key]
+                    for key in (
+                        "freq",
+                        "receiver",
+                        "slot",
+                        "expected_active_slot",
+                        "provider_generation",
+                    )
+                }
+            )
         descriptor = command_descriptor(intent.name)
         if (
             descriptor is not None

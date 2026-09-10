@@ -82,6 +82,7 @@ __all__ = [
     "SetFilterShape",
     "SetFilterWidth",
     "SetFreq",
+    "SetVfoFreq",
     "SetIfShift",
     "SetIpPlus",
     "SetKeySpeed",
@@ -163,6 +164,28 @@ __all__ = [
 class SetFreq:
     freq: int
     receiver: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SetVfoFreq:
+    """Fixed slot write, guarded by the identity captured when editing began."""
+
+    freq: int
+    receiver: int
+    slot: str
+    expected_active_slot: str
+    provider_generation: int
+
+    def __post_init__(self) -> None:
+        for name in ("freq", "receiver", "provider_generation"):
+            if type(getattr(self, name)) is not int:
+                raise ValueError(f"{name} must be an integer")
+        if not 0 <= self.freq <= 9_999_999_999 or self.provider_generation < 0:
+            raise ValueError("frequency or provider generation out of range")
+        if self.receiver != 0 or self.slot not in ("A", "B"):
+            raise ValueError("direct frequency requires receiver 0 and slot A/B")
+        if self.expected_active_slot not in ("A", "B"):
+            raise ValueError("expected_active_slot must be A/B")
 
 
 @dataclass(frozen=True, slots=True)
@@ -852,6 +875,7 @@ class Speak:
 Command: TypeAlias = (
     CommandIntent
     | SetFreq
+    | SetVfoFreq
     | SetMode
     | SendCiv
     | SetFilter
@@ -1016,6 +1040,7 @@ def canonicalize_level_command(
 # fails on any that is neither listed here nor classified there.
 LEGACY_COMMAND_NAMES: dict[type, str] = {
     SetFreq: "set_freq",
+    SetVfoFreq: "set_vfo_freq",
     SetMode: "set_mode",
     SetFilter: "set_filter",
     SetFilterWidth: "set_filter_width",
