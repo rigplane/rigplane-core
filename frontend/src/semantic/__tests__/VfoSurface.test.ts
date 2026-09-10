@@ -331,6 +331,25 @@ describe('receiver-addressed indicator composition (MOR-2299 slice 1)', () => {
       expect(badge.textContent).not.toBe(`RFG ${rfGainValue}`);
     },
   );
+
+  it('omits the Standard RFG badge when display support is unavailable despite a known reading', () => {
+    const base = withReceiverIndicators('1/single');
+    const indicator = base.receiverIndicators![0];
+    const viewModel = validateRadioViewModel({
+      ...base,
+      receiverIndicators: [{
+        ...indicator,
+        rfGain: {
+          ...indicator.rfGain,
+          reading: { status: 'known' as const, value: 0.75 },
+          display: { state: 'unsupported' },
+        },
+      }],
+    });
+
+    const target = mountSurface({ viewModel, appearance: 'standard' });
+    expect(target.querySelector('[data-indicator-fact="rfg"]')).toBeNull();
+  });
 });
 
 function withRadioWide(
