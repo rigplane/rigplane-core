@@ -3003,8 +3003,9 @@ def test_ic7300_real_profile_ipplus_is_polled_as_plain_cmd16_read() -> None:
     execution = asyncio.run(executor.execute(request, already_sent_paths=frozenset()))
 
     assert execution.failed_paths == ()
-    assert executor.query_for_path(ipplus) == acquisition_query(0x16, sub=0x65)
-    assert acquisition_query(0x16, sub=0x65) in sent
+    expected = acquisition_query(0x16, sub=0x65, receiver=0)
+    assert executor.query_for_path(ipplus) == expected
+    assert expected in sent
     assert profile.cmd29_routes == frozenset()
 
 
