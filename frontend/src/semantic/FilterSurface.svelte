@@ -91,6 +91,7 @@
     view: RadioViewModel;
     handles: FilterInstrumentHandles;
     finiteLayout?: FilterFiniteLayout;
+    part?: 'all' | 'filter';
     filterWidthFeedback?: Readonly<CommandScalarFeedback>;
     onFilterWidthChange?: (width: number) => void;
     onIfShiftChange?: (value: number) => void;
@@ -99,7 +100,7 @@
     onPbtReset?: () => void;
   }
   let {
-    view, handles, finiteLayout, filterWidthFeedback,
+    view, handles, finiteLayout, part = 'all', filterWidthFeedback,
     onFilterWidthChange, onIfShiftChange, onPbtInnerChange, onPbtOuterChange, onPbtReset,
   }: Props = $props();
 
@@ -203,12 +204,17 @@
 </script>
 
 {#if modeFilter || filterPassband}
-  <section class="filter-surface" data-testid="filter-surface" aria-label="Mode and filter controls">
+  <section class="filter-surface" data-testid={part === 'all' ? 'filter-surface' : `${part}-surface`}
+    aria-label={part === 'filter' ? 'Filter controls' : 'Mode and filter controls'}>
     {#if finiteLayout}
       {@render finiteLayout(handles)}
-    {:else if modeFilter}
-      {@render handles.mode()}
-      {@render handles.filter()}
+    {:else}
+      {#if modeFilter && part !== 'filter'}
+        {@render handles.mode()}
+      {/if}
+      {#if modeFilter}
+        {@render handles.filter()}
+      {/if}
     {/if}
     {#if modeFilter}
       {#if modeFilter.filterWidth.availability.structural}
@@ -291,7 +297,7 @@
           onclick={() => onPbtReset?.()}
         >Reset</button>
       {/if}
-      {#if !finiteLayout}
+      {#if !finiteLayout && part !== 'filter'}
         {@render handles.dataMode()}
       {/if}
     {/if}

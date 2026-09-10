@@ -2507,6 +2507,89 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
       .not.toBeNull();
   });
 
+  it('restores capability-driven MODE hardware keys and keeps FILTER in a sibling panel', () => {
+    const renderModePanel = (
+      modes: string[], dataModeCount?: number, dataModeLabels?: Record<string, string>, observed = true,
+    ) => {
+      h.caps = {
+        ...(capsFor('2/main_sub') as object), modes, filters: ['FIL1', 'FIL2', 'FIL3'],
+        capabilities: [
+          'scope', 'audio', 'tx', 'dual_rx', 'filter_shape',
+          ...(dataModeCount === undefined ? [] : ['data_mode']),
+        ],
+        ...(dataModeCount === undefined ? {} : { dataModeCount, dataModeLabels }),
+      } as Capabilities;
+      const state = liveState() as { main: Record<string, unknown>; fieldStatus: Record<string, unknown> };
+      const fieldStatus: Record<string, unknown> = { ...state.fieldStatus, 'main.dataMode': fresh };
+      if (!observed) {
+        const missing = { storePath: 'x', observed: false, freshness: 'unknown', availability: 'missing' };
+        fieldStatus['main.mode'] = missing;
+        fieldStatus['main.dataMode'] = missing;
+      }
+      h.state = {
+        ...state, main: { ...state.main, dataMode: 0 },
+        fieldStatus,
+      };
+      const target = render('desktop-v2');
+      const mode = target.querySelector('[data-panel-id="semantic-filter"]')!;
+      const filter = target.querySelector('[data-panel-id="semantic-filter-controls"]')!;
+      return { mode, filter,
+        modes: texts(mode, '[data-testid="standard-mode-choices"] button'),
+        data: texts(mode, '[data-testid="standard-data-mode"] button') };
+    };
+
+    const ic7610 = renderModePanel(
+      ['FM', 'PSK-R', 'RTTY', 'LSB', 'CW-R', 'AM', 'USB', 'PSK', 'CW', 'RTTY-R'],
+      3, { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' },
+    );
+    expect(ic7610.mode.querySelector('.panel-header .title')?.textContent).toBe('MODE');
+    expect(ic7610.filter.querySelector('.panel-header .title')?.textContent).toBe('FILTER');
+    expect(ic7610.modes).toEqual([
+      'USB', 'LSB', 'CW', 'CW-R', 'RTTY', 'RTTY-R', 'PSK', 'PSK-R', 'AM', 'FM',
+    ]);
+    expect(ic7610.data).toEqual(['OFF', 'D1', 'D2', 'D3']);
+    expect(ic7610.mode.querySelectorAll('[data-surface="hardware"]')).toHaveLength(14);
+    for (const id of ['filter-select', 'filter-shape', 'filter-width', 'filter-pbtInner']) {
+      expect(ic7610.mode.querySelector(`[data-testid="${id}"]`), id).toBeNull();
+    }
+    expect(ic7610.filter.querySelector('[data-testid="standard-mode-choices"]')).toBeNull();
+    expect(ic7610.filter.querySelector('[data-testid="standard-data-mode"]')).toBeNull();
+    expect(ic7610.filter.querySelector('[data-testid="filter-select"]')).not.toBeNull();
+    expect(ic7610.filter.querySelector('[data-testid="filter-shape"]')).not.toBeNull();
+    (ic7610.mode.querySelector('.panel-header') as HTMLButtonElement).click(); flushSync();
+    expect(ic7610.mode.getAttribute('data-collapsed')).toBe('true');
+    expect(ic7610.filter.getAttribute('data-collapsed')).toBe('false');
+    (ic7610.mode.querySelector('.panel-header') as HTMLButtonElement).click(); flushSync();
+    (ic7610.filter.querySelector('.panel-header') as HTMLButtonElement).click(); flushSync();
+    expect(ic7610.mode.getAttribute('data-collapsed')).toBe('false');
+    expect(ic7610.filter.getAttribute('data-collapsed')).toBe('true');
+
+    const ic7300 = renderModePanel(
+      ['USB', 'LSB', 'CW', 'CW-R', 'RTTY', 'RTTY-R', 'AM', 'FM'],
+      1, { '0': 'OFF', '1': 'DATA' },
+    );
+    expect(ic7300.modes).not.toContain('PSK');
+    expect(ic7300.modes).not.toContain('PSK-R');
+    expect(ic7300.data).toEqual(['OFF', 'DATA']);
+
+    const yaesu = renderModePanel([
+      'FM-N', 'DATA-FM', 'RTTY-U', 'CW-L', 'USB', 'LSB', 'CW-U', 'RTTY-L',
+      'DATA-U', 'DATA-L', 'AM', 'FM',
+    ]);
+    expect(yaesu.modes).toEqual([
+      'USB', 'LSB', 'CW-U', 'CW-L', 'RTTY-L', 'RTTY-U',
+      'DATA-U', 'DATA-L', 'DATA-FM', 'AM', 'FM', 'FM-N',
+    ]);
+    expect(yaesu.mode.querySelector('[data-testid="standard-data-mode"]')).toBeNull();
+
+    const unknown = renderModePanel(['USB', 'LSB'], 1, { '0': 'OFF', '1': 'DATA' }, false);
+    expect(unknown.mode.querySelectorAll('[data-testid="standard-mode-choices"] button:not(:disabled)'), 'mode')
+      .toHaveLength(0);
+    expect(unknown.mode.querySelectorAll('[data-testid="standard-data-mode"] button:not(:disabled)'), 'data')
+      .toHaveLength(0);
+    expect(unknown.mode.querySelector('[aria-pressed="true"]')).toBeNull();
+  });
+
   it('groups both bare CW instruments inside the one movable CW shell', () => {
     enableAllServiceSurfaces();
     const t = renderAll('desktop-v2');
