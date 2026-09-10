@@ -11,6 +11,7 @@ type Scalar = number | string | boolean;
 type Observation = Readonly<{ value: Scalar; marker: number }>;
 type Observations = Readonly<Record<string, Observation>>;
 type Markers = Readonly<Record<string, number>>;
+type SelectionObservation = Readonly<{ context: string; slot: 'A' | 'B'; marker: number }>;
 export interface ScopePassbandTuple {
   readonly frequencyHz: number;
   readonly mode: string;
@@ -35,6 +36,8 @@ export interface ScopePassbandDisplayState {
   readonly floors: Readonly<{ domain: string | null; geometry: Markers; receipt: number }> | null;
   /** Keeps one hold-entry evidence floor pinned until fresh frequency recovery completes. */
   readonly frequencyHoldRecovery: boolean;
+  readonly selection: SelectionObservation | null;
+  readonly selectionRecovery: Readonly<{ context: string | null }> | null;
 }
 export interface ScopePassbandDisplayInput {
   state: ServerState | null;
@@ -49,6 +52,7 @@ export const EMPTY_SCOPE_PASSBAND_DISPLAY: ScopePassbandDisplayState = Object.fr
   display: Object.freeze({ state: 'unknown', reason: 'not-observed' }),
   identity: null, continuityIdentity: null, domain: null, observations: EMPTY_OBSERVATIONS,
   geometryPaths: EMPTY_PATHS, receipt: 0, floors: null, frequencyHoldRecovery: false,
+  selection: null, selectionRecovery: null,
 });
 const nonnegative = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
 const positive = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0;
@@ -83,13 +87,14 @@ interface Inspection {
   receipt: number;
   reason: string;
   unsupported: boolean;
+  selection: SelectionObservation | null;
 }
 function inspect(input: ScopePassbandDisplayInput): Inspection {
   const { state, caps, selection, session, frame: presentation } = input;
   const envelope = presentation?.envelope;
   const result: Inspection = { candidate: null, domain: null, observations: {}, geometryPaths: [],
     receipt: integer(envelope?.acceptedSequence) ? envelope.acceptedSequence : 0,
-    reason: 'identity-unresolved', unsupported: false };
+    reason: 'identity-unresolved', unsupported: false, selection: null };
   if (!state || !caps || !selection || state.stateContractVersion !== 1 || caps.stateContractVersion !== 1
     || !integer(state.providerGeneration) || state.providerGeneration !== caps.providerGeneration
     || (selection.receiver !== 'MAIN' && selection.receiver !== 'SUB')) return result;
@@ -145,6 +150,12 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
     const slot = read(`${key}.activeSlot`, rx.activeSlot);
     if ((selection.slot !== 'A' && selection.slot !== 'B') || slot !== selection.slot
       || !slots?.includes(selection.slot)) return result;
+    if (session?.state === 'connected' && integer(session.epoch) && session.epoch > 0) {
+      result.selection = Object.freeze({ slot: selection.slot,
+        marker: result.observations[`${key}.activeSlot`].marker,
+        context: JSON.stringify([state.providerGeneration, capabilityIdentity(caps), session.epoch, selection.receiver]),
+      });
+    }
   } else if (selection.slot !== 'single') return result;
   const position = slotted ? (selection.slot === 'A' ? rx.vfoA : rx.vfoB) : rx;
   const base = slotted ? `${key}.${selection.slot === 'A' ? 'vfoA' : 'vfoB'}` : key;
@@ -245,6 +256,20 @@ export function projectScopePassbandDisplay(
   const changedGeometry = next.geometryPaths.some((path) =>
     next.observations[path]?.value !== previous.observations[path]?.value);
   const receiptRegression = candidate !== null && next.receipt < previous.receipt;
+  const selectionChanged = next.selection !== null && previous.selection !== null
+    && next.selection.context === previous.selection.context && next.selection.slot !== previous.selection.slot
+    && next.selection.marker > previous.selection.marker && !regression && !receiptRegression;
+  const recoveryContext = candidate?.continuityIdentity ?? candidate?.identity ?? null;
+  let selectionRecovery = selectionChanged ? { context: recoveryContext } : previous.selectionRecovery;
+  if (selectionRecovery && (regression || receiptRegression || !next.selection
+    || (!selectionChanged && next.selection.context !== previous.selection?.context)
+    || (selectionRecovery.context !== null && recoveryContext !== selectionRecovery.context))) {
+    selectionRecovery = null;
+  }
+  if (selectionRecovery && selectionRecovery.context === null && recoveryContext !== null) {
+    selectionRecovery = { context: recoveryContext };
+  }
+  const recoveryCancelled = previous.selectionRecovery !== null && selectionRecovery === null;
   const hasTuple = active(previous.display);
   const wasTranslated = hasTuple && previous.display.translated === true;
   const holdingFrequency = hasTuple && candidate !== null && candidate.continuityIdentity !== null
@@ -260,10 +285,14 @@ export function projectScopePassbandDisplay(
     && (candidate.stale || candidate.strict || !candidate.frequencyAligned);
   const translating = canTranslate && (changedIdentity || wasTranslated);
   const domainChange = previous.floors !== null && next.domain !== null && previous.floors.domain !== next.domain;
-  const retire = (((hasTuple && (invalid || changedIdentity)) || changedIdentity)
-    && !translating && !holdingFrequency) || domainChange;
+  const retire = !selectionRecovery && ((((hasTuple && (invalid || changedIdentity)) || changedIdentity)
+    && !translating && !holdingFrequency) || domainChange || recoveryCancelled);
   let floors = previous.floors;
-  if (retire || (holdingFrequency && !previous.frequencyHoldRecovery)
+  if (selectionChanged) {
+    floors = Object.freeze({ domain: next.domain, receipt: previous.receipt,
+      geometry: Object.freeze(Object.fromEntries(next.geometryPaths.map((path) => [path, next.selection!.marker]))),
+    });
+  } else if (retire || (holdingFrequency && !previous.frequencyHoldRecovery)
     || (translating && !previous.frequencyHoldRecovery
       && (!wasTranslated || candidate.tuple.frequencyHz !== tupleOf(previous.display).frequencyHz))) {
     const domain = next.domain ?? previous.domain;
@@ -279,9 +308,9 @@ export function projectScopePassbandDisplay(
       && next.observations[path].marker > (floors.geometry[path] ?? -1)));
   const axisAligned = candidate && (candidate.tuple.frameMode === 1 || candidate.tuple.frameMode === 3
     || candidate.tuple.frequencyHz === (candidate.tuple.startHz + candidate.tuple.endHz) / 2);
-  const canRetain = hasTuple && !retire && !invalid && !translating;
+  const canRetain = hasTuple && !selectionRecovery && !retire && !invalid && !translating;
   const canCapture = candidate && !candidate.stale && candidate.strict && !regression
-    && !receiptRegression && !retire && crossedFloors;
+    && !receiptRegression && !retire && crossedFloors && (!selectionRecovery || axisAligned);
   const display: ScopePassbandDisplay = holdingFrequency
     ? { state: 'stale', translated: true, tuple: {
       ...tupleOf(previous.display), frameMode: candidate!.tuple.frameMode,
@@ -312,6 +341,9 @@ export function projectScopePassbandDisplay(
     floors: active(display) && !display.translated ? null : floors,
     frequencyHoldRecovery: (holdingFrequency || previous.frequencyHoldRecovery)
       && active(display) && display.translated === true,
+    selection: regression ? previous.selection : next.selection ?? previous.selection,
+    selectionRecovery: active(display) && !display.translated ? null
+      : selectionRecovery && Object.freeze(selectionRecovery),
   });
 }
 function tupleOf(display: ScopePassbandDisplay): ScopePassbandTuple {

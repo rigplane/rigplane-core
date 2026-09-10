@@ -11,6 +11,7 @@ import { resolve } from 'node:path';
 import type { ScopeDisplayProjection } from '$lib/runtime/adapters/scope-display-projection';
 import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
   type ScopePassbandDisplayInput } from '$lib/runtime/adapters/scope-passband-display';
+import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
 import { qualifyScopeFrameEnvelope, toScopeDisplayFrame } from '$lib/runtime/adapters/scope-adapter';
 import { resolveLcdSpectrumFrame } from '../../../skins/segmentline/lcd-display-contract';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
@@ -1646,6 +1647,63 @@ describe('managed scope projection (MOR-2367)', () => {
       expect(target.querySelectorAll('.passband-overlay')).toHaveLength(1);
       if (step < 7) expect(target.querySelector('.passband-resize-zone')).toBeNull();
     }
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+  });
+  it('recovers selected-slot geometry through canonical alias hydration without a second width reading', () => {
+    authorityHarness.state.useProductionSelector = true;
+    const state = structuredClone(IC7300_STATE); const caps = structuredClone(IC7300_CAPABILITIES);
+    const rx = state.main!;
+    Object.assign(rx, { freqHz: 14_074_000, mode: 'USB', filter: 1, activeSlot: 'A',
+      filterWidth: 2400, pbtInner: 128, pbtOuter: 128, dataMode: 0,
+      vfoA: { freqHz: 14_074_000, mode: 'USB', filterNum: 1, dataMode: 0 },
+      vfoB: { freqHz: 14_090_000, mode: 'LSB', filterNum: 2, dataMode: 1 } });
+    const paths = ['main', ...Object.keys(rx).map((leaf) => `main.${leaf}`),
+      ...['vfoA', 'vfoB'].flatMap(slot => Object.keys(rx.vfoA!).map(leaf => `main.${slot}.${leaf}`))];
+    state.fieldStatus = Object.fromEntries(paths.map(path => [path, { storePath: path,
+      observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 10 }]));
+    runtimeHarness.state.currentState = state; runtimeHarness.state.currentCaps = caps;
+    const input: ScopePassbandDisplayInput = { state, caps, selection: null,
+      session: { state: 'connected', epoch: 1 }, frame: null };
+    const { target, props } = managed(null); let result = EMPTY_SCOPE_PASSBAND_DISPLAY; let sequence = 0;
+    function present(center: number): void {
+      const active = toRadioViewModel(state, caps)!.vfos.filter(vfo => vfo.isActive);
+      const vfo = active.length === 1 ? active[0] : null;
+      input.selection = vfo?.slot.kind === 'slotted' ? { receiver: vfo.receiver, slot: vfo.slot.id } : null;
+      const envelope = qualifyScopeFrameEnvelope({ receiver: 0, mode: 0,
+        startFreq: center - 50_000, endFreq: center + 50_000, pixels: new Uint8Array([10, 100, 200]) },
+      { source: 'hardware', receiver: 0, providerGeneration: 1, transportEpoch: 1,
+        receivedAt: 0, acceptedSequence: ++sequence }, 1)!;
+      const authority = { source: 'hardware' as const, receiver: 0 as const, providerGeneration: 1,
+        transportEpoch: 1, demanded: true, transport: 'connected' as const, nowMonotonic: 0 };
+      const frame = toScopeDisplayFrame(envelope, authority);
+      input.frame = { envelope, authority, resolution: resolveLcdSpectrumFrame(frame, { source: 'hardware', receiver: 'MAIN' }) };
+      result = projectScopePassbandDisplay(result, input);
+      props.set('projection', { frame, frameMode: 0, acceptedSequence: sequence, passband: result.display }); flushSync();
+    }
+    present(14_074_000); expect(result.display.state).toBe('current');
+    rx.activeSlot = 'B'; state.fieldStatus['main.activeSlot'].lastObservedMonotonic = 20;
+    for (const leaf of Object.keys(rx.vfoB!)) state.fieldStatus[`main.vfoB.${leaf}`].observed = false;
+    rx.filterWidth = 1800; state.fieldStatus['main.filterWidth'].lastObservedMonotonic = 20.1;
+    present(14_074_000);
+    expect(input.selection).toEqual({ receiver: 'MAIN', slot: 'B' });
+    expect(result.display.state).toBe('unknown');
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    Object.assign(rx, { freqHz: 14_090_000, mode: 'LSB', filter: 2, dataMode: 1 });
+    for (const path of [...Object.keys(rx.vfoB!).map(leaf => `main.vfoB.${leaf}`),
+      'main.freqHz', 'main.mode', 'main.filter', 'main.dataMode']) {
+      Object.assign(state.fieldStatus[path], { observed: true, lastObservedMonotonic: 20.2 });
+    }
+    present(14_090_000); expect(result.display.state).toBe('unknown');
+    for (const [index, leaf] of ['pbtInner', 'pbtOuter'].entries()) {
+      state.fieldStatus[`main.${leaf}`].lastObservedMonotonic = 20.3 + index / 10;
+      present(14_090_000);
+      if (index === 0) expect(target.querySelector('.passband-overlay')).toBeNull();
+    }
+    expect(result.display).toMatchObject({ state: 'current', tuple: { frequencyHz: 14_090_000, mode: 'LSB', widthHz: 1800 } });
+    expect(target.querySelectorAll('.passband-overlay')).toHaveLength(1);
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
   });
