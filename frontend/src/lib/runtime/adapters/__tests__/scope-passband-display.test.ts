@@ -460,6 +460,32 @@ describe('coherent RF passband display', () => {
     expect(project(input, back).display.state).toBe('unknown');
     renew(input, 11, 4); expect(project(input, back).display.state).toBe('current');
   });
+  it.each([
+    ['command_response', 'unknown'],
+    ['poll_response', 'current'],
+  ] as const)('treats a same-slot %s refresh as %s', (source, expected) => {
+    const input = banded(); const current = project(input); const rx = input.state!.main!;
+    rx.filterWidth = 1800;
+    for (const leaf of ['filterWidth', 'pbtInner', 'pbtOuter']) {
+      status(input, `main.${leaf}`, { lastObservedMonotonic: 20.1 });
+    }
+    status(input, 'main.activeSlot', { lastObservedMonotonic: 21, source: { source } });
+    for (const path of ['main.freqHz', 'main.mode', 'main.filter', 'main.dataMode',
+      'main.vfoA.freqHz', 'main.vfoA.mode', 'main.vfoA.filterNum']) {
+      status(input, path, { lastObservedMonotonic: 21.2 });
+    }
+    receipt(input, 2, { startFreq: 14_024_000, endFreq: 14_124_000 });
+    const boundary = project(input, current); expect(boundary.display.state).toBe(expected);
+    if (source === 'command_response') {
+      for (const leaf of ['filterWidth', 'pbtInner', 'pbtOuter']) {
+        status(input, `main.${leaf}`, { lastObservedMonotonic: 21.3 });
+      }
+      receipt(input, 3, { startFreq: 14_024_000, endFreq: 14_124_000 });
+      const recovered = project(input, boundary);
+      expect(recovered.display).toMatchObject({ state: 'current', tuple: { widthHz: 1800 } });
+      expect(project(input, recovered).display.state).toBe('current');
+    }
+  });
   it('rejects partial width updates and regressing leaf/ancestor markers', () => {
     for (const path of ['main.ifShift', 'main']) {
       const input = fixture(); const current = project(input); status(input, path, { lastObservedMonotonic: 9 });

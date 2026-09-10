@@ -1704,6 +1704,18 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(result.display).toMatchObject({ state: 'current', tuple: { frequencyHz: 14_090_000, mode: 'LSB', widthHz: 1800 } });
     expect(target.querySelectorAll('.passband-overlay')).toHaveLength(1);
     expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    Object.assign(state.fieldStatus['main.activeSlot'], {
+      lastObservedMonotonic: 30, source: { source: 'command_response' },
+    });
+    present(14_090_000);
+    expect(result.display.state).toBe('unknown');
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+    for (const [index, leaf] of ['filterWidth', 'pbtInner', 'pbtOuter'].entries()) {
+      state.fieldStatus[`main.${leaf}`].lastObservedMonotonic = 30.1 + index / 10;
+      present(14_090_000);
+    }
+    expect(result.display).toMatchObject({ state: 'current', tuple: { frequencyHz: 14_090_000, widthHz: 1800 } });
+    expect(target.querySelectorAll('.passband-overlay')).toHaveLength(1);
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
   });

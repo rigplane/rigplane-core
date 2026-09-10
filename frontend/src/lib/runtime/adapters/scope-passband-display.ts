@@ -88,13 +88,14 @@ interface Inspection {
   reason: string;
   unsupported: boolean;
   selection: SelectionObservation | null;
+  explicitSelectionBind: boolean;
 }
 function inspect(input: ScopePassbandDisplayInput): Inspection {
   const { state, caps, selection, session, frame: presentation } = input;
   const envelope = presentation?.envelope;
   const result: Inspection = { candidate: null, domain: null, observations: {}, geometryPaths: [],
     receipt: integer(envelope?.acceptedSequence) ? envelope.acceptedSequence : 0,
-    reason: 'identity-unresolved', unsupported: false, selection: null };
+    reason: 'identity-unresolved', unsupported: false, selection: null, explicitSelectionBind: false };
   if (!state || !caps || !selection || state.stateContractVersion !== 1 || caps.stateContractVersion !== 1
     || !integer(state.providerGeneration) || state.providerGeneration !== caps.providerGeneration
     || (selection.receiver !== 'MAIN' && selection.receiver !== 'SUB')) return result;
@@ -155,6 +156,7 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
         marker: result.observations[`${key}.activeSlot`].marker,
         context: JSON.stringify([state.providerGeneration, capabilityIdentity(caps), session.epoch, selection.receiver]),
       });
+      result.explicitSelectionBind = state.fieldStatus?.[`${key}.activeSlot`]?.source?.source === 'command_response';
     }
   } else if (selection.slot !== 'single') return result;
   const position = slotted ? (selection.slot === 'A' ? rx.vfoA : rx.vfoB) : rx;
@@ -259,10 +261,14 @@ export function projectScopePassbandDisplay(
   const selectionChanged = next.selection !== null && previous.selection !== null
     && next.selection.context === previous.selection.context && next.selection.slot !== previous.selection.slot
     && next.selection.marker > previous.selection.marker && !regression && !receiptRegression;
+  const selectionRebound = next.explicitSelectionBind && next.selection !== null && previous.selection !== null
+    && next.selection.context === previous.selection.context && next.selection.slot === previous.selection.slot
+    && next.selection.marker > previous.selection.marker && !regression && !receiptRegression;
+  const selectionBoundary = selectionChanged || selectionRebound;
   const recoveryContext = candidate?.continuityIdentity ?? candidate?.identity ?? null;
-  let selectionRecovery = selectionChanged ? { context: recoveryContext } : previous.selectionRecovery;
+  let selectionRecovery = selectionBoundary ? { context: recoveryContext } : previous.selectionRecovery;
   if (selectionRecovery && (regression || receiptRegression || !next.selection
-    || (!selectionChanged && next.selection.context !== previous.selection?.context)
+    || (!selectionBoundary && next.selection.context !== previous.selection?.context)
     || (selectionRecovery.context !== null && recoveryContext !== selectionRecovery.context))) {
     selectionRecovery = null;
   }
@@ -288,7 +294,7 @@ export function projectScopePassbandDisplay(
   const retire = !selectionRecovery && ((((hasTuple && (invalid || changedIdentity)) || changedIdentity)
     && !translating && !holdingFrequency) || domainChange || recoveryCancelled);
   let floors = previous.floors;
-  if (selectionChanged) {
+  if (selectionBoundary) {
     floors = Object.freeze({ domain: next.domain, receipt: previous.receipt,
       geometry: Object.freeze(Object.fromEntries(next.geometryPaths.map((path) => [path, next.selection!.marker]))),
     });
