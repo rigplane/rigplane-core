@@ -544,7 +544,7 @@ class RadioPoller:
         # so the map never leaks.
         self._acquisition_healthy_grace_started: dict[str, float] = {}
         self._queue = queue
-        self._connection_generation_capture = lambda: getattr(
+        self._connection_generation_capture: Callable[[], int | None] = lambda: getattr(
             self._radio, "_civ_epoch", None
         )
         self._connection_generation_bound = False
@@ -597,6 +597,9 @@ class RadioPoller:
         self._scope_session_state: tuple[bool, bool] | None = None
         self._scope_session_active = False
         self._vfo_binding_generation = 0
+        self._vfo_connect_attempt: tuple[int, object] | None = None
+        self._vfo_recovery_generation: tuple[int, object] | None = None
+        self._vfo_connection_started_at = 0.0
         # MOR-615: (main, sub) data_mode pair seen at the last MOD-input fetch;
         # a change triggers a refetch of the per-DATA-group MOD-input sources.
         self._mod_input_data_modes: tuple[int, int] | None = None
@@ -3681,9 +3684,63 @@ class RadioPoller:
             )
         return tuple(paths)
 
-    def reset_vfo_session(self) -> None:
+    def _vfo_connection_generation(self) -> tuple[int, object]:
+        return self._provider_generation(), self._connection_generation_capture()
+
+    async def select_vfo_a_on_connect(self, *, read_only: bool) -> None:
+        """Attempt the application connection policy once, with fresh RX only."""
+        generation = self._vfo_connection_generation()
+        if self._vfo_connect_attempt == generation:
+            return
+        self._vfo_connect_attempt = generation
+        self._vfo_recovery_generation = generation
+        reason: str | None = None
+        if read_only:
+            reason = "read_only"
+        elif (
+            self._profile.receiver_count != 1
+            or self._profile.vfo_scheme != "ab"
+            or self._profile.vfo_readback != "selected_unselected"
+        ):
+            reason = "inapplicable_profile"
+        else:
+            snapshot = self._state_store.snapshot()
+            if self._current_rf_state(snapshot) is not RfState.RX:
+                reason = "rf_not_confirmed_rx"
+            elif (
+                snapshot.field(_PTT_PATH).last_observed_monotonic
+                < self._vfo_connection_started_at
+            ):
+                reason = "ptt_predates_connection"
+        if reason is not None:
+            self._record_state_diagnostic(
+                "vfo_connect_skipped", "web.radio_poller", reason=reason
+            )
+            logger.info("radio-poller: VFO A connection selection skipped: %s", reason)
+            return
+        try:
+            await self._execute(SelectVfo("A"), source="internal_policy")
+        except Exception:
+            self._record_state_diagnostic(
+                "vfo_connect_failed",
+                "web.radio_poller",
+                reason="selection_or_readback_failed",
+            )
+            logger.warning(
+                "radio-poller: VFO A connection selection failed", exc_info=True
+            )
+
+    def reset_vfo_session(self, *, connection_recovery: bool = False) -> None:
         """Invalidate connection-epoch A/B proof without touching TX facts."""
 
+        if connection_recovery:
+            generation = self._vfo_connection_generation()
+            if self._vfo_recovery_generation == generation:
+                return
+            self._vfo_recovery_generation = generation
+            self._vfo_connection_started_at = (
+                self._state_store.snapshot().generated_at_monotonic
+            )
         self._vfo_binding_generation += 1
         relative_reset = self._state_store.reset_relative_vfo_retention(
             generation=self._provider_generation()
