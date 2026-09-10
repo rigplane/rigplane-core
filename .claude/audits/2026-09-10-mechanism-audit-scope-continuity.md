@@ -88,7 +88,22 @@ This evidence does not establish fully accepted tuning UX or causal physical
 input provenance. The same 140 balanced key actions produced 140 enqueues with
 zero command errors, but the initial 14,101,000 Hz became a final target and
 readback of 14,102,000 Hz; the first wrong absolute target was command 7.
-That numeric intent drift is the existing MOR-1864 issue, still In Progress
-and High priority, rather than a change to this audit's original mechanism
-verdict. MOR-2439 still owns producer freshness coverage, and MOR-2440
-separately owns recovery after a genuine hard retirement.
+At that point, the numeric intent drift remained the existing MOR-1864 issue,
+In Progress and High priority, rather than a change to this audit's original
+mechanism verdict. MOR-2439 still owns producer freshness coverage, and
+MOR-2440 separately owns recovery after a genuine hard retirement.
+
+MOR-1864 subsequently completed its own independent gate in PR #3434. Exact
+head `c356a85ab24389efe1b8320d1061035001e4b8ed` merged as
+`08b650d3fb24207abf760f96a7346c5aab13efee` with equal tree
+`0e4e4aba0359e5b96904c7f44e5504aa4442bf74`. Independent review, 469
+tests, canonical quick run `34485949152`, visual CI, and installed
+keyboard/wheel acceptance passed. The installed 140-action keyboard run
+enqueued all 70 `[S+1000,S]` pairs exactly and returned to fresh S with zero
+missing overlays; the ten-action wheel run also returned to fresh S with zero
+missing overlays or command errors.
+
+That later MOR-1864 acceptance remains separate from this audit's original
+scope-continuity verdict. Its readback association intentionally cannot prove
+that a physical dial observation equal to a still-relevant accepted target was
+caused by that command. MOR-2439 and MOR-2440 remain separate Backlog work.

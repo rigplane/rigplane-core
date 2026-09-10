@@ -8,7 +8,8 @@ Independent definition/consumer collection followed by architectural adjudicatio
   the audited frequency-current display contract; subsequent installed
   sustained-alternation failure, the completed MOR-2437 stale-hold repair, and
   its installed display-continuity acceptance are retained in the report.
-  Numeric tuning-intent drift remains separate under MOR-1864.
+  Numeric tuning-intent drift remained separate under MOR-1864 and later
+  completed its own reviewed, CI, and installed keyboard/wheel acceptance.
 - [Managed TX refresh](2026-09-10-mechanism-audit-managed-tx-refresh.md): initially BLOCKED for incomplete TOT/error context fencing; follow-up revision `42746022` passed independent delta adjudication. Both verdicts are retained.
 - [Command retention](2026-09-10-mechanism-audit-command-retention.md): PASS; shared Core active bookkeeping is distinct from queue coalescing and retained lifecycle history.
 
