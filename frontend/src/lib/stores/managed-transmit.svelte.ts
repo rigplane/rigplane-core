@@ -5,6 +5,7 @@ let document = $state<ManagedTransmitDocument | null>(null); let countdown = $st
 let invalidationRevision = 0;
 let refreshRevision = 0;
 const clock = () => globalThis.performance.now();
+const contextIsCurrent = (revision: number): boolean => revision === invalidationRevision;
 const applyManagedTransmitSnapshot = (value: ManagedTransmitDocument, receivedAt = clock()): void => {
   document = value;
   const tot = value.managedTransmit.status === 'available' ? value.managedTransmit.tot : null;
@@ -31,12 +32,12 @@ export async function refreshManagedTransmit(
   let value: ManagedTransmitDocument;
   try {
     value = await client.snapshot();
-  } catch (error) {
-    if (refresh !== refreshRevision || invalidationAtStart !== invalidationRevision) return;
+  } catch {
+    if (refresh !== refreshRevision || !contextIsCurrent(invalidationAtStart)) return;
     invalidateManagedTransmit();
-    throw error;
+    return;
   }
-  if (refresh !== refreshRevision || invalidationAtStart !== invalidationRevision) return;
+  if (refresh !== refreshRevision || !contextIsCurrent(invalidationAtStart)) return;
   receiveManagedTransmitSnapshot(value);
 }
 export async function submitManagedTransmit(operation: 'transmit_on' | 'force_off', client = new ManagedTransmitClient()): Promise<'accepted' | 'rejected'> { const outcome = await client.command(operation); await refreshManagedTransmit(client); return outcome; }
@@ -44,9 +45,13 @@ export async function setManagedTransmitTot(
   configuredSeconds: number | null,
   client: Pick<ManagedTransmitClient, 'setTot'> = new ManagedTransmitClient(),
 ): Promise<void> {
+  const invalidationAtStart = invalidationRevision;
   try {
-    receiveManagedTransmitSnapshot(await client.setTot(configuredSeconds));
+    const value = await client.setTot(configuredSeconds);
+    if (!contextIsCurrent(invalidationAtStart)) return;
+    receiveManagedTransmitSnapshot(value);
   } catch (error) {
+    if (!contextIsCurrent(invalidationAtStart)) return;
     invalidateManagedTransmit();
     throw error;
   }

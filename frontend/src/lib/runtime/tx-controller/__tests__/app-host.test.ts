@@ -291,15 +291,36 @@ describe('managed App TX host', () => {
     const facade = getManagedAppTxController();
     let published: ManagedTxState | undefined;
     facade.subscribe((state) => { published = state; });
-    h.setTot.mockRejectedValueOnce(new Error('write failed'));
-    h.invalidate.mockImplementationOnce(() => {
+    h.setTot.mockImplementationOnce(async () => {
       h.state = { ...h.state, fresh: false, configuredSeconds: null };
+      h.invalidate();
+      throw new Error('write failed');
     });
 
     await expect(facade.setTot(240)).rejects.toThrow('write failed');
 
     expect(h.invalidate).toHaveBeenCalledTimes(1);
     expect(published).toMatchObject({ fresh: false, configuredSeconds: null });
+    host.dispose();
+    await flush();
+  });
+
+  it('does not retire a newer projection after the TOT dependency reports its handled failure', async () => {
+    const host = provideManagedAppTxHost(bindings());
+    const facade = getManagedAppTxController();
+    h.setTot.mockImplementationOnce(async () => {
+      h.invalidate();
+      h.state = { ...h.state, fresh: false, configuredSeconds: null };
+      queueMicrotask(() => {
+        h.state = { ...idle(), configuredSeconds: 300 };
+      });
+      throw new Error('old context write failed');
+    });
+
+    await expect(facade.setTot(240)).rejects.toThrow('old context write failed');
+
+    expect(h.invalidate).toHaveBeenCalledTimes(1);
+    expect(facade.snapshot()).toMatchObject({ fresh: true, configuredSeconds: 300 });
     host.dispose();
     await flush();
   });
