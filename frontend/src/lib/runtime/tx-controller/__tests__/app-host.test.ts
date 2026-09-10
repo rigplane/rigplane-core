@@ -77,6 +77,7 @@ describe('managed App TX host', () => {
   it('registers one lifecycle owner, refreshes on connect, and unregisters exactly once', async () => {
     const host = provideManagedAppTxHost(bindings());
     expect([h.session, h.lifecycle, h.barrier].every(Boolean)).toBe(true);
+    host.refreshAuthority(3);
     h.session!({ state: 'connected', epoch: 4 });
     await flush();
     expect(h.refresh).toHaveBeenCalledTimes(1);
@@ -125,7 +126,7 @@ describe('managed App TX host', () => {
     getManagedAppTxController().transmitOn();
     await vi.waitFor(() => expect(h.submit).toHaveBeenCalledWith('transmit_on'));
     h.state = { ...idle(), phase: 'active', intent: 'latched', radioTx: 'on', releaseRequired: true };
-    host.refreshAuthority();
+    host.refreshAuthority(3);
     await flush();
     if (release === 'lifecycle') h.lifecycle!();
     if (release === 'pre-disconnect') await h.barrier!();
@@ -164,10 +165,108 @@ describe('managed App TX host', () => {
       .map((mock) => mock.mock.calls.length);
     h.session!({ state: 'connected', epoch: 6 }); h.lifecycle!(); await h.barrier!();
     facade.pttOn(); facade.pttOff(); facade.transmitOn(); facade.forceOff();
-    await facade.setTot(240); host.refreshAuthority();
+    await facade.setTot(240); host.refreshAuthority(3);
     await flush();
     expect([h.refresh, h.sendPtt, h.submit, h.setTot, h.startAudio]
       .map((mock) => mock.mock.calls.length)).toEqual(counts);
+  });
+
+  it('invalidates immediately across provider and control-session boundaries', async () => {
+    const host = provideManagedAppTxHost(bindings());
+    host.refreshAuthority(3);
+    expect(h.invalidate).toHaveBeenCalledTimes(1);
+    expect(h.refresh).not.toHaveBeenCalled();
+
+    h.session!({ state: 'connected', epoch: 4 });
+    await flush();
+    expect(h.invalidate).toHaveBeenCalledTimes(2);
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+
+    host.refreshAuthority(3);
+    await flush();
+    expect(h.invalidate).toHaveBeenCalledTimes(2);
+    expect(h.refresh).toHaveBeenCalledTimes(2);
+
+    host.refreshAuthority(5);
+    await flush();
+    expect(h.invalidate).toHaveBeenCalledTimes(3);
+    expect(h.refresh).toHaveBeenCalledTimes(3);
+
+    h.session!({ state: 'connected', epoch: 6 });
+    await flush();
+    expect(h.invalidate).toHaveBeenCalledTimes(4);
+    expect(h.refresh).toHaveBeenCalledTimes(4);
+    host.dispose();
+  });
+
+  it('dispatches one explicit TRANSMIT intent while a background refresh is pending', async () => {
+    let resolveRefresh!: () => void;
+    h.refresh.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveRefresh = resolve; }));
+    h.submit.mockResolvedValueOnce('rejected');
+    const host = provideManagedAppTxHost(bindings());
+    host.refreshAuthority(3);
+    h.session!({ state: 'connected', epoch: 4 });
+    await flush();
+
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+    expect(h.submit).not.toHaveBeenCalled();
+    getManagedAppTxController().transmitOn();
+    await vi.waitFor(() => expect(h.submit).toHaveBeenCalledExactlyOnceWith('transmit_on'));
+    expect(h.sendPtt).not.toHaveBeenCalled();
+    expect(getManagedAppTxController().snapshot()).toMatchObject({ phase: 'idle', fresh: true });
+
+    resolveRefresh();
+    await flush();
+    expect(h.submit).toHaveBeenCalledTimes(1);
+    host.dispose();
+  });
+
+  it('coalesces repeated background refresh requests and performs one trailing read', async () => {
+    let resolveRefresh!: () => void;
+    h.refresh.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveRefresh = resolve; }));
+    const host = provideManagedAppTxHost(bindings());
+    host.refreshAuthority(3);
+    h.session!({ state: 'connected', epoch: 4 });
+    host.refreshAuthority(3);
+    host.refreshAuthority(3);
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+
+    resolveRefresh();
+    await flush();
+    expect(h.refresh).toHaveBeenCalledTimes(2);
+    host.dispose();
+  });
+
+  it('does not launch a queued refresh after disposal', async () => {
+    let resolveRefresh!: () => void;
+    h.refresh.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveRefresh = resolve; }));
+    const host = provideManagedAppTxHost(bindings());
+    host.refreshAuthority(3);
+    h.session!({ state: 'connected', epoch: 4 });
+    host.refreshAuthority(3);
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+
+    host.dispose();
+    resolveRefresh();
+    await flush();
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidates disconnect synchronously and fences its late cleanup after reconnect', async () => {
+    const host = provideManagedAppTxHost(bindings());
+    host.refreshAuthority(3);
+    h.session!({ state: 'connected', epoch: 4 });
+    await flush();
+    expect(h.invalidate).toHaveBeenCalledTimes(2);
+
+    h.session!({ state: 'disconnected', epoch: 5 });
+    expect(h.invalidate).toHaveBeenCalledTimes(3);
+    h.session!({ state: 'connected', epoch: 6 });
+    expect(h.invalidate).toHaveBeenCalledTimes(4);
+    await flush();
+    expect(h.invalidate).toHaveBeenCalledTimes(4);
+    expect(h.refresh).toHaveBeenCalledTimes(2);
+    host.dispose();
   });
 
   it('routes fractional and disabled TOT edits through the stable facade', async () => {
@@ -192,15 +291,36 @@ describe('managed App TX host', () => {
     const facade = getManagedAppTxController();
     let published: ManagedTxState | undefined;
     facade.subscribe((state) => { published = state; });
-    h.setTot.mockRejectedValueOnce(new Error('write failed'));
-    h.invalidate.mockImplementationOnce(() => {
+    h.setTot.mockImplementationOnce(async () => {
       h.state = { ...h.state, fresh: false, configuredSeconds: null };
+      h.invalidate();
+      throw new Error('write failed');
     });
 
     await expect(facade.setTot(240)).rejects.toThrow('write failed');
 
     expect(h.invalidate).toHaveBeenCalledTimes(1);
     expect(published).toMatchObject({ fresh: false, configuredSeconds: null });
+    host.dispose();
+    await flush();
+  });
+
+  it('does not retire a newer projection after the TOT dependency reports its handled failure', async () => {
+    const host = provideManagedAppTxHost(bindings());
+    const facade = getManagedAppTxController();
+    h.setTot.mockImplementationOnce(async () => {
+      h.invalidate();
+      h.state = { ...h.state, fresh: false, configuredSeconds: null };
+      queueMicrotask(() => {
+        h.state = { ...idle(), configuredSeconds: 300 };
+      });
+      throw new Error('old context write failed');
+    });
+
+    await expect(facade.setTot(240)).rejects.toThrow('old context write failed');
+
+    expect(h.invalidate).toHaveBeenCalledTimes(1);
+    expect(facade.snapshot()).toMatchObject({ fresh: true, configuredSeconds: 300 });
     host.dispose();
     await flush();
   });

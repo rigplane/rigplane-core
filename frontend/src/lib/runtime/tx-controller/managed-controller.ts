@@ -10,6 +10,7 @@ export interface ManagedTxDependencies {
   invalidate(): void;
   sendPtt(operation: PttOperation): Promise<Outcome>;
   submit(operation: ManagedOperation): Promise<Outcome>;
+  /** Persists TOT and owns canonical projection invalidation on failure. */
   setTot(configuredSeconds: number | null): Promise<void>;
   /** Browser-only presentation clock; never a TX or transport authority. */
   onPresentationTick?(handler: () => void): () => void;
@@ -95,7 +96,6 @@ export class ManagedTxController {
     try {
       await this.dependencies.setTot(configuredSeconds);
     } catch (error) {
-      this.dependencies.invalidate();
       this.#publish();
       throw error;
     }
