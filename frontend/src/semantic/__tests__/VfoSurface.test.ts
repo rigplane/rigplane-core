@@ -2450,8 +2450,7 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(panel).toMatch(/meterSource=\{indicator\?\.sMeter\.source\}/);
     expect(panel).toMatch(/\{continuitySession\}/);
     expect(source.match(/receiverInstruments\?\.(?:mainSMeter|subSMeter)/g)).toHaveLength(6);
-    expect(source.match(/sMeter=\{receiverInstruments === undefined \? undefined : hostedMeter\}/g))
-      .toHaveLength(3);
+    expect(source.match(/sMeter=\{receiverInstruments === undefined/g)).toHaveLength(3);
   });
 
   it.each(['semantic', 'sdr', 'standard'] as const)(
@@ -2499,18 +2498,67 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
     expect(root.querySelectorAll('[data-testid="receiver-s-meter"]')).toHaveLength(1);
   });
-  it('keeps the Standard active frequency dominant over its secondary memory', () => {
-    const root = mountSurface({ viewModel: withReceiverIndicators('1/ab'), appearance: 'standard' });
-    const primary = root.querySelector<HTMLElement>('[data-vfo-active-slot="true"] .vfo-freq')!;
-    const secondary = root.querySelector<HTMLElement>('[data-vfo-active-slot="false"] .vfo-freq')!;
-    expect(primary).not.toBeNull();
-    expect(secondary).not.toBeNull();
-    const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
-    expect(source).toContain('grid-template-columns: auto minmax(0, 1fr) auto;');
-    expect(source).toContain('grid-template-rows: auto auto;');
-    expect(source).toContain('grid-template-columns: auto auto minmax(0, 1fr) auto;');
-    expect(source).toContain('font-size: clamp(34px, 3vw, 44px)');
-    expect(source).toContain('.secondary-slot .vfo-freq { font-size: 18px;');
+  it('keeps Standard VFO A left and VFO B right while the confirmed active highlight moves', () => {
+    const base = withReceiverIndicators('1/ab');
+    const aActive = mountSurface({ viewModel: base, appearance: 'standard' });
+    expect(Array.from(aActive.querySelectorAll('[data-standard-vfo-slot]')).map((node) =>
+      node.getAttribute('data-standard-vfo-slot'))).toEqual(['A', 'B']);
+    expect(aActive.querySelector('[data-standard-vfo-slot="A"] .panel')?.classList.contains('active')).toBe(true);
+    expect(aActive.querySelector('[data-standard-vfo-slot="B"] .panel')?.classList.contains('active')).toBe(false);
+    expect(aActive.querySelectorAll('[data-testid="receiver-s-meter"]')).toHaveLength(1);
+    expect(aActive.querySelector('[data-standard-vfo-slot="B"] [data-meter-space="reserved"]')).not.toBeNull();
+
+    const bModel: RadioViewModel = {
+      ...base,
+      vfos: base.vfos.map((vfo) => ({
+        ...vfo,
+        isActive: vfo.slot.kind === 'slotted' && vfo.slot.id === 'B',
+        isActiveSlot: vfo.slot.kind === 'slotted' && vfo.slot.id === 'B',
+      })),
+    };
+    const bActive = mountSurface({ viewModel: bModel, appearance: 'standard' });
+    expect(Array.from(bActive.querySelectorAll('[data-standard-vfo-slot]')).map((node) =>
+      node.getAttribute('data-standard-vfo-slot'))).toEqual(['A', 'B']);
+    expect(bActive.querySelector('[data-standard-vfo-slot="A"] .panel')?.classList.contains('active')).toBe(false);
+    expect(bActive.querySelector('[data-standard-vfo-slot="B"] .panel')?.classList.contains('active')).toBe(true);
+    expect(bActive.querySelector('[data-standard-vfo-slot="A"] [data-vfo-freq]')?.textContent?.replace(/\s/g, '')).toBe('7.100.000');
+    expect(bActive.querySelector('[data-standard-vfo-slot="B"] [data-vfo-freq]')?.textContent?.replace(/\s/g, '')).toBe('7.150.000');
+  });
+
+  it('keeps the inactive Standard peer on its own slot frequency when the active receiver uses a hosted readout', () => {
+    const onTuneFrequency = vi.fn();
+    const onSelectVfo = vi.fn();
+    const root = mountSurface({
+      viewModel: withReceiverIndicators('1/ab'), appearance: 'standard',
+      receiverInstruments: hostedReceiverInstruments(), onTuneFrequency, onSelectVfo,
+    });
+    expect(root.querySelector('[data-standard-vfo-slot="A"] [data-hosted-frequency="MAIN"]')).not.toBeNull();
+    expect(root.querySelector('[data-standard-vfo-slot="B"] [data-vfo-freq]')?.textContent?.replace(/\s/g, '')).toBe('7.150.000');
+    expect(root.querySelector('[data-standard-vfo-slot="B"] [data-hosted-frequency]')).toBeNull();
+    const inactiveFrequency = root.querySelector<HTMLElement>('[data-standard-vfo-slot="B"] [data-vfo-freq]')!;
+    expect(inactiveFrequency.getAttribute('data-freq-tunable')).toBe('false');
+    inactiveFrequency.click();
+    inactiveFrequency.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    inactiveFrequency.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(onTuneFrequency).not.toHaveBeenCalled();
+    expect(onSelectVfo).not.toHaveBeenCalled();
+  });
+
+  it('puts persistent A/B selection and shared operations in the center of the Standard pair', () => {
+    const onSelectVfo = vi.fn();
+    const root = mountSurface({
+      viewModel: withReceiverIndicators('1/ab'), appearance: 'standard', onSelectVfo,
+    });
+    const bridge = root.querySelector('[data-instrument-bridge]')!;
+    expect(bridge.previousElementSibling?.getAttribute('data-standard-vfo-slot')).toBe('A');
+    expect(bridge.nextElementSibling?.getAttribute('data-standard-vfo-slot')).toBe('B');
+    expect(bridge.querySelectorAll('[data-standard-select-vfo]')).toHaveLength(2);
+    bridge.querySelector<HTMLButtonElement>('[data-standard-select-vfo="B"]')?.click();
+    expect(onSelectVfo).toHaveBeenCalledExactlyOnceWith({ receiver: 'MAIN', slot: { kind: 'slotted', id: 'B' } });
+    expect(bridge.querySelector('[data-vfo-split]')).not.toBeNull();
+    expect(bridge.querySelector('[data-vfo-equalize]')).not.toBeNull();
+    expect(bridge.querySelector('[data-vfo-swap]')).not.toBeNull();
+    expect(bridge.querySelector('[data-vfo-tx-target-status]')).not.toBeNull();
   });
 
   it('mounts the surviving Standard VfoPanel with honest meter states', () => {
@@ -2546,7 +2594,7 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(onSelectVfo).toHaveBeenCalledExactlyOnceWith({ receiver: 'SUB', slot: { kind: 'slotted', id: 'B' } });
   });
 
-  it('retains a structural receiver and both records when active-slot identity is unknown', () => {
+  it('retains both fixed cards without an optimistic highlight when the active slot is unknown', () => {
     const base = withReceiverIndicators('1/ab');
     const onSelectVfo = vi.fn();
     const viewModel: RadioViewModel = {
@@ -2555,11 +2603,12 @@ describe('MOR-2342 historical instrument presentations', () => {
       vfos: base.vfos.map((vfo) => ({ ...vfo, isActive: false, isActiveSlot: false })),
     };
     const root = mountSurface({ viewModel, appearance: 'standard', onSelectVfo });
-    expect(root.querySelectorAll('[data-receiver-instrument="MAIN"]')).toHaveLength(1);
-    expect(root.querySelector('[data-vfo-dominant="unknown"] [data-vfo-freq]')?.textContent?.trim()).toBe('—');
+    expect(root.querySelectorAll('[data-receiver-instrument="MAIN"]')).toHaveLength(2);
+    expect(root.querySelectorAll('[data-standard-vfo-slot]')).toHaveLength(2);
+    expect(root.querySelectorAll('.panel.active')).toHaveLength(0);
     expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
     expect(Array.from(root.querySelectorAll('[data-vfo-slot]')).map((node) => node.getAttribute('data-vfo-slot'))).toEqual(['A', 'B']);
-    root.querySelector<HTMLButtonElement>('[data-vfo-slot="B"]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-standard-select-vfo="B"]')?.click();
     expect(onSelectVfo).toHaveBeenCalledExactlyOnceWith({ receiver: 'MAIN', slot: { kind: 'slotted', id: 'B' } });
   });
 
@@ -2572,11 +2621,12 @@ describe('MOR-2342 historical instrument presentations', () => {
     };
     const root = mountSurface({ viewModel, appearance: 'standard', onSelectVfo });
     expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
-    const unknown = root.querySelector<HTMLButtonElement>('[data-vfo-slot="unknown"]')!;
+    const unknown = root.querySelector<HTMLElement>('[data-vfo-slot="unknown"]')!;
     expect(unknown).not.toBeNull();
-    expect(unknown.disabled).toBe(true);
-    expect(unknown.title).toContain("has not confirmed this VFO's A/B identity");
-    unknown.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const unknownHeader = unknown.querySelector<HTMLButtonElement>('.panel-header')!;
+    expect(unknownHeader.disabled).toBe(true);
+    expect(unknownHeader.title).toContain("has not confirmed this VFO's A/B identity");
+    unknownHeader.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(onSelectVfo).not.toHaveBeenCalled();
   });
 
@@ -2592,11 +2642,11 @@ describe('MOR-2342 historical instrument presentations', () => {
     };
     const root = mountSurface({ viewModel, appearance: 'standard', onSelectVfo });
     expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
-    const relative = root.querySelector<HTMLButtonElement>('[data-vfo-slot="unselected"]')!;
+    const relative = root.querySelector<HTMLElement>('[data-vfo-slot="unselected"]')!;
     expect(relative).not.toBeNull();
-    expect(relative.disabled).toBe(true);
-    expect(relative.title).toContain('has not confirmed which VFO is A and which is B');
-    relative.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(relative.querySelector('.panel-header')?.getAttribute('disabled')).not.toBeNull();
+    expect(root.querySelectorAll('[data-vfo-select-absolute]')).toHaveLength(2);
+    relative.querySelector<HTMLElement>('.panel-header')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(onSelectVfo).not.toHaveBeenCalled();
   });
 });
