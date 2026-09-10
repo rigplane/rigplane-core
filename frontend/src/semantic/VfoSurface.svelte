@@ -44,6 +44,8 @@
   import VfoPanel from '../components-v2/vfo/VfoPanel.svelte';
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import VfoOperationGroup from './VfoOperationGroup.svelte';
+  import { formatKnownLevel } from './format-level';
+  import { RF_FRONT_END_LEVELS } from './rf-front-end-instruments';
   import {
     invokeVfoOperation,
     projectVfoOperations,
@@ -482,7 +484,10 @@
     toggle('IP+', indicator.ipPlus); toggle('DIGI-SEL', indicator.digiSel);
     if (indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported') {
       const shown = displayValue(indicator.rfGain.display, indicator.rfGain.reading.status === 'known' ? indicator.rfGain.reading.value : null);
-      badges.push({ label: `RFG ${shown ?? '—'}`, active: shown !== null, color: shown === null ? 'muted' : 'cyan', state: indicator.rfGain.display?.state ?? indicator.rfGain.reading.status });
+      const text = shown === null
+        ? '—'
+        : formatKnownLevel(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3]);
+      badges.push({ label: `RFG ${text}`, active: shown !== null, color: shown === null ? 'muted' : 'cyan', state: indicator.rfGain.display?.state ?? indicator.rfGain.reading.status });
     }
     return badges;
   }

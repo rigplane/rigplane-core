@@ -361,11 +361,11 @@ describe('the composed tree owns no audio lifetime', () => {
 describe('AF level: 0..100 becomes 0..1 exactly once, at the adapter seam', () => {
   // MUTATION KILLED: a second `/ 100` (renders 0.0042) or a missing one
   // (renders 42, clamped by the range to 1).
-  it('renders a browser volume of 42 as an AF level of 0.42', () => {
+  it('renders a browser volume of 42 as 42% while keeping an AF control value of 0.42', () => {
     render();
     expect(Number(afSlider()!.getAttribute('aria-valuenow')))
       .toBeCloseTo(0.42, 10);
-    expect(text('af-value')).toBe('0.42');
+    expect(text('af-value')).toBe('42%');
   });
 
   it.each([0, 7, 50, 100])('renders a browser volume of %i on the 0..1 scale', (volume) => {
