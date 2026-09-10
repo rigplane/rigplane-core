@@ -1038,7 +1038,9 @@
   }
 
   .content-left,
-  .content-right {
+  .content-right,
+  .desktop-control-face :global(.desktop-controls-left),
+  .desktop-control-face :global(.desktop-controls-right) {
     min-height: 0;
     max-height: 100%;
     overflow-y: auto;
@@ -1050,7 +1052,9 @@
   }
 
   .content-left::-webkit-scrollbar,
-  .content-right::-webkit-scrollbar {
+  .content-right::-webkit-scrollbar,
+  .desktop-control-face :global(.desktop-controls-left)::-webkit-scrollbar,
+  .desktop-control-face :global(.desktop-controls-right)::-webkit-scrollbar {
     display: none; /* Chrome/Safari/Opera */
   }
 
