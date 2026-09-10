@@ -9,6 +9,10 @@ import { SvelteMap } from 'svelte/reactivity';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ScopeDisplayProjection } from '$lib/runtime/adapters/scope-display-projection';
+import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
+  type ScopePassbandDisplayInput } from '$lib/runtime/adapters/scope-passband-display';
+import { qualifyScopeFrameEnvelope, toScopeDisplayFrame } from '$lib/runtime/adapters/scope-adapter';
+import { resolveLcdSpectrumFrame } from '../../../skins/segmentline/lcd-display-contract';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
 // ---------------------------------------------------------------------------
@@ -1531,6 +1535,83 @@ describe('managed scope projection (MOR-2367)', () => {
     props.set('projection', projection('stale')); flushSync();
     pointer(window, 'pointerup', 84, 130);
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+  });
+  it('positions translated stale CENTER geometry on the live axis through frame lag and cancels resize', async () => {
+    const { target, props } = managed(projection()); const { waterfall } = prepareGeometry(target);
+    pointer(waterfall.querySelector('.passband-resize-zone')!, 'pointerdown', 89, 100);
+    pointer(waterfall, 'pointermove', 89, 130);
+    const initial = projection('stale');
+    if (initial.passband.state !== 'stale') throw new Error('stale fixture required');
+    const translated = { ...initial, passband: { ...initial.passband, translated: true,
+      tuple: { ...initial.passband.tuple, frequencyHz: 14_051_000 } } };
+    props.set('projection', translated); flushSync();
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('51%');
+    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('39%');
+    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.width).toBe('24%');
+    await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions).toMatchObject({
+      tuneHz: 14_051_000, centerHz: 14_050_000, scopeMode: 1, passbandHz: 2400,
+    }));
+    pointer(window, 'pointerup', 89, 130);
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+    props.set('projection', { ...translated, acceptedSequence: 2,
+      frame: { ...translated.frame, startHz: 14_001_000, endHz: 14_101_000 },
+      passband: { ...translated.passband, tuple: { ...translated.passband.tuple, startHz: 14_001_000, endHz: 14_101_000 } } });
+    flushSync();
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+  it('keeps projector-produced overlays through five seconds of fresh frames and staggered geometry readback', () => {
+    authorityHarness.state.useProductionSelector = true;
+    const state = structuredClone(IC7300_STATE); const caps = structuredClone(IC7300_CAPABILITIES);
+    const rx = state.main!;
+    Object.assign(rx, { freqHz: 14_074_000, mode: 'USB', filter: 1, activeSlot: 'A',
+      filterWidth: 2400, pbtInner: 128, pbtOuter: 128, dataMode: 0,
+      vfoA: { freqHz: 14_074_000, mode: 'USB', filterNum: 1, dataMode: 0 } });
+    const paths = ['main', ...Object.keys(rx).map((leaf) => `main.${leaf}`),
+      ...Object.keys(rx.vfoA!).map((leaf) => `main.vfoA.${leaf}`)];
+    state.fieldStatus = Object.fromEntries(paths.map((path) => [path, { storePath: path,
+      observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 10 }]));
+    runtimeHarness.state.currentState = state; runtimeHarness.state.currentCaps = caps;
+    const input: ScopePassbandDisplayInput = { state, caps, selection: { receiver: 'MAIN', slot: 'A' },
+      session: { state: 'connected', epoch: 1 }, frame: null };
+    let result = EMPTY_SCOPE_PASSBAND_DISPLAY; let sequence = 0;
+    const { target, props } = managed(null);
+    function present(now: number, center: number): void {
+      const envelope = qualifyScopeFrameEnvelope({ receiver: 0, mode: 0,
+        startFreq: center - 50_000, endFreq: center + 50_000, pixels: new Uint8Array([10, 100, 200]) },
+      { source: 'hardware', receiver: 0, providerGeneration: 1, transportEpoch: 1,
+        receivedAt: now, acceptedSequence: ++sequence }, 1)!;
+      const authority = { source: 'hardware' as const, receiver: 0 as const, providerGeneration: 1,
+        transportEpoch: 1, demanded: true, transport: 'connected' as const, nowMonotonic: now };
+      const frame = toScopeDisplayFrame(envelope, authority);
+      const resolution = resolveLcdSpectrumFrame(frame, { source: 'hardware', receiver: 'MAIN' });
+      input.frame = { envelope, authority, resolution }; result = projectScopePassbandDisplay(result, input);
+      props.set('projection', { frame, frameMode: 0, acceptedSequence: sequence, passband: result.display }); flushSync();
+    }
+    present(0, 14_074_000); expect(result.display.state).toBe('current');
+    rx.vfoA!.freqHz = 14_075_000; state.fieldStatus['main.vfoA.freqHz'].lastObservedMonotonic = 11;
+    present(100, 14_074_000);
+    expect(result.display.state).toBe('stale');
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('51%');
+    rx.freqHz = 14_075_000; state.fieldStatus['main.freqHz'].lastObservedMonotonic = 11.1;
+    for (let now = 200; now <= 5000; now += 100) {
+      present(now, 14_075_000);
+      expect(result.display.state).toBe('stale');
+      expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
+      expect(target.querySelectorAll('.passband-overlay')).toHaveLength(1);
+      expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    }
+    for (const [index, leaf] of ['filterWidth', 'pbtInner', 'pbtOuter'].entries()) {
+      state.fieldStatus[`main.${leaf}`].lastObservedMonotonic = 15.1 + index / 10;
+      present(5100 + index * 100, 14_075_000);
+      expect(result.display.state).toBe(index === 2 ? 'current' : 'stale');
+      expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    }
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
   });
   it('pushes normalized managed frames through existing waterfall registrations on mount and recovery', () => {
