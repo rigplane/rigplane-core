@@ -3102,8 +3102,8 @@ class TestIc7300ManualOnlyCommands:
     def test_exact_retained_membership(self):
         _assert_manual_only_membership(
             "ic7300.toml",
-            320,
-            "61f58222a9bbb632db9146d17c60a2b339fe0f188bb14288139168656f7c0fea",
+            322,
+            "8ca3056d69fb2c06d68b0f8b7f45d5bfb14c0d953605cbbc6c0d9eb489856d42",
             self._REMOVED_NAMES,
         )
 

@@ -198,7 +198,7 @@ async def test_handler_waits_and_pins_connection_generation():
     handler._radio = radio
     handler._read_only = False
     handler._command_service = None
-    handler._server = SimpleNamespace(command_queue=queue)
+    handler._server = SimpleNamespace(command_queue=queue, command_state_store=store)
     intent = command_intent_from_request(
         "set_vfo_freq", dataclasses.asdict(command(store)), source="websocket"
     )
@@ -347,3 +347,130 @@ async def test_cancelled_queued_request_cannot_write():
     future.cancel()
     await poller._execute_queued_entry(entry)
     radio.send_civ.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "active,slot", [("A", "A"), ("A", "B"), ("B", "A"), ("B", "B")]
+)
+@pytest.mark.parametrize("outcome", ["success", "disconnect", "cancel", "rebind"])
+async def test_real_service_handler_queue_poller_completes_correlated_readback(
+    active, slot, outcome
+):
+    poller, radio, store, queue = setup(active)
+    now = time.monotonic()
+    store.apply_relative_vfo_observations(
+        tuple(
+            Observation(
+                path=factory("0", "freq_mode", leaf),
+                value=value,
+                source=SourceMetadata(source="poll_response", provider="icom_civ"),
+                timestamp_monotonic=now,
+                provider_generation=store.provider_generation,
+            )
+            for factory in (FieldPath.active, FieldPath.unselected)
+            for leaf, value in (("freq_hz", 7_100_000), ("mode", "USB"))
+        ),
+        generation=store.provider_generation,
+    )
+    selector = 0 if active == slot else 1
+    radio.send_civ.side_effect = [
+        ACK,
+        parse_civ_frame(
+            bytes.fromhex(f"FE FE E0 94 25 {selector:02X} 00 40 07 14 00 FD")
+        ),
+    ]
+    entered, release = asyncio.Event(), asyncio.Event()
+    if outcome in ("disconnect", "cancel"):
+
+        async def delayed_send(*args, **kwargs):
+            if radio.send_civ.await_count == 1:
+                entered.set()
+                await release.wait()
+                return ACK
+            return parse_civ_frame(
+                bytes.fromhex(f"FE FE E0 94 25 {selector:02X} 00 40 07 14 00 FD")
+            )
+
+        radio.send_civ.side_effect = delayed_send
+    if outcome == "rebind":
+        original_put = queue.put_ordered
+
+        def put_with_rebind(*args, **kwargs):
+            entry = original_put(*args, **kwargs)
+
+            def rebind(_future):
+                store.apply(
+                    Observation(
+                        path=FieldPath.active_slot("0"),
+                        value="B" if active == "A" else "A",
+                        source=SourceMetadata(
+                            source="command_response", provider="vfo_binding"
+                        ),
+                        timestamp_monotonic=time.monotonic(),
+                        provider_generation=store.provider_generation,
+                    )
+                )
+
+            entry.future.add_done_callback(rebind)
+            return entry
+
+        queue.put_ordered = put_with_rebind
+    handler = ControlHandler.__new__(ControlHandler)
+    handler._radio, handler._read_only = radio, False
+    handler._server = SimpleNamespace(command_queue=queue, command_state_store=store)
+    service = CommandService(
+        executor=SimpleNamespace(execute=handler._execute_intent),
+        state_store=store,
+    )
+    handler._command_service = service
+    intent = command_intent_from_request(
+        "set_vfo_freq",
+        dataclasses.asdict(command(store, slot, active)),
+        source="websocket",
+        session_id="integrated",
+    )
+    task = asyncio.create_task(service.execute(intent))
+    await queue.wait(timeout=1)
+    entry = queue.take_entry()
+    assert entry is not None
+    dispatch = asyncio.create_task(poller._execute_queued_entry(entry))
+    if outcome in ("disconnect", "cancel"):
+        await entered.wait()
+        if outcome == "disconnect":
+            radio._civ_epoch += 1
+        else:
+            task.cancel()
+        release.set()
+        results = await asyncio.gather(dispatch, task, return_exceptions=True)
+        if outcome == "disconnect":
+            assert all(isinstance(result, CommandError) for result in results)
+        else:
+            assert isinstance(results[1], asyncio.CancelledError)
+        assert not service.pending_overlays(source="websocket", session_id="integrated")
+        assert "reconciled" not in [event.state for event in service.lifecycle_events()]
+        return
+    await dispatch
+    if outcome == "rebind":
+        with pytest.raises(CommandError, match="before readback delivery"):
+            await task
+        assert not service.pending_overlays(source="websocket", session_id="integrated")
+        assert not any(
+            field.path.name == "freq_hz" and field.value == FREQ
+            for field in store.snapshot().fields
+        )
+        return
+    result = await task
+    assert result.executor_result.details["slot"] == slot
+    assert [event.state for event in result.lifecycle_events][-2:] == [
+        "acknowledged",
+        "reconciled",
+    ]
+    assert not service.pending_overlays(source="websocket", session_id="integrated")
+    target = (FieldPath.active if selector == 0 else FieldPath.unselected)(
+        "0", "freq_mode", "freq_hz"
+    )
+    other = (FieldPath.unselected if selector == 0 else FieldPath.active)(
+        "0", "freq_mode", "freq_hz"
+    )
+    assert store.snapshot().field(target).value == FREQ
+    assert store.snapshot().field(other).value == 7_100_000

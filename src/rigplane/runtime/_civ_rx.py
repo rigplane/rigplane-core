@@ -3659,8 +3659,12 @@ class CivRuntime:
     @staticmethod
     def _civ_expects_response(frame: CivFrame) -> bool:
         """Determine if a CI-V frame expects a data RESPONSE or just an ACK/NAK."""
-        if frame.command in (0x03, 0x04, 0x25, 0x26):
+        if frame.command in (0x03, 0x04):
             return True
+        if frame.command in (0x25, 0x26):
+            # A GET carries only the selected/unselected selector. Adding
+            # frequency or mode data is a SET whose completion is ACK/NAK.
+            return len(frame.data) <= 1
         if frame.command == 0x07 and frame.data == b"\xc2":
             return True
         if frame.command == 0x1A and frame.sub == 0x05 and len(frame.data) == 2:

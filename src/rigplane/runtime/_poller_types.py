@@ -1109,7 +1109,7 @@ LEGACY_COMMAND_NAMES: dict[type, str] = {
 @dataclass(frozen=True, slots=True)
 class CommandQueueEntry:
     command: Command | None
-    future: asyncio.Future[None] | None = None
+    future: asyncio.Future[Any] | None = None
     command_id: str | None = None
     source: CommandSource | None = None
     session_id: str | None = None
@@ -1365,7 +1365,7 @@ class CommandQueue:
         self,
         cmd: Command | None,
         *,
-        future: asyncio.Future[None] | None = None,
+        future: asyncio.Future[Any] | None = None,
         command_id: str | None = None,
         source: CommandSource | None = None,
         session_id: str | None = None,
@@ -1394,7 +1394,7 @@ class CommandQueue:
         self._notify.set()
         if future is not None:
 
-            def remove_cancelled(reply: asyncio.Future[None]) -> None:
+            def remove_cancelled(reply: asyncio.Future[Any]) -> None:
                 # Preserve the legacy final drain's pending-unkey eligibility.
                 if reply.cancelled() and not isinstance(entry.command, PttOff):
                     self.remove_pending(entry)
