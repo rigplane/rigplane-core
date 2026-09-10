@@ -64,6 +64,8 @@ _UNSET = object()
 _MAX_ACTIVE_COMMANDS = 128
 _MAX_READBACK_EXPECTATIONS = 128
 _READBACK_EXPECTATION_GRACE_SECONDS = 2.0
+# ACK stays dispatchable for late queue callbacks. Its active bookkeeping uses
+# the existing overlay/readback windows, without implying terminal success.
 _DISPATCHABLE_LIFECYCLE_STATES = ("accepted", "queued", "sent", "acknowledged")
 _NORMALIZED_LEVEL_EXPECTATION_COMMANDS = {
     "set_af_level": "af_level",
@@ -457,6 +459,7 @@ class CommandService:
     ) -> CommandLifecycleEvent:
         """Record and publish a lifecycle event for an intent."""
 
+        self._purge_expired()
         payload_details = dict(details or {})
         if "session_id" in intent.params:
             payload_details["session_id"] = _session_id(intent)
@@ -474,14 +477,26 @@ class CommandService:
             while key not in self._active_commands and (
                 len(self._active_commands) >= _MAX_ACTIVE_COMMANDS
             ):
-                oldest = next(iter(self._active_commands))
-                self.fail_command(
-                    oldest[2],
-                    source=oldest[0],
-                    session_id=oldest[1],
-                    message="active command capacity exceeded",
+                acknowledged = next(
+                    (
+                        item
+                        for item, active in self._active_commands.items()
+                        if active.state == "acknowledged"
+                    ),
+                    None,
                 )
+                oldest = acknowledged or next(iter(self._active_commands))
+                self._active_commands.pop(oldest)
+                if acknowledged is None:
+                    self.fail_command(
+                        oldest[2],
+                        source=oldest[0],
+                        session_id=oldest[1],
+                        message="active command capacity exceeded",
+                    )
             self._active_commands[key] = event
+            if state == "acknowledged":
+                self._purge_expired()
         else:
             self._active_commands.pop(key, None)
         self._events.append(event)
@@ -851,6 +866,13 @@ class CommandService:
             for overlay in self._readback_expectations
             if not overlay.is_expired(now)
         ]
+        retained = {
+            (overlay.source, overlay.session_id, overlay.command_id)
+            for overlay in (*self._overlays, *self._readback_expectations)
+        }
+        for key, event in tuple(self._active_commands.items()):
+            if event.state == "acknowledged" and key not in retained:
+                self._active_commands.pop(key)
 
     def _last_event(
         self,
