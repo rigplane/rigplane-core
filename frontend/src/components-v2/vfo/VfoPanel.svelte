@@ -64,6 +64,8 @@
     layoutProfile?: VfoLayoutProfile;
     onModeClick?: () => void;
     onFreqChange?: (freq: number) => void;
+    /** Opens direct entry for this card; digit arithmetic remains independent. */
+    onFrequencyClick?: (trigger: HTMLElement) => void;
     onSelectSlot?: (key: string) => void;
     /** Selects this VFO from its header; frequency gestures remain independent. */
     onSelectHeader?: () => void;
@@ -79,6 +81,7 @@
     layoutProfile = 'baseline',
     onModeClick,
     onFreqChange,
+    onFrequencyClick,
     onSelectSlot,
     onSelectHeader,
     headerReason,
@@ -98,6 +101,12 @@
     const groups = groupDigitsForDisplay(splitFrequencyToDigits(hz));
     return [groups.mhz, groups.khz, groups.hz]
       .map((group) => group.map((digit) => digit.char).join('')).join('.');
+  }
+
+  function handleFrequencyClick(event: MouseEvent): void {
+    if (onFrequencyClick === undefined || !(event.target instanceof Element)
+      || event.target.closest('.digit') === null) return;
+    if (event.currentTarget instanceof HTMLElement) onFrequencyClick(event.currentTarget);
   }
 </script>
 
@@ -143,6 +152,7 @@
       <div class="freq-row">
         <span class="vfo-freq" data-vfo-freq data-freq-tunable={!frequencyDisabled}
           data-display-state={frequencyState} class:display-unknown={displayHz === null}
+          onclickcapture={handleFrequencyClick}
           >
           {#if frequency}
             {@render frequency()}

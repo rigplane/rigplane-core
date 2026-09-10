@@ -62,6 +62,8 @@
     viewModel: RadioViewModel;
     appearance?: 'semantic' | 'sdr' | 'standard';
     onSelectVfo?: (target: VfoSelection) => void;
+    /** Standard-face digit activation with exact VFO identity and focus return node. */
+    onOpenFrequencyEntry?: (target: VfoSelection, trigger: HTMLElement) => void;
     onToggleSplit?: () => void;
     onToggleDualWatch?: () => void;
     /**
@@ -194,6 +196,7 @@
   let {
     viewModel, appearance = 'semantic',
     onSelectVfo,
+    onOpenFrequencyEntry,
     onToggleSplit,
     onToggleDualWatch,
     selectionPoolSize,
@@ -843,6 +846,9 @@
           reserveMeterSpace={fixed !== undefined && !fixed.isActiveSlot}
           onFreqChange={receiverInstruments === undefined && dominant
             ? (hz) => tuneFrequency(dominant, hz) : undefined}
+          onFrequencyClick={dominant && onOpenFrequencyEntry
+            ? (trigger) => onOpenFrequencyEntry({ receiver: dominant.receiver, slot: dominant.slot }, trigger)
+            : undefined}
           onSelectSlot={(key) => {
             const choice = viewModel.vfos[Number(key)];
             if (choice) selectVfo(choice);
