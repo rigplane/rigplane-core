@@ -45,6 +45,7 @@
     frequencyState?: 'current' | 'stale' | 'unknown' | 'unsupported';
     contextKey?: string;
     frequencyDisabled?: boolean;
+    controlsDisabled?: boolean;
     mode: string | null;
     filter: string | null;
     sMeter?: Snippet;
@@ -58,22 +59,29 @@
     bandText?: string | null;
     rit?: { active: boolean; offset: number };
     slotChoices?: readonly VfoPanelSlotChoice[];
+    /** Keep peer cards aligned while only the active VFO owns the real meter. */
+    reserveMeterSpace?: boolean;
     layoutProfile?: VfoLayoutProfile;
     onModeClick?: () => void;
     onFreqChange?: (freq: number) => void;
     onSelectSlot?: (key: string) => void;
+    /** Selects this VFO from its header; frequency gestures remain independent. */
+    onSelectHeader?: () => void;
+    headerReason?: string;
   }
 
   let {
     receiver, receiverLabel, slotTag, frequency, freq, displayHz, pendingDisplayHz = null,
-    frequencyState = 'current', contextKey, frequencyDisabled = false,
+    frequencyState = 'current', contextKey, frequencyDisabled = false, controlsDisabled = false,
     mode, filter, sMeter, sValue, meterPresent = true, meterOperational, meterSource, continuitySession,
     isActive,
-    badgeItems, bandText, rit, slotChoices = [],
+    badgeItems, bandText, rit, slotChoices = [], reserveMeterSpace = false,
     layoutProfile = 'baseline',
     onModeClick,
     onFreqChange,
     onSelectSlot,
+    onSelectHeader,
+    headerReason,
   }: Props = $props();
 
   let meterVariant = $derived(layoutProfile === 'wide' ? 'vfo-wide' : 'vfo');
@@ -99,18 +107,24 @@
   data-layout-profile={layoutProfile}
   style={Object.entries(receiverChromeVars).map(([key, value]) => `${key}:${value}`).join(';')}
 >
-  <div class="panel-header">
+  <button
+    type="button" class="panel-header" disabled={onSelectHeader === undefined}
+    aria-label={onSelectHeader ? `Select ${receiverLabel}` : undefined}
+    title={headerReason}
+    onclick={onSelectHeader}
+  >
     <div class="header-title-group">
       <span class="vfo-label">{receiverLabel}</span>
     </div>
 
     <div class="header-badges">
-      <span class="header-tag meter-tag">BAR</span>
+      {#if sMeter || meterPresent}<span class="header-tag meter-tag">BAR</span>{/if}
       <span class="header-tag slot-tag">{slotTag}</span>
     </div>
-  </div>
+  </button>
 
-  <div class="smeter-row panel-meter">
+  <div class="smeter-row panel-meter"
+    data-meter-space={!sMeter && !meterPresent && reserveMeterSpace ? 'reserved' : undefined}>
     {#if sMeter}
       <div data-testid="receiver-s-meter" data-receiver={receiver}>
         {@render sMeter()}
@@ -158,8 +172,14 @@
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <div
         class="mode-badge-wrapper"
-        onclick={(e) => { e.stopPropagation(); onModeClick?.(); }}
-        title={`Change mode (current: ${mode})`}
+        class:mode-disabled={controlsDisabled || onModeClick === undefined}
+        data-vfo-controls-disabled={controlsDisabled}
+        aria-disabled={controlsDisabled || onModeClick === undefined}
+        onclick={(e) => {
+          e.stopPropagation();
+          if (!controlsDisabled) onModeClick?.();
+        }}
+        title={!controlsDisabled && onModeClick ? `Change mode (current: ${mode})` : undefined}
       >
         <StatusIndicator
           label={mode ?? '—'}
@@ -252,7 +272,17 @@
       var(--vfo-panel-pad-x, 10px)
       0;
     border-bottom: none;
+    width: 100%;
+    border-top: 0;
+    border-inline: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: inherit;
+    cursor: pointer;
   }
+
+  .panel-header:disabled { cursor: default; }
 
   .header-title-group {
     display: flex;
@@ -335,6 +365,8 @@
     cursor: pointer;
     display: inline-flex;
   }
+
+  .mode-badge-wrapper.mode-disabled { cursor: default; }
 
   .mode-badge-wrapper:hover :global(.v2-status-indicator) {
     filter: brightness(1.15);
