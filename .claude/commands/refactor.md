@@ -1,125 +1,78 @@
 # Refactor
 
-Deterministic, test-safe refactoring workflow. Manual trigger only.
+Manual `/refactor <target>` workflow for a module, area, or concrete code smell.
+Read `AGENTS.md` and `docs/internals/coordinator-policy.md` from the assigned
+worktree. The coordinator retains integration ownership; workers keep their
+assigned roles. No automatic refactoring or unrelated feature work.
 
-## Input
+## Invariant and plan
 
-`$ARGUMENTS`: module path, area name, or code smell description.
+Refactoring must preserve behavior and public API. Ground the plan in the
+actual target code, relevant tests, and current acceptance criteria. A code
+smell alone does not authorize a new layer, abstraction, or speculative cleanup.
+Resolve the planning owner under the repository's Linear delegation first.
 
-## Invariant
+Record the plan and evidence in private artifacts outside every repository
+worktree. Include goal, non-goals, exact files/symbols, small reversible steps,
+risks, and how behavioral equivalence will be checked. Respect `CLAUDE.md`
+guardrails; no changes outside the authorized plan.
 
-**Refactoring MUST NOT change behavior.** If behavior changes at any point → FAIL immediately.
+Use existing relevant baseline evidence and verify compared-path freshness.
+A skipped CI path provides no counts; absent evidence is an explicit gap, not
+an instruction to rerun a full suite. If the affected behavior lacks coverage,
+add focused regression coverage before implementation within the approved
+scope. A failed relevant baseline must be understood before relying on it.
 
-## Pipeline: EXPLORE → PLAN → EXECUTE → TEST → REVIEW → PR
+## Implement and freeze
 
-No fast path. PLAN is always mandatory.
+Dispatch a builder for material implementation with explicit supported
+model/effort and the bounded contract. Use ordinary tools for a small
+mechanical edit when that is sufficient; independent review remains separate.
 
-### Phase 1: EXPLORE
+Use focused changed-scope checks after meaningful steps or corrections. Keep
+related fixes in one delivery batch and freeze one candidate after focused
+checks pass. Do not start a full suite per step. Record changes and evidence
+privately. On failure, preserve the evidence and diagnose before correcting;
+revert only your known changes when safe. Never blanket-checkout files or
+rollback uncertain work. A proven behavior change violates this contract and
+must be corrected before the refactor can pass.
 
-1. Read target module(s) identified by `$ARGUMENTS`
-2. Identify code smells:
-   - Duplication
-   - Large functions (>50 LOC)
-   - Unclear naming
-   - Poor module boundaries
-   - Dead code
-3. Check existing test coverage for target area
-4. Write findings to `.claude/workflow/research.md`
+After two unsuccessful attempts without new evidence, change the hypothesis,
+escalate a bounded diagnosis, or report the external blocker; arbitrary retry
+counts do not end useful work. Scope expansion or missing safety authority
+stops dependent action until resolved.
 
-### Phase 2: VALIDATE PRECONDITIONS
+## Review and CI in parallel
 
-1. Take the baseline from the `quick.yml` run on `main` that CLAUDE.md
-   §Agent working rules names as the baseline (must be green)
-2. If target area lacks tests → generate minimal regression tests first (`/generate-tests file <path>`)
-3. Baseline must be green before proceeding. If not → STOP.
+Commit an English `refactor:` message linked to the owning issue, push the final
+candidate, and open or mark one PR Ready against `main`. Immediately dispatch a
+fresh independent verifier on that exact head while required CI runs. Have it
+review the intended improvement, behavior and API preservation, tests, and
+unintended changes. Equal pass counts alone do not prove equal behavior.
 
-### Phase 3: PLAN (mandatory)
+One observer owns the candidate's CI run and provides evidence to all roles.
+Use the `AGENTS.md` path contract and existing artifacts; do not duplicate full
+suites. Review returns its code verdict with CI state as found, without waiting
+for CI completion. A correction requires new-head CI and fresh delta review;
+broaden only for affected dependencies or concrete interaction risk.
 
-Write `.claude/workflow/refactor-plan.md`:
-- **Goal:** what improves (readability, duplication, boundaries)
-- **Non-goals:** what must NOT change (behavior, API, public interface)
-- **Scope:** exact files and functions (inside the soft threshold in CLAUDE.md §Guardrails)
-- **Steps:** ordered list of small, independently testable changes
-- **Risks:** what could break, how to verify it didn't
-- **Rollback:** `git checkout -- <files>` for each step
+Documentation-only changes use their explicit `AGENTS.md` exception: readback,
+diff proof, and independent review without check automation.
 
-Guardrails apply (CLAUDE.md §Guardrails): the hard ceiling is not author-waivable;
-no new abstractions unless explicitly targeted.
+## Acceptance and preservation
 
-### Phase 4: EXECUTE (strict)
+Re-derive guardrail counts at the pushed head and justify the batch size when
+needed. The PR states the actual change and evidence. Apply required review
+corrections, verify exact-head Agent Review Gate and all required statuses
+immediately before a guarded merge, and follow `AGENTS.md` for final main
+acceptance. Installed, visual, and physical-radio acceptance remain separate.
 
-1. Dispatch the `builder` role (`.claude/agents/builder.md`) with
-   `refactor-plan.md` as its spec; apply changes one step at a time
-2. After each step: run the targeted files — the tests covering what that step
-   touched — locally, `uv run pytest <paths> --tb=short -x`. The full suite is
-   CI's (CLAUDE.md §Agent working rules)
-3. If tests fail after any step:
-   - Rollback that step: `git checkout -- <changed files>`
-   - Mark step as failed in `progress.md`
-   - If 2 consecutive step failures → STOP, mark FAILED
-4. Update `progress.md` after each step
+Return status, commit/tree, files, evidence, risks, and next action to the
+coordinator. Keep operational progress and handoff outside all worktrees;
+publish only reusable architecture decisions when appropriate.
 
-Rules:
-- Follow plan exactly — no scope expansion
-- No new features
-- No behavior changes
-- No unrelated cleanups
-
-### Phase 5: TEST
-
-The suite result is CI's, so the PR opens here — before REVIEW, not after it.
-
-1. Commit (`refactor: <area description>`), push, then `gh pr create` —
-   ready, not `--draft`: `quick.yml` triggers on push/PR to `main` and its
-   `quick` job's `if:` skips a draft PR, so the branch has no `quick` job to
-   read until a ready PR exists (CLAUDE.md §Agent working rules)
-2. Read the gates off that PR's `quick` run at this head: it runs the pytest
-   suite, `ruff check` and `ruff format --check` under its `core` path filter,
-   and `mypy --strict src/rigplane/web` under its `frontend` one
-3. Compare pass/fail counts against Phase 2 baseline
-4. Any new failure = behavior change → rollback all, mark FAILED
-5. Proceed to REVIEW only with `quick` green at this head; the PR opened
-   ready, so the verifier reviews a ready PR, never a draft (AGENTS.md,
-   "Draft PRs must not merge")
-
-### Phase 6: REVIEW
-
-Dispatch the `verifier` role (`.claude/agents/verifier.md`) on the PR Phase 5
-opened — the implementation agent never reviews its own work
-(CLAUDE.md §Language & Git).
-Have it confirm:
-- Improved readability or reduced duplication
-- No unintended changes (`git diff` review)
-- No behavior changes (test counts match baseline)
-- No new public API surface
-
-Relay its verdict and write `review.md`.
-
-### Phase 7: PR
-
-- PR body: what improved, what didn't change, and the `quick` run the test
-  evidence comes from
-- The verdict is bound to a SHA: `Agent Review: PASS <sha>` must name the PR's
-  current head, so a push after Phase 6 needs a fresh verdict (CLAUDE.md
-  §Language & Git)
-
-## Post-pipeline
-
-- On success: save pattern to `.claude/knowledge/patterns.md`
-- On failure: classify the outcome and record the reason in the PR or ticket,
-  per CLAUDE.md §Failure handling
-- Cleanup workspace
-
-## Safety guards
-
-- Tests fail → rollback step and FAIL
-- Scope expands beyond plan → STOP
-- Behavior changes detected → rollback all, FAIL
-- New features introduced → STOP, mark `workflow_violation`
-
-## Rules
-
-- Never triggered automatically — manual `/refactor <target>` only
-- Never combined with feature work in same session
-- Never modify files outside the plan
-- Each step must be small enough to rollback independently
+Preserve active or uncertain worktrees and services. Cleanup requires released
+ownership, retained work/evidence, verified safe state, and existing authority;
+never force-remove automatically. Context size or corrections alone do not
+require resetting the session. Follow the policy's supported ownership transfer
+before any succession; a new chat does not inherit radio or process ownership.
