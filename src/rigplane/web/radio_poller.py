@@ -98,6 +98,7 @@ from ..core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from ..core.radio_protocol import (
+    CivCommandCapable,
     ManagedTxApi,
     RelativeVfoReadbackCapable,
 )
@@ -3687,6 +3688,8 @@ class RadioPoller:
     def _vfo_connection_generation(self) -> tuple[int, object]:
         return self._provider_generation(), self._connection_generation_capture()
 
+    _VFO_CONNECT_PTT_TIMEOUT: float = 2.0
+
     async def select_vfo_a_on_connect(self, *, read_only: bool) -> None:
         """Attempt the application connection policy once, with fresh RX only."""
         generation = self._vfo_connection_generation()
@@ -3705,13 +3708,45 @@ class RadioPoller:
             reason = "inapplicable_profile"
         else:
             snapshot = self._state_store.snapshot()
-            if self._current_rf_state(snapshot) is not RfState.RX:
-                reason = "rf_not_confirmed_rx"
-            elif (
-                snapshot.field(_PTT_PATH).last_observed_monotonic
+            rf_state = self._current_rf_state(snapshot)
+            if rf_state is RfState.UNKNOWN or (
+                rf_state is RfState.RX
+                and snapshot.field(_PTT_PATH).last_observed_monotonic
                 < self._vfo_connection_started_at
             ):
-                reason = "ptt_predates_connection"
+                try:
+                    cmd_map = self._cmd_map
+                    if (
+                        not isinstance(self._radio, CivCommandCapable)
+                        or cmd_map is None
+                        or not cmd_map.has("get_transceiver_status")
+                    ):
+                        raise CommandError("connection PTT read is unavailable")
+                    command, sub, data = decode_wire_tuple(
+                        cmd_map.get("get_transceiver_status")
+                    )
+                    if data:
+                        raise CommandError("connection PTT read must carry no data")
+                    await asyncio.wait_for(
+                        self._radio.send_civ(
+                            command, sub=sub, data=data, wait_response=True
+                        ),
+                        timeout=self._VFO_CONNECT_PTT_TIMEOUT,
+                    )
+                except Exception:
+                    reason = "ptt_refresh_failed"
+                if generation != self._vfo_connection_generation():
+                    reason = "connection_changed"
+                snapshot = self._state_store.snapshot()
+                rf_state = self._current_rf_state(snapshot)
+            if reason is None:
+                if rf_state is not RfState.RX:
+                    reason = "rf_not_confirmed_rx"
+                elif (
+                    snapshot.field(_PTT_PATH).last_observed_monotonic
+                    < self._vfo_connection_started_at
+                ):
+                    reason = "ptt_predates_connection"
         if reason is not None:
             self._record_state_diagnostic(
                 "vfo_connect_skipped", "web.radio_poller", reason=reason

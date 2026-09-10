@@ -92,6 +92,7 @@ interface BootOptions {
   theme?: 'nord' | 'github-light';
   locale?: 'en-US' | 'ru-RU';
   extraCapabilities?: string[];
+  absoluteVfoPair?: boolean;
   /** The QA-only skin `?layout=flagship-probe` selects
    *  (`lib/stores/qa-cockpit-override.ts`). It is not a `CanonicalLayoutMode`,
    *  so the workspace `layout` this helper writes cannot carry it. */
@@ -101,6 +102,25 @@ interface BootOptions {
 async function boot(page: Page, layout: string, width: number, known: boolean, language = 'studioline', productionUnknown = false, topology?: TopologyId, options: BootOptions = {}) {
   const { state, caps } = topology ? catalogFixture(topology, known) : productionUnknown
     ? { state: structuredClone(mockState), caps: structuredClone(mockCapabilities) } : fixture(known);
+  if (options.absoluteVfoPair) {
+    const observed = (storePath: string) => ({ storePath, observed: true as const,
+      freshness: 'fresh' as const, availability: 'available' as const, lastObservedMonotonic: 0 });
+    state.main.vfoA = { freqHz: state.main.freqHz, mode: state.main.mode,
+      filterNum: state.main.filter, dataMode: 0 };
+    state.main.vfoB = structuredClone(state.main.unselectedVfo!);
+    Object.assign(state, { txAntenna: 1, ritOn: false, ritTx: false, ritFreq: 0 });
+    Object.assign(caps, { antennas: 1 });
+    Object.assign(state.fieldStatus!, {
+      'main.activeSlot': observed('main.activeSlot'),
+      ...Object.fromEntries(['txAntenna', 'tunerStatus', 'ritOn', 'ritTx', 'ritFreq']
+        .map(path => [path, observed(path)])),
+      ...Object.fromEntries(['freqHz', 'mode', 'filterNum', 'dataMode'].flatMap(leaf =>
+        (['vfoA', 'vfoB'] as const).map(slot => {
+          const path = `main.${slot}.${leaf}`;
+          return [path, observed(path)];
+        }))),
+    });
+  }
   if (options.extraCapabilities) {
     const tags = (caps as unknown as { capabilities: string[] }).capabilities;
     (caps as unknown as { capabilities: string[] }).capabilities = [...new Set([...tags, ...options.extraCapabilities])];
@@ -339,6 +359,72 @@ function expectStandardReceiverIntegrity(
 }
 
 test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
+  for (const width of [900, 1024, 1200, 1700] as const) {
+    test(`Standard ${width} compact absolute VFO pair keeps every bridge control`, async ({ page }, info) => {
+      await boot(page, 'standard', width, true, 'studioline', false, undefined, {
+        height: 1000, extraCapabilities: ALL_STRUCTURAL_ACTION_CAPS, absoluteVfoPair: true,
+      });
+      const panel = page.getByTestId('vfo-instrument-panel');
+      const cards = page.locator('[data-standard-vfo-slot]');
+      await expect(cards).toHaveCount(2);
+      const geometry = await panel.evaluate(element => {
+        const rect = (target: Element) => target.getBoundingClientRect().toJSON();
+        const cardRects = [...element.querySelectorAll('[data-standard-vfo-slot]')].map(rect);
+        return {
+          panel: rect(element), cards: cardRects,
+          overflow: element.scrollWidth > element.clientWidth + 1,
+          cardOverflow: [...element.querySelectorAll<HTMLElement>('[data-standard-vfo-slot]')]
+            .map(card => {
+              const cardBox = card.getBoundingClientRect();
+              return [...card.querySelectorAll<HTMLElement>('.panel-header, .panel-meter, .vfo-freq, .control-strip, .control-strip *')]
+              .filter(target => {
+                const style = getComputedStyle(target);
+                const box = target.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden'
+                  && (target.scrollWidth > target.clientWidth + 1
+                    || box.left < cardBox.left - 1 || box.right > cardBox.right + 1
+                    || box.top < cardBox.top - 1 || box.bottom > cardBox.bottom + 1);
+              }).map(target => ({ target: target.className ?? target.tagName,
+                scrollWidth: target.scrollWidth, clientWidth: target.clientWidth,
+                rect: target.getBoundingClientRect().toJSON(), card: cardBox.toJSON() }));
+            }),
+          bridgeOverflow: [...element.querySelectorAll<HTMLElement>('[data-instrument-bridge] *')]
+            .filter(target => target.scrollWidth > target.clientWidth + 1)
+            .map(target => target.getAttribute('data-dual-action') ?? target.className ?? target.tagName),
+        };
+      });
+      await info.attach('compact-vfo-pair', { body: JSON.stringify(geometry), contentType: 'application/json' });
+      if (width > 1050) {
+        expect.soft(geometry.panel.height, 'the full Standard VFO row stays compact').toBeLessThanOrEqual(190);
+        expect.soft(geometry.cards[0].top, 'A and B cards start together').toBeCloseTo(geometry.cards[1].top, 0);
+        expect.soft(geometry.cards[0].bottom, 'A and B cards end together').toBeCloseTo(geometry.cards[1].bottom, 0);
+      }
+      expect.soft(geometry.overflow, 'the VFO pair does not overflow its row').toBe(false);
+      expect.soft(geometry.cardOverflow, 'both full card strips fit without clipped descendants').toEqual([[], []]);
+      expect.soft(geometry.bridgeOverflow, 'every bridge item fits its assigned cell').toEqual([]);
+      await expect(page.locator('[data-standard-select-vfo]')).toHaveCount(2);
+      await expect(page.locator('[data-vfo-split]')).toBeVisible();
+      for (const action of ['equalize', 'swap', 'speak']) {
+        await expect(page.locator(`[data-dual-action="${action}"]`)).toBeVisible();
+      }
+      await expect(page.getByTestId('vfo-split-digest')).toBeVisible();
+      const strips = cards.locator('.control-strip');
+      await expect(strips).toHaveCount(2);
+      await expect(strips.nth(0).locator('.mode-badge-wrapper')).toHaveAttribute('data-vfo-controls-disabled', 'false');
+      await expect(strips.nth(1).locator('.mode-badge-wrapper')).toHaveAttribute('data-vfo-controls-disabled', 'true');
+      await expect(strips.nth(0)).toContainText(/CW.*FIL3/);
+      await expect(strips.nth(1)).toContainText(/USB.*FIL1/);
+      for (const fact of ['antenna', 'atu', 'rit', 'xit']) {
+        await expect(page.locator(`[data-indicator-fact="${fact}"]`)).toBeVisible();
+      }
+      expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
+        .geometryCommands.filter(c => c.type === 'cmd'))).toEqual([]);
+      const screenshot = info.outputPath(`compact-vfo-pair-${width}.png`);
+      await page.screenshot({ path: screenshot, fullPage: true });
+      await info.attach('compact-vfo-pair-screenshot', { path: screenshot, contentType: 'image/png' });
+    });
+  }
+
   for (const width of STANDARD_WIDTHS) for (const topology of STANDARD_TOPOLOGIES) {
     test(`standard ${width} ${topology} painted grid`, async ({ page }, info) => {
       await boot(page, 'standard', width, true, 'studioline', false, topology);
@@ -465,6 +551,18 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
     test(`${layout} ${width} ${known ? 'observed IC' : 'unknown'} geometry`, async ({ page }, info) => {
       const errors: string[] = []; page.on('pageerror', e => errors.push(String(e)));
       await boot(page, layout, width, known);
+      if (layout === 'standard' && width === 900) {
+        const stripFailures = await page.locator('.receiver-instrument .control-strip').evaluateAll(strips =>
+          strips.flatMap(strip => {
+            const card = strip.closest('.receiver-instrument')!.getBoundingClientRect();
+            const box = strip.getBoundingClientRect();
+            return strip.scrollWidth > strip.clientWidth + 1 || box.left < card.left - 1
+              || box.right > card.right + 1 || box.top < card.top - 1 || box.bottom > card.bottom + 1
+              ? [{ scrollWidth: strip.scrollWidth, clientWidth: strip.clientWidth,
+                strip: box.toJSON(), card: card.toJSON() }] : [];
+          }));
+        expect.soft(stripFailures, '900px Standard cards keep every status chip contained').toEqual([]);
+      }
       const unkey = page.getByTestId('rx-tx-unkey');
       await expect(unkey).toHaveCount(1);
       await expect(page.getByTestId('rx-tx-key')).toHaveCount(1);

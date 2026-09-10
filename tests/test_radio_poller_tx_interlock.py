@@ -759,7 +759,11 @@ async def test_application_connect_refuses_without_fresh_rx(state: str) -> None:
         )
     if state == "old_generation":
         store.begin_provider_generation()
+    if state in ("read_only", "tx"):
+        radio.send_civ = AsyncMock()
     await poller.select_vfo_a_on_connect(read_only=state == "read_only")
+    if state in ("read_only", "tx"):
+        radio.send_civ.assert_not_awaited()
     _observe_ptt(store, False)
     await poller._send_query()
     assert radio.wire.sent_frames == []
@@ -777,8 +781,10 @@ async def test_application_connect_leaves_other_topologies_alone(
 
     poller, radio, store = connect_vfo_poller()
     poller._profile = replace(poller._profile, **overrides)
+    radio.send_civ = AsyncMock()
     _observe_ptt(store, False)
     await poller.select_vfo_a_on_connect(read_only=False)
+    radio.send_civ.assert_not_awaited()
     assert radio.wire.sent_frames == []
 
 
@@ -822,6 +828,72 @@ async def test_connection_reset_requires_new_rx_and_allows_one_new_select() -> N
     await poller.select_vfo_a_on_connect(read_only=False)
     assert len(radio.wire.sent_frames) == 10
     assert store.snapshot().field(FieldPath.active_slot("0")).value == "A"
+
+
+async def observe_connect_ptt_read(radio: ConnectVfoRadio, value: bool | None) -> None:
+    from rigplane.core.civ import CivFrame
+    from rigplane.commands import build_civ_frame
+
+    await radio.wire.send(build_civ_frame(0x94, 0xE0, 0x1C, sub=0))
+    if value is not None:
+        await radio._civ_runtime._route_civ_frame(
+            CivFrame(0xE0, 0x94, 0x1C, sub=0, data=bytes([int(value)])),
+            generation=radio._civ_epoch,
+            store_provider_generation=radio.state_store.provider_generation,
+        )
+
+
+@pytest.mark.parametrize("value", (False, True, None))
+@pytest.mark.parametrize("stale_ptt", (False, True))
+async def test_connect_rechecks_genuine_ptt_after_one_bounded_read(
+    value: bool | None,
+    stale_ptt: bool,
+) -> None:
+    poller, radio, store = connect_vfo_poller()
+    _observe_ptt(store, stale_ptt, observed_at=time.monotonic() - 5.0)
+
+    async def read(command: int, **kwargs: object) -> bool:
+        assert command == 0x1C
+        assert kwargs == {"sub": 0, "data": b"", "wait_response": True}
+        await observe_connect_ptt_read(radio, value)
+        return False
+
+    radio.send_civ = AsyncMock(side_effect=read)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    radio.send_civ.assert_awaited_once()
+    assert radio.wire.sent_frames[0] == bytes.fromhex("fefe94e01c00fd")
+    assert len(radio.wire.sent_frames) == (6 if value is False else 1)
+    assert (str(FieldPath.active_slot("0")) in store.snapshot().as_dict()) is (
+        value is False
+    )
+
+
+@pytest.mark.parametrize("outcome", ("timeout", "new_generation"))
+async def test_connect_read_timeout_or_epoch_change_never_selects(outcome: str) -> None:
+    poller, radio, store = connect_vfo_poller()
+    entered, release = asyncio.Event(), asyncio.Event()
+    radio.send_civ = AsyncMock()
+
+    async def read(*args: object, **kwargs: object) -> None:
+        entered.set()
+        if outcome == "timeout":
+            await asyncio.Event().wait()
+        await release.wait()
+        radio._civ_epoch += 1
+        store.begin_provider_generation()
+        await observe_connect_ptt_read(radio, False)
+
+    radio.send_civ.side_effect = read
+    poller._VFO_CONNECT_PTT_TIMEOUT = 0.01
+    task = asyncio.create_task(poller.select_vfo_a_on_connect(read_only=False))
+    await asyncio.wait_for(entered.wait(), timeout=0.5)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    release.set()
+    await task
+    radio.send_civ.assert_awaited_once()
+    assert all(frame[4] != 0x07 for frame in radio.wire.sent_frames)
+    assert str(FieldPath.active_slot("0")) not in store.snapshot().as_dict()
 
 
 async def test_teardown_drain_unkey_stays_outside_the_execute_seat() -> None:
