@@ -6538,7 +6538,8 @@ def test_scan_facts_seed_labelled_command_response_not_poll_response() -> None:
 #: ``(command, sub, data)`` of every frame one IC-7300 drain cycle emits.
 #: MOR-2425: re-recorded after the ten panel knobs moved from
 #: command_response-only membership onto a 5.0s cadence (owner ruling,
-#: 2026-09-07). 42 -> 52 frames, one cadence read per newly-polled field:
+#: 2026-09-07). MOR-2449 adds IP+ (0x16 65) at the same 5.0s tier: 52 -> 53
+#: frames. One cadence read is emitted per newly-polled field:
 #: 0x1A 03 filter_width, 0x14 07/08 PBT inner/outer, 0x14 06 NR level,
 #: 0x14 12 NB level, 0x14 0D notch position, 0x16 57 notch width,
 #: 0x16 41/48 auto/manual notch, 0x21 00 RIT offset. The prime burst is
@@ -6573,6 +6574,7 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x14, 0x07, b""),
     (0x14, 0x08, b""),
     (0x16, 0x41, b""),
+    (0x16, 0x65, b""),
     (0x16, 0x48, b""),
     (0x21, 0x00, b""),
     (0x14, 0x17, b""),
