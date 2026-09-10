@@ -1483,6 +1483,30 @@ def test_unconditional_declared_meter_is_missing_until_observed() -> None:
     assert field_status["vdMeter"]["availability"] == "missing"
 
 
+def test_ic7300_ipplus_is_missing_until_a_canonical_observation_arrives() -> None:
+    """MOR-2449: declared IP+ stays non-operational until CI-V observes it."""
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    ipplus = FieldPath.receiver("main", "operator_toggles", "ipplus")
+
+    before = _profile_field_status("IC-7300", store.snapshot())
+    assert before["main.ipplus"] == {
+        "storePath": "receiver.main.operator_toggles.ipplus",
+        "observed": False,
+        "freshness": "unknown",
+        "availability": "missing",
+    }
+
+    # 0x16/0x65 is decoded into this canonical StateStore observation by the
+    # CI-V runtime; the profile's 10-second TTL is stamped on that ingress.
+    store.apply(_observation(ipplus, True, at=clock.now(), max_age=10.0, provider="icom_civ"))
+
+    after = _profile_field_status("IC-7300", store.snapshot())
+    assert after["main.ipplus"]["observed"] is True
+    assert after["main.ipplus"]["freshness"] == "fresh"
+    assert after["main.ipplus"]["availability"] == "available"
+
+
 def test_meter_the_profile_never_declares_is_undeclared() -> None:
     """R42/R52 absence (1): the radio does not carry the field at all.
 
