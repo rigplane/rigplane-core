@@ -986,10 +986,10 @@
     --btn-compact-min-height: 18px;
     --btn-compact-padding-block: 1px;
     --btn-compact-padding-inline: 4px;
-    --btn-compact-font-size: 8px;
+    --btn-compact-font-size: 9px;
     --vfo-control-strip-gap: 2px;
-    --vfo-panel-body-height: 82px;
-    --vfo-control-strip-height: 40px;
+    --vfo-panel-body-height: 100px;
+    --vfo-control-strip-height: 54px;
   }
   [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] :global(.control-strip) {
     align-content: center;

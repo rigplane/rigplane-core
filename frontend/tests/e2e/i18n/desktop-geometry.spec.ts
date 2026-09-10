@@ -374,13 +374,20 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
           panel: rect(element), cards: cardRects,
           overflow: element.scrollWidth > element.clientWidth + 1,
           cardOverflow: [...element.querySelectorAll<HTMLElement>('[data-standard-vfo-slot]')]
-            .map(card => [...card.querySelectorAll<HTMLElement>('.panel-header, .panel-meter, .vfo-freq, .control-strip, .control-strip *')]
+            .map(card => {
+              const cardBox = card.getBoundingClientRect();
+              return [...card.querySelectorAll<HTMLElement>('.panel-header, .panel-meter, .vfo-freq, .control-strip, .control-strip *')]
               .filter(target => {
                 const style = getComputedStyle(target);
+                const box = target.getBoundingClientRect();
                 return style.display !== 'none' && style.visibility !== 'hidden'
-                  && target.scrollWidth > target.clientWidth + 1;
+                  && (target.scrollWidth > target.clientWidth + 1
+                    || box.left < cardBox.left - 1 || box.right > cardBox.right + 1
+                    || box.top < cardBox.top - 1 || box.bottom > cardBox.bottom + 1);
               }).map(target => ({ target: target.className ?? target.tagName,
-                scrollWidth: target.scrollWidth, clientWidth: target.clientWidth }))),
+                scrollWidth: target.scrollWidth, clientWidth: target.clientWidth,
+                rect: target.getBoundingClientRect().toJSON(), card: cardBox.toJSON() }));
+            }),
           bridgeOverflow: [...element.querySelectorAll<HTMLElement>('[data-instrument-bridge] *')]
             .filter(target => target.scrollWidth > target.clientWidth + 1)
             .map(target => target.getAttribute('data-dual-action') ?? target.className ?? target.tagName),
@@ -410,6 +417,9 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       }
       expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
         .geometryCommands.filter(c => c.type === 'cmd'))).toEqual([]);
+      const screenshot = info.outputPath(`compact-vfo-pair-${width}.png`);
+      await page.screenshot({ path: screenshot, fullPage: true });
+      await info.attach('compact-vfo-pair-screenshot', { path: screenshot, contentType: 'image/png' });
     });
   }
 
