@@ -2387,13 +2387,9 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     expect(t.querySelector('[data-testid="antenna-control-grid"]')).not.toBeNull();
   });
 
-  /**
-   * MOR-2445 stage A keeps both selectors mounted, restores HAM only in the
-   * upper Standard panel through the semantic instrument handle, and leaves
-   * settings on the two broadcast tabs. The lower semantic block is retained
-   * until the separate owner-present acceptance gate.
-   */
-  it('moves semantic HAM choices into the upper BAND selector and keeps settings broadcast-only', () => {
+  /** Unsupported profiles retain the generic lower entry surface because
+   * their active-frequency command is still the only available route. */
+  it('keeps the generic lower entry on unsupported profiles while moving HAM into BANDS', () => {
     const t = renderAll('desktop-v2');
     const upper = t.querySelector('.left-sidebar [data-panel-id="band"]');
     const settings = t.querySelector('[data-panel-id="desktop-vfo-ops"]');
@@ -2402,8 +2398,30 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     expect(upper?.querySelector('[data-testid="band-choices-compact"]')).not.toBeNull();
     expect(texts(settings, '.band-tab')).toEqual(['LW/MW', 'SWL']);
     expect(texts(settings, '.grid button')).toEqual(LW_MW_PRESETS);
-    // Stage A deliberately retains the lower semantic block until owner acceptance.
     expect(t.querySelector('[data-testid="band-surface"] [data-testid="band-choices"]')).not.toBeNull();
+  });
+
+  it('retires the complete lower BAND panel for direct Standard entry without freshness resurrection', () => {
+    h.caps = {
+      ...(h.caps as object),
+      capabilities: [...(h.caps as Capabilities).capabilities, 'vfo_freq_direct'],
+      receivers: 1,
+      vfoScheme: 'ab',
+    } as Capabilities;
+    const t = renderAll('desktop-v2');
+
+    const upper = t.querySelector('.left-sidebar [data-panel-id="band"]');
+    expect(texts(upper, '.band-tab')).toEqual(['HAM', 'LW/MW', 'SWL']);
+    expect(upper?.querySelector('[data-testid="band-choices-compact"]')).not.toBeNull();
+    expect(t.querySelector('[data-testid="band-surface"]')).toBeNull();
+    expect(t.querySelector('[data-panel-id="semantic-band"]')).toBeNull();
+
+    h.state = { ...(h.state as object), fieldStatus: {} };
+    const stale = renderAll('desktop-v2');
+
+    expect(stale.querySelector('[data-testid="band-surface"]')).toBeNull();
+    expect(stale.querySelector('[data-panel-id="semantic-band"]')).toBeNull();
+    expect(stale.querySelector('.left-sidebar [data-panel-id="band"]')).not.toBeNull();
   });
 
   // PRESET SURVIVAL. Both broadcast tabs remain reachable and every preset is
@@ -2449,7 +2467,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     ]) {
       expect(t.querySelectorAll(selector).length, selector).toBe(0);
     }
-    // Stage A has one retained lower semantic grid plus the compact upper host.
+    // This unsupported fixture retains the generic lower grid plus the compact upper host.
     expect(t.querySelectorAll('[data-testid="band-choices"]').length).toBe(1);
     expect(t.querySelectorAll('[data-testid="band-choices-compact"]').length).toBe(1);
     expect([...t.querySelectorAll('.band-tab')].filter((b) => b.textContent?.trim() === 'HAM').length)

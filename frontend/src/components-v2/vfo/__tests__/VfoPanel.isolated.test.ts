@@ -471,7 +471,7 @@ describe('explicit presentation contract', () => {
     expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_074_001);
   });
 
-  it('reports a digit click once without tuning and preserves deliberate wheel tuning', () => {
+  it('opens from the whole readout without tuning and preserves deliberate wheel tuning', () => {
     const onFrequencyClick = vi.fn();
     const onFreqChange = vi.fn();
     const t = mountPanel({ ...explicit, onFrequencyClick, onFreqChange });
@@ -485,7 +485,64 @@ describe('explicit presentation contract', () => {
     digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
     expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_075_000);
     t.querySelector<HTMLElement>('.sep')?.click();
-    expect(onFrequencyClick).toHaveBeenCalledTimes(1);
+    readout.click();
+    expect(onFrequencyClick).toHaveBeenCalledTimes(3);
+    expect(onFreqChange).toHaveBeenCalledOnce();
+  });
+
+  it.each(['Enter', ' '] as const)(
+    'exposes inactive direct entry as an enabled button and opens with %s without tuning',
+    (key) => {
+      const onFrequencyClick = vi.fn();
+      const onFreqChange = vi.fn();
+      const t = mountPanel({
+        ...explicit, receiverLabel: 'MAIN B', isActive: false,
+        frequencyDisabled: true, controlsDisabled: true,
+        onFrequencyClick, onFreqChange,
+      });
+      const trigger = t.querySelector<HTMLElement>('[data-vfo-freq]')!;
+      const readout = trigger.querySelector<HTMLElement>('.freq')!;
+
+      expect(trigger.getAttribute('role')).toBe('button');
+      expect(trigger.getAttribute('aria-label')).toBe('Set frequency — MAIN B');
+      expect(trigger.getAttribute('aria-disabled')).toBeNull();
+      expect(trigger.getAttribute('tabindex')).toBe('0');
+      expect(readout.parentElement?.getAttribute('aria-hidden')).toBe('true');
+      trigger.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+
+      expect(onFrequencyClick).toHaveBeenCalledExactlyOnceWith(trigger);
+      expect(onFreqChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it('opens inactive direct entry by pointer without digit selection or wheel and arrow tuning', () => {
+    const onFrequencyClick = vi.fn();
+    const onFreqChange = vi.fn();
+    const t = mountPanel({
+      ...explicit, receiverLabel: 'MAIN B', isActive: false,
+      frequencyDisabled: true, controlsDisabled: true,
+      onFrequencyClick, onFreqChange,
+    });
+    const trigger = t.querySelector<HTMLElement>('[data-vfo-freq]')!;
+    const readout = trigger.querySelector<HTMLElement>('.freq')!;
+    const digit = readout.querySelector<HTMLElement>('.digit')!;
+
+    digit.click();
+    expect(onFrequencyClick).toHaveBeenCalledExactlyOnceWith(trigger);
+    expect(digit.classList.contains('selected')).toBe(false);
+    digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it('does not expose unsupported inactive frequency as an entry button', () => {
+    const t = mountPanel({
+      ...explicit, isActive: false, frequencyDisabled: true, controlsDisabled: true,
+    });
+    const wrapper = t.querySelector<HTMLElement>('[data-vfo-freq]')!;
+    expect(wrapper.getAttribute('role')).toBeNull();
+    expect(wrapper.getAttribute('tabindex')).toBeNull();
+    expect(wrapper.querySelector('.freq')?.parentElement?.getAttribute('aria-hidden')).toBeNull();
   });
 
   // MOR-2425/R29+R40: a HELD frequency stays tunable. `frequencyState` alone
