@@ -1,5 +1,15 @@
 # Mechanism-audit reports
 
+## 2026-09-10 — Recent regression fixes
+
+Independent definition/consumer collection followed by architectural adjudication, with source revisions pinned in each report:
+
+- [Scope continuity](2026-09-10-mechanism-audit-scope-continuity.md): PASS; display retention remains separate from strict command authority.
+- [Managed TX refresh](2026-09-10-mechanism-audit-managed-tx-refresh.md): initially BLOCKED for incomplete TOT/error context fencing; follow-up revision `42746022` passed independent delta adjudication. Both verdicts are retained.
+- [Command retention](2026-09-10-mechanism-audit-command-retention.md): PASS; shared Core active bookkeeping is distinct from queue coalescing and retained lifecycle history.
+
+These are point-in-time mechanism verdicts, not CI or installed-hardware acceptance.
+
 Archived, point-in-time outputs of the `auditor` role running the
 `.claude/skills/mechanism-audit/SKILL.md` method. Each report pins the exact
 revision it audited in its own header; citations inside a report (including
