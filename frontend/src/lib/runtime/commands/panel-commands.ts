@@ -45,6 +45,15 @@ import {
 
 type Receiver = 0 | 1;
 
+export interface DirectVfoFrequencyRequest {
+  readonly frequencyHz: number;
+  readonly receiver: 'MAIN' | 'SUB';
+  readonly slot: 'A' | 'B';
+  readonly expectedActiveSlot: 'A' | 'B';
+  readonly providerGeneration: number;
+  readonly sessionEpoch: number;
+}
+
 function knownActiveReceiver(
   field?: string, target?: 'MAIN' | 'SUB', receiverCount?: number | null,
 ): Receiver | null {
@@ -1269,6 +1278,37 @@ export function makeVfoHandlers() {
       tuningAccumulator().cancel(receiver === 'SUB' ? 1 : 0);
       if (active !== receiver && !activateReceiver(receiver, context)) return;
       if (slot !== null) dispatchRadioIntent({ name: 'set_vfo', params: { vfo: slot } });
+    },
+    onDirectFrequencyChange: (request: DirectVfoFrequencyRequest) => {
+      const context = currentA03cContext();
+      const generation = context?.state.providerGeneration;
+      const activeSlot = context?.state.main?.activeSlot;
+      if (!context || request.receiver !== 'MAIN' || context.caps.receivers !== 1
+        || context.caps.vfoScheme !== 'ab'
+        || !context.caps.capabilities.includes('vfo_freq_direct')
+        || request.sessionEpoch !== currentControlSessionEpoch()
+        || !Number.isSafeInteger(request.providerGeneration) || request.providerGeneration < 0
+        || generation !== request.providerGeneration
+        || context.caps.providerGeneration !== request.providerGeneration
+        || !observedAvailableField(context.state, 'main.activeSlot')
+        || (activeSlot !== 'A' && activeSlot !== 'B')
+        || activeSlot !== request.expectedActiveSlot
+        || (request.slot !== 'A' && request.slot !== 'B')
+        || !Number.isSafeInteger(request.frequencyHz) || request.frequencyHz <= 0
+        || !context.caps.freqRanges.some(
+          (range) => request.frequencyHz >= range.start && request.frequencyHz <= range.end,
+        )) return null;
+      tuningAccumulator().cancel(0);
+      return dispatchRadioIntent({
+        name: 'set_vfo_freq',
+        params: {
+          freq: request.frequencyHz,
+          receiver: 0,
+          slot: request.slot,
+          expected_active_slot: request.expectedActiveSlot,
+          provider_generation: request.providerGeneration,
+        },
+      });
     },
     onMainModeClick: () => { tuningAccumulator().cancel(); focusModePanel('MAIN'); },
     onSubModeClick: () => { tuningAccumulator().cancel(); focusModePanel('SUB'); },

@@ -2544,6 +2544,29 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(onSelectVfo).not.toHaveBeenCalled();
   });
 
+  it('reports the exact Standard A/B record clicked without selecting or tuning either slot', () => {
+    const onOpenFrequencyEntry = vi.fn();
+    const onSelectVfo = vi.fn();
+    const onTuneFrequency = vi.fn();
+    const model = withReceiverIndicators('1/ab');
+    const root = mountSurface({
+      viewModel: model, appearance: 'standard', onOpenFrequencyEntry, onSelectVfo,
+      onTuneFrequency,
+    });
+
+    for (const id of ['A', 'B'] as const) {
+      root.querySelector<HTMLElement>(`[data-standard-vfo-slot="${id}"] .digit`)?.click();
+    }
+    expect(onOpenFrequencyEntry).toHaveBeenCalledTimes(2);
+    expect(onOpenFrequencyEntry.mock.calls.map(([target]) => target)).toEqual([
+      { receiver: 'MAIN', slot: { kind: 'slotted', id: 'A' } },
+      { receiver: 'MAIN', slot: { kind: 'slotted', id: 'B' } },
+    ]);
+    expect(onOpenFrequencyEntry.mock.calls.every(([, trigger]) => trigger instanceof HTMLElement)).toBe(true);
+    expect(onSelectVfo).not.toHaveBeenCalled();
+    expect(onTuneFrequency).not.toHaveBeenCalled();
+  });
+
   it('puts persistent A/B selection and shared operations in the center of the Standard pair', () => {
     const onSelectVfo = vi.fn();
     const root = mountSurface({

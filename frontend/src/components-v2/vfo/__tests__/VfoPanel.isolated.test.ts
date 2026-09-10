@@ -471,6 +471,23 @@ describe('explicit presentation contract', () => {
     expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_074_001);
   });
 
+  it('reports a digit click once without tuning and preserves deliberate wheel tuning', () => {
+    const onFrequencyClick = vi.fn();
+    const onFreqChange = vi.fn();
+    const t = mountPanel({ ...explicit, onFrequencyClick, onFreqChange });
+    const readout = t.querySelector<HTMLElement>('[data-vfo-freq] .freq')!;
+    const digit = t.querySelectorAll<HTMLElement>('.digit').item(4);
+
+    digit.click();
+    expect(onFrequencyClick).toHaveBeenCalledExactlyOnceWith(readout);
+    expect(onFreqChange).not.toHaveBeenCalled();
+
+    digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_075_000);
+    t.querySelector<HTMLElement>('.sep')?.click();
+    expect(onFrequencyClick).toHaveBeenCalledTimes(1);
+  });
+
   // MOR-2425/R29+R40: a HELD frequency stays tunable. `frequencyState` alone
   // no longer disables the arithmetic control; a display carrying no value
   // ('unknown'/'unsupported') still does, as does `frequencyDisabled`.
