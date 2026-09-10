@@ -18,11 +18,14 @@ describe('MOR-1425 tuning accumulator', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     emit = vi.fn((_receiver: number, _freq: number) => ({ status: 'pending' }));
-    acc = createTuningAccumulator({ emit, paceMs: 60, quietWindowMs: 4_000 });
+    acc = createTuningAccumulator({
+      emit, paceMs: 60, quietWindowMs: 4_000,
+      acceptedTarget: ({ frequency }) => emit.mock.calls.some(([, target]) => target === frequency),
+    });
   });
 
   it('(f) emits an isolated single step immediately, unpaced', () => {
-    acc.step(0, 14_074_000, 14_075_000);
+    acc.step(0, 14_074_000, 14_075_000, 1);
     expect(emit).toHaveBeenCalledExactlyOnceWith(0, 14_075_000);
   });
 
@@ -33,7 +36,7 @@ describe('MOR-1425 tuning accumulator', () => {
     for (let i = 1; i <= N; i++) {
       // Each gesture computes target = displayed (still-stale confirmed) +
       // step — exactly the operator-captured mechanism from MOR-1425.
-      acc.step(0, confirmed, confirmed + step);
+      acc.step(0, confirmed, confirmed + step, 1);
     }
     // First (cold) step emitted immediately; the rest are paced.
     expect(emit).toHaveBeenCalledTimes(1);
@@ -44,17 +47,17 @@ describe('MOR-1425 tuning accumulator', () => {
 
   it('(b) paced emissions during a sustained burst are at least ~60ms apart', () => {
     const confirmed = 14_074_000;
-    acc.step(0, confirmed, confirmed + 1_000); // cold, immediate
+    acc.step(0, confirmed, confirmed + 1_000, 1); // cold, immediate
     expect(emit).toHaveBeenCalledTimes(1);
 
-    acc.step(0, confirmed, confirmed + 2_000); // hot, schedules a flush
+    acc.step(0, confirmed, confirmed + 2_000, 1); // hot, schedules a flush
     expect(emit).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(59);
     expect(emit).toHaveBeenCalledTimes(1); // not yet — under the pace window
     vi.advanceTimersByTime(1);
     expect(emit).toHaveBeenCalledTimes(2); // paced flush fires at >=60ms
 
-    acc.step(0, confirmed, confirmed + 3_000); // hot again, schedules another
+    acc.step(0, confirmed, confirmed + 3_000, 1); // hot again, schedules another
     vi.advanceTimersByTime(59);
     expect(emit).toHaveBeenCalledTimes(2);
     vi.advanceTimersByTime(1);
@@ -63,14 +66,14 @@ describe('MOR-1425 tuning accumulator', () => {
 
   it('(c) a contradictory confirmed observation resets accumulation — the next step bases on the new truth', () => {
     const confirmed = 14_074_000;
-    acc.step(0, confirmed, confirmed + 1_000); // cold, immediate: target 14_075_000
-    acc.step(0, confirmed, confirmed + 2_000); // hot: target 14_076_000, paced
+    acc.step(0, confirmed, confirmed + 1_000, 1); // cold, immediate: target 14_075_000
+    acc.step(0, confirmed, confirmed + 2_000, 1); // hot: target 14_076_000, paced
 
     // The operator turned the physical knob: a confirmed freq that matches
     // neither our frozen baseline (14_074_000) nor our pending target
     // (14_076_000).
     const physical = 14_200_000;
-    acc.step(0, physical, physical + 1_000);
+    acc.step(0, physical, physical + 1_000, 2);
 
     // The reset step is itself a cold start: immediate, unpaced, and its
     // delta is measured from the NEW physical truth, not the old baseline.
@@ -79,23 +82,23 @@ describe('MOR-1425 tuning accumulator', () => {
 
   it('(c) a confirmed observation that matches our own predicted target is NOT a contradiction', () => {
     const confirmed = 14_074_000;
-    acc.step(0, confirmed, confirmed + 1_000); // cold, immediate: target 14_075_000
+    acc.step(0, confirmed, confirmed + 1_000, 1); // cold, immediate: target 14_075_000
     // Our own first write lands mid-burst — confirmed truth now equals what
     // we predicted. This must rebase, not reset: the next step's delta is
     // measured from the new (matching) baseline and continues accumulating.
-    acc.step(0, confirmed + 1_000, confirmed + 1_000 + 1_000);
+    acc.step(0, confirmed + 1_000, confirmed + 1_000 + 1_000, 2);
     vi.advanceTimersByTime(60);
     expect(emit).toHaveBeenLastCalledWith(0, confirmed + 2_000);
   });
 
   it('(d) the accumulator expires after the quiet window and the next step is a fresh cold start', () => {
     const confirmed = 14_074_000;
-    acc.step(0, confirmed, confirmed + 1_000);
+    acc.step(0, confirmed, confirmed + 1_000, 1);
     expect(emit).toHaveBeenCalledTimes(1);
 
     vi.advanceTimersByTime(4_001); // past quietWindowMs with no further activity
 
-    acc.step(0, confirmed, confirmed + 1_000);
+    acc.step(0, confirmed, confirmed + 1_000, 1);
     // A fresh cold start emits immediately again — no pacing delay, and
     // the target is not double-accumulated from the expired burst.
     expect(emit).toHaveBeenCalledTimes(2);
@@ -111,13 +114,13 @@ describe('MOR-1425 tuning accumulator', () => {
     const lifecycle = { status: 'pending' };
     emit.mockReturnValueOnce(lifecycle);
     const confirmed = 14_074_000;
-    acc.step(0, confirmed, confirmed + 1_000); // cold, immediate — still pending
+    acc.step(0, confirmed, confirmed + 1_000, 1); // cold, immediate — still pending
 
     // The async failure arrives later by mutating the SAME retained object,
     // exactly like `failCommand`/`acknowledgeCommand` do in production.
     lifecycle.status = 'failed';
 
-    acc.step(0, confirmed, confirmed + 2_000);
+    acc.step(0, confirmed, confirmed + 2_000, 1);
     // Treated as a fresh cold start (the prior burst is dead), not an
     // accumulation onto a target that will never be retried. If the
     // accumulator had snapshotted `.status` at emit time instead of
@@ -128,16 +131,16 @@ describe('MOR-1425 tuning accumulator', () => {
   });
 
   it('tracks receivers independently', () => {
-    acc.step(0, 14_074_000, 14_075_000);
-    acc.step(1, 7_100_000, 7_101_000);
+    acc.step(0, 14_074_000, 14_075_000, 1);
+    acc.step(1, 7_100_000, 7_101_000, 1);
     expect(emit).toHaveBeenNthCalledWith(1, 0, 14_075_000);
     expect(emit).toHaveBeenNthCalledWith(2, 1, 7_101_000);
   });
 
   it('(g) jump(receiver, freq) clears accumulator state and emits the exact frequency immediately, unpaced — even mid-burst (review B1)', () => {
     const confirmed = 14_074_000;
-    acc.step(0, confirmed, confirmed + 1_000); // cold, immediate
-    acc.step(0, confirmed, confirmed + 1_000); // hot, accumulates, paced flush pending
+    acc.step(0, confirmed, confirmed + 1_000, 1); // cold, immediate
+    acc.step(0, confirmed, confirmed + 1_000, 1); // hot, accumulates, paced flush pending
     expect(emit).toHaveBeenCalledTimes(1);
 
     acc.jump(0, 18_100_000); // absolute target — must land EXACTLY, not accumulate
@@ -151,7 +154,7 @@ describe('MOR-1425 tuning accumulator', () => {
 
     // The next step is a fresh cold start off the jumped-to frequency, not
     // a continuation of the pre-jump burst.
-    acc.step(0, 18_100_000, 18_101_000);
+    acc.step(0, 18_100_000, 18_101_000, 1);
     expect(emit).toHaveBeenCalledTimes(3);
     expect(emit).toHaveBeenLastCalledWith(0, 18_101_000);
   });
@@ -160,19 +163,19 @@ describe('MOR-1425 tuning accumulator', () => {
     const confirmed = 14_074_000;
     const step = 1_000;
 
-    acc.step(0, confirmed, confirmed + step); // cold, immediate: target C+1_000
-    acc.step(0, confirmed, confirmed + step); // hot: target C+2_000, paced
-    acc.step(0, confirmed, confirmed + step); // hot: target C+3_000, same paced flush
+    acc.step(0, confirmed, confirmed + step, 1); // cold, immediate: target C+1_000
+    acc.step(0, confirmed, confirmed + step, 1); // hot: target C+2_000, paced
+    acc.step(0, confirmed, confirmed + step, 1); // hot: target C+3_000, same paced flush
     vi.advanceTimersByTime(60); // flush carries the latest target: C+3_000
 
-    acc.step(0, confirmed, confirmed + step); // hot, still no echo yet: target C+4_000, paced
+    acc.step(0, confirmed, confirmed + step, 1); // hot, still no echo yet: target C+4_000, paced
     vi.advanceTimersByTime(60); // flush: C+4_000 already sent to the radio
 
     // The echo of the VERY FIRST write (C+1_000 — long superseded by the
     // C+4_000 already in flight) finally lands: an INTERMEDIATE target, not
     // the frozen baseline (C) and not the current pending target either —
     // exactly the failure mode from the live capture (review B2).
-    acc.step(0, confirmed + step, confirmed + 2 * step);
+    acc.step(0, confirmed + step, confirmed + 2 * step, 2);
     vi.advanceTimersByTime(60);
 
     const targets = emit.mock.calls.map(([, freq]) => freq);
@@ -191,11 +194,11 @@ describe('MOR-1425 tuning accumulator', () => {
     let epoch = 1;
     const local = createTuningAccumulator({ emit, paceMs: 60, quietWindowMs: 4_000, epoch: () => epoch });
     const confirmed = 14_074_000;
-    local.step(0, confirmed, confirmed + 1_000); // cold, immediate
-    local.step(0, confirmed, confirmed + 1_000); // hot, paced
+    local.step(0, confirmed, confirmed + 1_000, 1); // cold, immediate
+    local.step(0, confirmed, confirmed + 1_000, 1); // hot, paced
 
     epoch = 2; // reconnect — a NEW control session
-    local.step(0, confirmed, confirmed + 1_000);
+    local.step(0, confirmed, confirmed + 1_000, 1);
 
     // Treated as a fresh cold start under the new epoch, not a continuation
     // of the pre-reconnect accumulation.
@@ -207,14 +210,73 @@ describe('MOR-1425 tuning accumulator', () => {
     let generation: number | null = 7;
     const local = createTuningAccumulator({ emit, paceMs: 60, quietWindowMs: 4_000, generation: () => generation });
     const confirmed = 14_074_000;
-    local.step(0, confirmed, confirmed + 1_000); // cold, immediate
-    local.step(0, confirmed, confirmed + 1_000); // hot, paced
+    local.step(0, confirmed, confirmed + 1_000, 1); // cold, immediate
+    local.step(0, confirmed, confirmed + 1_000, 1); // hot, paced
 
     generation = 8; // radio switch / re-negotiated capabilities
-    local.step(0, confirmed, confirmed + 1_000);
+    local.step(0, confirmed, confirmed + 1_000, 1);
 
     expect(emit).toHaveBeenCalledTimes(2);
     expect(emit).toHaveBeenLastCalledWith(0, confirmed + 1_000);
+  });
+
+  it('MOR-1864 fails closed on missing, regressed, or contradictory marker evidence', () => {
+    for (const [marker, frequency] of [[null, 14_074_000], [0, 14_074_000], [1, 14_080_000]] as const) {
+      emit.mockClear();
+      const local = createTuningAccumulator({ emit, paceMs: 60 });
+      local.step(0, 14_074_000, 14_075_000, 1);
+      local.step(0, frequency, frequency + 1_000, marker);
+      expect(emit).toHaveBeenCalledTimes(2);
+      expect(emit).toHaveBeenLastCalledWith(0, frequency + 1_000);
+    }
+  });
+
+  it('MOR-1864 preserves a repolled equal value, but requires association for a changed value', () => {
+    const acceptedTarget = vi.fn(() => false);
+    const local = createTuningAccumulator({ emit, paceMs: 60, acceptedTarget });
+    local.step(0, 14_074_000, 14_075_000, 1);
+    local.step(0, 14_074_000, 14_075_000, 2); // newer field marker, same value
+    vi.advanceTimersByTime(60);
+    expect(emit).toHaveBeenLastCalledWith(0, 14_076_000);
+    expect(acceptedTarget).not.toHaveBeenCalled();
+
+    local.step(0, 14_075_000, 14_076_000, 3); // changed, unmatched value
+    expect(emit).toHaveBeenLastCalledWith(0, 14_076_000);
+    expect(acceptedTarget).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      frequency: 14_075_000, observationMarker: 3,
+    }));
+  });
+
+  it.each([14_074_500, 14_200_000])(
+    'MOR-1864 treats unmatched physical value %i as cold regardless of numeric segment',
+    (physical) => {
+      const local = createTuningAccumulator({ emit, paceMs: 60, acceptedTarget: () => false });
+      local.step(0, 14_074_000, 14_076_000, 1);
+      local.step(0, physical, physical + 1_000, 2);
+      expect(emit).toHaveBeenCalledTimes(2);
+      expect(emit).toHaveBeenLastCalledWith(0, physical + 1_000);
+    },
+  );
+
+  it('MOR-1864 rechecks selected identity and terminal/quiet fences at paced flush', () => {
+    let context = 'ab:main:A';
+    const lifecycle = { status: 'pending' };
+    emit.mockReturnValue(lifecycle);
+    const local = createTuningAccumulator({
+      emit, paceMs: 60, quietWindowMs: 4_000, context: () => context,
+    });
+    local.step(0, 14_074_000, 14_075_000, 1);
+    local.step(0, 14_074_000, 14_075_000, 1);
+    context = 'ab:main:B';
+    vi.advanceTimersByTime(60);
+    expect(emit).toHaveBeenCalledTimes(1);
+
+    context = 'ab:main:A';
+    local.step(0, 14_074_000, 14_075_000, 2);
+    local.step(0, 14_074_000, 14_075_000, 2);
+    lifecycle.status = 'failed';
+    vi.advanceTimersByTime(60);
+    expect(emit).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -233,13 +295,13 @@ describe('MOR-1425 getSharedTuningAccumulator (review B5)', () => {
 
     const confirmed = 14_074_000;
     const step = 1_000;
-    first.step(0, confirmed, confirmed + step); // cold, immediate
+    first.step(0, confirmed, confirmed + step, 1); // cold, immediate
     expect(sharedEmit).toHaveBeenCalledTimes(1);
 
     // If `second` tracked independent state, this would ALSO be a cold,
     // immediate start (on `second`'s own emit spy). Because it shares
     // `first`'s pending burst instead, it accumulates and paces.
-    second.step(0, confirmed, confirmed + step);
+    second.step(0, confirmed, confirmed + step, 1);
     expect(sharedEmit).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(60);
     expect(sharedEmit).toHaveBeenCalledTimes(2);

@@ -35,7 +35,11 @@ import {
 import { audioManager } from '$lib/audio/audio-manager';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
 import { currentControlSessionEpoch, dispatchRadioIntent, isNormalizedLevel } from './radio-intents';
-import { getSharedTuningAccumulator } from './tuning-accumulator';
+import { getCommandLifecycles } from '$lib/stores/commands.svelte';
+import {
+  getSharedTuningAccumulator,
+  type AcceptedTargetQuery,
+} from './tuning-accumulator';
 
 /* ── Shared helpers ──────────────────────────────────────────────── */
 
@@ -1133,6 +1137,80 @@ function supportsVfoSlot(
   return context.caps.vfoScheme === 'ab' || context.caps.vfoScheme === 'main_sub';
 }
 
+function tuningReceiverPath(receiver: number): 'main' | 'sub' | null {
+  return receiver === 0 ? 'main' : receiver === 1 ? 'sub' : null;
+}
+
+/** Identity of the physical receiver's currently selected VFO. Relative A/B
+ * providers remain relative; an A/B label is used only when observed. */
+function currentTuningContext(receiver: number): string | null {
+  const context = currentA03cContext();
+  const receiverPath = tuningReceiverPath(receiver);
+  if (!context || receiverPath === null) return null;
+  if (knownA03cReceiver(context, receiverPath === 'main' ? 'MAIN' : 'SUB', 'freqHz') !== receiver) return null;
+  if (context.caps.vfoScheme === 'single' || context.caps.vfoScheme === 'ab_shared') {
+    return `${context.caps.vfoScheme}:${receiverPath}`;
+  }
+  if (context.caps.vfoScheme === 'ab'
+    && relativeVfoIdentityUnknown(context.state, context.caps, receiverPath)) {
+    return `ab-relative:${receiverPath}`;
+  }
+  const selected = context.state[receiverPath]?.activeSlot;
+  const status = getFieldStatus(context.state, `${receiverPath}.activeSlot`);
+  if (context.caps.vfoScheme === 'main_sub' && (status?.observed !== true
+    || (selected !== 'A' && selected !== 'B'))) return `main_sub:${receiverPath}`;
+  return status?.observed === true && status.freshness !== 'unknown'
+    && status.availability !== 'missing' && (selected === 'A' || selected === 'B')
+    ? `${context.caps.vfoScheme}:${receiverPath}:${selected}` : null;
+}
+
+function currentTuningMarker(receiver: number): number | null {
+  const context = currentA03cContext();
+  const receiverPath = tuningReceiverPath(receiver);
+  if (!context || receiverPath === null) return null;
+  const status = getFieldStatus(context.state, `${receiverPath}.freqHz`);
+  const marker = status?.lastObservedMonotonic;
+  return status?.observed === true && status.freshness !== 'unknown'
+    && status.availability !== 'missing' && status.availability !== 'unavailable'
+    && status.availability !== 'undeclared'
+    && status.source !== null
+    && (!Array.isArray(status.quality) || status.quality.includes('confirmed'))
+    && typeof marker === 'number' && Number.isFinite(marker) && marker >= 0
+    ? marker : null;
+}
+
+function acceptedTuningTarget(query: AcceptedTargetQuery): boolean {
+  // Practical association, not causal proof: a changed radio observation may
+  // continue this burst only when it exactly equals an accepted local target
+  // and advances that command's frequency-field ACK marker. A physical move
+  // to the same still-relevant target is intrinsically indistinguishable and
+  // is intentionally treated as the local echo.
+  if (currentTuningContext(query.receiver) !== query.context) return false;
+  const receiverPath = tuningReceiverPath(query.receiver);
+  if (receiverPath === null) return false;
+  const path = `${receiverPath}.freqHz`;
+  const records = getCommandLifecycles();
+  const anchorIndex = query.anchor.id === null ? -1 : records.findIndex((record) =>
+    record.id === query.anchor.id && record.createdAt === query.anchor.createdAt);
+  return records.some((record, index) => {
+    const inBurst = anchorIndex >= 0
+      ? index >= anchorIndex
+      : record.createdAt > query.anchor.createdAt;
+    const params = record.params;
+    const boundary = record.ackFieldObservationTimes?.[path];
+    return inBurst
+      && record.name === 'set_freq'
+      && (record.status === 'acknowledged' || record.status === 'confirmed')
+      && record.originalEpoch === currentControlSessionEpoch()
+      && record.providerGeneration === getCapabilities()?.providerGeneration
+      && Reflect.ownKeys(params).length === 2
+      && params.receiver === query.receiver
+      && params.freq === query.frequency
+      && typeof boundary === 'number' && Number.isFinite(boundary)
+      && query.observationMarker > boundary;
+  });
+}
+
 export function makeVfoHandlers() {
   // MOR-1425: rapid-tuning-step accumulator, shared module-wide (review
   // B5) — NOT per-instance: `panel-adapters.ts` holds both a singleton
@@ -1149,6 +1227,8 @@ export function makeVfoHandlers() {
         const value = getCapabilities()?.providerGeneration;
         return typeof value === 'number' ? value : null;
       },
+      context: currentTuningContext,
+      acceptedTarget: acceptedTuningTarget,
     });
   }
 
@@ -1156,11 +1236,13 @@ export function makeVfoHandlers() {
     onSwap: () => {
       const context = currentA03cContext();
       if (!context || !context.caps.capabilities.includes('vfo_swap')) return;
+      tuningAccumulator().cancel();
       dispatchRadioIntent({ name: 'vfo_swap', params: {} });
     },
     onEqual: () => {
       const context = currentA03cContext();
       if (!context || !context.caps.capabilities.includes('vfo_equalize')) return;
+      tuningAccumulator().cancel();
       dispatchRadioIntent({ name: 'vfo_equalize', params: {} });
     },
     onSplitToggle: () => {
@@ -1170,8 +1252,8 @@ export function makeVfoHandlers() {
         || !knownA03cTopLevelField(context, 'split') || typeof current !== 'boolean') return;
       dispatchRadioIntent({ name: 'set_split', params: { on: !current } });
     },
-    onMainVfoClick: () => { activateReceiver('MAIN'); },
-    onSubVfoClick: () => { activateReceiver('SUB'); },
+    onMainVfoClick: () => { tuningAccumulator().cancel(); activateReceiver('MAIN'); },
+    onSubVfoClick: () => { tuningAccumulator().cancel(); activateReceiver('SUB'); },
     onVfoSelect: (receiver: 'MAIN' | 'SUB', slot: 'A' | 'B' | null) => {
       const context = currentA03cContext();
       // MOR-1423: same single-receiver `active` bypass as knownActiveReceiver
@@ -1184,24 +1266,25 @@ export function makeVfoHandlers() {
       if (!context || (active !== 'MAIN' && active !== 'SUB')
         || knownA03cReceiver(context, receiver) === null
         || !supportsVfoSlot(context, slot)) return;
+      tuningAccumulator().cancel(receiver === 'SUB' ? 1 : 0);
       if (active !== receiver && !activateReceiver(receiver, context)) return;
       if (slot !== null) dispatchRadioIntent({ name: 'set_vfo', params: { vfo: slot } });
     },
-    onMainModeClick: () => focusModePanel('MAIN'),
-    onSubModeClick: () => focusModePanel('SUB'),
+    onMainModeClick: () => { tuningAccumulator().cancel(); focusModePanel('MAIN'); },
+    onSubModeClick: () => { tuningAccumulator().cancel(); focusModePanel('SUB'); },
     onMainFreqChange: (freq: number) => {
       const context = currentA03cContext();
       const main = context?.state.main;
       if (!context || knownA03cReceiver(context, 'MAIN', 'freqHz') !== 0
         || !Number.isSafeInteger(freq) || !main) return;
-      tuningAccumulator().step(0, main.freqHz, freq);
+      tuningAccumulator().step(0, main.freqHz, freq, currentTuningMarker(0));
     },
     onSubFreqChange: (freq: number) => {
       const context = currentA03cContext();
       const sub = context?.state.sub;
       if (!context || knownA03cReceiver(context, 'SUB', 'freqHz') !== 1
         || !Number.isSafeInteger(freq) || !sub) return;
-      tuningAccumulator().step(1, sub.freqHz, freq);
+      tuningAccumulator().step(1, sub.freqHz, freq, currentTuningMarker(1));
     },
     // MOR-1425 review B1: callers mix ABSOLUTE targets (spectrum click/
     // drag, EiBi/QSY recall) and RELATIVE steps (spectrum scroll, media
@@ -1216,7 +1299,7 @@ export function makeVfoHandlers() {
       if (kind === 'jump') { tuningAccumulator().jump(receiver, freq); return; }
       const confirmed = receiver === 1 ? context.state.sub : context.state.main;
       if (!confirmed) return;
-      tuningAccumulator().step(receiver, confirmed.freqHz, freq);
+      tuningAccumulator().step(receiver, confirmed.freqHz, freq, currentTuningMarker(receiver));
     },
     onModeChange: (mode: string, receiver?: Receiver) => {
       const context = currentA03cContext();
