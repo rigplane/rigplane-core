@@ -1426,7 +1426,11 @@ class RadioPoller:
             expected = expected_observations_for_command(name, params)
         paths = tuple(observable_field_path(path) for path in expected)
         if type(cmd) is SelectVfo and selected_receiver is not None:
-            receiver_id = str(selected_receiver)
+            # Scheduler/profile paths use the canonical receiver names, not
+            # the command API's integer receiver index.  A numeric spelling
+            # makes every real-profile capability lookup below unsupported,
+            # silently leaving geometry on its ordinary cadence after A/B.
+            receiver_id = "sub" if selected_receiver == 1 else "main"
             geometry = (
                 FieldPath.active(receiver_id, "freq_mode", "filter_width"),
                 *(
