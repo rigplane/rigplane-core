@@ -675,7 +675,7 @@ describe('each finite control has exactly one owner in the composed tree', () =>
     renderHostedFace('desktop-v2');
     const seats = [...target.querySelectorAll<HTMLElement>('.rf-front-end-finite-seat')]
       .map((seat) => seat.dataset.field);
-    expect(seats).toEqual(['preamp', 'attenuator', 'digiSel', 'ipPlus']);
+    expect(seats).toEqual(['attenuator', 'preamp', 'digiSel', 'ipPlus']);
   });
 
   it('has no Standard seat grid on sdr-test — the grouped surface owns placement there', () => {

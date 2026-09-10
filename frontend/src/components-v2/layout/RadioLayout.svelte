@@ -387,8 +387,8 @@
 
 {#snippet rfFrontEndFiniteLayout(rfFrontEndInstruments: RfFrontEndFiniteHandles)}
   <div class="rf-front-end-finite-grid">
-    <div class="rf-front-end-finite-seat" data-field="preamp">{@render rfFrontEndInstruments.preamp()}</div>
     <div class="rf-front-end-finite-seat" data-field="attenuator">{@render rfFrontEndInstruments.attenuator()}</div>
+    <div class="rf-front-end-finite-seat" data-field="preamp">{@render rfFrontEndInstruments.preamp()}</div>
     <div class="rf-front-end-finite-seat" data-field="digiSel">{@render rfFrontEndInstruments.digiSel()}</div>
     <div class="rf-front-end-finite-seat" data-field="ipPlus">{@render rfFrontEndInstruments.ipPlus()}</div>
   </div>
@@ -961,7 +961,8 @@
   .standard-bottom-dock > .content-right { display: contents; }
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .dsp-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-  .rf-front-end-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .rf-front-end-finite-grid { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+  .rf-front-end-finite-seat { display: contents; }
   /* The `.filter-finite-*` shape, not the siblings' wrap row: a wrap row let
      each seat shrink to its content, and the desktop-v2 skin stretches
      `.rx-audio-row` buttons with `flex: 1 1 0`, which needs the row to span
