@@ -67,6 +67,7 @@ import {
 } from '../panel-adapters';
 import {
   BREAK_IN_DELAY_COMMAND_DESCRIPTOR, CW_PITCH_COMMAND_DESCRIPTOR, FILTER_WIDTH_COMMAND_DESCRIPTOR,
+  DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR,
   DSP_COMMAND_DESCRIPTORS, IF_SHIFT_COMMAND_DESCRIPTOR, KEY_SPEED_COMMAND_DESCRIPTOR,
   PBT_INNER_COMMAND_DESCRIPTOR, PBT_OUTER_COMMAND_DESCRIPTOR,
   RF_GAIN_COMMAND_DESCRIPTOR, SQUELCH_COMMAND_DESCRIPTOR,
@@ -112,8 +113,9 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   it('shares one canonical registered Filter Width descriptor and exact paths', () => {
     expect(FILTER_WIDTH_FEEDBACK_DESCRIPTOR).toBe(FILTER_WIDTH_COMMAND_DESCRIPTOR);
     expect(getStateBackedCommandDescriptor('set_filter_width')).toBe(FILTER_WIDTH_COMMAND_DESCRIPTOR);
+    expect(getStateBackedCommandDescriptor('set_vfo_freq')).toBe(DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR);
     expect([...STATE_BACKED_COMMAND_DESCRIPTORS.keys()]).toEqual([
-      'set_filter_width', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
+      'set_filter_width', 'set_vfo_freq', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
       'set_cw_pitch', 'set_key_speed', 'set_mic_gain', 'set_drive_gain',
       'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
       'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
@@ -129,6 +131,23 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(FILTER_WIDTH_COMMAND_DESCRIPTOR.scope(command({ params: { width: 3000, receiver: 2 } }))).toBeNull();
     expect(FILTER_WIDTH_COMMAND_DESCRIPTOR.target(command({ params: { width: 3000.5 } }))).toBeNull();
     expect(FILTER_WIDTH_COMMAND_DESCRIPTOR.repeatPolicy).toBe('latest-target-wins');
+    const fixedB = DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR.scope(command({
+      name: 'set_vfo_freq', params: {
+        freq: 7_074_000, receiver: 0, slot: 'B', expected_active_slot: 'A', provider_generation: 3,
+      },
+    }))!;
+    expect(fixedB).toEqual({ control: 'vfo-frequency', receiver: 0, slot: 'B' });
+    expect(DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR.fieldPath(fixedB)).toBe('main.vfoB.freqHz');
+    expect(DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR.target(command({
+      name: 'set_vfo_freq', params: {
+        freq: 7_074_000, receiver: 0, slot: 'B', expected_active_slot: 'A', provider_generation: 3,
+      },
+    }))).toBe(7_074_000);
+    expect(DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR.scope(command({
+      name: 'set_vfo_freq', params: {
+        freq: 7_074_000, receiver: 0, slot: 'selected', expected_active_slot: 'A', provider_generation: 3,
+      },
+    }))).toBeNull();
   });
   it('stays unavailable rather than fabricating a pending or confirmed value without observed width', () => {
     runtimeState.state = state({ main: {} });
@@ -598,6 +617,7 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     expect(getStateBackedCommandDescriptor('set_break_in_delay')).toBe(BREAK_IN_DELAY_COMMAND_DESCRIPTOR);
     expect([...STATE_BACKED_COMMAND_DESCRIPTORS.entries()]).toEqual([
       ['set_filter_width', FILTER_WIDTH_COMMAND_DESCRIPTOR],
+      ['set_vfo_freq', DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR],
       ['set_break_in_delay', BREAK_IN_DELAY_COMMAND_DESCRIPTOR],
       ['set_rf_gain', RF_GAIN_COMMAND_DESCRIPTOR],
       ['set_squelch', SQUELCH_COMMAND_DESCRIPTOR],

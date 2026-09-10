@@ -90,6 +90,9 @@ import {
 const PANEL_COMMANDS_PATH = resolve(process.cwd(), 'src/lib/runtime/commands/panel-commands.ts');
 const SOURCE = readFileSync(PANEL_COMMANDS_PATH, 'utf8');
 
+/** Exact fixed-slot lifecycle conformance is pinned by the descriptor inventory test. */
+const EXACT_TARGET_INTENTS = new Set(['set_vfo_freq']);
+
 /** Every `dispatchRadioIntent({ name: '<literal>', ... })` call site. */
 const INTENT_CALL_RE = /dispatchRadioIntent\(\s*\{\s*name:\s*(['"])([A-Za-z0-9_]+)\1/g;
 
@@ -207,10 +210,10 @@ function completenessSuite(opts: {
 completenessSuite({
   label: 'panel-commands.ts intent completeness ledger (MOR-1556)',
   sourceNames: extractSourceIntents(SOURCE),
-  claimed: CLAIMED_INTENTS,
+  claimed: new Set([...CLAIMED_INTENTS, ...EXACT_TARGET_INTENTS]),
   waived: WAIVED_INTENTS,
   waivedCount: WAIVED_INTENTS_COUNT,
-  claimedCount: CLAIMED_INTENTS_COUNT,
+  claimedCount: CLAIMED_INTENTS_COUNT + EXACT_TARGET_INTENTS.size,
 });
 
 completenessSuite({

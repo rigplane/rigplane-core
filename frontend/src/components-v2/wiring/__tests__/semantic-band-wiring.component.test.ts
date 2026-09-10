@@ -245,23 +245,25 @@ beforeEach(() => {
 });
 
 describe('fixed-slot frequency entry overlay', () => {
-  function directState(): ServerState {
+  function directState(withDisplayContract = false): ServerState {
     const current = liveState();
-    return { ...current, sub: undefined, main: {
+    return { ...current, ...(withDisplayContract ? { stateContractVersion: 1 as const } : {}),
+      sub: undefined, main: {
       ...current.main!, activeSlot: 'A',
       vfoA: slot(14_250_000), vfoB: slot(7_074_000),
     } } as unknown as ServerState;
   }
-  function directCaps(): Capabilities {
+  function directCaps(withDisplayContract = false): Capabilities {
     return { ...liveCaps(BAND_PLAN), capabilities: ['audio', 'tx', 'vfo_freq_direct'],
+      ...(withDisplayContract ? { stateContractVersion: 1 as const } : {}),
       receivers: 1, vfoScheme: 'ab' };
   }
 
   it('opens from inactive B digits and dispatches B without selecting it', () => {
-    h.state = directState(); h.caps = directCaps();
+    h.state = directState(true); h.caps = directCaps(true);
     render({ vfoAppearance: 'standard' });
-    const digit = document.createElement('span'); digit.className = 'digit';
-    q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!.append(digit);
+    const digit = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq] .digit')!;
+    expect(digit).not.toBeNull();
     digit.click();
     flushSync();
     const dialog = q<HTMLElement>('[data-testid="frequency-entry-dialog-panel"]')!;
@@ -276,11 +278,43 @@ describe('fixed-slot frequency entry overlay', () => {
     expect(vi.mocked(sendCommand).mock.calls.some(([name]) => name === 'set_vfo')).toBe(false);
   });
 
+  it.each(['Escape', 'backdrop'] as const)(
+    'restores focus to the real inactive B readout after %s close without commands',
+    async (closeWith) => {
+      h.state = directState(true); h.caps = directCaps(true);
+      render({ vfoAppearance: 'standard' });
+      const readout = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq] .freq')!;
+      const digit = readout.querySelector<HTMLElement>('.digit')!;
+
+      expect(readout).not.toBeNull();
+      expect(digit).not.toBeNull();
+      digit.click();
+      flushSync();
+      await Promise.resolve();
+      const input = q<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+      expect(document.activeElement).toBe(input);
+
+      if (closeWith === 'Escape') {
+        input.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Escape', bubbles: true, cancelable: true,
+        }));
+      } else {
+        q<HTMLElement>('[data-testid="frequency-entry-dialog-backdrop"]')!.click();
+      }
+      flushSync();
+      await Promise.resolve();
+
+      expect(q<HTMLElement>('[role="dialog"]')).toBeNull();
+      expect(document.activeElement).toBe(readout);
+      expect(vi.mocked(sendCommand)).not.toHaveBeenCalled();
+    },
+  );
+
   it('keeps an open draft inert after the captured session changes', () => {
     h.state = directState(); h.caps = directCaps();
     render({ vfoAppearance: 'standard' });
     const digit = document.createElement('span'); digit.className = 'digit';
-    q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!.append(digit);
+    q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq] .freq')!.append(digit);
     digit.click();
     flushSync();
     h.controlSession = { state: 'connected', epoch: 2 };

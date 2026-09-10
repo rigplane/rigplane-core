@@ -475,11 +475,11 @@ describe('explicit presentation contract', () => {
     const onFrequencyClick = vi.fn();
     const onFreqChange = vi.fn();
     const t = mountPanel({ ...explicit, onFrequencyClick, onFreqChange });
-    const wrapper = t.querySelector<HTMLElement>('[data-vfo-freq]')!;
+    const readout = t.querySelector<HTMLElement>('[data-vfo-freq] .freq')!;
     const digit = t.querySelectorAll<HTMLElement>('.digit').item(4);
 
     digit.click();
-    expect(onFrequencyClick).toHaveBeenCalledExactlyOnceWith(wrapper);
+    expect(onFrequencyClick).toHaveBeenCalledExactlyOnceWith(readout);
     expect(onFreqChange).not.toHaveBeenCalled();
 
     digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));

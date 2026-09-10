@@ -106,7 +106,8 @@
   function handleFrequencyClick(event: MouseEvent): void {
     if (onFrequencyClick === undefined || !(event.target instanceof Element)
       || event.target.closest('.digit') === null) return;
-    if (event.currentTarget instanceof HTMLElement) onFrequencyClick(event.currentTarget);
+    const readout = event.target.closest('.freq');
+    if (readout instanceof HTMLElement) onFrequencyClick(readout);
   }
 </script>
 
