@@ -340,7 +340,9 @@
   .ritxit-scan-surface[data-part='rit-xit'] .row { flex-direction: column; align-items: stretch; }
   .ritxit-scan-surface[data-part='rit-xit'] .offset { width: 100%; }
   .ritxit-scan-surface[data-part='rit-xit'] .offset input { flex: 1; min-width: 0; }
-  .ritxit-scan-surface[data-part='rit-xit'] .ritxit-mode-row :global(.v2-control-button) { min-width: 60px; }
+  .ritxit-scan-surface[data-part='rit-xit'] .ritxit-mode-row :global(button.v2-control-button[data-surface='hardware']) {
+    width: 60px; min-width: 60px; flex: 0 0 60px;
+  }
   .ritxit-scan-surface[data-part='scan'] .row {
     display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; width: 100%;
   }

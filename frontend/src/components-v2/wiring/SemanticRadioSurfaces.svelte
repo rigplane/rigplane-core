@@ -2203,14 +2203,14 @@
     remains the key/unkey authority (R9).
   -->
   {#snippet antennaSurface(controlLayout?: Snippet)}
-    {#if view?.antenna || (controlLayout && runtime.caps?.antennas === 1)}
-      {#if controlLayout}
+    {#if controlLayout}
+      {#if view?.antenna || runtime.caps?.antennas === 1}
         {@render controlLayout()}
-      {:else}
-        <AntennaSurface
-          {view} tx={txState} handles={antennaInstruments} layout={antennaLayout}
-        />
       {/if}
+    {:else if view?.antenna}
+      <AntennaSurface
+        {view} tx={txState} handles={antennaInstruments} layout={antennaLayout}
+      />
     {/if}
   {/snippet}
 
