@@ -1089,6 +1089,11 @@
   [data-vfo-appearance='standard'] .receiver-instrument .secondary-slot .vfo-select {
     grid-column: 4; grid-row: 1;
   }
+  @media (max-width: 1280px) {
+    .vfo-surface[data-vfo-appearance='standard'][data-vfo-appearance] { gap: 0; }
+    [data-vfo-appearance='standard'] .standard-radio-facts { min-height: 14px; line-height: 14px; }
+    [data-vfo-appearance='standard'] .standard-receiver { padding-block: 1px; }
+  }
   @media (max-width: 1050px) {
     .instrument-panel { flex-wrap: wrap; }
     .receiver-instrument { flex-basis: calc(50% - 90px); }
