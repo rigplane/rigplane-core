@@ -299,6 +299,7 @@ describe('MobileRadioLayout structure', () => {
     vi.mocked(getCapabilities).mockReturnValue({
       ...oldCaps, model: 'fixture', receivers: 1, vfoScheme: 'ab',
       capabilities: ['mod_input_routing'],
+      dataModeCount: 1,
       dataModeInputs: MOD_INPUT_SOURCES.map(({ value, label }) => ({ value, label })),
     } as Capabilities);
     const fresh = { storePath: 'fixture', observed: true, freshness: 'fresh', availability: 'available' };
