@@ -231,6 +231,31 @@ test.describe('startup viewport classification', () => {
       await context.close();
     }
   });
+
+  for (const width of [1136, 1280, 1440]) for (const height of [600, 900]) {
+    test(`Standard keeps panorama above Station Meters in a ${width}×${height} viewport`, async ({ page }, info) => {
+      await boot(page, 'standard', width, true, 'studioline', false, 'topology-2-main-sub', { height });
+      const center = page.locator('.standard-face .desktop-controls-center');
+      const panorama = center.locator('.spectrum-frame');
+      const meters = page.locator('.standard-face [data-panel-id="semantic-meters"]');
+      const bounds = await Promise.all([center, panorama, meters].map(element =>
+        element.evaluate(node => node.getBoundingClientRect().toJSON())));
+      await writeFile(info.outputPath('layout-bounds.json'), JSON.stringify({ width, height, bounds }));
+      expect(bounds[0].bottom).toBeLessThanOrEqual(bounds[2].top);
+      expect(bounds[1].bottom).toBeLessThanOrEqual(bounds[2].top);
+      expect(bounds[1].height).toBeGreaterThanOrEqual(280);
+      await focusWithoutActivation(page, meters.locator('.panel-header'));
+      await expect(meters.locator('.panel-header')).toBeFocused();
+      await meters.scrollIntoViewIfNeeded();
+      const visibleBounds = await meters.evaluate(node => {
+        const box = node.getBoundingClientRect();
+        return { top: box.top, bottom: box.bottom - Number.parseFloat(getComputedStyle(node).borderBottomWidth) };
+      });
+      expect(visibleBounds.top).toBeGreaterThanOrEqual(0);
+      expect(visibleBounds.bottom).toBeLessThanOrEqual(height);
+      expect(await page.locator('.standard-face').evaluate(node => node.scrollWidth > node.clientWidth)).toBe(false);
+    });
+  }
 });
 
 async function focusWithoutActivation(page: Page, control: Locator) {

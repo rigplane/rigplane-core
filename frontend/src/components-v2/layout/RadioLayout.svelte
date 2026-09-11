@@ -1120,7 +1120,7 @@
   }
   .radio-layout.desktop-control-face.standard-face {
     grid-template-columns: 228px minmax(0, 1fr) 228px;
-    grid-template-rows: auto 28px auto minmax(0, 1fr) auto;
+    grid-template-rows: auto 28px auto minmax(min-content, 1fr) auto;
     gap: 5px;
   }
   .desktop-control-face > .receiver-deck,
