@@ -551,7 +551,12 @@ describe('AmberTelemetry props (MOR-483: drop dead TEMP tile)', () => {
 });
 
 describe('Mode panel MOD-input source (MOR-616)', () => {
-  const caps = { capabilities: ['data_mode'], dataModeCount: 3 } as any;
+  const choices = [
+    { value: 0, label: 'MIC' }, { value: 1, label: 'ACC' },
+    { value: 2, label: 'MIC+ACC' }, { value: 3, label: 'USB' },
+    { value: 4, label: 'MIC+USB' }, { value: 5, label: 'LAN' },
+  ];
+  const caps = { capabilities: ['data_mode'], dataModeCount: 3, dataModeInputs: choices } as any;
 
   function modInputState(overrides: Record<string, unknown> = {}) {
     return makeState({
@@ -573,6 +578,7 @@ describe('Mode panel MOD-input source (MOR-616)', () => {
     const props = toModeProps(modInputState(), caps);
     expect(props.modInputSource).toBe(0);
     expect(props.hasModInput).toBe(true);
+    expect(props.modInputChoices).toEqual(choices);
   });
 
   it('follows the active receiver into its DATA group (D1 on SUB)', () => {
@@ -585,6 +591,18 @@ describe('Mode panel MOD-input source (MOR-616)', () => {
   it('hides the control without the data_mode capability', () => {
     const props = toModeProps(modInputState(), { capabilities: [] } as any);
     expect(props.hasModInput).toBe(false);
+  });
+
+  it('hides the control when the profile does not declare a source domain', () => {
+    const props = toModeProps(modInputState(), { capabilities: ['data_mode'], dataModeCount: 1 } as any);
+    expect(props.hasModInput).toBe(false);
+    expect(props.modInputChoices).toEqual([]);
+  });
+
+  it('hides the control for a DATA group outside the profile count', () => {
+    const state = modInputState();
+    state.main.dataMode = 2;
+    expect(toModeProps(state, { ...caps, dataModeCount: 1 }).hasModInput).toBe(false);
   });
 
   it('hides the control while the active group is unread (missing)', () => {

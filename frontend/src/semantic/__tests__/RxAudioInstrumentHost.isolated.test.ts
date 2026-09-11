@@ -370,6 +370,14 @@ describe('RxAudioInstrumentHost finite handles (RX-B/RX-C)', () => {
     expect(onModInputChange).toHaveBeenCalledTimes(MOD_INPUT_SOURCES.length);
   });
 
+  it('uses the declared source domain and does not offer LAN when it is unsupported', () => {
+    const choices = MOD_INPUT_SOURCES.filter(option => option.value !== 5);
+    renderFinite(withRx({ modInputChoices: choices, modInputReadiness: { status: 'mismatch', source: 0 } }));
+    expect(target.querySelector('[data-testid="external-MOD input-4"]')).not.toBeNull();
+    expect(target.querySelector('[data-testid="external-MOD input-5"]')).toBeNull();
+    expect(target.querySelector('[data-testid="external-Set LAN"]')).toBeNull();
+  });
+
   // The split seat's reading is the LABEL ('on'/'off') mapped from the raw
   // `routingSplit` boolean fact by `splitLabelOf`; these two rows are literal
   // (not derived via `SPLIT_CHOICES.find`) so a `splitLabelOf` that maps the

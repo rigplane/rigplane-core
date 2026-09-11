@@ -35,6 +35,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 
 
 const h = vi.hoisted(() => ({
@@ -232,10 +233,13 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   model: 'fixture', scope: false, audio: tags.includes('audio'), tx: true,
   capabilities: tags, audioTxRequiredModInputSource: 5,
   receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: [], filters: [],
+  dataModeCount: 3,
+  dataModeInputs: MOD_INPUT_SOURCES.map(({ value, label }) => ({ value, label })),
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: null, audioFftAvailable: false,
+  stateContractVersion: 1,
   providerGeneration: 1,
 } as unknown as Capabilities);
 
@@ -312,6 +316,7 @@ beforeEach(() => {
   h.txController = txHarness.controller;
   h.state = liveState();
   h.caps = liveCaps(AUDIO_TAGS);
+  expect(setCapabilities(h.caps as Capabilities)).toBe(true);
   h.audio = { muted: false, rxEnabled: true, volume: 42 };
   h.audioConnected = true;
   h.rxEnabled = true;
@@ -326,6 +331,7 @@ afterEach(() => {
   if (component) unmount(component);
   component = null;
   expect(h.authoritySubscribers.size).toBe(0);
+  clearCapabilities();
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';

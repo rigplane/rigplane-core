@@ -58,6 +58,7 @@ import { currentControlSessionEpoch } from '../commands/radio-intents';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { DisplayObservation } from '../../../semantic/radio-view-model';
+import { modInputCommand, modInputStateKey, type ModInputStateKey } from '$lib/radio/mod-input';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import {
   controlRangeFromCapsOrDefault, deriveIfShift, nbDepthRawToDisplay,
@@ -1065,7 +1066,8 @@ const ACK_CONFIRM_GRACE_MS = 3_000;
  * backstop above.
  */
 function latestPendingParam(
-  intentName: string, paramKey: string, receiver: 0 | 1, confirmedField: keyof ServerState['main'],
+  intentName: string, paramKey: string, receiver: 0 | 1 | null,
+  confirmedField: keyof ServerState['main'] | ModInputStateKey,
 ): unknown {
   let latest: {
     createdAt: number; value: unknown; status: string;
@@ -1074,7 +1076,7 @@ function latestPendingParam(
   } | null = null;
   for (const command of getCommandLifecycles()) {
     if (command.name !== intentName) continue;
-    if (command.params.receiver !== receiver) continue;
+    if (receiver !== null && command.params.receiver !== receiver) continue;
     // Supersession is durable for the older record even after the newer
     // terminal record's bounded presentation retention expires. Never let a
     // superseded lifecycle become the newest selectable pending command.
@@ -1101,7 +1103,8 @@ function latestPendingParam(
   // Grace backstop: bounds the no-answer case (NAK, or nothing at all).
   if (Date.now() - latest.updatedAt > ACK_CONFIRM_GRACE_MS) return undefined;
 
-  const fieldPath = `${receiver === 1 ? 'sub' : 'main'}.${String(confirmedField)}`;
+  const fieldPath = receiver === null
+    ? String(confirmedField) : `${receiver === 1 ? 'sub' : 'main'}.${String(confirmedField)}`;
   const boundary = latest.ackFieldObservationTimes?.[fieldPath];
   const observedAt = runtime.state?.fieldStatus?.[fieldPath]?.lastObservedMonotonic;
   if (typeof boundary === 'number' && Number.isFinite(boundary)
@@ -1115,7 +1118,10 @@ function latestPendingParam(
     && currentObservationSeq <= ackObservationSeq) {
     return latest.value;
   }
-  return confirmedReceiverState(receiver)?.[confirmedField] === latest.value ? undefined : latest.value;
+  const confirmed = receiver === null
+    ? runtime.state?.[confirmedField as ModInputStateKey]
+    : confirmedReceiverState(receiver)?.[confirmedField as keyof ServerState['main']];
+  return confirmed === latest.value ? undefined : latest.value;
 }
 
 /** Freshest unconfirmed `set_filter` target for `receiver`, or `null`.
@@ -1318,6 +1324,20 @@ export function getDataModeArmed(): ArmedFact<number> {
   const receiver = activeReceiverOrNull();
   if (receiver === null) return { armed: false, value: null };
   return armedFact<number>('set_data_mode', 'mode', receiver, 'dataMode');
+}
+
+/** Active DATA group's MOD-input source pending over the same lifecycle
+ * decision table, using its top-level readback rather than a receiver field. */
+export function getModInputArmed(): ArmedFact<number> {
+  const state = runtime.state;
+  const rx = state?.active === 'SUB' ? state.sub : state?.main;
+  const dataMode = rx?.dataMode;
+  if (!Number.isSafeInteger(dataMode) || (dataMode as number) < 0 || (dataMode as number) > 3) {
+    return { armed: false, value: null };
+  }
+  const key = modInputStateKey(dataMode as number);
+  const value = latestPendingParam(modInputCommand(dataMode as number), 'source', null, key);
+  return typeof value === 'number' ? { armed: true, value } : { armed: false, value: null };
 }
 
 /** Auto-notch armed fact (`set_auto_notch`). Notch mode is written as TWO

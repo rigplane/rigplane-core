@@ -6,6 +6,7 @@ TDD: these tests were written FIRST, then the implementation.
 from __future__ import annotations
 
 import json
+import re
 import textwrap
 import tomllib
 from decimal import Decimal
@@ -710,6 +711,54 @@ labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
     def test_ic7610_stays_separate_rf_sql_control_model(self):
         rig = load_rig(RIGS_DIR / "ic7610.toml")
         assert rig.rf_sql_control_model == "separate"
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            (
+                "ic7300.toml",
+                ((0, "MIC"), (1, "ACC"), (2, "MIC+ACC"), (3, "USB"), (4, "MIC+USB")),
+            ),
+            (
+                "ic7610.toml",
+                (
+                    (0, "MIC"),
+                    (1, "ACC"),
+                    (3, "USB"),
+                    (5, "LAN"),
+                    (2, "MIC+ACC"),
+                    (4, "MIC+USB"),
+                ),
+            ),
+        ],
+    )
+    def test_data_mode_inputs_reach_runtime_profile(self, name, expected):
+        rig = load_rig(RIGS_DIR / name)
+        assert rig.data_mode_inputs == expected
+        assert rig.to_profile().data_mode_inputs == expected
+
+    @pytest.mark.parametrize(
+        ("inputs", "message"),
+        [
+            (
+                '[{ value = 0, name = "MIC" }, { value = 0, name = "ACC" }]',
+                "inputs values must be unique",
+            ),
+            ("[]", "inputs must be a non-empty array"),
+        ],
+    )
+    def test_data_mode_inputs_reject_invalid_metadata(self, tmp_path, inputs, message):
+        text = re.sub(
+            r"inputs = \[.*?\]",
+            f"inputs = {inputs}",
+            TEMPLATE_PATH.read_text(),
+            count=1,
+            flags=re.DOTALL,
+        )
+        path = tmp_path / "invalid-input.toml"
+        path.write_text(text)
+        with pytest.raises(RigLoadError, match=message):
+            load_rig(path)
 
     @pytest.mark.parametrize(
         ("scheme", "receiver_count"),

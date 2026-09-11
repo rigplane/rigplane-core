@@ -4,7 +4,6 @@
   import {
     deriveModeProps, getModeHandlers, getModeArmed, getDataModeArmed,
   } from '$lib/runtime/adapters/panel-adapters';
-  import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
   import { t } from '$lib/i18n';
 
   const handlers = getModeHandlers();
@@ -43,6 +42,7 @@
   let dataModeLabels = $derived(p.dataModeLabels ?? { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' });
   // MOR-616: MOD-input source of the active DATA group (null until read).
   let modInputSource = $derived(p.modInputSource ?? null);
+  let modInputChoices = $derived(p.modInputChoices ?? []);
   let hasModInput = $derived(p.hasModInput ?? false);
   const onModeChange = handlers.onModeChange;
   const onDataModeChange = handlers.onDataModeChange;
@@ -161,12 +161,13 @@
           aria-label={t('core.modePanel.modInputAria')}
           title={t('core.modePanel.modInputAria')}
           value={modInputSource === null ? '' : String(modInputSource)}
+          disabled={modInputSource === null}
           onchange={(e) => onModInputChange(Number(e.currentTarget.value))}
         >
           {#if modInputSource === null}
             <option value="" disabled>—</option>
           {/if}
-          {#each MOD_INPUT_SOURCES as option (option.value)}
+          {#each modInputChoices as option (option.value)}
             <option value={String(option.value)}>{option.label}</option>
           {/each}
         </select>

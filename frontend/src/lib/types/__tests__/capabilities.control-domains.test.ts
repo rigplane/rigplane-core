@@ -65,6 +65,17 @@ function parse(control: Record<string, unknown>): ControlDomain {
   return result.controls?.test as ControlDomain;
 }
 describe('normalized control capability domains', () => {
+  it('validates optional per-profile MOD input choices and rejects malformed domains', () => {
+    const choices = [{ value: 0, label: 'MIC' }, { value: 3, label: 'USB' }];
+    expect(validateCapabilities({ ...baseCapabilities, dataModeInputs: choices }).dataModeInputs)
+      .toBe(choices);
+    expect(validateCapabilities(baseCapabilities)).toBe(baseCapabilities);
+    expect(() => validateCapabilities({ ...baseCapabilities,
+      dataModeInputs: [{ value: 0, label: 'MIC' }, { value: 0, label: 'USB' }] }))
+      .toThrow(/unique integer/);
+    expect(() => validateCapabilities({ ...baseCapabilities,
+      dataModeInputs: [{ value: 5, label: '' }] })).toThrow(/non-empty string/);
+  });
   it('consumes the loader-generated golden controls fixture without numeric coercion', () => {
     const payload = { ...baseCapabilities, controls: goldenControls };
     const parsed = validateCapabilities(payload);

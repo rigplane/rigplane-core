@@ -57,7 +57,7 @@
     getTxAuxControlFeedback, type TxAuxControlFeedbackField,
     getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
-    getSystemHandlers, getDataModeArmed,
+    getSystemHandlers, getDataModeArmed, getModInputArmed,
     deriveMemoryPanelProps, getMemoryHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { toRitXitProps } from '$lib/runtime/props/panel-props';
@@ -1530,6 +1530,8 @@
   ) as unknown as TxAuxLevelFeedback);
   let dataModeArmed = $derived(getDataModeArmed());
   let pendingDataMode = $derived(dataModeArmed.armed ? dataModeArmed.value : null);
+  let modInputArmed = $derived(getModInputArmed());
+  let pendingModInput = $derived(modInputArmed.armed ? modInputArmed.value : null);
   let pendingPreamp = $derived(
     activeReceiverIndex === null ? null : getPendingPreampLevel(activeReceiverIndex),
   );
@@ -1749,11 +1751,12 @@
   {#snippet children(rfFrontEndInstruments)}
   {#snippet vfoInstrumentComposition(vfoOperations: VfoOperationHandles)}
   <FilterInstrumentHost
-    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingDataMode}
+    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingDataMode} {pendingModInput}
     onModeChange={filterIntents.onModeChange}
     onFilterChange={filterIntents.onFilterChange}
     onFilterShapeChange={filterIntents.onFilterShapeChange}
     onDataModeChange={filterIntents.onDataModeChange}
+    onModInputChange={filterIntents.onModInputChange}
   >
   {#snippet children(filterInstruments)}
   <BandInstrumentHost

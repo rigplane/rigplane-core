@@ -77,6 +77,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
     : group }),
   getSystemHandlers: () => ({ onSpeak: h.speak }),
   getDataModeArmed: () => ({ armed: false, value: null }),
+  getModInputArmed: () => ({ armed: false, value: null }),
   getBreakInDelayControlFeedback: () => null,
   getFilterWidthControlFeedback: h.filterWidthFeedback,
   getCwPitchControlFeedback: h.cwPitchFeedback,

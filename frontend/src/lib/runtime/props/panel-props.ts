@@ -555,6 +555,8 @@ export interface ModeProps {
   dataModeLabels: Record<string, string>;
   /** Active DATA group's MOD-input source (IC-7610 enum, MOR-616); null until read. */
   modInputSource: number | null;
+  /** Exact profile-declared MOD-input choices; empty when capability metadata is absent. */
+  modInputChoices: readonly { readonly value: number; readonly label: string }[];
   /** Show the MOD-input control: data_mode cap + the active group has been observed. */
   hasModInput: boolean;
 }
@@ -569,7 +571,12 @@ export function toModeProps(
   // `isFieldRead` as its availability compatibility gate. The helper rejects
   // the three explicit absence values while preserving the legacy no-entry
   // fallback; it does not establish observation evidence.
-  const modInputKey = modInputStateKey(rx?.dataMode ?? 0);
+  const dataMode = rx?.dataMode;
+  const validDataGroup = Number.isSafeInteger(dataMode) && (dataMode as number) >= 0
+    && (dataMode as number) <= (caps?.dataModeCount ?? -1);
+  const modInputKey = validDataGroup ? modInputStateKey(dataMode as number) : null;
+  const modInputChoices = caps?.dataModeInputs ?? [];
+  const modInputSource = modInputKey === null ? null : state?.[modInputKey] ?? null;
   return {
     // MOR-1409 A11: no fabricated USB stand-in for an unobserved mode.
     currentMode: rx?.mode ?? '---',
@@ -583,9 +590,12 @@ export function toModeProps(
     hasDataMode: hasCap(caps, 'data_mode'),
     dataModeCount: caps?.dataModeCount ?? 0,
     dataModeLabels: caps?.dataModeLabels ?? { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' },
-    modInputSource: state?.[modInputKey] ?? null,
+    modInputSource: modInputChoices.some(option => option.value === modInputSource)
+      ? modInputSource : null,
+    modInputChoices,
     hasModInput:
-      hasCap(caps, 'data_mode') && state !== null && isFieldRead(state, modInputKey),
+      hasCap(caps, 'data_mode') && modInputChoices.length > 0 && modInputKey !== null
+      && state !== null && isFieldRead(state, modInputKey),
   };
 }
 

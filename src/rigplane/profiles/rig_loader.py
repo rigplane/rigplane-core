@@ -552,6 +552,7 @@ class RigConfig:
     max_watts: int | None = None
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
+    data_mode_inputs: tuple[tuple[int, str], ...] | None = None
     protocol_type: str = "civ"
     protocol_address: int | None = None
     protocol_baud: int | None = None
@@ -767,6 +768,7 @@ class RigConfig:
             rf_sql_control_model=self.rf_sql_control_model,
             data_mode_count=self.data_mode_count,
             data_mode_labels=self.data_mode_labels,
+            data_mode_inputs=self.data_mode_inputs,
             # isinstance, not membership: a declared-absent entry
             # (AbsentCommandSpec, MOR-2005 step 4a) is a dict key too, but
             # it means the opposite of "the radio has this command" — see
@@ -2431,12 +2433,47 @@ def load_rig(path: Path) -> RigConfig:
         data_mode_labels = (
             dict(data_mode_section["labels"]) if "labels" in data_mode_section else None
         )
+        raw_inputs = data_mode_section.get("inputs")
+        if raw_inputs is not None:
+            if not isinstance(raw_inputs, list) or not raw_inputs:
+                raise RigLoadError(
+                    f"{filename}: [data_mode].inputs must be a non-empty array"
+                )
+            parsed_inputs: list[tuple[int, str]] = []
+            for index, item in enumerate(raw_inputs):
+                if not isinstance(item, dict) or set(item) != {"value", "name"}:
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].inputs[{index}] must contain value and name"
+                    )
+                value, name = item["value"], item["name"]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or not 0 <= value <= 5
+                ):
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].inputs[{index}].value must be an integer from 0 to 5"
+                    )
+                if not isinstance(name, str) or not name.strip():
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].inputs[{index}].name must be non-empty"
+                    )
+                parsed_inputs.append((value, name))
+            if len({value for value, _ in parsed_inputs}) != len(parsed_inputs):
+                raise RigLoadError(
+                    f"{filename}: [data_mode].inputs values must be unique"
+                )
+            data_mode_inputs = tuple(parsed_inputs)
+        else:
+            data_mode_inputs = None
     elif has_data_mode_feature:
         data_mode_count = 1
         data_mode_labels = {"0": "OFF", "1": "DATA"}
+        data_mode_inputs = None
     else:
         data_mode_count = 0
         data_mode_labels = None
+        data_mode_inputs = None
 
     # Parse [controls] (optional)
     controls_raw = data.get("controls")
@@ -2684,6 +2721,7 @@ def load_rig(path: Path) -> RigConfig:
         rf_sql_control_model=rf_sql_control_model,
         data_mode_count=data_mode_count,
         data_mode_labels=data_mode_labels,
+        data_mode_inputs=data_mode_inputs,
         protocol_type=protocol_type,
         protocol_address=protocol_address,
         protocol_baud=protocol_baud,

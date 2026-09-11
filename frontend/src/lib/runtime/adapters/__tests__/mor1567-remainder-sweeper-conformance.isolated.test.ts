@@ -95,11 +95,11 @@
  * real, fixture-relevant, mixed reading, not a hypothetical. The 4-case
  * table below mutates only `h.state.main.dataMode` (never the underlying
  * fixture file) to walk all four DATA groups' observation state through the
- * real handler, covering every group this fixture can reach — group 0's
- * refusal is the ACTUAL current-state behavior; groups 1-3's dispatches
- * confirm the handler resolves the right per-group command
- * (`set_data1_mod_input`/`set_data2_mod_input`/`set_data3_mod_input`) once
- * observed. This coverage is ADDITIVE — it claims no new name in
+ * real handler, covering every stored group while respecting the IC-7300's
+ * one-DATA-group capability — group 0's refusal is the ACTUAL current-state
+ * behavior; group 1 dispatches once observed; groups 2-3 refuse even when
+ * observed because this radio does not expose those DATA groups. This
+ * coverage is ADDITIVE — it claims no new name in
  * `claimed.ts` and changes no count, since these 4 names live outside the
  * 87-name universe by design (see header cited above).
  */
@@ -197,6 +197,8 @@ describe('IC-7300 fixture — remainder-sweeper family conformance (MOR-1567)', 
     h.caps = {
       ...fixtureCaps(profile),
       capabilities: [...fixtureCaps(profile).capabilities, 'speech'],
+      dataModeCount: 1,
+      dataModeInputs: [0, 1, 2, 3, 4].map(value => ({ value, label: String(value) })),
     };
     h.sendCommand.mockClear();
   });
@@ -305,9 +307,9 @@ describe('IC-7300 fixture — remainder-sweeper family conformance (MOR-1567)', 
       readonly frames: Array<[string, Record<string, unknown>]>;
     }> = [
       { dataMode: 0, stateKey: 'dataOffModInput', frames: [] },
-      { dataMode: 1, stateKey: 'data1ModInput', frames: [['set_data1_mod_input', { source: 5 }]] },
-      { dataMode: 2, stateKey: 'data2ModInput', frames: [['set_data2_mod_input', { source: 5 }]] },
-      { dataMode: 3, stateKey: 'data3ModInput', frames: [['set_data3_mod_input', { source: 5 }]] },
+      { dataMode: 1, stateKey: 'data1ModInput', frames: [['set_data1_mod_input', { source: 4 }]] },
+      { dataMode: 2, stateKey: 'data2ModInput', frames: [] },
+      { dataMode: 3, stateKey: 'data3ModInput', frames: [] },
     ];
 
     for (const g of GROUPS) {
@@ -316,7 +318,7 @@ describe('IC-7300 fixture — remainder-sweeper family conformance (MOR-1567)', 
       it(`dataMode=${g.dataMode} (${g.stateKey}, observed=${observed}): ${outcome}`, () => {
         expect(h.state?.main).toBeTruthy();
         h.state!.main!.dataMode = g.dataMode;
-        const run = () => makeModeHandlers().onModInputChange(5);
+        const run = () => makeModeHandlers().onModInputChange(4);
         if (g.frames.length > 0) {
           expectFrames(run, g.frames);
         } else {

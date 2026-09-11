@@ -2510,6 +2510,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   it('restores capability-driven MODE hardware keys and keeps FILTER in a sibling panel', () => {
     const renderModePanel = (
       modes: string[], dataModeCount?: number, dataModeLabels?: Record<string, string>, observed = true,
+      dataModeInputs?: { value: number; label: string }[], dataMode = 0,
     ) => {
       h.caps = {
         ...(capsFor('2/main_sub') as object), modes, filters: ['FIL1', 'FIL2', 'FIL3'],
@@ -2517,17 +2518,21 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
           'scope', 'audio', 'tx', 'dual_rx', 'filter_shape',
           ...(dataModeCount === undefined ? [] : ['data_mode']),
         ],
-        ...(dataModeCount === undefined ? {} : { dataModeCount, dataModeLabels }),
+        ...(dataModeCount === undefined ? {} : { dataModeCount, dataModeLabels, dataModeInputs }),
       } as Capabilities;
       const state = liveState() as { main: Record<string, unknown>; fieldStatus: Record<string, unknown> };
-      const fieldStatus: Record<string, unknown> = { ...state.fieldStatus, 'main.dataMode': fresh };
+      const modInputKey = ['dataOffModInput', 'data1ModInput', 'data2ModInput', 'data3ModInput'][dataMode]!;
+      const fieldStatus: Record<string, unknown> = {
+        ...state.fieldStatus, 'main.dataMode': fresh, [modInputKey]: fresh,
+      };
       if (!observed) {
         const missing = { storePath: 'x', observed: false, freshness: 'unknown', availability: 'missing' };
         fieldStatus['main.mode'] = missing;
         fieldStatus['main.dataMode'] = missing;
+        fieldStatus[modInputKey] = missing;
       }
       h.state = {
-        ...state, main: { ...state.main, dataMode: 0 },
+        ...state, main: { ...state.main, dataMode }, [modInputKey]: 0,
         fieldStatus,
       };
       const target = render('desktop-v2');
@@ -2535,12 +2540,24 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
       const filter = target.querySelector('[data-panel-id="semantic-filter-controls"]')!;
       return { mode, filter,
         modes: texts(mode, '[data-testid="standard-mode-choices"] button'),
-        data: texts(mode, '[data-testid="standard-data-mode"] button') };
+        data: texts(mode, '[data-testid="standard-data-mode"] button'),
+        modInputs: texts(mode, '[data-testid="mod-input-select"] option') };
     };
+
+    const ic7300Inputs = [
+      { value: 0, label: 'MIC' }, { value: 1, label: 'ACC' },
+      { value: 2, label: 'MIC+ACC' }, { value: 3, label: 'USB' },
+      { value: 4, label: 'MIC+USB' },
+    ];
+    const ic7610Inputs = [
+      { value: 0, label: 'MIC' }, { value: 1, label: 'ACC' },
+      { value: 3, label: 'USB' }, { value: 5, label: 'LAN' },
+      { value: 2, label: 'MIC+ACC' }, { value: 4, label: 'MIC+USB' },
+    ];
 
     const ic7610 = renderModePanel(
       ['FM', 'PSK-R', 'RTTY', 'LSB', 'CW-R', 'AM', 'USB', 'PSK', 'CW', 'RTTY-R'],
-      3, { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' },
+      3, { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' }, true, ic7610Inputs, 3,
     );
     expect(ic7610.mode.querySelector('.panel-header .title')?.textContent).toBe('MODE');
     expect(ic7610.filter.querySelector('.panel-header .title')?.textContent).toBe('FILTER');
@@ -2548,6 +2565,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
       'USB', 'LSB', 'CW', 'CW-R', 'RTTY', 'RTTY-R', 'PSK', 'PSK-R', 'AM', 'FM',
     ]);
     expect(ic7610.data).toEqual(['OFF', 'D1', 'D2', 'D3']);
+    expect(ic7610.modInputs).toEqual(['MIC', 'ACC', 'USB', 'LAN', 'MIC+ACC', 'MIC+USB']);
     expect(ic7610.mode.querySelectorAll('[data-surface="hardware"]')).toHaveLength(14);
     for (const id of ['filter-select', 'filter-shape', 'filter-width', 'filter-pbtInner']) {
       expect(ic7610.mode.querySelector(`[data-testid="${id}"]`), id).toBeNull();
@@ -2566,11 +2584,12 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
 
     const ic7300 = renderModePanel(
       ['USB', 'LSB', 'CW', 'CW-R', 'RTTY', 'RTTY-R', 'AM', 'FM'],
-      1, { '0': 'OFF', '1': 'DATA' },
+      1, { '0': 'OFF', '1': 'DATA' }, true, ic7300Inputs, 1,
     );
     expect(ic7300.modes).not.toContain('PSK');
     expect(ic7300.modes).not.toContain('PSK-R');
     expect(ic7300.data).toEqual(['OFF', 'DATA']);
+    expect(ic7300.modInputs).toEqual(['MIC', 'ACC', 'MIC+ACC', 'USB', 'MIC+USB']);
 
     const yaesu = renderModePanel([
       'FM-N', 'DATA-FM', 'RTTY-U', 'CW-L', 'USB', 'LSB', 'CW-U', 'RTTY-L',
@@ -2581,13 +2600,19 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
       'DATA-U', 'DATA-L', 'DATA-FM', 'AM', 'FM', 'FM-N',
     ]);
     expect(yaesu.mode.querySelector('[data-testid="standard-data-mode"]')).toBeNull();
+    expect(yaesu.mode.querySelector('[data-testid="mod-input-select"]')).toBeNull();
 
-    const unknown = renderModePanel(['USB', 'LSB'], 1, { '0': 'OFF', '1': 'DATA' }, false);
+    const unknown = renderModePanel(
+      ['USB', 'LSB'], 1, { '0': 'OFF', '1': 'DATA' }, false, ic7300Inputs,
+    );
     expect(unknown.mode.querySelectorAll('[data-testid="standard-mode-choices"] button:not(:disabled)'), 'mode')
       .toHaveLength(0);
     expect(unknown.mode.querySelectorAll('[data-testid="standard-data-mode"] button:not(:disabled)'), 'data')
       .toHaveLength(0);
     expect(unknown.mode.querySelector('[aria-pressed="true"]')).toBeNull();
+    const unknownInput = unknown.mode.querySelector<HTMLSelectElement>('[data-testid="mod-input-select"]')!;
+    expect(unknownInput.disabled).toBe(true);
+    expect(unknownInput.value).toBe('');
   });
 
   it('groups both bare CW instruments inside the one movable CW shell', () => {

@@ -247,6 +247,11 @@ export function withRxAudio(
     routingFocus: known('both'),
     routingSplit: known(false),
     modInputSource: known(readiness.status === 'ready' || readiness.status === 'mismatch' ? readiness.source : 5),
+    modInputChoices: [
+      { value: 0, label: 'MIC' }, { value: 1, label: 'ACC' },
+      { value: 2, label: 'MIC+ACC' }, { value: 3, label: 'USB' },
+      { value: 4, label: 'MIC+USB' }, { value: 5, label: 'LAN' },
+    ],
     modInputReadiness: readiness,
   };
   return { ...fixture, rxAudio };
@@ -302,6 +307,8 @@ export function withFilterPassband(fixture: RadioViewModel): RadioViewModel {
     pbtOuter: known(0),
     dataMode: known(0),
     dataModeChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'D1' }],
+    modInputSource: known(0),
+    modInputChoices: [{ value: 0, label: 'MIC' }, { value: 3, label: 'USB' }],
   };
   return { ...fixture, filterPassband };
 }
