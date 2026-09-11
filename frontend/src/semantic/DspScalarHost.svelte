@@ -51,10 +51,20 @@
   function domain(field: DspScalarField): Readonly<{ domain: ScalarDomain; valid: boolean }> {
     if (field === 'nrLevel') {
       const nr = dsp?.nrLevelProjection?.domain;
-      const valid = nr !== undefined && safeInteger(nr.min) && safeInteger(nr.max)
-        && safeInteger(nr.step) && safeInteger(nr.origin) && nr.step > 0 && nr.max > nr.min;
-      return { valid, domain: valid ? { ...nr, defaultValue: null, fineStepDivisor: 1 }
-        : { min: 0, max: 15, step: 1, defaultValue: null, fineStepDivisor: 1 } };
+      if (nr === undefined || nr === null || !safeInteger(nr.min) || !safeInteger(nr.max)
+        || !safeInteger(nr.step) || !safeInteger(nr.origin) || nr.step <= 0 || nr.max <= nr.min) {
+        return {
+          valid: false,
+          domain: { min: 0, max: 15, step: 1, defaultValue: null, fineStepDivisor: 1 },
+        };
+      }
+      return {
+        valid: true,
+        domain: {
+          min: nr.min, max: nr.max, step: nr.step,
+          defaultValue: null, fineStepDivisor: 1,
+        },
+      };
     }
     const [min, max] = field === 'nbLevel' ? [0, nbLevelMax]
       : field === 'nbDepth' ? [1, 10]

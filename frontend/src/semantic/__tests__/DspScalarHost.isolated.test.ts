@@ -70,7 +70,7 @@ const view = (): RadioViewModel => withDsp(topologyFixtures['1/single']);
 
 type RendererNode = HTMLButtonElement & { readonly rendererLease: ContinuousScalarRendererLease };
 type Props = {
-  view: RadioViewModel; feedback: DspScalarFeedback; presentation: 'grouped' | 'independent';
+  view: RadioViewModel; feedback: DspScalarFeedback; presentation: 'grouped' | 'independent' | 'nr';
   scalarPresentation?: Readonly<DspScalarPresentation>; nbLevelMax?: number;
   nbLevelPercent?: boolean; onLevelChange?: (field: DspScalarField, value: number) => void;
   scalarAppearance?: Skin; presentationIsCurrent?: () => boolean;
@@ -207,6 +207,25 @@ describe('two-scalar DSP family host', () => {
     r.props.nbLevelPercent = false;
     flushSync();
     expect(r.scalar('nbLevel')?.dataset.display).toBe('65');
+    r.dispose();
+  });
+
+  it('keeps a null NR domain unknown, disabled, and command-inert', () => {
+    const current = view();
+    const r = render({
+      presentation: 'nr',
+      view: { ...current, dsp: { ...current.dsp!, nrLevelProjection: {
+        value: null, domain: null, adjustable: false,
+      } } },
+      feedback: feedback({ nrLevel: commandFeedback('nrLevel', {
+        confirmed: null, phase: 'unavailable', availability: 'unavailable',
+      }) }),
+    });
+    const nr = r.scalar('nrLevel')!;
+    expect(nr.getAttribute('aria-disabled')).toBe('true');
+    expect(nr.dataset.display).toBe('?');
+    nr.click();
+    expect(r.onLevelChange).not.toHaveBeenCalled();
     r.dispose();
   });
 

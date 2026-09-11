@@ -15,7 +15,7 @@
   interface Props {
     view: RadioViewModel;
     feedback?: DspScalarFeedback;
-    presentation?: 'grouped' | 'independent';
+    presentation?: 'grouped' | 'independent' | 'nr';
     scalarPresentation?: Readonly<DspScalarPresentation>;
     agcLabels?: Record<string, string>;
     nbLevelMax?: number;
@@ -81,10 +81,16 @@
           </section>
         {/snippet}
         {#key presentation}
-          <DspSurface {view} {finiteHandles} scalarHandles={scalarHandles}
-            finiteLayout={presentation === 'independent' ? independentFinite : undefined}
-            scalarLayout={presentation === 'independent' ? independentScalars : undefined}
-            onLevelChange={(field, value) => onLevelChange?.(field, value)} />
+          {#if presentation === 'nr'}
+            <section data-testid="nr-dsp-scalar">
+              {@render scalarHandles.nrLevel(scalarPresentation)}
+            </section>
+          {:else}
+            <DspSurface {view} {finiteHandles} scalarHandles={scalarHandles}
+              finiteLayout={presentation === 'independent' ? independentFinite : undefined}
+              scalarLayout={presentation === 'independent' ? independentScalars : undefined}
+              onLevelChange={(field, value) => onLevelChange?.(field, value)} />
+          {/if}
         {/key}
       {/snippet}
     </DspScalarHost>
