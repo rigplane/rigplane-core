@@ -128,6 +128,7 @@ export function createDragReorder(options: DragReorderOptions): DragInstance {
   let order = $state(loadPanelOrder(storageKey, defaults));
   let dragPanelId = $state<string | null>(null);
   let dropTargetIndex = $state<number>(-1);
+  let cancelActiveDrag: (() => void) | null = null;
 
   // Cross-sidebar state (set by peer during its drag)
   let _incomingDragId = $state<string | null>(null);
@@ -192,12 +193,12 @@ export function createDragReorder(options: DragReorderOptions): DragInstance {
 
   function handleDragStart(panelId: string, event: PointerEvent) {
     const handle = event.currentTarget as HTMLElement;
-    handle.setPointerCapture(event.pointerId);
-    dragPanelId = panelId;
-    dropTargetIndex = order.indexOf(panelId);
-
     const sidebar = handle.closest(containerSelector) as HTMLElement;
     if (!sidebar) return;
+    cancelActiveDrag?.();
+    const pointerId = event.pointerId;
+    dragPanelId = panelId;
+    dropTargetIndex = order.indexOf(panelId);
 
     // Cache own panel rects
     const rects = new Map<string, DOMRect>();
@@ -224,8 +225,10 @@ export function createDragReorder(options: DragReorderOptions): DragInstance {
     }
 
     let activePeer: (typeof peers)[number] | null = null;
+    let ended = false;
 
     function onMove(e: PointerEvent) {
+      if (e.pointerId !== pointerId || ended) return;
       const target = peers.find(({ rect }) =>
         e.clientX >= rect.left &&
         e.clientX <= rect.right &&
@@ -251,7 +254,23 @@ export function createDragReorder(options: DragReorderOptions): DragInstance {
       }
     }
 
-    function onUp() {
+    function cleanup() {
+      if (ended) return;
+      ended = true;
+      activePeer?.instance._setIncoming(null, -1);
+      activePeer = null;
+      dragPanelId = null;
+      dropTargetIndex = -1;
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+      window.removeEventListener('blur', onCancel);
+      handle.removeEventListener('lostpointercapture', onLostPointerCapture);
+      if (cancelActiveDrag === cleanup) cancelActiveDrag = null;
+    }
+
+    function onUp(e: PointerEvent) {
+      if (e.pointerId !== pointerId || ended) return;
       if (activePeer && dragPanelId) {
         const targetIdx = activePeer.instance._incomingDropIndex;
         activePeer.instance._acceptPanel(dragPanelId, targetIdx >= 0 ? targetIdx : 0);
@@ -260,18 +279,32 @@ export function createDragReorder(options: DragReorderOptions): DragInstance {
         const newOrder = reorderPanels(order, dragPanelId, dropTargetIndex);
         if (newOrder !== order) order = newOrder;
       }
-      activePeer?.instance._setIncoming(null, -1);
-      activePeer = null;
-      dragPanelId = null;
-      dropTargetIndex = -1;
-      handle.removeEventListener('pointermove', onMove);
-      handle.removeEventListener('pointerup', onUp);
-      handle.removeEventListener('pointercancel', onUp);
+      cleanup();
     }
 
-    handle.addEventListener('pointermove', onMove);
-    handle.addEventListener('pointerup', onUp);
-    handle.addEventListener('pointercancel', onUp);
+    function onCancel(e: Event) {
+      if (e instanceof PointerEvent && e.pointerId !== pointerId) return;
+      cleanup();
+    }
+
+    function onLostPointerCapture(e: PointerEvent) {
+      // A Svelte update may replace the original handle while the pointer is
+      // still down. Window listeners keep that drag alive; a capture loss with
+      // no pressed buttons is an end signal and must clear the preview.
+      if (e.pointerId === pointerId && e.buttons === 0) cleanup();
+    }
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('blur', onCancel);
+    handle.addEventListener('lostpointercapture', onLostPointerCapture);
+    cancelActiveDrag = cleanup;
+    try {
+      handle.setPointerCapture(pointerId);
+    } catch {
+      // Global listeners still provide a complete drag lifecycle.
+    }
   }
 
   function reset() {
@@ -318,6 +351,7 @@ export function createDragReorder(options: DragReorderOptions): DragInstance {
   // In Svelte 5, $effect teardown runs on component unmount.
   $effect(() => {
     return () => {
+      cancelActiveDrag?.();
       const idx = _registry.indexOf(instance);
       if (idx >= 0) _registry.splice(idx, 1);
     };
