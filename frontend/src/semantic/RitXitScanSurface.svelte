@@ -204,6 +204,8 @@
     selectedType = type;
     onScanStart?.(type);
   }
+  const resumeSelected = (value: number): boolean => sc?.scanResumeMode.reading.status === 'known'
+    && sc.scanResumeMode.reading.value === (value & 0x0f);
   function changeOffset(displayHz: number): void {
     if (!canAdjustOffset || !Number.isFinite(displayHz)) return;
     let raw = displayHz;
@@ -286,6 +288,7 @@
                 {#each availableScanTypes as [value, label] (value)}
                   <button
                     type="button" class="scan-choice" data-testid={`scan-type-0x${hex(value)}`}
+                    aria-pressed={effectiveSelectedType === value}
                     onclick={() => selectScanType(value)}
                   >{label}</button>
                 {/each}
@@ -317,6 +320,7 @@
                 {#each availableResumeModes as [value, label] (value)}
                   <button
                     type="button" class="scan-choice" data-testid={`scan-resume-0x${hex(value)}`}
+                    aria-pressed={resumeSelected(value)}
                     onclick={() => onResumeModeChange?.(value)}
                   >{label}</button>
                 {/each}
@@ -340,7 +344,7 @@
   .ritxit-scan-surface[data-part='rit-xit'] .row { flex-direction: column; align-items: stretch; }
   .ritxit-scan-surface[data-part='rit-xit'] .offset { width: 100%; }
   .ritxit-scan-surface[data-part='rit-xit'] .offset input { flex: 1; min-width: 0; }
-  .ritxit-scan-surface[data-part='rit-xit'] .ritxit-mode-row :global(button.v2-control-button[data-surface='hardware']) {
+  .ritxit-scan-surface[data-part='rit-xit'] .ritxit-mode-row :global(button) {
     width: 60px; min-width: 60px; flex: 0 0 60px;
   }
   .ritxit-scan-surface[data-part='scan'] .row {

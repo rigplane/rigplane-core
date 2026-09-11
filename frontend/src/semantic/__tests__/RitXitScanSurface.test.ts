@@ -577,6 +577,7 @@ describe('scan TYPE selection: six buttons restore v2.11.1, MOR-2425', () => {
     });
     expect([...target.querySelectorAll('[data-testid^="scan-type-0x"]')]
       .map((button) => button.textContent?.trim())).toEqual(['PROG', 'ΔF', 'SEL']);
+    expect(r.el('scan-type-0x01')?.getAttribute('aria-pressed')).toBe('true');
     expect(r.el('ritxit')).toBeNull();
     r.dispose();
   });
@@ -686,6 +687,7 @@ describe('scan RESUME mode: four explicit literal buttons, MOR-2425 (replacing t
     });
     expect([...target.querySelectorAll('[data-testid^="scan-resume-0x"]')]
       .map((button) => button.textContent?.trim())).toEqual(['OFF', 'ON']);
+    expect(r.el('scan-resume-0xd0')?.getAttribute('aria-pressed')).toBe('true');
     expect(r.el('scan-resume-0xd1')).toBeNull();
     expect(r.el('scan-resume-0xd2')).toBeNull();
     r.dispose();
