@@ -58,6 +58,7 @@
  * the MODE HardwareButton even when their component owns compact geometry. */
 .desktop-control-face.standard-face :is(
   .semantic-control-panel button,
+  .v2-control-button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,
