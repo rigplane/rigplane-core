@@ -216,6 +216,7 @@
           showLabel={explicitPresentation ? presentation?.showLabel ?? true : false}
           showValue={explicitPresentation ? presentation?.showValue ?? true : false}
           compact={explicitPresentation ? presentation?.compact ?? false : true}
+          variant={presentation?.variant ?? 'modern'}
           title={disabledReason}
           {accessibility}
           skin={scalarAppearance}
@@ -229,6 +230,7 @@
           showLabel={explicitPresentation ? presentation?.showLabel ?? true : false}
           showValue={explicitPresentation ? presentation?.showValue ?? true : false}
           compact={explicitPresentation ? presentation?.compact ?? false : true}
+          variant={presentation?.variant ?? 'modern'}
           title={disabledReason}
           {accessibility}
           skin={scalarAppearance}
@@ -292,7 +294,7 @@
 
 <style>
   .tx-aux-level { display: grid; grid-template-columns: 10ch 8rem auto; align-items: center; gap: 0.5rem; }
-  .tx-aux-level--presented { display: inline-flex; min-width: 0; max-width: 100%; }
+  .tx-aux-level--presented { display: flex; width: 100%; min-width: 0; max-width: 100%; }
   .tx-aux-name { white-space: nowrap; }
   .tx-aux-level :global(.vc-hbar) { width: 100%; min-width: 0; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }

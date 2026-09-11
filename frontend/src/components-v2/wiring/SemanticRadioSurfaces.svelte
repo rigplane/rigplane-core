@@ -19,6 +19,7 @@
     InstrumentComposition,
     InstrumentVfoAppearance,
     PanelChrome,
+    StandardTxLayout,
   } from './instrument-composition';
 
   export interface ExternalPresentation {
@@ -34,6 +35,7 @@
     InstrumentComposition,
     InstrumentVfoAppearance,
     PanelChrome,
+    StandardTxLayout,
   } from './instrument-composition';
   import { t } from '$lib/i18n';
   import { getFieldStatus } from '$lib/state/field-status';
@@ -1987,9 +1989,10 @@
     must exist even while `view` is still null — see the alerts comment
     below), so the view-model gate now lives on the snippet itself.
   -->
-  {#snippet rxTxSurface()}
+  {#snippet rxTxSurface(standard = false)}
     {#if view}
-      <RxTxSurface {view} tx={txState} onRequestKey={requestKey} onRequestUnkey={requestUnkey} />
+      <RxTxSurface {view} tx={txState} {standard}
+        onRequestKey={requestKey} onRequestUnkey={requestUnkey} />
     {/if}
   {/snippet}
 
@@ -2385,13 +2388,14 @@
     gated inside the surface on the model's one `txPermit`, and the key/unkey
     authority stays the single `<RxTxSurface>` above (decomposition R9).
   -->
-  {#snippet cwKeyerSurface(showKeyerSpeed = true, showPitchHz = true)}
+  {#snippet cwKeyerSurface(showKeyerSpeed = true, showPitchHz = true, standard = false)}
     {#if view?.cwKeyer}
       <CwKeyerSurface
         {view}
         continuousHandles={cwKeyerInstruments}
         {showKeyerSpeed}
         {showPitchHz}
+        {standard}
         {breakInDelayFeedback}
         {autoTuneAvailable}
         onBreakInMode={(mode) => cwIntents.onBreakInModeChange(mode)}
@@ -2504,8 +2508,17 @@
     )}{/snippet}
     {@render zoned('vfo', view !== null && singleOrder.includes('vfo'), body, allowBare)}
   {/snippet}
-  {#snippet hostedRxTx(allowBare = allowBareSurfaces, chrome?: PanelChrome)}
-    {@render zoned('rxTx', view !== null && singleOrder.includes('rxTx'), rxTxSurface, allowBare, chrome)}
+  {#snippet hostedRxTx(
+    allowBare = allowBareSurfaces, chrome?: PanelChrome, standardTxLayout?: StandardTxLayout,
+  )}
+    {#snippet body()}
+      {@render rxTxSurface(standardTxLayout !== undefined)}
+      {#if standardTxLayout && view?.txAux}
+        {@render standardTxLayout(txAuxInstruments, txAuxScalars)}
+        {@render txAuxSurface(txAuxInstruments, txAuxScalars, false, false)}
+      {/if}
+    {/snippet}
+    {@render zoned('rxTx', view !== null && singleOrder.includes('rxTx'), body, allowBare, chrome)}
   {/snippet}
   {#snippet hostedTxAux(
     instrumentLayout: Snippet, allowBare = allowBareSurfaces, chrome?: PanelChrome,
@@ -2599,11 +2612,11 @@
   {/snippet}
   {#snippet hostedCwKeyer(
     allowBare = allowBareSurfaces, showKeyerSpeed = true, chrome?: PanelChrome,
-    instrumentLayout?: Snippet,
+    instrumentLayout?: Snippet, standard = false,
   )}
     {#snippet body()}
       {#if instrumentLayout}{@render instrumentLayout()}{/if}
-      {@render cwKeyerSurface(showKeyerSpeed, showKeyerSpeed)}
+      {@render cwKeyerSurface(showKeyerSpeed, showKeyerSpeed, standard)}
     {/snippet}
     {@render zoned('cwKeyer', view?.cwKeyer !== undefined, body, allowBare, chrome)}
   {/snippet}

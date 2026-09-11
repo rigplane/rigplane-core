@@ -23,6 +23,7 @@ import type { RitXitScanInstrumentHandles } from '../../semantic/RitXitScanInstr
 import type { RitXitScanSurfacePart } from '../../semantic/RitXitScanSurface.svelte';
 
 export type InstrumentVfoAppearance = 'semantic' | 'sdr' | 'standard';
+export type StandardTxLayout = Snippet<[TxAuxFiniteHandles, TxAuxScalarHandles]>;
 
 export interface PanelChrome {
   readonly panelId: string;
@@ -47,7 +48,9 @@ export interface InstrumentComposition {
     operationControls?: Snippet,
   ]>;
   readonly vfoOperations: VfoOperationHandles;
-  readonly rxTx: Snippet<[allowBare?: boolean, chrome?: PanelChrome]>;
+  readonly rxTx: Snippet<[
+    allowBare?: boolean, chrome?: PanelChrome, standardTxLayout?: StandardTxLayout,
+  ]>;
   readonly txAuxControls: Snippet<[
     scalarLayout: Snippet, allowBare?: boolean, chrome?: PanelChrome,
   ]>;
@@ -87,7 +90,7 @@ export interface InstrumentComposition {
   readonly cwKeyerInstruments: CwKeyerInstrumentHandles;
   readonly cwKeyer: Snippet<[
     allowBare?: boolean, showKeyerSpeed?: boolean, chrome?: PanelChrome,
-    instrumentLayout?: Snippet,
+    instrumentLayout?: Snippet, standard?: boolean,
   ]>;
   readonly memory: Snippet<[allowBare?: boolean, chrome?: PanelChrome]>;
   readonly scopeDisplay: Snippet<[allowBare?: boolean]>;

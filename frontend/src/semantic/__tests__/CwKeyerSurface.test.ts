@@ -35,7 +35,7 @@ import {
   UNKNOWN_TEXT, breakInBlockedLabel, breakInPosture, type CwLevelField,
 } from '../CwKeyerSurface.svelte';
 import CwKeyerInstrumentHostFixture from './fixtures/CwKeyerInstrumentHostFixture.svelte';
-import { topologyFixtures, withCwKeyer, withTxAux } from '../fixtures/topologies';
+import { topologyFixtures, withCwKeyer, withModeFilter, withTxAux } from '../fixtures/topologies';
 import type {
   Availability, BreakInMode, CwKeyerField, CwKeyerViewModel, DisabledReason, RadioViewModel,
 } from '../radio-view-model';
@@ -79,6 +79,8 @@ beforeEach(() => { target = document.createElement('div'); document.body.appendC
 afterEach(() => { target.remove(); });
 
 type Handlers = {
+  standard?: boolean;
+  autoTuneAvailable?: boolean;
   onBreakInMode?: (mode: number) => void;
   onLevelChange?: (field: CwLevelField, value: number) => void;
   onApfOn?: (on: boolean) => void;
@@ -135,6 +137,51 @@ const feedback = (
 /* ── (a) the surface is not a key path ────────────────────────── */
 
 describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
+  it('renders the Standard compact composition through the existing setting intents', () => {
+    const onBreakInMode = vi.fn();
+    const onApfOn = vi.fn();
+    const onAutoTune = vi.fn();
+    const r = render(withModeFilter(withCw({ breakIn: known('semi'), apf: known(1) })), {
+      standard: true, autoTuneAvailable: true, onBreakInMode, onApfOn, onAutoTune,
+    });
+    try {
+      expect(r.el('rx-mode')?.textContent).toContain('USB');
+      expect(r.el('break-in-off')).toBeNull();
+      expect(r.text('break-in-semi')).toBe('SEMI');
+      expect(r.text('break-in-full')).toBe('FULL');
+      expect(r.el('apf')?.getAttribute('role')).toBeNull();
+      expect(r.el('apf-on')?.getAttribute('role')).toBeNull();
+      expect(r.el('apf-on')?.getAttribute('aria-pressed')).toBe('true');
+      expect(r.el('pitchHz')!.compareDocumentPosition(r.el('keyerSpeed')!)
+        & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+      press(r.el('break-in-semi')!);
+      press(r.el('break-in-full')!);
+      expect(onBreakInMode.mock.calls).toEqual([[0], [2]]);
+      press(r.el('apf-on')!);
+      expect(onApfOn).toHaveBeenCalledWith(false);
+
+      const settings = r.controls().find(control =>
+        control.getAttribute('aria-label') === 'CW additional settings')!;
+      expect(settings.getAttribute('aria-expanded')).toBe('false');
+      expect(settings.getAttribute('aria-controls')).toBe('cw-extra-settings');
+      const controlled = target.querySelector<HTMLElement>(
+        `#${settings.getAttribute('aria-controls')}`,
+      )!;
+      expect(controlled.hidden).toBe(true);
+      expect(controlled.querySelector('[data-testid="cw-keyer-breakInDelay"]')).not.toBeNull();
+      expect(controlled.querySelector('[data-testid="cw-keyer-reverse-paddle"]')).not.toBeNull();
+      press(settings);
+      flushSync();
+      expect(settings.getAttribute('aria-expanded')).toBe('true');
+      expect(controlled.hidden).toBe(false);
+
+      expect(r.text('auto-tune')).toBe('AUTO TUNE');
+      press(r.el('auto-tune')!);
+      expect(onAutoTune).toHaveBeenCalledTimes(1);
+    } finally { r.dispose(); }
+  });
+
   /** The whole static import closure of the file, allow-listed. Kills: adding
    *  ANY import that could reach the TX controller, the transport or the
    *  permit utility — including through a relative specifier.
@@ -204,7 +251,8 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
   it('takes exactly one state prop — the view model — plus SETTING intents', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
     expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1])).toEqual([
-      'view', 'continuousHandles', 'showKeyerSpeed', 'showPitchHz', 'onBreakInMode', 'onLevelChange',
+      'view', 'continuousHandles', 'showKeyerSpeed', 'showPitchHz', 'standard',
+      'onBreakInMode', 'onLevelChange',
       'onApfOn', 'onTwinPeakToggle', 'onReversePaddleToggle', 'breakInDelayFeedback',
       'autoTuneAvailable', 'onAutoTune',
     ]);

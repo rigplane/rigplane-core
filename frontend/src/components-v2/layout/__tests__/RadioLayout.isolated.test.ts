@@ -751,11 +751,41 @@ describe('App presentation selection', () => {
     });
     const semanticHost = t.querySelector('[data-testid="semantic-radio-surfaces"]');
     const globalHost = t.querySelector('[data-testid="app-global-host"]');
+    const standardTx = t.querySelector('[data-testid="standard-tx-controls"]');
+    expect(t.querySelector('[data-testid="rx-tx-key"]')
+      ?.closest('[data-panel-id="semantic-rx-tx"]')).not.toBeNull();
+    expect(standardTx?.closest('[data-panel-id="semantic-rx-tx"]')).not.toBeNull();
+    expect(t.querySelector('[data-testid="cw-keyer-rx-mode"]')?.textContent).toContain('USB');
+    expect(t.querySelector('[data-testid="cw-keyer-break-in-off"]')).toBeNull();
+    expect(t.querySelector('[data-testid="cw-keyer-break-in-semi"]')?.textContent).toContain('SEMI');
+    expect(t.querySelector('[data-testid="cw-keyer-break-in-full"]')?.textContent).toContain('FULL');
+    const pitch = t.querySelector('[data-testid="cw-keyer-pitchHz"]')!;
+    const speed = t.querySelector('[data-testid="cw-keyer-keyerSpeed"]')!;
+    const rxMode = t.querySelector('[data-testid="cw-keyer-rx-mode"]')!;
+    const breakIn = t.querySelector('[data-testid="cw-keyer-break-in"]')!;
+    expect(rxMode.compareDocumentPosition(pitch) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(pitch.compareDocumentPosition(speed) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(speed.compareDocumentPosition(breakIn) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    const pitchRenderer = pitch.querySelector<HTMLElement>('[data-external-scalar-renderer]');
+    const speedRenderer = speed.querySelector<HTMLElement>('[data-external-scalar-renderer]');
+    expect(pitchRenderer?.dataset.compact).toBe('false');
+    expect(speedRenderer?.dataset.compact).toBe('false');
+    expect(pitchRenderer?.dataset.variant).toBe('hardware-illuminated');
+    expect(speedRenderer?.dataset.variant).toBe('hardware-illuminated');
+    const txLevels = [...t.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.getAttribute('aria-label') === 'TX level settings');
+    expect(txLevels?.getAttribute('aria-expanded')).toBe('false');
+    txLevels?.click();
+    flushSync();
+    expect(txLevels?.getAttribute('aria-expanded')).toBe('true');
+    expect(t.querySelector('[data-testid="standard-tx-controls"]')
+      ?.closest('[data-panel-id="semantic-rx-tx"]')).not.toBeNull();
+    expect(t.querySelector('[data-panel-id="semantic-tx-aux"]')).toBeNull();
     const oldMic = t.querySelector<RendererNode>(
       '[data-testid="tx-aux-micGain"] [data-external-scalar-renderer]',
     );
     const oldKeyerSpeed = t.querySelector<RendererNode>(
-      '[data-cw-keyer-seat="keyerSpeed"] [data-external-scalar-renderer]',
+      '[data-testid="cw-keyer-keyerSpeed"] [data-external-scalar-renderer]',
     );
     if (oldMic === null) throw new Error('Standard did not render the external MIC probe');
     if (oldKeyerSpeed === null) throw new Error('Standard did not render the Keyer Speed seat');
@@ -831,7 +861,6 @@ describe('App presentation selection', () => {
     expect(newKeyerSpeed.rendererLease).not.toBe(oldKeyerSpeedLease);
     expect(oldLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
     expect(oldKeyerSpeedLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
-    expect(t.querySelector('[data-cw-keyer-seat="keyerSpeed"]')).toBeNull();
     expect(t.querySelectorAll('[data-testid="cw-keyer-keyerSpeed"]')).toHaveLength(1);
     expect({
       requested: newKeyerSpeed.dataset.requested,

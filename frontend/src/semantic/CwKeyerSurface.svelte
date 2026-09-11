@@ -149,6 +149,7 @@
     continuousHandles: CwKeyerInstrumentHandles;
     showKeyerSpeed?: boolean;
     showPitchHz?: boolean;
+    standard?: boolean;
     onBreakInMode?: (mode: number) => void;
     onLevelChange?: (field: CwLevelField, value: number) => void;
     onApfOn?: (on: boolean) => void;
@@ -159,7 +160,7 @@
     onAutoTune?: () => void;
   }
   let {
-    view, continuousHandles, showKeyerSpeed = true, showPitchHz = true,
+    view, continuousHandles, showKeyerSpeed = true, showPitchHz = true, standard = false,
     onBreakInMode, onLevelChange, onApfOn, onTwinPeakToggle, onReversePaddleToggle,
     breakInDelayFeedback,
     autoTuneAvailable = false, onAutoTune,
@@ -167,6 +168,9 @@
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
   let cw = $derived(view.cwKeyer);
+  let extraOpen = $state(false);
+  let rxMode = $derived(view.modeFilter?.currentMode.reading.status === 'known'
+    ? view.modeFilter.currentMode.reading.value : UNKNOWN_TEXT);
   /** Rule 2. The model's ONE permit, READ. No second derivation exists here —
    *  `getFrequencyPermit`, `txBands` and `band` are not imported at all. */
   let permitAllowed = $derived(view.txPermit.status === 'allowed');
@@ -209,6 +213,9 @@
    *  set what the widget refused. */
   function setBreakIn(mode: number): void {
     if (cw && usable(cw.breakIn) && permitAllowed) onBreakInMode?.(mode);
+  }
+  function toggleBreakIn(label: 'semi' | 'full', mode: 1 | 2): void {
+    setBreakIn(cw?.breakIn.reading.status === 'known' && cw.breakIn.reading.value === label ? 0 : mode);
   }
   function setLevel(field: CwLevelField, value: number): void {
     if (cw && usable(cw[field])) onLevelChange?.(field, value);
@@ -347,9 +354,26 @@
 {#if cw}
   <!-- Rule 4: named for what it actually holds, not "CW". -->
   <section
-    class="cw-keyer-surface" data-testid="cw-keyer-surface"
+    class="cw-keyer-surface" class:standard data-testid="cw-keyer-surface"
     aria-label="CW keyer and audio peak filters"
   >
+    {#if standard}
+      <div class="cw-mode-line" data-testid="cw-keyer-rx-mode">
+        <span>RX MODE</span><output>{rxMode}</output>
+      </div>
+      {#if showPitchHz}
+        {@render continuousHandles.pitchHz({
+          form: 'hbar', compact: false, showLabel: true, showValue: true,
+          variant: 'hardware-illuminated',
+        })}
+      {/if}
+      {#if showKeyerSpeed}
+        {@render continuousHandles.keyerSpeed({
+          form: 'hbar', compact: false, showLabel: true, showValue: true,
+          variant: 'hardware-illuminated',
+        })}
+      {/if}
+    {/if}
     {#if cw.breakIn.availability.structural}
       <div
         class="cw-keyer-block" data-testid="cw-keyer-break-in"
@@ -357,15 +381,15 @@
         data-permitted={permitAllowed}
       >
         <div class="cw-keyer-row" role="radiogroup" aria-label="Break-in">
-          {#each BREAK_IN_CHOICES as [label, mode] (mode)}
+          {#each (standard ? BREAK_IN_CHOICES.filter(([label]) => label !== 'off') : BREAK_IN_CHOICES) as [label, mode] (mode)}
             <button
               type="button" role="radio" class="cw-keyer-choice"
               data-testid={`cw-keyer-break-in-${label}`}
               aria-checked={cw.breakIn.reading.status === 'known'
                 && cw.breakIn.reading.value === label}
               disabled={!usable(cw.breakIn) || !permitAllowed}
-              onclick={() => setBreakIn(mode)}
-            >{label}</button>
+              onclick={() => standard && mode !== 0 ? toggleBreakIn(label as 'semi' | 'full', mode) : setBreakIn(mode)}
+            >{standard ? label.toUpperCase() : label}</button>
           {/each}
         </div>
         <!-- Rule 5: the posture is TEXT, so it survives forced-colors and so
@@ -373,7 +397,7 @@
              permitted" — the operator's radio can still key from its own
              paddle while this UI refuses to change the setting. It is a
              SENTENCE, so it gets its own line below the keys and may wrap. -->
-        <p class="cw-keyer-sentence">
+        <p class="cw-keyer-sentence" class:sr-only={standard && permitAllowed}>
           <output data-testid="cw-keyer-posture">{POSTURE_LABEL[breakInPosture(cw.breakIn)]}</output>
         </p>
         {#if !permitAllowed && breakInReason}
@@ -385,16 +409,16 @@
       </div>
     {/if}
 
-    {#if showKeyerSpeed}
-      {@render continuousHandles.keyerSpeed()}
-    {/if}
-    {#if showPitchHz}
-      {@render continuousHandles.pitchHz()}
+    {#if !standard}
+      {#if showKeyerSpeed}{@render continuousHandles.keyerSpeed()}{/if}
+      {#if showPitchHz}{@render continuousHandles.pitchHz()}{/if}
     {/if}
 
+    {#snippet cwSettings()}
     {#each CW_LEVELS.filter(([field]) => field !== 'keyerSpeed' && field !== 'pitchHz') as [field, label, min, max, step, unit] (field)}
       {@const f = cw[field]}
-      {#if f.availability.structural}
+      {#if f.availability.structural && (!standard || field !== 'breakInDelay'
+        || (cw.breakIn.reading.status === 'known' && cw.breakIn.reading.value === 'semi'))}
         <label
           class="cw-keyer-level" data-testid={`cw-keyer-${field}`}
           data-observed={usable(f)}
@@ -438,13 +462,6 @@
       {/if}
     {/each}
 
-    {#if autoTuneAvailable}
-      <button
-        type="button" class="cw-keyer-toggle" data-testid="cw-keyer-auto-tune"
-        onclick={requestRxFrequencyCorrection}
-      >RX frequency correction</button>
-    {/if}
-
     {#if cw.reversePaddle.availability.structural}
       <button
         type="button" class="cw-keyer-toggle" data-testid="cw-keyer-reverse-paddle"
@@ -453,6 +470,22 @@
         onclick={() => reversePaddleToggle.invoke()}
       >Reverse paddle: {textOf(cw.reversePaddle)}</button>
     {/if}
+    {/snippet}
+
+    {#if standard}
+      <div id="cw-extra-settings" class="cw-extra-settings" role="group"
+        aria-label="CW additional settings" hidden={!extraOpen}>
+        {@render cwSettings()}
+        {#if view.txAux}
+          <p class="cw-keyer-row" data-testid="cw-keyer-sidetone"
+            data-observed={usable(view.txAux.monitorLevel)}>
+            Sidetone level: {textOf(view.txAux.monitorLevel)}
+          </p>
+        {/if}
+      </div>
+    {:else}
+      {@render cwSettings()}
+    {/if}
 
     {#if cw.apf.availability.structural}
       <!-- `apf` is an ORDINAL (0 = off, >0 = a filter type this contract does
@@ -460,25 +493,36 @@
            ordinal and the ordinal itself is shown verbatim; "which type" would
            need an `apfOn`/`apfType` fact that slice 9A deliberately did not
            promote (MOR-1296 open question 2) — flagged, not guessed. -->
-      <div class="cw-keyer-block">
+      <div class="cw-keyer-block" class:cw-standard-filter={standard}>
         <div
-          class="cw-keyer-row" role="radiogroup" aria-label="Audio peak filter"
+          class="cw-keyer-row" role={standard ? undefined : 'radiogroup'} aria-label="Audio peak filter"
           data-testid="cw-keyer-apf" data-observed={usable(cw.apf)}
         >
-          {#each APF_CHOICES as [label, on] (label)}
+          {#if standard}
             <button
-              type="button" role="radio" class="cw-keyer-choice"
-              data-testid={`cw-keyer-apf-${label}`}
-              aria-checked={apfChoice.isSelected(on)}
+              type="button" class="cw-keyer-toggle" data-testid="cw-keyer-apf-on"
+              aria-pressed={apfChoice.isSelected(true)}
+              aria-describedby={mutexed('apf') ? 'cw-keyer-apf-reason' : undefined}
               disabled={!apfChoice.available}
-              onclick={() => apfChoice.invoke(on)}
-            >APF {label}</button>
-          {/each}
-          <output data-testid="cw-keyer-apf-value">{textOf(cw.apf)}</output>
+              onclick={() => apfChoice.invoke(!apfChoice.isSelected(true))}
+            >APF</button>
+          {:else}
+            {#each APF_CHOICES as [label, on] (label)}
+              <button
+                type="button" role="radio" class="cw-keyer-choice"
+                data-testid={`cw-keyer-apf-${label}`}
+                aria-checked={apfChoice.isSelected(on)}
+                aria-describedby={mutexed('apf') ? 'cw-keyer-apf-reason' : undefined}
+                disabled={!apfChoice.available}
+                onclick={() => apfChoice.invoke(on)}
+              >APF {label}</button>
+            {/each}
+          {/if}
+          <output class:sr-only={standard} data-testid="cw-keyer-apf-value">{textOf(cw.apf)}</output>
         </div>
         {#if mutexed('apf')}
-          <p class="cw-keyer-sentence">
-            <output data-testid="cw-keyer-apf-mutex" data-reason="mutually-exclusive-control"
+          <p class="cw-keyer-sentence" class:sr-only={standard}>
+            <output id="cw-keyer-apf-reason" data-testid="cw-keyer-apf-mutex" data-reason="mutually-exclusive-control"
             >{MUTEX_LABEL.apf}</output>
           </p>
         {/if}
@@ -486,34 +530,51 @@
     {/if}
 
     {#if cw.twinPeak.availability.structural}
-      <div class="cw-keyer-block">
+      <div class="cw-keyer-block" class:cw-standard-filter={standard}>
         <div class="cw-keyer-row" data-testid="cw-keyer-twin-peak" data-observed={usable(cw.twinPeak)}>
           <button
             type="button" class="cw-keyer-toggle" data-testid="cw-keyer-twin-peak-toggle"
             aria-pressed={pressedOf(cw.twinPeak)}
+            aria-describedby={mutexed('twinPeak') ? 'cw-keyer-twin-peak-reason' : undefined}
             disabled={!twinPeakToggle.available}
             onclick={() => twinPeakToggle.invoke()}
-          >TPF: {textOf(cw.twinPeak)}</button>
+          >{standard ? 'TPF' : `TPF: ${textOf(cw.twinPeak)}`}</button>
         </div>
         {#if mutexed('twinPeak')}
           <!-- Rule 4: RTTY is named, so a permanently-disabled control in a
                block the operator reads as "CW" is never unexplained. It is a
                SENTENCE, so it leaves the keys row for its own line. -->
-          <p class="cw-keyer-sentence">
-            <output data-testid="cw-keyer-twin-peak-mutex" data-reason="mutually-exclusive-control"
+          <p class="cw-keyer-sentence" class:sr-only={standard}>
+            <output id="cw-keyer-twin-peak-reason" data-testid="cw-keyer-twin-peak-mutex" data-reason="mutually-exclusive-control"
             >{MUTEX_LABEL.twinPeak}</output>
           </p>
         {/if}
       </div>
     {/if}
 
-    {#if view.txAux}
+    {#if autoTuneAvailable}
+      <button
+        type="button" class="cw-keyer-toggle" data-testid="cw-keyer-auto-tune"
+        onclick={requestRxFrequencyCorrection}
+      >{standard ? 'AUTO TUNE' : 'RX frequency correction'}</button>
+    {/if}
+
+    {#if view.txAux && !standard}
       <!-- Sidetone level IS `txAux.monitorLevel` (MOR-1296 §4): read there,
            never duplicated as a second fact and never given a second control —
            the one control lives in `TxAuxSurface`. Readout only. -->
       <p class="cw-keyer-row" data-testid="cw-keyer-sidetone" data-observed={usable(view.txAux.monitorLevel)}>
         Sidetone level: {textOf(view.txAux.monitorLevel)}
       </p>
+    {/if}
+
+    {#if standard && (cw.reversePaddle.availability.structural
+      || cw.breakInDelay.availability.structural || view.txAux !== undefined)}
+      <button type="button" class="cw-keyer-toggle cw-extra-toggle"
+        aria-label="CW additional settings" aria-expanded={extraOpen}
+        aria-controls="cw-extra-settings"
+        onclick={() => (extraOpen = !extraOpen)}
+      >SETTINGS {extraOpen ? '▴' : '▾'}</button>
     {/if}
   </section>
 {/if}
@@ -527,6 +588,30 @@
   .cw-keyer-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .cw-keyer-name { min-width: 12ch; }
   .cw-keyer-choice[aria-checked='true'], .cw-keyer-toggle[aria-pressed='true'] { font-weight: 700; }
+  .cw-keyer-surface.standard {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;
+  }
+  .standard .cw-mode-line {
+    grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .standard .cw-mode-line span { color: var(--v2-text-dim); }
+  .standard .cw-mode-line output { color: var(--v2-text-bright); }
+  .standard :global(.cw-keyer-level--presented) { grid-column: 1 / -1; }
+  .standard [data-testid='cw-keyer-break-in'] { grid-column: span 2; }
+  .standard [data-testid='cw-keyer-break-in'] .cw-keyer-row {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
+  }
+  .standard [data-testid='cw-keyer-apf'],
+  .standard [data-testid='cw-keyer-twin-peak'] { display: contents; }
+  .standard .cw-standard-filter { display: contents; }
+  .standard [data-testid='cw-keyer-auto-tune'], .standard .cw-extra-toggle { grid-column: span 2; }
+  .standard .cw-extra-settings {
+    grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px;
+  }
+  .standard .cw-extra-settings[hidden] { display: none; }
+  .standard .cw-keyer-level, .standard [data-testid='cw-keyer-reverse-paddle'],
+  .standard [data-testid='cw-keyer-sidetone'] { grid-column: 1 / -1; }
+  .standard button { min-width: 0; }
   /* Second channel beside the unknown TEXT, never the only one. */
   [data-observed='false'] { font-style: italic; }
   .command-pending { font-style: italic; }

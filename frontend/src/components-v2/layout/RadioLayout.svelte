@@ -37,6 +37,8 @@
   import { createDragReorder } from '$lib/drag-reorder.svelte';
   import type { DspFiniteHandles } from '../../semantic/dsp-instruments';
   import type { DspScalarHandles } from '../../semantic/dsp-scalars';
+  import type { TxAuxFiniteHandles } from '../../semantic/tx-aux-finite';
+  import type { TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
   import type { RfFrontEndFiniteHandles } from '../../semantic/rf-front-end-instruments';
   import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instruments';
   import type { FilterInstrumentHandles } from '../../semantic/filter-instruments';
@@ -72,6 +74,7 @@
   import { HardwareButton } from '$lib/Button';
 
   let { skinId = 'desktop-v2', instruments }: { skinId?: SkinId; instruments: InstrumentComposition } = $props();
+  let txLevelsOpen = $state(false);
 
   const standardFaceAtMount = untrack(() => skinId === 'desktop-v2');
   const STANDARD_PANEL_ID_REPLACEMENTS: Readonly<Record<string, readonly string[]>> = {
@@ -432,6 +435,35 @@
   {@render txAuxScalars()}
 {/snippet}
 
+{#snippet standardTxLayout(finite: TxAuxFiniteHandles, scalars: TxAuxScalarHandles)}
+  <div class="standard-tx-controls" data-testid="standard-tx-controls">
+    <div class="standard-tx-button-grid">
+      <div class="standard-tx-seat" data-field="atu">{@render finite.atu()}</div>
+      <div class="standard-tx-seat" data-field="atuTune">{@render finite.atuTune()}</div>
+      <div class="standard-tx-seat" data-field="vox">{@render finite.vox()}</div>
+      <div class="standard-tx-seat" data-field="compressor">{@render finite.compressor()}</div>
+      <div class="standard-tx-seat" data-field="monitor">{@render finite.monitor()}</div>
+      <HardwareButton indicator="edge-left" color="gray" active={txLevelsOpen}
+        ariaLabel="TX level settings" ariaExpanded={txLevelsOpen}
+        ariaControls="standard-tx-levels"
+        onclick={() => (txLevelsOpen = !txLevelsOpen)}
+      >LEVELS {txLevelsOpen ? '▴' : '▾'}</HardwareButton>
+    </div>
+    {#if txLevelsOpen}
+      <div class="standard-tx-levels" id="standard-tx-levels" role="group" aria-label="TX levels">
+        <div class="standard-tx-scalar-seat" data-field="rfPower">{@render scalars.rfPower({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        <div class="standard-tx-scalar-seat" data-field="micGain">{@render scalars.micGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        <div class="standard-tx-scalar-seat" data-field="driveGain">{@render scalars.driveGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        <div class="standard-tx-scalar-seat" data-field="voxGain">{@render scalars.voxGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        <div class="standard-tx-scalar-seat" data-field="antiVoxGain">{@render scalars.antiVoxGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        <div class="standard-tx-scalar-seat" data-field="voxDelay">{@render scalars.voxDelay({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        <div class="standard-tx-scalar-seat" data-field="compressorLevel">{@render scalars.compressorLevel({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        <div class="standard-tx-scalar-seat" data-field="monitorLevel">{@render scalars.monitorLevel({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
 {#snippet dspFiniteLayout(dspInstruments: DspFiniteHandles)}
   <div class="dsp-finite-grid">
     {#if dspInstruments.compactNb}<div class="dsp-finite-seat" data-field="nbActive">{@render dspInstruments.compactNb()}</div>{/if}
@@ -499,19 +531,6 @@
     <div class="band-control-seat" data-field="frequencyEntry">
       {@render bandInstruments.frequencyEntry()}
     </div>
-  </div>
-{/snippet}
-
-{#snippet cwKeyerInstrumentLayout()}
-  <div class="cw-keyer-instrument-seat" data-cw-keyer-seat="keyerSpeed">
-    {@render instruments.cwKeyerInstruments.keyerSpeed({
-      form: 'hbar', compact: false, showLabel: true, showValue: true,
-    })}
-  </div>
-  <div class="cw-keyer-instrument-seat" data-cw-keyer-seat="pitchHz" data-field="pitchHz">
-    {@render instruments.cwKeyerInstruments.pitchHz({
-      form: 'hbar', compact: false, showLabel: true, showValue: true,
-    })}
   </div>
 {/snippet}
 
@@ -595,7 +614,9 @@
     )}
   {/if}
   {#if owner.order.includes('semantic-rx-tx')}
-    {@render instruments.rxTx(undefined, panelChrome(owner, 'semantic-rx-tx'))}
+    {@render instruments.rxTx(
+      undefined, panelChrome(owner, 'semantic-rx-tx', 'TX'), standardTxLayout,
+    )}
   {/if}
   {#if owner.order.includes('semantic-rx-audio')}
     {@render instruments.rxAudio(
@@ -609,16 +630,11 @@
   {/if}
   {#if owner.order.includes('semantic-cw')}
     {@render instruments.cwKeyer(
-      undefined, false, panelChrome(owner, 'semantic-cw'), cwKeyerInstrumentLayout,
+      undefined, true, panelChrome(owner, 'semantic-cw', 'CW'), undefined, true,
     )}
   {/if}
   {#if owner.order.includes('semantic-memory')}
     {@render instruments.memory(undefined, panelChrome(owner, 'semantic-memory'))}
-  {/if}
-  {#if owner.order.includes('semantic-tx-aux')}
-    {@render instruments.txAuxControls(
-      txAuxInstrumentLayout, undefined, panelChrome(owner, 'semantic-tx-aux'),
-    )}
   {/if}
   {#if owner.order.includes('semantic-meters')}
     {@render instruments.meters(undefined, panelChrome(owner, 'semantic-meters'))}
@@ -1051,6 +1067,19 @@
   .standard-bottom-dock > .content-left,
   .standard-bottom-dock > .content-right { display: contents; }
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .standard-tx-controls {
+    display: flex; flex-direction: column; gap: 6px; padding: 0 8px 8px;
+  }
+  .standard-tx-button-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
+  }
+  .standard-tx-seat { display: contents; }
+  .standard-tx-levels {
+    display: flex; flex-direction: column; gap: 6px; padding: 6px;
+    border: 1px solid var(--v2-border-subtle, rgba(255,255,255,.12)); border-radius: 3px;
+  }
+  .standard-tx-scalar-seat { min-width: 0; }
+  .standard-tx-scalar-seat :global(.vc-hbar) { width: 100%; min-width: 0; }
   .dsp-finite-grid {
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
   }
@@ -1103,8 +1132,6 @@
     gap: 4px 8px;
   }
   .tx-aux-scalar-seat { min-width: 0; }
-  .cw-keyer-instrument-seat { min-width: 0; }
-
   .radio-layout, .radio-layout.semantic-deck {
     height: 100vh;
     background:
