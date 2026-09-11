@@ -73,7 +73,7 @@
   import FrequencyEntryDialog from '../../semantic/FrequencyEntryDialog.svelte';
   import type { BandControlLayout } from '../../semantic/band-instruments';
   import DspSurface, {
-    type DspLevelField, type DspToggleField,
+    type DspLevelField, type DspSurfacePart, type DspToggleField,
   } from '../../semantic/DspSurface.svelte';
   import DspInstrumentHost from '../../semantic/DspInstrumentHost.svelte';
   import type { DspFiniteHandles, DspFiniteLayout } from '../../semantic/dsp-instruments';
@@ -101,7 +101,9 @@
   } from '../../semantic/RfFrontEndSurface.svelte';
   import RfFrontEndInstrumentHost from '../../semantic/RfFrontEndInstrumentHost.svelte';
   import type { RfFrontEndFiniteLayout } from '../../semantic/rf-front-end-instruments';
-  import RitXitScanSurface from '../../semantic/RitXitScanSurface.svelte';
+  import RitXitScanSurface, {
+    type RitXitScanSurfacePart,
+  } from '../../semantic/RitXitScanSurface.svelte';
   import RitXitScanInstrumentHost from '../../semantic/RitXitScanInstrumentHost.svelte';
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
   import RxAudioInstrumentHost from '../../semantic/RxAudioInstrumentHost.svelte';
@@ -621,6 +623,8 @@
    * with no capability check (see that surface's own file header). Same
    * "caps-echo display metadata" seam as `hasDualReceiver` below. */
   let scanCapable = $derived(hasCapability('scan'));
+  let scanTypeValues = $derived(runtime.caps?.scanTypeValues);
+  let scanResumeValues = $derived(runtime.caps?.scanResumeValues);
   /** MOR-1731: consume the shared validated tri-state boundary. `undefined`
    * keeps legacy servers compatible; `null` is the adapter's fail-closed
    * result for present-but-unusable metadata. */
@@ -2199,14 +2203,14 @@
     remains the key/unkey authority (R9).
   -->
   {#snippet antennaSurface(controlLayout?: Snippet)}
-    {#if view?.antenna}
-      {#if controlLayout}
+    {#if controlLayout}
+      {#if view?.antenna || runtime.caps?.antennas === 1}
         {@render controlLayout()}
-      {:else}
-        <AntennaSurface
-          {view} tx={txState} handles={antennaInstruments} layout={antennaLayout}
-        />
       {/if}
+    {:else if view?.antenna}
+      <AntennaSurface
+        {view} tx={txState} handles={antennaInstruments} layout={antennaLayout}
+      />
     {/if}
   {/snippet}
 
@@ -2235,11 +2239,13 @@
     props (`agcLabels` to the finite host, the two `nbLevel*` to the scalar
     host), never to this surface.
   -->
-  {#snippet dspSurface(finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout)}
+  {#snippet dspSurface(
+    finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout, part: DspSurfacePart = 'all',
+  )}
     {#if view?.dsp}
       <DspSurface
         {view} finiteHandles={dspInstruments} {finiteLayout}
-        scalarHandles={dspScalars} {scalarLayout}
+        scalarHandles={dspScalars} {scalarLayout} {part}
         onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
       />
     {/if}
@@ -2312,10 +2318,10 @@
     `'ritXitScan'` becomes DECLARABLE with this slice, and `desktop-v2`
     declared it in MOR-1367 (S8); the cockpit still declares none.
   -->
-  {#snippet ritXitScanSurface()}
-    {#if view?.ritXit || view?.scan}
+  {#snippet ritXitScanSurface(part: RitXitScanSurfacePart = 'all')}
+    {#if (part !== 'scan' && view?.ritXit) || (part !== 'rit-xit' && view?.scan)}
       <RitXitScanSurface
-        {view} {ritDomain} {scanCapable}
+        {view} {ritDomain} {scanCapable} {scanTypeValues} {scanResumeValues} {part}
         handles={ritXitInstruments}
         onRitOffsetChange={ritXitIntents.onRitOffsetChange}
         onXitOffsetChange={ritXitIntents.onXitOffsetChange}
@@ -2326,6 +2332,7 @@
       />
     {/if}
   {/snippet}
+  {#snippet groupedRitXitScanSurface()}{@render ritXitScanSurface()}{/snippet}
 
   <!--
     MOR-1310 (vocabulary slice 9B) — SAFETY-CRITICAL. Same structural gate as
@@ -2531,9 +2538,9 @@
   {/snippet}
   {#snippet hostedDsp(
     allowBare = allowBareSurfaces, finiteLayout?: DspFiniteLayout,
-    scalarLayout?: DspScalarLayout, chrome?: PanelChrome,
+    scalarLayout?: DspScalarLayout, chrome?: PanelChrome, part: DspSurfacePart = 'all',
   )}
-    {#snippet body()}{@render dspSurface(finiteLayout, scalarLayout)}{/snippet}
+    {#snippet body()}{@render dspSurface(finiteLayout, scalarLayout, part)}{/snippet}
     {@render zoned('dsp', view?.dsp !== undefined, body, allowBare, chrome)}
   {/snippet}
   {#snippet hostedBand(
@@ -2546,12 +2553,19 @@
     allowBare = allowBareSurfaces, controlLayout?: Snippet, chrome?: PanelChrome,
   )}
     {#snippet body()}{@render antennaSurface(controlLayout)}{/snippet}
-    {@render zoned('antenna', view?.antenna !== undefined, body, allowBare, chrome)}
-  {/snippet}
-  {#snippet hostedRitXitScan(allowBare = allowBareSurfaces, chrome?: PanelChrome)}
     {@render zoned(
-      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined,
-      ritXitScanSurface, allowBare, chrome,
+      'antenna', view?.antenna !== undefined || (controlLayout !== undefined && runtime.caps?.antennas === 1),
+      body, allowBare, chrome,
+    )}
+  {/snippet}
+  {#snippet hostedRitXitScan(
+    allowBare = allowBareSurfaces, chrome?: PanelChrome, part: RitXitScanSurfacePart = 'all',
+  )}
+    {#snippet body()}{@render ritXitScanSurface(part)}{/snippet}
+    {@render zoned(
+      'ritXitScan', (part !== 'scan' && view?.ritXit !== undefined)
+        || (part !== 'rit-xit' && view?.scan !== undefined),
+      body, allowBare, chrome,
     )}
   {/snippet}
   {#snippet hostedCwKeyer(
@@ -2670,7 +2684,7 @@
     {@render zoned('band', view?.band !== undefined, bandSurface, false)}
     {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, false)}
     {@render zoned(
-      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface, false,
+      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, groupedRitXitScanSurface, false,
     )}
     {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, false)}
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface)}
@@ -2689,7 +2703,7 @@
       {@render zoned('band', view?.band !== undefined, bandSurface, allowBareSurfaces)}
       {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBareSurfaces)}
       {@render zoned(
-        'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface,
+        'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, groupedRitXitScanSurface,
         allowBareSurfaces,
       )}
       {#if regionExtras}{@render regionExtras('left')}{/if}
@@ -2771,7 +2785,7 @@
     {@render zoned('band', view?.band !== undefined, bandSurface, allowBareSurfaces)}
     {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBareSurfaces)}
     {@render zoned(
-      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface,
+      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, groupedRitXitScanSurface,
       allowBareSurfaces,
     )}
     {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBareSurfaces)}

@@ -94,8 +94,9 @@
     [0xa5, '±100k'], [0xa6, '±500k'], [0xa7, '±1M'],
   ] as const;
   export const RESUME_MODES = [
-    [0xd0, 'OFF'], [0xd1, '5s'], [0xd2, '10s'], [0xd3, '15s'],
+    [0xd0, 'OFF'], [0xd1, '5S'], [0xd2, '10S'], [0xd3, 'ON'],
   ] as const;
+  export type RitXitScanSurfacePart = 'all' | 'rit-xit' | 'scan';
   const hex = (value: number): string => value.toString(16).padStart(2, '0');
 
   export const usable = (f: RitXitField<unknown> | ScanField<unknown>): boolean =>
@@ -103,6 +104,11 @@
   export const textOf = (f: RitXitField<unknown> | ScanField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
   const isOn = (f: RitXitField<boolean>): boolean => f.reading.status === 'known' && f.reading.value === true;
+  const signedOffset = (f: RitXitField<number>): string => {
+    if (f.reading.status !== 'known' || !Number.isFinite(f.reading.value)) return UNKNOWN_TEXT;
+    const value = f.reading.value;
+    return `${value > 0 ? '+' : ''}${value} Hz`;
+  };
 </script>
 
 <script lang="ts">
@@ -127,6 +133,9 @@
      *  (never merely disables) the TYPE/SPAN/RESUME button groups. Fails
      *  closed: absent controls until a caller proves the tag is present. */
     scanCapable?: boolean;
+    scanTypeValues?: readonly number[];
+    scanResumeValues?: readonly number[];
+    part?: RitXitScanSurfacePart;
     ritDomain?: ControlDomain | null;
     handles: RitXitScanInstrumentHandles;
     instrumentLayout?: RitXitScanInstrumentLayout;
@@ -134,6 +143,7 @@
   let {
     view, onRitOffsetChange, onXitOffsetChange,
     onScanStart, onScanStop, onDfSpanChange, onResumeModeChange, scanCapable = false,
+    scanTypeValues, scanResumeValues, part = 'all',
     ritDomain, handles, instrumentLayout,
   }: Props = $props();
 
@@ -166,16 +176,24 @@
    *  file header). NOT an observed radio fact, so it needs no `usable()`
    *  gate: it is honest about what it is from the moment it exists. */
   let selectedType = $state(DEFAULT_SCAN_TYPE);
+  let availableScanTypes = $derived(SCAN_TYPES.filter(([value]) =>
+    scanTypeValues === undefined ? part === 'all' : scanTypeValues.includes(value)));
+  let availableResumeModes = $derived(RESUME_MODES.filter(([value]) =>
+    scanResumeValues === undefined ? part === 'all' : scanResumeValues.includes(value)));
+  let effectiveSelectedType = $derived(
+    availableScanTypes.some(([value]) => value === selectedType)
+      ? selectedType : (availableScanTypes[0]?.[0] ?? DEFAULT_SCAN_TYPE),
+  );
   /** v2.11.1 `isDfSelected || (scanning && scanType === 0x03)`, verbatim —
    *  never reads `sc.scanType` to decide whether the SELECTION itself is
    *  ΔF, only whether an ALREADY-ACTIVE observed scan is. */
-  let isDfSelected = $derived(selectedType === 0x03 || (scanningOn
+  let isDfSelected = $derived(effectiveSelectedType === 0x03 || (scanningOn
     && sc?.scanType.reading.status === 'known' && sc.scanType.reading.value === 0x03));
 
   const scanToggle = bindToggleInstrument(() => ({
     field: sc?.scanning,
     invoke: (next) => {
-      if (next) onScanStart?.(selectedType);
+      if (next) onScanStart?.(effectiveSelectedType);
       else onScanStop?.();
     },
   }));
@@ -186,6 +204,8 @@
     selectedType = type;
     onScanStart?.(type);
   }
+  const resumeSelected = (value: number): boolean => sc?.scanResumeMode.reading.status === 'known'
+    && sc.scanResumeMode.reading.value === (value & 0x0f);
   function changeOffset(displayHz: number): void {
     if (!canAdjustOffset || !Number.isFinite(displayHz)) return;
     let raw = displayHz;
@@ -231,38 +251,48 @@
   </label>
 {/snippet}
 
-{#if rx || sc}
-  <section class="ritxit-scan-surface" data-testid="ritxit-scan-surface" aria-label="RIT, XIT and scan">
-    {#if rx}
+{#if (part !== 'scan' && rx) || (part !== 'rit-xit' && sc)}
+  <section class="ritxit-scan-surface" data-testid="ritxit-scan-surface" data-part={part}
+    aria-label={part === 'rit-xit' ? 'RIT and XIT controls' : part === 'scan' ? 'Scan controls' : 'RIT, XIT and scan'}>
+    {#if part !== 'scan' && rx}
       <div class="row" data-testid="ritxit" data-active-vfo-known={activeKnown}>
         {#if instrumentLayout}
           {@render instrumentLayout(handles, offsetSlot)}
         {:else}
-          {@render handles.rit()}
-          {@render handles.xit()}
-          {@render offsetSlot()}
-          {@render handles.clear()}
+          <div class="ritxit-mode-row">
+            {@render handles.rit()}<output data-testid="rit-offset-value">{signedOffset(rx.ritOffset)}</output>
+          </div>
+          <div class="ritxit-mode-row">
+            {@render handles.xit()}<output data-testid="xit-offset-value">{signedOffset(rx.xitOffset)}</output>
+          </div>
+          <div class="ritxit-offset-row">{@render offsetSlot()}</div>
+          <div class="ritxit-clear-row">{@render handles.clear()}</div>
         {/if}
       </div>
     {/if}
 
-    {#if sc}
+    {#if part !== 'rit-xit' && sc}
       <div class="row" data-testid="scan">
         {#if sc.scanning.availability.structural}
-          <span data-testid="scan-status" data-observed={usable(sc.scanning)}>{textOf(sc.scanning)}</span>
+          <span class="row-label">SCAN</span>
+          {#if part === 'all'}<span data-testid="scan-status" data-observed={usable(sc.scanning)}>{textOf(sc.scanning)}</span>{/if}
           <button
             type="button" data-testid="scan-toggle" aria-pressed={pressedOf(sc.scanning)}
-            disabled={!scanToggle.available}
+            disabled={!scanToggle.available || (!scanningOn && availableScanTypes.length === 0)}
             onclick={() => scanToggle.invoke()}
           >{scanningOn ? 'STOP' : 'START'}</button>
-          {#if scanCapable}
+          {#if scanCapable && availableScanTypes.length > 0}
             <div class="scan-choice-group" data-testid="scan-type-group">
-              {#each SCAN_TYPES as [value, label] (value)}
-                <button
-                  type="button" class="scan-choice" data-testid={`scan-type-0x${hex(value)}`}
-                  onclick={() => selectScanType(value)}
-                >{label}</button>
-              {/each}
+              <span class="row-label">TYPE</span>
+              <div class="scan-choice-buttons scan-type-buttons">
+                {#each availableScanTypes as [value, label] (value)}
+                  <button
+                    type="button" class="scan-choice" data-testid={`scan-type-0x${hex(value)}`}
+                    aria-pressed={effectiveSelectedType === value}
+                    onclick={() => selectScanType(value)}
+                  >{label}</button>
+                {/each}
+              </div>
             </div>
             {#if isDfSelected}
               <div class="scan-choice-group" data-testid="scan-span-group">
@@ -276,19 +306,25 @@
             {/if}
           {/if}
         {/if}
-        {#if sc.scanType.availability.structural}
+        {#if part === 'all' && sc.scanType.availability.structural}
           <output data-testid="scan-type-value">{textOf(sc.scanType)}</output>
         {/if}
         {#if sc.scanResumeMode.availability.structural}
+          {#if part === 'all'}
           <output data-testid="scan-resume-value">{textOf(sc.scanResumeMode)}</output>
-          {#if scanCapable}
+          {/if}
+          {#if scanCapable && availableResumeModes.length > 0}
             <div class="scan-choice-group" data-testid="scan-resume-group">
-              {#each RESUME_MODES as [value, label] (value)}
-                <button
-                  type="button" class="scan-choice" data-testid={`scan-resume-0x${hex(value)}`}
-                  onclick={() => onResumeModeChange?.(value)}
-                >{label}</button>
-              {/each}
+              <span class="row-label">RESUME</span>
+              <div class="scan-choice-buttons scan-resume-buttons">
+                {#each availableResumeModes as [value, label] (value)}
+                  <button
+                    type="button" class="scan-choice" data-testid={`scan-resume-0x${hex(value)}`}
+                    aria-pressed={resumeSelected(value)}
+                    onclick={() => onResumeModeChange?.(value)}
+                  >{label}</button>
+                {/each}
+              </div>
             </div>
           {/if}
         {/if}
@@ -302,7 +338,29 @@
   .ritxit-scan-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
   .offset { display: flex; align-items: baseline; gap: 0.5rem; }
+  .ritxit-mode-row, .ritxit-offset-row { display: flex; align-items: center; gap: 0.5rem; width: 100%; }
+  .ritxit-mode-row output { margin-inline-start: auto; }
+  .ritxit-clear-row { display: flex; justify-content: flex-end; width: 100%; }
+  .ritxit-scan-surface[data-part='rit-xit'] .row { flex-direction: column; align-items: stretch; }
+  .ritxit-scan-surface[data-part='rit-xit'] .offset { width: 100%; }
+  .ritxit-scan-surface[data-part='rit-xit'] .offset input { flex: 1; min-width: 0; }
+  .ritxit-scan-surface[data-part='rit-xit'] .ritxit-mode-row :global(button) {
+    width: 60px; min-width: 60px; flex: 0 0 60px;
+  }
+  .ritxit-scan-surface[data-part='scan'] .row {
+    display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; width: 100%;
+  }
+  .ritxit-scan-surface[data-part='scan'] .row > button { width: 100%; }
   .scan-choice-group { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+  .ritxit-scan-surface[data-part='scan'] .scan-choice-group {
+    grid-column: 1 / -1; display: grid; grid-template-columns: 42px minmax(0, 1fr);
+    align-items: center; gap: 0.25rem;
+  }
+  .scan-choice-buttons { display: grid; gap: 0.25rem; }
+  .scan-choice-buttons button { width: 100%; min-width: 0; }
+  .scan-type-buttons { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .scan-resume-buttons { grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); }
+  .row-label { font: inherit; }
   [aria-pressed='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }
   button:disabled, input:disabled { cursor: not-allowed; }

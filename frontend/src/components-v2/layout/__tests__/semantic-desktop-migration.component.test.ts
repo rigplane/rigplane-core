@@ -1383,9 +1383,19 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
     ] as const) {
       for (const surface of surfaces) {
         const selector = `[data-testid="${surface}"]`;
-        expect(root.querySelectorAll(selector), surface).toHaveLength(1);
+        const splitCount = skinId === 'desktop-v2'
+          && (surface === 'ritxit-scan-surface' || surface === 'dsp-surface') ? 2 : 1;
+        expect(root.querySelectorAll(selector), surface).toHaveLength(splitCount);
         expect(root.querySelector(`.desktop-controls-${region} ${selector}`), surface).not.toBeNull();
       }
+    }
+    if (skinId === 'desktop-v2') {
+      expect(root.querySelector('.desktop-controls-left [data-testid="dsp-surface"][data-part="agc"]'))
+        .not.toBeNull();
+      expect(root.querySelector('.desktop-controls-left [data-testid="ritxit-scan-surface"] [data-testid="ritxit"]'))
+        .not.toBeNull();
+      expect(root.querySelector('.desktop-controls-left [data-testid="ritxit-scan-surface"] [data-testid="scan"]'))
+        .not.toBeNull();
     }
     expect(root.querySelectorAll(KEY_AUTHORITIES)).toHaveLength(1);
     expect(root.querySelector('.desktop-controls-right [data-testid="rx-tx-unkey"]')).not.toBeNull();
@@ -1977,7 +1987,8 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     // The AGC half of the same family — the row that makes this a pairing.
     expect(t.querySelector('.left-sidebar [data-panel-id="agc"]')).toBeNull();
     expect(t.querySelector('[data-panel-id="desktop-agc"]')).toBeNull();
-    expect(t.querySelectorAll('[data-testid="dsp-surface"]').length).toBe(1);
+    expect(t.querySelectorAll('[data-testid="dsp-surface"][data-part="agc"]').length).toBe(1);
+    expect(t.querySelectorAll('[data-testid="dsp-surface"][data-part="dsp"]').length).toBe(1);
   });
 
   // SAFETY-CRITICAL (MOR-1310). After this, `CwKeyerSurface` is the SOLE
@@ -2001,7 +2012,8 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     h.caps = S9_CAPS();
     const t = renderAll('desktop-v2');
     expect(t.querySelectorAll('[data-testid="rx-audio-surface"]').length).toBe(1);
-    expect(t.querySelectorAll('[data-testid="dsp-surface"]').length).toBe(1);
+    expect(t.querySelectorAll('[data-testid="dsp-surface"][data-part="agc"]').length).toBe(1);
+    expect(t.querySelectorAll('[data-testid="dsp-surface"][data-part="dsp"]').length).toBe(1);
     expect(t.querySelectorAll('[data-testid="cw-keyer-surface"]').length).toBe(1);
     for (const [, host, selector] of S9_RETIRED) {
       expect(t.querySelectorAll(selector).length, host).toBe(0);
@@ -2355,15 +2367,15 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   // deck", which is the double-presentation defect this slice closes. Run
   // against the real resolved plan (see `renderWithPlan`), because that is the
   // read `zoneOwning()` makes.
-  it.each([['band', 'band-surface'], ['antenna', 'antenna-control-grid'],
-    ['rit-xit-scan', 'ritxit-scan-surface']])(
-    'mounts %s inside its own declared zone element', (zoneId, testid) => {
+  it.each([['band', 'band-surface', 1], ['antenna', 'antenna-control-grid', 1],
+    ['rit-xit-scan', 'ritxit-scan-surface', 2]])(
+    'mounts %s inside its own declared zone element', (zoneId, testid, count) => {
       const t = renderWithPlan('desktop-v2');
       const zone = t.querySelector(`[data-zone-id="${zoneId}"]`);
       expect(zone, `${zoneId} zone element`).not.toBeNull();
       expect(zone!.querySelector(`[data-testid="${testid}"]`)).not.toBeNull();
       // …and it is the ONLY instance — no second, bare mount alongside it.
-      expect(t.querySelectorAll(`[data-testid="${testid}"]`).length).toBe(1);
+      expect(t.querySelectorAll(`[data-testid="${testid}"]`).length).toBe(count);
     },
   );
 
@@ -2458,9 +2470,9 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   // covers only some of the three zones, or a second mount path.
   it('presents band, antenna and ritXitScan exactly ONCE each on desktop-v2', () => {
     const t = renderAll('desktop-v2');
-    for (const testid of ['band-surface', 'antenna-control-grid', 'ritxit-scan-surface']) {
-      expect(t.querySelectorAll(`[data-testid="${testid}"]`).length, testid).toBe(1);
-    }
+    expect(t.querySelectorAll('[data-testid="band-surface"]')).toHaveLength(1);
+    expect(t.querySelectorAll('[data-testid="antenna-control-grid"]')).toHaveLength(1);
+    expect(t.querySelectorAll('[data-testid="ritxit-scan-surface"]')).toHaveLength(2);
     for (const selector of [
       '.left-sidebar [data-panel-id="rit-xit"]', '.left-sidebar [data-panel-id="scan"]',
       '[data-panel-id="desktop-rit"]', '.left-sidebar [data-panel-id="antenna"]',
@@ -2485,8 +2497,8 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     enableAllServiceSurfaces();
     const t = renderAll('desktop-v2');
     for (const panelId of [
-      'semantic-rf-front-end', 'semantic-filter', 'semantic-band', 'semantic-antenna',
-      'semantic-rit-xit-scan', 'band',
+      'semantic-rf-front-end', 'semantic-filter', 'semantic-band', 'semantic-agc',
+      'semantic-rit-xit', 'semantic-antenna', 'semantic-scan', 'band',
     ]) {
       const renderedIds = [...t.querySelectorAll('[data-panel-id]')]
         .map((panel) => panel.getAttribute('data-panel-id'));
@@ -2505,6 +2517,32 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     }
     expect(t.querySelector('.standard-bottom-dock [data-panel-id="semantic-meters"]'))
       .not.toBeNull();
+  });
+
+  it('migrates combined and legacy panel preferences without appending duplicates', () => {
+    localStorage.setItem('rigplane:panel-order', JSON.stringify([
+      'semantic-rf-front-end', 'semantic-rit-xit-scan', 'agc', 'band',
+    ]));
+    localStorage.setItem('rigplane:panel-collapsed', JSON.stringify({
+      'semantic-rit-xit-scan': true, agc: true,
+    }));
+    renderAll('desktop-v2');
+    expect(JSON.parse(localStorage.getItem('rigplane:panel-order')!)).toEqual([
+      'semantic-rf-front-end', 'semantic-rit-xit', 'semantic-scan', 'semantic-agc', 'band',
+      'semantic-filter', 'semantic-band', 'semantic-antenna',
+    ]);
+    expect(JSON.parse(localStorage.getItem('rigplane:panel-collapsed')!)).toMatchObject({
+      'semantic-rit-xit': true, 'semantic-scan': true, 'semantic-agc': true,
+    });
+  });
+
+  it('keeps a one-port antenna panel descriptive and non-interactive', () => {
+    h.caps = { ...h.caps!, antennas: 1, hasRxAntenna: false };
+    const t = renderAll('desktop-v2');
+    const fixed = t.querySelector('[data-testid="antenna-fixed-port"]');
+    expect(fixed?.textContent).toContain('TX');
+    expect(fixed?.textContent).toContain('ANT 1');
+    expect(fixed?.querySelectorAll('button, input')).toHaveLength(0);
   });
 
   it('restores capability-driven MODE hardware keys and keeps FILTER in a sibling panel', () => {

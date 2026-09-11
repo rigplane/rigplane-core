@@ -11,6 +11,7 @@ import type {
 } from '../../semantic/rf-front-end-instruments';
 import type { DspFiniteLayout } from '../../semantic/dsp-instruments';
 import type { DspScalarLayout } from '../../semantic/dsp-scalars';
+import type { DspSurfacePart } from '../../semantic/DspSurface.svelte';
 import type { VfoOperationHandles } from '../../semantic/VfoOperationSeatHost.svelte';
 import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
 import type { BandControlLayout, BandInstrumentHandles } from '../../semantic/band-instruments';
@@ -19,11 +20,13 @@ import type {
   AntennaInstrumentHandles, AntennaInstrumentLayout,
 } from '../../semantic/AntennaInstrumentHost.svelte';
 import type { RitXitScanInstrumentHandles } from '../../semantic/RitXitScanInstrumentHost.svelte';
+import type { RitXitScanSurfacePart } from '../../semantic/RitXitScanSurface.svelte';
 
 export type InstrumentVfoAppearance = 'semantic' | 'sdr' | 'standard';
 
 export interface PanelChrome {
   readonly panelId: string;
+  readonly title?: string;
   readonly draggable: boolean;
   readonly onDragStart: (panelId: string, event: PointerEvent) => void;
   readonly style: string;
@@ -66,7 +69,7 @@ export interface InstrumentComposition {
   ]>;
   readonly dsp: Snippet<[
     allowBare?: boolean, finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout,
-    chrome?: PanelChrome,
+    chrome?: PanelChrome, part?: DspSurfacePart,
   ]>;
   readonly band: Snippet<[
     allowBare?: boolean, controlLayout?: BandControlLayout, chrome?: PanelChrome,
@@ -77,7 +80,9 @@ export interface InstrumentComposition {
   ]>;
   readonly antennaInstruments: AntennaInstrumentHandles;
   readonly antennaLayout: AntennaInstrumentLayout;
-  readonly ritXitScan: Snippet<[allowBare?: boolean, chrome?: PanelChrome]>;
+  readonly ritXitScan: Snippet<[
+    allowBare?: boolean, chrome?: PanelChrome, part?: RitXitScanSurfacePart,
+  ]>;
   readonly ritXitInstruments: RitXitScanInstrumentHandles;
   readonly cwKeyerInstruments: CwKeyerInstrumentHandles;
   readonly cwKeyer: Snippet<[
