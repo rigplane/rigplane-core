@@ -799,12 +799,39 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     const agcButtons = [...target.querySelectorAll<HTMLButtonElement>('button')]
       .filter(button => button.textContent?.trim().startsWith('AGC-T'));
     expect(agcButtons).toHaveLength(1);
+    expect(agcButtons[0].textContent).toContain('▾');
+    expect(agcButtons[0].closest('.dsp-agc-time')?.getAttribute('data-expanded')).toBe('false');
     expect(target.querySelectorAll('[data-testid="dsp-agcTimeConstant"]')).toHaveLength(0);
     agcButtons[0].click();
     flushSync();
+    expect(agcButtons[0].textContent).toContain('▴');
+    expect(agcButtons[0].closest('.dsp-agc-time')?.getAttribute('data-expanded')).toBe('true');
     expect(target.querySelectorAll('[data-testid="dsp-agcTimeConstant"]')).toHaveLength(1);
     expect(q('[data-testid="dsp-agcTimeConstant"]')!.closest('[data-part="dsp"]')).not.toBeNull();
     expect(q('[data-testid="dsp-agcTimeConstant"]')!.closest('[data-part="agc"]')).toBeNull();
+  });
+
+  it('opens and closes NB settings from its chevron without sending an NB command', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    h.state = proxy(liveState(true) as object);
+    renderHosted();
+    const open = q<HTMLButtonElement>('button[title="Open NB settings"]')!;
+    expect(open.textContent).toContain('▾');
+    expect(q('button[title="Open NR settings"]')).not.toBeNull();
+    expect(q('button[title="Open NOTCH settings"]')).not.toBeNull();
+    expect(q('button[title*="A-NOTCH settings"]')).toBeNull();
+
+    open.click();
+    flushSync();
+    expect(q('[data-testid="dsp-nbLevel"]')).not.toBeNull();
+    const close = q<HTMLButtonElement>('button[title="Close NB settings"]')!;
+    expect(close.textContent).toContain('▴');
+    expect(h.nbToggle).not.toHaveBeenCalled();
+
+    close.click();
+    flushSync();
+    expect(q('[data-testid="dsp-nbLevel"]')).toBeNull();
+    expect(h.nbToggle).not.toHaveBeenCalled();
   });
 
   it('disables an open AGC-time adjustment when its reading becomes stale', () => {

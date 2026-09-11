@@ -1819,6 +1819,7 @@
     onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
     onNotchModeChange={dspIntents.onNotchModeChange}
     onAgcModeChange={agcIntents.onAgcModeChange}
+    settingsPanel={standardDspSettings}
     onOpenSettings={(panel) => standardDspSettings = panel}
   >
   {#snippet children(dspInstruments)}

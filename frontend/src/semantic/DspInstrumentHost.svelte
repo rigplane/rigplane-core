@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, type Snippet } from 'svelte';
+  import { HardwareButton } from '$lib/Button';
   import { t } from '$lib/i18n';
   import { buildAgcOptions } from '../components-v2/panels/agc-utils';
   import { bindChoiceInstrument, bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
@@ -19,7 +20,8 @@
     onToggle?: (field: DspToggleField, next: boolean) => void;
     onNotchModeChange?: (mode: DspNotchMode) => void;
     onAgcModeChange?: (mode: number) => void;
-    onOpenSettings?: (panel: DspSettingsPanel) => void;
+    settingsPanel?: DspSettingsPanel | null;
+    onOpenSettings?: (panel: DspSettingsPanel | null) => void;
     children: Snippet<[DspFiniteHandles]>;
   }
   type RendererSelection = { finiteAppearance?: undefined; rendererContext?: undefined } | {
@@ -29,7 +31,7 @@
 
   let {
     view, agcLabels = {}, pendingNb = null, pendingNr = null,
-    onToggle, onNotchModeChange, onAgcModeChange, onOpenSettings,
+    onToggle, onNotchModeChange, onAgcModeChange, settingsPanel = null, onOpenSettings,
     finiteAppearance, rendererContext, children,
   }: Props = $props();
 
@@ -93,11 +95,13 @@
   }));
   let holdTimer: ReturnType<typeof setTimeout> | null = null;
   let heldPanel: DspSettingsPanel | null = null;
+  const toggleSettings = (panel: DspSettingsPanel): void =>
+    onOpenSettings?.(settingsPanel === panel ? null : panel);
   function startSettingsHold(panel: DspSettingsPanel): void {
     if (holdTimer !== null) clearTimeout(holdTimer);
     heldPanel = null;
     holdTimer = setTimeout(() => {
-      holdTimer = null; heldPanel = panel; onOpenSettings?.(panel);
+      holdTimer = null; heldPanel = panel; toggleSettings(panel);
     }, 500);
   }
   function endSettingsHold(): void {
@@ -198,6 +202,11 @@
           title={`${label} — click to toggle; hold for settings`}
           onclick={() => kind === 'notch' ? compactNotch('manual') : compactToggle(field)}>{label}</button>
       {/if}
+      <span class="dsp-settings-chevron">
+        <HardwareButton compact={true} indicator="edge-left" active={settingsPanel === kind}
+          color="cyan" title={`${settingsPanel === kind ? 'Close' : 'Open'} ${label} settings`}
+          onclick={() => toggleSettings(kind)}>{settingsPanel === kind ? '▴' : '▾'}</HardwareButton>
+      </span>
     </div>
   {/if}
 {/snippet}
@@ -281,7 +290,12 @@
 
 <style>
   .dsp-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-  .compact-dsp-button { display: contents; }
+  .compact-dsp-button {
+    display: grid; grid-template-columns: minmax(0, 1fr) 24px; gap: 2px; min-width: 0;
+  }
+  .compact-dsp-button > :global(button) { min-width: 0; }
+  .dsp-settings-chevron { display: flex; min-width: 0; }
+  .dsp-settings-chevron :global(button) { flex: 1 1 auto; min-width: 0; padding-inline: 2px; }
   .dsp-toggle[aria-pressed='true'], .dsp-choice[aria-pressed='true'] { font-weight: 700; }
   .dsp-toggle:disabled, .dsp-choice:disabled { cursor: not-allowed; }
   .dsp-toggle[data-pending-status='pending'] { font-style: italic; opacity: 0.75; }
