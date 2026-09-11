@@ -86,6 +86,10 @@
       () => input(field), createRenderedNativeRangeContinuousScalarPolicy(),
     );
   }
+  // Preserve the original two-lane host's eager identity/order. Additional
+  // disclosure bindings are created only when Standard opens their panel.
+  bindingFor('nbLevel');
+  bindingFor('nbWidth');
 
   const record = <T,>(value: T) => Object.fromEntries(
     DSP_SCALAR_FIELDS.map((field) => [field, value]),
@@ -195,8 +199,25 @@
 {#snippet nbWidth(presentation?: Readonly<DspScalarPresentation>)}
   {@render scalar('nbWidth', presentation)}
 {/snippet}
+{#snippet nbDepth(presentation?: Readonly<DspScalarPresentation>)}
+  {@render scalar('nbDepth', presentation)}
+{/snippet}
+{#snippet nrLevel(presentation?: Readonly<DspScalarPresentation>)}
+  {@render scalar('nrLevel', presentation)}
+{/snippet}
+{#snippet notchFreq(presentation?: Readonly<DspScalarPresentation>)}
+  {@render scalar('notchFreq', presentation)}
+{/snippet}
+{#snippet manualNotchWidth(presentation?: Readonly<DspScalarPresentation>)}
+  {@render scalar('manualNotchWidth', presentation)}
+{/snippet}
+{#snippet agcTimeConstant(presentation?: Readonly<DspScalarPresentation>)}
+  {@render scalar('agcTimeConstant', presentation)}
+{/snippet}
 
-{@render children({ nbLevel, nbWidth })}
+{@render children({
+  nbLevel, nbDepth, nbWidth, nrLevel, notchFreq, manualNotchWidth, agcTimeConstant,
+})}
 
 {#each DSP_SCALAR_FIELDS as field (field)}
   {#if issuedStatus[field] !== null}
