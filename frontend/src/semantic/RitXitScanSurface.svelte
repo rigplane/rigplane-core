@@ -250,7 +250,7 @@
 {/snippet}
 
 {#if (part !== 'scan' && rx) || (part !== 'rit-xit' && sc)}
-  <section class="ritxit-scan-surface" data-testid="ritxit-scan-surface"
+  <section class="ritxit-scan-surface" data-testid="ritxit-scan-surface" data-part={part}
     aria-label={part === 'rit-xit' ? 'RIT and XIT controls' : part === 'scan' ? 'Scan controls' : 'RIT, XIT and scan'}>
     {#if part !== 'scan' && rx}
       <div class="row" data-testid="ritxit" data-active-vfo-known={activeKnown}>
@@ -263,7 +263,8 @@
           <div class="ritxit-mode-row">
             {@render handles.xit()}<output data-testid="xit-offset-value">{signedOffset(rx.xitOffset)}</output>
           </div>
-          <div class="ritxit-offset-row">{@render offsetSlot()}{@render handles.clear()}</div>
+          <div class="ritxit-offset-row">{@render offsetSlot()}</div>
+          <div class="ritxit-clear-row">{@render handles.clear()}</div>
         {/if}
       </div>
     {/if}
@@ -281,12 +282,14 @@
           {#if scanCapable && availableScanTypes.length > 0}
             <div class="scan-choice-group" data-testid="scan-type-group">
               <span class="row-label">TYPE</span>
-              {#each availableScanTypes as [value, label] (value)}
-                <button
-                  type="button" class="scan-choice" data-testid={`scan-type-0x${hex(value)}`}
-                  onclick={() => selectScanType(value)}
-                >{label}</button>
-              {/each}
+              <div class="scan-choice-buttons scan-type-buttons">
+                {#each availableScanTypes as [value, label] (value)}
+                  <button
+                    type="button" class="scan-choice" data-testid={`scan-type-0x${hex(value)}`}
+                    onclick={() => selectScanType(value)}
+                  >{label}</button>
+                {/each}
+              </div>
             </div>
             {#if isDfSelected}
               <div class="scan-choice-group" data-testid="scan-span-group">
@@ -310,12 +313,14 @@
           {#if scanCapable && availableResumeModes.length > 0}
             <div class="scan-choice-group" data-testid="scan-resume-group">
               <span class="row-label">RESUME</span>
-              {#each availableResumeModes as [value, label] (value)}
-                <button
-                  type="button" class="scan-choice" data-testid={`scan-resume-0x${hex(value)}`}
-                  onclick={() => onResumeModeChange?.(value)}
-                >{label}</button>
-              {/each}
+              <div class="scan-choice-buttons scan-resume-buttons">
+                {#each availableResumeModes as [value, label] (value)}
+                  <button
+                    type="button" class="scan-choice" data-testid={`scan-resume-0x${hex(value)}`}
+                    onclick={() => onResumeModeChange?.(value)}
+                  >{label}</button>
+                {/each}
+              </div>
             </div>
           {/if}
         {/if}
@@ -331,7 +336,24 @@
   .offset { display: flex; align-items: baseline; gap: 0.5rem; }
   .ritxit-mode-row, .ritxit-offset-row { display: flex; align-items: center; gap: 0.5rem; width: 100%; }
   .ritxit-mode-row output { margin-inline-start: auto; }
+  .ritxit-clear-row { display: flex; justify-content: flex-end; width: 100%; }
+  .ritxit-scan-surface[data-part='rit-xit'] .row { flex-direction: column; align-items: stretch; }
+  .ritxit-scan-surface[data-part='rit-xit'] .offset { width: 100%; }
+  .ritxit-scan-surface[data-part='rit-xit'] .offset input { flex: 1; min-width: 0; }
+  .ritxit-scan-surface[data-part='rit-xit'] .ritxit-mode-row :global(.v2-control-button) { min-width: 60px; }
+  .ritxit-scan-surface[data-part='scan'] .row {
+    display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; width: 100%;
+  }
+  .ritxit-scan-surface[data-part='scan'] .row > button { width: 100%; }
   .scan-choice-group { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+  .ritxit-scan-surface[data-part='scan'] .scan-choice-group {
+    grid-column: 1 / -1; display: grid; grid-template-columns: 42px minmax(0, 1fr);
+    align-items: center; gap: 0.25rem;
+  }
+  .scan-choice-buttons { display: grid; gap: 0.25rem; }
+  .scan-choice-buttons button { width: 100%; min-width: 0; }
+  .scan-type-buttons { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .scan-resume-buttons { grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); }
   .row-label { font: inherit; }
   [aria-pressed='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }

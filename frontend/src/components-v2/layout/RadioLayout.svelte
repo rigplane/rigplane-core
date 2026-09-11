@@ -1047,6 +1047,11 @@
   .standard-bottom-dock > .content-right { display: contents; }
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .dsp-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .agc-finite-grid { display: block; width: 100%; }
+  .agc-finite-grid .dsp-finite-seat { display: contents; }
+  .agc-finite-grid :global([role='radiogroup']) {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); width: 100%;
+  }
   .rf-front-end-finite-grid { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
   .rf-front-end-finite-seat { display: contents; }
   /* The `.filter-finite-*` shape, not the siblings' wrap row: a wrap row let
@@ -1072,7 +1077,10 @@
   }
   .band-control-grid, .band-control-seat { display: contents; }
   .antenna-control-grid { display: flex; flex-direction: column; gap: 0.25rem; }
-  .antenna-fixed-port { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+  .antenna-fixed-port {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem;
+    padding: 0.25rem 0.5rem;
+  }
   .antenna-control-seat { display: contents; }
   .antenna-blocked { margin: 0; padding-inline-start: 1.2em; }
   .antenna-blocked:empty { display: none; }
