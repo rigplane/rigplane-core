@@ -123,7 +123,7 @@
   import { HardwareButton } from '$lib/Button';
   import type { RadioViewModel } from './radio-view-model';
   import type { DspFiniteHandles, DspFiniteLayout, DspSettingsPanel } from './dsp-instruments';
-  import type { DspScalarHandles, DspScalarLayout } from './dsp-scalars';
+  import type { DspScalarHandles, DspScalarLayout, DspScalarPresentation } from './dsp-scalars';
 
   interface Props {
     view: RadioViewModel;
@@ -158,6 +158,10 @@
   }
   const showsLevel = (field: DspLevelField): boolean => part === 'all'
     || (part === 'dsp' && field !== 'agcTimeConstant');
+  const hardwareScalar: Readonly<DspScalarPresentation> = {
+    form: 'hbar', compact: true, showLabel: false, showValue: false,
+    variant: 'hardware-illuminated',
+  };
 </script>
 
 {#snippet nativeLevel(
@@ -200,19 +204,18 @@
 {/snippet}
 
 {#snippet compactLevels(panel: Exclude<DspSettingsPanel, 'agc'>)}
-  {#if panel === 'nb' && scalarHandles}
-    {@render scalarHandles.nbLevel()}
-    {@render scalarHandles.nbWidth()}
-  {/if}
-  {#each DSP_LEVELS as [field, label, min, max, step, format] (field)}
-    {#if ((panel === 'nr' && field === 'nrLevel')
-      || (panel === 'nb' && field === 'nbDepth')
-      || (panel === 'notch' && (field === 'notchFreq' || field === 'manualNotchWidth')))
-      && dsp?.[field].availability.structural}
-      {@const nr = field === 'nrLevel' ? nrPresentation(dsp) : null}
-      {@render nativeLevel(field, label, min, max, step, format, nr)}
+  {#if scalarHandles}
+    {#if panel === 'nb'}
+      {@render scalarHandles.nbLevel(hardwareScalar)}
+      {@render scalarHandles.nbDepth(hardwareScalar)}
+      {@render scalarHandles.nbWidth(hardwareScalar)}
+    {:else if panel === 'nr'}
+      {@render scalarHandles.nrLevel(hardwareScalar)}
+    {:else}
+      {@render scalarHandles.notchFreq(hardwareScalar)}
+      {@render scalarHandles.manualNotchWidth(hardwareScalar)}
     {/if}
-  {/each}
+  {/if}
 {/snippet}
 
 {#if dsp}
@@ -244,7 +247,7 @@
         </div>
         {#if settingsPanel === 'agc'}
           <div class="dsp-settings" id="dsp-agc-settings">
-            {@render nativeLevel('agcTimeConstant', 'AGC time', 0, 9, 1, formatAgcTime, null)}
+            {#if scalarHandles}{@render scalarHandles.agcTimeConstant(hardwareScalar)}{/if}
           </div>
         {/if}
       {/if}

@@ -833,14 +833,23 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     expect(close.getAttribute('aria-expanded')).toBe('true');
     expect(q(`#${close.getAttribute('aria-controls')}`)).not.toBeNull();
     expect(close.closest('.compact-dsp-button')?.getAttribute('data-expanded')).toBe('true');
-    expect(q<HTMLInputElement>('[data-testid="dsp-nbDepth"] input')?.closest('label')
-      ?.textContent).toContain('NB depth');
+    expect(target.querySelectorAll('#dsp-nb-settings .vc-hbar.hw-illum')).toHaveLength(3);
     expect(h.nbToggle).not.toHaveBeenCalled();
 
     close.click();
     flushSync();
     expect(q('[data-testid="dsp-nbLevel"]')).toBeNull();
     expect(h.nbToggle).not.toHaveBeenCalled();
+
+    q<HTMLButtonElement>('button[title="Open NR settings"]')!.click();
+    flushSync();
+    expect(target.querySelectorAll('#dsp-nr-settings .vc-hbar.hw-illum')).toHaveLength(1);
+    q<HTMLButtonElement>('button[title="Close NR settings"]')!.click();
+    q<HTMLButtonElement>('button[title="Open NOTCH settings"]')!.click();
+    flushSync();
+    expect(target.querySelectorAll('#dsp-notch-settings .vc-hbar.hw-illum')).toHaveLength(2);
+    expect(h.nrMode).not.toHaveBeenCalled();
+    expect(h.notchMode).not.toHaveBeenCalled();
   });
 
   it('disables an open AGC-time adjustment when its reading becomes stale', () => {
@@ -861,10 +870,10 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
       ...fresh, observed: false, freshness: 'stale', availability: 'unavailable',
     };
     flushSync();
-    const input = q<HTMLInputElement>('[data-testid="dsp-agcTimeConstant"] input')!;
-    expect(input.disabled).toBe(true);
-    input.value = '4';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const slider = q<HTMLElement>('[data-testid="dsp-agcTimeConstant"] [role="slider"]')!;
+    expect(slider.closest('.vc-hbar')?.classList.contains('hw-illum')).toBe(true);
+    expect(slider.getAttribute('aria-disabled')).toBe('true');
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(h.agcTime).not.toHaveBeenCalled();
   });
 

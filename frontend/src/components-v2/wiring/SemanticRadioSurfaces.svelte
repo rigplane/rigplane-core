@@ -52,6 +52,7 @@
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import {
     bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getDspControlFeedback,
+    projectDspControlFeedbackToDisplay,
     getFilterWidthControlFeedback,
     getCwPitchControlFeedback, getKeySpeedControlFeedback, getRfSqlControlFeedback,
     getTxAuxControlFeedback, type TxAuxControlFeedbackField,
@@ -1530,13 +1531,22 @@
   let cwPitchFeedback = $derived(getCwPitchControlFeedback(controlSession));
   let keySpeedFeedback = $derived(getKeySpeedControlFeedback(controlSession));
   /**
-   * MOR-2425. RAW command feedback for the two NB scalars — no projector:
-   * `nbLevel`/`nbWidth` are wire-raw, unlike `nrLevel`/`nbDepth`, which
-   * `DspSurface` still renders natively from the adapter's display-scaled
-   * projection (carry-forward 3).
+   * Command feedback for every hosted DSP settings scalar. `nbLevel`,
+   * `nbWidth`, notch and AGC stay wire-raw; NR level and NB depth use the
+   * adapter's established display projections before reaching the renderer.
    */
   let dspScalarFeedback = $derived({
-    nbLevel: getDspControlFeedback('nbLevel'), nbWidth: getDspControlFeedback('nbWidth'),
+    nbLevel: getDspControlFeedback('nbLevel'),
+    nbDepth: projectDspControlFeedbackToDisplay(
+      'nbDepth', getDspControlFeedback('nbDepth'), runtime.caps,
+    ),
+    nbWidth: getDspControlFeedback('nbWidth'),
+    nrLevel: projectDspControlFeedbackToDisplay(
+      'nrLevel', getDspControlFeedback('nrLevel'), runtime.caps,
+    ),
+    notchFreq: getDspControlFeedback('notchFilter'),
+    manualNotchWidth: getDspControlFeedback('manualNotchWidth'),
+    agcTimeConstant: getDspControlFeedback('agcTimeConstant'),
   });
   let txAuxLevelFeedback = $derived.by<TxAuxLevelFeedback>(() => Object.fromEntries(
     TX_AUX_FEEDBACK_LEVELS.map(field => [

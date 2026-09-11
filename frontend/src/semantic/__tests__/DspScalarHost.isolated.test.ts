@@ -38,7 +38,10 @@ import type { RadioViewModel } from '../radio-view-model';
 import type { DspScalarFeedback, DspScalarField, DspScalarPresentation } from '../dsp-scalars';
 
 const FIELDS = ['nbLevel', 'nbWidth'] as const satisfies readonly DspScalarField[];
-const CONFIRMED = { nbLevel: 64, nbWidth: 2 } as const;
+const CONFIRMED: Readonly<Record<DspScalarField, number>> = {
+  nbLevel: 64, nbDepth: 5, nbWidth: 2, nrLevel: 8,
+  notchFreq: 128, manualNotchWidth: 1, agcTimeConstant: 4,
+};
 function commandFeedback(
   field: DspScalarField, over: Partial<CommandScalarFeedback> = {},
 ): Readonly<CommandScalarFeedback> {
@@ -55,7 +58,12 @@ function feedback(
 ): DspScalarFeedback {
   return Object.freeze({
     nbLevel: over.nbLevel ?? commandFeedback('nbLevel'),
+    nbDepth: over.nbDepth ?? commandFeedback('nbDepth'),
     nbWidth: over.nbWidth ?? commandFeedback('nbWidth'),
+    nrLevel: over.nrLevel ?? commandFeedback('nrLevel'),
+    notchFreq: over.notchFreq ?? commandFeedback('notchFreq'),
+    manualNotchWidth: over.manualNotchWidth ?? commandFeedback('manualNotchWidth'),
+    agcTimeConstant: over.agcTimeConstant ?? commandFeedback('agcTimeConstant'),
   });
 }
 const view = (): RadioViewModel => withDsp(topologyFixtures['1/single']);

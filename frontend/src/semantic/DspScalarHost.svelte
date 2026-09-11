@@ -11,6 +11,7 @@
     type ScalarDomain,
   } from '../primitives/scalar/continuous-scalar.svelte';
   import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
+  import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
   import { disabledReasonText } from './disabled-reason';
   import type { DspField, RadioViewModel } from './radio-view-model';
   import { DSP_SCALAR_FIELDS, type DspScalarFeedback, type DspScalarField,
@@ -31,8 +32,15 @@
     onLevelChange, scalarAppearance, presentationIsCurrent, children }: Props = $props();
   let dsp = $derived(view?.dsp);
 
-  const LABELS = { nbLevel: 'NB level', nbWidth: 'NB width' } as const;
-  const COMMANDS = { nbLevel: 'set_nb_level', nbWidth: 'set_nb_width' } as const;
+  const LABELS = {
+    nbLevel: 'NB level', nbDepth: 'NB depth', nbWidth: 'NB width', nrLevel: 'NR level',
+    notchFreq: 'Notch position', manualNotchWidth: 'Notch width', agcTimeConstant: 'AGC time',
+  } as const;
+  const COMMANDS = {
+    nbLevel: 'set_nb_level', nbDepth: 'set_nb_depth', nbWidth: 'set_nb_width',
+    nrLevel: 'set_nr_level', notchFreq: 'set_notch_filter',
+    manualNotchWidth: 'set_manual_notch_width', agcTimeConstant: 'set_agc_time_constant',
+  } as const;
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const safeInteger = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value);
@@ -41,11 +49,21 @@
     && field.reading.status === 'known';
 
   function domain(field: DspScalarField): Readonly<{ domain: ScalarDomain; valid: boolean }> {
-    const max = field === 'nbLevel' ? nbLevelMax : 255;
-    const valid = safeInteger(max) && max > 0;
+    if (field === 'nrLevel') {
+      const nr = dsp?.nrLevelProjection?.domain;
+      const valid = nr !== undefined && safeInteger(nr.min) && safeInteger(nr.max)
+        && safeInteger(nr.step) && safeInteger(nr.origin) && nr.step > 0 && nr.max > nr.min;
+      return { valid, domain: valid ? { ...nr, defaultValue: null, fineStepDivisor: 1 }
+        : { min: 0, max: 15, step: 1, defaultValue: null, fineStepDivisor: 1 } };
+    }
+    const [min, max] = field === 'nbLevel' ? [0, nbLevelMax]
+      : field === 'nbDepth' ? [1, 10]
+        : field === 'manualNotchWidth' ? [0, 2]
+          : field === 'agcTimeConstant' ? [0, 9] : [0, 255];
+    const valid = safeInteger(min) && safeInteger(max) && max > min;
     return {
       valid,
-      domain: { min: 0, max, step: 1, defaultValue: null, fineStepDivisor: 1 },
+      domain: { min, max, step: 1, defaultValue: null, fineStepDivisor: 1 },
     };
   }
   function enabled(field: DspScalarField): boolean {
@@ -62,12 +80,12 @@
     };
   }
 
-  const policies = Object.fromEntries(DSP_SCALAR_FIELDS.map((field) => [
-    field, createRenderedNativeRangeContinuousScalarPolicy(),
-  ])) as Record<DspScalarField, ReturnType<typeof createRenderedNativeRangeContinuousScalarPolicy>>;
-  const bindings = Object.fromEntries(DSP_SCALAR_FIELDS.map((field) => [
-    field, createContinuousScalar(() => input(field), policies[field]),
-  ])) as Record<DspScalarField, ReturnType<typeof createContinuousScalar>>;
+  const bindings: Partial<Record<DspScalarField, ReturnType<typeof createContinuousScalar>>> = {};
+  function bindingFor(field: DspScalarField): ReturnType<typeof createContinuousScalar> {
+    return bindings[field] ??= createContinuousScalar(
+      () => input(field), createRenderedNativeRangeContinuousScalarPolicy(),
+    );
+  }
 
   const record = <T,>(value: T) => Object.fromEntries(
     DSP_SCALAR_FIELDS.map((field) => [field, value]),
@@ -106,6 +124,8 @@
   }
   function formatValue(field: DspScalarField, value: number | null): string {
     if (value === null || !Number.isFinite(value)) return '?';
+    if (field === 'manualNotchWidth') return NOTCH_WIDTH_LABELS[value] ?? String(value);
+    if (field === 'agcTimeConstant') return `${formatAgcTime(value)}s`;
     return field === 'nbLevel' && nbLevelPercent
       ? rawToPercentDisplay(value, 0, nbLevelMax) : String(value);
   }
@@ -127,7 +147,7 @@
   }
 
   onDestroy(() => {
-    for (const field of DSP_SCALAR_FIELDS) bindings[field].destroy();
+    for (const binding of Object.values(bindings)) binding.destroy();
   });
 </script>
 
@@ -150,11 +170,12 @@
       aria-busy={current.busy} title={reason} use:retireHBarStatus={{ field, form }}>
       <span class="dsp-scalar-name" class:sr-only={explicit}
         aria-hidden={explicit ? 'true' : undefined}>{label}</span>
-      <ValueControl {...feedbackIntegratedControl} binding={bindings[field]} {label} renderer={form}
+      <ValueControl {...feedbackIntegratedControl} binding={bindingFor(field)} {label} renderer={form}
         displayFn={(value) => formatValue(field, value)}
         showLabel={explicit ? presentation?.showLabel ?? true : false}
         showValue={explicit ? presentation?.showValue ?? true : false}
         compact={explicit ? presentation?.compact ?? false : true}
+        variant={presentation?.variant ?? 'modern'}
         title={reason} {accessibility}
         skin={scalarAppearance} {presentationIsCurrent}
         issuedStatusPresentation={form === 'hbar' ? statusPresentations[field] : undefined} />

@@ -53,7 +53,10 @@
     });
   }
   let scalarFeedback = $derived(feedback ?? Object.freeze({
-    nbLevel: defaultFeedback('nbLevel'), nbWidth: defaultFeedback('nbWidth'),
+    nbLevel: defaultFeedback('nbLevel'), nbDepth: defaultFeedback('nbDepth'),
+    nbWidth: defaultFeedback('nbWidth'), nrLevel: defaultFeedback('nrLevel'),
+    notchFreq: defaultFeedback('notchFreq'), manualNotchWidth: defaultFeedback('manualNotchWidth'),
+    agcTimeConstant: defaultFeedback('agcTimeConstant'),
   }));
 </script>
 
