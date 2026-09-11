@@ -15,15 +15,12 @@
  * tune-line/passband overlay. `binByte` is integer-only arithmetic over the
  * bin index — no `Math.random`, no `Date`, no transcendental function.
  *
- * WHAT IS NOT. This entry stubs nothing: the panel reaches the real
- * `frontend-runtime` singleton, so the toolbar's STEP readout still comes
- * from the live tuning store and `BandPlanOverlay`/`SpectrumToolbar` still
- * issue their band-plan fetches. Both are constant here rather than pinned by
- * construction — a fresh browsing context has no stored tuning step, and the
- * offline fixtures server has no `/api/v1/band-plan/*` handler, so those
- * routes resolve to its `text/html` dev-server fallback and the `.json()`
- * parse throws inside each call site's own `try`/`catch`, leaving its
- * defaults in place.
+ * WHAT IS NOT. Rendering and state projection stay production-real. The
+ * witness replaces only the panel's frequency and filter output callbacks
+ * with an in-page command log, so interaction tests can prove that separator
+ * gestures do not escape through either command seam. The toolbar's STEP
+ * readout still comes from the live tuning store and
+ * `BandPlanOverlay`/`SpectrumToolbar` still issue their band-plan fetches.
  *
  * The waterfall receives exactly one row: the panel pushes on a change of
  * `acceptedSequence`, and that never changes here. `WaterfallRenderer` draws
@@ -38,6 +35,44 @@ import '../src/app.css';
 import '../src/components-v2/theme/index';
 import SpectrumPanel from '../src/components/spectrum/SpectrumPanel.svelte';
 import type { ScopeDisplayProjection } from '../src/lib/runtime/adapters/scope-display-projection';
+import {
+  getFilterHandlers,
+  getVfoHandlers,
+} from '../src/lib/runtime/adapters/panel-adapters';
+
+type WitnessCommand = Readonly<{
+  kind: 'frequency' | 'filter';
+  args: readonly unknown[];
+}>;
+
+declare global {
+  interface Window {
+    __spectrumWitness: { commands: WitnessCommand[] };
+  }
+}
+
+const commands: WitnessCommand[] = [];
+window.__spectrumWitness = { commands };
+const vfoHandlers = getVfoHandlers();
+const filterHandlers = getFilterHandlers();
+vfoHandlers.onFreqChange = (...args) => commands.push({ kind: 'frequency', args });
+filterHandlers.onFilterWidthCommit = (...args) => commands.push({ kind: 'filter', args });
+
+if (new URLSearchParams(location.search).has('legacyBaseline')) {
+  const style = document.createElement('style');
+  style.textContent = `
+    .spectrum-split-region { display: contents !important; }
+    .spectrum-split-separator { display: none !important; }
+    .spectrum-with-scales { flex: 0 0 30% !important; border-bottom: 1px solid var(--panel-border) !important; }
+    .freq-axis { flex: 0 0 20px !important; border-bottom: 1px solid var(--panel-border) !important; }
+    .waterfall-area { flex: 1 1 70% !important; }
+  `;
+  document.head.append(style);
+}
+
+if (new URLSearchParams(location.search).has('portrait')) {
+  document.getElementById('app')!.style.height = '220px';
+}
 
 const BIN_COUNT = 256;
 /** The renderer saturates at 80 (`SPECTRUM_AMPLITUDE_MAX`); stay under it. */

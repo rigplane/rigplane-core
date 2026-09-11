@@ -123,6 +123,145 @@
   let dxSpots = $state<DxSpot[]>([]);
   let spectrumArea = $state<HTMLDivElement | null>(null);
   let waterfallContent = $state<HTMLDivElement | null>(null);
+  let splitRegion = $state<HTMLDivElement | null>(null);
+  let splitRegionHeight = $state(0);
+  const SPLIT_STORAGE_KEY = 'rigplane-spectrum-split-ratio';
+  const DEFAULT_SPLIT_RATIO = 0.3;
+  const MIN_SPLIT_RATIO = 0.2;
+  const MAX_SPLIT_RATIO = 0.8;
+  const SPLIT_KEY_STEP = 0.05;
+  const SPLIT_AXIS_HEIGHT = 20;
+  const SPLIT_SEPARATOR_HEIGHT = 8;
+  const MIN_SPECTRUM_HEIGHT = 64;
+  const MIN_WATERFALL_HEIGHT = 80;
+
+  function normalizeSplitRatio(value: number): number {
+    return Math.max(MIN_SPLIT_RATIO, Math.min(MAX_SPLIT_RATIO, value));
+  }
+
+  function readSplitRatio(): number {
+    if (typeof localStorage === 'undefined') return DEFAULT_SPLIT_RATIO;
+    try {
+      const stored = localStorage.getItem(SPLIT_STORAGE_KEY);
+      if (stored === null || stored.trim() === '') return DEFAULT_SPLIT_RATIO;
+      const value = Number(stored);
+      return Number.isFinite(value) ? normalizeSplitRatio(value) : DEFAULT_SPLIT_RATIO;
+    } catch {
+      return DEFAULT_SPLIT_RATIO;
+    }
+  }
+
+  let splitRatio = $state(readSplitRatio());
+  type SplitBounds = Readonly<{ min: number; max: number }>;
+
+  function resolveSplitBounds(regionHeight: number): SplitBounds {
+    const paneHeight = regionHeight - SPLIT_AXIS_HEIGHT - SPLIT_SEPARATOR_HEIGHT;
+    if (!Number.isFinite(paneHeight) || paneHeight <= 0) {
+      return Object.freeze({ min: MIN_SPLIT_RATIO, max: MAX_SPLIT_RATIO });
+    }
+    const floorTotal = MIN_SPECTRUM_HEIGHT + MIN_WATERFALL_HEIGHT;
+    if (paneHeight < floorTotal) {
+      const compressed = MIN_SPECTRUM_HEIGHT / floorTotal;
+      return Object.freeze({ min: compressed, max: compressed });
+    }
+    return Object.freeze({
+      min: Math.max(MIN_SPLIT_RATIO, MIN_SPECTRUM_HEIGHT / paneHeight),
+      max: Math.min(MAX_SPLIT_RATIO, 1 - MIN_WATERFALL_HEIGHT / paneHeight),
+    });
+  }
+
+  function clampSplitRatio(value: number, bounds: SplitBounds): number {
+    return Math.max(bounds.min, Math.min(bounds.max, value));
+  }
+
+  let splitBounds = $derived(resolveSplitBounds(splitRegionHeight));
+  let renderedSplitRatio = $derived(clampSplitRatio(splitRatio, splitBounds));
+  let splitRows = $derived(
+    `${renderedSplitRatio}fr ${SPLIT_AXIS_HEIGHT}px ${SPLIT_SEPARATOR_HEIGHT}px ${1 - renderedSplitRatio}fr`,
+  );
+  type SplitCapture = Readonly<{ pointerId: number; target: HTMLElement }>;
+  let splitCapture = $state<SplitCapture | null>(null);
+
+  function setSplitRatio(value: number): void {
+    splitRatio = normalizeSplitRatio(value);
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(SPLIT_STORAGE_KEY, String(splitRatio));
+    } catch {
+      // Storage availability must not disable the separator.
+    }
+  }
+
+  function updateSplitFromPointer(event: PointerEvent): void {
+    if (!splitRegion) return;
+    const regionRect = splitRegion.getBoundingClientRect();
+    splitRegionHeight = regionRect.height;
+    const availableHeight = regionRect.height - SPLIT_AXIS_HEIGHT - SPLIT_SEPARATOR_HEIGHT;
+    if (!Number.isFinite(availableHeight) || availableHeight <= 0) return;
+    const spectrumHeight = event.clientY - regionRect.top
+      - SPLIT_AXIS_HEIGHT - SPLIT_SEPARATOR_HEIGHT / 2;
+    setSplitRatio(clampSplitRatio(
+      spectrumHeight / availableHeight,
+      resolveSplitBounds(regionRect.height),
+    ));
+  }
+
+  function handleSplitStart(event: PointerEvent): void {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.currentTarget as HTMLElement;
+    splitCapture = Object.freeze({ pointerId: event.pointerId, target });
+    target.setPointerCapture(event.pointerId);
+    updateSplitFromPointer(event);
+  }
+
+  function handleSplitMove(event: PointerEvent): void {
+    if (splitCapture?.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    updateSplitFromPointer(event);
+  }
+
+  function releaseSplitCapture(event: PointerEvent, update: boolean): void {
+    const capture = splitCapture;
+    if (!capture || capture.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (update) updateSplitFromPointer(event);
+    splitCapture = null;
+    try {
+      capture.target.releasePointerCapture(event.pointerId);
+    } catch {
+      // A browser may already have released capture during cancellation.
+    }
+  }
+
+  function handleSplitLostCapture(event: PointerEvent): void {
+    if (splitCapture?.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    splitCapture = null;
+  }
+
+  function handleSplitKeydown(event: KeyboardEvent): void {
+    if (splitRegion) splitRegionHeight = splitRegion.getBoundingClientRect().height;
+    const bounds = resolveSplitBounds(splitRegionHeight);
+    const current = clampSplitRatio(splitRatio, bounds);
+    let next: number;
+    if (event.key === 'ArrowUp') next = current - SPLIT_KEY_STEP;
+    else if (event.key === 'ArrowDown') next = current + SPLIT_KEY_STEP;
+    else if (event.key === 'Home') next = bounds.min;
+    else if (event.key === 'End') next = bounds.max;
+    else return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSplitRatio(clampSplitRatio(next, bounds));
+  }
+
+  function isolateSplitWheel(event: WheelEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+  }
   type SampleGeometry = Readonly<{
     frameMode: number;
     startFreq: number;
@@ -666,6 +805,12 @@
   {:else}
   <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} />
   {/if}
+  <div
+    class="spectrum-split-region"
+    bind:this={splitRegion}
+    bind:clientHeight={splitRegionHeight}
+    style:grid-template-rows={splitRows}
+  >
   <div class="spectrum-with-scales">
     <div class="db-scale">
       {#each audioFft ? [] : DB_TICKS as tick}
@@ -702,6 +847,25 @@
       {/each}
     </div>
   {/if}
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    class="spectrum-split-separator"
+    class:active={splitCapture !== null}
+    role="separator"
+    aria-label="Resize spectrum and waterfall"
+    aria-orientation="horizontal"
+    aria-valuemin={Math.round(splitBounds.min * 100)}
+    aria-valuemax={Math.round(splitBounds.max * 100)}
+    aria-valuenow={Math.round(renderedSplitRatio * 100)}
+    tabindex="0"
+    onpointerdown={handleSplitStart}
+    onpointermove={handleSplitMove}
+    onpointerup={(event) => releaseSplitCapture(event, true)}
+    onpointercancel={(event) => releaseSplitCapture(event, false)}
+    onlostpointercapture={handleSplitLostCapture}
+    onkeydown={handleSplitKeydown}
+    onwheel={isolateSplitWheel}
+  ></div>
   <div class="waterfall-area">
     <div class="waterfall-scale"></div>
     <div class="waterfall-content" class:panning={dragging} class:draggable={canPan} bind:this={waterfallContent} onpointerdown={handleDragStart} role="presentation">
@@ -728,6 +892,7 @@
         <div class="tune-line" style="left:{tuneLinePct}%"></div>
       {/if}
     </div>
+  </div>
   </div>
 </div>
 
@@ -757,11 +922,17 @@
     border: none;
   }
 
+  .spectrum-split-region {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: grid;
+    overflow: hidden;
+  }
+
   .spectrum-with-scales {
-    flex: 0 0 30%;
+    grid-row: 1;
     min-height: 0;
     display: flex;
-    border-bottom: 1px solid var(--panel-border);
     overflow: hidden;
   }
 
@@ -799,10 +970,45 @@
   }
 
   .freq-axis {
-    flex: 0 0 20px;
+    grid-row: 2;
     position: relative;
     background: var(--panel);
-    border-bottom: 1px solid var(--panel-border);
+  }
+
+  .spectrum-split-separator {
+    grid-row: 3;
+    position: relative;
+    z-index: 20;
+    width: 100%;
+    min-height: 8px;
+    padding: 0;
+    border: 0;
+    background: linear-gradient(
+      to bottom,
+      transparent 3px,
+      var(--panel-border) 3px,
+      var(--panel-border) 5px,
+      transparent 5px
+    );
+    cursor: ns-resize;
+    touch-action: none;
+    user-select: none;
+  }
+
+  .spectrum-split-separator:hover,
+  .spectrum-split-separator.active {
+    background: linear-gradient(
+      to bottom,
+      transparent 2px,
+      var(--accent, var(--panel-border)) 2px,
+      var(--accent, var(--panel-border)) 6px,
+      transparent 6px
+    );
+  }
+
+  .spectrum-split-separator:focus-visible {
+    outline: 2px solid var(--accent, var(--panel-border));
+    outline-offset: -2px;
   }
 
   .freq-axis .tick {
@@ -824,7 +1030,7 @@
   }
 
   .waterfall-area {
-    flex: 1 1 70%;
+    grid-row: 4;
     min-height: 0;
     position: relative;
     display: flex;

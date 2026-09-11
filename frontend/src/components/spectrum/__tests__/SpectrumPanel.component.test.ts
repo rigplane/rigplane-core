@@ -527,7 +527,7 @@ function rect(element: Element, left = 0, width = 200): void {
 
 function pointer(
   element: EventTarget,
-  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel',
+  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel' | 'lostpointercapture',
   pointerId: number,
   clientX: number,
   init: Partial<PointerEventInit> = {},
@@ -542,6 +542,16 @@ function pointer(
     ...init,
   }));
   flushSync();
+}
+
+function verticalRect(element: Element, top: number, height: number): void {
+  Object.defineProperty(element, 'getBoundingClientRect', {
+    configurable: true,
+    value: vi.fn(() => ({
+      x: 0, y: top, left: 0, top, right: 800, bottom: top + height,
+      width: 800, height, toJSON: () => ({}),
+    })),
+  });
 }
 
 function prepareGeometry(target: HTMLElement, width = 200): {
@@ -568,6 +578,7 @@ function mountPanel(props: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   components = [];
+  storageMap.clear();
   txHarness = new ManagedAppTxHarness();
   appTxHostHarness.controller = txHarness.controller;
   runtimeHarness.state.capturedHardwareFrame = null;
@@ -810,6 +821,126 @@ describe('SpectrumPanel component', () => {
     expect(spectrumPanelSource).not.toContain('resolveFilterModeConfig');
     expect(spectrumPanelSource).not.toContain('tuneBy');
     expect(spectrumPanelSource).not.toContain('getDragInterval');
+  });
+});
+
+describe('SpectrumPanel spectrum/waterfall separator (MOR-2461)', () => {
+  function splitElements(target: HTMLElement) {
+    const region = target.querySelector<HTMLElement>('.spectrum-split-region')!;
+    const axis = target.querySelector<HTMLElement>('.freq-axis');
+    const separator = target.querySelector<HTMLElement>('[role="separator"]')!;
+    verticalRect(region, 0, 400);
+    if (axis) verticalRect(axis, 120, 20);
+    verticalRect(separator, 140, 8);
+    return { region, axis, separator };
+  }
+
+  it('renders a focusable horizontal separator and falls back safely for invalid storage', () => {
+    storageMap.set('rigplane-spectrum-split-ratio', 'not-a-ratio');
+    const target = mountPanel();
+    const { region, separator } = splitElements(target);
+
+    expect(separator.getAttribute('aria-orientation')).toBe('horizontal');
+    expect(separator.tabIndex).toBe(0);
+    expect(separator.getAttribute('aria-valuenow')).toBe('30');
+    expect(separator.getAttribute('aria-valuemin')).toBe('20');
+    expect(separator.getAttribute('aria-valuemax')).toBe('80');
+    expect(region.style.gridTemplateRows).toContain('0.3fr');
+    expect(region.style.gridTemplateRows).toContain('0.7fr');
+    expect(region.style.gridTemplateRows).toContain('20px 8px');
+  });
+
+  it('restores a normalized persisted ratio without remounting either canvas', () => {
+    storageMap.set('rigplane-spectrum-split-ratio', '0.62');
+    const target = mountPanel();
+    const { region, separator } = splitElements(target);
+    const spectrumCanvas = target.querySelector('.spectrum-area canvas');
+    const waterfallCanvas = target.querySelector('.waterfall-content canvas');
+
+    expect(separator.getAttribute('aria-valuenow')).toBe('62');
+    expect(region.style.gridTemplateRows).toContain('0.62fr');
+    window.dispatchEvent(new Event('resize'));
+    target.querySelector<HTMLButtonElement>('[title="Toggle fullscreen"]')!.click();
+    flushSync();
+
+    expect(target.querySelector('.spectrum-panel')?.classList.contains('fullscreen')).toBe(true);
+    expect(separator.getAttribute('aria-valuenow')).toBe('62');
+    expect(region.style.gridTemplateRows).toContain('0.62fr');
+    expect(target.querySelector('.spectrum-area canvas')).toBe(spectrumCanvas);
+    expect(target.querySelector('.waterfall-content canvas')).toBe(waterfallCanvas);
+  });
+
+  it('captures pointer drag, clamps to practical minimum heights, and persists the ratio', () => {
+    const target = mountPanel();
+    const { separator } = splitElements(target);
+    const spectrumCanvas = target.querySelector('.spectrum-area canvas');
+    const waterfallCanvas = target.querySelector('.waterfall-content canvas');
+
+    pointer(separator, 'pointerdown', 71, 10, { clientY: 250 });
+    expect(HTMLElement.prototype.setPointerCapture).toHaveBeenCalledWith(71);
+    expect(Number(separator.getAttribute('aria-valuenow'))).toBe(61);
+    expect(Number(storageMap.get('rigplane-spectrum-split-ratio'))).toBeCloseTo(226 / 372);
+
+    pointer(separator, 'pointermove', 71, 10, { clientY: -100 });
+    expect(separator.getAttribute('aria-valuenow')).toBe('20');
+    pointer(separator, 'pointermove', 71, 10, { clientY: 1000 });
+    expect(Number(separator.getAttribute('aria-valuenow'))).toBe(78);
+
+    pointer(separator, 'pointerup', 71, 10, { clientY: 300 });
+    expect(HTMLElement.prototype.releasePointerCapture).toHaveBeenCalledWith(71);
+    const completed = separator.getAttribute('aria-valuenow');
+    pointer(separator, 'pointermove', 71, 10, { clientY: 100 });
+    expect(separator.getAttribute('aria-valuenow')).toBe(completed);
+    expect(target.querySelector('.spectrum-area canvas')).toBe(spectrumCanvas);
+    expect(target.querySelector('.waterfall-content canvas')).toBe(waterfallCanvas);
+  });
+
+  it('cleans up matching cancel and lost capture without emitting a radio command', () => {
+    const target = mountPanel();
+    const { separator } = splitElements(target);
+
+    pointer(separator, 'pointerdown', 72, 10, { clientY: 200 });
+    pointer(separator, 'pointercancel', 72, 10, { clientY: 200 });
+    const afterCancel = separator.getAttribute('aria-valuenow');
+    pointer(separator, 'pointermove', 72, 10, { clientY: 300 });
+    expect(separator.getAttribute('aria-valuenow')).toBe(afterCancel);
+
+    pointer(separator, 'pointerdown', 73, 10, { clientY: 220 });
+    pointer(separator, 'lostpointercapture', 73, 10, { clientY: 220 });
+    const afterLost = separator.getAttribute('aria-valuenow');
+    pointer(separator, 'pointermove', 73, 10, { clientY: 300 });
+    expect(separator.getAttribute('aria-valuenow')).toBe(afterLost);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+    expect(mockRuntime.send).not.toHaveBeenCalled();
+  });
+
+  it('supports ArrowUp, ArrowDown, Home, and End while isolating wheel intent', () => {
+    storageMap.set('rigplane-spectrum-split-ratio', '0.5');
+    const target = mountPanel();
+    const { separator } = splitElements(target);
+    const key = (value: string) => {
+      separator.dispatchEvent(new KeyboardEvent('keydown', { key: value, bubbles: true }));
+      flushSync();
+    };
+
+    key('ArrowUp');
+    expect(separator.getAttribute('aria-valuenow')).toBe('45');
+    key('ArrowDown');
+    expect(separator.getAttribute('aria-valuenow')).toBe('50');
+    key('Home');
+    expect(separator.getAttribute('aria-valuenow')).toBe('20');
+    key('End');
+    expect(separator.getAttribute('aria-valuenow')).toBe('78');
+
+    separator.dispatchEvent(new WheelEvent('wheel', {
+      deltaY: -100, bubbles: true, cancelable: true,
+    }));
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+    expect(mockRuntime.send).not.toHaveBeenCalled();
+    expect(Number(storageMap.get('rigplane-spectrum-split-ratio')))
+      .toBeCloseTo(1 - 80 / 372);
   });
 });
 
