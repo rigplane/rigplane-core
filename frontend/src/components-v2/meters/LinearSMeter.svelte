@@ -162,6 +162,8 @@
     return projectSignalMeter((props as { value: number | null }).value);
   });
 
+  const isInlineVfoVariant = $derived(variant === 'vfo-inline');
+  const meterWidth = $derived(isInlineVfoVariant ? 300 : 600);
   const isVfoVariant = $derived(variant === 'vfo' || variant === 'vfo-wide');
   const isWideVfoVariant = $derived(variant === 'vfo-wide');
 
@@ -171,11 +173,11 @@
   const RAW_SEGMENT_DOMAIN = 20;
   const SEG_COUNT = $derived(display.segmentCount);
   const SEG_GAP = $derived(display.segmentGapPx);
-  const BAR_X = $derived(compact && isVfoVariant ? (isWideVfoVariant ? 14 : 12) : 8);
-  const BAR_WIDTH = $derived(compact && isVfoVariant ? (isWideVfoVariant ? 498 : 492) : 484);
+  const BAR_X = $derived(isInlineVfoVariant ? 8 : (compact && isVfoVariant ? (isWideVfoVariant ? 14 : 12) : 8));
+  const BAR_WIDTH = $derived(isInlineVfoVariant ? 230 : (compact && isVfoVariant ? (isWideVfoVariant ? 498 : 492) : 484));
   const SEG_W = $derived((BAR_WIDTH - (SEG_COUNT - 1) * SEG_GAP) / SEG_COUNT);
 
-  const READOUT_CX = $derived(BAR_X + BAR_WIDTH + (compact && isVfoVariant ? 36 : 54));
+  const READOUT_CX = $derived(isInlineVfoVariant ? 270 : (BAR_X + BAR_WIDTH + (compact && isVfoVariant ? 36 : 54)));
 
   function segX(i: number): number {
     return BAR_X + i * (SEG_W + SEG_GAP);
@@ -288,24 +290,24 @@
   // ── Layout (switches between full / compact) ────────────────────────────────
   //   When label is present: label at top → meter shifted down
   //   Vertical stacking: [label] → scale labels → ticks → bar
-  const LABEL_OFFSET  = $derived(label ? (compact ? (isVfoVariant ? 8 : 10) : 14) : 0);
+  const LABEL_OFFSET  = $derived(isInlineVfoVariant ? 0 : (label ? (compact ? (isVfoVariant ? 8 : 10) : 14) : 0));
   const TAG_Y         = $derived(compact ? (isVfoVariant ? 1 : 2) : 3);   // label "MAIN"/"SUB" Y
-  const TAG_FS        = $derived(compact ? 7  : 8);
-  const SCALE_LABEL_Y = $derived((compact ? (isVfoVariant ? 1 : 2) : 3) + LABEL_OFFSET);
-  const SCALE_LABEL_FS = $derived(compact ? (isVfoVariant ? 9 : 8) : 9);
-  const TICK_MAJOR_Y1 = $derived((compact ? (isVfoVariant ? 12 : 14) : 18) + LABEL_OFFSET);
-  const TICK_MAJOR_Y2 = $derived((compact ? (isVfoVariant ? 27 : 26) : 38) + LABEL_OFFSET);
-  const TICK_MID_Y1   = $derived((compact ? (isVfoVariant ? 16 : 17) : 22) + LABEL_OFFSET);
-  const TICK_MID_Y2   = $derived((compact ? (isVfoVariant ? 27 : 26) : 38) + LABEL_OFFSET);
-  const TICK_MINOR_Y1 = $derived((compact ? (isVfoVariant ? 20 : 20) : 28) + LABEL_OFFSET);
-  const TICK_MINOR_Y2 = $derived((compact ? (isVfoVariant ? 27 : 26) : 38) + LABEL_OFFSET);
-  const TRACK_Y       = $derived((compact ? (isVfoVariant ? 29 : 28) : 40) + LABEL_OFFSET);
-  const TRACK_H       = $derived(compact ? (isVfoVariant ? (isWideVfoVariant ? 11 : 10) : 8) : 14);
+  const TAG_FS        = $derived(isInlineVfoVariant ? 11 : (compact ? 7  : 8));
+  const SCALE_LABEL_Y = $derived(isInlineVfoVariant ? 0 : ((compact ? (isVfoVariant ? 1 : 2) : 3) + LABEL_OFFSET));
+  const SCALE_LABEL_FS = $derived(isInlineVfoVariant ? 13 : (compact ? (isVfoVariant ? 9 : 8) : 9));
+  const TICK_MAJOR_Y1 = $derived(isInlineVfoVariant ? 15 : ((compact ? (isVfoVariant ? 12 : 14) : 18) + LABEL_OFFSET));
+  const TICK_MAJOR_Y2 = $derived(isInlineVfoVariant ? 19 : ((compact ? (isVfoVariant ? 27 : 26) : 38) + LABEL_OFFSET));
+  const TICK_MID_Y1   = $derived(isInlineVfoVariant ? 17 : ((compact ? (isVfoVariant ? 16 : 17) : 22) + LABEL_OFFSET));
+  const TICK_MID_Y2   = $derived(isInlineVfoVariant ? 19 : ((compact ? (isVfoVariant ? 27 : 26) : 38) + LABEL_OFFSET));
+  const TICK_MINOR_Y1 = $derived(isInlineVfoVariant ? 18 : ((compact ? (isVfoVariant ? 20 : 20) : 28) + LABEL_OFFSET));
+  const TICK_MINOR_Y2 = $derived(isInlineVfoVariant ? 19 : ((compact ? (isVfoVariant ? 27 : 26) : 38) + LABEL_OFFSET));
+  const TRACK_Y       = $derived(isInlineVfoVariant ? 21 : ((compact ? (isVfoVariant ? 29 : 28) : 40) + LABEL_OFFSET));
+  const TRACK_H       = $derived(isInlineVfoVariant ? 6 : (compact ? (isVfoVariant ? (isWideVfoVariant ? 11 : 10) : 8) : 14));
   // Readout aligned to bar: S-unit centered on bar, dBm just below
   const S_UNIT_Y      = $derived(TRACK_Y - (compact ? (isVfoVariant ? 2 : 1) : 2));
-  const S_UNIT_FS     = $derived(compact ? (isVfoVariant ? (isWideVfoVariant ? 15 : 14) : 12) : 15);
+  const S_UNIT_FS     = $derived(isInlineVfoVariant ? 14 : (compact ? (isVfoVariant ? (isWideVfoVariant ? 15 : 14) : 12) : 15));
   const DBM_Y         = $derived(TRACK_Y + TRACK_H + (compact ? (isVfoVariant ? 0 : 1) : 2));
-  const DBM_FS        = $derived(compact ? (isVfoVariant ? 9 : 8) : 9);
+  const DBM_FS        = $derived(isInlineVfoVariant ? 13 : (compact ? (isVfoVariant ? 9 : 8) : 9));
 
   // Lower scale row (MOR-2250): stacked below the main bar, in the bar's own
   // x-range — it sits below TRACK_Y + TRACK_H the same way the S-unit/dBm
@@ -319,10 +321,8 @@
   const LOWER_TRACK_Y  = $derived(LOWER_TICK_Y2 + 2);
   const LOWER_TRACK_H  = $derived(compact ? 6 : 8);
 
-  // Bottom padding symmetric to top; the lower row (when present) pushes the
-  // bottom edge down instead of the plain post-bar padding.
   const TOTAL_HEIGHT  = $derived(
-    lowerScale ? LOWER_TRACK_Y + LOWER_TRACK_H + SCALE_LABEL_Y : TRACK_Y + TRACK_H + SCALE_LABEL_Y,
+    lowerScale ? LOWER_TRACK_Y + LOWER_TRACK_H + SCALE_LABEL_Y : isInlineVfoVariant ? 30 : TRACK_Y + TRACK_H + SCALE_LABEL_Y,
   );
 
   const localMotion = initialInputMode === 'local'
@@ -437,7 +437,7 @@
   </svg>
 {:else}
 <svg
-  viewBox="0 0 600 {TOTAL_HEIGHT}"
+  viewBox="0 0 {meterWidth} {TOTAL_HEIGHT}"
   width="100%"
   height="auto"
   preserveAspectRatio="xMidYMid meet"
@@ -456,7 +456,7 @@
   <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
   <!-- Container background -->
   <rect
-    x="0" y="0" width="600" height={TOTAL_HEIGHT}
+    x="0" y="0" width={meterWidth} height={TOTAL_HEIGHT}
     rx="8"
     fill="var(--v2-bg-darkest)"
     stroke="var(--v2-bg-panel)"
