@@ -72,9 +72,9 @@
   border-radius: var(--btn-border-radius);
   font-family: 'Roboto Mono', monospace;
   font-size: var(--btn-font-size);
-  font-weight: var(--btn-font-weight);
+  font-weight: 400;
   letter-spacing: var(--btn-letter-spacing);
-  line-height: 1;
+  line-height: 1.2;
   text-transform: uppercase;
 }
 
