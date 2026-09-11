@@ -640,7 +640,8 @@ describe('desktop-v2 declares a real dsp zone; the cockpit does not (MOR-1368, S
 });
 
 describe('persistent finite DSP composition and authority (MOR-2425)', () => {
-  const external = ['NR', 'NB', 'Notch mode', 'AGC mode'] as const;
+  const groupedExternal = ['NR', 'NB', 'Notch mode', 'AGC mode'] as const;
+  const standardExternal = ['NB', 'NR', 'NOTCH', 'A-NOTCH', 'AGC mode'] as const;
   /**
    * MOR-2425: the DSP levels `DspSurface` still owns natively, in
    * `DSP_LEVELS` order. Named rather than counted — a bare cardinality is
@@ -664,12 +665,12 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     const staleStandardNr = retainedInvocations.get('NR')!;
 
     expect(seatFields('.dsp-finite-seat'))
-      .toEqual(['agcMode', 'nrActive', 'nbActive', 'notchMode']);
-    expect(seatFields('.dsp-scalar-seat')).toEqual(['nbLevel', 'nbWidth']);
-    for (const label of external) expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
-    expect(rangeFields()).toEqual([
-      'agcTimeConstant', 'nrLevel', 'nbDepth', 'notchFreq', 'manualNotchWidth',
-    ]);
+      .toEqual(['agcMode', 'nbActive', 'nrActive', 'manualNotch', 'autoNotch']);
+    expect(seatFields('.dsp-scalar-seat')).toEqual([]);
+    for (const label of standardExternal) {
+      expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
+    }
+    expect(rangeFields()).toEqual([]);
 
     (h.state as { main: Record<string, unknown> }).main.nr = false;
     props.skinId = 'sdr-test';
@@ -678,7 +679,9 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     expect(target.querySelectorAll('[data-testid="dsp-surface"]')).toHaveLength(1);
     expect(target.querySelectorAll('.dsp-finite-seat')).toHaveLength(0);
     expect(target.querySelectorAll('.dsp-scalar-seat')).toHaveLength(0);
-    for (const label of external) expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
+    for (const label of groupedExternal) {
+      expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
+    }
     expect(rangeFields()).toEqual(NATIVE_RANGE_FIELDS);
     for (const field of ['nbLevel', 'nbWidth']) {
       expect(target.querySelectorAll(`[data-testid="dsp-${field}"]`)).toHaveLength(1);
@@ -706,6 +709,12 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     h.selectedFiniteAppearance = finiteAppearance;
     h.state = proxy(liveState(true) as object);
     const props = renderHosted();
+    vi.useFakeTimers();
+    q('[data-testid="external-NB"]')!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    vi.advanceTimersByTime(500);
+    q('[data-testid="external-NB"]')!.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    flushSync();
+    vi.useRealTimers();
     beginCommand({
       id: 'pending-nb-width', name: 'set_nb_width', params: { level: 7 }, originalEpoch: 1,
     });
@@ -754,11 +763,48 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     h.controlSession = { state: 'disconnected', epoch: 1 };
     render();
     expect(target.querySelectorAll('.dsp-toggle, .dsp-choice')).toHaveLength(0);
-    for (const label of external) expect(q(`[data-testid="external-${label}"]`)).toBeNull();
+    for (const label of groupedExternal) expect(q(`[data-testid="external-${label}"]`)).toBeNull();
     expect(rangeFields()).toEqual(NATIVE_RANGE_FIELDS);
     // Receiver + AF + RF level + station meter + antenna hosts + the single
     // finite-renderer fan-in.
     expect(h.authoritySubscribers.size).toBe(6);
+  });
+
+  it('maps NOTCH to manual, A-NOTCH to auto, and selected clicks to off', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    h.state = proxy(liveState(true) as object);
+    renderHosted();
+
+    retainedInvocations.get('NOTCH')!();
+    expect(h.notchMode).toHaveBeenLastCalledWith('manual');
+    (h.state as { main: Record<string, unknown> }).main.manualNotch = true;
+    flushSync();
+    retainedInvocations.get('NOTCH')!();
+    expect(h.notchMode).toHaveBeenLastCalledWith('off');
+
+    (h.state as { main: Record<string, unknown> }).main.manualNotch = false;
+    (h.state as { main: Record<string, unknown> }).main.autoNotch = false;
+    flushSync();
+    retainedInvocations.get('A-NOTCH')!();
+    expect(h.notchMode).toHaveBeenLastCalledWith('auto');
+    (h.state as { main: Record<string, unknown> }).main.autoNotch = true;
+    flushSync();
+    retainedInvocations.get('A-NOTCH')!();
+    expect(h.notchMode).toHaveBeenLastCalledWith('off');
+  });
+
+  it('keeps AGC mode in the left panel and exposes AGC time once in right DSP', () => {
+    h.state = proxy(liveState(true) as object);
+    renderHosted();
+    const agcButtons = [...target.querySelectorAll<HTMLButtonElement>('button')]
+      .filter(button => button.textContent?.trim().startsWith('AGC-T'));
+    expect(agcButtons).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="dsp-agcTimeConstant"]')).toHaveLength(0);
+    agcButtons[0].click();
+    flushSync();
+    expect(target.querySelectorAll('[data-testid="dsp-agcTimeConstant"]')).toHaveLength(1);
+    expect(q('[data-testid="dsp-agcTimeConstant"]')!.closest('[data-part="dsp"]')).not.toBeNull();
+    expect(q('[data-testid="dsp-agcTimeConstant"]')!.closest('[data-part="agc"]')).toBeNull();
   });
 
   it.each([

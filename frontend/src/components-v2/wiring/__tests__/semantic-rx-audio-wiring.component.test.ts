@@ -47,6 +47,7 @@ const h = vi.hoisted(() => ({
   }) => void>(),
   txController: null as ManagedAppTxController | null,
   audio: { muted: false, rxEnabled: true, volume: 42 },
+  audioRouting: { focus: 'both', split_stereo: false, main_gain_db: -6, sub_gain_db: 2 },
   audioConnected: true,
   rxEnabled: true,
   guardVisible: false,
@@ -137,6 +138,7 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
       return () => { h.authoritySubscribers.delete(handler); };
     },
     get audio() { return h.audio; },
+    get audioRouting() { return h.audioRouting; },
     get connectionAudio() { return h.audioConnected; },
     get rxEnabled() { return h.rxEnabled; },
     setVolume: h.setVolume, setMuted: h.setMuted,
@@ -318,6 +320,7 @@ beforeEach(() => {
   h.caps = liveCaps(AUDIO_TAGS);
   expect(setCapabilities(h.caps as Capabilities)).toBe(true);
   h.audio = { muted: false, rxEnabled: true, volume: 42 };
+  h.audioRouting = { focus: 'both', split_stereo: false, main_gain_db: -6, sub_gain_db: 2 };
   h.audioConnected = true;
   h.rxEnabled = true;
   h.guardVisible = false;
@@ -405,6 +408,35 @@ describe('AF level: 0..100 becomes 0..1 exactly once, at the adapter seam', () =
       const handlers = factory() as Record<string, unknown>;
       for (const name of names) expect(typeof handlers[name]).toBe('function');
     }
+  });
+});
+
+describe('v2.11.1 monitor and dual-routing behavior in the Standard composition', () => {
+  it('keeps RADIO, LIVE and MUTE distinct and reports the selected output route', () => {
+    renderHostedFace('desktop-v2');
+    expect(q('[data-testid="rx-audio-monitor"]')?.textContent).toContain('RADIO');
+    expect(q('[data-testid="rx-audio-monitor"]')?.textContent).toContain('LIVE');
+    expect(q('[data-testid="rx-audio-monitor"]')?.textContent).toContain('MUTE');
+    expect(text('monitor-status')).toBe('Browser audio stream');
+    expect(text('af-value')).toBe('42%');
+  });
+
+  it('dispatches dual channel gain through the existing audio-routing handler', () => {
+    renderHostedFace('desktop-v2');
+    const main = q<HTMLInputElement>('[data-testid="rx-audio-main-gain"] input');
+    expect(main).not.toBeNull();
+    Object.defineProperty(main!, 'valueAsNumber', { configurable: true, value: -12 });
+    main!.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ main_gain_db: -12 });
+  });
+
+  it('does not render dual controls for a single-receiver radio', () => {
+    h.caps = { ...liveCaps(AUDIO_TAGS.filter(tag => tag !== 'dual_rx')), receivers: 1 };
+    renderHostedFace('desktop-v2');
+    expect(el('focus')).toBeNull();
+    expect(el('split')).toBeNull();
+    expect(el('main-gain')).toBeNull();
+    expect(el('sub-gain')).toBeNull();
   });
 });
 
@@ -759,7 +791,8 @@ describe('each finite control has exactly one owner in the composed tree', () =>
     const seats = [...target.querySelectorAll<HTMLElement>('.rx-audio-finite-seat')]
       .map((seat) => seat.dataset.field);
     expect(seats).toEqual([
-      'monitorMode', 'routingFocus', 'routingSplit', 'modInputSource', 'setModInputLan',
+      'monitorMode', 'afLevel', 'monitorStatus', 'routingFocus', 'routingSplit',
+      'mainGain', 'subGain', 'modInputSource', 'setModInputLan',
     ]);
   });
 
