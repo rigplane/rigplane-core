@@ -772,12 +772,13 @@ describe('App presentation selection', () => {
     expect(speedRenderer?.dataset.compact).toBe('false');
     expect(pitchRenderer?.dataset.variant).toBe('hardware-illuminated');
     expect(speedRenderer?.dataset.variant).toBe('hardware-illuminated');
-    const txLevels = [...t.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => button.getAttribute('aria-label') === 'TX level settings');
-    expect(txLevels?.getAttribute('aria-expanded')).toBe('false');
-    txLevels?.click();
+    expect(t.querySelector('[aria-label="TX level settings"]')).toBeNull();
+    const micSettings = t.querySelector<HTMLButtonElement>('[aria-label="MIC GAIN settings"]');
+    expect(micSettings?.getAttribute('aria-expanded')).toBe('false');
+    micSettings?.click();
     flushSync();
-    expect(txLevels?.getAttribute('aria-expanded')).toBe('true');
+    expect(micSettings?.getAttribute('aria-expanded')).toBe('true');
+    expect(t.querySelector('[data-testid="standard-tx-settings-popover"]')).not.toBeNull();
     expect(t.querySelector('[data-testid="standard-tx-controls"]')
       ?.closest('[data-panel-id="semantic-rx-tx"]')).not.toBeNull();
     expect(t.querySelector('[data-panel-id="semantic-tx-aux"]')).toBeNull();

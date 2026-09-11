@@ -415,15 +415,39 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
         })),
         commands: await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
           .geometryCommands.filter(command => command.type === 'cmd')),
-        overlay: null as null | { box: DOMRect; geometry: Awaited<ReturnType<typeof standardGeometry>> },
+        overlay: null as null | {
+          box: DOMRect; geometry: Awaited<ReturnType<typeof standardGeometry>>;
+          gapBefore: number; gapAfter: number; rightBefore: number; rightAfter: number; scrollTop: number;
+        },
       };
       if (txState === 'rx') {
-        await page.getByRole('button', { name: 'VOX settings' }).click();
+        const trigger = page.getByRole('button', { name: 'VOX settings' });
+        await trigger.click();
         const popover = page.getByTestId('standard-tx-settings-popover');
         await expect(popover).toBeVisible();
+        const before = {
+          trigger: await trigger.evaluate(element => element.getBoundingClientRect().toJSON()),
+          popover: await popover.evaluate(element => element.getBoundingClientRect().toJSON()),
+        };
+        const rail = page.locator('.desktop-controls-right');
+        const scrollTop = await rail.evaluate(element => {
+          element.scrollTop = Math.min(element.scrollHeight - element.clientHeight, element.scrollTop + 80);
+          return element.scrollTop;
+        });
+        expect(scrollTop).toBeGreaterThan(0);
+        await expect.poll(async () => (await popover.boundingBox())?.y).not.toBe(before.popover.top);
+        const after = {
+          trigger: await trigger.evaluate(element => element.getBoundingClientRect().toJSON()),
+          popover: await popover.evaluate(element => element.getBoundingClientRect().toJSON()),
+        };
         result.overlay = {
-          box: await popover.evaluate(element => element.getBoundingClientRect().toJSON()),
+          box: after.popover,
           geometry: await standardGeometry(page),
+          gapBefore: before.popover.top - before.trigger.bottom,
+          gapAfter: after.popover.top - after.trigger.bottom,
+          rightBefore: before.trigger.right - before.popover.right,
+          rightAfter: after.trigger.right - after.popover.right,
+          scrollTop,
         };
         const overlayScreenshot = info.outputPath('mor2458-vox-overlay.png');
         await page.screenshot({ path: overlayScreenshot, fullPage: true });
@@ -450,6 +474,8 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     expect(rx.overlay!.box.top).toBeGreaterThanOrEqual(8);
     expect(rx.overlay!.box.right).toBeLessThanOrEqual(1432);
     expect(rx.overlay!.box.bottom).toBeLessThanOrEqual(892);
+    expect(rx.overlay!.gapAfter).toBeCloseTo(rx.overlay!.gapBefore, 1);
+    expect(rx.overlay!.rightAfter).toBeCloseTo(rx.overlay!.rightBefore, 1);
     expect(tx.targetBadges).toEqual([{ slot: 'B', text: 'TX 14.332.000' }]);
     expect(rx.targetBadges).toEqual([]);
     expect(unknown.targetBadges).toEqual([]);

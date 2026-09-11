@@ -130,6 +130,13 @@
     closeTxSettings(true);
   }
 
+  onMount(() => {
+    // Element scroll events do not bubble. Capture them at the window so a
+    // disclosure remains attached while either Standard sidebar rail scrolls.
+    window.addEventListener('scroll', positionTxSettings, true);
+    return () => window.removeEventListener('scroll', positionTxSettings, true);
+  });
+
   const standardFaceAtMount = untrack(() => skinId === 'desktop-v2');
   const STANDARD_PANEL_ID_REPLACEMENTS: Readonly<Record<string, readonly string[]>> = {
     'semantic-rit-xit-scan': ['semantic-rit-xit', 'semantic-scan'],
@@ -452,7 +459,6 @@
   onpointerdown={handleTxSettingsPointerDown}
   onkeydown={handleTxSettingsKeydown}
   onresize={positionTxSettings}
-  onscroll={positionTxSettings}
 />
 
 {#snippet scopeRegion(scopeControls: Snippet | undefined, managedScope: ManagedScopeRegion | undefined)}
