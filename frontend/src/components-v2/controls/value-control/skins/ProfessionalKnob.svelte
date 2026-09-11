@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { wheelControl } from '../wheel-control';
   import { onDestroy, untrack } from 'svelte';
   import '../value-control.css';
   import type {
@@ -26,7 +27,7 @@
   } | null = null;
   const initialBinding = untrack(() => binding);
   let attachedBinding = initialBinding;
-  let lease: ContinuousScalarRendererLease = $state(initialBinding.attachRenderer());
+  let lease: ContinuousScalarRendererLease = $state.raw(initialBinding.attachRenderer());
 
   $effect(() => {
     if (binding === attachedBinding) return;
@@ -112,11 +113,6 @@
     lease.cancelPointer(activePointer.token);
     activePointer = null;
   }
-  function onWheel(e: WheelEvent) {
-    if (!view.editable) return;
-    e.preventDefault();
-    lease.wheel({ direction: e.deltaY > 0 ? -1 : 1, fine: e.shiftKey });
-  }
   function onKey(e: KeyboardEvent) {
     if (lease.key({ key: e.key, fine: e.shiftKey })) e.preventDefault();
   }
@@ -137,7 +133,7 @@
     aria-describedby={renderPresentation.description !== null ? feedbackDescriptionId : undefined}
     data-command-phase={renderPresentation.attributes['data-command-phase'] ?? undefined}
     onpointerdown={onDown} onpointermove={onMove} onpointerup={onUp} onpointercancel={onCancel}
-    onwheel={onWheel} onkeydown={onKey} ondblclick={onDbl}>
+    use:wheelControl={{ view, lease }} onkeydown={onKey} ondblclick={onDbl}>
     <svg width={size} height={size} viewBox="0 0 {size} {size}" class="pro-svg">
       <defs>
         <radialGradient id="{uid}-b" cx="38%" cy="32%" r="68%"><stop offset="0%" stop-color="#3a4550"/><stop offset="50%" stop-color="#1c2428"/><stop offset="100%" stop-color="#0c1014"/></radialGradient>

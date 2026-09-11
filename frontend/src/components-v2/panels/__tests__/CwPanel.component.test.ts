@@ -153,10 +153,14 @@ describe('CwPanel component rendering', () => {
   it('preserves immediate wheel requests for both controls', () => {
     const t = mountPanel({ cwPitch: 600, keySpeed: 12 });
     t.querySelector<HTMLElement>('[aria-label="CW Pitch"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    t.querySelector<HTMLElement>('[aria-label="CW Pitch"]')!
       .dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
     t.querySelector<HTMLElement>('[aria-label="Key Speed"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    t.querySelector<HTMLElement>('[aria-label="Key Speed"]')!
       .dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
-    expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(660);
+    expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(605);
     expect(mockHandlers.onKeySpeedChange).toHaveBeenCalledExactlyOnceWith(13);
   });
 

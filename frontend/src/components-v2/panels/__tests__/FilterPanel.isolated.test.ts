@@ -371,7 +371,7 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
     ['pointer-left', 1800], ['pointer-middle', 2100], ['pointer-right', 3000],
     ['ArrowRight', 3000], ['Home', 1800], ['End', 3000], ['Shift+ArrowRight', 3000],
     ['wheel', 3000], ['fine-wheel', 3000], ['reset', 1800],
-  ] as const)('%s requests only the actual nonuniform catalog choice %i', (gesture, expected) => {
+  ] as const)('%s preserves catalog choices and modified-wheel scrolling (choice %i)', (gesture, expected) => {
     setWidthFeedback({ confirmed: gesture === 'pointer-middle' ? 1800 : 2100 });
     const t = mountPanel({ filterConfig: {
       defaults: [2100, 2100, 2100], fixed: false,
@@ -385,6 +385,7 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
       const x = gesture === 'pointer-left' ? 0 : gesture === 'pointer-middle' ? 50 : 100;
       control.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: x, pointerId: 1 }));
     } else if (gesture.includes('wheel')) {
+      control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       control.dispatchEvent(new WheelEvent('wheel', {
         bubbles: true, cancelable: true, deltaY: -1, shiftKey: gesture === 'fine-wheel',
       }));
@@ -397,6 +398,10 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
     }
     vi.advanceTimersByTime(60);
 
+    if (gesture === 'fine-wheel') {
+      expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
+      return;
+    }
     expect(mockHandlers.onFilterWidthChange).toHaveBeenCalledWith(expected);
     expect([1800, 2100, 3000]).toContain(mockHandlers.onFilterWidthChange.mock.calls.at(-1)?.[0]);
   });
