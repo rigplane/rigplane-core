@@ -414,7 +414,7 @@
   <!-- Global feedback / power-health / authoritative TX indication live here,
        as siblings of the presentation, so switching layout or skin never
        recreates or duplicates them (MOR-1059). -->
-  <AppGlobalHost />
+  <AppGlobalHost showTxIndication={committedLayoutId !== 'desktop-v2'} />
   <LocalExtensionsHost />
 {/if}
 

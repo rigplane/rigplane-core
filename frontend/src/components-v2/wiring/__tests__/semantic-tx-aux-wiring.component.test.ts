@@ -13,7 +13,7 @@
  * The controller here is a spy; the surfaces are the real ones.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, unmount } from 'svelte';
+import { flushSync, mount, tick, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
 import { proxy } from 'svelte/internal/client';
 import type { Capabilities } from '$lib/types/capabilities';
@@ -459,22 +459,12 @@ afterEach(() => {
 });
 
 describe('L1 hosted desktop TX auxiliary composition', () => {
-  it('places all five finite and eight scalar handles independently', () => {
+  it('places finite controls separately and groups scalar handles under their disclosures', async () => {
     txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     renderHostedDesktop();
-    const levels = [...target.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => button.getAttribute('aria-label') === 'TX level settings')!;
-    levels.click();
-    flushSync();
-
-    const fields = [
-      'rfPower', 'micGain', 'driveGain', 'voxGain', 'antiVoxGain', 'voxDelay',
-      'compressorLevel', 'monitorLevel',
-    ] as const;
     const zone = q('[data-zone-id="rx-tx"]');
     const remainder = q('[data-testid="tx-aux-surface"]');
     const finiteGrid = q('.standard-tx-button-grid');
-    const grid = q('.standard-tx-levels');
     const reasons = q('[data-testid="tx-aux-tune-blocked"]');
 
     expect(target.querySelectorAll('[data-zone-id="tx-aux"]')).toHaveLength(0);
@@ -483,32 +473,40 @@ describe('L1 hosted desktop TX auxiliary composition', () => {
     expect(zone).not.toBeNull();
     expect(remainder?.closest('[data-zone-id="rx-tx"]')).toBe(zone);
     expect(finiteGrid?.closest('[data-zone-id="rx-tx"]')).toBe(zone);
-    expect(grid?.closest('[data-zone-id="rx-tx"]')).toBe(zone);
-    expect(finiteGrid?.querySelectorAll(':scope > .standard-tx-seat')).toHaveLength(5);
-    expect(grid?.querySelectorAll(':scope > .standard-tx-scalar-seat')).toHaveLength(8);
+    expect(finiteGrid?.querySelectorAll(':scope > [data-field]')).toHaveLength(5);
     expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(1);
     expect(reasons?.querySelectorAll('[data-reason]')).toHaveLength(2);
-    expect(grid!.compareDocumentPosition(reasons!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-
     for (const [field, testid] of [
       ['atu', 'tx-aux-atu'], ['vox', 'tx-aux-vox'], ['compressor', 'tx-aux-compressor'],
       ['monitor', 'tx-aux-monitor'], ['atuTune', 'tx-aux-atu-tune'],
     ] as const) {
-      const seat = finiteGrid?.querySelector(`:scope > .standard-tx-seat[data-field="${field}"]`);
+      const seat = finiteGrid?.querySelector(`[data-field="${field}"]`);
       expect(seat, `${field} seat`).not.toBeNull();
       expect(seat?.querySelector(`[data-testid="${testid}"]`)).not.toBeNull();
       expect(target.querySelectorAll(`[data-testid="${testid}"]`)).toHaveLength(1);
     }
 
-    for (const field of fields) {
-      const seat = grid?.querySelector(`:scope > .standard-tx-scalar-seat[data-field="${field}"]`);
-      expect(seat, `${field} seat`).not.toBeNull();
-      expect(seat?.querySelector(`[data-testid="tx-aux-${field}"]`)).not.toBeNull();
-      expect(target.querySelectorAll(`[data-testid="tx-aux-${field}"]`)).toHaveLength(1);
-      expect(seat?.querySelector('.vc-hbar.hw-illum')).not.toBeNull();
+    expect(q('.standard-tx-levels')).toBeNull();
+    for (const [label, fields] of [
+      ['VOX settings', ['voxGain', 'antiVoxGain', 'voxDelay']],
+      ['COMP settings', ['compressorLevel']],
+      ['MON settings', ['monitorLevel']],
+      ['RF POWER settings', ['rfPower', 'driveGain']],
+      ['MIC GAIN settings', ['micGain']],
+    ] as const) {
+      q<HTMLButtonElement>(`[aria-label="${label}"]`)!.click();
+      await tick();
+      const popover = q('[data-testid="standard-tx-settings-popover"]')!;
+      expect(popover.closest('[data-zone-id="rx-tx"]')).toBe(zone);
+      expect(popover.querySelectorAll('.standard-tx-scalar-seat')).toHaveLength(fields.length);
+      for (const field of fields) {
+        const seat = popover.querySelector(`[data-field="${field}"]`);
+        expect(seat?.querySelector(`[data-testid="tx-aux-${field}"]`), `${field} handle`).not.toBeNull();
+        expect(seat?.querySelector('.vc-hbar.hw-illum')).not.toBeNull();
+      }
     }
 
-    expect(remainder?.querySelector('.standard-tx-levels')).toBeNull();
+    expect(remainder?.querySelector('[data-testid="standard-tx-settings-popover"]')).toBeNull();
     expect(target.querySelectorAll('[data-testid="tx-aux-atu-tune"]')).toHaveLength(1);
     expect(target.querySelectorAll('.tx-aux-toggle')).toHaveLength(4);
   });
@@ -531,7 +529,7 @@ describe('hosted Standard VFO operation instruments', () => {
     expect(h.subReceiver).toHaveBeenCalledOnce();
   });
 
-  it('places every admitted named seat once, invokes current callbacks, and keeps one digest', () => {
+  it('places every admitted named seat once and invokes current callbacks without a center digest', () => {
     h.caps = vfoCaps();
     h.selectedFiniteAppearance = finiteAppearance;
     renderHostedDesktop();
@@ -541,7 +539,7 @@ describe('hosted Standard VFO operation instruments', () => {
       'split', 'dualWatch', 'activeReceiver', 'equalize', 'swap', 'speak',
     ]);
     expect(q('[data-vfo-split]')).toBeNull();
-    expect(target.querySelectorAll('[data-testid="vfo-split-digest"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="vfo-split-digest"]')).toHaveLength(0);
     expect(q('[data-testid="external-Quick split"]')).toBeNull();
     expect(q('[data-testid="external-Quick dual watch"]')).toBeNull();
 
@@ -641,7 +639,7 @@ describe('hosted Standard VFO operation instruments', () => {
     expect(h.split).toHaveBeenCalledOnce();
   });
 
-  it('fails selected appearance closed at null authority without losing the digest', () => {
+  it('fails selected appearance closed at null authority without adding a center digest', () => {
     h.caps = vfoCaps();
     h.selectedFiniteAppearance = finiteAppearance;
     h.session = { state: 'disconnected', epoch: 7 };
@@ -650,7 +648,7 @@ describe('hosted Standard VFO operation instruments', () => {
     expect(q('[data-vfo-split]')).toBeNull();
     expect(q('[data-testid="external-Split"]')).toBeNull();
     expect(q('[data-testid="external-Receiver"]')).toBeNull();
-    expect(target.querySelectorAll('[data-testid="vfo-split-digest"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="vfo-split-digest"]')).toHaveLength(0);
   });
 
   it('revokes every retained VFO renderer when the persistent host is destroyed', () => {
@@ -702,17 +700,16 @@ describe('hosted Standard VFO operation instruments', () => {
 });
 
 describe('selected finite TX auxiliary authority lifetime', () => {
-  it('keeps one external Standard reason list after every scalar', () => {
+  it('keeps one external Standard reason list outside the scalar overlay', async () => {
     h.selectedFiniteAppearance = finiteAppearance;
     txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     renderHostedDesktop();
-    [...target.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => button.getAttribute('aria-label') === 'TX level settings')!.click();
-    flushSync();
+    q<HTMLButtonElement>('[aria-label="MIC GAIN settings"]')!.click();
+    await tick();
     const reasons = q('[data-testid="tx-aux-tune-blocked"]')!;
     expect(q('[data-testid="external-TUNE"]')).not.toBeNull();
     expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(1);
-    expect(q('.standard-tx-levels')!.compareDocumentPosition(reasons)
+    expect(q('[data-testid="standard-tx-settings-popover"]')!.compareDocumentPosition(reasons)
       & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 

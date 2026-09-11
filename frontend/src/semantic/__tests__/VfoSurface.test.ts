@@ -2567,7 +2567,7 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(onTuneFrequency).not.toHaveBeenCalled();
   });
 
-  it('puts persistent A/B selection and shared operations in the center of the Standard pair', () => {
+  it('keeps only selection and shared operation controls in the center of the Standard pair', () => {
     const onSelectVfo = vi.fn();
     const root = mountSurface({
       viewModel: withReceiverIndicators('1/ab'), appearance: 'standard', onSelectVfo,
@@ -2581,7 +2581,9 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(bridge.querySelector('[data-vfo-split]')).not.toBeNull();
     expect(bridge.querySelector('[data-vfo-equalize]')).not.toBeNull();
     expect(bridge.querySelector('[data-vfo-swap]')).not.toBeNull();
-    expect(bridge.querySelector('[data-vfo-tx-target-status]')).not.toBeNull();
+    expect(bridge.querySelector('[data-vfo-tx-target-status]')).toBeNull();
+    expect(bridge.querySelector('[data-indicator-fact]')).toBeNull();
+    expect(bridge.querySelector('[data-vfo-operation-digest]')).toBeNull();
   });
 
   it('mounts the surviving Standard VfoPanel with honest meter states', () => {

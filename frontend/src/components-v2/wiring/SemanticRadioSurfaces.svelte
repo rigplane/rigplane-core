@@ -2514,7 +2514,16 @@
     {#snippet body()}
       {@render rxTxSurface(standardTxLayout !== undefined)}
       {#if standardTxLayout && view?.txAux}
-        {@render standardTxLayout(txAuxInstruments, txAuxScalars)}
+        {@render standardTxLayout(txAuxInstruments, txAuxScalars, {
+          rfPower: view.txAux.rfPower.availability.structural,
+          micGain: view.txAux.micGain.availability.structural,
+          driveGain: view.txAux.driveGain.availability.structural,
+          voxGain: view.txAux.voxGain.availability.structural,
+          antiVoxGain: view.txAux.antiVoxGain.availability.structural,
+          voxDelay: view.txAux.voxDelay.availability.structural,
+          compressorLevel: view.txAux.compressorLevel.availability.structural,
+          monitorLevel: view.txAux.monitorLevel.availability.structural,
+        })}
         {@render txAuxSurface(txAuxInstruments, txAuxScalars, false, false)}
       {/if}
     {/snippet}

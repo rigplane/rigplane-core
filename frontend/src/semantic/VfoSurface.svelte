@@ -468,9 +468,45 @@
     ),
   );
 
-  function standardBadges(indicator: ReceiverIndicatorViewModel | undefined) {
-    if (!indicator) return [];
-    const badges: { label: string; active: boolean; color: 'cyan' | 'orange' | 'muted'; state: string }[] = [];
+  function standardBadges(indicator: ReceiverIndicatorViewModel | undefined, vfo?: VfoViewModel) {
+    const badges: { label: string; active: boolean; color: 'cyan' | 'orange' | 'muted' | 'red' | 'amber'; state: string }[] = [];
+    const wide = viewModel.radioWideIndicators;
+    const rfState = viewModel.radioWideIndicators?.rfState;
+    if (vfo?.isActiveSlot) {
+      const rxHz = displayValue(vfo.display?.frequencyHz, vfo.frequencyHz);
+      badges.push({ label: `RX ${formatFrequency(rxHz)}`, active: rxHz !== null,
+        color: rxHz === null ? 'muted' : 'cyan', state: vfo.display?.frequencyHz.state ?? (rxHz === null ? 'unknown' : 'current') });
+      if (wide?.antenna.availability.structural) {
+        const value = wide.antenna.reading.status === 'known' ? wide.antenna.reading.value : null;
+        badges.push({ label: `ANT ${value ?? '—'}`, active: value !== null,
+          color: value === null ? 'muted' : 'cyan', state: wide.antenna.reading.status });
+      }
+      if (wide?.atu.availability.structural) {
+        const value = wide.atu.reading.status === 'known' ? wide.atu.reading.value.toUpperCase() : null;
+        badges.push({ label: `TUNE ${value ?? '—'}`, active: value === 'ON' || value === 'TUNING',
+          color: value === null ? 'muted' : value === 'OFF' ? 'cyan' : 'orange', state: wide.atu.reading.status });
+      }
+      if (wide && (wide.xitActive.availability.structural || wide.xitOffset.availability.structural)) {
+        const active = wide.xitActive.reading.status === 'known' ? wide.xitActive.reading.value : null;
+        const offset = wide.xitOffset.reading.status === 'known' ? wide.xitOffset.reading.value : null;
+        badges.push({ label: `XIT ${active === null ? '—' : active ? 'ON' : 'OFF'} ${offset ?? '—'} Hz`,
+          active: active === true, color: active === null || offset === null ? 'muted' : active ? 'orange' : 'cyan',
+          state: active === null || offset === null ? 'unknown' : 'known' });
+      }
+    }
+    if (vfo?.isTxTarget && viewModel.txTarget.status === 'known') {
+      const transmitting = rfState === 'transmitting';
+      const uncertain = rfState === 'uncertain';
+      badges.push({
+        label: `${uncertain ? 'TX?' : 'TX'} ${formatFrequency(viewModel.txTarget.frequencyHz)}`,
+        active: true,
+        color: transmitting ? 'red' : uncertain ? 'amber' : 'orange',
+        state: rfState ?? 'unknown',
+      });
+    }
+    // A split TX target may be the inactive slot. It receives only RF truth;
+    // receiver-local badges still belong exclusively to the active VFO.
+    if (!indicator || (vfo !== undefined && !vfo.isActiveSlot)) return badges;
     const numeric = (name: string, field: ReceiverIndicatorViewModel['bandwidthHz'], unit = '') => {
       if (!field.availability.structural) return;
       const reading = field.reading;
@@ -721,6 +757,16 @@
   {/if}
   {/snippet}
 
+  {#snippet standardOperationContent()}
+    <VfoOperationGroup
+      {appearance}
+      scheme={viewModel.vfoScheme}
+      projection={vfoOperations}
+      controls={operationControls}
+      onIntent={handleOperationIntent}
+    />
+  {/snippet}
+
   {#snippet standardPairSelectors(pair: { receiver: ReceiverId; left: VfoViewModel; right: VfoViewModel; absolute: boolean })}
     {#if pair.absolute}
     <div class="standard-vfo-selectors" aria-label="Select VFO">
@@ -734,15 +780,6 @@
     {:else}
       {@render identitySelectors()}
     {/if}
-  {/snippet}
-
-  {#snippet standardTxTargetStatus()}
-    <span class="standard-tx-target" data-vfo-tx-target-status>
-      {t('core.vfo.txTarget.label')}
-      {viewModel.txTarget.status === 'known'
-        ? ` ${viewModel.txTarget.slot.kind === 'slotted' ? viewModel.txTarget.slot.id : roleLabel(viewModel.vfos.find((vfo) => vfo.isTxTarget) ?? viewModel.vfos[0])}`
-        : ' —'}
-    </span>
   {/snippet}
 
   {#snippet receiverInstrument(receiver: ReceiverId)}
@@ -840,7 +877,7 @@
           meterSource={indicator?.sMeter.source}
           {continuitySession}
           isActive={dominant?.isActive ?? false}
-          badgeItems={fixed === undefined || fixed.isActiveSlot ? standardBadges(indicator) : []}
+          badgeItems={standardBadges(indicator, dominant)}
           bandText={dominant ? standardBand(dominant) : null}
           rit={dominant ? standardRit(dominant) : undefined} slotChoices={choices}
           reserveMeterSpace={fixed !== undefined && !fixed.isActiveSlot}
@@ -869,8 +906,7 @@
         {@render standardInstrument(standardPair.receiver, standardPair.left)}
         <div class="bridge standard-pair-bridge" data-instrument-bridge>
           {@render standardPairSelectors(standardPair)}
-          {@render radioWideContent()}
-          {@render standardTxTargetStatus()}
+          {@render standardOperationContent()}
         </div>
         {@render standardInstrument(standardPair.receiver, standardPair.right)}
       {:else}
@@ -882,7 +918,8 @@
         <div class="bridge" data-instrument-bridge>
           {@render activeReceiverStatus()}
           {@render identitySelectors()}
-          {@render radioWideContent()}
+          {#if appearance === 'standard'}{@render standardOperationContent()}
+          {:else}{@render radioWideContent()}{/if}
         </div>
       {/if}
       {#each instrumentReceivers.slice(1) as receiver (receiver)}
