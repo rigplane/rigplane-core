@@ -225,8 +225,22 @@ test.describe('startup viewport classification', () => {
       await expect(page.locator('.m-landscape')).toBeVisible();
       await page.reload();
       await expect(page.locator('.m-landscape')).toBeVisible();
-      await page.setViewportSize({ width: 1024, height: 600 });
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('wide touch viewport cold-boots Standard at 1024×600', async ({ browser }) => {
+    const context = await browser.newContext({
+      hasTouch: true, isMobile: true, viewport: { width: 1024, height: 600 },
+    });
+    const page = await context.newPage();
+    try {
+      await boot(page, 'standard', 1024, true, 'studioline', false, undefined, { height: 600 });
+      expect(await page.evaluate(() => ({ width: innerWidth, height: innerHeight, touch: navigator.maxTouchPoints > 0 })))
+        .toEqual({ width: 1024, height: 600, touch: true });
       await expect(page.locator('.desktop-control-face.standard-face')).toBeVisible();
+      await expect(page.locator('.m-layout, .m-landscape')).toHaveCount(0);
     } finally {
       await context.close();
     }
