@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
-  import { MOD_INPUT_SOURCES, modInputSourceLabel } from '$lib/radio/mod-input';
+  import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { ValueControl } from '../components-v2/controls/value-control';
   import {
@@ -83,6 +83,10 @@
   let lastAuthority: AfAuthority | null | undefined;
   let stop: (() => void) | null = null;
   let rx = $derived(presentation.rxAudio);
+  let modInputChoices = $derived(rx?.modInputChoices ?? []);
+  let modInputReadingValue = $derived(
+    rx?.modInputSource.reading.status === 'known' ? rx.modInputSource.reading.value : undefined,
+  );
   /** MOR-1279: the FACT, never a capability re-derivation. */
   let liveOffered = $derived(rx?.liveAudio.structural === true);
   /** MOR-1384 — the v2 `RxAudioPanel` link-lost readout, restored from the SAME
@@ -95,8 +99,8 @@
     liveOffered && rx?.monitorMode === 'live' && rx.liveAudio.operational === false,
   );
   let modInputRecognized = $derived(
-    rx?.modInputSource.reading.status === 'known'
-      && modInputSourceLabel(rx.modInputSource.reading.value) !== null,
+    modInputReadingValue !== undefined
+      && modInputChoices.some(option => option.value === modInputReadingValue),
   );
 
   const monitorBehavior = bindAbsoluteChoiceInstrument<MonitorMode>(() => ({
@@ -121,7 +125,7 @@
   }));
   const modInputBehavior = bindChoiceInstrument<number>(() => ({
     field: rx?.modInputSource,
-    choices: MOD_INPUT_SOURCES.map((option) => option.value),
+    choices: modInputChoices.map((option) => option.value),
     blocked: !modInputRecognized,
     invoke: (source) => onModInputChange?.(source),
   }));
@@ -130,7 +134,7 @@
   );
   function changeModInput(select: HTMLSelectElement): void {
     const value = select.value;
-    const source = MOD_INPUT_SOURCES.find((option) => String(option.value) === value);
+    const source = modInputChoices.find((option) => String(option.value) === value);
     select.value = modInputValue;
     if (source) modInputBehavior.invoke(source.value);
   }
@@ -174,14 +178,16 @@
   const modInputSeat = createChoiceRendererSeat<RxAudioFiniteChoiceValue>(() => ({
     context: rendererContext ?? null, label: 'MOD input',
     field: rx?.modInputSource, blocked: !modInputRecognized,
-    options: MOD_INPUT_SOURCES.map((option) => ({ value: option.value, label: option.label })),
+    options: modInputChoices.map((option) => ({ value: option.value, label: option.label })),
     invoke: (source) => onModInputChange?.(source as number),
   }));
   function setLanInput(): AvailabilityActionRendererInput {
     return {
       context: rendererContext ?? null, label: 'Set LAN',
-      availability: rx === undefined ? undefined : { structural: true, operational: true },
-      blocked: rx?.modInputReadiness.status !== 'mismatch',
+      availability: rx === undefined || !modInputChoices.some(option => option.value === LAN_MOD_INPUT_SOURCE)
+        ? undefined : { structural: true, operational: true },
+      blocked: rx?.modInputReadiness.status !== 'mismatch'
+        || !modInputChoices.some(option => option.value === LAN_MOD_INPUT_SOURCE),
       invoke: () => onSetModInputLan?.(),
     };
   }
@@ -404,13 +410,13 @@
             {#if modInputValue === ''}
               <option value="" disabled>{UNKNOWN_TEXT}</option>
             {/if}
-            {#each MOD_INPUT_SOURCES as option (option.value)}
+            {#each modInputChoices as option (option.value)}
               <option value={String(option.value)}>{option.label}</option>
             {/each}
           </select>
         </label>
         <span data-testid="rx-audio-mod-source">MOD: {rx.modInputSource.reading.status === 'known'
-          ? modInputSourceLabel(rx.modInputSource.reading.value) ?? UNKNOWN_TEXT
+          ? modInputChoices.find(option => option.value === modInputReadingValue)?.label ?? UNKNOWN_TEXT
           : UNKNOWN_TEXT}</span>
         <span data-testid="rx-audio-mod-readiness"
         >{READINESS_LABEL[rx.modInputReadiness.status]}</span>
@@ -420,7 +426,8 @@
 {/snippet}
 
 {#snippet setModInputLan()}
-  {#if rx?.modInputReadiness.status === 'mismatch'}
+  {#if rx?.modInputReadiness.status === 'mismatch'
+    && modInputChoices.some(option => option.value === LAN_MOD_INPUT_SOURCE)}
     {#if finiteAppearance}
       {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
         seat={setLanSeat} renderer={finiteAppearance.action}

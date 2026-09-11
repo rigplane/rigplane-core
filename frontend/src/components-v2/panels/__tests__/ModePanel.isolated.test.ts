@@ -37,6 +37,11 @@ const mockProps = {
   dataModeCount: 3,
   dataModeLabels: { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' } as Record<string, string>,
   modInputSource: null as number | null,
+  modInputChoices: [
+    { value: 0, label: 'MIC' }, { value: 1, label: 'ACC' },
+    { value: 2, label: 'MIC+ACC' }, { value: 3, label: 'USB' },
+    { value: 4, label: 'MIC+USB' }, { value: 5, label: 'LAN' },
+  ],
   hasModInput: false,
 };
 
@@ -89,6 +94,11 @@ beforeEach(() => {
   mockProps.dataModeCount = 3;
   mockProps.dataModeLabels = { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' };
   mockProps.modInputSource = null;
+  mockProps.modInputChoices = [
+    { value: 0, label: 'MIC' }, { value: 1, label: 'ACC' },
+    { value: 2, label: 'MIC+ACC' }, { value: 3, label: 'USB' },
+    { value: 4, label: 'MIC+USB' }, { value: 5, label: 'LAN' },
+  ];
   mockProps.hasModInput = false;
   mockHandlers.onModeChange = vi.fn();
   mockHandlers.onDataModeChange = vi.fn();
@@ -317,11 +327,20 @@ describe('ModePanel', () => {
       expect(labels).toEqual(['MIC', 'ACC', 'MIC+ACC', 'USB', 'MIC+USB', 'LAN']);
     });
 
+    it('renders only the declared IC-7300 domain and hides when it is absent', () => {
+      const choices = mockProps.modInputChoices.slice(0, 5);
+      const target = mountPanel({ hasModInput: true, modInputSource: 4, modInputChoices: choices });
+      expect(Array.from(modInputSelect(target)!.options).map(option => option.text))
+        .toEqual(['MIC', 'ACC', 'MIC+ACC', 'USB', 'MIC+USB']);
+      expect(modInputSelect(mountPanel({ hasModInput: false, modInputChoices: [] }))).toBeNull();
+    });
+
     it('shows an empty placeholder before the first readback', () => {
       const target = mountPanel({ hasModInput: true, modInputSource: null });
       const select = modInputSelect(target);
       expect(select).not.toBeNull();
       expect(select!.value).toBe('');
+      expect(select!.disabled).toBe(true);
     });
 
     it('is hidden when the radio does not expose MOD-input routing', () => {

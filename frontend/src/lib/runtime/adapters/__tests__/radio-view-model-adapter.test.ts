@@ -1189,7 +1189,7 @@ describe('MOR-2374 shared DATA and filter configuration', () => {
   });
   it('fails closed for absent domains, undeclared fields, and unobserved values', () => {
     const s = state(); s.dataOffModInput = 0;
-    expect(toRadioViewModel(s, dataCaps())!.filterPassband!.modInputSource!.availability.structural).toBe(false);
+    expect(toRadioViewModel(s, dataCaps())!.filterPassband!.modInputSource).toBeUndefined();
     s.fieldStatus!.dataOffModInput = { ...fresh, availability: 'undeclared', observed: false };
     expect(toRadioViewModel(s, dataCaps({ dataModeInputs: ic7300Inputs }))!.filterPassband!
       .modInputSource!.availability.structural).toBe(false);

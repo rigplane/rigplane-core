@@ -300,6 +300,7 @@ export interface RxAudioViewModel {
   routingSplit: RxAudioField<boolean>;
   /** The active DATA group's MOD-input source enum (`$lib/radio/mod-input`). */
   modInputSource: RxAudioField<number>;
+  readonly modInputChoices?: readonly { readonly value: number; readonly label: string }[];
   modInputReadiness: ModInputReadiness;
 }
 
@@ -1717,7 +1718,7 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
   const v = record(value, path);
   exactKeys(v, [
     'monitorMode', 'liveAudio', 'afLevel', 'routingFocus', 'routingSplit',
-    'modInputSource', 'modInputReadiness',
+    'modInputSource', 'modInputChoices', 'modInputReadiness',
   ], path);
   return {
     monitorMode: oneOf(v.monitorMode, MONITOR_MODES, `${path}.monitorMode`),
@@ -1728,6 +1729,9 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
     ),
     routingSplit: validateTxAuxField(v.routingSplit, `${path}.routingSplit`, bool),
     modInputSource: validateTxAuxField(v.modInputSource, `${path}.modInputSource`, num),
+    ...(v.modInputChoices === undefined ? {} : {
+      modInputChoices: validateModInputChoices(v.modInputChoices, `${path}.modInputChoices`),
+    }),
     modInputReadiness: validateModInputReadiness(v.modInputReadiness, `${path}.modInputReadiness`),
   };
 }

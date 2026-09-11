@@ -46,7 +46,7 @@ import { sendCommand } from '$lib/transport/ws-client';
 import { dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
 import { runtime } from '$lib/runtime/frontend-runtime';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
-import { setCapabilities } from '$lib/stores/capabilities.svelte';
+import { getCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import {
   armModInputTxGuard,
   deriveModInputTxGuardProps,
@@ -113,6 +113,8 @@ function setState(overrides: Record<string, unknown> = {}): void {
 function useDualReceiverCapabilities(): void {
   setCapabilities({
     capabilities: ['data_mode'],
+    dataModeCount: 3,
+    dataModeInputs: [0, 1, 2, 3, 4, 5].map(value => ({ value, label: String(value) })),
     receivers: 2,
     vfoScheme: 'main_sub',
     audioTx: true,
@@ -145,6 +147,8 @@ beforeEach(() => {
   resetRadioState();
   setCapabilities({
     capabilities: ['data_mode'],
+    dataModeCount: 3,
+    dataModeInputs: [0, 1, 2, 3, 4, 5].map(value => ({ value, label: String(value) })),
     audioTx: true,
     audioTxRoute: 'lan',
     audioTxRequiredModInputSource: 5,
@@ -345,6 +349,8 @@ describe('one-click Set LAN (MOR-617)', () => {
   it('dispatches the active group SET intent with source=5', () => {
     setState({ main: receiver(1), data1ModInput: 0 });
     armModInputTxGuard();
+
+    expect(getCapabilities()?.dataModeInputs?.some(option => option.value === 5)).toBe(true);
 
     getModInputTxGuardHandlers().onSetLan();
 

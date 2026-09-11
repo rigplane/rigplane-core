@@ -256,6 +256,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       modes: ['USB', 'CW'],
       filters: ['FIL1', 'FIL2', 'FIL3'],
       dataModeCount: 3,
+      dataModeInputs: [0, 1, 2, 3, 4, 5].map(value => ({ value, label: String(value) })),
       preValues: [0, 1, 2],
       attValues: [0, 6, 12],
       agcModes: [1, 2, 3],

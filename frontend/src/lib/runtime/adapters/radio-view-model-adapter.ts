@@ -728,8 +728,10 @@ function deriveFilterPassband(
     },
     dataModeChoices,
     dataMode: txAuxField(hasDataModeCap, dataModeObserved, numOrUndef(dataRx?.dataMode)),
-    modInputChoices,
-    modInputSource: txAuxField(modInputStructural, modInputObserved, modInputValue),
+    ...(modInputChoices.length > 0 ? {
+      modInputChoices,
+      modInputSource: txAuxField(modInputStructural, modInputObserved, modInputValue),
+    } : {}),
   };
 }
 
@@ -1612,7 +1614,11 @@ function deriveRxAudio(
   // `toRxAudioProps`'s own gate: the radio's AF control, or the browser stream.
   const hasAfLevel = hasCap(caps, 'af_level') || hasLiveAudio;
   const hasDualRx = hasCap(caps, 'dual_rx');
-  const hasModInput = facts.modInputRoutingAvailable;
+  const modInputChoices = Array.isArray(caps?.dataModeInputs) ? caps.dataModeInputs : [];
+  const activeDataMode = state?.active === 'SUB' ? state.sub?.dataMode : state?.main?.dataMode;
+  const hasModInput = facts.modInputRoutingAvailable && modInputChoices.length > 0
+    && Number.isSafeInteger(activeDataMode) && (activeDataMode as number) >= 0
+    && (activeDataMode as number) <= (caps?.dataModeCount ?? -1);
   if (!hasAfLevel && !hasLiveAudio && !hasDualRx && !hasModInput) return undefined;
   // Byte-identical to `toRxAudioProps`'s monitor-mode derivation; parity across
   // the whole matrix is pinned in `__tests__/rx-audio-adapter.test.ts`.
@@ -1638,6 +1644,7 @@ function deriveRxAudio(
     routingFocus: txAuxField(hasDualRx, routing?.focus !== undefined, routing?.focus),
     routingSplit: txAuxField(hasDualRx, routing?.splitStereo !== undefined, routing?.splitStereo),
     modInputSource: txAuxField(hasModInput, source !== undefined, source),
+    modInputChoices,
     modInputReadiness: facts.modInputReadiness,
   };
 }
