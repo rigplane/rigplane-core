@@ -4,6 +4,8 @@ import DualParamRenderer from '../DualParamRenderer.svelte';
 import type { DualParamIssuedStatusPresentation } from '../dual-param-issued-status';
 import {
   createContinuousPair,
+  createLegacyContinuousPairPolicy,
+  createRenderedNativeRangeContinuousPairPolicy,
   nativeRangeContinuousPairPolicy,
   type CommandFeedbackContinuousPairInput,
   type ContinuousPairBinding,
@@ -86,6 +88,61 @@ function mountReactive(binding: ContinuousPairBinding) {
 function slider(target: HTMLElement): HTMLElement {
   return target.querySelector('[role="slider"]') as HTMLElement;
 }
+
+it('leaves unarmed RF/SQL wheel input available for page scrolling', () => {
+  const { binding, lease } = fakeBinding(1);
+  const { target } = mountReactive(binding);
+  const event = new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true });
+  slider(target).dispatchEvent(event);
+  expect(event.defaultPrevented).toBe(false);
+  expect(lease.wheel).not.toHaveBeenCalled();
+});
+
+it.each(['legacy', 'native'] as const)('keeps %s RF/SQL geometry and authority through accelerated wheel input', (kind) => {
+  const requestRf = vi.fn();
+  const requestSql = vi.fn();
+  const source = $state({
+    evidence: 'reading' as const, ownerKey: 'receiver-a', enabled: true,
+    domain: { min: 0, max: 100, step: 2, defaultValue: null, fineStepDivisor: 10 },
+    rf: { reading: { status: 'known' as const, value: 100 }, availability: 'available' as const },
+    sql: { reading: { status: 'known' as const, value: 0 }, availability: 'available' as const },
+    requestRf, requestSql,
+  });
+  const binding = createContinuousPair(() => source, kind === 'legacy'
+    ? createLegacyContinuousPairPolicy({ keyboardDebounceMs: 50 })
+    : createRenderedNativeRangeContinuousPairPolicy());
+  const { target } = mountReactive(binding);
+  const control = slider(target);
+  control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  const wheel = (time: number, deltaY = -120) => {
+    const event = new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'timeStamp', { value: time });
+    control.dispatchEvent(event);
+    flushSync();
+    return event;
+  };
+  wheel(1000);
+  if (kind === 'legacy') expect(requestSql).toHaveBeenCalledExactlyOnceWith(2);
+  else expect(requestSql).not.toHaveBeenCalled();
+  wheel(1010);
+  expect(requestSql).toHaveBeenLastCalledWith(kind === 'legacy' ? 18 : 26);
+  expect(requestRf).not.toHaveBeenCalled();
+  expect(binding.view.canonical).toEqual({ rf: 100, sql: 0 });
+  for (let time = 1020; time < 1200; time += 10) {
+    source.sql.reading.value = requestSql.mock.lastCall?.[0] ?? 0;
+    flushSync();
+    wheel(time);
+  }
+  expect(requestSql).toHaveBeenLastCalledWith(100);
+  expect(requestSql.mock.calls.every(([value]) => value >= 0 && value <= 100 && value % 2 === 0)).toBe(true);
+  source.ownerKey = 'receiver-b';
+  flushSync();
+  expect(control.dataset.wheelArmed).toBe('false');
+  requestSql.mockClear();
+  expect(wheel(1300).defaultPrevented).toBe(false);
+  expect(requestSql).not.toHaveBeenCalled();
+  binding.destroy();
+});
 
 function commandFeedback(
   control: string,
@@ -223,12 +280,12 @@ describe('binding-only DualParamRenderer', () => {
     }));
     control.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 2 }));
     expect(first.lease.cancelPointer).toHaveBeenCalledExactlyOnceWith(11);
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     control.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -1 }));
     control.dispatchEvent(new WheelEvent('wheel', {
       bubbles: true, cancelable: true, deltaY: 1, shiftKey: true,
     }));
-    expect(first.lease.wheel).toHaveBeenNthCalledWith(1, { direction: 1, fine: false });
-    expect(first.lease.wheel).toHaveBeenNthCalledWith(2, { direction: -1, fine: true });
+    expect(first.lease.wheel).toHaveBeenCalledExactlyOnceWith({ direction: 1, fine: false, steps: 1 });
     control.dispatchEvent(new KeyboardEvent('keydown', {
       bubbles: true, cancelable: true, key: 'ArrowRight', shiftKey: true,
     }));

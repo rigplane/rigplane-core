@@ -371,7 +371,7 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
     ['pointer-left', 1800], ['pointer-middle', 2100], ['pointer-right', 3000],
     ['ArrowRight', 3000], ['Home', 1800], ['End', 3000], ['Shift+ArrowRight', 3000],
     ['wheel', 3000], ['fine-wheel', 3000], ['reset', 1800],
-  ] as const)('%s requests only the actual nonuniform catalog choice %i', (gesture, expected) => {
+  ] as const)('%s preserves catalog choices and modified-wheel scrolling (choice %i)', (gesture, expected) => {
     setWidthFeedback({ confirmed: gesture === 'pointer-middle' ? 1800 : 2100 });
     const t = mountPanel({ filterConfig: {
       defaults: [2100, 2100, 2100], fixed: false,
@@ -385,6 +385,7 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
       const x = gesture === 'pointer-left' ? 0 : gesture === 'pointer-middle' ? 50 : 100;
       control.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: x, pointerId: 1 }));
     } else if (gesture.includes('wheel')) {
+      control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       control.dispatchEvent(new WheelEvent('wheel', {
         bubbles: true, cancelable: true, deltaY: -1, shiftKey: gesture === 'fine-wheel',
       }));
@@ -397,9 +398,50 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
     }
     vi.advanceTimersByTime(60);
 
+    if (gesture === 'fine-wheel') {
+      expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
+      return;
+    }
     expect(mockHandlers.onFilterWidthChange).toHaveBeenCalledWith(expected);
     expect([1800, 2100, 3000]).toContain(mockHandlers.onFilterWidthChange.mock.calls.at(-1)?.[0]);
   });
+
+  it.each([
+    [1800, -1, 1950, 2700, 3000],
+    [3000, 1, 2700, 1950, 1800],
+  ])('accelerates armed catalog wheel input from %i with one immediate final request',
+    (confirmed, direction, slow, accelerated, bound) => {
+      setWidthFeedback({ confirmed });
+      const t = mountPanel({ filterConfig: {
+        defaults: [confirmed, confirmed, confirmed], fixed: false,
+        minHz: 1800, maxHz: 3000, stepHz: 1, table: [1800, 1950, 2200, 2500, 2700, 3000],
+      } as typeof mockProps.filterConfig });
+      const control = t.querySelector<HTMLElement>('[role="slider"]')!;
+      const wheel = (time: number, deltaY: number, extra: WheelEventInit = {}) => {
+        const event = new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true, ...extra });
+        Object.defineProperty(event, 'timeStamp', { value: time });
+        control.dispatchEvent(event);
+        flushSync();
+        return event;
+      };
+      expect(wheel(500, direction * 120).defaultPrevented).toBe(false);
+      expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
+      control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      for (const extra of [{ shiftKey: true }, { ctrlKey: true }, { metaKey: true }]) {
+        expect(wheel(600, direction * 120, extra).defaultPrevented).toBe(false);
+      }
+      expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
+      wheel(1000, direction * 120);
+      expect(mockHandlers.onFilterWidthChange.mock.calls).toEqual([[slow]]);
+      wheel(1030, direction * 120);
+      expect(mockHandlers.onFilterWidthChange.mock.calls).toEqual([[slow], [accelerated]]);
+      expect(control.getAttribute('aria-valuenow')).toBe(String(confirmed));
+      expect(t.querySelector('.vc-value')?.textContent).toBe(confirmed === 1800 ? '1.8kHz' : '3kHz');
+      wheel(1040, direction * 10000);
+      wheel(1050, -direction * 10000);
+      expect(mockHandlers.onFilterWidthChange.mock.calls).toEqual([[slow], [accelerated], [bound], [confirmed]]);
+    },
+  );
 
   it('invalidates a deferred choice when same-endpoint catalog content changes', () => {
     setWidthFeedback({ confirmed: 2100 });
