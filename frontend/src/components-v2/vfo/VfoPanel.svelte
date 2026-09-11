@@ -35,6 +35,10 @@
   }
 
   interface Props {
+    compactHeader?: boolean;
+    txTarget?: boolean;
+    txFrequencyText?: string;
+    rfState?: string;
     receiver: 'main' | 'sub';
     receiverLabel: string;
     slotTag: string;
@@ -73,6 +77,7 @@
   }
 
   let {
+    compactHeader = false, txTarget = false, txFrequencyText, rfState,
     receiver, receiverLabel, slotTag, frequency, freq, displayHz, pendingDisplayHz = null,
     frequencyState = 'current', contextKey, frequencyDisabled = false, controlsDisabled = false,
     mode, filter, sMeter, sValue, meterPresent = true, meterOperational, meterSource, continuitySession,
@@ -87,7 +92,7 @@
     headerReason,
   }: Props = $props();
 
-  let meterVariant = $derived(layoutProfile === 'wide' ? 'vfo-wide' : 'vfo');
+  let meterVariant = $derived(compactHeader ? 'vfo-inline' : layoutProfile === 'wide' ? 'vfo-wide' : 'vfo');
   let frequencyEntryButton = $derived(onFrequencyClick !== undefined && controlsDisabled
     && (frequencyState === 'current' || frequencyState === 'stale')
     && freq !== null && freq !== undefined && Number.isFinite(freq));
@@ -129,12 +134,34 @@
   }
 </script>
 
+{#snippet slotChoiceControls()}
+      {#each slotChoices as choice (choice.key)}
+        <button
+          type="button" class="slot-choice" data-vfo-tile data-vfo-select
+          data-vfo-receiver={choice.receiver === 'sub' ? 'SUB' : 'MAIN'}
+          data-vfo-slot={choice.slot} data-vfo-active={choice.active}
+          data-vfo-active-slot={choice.activeSlot} data-vfo-tx-target={choice.txTarget}
+          disabled={choice.disabled} title={choice.reason}
+          aria-describedby={choice.reason ? `${staleId}-choice-${choice.key}` : undefined}
+          onclick={() => onSelectSlot?.(choice.key)}
+        >
+          <span class="vfo-role">{choice.label}</span>
+          <span class="vfo-freq">{choice.frequencyText}</span>
+        </button>
+        {#if choice.reason}
+          <span id={`${staleId}-choice-${choice.key}`} class="sr-only">{choice.reason}</span>
+        {/if}
+      {/each}
+{/snippet}
+
 <div
   class="panel"
   class:active={isActive}
+  class:compact-header={compactHeader}
   data-layout-profile={layoutProfile}
   style={Object.entries(receiverChromeVars).map(([key, value]) => `${key}:${value}`).join(';')}
 >
+  <div class="identity-row">
   <button
     type="button" class="panel-header" disabled={onSelectHeader === undefined}
     aria-label={onSelectHeader ? `Select ${receiverLabel}` : undefined}
@@ -146,11 +173,16 @@
     </div>
 
     <div class="header-badges">
-      {#if sMeter || meterPresent}<span class="header-tag meter-tag">BAR</span>{/if}
-      <span class="header-tag slot-tag">{slotTag}</span>
+      {#if !compactHeader && (sMeter || meterPresent)}<span class="header-tag meter-tag">BAR</span>{/if}
+      {#if !compactHeader}<span class="header-tag slot-tag">{slotTag}</span>{/if}
     </div>
   </button>
 
+  {#if compactHeader}
+    <div class="tx-marker-slot">
+    {#if txTarget}<span class="tx-marker" data-standard-tx-marker data-rf-state={rfState}>{rfState === 'transmitting' ? 'TX' : rfState === 'uncertain' ? 'TX?' : 'TX target'}</span>{/if}
+    </div>
+  {/if}
   <div class="smeter-row panel-meter"
     data-meter-space={!sMeter && !meterPresent && reserveMeterSpace ? 'reserved' : undefined}>
     {#if sMeter}
@@ -161,9 +193,11 @@
       <div data-testid="receiver-s-meter" data-receiver={receiver}
         data-operational={meterOperational === undefined ? undefined : String(meterOperational)}
         aria-label={sValue === null ? `${receiverLabel} S meter unknown` : undefined}>
-        <LinearSMeter value={typeof sValue === 'number' && Number.isFinite(sValue) ? sValue : null} compact label={slotTag} variant={meterVariant} source={meterSource} session={continuitySession} />
+        <LinearSMeter value={typeof sValue === 'number' && Number.isFinite(sValue) ? sValue : null} compact label={compactHeader ? undefined : slotTag} variant={meterVariant} source={meterSource} session={continuitySession} />
       </div>
     {/if}
+  </div>
+
   </div>
 
   <div class="panel-body">
@@ -195,6 +229,25 @@
         </span>
       </div>
 
+      {#if compactHeader}
+        <div class="frequency-summary">
+          <div class="mode-filter-summary" aria-label="Mode and filter">
+          {#if onModeClick}
+            <button type="button" class="mode-control" disabled={controlsDisabled}
+              onclick={onModeClick} aria-label={`Change mode (current: ${mode ?? '—'})`}>{mode ?? '—'}</button>
+          {:else}<span class="mode-reading">{mode ?? '—'}</span>{/if}
+          <span>{filter ?? '—'}</span>
+          {#if bandText}<span>{bandText}</span>{/if}
+          {#each badgeItems.filter((item) => item.label.startsWith('BW ')) as item}
+            <span data-indicator-fact="bw" data-state={item.state}>{item.label}</span>
+          {/each}
+          {@render slotChoiceControls()}
+          </div>
+          <span class="tx-frequency" data-standard-tx-frequency={txFrequencyText ? '' : undefined}
+            data-rf-state={rfState}>{txFrequencyText ?? ''}</span>
+        </div>
+      {/if}
+
       {#if rit?.active}
         <div class="rit-row">
           <span class="rit-label">RIT</span>
@@ -204,6 +257,21 @@
     </div>
 
     <div class="control-strip">
+      {#if compactHeader}
+        {#each ['RF', 'DSP'] as group}
+          {@const items = badgeItems.filter((item) => !item.label.startsWith('BW ')
+            && (['NB', 'NR', 'NOTCH'].includes(item.label.split(' ')[0]) ? 'DSP' : 'RF') === group)}
+          {#if items.length}
+            <div class="indicator-group" data-indicator-group={group}>
+              <span class="group-label">{group}</span>
+              {#each items as item (item.label)}
+                <span class="passive-reading" data-indicator-fact={item.label.split(' ')[0]?.toLowerCase()}
+                  data-state={item.state}>{item.label}</span>
+              {/each}
+            </div>
+          {/if}
+        {/each}
+      {:else}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <div
@@ -244,28 +312,56 @@
         </span>
       {/each}
 
-      {#each slotChoices as choice (choice.key)}
-        <button
-          type="button" class="slot-choice" data-vfo-tile data-vfo-select
-          data-vfo-receiver={choice.receiver === 'sub' ? 'SUB' : 'MAIN'}
-          data-vfo-slot={choice.slot} data-vfo-active={choice.active}
-          data-vfo-active-slot={choice.activeSlot} data-vfo-tx-target={choice.txTarget}
-          disabled={choice.disabled} title={choice.reason}
-          aria-describedby={choice.reason ? `${staleId}-choice-${choice.key}` : undefined}
-          onclick={() => onSelectSlot?.(choice.key)}
-        >
-          <span class="vfo-role">{choice.label}</span>
-          <span class="vfo-freq">{choice.frequencyText}</span>
-        </button>
-        {#if choice.reason}
-          <span id={`${staleId}-choice-${choice.key}`} class="sr-only">{choice.reason}</span>
-        {/if}
-      {/each}
+      {/if}
+
+      {#if !compactHeader}{@render slotChoiceControls()}{/if}
+
     </div>
   </div>
 </div>
 
 <style>
+  .identity-row { display: contents; }
+  .panel.compact-header {
+    grid-template-rows: 28px auto;
+    min-height: 100%;
+    container-type: inline-size;
+  }
+  .compact-header .identity-row {
+    display: flex; align-items: center; min-width: 0; gap: 6px; padding: 0 8px;
+  }
+  .compact-header .panel-header { width: auto; flex: 0 0 auto; padding: 0; min-height: 24px; }
+  .compact-header .vfo-label { font-size: 12px; letter-spacing: 0.04em; }
+  .compact-header .panel-meter { margin-left: auto; flex: 1 1 240px; max-width: 310px; min-width: 0; padding: 0; height: 28px; }
+  .compact-header .panel-meter:empty { display: none; }
+  .compact-header .panel-meter :global(svg) { width: 100%; height: 28px; }
+  .compact-header .panel-body { display: flex; flex-direction: column; gap: 3px; padding: 0 8px 3px; }
+  .compact-header .display-row { min-height: 44px; gap: 8px; flex-wrap: wrap; justify-content: flex-start; }
+  .panel.compact-header .vfo-freq { font-size: 44px; line-height: 1; letter-spacing: 0; inline-size: auto; white-space: nowrap; }
+  .compact-header .freq-row { flex: 0 0 auto; }
+  .frequency-summary { display: flex; flex-direction: column; justify-content: center; flex: 1 1 0; min-width: 150px; gap: 2px; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--v2-text-secondary); }
+  .mode-filter-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+  .mode-filter-summary > span { white-space: nowrap; }
+  .mode-reading { font-weight: 700; color: var(--v2-text-primary); }
+  .mode-control { font: inherit; color: var(--receiver-accent); background: var(--v2-bg-panel); border: 1px solid var(--receiver-control-border); border-radius: 3px; cursor: pointer; padding: 3px 6px; }
+  .compact-header .control-strip { display: flex; align-content: start; align-items: baseline; flex-wrap: wrap; gap: 3px 12px; min-height: 27px; overflow: visible; white-space: normal; font-size: 11px; }
+  .tx-frequency { min-height: 12px; color: var(--v2-accent-orange, #ff9838); font-size: 11px; line-height: 12px; white-space: nowrap; }
+  .tx-frequency[data-rf-state='transmitting'] { color: var(--v2-accent-red, #ff4040); }
+  .tx-marker-slot { flex: 0 0 9ch; font-size: 11px; }
+  .indicator-group { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 9px; font-size: 11px; line-height: 12px; }
+  .group-label { color: var(--v2-accent-cyan); font-weight: 700; }
+  .passive-reading { color: var(--v2-text-secondary); white-space: nowrap; }
+  .tx-marker { flex: 0 0 9ch; color: var(--v2-accent-orange, #ff9838); font-size: 11px; white-space: nowrap; }
+  .tx-marker[data-rf-state='transmitting'] { color: var(--v2-accent-red, #ff4040); }
+  .tx-marker[data-rf-state='uncertain'] { color: var(--v2-accent-yellow, #ffca55); }
+  .compact-header .slot-choice { font-size: 11px; line-height: 14px; margin-inline-start: 0; }
+  .compact-header .slot-choice .vfo-role,
+  .compact-header .slot-choice .vfo-freq { font-size: inherit; }
+  @container (max-width: 540px) {
+    .compact-header .frequency-summary { flex-basis: 100%; }
+    .compact-header .display-row { row-gap: 0; }
+  }
+
   .panel {
     display: grid;
     grid-template-rows:

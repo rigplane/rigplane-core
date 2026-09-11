@@ -42,6 +42,12 @@ describe('MOR-2342 opt-in SDR meter', () => {
     expect(root.textContent).not.toContain('S9');
     expect(root.querySelector('svg')?.getAttribute('aria-label')).not.toContain('dBm');
   });
+  it('renders the inline meter at native compact dimensions with readable labels', () => {
+    const root = render(0, 'vfo-inline');
+    expect(root.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 300 30');
+    expect(root.querySelectorAll('[data-segment]')).toHaveLength(20);
+    expect([...root.querySelectorAll('text')].every((text) => Number(text.getAttribute('font-size')) >= 11)).toBe(true);
+  });
   it('retains the existing Standard meter and its distinct 20 segments', () => {
     const root = render(0, 'vfo-wide');
     expect(root.querySelector('svg')?.getAttribute('viewBox')).toMatch(/^0 0 600 /);

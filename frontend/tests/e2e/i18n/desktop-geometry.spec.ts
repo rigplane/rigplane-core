@@ -95,6 +95,7 @@ interface BootOptions {
   absoluteVfoPair?: boolean;
   txState?: 'rx' | 'tx';
   txTargetSlot?: 'A' | 'B' | 'unknown';
+  txFrequencyHz?: number;
   /** The QA-only skin `?layout=flagship-probe` selects
    *  (`lib/stores/qa-cockpit-override.ts`). It is not a `CanonicalLayoutMode`,
    *  so the workspace `layout` this helper writes cannot carry it. */
@@ -129,9 +130,9 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
       ? { status: 'unknown', reason: 'not-observed' }
       : {
           status: 'known', receiver: 'MAIN', slot: options.txTargetSlot,
-          frequencyHz: options.txTargetSlot === 'A'
+          frequencyHz: options.txFrequencyHz ?? (options.txTargetSlot === 'A'
             ? state.main.vfoA?.freqHz ?? state.main.freqHz ?? null
-            : state.main.vfoB?.freqHz ?? state.main.unselectedVfo?.freqHz ?? null,
+            : state.main.vfoB?.freqHz ?? state.main.unselectedVfo?.freqHz ?? null),
         };
   }
   if (options.extraCapabilities) {
@@ -374,18 +375,18 @@ function expectStandardReceiverIntegrity(
 
 test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
   test('MOR-2458 keeps RX/TX geometry fixed and attributes TX only to the known split target', async ({ browser }, info) => {
-    const capture = async (txState: 'rx' | 'tx', txTargetSlot: 'B' | 'unknown') => {
+    const capture = async (txState: 'rx' | 'tx', txTargetSlot: 'B' | 'unknown', txFrequencyHz?: number) => {
       const context = await browser.newContext();
       const page = await context.newPage();
       await boot(page, 'standard', 1440, true, 'studioline', false, undefined, {
-        height: 900, absoluteVfoPair: true, txState, txTargetSlot,
+        height: 900, absoluteVfoPair: true, txState, txTargetSlot, txFrequencyHz,
       });
       const geometry = await standardGeometry(page);
       const stateName = `${txState}-${txTargetSlot}`;
       const stateScreenshot = info.outputPath(`mor2458-${stateName}.png`);
       await page.screenshot({ path: stateScreenshot, fullPage: true });
       await info.attach(`mor2458-${stateName}`, { path: stateScreenshot, contentType: 'image/png' });
-      const targetBadges = await page.locator('[data-standard-vfo-slot] [data-indicator-fact="tx"][data-state="transmitting"], [data-standard-vfo-slot] [data-indicator-fact="tx?"]').evaluateAll(
+      const targetBadges = await page.locator('[data-standard-vfo-slot] [data-standard-tx-marker]').evaluateAll(
         elements => elements.map(element => ({
           slot: element.closest('[data-standard-vfo-slot]')?.getAttribute('data-standard-vfo-slot'),
           text: element.textContent?.trim(),
@@ -394,7 +395,14 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       const result = {
         geometry,
         targetBadges,
-        vfoFacts: await page.locator('[data-standard-vfo-slot] [data-indicator-fact="rx"], [data-standard-vfo-slot] [data-indicator-fact="tx"], [data-standard-vfo-slot] [data-indicator-fact="antenna"], [data-standard-vfo-slot] [data-indicator-fact="tune"], [data-standard-vfo-slot] [data-indicator-fact="rit"], [data-standard-vfo-slot] [data-indicator-fact="xit"]').evaluateAll(
+        targetFrequencies: await page.locator('[data-standard-tx-frequency]').evaluateAll(elements =>
+          elements.map(element => ({ slot: element.closest('[data-standard-vfo-slot]')?.getAttribute('data-standard-vfo-slot'),
+            text: element.textContent?.trim() }))),
+        radioFacts: await page.locator('[data-standard-radio-facts] [data-indicator-fact]').evaluateAll(elements =>
+          elements.map(element => element.getAttribute('data-indicator-fact'))),
+        headerBoxes: await page.locator('[data-standard-vfo-slot] .panel, [data-standard-vfo-slot] .identity-row, [data-standard-vfo-slot] .panel-meter')
+          .evaluateAll(elements => elements.map(element => element.getBoundingClientRect().toJSON())),
+        vfoFacts: await page.locator('[data-standard-vfo-slot] [data-indicator-fact="rx"], [data-standard-vfo-slot] [data-indicator-fact="tx"], [data-standard-vfo-slot] [data-indicator-fact="ant"], [data-standard-vfo-slot] [data-indicator-fact="atu"], [data-standard-vfo-slot] [data-indicator-fact="rit"], [data-standard-vfo-slot] [data-indicator-fact="xit"]').evaluateAll(
           elements => elements.map(element => ({
             fact: element.getAttribute('data-indicator-fact'),
             slot: element.closest('[data-standard-vfo-slot]')?.getAttribute('data-standard-vfo-slot'),
@@ -459,8 +467,9 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     const rx = await capture('rx', 'B');
     const tx = await capture('tx', 'B');
     const unknown = await capture('tx', 'unknown');
+    const offset = await capture('tx', 'B', 14332250);
     await info.attach('mor2458-rx-tx-geometry', {
-      body: JSON.stringify({ rx, tx, unknown }, null, 2), contentType: 'application/json',
+      body: JSON.stringify({ rx, tx, unknown, offset }, null, 2), contentType: 'application/json',
     });
     const stableGeometry = (geometry: typeof rx.geometry) => {
       const boxes = geometry.boxes as Record<string, DOMRect>;
@@ -476,18 +485,18 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     expect(rx.overlay!.box.bottom).toBeLessThanOrEqual(892);
     expect(rx.overlay!.gapAfter).toBeCloseTo(rx.overlay!.gapBefore, 1);
     expect(rx.overlay!.rightAfter).toBeCloseTo(rx.overlay!.rightBefore, 1);
-    expect(tx.targetBadges).toEqual([{ slot: 'B', text: 'TX 14.332.000' }]);
-    expect(rx.targetBadges).toEqual([]);
+    expect(tx.targetBadges).toEqual([{ slot: 'B', text: 'TX' }]);
+    expect(rx.targetBadges).toEqual([{ slot: 'B', text: 'TX target' }]);
     expect(unknown.targetBadges).toEqual([]);
-    for (const result of [rx, tx]) {
-      expect(result.vfoFacts).toEqual(expect.arrayContaining([
-        { fact: 'rx', slot: 'A' }, { fact: 'tune', slot: 'A' },
-        { fact: 'rit', slot: 'A' }, { fact: 'xit', slot: 'A' },
-        { fact: 'tx', slot: 'B' },
-      ]));
+    expect(offset.targetFrequencies).toEqual([{ slot: 'B', text: 'TX 14.332.250' }]);
+    for (const result of [rx, tx, unknown]) expect(result.targetFrequencies).toEqual([]);
+    for (const result of [tx, unknown, offset]) {
+      expect(result.headerBoxes).toEqual(rx.headerBoxes);
+      expect(result.geometry.boxes.receiver).toEqual(rx.geometry.boxes.receiver);
     }
-    expect(unknown.vfoFacts.some(({ fact }) => fact === 'tx')).toBe(false);
-    for (const result of [rx, tx, unknown]) {
+    for (const result of [rx, tx, unknown, offset]) {
+      expect(result.vfoFacts).toEqual([]);
+      expect(result.radioFacts).toEqual(['ant', 'atu', 'rit', 'xit']);
       expect(result.topTx).toBe(0);
       expect(result.centerTx).toBe(0);
       expect(result.centerFacts).toBe(0);
@@ -497,7 +506,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     }
   });
 
-  for (const width of [900, 1024, 1200, 1700] as const) {
+  for (const width of [900, 1024, 1200, 1280, 1440, 1700, 1920] as const) {
     test(`Standard ${width} compact absolute VFO pair keeps every bridge control`, async ({ page }, info) => {
       await boot(page, 'standard', width, true, 'studioline', false, undefined, {
         height: 1000, extraCapabilities: ALL_STRUCTURAL_ACTION_CAPS, absoluteVfoPair: true,
@@ -514,7 +523,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
           cardOverflow: [...element.querySelectorAll<HTMLElement>('[data-standard-vfo-slot]')]
             .map(card => {
               const cardBox = card.getBoundingClientRect();
-              return [...card.querySelectorAll<HTMLElement>('.panel-header, .panel-meter, .vfo-freq, .control-strip, .control-strip *')]
+              return [...card.querySelectorAll<HTMLElement>('.panel-header, .panel-meter, .vfo-freq, .frequency-summary, .frequency-summary *, .control-strip, .control-strip *')]
               .filter(target => {
                 const style = getComputedStyle(target);
                 const box = target.getBoundingClientRect();
@@ -547,18 +556,22 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       }
       const bridge = page.locator('[data-instrument-bridge]');
       await expect(bridge.locator('[data-indicator-fact], [data-vfo-operation-digest]')).toHaveCount(0);
-      await expect(cards.nth(0).locator('[data-indicator-fact="rx"]')).toContainText('RX 14.035.720');
-      await expect(cards.locator('[data-indicator-fact="tx"]')).toHaveCount(0);
-      const strips = cards.locator('.control-strip');
-      await expect(strips).toHaveCount(2);
-      await expect(strips.nth(0).locator('.mode-badge-wrapper')).toHaveAttribute('data-vfo-controls-disabled', 'false');
-      await expect(strips.nth(1).locator('.mode-badge-wrapper')).toHaveAttribute('data-vfo-controls-disabled', 'true');
-      await expect(strips.nth(0)).toContainText(/CW.*FIL3/);
-      await expect(strips.nth(1)).toContainText(/USB.*FIL1/);
-      for (const fact of ['ant', 'tune', 'rit', 'xit']) {
-        await expect(cards.nth(0).locator(`[data-indicator-fact="${fact}"]`)).toBeVisible();
-        await expect(cards.nth(1).locator(`[data-indicator-fact="${fact}"]`)).toHaveCount(0);
+      await expect(cards.locator('[data-indicator-fact="rx"], [data-indicator-fact="tx"]')).toHaveCount(0);
+      await expect(cards.locator('[data-standard-tx-frequency]')).toHaveCount(0);
+      const summaries = cards.locator('.frequency-summary');
+      await expect(summaries).toHaveCount(2);
+      await expect(summaries.nth(0)).toContainText(/CW.*FIL3/);
+      await expect(summaries.nth(1)).toContainText(/USB.*FIL1/);
+      await expect(summaries.locator('.mode-badge-wrapper, .v2-status-indicator')).toHaveCount(0);
+      for (const fact of ['ant', 'atu', 'rit', 'xit']) {
+        await expect(page.locator(`[data-standard-radio-facts] [data-indicator-fact="${fact}"]`)).toBeVisible();
+        await expect(cards.locator(`[data-indicator-fact="${fact}"]`)).toHaveCount(0);
       }
+      const fonts = await cards.locator('.freq-row .freq').evaluateAll(elements =>
+        elements.map(element => getComputedStyle(element).fontSize));
+      expect(fonts).toEqual(['44px', '44px']);
+      await expect(cards.locator('[data-meter-space="reserved"]')).toHaveCount(0);
+      await expect(cards.locator('.identity-row [data-testid="receiver-s-meter"]')).toHaveCount(1);
       expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
         .geometryCommands.filter(c => c.type === 'cmd'))).toEqual([]);
       const screenshot = info.outputPath(`compact-vfo-pair-${width}.png`);

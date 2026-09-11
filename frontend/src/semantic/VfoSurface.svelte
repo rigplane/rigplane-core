@@ -468,51 +468,39 @@
     ),
   );
 
+  function standardRadioBadges() {
+    const badges: { label: string; active: boolean; color: string; state: string }[] = [];
+    const wide = viewModel.radioWideIndicators;
+    if (wide?.antenna.availability.structural) {
+      const value = wide.antenna.reading.status === 'known' ? wide.antenna.reading.value : null;
+      badges.push({ label: `ANT ${value ?? '—'}`, active: value !== null,
+        color: value === null ? 'muted' : 'cyan', state: wide.antenna.reading.status });
+    }
+    if (wide?.atu.availability.structural) {
+      const value = wide.atu.reading.status === 'known' ? wide.atu.reading.value.toUpperCase() : null;
+      badges.push({ label: `ATU ${value ?? '—'}`, active: value === 'ON' || value === 'TUNING',
+        color: value === null ? 'muted' : value === 'OFF' ? 'cyan' : 'orange', state: wide.atu.reading.status });
+    }
+    if (wide && (wide.ritActive.availability.structural || wide.ritOffset.availability.structural)) {
+      const active = wide.ritActive.reading.status === 'known' ? wide.ritActive.reading.value : null;
+      const offset = wide.ritOffset.reading.status === 'known' ? wide.ritOffset.reading.value : null;
+      badges.push({ label: `RIT ${active === null ? '—' : active ? 'ON' : 'OFF'} ${offset ?? '—'} Hz`,
+        active: active === true, color: active === null || offset === null ? 'muted' : active ? 'orange' : 'cyan',
+        state: active === null || offset === null ? 'unknown' : 'known' });
+    }
+    if (wide && (wide.xitActive.availability.structural || wide.xitOffset.availability.structural)) {
+      const active = wide.xitActive.reading.status === 'known' ? wide.xitActive.reading.value : null;
+      const offset = wide.xitOffset.reading.status === 'known' ? wide.xitOffset.reading.value : null;
+      badges.push({ label: `XIT ${active === null ? '—' : active ? 'ON' : 'OFF'} ${offset ?? '—'} Hz`,
+        active: active === true, color: active === null || offset === null ? 'muted' : active ? 'orange' : 'cyan',
+        state: active === null || offset === null ? 'unknown' : 'known' });
+    }
+
+    return badges;
+  }
+
   function standardBadges(indicator: ReceiverIndicatorViewModel | undefined, vfo?: VfoViewModel) {
     const badges: { label: string; active: boolean; color: 'cyan' | 'orange' | 'muted' | 'red' | 'amber'; state: string }[] = [];
-    const wide = viewModel.radioWideIndicators;
-    const rfState = viewModel.radioWideIndicators?.rfState;
-    if (vfo?.isActiveSlot) {
-      const rxHz = displayValue(vfo.display?.frequencyHz, vfo.frequencyHz);
-      badges.push({ label: `RX ${formatFrequency(rxHz)}`, active: rxHz !== null,
-        color: rxHz === null ? 'muted' : 'cyan', state: vfo.display?.frequencyHz.state ?? (rxHz === null ? 'unknown' : 'current') });
-      if (wide?.antenna.availability.structural) {
-        const value = wide.antenna.reading.status === 'known' ? wide.antenna.reading.value : null;
-        badges.push({ label: `ANT ${value ?? '—'}`, active: value !== null,
-          color: value === null ? 'muted' : 'cyan', state: wide.antenna.reading.status });
-      }
-      if (wide?.atu.availability.structural) {
-        const value = wide.atu.reading.status === 'known' ? wide.atu.reading.value.toUpperCase() : null;
-        badges.push({ label: `TUNE ${value ?? '—'}`, active: value === 'ON' || value === 'TUNING',
-          color: value === null ? 'muted' : value === 'OFF' ? 'cyan' : 'orange', state: wide.atu.reading.status });
-      }
-      if (wide && (wide.ritActive.availability.structural || wide.ritOffset.availability.structural)) {
-        const active = wide.ritActive.reading.status === 'known' ? wide.ritActive.reading.value : null;
-        const offset = wide.ritOffset.reading.status === 'known' ? wide.ritOffset.reading.value : null;
-        badges.push({ label: `RIT ${active === null ? '—' : active ? 'ON' : 'OFF'} ${offset ?? '—'} Hz`,
-          active: active === true, color: active === null || offset === null ? 'muted' : active ? 'orange' : 'cyan',
-          state: active === null || offset === null ? 'unknown' : 'known' });
-      }
-      if (wide && (wide.xitActive.availability.structural || wide.xitOffset.availability.structural)) {
-        const active = wide.xitActive.reading.status === 'known' ? wide.xitActive.reading.value : null;
-        const offset = wide.xitOffset.reading.status === 'known' ? wide.xitOffset.reading.value : null;
-        badges.push({ label: `XIT ${active === null ? '—' : active ? 'ON' : 'OFF'} ${offset ?? '—'} Hz`,
-          active: active === true, color: active === null || offset === null ? 'muted' : active ? 'orange' : 'cyan',
-          state: active === null || offset === null ? 'unknown' : 'known' });
-      }
-    }
-    if (vfo?.isTxTarget && viewModel.txTarget.status === 'known') {
-      const transmitting = rfState === 'transmitting';
-      const uncertain = rfState === 'uncertain';
-      badges.push({
-        label: `${uncertain ? 'TX?' : 'TX'} ${formatFrequency(viewModel.txTarget.frequencyHz)}`,
-        active: true,
-        color: transmitting ? 'red' : uncertain ? 'amber' : 'orange',
-        state: rfState ?? 'unknown',
-      });
-    }
-    // A split TX target may be the inactive slot. It receives only RF truth;
-    // receiver-local badges still belong exclusively to the active VFO.
     if (!indicator || (vfo !== undefined && !vfo.isActiveSlot)) return badges;
     const numeric = (name: string, field: ReceiverIndicatorViewModel['bandwidthHz'], unit = '') => {
       if (!field.availability.structural) return;
@@ -821,9 +809,7 @@
       {@render frequencyHandle!({ compact: false, vfoFreqHook: false })}
     {/snippet}
     {#snippet hostedMeterFrame(frame: SignalMeterFrame)}
-      <LinearSMeter {frame} compact
-        label={dominant ? (dominant.slot.kind === 'slotted' ? dominant.slot.id : roleLabel(dominant)) : '—'}
-        variant="vfo" />
+      <LinearSMeter {frame} compact variant="vfo-inline" />
     {/snippet}
     {#snippet hostedMeter()}
       {#if meterHandle}{@render meterHandle(hostedMeterFrame)}{/if}
@@ -851,7 +837,13 @@
         data-vfo-active={dominant?.isActive} data-vfo-active-slot={dominant?.isActiveSlot}
         data-vfo-tx-target={dominant?.isTxTarget}>
         <VfoPanel
-          receiver={receiver === 'SUB' ? 'sub' : 'main'} receiverLabel={fixed ? roleLabel(fixed) : receiver}
+          compactHeader
+          txTarget={dominant?.isTxTarget && viewModel.txTarget.status === 'known'}
+          txFrequencyText={dominant?.isTxTarget && viewModel.txTarget.status === 'known'
+            && viewModel.txTarget.frequencyHz !== displayValue(dominant.display?.frequencyHz, dominant.frequencyHz)
+            ? `TX ${formatFrequency(viewModel.txTarget.frequencyHz)}` : undefined}
+          rfState={viewModel.radioWideIndicators?.rfState}
+          receiver={receiver === 'SUB' ? 'sub' : 'main'} receiverLabel={dominant ? roleLabel(dominant) : receiver}
           slotTag={dominant ? (dominant.slot.kind === 'slotted' ? dominant.slot.id : roleLabel(dominant)) : '—'}
           frequency={receiverInstruments !== undefined && dominant && frequencyHandle
             && (fixed === undefined || fixed.isActiveSlot)
@@ -881,7 +873,6 @@
           badgeItems={standardBadges(indicator, dominant)}
           bandText={dominant ? standardBand(dominant) : null}
           slotChoices={choices}
-          reserveMeterSpace={fixed !== undefined && !fixed.isActiveSlot}
           onFreqChange={receiverInstruments === undefined && dominant
             ? (hz) => tuneFrequency(dominant, hz) : undefined}
           onFrequencyClick={dominant && onOpenFrequencyEntry
@@ -901,6 +892,17 @@
     </section>
   {/snippet}
 
+  {#if appearance === 'standard' && showRadioWideFacts}
+    <div class="standard-radio-facts" data-standard-radio-facts aria-label="Radio indicators">
+      <span class="radio-label">RADIO</span>
+      {#each standardRadioBadges() as item (item.label.split(' ')[0])}
+        <span class="radio-fact" data-indicator-fact={item.label.split(' ')[0].toLowerCase()}
+          data-state={item.state} class:offset-active={item.active && item.color === 'orange'}>{item.label}</span>
+      {/each}
+      <span class="radio-tx">{viewModel.txTarget.status === 'unknown' ? 'TX —' : ''}</span>
+    </div>
+  {/if}
+
   {#if appearance !== 'semantic' && showVfoList}
     <div class="instrument-panel" data-testid="vfo-instrument-panel">
       {#if standardPair}
@@ -917,7 +919,7 @@
       {/if}
       {#if showRadioWideFacts}
         <div class="bridge" data-instrument-bridge>
-          {@render activeReceiverStatus()}
+          {#if appearance !== 'standard'}{@render activeReceiverStatus()}{/if}
           {@render identitySelectors()}
           {#if appearance === 'standard'}{@render standardOperationContent()}
           {:else}{@render radioWideContent()}{/if}
@@ -1018,82 +1020,39 @@
   .receiver-instrument .secondary-slot .vfo-freq { font-size: 18px; margin: 2px 0; }
   .receiver-instrument .vfo-select { justify-self: end; grid-column: 2; grid-row: 1 / 3; }
   .bridge .vfo-identity-selectors { flex-direction: column; }
-  [data-vfo-appearance='standard'] .receiver-instrument { padding: 8px; }
-  [data-vfo-appearance='standard'] .instrument-active {
-    border: 1px solid var(--v2-accent-cyan, #00d4ff); border-radius: 4px;
-    box-shadow: 0 0 6px rgba(0,212,255,.3), inset 0 0 16px rgba(0,212,255,.06);
-  }
-  [data-vfo-appearance='standard'] .bridge { flex-basis: 136px; }
-  [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
+  [data-vfo-appearance='standard'] { gap: 3px; }
+  [data-vfo-appearance='standard'] .instrument-panel { flex-wrap: nowrap; }
+  [data-vfo-appearance='standard'] .standard-receiver {
     flex: 1 1 0;
-    padding: 6px;
-    --btn-compact-min-height: 18px;
-    --btn-compact-padding-block: 1px;
-    --btn-compact-padding-inline: 4px;
-    --btn-compact-font-size: 9px;
-    --vfo-control-strip-gap: 2px;
-    --vfo-panel-body-height: 100px;
-    --vfo-control-strip-height: 54px;
-  }
-  [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] :global(.control-strip) {
-    align-content: center;
-    flex-wrap: wrap;
-    overflow: visible;
-    white-space: normal;
-  }
-  @media (min-width: 951px) and (max-width: 1280px) {
-    [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
-      --btn-compact-min-height: 14px;
-      --btn-compact-padding-block: 0;
-      --btn-compact-padding-inline: 3px;
-    }
-    [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] :global(.control-strip) {
-      line-height: 14px;
-    }
-  }
-  [data-vfo-appearance='standard'] .standard-pair-bridge {
-    flex: 0 0 clamp(190px, 14vw, 220px);
-    padding: 4px;
-    gap: 3px;
-    --vfo-ops-gap: 3px;
-    --vfo-ops-badge-padding-x: 3px;
-    --vfo-ops-badge-font-size: 9px;
-  }
-  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .facts) {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 3px;
-  }
-  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .fact) {
+    padding: 3px;
     min-width: 0;
-    text-align: center;
   }
-  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .rf-lamp:empty) {
-    display: none;
+  [data-vfo-appearance='standard'] .bridge {
+    flex: 0 0 170px;
+    padding: 4px;
+    gap: 4px;
+    --vfo-ops-gap: 4px;
+    --vfo-ops-badge-padding-x: 3px;
+    --vfo-ops-badge-font-size: 10px;
   }
-  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.vfo-ops) {
+  [data-vfo-appearance='standard'] .bridge :global(.vfo-ops) {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.split-digest) {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 3px;
+  .standard-radio-facts {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px;
+    min-height: 18px; padding: 0 8px; font-size: 11px; line-height: 16px;
+    color: var(--v2-text-secondary); font-variant-numeric: tabular-nums;
   }
-  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.split-digest > span) {
-    min-width: 0;
-    text-align: center;
-  }
+  .radio-label { color: var(--v2-accent-cyan); font-weight: 700; }
+  .radio-fact { white-space: nowrap; }
+  .offset-active, .radio-tx { color: var(--v2-accent-orange, #ff9838); }
+  .radio-tx { margin-left: auto; min-width: 14ch; white-space: nowrap; }
   .standard-vfo-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
   .standard-vfo-selectors .vfo-select {
-    min-width: 0; padding: 4px 3px; font-size: 9px; font-weight: 700;
+    min-width: 0; padding: 4px 3px; font-size: 11px; font-weight: 700;
   }
   .standard-vfo-selectors .vfo-select[data-active='true'] {
     border-color: var(--v2-accent-cyan, #00d4ff); color: var(--v2-accent-cyan, #00d4ff);
-  }
-  .standard-tx-target {
-    display: block; padding: 3px 5px; border: 1px solid var(--v2-accent-red, #ff2020);
-    border-radius: 3px; color: var(--v2-accent-red, #ff2020); font-size: 9px;
-    font-weight: 700; text-align: center;
   }
   [data-vfo-appearance='standard'] .receiver-instrument :where(.vfo-tile) {
     grid-template-columns: auto minmax(0, 1fr) auto;
@@ -1135,19 +1094,6 @@
     .receiver-instrument { flex-basis: calc(50% - 90px); }
     .bridge { flex-basis: 150px; }
     .receiver-instrument .vfo-freq { font-size: 26px; }
-  }
-  @media (max-width: 950px) {
-    [data-vfo-appearance='standard'] .standard-pair-bridge {
-      padding: 2px;
-      gap: 1px;
-    }
-    [data-vfo-appearance='standard'] .standard-receiver {
-      --vfo-panel-body-height: 64px;
-      --vfo-control-strip-height: 22px;
-    }
-    [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
-      flex-basis: calc(100% - 192px);
-    }
   }
   @media (max-width: 760px) {
     .instrument-panel { flex-direction: column; }
