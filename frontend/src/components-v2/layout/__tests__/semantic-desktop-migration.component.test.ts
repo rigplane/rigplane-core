@@ -1403,7 +1403,10 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
       ['atu', 'tx-aux-atu'], ['vox', 'tx-aux-vox'], ['compressor', 'tx-aux-compressor'],
       ['monitor', 'tx-aux-monitor'], ['atuTune', 'tx-aux-atu-tune'],
     ] as const) {
-      const seat = root.querySelector(`.desktop-controls-right .tx-aux-finite-seat[data-field="${field}"]`);
+      const seatClass = skinId === 'desktop-v2' ? 'standard-tx-seat' : 'tx-aux-finite-seat';
+      const seat = root.querySelector(
+        `.desktop-controls-right .${seatClass}[data-field="${field}"]`,
+      );
       expect(seat, `${field} finite seat`).not.toBeNull();
       expect(seat?.querySelector(`[data-testid="${testid}"]`)).not.toBeNull();
       expect(root.querySelectorAll(`[data-testid="${testid}"]`)).toHaveLength(1);
@@ -2509,12 +2512,22 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     }
     for (const panelId of [
       'semantic-rx-tx', 'semantic-rx-audio', 'semantic-dsp', 'semantic-cw',
-      'semantic-memory', 'semantic-tx-aux',
+      'semantic-memory',
     ]) {
       expect(t.querySelectorAll(`[data-panel-id="${panelId}"]`), panelId).toHaveLength(1);
       expect(t.querySelector(`.desktop-controls-right [data-panel-id="${panelId}"]`), panelId)
         .not.toBeNull();
     }
+    expect(t.querySelectorAll('[data-panel-id="semantic-tx-aux"]')).toHaveLength(0);
+    const txPanel = t.querySelector('[data-panel-id="semantic-rx-tx"]')!;
+    expect(txPanel.querySelector('[data-testid="tx-aux-surface"]')).not.toBeNull();
+    const levels = [...txPanel.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.getAttribute('aria-label') === 'TX level settings')!;
+    expect(levels.getAttribute('aria-expanded')).toBe('false');
+    levels.click();
+    flushSync();
+    expect(levels.getAttribute('aria-expanded')).toBe('true');
+    expect(txPanel.querySelectorAll('.standard-tx-levels')).toHaveLength(1);
     expect(t.querySelector('.standard-bottom-dock [data-panel-id="semantic-meters"]'))
       .not.toBeNull();
   });
@@ -2653,13 +2666,16 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     expect(unknownInput.value).toBe('');
   });
 
-  it('groups both bare CW instruments inside the one movable CW shell', () => {
+  it('hosts both CW hardware hbars inside the one movable CW shell', () => {
     enableAllServiceSurfaces();
     const t = renderAll('desktop-v2');
     const cw = t.querySelector('[data-panel-id="semantic-cw"]')!;
     expect(cw.querySelector('[data-testid="cw-keyer-surface"]')).not.toBeNull();
-    expect(cw.querySelectorAll('[data-cw-keyer-seat]')).toHaveLength(2);
-    expect(t.querySelectorAll('[data-cw-keyer-seat]')).toHaveLength(2);
+    expect(cw.querySelector('[data-testid="cw-keyer-pitchHz"] .vc-hbar.hw-illum')).not.toBeNull();
+    expect(cw.querySelector('[data-testid="cw-keyer-keyerSpeed"] .vc-hbar.hw-illum')).not.toBeNull();
+    expect(t.querySelectorAll('[data-testid="cw-keyer-pitchHz"]')).toHaveLength(1);
+    expect(t.querySelectorAll('[data-testid="cw-keyer-keyerSpeed"]')).toHaveLength(1);
+    expect(t.querySelectorAll('[data-cw-keyer-seat]')).toHaveLength(0);
   });
 
   it('moves one service panel through all Standard owners, persists, and resets without commands', () => {
