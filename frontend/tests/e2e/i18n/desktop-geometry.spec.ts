@@ -973,6 +973,18 @@ for (const width of [1024, 1440]) {
       expect(buttons.every(button => button.height >= 28 && button.fits)).toBe(true);
       expect(await measure()).toEqual(knownBounds);
     }
+    const longValues = structuredClone(initial);
+    Object.assign(longValues, { revision: 10, stateRevision: 10,
+      freshnessRevision: 10, observationSeq: 10 });
+    Object.assign(longValues.main, { activeSlot: 'A', freqHz: 999_999_999,
+      mode: 'RTTY-R', filter: 3, filterWidth: 9999 });
+    Object.assign(longValues.main.vfoA!, { freqHz: 999_999_999, mode: 'RTTY-R',
+      filterNum: 3 });
+    await page.evaluate(state => window.dispatchEvent(
+      new CustomEvent('geometry-state', { detail: state })), longValues);
+    await expect(page.locator('[data-standard-vfo-slot="A"] [data-vfo-freq]'))
+      .toContainText('999');
+    expect(await measure()).toEqual(knownBounds);
     expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
       .geometryCommands.filter(command => command.type === 'cmd'))).toEqual([]);
   });
