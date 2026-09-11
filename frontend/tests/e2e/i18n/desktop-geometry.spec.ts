@@ -602,7 +602,8 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       expect.soft(boxes.meters.width, 'meters span the full-width bottom dock').toBeCloseTo(boxes.bottom.width, 0);
       if (width > 1024) {
         const sideWidth = width <= 1200 ? 208 : 228;
-        expect.soft(boxes.receiver.height, 'wide Standard receiver row keeps its 200px floor').toBeGreaterThanOrEqual(199);
+        expect.soft(boxes.receiver.height, 'Standard deck fits its wide or wrapped header budget')
+          .toBeLessThanOrEqual(width > 1280 ? 150 : 175);
         expect.soft(boxes.left.width).toBeCloseTo(sideWidth, 0);
         expect.soft(boxes.right.width).toBeCloseTo(sideWidth, 0);
         expect.soft(boxes.left.y).toBeCloseTo(boxes.center.y, 0);
@@ -620,9 +621,10 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       expectStandardReceiverIntegrity(geometry, bodyTop);
       for (const instrument of geometry.instruments) {
         expect.soft(instrument.meter?.width ?? 0, 'receiver meter is painted').toBeGreaterThan(0);
-        expect.soft(instrument.meter?.height ?? 0, 'receiver meter is painted').toBeGreaterThan(0);
+        expect.soft(instrument.meter?.height ?? 0, 'inline receiver meter retains its readable height').toBe(28);
         expect.soft(instrument.primary?.width ?? 0, 'primary frequency glyphs are painted').toBeGreaterThan(0);
         expect.soft(instrument.primary?.height ?? 0, 'primary frequency glyphs are painted').toBeGreaterThan(0);
+        expect.soft(instrument.primary?.fontSize, 'primary frequency retains its 44px type').toBe(44);
         expect.soft(instrument.meter!.left).toBeGreaterThanOrEqual(instrument.instrument.left - 1);
         expect.soft(instrument.meter!.right).toBeLessThanOrEqual(instrument.instrument.right + 1);
         expect.soft(instrument.primary!.rect.left).toBeGreaterThanOrEqual(instrument.instrument.left - 1);
@@ -744,7 +746,7 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
               ? [{ scrollWidth: strip.scrollWidth, clientWidth: strip.clientWidth,
                 strip: box.toJSON(), card: card.toJSON() }] : [];
           }));
-        expect.soft(stripFailures, '900px Standard cards keep every status chip contained').toEqual([]);
+        expect.soft(stripFailures, '900px Standard cards keep receiver facts contained').toEqual([]);
       }
       const unkey = page.getByTestId('rx-tx-unkey');
       await expect(unkey).toHaveCount(1);
