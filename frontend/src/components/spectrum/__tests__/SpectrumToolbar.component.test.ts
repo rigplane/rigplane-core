@@ -782,7 +782,7 @@ describe('source and enforcement boundary', () => {
     const source = readFileSync(sourcePath, 'utf8');
     const cssHash = createHash('sha256').update(source.slice(source.indexOf('<style>'))).digest('hex');
     // MOR-2358 adds host-scoped wrapping for the semantic scope surface.
-    expect(cssHash).toBe('622f0d23564d864e655abdcba793df729fe4d7f33723002c9ec8b36cd3924de4');
+    expect(cssHash).toBe('252756d5c08e3b90ae9c73abcda041279b92f7bb205f41fc8447408cf7e8d0fa');
   });
 });
 

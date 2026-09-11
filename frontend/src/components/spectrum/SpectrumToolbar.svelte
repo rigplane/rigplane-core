@@ -636,51 +636,7 @@
   }
 
   :global(.desktop-control-face.standard-face) .toolbar-btn {
-    background: linear-gradient(180deg,
-      var(--hw-gradient-top-1) 0%,
-      var(--hw-gradient-top-2) 14%,
-      var(--hw-gradient-mid) 52%,
-      var(--hw-gradient-bottom) 100%);
-    border-color: var(--hw-border);
-    color: var(--v2-text-subdued, var(--text-muted));
-    font-weight: 700;
-    box-shadow:
-      inset 0 1px 0 var(--hw-shadow-top),
-      inset 0 -1px 0 var(--hw-shadow-bottom),
-      inset 1px 0 0 var(--hw-shadow-left),
-      inset -1px 0 0 var(--hw-shadow-right),
-      0 1px 0 var(--hw-shadow-outer-top),
-      0 4px 10px var(--hw-shadow-outer-bottom);
-  }
-
-  :global(.desktop-control-face.standard-face) .toolbar-btn:hover:not(:disabled) {
-    background: linear-gradient(180deg,
-      var(--hw-gradient-top-1-hover) 0%,
-      var(--hw-gradient-top-2-hover) 16%,
-      var(--hw-gradient-mid-hover) 56%,
-      var(--hw-gradient-bottom-hover) 100%);
-    border-color: var(--v2-accent-cyan, #00d4ff);
-    color: var(--v2-text-bright, var(--text));
-  }
-
-  :global(.desktop-control-face.standard-face) .toolbar-btn.active {
-    color: var(--v2-text-bright, #fff);
-    border-color: var(--v2-accent-cyan, #00d4ff);
-    box-shadow:
-      inset 3px 0 var(--v2-accent-cyan, #00d4ff),
-      inset 0 1px 0 var(--hw-shadow-top),
-      0 0 0 1px color-mix(in srgb, var(--v2-accent-cyan, #00d4ff) 15%, transparent),
-      0 0 10px color-mix(in srgb, var(--v2-accent-cyan, #00d4ff) 10%, transparent);
-  }
-
-  :global(.desktop-control-face.standard-face) .toolbar-btn:focus-visible {
-    outline: var(--v2-focus-ring);
-    outline-offset: 2px;
-  }
-
-  :global(.desktop-control-face.standard-face) .toolbar-btn:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
+    font-weight: 400;
   }
 
   .toolbar-btn.small {
