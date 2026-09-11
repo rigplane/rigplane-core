@@ -7,7 +7,8 @@
   import { createChoiceRendererSeat, createToggleRendererSeat,
     type FiniteControlAppearance, type FiniteRendererContext } from '../primitives/control-instruments/control-instrument-renderer.svelte';
   import { DSP_NOTCH_MODES, DSP_TOGGLES, type DspFiniteChoiceValue,
-    type DspFiniteHandles, type DspNotchMode, type DspToggleField } from './dsp-instruments';
+    type DspFiniteHandles, type DspNotchMode, type DspSettingsPanel,
+    type DspToggleField } from './dsp-instruments';
   import type { RadioViewModel } from './radio-view-model';
 
   interface ExistingProps {
@@ -18,6 +19,7 @@
     onToggle?: (field: DspToggleField, next: boolean) => void;
     onNotchModeChange?: (mode: DspNotchMode) => void;
     onAgcModeChange?: (mode: number) => void;
+    onOpenSettings?: (panel: DspSettingsPanel) => void;
     children: Snippet<[DspFiniteHandles]>;
   }
   type RendererSelection = { finiteAppearance?: undefined; rendererContext?: undefined } | {
@@ -27,7 +29,7 @@
 
   let {
     view, agcLabels = {}, pendingNb = null, pendingNr = null,
-    onToggle, onNotchModeChange, onAgcModeChange,
+    onToggle, onNotchModeChange, onAgcModeChange, onOpenSettings,
     finiteAppearance, rendererContext, children,
   }: Props = $props();
 
@@ -72,12 +74,59 @@
     options: DSP_NOTCH_MODES.map(value => ({ value, label: value })),
     invoke: (mode) => onNotchModeChange?.(mode as DspNotchMode),
   }));
+  const notchToggleField = (mode: 'manual' | 'auto') => {
+    const field = dsp?.notchMode;
+    return field === undefined ? undefined : {
+      availability: field.availability,
+      reading: field.reading.status === 'known'
+        ? { status: 'known' as const, value: field.reading.value === mode }
+        : { status: 'unknown' as const },
+    };
+  };
+  const manualNotchSeat = createToggleRendererSeat(() => ({
+    context: rendererContext ?? null, field: notchToggleField('manual'), label: 'NOTCH',
+    invoke: (next) => onNotchModeChange?.(next ? 'manual' : 'off'),
+  }));
+  const autoNotchSeat = createToggleRendererSeat(() => ({
+    context: rendererContext ?? null, field: notchToggleField('auto'), label: 'A-NOTCH',
+    invoke: (next) => onNotchModeChange?.(next ? 'auto' : 'off'),
+  }));
+  let holdTimer: ReturnType<typeof setTimeout> | null = null;
+  let heldPanel: DspSettingsPanel | null = null;
+  function startSettingsHold(panel: DspSettingsPanel): void {
+    if (holdTimer !== null) clearTimeout(holdTimer);
+    heldPanel = null;
+    holdTimer = setTimeout(() => {
+      holdTimer = null; heldPanel = panel; onOpenSettings?.(panel);
+    }, 500);
+  }
+  function endSettingsHold(): void {
+    if (holdTimer !== null) clearTimeout(holdTimer);
+    holdTimer = null;
+  }
+  function compactToggle(field: DspToggleField): void {
+    if (heldPanel !== null) { heldPanel = null; return; }
+    const behavior = field === 'nrActive' ? nrBehavior : nbBehavior;
+    behavior.invoke();
+  }
+  function suppressHeldClick(event: MouseEvent): void {
+    if (heldPanel === null) return;
+    event.preventDefault(); event.stopPropagation(); heldPanel = null;
+  }
+  function compactNotch(mode: 'manual' | 'auto'): void {
+    if (heldPanel !== null) { heldPanel = null; return; }
+    notchBehavior.invoke(notchBehavior.isSelected(mode) ? 'off' : mode);
+  }
   const agcSeat = createChoiceRendererSeat<DspFiniteChoiceValue>(() => ({
     context: rendererContext ?? null, field: dsp?.agcMode, label: 'AGC mode',
     options: agcOptions.map(option => ({ value: option.value, label: option.label })),
     invoke: (mode) => onAgcModeChange?.(mode as number),
   }));
-  onDestroy(() => { nrSeat.destroy(); nbSeat.destroy(); notchSeat.destroy(); agcSeat.destroy(); });
+  onDestroy(() => {
+    endSettingsHold();
+    nrSeat.destroy(); nbSeat.destroy(); notchSeat.destroy(); manualNotchSeat.destroy();
+    autoNotchSeat.destroy(); agcSeat.destroy();
+  });
 </script>
 
 {#snippet toggle(field: DspToggleField, label: string)}
@@ -103,6 +152,67 @@
     {/if}
   {/if}
 {/snippet}
+{#snippet compactDspButton(kind: 'nb' | 'nr' | 'notch', label: string)}
+  {@const field = kind === 'nb' ? 'nbActive' : 'nrActive'}
+  {@const current = kind === 'notch' ? dsp?.notchMode : dsp?.[field]}
+  {#if current?.availability.structural}
+    {@const available = kind === 'notch' ? notchBehavior.available
+      : (kind === 'nr' ? nrBehavior.available : nbBehavior.available)}
+    {@const active = kind === 'notch'
+      ? notchBehavior.isSelected('manual')
+      : current.reading.status === 'known' && current.reading.value === true}
+    <div class="compact-dsp-button" role="group" aria-label={`${label} control`}
+      onpointerdown={() => startSettingsHold(kind)} onpointerup={endSettingsHold}
+      onpointercancel={endSettingsHold} onpointerleave={endSettingsHold}
+      onkeydown={(event) => { if (event.key === ' ') startSettingsHold(kind); }}
+      onkeyup={(event) => { if (event.key === ' ') endSettingsHold(); }}
+      onclickcapture={suppressHeldClick}>
+      {#if finiteAppearance}
+        {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
+          seat={kind === 'notch' ? manualNotchSeat : (kind === 'nr' ? nrSeat : nbSeat)}
+          renderer={finiteAppearance.toggle}
+        />{/key}{/key}
+      {:else}
+        <button type="button" class="dsp-toggle" aria-pressed={active} disabled={!available}
+          title={`${label} — click to toggle; hold for settings`}
+          onclick={() => kind === 'notch' ? compactNotch('manual') : compactToggle(field)}>{label}</button>
+      {/if}
+    </div>
+  {/if}
+{/snippet}
+{#snippet compactNb()}{@render compactDspButton('nb', 'NB')}{/snippet}
+{#snippet compactNr()}{@render compactDspButton('nr', 'NR')}{/snippet}
+{#snippet compactManualNotch()}{@render compactDspButton('notch', 'NOTCH')}{/snippet}
+{#snippet compactAutoNotch()}
+  {#if dsp?.notchMode.availability.structural}
+    {#if finiteAppearance}
+      {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
+        seat={autoNotchSeat} renderer={finiteAppearance.toggle}
+      />{/key}{/key}
+    {:else}
+      <button type="button" class="dsp-toggle"
+        aria-pressed={notchBehavior.isSelected('auto')} disabled={!notchBehavior.available}
+        onclick={() => compactNotch('auto')}>A-NOTCH</button>
+    {/if}
+  {/if}
+{/snippet}
+{#snippet notchToggle(mode: 'manual' | 'auto', label: string)}
+  {#if dsp?.notchMode.availability.structural}
+    {#if finiteAppearance}
+      {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
+        seat={mode === 'manual' ? manualNotchSeat : autoNotchSeat}
+        renderer={finiteAppearance.toggle}
+      />{/key}{/key}
+    {:else}
+      <button type="button" class="dsp-toggle" data-testid={`dsp-${mode}Notch`}
+        aria-pressed={notchBehavior.selected === undefined ? undefined : notchBehavior.isSelected(mode)}
+        disabled={!notchBehavior.available}
+        onclick={() => notchBehavior.invoke(notchBehavior.isSelected(mode) ? 'off' : mode)}>{label}</button>
+    {/if}
+  {/if}
+{/snippet}
+{#snippet manualNotch()}{@render notchToggle('manual', 'NOTCH')}{/snippet}
+{#snippet autoNotch()}{@render notchToggle('auto', 'A-NOTCH')}{/snippet}
 
 {#snippet nrActive()}{@render toggle('nrActive', DSP_TOGGLES[0][1])}{/snippet}
 {#snippet nbActive()}{@render toggle('nbActive', DSP_TOGGLES[1][1])}{/snippet}
@@ -143,10 +253,14 @@
   {/if}
 {/snippet}
 
-{@render children({ nrActive, nbActive, notchMode, agcMode })}
+{@render children({
+  nrActive, nbActive, notchMode, manualNotch, autoNotch,
+  compactNb, compactNr, compactManualNotch, compactAutoNotch, agcMode,
+})}
 
 <style>
   .dsp-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .compact-dsp-button { display: contents; }
   .dsp-toggle[aria-pressed='true'], .dsp-choice[aria-pressed='true'] { font-weight: 700; }
   .dsp-toggle:disabled, .dsp-choice:disabled { cursor: not-allowed; }
   .dsp-toggle[data-pending-status='pending'] { font-style: italic; opacity: 0.75; }

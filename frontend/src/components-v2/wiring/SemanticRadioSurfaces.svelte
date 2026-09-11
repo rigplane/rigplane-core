@@ -76,7 +76,9 @@
     type DspLevelField, type DspSurfacePart, type DspToggleField,
   } from '../../semantic/DspSurface.svelte';
   import DspInstrumentHost from '../../semantic/DspInstrumentHost.svelte';
-  import type { DspFiniteHandles, DspFiniteLayout } from '../../semantic/dsp-instruments';
+  import type {
+    DspFiniteHandles, DspFiniteLayout, DspSettingsPanel,
+  } from '../../semantic/dsp-instruments';
   import DspScalarHost from '../../semantic/DspScalarHost.svelte';
   import type { DspScalarLayout } from '../../semantic/dsp-scalars';
   import FilterSurface from '../../semantic/FilterSurface.svelte';
@@ -499,6 +501,7 @@
    * test, not re-asserted here.
    */
   const dspIntents = semanticHandlers.dsp;
+  let standardDspSettings = $state<DspSettingsPanel | null>(null);
   const DSP_TOGGLE_INTENT: Record<DspToggleField, (next: boolean) => void> = {
     nrActive: (next) => dspIntents.onNrModeChange(next ? 1 : 0),
     nbActive: (next) => dspIntents.onNbToggle(next),
@@ -1736,6 +1739,10 @@
     onMonitorModeChange={(mode) => rxAudioIntents.onMonitorModeChange(mode)}
     onFocusChange={(focus) => routingIntents.onFocusChange(focus)}
     onSplitStereoChange={(split) => routingIntents.onSplitStereoChange(split)}
+    routingGains={runtime.audioRouting == null ? null : {
+      main: runtime.audioRouting.main_gain_db, sub: runtime.audioRouting.sub_gain_db,
+    }}
+    onChannelGainChange={(channel, value) => routingIntents.onChannelGainChange(channel, value)}
     onModInputChange={semanticHandlers.mode.onModInputChange}
     onSetModInputLan={setModInputLan}
     {...rxAudioFiniteRendererSelection}
@@ -1806,6 +1813,7 @@
     onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
     onNotchModeChange={dspIntents.onNotchModeChange}
     onAgcModeChange={agcIntents.onAgcModeChange}
+    onOpenSettings={(panel) => standardDspSettings = panel}
   >
   {#snippet children(dspInstruments)}
   <DspScalarHost
@@ -2241,11 +2249,14 @@
   -->
   {#snippet dspSurface(
     finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout, part: DspSurfacePart = 'all',
+    compactAgcTime = false,
   )}
     {#if view?.dsp}
       <DspSurface
         {view} finiteHandles={dspInstruments} {finiteLayout}
-        scalarHandles={dspScalars} {scalarLayout} {part}
+        scalarHandles={dspScalars} {scalarLayout} {part} {compactAgcTime}
+        settingsPanel={compactAgcTime ? standardDspSettings : null}
+        onSettingsPanelChange={(panel) => standardDspSettings = panel}
         onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
       />
     {/if}
@@ -2539,8 +2550,9 @@
   {#snippet hostedDsp(
     allowBare = allowBareSurfaces, finiteLayout?: DspFiniteLayout,
     scalarLayout?: DspScalarLayout, chrome?: PanelChrome, part: DspSurfacePart = 'all',
+    compactAgcTime = false,
   )}
-    {#snippet body()}{@render dspSurface(finiteLayout, scalarLayout, part)}{/snippet}
+    {#snippet body()}{@render dspSurface(finiteLayout, scalarLayout, part, compactAgcTime)}{/snippet}
     {@render zoned('dsp', view?.dsp !== undefined, body, allowBare, chrome)}
   {/snippet}
   {#snippet hostedBand(

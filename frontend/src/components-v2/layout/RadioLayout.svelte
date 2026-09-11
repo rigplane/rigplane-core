@@ -434,9 +434,10 @@
 
 {#snippet dspFiniteLayout(dspInstruments: DspFiniteHandles)}
   <div class="dsp-finite-grid">
-    <div class="dsp-finite-seat" data-field="nrActive">{@render dspInstruments.nrActive()}</div>
-    <div class="dsp-finite-seat" data-field="nbActive">{@render dspInstruments.nbActive()}</div>
-    <div class="dsp-finite-seat" data-field="notchMode">{@render dspInstruments.notchMode()}</div>
+    {#if dspInstruments.compactNb}<div class="dsp-finite-seat" data-field="nbActive">{@render dspInstruments.compactNb()}</div>{/if}
+    {#if dspInstruments.compactNr}<div class="dsp-finite-seat" data-field="nrActive">{@render dspInstruments.compactNr()}</div>{/if}
+    {#if dspInstruments.compactManualNotch}<div class="dsp-finite-seat" data-field="manualNotch">{@render dspInstruments.compactManualNotch()}</div>{/if}
+    {#if dspInstruments.compactAutoNotch}<div class="dsp-finite-seat" data-field="autoNotch">{@render dspInstruments.compactAutoNotch()}</div>{/if}
   </div>
 {/snippet}
 
@@ -458,8 +459,12 @@
 {#snippet rxAudioFiniteLayout(rxAudioInstruments: RxAudioInstrumentHandles)}
   <div class="rx-audio-finite-grid">
     <div class="rx-audio-finite-seat" data-field="monitorMode">{@render rxAudioInstruments.monitorMode()}</div>
+    {#if rxAudioInstruments.afLevelRow}<div class="rx-audio-finite-seat" data-field="afLevel">{@render rxAudioInstruments.afLevelRow()}</div>{/if}
+    {#if rxAudioInstruments.monitorStatus}<div class="rx-audio-finite-seat" data-field="monitorStatus">{@render rxAudioInstruments.monitorStatus()}</div>{/if}
     <div class="rx-audio-finite-seat" data-field="routingFocus">{@render rxAudioInstruments.routingFocus()}</div>
-    <div class="rx-audio-finite-seat" data-field="routingSplit">{@render rxAudioInstruments.routingSplit()}</div>
+    {#if rxAudioInstruments.routingSplitToggle}<div class="rx-audio-finite-seat" data-field="routingSplit">{@render rxAudioInstruments.routingSplitToggle()}</div>{/if}
+    {#if rxAudioInstruments.mainGain}<div class="rx-audio-finite-seat" data-field="mainGain">{@render rxAudioInstruments.mainGain()}</div>{/if}
+    {#if rxAudioInstruments.subGain}<div class="rx-audio-finite-seat" data-field="subGain">{@render rxAudioInstruments.subGain()}</div>{/if}
     <div class="rx-audio-finite-seat" data-field="modInputSource">{@render rxAudioInstruments.modInputSource()}</div>
     <div class="rx-audio-finite-seat" data-field="setModInputLan">{@render rxAudioInstruments.setModInputLan()}</div>
   </div>
@@ -599,7 +604,7 @@
   {/if}
   {#if owner.order.includes('semantic-dsp')}
     {@render instruments.dsp(
-      undefined, dspFiniteLayout, dspScalarLayout, panelChrome(owner, 'semantic-dsp'), 'dsp',
+      undefined, dspFiniteLayout, dspScalarLayout, panelChrome(owner, 'semantic-dsp'), 'dsp', true,
     )}
   {/if}
   {#if owner.order.includes('semantic-cw')}
@@ -1046,7 +1051,10 @@
   .standard-bottom-dock > .content-left,
   .standard-bottom-dock > .content-right { display: contents; }
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-  .dsp-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .dsp-finite-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
+  }
+  .dsp-finite-seat { display: contents; }
   .agc-finite-grid { display: block; width: 100%; }
   .agc-finite-grid .dsp-finite-seat { display: contents; }
   .agc-finite-grid :global([role='radiogroup']) {
@@ -1063,6 +1071,10 @@
      when it groups them itself. */
   .rx-audio-finite-grid { display: flex; flex-direction: column; gap: 0.25rem; }
   .rx-audio-finite-seat { display: contents; }
+  .rx-audio-finite-grid :global([data-testid='rx-audio-monitor']),
+  .rx-audio-finite-grid :global([data-testid='rx-audio-focus']) {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 4px;
+  }
   .dsp-scalar-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

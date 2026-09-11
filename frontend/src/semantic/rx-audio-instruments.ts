@@ -75,9 +75,14 @@ export type RxAudioFiniteChoiceValue = MonitorMode | AudioFocus | RxAudioSplitLa
  *  (MOR-2425 RX-B/RX-C). */
 export interface RxAudioInstrumentHandles {
   readonly afLevel: Snippet;
+  readonly afLevelRow?: Snippet;
   readonly monitorMode: Snippet;
+  readonly monitorStatus?: Snippet;
   readonly routingFocus: Snippet;
   readonly routingSplit: Snippet;
+  readonly routingSplitToggle?: Snippet;
+  readonly mainGain?: Snippet;
+  readonly subGain?: Snippet;
   readonly modInputSource: Snippet;
   readonly setModInputLan: Snippet;
 }
