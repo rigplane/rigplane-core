@@ -1041,6 +1041,16 @@
     overflow: visible;
     white-space: normal;
   }
+  @media (min-width: 951px) and (max-width: 1280px) {
+    [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
+      --btn-compact-min-height: 14px;
+      --btn-compact-padding-block: 0;
+      --btn-compact-padding-inline: 3px;
+    }
+    [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] :global(.control-strip) {
+      line-height: 14px;
+    }
+  }
   [data-vfo-appearance='standard'] .standard-pair-bridge {
     flex: 0 0 clamp(190px, 14vw, 220px);
     padding: 4px;

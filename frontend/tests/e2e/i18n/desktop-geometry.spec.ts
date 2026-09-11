@@ -545,15 +545,19 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       for (const action of ['equalize', 'swap', 'speak']) {
         await expect(page.locator(`[data-dual-action="${action}"]`)).toBeVisible();
       }
-      await expect(page.getByTestId('vfo-split-digest')).toBeVisible();
+      const bridge = page.locator('[data-instrument-bridge]');
+      await expect(bridge.locator('[data-indicator-fact], [data-vfo-operation-digest]')).toHaveCount(0);
+      await expect(cards.nth(0).locator('[data-indicator-fact="rx"]')).toContainText('RX 14.035.720');
+      await expect(cards.locator('[data-indicator-fact="tx"]')).toHaveCount(0);
       const strips = cards.locator('.control-strip');
       await expect(strips).toHaveCount(2);
       await expect(strips.nth(0).locator('.mode-badge-wrapper')).toHaveAttribute('data-vfo-controls-disabled', 'false');
       await expect(strips.nth(1).locator('.mode-badge-wrapper')).toHaveAttribute('data-vfo-controls-disabled', 'true');
       await expect(strips.nth(0)).toContainText(/CW.*FIL3/);
       await expect(strips.nth(1)).toContainText(/USB.*FIL1/);
-      for (const fact of ['antenna', 'atu', 'rit', 'xit']) {
-        await expect(page.locator(`[data-indicator-fact="${fact}"]`)).toBeVisible();
+      for (const fact of ['ant', 'tune', 'rit', 'xit']) {
+        await expect(cards.nth(0).locator(`[data-indicator-fact="${fact}"]`)).toBeVisible();
+        await expect(cards.nth(1).locator(`[data-indicator-fact="${fact}"]`)).toHaveCount(0);
       }
       expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
         .geometryCommands.filter(c => c.type === 'cmd'))).toEqual([]);
