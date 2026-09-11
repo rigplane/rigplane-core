@@ -10,6 +10,7 @@
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
   import {
     createAbsoluteChoiceRendererSeat, createActionRendererSeat, createChoiceRendererSeat,
+    createToggleRendererSeat,
     type AvailabilityActionRendererInput,
     type FiniteControlAppearance, type FiniteRendererContext,
   } from '../primitives/control-instruments/control-instrument-renderer.svelte';

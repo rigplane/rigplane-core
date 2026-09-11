@@ -113,6 +113,29 @@
     if (heldPanel === null) return;
     event.preventDefault(); event.stopPropagation(); heldPanel = null;
   }
+  function settingsHold(node: HTMLElement, panel: DspSettingsPanel) {
+    const pointerDown = () => startSettingsHold(panel);
+    const keyDown = (event: KeyboardEvent) => { if (event.key === ' ') startSettingsHold(panel); };
+    const keyUp = (event: KeyboardEvent) => { if (event.key === ' ') endSettingsHold(); };
+    node.addEventListener('pointerdown', pointerDown);
+    node.addEventListener('pointerup', endSettingsHold);
+    node.addEventListener('pointercancel', endSettingsHold);
+    node.addEventListener('pointerleave', endSettingsHold);
+    node.addEventListener('keydown', keyDown);
+    node.addEventListener('keyup', keyUp);
+    node.addEventListener('click', suppressHeldClick, { capture: true });
+    return {
+      destroy() {
+        node.removeEventListener('pointerdown', pointerDown);
+        node.removeEventListener('pointerup', endSettingsHold);
+        node.removeEventListener('pointercancel', endSettingsHold);
+        node.removeEventListener('pointerleave', endSettingsHold);
+        node.removeEventListener('keydown', keyDown);
+        node.removeEventListener('keyup', keyUp);
+        node.removeEventListener('click', suppressHeldClick, { capture: true });
+      },
+    };
+  }
   function compactNotch(mode: 'manual' | 'auto'): void {
     if (heldPanel !== null) { heldPanel = null; return; }
     notchBehavior.invoke(notchBehavior.isSelected(mode) ? 'off' : mode);
@@ -162,11 +185,7 @@
       ? notchBehavior.isSelected('manual')
       : current.reading.status === 'known' && current.reading.value === true}
     <div class="compact-dsp-button" role="group" aria-label={`${label} control`}
-      onpointerdown={() => startSettingsHold(kind)} onpointerup={endSettingsHold}
-      onpointercancel={endSettingsHold} onpointerleave={endSettingsHold}
-      onkeydown={(event) => { if (event.key === ' ') startSettingsHold(kind); }}
-      onkeyup={(event) => { if (event.key === ' ') endSettingsHold(); }}
-      onclickcapture={suppressHeldClick}>
+      use:settingsHold={kind}>
       {#if finiteAppearance}
         {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
           seat={kind === 'notch' ? manualNotchSeat : (kind === 'nr' ? nrSeat : nbSeat)}

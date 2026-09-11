@@ -748,6 +748,14 @@
       splitStereo: runtime.audioRouting.split_stereo,
     },
   });
+  let rxAudioRoutingGains = $derived.by(() => {
+    const routing = runtime.audioRouting;
+    return routing !== null
+      && typeof routing?.main_gain_db === 'number' && Number.isFinite(routing.main_gain_db)
+      && typeof routing?.sub_gain_db === 'number' && Number.isFinite(routing.sub_gain_db)
+      ? { main: routing.main_gain_db, sub: routing.sub_gain_db }
+      : null;
+  });
 
   /**
    * MOR-1312 (slice 12B) — the App-owned scope-display snapshot the
@@ -1739,9 +1747,7 @@
     onMonitorModeChange={(mode) => rxAudioIntents.onMonitorModeChange(mode)}
     onFocusChange={(focus) => routingIntents.onFocusChange(focus)}
     onSplitStereoChange={(split) => routingIntents.onSplitStereoChange(split)}
-    routingGains={runtime.audioRouting == null ? null : {
-      main: runtime.audioRouting.main_gain_db, sub: runtime.audioRouting.sub_gain_db,
-    }}
+    routingGains={rxAudioRoutingGains}
     onChannelGainChange={(channel, value) => routingIntents.onChannelGainChange(channel, value)}
     onModInputChange={semanticHandlers.mode.onModInputChange}
     onSetModInputLan={setModInputLan}
