@@ -3118,6 +3118,16 @@ class WebServer:
                         list(profile.agc_modes) if profile.agc_modes else None
                     ),
                     "agcLabels": profile.agc_labels,
+                    "scanTypeValues": (
+                        list(profile.scan_type_values)
+                        if profile.scan_type_values is not None
+                        else []
+                    ),
+                    "scanResumeValues": (
+                        list(profile.scan_resume_values)
+                        if profile.scan_resume_values is not None
+                        else []
+                    ),
                     "rfSqlControlModel": profile.rf_sql_control_model,
                     "antennas": profile.antenna_tx_count,
                     "hasRxAntenna": profile.antenna_has_rx_ant,
@@ -3591,6 +3601,16 @@ class WebServer:
             "preLabels": profile.pre_labels if profile.pre_labels else {},
             "agcModes": list(profile.agc_modes) if profile.agc_modes else [],
             "agcLabels": profile.agc_labels if profile.agc_labels else {},
+            "scanTypeValues": (
+                list(profile.scan_type_values)
+                if profile.scan_type_values is not None
+                else []
+            ),
+            "scanResumeValues": (
+                list(profile.scan_resume_values)
+                if profile.scan_resume_values is not None
+                else []
+            ),
             "rfSqlControlModel": profile.rf_sql_control_model,
             "dataModeCount": profile.data_mode_count,
             "dataModeLabels": (

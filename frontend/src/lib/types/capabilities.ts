@@ -180,6 +180,8 @@ export interface Capabilities {
   preLabels?: Record<string, string>;  // Preamp labels (e.g. {"0":"OFF","1":"P1","2":"P2"})
   agcModes?: number[];    // AGC mode values (e.g. [1,2,3] = FAST/MID/SLOW)
   agcLabels?: Record<string, string>;  // AGC mode labels (e.g. {"1":"FAST","2":"MID","3":"SLOW"})
+  scanTypeValues?: number[];    // Profile-declared scan start types
+  scanResumeValues?: number[];  // Profile-declared scan resume modes
   /** RF/SQL control model (MOR-1447 leg 2): "separate" (default, two
    *  independent controls) or "combined" (Icom-style single RF/SQL knob).
    *  Absent on older servers — treat as "separate". */
@@ -456,6 +458,12 @@ export function validateCapabilities(value: unknown): Capabilities {
   requireInteger(raw.receivers, '$.receivers', true);
   if (Object.prototype.hasOwnProperty.call(raw, 'hasRxAntenna')) {
     requireBoolean(raw.hasRxAntenna, '$.hasRxAntenna');
+  }
+  for (const field of ['scanTypeValues', 'scanResumeValues'] as const) {
+    if (Object.prototype.hasOwnProperty.call(raw, field)) {
+      if (!Array.isArray(raw[field])) invalid(`$.${field}`, 'an array');
+      raw[field].forEach((entry, index) => requireInteger(entry, `$.${field}[${index}]`));
+    }
   }
 
   const txAudioFields = [

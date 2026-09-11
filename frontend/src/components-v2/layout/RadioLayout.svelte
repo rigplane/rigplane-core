@@ -74,11 +74,66 @@
   let { skinId = 'desktop-v2', instruments }: { skinId?: SkinId; instruments: InstrumentComposition } = $props();
 
   const standardFaceAtMount = untrack(() => skinId === 'desktop-v2');
+  const STANDARD_PANEL_ID_REPLACEMENTS: Readonly<Record<string, readonly string[]>> = {
+    'semantic-rit-xit-scan': ['semantic-rit-xit', 'semantic-scan'],
+    'rit-xit': ['semantic-rit-xit'], scan: ['semantic-scan'], agc: ['semantic-agc'],
+  };
+  function migrateStandardPanelPreferences(): void {
+    if (!standardFaceAtMount || typeof localStorage === 'undefined') return;
+    const orderKeys = ['rigplane:panel-order', 'rigplane:right-panel-order'] as const;
+    const migratedIds = new Set<string>();
+    for (const key of orderKeys) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw === null) continue;
+        const parsed: unknown = JSON.parse(raw);
+        if (!Array.isArray(parsed)) continue;
+        const seen = new Set<string>();
+        const migrated: string[] = [];
+        for (const entry of parsed) {
+          if (typeof entry !== 'string') continue;
+          const replacements = STANDARD_PANEL_ID_REPLACEMENTS[entry] ?? [entry];
+          for (const id of replacements) if (!seen.has(id)) {
+            seen.add(id); migrated.push(id); migratedIds.add(id);
+          }
+        }
+        localStorage.setItem(key, JSON.stringify(migrated));
+      } catch { /* retain unreadable preferences */ }
+    }
+    for (const key of orderKeys) {
+      try {
+        const knownKey = `${key}:known-defaults`;
+        const raw = localStorage.getItem(knownKey);
+        const parsed: unknown = raw === null ? [] : JSON.parse(raw);
+        const known = new Set(Array.isArray(parsed)
+          ? parsed.filter((entry): entry is string => typeof entry === 'string') : []);
+        for (const [legacy, replacements] of Object.entries(STANDARD_PANEL_ID_REPLACEMENTS)) {
+          if (known.delete(legacy)) replacements.forEach(id => known.add(id));
+        }
+        migratedIds.forEach(id => known.add(id));
+        localStorage.setItem(knownKey, JSON.stringify([...known]));
+      } catch { /* retain unreadable preferences */ }
+    }
+    try {
+      const raw = localStorage.getItem('rigplane:panel-collapsed');
+      if (raw === null) return;
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+      const collapsed = parsed as Record<string, unknown>;
+      for (const [legacy, replacements] of Object.entries(STANDARD_PANEL_ID_REPLACEMENTS)) {
+        if (typeof collapsed[legacy] !== 'boolean') continue;
+        for (const id of replacements) if (!(id in collapsed)) collapsed[id] = collapsed[legacy];
+        delete collapsed[legacy];
+      }
+      localStorage.setItem('rigplane:panel-collapsed', JSON.stringify(collapsed));
+    } catch { /* retain unreadable preferences */ }
+  }
+  migrateStandardPanelPreferences();
   const standardLeftDrag: PanelDragOwner | null = standardFaceAtMount ? createDragReorder({
     storageKey: 'rigplane:panel-order',
     defaults: [
-      'semantic-rf-front-end', 'semantic-filter', 'semantic-band', 'semantic-antenna',
-      'semantic-rit-xit-scan', 'band',
+      'semantic-rf-front-end', 'semantic-filter', 'semantic-band', 'semantic-agc',
+      'semantic-rit-xit', 'semantic-antenna', 'semantic-scan', 'band',
     ],
     containerSelector: '.standard-panel-owner-left',
   }) : null;
@@ -96,12 +151,13 @@
     containerSelector: '.standard-bottom-dock',
   }) : null;
 
-  function panelChrome(owner: PanelDragOwner, panelId: string): PanelChrome {
+  function panelChrome(owner: PanelDragOwner, panelId: string, title?: string): PanelChrome {
     return {
       panelId,
       draggable: true,
       onDragStart: owner.handleDragStart,
       style: owner.dragStyle(panelId),
+      title,
     };
   }
 
@@ -381,6 +437,11 @@
     <div class="dsp-finite-seat" data-field="nrActive">{@render dspInstruments.nrActive()}</div>
     <div class="dsp-finite-seat" data-field="nbActive">{@render dspInstruments.nbActive()}</div>
     <div class="dsp-finite-seat" data-field="notchMode">{@render dspInstruments.notchMode()}</div>
+  </div>
+{/snippet}
+
+{#snippet agcFiniteLayout(dspInstruments: DspFiniteHandles)}
+  <div class="dsp-finite-grid agc-finite-grid">
     <div class="dsp-finite-seat" data-field="agcMode">{@render dspInstruments.agcMode()}</div>
   </div>
 {/snippet}
@@ -456,19 +517,23 @@
   host hands both the id and the reason codes on `instruments.antennaLayout`.
 -->
 {#snippet antennaControlLayout()}
-  <div class="antenna-control-grid" data-testid="antenna-control-grid">
+  {#if runtime.caps?.antennas === 1}
+    <div class="antenna-fixed-port" data-testid="antenna-fixed-port">
+      <span>TX</span><output>ANT 1</output>
+    </div>
+  {:else}<div class="antenna-control-grid" data-testid="antenna-control-grid">
     <div class="antenna-control-seat" data-field="txPort">
       {@render instruments.antennaInstruments.txPort()}
     </div>
     <div class="antenna-control-seat" data-field="rxAnt">
       {@render instruments.antennaInstruments.rxAnt()}
     </div>
-  </div>
-  <ul class="antenna-blocked" id={instruments.antennaLayout.blockedId} data-testid="antenna-blocked">
+  </div>{/if}
+  {#if runtime.caps?.antennas !== 1}<ul class="antenna-blocked" id={instruments.antennaLayout.blockedId} data-testid="antenna-blocked">
     {#each instruments.antennaLayout.blocked as code (code)}
       <li data-reason={code}>{ANTENNA_BLOCKED_LABEL[code]}</li>
     {/each}
-  </ul>
+  </ul>{/if}
 {/snippet}
 
 {#snippet vfoOperationControls()}
@@ -509,9 +574,19 @@
       undefined, antennaControlLayout, panelChrome(owner, 'semantic-antenna'),
     )}
   {/if}
-  {#if owner.order.includes('semantic-rit-xit-scan')}
+  {#if owner.order.includes('semantic-agc')}
+    {@render instruments.dsp(
+      undefined, agcFiniteLayout, undefined, panelChrome(owner, 'semantic-agc', 'AGC'), 'agc',
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-rit-xit')}
     {@render instruments.ritXitScan(
-      undefined, panelChrome(owner, 'semantic-rit-xit-scan'),
+      undefined, panelChrome(owner, 'semantic-rit-xit', 'RIT / XIT'), 'rit-xit',
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-scan')}
+    {@render instruments.ritXitScan(
+      undefined, panelChrome(owner, 'semantic-scan', 'SCAN'), 'scan',
     )}
   {/if}
   {#if owner.order.includes('semantic-rx-tx')}
@@ -524,7 +599,7 @@
   {/if}
   {#if owner.order.includes('semantic-dsp')}
     {@render instruments.dsp(
-      undefined, dspFiniteLayout, dspScalarLayout, panelChrome(owner, 'semantic-dsp'),
+      undefined, dspFiniteLayout, dspScalarLayout, panelChrome(owner, 'semantic-dsp'), 'dsp',
     )}
   {/if}
   {#if owner.order.includes('semantic-cw')}
@@ -997,6 +1072,7 @@
   }
   .band-control-grid, .band-control-seat { display: contents; }
   .antenna-control-grid { display: flex; flex-direction: column; gap: 0.25rem; }
+  .antenna-fixed-port { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
   .antenna-control-seat { display: contents; }
   .antenna-blocked { margin: 0; padding-inline-start: 1.2em; }
   .antenna-blocked:empty { display: none; }

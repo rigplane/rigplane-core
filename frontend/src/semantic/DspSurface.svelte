@@ -55,6 +55,7 @@
     ['agcTimeConstant', 'AGC time', 0, 9, 1, formatAgcTime],
   ] as const;
   export type DspLevelField = (typeof DSP_LEVELS)[number][0] | 'nbLevel';
+  export type DspSurfacePart = 'all' | 'agc' | 'dsp';
   const [, , NR_FALLBACK_MIN, NR_FALLBACK_MAX, NR_FALLBACK_STEP] = DSP_LEVELS[0];
 
   /** Usable ⇔ the radio HAS it, it is readable NOW, and it has been observed. */
@@ -129,10 +130,11 @@
     finiteLayout?: DspFiniteLayout;
     scalarHandles?: DspScalarHandles;
     scalarLayout?: DspScalarLayout;
+    part?: DspSurfacePart;
     onLevelChange?: (field: DspLevelField, value: number) => void;
   }
   let {
-    view, finiteHandles, finiteLayout, scalarHandles, scalarLayout, onLevelChange,
+    view, finiteHandles, finiteLayout, scalarHandles, scalarLayout, part = 'all', onLevelChange,
   }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
@@ -149,10 +151,12 @@
     }
     if (usable(dsp[field])) onLevelChange?.(field, value);
   }
+  const showsLevel = (field: DspLevelField): boolean =>
+    part === 'all' || (part === 'agc' ? field === 'agcTimeConstant' : field !== 'agcTimeConstant');
 </script>
 
 {#if dsp}
-  <section class="dsp-surface" data-testid="dsp-surface" aria-label="DSP controls">
+  <section class="dsp-surface" data-testid="dsp-surface" data-part={part} aria-label={part === 'agc' ? 'AGC controls' : 'DSP controls'}>
     {#if finiteLayout}
       {@render finiteLayout(finiteHandles)}
     {:else}
@@ -162,14 +166,14 @@
       </div>
     {/if}
 
-    {#if scalarHandles && scalarLayout}
+    {#if part !== 'agc' && scalarHandles && scalarLayout}
       {@render scalarLayout(scalarHandles)}
     {/if}
 
     {#each DSP_LEVELS as [field, label, min, max, step, format] (field)}
       {#if field === 'nbWidth'}
         {#if scalarHandles && !scalarLayout}{@render scalarHandles.nbWidth()}{/if}
-      {:else if dsp[field].availability.structural}
+      {:else if showsLevel(field) && dsp[field].availability.structural}
         {@const nr = field === 'nrLevel' ? nrPresentation(dsp) : null}
         <label
           class="dsp-level" data-testid={`dsp-${field}`} data-field={field}
@@ -187,11 +191,11 @@
       {/if}
     {/each}
 
-    {#if scalarHandles && !scalarLayout}{@render scalarHandles.nbLevel()}{/if}
+    {#if part !== 'agc' && scalarHandles && !scalarLayout}{@render scalarHandles.nbLevel()}{/if}
 
     {#if !finiteLayout}
-      {@render finiteHandles.notchMode()}
-      {@render finiteHandles.agcMode()}
+      {#if part !== 'agc'}{@render finiteHandles.notchMode()}{/if}
+      {#if part !== 'dsp'}{@render finiteHandles.agcMode()}{/if}
     {/if}
   </section>
 {/if}
