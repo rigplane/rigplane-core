@@ -227,10 +227,12 @@
         </div>
       {/if}
       {#if dsp.agcTimeConstant.availability.structural}
-        <HardwareButton indicator="edge-left" color="gray" title="AGC Time — click for settings"
-          disabled={!usable(dsp.agcTimeConstant)}
-          onclick={() => onSettingsPanelChange?.(settingsPanel === 'agc' ? null : 'agc')}
-        >AGC-T {fmt(dsp.agcTimeConstant, formatAgcTime)}s</HardwareButton>
+        <div class="dsp-agc-time">
+          <HardwareButton indicator="edge-left" color="gray" title="AGC Time — click for settings"
+            disabled={!usable(dsp.agcTimeConstant)}
+            onclick={() => onSettingsPanelChange?.(settingsPanel === 'agc' ? null : 'agc')}
+          >AGC-T {fmt(dsp.agcTimeConstant, formatAgcTime)}s</HardwareButton>
+        </div>
         {#if settingsPanel === 'agc'}
           <label class="dsp-level dsp-settings" data-testid="dsp-agcTimeConstant"
             data-field="agcTimeConstant">
@@ -264,4 +266,6 @@
     padding: 6px; border: 1px solid var(--v2-border-subtle, rgba(255,255,255,.12));
     border-radius: 3px;
   }
+  .dsp-agc-time { display: flex; width: calc(50% - 3px); }
+  .dsp-agc-time :global(button) { flex: 1 1 auto; min-width: 0; }
 </style>

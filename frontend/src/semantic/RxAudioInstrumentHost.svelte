@@ -314,6 +314,7 @@
     {...feedbackIntegratedControl}
     binding={afLevelBinding} label="AF" renderer="hbar"
     showLabel={false} showValue={false} compact={true}
+    variant="hardware-illuminated" accentColor="var(--v2-accent-cyan-alt)"
   />
 {/snippet}
 
@@ -526,7 +527,7 @@
 <style>
   .rx-audio-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
   .rx-audio-level, .rx-audio-gain { display: flex; align-items: baseline; gap: 0.5rem; }
-  .rx-audio-level :global(.value-control), .rx-audio-gain input { flex: 1 1 auto; min-width: 0; }
+  .rx-audio-level :global(.vc-hbar), .rx-audio-gain input { flex: 1 1 auto; min-width: 0; }
   .rx-audio-name { min-width: 7ch; }
   .rx-audio-status { margin: 0; color: var(--v2-text-dim, #8ca0b8); font-size: 10px; }
   .rx-audio-mod-selector { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; max-width: 100%; }
