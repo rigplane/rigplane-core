@@ -75,6 +75,12 @@ scheme = "ab"
 tx_count = 2
 has_rx_ant = true
 
+[scan_types]
+values = [0x01, 0x03, 0x13, 0x23]
+
+[scan_resume]
+values = [0xD0, 0xD3]
+
 [controls.identity]
 mapping = "identity"
 raw_min = -2
@@ -175,6 +181,8 @@ async def test_control_domains_round_trip_through_both_capability_endpoints(
         assert controls == _golden_controls()
         assert capability_payload["antennas"] == 2
         assert capability_payload["hasRxAntenna"] is True
+        assert capability_payload["scanTypeValues"] == [0x01, 0x03, 0x13, 0x23]
+        assert capability_payload["scanResumeValues"] == [0xD0, 0xD3]
 
 
 @pytest.mark.asyncio
