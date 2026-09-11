@@ -376,6 +376,9 @@
     .panel.compact-header .vfo-freq { font-size: 44px; }
     .passive-summary-reading { min-height: 24px; padding-inline: 4px; }
   }
+  @media (max-width: 1280px) {
+    .panel.compact-header .vfo-freq { font-size: 44px; }
+  }
 
   .panel {
     display: grid;
