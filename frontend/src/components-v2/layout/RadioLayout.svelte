@@ -451,14 +451,14 @@
     </div>
     {#if txLevelsOpen}
       <div class="standard-tx-levels" id="standard-tx-levels" role="group" aria-label="TX levels">
-        <div class="standard-tx-scalar-seat" data-field="rfPower">{@render scalars.rfPower({ form: 'hbar', compact: false, showLabel: true, showValue: true })}</div>
-        <div class="standard-tx-scalar-seat" data-field="micGain">{@render scalars.micGain({ form: 'hbar', compact: false, showLabel: true, showValue: true })}</div>
-        <div class="standard-tx-scalar-seat" data-field="driveGain">{@render scalars.driveGain({ form: 'hbar', compact: false, showLabel: true, showValue: true })}</div>
-        <div class="standard-tx-scalar-seat" data-field="voxGain">{@render scalars.voxGain({ form: 'hbar', compact: false, showLabel: true, showValue: true })}</div>
-        <div class="standard-tx-scalar-seat" data-field="antiVoxGain">{@render scalars.antiVoxGain({ form: 'hbar', compact: false, showLabel: true, showValue: true })}</div>
-        <div class="standard-tx-scalar-seat" data-field="voxDelay">{@render scalars.voxDelay({ form: 'hbar', compact: false, showLabel: true, showValue: true })}</div>
-        <div class="standard-tx-scalar-seat" data-field="compressorLevel">{@render scalars.compressorLevel({ form: 'hbar', compact: false, showLabel: true, showValue: true })}</div>
-        <div class="standard-tx-scalar-seat" data-field="monitorLevel">{@render scalars.monitorLevel({ form: 'hbar', compact: false, showLabel: true, showValue: true })}</div>
+        <div class="standard-tx-scalar-seat" data-field="rfPower">{@render scalars.rfPower({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        <div class="standard-tx-scalar-seat" data-field="micGain">{@render scalars.micGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        <div class="standard-tx-scalar-seat" data-field="driveGain">{@render scalars.driveGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        <div class="standard-tx-scalar-seat" data-field="voxGain">{@render scalars.voxGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        <div class="standard-tx-scalar-seat" data-field="antiVoxGain">{@render scalars.antiVoxGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        <div class="standard-tx-scalar-seat" data-field="voxDelay">{@render scalars.voxDelay({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        <div class="standard-tx-scalar-seat" data-field="compressorLevel">{@render scalars.compressorLevel({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        <div class="standard-tx-scalar-seat" data-field="monitorLevel">{@render scalars.monitorLevel({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
       </div>
     {/if}
   </div>

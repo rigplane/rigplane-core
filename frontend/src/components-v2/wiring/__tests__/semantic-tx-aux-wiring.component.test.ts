@@ -505,6 +505,7 @@ describe('L1 hosted desktop TX auxiliary composition', () => {
       expect(seat, `${field} seat`).not.toBeNull();
       expect(seat?.querySelector(`[data-testid="tx-aux-${field}"]`)).not.toBeNull();
       expect(target.querySelectorAll(`[data-testid="tx-aux-${field}"]`)).toHaveLength(1);
+      expect(seat?.querySelector('.vc-hbar.hw-illum')).not.toBeNull();
     }
 
     expect(remainder?.querySelector('.standard-tx-levels')).toBeNull();

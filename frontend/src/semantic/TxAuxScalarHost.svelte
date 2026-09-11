@@ -216,6 +216,7 @@
           showLabel={explicitPresentation ? presentation?.showLabel ?? true : false}
           showValue={explicitPresentation ? presentation?.showValue ?? true : false}
           compact={explicitPresentation ? presentation?.compact ?? false : true}
+          variant={presentation?.variant ?? 'modern'}
           title={disabledReason}
           {accessibility}
           skin={scalarAppearance}
@@ -229,6 +230,7 @@
           showLabel={explicitPresentation ? presentation?.showLabel ?? true : false}
           showValue={explicitPresentation ? presentation?.showValue ?? true : false}
           compact={explicitPresentation ? presentation?.compact ?? false : true}
+          variant={presentation?.variant ?? 'modern'}
           title={disabledReason}
           {accessibility}
           skin={scalarAppearance}

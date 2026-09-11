@@ -32,6 +32,7 @@ export interface TxAuxScalarPresentation {
   readonly compact?: boolean;
   readonly showLabel?: boolean;
   readonly showValue?: boolean;
+  readonly variant?: 'modern' | 'hardware' | 'hardware-illuminated';
 }
 
 export type TxAuxScalarHandle = Snippet<[
