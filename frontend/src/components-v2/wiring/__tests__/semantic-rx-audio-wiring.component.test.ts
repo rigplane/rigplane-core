@@ -47,7 +47,10 @@ const h = vi.hoisted(() => ({
   }) => void>(),
   txController: null as ManagedAppTxController | null,
   audio: { muted: false, rxEnabled: true, volume: 42 },
-  audioRouting: { focus: 'both', split_stereo: false, main_gain_db: -6, sub_gain_db: 2 },
+  audioRouting: null as null | {
+    focus: 'main' | 'sub' | 'both'; split_stereo: boolean;
+    main_gain_db: number; sub_gain_db: number;
+  },
   audioConnected: true,
   rxEnabled: true,
   guardVisible: false,
@@ -320,7 +323,7 @@ beforeEach(() => {
   h.caps = liveCaps(AUDIO_TAGS);
   expect(setCapabilities(h.caps as Capabilities)).toBe(true);
   h.audio = { muted: false, rxEnabled: true, volume: 42 };
-  h.audioRouting = { focus: 'both', split_stereo: false, main_gain_db: -6, sub_gain_db: 2 };
+  h.audioRouting = null;
   h.audioConnected = true;
   h.rxEnabled = true;
   h.guardVisible = false;
@@ -422,6 +425,7 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
   });
 
   it('dispatches dual channel gain through the existing audio-routing handler', () => {
+    h.audioRouting = { focus: 'both', split_stereo: false, main_gain_db: -6, sub_gain_db: 2 };
     renderHostedFace('desktop-v2');
     const main = q<HTMLInputElement>('[data-testid="rx-audio-main-gain"] input');
     expect(main).not.toBeNull();
