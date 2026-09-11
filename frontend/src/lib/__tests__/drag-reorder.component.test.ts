@@ -34,12 +34,15 @@ function handle(panelId: string): HTMLElement {
   return target.querySelector(`[data-drag-handle="${panelId}"]`)!;
 }
 
-function pointer(element: HTMLElement, type: string, clientX: number, clientY: number): void {
+function pointer(
+  element: EventTarget, type: string, clientX: number, clientY: number, buttons = 0,
+): void {
   element.dispatchEvent(new PointerEvent(type, {
     bubbles: true,
     pointerId: 1,
     clientX,
     clientY,
+    buttons,
   }));
   flushSync();
 }
@@ -97,6 +100,64 @@ afterEach(() => {
 });
 
 describe('three-zone panel drag', () => {
+  it('reorders upward on a window release and persists the result', () => {
+    render();
+    const beta = handle('beta');
+
+    pointer(beta, 'pointerdown', 10, 75, 1);
+    pointer(window, 'pointermove', 10, 20, 1);
+    pointer(window, 'pointerup', -20, -20);
+
+    expect(panelIds('left')).toEqual(['beta', 'alpha']);
+    expect(JSON.parse(localStorage.getItem(KEYS.left)!)).toEqual(['beta', 'alpha']);
+    expect(handle('beta').closest('[data-panel-id]')?.getAttribute('style')).not.toContain('opacity');
+  });
+
+  it('finishes from window after Svelte replaces the captured handle', () => {
+    render();
+    const beta = handle('beta');
+
+    pointer(beta, 'pointerdown', 10, 75, 1);
+    pointer(window, 'pointermove', 10, 20, 1);
+    target.querySelector<HTMLElement>('[data-replace-handles]')!.click();
+    flushSync();
+    expect(handle('beta')).not.toBe(beta);
+    pointer(beta, 'lostpointercapture', 10, 20, 1);
+    pointer(window, 'pointerup', 10, 20);
+
+    expect(panelIds('left')).toEqual(['beta', 'alpha']);
+    expect(JSON.parse(localStorage.getItem(KEYS.left)!)).toEqual(['beta', 'alpha']);
+  });
+
+  it('cancels without reordering and clears every drag preview', () => {
+    render();
+    const alpha = handle('alpha');
+
+    pointer(alpha, 'pointerdown', 10, 25, 1);
+    pointer(window, 'pointermove', 350, 75, 1);
+    expect(zone('right').dataset.dropTarget).toBe('true');
+    pointer(window, 'pointercancel', 350, 75);
+
+    expect(panelIds('left')).toEqual(['alpha', 'beta']);
+    expect(panelIds('right')).toEqual(['gamma', 'delta']);
+    expect(zone('right').dataset.dropTarget).toBe('false');
+    expect(handle('alpha').closest('[data-panel-id]')?.getAttribute('style')).not.toContain('opacity');
+  });
+
+  it('cleans up terminal lost capture without committing', () => {
+    render();
+    const alpha = handle('alpha');
+
+    pointer(alpha, 'pointerdown', 10, 25, 1);
+    pointer(window, 'pointermove', 350, 75, 1);
+    pointer(alpha, 'lostpointercapture', 350, 75, 0);
+
+    expect(panelIds('left')).toEqual(['alpha', 'beta']);
+    expect(panelIds('right')).toEqual(['gamma', 'delta']);
+    expect(zone('right').dataset.dropTarget).toBe('false');
+    expect(handle('alpha').closest('[data-panel-id]')?.getAttribute('style')).not.toContain('opacity');
+  });
+
   it('tracks left to bottom to right and transfers only to the active target', () => {
     render();
     const alpha = handle('alpha');
