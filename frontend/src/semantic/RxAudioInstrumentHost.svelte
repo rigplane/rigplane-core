@@ -428,7 +428,6 @@
       <span>{channel.toUpperCase()}</span>
       <input type="range" min="-60" max="12" step="1" value={value ?? 0}
         aria-label={`${channel.toUpperCase()} gain in decibels`}
-        feedback-policy="local-resource"
         disabled={value === undefined || !rx.routingFocus.availability.operational
           || onChannelGainChange === undefined}
         oninput={(event) => onChannelGainChange?.(channel, event.currentTarget.valueAsNumber)} />
