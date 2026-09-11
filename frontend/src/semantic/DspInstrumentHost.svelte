@@ -206,6 +206,8 @@
       <span class="dsp-settings-chevron">
         <HardwareButton compact={true} indicator="edge-left" active={settingsPanel === kind}
           color="cyan" title={`${settingsPanel === kind ? 'Close' : 'Open'} ${label} settings`}
+          ariaLabel={`${label} settings`} ariaExpanded={settingsPanel === kind}
+          ariaControls={`dsp-${kind}-settings`}
           onclick={() => toggleSettings(kind)}>{settingsPanel === kind ? '▴' : '▾'}</HardwareButton>
       </span>
     </div>

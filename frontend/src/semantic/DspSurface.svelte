@@ -160,6 +160,28 @@
     || (part === 'dsp' && field !== 'agcTimeConstant');
 </script>
 
+{#snippet nativeLevel(
+  field: DspLevelField,
+  label: string,
+  min: number,
+  max: number,
+  step: number,
+  format: ((value: number) => string) | undefined,
+  nr: NrPresentation | null,
+)}
+  {#if dsp}
+    <label class="dsp-level" data-testid={`dsp-${field}`} data-field={field}
+      data-disabled-reason={nr ? (nr.usable ? undefined : 'field-not-observed') : reasonOf(dsp[field])}>
+      <span class="dsp-name">{label}</span>
+      <input type="range" min={nr?.min ?? min} max={nr?.max ?? max} step={nr?.step ?? step}
+        value={nr?.value ?? numberOf(dsp[field], min)}
+        disabled={nr ? !nr.usable : !usable(dsp[field])}
+        oninput={(event) => level(field, event.currentTarget.valueAsNumber)} />
+      <output>{nr?.text ?? fmt(dsp[field], format)}</output>
+    </label>
+  {/if}
+{/snippet}
+
 {#snippet adjustableLevels()}
   {#if scalarHandles && scalarLayout}
     {@render scalarLayout(scalarHandles)}
@@ -170,16 +192,7 @@
       {#if scalarHandles && !scalarLayout}{@render scalarHandles.nbWidth()}{/if}
     {:else if showsLevel(field) && dsp?.[field].availability.structural}
       {@const nr = field === 'nrLevel' ? nrPresentation(dsp) : null}
-      <label class="dsp-level" data-testid={`dsp-${field}`} data-field={field}
-        data-disabled-reason={nr ? (nr.usable ? undefined : 'field-not-observed') : reasonOf(dsp[field])}>
-        <span class="dsp-name">{label}</span>
-        <input type="range" min={nr?.min ?? min} max={nr?.max ?? max} step={nr?.step ?? step}
-          aria-label={`${label} adjustment`}
-          value={nr?.value ?? numberOf(dsp[field], min)}
-          disabled={nr ? !nr.usable : !usable(dsp[field])}
-          oninput={(event) => level(field, event.currentTarget.valueAsNumber)} />
-        <output>{nr?.text ?? fmt(dsp[field], format)}</output>
-      </label>
+      {@render nativeLevel(field, label, min, max, step, format, nr)}
     {/if}
   {/each}
 
@@ -197,16 +210,7 @@
       || (panel === 'notch' && (field === 'notchFreq' || field === 'manualNotchWidth')))
       && dsp?.[field].availability.structural}
       {@const nr = field === 'nrLevel' ? nrPresentation(dsp) : null}
-      <label class="dsp-level" data-testid={`dsp-${field}`} data-field={field}
-        data-disabled-reason={nr ? (nr.usable ? undefined : 'field-not-observed') : reasonOf(dsp[field])}>
-        <span class="dsp-name">{label}</span>
-        <input type="range" min={nr?.min ?? min} max={nr?.max ?? max} step={nr?.step ?? step}
-          aria-label={`Settings ${label}`}
-          value={nr?.value ?? numberOf(dsp[field], min)}
-          disabled={nr ? !nr.usable : !usable(dsp[field])}
-          oninput={(event) => level(field, event.currentTarget.valueAsNumber)} />
-        <output>{nr?.text ?? fmt(dsp[field], format)}</output>
-      </label>
+      {@render nativeLevel(field, label, min, max, step, format, nr)}
     {/if}
   {/each}
 {/snippet}
@@ -224,7 +228,8 @@
 
     {#if compactAgcTime}
       {#if settingsPanel !== null && settingsPanel !== 'agc'}
-        <div class="dsp-settings" role="group" aria-label={`${settingsPanel.toUpperCase()} settings`}>
+        <div class="dsp-settings" id={`dsp-${settingsPanel}-settings`}
+          role="group" aria-label={`${settingsPanel.toUpperCase()} settings`}>
           {@render compactLevels(settingsPanel)}
         </div>
       {/if}
@@ -232,20 +237,15 @@
         <div class="dsp-agc-time" data-expanded={settingsPanel === 'agc'}>
           <HardwareButton indicator="edge-left" color="gray" title="AGC Time — click for settings"
             disabled={!usable(dsp.agcTimeConstant)}
+            ariaLabel="AGC time settings" ariaExpanded={settingsPanel === 'agc'}
+            ariaControls="dsp-agc-settings"
             onclick={() => onSettingsPanelChange?.(settingsPanel === 'agc' ? null : 'agc')}
           >AGC-T {fmt(dsp.agcTimeConstant, formatAgcTime)}s {settingsPanel === 'agc' ? '▴' : '▾'}</HardwareButton>
         </div>
         {#if settingsPanel === 'agc'}
-          <label class="dsp-level dsp-settings" data-testid="dsp-agcTimeConstant"
-            data-field="agcTimeConstant">
-            <span class="dsp-name">AGC time</span>
-            <input type="range" min="0" max="9" step="1"
-              aria-label="AGC time setting"
-              value={numberOf(dsp.agcTimeConstant, 0)}
-              disabled={!usable(dsp.agcTimeConstant)}
-              oninput={(event) => level('agcTimeConstant', event.currentTarget.valueAsNumber)} />
-            <output>{fmt(dsp.agcTimeConstant, formatAgcTime)}s</output>
-          </label>
+          <div class="dsp-settings" id="dsp-agc-settings">
+            {@render nativeLevel('agcTimeConstant', 'AGC time', 0, 9, 1, formatAgcTime, null)}
+          </div>
         {/if}
       {/if}
     {:else}

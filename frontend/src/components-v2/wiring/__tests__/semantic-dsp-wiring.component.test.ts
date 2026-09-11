@@ -817,6 +817,9 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     renderHosted();
     const open = q<HTMLButtonElement>('button[title="Open NB settings"]')!;
     expect(open.textContent).toContain('▾');
+    expect(open.getAttribute('aria-label')).toBe('NB settings');
+    expect(open.getAttribute('aria-expanded')).toBe('false');
+    expect(open.getAttribute('aria-controls')).toBe('dsp-nb-settings');
     expect(open.closest('.compact-dsp-button')?.getAttribute('data-expanded')).toBe('false');
     expect(q('button[title="Open NR settings"]')).not.toBeNull();
     expect(q('button[title="Open NOTCH settings"]')).not.toBeNull();
@@ -827,9 +830,11 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     expect(q('[data-testid="dsp-nbLevel"]')).not.toBeNull();
     const close = q<HTMLButtonElement>('button[title="Close NB settings"]')!;
     expect(close.textContent).toContain('▴');
+    expect(close.getAttribute('aria-expanded')).toBe('true');
+    expect(q(`#${close.getAttribute('aria-controls')}`)).not.toBeNull();
     expect(close.closest('.compact-dsp-button')?.getAttribute('data-expanded')).toBe('true');
-    expect(q<HTMLInputElement>('[data-testid="dsp-nbDepth"] input')?.getAttribute('aria-label'))
-      .toBe('Settings NB depth');
+    expect(q<HTMLInputElement>('[data-testid="dsp-nbDepth"] input')?.closest('label')
+      ?.textContent).toContain('NB depth');
     expect(h.nbToggle).not.toHaveBeenCalled();
 
     close.click();
@@ -845,6 +850,9 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
       .find(button => button.textContent?.trim().startsWith('AGC-T'))!;
     agcButton.click();
     flushSync();
+    expect(agcButton.getAttribute('aria-label')).toBe('AGC time settings');
+    expect(agcButton.getAttribute('aria-expanded')).toBe('true');
+    expect(q(`#${agcButton.getAttribute('aria-controls')}`)).not.toBeNull();
     const status = (h.state as ServerState).fieldStatus as unknown as Record<string, {
       storePath: string; observed: boolean; freshness: string; availability: string;
       lastObservedMonotonic: number;

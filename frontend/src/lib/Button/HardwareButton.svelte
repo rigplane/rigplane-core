@@ -16,6 +16,9 @@
     shortcutHint = null,
     armed = false,
     describedBy,
+    ariaLabel,
+    ariaExpanded,
+    ariaControls,
     onclick,
     onpointerdown,
     onpointerup,
@@ -36,6 +39,9 @@
   {shortcutHint}
   {armed}
   {describedBy}
+  {ariaLabel}
+  {ariaExpanded}
+  {ariaControls}
   {onclick}
   {onpointerdown}
   {onpointerup}
