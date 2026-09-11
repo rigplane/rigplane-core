@@ -1383,9 +1383,19 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
     ] as const) {
       for (const surface of surfaces) {
         const selector = `[data-testid="${surface}"]`;
-        expect(root.querySelectorAll(selector), surface).toHaveLength(1);
+        const splitCount = skinId === 'desktop-v2'
+          && (surface === 'ritxit-scan-surface' || surface === 'dsp-surface') ? 2 : 1;
+        expect(root.querySelectorAll(selector), surface).toHaveLength(splitCount);
         expect(root.querySelector(`.desktop-controls-${region} ${selector}`), surface).not.toBeNull();
       }
+    }
+    if (skinId === 'desktop-v2') {
+      expect(root.querySelector('.desktop-controls-left [data-testid="dsp-surface"][data-part="agc"]'))
+        .not.toBeNull();
+      expect(root.querySelector('.desktop-controls-left [data-testid="ritxit-scan-surface"] [data-testid="ritxit"]'))
+        .not.toBeNull();
+      expect(root.querySelector('.desktop-controls-left [data-testid="ritxit-scan-surface"] [data-testid="scan"]'))
+        .not.toBeNull();
     }
     expect(root.querySelectorAll(KEY_AUTHORITIES)).toHaveLength(1);
     expect(root.querySelector('.desktop-controls-right [data-testid="rx-tx-unkey"]')).not.toBeNull();

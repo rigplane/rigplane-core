@@ -94,7 +94,7 @@
     [0xa5, '±100k'], [0xa6, '±500k'], [0xa7, '±1M'],
   ] as const;
   export const RESUME_MODES = [
-    [0xd0, 'OFF'], [0xd3, 'ON'],
+    [0xd0, 'OFF'], [0xd1, '5S'], [0xd2, '10S'], [0xd3, 'ON'],
   ] as const;
   export type RitXitScanSurfacePart = 'all' | 'rit-xit' | 'scan';
   const hex = (value: number): string => value.toString(16).padStart(2, '0');

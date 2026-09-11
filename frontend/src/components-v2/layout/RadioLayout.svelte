@@ -157,7 +157,7 @@
       draggable: true,
       onDragStart: owner.handleDragStart,
       style: owner.dragStyle(panelId),
-      title,
+      ...(title === undefined ? {} : { title }),
     };
   }
 
