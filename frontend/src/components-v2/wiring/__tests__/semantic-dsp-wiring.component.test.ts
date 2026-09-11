@@ -664,10 +664,12 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     const staleStandardNr = retainedInvocations.get('NR')!;
 
     expect(seatFields('.dsp-finite-seat'))
-      .toEqual(['nrActive', 'nbActive', 'notchMode', 'agcMode']);
+      .toEqual(['agcMode', 'nrActive', 'nbActive', 'notchMode']);
     expect(seatFields('.dsp-scalar-seat')).toEqual(['nbLevel', 'nbWidth']);
     for (const label of external) expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
-    expect(rangeFields()).toEqual(NATIVE_RANGE_FIELDS);
+    expect(rangeFields()).toEqual([
+      'agcTimeConstant', 'nrLevel', 'nbDepth', 'notchFreq', 'manualNotchWidth',
+    ]);
 
     (h.state as { main: Record<string, unknown> }).main.nr = false;
     props.skinId = 'sdr-test';

@@ -176,8 +176,10 @@
    *  file header). NOT an observed radio fact, so it needs no `usable()`
    *  gate: it is honest about what it is from the moment it exists. */
   let selectedType = $state(DEFAULT_SCAN_TYPE);
-  let availableScanTypes = $derived(SCAN_TYPES.filter(([value]) => scanTypeValues?.includes(value) ?? true));
-  let availableResumeModes = $derived(RESUME_MODES.filter(([value]) => scanResumeValues?.includes(value) ?? true));
+  let availableScanTypes = $derived(SCAN_TYPES.filter(([value]) =>
+    scanTypeValues === undefined ? part === 'all' : scanTypeValues.includes(value)));
+  let availableResumeModes = $derived(RESUME_MODES.filter(([value]) =>
+    scanResumeValues === undefined ? part === 'all' : scanResumeValues.includes(value)));
   let effectiveSelectedType = $derived(
     availableScanTypes.some(([value]) => value === selectedType)
       ? selectedType : (availableScanTypes[0]?.[0] ?? DEFAULT_SCAN_TYPE),
@@ -248,7 +250,8 @@
 {/snippet}
 
 {#if (part !== 'scan' && rx) || (part !== 'rit-xit' && sc)}
-  <section class="ritxit-scan-surface" data-testid="ritxit-scan-surface" aria-label="RIT, XIT and scan">
+  <section class="ritxit-scan-surface" data-testid="ritxit-scan-surface"
+    aria-label={part === 'rit-xit' ? 'RIT and XIT controls' : part === 'scan' ? 'Scan controls' : 'RIT, XIT and scan'}>
     {#if part !== 'scan' && rx}
       <div class="row" data-testid="ritxit" data-active-vfo-known={activeKnown}>
         {#if instrumentLayout}
@@ -269,13 +272,13 @@
       <div class="row" data-testid="scan">
         {#if sc.scanning.availability.structural}
           <span class="row-label">SCAN</span>
-          <span class="visually-hidden" data-testid="scan-status" data-observed={usable(sc.scanning)}>{textOf(sc.scanning)}</span>
+          {#if part === 'all'}<span data-testid="scan-status" data-observed={usable(sc.scanning)}>{textOf(sc.scanning)}</span>{/if}
           <button
             type="button" data-testid="scan-toggle" aria-pressed={pressedOf(sc.scanning)}
-            disabled={!scanToggle.available}
+            disabled={!scanToggle.available || (!scanningOn && availableScanTypes.length === 0)}
             onclick={() => scanToggle.invoke()}
           >{scanningOn ? 'STOP' : 'START'}</button>
-          {#if scanCapable}
+          {#if scanCapable && availableScanTypes.length > 0}
             <div class="scan-choice-group" data-testid="scan-type-group">
               <span class="row-label">TYPE</span>
               {#each availableScanTypes as [value, label] (value)}
@@ -297,12 +300,14 @@
             {/if}
           {/if}
         {/if}
-        {#if sc.scanType.availability.structural}
+        {#if part === 'all' && sc.scanType.availability.structural}
           <output data-testid="scan-type-value">{textOf(sc.scanType)}</output>
         {/if}
         {#if sc.scanResumeMode.availability.structural}
+          {#if part === 'all'}
           <output data-testid="scan-resume-value">{textOf(sc.scanResumeMode)}</output>
-          {#if scanCapable}
+          {/if}
+          {#if scanCapable && availableResumeModes.length > 0}
             <div class="scan-choice-group" data-testid="scan-resume-group">
               <span class="row-label">RESUME</span>
               {#each availableResumeModes as [value, label] (value)}
@@ -328,7 +333,6 @@
   .ritxit-mode-row output { margin-inline-start: auto; }
   .scan-choice-group { display: flex; flex-wrap: wrap; gap: 0.25rem; }
   .row-label { font: inherit; }
-  .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   [aria-pressed='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }
   button:disabled, input:disabled { cursor: not-allowed; }

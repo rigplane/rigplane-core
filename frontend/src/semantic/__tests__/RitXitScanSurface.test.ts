@@ -581,6 +581,17 @@ describe('scan TYPE selection: six buttons restore v2.11.1, MOR-2425', () => {
     r.dispose();
   });
 
+  it('fails closed in the Standard scan part when an older server declares no domains', () => {
+    const r = renderScan(coldStart(), { scanCapable: true, part: 'scan' });
+    expect(r.el('scan-type-group')).toBeNull();
+    expect(r.el('scan-resume-group')).toBeNull();
+    expect(r.el('scan-toggle')?.hasAttribute('disabled')).toBe(true);
+    expect(r.el('scan-status')).toBeNull();
+    expect(r.el('scan-type-value')).toBeNull();
+    expect(r.el('scan-resume-value')).toBeNull();
+    r.dispose();
+  });
+
   it.each(scanTypeCases)(
     '$label ($hex) dispatches onScanStart with its own byte exactly once, from a cold start where scanType has never been reported',
     ({ value, hex }) => {
