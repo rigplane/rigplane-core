@@ -8,16 +8,18 @@
 
   interface Props {
     view: RadioViewModel | null;
-    presentation?: 'grouped' | 'independent';
+    presentation?: 'grouped' | 'independent' | 'standard';
     renderSurface?: boolean;
     pendingFilter?: number | null;
     pendingDataMode?: number | null;
+    pendingModInput?: number | null;
     filterWidthFeedback?: Readonly<CommandScalarFeedback>;
     finiteAppearance?: FiniteControlAppearance<FilterFiniteChoiceValue>;
     rendererContext?: FiniteRendererContext | null;
     onModeChange?: (mode: string) => void;
     onFilterChange?: (filter: number) => void;
     onDataModeChange?: (mode: number) => void;
+    onModInputChange?: (source: number) => void;
     onFilterWidthChange?: (width: number) => void;
     onFilterShapeChange?: (shape: number) => void;
     onIfShiftChange?: (value: number) => void;
@@ -26,9 +28,9 @@
   }
   let {
     view, presentation = 'grouped', renderSurface = false,
-    pendingFilter = null, pendingDataMode = null, filterWidthFeedback,
+    pendingFilter = null, pendingDataMode = null, pendingModInput = null, filterWidthFeedback,
     finiteAppearance, rendererContext = null, onModeChange, onFilterChange,
-    onDataModeChange, onFilterWidthChange, onFilterShapeChange,
+    onDataModeChange, onModInputChange, onFilterWidthChange, onFilterShapeChange,
     onIfShiftChange, onPbtInnerChange, onPbtOuterChange,
   }: Props = $props();
   let selection = $derived(finiteAppearance === undefined ? {} : { finiteAppearance, rendererContext });
@@ -41,8 +43,8 @@
   <div data-slot="data-mode">{@render handles.dataMode()}</div>
 {/snippet}
 
-<FilterInstrumentHost {view} {pendingFilter} {pendingDataMode} {onModeChange} {onFilterChange}
-  {onFilterShapeChange} {onDataModeChange} {...selection}>
+<FilterInstrumentHost {view} {pendingFilter} {pendingDataMode} {pendingModInput} {onModeChange} {onFilterChange}
+  {onFilterShapeChange} {onDataModeChange} {onModInputChange} {...selection}>
   {#snippet children(handles: FilterInstrumentHandles)}
     {#if renderSurface && view !== null}
       <FilterSurface
@@ -53,7 +55,9 @@
     {:else}
       {#key presentation}
         <section data-testid={`${presentation}-filter-composition`}>
-          {#if presentation === 'grouped'}
+          {#if presentation === 'standard'}
+            {#if handles.standardDataMode}{@render handles.standardDataMode()}{/if}
+          {:else if presentation === 'grouped'}
             {@render handles.mode()}{@render handles.filter()}{@render handles.shape()}{@render handles.dataMode()}
           {:else}
             {@render independent(handles)}

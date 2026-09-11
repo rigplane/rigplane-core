@@ -2541,6 +2541,13 @@ async def test_capabilities_reports_combined_rf_sql_control_model_for_ic7300() -
     _, payload = _response_json(writer)
 
     assert payload["rfSqlControlModel"] == "combined"
+    assert payload["dataModeInputs"] == [
+        {"value": 0, "label": "MIC"},
+        {"value": 1, "label": "ACC"},
+        {"value": 2, "label": "MIC+ACC"},
+        {"value": 3, "label": "USB"},
+        {"value": 4, "label": "MIC+USB"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -3939,6 +3946,14 @@ async def test_info_endpoint_returns_structured_capabilities() -> None:
     assert isinstance(caps["tags"], list)
     assert isinstance(caps["modes"], list)
     assert isinstance(caps["filters"], list)
+    assert caps["dataModeInputs"] == [
+        {"value": 0, "label": "MIC"},
+        {"value": 1, "label": "ACC"},
+        {"value": 3, "label": "USB"},
+        {"value": 5, "label": "LAN"},
+        {"value": 2, "label": "MIC+ACC"},
+        {"value": 4, "label": "MIC+USB"},
+    ]
 
     conn = data["connection"]
     assert conn["rigConnected"] is True

@@ -3123,6 +3123,10 @@ class WebServer:
                     "hasRxAntenna": profile.antenna_has_rx_ant,
                     "dataModeCount": profile.data_mode_count,
                     "dataModeLabels": profile.data_mode_labels,
+                    "dataModeInputs": [
+                        {"value": value, "label": label}
+                        for value, label in (profile.data_mode_inputs or ())
+                    ],
                     "keyboard": _serialize_keyboard_config(profile),
                     **({"controls": profile.controls} if profile.controls else {}),
                     "txBands": [
@@ -3592,6 +3596,10 @@ class WebServer:
             "dataModeLabels": (
                 profile.data_mode_labels if profile.data_mode_labels else {}
             ),
+            "dataModeInputs": [
+                {"value": value, "label": label}
+                for value, label in (profile.data_mode_inputs or ())
+            ],
             "keyboard": _serialize_keyboard_config(profile),
             "scopeSource": (
                 "hardware"

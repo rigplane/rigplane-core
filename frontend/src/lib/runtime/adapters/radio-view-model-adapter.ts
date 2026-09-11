@@ -605,6 +605,18 @@ function deriveFilterPassband(
       const label = caps.dataModeLabels?.[String(value)];
       return { value, label: typeof label === 'string' && label.trim() ? label : null };
     }) : [];
+  const modInputChoices = Array.isArray(caps.dataModeInputs) ? caps.dataModeInputs : [];
+  const activeDataMode = isDataModeValue(dataValue) ? dataValue : null;
+  const modInputKey = activeDataMode === null ? null : modInputStateKey(activeDataMode);
+  const modInputStatus = modInputKey === null ? undefined : state?.fieldStatus?.[modInputKey];
+  const modInputStructural = hasDataModeCap && activeDataMode !== null
+    && typeof count === 'number' && activeDataMode <= count && modInputChoices.length > 0
+    && modInputStatus !== undefined
+    && modInputStatus.availability !== 'undeclared' && modInputStatus.availability !== 'unavailable';
+  const modInputValue = modInputKey === null ? undefined : numOrUndef(state?.[modInputKey]);
+  const modInputObserved = modInputStructural && modInputKey !== null
+    && strictFieldAvailable(state, modInputKey)
+    && modInputChoices.some(choice => choice.value === modInputValue);
   const pbtInnerObserved = topFieldAvailable(state, `${base}pbtInner`);
   const pbtOuterObserved = topFieldAvailable(state, `${base}pbtOuter`);
   const ifShiftRawObserved = topFieldAvailable(state, `${base}ifShift`);
@@ -716,6 +728,8 @@ function deriveFilterPassband(
     },
     dataModeChoices,
     dataMode: txAuxField(hasDataModeCap, dataModeObserved, numOrUndef(dataRx?.dataMode)),
+    modInputChoices,
+    modInputSource: txAuxField(modInputStructural, modInputObserved, modInputValue),
   };
 }
 

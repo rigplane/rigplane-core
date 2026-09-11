@@ -393,6 +393,7 @@ class RadioProfile:
     rf_sql_control_model: str = "separate"
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
+    data_mode_inputs: tuple[tuple[int, str], ...] | None = None
     # When True, MAIN set_mode routes through CI-V 0x26 0x00 (set selected
     # receiver mode) instead of the bare 0x06. Data-driven: derived from the
     # profile declaring a ``set_selected_mode`` command (e.g. Xiegu X6200,

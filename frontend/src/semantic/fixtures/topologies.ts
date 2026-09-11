@@ -302,6 +302,8 @@ export function withFilterPassband(fixture: RadioViewModel): RadioViewModel {
     pbtOuter: known(0),
     dataMode: known(0),
     dataModeChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'D1' }],
+    modInputSource: known(0),
+    modInputChoices: [{ value: 0, label: 'MIC' }, { value: 3, label: 'USB' }],
   };
   return { ...fixture, filterPassband };
 }

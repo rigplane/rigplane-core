@@ -1121,7 +1121,9 @@ describe('RF gain additive display observation', () => {
       delete indicator.sMeter.source;
       delete indicator.sMeter.domain;
     }
-    const strictJson = JSON.stringify(legacyView, (key, value) => ['display', 'activeFilterConfiguration', 'dataModeChoices'].includes(key) ? undefined : value);
+    const strictJson = JSON.stringify(legacyView, (key, value) => [
+      'display', 'activeFilterConfiguration', 'dataModeChoices', 'modInputSource', 'modInputChoices',
+    ].includes(key) ? undefined : value);
     const digest = createHash('sha256').update(strictJson).digest('hex');
     // MOR-2425/R40+R41: ONE digest for both freshness values. Read off this
     // test's own failure diff for stale=true, not computed by hand.
@@ -1160,6 +1162,42 @@ describe('MOR-2374 shared DATA and filter configuration', () => {
     s.fieldStatus = { ...s.fieldStatus, 'main.dataMode': fresh, 'sub.dataMode': fresh };
     return s;
   }
+  const ic7300Inputs = [
+    { value: 0, label: 'MIC' }, { value: 1, label: 'ACC' },
+    { value: 2, label: 'MIC+ACC' }, { value: 3, label: 'USB' },
+    { value: 4, label: 'MIC+USB' },
+  ];
+  const ic7610Inputs = [
+    { value: 0, label: 'MIC' }, { value: 1, label: 'ACC' },
+    { value: 3, label: 'USB' }, { value: 5, label: 'LAN' },
+    { value: 2, label: 'MIC+ACC' }, { value: 4, label: 'MIC+USB' },
+  ];
+  it.each([
+    [0, 'dataOffModInput', 3], [1, 'data1ModInput', 4],
+  ] as const)('projects IC-7300 DATA group %i from %s with its exact source domain', (dataMode, key, source) => {
+    const s = state(); s.main.dataMode = dataMode; s[key] = source; s.fieldStatus![key] = fresh;
+    const fp = toRadioViewModel(s, dataCaps({ dataModeCount: 1, dataModeInputs: ic7300Inputs }))!.filterPassband!;
+    expect(fp.modInputChoices).toEqual(ic7300Inputs);
+    expect(fp.modInputChoices!.map(choice => choice.label)).not.toContain('LAN');
+    expect(fp.modInputSource!.reading).toEqual({ status: 'known', value: source });
+  });
+  it('projects IC-7610 D3 and preserves the profile source order including LAN', () => {
+    const s = state(); s.main.dataMode = 3; s.data3ModInput = 5; s.fieldStatus!.data3ModInput = fresh;
+    const fp = toRadioViewModel(s, dataCaps({ dataModeInputs: ic7610Inputs }))!.filterPassband!;
+    expect(fp.modInputChoices).toEqual(ic7610Inputs);
+    expect(fp.modInputSource!.reading).toEqual({ status: 'known', value: 5 });
+  });
+  it('fails closed for absent domains, undeclared fields, and unobserved values', () => {
+    const s = state(); s.dataOffModInput = 0;
+    expect(toRadioViewModel(s, dataCaps())!.filterPassband!.modInputSource!.availability.structural).toBe(false);
+    s.fieldStatus!.dataOffModInput = { ...fresh, availability: 'undeclared', observed: false };
+    expect(toRadioViewModel(s, dataCaps({ dataModeInputs: ic7300Inputs }))!.filterPassband!
+      .modInputSource!.availability.structural).toBe(false);
+    s.fieldStatus!.dataOffModInput = { ...fresh, availability: 'missing', observed: false };
+    const unknown = toRadioViewModel(s, dataCaps({ dataModeInputs: ic7300Inputs }))!.filterPassband!.modInputSource!;
+    expect(unknown.availability).toEqual({ structural: true, operational: false });
+    expect(unknown.reading).toEqual({ status: 'unknown' });
+  });
   it.each([0, 1, 3])('offers exactly 0..%i with canonical labels', (count) => {
     const model = toRadioViewModel(state(), dataCaps({ dataModeCount: count,
       dataModeLabels: { '0': 'OFF label', '1': 'Digital', '2': '  ', '9': 'stray' } }))!;

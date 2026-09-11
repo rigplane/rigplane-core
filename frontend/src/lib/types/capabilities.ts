@@ -149,6 +149,11 @@ export interface TxBand {
   end: number;
 }
 
+export interface DataModeInput {
+  value: number;
+  label: string;
+}
+
 export interface Capabilities {
   [extension: string]: unknown;
   model: string;
@@ -181,6 +186,7 @@ export interface Capabilities {
   rfSqlControlModel?: 'separate' | 'combined';
   dataModeCount?: number;
   dataModeLabels?: Record<string, string>;
+  dataModeInputs?: DataModeInput[];
   keyboard?: KeyboardConfig | null;
   antennas?: number;      // Number of antenna ports
   hasRxAntenna?: boolean;
@@ -547,6 +553,26 @@ export function validateCapabilities(value: unknown): Capabilities {
   });
   requireStringArray(raw.modes, '$.modes');
   requireStringArray(raw.filters, '$.filters');
+  if ('dataModeInputs' in raw) {
+    if (!Array.isArray(raw.dataModeInputs) || raw.dataModeInputs.length > 6) {
+      invalid('$.dataModeInputs', 'an array of at most 6 source options');
+    }
+    const values = new Set<number>();
+    raw.dataModeInputs.forEach((value, index) => {
+      const path = `$.dataModeInputs[${index}]`;
+      const option = requireRecord(value, path);
+      if (Object.keys(option).length !== 2 || !('value' in option) || !('label' in option)) {
+        invalid(path, 'exactly value and label');
+      }
+      requireInteger(option.value, `${path}.value`);
+      if ((option.value as number) < 0 || (option.value as number) > 5 || values.has(option.value as number)) {
+        invalid(`${path}.value`, 'a unique integer from 0 to 5');
+      }
+      values.add(option.value as number);
+      requireString(option.label, `${path}.label`);
+      if (!(option.label as string).trim()) invalid(`${path}.label`, 'a non-empty string');
+    });
+  }
 
   const audioConfig = requireRecord(raw.audioConfig, '$.audioConfig');
   requireInteger(audioConfig.sampleRate, '$.audioConfig.sampleRate', true);

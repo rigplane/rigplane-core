@@ -426,6 +426,8 @@ export interface FilterPassbandViewModel {
   pbtOuter: DisplayObservedField<number>;
   dataMode: FilterPassbandField<number>;
   readonly dataModeChoices: readonly { readonly value: number; readonly label: string | null }[];
+  modInputSource?: FilterPassbandField<number>;
+  readonly modInputChoices?: readonly { readonly value: number; readonly label: string }[];
 }
 
 /**
@@ -1795,6 +1797,21 @@ function validateDataModeChoices(value: unknown, path: string): FilterPassbandVi
   });
 }
 
+function validateModInputChoices(value: unknown, path: string): NonNullable<FilterPassbandViewModel['modInputChoices']> {
+  if (!Array.isArray(value) || value.length > 6) invalid(path, 'MOD input choices in 0..5');
+  const seen = new Set<number>();
+  return value.map((item, i) => {
+    const choice = record(item, path + '[' + i + ']');
+    exactKeys(choice, ['value', 'label'], path);
+    const value = num(choice.value, `${path}[${i}].value`);
+    if (!Number.isSafeInteger(value) || value < 0 || value > 5 || seen.has(value)) {
+      invalid(`${path}[${i}].value`, 'a unique integer in 0..5');
+    }
+    seen.add(value);
+    return { value, label: nonBlank(choice.label, `${path}[${i}].label`) };
+  });
+}
+
 function validateModeFilter(value: unknown, path: string): ModeFilterViewModel {
   const v = record(value, path);
   exactKeys(v, [
@@ -1819,10 +1836,13 @@ function validateFilterPassband(value: unknown, path: string): FilterPassbandVie
     v,
     [
       'filterShape', 'filterShapeControlStructural', 'ifShift', 'ifShiftControlStructural',
-      'pbtInner', 'pbtOuter', 'dataMode', 'dataModeChoices',
+      'pbtInner', 'pbtOuter', 'dataMode', 'dataModeChoices', 'modInputSource', 'modInputChoices',
     ],
     path,
   );
+  const hasModInputSource = v.modInputSource !== undefined;
+  const hasModInputChoices = v.modInputChoices !== undefined;
+  if (hasModInputSource !== hasModInputChoices) invalid(path, 'MOD input source and choices together');
   return {
     filterShape: validateTxAuxField(v.filterShape, `${path}.filterShape`, num),
     filterShapeControlStructural: bool(v.filterShapeControlStructural, `${path}.filterShapeControlStructural`),
@@ -1832,6 +1852,10 @@ function validateFilterPassband(value: unknown, path: string): FilterPassbandVie
     pbtOuter: validateDisplayObservedField(v.pbtOuter, `${path}.pbtOuter`, num),
     dataModeChoices: validateDataModeChoices(v.dataModeChoices, `${path}.dataModeChoices`),
     dataMode: validateTxAuxField(v.dataMode, `${path}.dataMode`, num),
+    ...(hasModInputSource ? {
+      modInputChoices: validateModInputChoices(v.modInputChoices, `${path}.modInputChoices`),
+      modInputSource: validateTxAuxField(v.modInputSource, `${path}.modInputSource`, num),
+    } : {}),
   };
 }
 

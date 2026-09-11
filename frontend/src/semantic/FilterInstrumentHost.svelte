@@ -16,10 +16,12 @@
     view: RadioViewModel | null;
     pendingFilter?: number | null;
     pendingDataMode?: number | null;
+    pendingModInput?: number | null;
     onModeChange?: (mode: string) => void;
     onFilterChange?: (filter: number) => void;
     onFilterShapeChange?: (shape: number) => void;
     onDataModeChange?: (mode: number) => void;
+    onModInputChange?: (source: number) => void;
     children: Snippet<[FilterInstrumentHandles]>;
   }
   type RendererSelection = { finiteAppearance?: undefined; rendererContext?: undefined } | {
@@ -29,8 +31,8 @@
   type Props = ExistingProps & RendererSelection;
 
   let {
-    view, pendingFilter = null, pendingDataMode = null,
-    onModeChange, onFilterChange, onFilterShapeChange, onDataModeChange,
+    view, pendingFilter = null, pendingDataMode = null, pendingModInput = null,
+    onModeChange, onFilterChange, onFilterShapeChange, onDataModeChange, onModInputChange,
     finiteAppearance, rendererContext, children,
   }: Props = $props();
 
@@ -38,6 +40,7 @@
   let filterPassband = $derived(view?.filterPassband);
   const pendingId = $props.id();
   const pendingDataModeId = `${pendingId}-data-mode`;
+  const pendingModInputId = `${pendingId}-mod-input`;
   const usable = (field: { availability: { structural: boolean; operational: boolean };
     reading: { status: string } } | undefined): boolean => field !== undefined
       && field.availability.structural && field.availability.operational
@@ -222,6 +225,28 @@
           {/each}
         </div>
         {#if pendingDataMode !== null}<span id={pendingDataModeId} class="sr-only">{t('core.modePanel.dataMode.pendingAnnouncement')}</span>{/if}
+        {#if filterPassband.modInputSource?.availability.structural}
+          <label class="standard-mod-input" data-testid="standard-mod-input"
+            data-disabled-reason={reason(filterPassband.modInputSource)}
+            data-mod-input-status={pendingModInput !== null ? 'pending' : usable(filterPassband.modInputSource) ? 'confirmed' : filterPassband.modInputSource.reading.status === 'known' ? 'retained' : 'unknown'}>
+            <span class="standard-section-label">{t('core.modePanel.modInputLabel')}</span>
+            {#key `${filterPassband.modInputSource.reading.status}:${filterPassband.modInputSource.reading.status === 'known' ? filterPassband.modInputSource.reading.value : ''}:${pendingModInput ?? ''}`}
+            <select data-testid="mod-input-select" aria-label={t('core.modePanel.modInputAria')}
+              aria-describedby={pendingModInput !== null ? pendingModInputId : undefined}
+              data-pending-value={pendingModInput === null ? undefined : pendingModInput}
+              disabled={!usable(filterPassband.modInputSource)}
+              onchange={(event) => onModInputChange?.(Number(event.currentTarget.value))}>
+              {#if filterPassband.modInputSource.reading.status !== 'known'}<option value="" disabled selected>—</option>{/if}
+              {#each filterPassband.modInputChoices ?? [] as choice (choice.value)}
+                <option value={choice.value}
+                  selected={filterPassband.modInputSource.reading.status === 'known'
+                    && filterPassband.modInputSource.reading.value === choice.value}>{choice.label}</option>
+              {/each}
+            </select>
+            {/key}
+            {#if pendingModInput !== null}<span id={pendingModInputId} class="sr-only">{t('core.modePanel.dataMode.pendingAnnouncement')}</span>{/if}
+          </label>
+        {/if}
       </div>
     {/if}
   {/if}
@@ -236,6 +261,8 @@
   .filter-choice:disabled { cursor: not-allowed; }
   .filter-choice[data-pending='true'] { font-style: italic; opacity: 0.75; }
   .standard-data-block { display: flex; flex-direction: column; gap: 0.5rem; }
+  .standard-mod-input { display: grid; grid-template-columns: 1fr minmax(0, 1fr); align-items: center; gap: 0.75rem; }
+  .standard-mod-input select { min-width: 0; }
   .standard-choice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
   .standard-choice-grid > span { min-width: 0; }
   .standard-choice-grid > span > :global(button) { width: 100%; min-width: 0; min-height: 36px; }

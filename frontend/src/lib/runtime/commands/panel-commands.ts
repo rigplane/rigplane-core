@@ -294,11 +294,17 @@ export function makeModeHandlers() {
       const receiver = knownActiveReceiver('dataMode');
       const dataMode = receiver === null ? null : getActiveReceiver()?.dataMode;
       const state = getRadioState();
+      const caps = getCapabilities();
       if (
         !state
+        || !caps
+        || !Array.isArray(caps.dataModeInputs)
+        || !caps.dataModeInputs.some(option => option.value === source)
         || !Number.isSafeInteger(dataMode)
         || (dataMode as number) < 0
         || (dataMode as number) > 3
+        || !Number.isSafeInteger(caps.dataModeCount)
+        || (dataMode as number) > (caps.dataModeCount as number)
         || !isFieldAvailable(state, modInputStateKey(dataMode as number))
       ) return;
       dispatchRadioIntent({ name: modInputCommand(dataMode as number), params: { source } });

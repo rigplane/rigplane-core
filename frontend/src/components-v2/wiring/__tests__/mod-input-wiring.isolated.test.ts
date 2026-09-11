@@ -11,6 +11,11 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const h = vi.hoisted(() => ({
+  caps: { receivers: 1, dataModeCount: 3,
+    dataModeInputs: [0, 1, 2, 3, 4, 5].map(value => ({ value, label: String(value) })) },
+}));
+
 vi.mock('$lib/transport/ws-client', () => ({
   sendCommand: vi.fn(),
 }));
@@ -22,6 +27,10 @@ vi.mock('$lib/runtime/commands/radio-intents', async () => {
 vi.mock('$lib/stores/radio.svelte', () => ({
   getActiveReceiver: vi.fn(() => null),
   getRadioState: vi.fn(() => null),
+}));
+vi.mock('$lib/stores/capabilities.svelte', () => ({
+  capabilitiesMatchGeneration: vi.fn(() => true),
+  getCapabilities: vi.fn(() => h.caps),
 }));
 
 vi.mock('$lib/audio/audio-manager', () => ({
@@ -47,6 +56,8 @@ describe.each(factories)('%s onModInputChange (MOR-616)', (_name, makeHandlers) 
     vi.mocked(sendCommand).mockClear();
     vi.mocked(getActiveReceiver).mockReturnValue(null);
     vi.mocked(getRadioState).mockReturnValue(null);
+    h.caps = { receivers: 1, dataModeCount: 3,
+      dataModeInputs: [0, 1, 2, 3, 4, 5].map(value => ({ value, label: String(value) })) };
   });
 
   it('emits set_data_off_mod_input when DATA is off', () => {
@@ -78,6 +89,17 @@ describe.each(factories)('%s onModInputChange (MOR-616)', (_name, makeHandlers) 
   it('fails closed when no receiver state exists', () => {
     makeHandlers().onModInputChange(0);
 
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('rejects a source or DATA group outside the active profile domain', () => {
+    h.caps = { receivers: 1, dataModeCount: 1,
+      dataModeInputs: [0, 1, 2, 3, 4].map(value => ({ value, label: String(value) })) };
+    vi.mocked(getRadioState).mockReturnValue({ active: 'MAIN', main: {} } as never);
+    vi.mocked(getActiveReceiver).mockReturnValue({ dataMode: 0 } as never);
+    makeHandlers().onModInputChange(5);
+    vi.mocked(getActiveReceiver).mockReturnValue({ dataMode: 2 } as never);
+    makeHandlers().onModInputChange(3);
     expect(sendCommand).not.toHaveBeenCalled();
   });
 });
