@@ -582,6 +582,32 @@
     letter-spacing: 0.05em;
   }
 
+  :global(.desktop-control-face.standard-face) :where(
+    .control-btn,
+    .status-bar .now-playing,
+    .status-bar .status-controls :global(.managed-tot-trigger),
+    .status-bar .status-controls :global(.theme-button)
+  ) {
+    background: linear-gradient(180deg,
+      var(--hw-gradient-top-1) 0%,
+      var(--hw-gradient-top-2) 14%,
+      var(--hw-gradient-mid) 52%,
+      var(--hw-gradient-bottom) 100%);
+    border: 1px solid var(--hw-border);
+    border-radius: 3px;
+    color: var(--v2-text-subdued, #9aa6b2);
+    font-family: 'Roboto Mono', monospace;
+    font-weight: 700;
+    text-transform: uppercase;
+    box-shadow:
+      inset 0 1px 0 var(--hw-shadow-top),
+      inset 0 -1px 0 var(--hw-shadow-bottom),
+      inset 1px 0 0 var(--hw-shadow-left),
+      inset -1px 0 0 var(--hw-shadow-right),
+      0 1px 0 var(--hw-shadow-outer-top),
+      0 4px 10px var(--hw-shadow-outer-bottom);
+  }
+
   .btn-label {
     white-space: nowrap;
   }
@@ -658,6 +684,31 @@
     background: var(--v2-bg-card, #252540);
     border-color: var(--v2-accent-cyan, #06b6d4);
     color: var(--v2-text-primary, #fff);
+  }
+
+  :global(.desktop-control-face.standard-face) :where(
+    .control-btn,
+    .status-bar .now-playing,
+    .status-bar .status-controls :global(.managed-tot-trigger),
+    .status-bar .status-controls :global(.theme-button)
+  ):hover {
+    background: linear-gradient(180deg,
+      var(--hw-gradient-top-1-hover) 0%,
+      var(--hw-gradient-top-2-hover) 16%,
+      var(--hw-gradient-mid-hover) 56%,
+      var(--hw-gradient-bottom-hover) 100%);
+    border-color: var(--v2-accent-cyan, #06b6d4);
+    color: var(--v2-text-bright, #fff);
+  }
+
+  :global(.desktop-control-face.standard-face) :where(
+    .control-btn,
+    .status-bar .now-playing,
+    .status-bar .status-controls :global(.managed-tot-trigger),
+    .status-bar .status-controls :global(.theme-button)
+  ):focus-visible {
+    outline: var(--v2-focus-ring);
+    outline-offset: 2px;
   }
 
   .control-btn:active {
