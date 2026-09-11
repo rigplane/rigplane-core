@@ -81,7 +81,10 @@ export function getTxAuxControlFeedback(field: keyof typeof txAuxControls) {
   });
 }
 
-const dspScalarControls = Object.freeze({ nbLevel: 'nb-level', nbWidth: 'nb-width' } as const);
+const dspScalarControls = Object.freeze({
+  nbLevel: 'nb-level', nbWidth: 'nb-width', nbDepth: 'nb-depth', nrLevel: 'nr-level',
+  notchFilter: 'notch-position', manualNotchWidth: 'manual-notch-width', agcTimeConstant: 'agc-time',
+} as const);
 
 /** MOR-2425 — offline fixtures never fabricate radio-global DSP command-feedback authority. */
 export function getDspControlFeedback(field: keyof typeof dspScalarControls) {
@@ -92,6 +95,15 @@ export function getDspControlFeedback(field: keyof typeof dspScalarControls) {
     scope: Object.freeze({ control: dspScalarControls[field], receiver: 0 as const }),
     repeatPolicy: 'latest-target-wins' as const,
   });
+}
+
+/** Offline DSP feedback has no readings to project into display units. */
+export function projectDspControlFeedbackToDisplay(
+  _field: 'nrLevel' | 'nbDepth',
+  feedback: ReturnType<typeof getDspControlFeedback>,
+  _caps: unknown,
+) {
+  return feedback;
 }
 
 /** The offline fixture has no qualified RF/SQL command-feedback authority. */
