@@ -198,7 +198,15 @@
     name: 'filter-width-catalog',
     preview: 'confirmed',
     normalize: (value) => nearestWidthChoice(value),
-    wheel: (current, event) => adjacentWidthChoice(current, event.direction),
+    wheel: (current, event) => {
+      const steps = event.steps ?? 1;
+      if (!Number.isInteger(steps) || steps < 1 || steps > 8) return null;
+      let candidate: number | null = current;
+      for (let index = 0; index < steps && candidate !== null; index += 1) {
+        candidate = adjacentWidthChoice(candidate, event.direction);
+      }
+      return candidate;
+    },
     key: (current, event) => {
       if (event.key === 'Home') return validWidthCatalog() ? currentWidthTable[0] : null;
       if (event.key === 'End') return validWidthCatalog()
