@@ -39,23 +39,6 @@
   line-height: 1.2;
 }
 
-/* Standard command keys inherit the MODE HardwareButton's canonical chrome
-   from control-button.css. Only contextual typography and safety accents live
-   here; geometry remains owned by each surface. */
-.desktop-control-face.standard-face :is(
-  .semantic-control-panel section button,
-  [data-vfo-appearance='standard'] .vfo-select,
-  [data-vfo-operation-appearance='standard'] .fact-toggle,
-  [data-vfo-operation-appearance='standard'] .vfo-op,
-  .reset-order-btn
-) {
-  font-weight: 400;
-}
-
-.desktop-control-face.standard-face .band-tab {
-  font-weight: 400;
-}
-
 /* A selected VFO is intentionally disabled because selecting it again is a
    no-op. Keep that current selection visually active while retaining the
    native disabled cursor and interaction semantics. */

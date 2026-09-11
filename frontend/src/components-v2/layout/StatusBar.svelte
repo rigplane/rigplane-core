@@ -582,15 +582,6 @@
     letter-spacing: 0.05em;
   }
 
-  :global(.desktop-control-face.standard-face) :where(
-    .control-btn,
-    .status-bar .now-playing,
-    .status-bar .status-controls :global(.managed-tot-trigger),
-    .status-bar .status-controls :global(.theme-button)
-  ) {
-    font-weight: 400;
-  }
-
   .btn-label {
     white-space: nowrap;
   }

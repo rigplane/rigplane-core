@@ -2,7 +2,7 @@
 
 .v2-control-button,
 .standard-face :where(:is(
-  .semantic-control-panel section button,
+  .semantic-control-panel button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,
@@ -54,9 +54,33 @@
   --glow-color: var(--indicator-color);
 }
 
+/* Standard-face command families use the same label and corner treatment as
+ * the MODE HardwareButton even when their component owns compact geometry. */
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment),
+.desktop-control-face.standard-face .band-tab {
+  border-radius: var(--btn-border-radius);
+  font-family: 'Roboto Mono', monospace;
+  font-size: var(--btn-font-size);
+  font-weight: var(--btn-font-weight);
+  letter-spacing: var(--btn-letter-spacing);
+  line-height: 1;
+  text-transform: uppercase;
+}
+
 .v2-control-button:hover,
 .desktop-control-face.standard-face :is(
-  .semantic-control-panel section button,
+  .semantic-control-panel button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,
@@ -74,7 +98,7 @@
 
 .v2-control-button:focus,
 .desktop-control-face.standard-face :is(
-  .semantic-control-panel section button,
+  .semantic-control-panel button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,
@@ -91,7 +115,7 @@
 
 .v2-control-button:focus-visible,
 .desktop-control-face.standard-face :is(
-  .semantic-control-panel section button,
+  .semantic-control-panel button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,
@@ -114,7 +138,7 @@
 .v2-control-button:disabled,
 .v2-control-button[aria-disabled='true'],
 .desktop-control-face.standard-face :is(
-  .semantic-control-panel section button,
+  .semantic-control-panel button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,
@@ -134,7 +158,7 @@
 .v2-control-button:disabled:hover,
 .v2-control-button[aria-disabled='true']:hover,
 .desktop-control-face.standard-face :is(
-  .semantic-control-panel section button,
+  .semantic-control-panel button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,
@@ -165,7 +189,7 @@
 .v2-control-button.active,
 .v2-control-button[data-active='true'],
 .desktop-control-face.standard-face :is(
-  .semantic-control-panel section button,
+  .semantic-control-panel button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,
@@ -226,7 +250,7 @@
 .v2-control-button[data-indicator-style='edge-left']::before,
 .v2-control-button[data-indicator-style='edge-sides']::before,
 .desktop-control-face.standard-face :is(
-  .semantic-control-panel section button,
+  .semantic-control-panel button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,
@@ -307,7 +331,7 @@
 
 .v2-control-button[data-indicator-style='edge-left']::before,
 .desktop-control-face.standard-face :is(
-  .semantic-control-panel section button,
+  .semantic-control-panel button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,
@@ -362,7 +386,7 @@
 .v2-control-button[data-indicator-style='edge-sides'].active::before,
 .v2-control-button[data-indicator-style='edge-sides'][data-active='true']::before,
 .desktop-control-face.standard-face :is(
-  .semantic-control-panel section button,
+  .semantic-control-panel button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,
@@ -391,7 +415,7 @@
 .v2-control-button[data-indicator-style='edge-sides'].active,
 .v2-control-button[data-indicator-style='edge-sides'][data-active='true'],
 .desktop-control-face.standard-face :is(
-  .semantic-control-panel section button,
+  .semantic-control-panel button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,
@@ -428,7 +452,7 @@
 
 .v2-control-button[data-surface='hardware'],
 .desktop-control-face.standard-face :is(
-  .semantic-control-panel section button,
+  .semantic-control-panel button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,
@@ -460,7 +484,7 @@
 
 .v2-control-button[data-surface='hardware']:hover,
 .desktop-control-face.standard-face :is(
-  .semantic-control-panel section button,
+  .semantic-control-panel button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,
@@ -485,7 +509,7 @@
 .v2-control-button[data-surface='hardware'].active,
 .v2-control-button[data-surface='hardware'][data-active='true'],
 .desktop-control-face.standard-face :is(
-  .semantic-control-panel section button,
+  .semantic-control-panel button,
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op,

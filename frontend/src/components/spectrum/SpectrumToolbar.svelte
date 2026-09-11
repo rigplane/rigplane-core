@@ -635,10 +635,6 @@
     background: rgba(0, 212, 255, 0.1);
   }
 
-  :global(.desktop-control-face.standard-face) .toolbar-btn {
-    font-weight: 400;
-  }
-
   .toolbar-btn.small {
     padding: 2px 4px;
     min-width: 18px;
