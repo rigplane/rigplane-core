@@ -366,10 +366,12 @@
   .tx-marker[data-rf-state='uncertain'] { color: var(--v2-accent-yellow, #ffca55); }
   .compact-header .slot-choice { font-size: 11px; line-height: 14px; margin-inline-start: 0; }
   .compact-header .slot-choice .vfo-role,
-  .compact-header .slot-choice .vfo-freq { font-size: inherit; }
+  .panel.compact-header .frequency-summary .slot-choice .vfo-freq {
+    font-size: 11px; line-height: 14px; letter-spacing: 0;
+  }
   @container (max-width: 540px) {
     .compact-header .display-row { gap: 6px; }
-    .compact-header .frequency-summary { min-width: 145px; }
+    .compact-header .frequency-summary { min-width: 125px; }
     .mode-filter-summary { gap: 3px; }
     .panel.compact-header .vfo-freq { font-size: 44px; }
     .passive-summary-reading { min-height: 24px; padding-inline: 4px; }
