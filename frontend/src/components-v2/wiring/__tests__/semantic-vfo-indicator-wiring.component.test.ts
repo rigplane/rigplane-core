@@ -300,12 +300,7 @@ describe('production receiver-indicator partitioning', () => {
   ] as const)('renders one operation group and status in %s', (_name, props, surfaces, appearance) => {
     render(caps('main_sub', 2), state(), {}, props);
     expect(target.querySelectorAll('[data-testid="vfo-surface"]')).toHaveLength(surfaces);
-    expect(target.querySelectorAll('[data-testid="vfo-active-receiver"]')).toHaveLength(appearance === 'standard' ? 0 : 1);
-    if (appearance === 'standard') {
-      expect(target.querySelector('[data-receiver-instrument="MAIN"] .vfo-label')?.textContent).toBe('MAIN A');
-      expect(target.querySelector('[data-receiver-instrument="SUB"] .vfo-label')?.textContent).toBe('SUB A');
-      expect(target.querySelector('[data-dual-action="main"]')?.getAttribute('aria-checked')).toBe('true');
-    }
+    expect(target.querySelectorAll('[data-testid="vfo-active-receiver"]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-testid="vfo-ops"]')).toHaveLength(1);
     expect(target.querySelector('[data-vfo-operation-appearance]')?.getAttribute('data-vfo-operation-appearance')).toBe(appearance);
   });

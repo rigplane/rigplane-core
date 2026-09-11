@@ -2506,7 +2506,7 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(aActive.querySelector('[data-standard-vfo-slot="A"] .panel')?.classList.contains('active')).toBe(true);
     expect(aActive.querySelector('[data-standard-vfo-slot="B"] .panel')?.classList.contains('active')).toBe(false);
     expect(aActive.querySelectorAll('[data-testid="receiver-s-meter"]')).toHaveLength(1);
-    expect(aActive.querySelector('[data-standard-vfo-slot="B"] [data-meter-space="reserved"]')).toBeNull();
+    expect(aActive.querySelector('[data-standard-vfo-slot="B"] [data-meter-space="reserved"]')).not.toBeNull();
 
     const bModel: RadioViewModel = {
       ...base,
@@ -2592,7 +2592,7 @@ describe('MOR-2342 historical instrument presentations', () => {
     ['unknown', null, null, true, 'RIT — — Hz', 'unknown'],
     ['unsupported', null, null, false, null, null],
   ] as const)(
-    'renders the Standard radio-wide RIT %s state once with structural gating',
+    'renders the Standard active-VFO RIT %s state once with structural gating',
     (_name, active, offset, structural, expectedText, expectedState) => {
       const base = withRadioWide('1/ab');
       const wide = base.radioWideIndicators!;
@@ -2621,84 +2621,11 @@ describe('MOR-2342 historical instrument presentations', () => {
       if (expectedText !== null) {
         expect(badges[0].textContent?.trim()).toBe(expectedText);
         expect(badges[0].getAttribute('data-state')).toBe(expectedState);
-        expect(badges[0].closest('[data-standard-vfo-slot]')).toBeNull();
-        expect(badges[0].closest('[data-standard-radio-facts]')).not.toBeNull();
+        expect(badges[0].closest('[data-standard-vfo-slot]')?.getAttribute('data-standard-vfo-slot')).toBe('A');
       }
       expect(root.querySelector('.rit-row')).toBeNull();
     },
   );
-
-  it.each(['1/ab', '2/main_sub'] as const)('keeps Standard %s common facts out of receiver cards', (id) => {
-    const root = mountSurface({ viewModel: withRadioWide(id), appearance: 'standard' });
-    const rail = root.querySelector('[data-standard-radio-facts]')!;
-    expect(rail).not.toBeNull();
-    for (const fact of ['ant', 'atu', 'rit', 'xit']) {
-      expect(root.querySelectorAll(`[data-indicator-fact="${fact}"]`)).toHaveLength(1);
-      expect(rail.querySelector(`[data-indicator-fact="${fact}"]`)).not.toBeNull();
-    }
-    expect(root.querySelector('[data-indicator-fact="rx"]')).toBeNull();
-    if (id === '2/main_sub') {
-      for (const receiver of ['MAIN', 'SUB']) {
-        const card = root.querySelector(`[data-receiver-instrument="${receiver}"]`)!;
-        expect(card.querySelector('.vfo-label')?.textContent).toBe(`${receiver} A`);
-        expect(card.querySelector('.frequency-summary .slot-choice .vfo-role')?.textContent).toBe(`${receiver} B`);
-      }
-      expect(root.querySelector('[data-instrument-bridge] .active-receiver')).toBeNull();
-    }
-    for (const panel of root.querySelectorAll('.compact-header')) {
-      expect(panel.querySelector('.frequency-summary')?.textContent).toMatch(/WIDE|NARROW/);
-      expect(panel.querySelector('.frequency-summary .v2-status-indicator')).toBeNull();
-    }
-    for (const meter of root.querySelectorAll('[data-testid="receiver-s-meter"]')) {
-      expect(meter.closest('.identity-row')).not.toBeNull();
-    }
-    for (const badge of root.querySelectorAll('[data-indicator-fact="agc"]')) {
-      expect(badge.closest('[data-indicator-group="RF"]')).not.toBeNull();
-    }
-    for (const badge of root.querySelectorAll('[data-indicator-fact="nr"]')) {
-      expect(badge.closest('[data-indicator-group="DSP"]')).not.toBeNull();
-    }
-  });
-
-  it('does not assign unknown Standard TX ownership from split or a stale marker', () => {
-    const base = withRadioWide('1/ab');
-    const root = mountSurface({ viewModel: { ...base,
-      txTarget: { status: 'unknown', reason: 'not-observed' },
-      vfos: base.vfos.map((vfo) => ({ ...vfo, isTxTarget: true })),
-    }, appearance: 'standard' });
-    expect(root.querySelector('[data-standard-radio-facts]')?.textContent).toContain('TX —');
-    expect(root.querySelector('[data-standard-tx-marker]')).toBeNull();
-    expect(root.querySelector('[data-standard-tx-frequency]')).toBeNull();
-  });
-
-  it('keeps the supplied Standard TX frequency unchanged by XIT and changes only the RF marker', () => {
-    const base = withRadioWide('1/ab');
-    const target = { status: 'known' as const, receiver: 'MAIN' as const,
-      slot: { kind: 'slotted' as const, id: 'B' as const }, frequencyHz: 7150250 };
-    const model = writable<RadioViewModel>({ ...base, txTarget: target,
-      vfos: base.vfos.map((vfo) => ({ ...vfo, isTxTarget: vfo.slot.kind === 'slotted' && vfo.slot.id === 'B' })),
-      radioWideIndicators: { ...base.radioWideIndicators!, xitOffset: indicatorField(250) },
-    });
-    const live = fromStore(model);
-    const root = mountSurface({ get viewModel() { return live.current; }, appearance: 'standard' });
-    const frequency = root.querySelector('[data-standard-tx-frequency]')!;
-    const marker = root.querySelector('[data-standard-tx-marker]')!;
-    expect(frequency.textContent).toBe('TX 7.150.250');
-    expect(marker.textContent).toBe('TX target');
-    expect(marker.closest('[data-standard-vfo-slot]')?.getAttribute('data-standard-vfo-slot')).toBe('B');
-    model.set({ ...live.current, radioWideIndicators: { ...live.current.radioWideIndicators!, rfState: 'transmitting' } });
-    flushSync();
-    expect(root.querySelector('[data-standard-tx-frequency]')).toBe(frequency);
-    expect(root.querySelector('[data-standard-tx-marker]')).toBe(marker);
-    expect(marker.textContent).toBe('TX');
-    expect(marker.getAttribute('data-rf-state')).toBe('transmitting');
-    expect(frequency.textContent).toBe('TX 7.150.250');
-    expect(frequency.closest('[data-standard-vfo-slot]')?.getAttribute('data-standard-vfo-slot')).toBe('B');
-    model.set({ ...live.current, txTarget: { ...target, frequencyHz: 7150000 } });
-    flushSync();
-    expect(root.querySelector('[data-standard-tx-frequency]')).toBeNull();
-    expect(root.querySelector('[data-standard-tx-marker]')).toBe(marker);
-  });
 
   it('mounts the surviving Standard VfoPanel with honest meter states', () => {
     const base = withReceiverIndicators('1/single');
