@@ -234,7 +234,7 @@ describe('MOR-1232: "suppress it entirely" sites now have a real focus-visible t
     {
       label: 'control-button.css .v2-control-button (shared by 7+ v2 buttons)',
       file: 'components-v2/controls/control-button.css',
-      selector: /\.v2-control-button:focus-visible\s*\{[^}]*outline:\s*var\(--v2-focus-ring\)[^}]*\}/,
+      selector: /\.v2-control-button:focus-visible(?:\s*,[^{]*)?\s*\{[^}]*outline:\s*var\(--v2-focus-ring\)[^}]*\}/,
     },
     {
       label: 'StatusBar.svelte .skin-select',

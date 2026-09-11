@@ -1,5 +1,5 @@
-/* Button and range chrome adapted from control-button.css and HBarRenderer.svelte.
-   SemanticControlPanel excludes VFO; the skin ancestor opts in to this chrome. */
+/* Semantic panel geometry and range chrome. Standard command-button chrome is
+   owned by the shared control-button.css rules. */
 .desktop-control-face .semantic-control-panel {
   min-width: 0;
   color: var(--v2-text-primary);
@@ -39,145 +39,26 @@
   line-height: 1.2;
 }
 
-.desktop-control-face.standard-face :where(
-  .semantic-control-panel section button:not([data-surface='hardware']),
-  [data-vfo-appearance='standard'] .vfo-select,
-  .v2-control-button:not([data-surface='hardware']),
-  .reset-order-btn
-) {
-  position: relative;
-  appearance: none;
-  border: 1px solid var(--hw-border, var(--v2-border-dark));
-  border-radius: 3px;
-  background: linear-gradient(180deg,
-    var(--hw-gradient-top-1, var(--v2-control-button-gradient-top)) 0%,
-    var(--hw-gradient-top-2, var(--v2-control-button-gradient-top)) 14%,
-    var(--hw-gradient-mid, var(--v2-control-button-gradient-bottom)) 52%,
-    var(--hw-gradient-bottom, var(--v2-control-button-gradient-bottom)) 100%);
-  color: var(--v2-text-subdued);
-  font-family: 'Roboto Mono', monospace;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  cursor: pointer;
-  box-shadow:
-    inset 0 1px 0 var(--hw-shadow-top),
-    inset 0 -1px 0 var(--hw-shadow-bottom),
-    inset 1px 0 0 var(--hw-shadow-left),
-    inset -1px 0 0 var(--hw-shadow-right),
-    0 1px 0 var(--hw-shadow-outer-top),
-    0 4px 10px var(--hw-shadow-outer-bottom);
-}
-
-.desktop-control-face.standard-face :where(
-  .semantic-control-panel section button:not([data-surface='hardware']),
-  [data-vfo-appearance='standard'] .vfo-select,
-  .v2-control-button:not([data-surface='hardware']),
-  .reset-order-btn
-):hover:not(:disabled) {
-  background: linear-gradient(180deg,
-    var(--hw-gradient-top-1-hover) 0%,
-    var(--hw-gradient-top-2-hover) 16%,
-    var(--hw-gradient-mid-hover) 56%,
-    var(--hw-gradient-bottom-hover) 100%);
-  color: var(--v2-text-bright);
-  border-color: var(--v2-accent-cyan);
-}
-
-.desktop-control-face.standard-face :is(
-  .semantic-control-panel section button:not([data-surface='hardware']):is([aria-pressed='true'], [aria-checked='true']),
-  [data-vfo-appearance='standard'] .vfo-select[data-active='true'],
-  .v2-control-button[data-active='true']:not([data-surface='hardware']):not([data-indicator-style])
-) {
-  color: var(--v2-text-bright);
-  border-color: var(--v2-accent-cyan);
-  box-shadow:
-    inset 3px 0 var(--v2-accent-cyan),
-    inset 0 1px 0 var(--hw-shadow-top),
-    0 0 0 1px color-mix(in srgb, var(--v2-accent-cyan) 15%, transparent),
-    0 0 10px color-mix(in srgb, var(--v2-accent-cyan) 10%, transparent);
-}
-
-/* These families carry component-local transparent/card backgrounds with
-   greater specificity than the shared low-specificity seat above. Keep this
-   allow-list narrow: MODE's existing HardwareButton is the reference and is
-   deliberately absent. */
-.desktop-control-face.standard-face :is(
-  [data-vfo-appearance='standard'] .vfo-select,
-  [data-vfo-operation-appearance='standard'] .fact-toggle,
-  [data-vfo-operation-appearance='standard'] .vfo-op,
-  .band-tab,
-  .semantic-control-panel .rx-tx-actions .rx-tx-key,
-  .semantic-control-panel .rx-tx-actions .rx-tx-unkey
-) {
-  background: linear-gradient(180deg,
-    var(--hw-gradient-top-1) 0%,
-    var(--hw-gradient-top-2) 14%,
-    var(--hw-gradient-mid) 52%,
-    var(--hw-gradient-bottom) 100%);
-  border-color: var(--hw-border);
-  border-radius: 3px;
-  color: var(--v2-text-subdued);
-  font-family: 'Roboto Mono', monospace;
-  font-weight: 700;
-  box-shadow:
-    inset 0 1px 0 var(--hw-shadow-top),
-    inset 0 -1px 0 var(--hw-shadow-bottom),
-    inset 1px 0 0 var(--hw-shadow-left),
-    inset -1px 0 0 var(--hw-shadow-right),
-    0 1px 0 var(--hw-shadow-outer-top),
-    0 4px 10px var(--hw-shadow-outer-bottom);
-}
-
-.desktop-control-face.standard-face :is(
-  [data-vfo-appearance='standard'] .vfo-select[data-active='true'],
-  [data-vfo-operation-appearance='standard'] :is(.fact-toggle, .vfo-op)[data-active='true'],
-  .band-tab.active
-) {
-  border-color: var(--v2-accent-cyan);
-  color: var(--v2-text-bright);
-  box-shadow:
-    inset 3px 0 var(--v2-accent-cyan),
-    inset 0 1px 0 var(--hw-shadow-top),
-    0 0 0 1px color-mix(in srgb, var(--v2-accent-cyan) 15%, transparent),
-    0 0 10px color-mix(in srgb, var(--v2-accent-cyan) 10%, transparent);
-}
-
+/* A selected VFO is intentionally disabled because selecting it again is a
+   no-op. Keep that current selection visually active while retaining the
+   native disabled cursor and interaction semantics. */
 .desktop-control-face.standard-face :is(
   [data-vfo-appearance='standard'] .vfo-select,
   [data-vfo-operation-appearance='standard'] .fact-toggle,
   [data-vfo-operation-appearance='standard'] .vfo-op
-):disabled:not([data-active='true']) {
-  color: var(--v2-text-disabled, var(--v2-text-dim));
-}
-
-.desktop-control-face.standard-face :is(
-  [data-vfo-appearance='standard'] .vfo-select,
-  [data-vfo-operation-appearance='standard'] .fact-toggle,
-  [data-vfo-operation-appearance='standard'] .vfo-op,
-  .band-tab,
-  .semantic-control-panel .rx-tx-actions .rx-tx-key,
-  .semantic-control-panel .rx-tx-actions .rx-tx-unkey
-):hover:not(:disabled) {
-  background: linear-gradient(180deg,
-    var(--hw-gradient-top-1-hover) 0%,
-    var(--hw-gradient-top-2-hover) 16%,
-    var(--hw-gradient-mid-hover) 56%,
-    var(--hw-gradient-bottom-hover) 100%);
-  border-color: var(--v2-accent-cyan);
+):disabled:is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']) {
+  opacity: 1;
   color: var(--v2-text-bright);
 }
 
 .desktop-control-face.standard-face .semantic-control-panel .rx-tx-actions .rx-tx-key {
   border: 2px solid var(--v2-accent-red);
+  --indicator-color: var(--v2-accent-red);
+  --glow-color: var(--v2-accent-red);
 }
 
 .desktop-control-face.standard-face .semantic-control-panel .rx-tx-actions .rx-tx-key:hover:not(:disabled) {
   border-color: var(--v2-accent-red);
-}
-
-.desktop-control-face.standard-face .semantic-control-panel .rx-tx-actions .rx-tx-key[data-active='true'] {
-  color: var(--v2-text-bright);
 }
 
 .desktop-control-face .semantic-control-panel section :is(button, input, select):disabled {
