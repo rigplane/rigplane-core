@@ -159,7 +159,7 @@
   const showsLevel = (field: DspLevelField): boolean => part === 'all'
     || (part === 'dsp' && field !== 'agcTimeConstant');
   const hardwareScalar: Readonly<DspScalarPresentation> = {
-    form: 'hbar', compact: true, showLabel: false, showValue: false,
+    form: 'hbar', compact: false, showLabel: true, showValue: true,
     variant: 'hardware-illuminated',
   };
 </script>

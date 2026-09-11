@@ -833,7 +833,11 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     expect(close.getAttribute('aria-expanded')).toBe('true');
     expect(q(`#${close.getAttribute('aria-controls')}`)).not.toBeNull();
     expect(close.closest('.compact-dsp-button')?.getAttribute('data-expanded')).toBe('true');
-    expect(target.querySelectorAll('#dsp-nb-settings .vc-hbar.hw-illum')).toHaveLength(3);
+    const nbSettings = [...target.querySelectorAll<HTMLElement>('#dsp-nb-settings .vc-hbar.hw-illum')];
+    expect(nbSettings).toHaveLength(3);
+    expect(nbSettings.every(control => !control.classList.contains('compact'))).toBe(true);
+    expect(target.querySelectorAll('#dsp-nb-settings .vc-label')).toHaveLength(3);
+    expect(target.querySelectorAll('#dsp-nb-settings .vc-value')).toHaveLength(3);
     expect(h.nbToggle).not.toHaveBeenCalled();
 
     close.click();
@@ -844,10 +848,14 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     q<HTMLButtonElement>('button[title="Open NR settings"]')!.click();
     flushSync();
     expect(target.querySelectorAll('#dsp-nr-settings .vc-hbar.hw-illum')).toHaveLength(1);
+    expect(target.querySelectorAll('#dsp-nr-settings .vc-label')).toHaveLength(1);
+    expect(target.querySelectorAll('#dsp-nr-settings .vc-value')).toHaveLength(1);
     q<HTMLButtonElement>('button[title="Close NR settings"]')!.click();
     q<HTMLButtonElement>('button[title="Open NOTCH settings"]')!.click();
     flushSync();
     expect(target.querySelectorAll('#dsp-notch-settings .vc-hbar.hw-illum')).toHaveLength(2);
+    expect(target.querySelectorAll('#dsp-notch-settings .vc-label')).toHaveLength(2);
+    expect(target.querySelectorAll('#dsp-notch-settings .vc-value')).toHaveLength(2);
     expect(h.nrMode).not.toHaveBeenCalled();
     expect(h.notchMode).not.toHaveBeenCalled();
   });
@@ -872,6 +880,9 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     flushSync();
     const slider = q<HTMLElement>('[data-testid="dsp-agcTimeConstant"] [role="slider"]')!;
     expect(slider.closest('.vc-hbar')?.classList.contains('hw-illum')).toBe(true);
+    expect(slider.closest('.vc-hbar')?.classList.contains('compact')).toBe(false);
+    expect(q('[data-testid="dsp-agcTimeConstant"] .vc-label')).not.toBeNull();
+    expect(q('[data-testid="dsp-agcTimeConstant"] .vc-value')).not.toBeNull();
     expect(slider.getAttribute('aria-disabled')).toBe('true');
     slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(h.agcTime).not.toHaveBeenCalled();

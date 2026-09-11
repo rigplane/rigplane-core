@@ -240,7 +240,7 @@
 
 <style>
   .dsp-scalar { display: grid; grid-template-columns: 9ch 8rem auto; align-items: center; gap: 0.5rem; }
-  .dsp-scalar--presented { display: inline-flex; min-width: 0; max-width: 100%; }
+  .dsp-scalar--presented { display: flex; width: 100%; min-width: 0; max-width: 100%; }
   .dsp-scalar-name { white-space: nowrap; }
   .dsp-scalar :global(.vc-hbar) { width: 100%; min-width: 0; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
