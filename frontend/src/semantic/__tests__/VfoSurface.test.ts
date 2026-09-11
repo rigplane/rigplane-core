@@ -2586,6 +2586,47 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(bridge.querySelector('[data-vfo-operation-digest]')).toBeNull();
   });
 
+  it.each([
+    ['off', false, 0, true, 'RIT OFF 0 Hz', 'known'],
+    ['on', true, 120, true, 'RIT ON 120 Hz', 'known'],
+    ['unknown', null, null, true, 'RIT — — Hz', 'unknown'],
+    ['unsupported', null, null, false, null, null],
+  ] as const)(
+    'renders the Standard active-VFO RIT %s state once with structural gating',
+    (_name, active, offset, structural, expectedText, expectedState) => {
+      const base = withRadioWide('1/ab');
+      const wide = base.radioWideIndicators!;
+      const availability = { structural, operational: structural };
+      const viewModel = validateRadioViewModel({
+        ...base,
+        radioWideIndicators: {
+          ...wide,
+          ritActive: {
+            reading: active === null
+              ? { status: 'unknown' as const }
+              : { status: 'known' as const, value: active },
+            availability,
+          },
+          ritOffset: {
+            reading: offset === null
+              ? { status: 'unknown' as const }
+              : { status: 'known' as const, value: offset },
+            availability,
+          },
+        },
+      });
+      const root = mountSurface({ viewModel, appearance: 'standard' });
+      const badges = root.querySelectorAll('[data-indicator-fact="rit"]');
+      expect(badges).toHaveLength(expectedText === null ? 0 : 1);
+      if (expectedText !== null) {
+        expect(badges[0].textContent?.trim()).toBe(expectedText);
+        expect(badges[0].getAttribute('data-state')).toBe(expectedState);
+        expect(badges[0].closest('[data-standard-vfo-slot]')?.getAttribute('data-standard-vfo-slot')).toBe('A');
+      }
+      expect(root.querySelector('.rit-row')).toBeNull();
+    },
+  );
+
   it('mounts the surviving Standard VfoPanel with honest meter states', () => {
     const base = withReceiverIndicators('1/single');
     const standard = mountSurface({ viewModel: base, appearance: 'standard' });

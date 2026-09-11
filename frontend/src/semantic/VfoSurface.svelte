@@ -486,6 +486,13 @@
         badges.push({ label: `TUNE ${value ?? '—'}`, active: value === 'ON' || value === 'TUNING',
           color: value === null ? 'muted' : value === 'OFF' ? 'cyan' : 'orange', state: wide.atu.reading.status });
       }
+      if (wide && (wide.ritActive.availability.structural || wide.ritOffset.availability.structural)) {
+        const active = wide.ritActive.reading.status === 'known' ? wide.ritActive.reading.value : null;
+        const offset = wide.ritOffset.reading.status === 'known' ? wide.ritOffset.reading.value : null;
+        badges.push({ label: `RIT ${active === null ? '—' : active ? 'ON' : 'OFF'} ${offset ?? '—'} Hz`,
+          active: active === true, color: active === null || offset === null ? 'muted' : active ? 'orange' : 'cyan',
+          state: active === null || offset === null ? 'unknown' : 'known' });
+      }
       if (wide && (wide.xitActive.availability.structural || wide.xitOffset.availability.structural)) {
         const active = wide.xitActive.reading.status === 'known' ? wide.xitActive.reading.value : null;
         const offset = wide.xitOffset.reading.status === 'known' ? wide.xitOffset.reading.value : null;
@@ -548,12 +555,6 @@
       && band.reading.status === 'known' ? band.reading.value : null;
   }
 
-  function standardRit(vfo: VfoViewModel): { active: boolean; offset: number } | undefined {
-    const wide = viewModel.radioWideIndicators;
-    if (!vfo.isActive || !wide || wide.ritActive.reading.status !== 'known'
-      || wide.ritOffset.reading.status !== 'known') return undefined;
-    return { active: wide.ritActive.reading.value, offset: wide.ritOffset.reading.value };
-  }
 </script>
 
 <div class="vfo-surface" role="group" aria-label={groupLabel ?? t('core.vfo.groupLabel')} data-testid="vfo-surface" data-vfo-appearance={appearance}>
@@ -879,7 +880,7 @@
           isActive={dominant?.isActive ?? false}
           badgeItems={standardBadges(indicator, dominant)}
           bandText={dominant ? standardBand(dominant) : null}
-          rit={dominant ? standardRit(dominant) : undefined} slotChoices={choices}
+          slotChoices={choices}
           reserveMeterSpace={fixed !== undefined && !fixed.isActiveSlot}
           onFreqChange={receiverInstruments === undefined && dominant
             ? (hz) => tuneFrequency(dominant, hz) : undefined}

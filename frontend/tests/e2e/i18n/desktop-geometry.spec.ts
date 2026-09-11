@@ -394,7 +394,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       const result = {
         geometry,
         targetBadges,
-        vfoFacts: await page.locator('[data-standard-vfo-slot] [data-indicator-fact="rx"], [data-standard-vfo-slot] [data-indicator-fact="tx"], [data-standard-vfo-slot] [data-indicator-fact="antenna"], [data-standard-vfo-slot] [data-indicator-fact="tune"], [data-standard-vfo-slot] [data-indicator-fact="xit"]').evaluateAll(
+        vfoFacts: await page.locator('[data-standard-vfo-slot] [data-indicator-fact="rx"], [data-standard-vfo-slot] [data-indicator-fact="tx"], [data-standard-vfo-slot] [data-indicator-fact="antenna"], [data-standard-vfo-slot] [data-indicator-fact="tune"], [data-standard-vfo-slot] [data-indicator-fact="rit"], [data-standard-vfo-slot] [data-indicator-fact="xit"]').evaluateAll(
           elements => elements.map(element => ({
             fact: element.getAttribute('data-indicator-fact'),
             slot: element.closest('[data-standard-vfo-slot]')?.getAttribute('data-standard-vfo-slot'),
@@ -482,7 +482,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     for (const result of [rx, tx]) {
       expect(result.vfoFacts).toEqual(expect.arrayContaining([
         { fact: 'rx', slot: 'A' }, { fact: 'tune', slot: 'A' },
-        { fact: 'xit', slot: 'A' },
+        { fact: 'rit', slot: 'A' }, { fact: 'xit', slot: 'A' },
         { fact: 'tx', slot: 'B' },
       ]));
     }
