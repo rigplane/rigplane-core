@@ -817,6 +817,7 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     renderHosted();
     const open = q<HTMLButtonElement>('button[title="Open NB settings"]')!;
     expect(open.textContent).toContain('▾');
+    expect(open.closest('.compact-dsp-button')?.getAttribute('data-expanded')).toBe('false');
     expect(q('button[title="Open NR settings"]')).not.toBeNull();
     expect(q('button[title="Open NOTCH settings"]')).not.toBeNull();
     expect(q('button[title*="A-NOTCH settings"]')).toBeNull();
@@ -826,6 +827,9 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     expect(q('[data-testid="dsp-nbLevel"]')).not.toBeNull();
     const close = q<HTMLButtonElement>('button[title="Close NB settings"]')!;
     expect(close.textContent).toContain('▴');
+    expect(close.closest('.compact-dsp-button')?.getAttribute('data-expanded')).toBe('true');
+    expect(q<HTMLInputElement>('[data-testid="dsp-nbDepth"] input')?.getAttribute('aria-label'))
+      .toBe('Settings NB depth');
     expect(h.nbToggle).not.toHaveBeenCalled();
 
     close.click();

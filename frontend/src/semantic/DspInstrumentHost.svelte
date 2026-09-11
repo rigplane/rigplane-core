@@ -191,6 +191,7 @@
       ? notchBehavior.isSelected('manual')
       : current.reading.status === 'known' && current.reading.value === true}
     <div class="compact-dsp-button" role="group" aria-label={`${label} control`}
+      data-expanded={settingsPanel === kind}
       use:settingsHold={kind}>
       {#if finiteAppearance}
         {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost

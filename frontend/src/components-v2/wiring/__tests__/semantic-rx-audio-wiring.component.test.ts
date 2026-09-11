@@ -357,6 +357,7 @@ describe('the composed tree owns no audio lifetime', () => {
   it('mounts, renders the surface and still starts no stream and sends no command', () => {
     render();
     expect(el('surface')).not.toBeNull();
+    expect(afSlider()?.closest('.vc-hbar')?.classList.contains('hw-illum')).toBe(false);
     for (const spy of SEAM_SPIES()) expect(spy).not.toHaveBeenCalled();
   });
 
@@ -422,6 +423,7 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
     expect(q('[data-testid="rx-audio-monitor"]')?.textContent).toContain('MUTE');
     expect(text('monitor-status')).toBe('Browser audio stream');
     expect(text('af-value')).toBe('42%');
+    expect(afSlider()?.closest('.vc-hbar')?.classList.contains('hw-illum')).toBe(true);
   });
 
   it('dispatches dual channel gain through the existing audio-routing handler', () => {

@@ -174,6 +174,7 @@
         data-disabled-reason={nr ? (nr.usable ? undefined : 'field-not-observed') : reasonOf(dsp[field])}>
         <span class="dsp-name">{label}</span>
         <input type="range" min={nr?.min ?? min} max={nr?.max ?? max} step={nr?.step ?? step}
+          aria-label={`${label} adjustment`}
           value={nr?.value ?? numberOf(dsp[field], min)}
           disabled={nr ? !nr.usable : !usable(dsp[field])}
           oninput={(event) => level(field, event.currentTarget.valueAsNumber)} />
@@ -200,6 +201,7 @@
         data-disabled-reason={nr ? (nr.usable ? undefined : 'field-not-observed') : reasonOf(dsp[field])}>
         <span class="dsp-name">{label}</span>
         <input type="range" min={nr?.min ?? min} max={nr?.max ?? max} step={nr?.step ?? step}
+          aria-label={`Settings ${label}`}
           value={nr?.value ?? numberOf(dsp[field], min)}
           disabled={nr ? !nr.usable : !usable(dsp[field])}
           oninput={(event) => level(field, event.currentTarget.valueAsNumber)} />
@@ -238,6 +240,7 @@
             data-field="agcTimeConstant">
             <span class="dsp-name">AGC time</span>
             <input type="range" min="0" max="9" step="1"
+              aria-label="AGC time setting"
               value={numberOf(dsp.agcTimeConstant, 0)}
               disabled={!usable(dsp.agcTimeConstant)}
               oninput={(event) => level('agcTimeConstant', event.currentTarget.valueAsNumber)} />

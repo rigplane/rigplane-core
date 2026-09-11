@@ -309,14 +309,16 @@
   });
 </script>
 
-{#snippet afLevel()}
+{#snippet afLevelControl(hardware: boolean)}
   <ValueControl
     {...feedbackIntegratedControl}
     binding={afLevelBinding} label="AF" renderer="hbar"
     showLabel={false} showValue={false} compact={true}
-    variant="hardware-illuminated" accentColor="var(--v2-accent-cyan-alt)"
+    variant={hardware ? 'hardware-illuminated' : 'modern'}
+    accentColor={hardware ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
   />
 {/snippet}
+{#snippet afLevel()}{@render afLevelControl(false)}{/snippet}
 
 {#snippet routingSplitToggle()}
   {#if rx?.routingSplit.availability.structural}
@@ -342,7 +344,7 @@
     <label class="rx-audio-level" data-testid="rx-audio-af"
       data-observed={usable(rx.afLevel)}>
       <span class="rx-audio-name">AF LEVEL</span>
-      {@render afLevel()}
+      {@render afLevelControl(true)}
       <output data-testid="rx-audio-af-value">{rx.afLevel.reading.status === 'known'
         ? `${Math.round(rx.afLevel.reading.value * 100)}%` : UNKNOWN_TEXT}</output>
     </label>
