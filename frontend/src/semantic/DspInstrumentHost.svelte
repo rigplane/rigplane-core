@@ -115,7 +115,9 @@
   }
   function settingsHold(node: HTMLElement, panel: DspSettingsPanel) {
     const pointerDown = () => startSettingsHold(panel);
-    const keyDown = (event: KeyboardEvent) => { if (event.key === ' ') startSettingsHold(panel); };
+    const keyDown = (event: KeyboardEvent) => {
+      if (event.key === ' ' && !event.repeat && holdTimer === null) startSettingsHold(panel);
+    };
     const keyUp = (event: KeyboardEvent) => { if (event.key === ' ') endSettingsHold(); };
     node.addEventListener('pointerdown', pointerDown);
     node.addEventListener('pointerup', endSettingsHold);

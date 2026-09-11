@@ -239,6 +239,7 @@
             <span class="dsp-name">AGC time</span>
             <input type="range" min="0" max="9" step="1"
               value={numberOf(dsp.agcTimeConstant, 0)}
+              disabled={!usable(dsp.agcTimeConstant)}
               oninput={(event) => level('agcTimeConstant', event.currentTarget.valueAsNumber)} />
             <output>{fmt(dsp.agcTimeConstant, formatAgcTime)}s</output>
           </label>

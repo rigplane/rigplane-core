@@ -807,6 +807,49 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     expect(q('[data-testid="dsp-agcTimeConstant"]')!.closest('[data-part="agc"]')).toBeNull();
   });
 
+  it('disables an open AGC-time adjustment when its reading becomes stale', () => {
+    h.state = proxy(liveState(true) as object);
+    renderHosted();
+    const agcButton = [...target.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim().startsWith('AGC-T'))!;
+    agcButton.click();
+    flushSync();
+    const status = (h.state as ServerState).fieldStatus as unknown as Record<string, {
+      storePath: string; observed: boolean; freshness: string; availability: string;
+      lastObservedMonotonic: number;
+    }>;
+    status['main.agcTimeConstant'] = {
+      ...fresh, observed: false, freshness: 'stale', availability: 'unavailable',
+    };
+    flushSync();
+    const input = q<HTMLInputElement>('[data-testid="dsp-agcTimeConstant"] input')!;
+    expect(input.disabled).toBe(true);
+    input.value = '4';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(h.agcTime).not.toHaveBeenCalled();
+  });
+
+  it('opens NR settings after one held Space despite key repeat and suppresses its click', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    h.state = proxy(liveState(true) as object);
+    renderHosted();
+    const nr = q<HTMLButtonElement>('[data-testid="external-NR"]')!;
+    vi.useFakeTimers();
+    try {
+      nr.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', repeat: false, bubbles: true }));
+      vi.advanceTimersByTime(300);
+      nr.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true }));
+      vi.advanceTimersByTime(200);
+      nr.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', bubbles: true }));
+      nr.click();
+      flushSync();
+      expect(q('[data-testid="dsp-nrLevel"]')).not.toBeNull();
+      expect(h.nrMode).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ['session', (state: ServerState, caps: Capabilities) =>
       ({ state, caps, session: { state: 'connected', epoch: 2 } as ControlSessionSnapshot })],
