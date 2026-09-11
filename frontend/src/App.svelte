@@ -10,6 +10,7 @@
   import { hasAnyScope } from './lib/stores/capabilities.svelte';
   import { getLayoutMode } from './lib/stores/layout.svelte';
   import { readQaCockpitLayoutOverride } from './lib/stores/qa-cockpit-override';
+  import { isMobileViewport } from './lib/stores/viewport-classification';
   import { getAvailableThemes } from './components-v2/theme/theme-switcher';
   import { getDesignLanguage, listDesignLanguageIds } from './presentation/languages/contract';
   // Side-effect import: populates the design-language registry the lookup
@@ -69,11 +70,9 @@
   const qaCockpitLayoutOverride = readQaCockpitLayoutOverride();
   let windowWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1200);
   let windowHeight = $state(typeof window !== 'undefined' ? window.innerHeight : 800);
-  // Mobile = narrow portrait OR short landscape (touch device rotated)
-  let isMobile = $derived(
-    Math.min(windowWidth, windowHeight) < 640 ||
-    ('ontouchstart' in globalThis && Math.min(windowWidth, windowHeight) < 500)
-  );
+  let isMobile = $derived(isMobileViewport(
+    windowWidth, windowHeight, typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0,
+  ));
   let skinId = $derived<SkinId>(resolveSkinId({
     capabilities: runtime.caps,
     layoutPreference: qaCockpitLayoutOverride ?? getLayoutMode(),

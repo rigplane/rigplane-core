@@ -18,37 +18,24 @@
  * several component-test suites already use for those two modules (e.g.
  * `src/__tests__/lazy-presentation.component.test.ts`) — a new named
  * export added to either would come back `undefined` under those mocks.
- *
- * Pure: reads only the given search string (or `window.location.search`
- * when none is given); touches no store and persists nothing. Safe to call
- * from tests.
- *
- * The param never overrides the mobile short-circuit in `resolveSkinId`
- * (`skins/registry.ts` checks `ctx.isMobile` first, unconditionally) —
- * that precedence is unchanged here. Below the same 640px minimum
- * dimension `App.svelte` uses to classify the viewport as mobile, the
- * param would otherwise be silently ignored with no signal, which reads
- * as "the param is broken" rather than "this viewport is mobile" — most
- * often on an ordinary narrow/short desktop window, not an actual phone.
- * `console.warn` makes that non-obvious no-op self-explaining.
  */
+import { isMobileViewport } from './viewport-classification';
+
 const QA_COCKPIT_QUERY_PARAM = 'layout';
 export type QaLayoutOverride = 'dual-receiver-cockpit' | 'flagship-probe';
 /** Exact match only: anything not in this list falls through to the normal
  *  preference, so a guessed `?layout=...` cannot reach a QA-only skin. */
 const QA_QUERY_VALUES: readonly QaLayoutOverride[] = ['dual-receiver-cockpit', 'flagship-probe'];
-const MOBILE_MIN_DIMENSION_PX = 640;
 
 export function readQaCockpitLayoutOverride(search?: string): QaLayoutOverride | null {
   const raw = search ?? (typeof window !== 'undefined' ? window.location.search : '');
   const value = new URLSearchParams(raw).get(QA_COCKPIT_QUERY_PARAM);
   const matched = QA_QUERY_VALUES.find((id) => id === value) ?? null;
   if (matched !== null && typeof window !== 'undefined'
-    && Math.min(window.innerWidth, window.innerHeight) < MOBILE_MIN_DIMENSION_PX) {
+    && isMobileViewport(window.innerWidth, window.innerHeight, navigator.maxTouchPoints > 0)) {
     console.warn(
-      `[rigplane] ?layout=${matched} is set, but the viewport is under `
-      + `${MOBILE_MIN_DIMENSION_PX}px — the mobile skin takes precedence and that skin will `
-      + 'not show. Widen the window to at least 640x640 to view it.',
+      `[rigplane] ?layout=${matched} is set, but the viewport is mobile — `
+      + 'the mobile skin takes precedence and that skin will not show.',
     );
   }
   return matched;
