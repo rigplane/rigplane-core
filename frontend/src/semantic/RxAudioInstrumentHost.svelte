@@ -319,17 +319,20 @@
 
 {#snippet routingSplitToggle()}
   {#if rx?.routingSplit.availability.structural}
-    {#if finiteAppearance}
-      {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
-        seat={splitToggleSeat} renderer={finiteAppearance.toggle}
-      />{/key}{/key}
-    {:else}
-      <button type="button" class="rx-audio-choice" data-testid="rx-audio-split-toggle"
-        aria-pressed={splitBehavior.selected}
-        disabled={!splitBehavior.available || splitBehavior.selected === undefined}
-        onclick={() => splitBehavior.selected !== undefined
-          && splitBehavior.invoke(!splitBehavior.selected)}>Stereo split</button>
-    {/if}
+    <div class="rx-audio-row" data-testid="rx-audio-split"
+      data-observed={usable(rx.routingSplit)}>
+      {#if finiteAppearance}
+        {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
+          seat={splitToggleSeat} renderer={finiteAppearance.toggle}
+        />{/key}{/key}
+      {:else}
+        <button type="button" class="rx-audio-choice" data-testid="rx-audio-split-toggle"
+          aria-pressed={splitBehavior.selected}
+          disabled={!splitBehavior.available || splitBehavior.selected === undefined}
+          onclick={() => splitBehavior.selected !== undefined
+            && splitBehavior.invoke(!splitBehavior.selected)}>Stereo split</button>
+      {/if}
+    </div>
   {/if}
 {/snippet}
 
