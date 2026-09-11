@@ -540,7 +540,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     }
   });
 
-  for (const width of [900, 1024, 1200, 1280, 1440, 1700, 1920] as const) {
+  for (const width of [900, 1024, 1136, 1200, 1280, 1440, 1700, 1920] as const) {
     test(`Standard ${width} compact absolute VFO pair keeps every bridge control`, async ({ page }, info) => {
       await boot(page, 'standard', width, true, 'studioline', false, undefined, {
         height: 1000, extraCapabilities: ALL_STRUCTURAL_ACTION_CAPS, absoluteVfoPair: true,
@@ -603,7 +603,24 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       }
       const fonts = await cards.locator('.freq-row .freq').evaluateAll(elements =>
         elements.map(element => getComputedStyle(element).fontSize));
-      expect(fonts).toEqual(['44px', '44px']);
+      const expectedFont = width > 1280 ? '48px' : '44px';
+      expect(fonts).toEqual([expectedFont, expectedFont]);
+      const framedFacts = cards.locator('[data-summary-fact="mode"], [data-summary-fact="filter"], [data-summary-fact="bandwidth"]');
+      await expect(framedFacts).toHaveCount(5);
+      expect(await framedFacts.evaluateAll(elements => elements.map(element => {
+        const style = getComputedStyle(element);
+        const box = element.getBoundingClientRect();
+        return { fontSize: style.fontSize, borderStyle: style.borderStyle, height: box.height };
+      }))).toEqual(expect.arrayContaining([
+        expect.objectContaining({ fontSize: '12px', borderStyle: 'solid' }),
+      ]));
+      const bridgeButtons = page.locator('[data-instrument-bridge] button');
+      expect(await bridgeButtons.evaluateAll(elements => elements.map(element => {
+        const style = getComputedStyle(element);
+        return { height: element.getBoundingClientRect().height, fontSize: style.fontSize };
+      }))).toEqual(expect.arrayContaining([
+        expect.objectContaining({ height: 28, fontSize: '12px' }),
+      ]));
       await expect(cards.locator('[data-meter-space="reserved"]')).toHaveCount(0);
       await expect(cards.locator('.identity-row [data-testid="receiver-s-meter"]')).toHaveCount(1);
       expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
@@ -655,10 +672,11 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       expectStandardReceiverIntegrity(geometry, bodyTop);
       for (const instrument of geometry.instruments) {
         expect.soft(instrument.meter?.width ?? 0, 'receiver meter is painted').toBeGreaterThan(0);
-        expect.soft(instrument.meter?.height ?? 0, 'inline receiver meter retains its readable height').toBe(28);
+        expect.soft(instrument.meter?.height ?? 0, 'inline receiver meter retains its readable height').toBe(30);
         expect.soft(instrument.primary?.width ?? 0, 'primary frequency glyphs are painted').toBeGreaterThan(0);
         expect.soft(instrument.primary?.height ?? 0, 'primary frequency glyphs are painted').toBeGreaterThan(0);
-        expect.soft(instrument.primary?.fontSize, 'primary frequency retains its 44px type').toBe(44);
+        expect.soft(instrument.primary?.fontSize, 'primary frequency retains readable type')
+          .toBe(width > 1280 ? 48 : 44);
         expect.soft(instrument.meter!.left).toBeGreaterThanOrEqual(instrument.instrument.left - 1);
         expect.soft(instrument.meter!.right).toBeLessThanOrEqual(instrument.instrument.right + 1);
         expect.soft(instrument.primary!.rect.left).toBeGreaterThanOrEqual(instrument.instrument.left - 1);

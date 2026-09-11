@@ -1030,15 +1030,26 @@
   }
   [data-vfo-appearance='standard'] .bridge {
     flex: 0 0 170px;
-    padding: 4px;
-    gap: 4px;
+    padding: 6px;
+    gap: 5px;
     --vfo-ops-gap: 4px;
-    --vfo-ops-badge-padding-x: 3px;
-    --vfo-ops-badge-font-size: 10px;
+    --vfo-ops-badge-height: 28px;
+    --vfo-ops-badge-padding-x: 5px;
+    --vfo-ops-badge-font-size: 11px;
+    --btn-font-size: 12px;
+  }
+  [data-vfo-appearance='standard'] .bridge::before {
+    content: 'ACTIONS'; color: var(--v2-text-subdued, rgba(255,255,255,.55));
+    font-size: 10px; font-weight: 700; letter-spacing: .12em; line-height: 12px;
+  }
+  [data-vfo-appearance='standard'] .bridge :global(.fact-toggles) {
+    grid-template-columns: minmax(0, 1fr);
   }
   [data-vfo-appearance='standard'] .bridge :global(.vfo-ops) {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+  [data-vfo-appearance='standard'] .bridge :global(.fact-toggle),
+  [data-vfo-appearance='standard'] .bridge :global(.vfo-op) { min-height: 28px; font-size: 12px; }
   .standard-radio-facts {
     display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px;
     min-height: 18px; padding: 0 8px; font-size: 11px; line-height: 16px;
@@ -1050,7 +1061,7 @@
   .radio-tx { margin-left: auto; min-width: 14ch; white-space: nowrap; }
   .standard-vfo-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
   .standard-vfo-selectors .vfo-select {
-    min-width: 0; padding: 4px 3px; font-size: 11px; font-weight: 700;
+    min-width: 0; min-height: 28px; padding: 4px 3px; font-size: 11px; font-weight: 700;
   }
   .standard-vfo-selectors .vfo-select[data-active='true'] {
     border-color: var(--v2-accent-cyan, #00d4ff); color: var(--v2-accent-cyan, #00d4ff);
@@ -1097,6 +1108,7 @@
   }
   @media (max-width: 1050px) {
     .instrument-panel { flex-wrap: wrap; }
+    [data-vfo-appearance='standard'] .instrument-panel { min-height: 170px; }
     .receiver-instrument { flex-basis: calc(50% - 90px); }
     .bridge { flex-basis: 150px; }
     .receiver-instrument .vfo-freq { font-size: 26px; }

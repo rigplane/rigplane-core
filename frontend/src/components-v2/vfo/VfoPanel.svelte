@@ -235,11 +235,12 @@
           {#if onModeClick}
             <button type="button" class="mode-control" disabled={controlsDisabled}
               onclick={onModeClick} aria-label={`Change mode (current: ${mode ?? '—'})`}>{mode ?? '—'}</button>
-          {:else}<span class="mode-reading">{mode ?? '—'}</span>{/if}
-          <span>{filter ?? '—'}</span>
-          {#if bandText}<span>{bandText}</span>{/if}
+          {:else}<span class="mode-reading passive-summary-reading" data-summary-fact="mode">{mode ?? '—'}</span>{/if}
+          <span class="passive-summary-reading" data-summary-fact="filter">{filter ?? '—'}</span>
+          {#if bandText}<span class="band-reading" data-summary-fact="band">{bandText}</span>{/if}
           {#each badgeItems.filter((item) => item.label.startsWith('BW ')) as item}
-            <span data-indicator-fact="bw" data-state={item.state}>{item.label}</span>
+            <span class="passive-summary-reading" data-summary-fact="bandwidth"
+              data-indicator-fact="bw" data-state={item.state}>{item.label}</span>
           {/each}
           {@render slotChoiceControls()}
           </div>
@@ -323,32 +324,41 @@
 <style>
   .identity-row { display: contents; }
   .panel.compact-header {
-    grid-template-rows: 28px auto;
+    grid-template-rows: 30px auto;
     min-height: 100%;
     container-type: inline-size;
   }
   .compact-header .identity-row {
-    display: flex; align-items: center; min-width: 0; gap: 6px; padding: 0 8px;
+    display: flex; align-items: center; min-width: 0; gap: 10px; padding: 0 10px;
   }
   .compact-header .panel-header { width: auto; flex: 0 0 auto; padding: 0; min-height: 24px; }
   .compact-header .vfo-label { font-size: 12px; letter-spacing: 0.04em; }
-  .compact-header .panel-meter { margin-left: auto; flex: 1 1 240px; max-width: 310px; min-width: 0; padding: 0; height: 28px; }
+  .compact-header .panel-meter { margin-left: auto; flex: 1 1 250px; max-width: 350px; min-width: 0; padding: 0; height: 30px; }
   .compact-header .panel-meter:empty { display: none; }
-  .compact-header .panel-meter :global(svg) { width: 100%; height: 28px; }
-  .compact-header .panel-body { display: flex; flex-direction: column; gap: 3px; padding: 0 8px 3px; }
-  .compact-header .display-row { min-height: 44px; gap: 8px; flex-wrap: wrap; justify-content: flex-start; }
-  .panel.compact-header .vfo-freq { font-size: 44px; line-height: 1; letter-spacing: 0; inline-size: auto; white-space: nowrap; }
+  .compact-header .panel-meter :global(svg) { width: 100%; height: 30px; }
+  .compact-header .panel-body { display: flex; flex-direction: column; gap: 3px; padding: 1px 10px 3px; }
+  .compact-header .display-row { min-height: 50px; gap: 12px; flex-wrap: wrap; justify-content: flex-start; }
+  .panel.compact-header .vfo-freq { font-size: 48px; line-height: 1; letter-spacing: -0.015em; inline-size: auto; white-space: nowrap; }
   .compact-header .freq-row { flex: 0 0 auto; }
-  .frequency-summary { display: flex; flex-direction: column; justify-content: center; flex: 1 1 0; min-width: 150px; gap: 2px; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--v2-text-secondary); }
-  .mode-filter-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+  .frequency-summary { display: flex; flex-direction: column; justify-content: center; flex: 1 1 0; min-width: 150px; gap: 4px; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--v2-text-secondary); }
+  .mode-filter-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
   .mode-filter-summary > span { white-space: nowrap; }
-  .mode-reading { font-weight: 700; color: var(--v2-text-primary); }
-  .mode-control { font: inherit; color: var(--receiver-accent); background: var(--v2-bg-panel); border: 1px solid var(--receiver-control-border); border-radius: 3px; cursor: pointer; padding: 3px 6px; }
-  .compact-header .control-strip { display: flex; align-content: start; align-items: baseline; flex-wrap: wrap; gap: 3px 12px; min-height: 27px; overflow: visible; white-space: normal; font-size: 11px; }
+  .passive-summary-reading {
+    display: inline-flex; align-items: center; justify-content: center; min-height: 26px;
+    padding: 3px 8px; border: 1px solid var(--v2-border-panel);
+    border-radius: 3px; background: var(--v2-bg-panel); color: var(--v2-text-primary);
+    font-size: 12px; line-height: 1; box-sizing: border-box;
+  }
+  .mode-reading { font-weight: 700; color: var(--receiver-accent); border-color: var(--receiver-control-border); }
+  .band-reading { padding-inline: 3px; color: var(--v2-text-secondary); font-size: 12px; }
+  .mode-control { min-height: 28px; font: inherit; color: var(--receiver-accent); background: var(--v2-bg-panel); border: 1px solid var(--receiver-control-border); border-radius: 3px; cursor: pointer; padding: 3px 8px; }
+  .compact-header .control-strip { display: flex; align-content: start; align-items: stretch; flex-wrap: wrap; gap: 4px 0; min-height: 32px; overflow: visible; white-space: normal; font-size: 12px; }
   .tx-frequency { min-height: 12px; color: var(--v2-accent-orange, #ff9838); font-size: 11px; line-height: 12px; white-space: nowrap; }
   .tx-frequency[data-rf-state='transmitting'] { color: var(--v2-accent-red, #ff4040); }
   .tx-marker-slot { flex: 0 0 9ch; font-size: 11px; }
-  .indicator-group { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 9px; font-size: 11px; line-height: 12px; }
+  .indicator-group { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-height: 28px; padding: 2px 12px; font-size: 12px; line-height: 16px; }
+  .indicator-group:first-child { padding-left: 0; }
+  .indicator-group + .indicator-group { border-left: 1px solid var(--v2-border-panel); }
   .group-label { color: var(--v2-accent-cyan); font-weight: 700; }
   .passive-reading { color: var(--v2-text-secondary); white-space: nowrap; }
   .tx-marker { flex: 0 0 9ch; color: var(--v2-accent-orange, #ff9838); font-size: 11px; white-space: nowrap; }
@@ -358,8 +368,11 @@
   .compact-header .slot-choice .vfo-role,
   .compact-header .slot-choice .vfo-freq { font-size: inherit; }
   @container (max-width: 540px) {
-    .compact-header .frequency-summary { flex-basis: 100%; }
-    .compact-header .display-row { row-gap: 0; }
+    .compact-header .display-row { gap: 6px; }
+    .compact-header .frequency-summary { min-width: 145px; }
+    .mode-filter-summary { gap: 3px; }
+    .panel.compact-header .vfo-freq { font-size: 44px; }
+    .passive-summary-reading { min-height: 24px; padding-inline: 4px; }
   }
 
   .panel {
