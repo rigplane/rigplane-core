@@ -38,10 +38,11 @@
   interface Props {
     view: RadioViewModel;
     tx: TxAuthoritySnapshot;
+    standard?: boolean;
     onRequestKey: () => void;
     onRequestUnkey: () => void;
   }
-  let { view, tx, onRequestKey, onRequestUnkey }: Props = $props();
+  let { view, tx, standard = false, onRequestKey, onRequestUnkey }: Props = $props();
 
   const blockedId = nextSurfaceId();
   let rf = $derived(rfState(tx));
@@ -91,18 +92,18 @@
 </script>
 
 <section
-  class="rx-tx-surface" data-testid="rx-tx-surface" aria-label="Transmitter status and control"
+  class="rx-tx-surface" class:standard data-testid="rx-tx-surface" aria-label="Transmitter status and control"
   {...stateFeedback?.attributes ?? {}}
 >
   <p
-    class="rx-tx-state" role="status" data-testid="rx-tx-state" hidden={!showTxState}
+    class="rx-tx-state" role="status" data-testid="rx-tx-state" hidden={!standard && !showTxState}
     data-rf={rf} data-session={session} data-intent={tx.intent ?? undefined}
   >
     <span class="rx-tx-mark" data-testid="rx-tx-rf-mark" aria-hidden="true">{RF_MARK[rf]}</span>
     <span
       class="rx-tx-label v2-status-indicator" data-testid="rx-tx-rf-label"
       data-color={RF_BADGE[rf].color} data-active={RF_BADGE[rf].active}
-    >{RF_LABEL[rf]}</span>
+    >{standard && rf === 'receiving' ? 'RX' : RF_LABEL[rf]}</span>
     {#if session !== 'idle'}<span class="rx-tx-session">{SESSION_LABEL[session]}</span>{/if}
     {#if tx.intent}<span class="rx-tx-intent">· {tx.intent}</span>{/if}
   </p>
@@ -118,7 +119,8 @@
   {/if}
 
   {#if known}
-    <p data-testid="rx-tx-target" data-target="known" data-receiver={receiver} data-slot={slot}>
+    <p class:sr-only={standard} data-testid="rx-tx-target" data-target="known"
+      data-receiver={receiver} data-slot={slot}>
       TX target: {receiver} {slot} · {frequencyHz ?? '—'} Hz
     </p>
   {:else}
@@ -138,13 +140,15 @@
       disabled={keyUnavailable} aria-pressed={pressed}
       aria-describedby={blockedDescription ? blockedId : undefined}
       onclick={onRequestKey}
-    >Key transmitter</button>
+      aria-label="Key transmitter"
+    >{standard ? 'PTT' : 'Key transmitter'}</button>
     <!-- Never gated: no `disabled`, no `{#if}`, no guard in the handler. -->
     <button
       type="button" class="rx-tx-unkey v2-control-button v2-control-button--pill" data-testid="rx-tx-unkey"
       data-surface="hardware"
+      aria-label="Unkey transmitter"
       onclick={onRequestUnkey}
-    >Unkey transmitter</button>
+    >{standard ? 'UNKEY' : 'Unkey transmitter'}</button>
   </div>
 
   {#if blockedDescription}<span id={blockedId} class="sr-only">{blockedDescription}</span>{/if}
@@ -165,6 +169,21 @@
   .rx-tx-label { min-inline-size: 3ch; font-weight: 700; letter-spacing: 0.08em; }
   .rx-tx-fault { margin: 0; font-weight: 700; }
   .rx-tx-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .rx-tx-surface.standard { gap: 8px; }
+  .rx-tx-surface.standard .rx-tx-state {
+    justify-content: center; padding: 6px; border: 1px solid var(--v2-border);
+    border-radius: 3px;
+  }
+  .rx-tx-surface.standard .rx-tx-actions { display: grid; grid-template-columns: 1fr; gap: 6px; }
+  .rx-tx-surface.standard .rx-tx-key {
+    width: 100%; min-height: 78px; border: 2px solid var(--v2-accent-red, #ef4444);
+    color: var(--v2-accent-red, #ef4444); font-size: 18px; letter-spacing: 0.1em;
+  }
+  .rx-tx-surface.standard .rx-tx-key[data-active='true'] {
+    color: #fff; background: color-mix(in srgb, var(--v2-accent-red, #ef4444) 28%, transparent);
+    box-shadow: 0 0 12px color-mix(in srgb, var(--v2-accent-red, #ef4444) 45%, transparent);
+  }
+  .rx-tx-surface.standard .rx-tx-unkey { width: 100%; }
   .rx-tx-blocked { margin: 0; padding-inline-start: 1.2em; }
   .rx-tx-blocked:empty { display: none; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }

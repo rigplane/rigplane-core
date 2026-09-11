@@ -79,6 +79,7 @@ beforeEach(() => { target = document.createElement('div'); document.body.appendC
 afterEach(() => { target.remove(); });
 
 type Handlers = {
+  standard?: boolean;
   onBreakInMode?: (mode: number) => void;
   onLevelChange?: (field: CwLevelField, value: number) => void;
   onApfOn?: (on: boolean) => void;
@@ -135,6 +136,44 @@ const feedback = (
 /* ── (a) the surface is not a key path ────────────────────────── */
 
 describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
+  it('renders the Standard compact composition through the existing setting intents', () => {
+    const onBreakInMode = vi.fn();
+    const onApfOn = vi.fn();
+    const onAutoTune = vi.fn();
+    const r = render(withCw({ breakIn: known('semi'), apf: known(1) }), {
+      standard: true, autoTuneAvailable: true, onBreakInMode, onApfOn, onAutoTune,
+    });
+    try {
+      expect(r.el('rx-mode')?.textContent).toContain('USB');
+      expect(r.el('break-in-off')).toBeNull();
+      expect(r.text('break-in-semi')).toBe('SEMI');
+      expect(r.text('break-in-full')).toBe('FULL');
+      expect(r.el('pitchHz')!.compareDocumentPosition(r.el('keyerSpeed')!)
+        & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+      press(r.el('break-in-semi')!);
+      press(r.el('break-in-full')!);
+      expect(onBreakInMode.mock.calls).toEqual([[0], [2]]);
+      press(r.el('apf-on')!);
+      expect(onApfOn).toHaveBeenCalledWith(false);
+
+      const settings = r.controls().find(control =>
+        control.getAttribute('aria-label') === 'CW additional settings')!;
+      expect(settings.getAttribute('aria-expanded')).toBe('false');
+      expect(r.el('breakInDelay')).toBeNull();
+      expect(r.el('reverse-paddle')).toBeNull();
+      press(settings);
+      flushSync();
+      expect(settings.getAttribute('aria-expanded')).toBe('true');
+      expect(r.el('breakInDelay')).not.toBeNull();
+      expect(r.el('reverse-paddle')).not.toBeNull();
+
+      expect(r.text('auto-tune')).toBe('AUTO TUNE');
+      press(r.el('auto-tune')!);
+      expect(onAutoTune).toHaveBeenCalledTimes(1);
+    } finally { r.dispose(); }
+  });
+
   /** The whole static import closure of the file, allow-listed. Kills: adding
    *  ANY import that could reach the TX controller, the transport or the
    *  permit utility — including through a relative specifier.

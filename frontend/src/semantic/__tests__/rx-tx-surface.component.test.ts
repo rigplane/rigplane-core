@@ -41,8 +41,11 @@ afterEach(() => { target.remove(); });
 
 type Handlers = { onRequestKey: () => void; onRequestUnkey: () => void };
 const inertHandlers = (): Handlers => ({ onRequestKey: vi.fn(), onRequestUnkey: vi.fn() });
-function render(view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handlers = inertHandlers()) {
-  const component = mount(RxTxSurface, { target, props: { view, tx, ...handlers } });
+function render(
+  view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handlers = inertHandlers(),
+  standard = false,
+) {
+  const component = mount(RxTxSurface, { target, props: { view, tx, standard, ...handlers } });
   flushSync();
   const q = (sel: string) => target.querySelector(sel);
   return {
@@ -586,6 +589,23 @@ describe('MOR-1474 — unknown TX target names the reason through the catalog', 
    and still covered by its own test. ─────────────────────────────────────── */
 
 describe('MOR-2231 — TX controls carry the shared control-button vocabulary', () => {
+  it('presents Standard RX status and large PTT without gating the separate unkey action', () => {
+    const handlers = inertHandlers();
+    const s = render(topologyFixtures['1/single'], IDLE_RX, handlers, true);
+    try {
+      expect(s.root().classList.contains('standard')).toBe(true);
+      expect(s.state().hidden).toBe(false);
+      expect(s.state().textContent).toContain('RX');
+      expect(s.key().textContent?.trim()).toBe('PTT');
+      expect(s.key().getAttribute('aria-label')).toBe('Key transmitter');
+      expect(s.unkey().textContent?.trim()).toBe('UNKEY');
+      expect(s.unkey().disabled).toBe(false);
+      s.unkey().click();
+      expect(handlers.onRequestUnkey).toHaveBeenCalledTimes(1);
+      expect(handlers.onRequestKey).not.toHaveBeenCalled();
+    } finally { s.dispose(); }
+  });
+
   it('the key action is a hardware-surface pill with a red dot indicator', () => {
     // Kill-mutation: drop any one of the class/attribute applications on
     // `.rx-tx-key`. Without `v2-control-button` the element inherits no

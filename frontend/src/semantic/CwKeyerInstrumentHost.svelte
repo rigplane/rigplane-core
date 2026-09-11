@@ -243,7 +243,7 @@
 
 <style>
   .cw-keyer-level { display: flex; align-items: baseline; gap: 0.5rem; }
-  .cw-keyer-level--presented { display: inline-flex; min-width: 0; max-width: 100%; }
+  .cw-keyer-level--presented { display: flex; width: 100%; min-width: 0; max-width: 100%; }
   .cw-keyer-name { min-width: 12ch; }
   .cw-keyer-level :global(.vc-hbar) { width: 100%; min-width: 0; }
   .command-pending { font-style: italic; }
