@@ -847,8 +847,7 @@ describe('SpectrumPanel spectrum/waterfall separator (MOR-2461)', () => {
     expect(separator.getAttribute('aria-valuemax')).toBe('80');
     expect(region.style.gridTemplateRows).toContain('0.3fr');
     expect(region.style.gridTemplateRows).toContain('0.7fr');
-    expect(region.style.gridTemplateRows).toContain('minmax(72px');
-    expect(region.style.gridTemplateRows).toContain('minmax(96px');
+    expect(region.style.gridTemplateRows).toContain('20px 8px');
   });
 
   it('restores a normalized persisted ratio without remounting either canvas', () => {
@@ -885,7 +884,7 @@ describe('SpectrumPanel spectrum/waterfall separator (MOR-2461)', () => {
     pointer(separator, 'pointermove', 71, 10, { clientY: -100 });
     expect(separator.getAttribute('aria-valuenow')).toBe('20');
     pointer(separator, 'pointermove', 71, 10, { clientY: 1000 });
-    expect(Number(separator.getAttribute('aria-valuenow'))).toBe(80);
+    expect(Number(separator.getAttribute('aria-valuenow'))).toBe(78);
 
     pointer(separator, 'pointerup', 71, 10, { clientY: 300 });
     expect(HTMLElement.prototype.releasePointerCapture).toHaveBeenCalledWith(71);
@@ -932,7 +931,7 @@ describe('SpectrumPanel spectrum/waterfall separator (MOR-2461)', () => {
     key('Home');
     expect(separator.getAttribute('aria-valuenow')).toBe('20');
     key('End');
-    expect(separator.getAttribute('aria-valuenow')).toBe('80');
+    expect(separator.getAttribute('aria-valuenow')).toBe('78');
 
     separator.dispatchEvent(new WheelEvent('wheel', {
       deltaY: -100, bubbles: true, cancelable: true,
@@ -940,7 +939,8 @@ describe('SpectrumPanel spectrum/waterfall separator (MOR-2461)', () => {
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
     expect(mockRuntime.send).not.toHaveBeenCalled();
-    expect(Number(storageMap.get('rigplane-spectrum-split-ratio'))).toBe(0.8);
+    expect(Number(storageMap.get('rigplane-spectrum-split-ratio')))
+      .toBeCloseTo(1 - 80 / 372);
   });
 });
 

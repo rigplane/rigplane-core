@@ -126,8 +126,8 @@ test('spectrum separator preserves geometry, ratio, canvas state, and command is
   expect(dragged.waterfall).toBeLessThan(initial.waterfall);
   expect(Math.abs(dragged.region - initial.region)).toBeLessThanOrEqual(1);
   expect(Math.abs(dragged.innerTotal - dragged.region)).toBeLessThanOrEqual(1);
-  expect(dragged.spectrum).toBeGreaterThanOrEqual(72);
-  expect(dragged.waterfall).toBeGreaterThanOrEqual(96);
+  expect(dragged.spectrum).toBeGreaterThanOrEqual(64);
+  expect(dragged.waterfall).toBeGreaterThanOrEqual(80);
   const persistedRatio = await page.evaluate(() =>
     Number(localStorage.getItem('rigplane-spectrum-split-ratio')),
   );
@@ -166,8 +166,8 @@ test('spectrum separator preserves geometry, ratio, canvas state, and command is
   const shrunk = await geometry();
   expect(shrunk.ariaRatio).toBeCloseTo(persistedRatio, 2);
   expect(shrunk.ratio).toBeCloseTo(persistedRatio, 2);
-  expect(shrunk.spectrum).toBeGreaterThanOrEqual(72);
-  expect(shrunk.waterfall).toBeGreaterThanOrEqual(96);
+  expect(shrunk.spectrum).toBeGreaterThanOrEqual(64);
+  expect(shrunk.waterfall).toBeGreaterThanOrEqual(80);
 
   await page.setViewportSize({ width: 1280, height: 900 });
   const grown = await geometry();
@@ -191,4 +191,91 @@ test('spectrum separator preserves geometry, ratio, canvas state, and command is
   const commands = await page.evaluate(() => window.__spectrumWitness.commands);
   expect(commands).toEqual([]);
   expect(requests).toHaveLength(initialRequestCount);
+});
+
+test('spectrum separator moves and reports rendered bounds in the 220px portrait slot', async ({ page }) => {
+  await page.setViewportSize(VIEWPORT);
+  await page.goto('/fixtures/spectrum-witness.html?portrait=1', { waitUntil: 'load' });
+  await page.waitForSelector('body[data-harness-ready="true"]');
+  const panel = page.locator('[data-waterfall]');
+  const separator = panel.locator('[role="separator"]');
+  const read = () => panel.evaluate((node) => {
+    const region = node.querySelector<HTMLElement>('.spectrum-split-region')!;
+    const spectrum = node.querySelector<HTMLElement>('.spectrum-with-scales')!;
+    const axis = node.querySelector<HTMLElement>('.freq-axis')!;
+    const split = node.querySelector<HTMLElement>('[role="separator"]')!;
+    const waterfall = node.querySelector<HTMLElement>('.waterfall-area')!;
+    const paneTotal = spectrum.offsetHeight + waterfall.offsetHeight;
+    return {
+      panel: node.getBoundingClientRect().height,
+      region: region.offsetHeight,
+      spectrum: spectrum.offsetHeight,
+      axis: axis.offsetHeight,
+      separator: split.offsetHeight,
+      waterfall: waterfall.offsetHeight,
+      innerTotal: spectrum.offsetHeight + axis.offsetHeight
+        + split.offsetHeight + waterfall.offsetHeight,
+      renderedRatio: spectrum.offsetHeight / paneTotal,
+      ariaRatio: Number(split.getAttribute('aria-valuenow')) / 100,
+      storedRatio: Number(localStorage.getItem('rigplane-spectrum-split-ratio')),
+    };
+  });
+  await panel.evaluate((node) => {
+    (window as typeof window & { __portraitCanvases?: Element[] }).__portraitCanvases = [
+      node.querySelector('.spectrum-area canvas')!,
+      node.querySelector('.waterfall-content canvas')!,
+    ];
+  });
+
+  const initial = await read();
+  expect(initial.panel).toBe(220);
+  expect(Math.abs(initial.innerTotal - initial.region)).toBeLessThanOrEqual(1);
+  expect(initial.spectrum).toBeGreaterThanOrEqual(64);
+  expect(initial.waterfall).toBeGreaterThanOrEqual(80);
+  expect(initial.ariaRatio).toBeCloseTo(initial.renderedRatio, 2);
+
+  const box = await separator.boundingBox();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2 + 12);
+  await page.mouse.up();
+  const pointerMoved = await read();
+  expect(pointerMoved.spectrum).toBeGreaterThan(initial.spectrum);
+  expect(pointerMoved.ariaRatio).toBeCloseTo(pointerMoved.renderedRatio, 2);
+  expect(pointerMoved.storedRatio).toBeCloseTo(pointerMoved.renderedRatio, 2);
+
+  await separator.press('Home');
+  const home = await read();
+  await separator.press('ArrowDown');
+  const keyboardMoved = await read();
+  expect(keyboardMoved.spectrum).toBeGreaterThan(home.spectrum);
+  expect(keyboardMoved.ariaRatio).toBeCloseTo(keyboardMoved.renderedRatio, 2);
+  expect(keyboardMoved.storedRatio).toBeCloseTo(keyboardMoved.renderedRatio, 2);
+
+  await panel.evaluate(() => {
+    document.getElementById('app')!.style.height = '150px';
+  });
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+  const constrained = await read();
+  expect(Math.abs(constrained.innerTotal - constrained.region)).toBeLessThanOrEqual(1);
+  expect(constrained.renderedRatio).toBeCloseTo(64 / (64 + 80), 2);
+  expect(constrained.ariaRatio).toBeCloseTo(constrained.renderedRatio, 2);
+  await panel.evaluate(() => {
+    document.getElementById('app')!.style.height = '220px';
+  });
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+  const restored = await read();
+  expect(restored.ariaRatio).toBeCloseTo(keyboardMoved.storedRatio, 2);
+  expect(restored.renderedRatio).toBeCloseTo(keyboardMoved.storedRatio, 2);
+  expect(await panel.evaluate((node) => {
+    const canvases = (window as typeof window & { __portraitCanvases?: Element[] })
+      .__portraitCanvases;
+    return canvases?.[0] === node.querySelector('.spectrum-area canvas')
+      && canvases?.[1] === node.querySelector('.waterfall-content canvas');
+  })).toBe(true);
+  expect(await page.evaluate(() => window.__spectrumWitness.commands)).toEqual([]);
 });

@@ -124,8 +124,7 @@
   let spectrumArea = $state<HTMLDivElement | null>(null);
   let waterfallContent = $state<HTMLDivElement | null>(null);
   let splitRegion = $state<HTMLDivElement | null>(null);
-  let splitAxis = $state<HTMLDivElement | null>(null);
-  let splitSeparator = $state<HTMLDivElement | null>(null);
+  let splitRegionHeight = $state(0);
   const SPLIT_STORAGE_KEY = 'rigplane-spectrum-split-ratio';
   const DEFAULT_SPLIT_RATIO = 0.3;
   const MIN_SPLIT_RATIO = 0.2;
@@ -133,8 +132,8 @@
   const SPLIT_KEY_STEP = 0.05;
   const SPLIT_AXIS_HEIGHT = 20;
   const SPLIT_SEPARATOR_HEIGHT = 8;
-  const MIN_SPECTRUM_HEIGHT = 72;
-  const MIN_WATERFALL_HEIGHT = 96;
+  const MIN_SPECTRUM_HEIGHT = 64;
+  const MIN_WATERFALL_HEIGHT = 80;
 
   function normalizeSplitRatio(value: number): number {
     return Math.max(MIN_SPLIT_RATIO, Math.min(MAX_SPLIT_RATIO, value));
@@ -153,8 +152,32 @@
   }
 
   let splitRatio = $state(readSplitRatio());
+  type SplitBounds = Readonly<{ min: number; max: number }>;
+
+  function resolveSplitBounds(regionHeight: number): SplitBounds {
+    const paneHeight = regionHeight - SPLIT_AXIS_HEIGHT - SPLIT_SEPARATOR_HEIGHT;
+    if (!Number.isFinite(paneHeight) || paneHeight <= 0) {
+      return Object.freeze({ min: MIN_SPLIT_RATIO, max: MAX_SPLIT_RATIO });
+    }
+    const floorTotal = MIN_SPECTRUM_HEIGHT + MIN_WATERFALL_HEIGHT;
+    if (paneHeight < floorTotal) {
+      const compressed = MIN_SPECTRUM_HEIGHT / floorTotal;
+      return Object.freeze({ min: compressed, max: compressed });
+    }
+    return Object.freeze({
+      min: Math.max(MIN_SPLIT_RATIO, MIN_SPECTRUM_HEIGHT / paneHeight),
+      max: Math.min(MAX_SPLIT_RATIO, 1 - MIN_WATERFALL_HEIGHT / paneHeight),
+    });
+  }
+
+  function clampSplitRatio(value: number, bounds: SplitBounds): number {
+    return Math.max(bounds.min, Math.min(bounds.max, value));
+  }
+
+  let splitBounds = $derived(resolveSplitBounds(splitRegionHeight));
+  let renderedSplitRatio = $derived(clampSplitRatio(splitRatio, splitBounds));
   let splitRows = $derived(
-    `minmax(${MIN_SPECTRUM_HEIGHT}px, ${splitRatio}fr) ${SPLIT_AXIS_HEIGHT}px ${SPLIT_SEPARATOR_HEIGHT}px minmax(${MIN_WATERFALL_HEIGHT}px, ${1 - splitRatio}fr)`,
+    `${renderedSplitRatio}fr ${SPLIT_AXIS_HEIGHT}px ${SPLIT_SEPARATOR_HEIGHT}px ${1 - renderedSplitRatio}fr`,
   );
   type SplitCapture = Readonly<{ pointerId: number; target: HTMLElement }>;
   let splitCapture = $state<SplitCapture | null>(null);
@@ -172,13 +195,15 @@
   function updateSplitFromPointer(event: PointerEvent): void {
     if (!splitRegion) return;
     const regionRect = splitRegion.getBoundingClientRect();
-    const axisHeight = splitAxis?.getBoundingClientRect().height ?? SPLIT_AXIS_HEIGHT;
-    const separatorHeight = splitSeparator?.getBoundingClientRect().height
-      ?? SPLIT_SEPARATOR_HEIGHT;
-    const availableHeight = regionRect.height - axisHeight - separatorHeight;
+    splitRegionHeight = regionRect.height;
+    const availableHeight = regionRect.height - SPLIT_AXIS_HEIGHT - SPLIT_SEPARATOR_HEIGHT;
     if (!Number.isFinite(availableHeight) || availableHeight <= 0) return;
-    const spectrumHeight = event.clientY - regionRect.top - axisHeight - separatorHeight / 2;
-    setSplitRatio(spectrumHeight / availableHeight);
+    const spectrumHeight = event.clientY - regionRect.top
+      - SPLIT_AXIS_HEIGHT - SPLIT_SEPARATOR_HEIGHT / 2;
+    setSplitRatio(clampSplitRatio(
+      spectrumHeight / availableHeight,
+      resolveSplitBounds(regionRect.height),
+    ));
   }
 
   function handleSplitStart(event: PointerEvent): void {
@@ -219,15 +244,18 @@
   }
 
   function handleSplitKeydown(event: KeyboardEvent): void {
+    if (splitRegion) splitRegionHeight = splitRegion.getBoundingClientRect().height;
+    const bounds = resolveSplitBounds(splitRegionHeight);
+    const current = clampSplitRatio(splitRatio, bounds);
     let next: number;
-    if (event.key === 'ArrowUp') next = splitRatio - SPLIT_KEY_STEP;
-    else if (event.key === 'ArrowDown') next = splitRatio + SPLIT_KEY_STEP;
-    else if (event.key === 'Home') next = MIN_SPLIT_RATIO;
-    else if (event.key === 'End') next = MAX_SPLIT_RATIO;
+    if (event.key === 'ArrowUp') next = current - SPLIT_KEY_STEP;
+    else if (event.key === 'ArrowDown') next = current + SPLIT_KEY_STEP;
+    else if (event.key === 'Home') next = bounds.min;
+    else if (event.key === 'End') next = bounds.max;
     else return;
     event.preventDefault();
     event.stopPropagation();
-    setSplitRatio(next);
+    setSplitRatio(clampSplitRatio(next, bounds));
   }
 
   function isolateSplitWheel(event: WheelEvent): void {
@@ -777,7 +805,12 @@
   {:else}
   <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} />
   {/if}
-  <div class="spectrum-split-region" bind:this={splitRegion} style:grid-template-rows={splitRows}>
+  <div
+    class="spectrum-split-region"
+    bind:this={splitRegion}
+    bind:clientHeight={splitRegionHeight}
+    style:grid-template-rows={splitRows}
+  >
   <div class="spectrum-with-scales">
     <div class="db-scale">
       {#each audioFft ? [] : DB_TICKS as tick}
@@ -808,7 +841,7 @@
     </div>
   </div>
   {#if freqTicks.length > 0}
-    <div class="freq-axis" bind:this={splitAxis}>
+    <div class="freq-axis">
       {#each freqTicks as tick}
         <div class="tick" style="left: {tick.position}%">{tick.label}</div>
       {/each}
@@ -818,13 +851,12 @@
   <div
     class="spectrum-split-separator"
     class:active={splitCapture !== null}
-    bind:this={splitSeparator}
     role="separator"
     aria-label="Resize spectrum and waterfall"
     aria-orientation="horizontal"
-    aria-valuemin={Math.round(MIN_SPLIT_RATIO * 100)}
-    aria-valuemax={Math.round(MAX_SPLIT_RATIO * 100)}
-    aria-valuenow={Math.round(splitRatio * 100)}
+    aria-valuemin={Math.round(splitBounds.min * 100)}
+    aria-valuemax={Math.round(splitBounds.max * 100)}
+    aria-valuenow={Math.round(renderedSplitRatio * 100)}
     tabindex="0"
     onpointerdown={handleSplitStart}
     onpointermove={handleSplitMove}

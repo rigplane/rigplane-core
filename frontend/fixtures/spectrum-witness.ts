@@ -70,6 +70,10 @@ if (new URLSearchParams(location.search).has('legacyBaseline')) {
   document.head.append(style);
 }
 
+if (new URLSearchParams(location.search).has('portrait')) {
+  document.getElementById('app')!.style.height = '220px';
+}
+
 const BIN_COUNT = 256;
 /** The renderer saturates at 80 (`SPECTRUM_AMPLITUDE_MAX`); stay under it. */
 const BIN_BYTE_MAX = 80;
