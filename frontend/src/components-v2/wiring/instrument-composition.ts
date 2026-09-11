@@ -69,7 +69,7 @@ export interface InstrumentComposition {
   ]>;
   readonly dsp: Snippet<[
     allowBare?: boolean, finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout,
-    chrome?: PanelChrome, part?: DspSurfacePart,
+    chrome?: PanelChrome, part?: DspSurfacePart, compactAgcTime?: boolean,
   ]>;
   readonly band: Snippet<[
     allowBare?: boolean, controlLayout?: BandControlLayout, chrome?: PanelChrome,

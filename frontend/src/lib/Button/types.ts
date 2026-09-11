@@ -33,6 +33,10 @@ export interface BaseButtonProps {
    *  element the caller renders (same pattern as `DspSurface.svelte`'s
    *  pending-toggle announcement). */
   describedBy?: string;
+  /** Accessible name and disclosure relationship passthrough. */
+  ariaLabel?: string;
+  ariaExpanded?: boolean;
+  ariaControls?: string;
   /** Click handler */
   onclick?: (event: MouseEvent) => void;
   /** Pointer event handlers */

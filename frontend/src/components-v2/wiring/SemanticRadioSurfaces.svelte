@@ -52,6 +52,7 @@
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import {
     bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getDspControlFeedback,
+    projectDspControlFeedbackToDisplay,
     getFilterWidthControlFeedback,
     getCwPitchControlFeedback, getKeySpeedControlFeedback, getRfSqlControlFeedback,
     getTxAuxControlFeedback, type TxAuxControlFeedbackField,
@@ -76,7 +77,9 @@
     type DspLevelField, type DspSurfacePart, type DspToggleField,
   } from '../../semantic/DspSurface.svelte';
   import DspInstrumentHost from '../../semantic/DspInstrumentHost.svelte';
-  import type { DspFiniteHandles, DspFiniteLayout } from '../../semantic/dsp-instruments';
+  import type {
+    DspFiniteHandles, DspFiniteLayout, DspSettingsPanel,
+  } from '../../semantic/dsp-instruments';
   import DspScalarHost from '../../semantic/DspScalarHost.svelte';
   import type { DspScalarLayout } from '../../semantic/dsp-scalars';
   import FilterSurface from '../../semantic/FilterSurface.svelte';
@@ -499,6 +502,7 @@
    * test, not re-asserted here.
    */
   const dspIntents = semanticHandlers.dsp;
+  let standardDspSettings = $state<DspSettingsPanel | null>(null);
   const DSP_TOGGLE_INTENT: Record<DspToggleField, (next: boolean) => void> = {
     nrActive: (next) => dspIntents.onNrModeChange(next ? 1 : 0),
     nbActive: (next) => dspIntents.onNbToggle(next),
@@ -744,6 +748,14 @@
       focus: runtime.audioRouting.focus,
       splitStereo: runtime.audioRouting.split_stereo,
     },
+  });
+  let rxAudioRoutingGains = $derived.by(() => {
+    const routing = runtime.audioRouting;
+    return routing !== null
+      && typeof routing?.main_gain_db === 'number' && Number.isFinite(routing.main_gain_db)
+      && typeof routing?.sub_gain_db === 'number' && Number.isFinite(routing.sub_gain_db)
+      ? { main: routing.main_gain_db, sub: routing.sub_gain_db }
+      : null;
   });
 
   /**
@@ -1519,13 +1531,22 @@
   let cwPitchFeedback = $derived(getCwPitchControlFeedback(controlSession));
   let keySpeedFeedback = $derived(getKeySpeedControlFeedback(controlSession));
   /**
-   * MOR-2425. RAW command feedback for the two NB scalars — no projector:
-   * `nbLevel`/`nbWidth` are wire-raw, unlike `nrLevel`/`nbDepth`, which
-   * `DspSurface` still renders natively from the adapter's display-scaled
-   * projection (carry-forward 3).
+   * Command feedback for every hosted DSP settings scalar. `nbLevel`,
+   * `nbWidth`, notch and AGC stay wire-raw; NR level and NB depth use the
+   * adapter's established display projections before reaching the renderer.
    */
   let dspScalarFeedback = $derived({
-    nbLevel: getDspControlFeedback('nbLevel'), nbWidth: getDspControlFeedback('nbWidth'),
+    nbLevel: getDspControlFeedback('nbLevel'),
+    nbDepth: projectDspControlFeedbackToDisplay(
+      'nbDepth', getDspControlFeedback('nbDepth'), runtime.caps,
+    ),
+    nbWidth: getDspControlFeedback('nbWidth'),
+    nrLevel: projectDspControlFeedbackToDisplay(
+      'nrLevel', getDspControlFeedback('nrLevel'), runtime.caps,
+    ),
+    notchFreq: getDspControlFeedback('notchFilter'),
+    manualNotchWidth: getDspControlFeedback('manualNotchWidth'),
+    agcTimeConstant: getDspControlFeedback('agcTimeConstant'),
   });
   let txAuxLevelFeedback = $derived.by<TxAuxLevelFeedback>(() => Object.fromEntries(
     TX_AUX_FEEDBACK_LEVELS.map(field => [
@@ -1736,6 +1757,8 @@
     onMonitorModeChange={(mode) => rxAudioIntents.onMonitorModeChange(mode)}
     onFocusChange={(focus) => routingIntents.onFocusChange(focus)}
     onSplitStereoChange={(split) => routingIntents.onSplitStereoChange(split)}
+    routingGains={rxAudioRoutingGains}
+    onChannelGainChange={(channel, value) => routingIntents.onChannelGainChange(channel, value)}
     onModInputChange={semanticHandlers.mode.onModInputChange}
     onSetModInputLan={setModInputLan}
     {...rxAudioFiniteRendererSelection}
@@ -1806,6 +1829,8 @@
     onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
     onNotchModeChange={dspIntents.onNotchModeChange}
     onAgcModeChange={agcIntents.onAgcModeChange}
+    settingsPanel={standardDspSettings}
+    onOpenSettings={(panel) => standardDspSettings = panel}
   >
   {#snippet children(dspInstruments)}
   <DspScalarHost
@@ -2241,11 +2266,14 @@
   -->
   {#snippet dspSurface(
     finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout, part: DspSurfacePart = 'all',
+    compactAgcTime = false,
   )}
     {#if view?.dsp}
       <DspSurface
         {view} finiteHandles={dspInstruments} {finiteLayout}
-        scalarHandles={dspScalars} {scalarLayout} {part}
+        scalarHandles={dspScalars} {scalarLayout} {part} {compactAgcTime}
+        settingsPanel={compactAgcTime ? standardDspSettings : null}
+        onSettingsPanelChange={(panel) => standardDspSettings = panel}
         onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
       />
     {/if}
@@ -2539,8 +2567,9 @@
   {#snippet hostedDsp(
     allowBare = allowBareSurfaces, finiteLayout?: DspFiniteLayout,
     scalarLayout?: DspScalarLayout, chrome?: PanelChrome, part: DspSurfacePart = 'all',
+    compactAgcTime = false,
   )}
-    {#snippet body()}{@render dspSurface(finiteLayout, scalarLayout, part)}{/snippet}
+    {#snippet body()}{@render dspSurface(finiteLayout, scalarLayout, part, compactAgcTime)}{/snippet}
     {@render zoned('dsp', view?.dsp !== undefined, body, allowBare, chrome)}
   {/snippet}
   {#snippet hostedBand(

@@ -27,6 +27,9 @@
     armed?: boolean;
     /** Pairs with a caller-rendered `.sr-only` announcement (MOR-1519). */
     describedBy?: string;
+    ariaLabel?: string;
+    ariaExpanded?: boolean;
+    ariaControls?: string;
     onclick?: (event: MouseEvent) => void;
     onpointerdown?: (event: PointerEvent) => void;
     onpointerup?: (event: PointerEvent) => void;
@@ -47,6 +50,9 @@
     shortcutHint = null,
     armed = false,
     describedBy,
+    ariaLabel,
+    ariaExpanded,
+    ariaControls,
     onclick,
     onpointerdown,
     onpointerup,
@@ -102,6 +108,9 @@
   data-glow={glowAttr}
   data-armed={armed || undefined}
   aria-describedby={describedBy}
+  aria-label={ariaLabel}
+  aria-expanded={ariaExpanded}
+  aria-controls={ariaControls}
   title={title ?? shortcutHint ?? undefined}
   data-shortcut-hint={shortcutHint ?? undefined}
   {disabled}

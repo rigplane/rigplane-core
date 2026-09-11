@@ -640,7 +640,8 @@ describe('desktop-v2 declares a real dsp zone; the cockpit does not (MOR-1368, S
 });
 
 describe('persistent finite DSP composition and authority (MOR-2425)', () => {
-  const external = ['NR', 'NB', 'Notch mode', 'AGC mode'] as const;
+  const groupedExternal = ['NR', 'NB', 'Notch mode', 'AGC mode'] as const;
+  const standardExternal = ['NB', 'NR', 'NOTCH', 'A-NOTCH', 'AGC mode'] as const;
   /**
    * MOR-2425: the DSP levels `DspSurface` still owns natively, in
    * `DSP_LEVELS` order. Named rather than counted — a bare cardinality is
@@ -664,12 +665,12 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     const staleStandardNr = retainedInvocations.get('NR')!;
 
     expect(seatFields('.dsp-finite-seat'))
-      .toEqual(['agcMode', 'nrActive', 'nbActive', 'notchMode']);
-    expect(seatFields('.dsp-scalar-seat')).toEqual(['nbLevel', 'nbWidth']);
-    for (const label of external) expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
-    expect(rangeFields()).toEqual([
-      'agcTimeConstant', 'nrLevel', 'nbDepth', 'notchFreq', 'manualNotchWidth',
-    ]);
+      .toEqual(['agcMode', 'nbActive', 'nrActive', 'manualNotch', 'autoNotch']);
+    expect(seatFields('.dsp-scalar-seat')).toEqual([]);
+    for (const label of standardExternal) {
+      expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
+    }
+    expect(rangeFields()).toEqual([]);
 
     (h.state as { main: Record<string, unknown> }).main.nr = false;
     props.skinId = 'sdr-test';
@@ -678,7 +679,9 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     expect(target.querySelectorAll('[data-testid="dsp-surface"]')).toHaveLength(1);
     expect(target.querySelectorAll('.dsp-finite-seat')).toHaveLength(0);
     expect(target.querySelectorAll('.dsp-scalar-seat')).toHaveLength(0);
-    for (const label of external) expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
+    for (const label of groupedExternal) {
+      expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
+    }
     expect(rangeFields()).toEqual(NATIVE_RANGE_FIELDS);
     for (const field of ['nbLevel', 'nbWidth']) {
       expect(target.querySelectorAll(`[data-testid="dsp-${field}"]`)).toHaveLength(1);
@@ -706,6 +709,12 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     h.selectedFiniteAppearance = finiteAppearance;
     h.state = proxy(liveState(true) as object);
     const props = renderHosted();
+    vi.useFakeTimers();
+    q('[data-testid="external-NB"]')!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    vi.advanceTimersByTime(500);
+    q('[data-testid="external-NB"]')!.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    flushSync();
+    vi.useRealTimers();
     beginCommand({
       id: 'pending-nb-width', name: 'set_nb_width', params: { level: 7 }, originalEpoch: 1,
     });
@@ -754,11 +763,150 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     h.controlSession = { state: 'disconnected', epoch: 1 };
     render();
     expect(target.querySelectorAll('.dsp-toggle, .dsp-choice')).toHaveLength(0);
-    for (const label of external) expect(q(`[data-testid="external-${label}"]`)).toBeNull();
+    for (const label of groupedExternal) expect(q(`[data-testid="external-${label}"]`)).toBeNull();
     expect(rangeFields()).toEqual(NATIVE_RANGE_FIELDS);
     // Receiver + AF + RF level + station meter + antenna hosts + the single
     // finite-renderer fan-in.
     expect(h.authoritySubscribers.size).toBe(6);
+  });
+
+  it('maps NOTCH to manual, A-NOTCH to auto, and selected clicks to off', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    h.state = proxy(liveState(true) as object);
+    renderHosted();
+
+    retainedInvocations.get('NOTCH')!();
+    expect(h.notchMode).toHaveBeenLastCalledWith('manual');
+    (h.state as { main: Record<string, unknown> }).main.manualNotch = true;
+    flushSync();
+    retainedInvocations.get('NOTCH')!();
+    expect(h.notchMode).toHaveBeenLastCalledWith('off');
+
+    (h.state as { main: Record<string, unknown> }).main.manualNotch = false;
+    (h.state as { main: Record<string, unknown> }).main.autoNotch = false;
+    flushSync();
+    retainedInvocations.get('A-NOTCH')!();
+    expect(h.notchMode).toHaveBeenLastCalledWith('auto');
+    (h.state as { main: Record<string, unknown> }).main.autoNotch = true;
+    flushSync();
+    retainedInvocations.get('A-NOTCH')!();
+    expect(h.notchMode).toHaveBeenLastCalledWith('off');
+  });
+
+  it('keeps AGC mode in the left panel and exposes AGC time once in right DSP', () => {
+    h.state = proxy(liveState(true) as object);
+    renderHosted();
+    const agcButtons = [...target.querySelectorAll<HTMLButtonElement>('button')]
+      .filter(button => button.textContent?.trim().startsWith('AGC-T'));
+    expect(agcButtons).toHaveLength(1);
+    expect(agcButtons[0].textContent).toContain('▾');
+    expect(agcButtons[0].closest('.dsp-agc-time')?.getAttribute('data-expanded')).toBe('false');
+    expect(target.querySelectorAll('[data-testid="dsp-agcTimeConstant"]')).toHaveLength(0);
+    agcButtons[0].click();
+    flushSync();
+    expect(agcButtons[0].textContent).toContain('▴');
+    expect(agcButtons[0].closest('.dsp-agc-time')?.getAttribute('data-expanded')).toBe('true');
+    expect(target.querySelectorAll('[data-testid="dsp-agcTimeConstant"]')).toHaveLength(1);
+    expect(q('[data-testid="dsp-agcTimeConstant"]')!.closest('[data-part="dsp"]')).not.toBeNull();
+    expect(q('[data-testid="dsp-agcTimeConstant"]')!.closest('[data-part="agc"]')).toBeNull();
+  });
+
+  it('opens and closes NB settings from its chevron without sending an NB command', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    h.state = proxy(liveState(true) as object);
+    renderHosted();
+    const open = q<HTMLButtonElement>('button[title="Open NB settings"]')!;
+    expect(open.textContent).toContain('▾');
+    expect(open.getAttribute('aria-label')).toBe('NB settings');
+    expect(open.getAttribute('aria-expanded')).toBe('false');
+    expect(open.getAttribute('aria-controls')).toBe('dsp-nb-settings');
+    expect(open.closest('.compact-dsp-button')?.getAttribute('data-expanded')).toBe('false');
+    expect(q('button[title="Open NR settings"]')).not.toBeNull();
+    expect(q('button[title="Open NOTCH settings"]')).not.toBeNull();
+    expect(q('button[title*="A-NOTCH settings"]')).toBeNull();
+
+    open.click();
+    flushSync();
+    expect(q('[data-testid="dsp-nbLevel"]')).not.toBeNull();
+    const close = q<HTMLButtonElement>('button[title="Close NB settings"]')!;
+    expect(close.textContent).toContain('▴');
+    expect(close.getAttribute('aria-expanded')).toBe('true');
+    expect(q(`#${close.getAttribute('aria-controls')}`)).not.toBeNull();
+    expect(close.closest('.compact-dsp-button')?.getAttribute('data-expanded')).toBe('true');
+    const nbSettings = [...target.querySelectorAll<HTMLElement>('#dsp-nb-settings .vc-hbar.hw-illum')];
+    expect(nbSettings).toHaveLength(3);
+    expect(nbSettings.every(control => !control.classList.contains('compact'))).toBe(true);
+    expect(target.querySelectorAll('#dsp-nb-settings .vc-label')).toHaveLength(3);
+    expect(target.querySelectorAll('#dsp-nb-settings .vc-value')).toHaveLength(3);
+    expect(h.nbToggle).not.toHaveBeenCalled();
+
+    close.click();
+    flushSync();
+    expect(q('[data-testid="dsp-nbLevel"]')).toBeNull();
+    expect(h.nbToggle).not.toHaveBeenCalled();
+
+    q<HTMLButtonElement>('button[title="Open NR settings"]')!.click();
+    flushSync();
+    expect(target.querySelectorAll('#dsp-nr-settings .vc-hbar.hw-illum')).toHaveLength(1);
+    expect(target.querySelectorAll('#dsp-nr-settings .vc-label')).toHaveLength(1);
+    expect(target.querySelectorAll('#dsp-nr-settings .vc-value')).toHaveLength(1);
+    q<HTMLButtonElement>('button[title="Close NR settings"]')!.click();
+    q<HTMLButtonElement>('button[title="Open NOTCH settings"]')!.click();
+    flushSync();
+    expect(target.querySelectorAll('#dsp-notch-settings .vc-hbar.hw-illum')).toHaveLength(2);
+    expect(target.querySelectorAll('#dsp-notch-settings .vc-label')).toHaveLength(2);
+    expect(target.querySelectorAll('#dsp-notch-settings .vc-value')).toHaveLength(2);
+    expect(h.nrMode).not.toHaveBeenCalled();
+    expect(h.notchMode).not.toHaveBeenCalled();
+  });
+
+  it('disables an open AGC-time adjustment when its reading becomes stale', () => {
+    h.state = proxy(liveState(true) as object);
+    renderHosted();
+    const agcButton = [...target.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim().startsWith('AGC-T'))!;
+    agcButton.click();
+    flushSync();
+    expect(agcButton.getAttribute('aria-label')).toBe('AGC time settings');
+    expect(agcButton.getAttribute('aria-expanded')).toBe('true');
+    expect(q(`#${agcButton.getAttribute('aria-controls')}`)).not.toBeNull();
+    const status = (h.state as ServerState).fieldStatus as unknown as Record<string, {
+      storePath: string; observed: boolean; freshness: string; availability: string;
+      lastObservedMonotonic: number;
+    }>;
+    status['main.agcTimeConstant'] = {
+      ...fresh, observed: false, freshness: 'stale', availability: 'unavailable',
+    };
+    flushSync();
+    const slider = q<HTMLElement>('[data-testid="dsp-agcTimeConstant"] [role="slider"]')!;
+    expect(slider.closest('.vc-hbar')?.classList.contains('hw-illum')).toBe(true);
+    expect(slider.closest('.vc-hbar')?.classList.contains('compact')).toBe(false);
+    expect(q('[data-testid="dsp-agcTimeConstant"] .vc-label')).not.toBeNull();
+    expect(q('[data-testid="dsp-agcTimeConstant"] .vc-value')).not.toBeNull();
+    expect(slider.getAttribute('aria-disabled')).toBe('true');
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(h.agcTime).not.toHaveBeenCalled();
+  });
+
+  it('opens NR settings after one held Space despite key repeat and suppresses its click', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    h.state = proxy(liveState(true) as object);
+    renderHosted();
+    const nr = q<HTMLButtonElement>('[data-testid="external-NR"]')!;
+    vi.useFakeTimers();
+    try {
+      nr.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', repeat: false, bubbles: true }));
+      vi.advanceTimersByTime(300);
+      nr.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true }));
+      vi.advanceTimersByTime(200);
+      nr.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', bubbles: true }));
+      nr.click();
+      flushSync();
+      expect(q('[data-testid="dsp-nrLevel"]')).not.toBeNull();
+      expect(h.nrMode).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([

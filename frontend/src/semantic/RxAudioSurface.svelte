@@ -84,9 +84,7 @@
       {@render finiteLayout(handles)}
     {:else}
       {@render handles.monitorMode()}
-    {/if}
-
-    {#if rx.afLevel.availability.structural}
+      {#if rx.afLevel.availability.structural}
       <label
         class="rx-audio-level" data-testid="rx-audio-af" data-observed={usable(rx.afLevel)}
       >
@@ -96,9 +94,7 @@
         {@render handles.afLevel()}
         <output data-testid="rx-audio-af-value">{afText(rx.afLevel)}</output>
       </label>
-    {/if}
-
-    {#if !finiteLayout}
+      {/if}
       {@render handles.routingFocus()}
       {@render handles.routingSplit()}
       <!-- MOD-input readiness/source readouts and the one-click LAN remedy

@@ -38,7 +38,10 @@ import type { RadioViewModel } from '../radio-view-model';
 import type { DspScalarFeedback, DspScalarField, DspScalarPresentation } from '../dsp-scalars';
 
 const FIELDS = ['nbLevel', 'nbWidth'] as const satisfies readonly DspScalarField[];
-const CONFIRMED = { nbLevel: 64, nbWidth: 2 } as const;
+const CONFIRMED: Readonly<Record<DspScalarField, number>> = {
+  nbLevel: 64, nbDepth: 5, nbWidth: 2, nrLevel: 8,
+  notchFreq: 128, manualNotchWidth: 1, agcTimeConstant: 4,
+};
 function commandFeedback(
   field: DspScalarField, over: Partial<CommandScalarFeedback> = {},
 ): Readonly<CommandScalarFeedback> {
@@ -55,14 +58,19 @@ function feedback(
 ): DspScalarFeedback {
   return Object.freeze({
     nbLevel: over.nbLevel ?? commandFeedback('nbLevel'),
+    nbDepth: over.nbDepth ?? commandFeedback('nbDepth'),
     nbWidth: over.nbWidth ?? commandFeedback('nbWidth'),
+    nrLevel: over.nrLevel ?? commandFeedback('nrLevel'),
+    notchFreq: over.notchFreq ?? commandFeedback('notchFreq'),
+    manualNotchWidth: over.manualNotchWidth ?? commandFeedback('manualNotchWidth'),
+    agcTimeConstant: over.agcTimeConstant ?? commandFeedback('agcTimeConstant'),
   });
 }
 const view = (): RadioViewModel => withDsp(topologyFixtures['1/single']);
 
 type RendererNode = HTMLButtonElement & { readonly rendererLease: ContinuousScalarRendererLease };
 type Props = {
-  view: RadioViewModel; feedback: DspScalarFeedback; presentation: 'grouped' | 'independent';
+  view: RadioViewModel; feedback: DspScalarFeedback; presentation: 'grouped' | 'independent' | 'nr';
   scalarPresentation?: Readonly<DspScalarPresentation>; nbLevelMax?: number;
   nbLevelPercent?: boolean; onLevelChange?: (field: DspScalarField, value: number) => void;
   scalarAppearance?: Skin; presentationIsCurrent?: () => boolean;
@@ -199,6 +207,25 @@ describe('two-scalar DSP family host', () => {
     r.props.nbLevelPercent = false;
     flushSync();
     expect(r.scalar('nbLevel')?.dataset.display).toBe('65');
+    r.dispose();
+  });
+
+  it('keeps a null NR domain unknown, disabled, and command-inert', () => {
+    const current = view();
+    const r = render({
+      presentation: 'nr',
+      view: { ...current, dsp: { ...current.dsp!, nrLevelProjection: {
+        value: null, domain: null, adjustable: false,
+      } } },
+      feedback: feedback({ nrLevel: commandFeedback('nrLevel', {
+        confirmed: null, phase: 'unavailable', availability: 'unavailable',
+      }) }),
+    });
+    const nr = r.scalar('nrLevel')!;
+    expect(nr.getAttribute('aria-disabled')).toBe('true');
+    expect(nr.dataset.display).toBe('?');
+    nr.click();
+    expect(r.onLevelChange).not.toHaveBeenCalled();
     r.dispose();
   });
 
