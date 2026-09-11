@@ -175,13 +175,17 @@
     border-radius: 3px;
   }
   .rx-tx-surface.standard .rx-tx-actions { display: grid; grid-template-columns: 1fr; gap: 6px; }
-  .rx-tx-surface.standard .rx-tx-key {
+  :global(.desktop-control-face.standard-face) .rx-tx-surface.standard .rx-tx-actions .rx-tx-key.v2-control-button {
     width: 100%; min-height: 78px; border: 2px solid var(--v2-accent-red, #ef4444);
-    color: var(--v2-accent-red, #ef4444); font-size: 18px; letter-spacing: 0.1em;
+    color: var(--v2-accent-red, #ef4444); font-size: 1.5rem; font-weight: 700;
+    letter-spacing: 0.1em;
   }
-  .rx-tx-surface.standard .rx-tx-key[data-active='true'] {
+  :global(.desktop-control-face.standard-face) .rx-tx-surface.standard .rx-tx-actions .rx-tx-key.v2-control-button[data-active='true'] {
     color: #fff; background: color-mix(in srgb, var(--v2-accent-red, #ef4444) 28%, transparent);
     box-shadow: 0 0 12px color-mix(in srgb, var(--v2-accent-red, #ef4444) 45%, transparent);
+  }
+  :global(.desktop-control-face.standard-face) .rx-tx-surface.standard .rx-tx-state .rx-tx-label.v2-status-indicator {
+    padding: 0; border: 0; background: none; box-shadow: none;
   }
   .rx-tx-surface.standard .rx-tx-unkey { width: 100%; }
   .rx-tx-blocked { margin: 0; padding-inline-start: 1.2em; }

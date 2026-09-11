@@ -16,6 +16,7 @@
     readonly compact?: boolean;
     readonly showLabel?: boolean;
     readonly showValue?: boolean;
+    readonly variant?: 'modern' | 'hardware' | 'hardware-illuminated';
   }
 
   export type CwContinuousHandle = Snippet<[
@@ -206,6 +207,7 @@
         showLabel={explicitPresentation ? presentation?.showLabel ?? true : false}
         showValue={explicitPresentation ? presentation?.showValue ?? true : false}
         compact={explicitPresentation ? presentation?.compact ?? false : true}
+        variant={presentation?.variant ?? 'modern'}
         title={disabledReason} {accessibility}
         skin={scalarAppearance}
         {presentationIsCurrent}

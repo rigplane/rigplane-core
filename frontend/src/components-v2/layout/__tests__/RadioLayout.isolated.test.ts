@@ -761,9 +761,17 @@ describe('App presentation selection', () => {
     expect(t.querySelector('[data-testid="cw-keyer-break-in-full"]')?.textContent).toContain('FULL');
     const pitch = t.querySelector('[data-testid="cw-keyer-pitchHz"]')!;
     const speed = t.querySelector('[data-testid="cw-keyer-keyerSpeed"]')!;
+    const rxMode = t.querySelector('[data-testid="cw-keyer-rx-mode"]')!;
+    const breakIn = t.querySelector('[data-testid="cw-keyer-break-in"]')!;
+    expect(rxMode.compareDocumentPosition(pitch) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(pitch.compareDocumentPosition(speed) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(pitch.querySelector<HTMLElement>('[data-external-scalar-renderer]')?.dataset.compact).toBe('false');
-    expect(speed.querySelector<HTMLElement>('[data-external-scalar-renderer]')?.dataset.compact).toBe('false');
+    expect(speed.compareDocumentPosition(breakIn) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    const pitchRenderer = pitch.querySelector<HTMLElement>('[data-external-scalar-renderer]');
+    const speedRenderer = speed.querySelector<HTMLElement>('[data-external-scalar-renderer]');
+    expect(pitchRenderer?.dataset.compact).toBe('false');
+    expect(speedRenderer?.dataset.compact).toBe('false');
+    expect(pitchRenderer?.dataset.variant).toBe('hardware-illuminated');
+    expect(speedRenderer?.dataset.variant).toBe('hardware-illuminated');
     const txLevels = [...t.querySelectorAll<HTMLButtonElement>('button')]
       .find(button => button.getAttribute('aria-label') === 'TX level settings');
     expect(txLevels?.getAttribute('aria-expanded')).toBe('false');

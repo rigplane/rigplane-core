@@ -505,6 +505,9 @@ describe('L1 hosted desktop TX auxiliary composition', () => {
       expect(seat, `${field} seat`).not.toBeNull();
       expect(seat?.querySelector(`[data-testid="tx-aux-${field}"]`)).not.toBeNull();
       expect(target.querySelectorAll(`[data-testid="tx-aux-${field}"]`)).toHaveLength(1);
+      const presented = seat?.querySelector<HTMLElement>('.tx-aux-level--presented');
+      expect(getComputedStyle(presented!).display).toBe('flex');
+      expect(getComputedStyle(presented!).width).toBe('100%');
     }
 
     expect(remainder?.querySelector('.standard-tx-levels')).toBeNull();

@@ -149,6 +149,9 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
       expect(r.el('break-in-off')).toBeNull();
       expect(r.text('break-in-semi')).toBe('SEMI');
       expect(r.text('break-in-full')).toBe('FULL');
+      expect(r.el('apf')?.getAttribute('role')).toBeNull();
+      expect(r.el('apf-on')?.getAttribute('role')).toBeNull();
+      expect(r.el('apf-on')?.getAttribute('aria-pressed')).toBe('true');
       expect(r.el('pitchHz')!.compareDocumentPosition(r.el('keyerSpeed')!)
         & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 
@@ -161,13 +164,17 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
       const settings = r.controls().find(control =>
         control.getAttribute('aria-label') === 'CW additional settings')!;
       expect(settings.getAttribute('aria-expanded')).toBe('false');
-      expect(r.el('breakInDelay')).toBeNull();
-      expect(r.el('reverse-paddle')).toBeNull();
+      expect(settings.getAttribute('aria-controls')).toBe('cw-extra-settings');
+      const controlled = target.querySelector<HTMLElement>(
+        `#${settings.getAttribute('aria-controls')}`,
+      )!;
+      expect(controlled.hidden).toBe(true);
+      expect(controlled.querySelector('[data-testid="cw-keyer-breakInDelay"]')).not.toBeNull();
+      expect(controlled.querySelector('[data-testid="cw-keyer-reverse-paddle"]')).not.toBeNull();
       press(settings);
       flushSync();
       expect(settings.getAttribute('aria-expanded')).toBe('true');
-      expect(r.el('breakInDelay')).not.toBeNull();
-      expect(r.el('reverse-paddle')).not.toBeNull();
+      expect(controlled.hidden).toBe(false);
 
       expect(r.text('auto-tune')).toBe('AUTO TUNE');
       press(r.el('auto-tune')!);

@@ -361,6 +361,18 @@
       <div class="cw-mode-line" data-testid="cw-keyer-rx-mode">
         <span>RX MODE</span><output>{rxMode}</output>
       </div>
+      {#if showPitchHz}
+        {@render continuousHandles.pitchHz({
+          form: 'hbar', compact: false, showLabel: true, showValue: true,
+          variant: 'hardware-illuminated',
+        })}
+      {/if}
+      {#if showKeyerSpeed}
+        {@render continuousHandles.keyerSpeed({
+          form: 'hbar', compact: false, showLabel: true, showValue: true,
+          variant: 'hardware-illuminated',
+        })}
+      {/if}
     {/if}
     {#if cw.breakIn.availability.structural}
       <div
@@ -397,27 +409,16 @@
       </div>
     {/if}
 
-    {#if standard}
-      {#if showPitchHz}
-        {@render continuousHandles.pitchHz({
-          form: 'hbar', compact: false, showLabel: true, showValue: true,
-        })}
-      {/if}
-      {#if showKeyerSpeed}
-        {@render continuousHandles.keyerSpeed({
-          form: 'hbar', compact: false, showLabel: true, showValue: true,
-        })}
-      {/if}
-    {:else}
+    {#if !standard}
       {#if showKeyerSpeed}{@render continuousHandles.keyerSpeed()}{/if}
       {#if showPitchHz}{@render continuousHandles.pitchHz()}{/if}
     {/if}
 
+    {#snippet cwSettings()}
     {#each CW_LEVELS.filter(([field]) => field !== 'keyerSpeed' && field !== 'pitchHz') as [field, label, min, max, step, unit] (field)}
       {@const f = cw[field]}
-      {#if f.availability.structural && (!standard || (extraOpen
-        && (field !== 'breakInDelay' || (cw.breakIn.reading.status === 'known'
-          && cw.breakIn.reading.value === 'semi'))))}
+      {#if f.availability.structural && (!standard || field !== 'breakInDelay'
+        || (cw.breakIn.reading.status === 'known' && cw.breakIn.reading.value === 'semi'))}
         <label
           class="cw-keyer-level" data-testid={`cw-keyer-${field}`}
           data-observed={usable(f)}
@@ -461,13 +462,29 @@
       {/if}
     {/each}
 
-    {#if cw.reversePaddle.availability.structural && (!standard || extraOpen)}
+    {#if cw.reversePaddle.availability.structural}
       <button
         type="button" class="cw-keyer-toggle" data-testid="cw-keyer-reverse-paddle"
         aria-pressed={pressedOf(cw.reversePaddle)}
         disabled={!reversePaddleToggle.available}
         onclick={() => reversePaddleToggle.invoke()}
       >Reverse paddle: {textOf(cw.reversePaddle)}</button>
+    {/if}
+    {/snippet}
+
+    {#if standard}
+      <div id="cw-extra-settings" class="cw-extra-settings" role="group"
+        aria-label="CW additional settings" hidden={!extraOpen}>
+        {@render cwSettings()}
+        {#if view.txAux}
+          <p class="cw-keyer-row" data-testid="cw-keyer-sidetone"
+            data-observed={usable(view.txAux.monitorLevel)}>
+            Sidetone level: {textOf(view.txAux.monitorLevel)}
+          </p>
+        {/if}
+      </div>
+    {:else}
+      {@render cwSettings()}
     {/if}
 
     {#if cw.apf.availability.structural}
@@ -478,19 +495,29 @@
            promote (MOR-1296 open question 2) — flagged, not guessed. -->
       <div class="cw-keyer-block" class:cw-standard-filter={standard}>
         <div
-          class="cw-keyer-row" role="radiogroup" aria-label="Audio peak filter"
+          class="cw-keyer-row" role={standard ? undefined : 'radiogroup'} aria-label="Audio peak filter"
           data-testid="cw-keyer-apf" data-observed={usable(cw.apf)}
         >
-          {#each (standard ? APF_CHOICES.filter(([, on]) => on) : APF_CHOICES) as [label, on] (label)}
+          {#if standard}
             <button
-              type="button" role="radio" class="cw-keyer-choice"
-              data-testid={`cw-keyer-apf-${label}`}
-              aria-checked={apfChoice.isSelected(on)}
+              type="button" class="cw-keyer-toggle" data-testid="cw-keyer-apf-on"
+              aria-pressed={apfChoice.isSelected(true)}
               aria-describedby={mutexed('apf') ? 'cw-keyer-apf-reason' : undefined}
               disabled={!apfChoice.available}
-              onclick={() => apfChoice.invoke(standard ? !apfChoice.isSelected(true) : on)}
-            >{standard ? 'APF' : `APF ${label}`}</button>
-          {/each}
+              onclick={() => apfChoice.invoke(!apfChoice.isSelected(true))}
+            >APF</button>
+          {:else}
+            {#each APF_CHOICES as [label, on] (label)}
+              <button
+                type="button" role="radio" class="cw-keyer-choice"
+                data-testid={`cw-keyer-apf-${label}`}
+                aria-checked={apfChoice.isSelected(on)}
+                aria-describedby={mutexed('apf') ? 'cw-keyer-apf-reason' : undefined}
+                disabled={!apfChoice.available}
+                onclick={() => apfChoice.invoke(on)}
+              >APF {label}</button>
+            {/each}
+          {/if}
           <output class:sr-only={standard} data-testid="cw-keyer-apf-value">{textOf(cw.apf)}</output>
         </div>
         {#if mutexed('apf')}
@@ -532,7 +559,7 @@
       >{standard ? 'AUTO TUNE' : 'RX frequency correction'}</button>
     {/if}
 
-    {#if view.txAux && (!standard || extraOpen)}
+    {#if view.txAux && !standard}
       <!-- Sidetone level IS `txAux.monitorLevel` (MOR-1296 §4): read there,
            never duplicated as a second fact and never given a second control —
            the one control lives in `TxAuxSurface`. Readout only. -->
@@ -545,6 +572,7 @@
       || cw.breakInDelay.availability.structural || view.txAux !== undefined)}
       <button type="button" class="cw-keyer-toggle cw-extra-toggle"
         aria-label="CW additional settings" aria-expanded={extraOpen}
+        aria-controls="cw-extra-settings"
         onclick={() => (extraOpen = !extraOpen)}
       >SETTINGS {extraOpen ? '▴' : '▾'}</button>
     {/if}
@@ -577,6 +605,10 @@
   .standard [data-testid='cw-keyer-twin-peak'] { display: contents; }
   .standard .cw-standard-filter { display: contents; }
   .standard [data-testid='cw-keyer-auto-tune'], .standard .cw-extra-toggle { grid-column: span 2; }
+  .standard .cw-extra-settings {
+    grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px;
+  }
+  .standard .cw-extra-settings[hidden] { display: none; }
   .standard .cw-keyer-level, .standard [data-testid='cw-keyer-reverse-paddle'],
   .standard [data-testid='cw-keyer-sidetone'] { grid-column: 1 / -1; }
   .standard button { min-width: 0; }

@@ -1067,7 +1067,9 @@
   .standard-bottom-dock > .content-left,
   .standard-bottom-dock > .content-right { display: contents; }
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-  .standard-tx-controls { display: flex; flex-direction: column; gap: 6px; }
+  .standard-tx-controls {
+    display: flex; flex-direction: column; gap: 6px; padding: 0 8px 8px;
+  }
   .standard-tx-button-grid {
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
   }
