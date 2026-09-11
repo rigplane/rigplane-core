@@ -35,7 +35,7 @@ import {
   UNKNOWN_TEXT, breakInBlockedLabel, breakInPosture, type CwLevelField,
 } from '../CwKeyerSurface.svelte';
 import CwKeyerInstrumentHostFixture from './fixtures/CwKeyerInstrumentHostFixture.svelte';
-import { topologyFixtures, withCwKeyer, withTxAux } from '../fixtures/topologies';
+import { topologyFixtures, withCwKeyer, withModeFilter, withTxAux } from '../fixtures/topologies';
 import type {
   Availability, BreakInMode, CwKeyerField, CwKeyerViewModel, DisabledReason, RadioViewModel,
 } from '../radio-view-model';
@@ -80,6 +80,7 @@ afterEach(() => { target.remove(); });
 
 type Handlers = {
   standard?: boolean;
+  autoTuneAvailable?: boolean;
   onBreakInMode?: (mode: number) => void;
   onLevelChange?: (field: CwLevelField, value: number) => void;
   onApfOn?: (on: boolean) => void;
@@ -140,7 +141,7 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     const onBreakInMode = vi.fn();
     const onApfOn = vi.fn();
     const onAutoTune = vi.fn();
-    const r = render(withCw({ breakIn: known('semi'), apf: known(1) }), {
+    const r = render(withModeFilter(withCw({ breakIn: known('semi'), apf: known(1) })), {
       standard: true, autoTuneAvailable: true, onBreakInMode, onApfOn, onAutoTune,
     });
     try {
@@ -243,7 +244,8 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
   it('takes exactly one state prop — the view model — plus SETTING intents', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
     expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1])).toEqual([
-      'view', 'continuousHandles', 'showKeyerSpeed', 'showPitchHz', 'onBreakInMode', 'onLevelChange',
+      'view', 'continuousHandles', 'showKeyerSpeed', 'showPitchHz', 'standard',
+      'onBreakInMode', 'onLevelChange',
       'onApfOn', 'onTwinPeakToggle', 'onReversePaddleToggle', 'breakInDelayFeedback',
       'autoTuneAvailable', 'onAutoTune',
     ]);

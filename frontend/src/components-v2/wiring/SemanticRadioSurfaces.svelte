@@ -35,6 +35,7 @@
     InstrumentComposition,
     InstrumentVfoAppearance,
     PanelChrome,
+    StandardTxLayout,
   } from './instrument-composition';
   import { t } from '$lib/i18n';
   import { getFieldStatus } from '$lib/state/field-status';

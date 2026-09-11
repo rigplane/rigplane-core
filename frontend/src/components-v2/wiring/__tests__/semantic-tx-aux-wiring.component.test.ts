@@ -462,25 +462,30 @@ describe('L1 hosted desktop TX auxiliary composition', () => {
   it('places all five finite and eight scalar handles independently', () => {
     txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     renderHostedDesktop();
+    const levels = [...target.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.getAttribute('aria-label') === 'TX level settings')!;
+    levels.click();
+    flushSync();
 
     const fields = [
       'rfPower', 'micGain', 'driveGain', 'voxGain', 'antiVoxGain', 'voxDelay',
       'compressorLevel', 'monitorLevel',
     ] as const;
-    const zone = q('[data-zone-id="tx-aux"]');
+    const zone = q('[data-zone-id="rx-tx"]');
     const remainder = q('[data-testid="tx-aux-surface"]');
-    const finiteGrid = q('.tx-aux-finite-grid');
-    const grid = q('.tx-aux-scalar-grid');
+    const finiteGrid = q('.standard-tx-button-grid');
+    const grid = q('.standard-tx-levels');
     const reasons = q('[data-testid="tx-aux-tune-blocked"]');
 
-    expect(target.querySelectorAll('[data-zone-id="tx-aux"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-zone-id="tx-aux"]')).toHaveLength(0);
+    expect(target.querySelectorAll('[data-zone-id="rx-tx"]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-testid="tx-aux-surface"]')).toHaveLength(1);
     expect(zone).not.toBeNull();
-    expect(remainder?.closest('[data-zone-id="tx-aux"]')).toBe(zone);
-    expect(finiteGrid?.closest('[data-zone-id="tx-aux"]')).toBe(zone);
-    expect(grid?.closest('[data-zone-id="tx-aux"]')).toBe(zone);
-    expect(finiteGrid?.querySelectorAll(':scope > .tx-aux-finite-seat')).toHaveLength(5);
-    expect(grid?.querySelectorAll(':scope > .tx-aux-scalar-seat')).toHaveLength(8);
+    expect(remainder?.closest('[data-zone-id="rx-tx"]')).toBe(zone);
+    expect(finiteGrid?.closest('[data-zone-id="rx-tx"]')).toBe(zone);
+    expect(grid?.closest('[data-zone-id="rx-tx"]')).toBe(zone);
+    expect(finiteGrid?.querySelectorAll(':scope > .standard-tx-seat')).toHaveLength(5);
+    expect(grid?.querySelectorAll(':scope > .standard-tx-scalar-seat')).toHaveLength(8);
     expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(1);
     expect(reasons?.querySelectorAll('[data-reason]')).toHaveLength(2);
     expect(grid!.compareDocumentPosition(reasons!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -489,20 +494,20 @@ describe('L1 hosted desktop TX auxiliary composition', () => {
       ['atu', 'tx-aux-atu'], ['vox', 'tx-aux-vox'], ['compressor', 'tx-aux-compressor'],
       ['monitor', 'tx-aux-monitor'], ['atuTune', 'tx-aux-atu-tune'],
     ] as const) {
-      const seat = finiteGrid?.querySelector(`:scope > .tx-aux-finite-seat[data-field="${field}"]`);
+      const seat = finiteGrid?.querySelector(`:scope > .standard-tx-seat[data-field="${field}"]`);
       expect(seat, `${field} seat`).not.toBeNull();
       expect(seat?.querySelector(`[data-testid="${testid}"]`)).not.toBeNull();
       expect(target.querySelectorAll(`[data-testid="${testid}"]`)).toHaveLength(1);
     }
 
     for (const field of fields) {
-      const seat = grid?.querySelector(`:scope > .tx-aux-scalar-seat[data-field="${field}"]`);
+      const seat = grid?.querySelector(`:scope > .standard-tx-scalar-seat[data-field="${field}"]`);
       expect(seat, `${field} seat`).not.toBeNull();
       expect(seat?.querySelector(`[data-testid="tx-aux-${field}"]`)).not.toBeNull();
       expect(target.querySelectorAll(`[data-testid="tx-aux-${field}"]`)).toHaveLength(1);
     }
 
-    expect(remainder?.querySelector('.tx-aux-scalar-grid')).toBeNull();
+    expect(remainder?.querySelector('.standard-tx-levels')).toBeNull();
     expect(target.querySelectorAll('[data-testid="tx-aux-atu-tune"]')).toHaveLength(1);
     expect(target.querySelectorAll('.tx-aux-toggle')).toHaveLength(4);
   });
@@ -700,10 +705,13 @@ describe('selected finite TX auxiliary authority lifetime', () => {
     h.selectedFiniteAppearance = finiteAppearance;
     txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     renderHostedDesktop();
+    [...target.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.getAttribute('aria-label') === 'TX level settings')!.click();
+    flushSync();
     const reasons = q('[data-testid="tx-aux-tune-blocked"]')!;
     expect(q('[data-testid="external-TUNE"]')).not.toBeNull();
     expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(1);
-    expect(q('.tx-aux-scalar-grid')!.compareDocumentPosition(reasons)
+    expect(q('.standard-tx-levels')!.compareDocumentPosition(reasons)
       & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
