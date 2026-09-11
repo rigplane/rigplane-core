@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 const txHarness = new ManagedAppTxHarness();
-import { createRawSnippet, flushSync, mount, unmount, type Snippet } from 'svelte';
+import { createRawSnippet, flushSync, mount, tick, unmount, type Snippet } from 'svelte';
 import { readFileSync } from 'fs';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
@@ -1403,10 +1403,10 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
       ['atu', 'tx-aux-atu'], ['vox', 'tx-aux-vox'], ['compressor', 'tx-aux-compressor'],
       ['monitor', 'tx-aux-monitor'], ['atuTune', 'tx-aux-atu-tune'],
     ] as const) {
-      const seatClass = skinId === 'desktop-v2' ? 'standard-tx-seat' : 'tx-aux-finite-seat';
-      const seat = root.querySelector(
-        `.desktop-controls-right .${seatClass}[data-field="${field}"]`,
-      );
+      const seatSelector = skinId === 'desktop-v2'
+        ? `.desktop-controls-right [data-testid="standard-tx-controls"] > .standard-tx-button-grid > [data-field="${field}"]`
+        : `.desktop-controls-right .tx-aux-finite-seat[data-field="${field}"]`;
+      const seat = root.querySelector(seatSelector);
       expect(seat, `${field} finite seat`).not.toBeNull();
       expect(seat?.querySelector(`[data-testid="${testid}"]`)).not.toBeNull();
       expect(root.querySelectorAll(`[data-testid="${testid}"]`)).toHaveLength(1);
@@ -1586,7 +1586,11 @@ describe('the semantic receiver deck carries the VFO ops again (MOR-1321)', () =
     for (const op of QUICK_OPS) {
       expect(deck.querySelector(`[data-vfo-${op}]`), op).toBeNull();
     }
-    expect(deck.querySelector('[data-testid="vfo-split-digest"]')).not.toBeNull();
+    if (skinId === 'desktop-v2') {
+      expect(deck.querySelector('[data-testid="vfo-split-digest"]')).toBeNull();
+    } else {
+      expect(deck.querySelector('[data-testid="vfo-split-digest"]')).not.toBeNull();
+    }
   });
 
   // The structural gate survives the trip through the real adapter: a
@@ -2496,7 +2500,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     expect(renderAll('desktop-v2').querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
   });
 
-  it('places each Standard service panel once in its default drag owner', () => {
+  it('places each Standard service panel once and keeps TX settings in one anchored overlay', async () => {
     enableAllServiceSurfaces();
     const t = renderAll('desktop-v2');
     for (const panelId of [
@@ -2521,13 +2525,30 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     expect(t.querySelectorAll('[data-panel-id="semantic-tx-aux"]')).toHaveLength(0);
     const txPanel = t.querySelector('[data-panel-id="semantic-rx-tx"]')!;
     expect(txPanel.querySelector('[data-testid="tx-aux-surface"]')).not.toBeNull();
-    const levels = [...txPanel.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => button.getAttribute('aria-label') === 'TX level settings')!;
-    expect(levels.getAttribute('aria-expanded')).toBe('false');
-    levels.click();
-    flushSync();
-    expect(levels.getAttribute('aria-expanded')).toBe('true');
-    expect(txPanel.querySelectorAll('.standard-tx-levels')).toHaveLength(1);
+    expect(txPanel.querySelector('[aria-label="TX level settings"]')).toBeNull();
+    expect(txPanel.querySelector('.standard-tx-levels')).toBeNull();
+    const vox = txPanel.querySelector<HTMLButtonElement>('[aria-label="VOX settings"]')!;
+    const comp = txPanel.querySelector<HTMLButtonElement>('[aria-label="COMP settings"]')!;
+    expect(vox.getAttribute('aria-expanded')).toBe('false');
+    vox.click();
+    await tick();
+    expect(vox.getAttribute('aria-expanded')).toBe('true');
+    expect(txPanel.querySelectorAll('[data-testid="standard-tx-settings-popover"]')).toHaveLength(1);
+    expect(txPanel.querySelector('[data-testid="tx-aux-voxGain"]')).not.toBeNull();
+    expect(txPanel.querySelector('[data-testid="tx-aux-antiVoxGain"]')).not.toBeNull();
+    expect(txPanel.querySelector('[data-testid="tx-aux-voxDelay"]')).not.toBeNull();
+    comp.click();
+    await tick();
+    expect(vox.getAttribute('aria-expanded')).toBe('false');
+    expect(comp.getAttribute('aria-expanded')).toBe('true');
+    expect(txPanel.querySelectorAll('[data-testid="standard-tx-settings-popover"]')).toHaveLength(1);
+    expect(txPanel.querySelector('[data-testid="tx-aux-compressorLevel"]')).not.toBeNull();
+    txPanel.querySelector<HTMLElement>('[data-testid="standard-tx-settings-popover"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await tick();
+    expect(comp.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(comp);
+    expect(txPanel.querySelector('[data-testid="standard-tx-settings-popover"]')).toBeNull();
     expect(t.querySelector('.standard-bottom-dock [data-panel-id="semantic-meters"]'))
       .not.toBeNull();
   });

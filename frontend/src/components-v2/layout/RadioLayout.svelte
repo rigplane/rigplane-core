@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, untrack, type Snippet } from 'svelte';
+  import { onDestroy, onMount, tick, untrack, type Snippet } from 'svelte';
   import '../theme/index';
   import { setTheme, getTheme, setVfoTheme, getVfoTheme } from '../theme/theme-switcher';
   
@@ -32,7 +32,7 @@
   import RightSidebar from './RightSidebar.svelte';
   import VfoHeader from './VfoHeader.svelte';
   import type {
-    InstrumentComposition, PanelChrome, PanelDragOwner,
+    InstrumentComposition, PanelChrome, PanelDragOwner, StandardTxLevelAvailability,
   } from '../wiring/instrument-composition';
   import { createDragReorder } from '$lib/drag-reorder.svelte';
   import type { DspFiniteHandles } from '../../semantic/dsp-instruments';
@@ -74,7 +74,68 @@
   import { HardwareButton } from '$lib/Button';
 
   let { skinId = 'desktop-v2', instruments }: { skinId?: SkinId; instruments: InstrumentComposition } = $props();
-  let txLevelsOpen = $state(false);
+  type StandardTxSettings = 'vox' | 'compressor' | 'monitor' | 'rfPower' | 'micGain';
+  let txSettingsOpen = $state<StandardTxSettings | null>(null);
+  let txSettingsTrigger = $state<HTMLButtonElement | null>(null);
+  let txSettingsPopover = $state<HTMLDivElement | null>(null);
+  let txSettingsPosition = $state('');
+
+  function closeTxSettings(returnFocus = false): void {
+    const trigger = txSettingsTrigger;
+    txSettingsOpen = null;
+    txSettingsTrigger = null;
+    txSettingsPosition = '';
+    if (returnFocus) void tick().then(() => trigger?.focus());
+  }
+
+  function positionTxSettings(): void {
+    if (!txSettingsTrigger || !txSettingsPopover || typeof window === 'undefined') return;
+    const margin = 8;
+    const gap = 5;
+    const anchor = txSettingsTrigger.getBoundingClientRect();
+    const popover = txSettingsPopover.getBoundingClientRect();
+    const left = Math.min(window.innerWidth - margin - popover.width,
+      Math.max(margin, anchor.right - popover.width));
+    const below = anchor.bottom + gap;
+    const top = below + popover.height <= window.innerHeight - margin
+      ? below
+      : Math.max(margin, anchor.top - gap - popover.height);
+    txSettingsPosition = `left:${left}px;top:${top}px;max-height:${Math.max(80, window.innerHeight - margin * 2)}px`;
+  }
+
+  async function toggleTxSettings(id: StandardTxSettings, event: MouseEvent): Promise<void> {
+    const trigger = event.currentTarget as HTMLButtonElement;
+    if (txSettingsOpen === id) {
+      closeTxSettings(true);
+      return;
+    }
+    txSettingsOpen = id;
+    txSettingsTrigger = trigger;
+    await tick();
+    positionTxSettings();
+    txSettingsPopover?.querySelector<HTMLElement>('[role="slider"], input, button')?.focus();
+  }
+
+  function handleTxSettingsPointerDown(event: PointerEvent): void {
+    if (txSettingsOpen === null) return;
+    const target = event.target as Node | null;
+    if (target && (txSettingsPopover?.contains(target) || txSettingsTrigger?.contains(target))) return;
+    closeTxSettings(true);
+  }
+
+  function handleTxSettingsKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || txSettingsOpen === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeTxSettings(true);
+  }
+
+  onMount(() => {
+    // Element scroll events do not bubble. Capture them at the window so a
+    // disclosure remains attached while either Standard sidebar rail scrolls.
+    window.addEventListener('scroll', positionTxSettings, true);
+    return () => window.removeEventListener('scroll', positionTxSettings, true);
+  });
 
   const standardFaceAtMount = untrack(() => skinId === 'desktop-v2');
   const STANDARD_PANEL_ID_REPLACEMENTS: Readonly<Record<string, readonly string[]>> = {
@@ -394,6 +455,12 @@
   });
 </script>
 
+<svelte:window
+  onpointerdown={handleTxSettingsPointerDown}
+  onkeydown={handleTxSettingsKeydown}
+  onresize={positionTxSettings}
+/>
+
 {#snippet scopeRegion(scopeControls: Snippet | undefined, managedScope: ManagedScopeRegion | undefined)}
   <section class="content-row">
     <main class="content-center center-column">
@@ -435,30 +502,69 @@
   {@render txAuxScalars()}
 {/snippet}
 
-{#snippet standardTxLayout(finite: TxAuxFiniteHandles, scalars: TxAuxScalarHandles)}
+{#snippet standardTxLayout(
+  finite: TxAuxFiniteHandles,
+  scalars: TxAuxScalarHandles,
+  available: StandardTxLevelAvailability,
+)}
   <div class="standard-tx-controls" data-testid="standard-tx-controls">
     <div class="standard-tx-button-grid">
       <div class="standard-tx-seat" data-field="atu">{@render finite.atu()}</div>
       <div class="standard-tx-seat" data-field="atuTune">{@render finite.atuTune()}</div>
-      <div class="standard-tx-seat" data-field="vox">{@render finite.vox()}</div>
-      <div class="standard-tx-seat" data-field="compressor">{@render finite.compressor()}</div>
-      <div class="standard-tx-seat" data-field="monitor">{@render finite.monitor()}</div>
-      <HardwareButton indicator="edge-left" color="gray" active={txLevelsOpen}
-        ariaLabel="TX level settings" ariaExpanded={txLevelsOpen}
-        ariaControls="standard-tx-levels"
-        onclick={() => (txLevelsOpen = !txLevelsOpen)}
-      >LEVELS {txLevelsOpen ? '▴' : '▾'}</HardwareButton>
+      <div class="standard-tx-compound" data-field="vox">
+        <div class="standard-tx-seat">{@render finite.vox()}</div>
+        {#if available.voxGain || available.antiVoxGain || available.voxDelay}
+          <button type="button" class="standard-tx-settings-trigger" aria-label="VOX settings"
+            aria-haspopup="dialog" aria-expanded={txSettingsOpen === 'vox'}
+            aria-controls="standard-tx-settings" onclick={(event) => toggleTxSettings('vox', event)}>▾</button>
+        {/if}
+      </div>
+      <div class="standard-tx-compound" data-field="compressor">
+        <div class="standard-tx-seat">{@render finite.compressor()}</div>
+        {#if available.compressorLevel}
+          <button type="button" class="standard-tx-settings-trigger" aria-label="COMP settings"
+            aria-haspopup="dialog" aria-expanded={txSettingsOpen === 'compressor'}
+            aria-controls="standard-tx-settings" onclick={(event) => toggleTxSettings('compressor', event)}>▾</button>
+        {/if}
+      </div>
+      <div class="standard-tx-compound" data-field="monitor">
+        <div class="standard-tx-seat">{@render finite.monitor()}</div>
+        {#if available.monitorLevel}
+          <button type="button" class="standard-tx-settings-trigger" aria-label="MON settings"
+            aria-haspopup="dialog" aria-expanded={txSettingsOpen === 'monitor'}
+            aria-controls="standard-tx-settings" onclick={(event) => toggleTxSettings('monitor', event)}>▾</button>
+        {/if}
+      </div>
+      {#if available.rfPower || available.driveGain}
+        <button type="button" class="standard-tx-disclosure" aria-label="RF POWER settings"
+          aria-haspopup="dialog" aria-expanded={txSettingsOpen === 'rfPower'}
+          aria-controls="standard-tx-settings" onclick={(event) => toggleTxSettings('rfPower', event)}>RF POWER ▾</button>
+      {/if}
+      {#if available.micGain}
+        <button type="button" class="standard-tx-disclosure" aria-label="MIC GAIN settings"
+          aria-haspopup="dialog" aria-expanded={txSettingsOpen === 'micGain'}
+          aria-controls="standard-tx-settings" onclick={(event) => toggleTxSettings('micGain', event)}>MIC GAIN ▾</button>
+      {/if}
     </div>
-    {#if txLevelsOpen}
-      <div class="standard-tx-levels" id="standard-tx-levels" role="group" aria-label="TX levels">
-        <div class="standard-tx-scalar-seat" data-field="rfPower">{@render scalars.rfPower({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
-        <div class="standard-tx-scalar-seat" data-field="micGain">{@render scalars.micGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
-        <div class="standard-tx-scalar-seat" data-field="driveGain">{@render scalars.driveGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
-        <div class="standard-tx-scalar-seat" data-field="voxGain">{@render scalars.voxGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
-        <div class="standard-tx-scalar-seat" data-field="antiVoxGain">{@render scalars.antiVoxGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
-        <div class="standard-tx-scalar-seat" data-field="voxDelay">{@render scalars.voxDelay({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
-        <div class="standard-tx-scalar-seat" data-field="compressorLevel">{@render scalars.compressorLevel({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
-        <div class="standard-tx-scalar-seat" data-field="monitorLevel">{@render scalars.monitorLevel({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+    {#if txSettingsOpen}
+      <div class="standard-tx-settings-popover" id="standard-tx-settings"
+        data-testid="standard-tx-settings-popover" data-settings={txSettingsOpen}
+        role="dialog" aria-label={`${txSettingsOpen} settings`} tabindex="-1"
+        bind:this={txSettingsPopover} style={txSettingsPosition}>
+        {#if txSettingsOpen === 'vox'}
+          {#if available.voxGain}<div class="standard-tx-scalar-seat" data-field="voxGain">{@render scalars.voxGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>{/if}
+          {#if available.antiVoxGain}<div class="standard-tx-scalar-seat" data-field="antiVoxGain">{@render scalars.antiVoxGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>{/if}
+          {#if available.voxDelay}<div class="standard-tx-scalar-seat" data-field="voxDelay">{@render scalars.voxDelay({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>{/if}
+        {:else if txSettingsOpen === 'compressor' && available.compressorLevel}
+          <div class="standard-tx-scalar-seat" data-field="compressorLevel">{@render scalars.compressorLevel({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        {:else if txSettingsOpen === 'monitor' && available.monitorLevel}
+          <div class="standard-tx-scalar-seat" data-field="monitorLevel">{@render scalars.monitorLevel({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        {:else if txSettingsOpen === 'rfPower'}
+          {#if available.rfPower}<div class="standard-tx-scalar-seat" data-field="rfPower">{@render scalars.rfPower({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>{/if}
+          {#if available.driveGain}<div class="standard-tx-scalar-seat" data-field="driveGain">{@render scalars.driveGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>{/if}
+        {:else if txSettingsOpen === 'micGain' && available.micGain}
+          <div class="standard-tx-scalar-seat" data-field="micGain">{@render scalars.micGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -1074,12 +1180,54 @@
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
   }
   .standard-tx-seat { display: contents; }
-  .standard-tx-levels {
-    display: flex; flex-direction: column; gap: 6px; padding: 6px;
-    border: 1px solid var(--v2-border-subtle, rgba(255,255,255,.12)); border-radius: 3px;
+  .standard-tx-compound {
+    display: grid; grid-template-columns: minmax(0, 1fr) 28px; min-width: 0;
+  }
+  .standard-tx-settings-trigger,
+  .standard-tx-disclosure {
+    min-width: 0; min-height: 30px;
+    border: 1px solid var(--v2-border-subtle, rgba(255,255,255,.18));
+    border-radius: 3px; color: var(--v2-text-primary, #e7eef7);
+    background: var(--v2-bg-raised, #202932); font: inherit; font-weight: 700;
+    cursor: pointer;
+  }
+  .standard-tx-settings-trigger {
+    border-inline-start: 0; border-start-start-radius: 0; border-end-start-radius: 0;
+  }
+  .standard-tx-disclosure { padding: 0 8px; }
+  .standard-tx-settings-trigger:hover,
+  .standard-tx-disclosure:hover,
+  .standard-tx-settings-trigger[aria-expanded='true'],
+  .standard-tx-disclosure[aria-expanded='true'] {
+    border-color: var(--v2-accent, #4af); color: var(--v2-accent, #4af);
+  }
+  .standard-tx-settings-trigger:focus-visible,
+  .standard-tx-disclosure:focus-visible {
+    outline: 2px solid var(--v2-accent, #4af); outline-offset: 1px;
+  }
+  .standard-tx-settings-popover {
+    position: fixed; z-index: 1200; box-sizing: border-box;
+    display: flex; flex-direction: column; gap: 8px;
+    width: min(360px, calc(100vw - 16px)); padding: 10px; overflow: auto;
+    border: 1px solid var(--v2-accent, #4af); border-radius: 4px;
+    background: var(--v2-bg-panel, #111820); box-shadow: 0 10px 28px rgba(0,0,0,.55);
   }
   .standard-tx-scalar-seat { min-width: 0; }
   .standard-tx-scalar-seat :global(.vc-hbar) { width: 100%; min-width: 0; }
+  /* Stable Standard RX/TX composition: reserve the larger TX meter footprint.
+     Individual readings remain absent while irrelevant; only the shell is sized. */
+  .standard-bottom-dock :global([data-panel-id='semantic-meters']) { height: 160px; }
+  .standard-bottom-dock :global([data-panel-id='semantic-meters'] .collapsible-content) {
+    min-height: 0; overflow: hidden;
+  }
+  /* Routine authority explanations remain in the key's accessible description,
+     without growing the Standard panel during an already-active TX session. */
+  .desktop-control-face.standard-face :global(.rx-tx-blocked [data-reason='tx-busy']),
+  .desktop-control-face.standard-face :global(.rx-tx-blocked [data-reason='radio-transmitting']),
+  .desktop-control-face.standard-face :global([data-testid='tx-aux-tune-blocked'] [data-reason='tx-busy']),
+  .desktop-control-face.standard-face :global([data-testid='tx-aux-tune-blocked'] [data-reason='radio-transmitting']) {
+    display: none;
+  }
   .dsp-finite-grid {
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
   }
@@ -1256,6 +1404,7 @@
   }
 
   @media (max-width: 1024px) {
+    .standard-bottom-dock :global([data-panel-id='semantic-meters']) { height: 260px; }
     .radio-layout {
       grid-template-rows: 28px auto minmax(0, auto) auto auto;
     }

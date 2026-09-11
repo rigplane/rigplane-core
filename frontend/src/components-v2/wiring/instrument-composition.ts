@@ -1,6 +1,6 @@
 import type { Snippet } from 'svelte';
 import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
-import type { TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
+import type { TxAuxLevelField, TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
 import type { TxAuxFiniteHandles } from '../../semantic/tx-aux-finite';
 import type { ReceiverInstrumentHandles } from '../../semantic/ReceiverInstrumentHost.svelte';
 import type {
@@ -23,7 +23,10 @@ import type { RitXitScanInstrumentHandles } from '../../semantic/RitXitScanInstr
 import type { RitXitScanSurfacePart } from '../../semantic/RitXitScanSurface.svelte';
 
 export type InstrumentVfoAppearance = 'semantic' | 'sdr' | 'standard';
-export type StandardTxLayout = Snippet<[TxAuxFiniteHandles, TxAuxScalarHandles]>;
+export type StandardTxLevelAvailability = Readonly<Record<TxAuxLevelField, boolean>>;
+export type StandardTxLayout = Snippet<[
+  TxAuxFiniteHandles, TxAuxScalarHandles, StandardTxLevelAvailability,
+]>;
 
 export interface PanelChrome {
   readonly panelId: string;
