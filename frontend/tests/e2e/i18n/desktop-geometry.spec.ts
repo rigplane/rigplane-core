@@ -89,6 +89,7 @@ function fixture(known: boolean) {
 
 interface BootOptions {
   height?: number;
+  expectedMobile?: boolean;
   theme?: 'nord' | 'github-light';
   locale?: 'en-US' | 'ru-RU';
   extraCapabilities?: string[];
@@ -193,12 +194,44 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
   const qaLayout = options.qaLayout;
   await page.goto(`/?locale=${locale}${qaLayout ? `&layout=${qaLayout}` : ''}`, { waitUntil: 'networkidle' });
   const shell = qaLayout ? '[data-testid="flagship-geometry-probe"]'
-    : width <= 640 ? '.m-layout, .m-landscape'
+    : (options.expectedMobile ?? width < 640) ? '.m-layout, .m-landscape'
     : layout.startsWith('lcd') ? '.lcd-layout' : '.desktop-control-face';
   await expect(page.locator(shell).first()).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
   return state;
 }
+
+test.describe('startup viewport classification', () => {
+  for (const width of [1024, 1136, 1280, 1440, 1920]) {
+    test(`Standard cold-boots on a ${width}×600 desktop viewport`, async ({ page }) => {
+      await boot(page, 'standard', width, true, 'studioline', false, undefined, { height: 600 });
+      await expect(page.locator('.desktop-control-face.standard-face')).toBeVisible();
+      await expect(page.locator('.m-layout, .m-landscape')).toHaveCount(0);
+      await page.setViewportSize({ width, height: 900 });
+      await page.setViewportSize({ width, height: 450 });
+      await expect(page.locator('.desktop-control-face.standard-face')).toBeVisible();
+      await expect(page.locator('.m-layout, .m-landscape')).toHaveCount(0);
+    });
+  }
+
+  test('touch phone keeps mobile portrait and landscape across cold entry and rotation', async ({ browser }) => {
+    const context = await browser.newContext({ hasTouch: true, isMobile: true });
+    const page = await context.newPage();
+    try {
+      await boot(page, 'standard', 390, true, 'studioline', false, undefined,
+        { height: 844, expectedMobile: true });
+      await expect(page.locator('.m-layout')).toBeVisible();
+      await page.setViewportSize({ width: 844, height: 390 });
+      await expect(page.locator('.m-landscape')).toBeVisible();
+      await page.reload();
+      await expect(page.locator('.m-landscape')).toBeVisible();
+      await page.setViewportSize({ width: 1024, height: 600 });
+      await expect(page.locator('.desktop-control-face.standard-face')).toBeVisible();
+    } finally {
+      await context.close();
+    }
+  });
+});
 
 async function focusWithoutActivation(page: Page, control: Locator) {
   // Focusing a disabled last button would leave focus on Unkey; re-focusing

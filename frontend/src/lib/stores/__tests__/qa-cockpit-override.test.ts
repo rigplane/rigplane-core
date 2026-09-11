@@ -62,27 +62,26 @@ describe('readQaCockpitLayoutOverride (MOR-1257)', () => {
     });
   });
 
-  // MOR-1257 D2 (independent verification, F2 mitigation) — below the same
-  // 640px minimum dimension App.svelte uses to classify the viewport as
-  // mobile, `resolveSkinId`'s mobile short-circuit suppresses the override
-  // with no signal at all. This does not change that precedence (still an
-  // owner-escalated question, not decided here) — it only makes the no-op
-  // self-explaining.
   describe('mobile-suppression warning (MOR-1257 D2)', () => {
     let warnSpy: ReturnType<typeof vi.spyOn>;
     let originalWidth: number;
     let originalHeight: number;
+    let originalTouchPoints: PropertyDescriptor | undefined;
 
     beforeEach(() => {
       warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       originalWidth = window.innerWidth;
       originalHeight = window.innerHeight;
+      originalTouchPoints = Object.getOwnPropertyDescriptor(navigator, 'maxTouchPoints');
+      Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 0 });
     });
 
     afterEach(() => {
       warnSpy.mockRestore();
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth });
       Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalHeight });
+      if (originalTouchPoints) Object.defineProperty(navigator, 'maxTouchPoints', originalTouchPoints);
+      else Reflect.deleteProperty(navigator, 'maxTouchPoints');
     });
 
     it('warns once when the param matches but the viewport is under 640px', () => {
@@ -93,7 +92,7 @@ describe('readQaCockpitLayoutOverride (MOR-1257)', () => {
 
       expect(warnSpy).toHaveBeenCalledTimes(1);
       expect(warnSpy.mock.calls[0][0]).toMatch(/dual-receiver-cockpit/);
-      expect(warnSpy.mock.calls[0][0]).toMatch(/640/);
+      expect(warnSpy.mock.calls[0][0]).toMatch(/mobile/);
     });
 
     it('does not warn when the param matches and the viewport is desktop-sized', () => {
@@ -103,6 +102,21 @@ describe('readQaCockpitLayoutOverride (MOR-1257)', () => {
       expect(readQaCockpitLayoutOverride('?layout=dual-receiver-cockpit')).toBe('dual-receiver-cockpit');
 
       expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [1136, 600, 0, false],
+      [1440, 450, 0, false],
+      [1024, 600, 5, false],
+      [844, 390, 5, true],
+      [844, 500, 5, false],
+      [639, 900, 0, true],
+    ])('classifies %ix%i with %i touch points consistently', (width, height, touchPoints, mobile) => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: height });
+      Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: touchPoints });
+      expect(readQaCockpitLayoutOverride('?layout=flagship-probe')).toBe('flagship-probe');
+      expect(warnSpy).toHaveBeenCalledTimes(mobile ? 1 : 0);
     });
 
     it('does not warn when the param is absent, regardless of viewport size', () => {
