@@ -700,21 +700,22 @@
         ? t('core.vfo.select.pendingReason')
         : undefined}
     {@const absoluteReasonId = reasonId('select-absolute', absoluteReason)}
-    <div class="vfo-identity-selectors" data-testid="vfo-identity-selectors">
+    <div class="vfo-identity-selectors" class:standard-vfo-selectors={appearance === 'standard'}
+      data-testid="vfo-identity-selectors">
       <button
         type="button" class="vfo-select" data-vfo-select-absolute="A"
         title={absoluteReason ?? relativeSelectionHelp} aria-label="Select VFO A"
         aria-describedby={absoluteReasonId}
         disabled={disabled || relativeSelectionPending}
         onclick={() => selectAbsoluteSlot('A')}
-      >Select VFO A</button>
+      >{appearance === 'standard' ? 'SELECT A' : 'Select VFO A'}</button>
       <button
         type="button" class="vfo-select" data-vfo-select-absolute="B"
         title={absoluteReason ?? relativeSelectionHelp} aria-label="Select VFO B"
         aria-describedby={absoluteReasonId}
         disabled={disabled || relativeSelectionPending}
         onclick={() => selectAbsoluteSlot('B')}
-      >Select VFO B</button>
+      >{appearance === 'standard' ? 'SELECT B' : 'Select VFO B'}</button>
       {#if absoluteReason !== undefined}
         <span id={absoluteReasonId} class="sr-only">{absoluteReason}</span>
       {/if}

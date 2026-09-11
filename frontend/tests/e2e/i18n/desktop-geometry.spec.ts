@@ -197,6 +197,7 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
     : layout.startsWith('lcd') ? '.lcd-layout' : '.desktop-control-face';
   await expect(page.locator(shell).first()).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
+  return state;
 }
 
 async function focusWithoutActivation(page: Page, control: Locator) {
@@ -856,6 +857,48 @@ for (const layout of ['standard', 'sdr-test']) for (const language of ['studioli
       }
     }
     expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] }).geometryCommands.filter(c => c.type === 'cmd'))).toEqual([]);
+  });
+}
+
+for (const width of [1024, 1440]) {
+  test(`Standard keeps panorama fixed when A/B identity becomes unknown and recovers at ${width}px`, async ({ page }) => {
+    const initial = await boot(page, 'standard', width, true, 'studioline', false, undefined,
+      { absoluteVfoPair: true });
+    const deck = page.locator('.standard-face [data-zone-id="receiver-deck"]');
+    const measure = () => deck.evaluate(element => element.getBoundingClientRect().toJSON());
+    await expect(page.locator('[data-standard-select-vfo="A"]')).toBeVisible();
+    const knownBounds = await measure();
+    // Change observation provenance only; preserve capabilities and every raw value.
+    for (const [index, identity] of ['unknown', 'known', 'full-unknown', 'known'].entries()) {
+      const state = structuredClone(initial);
+      Object.assign(state, { revision: index + 2, stateRevision: index + 2,
+        freshnessRevision: index + 2, observationSeq: index + 2 });
+      if (identity !== 'known') {
+        for (const [path, field] of Object.entries(state.fieldStatus!)) {
+          if (path !== 'main.activeSlot' && (identity !== 'full-unknown'
+            || !/^(?:main\.(?:vfoA|vfoB|freqHz|mode|filter)|split|rit|txAntenna|tunerStatus)/.test(path))) continue;
+          Object.assign(field, { observed: false, freshness: 'unknown', availability: 'missing' });
+        }
+        if (identity === 'full-unknown') state.txTarget = { status: 'unknown', reason: 'not-observed' };
+      }
+      await page.evaluate(state => window.dispatchEvent(new CustomEvent('geometry-state', { detail: state })), state);
+      const selectors = page.locator(identity !== 'known'
+        ? '[data-vfo-select-absolute]' : '[data-standard-select-vfo]');
+      await expect(selectors).toHaveCount(2);
+      if (identity !== 'known') {
+        await expect(page.getByRole('button', { name: 'Select VFO A', exact: true })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Select VFO B', exact: true })).toBeVisible();
+      }
+      const buttons = await selectors.evaluateAll(elements => elements.map(element => {
+        const box = element.getBoundingClientRect();
+        return { y: box.y, height: box.height, fits: element.scrollWidth <= element.clientWidth };
+      }));
+      expect(buttons[0].y).toBe(buttons[1].y);
+      expect(buttons.every(button => button.height >= 28 && button.fits)).toBe(true);
+      expect(await measure()).toEqual(knownBounds);
+    }
+    expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
+      .geometryCommands.filter(command => command.type === 'cmd'))).toEqual([]);
   });
 }
 
