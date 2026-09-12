@@ -2,7 +2,7 @@
  * MOR-2037 meter conformance contract (not itself a test file — see
  * `meter-contract.test.ts` for the suite this drives).
  *
- * `components-v2/meters/` has exactly two prop shapes today for how a meter
+ * `components-v2/meters/` has three prop shapes today for how a meter
  * component may receive a value that originates in a calibrated meter
  * domain (per-rig curves over engineering units —
  * `docs/architecture/level-meter-calibrated-domain.md`):
@@ -31,9 +31,13 @@
  *    never displayed text. It must render that string verbatim and derive
  *    no calibration-domain text of its own — the calibration already
  *    happened upstream, in whatever wiring built its props.
+ *  - 'profile-normalized-preformatted': the component receives the same
+ *    already-formatted text plus a profile-normalized 0-1 pointer fraction.
+ *    Unlike the compact bar, it may also render fixed multi-scale artwork;
+ *    the live reading is still never derived from the fraction.
  *
  * `METER_REGISTRY` is the exhaustive list of `.svelte` files directly under
- * `components-v2/meters/` and which of the two domains each one
+ * `components-v2/meters/` and which of the three domains each one
  * implements. `meter-contract.test.ts`'s census check re-derives the real
  * directory listing and fails if a `.svelte` file exists with no entry
  * here (a new meter added without registering) or an entry here names a
@@ -49,7 +53,10 @@
  * silently skip registering" guarantee for a fraction of the machinery.
  */
 
-export type MeterValueDomain = 'calibrated-db-rel-s9' | 'preformatted';
+export type MeterValueDomain =
+  | 'calibrated-db-rel-s9'
+  | 'preformatted'
+  | 'profile-normalized-preformatted';
 
 // Not exported: nothing outside this file needs the element type by name —
 // `METER_REGISTRY`'s own declared type below is enough for consumers that
@@ -63,5 +70,6 @@ interface MeterRegistration {
 
 export const METER_REGISTRY: readonly MeterRegistration[] = [
   { file: 'BarGauge.svelte', domain: 'preformatted' },
+  { file: 'IcomTouchNeedleMeter.svelte', domain: 'profile-normalized-preformatted' },
   { file: 'LinearSMeter.svelte', domain: 'calibrated-db-rel-s9' },
 ];

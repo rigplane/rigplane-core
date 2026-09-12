@@ -117,6 +117,7 @@ import type { Capabilities, MeterCalPoint } from '$lib/types/capabilities';
 import { setCapabilities, clearCapabilities } from '$lib/stores/capabilities.svelte';
 import { calibratedToSUnit, calibratedToDbm, formatDbm } from '../smeter-scale';
 import BarGauge from '../BarGauge.svelte';
+import IcomTouchNeedleMeter from '../IcomTouchNeedleMeter.svelte';
 import LinearSMeter from '../LinearSMeter.svelte';
 import { METER_REGISTRY, type MeterValueDomain } from './meter-contract';
 
@@ -127,6 +128,7 @@ const METERS_DIR = join(__dirname, '..');
  *  below, rather than assumed. */
 const COMPONENTS: Record<string, unknown> = {
   'BarGauge.svelte': BarGauge,
+  'IcomTouchNeedleMeter.svelte': IcomTouchNeedleMeter,
   'LinearSMeter.svelte': LinearSMeter,
 };
 
@@ -323,6 +325,25 @@ describe.each(byDomain('preformatted'))(
       (value) => {
         const text = renderMeter(file, { value, label: LABEL, displayValue: MARKER }).textContent;
         expect(text).toBe(`${LABEL}${MARKER}`);
+      },
+    );
+  },
+);
+
+// A multi-scale face necessarily carries static numbers and legends, so its
+// entire textContent cannot equal the live value. Pin the named live-value
+// seam instead: the marker must pass through verbatim at every pointer
+// position, and no position may manufacture another live output node.
+describe.each(byDomain('profile-normalized-preformatted'))(
+  "'$file': profile-normalized preformatted domain conformance",
+  ({ file }) => {
+    it.each([0, 0.25, 0.6, 1])(
+      'renders the one preformatted live value verbatim for value=%s',
+      (value) => {
+        const root = renderMeter(file, { value, label: LABEL, displayValue: MARKER });
+        const outputs = root.querySelectorAll('[data-meter-display-value]');
+        expect(outputs).toHaveLength(1);
+        expect(outputs[0]?.textContent).toBe(MARKER);
       },
     );
   },

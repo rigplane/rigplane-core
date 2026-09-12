@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "complexity": "compound",
+  "source": {
+    "file": "/var/folders/gt/c_czgx6x5bxc1sb3ntph9mgr0000gn/T/codex-clipboard-9ae12bbf-60c3-439d-9bc0-41d56e3f2220.png",
+    "sha256": "a2ef93da070e56f051d9674045b3de49420cbddc5fc4a0b932149f23f89d36c8",
+    "width": 1734,
+    "height": 1000,
+    "panelCrop": {"x": 0, "y": 0, "width": 1, "height": 1}
+  },
+  "selectedRegion": "main-multiscale-needle-meter",
+  "regions": [
+    {
+      "id": "left-control-column",
+      "kind": "radio-control",
+      "status": "identified",
+      "confidence": "probable",
+      "label": "ANT 1 / P.AMP 2 / ATT OFF / IP+ OFF / AGC FAST / VOX OFF / COMP OFF WIDE",
+      "group": "main-receiver-controls",
+      "bounds": {"x": 0.0115, "y": 0.022, "width": 0.1038, "height": 0.855},
+      "renderer": "html-css",
+      "evidence": ["stacked labelled touchscreen cells are visible; no physical travel or detents are shown"]
+    },
+    {
+      "id": "main-multiscale-needle-meter",
+      "kind": "scalar-meter",
+      "status": "identified",
+      "confidence": "confirmed",
+      "label": "MET Po / S / Po / SWR / COMP / ALC / Id / Vd",
+      "group": "main-receiver-glass",
+      "bounds": {"x": 0.1355, "y": 0.065, "width": 0.3691, "height": 0.24},
+      "renderer": "svg",
+      "evidence": ["four curved calibrated scales and one radial needle are visible", "selected crop is 640 by 240 pixels"]
+    },
+    {
+      "id": "sub-multiscale-needle-meter",
+      "kind": "scalar-meter",
+      "status": "identified",
+      "confidence": "confirmed",
+      "label": "MET Po / S / Po / SWR / COMP / ALC / Id / Vd",
+      "group": "sub-receiver-glass",
+      "bounds": {"x": 0.5998, "y": 0.065, "width": 0.3818, "height": 0.24},
+      "renderer": "svg",
+      "repeatedFrom": "main-multiscale-needle-meter",
+      "evidence": ["the right receiver repeats the same curved scale and needle family with different data"]
+    },
+    {
+      "id": "main-frequency-readout",
+      "kind": "numeric-readout",
+      "status": "identified",
+      "confidence": "confirmed",
+      "label": "VFO LSB FIL2 / 7.070.000",
+      "group": "main-receiver-glass",
+      "bounds": {"x": 0.1269, "y": 0.311, "width": 0.4302, "height": 0.211},
+      "renderer": "html-css",
+      "evidence": ["large literal frequency and adjacent mode/filter labels are visible"]
+    },
+    {
+      "id": "sub-frequency-readout",
+      "kind": "numeric-readout",
+      "status": "identified",
+      "confidence": "confirmed",
+      "label": "VFO CW FIL2 / 14.025.000",
+      "group": "sub-receiver-glass",
+      "bounds": {"x": 0.5594, "y": 0.311, "width": 0.4141, "height": 0.211},
+      "renderer": "html-css",
+      "evidence": ["large literal frequency and adjacent mode/filter labels are visible"]
+    },
+    {
+      "id": "dual-watch-indicator",
+      "kind": "discrete-state",
+      "status": "identified",
+      "confidence": "probable",
+      "label": "DUAL-W",
+      "group": "receiver-relationship",
+      "bounds": {"x": 0.5104, "y": 0.256, "width": 0.1061, "height": 0.045},
+      "renderer": "html-css",
+      "evidence": ["green DUAL-W status cell is centered between receiver clusters"]
+    },
+    {
+      "id": "scope-status-strip",
+      "kind": "radio-control",
+      "status": "identified",
+      "confidence": "probable",
+      "label": "M S D HOLD / SPECTRUM SCOPE / FIX / MAIN / Grid / 25k/10dB",
+      "group": "scope-controls-and-state",
+      "bounds": {"x": 0.1275, "y": 0.526, "width": 0.8466, "height": 0.039},
+      "renderer": "html-css",
+      "evidence": ["one compact labelled strip sits immediately above both scope panes"]
+    },
+    {
+      "id": "main-spectrum-waterfall",
+      "kind": "trace",
+      "status": "identified",
+      "confidence": "confirmed",
+      "label": "7.000-7.200 spectrum and waterfall",
+      "group": "main-receiver-scope",
+      "bounds": {"x": 0.1326, "y": 0.568, "width": 0.4152, "height": 0.319},
+      "renderer": "canvas",
+      "evidence": ["changing white spectrum trace and blue waterfall pixels are visible"]
+    },
+    {
+      "id": "sub-spectrum-waterfall",
+      "kind": "trace",
+      "status": "identified",
+      "confidence": "confirmed",
+      "label": "14.000-14.350 spectrum and waterfall",
+      "group": "sub-receiver-scope",
+      "bounds": {"x": 0.5588, "y": 0.568, "width": 0.406, "height": 0.319},
+      "renderer": "canvas",
+      "evidence": ["changing white spectrum trace and blue waterfall pixels are visible"]
+    },
+    {
+      "id": "bottom-softkey-row",
+      "kind": "radio-control",
+      "status": "identified",
+      "confidence": "probable",
+      "label": "<MENU1> / EDGE / HOLD / CENT/FIX / MAIN/SUB / DUAL / EXPD/SET",
+      "group": "scope-controls",
+      "bounds": {"x": 0.0115, "y": 0.895, "width": 0.977, "height": 0.071},
+      "renderer": "html-css",
+      "evidence": ["seven bordered touchscreen softkey cells form the bottom row"]
+    },
+    {
+      "id": "clock-cluster",
+      "kind": "unidentified",
+      "status": "unidentified",
+      "confidence": "ambiguous",
+      "label": "10:10 30 / UTC 1:10",
+      "group": "global-status",
+      "bounds": {"x": 0.5052, "y": 0.016, "width": 0.1125, "height": 0.074},
+      "renderer": "unknown",
+      "evidence": ["two time-like readouts are visible; their precise source and secondary meaning are not established by the image"]
+    }
+  ]
+}

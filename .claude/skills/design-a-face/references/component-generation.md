@@ -5,6 +5,12 @@ face, instrument, or radio control. It extends the analysis phases in
 `../SKILL.md`; it does not replace them. The field map, measured geometry,
 backed/unbacked/unshown lists, and owner decisions are inputs to this workflow.
 
+When an image reference is the source, also read `visual-reconstruction.md` in
+full. Do not begin code until `validate-face-map.py validate <map>` passes. For
+a `compound` reference, implement only its `selectedRegion` in this pass. A
+whole-face component, even one with good semantic tests, is not an acceptable
+first-pass substitute for a visually verified instrument crop.
+
 ## Build boundary
 
 Generate radio-specific components, not a screenshot-shaped demo.
