@@ -4,6 +4,22 @@ Measures latency and throughput of:
 - Audio codec operations (ulaw decode, PCM16 encode)
 - Frame building and serialization
 - End-to-end relay loop processing
+
+The measuring tests here are marked ``benchmark`` and so deselected from the
+default suite: they compare wall-clock measurements against fixed thresholds
+that idle hardware clears many times over -- the narrowest,
+``TestAudioCodecPerformance.test_frame_encode_throughput``, by about eight
+times -- or assert nothing at all and exist to print a number. Either way
+they are measurements rather than gates: a slowdown small enough to matter
+passes, while a busy host fails.
+``TestAudioStreamingEndToEnd.test_client_queue_saturation`` is deliberately
+NOT marked and stays in the default suite: it counts ``QueueFull``
+rejections against a bounded queue, a behaviour that does not depend on how
+fast the host is, so none of the reasoning above reaches it. Run the marked
+ones deliberately with ``uv run pytest -m benchmark tests/ -s`` and read the
+printed numbers. Tightening a threshold here means revisiting the marker, because a threshold
+tight enough to catch a regression is also tight enough to catch a busy
+neighbour.
 """
 
 from __future__ import annotations
@@ -25,6 +41,7 @@ from rigplane.web.protocol import (
 )
 
 
+@pytest.mark.benchmark
 class TestAudioCodecPerformance:
     """Profile audio codec operations."""
 
@@ -52,13 +69,15 @@ class TestAudioCodecPerformance:
         )
         assert p50 < 1000, "ulaw decode should be <1ms"
 
-    @pytest.mark.slow
     def test_ulaw_decode_throughput(self) -> None:
         """Measure ulaw decode throughput (samples/sec).
 
-        Marked ``slow`` so the default test run skips it — GitHub Actions
-        runner allocation is variable enough that the throughput floor
-        flakes on slow nodes. Run ``pytest -m slow`` locally to benchmark.
+        Was marked ``slow`` for a reason that was never about duration —
+        "runner allocation is variable enough that the throughput floor
+        flakes on slow nodes" — which is the ``benchmark`` rationale in the
+        module docstring, reached before that marker existed. It carries
+        ``benchmark`` from the class now, so one marker covers the whole
+        shape and ``slow`` goes back to meaning long-running.
         """
         # 20ms audio @ 16kHz = 320 samples = 320 bytes ulaw
         ulaw_frame = bytes([0x80] * 320)
@@ -135,6 +154,7 @@ class TestAudioCodecPerformance:
         assert throughput > 1e6, "Should encode >1M frames/sec"
 
 
+@pytest.mark.benchmark
 class TestAudioBroadcasterPerformance:
     """Profile AudioBroadcaster relay loop processing."""
 
@@ -232,6 +252,7 @@ class TestAudioBroadcasterPerformance:
 class TestAudioStreamingEndToEnd:
     """End-to-end latency measurements."""
 
+    @pytest.mark.benchmark
     def test_full_pipeline_latency(self) -> None:
         """Measure full pipeline: decode → encode → frame."""
         ulaw_frame = bytes([0x80] * 160)
@@ -260,6 +281,7 @@ class TestAudioStreamingEndToEnd:
         )
         assert p50 < 2000, "Full pipeline should be <2ms"
 
+    @pytest.mark.benchmark
     def test_frame_size_impact(self) -> None:
         """Measure impact of different frame sizes."""
         sizes = [160, 320, 640, 1280]  # 8kHz/16kHz/stereo variations
