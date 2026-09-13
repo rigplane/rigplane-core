@@ -10,11 +10,16 @@ never touch real hardware.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from rigplane.backends.yaesu_cat.transport import CatCommandRejected, CatTimeoutError
+from rigplane.backends.yaesu_cat.transport import (
+    CatCommandRejected,
+    CatTimeoutError,
+    CatTransportError,
+)
 from rigplane.core.radio_protocol import Radio
 from rigplane.core.radio_state import RadioState
 from rigplane.core.tx_observation import TxStateReading
@@ -542,3 +547,115 @@ async def test_tx_ptt_readback_falls_back_to_the_mirror_when_transmit_state_read
         ptt.evidence["ptt_read_unavailable"]
         == "radio does not implement TransmitStateReadable"
     )
+
+
+# ---------------------------------------------------------------------------
+# MOR-1951 — backend-agnostic teardown containment. ``CatTransportError`` is a
+# plain ``Exception`` outside ``_RESTORE_ERRORS``: raised by the OFF write
+# itself, it used to escape the teardown ``finally``, skip the power restore,
+# and die in the run-loop backstop, discarding the check's evidence. The
+# managed-path counterpart lives in tests/test_validation_hardware_tx.py.
+# ---------------------------------------------------------------------------
+
+
+async def test_unkey_transport_error_still_restores_power_and_fails_uncleanly():
+    """An OFF that dies on the wire must not skip the power restore, must be
+    legible in the evidence, and must never read as a clean PASS."""
+    radio, power = _tx_radio(start_power=200)
+    prompter, _ = _confirm_prompter(True)
+    state = radio.radio_state
+
+    async def _off_dies_on_wire(on: bool) -> None:
+        if on:
+            state.ptt = True
+            return
+        raise CatTransportError("write OFF failed: device not connected")
+
+    radio.set_ptt = AsyncMock(side_effect=_off_dies_on_wire)
+
+    levels = await _run(radio, safety=_FULL_SAFETY, tx_actuate=True, prompter=prompter)
+    ptt = _flatten(levels)["tx.ptt"]
+
+    assert ptt.status is CheckStatus.FAIL
+    assert ptt.evidence["keyed"] is True
+    assert ptt.evidence["unkeyed"] is False
+    assert "device not connected" in str(ptt.evidence["unkey_error"])
+    assert ptt.evidence["power_restored"] is True
+    assert power["value"] == 200  # restore ran despite the failed unkey
+    assert radio.set_rf_power.call_args_list[-1].args[0] == 200
+    # The verdict names the uncertain unkey instead of a generic failure.
+    assert "may still be keyed" in str(ptt.error)
+
+
+async def test_key_transport_error_keeps_teardown_evidence_on_the_result():
+    """A transport error from the KEY must land in the check's evidence (with
+    the ``finally`` teardown recorded), not die in the backstop that knows
+    nothing about it."""
+    radio, power = _tx_radio(start_power=200)
+    prompter, _ = _confirm_prompter(True)
+
+    async def _key_dies_on_wire(on: bool) -> None:
+        if on:
+            raise CatTransportError("write ON failed: device not connected")
+        radio.radio_state.ptt = False
+
+    radio.set_ptt = AsyncMock(side_effect=_key_dies_on_wire)
+
+    levels = await _run(radio, safety=_FULL_SAFETY, tx_actuate=True, prompter=prompter)
+    ptt = _flatten(levels)["tx.ptt"]
+
+    assert ptt.status is CheckStatus.FAIL
+    assert "tx actuation failed" in str(ptt.error)
+    assert "device not connected" in str(ptt.evidence["actuate_error"])
+    # The finally still ran and is reported: unkey attempted, power restored.
+    assert ptt.evidence["unkeyed"] is True
+    assert ptt.evidence["power_restored"] is True
+    assert power["value"] == 200
+    assert [c.args[0] for c in radio.set_ptt.call_args_list] == [True, False]
+
+
+async def test_cancellation_during_unkey_is_not_swallowed():
+    """``BaseException`` cancellation must still propagate out of the teardown:
+    the widened ``except Exception`` containment must not turn a cancelled run
+    into a fabricated result, and cancellation beats the best-effort restore."""
+    radio, power = _tx_radio(start_power=200)
+    prompter, _ = _confirm_prompter(True)
+    state = radio.radio_state
+
+    async def _cancel_on_off(on: bool) -> None:
+        if on:
+            state.ptt = True
+            return
+        raise asyncio.CancelledError()
+
+    radio.set_ptt = AsyncMock(side_effect=_cancel_on_off)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _run(radio, safety=_FULL_SAFETY, tx_actuate=True, prompter=prompter)
+    # Cancellation beat the restore: nothing pretends the teardown finished.
+    assert power["value"] == 0
+    assert state.ptt is True
+
+
+async def test_tuner_readback_transport_error_keeps_the_triggered_pass():
+    """The tuner readback is best-effort and never the pass/fail driver: a
+    transport error from the read must be recorded as evidence, not discard
+    the PASS the successful trigger earned."""
+    radio, _ = _tx_radio(start_power=200)
+    prompter, _ = _confirm_prompter(True)
+
+    async def _read_dies_on_wire() -> int:
+        raise CatTransportError("read failed: device not connected")
+
+    radio.get_tuner_status = AsyncMock(side_effect=_read_dies_on_wire)
+
+    levels = await _run(radio, safety=_FULL_SAFETY, tx_actuate=True, prompter=prompter)
+    checks = _flatten(levels)
+
+    assert checks["tuner.tune"].status is CheckStatus.PASS
+    assert checks["tuner.tune"].evidence["tune_triggered"] is True
+    assert "device not connected" in str(
+        checks["tuner.tune"].evidence["tuner_status_read_error"]
+    )
+    # The earlier tx.ptt check and its evidence survived the same run.
+    assert checks["tx.ptt"].status is CheckStatus.PASS

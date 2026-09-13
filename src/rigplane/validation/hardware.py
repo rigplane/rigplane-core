@@ -611,8 +611,12 @@ def _manual_required_result(
 
 # ---------------------------------------------------------------------------
 # TX actuation handlers (MOR-666) — reached ONLY after the full gate stack and
-# an explicit interactive confirm() YES. Each guarantees the radio is left in a
-# safe (un-keyed, power-restored) state via a finally that never raises.
+# an explicit interactive confirm() YES. Each handler's teardown ATTEMPTS to
+# leave the radio un-keyed with power restored via a ``finally`` that contains
+# every ordinary ``Exception``. An unkey that failed or could not be confirmed
+# is recorded (``unkeyed: False`` + ``unkey_error``) and FAILs the check —
+# never a PASS on uncertain teardown. ``BaseException`` cancellation still
+# propagates.
 #
 # MOR-1222: every PTT *assertion* below goes through the radio's managed TX
 # supervisor when it publishes one. A raw ``set_ptt`` here took no lease, so
@@ -649,16 +653,22 @@ async def _release_validation_lease(
     supervisor to release a lease this owner never took is free (it answers
     ``STALE`` and touches no wire).
 
-    A refusal is recorded, never escalated. ``force_unkey`` exists for a rig an
-    *external* process left keyed (MOR-1182); reaching for it here would let
-    the validation harness adopt — and de-key — a live transmission belonging
-    to somebody else. This tool only ever releases keys it took itself.
+    A refusal — or any release-path ``Exception`` — is recorded, never
+    escalated. The OFF write rides the same wire as the key, so the release
+    can fail with the backend's own transport error (a plain ``Exception``
+    outside ``_RESTORE_ERRORS``, e.g. Yaesu ``CatTransportError``); raising it
+    past the caller's ``finally`` would skip the power restore (MOR-1951).
+    ``BaseException`` cancellation still propagates. ``force_unkey`` exists
+    for a rig an *external* process left keyed (MOR-1182); reaching for it
+    here would let the validation harness adopt — and de-key — a live
+    transmission belonging to somebody else. This tool only ever releases
+    keys it took itself.
     """
     try:
         transition = await asyncio.wait_for(
             managed.set_ptt(False), timeout=per_check_timeout
         )
-    except _RESTORE_ERRORS as exc:
+    except Exception as exc:
         evidence["unkey_error"] = str(exc)
         return False
     refusal = _tx_refusal(transition, "release")
@@ -686,11 +696,14 @@ async def _actuate_tx_ptt(
     read too; see ``ptt_state_source`` in the evidence) → unkey → restore
     power.
     The unkey AND power-restore run in a ``finally`` that ALWAYS executes and
-    never raises (contained by ``_RESTORE_ERRORS``, which includes ``OSError``),
-    so a mid-check exception/timeout/LAN drop can never leave the radio keyed or
-    at the wrong power. (A pre-existing gap in that same ``finally`` — a
-    Yaesu transport error from the unkey call itself escaping uncontained —
-    is filed separately as MOR-1951; not this row's fix.)
+    never raises: each leg catches ``Exception`` — backend-agnostic, because a
+    Yaesu ``CatTransportError`` from the unkey write itself is a plain
+    ``Exception`` outside ``_RESTORE_ERRORS`` and must not skip the power
+    restore (MOR-1951) — while ``BaseException`` cancellation still
+    propagates. A failed or unconfirmed unkey is recorded (``unkeyed: False``
+    + ``unkey_error``) and the check FAILs: the harness never reports a PASS
+    on teardown it could not confirm, nor claims the radio is unkeyed when the
+    wire write failed.
 
     MOR-1222: on a managed rig both the key and the unkey go through the
     supervisor under :data:`_VALIDATION_TX_OWNER`. A refused key is a FAIL, not
@@ -884,12 +897,18 @@ async def _actuate_tx_ptt(
             evidence["ptt_state_source"] = ptt_state_source
             keyed = ptt_state
             evidence["keyed"] = keyed
-    except _RESTORE_ERRORS as exc:
+    except Exception as exc:
+        # Backend-agnostic containment (MOR-1951): a plain-``Exception``
+        # transport failure must land in the evidence like every mapped error,
+        # so the ``finally`` teardown below is legible on the result instead of
+        # being discarded by the run-loop backstop. Cancellation
+        # (``BaseException``) still propagates.
         verify_error = str(exc)
         evidence["actuate_error"] = verify_error
     finally:
-        # ALWAYS unkey, no matter what — the radio must never be left keyed.
-        # Never gated on whether the key was believed to succeed.
+        # ALWAYS attempt the unkey, no matter what — never gated on whether
+        # the key was believed to succeed. A failed attempt is recorded
+        # (``unkeyed: False`` + ``unkey_error``), never reported as success.
         unkeyed = False
         if managed is not None:
             unkeyed = await _release_validation_lease(
@@ -899,7 +918,7 @@ async def _actuate_tx_ptt(
             try:
                 await asyncio.wait_for(set_ptt(False), timeout=per_check_timeout)
                 unkeyed = True
-            except _RESTORE_ERRORS as exc:
+            except Exception as exc:
                 evidence["unkey_error"] = str(exc)
         evidence["unkeyed"] = unkeyed
         # ALWAYS restore the original power if we lowered it.
@@ -914,7 +933,7 @@ async def _actuate_tx_ptt(
                 power_restored = rf is None
                 if rf is not None:
                     evidence["power_restore_error"] = rf.error
-            except _RESTORE_ERRORS as exc:
+            except Exception as exc:
                 evidence["power_restore_error"] = str(exc)
         evidence["power_restored"] = power_restored
 
@@ -938,12 +957,19 @@ async def _actuate_tx_ptt(
         )
     if keyed and bool(evidence.get("unkeyed")):
         return _base_result(entry, CheckStatus.PASS, evidence=evidence)
+    unkey_error = evidence.get("unkey_error")
+    if unkey_error:
+        # MOR-1951: a failed/unconfirmed unkey must be legible in the error
+        # itself, not only in evidence — the radio may still be keyed.
+        error = f"unkey failed; radio may still be keyed: {unkey_error}"
+    else:
+        error = "PTT did not key/unkey cleanly"
     return _base_result(
         entry,
         CheckStatus.FAIL,
         failure_domain=FailureDomain.COMMAND_EXECUTION,
         evidence=evidence,
-        error="PTT did not key/unkey cleanly",
+        error=error,
     )
 
 
@@ -1002,15 +1028,21 @@ async def _actuate_tuner_tune(
     _get_tuner_attr = getattr(radio, "get_tuner_status", None)
     if callable(_get_tuner_attr):
         get_tuner = cast(Callable[[], Awaitable[int]], _get_tuner_attr)
-        status, sf = await _guard(
-            get_tuner(),
-            entry,
-            per_check_timeout=per_check_timeout,
-        )
-        if sf is None:
-            evidence["tuner_status_readback"] = status
-        else:
-            evidence["tuner_status_read_error"] = sf.error
+        try:
+            status, sf = await _guard(
+                get_tuner(),
+                entry,
+                per_check_timeout=per_check_timeout,
+            )
+            if sf is None:
+                evidence["tuner_status_readback"] = status
+            else:
+                evidence["tuner_status_read_error"] = sf.error
+        except Exception as exc:
+            # Best-effort readback (MOR-1951): a backend transport error
+            # outside ``_guard``'s mapped family must be recorded as evidence,
+            # not discard the PASS the successful trigger earned.
+            evidence["tuner_status_read_error"] = str(exc)
     return _base_result(entry, CheckStatus.PASS, evidence=evidence)
 
 
