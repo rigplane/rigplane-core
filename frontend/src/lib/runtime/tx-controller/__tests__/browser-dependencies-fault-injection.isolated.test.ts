@@ -9,6 +9,11 @@ const state = (fresh = true): ManagedTxState => ({
   releaseRequired: false, configuredSeconds: fresh ? 180 : null,
   remainingMs: null, lastOperation: null,
 });
+const keyed = (intent: 'momentary' | 'latched'): ManagedTxState => ({
+  phase: 'active', intent, radioTx: 'on', txRisk: 'confirmed-on', fault: null,
+  faultDetail: null, fresh: true, releaseRequired: true, configuredSeconds: 180,
+  remainingMs: 150_000, lastOperation: intent === 'momentary' ? 'ptt_on' : 'transmit_on',
+});
 const h = { start: vi.fn<() => Promise<string | null>>(), stop: vi.fn(),
   sendPtt: vi.fn<(operation: PttOperation) => Promise<'accepted' | 'rejected'>>(async () => 'accepted'),
   submit: vi.fn<(operation: ManagedOperation) => Promise<'accepted' | 'rejected'>>(async () => 'accepted'),
@@ -27,7 +32,14 @@ const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
 
 beforeEach(() => {
   h.projected = state(); h.start.mockReset().mockResolvedValue(null); h.stop.mockReset();
-  h.sendPtt.mockReset().mockResolvedValue('accepted'); h.submit.mockReset().mockResolvedValue('accepted');
+  h.sendPtt.mockReset().mockImplementation(async (operation) => {
+    h.projected = operation === 'ptt_on' ? keyed('momentary') : state();
+    return 'accepted';
+  });
+  h.submit.mockReset().mockImplementation(async (operation) => {
+    h.projected = operation === 'transmit_on' ? keyed('latched') : state();
+    return 'accepted';
+  });
   h.setTot.mockReset().mockResolvedValue(undefined);
 });
 

@@ -282,11 +282,21 @@ describe('AudioManager consumes the server TX codec ack', () => {
       const { audioManager } = await import('../audio-manager');
       const died = vi.fn();
       audioManager.onTxAudioDied(died);
-      const submit = vi.fn<(operation: ManagedOperation) => Promise<'accepted'>>(async () => 'accepted');
+      // The canonical snapshot tracks the accepted latch: fresh RX only
+      // before the ON admission and after its ForceOFF.
+      let latched = false;
+      const submit = vi.fn<(operation: ManagedOperation) => Promise<'accepted'>>(async (operation) => {
+        latched = operation === 'transmit_on';
+        return 'accepted';
+      });
+      const idle = { phase: 'idle' as const, intent: null, radioTx: 'off' as const,
+        txRisk: 'none' as const, fault: null, faultDetail: null, fresh: true,
+        releaseRequired: false, configuredSeconds: 180, remainingMs: null, lastOperation: null };
       const tx = new ManagedTxController({
-        snapshot: () => ({ phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none',
-          fault: null, faultDetail: null, fresh: true, releaseRequired: false,
-          configuredSeconds: 180, remainingMs: null, lastOperation: null }),
+        snapshot: () => latched
+          ? { ...idle, phase: 'active', intent: 'latched' as const, radioTx: 'on' as const,
+              txRisk: 'confirmed-on' as const, releaseRequired: true, lastOperation: 'transmit_on' as const }
+          : idle,
         refresh: async () => {}, invalidate: vi.fn(), sendPtt: async () => 'accepted',
         submit, setTot: async () => {}, startAudio: () => audioManager.startTx(),
         stopLocalAudio: () => audioManager.stopTx(),

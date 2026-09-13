@@ -1574,3 +1574,100 @@ async def test_shutdown_currency_observes_termination_synchronously() -> None:
         termination.set()
         allow_off.set()
         await asyncio.wait_for(task, 1)
+
+
+async def test_change_subscription_signals_only_real_state_mutations() -> None:
+    managed, _, _, _, _, _ = authority()
+    changes: list[None] = []
+    unsubscribe = managed.subscribe_changes(lambda: changes.append(None))
+    try:
+        assert await managed.ptt_down("owner-a") is ManagedTxOutcome.ACCEPTED
+        # Two real mutations: RX -> PTT admission, then the settled effect
+        # clearing ``pending_effect``.
+        assert len(changes) == 2, changes
+        changes.clear()
+        assert await managed.ptt_down("owner-a") is ManagedTxOutcome.ACCEPTED
+        assert await managed.ptt_up("owner-b") is ManagedTxOutcome.REJECTED
+        assert changes == [], "no-op outcomes must not signal subscribers"
+        changes.clear()
+        assert await managed.force_off() is ManagedTxOutcome.ACCEPTED
+        # ForceOff admission (debt) then accepted settle clearing the debt.
+        assert len(changes) == 2, changes
+    finally:
+        unsubscribe()
+        await managed.close()
+
+
+async def test_tot_expiry_notifies_subscribers_through_the_real_scheduler() -> None:
+    managed, clock, wakeup, _, _, lane = authority(seconds=10)
+    changes: list[None] = []
+    managed.subscribe_changes(lambda: changes.append(None))
+    try:
+        await managed.ptt_down("owner")
+        changes.clear()
+        revision = wakeup.revision
+        clock.now = 110
+        wakeup.wake()
+        await wakeup.wait_after(revision + 1)
+        assert lane.effects[-1].operation is ActuationOperation.FORCE_RECEIVE
+        projected = await managed.snapshot()
+        assert projected.state.intent.kind is ManagedTxIntentKind.RX
+        # TOT ForceOff admission plus the settled release clearing the debt.
+        assert len(changes) == 2, changes
+    finally:
+        await managed.close()
+
+
+async def test_provider_config_and_unreduced_mutations_signal_subscribers() -> None:
+    managed, _, _, _, _, _ = authority(generation=7)
+    changes: list[None] = []
+    unsubscribe = managed.subscribe_changes(lambda: changes.append(None))
+    try:
+        await managed.start_provider_unavailable()
+        # Provider flip alone is a real mutation from clean RX state.
+        assert len(changes) == 1, changes
+        changes.clear()
+        await managed.provider_available(8)
+        assert len(changes) == 1, changes
+        changes.clear()
+        assert (await managed.set_tot_seconds(30)).timeout_seconds == 30
+        assert len(changes) == 1, changes
+        changes.clear()
+        assert await managed.ptt_up("nobody") is ManagedTxOutcome.REJECTED
+        assert changes == []
+
+        # The no-generation ptt_up replacement mutates outside _reduce_locked.
+        assert await managed.ptt_down("owner-a") is ManagedTxOutcome.ACCEPTED
+        changes.clear()
+        async with managed._lock:
+            managed._provider_generation = None
+        assert await managed.ptt_up("owner-a") is ManagedTxOutcome.ACCEPTED
+        assert len(changes) == 1, changes
+    finally:
+        unsubscribe()
+        if managed._provider_generation is None:
+            await managed.provider_available(9)
+        await managed.force_off()
+        await managed.close()
+
+
+async def test_change_subscription_is_lifecycle_safe() -> None:
+    managed, _, _, _, _, _ = authority()
+    changes: list[None] = []
+
+    def broken() -> None:
+        changes.append(None)
+        raise RuntimeError("subscriber bug")
+
+    unsubscribe = managed.subscribe_changes(broken)
+    try:
+        assert await managed.ptt_down("owner-a") is ManagedTxOutcome.ACCEPTED
+        assert len(changes) == 2, changes
+        projected = await managed.snapshot()
+        assert projected.state.intent.kind is ManagedTxIntentKind.PTT
+    finally:
+        unsubscribe()
+    changes.clear()
+    assert await managed.ptt_up("owner-a") is ManagedTxOutcome.ACCEPTED
+    assert changes == [], "unsubscribed listeners must not be invoked"
+    await managed.close()

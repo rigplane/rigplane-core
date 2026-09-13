@@ -31,13 +31,15 @@ const h = vi.hoisted(() => ({
   stop: vi.fn(),
   restore: vi.fn(),
   stale: true,
+  appliedRevision: 0,
   document: null as any,
 }));
 vi.mock('$lib/stores/managed-transmit.svelte', () => ({
   managedTransmitSnapshot: () => h.document, managedTransmitIsStale: () => h.stale,
-  managedTransmitRemainingMs: () => null, refreshManagedTransmit: vi.fn(async () => { h.stale = false; }),
+  managedTransmitRemainingMs: () => null,
+  refreshManagedTransmit: vi.fn(async () => { h.stale = false; h.appliedRevision += 1; }),
   invalidateManagedTransmit: () => { h.stale = true; }, submitManagedTransmit: vi.fn(async () => 'accepted'),
-  setManagedTransmitTot: vi.fn(async () => {}),
+  setManagedTransmitTot: vi.fn(async () => {}), managedTransmitAppliedRevision: () => h.appliedRevision,
 }));
 vi.mock('$lib/stores/radio.svelte', () => ({
   getRadioState: () => h.radio,

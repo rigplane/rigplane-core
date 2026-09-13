@@ -164,4 +164,53 @@ describe('managed transmit store', () => {
     await pending;
     expect(store.managedTransmitIsStale()).toBe(true);
   });
+
+  it('advances the applied revision only when a snapshot is applied', async () => {
+    const store = await import('../managed-transmit.svelte');
+    expect(store.managedTransmitAppliedRevision()).toBe(0);
+    store.receiveManagedTransmitSnapshot(document(180));
+    expect(store.managedTransmitAppliedRevision()).toBe(1);
+    store.receiveManagedTransmitSnapshot(document(240, '2026-09-03T00:00:00Z'));
+    expect(store.managedTransmitAppliedRevision()).toBe(1);
+    store.invalidateManagedTransmit();
+    expect(store.managedTransmitAppliedRevision()).toBe(1);
+  });
+
+  it('does not advance the applied revision for a superseded refresh', async () => {
+    const store = await import('../managed-transmit.svelte');
+    store.receiveManagedTransmitSnapshot(document(180));
+    let resolveFirst!: (value: ManagedTransmitDocument) => void;
+    let resolveSecond!: (value: ManagedTransmitDocument) => void;
+    const client = {
+      snapshot: vi.fn()
+        .mockImplementationOnce(() => new Promise<ManagedTransmitDocument>((resolve) => { resolveFirst = resolve; }))
+        .mockImplementationOnce(() => new Promise<ManagedTransmitDocument>((resolve) => { resolveSecond = resolve; })),
+    };
+
+    const first = store.refreshManagedTransmit(client);
+    const second = store.refreshManagedTransmit(client);
+    resolveSecond(document(240, '2026-09-04T00:00:02Z'));
+    await second;
+    const applied = store.managedTransmitAppliedRevision();
+    resolveFirst(document(300, '2026-09-04T00:00:03Z'));
+    await first;
+
+    expect(store.managedTransmitAppliedRevision()).toBe(applied);
+    expect(store.managedTransmitSnapshot()?.sampledAt).toBe('2026-09-04T00:00:02Z');
+  });
+
+  it('does not advance the applied revision for an invalidated refresh context', async () => {
+    const store = await import('../managed-transmit.svelte');
+    store.receiveManagedTransmitSnapshot(document(180));
+    let resolveRead!: (value: ManagedTransmitDocument) => void;
+    const client = { snapshot: vi.fn(() => new Promise<ManagedTransmitDocument>((resolve) => { resolveRead = resolve; })) };
+
+    const pending = store.refreshManagedTransmit(client);
+    store.invalidateManagedTransmit();
+    resolveRead(document(240, '2026-09-04T00:00:01Z'));
+    await pending;
+
+    expect(store.managedTransmitAppliedRevision()).toBe(1);
+    expect(store.managedTransmitSnapshot()?.sampledAt).toBe('2026-09-04T00:00:00Z');
+  });
 });
