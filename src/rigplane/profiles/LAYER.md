@@ -55,8 +55,10 @@ types. **Do not hoist it to module top-level** (plan §6.2 no-touch list).
   extend the TOML schema in `rig_loader.py`, add a test fixture under
   `tests/test_rig_loader*.py`.
 - **Change the registry resolution policy** → edit `resolve_radio_profile`
-  in `profiles/__init__.py`; the docstring documents the precedence
-  order (explicit > model > civ_addr > IC-7610 default).
+  in `profiles/__init__.py`; the docstring states that an explicit
+  profile or model name is a caller override that wins over
+  `radio_addr`, and that `ValueError` is raised when none of the three
+  identifies the radio.
 
 ## See also
 

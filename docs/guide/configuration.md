@@ -39,8 +39,8 @@ rigplane supports two backends selected via `--backend`:
 ```bash
 # Serial backend quick start
 export ICOM_SERIAL_DEVICE=/dev/tty.usbmodem-IC7610
-rigplane --backend serial status
-rigplane --backend serial freq 14.074m
+rigplane --backend serial --model IC-7610 status
+rigplane --backend serial --model IC-7610 freq 14.074m
 
 # List available USB audio devices
 rigplane --list-audio-devices

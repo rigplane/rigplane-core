@@ -138,9 +138,9 @@ export ICOM_SERIAL_DEVICE=/dev/cu.usbserial-111120
 export ICOM_SERIAL_BAUDRATE=115200
 
 # Test basic control
-rigplane --backend serial status
-rigplane --backend serial freq
-rigplane --backend serial mode
+rigplane --backend serial --model IC-7610 status
+rigplane --backend serial --model IC-7610 freq
+rigplane --backend serial --model IC-7610 mode
 ```
 
 Expected output:
@@ -156,7 +156,7 @@ Power:        50
 
 ```bash
 # Capture 10 seconds of RX audio to WAV
-rigplane --backend serial \
+rigplane --backend serial --model IC-7610 \
     --rx-device "IC-7610 USB Audio" \
     audio rx --out test_rx.wav --seconds 10
 
@@ -169,33 +169,33 @@ rigplane --backend serial \
 
 ```bash
 # Status check
-rigplane --backend serial status
+rigplane --backend serial --model IC-7610 status
 
 # Set frequency
-rigplane --backend serial freq 7.074m
+rigplane --backend serial --model IC-7610 freq 7.074m
 
 # Set mode
-rigplane --backend serial mode USB
+rigplane --backend serial --model IC-7610 mode USB
 
 # PTT test: key for 3 seconds, then unkey automatically (exits 0)
-rigplane --backend serial ptt --for 3
+rigplane --backend serial --model IC-7610 ptt --for 3
 
 # rigplane ptt on (no --for) keys and blocks until you press Ctrl-C —
 # use that form instead when you want to hold the key down by hand
 # ptt off unkeys immediately: the recovery command if a crash or an
 # older rigplane build left the rig transmitting
-rigplane --backend serial ptt off
+rigplane --backend serial --model IC-7610 ptt off
 
 # CW keying
-rigplane --backend serial cw "CQ CQ DE KN4KYD K"
+rigplane --backend serial --model IC-7610 cw "CQ CQ DE KN4KYD K"
 
 # Attenuator (uses Command29 for IC-7610)
-rigplane --backend serial att 18
-rigplane --backend serial att 0
+rigplane --backend serial --model IC-7610 att 18
+rigplane --backend serial --model IC-7610 att 0
 
 # Preamp
-rigplane --backend serial preamp 1
-rigplane --backend serial preamp 0
+rigplane --backend serial --model IC-7610 preamp 1
+rigplane --backend serial --model IC-7610 preamp 0
 ```
 
 ### Python API
@@ -245,7 +245,7 @@ asyncio.run(main())
 
 ```bash
 # Start web UI on serial backend
-rigplane --backend serial \
+rigplane --backend serial --model IC-7610 \
     --rx-device "IC-7610 USB Audio" \
     --tx-device "IC-7610 USB Audio" \
     web
@@ -263,7 +263,7 @@ The web UI will show:
 
 ```bash
 # Start rigctld server on serial backend
-rigplane --backend serial serve
+rigplane --backend serial --model IC-7610 serve
 
 # Then configure WSJT-X:
 # Radio: Hamlib NET rigctl
@@ -380,7 +380,7 @@ usb-audio-resolve: /dev/cu.usbserial-201410 → prefix 0x2014 → RX device [2],
 
 If you see `"topology resolution not supported"` (Linux), specify device indices explicitly:
 ```bash
-rigplane --backend serial --rx-device 2 --tx-device 3 status
+rigplane --backend serial --model IC-7610 --rx-device 2 --tx-device 3 status
 ```
 
 Use `rigplane --list-audio-devices` to find the correct indices.
@@ -438,7 +438,7 @@ export ICOM_USB_RX_DEVICE="IC-7610 USB Audio"
 export ICOM_USB_TX_DEVICE="IC-7610 USB Audio"
 
 # Then simply:
-rigplane --backend serial status
+rigplane --backend serial --model IC-7610 status
 ```
 
 ## Migration from LAN to Serial
@@ -465,7 +465,7 @@ If you're currently using the LAN backend and want to switch to serial:
    rigplane status
    
    # After (Serial)
-   rigplane --backend serial status
+   rigplane --backend serial --model IC-7610 status
    ```
 
 3. **Capability check**: scope/waterfall requires ≥115200 baud (see table above)
