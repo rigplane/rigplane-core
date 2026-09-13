@@ -2,6 +2,7 @@
 
 import struct
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -18,6 +19,7 @@ from rigplane.radio import (
 )
 from rigplane.audio.route import AudioConfigSource
 from rigplane.profiles import RadioProfile
+from rigplane.runtime._control_phase import ControlPhaseRuntime
 from rigplane.transport import ConnectionState
 from rigplane.types import AudioCodec
 
@@ -185,6 +187,34 @@ class TestReceiveGuid:
         assert guid is None
 
 
+def _conninfo_radio_name(packet: bytes) -> bytes:
+    """The conninfo radio-name field — 32 ASCII bytes at 0x40, NUL-padded.
+
+    Offset and width per ``core/auth.py: build_conninfo_packet``.
+    """
+    return packet[0x40:0x60].rstrip(b"\x00")
+
+
+class _NamelessControlPhaseHost:
+    """Control-phase host with no ``model`` attribute at all.
+
+    Carries only what ``ControlPhaseRuntime._send_conninfo`` reads.
+    """
+
+    def __init__(self) -> None:
+        self._ctrl_transport = ConnectMockTransport()
+        self._username = "user"
+        self._token = 0x12345678
+        self._tok_request = 0xABCD
+        self._auth_seq = 0
+        self._audio_stream_contract = SimpleNamespace(
+            rx_codec=AudioCodec.PCM_1CH_16BIT,
+            tx_codec=AudioCodec.PCM_1CH_16BIT,
+            rx_sample_rate_hz=48000,
+            tx_sample_rate_hz=48000,
+        )
+
+
 class TestSendConninfo:
     @pytest.mark.asyncio
     async def test_sends_conninfo(self) -> None:
@@ -198,6 +228,28 @@ class TestSendConninfo:
         await radio._control_phase._send_conninfo(b"\x00" * 16)
         assert len(mt.sent_packets) == 1
         assert len(mt.sent_packets[0]) == CONNINFO_SIZE
+
+    @pytest.mark.asyncio
+    async def test_conninfo_carries_the_radios_own_model(self) -> None:
+        """The name field at 0x40 is whatever the rig calls itself."""
+        radio = IcomRadio("192.168.1.100", model="IC-7300")
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        await radio._control_phase._send_conninfo(b"\x00" * 16)
+        assert _conninfo_radio_name(mt.sent_packets[0]) == b"IC-7300"
+
+    @pytest.mark.asyncio
+    async def test_conninfo_names_no_radio_when_the_host_names_none(self) -> None:
+        """R59/MOR-2425: an unnamed host puts no rig name on the wire.
+
+        The default here used to be ``"IC-7610"``. ``ControlPhaseHost``
+        (``runtime/_runtime_protocols.py``) does not declare ``model``, so
+        ``_send_conninfo`` reaches for it with ``getattr``.
+        """
+        host = _NamelessControlPhaseHost()
+        await ControlPhaseRuntime(host)._send_conninfo(b"\x00" * 16)  # type: ignore[arg-type]
+        packet = host._ctrl_transport.sent_packets[0]
+        assert _conninfo_radio_name(packet) == b"unspecified"
 
     @pytest.mark.asyncio
     async def test_sends_conninfo_without_guid(self) -> None:

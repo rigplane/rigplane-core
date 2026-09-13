@@ -911,6 +911,38 @@ async def test_web_launch_without_application_auth(command, environment, monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("radio_model", [None, "", "IC-7300"])
+async def test_cmd_web_radio_model_never_falls_back_to_a_guessed_rig(radio_model):
+    """R59/MOR-2425: a radio that cannot name itself leaves WebConfig's own
+    ``_RADIO_MODEL_UNSPECIFIED`` sentinel in place instead of being labelled
+    IC-7610."""
+    from rigplane.web.server import _RADIO_MODEL_UNSPECIFIED
+
+    args = _build_parser().parse_args(["web"])
+    args.web_rigctld = False
+    radio = AsyncMock()
+    if radio_model is None:
+        del radio.model
+    else:
+        radio.model = radio_model
+    captured: dict[str, object] = {}
+
+    class FakeWebServer:
+        def __init__(self, _radio, cfg):
+            captured["cfg"] = cfg
+            self._runtime_log_path = None
+
+        async def serve_forever(self, *, on_started=None):
+            on_started()
+            raise asyncio.CancelledError
+
+    with patch("rigplane.web.server.WebServer", FakeWebServer):
+        assert await _cmd_web(radio, args) == 0
+    expected = radio_model or _RADIO_MODEL_UNSPECIFIED
+    assert captured["cfg"].radio_model == expected
+
+
+@pytest.mark.asyncio
 async def test_cmd_web_managed_ignores_env_auth_and_keeps_loopback_rigctld(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

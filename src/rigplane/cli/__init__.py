@@ -3806,7 +3806,13 @@ async def _cmd_web(
 
     config_kwargs["discovery"] = getattr(args, "web_discovery", True)
     config_kwargs["webrtc_enabled"] = getattr(args, "webrtc_enabled", False)
-    config_kwargs["radio_model"] = getattr(radio, "model", "IC-7610")
+    # R59/MOR-2425: a radio that cannot name itself is left unnamed. Omitting
+    # the key keeps WebConfig's ``_RADIO_MODEL_UNSPECIFIED`` sentinel, which
+    # the server already treats as "nothing identifies the radio"
+    # (server.py: WebServer._resolve_profile_if_identified).
+    _radio_model = getattr(radio, "model", None)
+    if isinstance(_radio_model, str) and _radio_model:
+        config_kwargs["radio_model"] = _radio_model
     config_kwargs["await_initial_state"] = True
     config = WebConfig(**config_kwargs)
     server = WebServer(radio, config)
