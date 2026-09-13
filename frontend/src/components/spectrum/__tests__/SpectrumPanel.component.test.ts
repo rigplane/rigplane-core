@@ -126,8 +126,9 @@ const runtimeHarness = vi.hoisted(() => {
   const state = {
     capturedHardwareFrame: null as ((frame: TestScopeFrame) => void) | null,
     capturedDxMessage: null as ((message: unknown) => void) | null,
-    currentState: Object.freeze({ source: 'test-state' }) as unknown,
+    currentState: Object.freeze({ source: 'test-state', providerGeneration: 17, active: 'MAIN' }) as unknown,
     currentCaps: Object.freeze({ source: 'test-capabilities' }) as unknown,
+    currentSession: { state: 'connected' as const, epoch: 1 },
     mockScopeConnected: true,
     tuningStep: 1_000,
     nextLeaseId: 0,
@@ -137,6 +138,7 @@ const runtimeHarness = vi.hoisted(() => {
   const runtime = {
     get state() { return state.currentState; },
     get caps() { return state.currentCaps; },
+    get controlSession() { return state.currentSession; },
     onTxAudioDied: () => () => {},
     defaultScopeStatus: { transport: 'connected' },
     scope: {
@@ -197,6 +199,17 @@ const authorityRefreshState = new SvelteMap<string, number>([['value', 0]]);
 function refreshSpectrumAuthority(): void {
   authorityRefreshState.set('value', (authorityRefreshState.get('value') ?? 0) + 1);
 }
+
+// The real runtime.state is store-backed and reactive; make the mock's
+// reads participate in refreshSpectrumAuthority() pokes so panel deriveds
+// re-evaluate raw identity-field changes the same way (MOR-2464).
+Object.defineProperty(mockRuntime, 'state', {
+  configurable: true,
+  get() {
+    authorityRefreshState.get('value');
+    return runtimeHarness.state.currentState;
+  },
+});
 
 const handlerHarness = vi.hoisted(() => {
   const vfo = Object.freeze({ onFreqChange: vi.fn() });
@@ -626,8 +639,9 @@ beforeEach(() => {
   runtimeHarness.state.nextLeaseId = 0;
   runtimeHarness.state.hardwareUnsubscribe = vi.fn();
   runtimeHarness.state.dxUnsubscribe = vi.fn();
-  runtimeHarness.state.currentState = Object.freeze({ source: 'test-state' });
+  runtimeHarness.state.currentState = Object.freeze({ source: 'test-state', providerGeneration: 17, active: 'MAIN' });
   runtimeHarness.state.currentCaps = Object.freeze({ source: 'test-capabilities' });
+  runtimeHarness.state.currentSession = { state: 'connected', epoch: 1 };
   authorityHarness.state.current = authority();
   authorityHarness.state.useProductionSelector = false;
   setFilterWidthLifecycle({});
@@ -1401,7 +1415,10 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     const target = mountPanel();
     emitFrame();
     expect(target.querySelector('.freq-axis')).not.toBeNull();
-    expect(target.querySelector('.tune-line')).toBeNull();
+    // MOR-2464 ruling: the CENTER frame itself proves the ruler's
+    // position — the static reference shows without a strict frequency
+    // Observation, in both areas; the passband stays hidden.
+    expect(target.querySelectorAll('.spectrum-area .tune-line, .waterfall-content .tune-line')).toHaveLength(2);
     expect(target.querySelector('.passband-overlay')).toBeNull();
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
     await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
@@ -1752,6 +1769,46 @@ describe('managed scope projection (MOR-2367)', () => {
     // the authority's observed FIX scope-control mode must keep the
     // reference hidden in both areas.
     props.set('projection', null); flushSync();
+    expectCenterReference(target, false);
+  });
+  it('keeps the static CENTER reference through a strict authority freshness gap in the same session', () => {
+    const { target, props } = managed(projection());
+    expect(target.querySelector('.spectrum-area .tune-line')).toBeNull();
+    expect(target.querySelector('.waterfall-content .tune-line')).not.toBeNull();
+    // Focus gap: the projection drops AND the strict authority nulls
+    // while provider/session/receiver identity is unchanged. The static
+    // ruler must not require a strictly fresh frequency to stay drawn.
+    props.set('projection', null); flushSync();
+    authorityHarness.state.current = null; refreshSpectrumAuthority(); flushSync();
+    expectCenterReference(target, true);
+    // Refocus: frames and authority return; the normal path resumes.
+    authorityHarness.state.current = authority(); refreshSpectrumAuthority(); flushSync();
+    props.set('projection', projection()); flushSync();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
+  });
+  it('clears the remembered mode on a provider identity change', () => {
+    const { target, props } = managed(projection());
+    props.set('projection', null); flushSync();
+    authorityHarness.state.current = null;
+    runtimeHarness.state.currentState = Object.freeze({ source: 'test-state', providerGeneration: 18, active: 'MAIN' });
+    refreshSpectrumAuthority(); flushSync();
+    expectCenterReference(target, false);
+    // The memory is invalidated by the MISMATCH, not consumed by the gap:
+    // identity back — the reference returns.
+    runtimeHarness.state.currentState = Object.freeze({ source: 'test-state', providerGeneration: 17, active: 'MAIN' });
+    refreshSpectrumAuthority(); flushSync();
+    expectCenterReference(target, true);
+  });
+  it('keeps a proven FIX mode hidden through the same freshness gap', () => {
+    authorityHarness.state.current = authority({
+      scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 1 }) }) }),
+    });
+    refreshSpectrumAuthority();
+    const { target, props } = managed(projection('current', 1));
+    expect(target.querySelector<HTMLElement>('.waterfall-content .tune-line')).not.toBeNull();
+    props.set('projection', null); flushSync();
+    authorityHarness.state.current = null; refreshSpectrumAuthority(); flushSync();
     expectCenterReference(target, false);
   });
   it('retains whole stale geometry with no cue while strict fresh frequency still pans', () => {

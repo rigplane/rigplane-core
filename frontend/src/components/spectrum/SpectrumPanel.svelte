@@ -384,9 +384,46 @@
       ? !isFixedScope
       : scopeControlsMode !== null && !isFixedScopeFn(scopeControlsMode),
   );
+  // MOR-2464 follow-up: presentation-only memory of the last PROVEN
+  // CENTER/FIX mode for the exact provider/session/receiver identity. The
+  // static reference is a ruler — a constant 50% mark, not RF data — so a
+  // temporary strict-authority freshness gap (browser refocus) must not
+  // blank it and drawing it must not require a strictly fresh frequency.
+  // It retains a MODE fact only: never passband geometry, never a
+  // frequency. Unknown startup stays hidden; explicit FIX clears it; a
+  // real identity change invalidates it.
+  let provenCenterMode = $state<{ providerGeneration: number; receiver: 0 | 1; sessionEpoch: number } | null>(null);
+  $effect(() => {
+    const authority = spectrumAuthority;
+    if (authority === null) return;
+    const center = spanHz > 0 ? !isFixedScope
+      : scopeControlsMode !== null ? !isFixedScopeFn(scopeControlsMode) : null;
+    if (center === null) return;
+    provenCenterMode = center
+      ? {
+          providerGeneration: authority.providerGeneration,
+          receiver: authority.receiver,
+          sessionEpoch: runtime.controlSession.epoch,
+        }
+      : null;
+  });
+  let rememberedCenterReference = $derived.by(() => {
+    const memory = provenCenterMode;
+    if (memory === null) return false;
+    const state = runtime.state;
+    if (!state || state.providerGeneration !== memory.providerGeneration) return false;
+    if (runtime.controlSession.epoch !== memory.sessionEpoch) return false;
+    // Receiver identity via the raw field; on a single-receiver radio
+    // `active` is structurally unobservable and tautologically MAIN
+    // (MOR-1418 doctrine shared with panel-commands).
+    const active = state.active;
+    const receiver = active === 'SUB' ? 1 : active === 'MAIN' ? 0
+      : runtime.caps?.receivers === 1 ? 0 : null;
+    return receiver === memory.receiver;
+  });
   let tuneLineVisible = $derived(
     (tuneVisible && spanHz > 0)
-    || (!audioFft && scopeDemandOn && centerReferenceMode && spectrumAuthority?.frequencyHz != null)
+    || (!audioFft && scopeDemandOn && (centerReferenceMode || rememberedCenterReference))
   );
   // The spectrum canvas draws its own carrier marker from renderer
   // options whenever the frame+tuple legs hold; this DOM reference stands
