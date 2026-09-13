@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from rigplane.backends.yaesu_cat.transport import CatTransportError
 from rigplane.core.radio_protocol import Radio
 from rigplane.core.radio_state import RadioState
 from rigplane.core.tx_safety import (
@@ -99,11 +100,36 @@ class _RecordingSupervisor:
         return TxTransition(self._off, _IDLE_TX_SNAPSHOT)
 
 
+class _RaisingReleaseSupervisor(_RecordingSupervisor):
+    """A release whose OFF write dies on the backend wire (MOR-1951).
+
+    Raises ``exc`` instead of writing OFF — a plain ``Exception`` outside the
+    harness's ``_RESTORE_ERRORS`` tuple, the exact shape that used to escape
+    the teardown ``finally`` and skip the power restore. The key still
+    succeeds and mirrors PTT on, exactly as a real link failure mid-key-down.
+    """
+
+    def __init__(
+        self, log: list[tuple[str, object]], state: RadioState, *, exc: Exception
+    ) -> None:
+        super().__init__(log, state)
+        self._exc = exc
+
+    async def release_owner(
+        self, owner: TxOwner, *, reason: TxReleaseReason
+    ) -> TxTransition:
+        self.owners.append(owner)
+        self.reasons.append(reason)
+        self._log.append(("supervisor.release_owner", owner))
+        raise self._exc
+
+
 def _tx_radio(
     *,
     managed: bool,
     on: TxOutcome = TxOutcome.ACCEPTED,
     off: TxOutcome = TxOutcome.ACCEPTED,
+    release_exc: Exception | None = None,
 ):
     """Stateful fake rig plus the ordered log of everything it was asked to do.
 
@@ -150,7 +176,11 @@ def _tx_radio(
 
     supervisor: _RecordingSupervisor | None = None
     if managed:
-        supervisor = _RecordingSupervisor(log, state, on=on, off=off)
+        supervisor = (
+            _RaisingReleaseSupervisor(log, state, exc=release_exc)
+            if release_exc is not None
+            else _RecordingSupervisor(log, state, on=on, off=off)
+        )
         radio.managed_tx = supervisor
     return radio, supervisor, log, power
 
@@ -385,3 +415,50 @@ async def test_a_refused_release_is_recorded_and_never_escalated_to_force():
     assert TxOutcome.STALE.value in str(ptt.evidence["unkey_error"])
     assert ptt.status is CheckStatus.FAIL
     assert radio.set_ptt.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# 4. Release that RAISES — backend transport error containment (MOR-1951).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_raising_release_is_contained_and_power_is_still_restored():
+    """The OFF write rides the same wire as the key, so the release can fail
+    with the backend's transport error (a plain ``Exception`` outside
+    ``_RESTORE_ERRORS``). That must not skip the power restore, must not fall
+    back to a raw PTT write, and must never read as a clean PASS."""
+    radio, supervisor, log, power = _tx_radio(
+        managed=True,
+        release_exc=CatTransportError("write OFF failed: link gone"),
+    )
+
+    checks = await _run(radio)
+
+    ptt = checks["tx.ptt"]
+    assert ptt.status is CheckStatus.FAIL
+    assert ptt.evidence["keyed"] is True
+    assert ptt.evidence["unkeyed"] is False
+    assert "link gone" in str(ptt.evidence["unkey_error"])
+    assert "may still be keyed" in str(ptt.error)
+
+    # Power was STILL restored after the failed release.
+    assert power["value"] == _START_POWER
+    assert ptt.evidence["power_restored"] is True
+
+    # Fail closed on the wire too: the key went through the supervisor and the
+    # failed release never fell back to a raw PTT write.
+    assert radio.set_ptt.await_count == 0
+    assert _names(log) == [
+        "radio.get_rf_power",
+        "radio.set_rf_power",  # -> minimum
+        "supervisor.request_on",
+        "supervisor.release_owner",
+        "radio.set_rf_power",  # -> restored, despite the raising release
+        "radio.set_tuner_status",
+        "radio.get_tuner_status",
+    ]
+    # The matrix continued: the next TX check still ran and passed.
+    assert checks["tuner.tune"].status is CheckStatus.PASS
+    assert supervisor is not None
+    assert supervisor.reasons == [TxReleaseReason.OPERATOR_RELEASE]
