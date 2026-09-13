@@ -277,6 +277,18 @@ function setPendingFrequency(receiver: 0 | 1, hz: number | null): void {
   pendingFrequencyState.set(String(receiver), hz);
 }
 
+// MOR-2464 follow-up — the display-only tuning-burst target the panel
+// prefers ahead of pending while a local gesture is live. Same
+// SvelteMap-backed harness shape as `pendingFrequencyState`.
+const tuningBurstState = new SvelteMap<string, number | null>([
+  ['0', null],
+  ['1', null],
+]);
+
+function setTuningBurstFrequency(receiver: 0 | 1, hz: number | null): void {
+  tuningBurstState.set(String(receiver), hz);
+}
+
 const passbandHarness = vi.hoisted(() => ({
   rawWidth: 2_700 as number | null,
   getFilterWidthFromRightEdgePx: vi.fn(() => 2_700 as number | null),
@@ -325,6 +337,13 @@ vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
     getFilterWidthCommandLifecycle: () => filterWidthLifecycleState.get('value')!,
     getPendingFrequencyHz: (receiver: 0 | 1) =>
       pendingFrequencyState.get(String(receiver)) ?? null,
+    // Delegates to the REAL accumulator publication first so reactive
+    // seam tests can drive a real accumulator; the SvelteMap stands in
+    // only when no real burst is live.
+    getTuningBurstFrequencyHz: (receiver: 0 | 1) =>
+      actual.getTuningBurstFrequencyHz(receiver)
+      ?? tuningBurstState.get(String(receiver))
+      ?? null,
   };
 });
 
@@ -415,6 +434,10 @@ import { WaterfallRenderer, type WaterfallOptions } from '$lib/renderers/waterfa
 import SpectrumPanel from '../SpectrumPanel.svelte';
 import spectrumPanelSource from '../SpectrumPanel.svelte?raw';
 import {
+  createTuningAccumulator,
+  resetSharedTuningAccumulatorForTests,
+} from '$lib/runtime/commands/tuning-accumulator';
+import {
   defaultSpectrumColorRoles,
   spectrumColorRolesToOptions,
 } from '$lib/renderers/spectrum-renderer';
@@ -461,7 +484,7 @@ type TestAuthority = Readonly<{
   pbtOuterHz: number | null;
   dataMode: number | null;
   rule: TestRule | null;
-  scopeControls: Readonly<{ mode: number }>;
+  scopeControls: Readonly<{ mode: Readonly<{ reading: Readonly<{ status: 'known'; value: number } | { status: 'unknown' }> }> }>;
   digest: string;
 }>;
 
@@ -483,7 +506,7 @@ function authority(overrides: Partial<Omit<TestAuthority, 'digest'>> = {}): Test
     pbtOuterHz: 0,
     dataMode: 0,
     rule: defaultRule,
-    scopeControls: Object.freeze({ mode: 2 }),
+    scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 2 }) }) }),
     ...overrides,
   };
   return Object.freeze({ ...core, digest: JSON.stringify(core) });
@@ -610,6 +633,9 @@ beforeEach(() => {
   setFilterWidthLifecycle({});
   pendingFrequencyState.set('0', null);
   pendingFrequencyState.set('1', null);
+  tuningBurstState.set('0', null);
+  tuningBurstState.set('1', null);
+  resetSharedTuningAccumulatorForTests();
   passbandHarness.rawWidth = 2_700;
   passbandHarness.getFilterWidthFromRightEdgePx.mockImplementation(() => passbandHarness.rawWidth);
   spectrumRendererHarness.lastOptions = null;
@@ -760,9 +786,14 @@ describe('SpectrumPanel component', () => {
     expect(target.querySelector('.freq-axis')).toBeNull();
   });
 
-  it('does not render tune-line when no span data', () => {
+  it('shows the static CENTER reference from frequency evidence before any frame data', () => {
     const target = mountPanel();
-    expect(target.querySelector('.tune-line')).toBeNull();
+    // No frame has arrived (span 0), but the radio's observed frequency is
+    // evidence enough for the stationary CENTER reference in BOTH areas
+    // (MOR-2464); the passband shade stays absent — its geometry is not
+    // available without the tuple.
+    expect(target.querySelectorAll('.spectrum-area .tune-line, .waterfall-content .tune-line')).toHaveLength(2);
+    expect(target.querySelector('.passband-overlay')).toBeNull();
   });
 
   it('unmounts cleanly without errors', () => {
@@ -1286,7 +1317,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     ['filter shape', { filterShape: 2 }],
     ['DATA', { dataMode: 1 }],
     ['rule', { rule: Object.freeze({ kind: 'step' as const, minHz: 200, maxHz: 5_000, stepHz: 100 }) }],
-    ['scope controls', { scopeControls: Object.freeze({ mode: 3 }) }],
+    ['scope controls', { scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 3 }) }) }) }],
   ])('completes final drag despite %s drift, which plain panning does not depend on (MOR-1497)', (_label, overrides) => {
     const target = mountPanel();
     emitFrame();
@@ -1391,7 +1422,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
   it('keeps frame mode and pixel geometry authoritative over canonical scope-control metadata', async () => {
     authorityHarness.state.current = authority({
       frequencyHz: 14_025_000,
-      scopeControls: Object.freeze({ mode: 3 }),
+      scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 3 }) }) }),
     });
     const target = mountPanel();
     emitFrame({ mode: 0 });
@@ -1561,6 +1592,8 @@ describe('opaque semantic scope snippet forwarding (MOR-2358)', () => {
     expect(target.querySelector('[data-testid="hosted-scope-probe"]')).toBeNull();
     expect(target.querySelector('.spectrum-toolbar')).toBeNull();
     expect(target.querySelector('.audio-source-label')?.textContent).toContain('Audio FFT · AF');
+    // Audio FFT keeps no carrier reference at all (MOR-2464 ruling).
+    expect(target.querySelector('.tune-line')).toBeNull();
     const viewer = target.querySelector<HTMLButtonElement>('[aria-label="Scope viewer"]')!;
     expect(viewer.textContent).toContain('Viewer ON'); viewer.click(); flushSync(); expect(viewer.textContent).toContain('Viewer OFF');
     expect(mockRuntime.scope.subscribeHardware).not.toHaveBeenCalled();
@@ -1568,16 +1601,28 @@ describe('opaque semantic scope snippet forwarding (MOR-2358)', () => {
 });
 
 describe('managed scope projection (MOR-2367)', () => {
-  function projection(state: 'current' | 'stale' | 'unknown' | 'unsupported' = 'current'): ScopeDisplayProjection {
+  function projection(state: 'current' | 'stale' | 'unknown' | 'unsupported' = 'current', frameMode = 0): ScopeDisplayProjection {
     return Object.freeze({
       frame: Object.freeze({ source: 'hardware', receiver: 'MAIN', freshness: 'fresh',
         startHz: 14_000_000, endHz: 14_100_000, normalizedBins: Object.freeze([0, 0.5, 1]) }),
-      frameMode: 0, acceptedSequence: 1,
+      frameMode, acceptedSequence: 1,
       passband: state === 'current' || state === 'stale'
         ? Object.freeze({ state, tuple: Object.freeze({ frequencyHz: 14_050_250, mode: 'USB',
-          widthHz: 2_400, shiftHz: 0, frameMode: 0, startHz: 14_000_000, endHz: 14_100_000 }) })
+          widthHz: 2_400, shiftHz: 0, frameMode, startHz: 14_000_000, endHz: 14_100_000 }) })
         : { state, reason: 'not-observed' },
     });
+  }
+  // MOR-2464: the static CENTER reference must appear in BOTH the spectrum
+  // area and over the waterfall — asserted together, never via one generic
+  // `.tune-line` query.
+  function expectCenterReference(target: HTMLElement, present: boolean): void {
+    const refs = target.querySelectorAll('.spectrum-area .tune-line, .waterfall-content .tune-line');
+    if (present) {
+      expect(refs).toHaveLength(2);
+      refs.forEach((el) => expect((el as HTMLElement).style.left).toBe('50%'));
+    } else {
+      expect(refs).toHaveLength(0);
+    }
   }
   function managed(initial: ReturnType<typeof projection> | null | undefined) {
     const props = new SvelteMap<string, unknown>([['projection', initial], ['demanded', true]]);
@@ -1589,7 +1634,10 @@ describe('managed scope projection (MOR-2367)', () => {
     return { target, props, onScopeDemandChange };
   }
   function cleared(target: HTMLElement) {
-    for (const selector of ['canvas', '.freq-axis', '.tune-line', '.passband-overlay', '.passband-resize-zone', '.draggable']) {
+    // The static CENTER tune-line is deliberately NOT in this list: it is
+    // reference-only and survives projection/demand gaps per call-site
+    // expectations (MOR-2464 focus-gap fix). The data plane clears.
+    for (const selector of ['canvas', '.freq-axis', '.passband-overlay', '.passband-resize-zone', '.draggable']) {
       expect(target.querySelector(selector), selector).toBeNull();
     }
   }
@@ -1598,8 +1646,12 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalled();
     expect(mockRuntime.scope.subscribeHardware).not.toHaveBeenCalled();
     emitFrame();
-    if (kind === null) cleared(target);
-    else expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    if (kind === null) {
+      cleared(target);
+      // MOR-2464: with frequency evidence the static CENTER reference
+      // stays visible in BOTH areas through the projection gap.
+      expectCenterReference(target, true);
+    } else expect(target.querySelector('.passband-overlay')).not.toBeNull();
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
   });
   it('keeps omitted and explicit undefined projections on the legacy acquisition path', () => {
@@ -1612,8 +1664,10 @@ describe('managed scope projection (MOR-2367)', () => {
     emitFrame(); const oldCallback = runtimeHarness.state.capturedHardwareFrame!;
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
     props.set('projection', null); flushSync(); cleared(target);
+    expectCenterReference(target, true);
     oldCallback({ receiver: 0, mode: 0, startFreq: 14_000_000, endFreq: 14_100_000, pixels: new Uint8Array([90, 90]) });
     flushSync(); cleared(target);
+    expectCenterReference(target, true);
     expect(runtimeHarness.state.hardwareUnsubscribe).toHaveBeenCalledOnce();
     expect(mockRuntime.releaseHardwareScope).toHaveBeenCalledOnce();
   });
@@ -1629,6 +1683,10 @@ describe('managed scope projection (MOR-2367)', () => {
     if (boundary === 'null') props.set('projection', null);
     else target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click();
     flushSync(); cleared(target);
+    // MOR-2464: a projection gap keeps the static CENTER reference in both
+    // areas; the viewer-OFF boundary keeps hiding it.
+    if (boundary === 'off') expectCenterReference(target, false);
+    else expectCenterReference(target, true);
     expect(oldCanvas?.isConnected).toBe(false);
     expect(runtimeHarness.state.mockScopeConnected).toBe(true);
     expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledOnce();
@@ -1638,6 +1696,8 @@ describe('managed scope projection (MOR-2367)', () => {
     pointer(spectrum, 'pointerdown', 81, 100); pointer(spectrum, 'pointermove', 81, 130); pointer(spectrum, 'pointerup', 81, 130);
     target.querySelector('.spectrum-panel')!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 1 }));
     emitFrame(); cleared(target);
+    if (boundary === 'off') expectCenterReference(target, false);
+    else expectCenterReference(target, true);
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
     if (boundary === 'off') {
@@ -1645,6 +1705,8 @@ describe('managed scope projection (MOR-2367)', () => {
       props.set('projection', null); flushSync();
       target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click(); flushSync();
       expect(onScopeDemandChange).toHaveBeenLastCalledWith(true); cleared(target);
+      // Demand back ON with the projection still gone: reference returns.
+      expectCenterReference(target, true);
     }
     props.set('projection', projection()); flushSync();
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
@@ -1654,9 +1716,43 @@ describe('managed scope projection (MOR-2367)', () => {
     const { target } = managed(projection(state));
     expect(target.querySelector('canvas')).not.toBeNull();
     expect(target.querySelector('.freq-axis')).not.toBeNull();
-    expect(target.querySelector('.tune-line')).toBeNull();
+    // MOR-2464: the static CENTER carrier reference is not passband
+    // geometry — in BOTH areas it shows from frequency evidence while the
+    // tuple lags; the filter shade itself stays absent (its geometry is
+    // intentionally unavailable until the tuple recovers).
+    expectCenterReference(target, true);
     expect(target.querySelector('.passband-overlay')).toBeNull();
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
+  });
+  it('keeps the static CENTER reference through a focus-like projection gap and restores passband on recovery', () => {
+    const { target, props } = managed(projection());
+    expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
+    expect(target.querySelector('.spectrum-area .tune-line')).toBeNull();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    // Focus pause: the projection drops; only the static reference
+    // survives in both areas — no passband geometry is invented from it.
+    props.set('projection', null); flushSync();
+    expectCenterReference(target, true);
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+    props.set('projection', projection()); flushSync();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
+  });
+  it('pins no false CENTER marker when a FIX projection drops to null', () => {
+    authorityHarness.state.current = authority({
+      scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 1 }) }) }),
+    });
+    refreshSpectrumAuthority();
+    const { target, props } = managed(projection('current', 1));
+    // FIX with live frame+tuple: proportional waterfall line, canvas
+    // marker, no spectrum-area DOM stand-in.
+    expect(target.querySelector<HTMLElement>('.waterfall-content .tune-line')).not.toBeNull();
+    expect(target.querySelector('.spectrum-area .tune-line')).toBeNull();
+    // The post-clear frameScopeMode default (0) is NOT proof of CENTER —
+    // the authority's observed FIX scope-control mode must keep the
+    // reference hidden in both areas.
+    props.set('projection', null); flushSync();
+    expectCenterReference(target, false);
   });
   it('retains whole stale geometry with no cue while strict fresh frequency still pans', () => {
     const { target, props } = managed(projection()); const original = target.querySelector('.passband-overlay')!.getAttribute('style');
@@ -1919,7 +2015,10 @@ describe('managed scope projection (MOR-2367)', () => {
   it('obeys an external demanded=false even if the supplied projection is still live', () => {
     const { target, props } = managed(projection());
     props.set('demanded', false); flushSync(); cleared(target);
+    // Viewer OFF keeps hiding the reference (MOR-2464 ruling).
+    expect(target.querySelector('.tune-line')).toBeNull();
     props.set('projection', projection()); flushSync(); cleared(target);
+    expect(target.querySelector('.tune-line')).toBeNull();
     expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalled();
     props.set('demanded', true); flushSync();
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
@@ -2328,6 +2427,126 @@ describe('center panorama motion (MOR-2464)', () => {
       // Sanity: the SUB-scoped pending does drive the SUB-authority viewport.
       setPendingFrequency(0, null);
       setPendingFrequency(1, 14_053_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(3_000));
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+  });
+
+  // MOR-2464 follow-up — the display-only tuning-burst latch: while local
+  // gesture intent is live (repeated arrows/wheel/clicks), the viewport
+  // chases the accumulator's per-gesture target — including paced-unsent
+  // steps — and intermediate confirmed observations plus the pending
+  // accessor's post-ack drop cannot pull it back mid-gesture. After the
+  // burst ends the pending lifecycle remains the fallback, then confirmed
+  // truth.
+  describe('tuning burst target', () => {
+    it('shields the glide when a mid-gesture observation drops the pending latch on an intermediate value', async () => {
+      const { target, props } = mountPanorama(panoramaProjection());
+      setTuningBurstFrequency(0, 14_051_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+      // The radio's own poll observes freqHz past the last ack boundary, so
+      // `getPendingFrequencyHz` drops to null while the confirmed tuple
+      // still carries an intermediate value — the exact handoff gap. The
+      // burst latch must keep the viewport on the gesture target.
+      setPendingFrequency(0, null);
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 2));
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      const shifts = recordedShifts();
+      const firstMoving = shifts.findIndex((v) => v > 0);
+      expect(shifts.slice(firstMoving).every((v) => v > 0)).toBe(true);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+
+    it('prefers the paced-unsent burst target over the older emitted pending value', async () => {
+      const { target } = mountPanorama(panoramaProjection());
+      setPendingFrequency(0, 14_051_000);
+      setTuningBurstFrequency(0, 14_052_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(2_000));
+      expect(recordedShifts().some((v) => v > 0 && v < 2_000)).toBe(true);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+
+    it('retargets a rapid burst reversal while observations stay stale', async () => {
+      const { target } = mountPanorama(panoramaProjection());
+      setTuningBurstFrequency(0, 14_051_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+      setTuningBurstFrequency(0, 14_049_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(-1_000));
+      expect(Math.max(...recordedShifts().map(Math.abs))).toBeLessThanOrEqual(1_000);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+
+    it('reconciles through pending after the burst ends, then to confirmed', async () => {
+      const { target } = mountPanorama(panoramaProjection());
+      setTuningBurstFrequency(0, 14_051_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      // Burst hold elapsed: pending (the last emitted command) keeps the
+      // viewport parked at the same target — no bounce.
+      setPendingFrequency(0, 14_051_000);
+      setTuningBurstFrequency(0, null);
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(recordedShifts().at(-1)).toBe(1_000);
+      // Pending resolves: confirmed observed truth takes over.
+      setPendingFrequency(0, null);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+
+    it('drops the displayed burst reactively when a paced flush emits an already-failed lifecycle', async () => {
+      const emitted: { status: string }[] = [];
+      const acc = createTuningAccumulator({
+        emit: () => {
+          const lifecycle = emitted.length === 0 ? { status: 'pending' } : { status: 'failed' };
+          emitted.push(lifecycle);
+          return lifecycle;
+        },
+        paceMs: 500, quietWindowMs: 4_000, visualHoldMs: 5_000,
+      });
+      mountPanorama(panoramaProjection());
+      acc.step(0, 14_050_000, 14_051_000, 1);
+      acc.step(0, 14_050_000, 14_051_000, 1);
+      // Two rapid steps: the component chases the paced-unsent +2_000
+      // target through the real publication map (glide completes well
+      // inside the 500ms pace window).
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(2_000), { timeout: 2_000 });
+      // The paced flush emits a lifecycle that is ALREADY terminal. The
+      // map must change so the panel's $derived re-reads it and falls back
+      // to the confirmed frequency — a shallow in-place mutation of the
+      // old record would leave the stale target painted.
+      await vi.waitFor(() => {
+        expect(emitted).toHaveLength(2);
+        expect(recordedShifts().at(-1)).toBe(0);
+      });
+      acc.cancel();
+    });
+
+    it('ignores a burst target scoped to the other receiver', async () => {
+      const { target } = mountPanorama(panoramaProjection());
+      setTuningBurstFrequency(1, 14_051_000);
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(recordedShifts().every((v) => v === 0)).toBe(true);
+      // Authority switches to SUB with no SUB-scoped burst: a MAIN-scoped
+      // burst must not move it...
+      setTuningBurstFrequency(1, null);
+      setTuningBurstFrequency(0, 14_052_000);
+      authorityHarness.state.current = authority({ receiver: 1 });
+      refreshSpectrumAuthority();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(recordedShifts().filter((v) => v !== 0)).toHaveLength(0);
+      // ...while a SUB-scoped burst does drive the SUB-authority viewport.
+      setTuningBurstFrequency(0, null);
+      setTuningBurstFrequency(1, 14_053_000);
       flushSync();
       await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(3_000));
       expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');

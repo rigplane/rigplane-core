@@ -22,6 +22,7 @@
     getFilterHandlers,
     getFilterWidthCommandLifecycle,
     getPendingFrequencyHz,
+    getTuningBurstFrequencyHz,
     getVfoHandlers,
   } from '../../lib/runtime/adapters/panel-adapters';
   import {
@@ -363,6 +364,34 @@
       ? ((tuneHz - startFreq) / spanHz) * 100
       : 50
   );
+  // MOR-2464 focus-gap defect: in CENTER scope mode the carrier reference
+  // is stationary at 50% by construction — showing it needs neither a live
+  // frame's span nor the evidence-bound passband tuple, only the radio's
+  // own observed frequency. During a projection/tuple recovery gap
+  // (browser refocus) the reference stays visible immediately instead of
+  // returning >1s later with the frame. FIX keeps its frame-bound
+  // proportional line, audio FFT shows none, and viewer OFF hides it.
+  // Positive CENTER evidence: the live frame's own mode while a frame is
+  // present, otherwise the authority's observed scope-control mode — the
+  // post-clear frameScopeMode default (0) alone is NOT proof of CENTER,
+  // so a FIX projection that dropped to null grows no false 50% marker.
+  let scopeControlsMode = $derived.by(() => {
+    const reading = spectrumAuthority?.scopeControls?.mode.reading;
+    return reading?.status === 'known' && typeof reading.value === 'number' ? reading.value : null;
+  });
+  let centerReferenceMode = $derived(
+    spanHz > 0
+      ? !isFixedScope
+      : scopeControlsMode !== null && !isFixedScopeFn(scopeControlsMode),
+  );
+  let tuneLineVisible = $derived(
+    (tuneVisible && spanHz > 0)
+    || (!audioFft && scopeDemandOn && centerReferenceMode && spectrumAuthority?.frequencyHz != null)
+  );
+  // The spectrum canvas draws its own carrier marker from renderer
+  // options whenever the frame+tuple legs hold; this DOM reference stands
+  // in only when they cannot (span 0 or tuple unavailable).
+  let spectrumCenterReferenceVisible = $derived(tuneLineVisible && !(tuneVisible && spanHz > 0));
 
   // --- Center panorama motion (MOR-2464): display-only, absolute Hz ---
   let panoramaCenter = new PanoramaViewportCenter(0);  let visualCenterHz = $state(0);
@@ -371,18 +400,26 @@
   let panoramaTargetApplied: number | null = null;
 
   let panoramaActive = $derived(!audioFft && !isFixedScope && spanHz > 0);
-  // MOR-2464 follow-up: while a set_freq intent is in flight for the
-  // authority's receiver — pending or acknowledged, until the radio's own
-  // observation confirms it — the panorama chases that pending target so
-  // the viewport answers the intent immediately. Display-only: the
-  // confirmed `displayFrequencyHz` below stays the fallback and authority.
+  // MOR-2464 follow-up: the panorama target takes the freshest display-only
+  // leg available. (1) The local tuning burst — the accumulator's per-gesture
+  // target, paced-unsent steps included — shields the glide from the
+  // intermediate confirmed observations and the pending accessor's post-ack
+  // drop that made rapid arrow tuning jerk. It self-retires shortly after
+  // input ends. (2) A pending/acknowledged set_freq target. (3) Confirmed
+  // `displayFrequencyHz`, which stays the authority. None of the legs emit
+  // commands.
+  let panoramaBurstHz = $derived(
+    panoramaActive && spectrumAuthority !== null
+      ? getTuningBurstFrequencyHz(spectrumAuthority.receiver)
+      : null,
+  );
   let panoramaPendingHz = $derived(
     panoramaActive && spectrumAuthority !== null
       ? getPendingFrequencyHz(spectrumAuthority.receiver)
       : null,
   );
   let panoramaTargetHz = $derived(panoramaActive
-    ? panoramaPendingHz ?? (displayFrequencyHz != null ? displayFrequencyHz : null)
+    ? panoramaBurstHz ?? panoramaPendingHz ?? (displayFrequencyHz != null ? displayFrequencyHz : null)
     : null);
   // Receiver/provider/span/mode identity resets the motion on change.
   let panoramaResetKey = $derived(panoramaActive
@@ -902,6 +939,9 @@
       {#if scopeTraceLive}
       <SpectrumCanvas data={scopePixels} options={spectrumOptions} {spanHz} {enableAvg} {enablePeakHold} onRegisterPush={(fn) => { spectrumPush = fn; if (managed && scopePixels) fn(scopePixels); }} />
       {/if}
+      {#if spectrumCenterReferenceVisible}
+        <div class="tune-line" style="left:{tuneLinePct}%"></div>
+      {/if}
       {#if tuneVisible && spanHz > 0 && pbWidthPct > 0 && canResizePassband}
         <button
           type="button"
@@ -964,6 +1004,8 @@
             ></button>
           {/if}
         {/if}
+      {/if}
+      {#if tuneLineVisible}
         <div class="tune-line" style="left:{tuneLinePct}%"></div>
       {/if}
     </div>

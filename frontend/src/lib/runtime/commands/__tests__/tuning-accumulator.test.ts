@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createTuningAccumulator,
   getSharedTuningAccumulator,
+  getTuningBurstTargetHz,
   resetSharedTuningAccumulatorForTests,
   type TuningAccumulator,
 } from '../tuning-accumulator';
@@ -277,6 +278,168 @@ describe('MOR-1425 tuning accumulator', () => {
     lifecycle.status = 'failed';
     vi.advanceTimersByTime(60);
     expect(emit).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('MOR-2464 display-only tuning-burst publication', () => {
+  let emit: ReturnType<typeof vi.fn<(receiver: number, freq: number) => { status: string }>>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetSharedTuningAccumulatorForTests();
+    emit = vi.fn((_receiver: number, _freq: number) => ({ status: 'pending' }));
+  });
+  afterEach(() => {
+    resetSharedTuningAccumulatorForTests();
+    vi.useRealTimers();
+  });
+
+  it('publishes the accumulated target including paced-unsent steps, ahead of the last emit', () => {
+    const acc = createTuningAccumulator({ emit, paceMs: 60, quietWindowMs: 4_000 });
+    const confirmed = 14_074_000;
+    acc.step(0, confirmed, confirmed + 1_000, 1); // cold: emit C+1k
+    acc.step(0, confirmed, confirmed + 1_000, 1); // hot: same stale confirmed, delta +1k, unsent
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(getTuningBurstTargetHz(0)).toBe(confirmed + 2_000);
+  });
+
+  it('expires the visual hold after the input quiet while accumulation authority survives', () => {
+    const acc = createTuningAccumulator({
+      emit, paceMs: 60, quietWindowMs: 4_000, visualHoldMs: 200,
+    });
+    const confirmed = 14_074_000;
+    acc.step(0, confirmed, confirmed + 1_000, 1);
+    expect(getTuningBurstTargetHz(0)).toBe(confirmed + 1_000);
+    vi.advanceTimersByTime(201);
+    expect(getTuningBurstTargetHz(0)).toBeNull();
+    // 201ms in, the 4s accumulation window is still hot: the next step
+    // paces (no immediate emit) and keeps accumulating — the visual hold
+    // and the accumulation quiet window are separate authorities.
+    acc.step(0, confirmed, confirmed + 1_000, 1);
+    expect(emit).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(60);
+    expect(emit).toHaveBeenLastCalledWith(0, confirmed + 2_000);
+  });
+
+  it('extends the hold on every accepted step, including an unchanged-command repeat', () => {
+    const acc = createTuningAccumulator({
+      emit, paceMs: 60, quietWindowMs: 4_000, visualHoldMs: 200,
+    });
+    const confirmed = 14_074_000;
+    acc.step(0, confirmed, confirmed + 1_000, 1);
+    vi.advanceTimersByTime(150);
+    // The echo confirms the first write (unassociated marker), so the next
+    // press of the same gesture re-emits the SAME target — an unchanged
+    // command emit. It is still local input: the visual latch refreshes.
+    acc.step(0, confirmed + 1_000, confirmed + 1_000, 2);
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(emit).toHaveBeenLastCalledWith(0, confirmed + 1_000);
+    vi.advanceTimersByTime(100); // 250ms past the FIRST input, 100ms past the second
+    expect(getTuningBurstTargetHz(0)).toBe(confirmed + 1_000);
+    vi.advanceTimersByTime(101);
+    expect(getTuningBurstTargetHz(0)).toBeNull();
+  });
+
+  it('tracks a mid-burst direction reversal in the published target', () => {
+    const acc = createTuningAccumulator({ emit, paceMs: 60, quietWindowMs: 4_000 });
+    const confirmed = 14_074_000;
+    acc.step(0, confirmed, confirmed + 1_000, 1);
+    acc.step(0, confirmed, confirmed + 1_000, 1);
+    // The displayed frequency is still the stale confirmed value; one press
+    // of the opposite arrow requests confirmed - step: delta -1k, hot.
+    acc.step(0, confirmed, confirmed - 1_000, 1);
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(getTuningBurstTargetHz(0)).toBe(confirmed + 1_000);
+  });
+
+  it('publishes a jump target and retires any prior burst publication', () => {
+    const acc = createTuningAccumulator({ emit, paceMs: 60, quietWindowMs: 4_000 });
+    acc.step(0, 14_074_000, 14_075_000, 1);
+    acc.jump(0, 18_100_000);
+    expect(getTuningBurstTargetHz(0)).toBe(18_100_000);
+    vi.advanceTimersByTime(60); // the pre-jump paced flush never resurrects it
+    expect(getTuningBurstTargetHz(0)).toBe(18_100_000);
+  });
+
+  it('releases immediately when the burst lifecycle resolves terminally', () => {
+    const lifecycle = { status: 'pending' };
+    emit.mockReturnValueOnce(lifecycle);
+    const acc = createTuningAccumulator({
+      emit, paceMs: 60, quietWindowMs: 4_000, visualHoldMs: 200,
+    });
+    acc.step(0, 14_074_000, 14_075_000, 1);
+    expect(getTuningBurstTargetHz(0)).toBe(14_075_000);
+    lifecycle.status = 'failed';
+    expect(getTuningBurstTargetHz(0)).toBeNull();
+  });
+
+  it('cancel(receiver) retires the publication for that receiver only', () => {
+    const acc = createTuningAccumulator({ emit, paceMs: 60, quietWindowMs: 4_000 });
+    acc.step(0, 14_074_000, 14_075_000, 1);
+    acc.step(1, 7_100_000, 7_101_000, 1);
+    acc.cancel(0);
+    expect(getTuningBurstTargetHz(0)).toBeNull();
+    expect(getTuningBurstTargetHz(1)).toBe(7_101_000);
+  });
+
+  it.each([
+    ['session epoch', (mutate: { epoch: () => number }) => { mutate.epoch = () => 2; }],
+    ['provider generation', (mutate: { generation: () => number | null }) => { mutate.generation = () => 8; }],
+    ['selected VFO context', (mutate: { context: () => string | null }) => { mutate.context = () => 'ab:main:B'; }],
+  ] as const)('releases on a mid-hold %s reset', (_label, reset) => {
+    const mutable = { epoch: () => 1, generation: () => 7 as number | null, context: () => 'ab:main:A' as string | null };
+    const acc = createTuningAccumulator({
+      emit, paceMs: 60, quietWindowMs: 4_000, visualHoldMs: 200,
+      epoch: () => mutable.epoch(), generation: () => mutable.generation(), context: () => mutable.context(),
+    });
+    acc.step(0, 14_074_000, 14_075_000, 1);
+    expect(getTuningBurstTargetHz(0)).toBe(14_075_000);
+    reset(mutable);
+    expect(getTuningBurstTargetHz(0)).toBeNull();
+  });
+
+  it('cancel() with no receiver retires markerless publications too (jump and cold step without pending entries)', () => {
+    const acc = createTuningAccumulator({ emit, paceMs: 60, quietWindowMs: 4_000 });
+    // A jump publishes without creating a pending entry; so does a cold
+    // step with no valid observation marker.
+    acc.jump(0, 18_100_000);
+    acc.step(1, 7_100_000, 7_101_000, null);
+    expect(getTuningBurstTargetHz(0)).toBe(18_100_000);
+    expect(getTuningBurstTargetHz(1)).toBe(7_101_000);
+    acc.cancel();
+    expect(getTuningBurstTargetHz(0)).toBeNull();
+    expect(getTuningBurstTargetHz(1)).toBeNull();
+  });
+
+  it('re-binds the publication to the paced flush lifecycle so a fresh terminal failure invalidates it immediately', () => {
+    const acc = createTuningAccumulator({ emit, paceMs: 60, quietWindowMs: 4_000, visualHoldMs: 200 });
+    const confirmed = 14_074_000;
+    const cold = { status: 'pending' };
+    emit.mockReturnValueOnce(cold);
+    acc.step(0, confirmed, confirmed + 1_000, 1); // cold emit carries `cold`
+    const hot = { status: 'pending' };
+    emit.mockReturnValueOnce(hot);
+    acc.step(0, confirmed, confirmed + 1_000, 1); // hot; the paced flush will emit `hot`
+    vi.advanceTimersByTime(60); // flush emits — the publication must now track `hot`
+    expect(emit).toHaveBeenCalledTimes(2);
+    hot.status = 'failed';
+    // Still inside the visual hold, and `cold` never went terminal — the
+    // FRESH emit's failure must still kill the displayed target.
+    expect(getTuningBurstTargetHz(0)).toBeNull();
+    // And the flush did not extend the hold past the last input.
+    vi.advanceTimersByTime(141); // 201ms past the input, 141ms past the flush
+    expect(getTuningBurstTargetHz(0)).toBeNull();
+  });
+
+  it('measures visual staleness on the accumulator clock, not Date.now', () => {
+    let clock = 1_000;
+    const acc = createTuningAccumulator({
+      emit, paceMs: 60, quietWindowMs: 4_000, visualHoldMs: 200, now: () => clock,
+    });
+    acc.step(0, 14_074_000, 14_075_000, 1);
+    vi.advanceTimersByTime(100); // timer/Date clock: only 100ms elapsed
+    clock += 250; // the injected clock says the input is already 250ms old
+    expect(getTuningBurstTargetHz(0)).toBeNull();
   });
 });
 
