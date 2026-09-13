@@ -43,6 +43,7 @@
     deriveFreqTicks,
     isFixedScope as isFixedScopeFn,
   } from './spectrum-logic';
+  import { PanoramaViewportCenter } from './panorama-motion';
 
   // --- Props ---
   // `hideSourceControls` is forwarded to SpectrumToolbar so layouts that surface
@@ -301,9 +302,11 @@
     && (scopeProjection.passband.state === 'current' || scopeProjection.passband.state === 'stale')
     ? scopeProjection.passband.tuple : null);
   let displayStale = $derived(displayTuple !== null && scopeProjection?.passband.state === 'stale');
-  let translatedStale = $derived(scopeProjection?.passband.state === 'stale'
-    && scopeProjection.passband.translated === true);
-  let proportionalIndicator = $derived(isFixedScope || translatedStale);
+  // MOR-2464: a translated stale tuple no longer flips the indicator to a
+  // proportional position — in CENTER the carrier+passband anchor stays at
+  // 50% and the panorama itself glides under it. FIX (and SCROLL-F) keep
+  // the proportional marker contract.
+  let proportionalIndicator = $derived(isFixedScope);
   let displayFrequencyHz = $derived(managed ? displayTuple?.frequencyHz : spectrumAuthority?.frequencyHz);
   let tuneVisible = $derived(
     displayFrequencyHz !== null
@@ -363,6 +366,88 @@
       : 50
   );
 
+  // --- Center panorama motion (MOR-2464) ---
+  // The displayed viewport center is tracked in absolute Hz; the
+  // sample-to-viewport offset is re-derived per render. Display-only.
+  let panoramaCenter = new PanoramaViewportCenter(0);
+  let visualCenterHz = $state(0);
+  let panoramaRafId = 0;
+  let panoramaKeyApplied: string | null = null;
+  let panoramaTargetApplied: number | null = null;
+
+  let panoramaActive = $derived(!audioFft && !isFixedScope && spanHz > 0);
+  let panoramaTargetHz = $derived(
+    panoramaActive && displayFrequencyHz !== null && displayFrequencyHz !== undefined
+      ? displayFrequencyHz
+      : null,
+  );
+  // Receiver/provider/span/mode identity: a change in any of these crosses
+  // an unrelated sample window and resets the motion instead of animating
+  // through it.
+  let panoramaResetKey = $derived(panoramaActive
+    ? [spectrumAuthority?.providerGeneration ?? 'x', spectrumAuthority?.receiver ?? 'x',
+      scopeProjection?.frame.receiver ?? 'legacy', frameScopeMode, spanHz].join('|')
+    : '');
+
+  function panoramaNow(): number {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+  }
+
+  function panoramaTick(now: number): void {
+    visualCenterHz = panoramaCenter.sample(now);
+    if (panoramaCenter.settling(now)) panoramaRafId = requestAnimationFrame(panoramaTick);
+    else panoramaRafId = 0;
+  }
+
+  function syncPanoramaMotion(key: string, target: number | null): void {
+    const now = panoramaNow();
+    if (key !== panoramaKeyApplied) {
+      panoramaKeyApplied = key;
+      panoramaTargetApplied = null;
+      panoramaCenter.reset(panoramaActive ? centerHz : 0, now);
+    }
+    if (target !== null && target !== panoramaTargetApplied) {
+      panoramaTargetApplied = target;
+      // A full-span distance leaves the viewport no sample overlap: snap.
+      if (Math.abs(target - centerHz) >= spanHz) {
+        panoramaCenter.reset(target, now);
+      } else {
+        panoramaCenter.retarget(target, now);
+      }
+    }
+    visualCenterHz = panoramaCenter.sample(now);
+    if (panoramaCenter.settling(now)) {
+      if (!panoramaRafId) panoramaRafId = requestAnimationFrame(panoramaTick);
+    } else if (panoramaRafId) {
+      cancelAnimationFrame(panoramaRafId);
+      panoramaRafId = 0;
+    }
+  }
+
+  $effect(() => {
+    const key = panoramaResetKey;
+    const target = panoramaTargetHz;
+    untrack(() => {
+      syncPanoramaMotion(key, target);
+    });
+  });
+
+  $effect(() => {
+    return () => {
+      if (panoramaRafId) cancelAnimationFrame(panoramaRafId);
+    };
+  });
+
+  let viewportShiftHz = $derived(panoramaActive ? visualCenterHz - centerHz : 0);
+  let viewportStartFreq = $derived(panoramaActive ? visualCenterHz - spanHz / 2 : startFreq);
+  let viewportEndFreq = $derived(panoramaActive ? visualCenterHz + spanHz / 2 : endFreq);
+  // Identity of the source sample window: changes reset the spectrum
+  // renderer's sample-space state (averaging, peak hold).
+  let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|`
+    + `${scopeProjection?.frame.receiver ?? 'legacy'}|${startFreq}|${endFreq}`);
+
   // Local brightness only — the radio REF command (0x27/0x19) shifts the
   // scope data that the IC-7610 sends over LAN, so applying refDb here
   // would double-shift. BRT is the frontend-only display adjustment.
@@ -373,19 +458,22 @@
     ...spectrumColorRolesToOptions(resolvedColorRoles),
     spanHz: audioFft || tuneVisible ? spanHz : 0,
     showRfOverlays: !audioFft,
-    centerHz,
+    centerHz: panoramaActive ? visualCenterHz : centerHz,
+    panoramaShiftHz: viewportShiftHz,
+    geometryKey: spectrumGeometryKey,
     tuneHz,
     passbandHz,
     passbandShiftHz,
     refLevel,
     mode: rxMode,
-    scopeMode: translatedStale ? 1 : scopeMode,
+    scopeMode,
   });
 
   let waterfallOptions = $derived<WaterfallOptions>({
     ...defaultWaterfallOptions,
     spanHz,
-    centerHz,
+    centerHz: panoramaActive ? visualCenterHz : centerHz,
+    panoramaShiftHz: viewportShiftHz,
     refLevel,
     colorScheme,
   });
@@ -823,7 +911,7 @@
       {:else if !scopeConnected}
         <div class="scope-disconnected-overlay">{t('core.overlay.scopeDisconnected')}</div>
       {/if}
-      {#if !audioFft}<BandPlanOverlay {startFreq} {endFreq} visible={showBandPlan} {hiddenLayers} />{/if}
+      {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} />{/if}
       {#if scopeTraceLive}
       <SpectrumCanvas data={scopePixels} options={spectrumOptions} {spanHz} {enableAvg} {enablePeakHold} onRegisterPush={(fn) => { spectrumPush = fn; if (managed && scopePixels) fn(scopePixels); }} />
       {/if}
@@ -872,7 +960,7 @@
       {#if !managedUnavailable}
       <WaterfallCanvas options={waterfallOptions} onFreqClick={audioFft ? undefined : handleTune} onRegisterPush={(fn) => { waterfallPush = fn; if (managed && scopePixels) fn(scopePixels); }} />
       {/if}
-      {#if !audioFft}<DxOverlay spots={dxSpots} {startFreq} {endFreq} onTune={handleTune} />{/if}
+      {#if !audioFft}<DxOverlay spots={dxSpots} startFreq={viewportStartFreq} endFreq={viewportEndFreq} onTune={handleTune} />{/if}
       <!-- Tuning + passband indicator overlays the waterfall -->
       {#if tuneVisible && spanHz > 0}
         {#if pbWidthPct > 0}

@@ -21,6 +21,11 @@
 
   function directPush(pixels: Uint8Array): void {
     if (document.hidden) return;
+    // Bind the frame's geometry to its pixels before the row is written:
+    // the push callback fires synchronously from the frame handler, while
+    // the options $effect below runs later — apply the latest options here
+    // so no row is ever sampled under the previous frame's viewport.
+    if (renderer && options) renderer.updateOptions(options);
     renderer?.pushRow(pixels);
   }
 

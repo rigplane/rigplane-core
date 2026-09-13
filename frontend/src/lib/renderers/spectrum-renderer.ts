@@ -89,6 +89,13 @@ export interface SpectrumOptions {
   passbandShiftHz: number; // IF/PBT-derived passband offset from carrier
   mode: string;       // current mode (USB/LSB/CW/AM/FM) — affects passband placement
   scopeMode: number;  // 0=CTR, 1=FIX, 2=SCROLL-C, 3=SCROLL-F
+  // MOR-2464: viewport center minus sample-window center, Hz. Positive
+  // shifts the sampled content left. Positions outside the sample window
+  // stay blank.
+  panoramaShiftHz: number;
+  // Identity of the SOURCE sample window (frame edges/receiver/provider).
+  // A change resets sample-space state; viewport animation never changes it.
+  geometryKey: string;
 }
 
 export const defaultSpectrumOptions: SpectrumOptions = {
@@ -103,6 +110,8 @@ export const defaultSpectrumOptions: SpectrumOptions = {
   passbandShiftHz: 0,
   mode: '',
   scopeMode: 0,
+  panoramaShiftHz: 0,
+  geometryKey: '',
 };
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -110,6 +119,38 @@ function clamp(v: number, lo: number, hi: number): number {
 }
 
 const SPECTRUM_AMPLITUDE_MAX = 80;
+
+function panoramaShiftPixels(options: SpectrumOptions, width: number): number {
+  const { spanHz, panoramaShiftHz } = options;
+  if (!(spanHz > 0) || !Number.isFinite(panoramaShiftHz)) return 0;
+  return (panoramaShiftHz / spanHz) * width;
+}
+
+/**
+ * Map data to canvas y-coordinates for the shifted viewport, linearly
+ * interpolating sample positions. Columns whose sample position falls
+ * outside [0, n-1] are left uncovered in `covered`.
+ */
+function mapShiftedPoints(
+  data: Uint8Array,
+  width: number,
+  height: number,
+  shiftPx: number,
+  refLevel: number,
+  yPoints: Float32Array,
+  covered: Uint8Array,
+): void {
+  const n = data.length;
+  for (let x = 0; x < width; x++) {
+    const src = ((x + shiftPx) * n) / width;
+    if (src < 0 || src > n - 1) continue;
+    const i0 = Math.floor(src);
+    const frac = src - i0;
+    const sample = i0 >= n - 1 ? data[i0] : data[i0] * (1 - frac) + data[i0 + 1] * frac;
+    yPoints[x] = height * (1 - spectrumDisplayAmplitude(sample, refLevel));
+    covered[x] = 1;
+  }
+}
 
 export function spectrumDisplayAmplitude(sample: number, refLevel: number): number {
   const refAdjust = (refLevel / 60) * 40;
@@ -192,12 +233,12 @@ export function renderSpectrum(
   // Gain boost: map 0-80 → full height with sqrt curve for better contrast
   // at low signal levels (IC-7610 scope data typically peaks at ~55)
   // Ref level: -30..+30 dB → ±40 on 0-80 scale (same mapping as waterfall)
+  // MOR-2464: sampling is shifted by the panorama viewport offset; uncovered
+  // columns (sample position outside the frame window) stay blank.
+  const shiftPx = panoramaShiftPixels(options, width);
   const yPoints = new Float32Array(width);
-  for (let x = 0; x < width; x++) {
-    const idx = Math.min(n - 1, Math.floor((x / width) * n));
-    const amplitude = spectrumDisplayAmplitude(data[idx], options.refLevel);
-    yPoints[x] = height * (1 - amplitude);
-  }
+  const covered = new Uint8Array(width);
+  mapShiftedPoints(data, width, height, shiftPx, options.refLevel, yPoints, covered);
 
   // Filled area under spectrum (gradient cached per-instance; recreated only when height or either stop changes)
   const cache = gradCache ?? { current: null };
@@ -209,22 +250,30 @@ export function renderSpectrum(
     cache.current = { grad, height, fillColor, fillColorBottom };
   }
   ctx.fillStyle = cache.current.grad;
-  ctx.beginPath();
-  ctx.moveTo(0, height);
-  for (let x = 0; x < width; x++) {
-    ctx.lineTo(x, yPoints[x]);
+  for (let runStart = 0; runStart < width;) {
+    if (!covered[runStart]) { runStart++; continue; }
+    let runEnd = runStart;
+    while (runEnd + 1 < width && covered[runEnd + 1]) runEnd++;
+    ctx.beginPath();
+    ctx.moveTo(runStart, height);
+    for (let x = runStart; x <= runEnd; x++) {
+      ctx.lineTo(x, yPoints[x]);
+    }
+    ctx.lineTo(runEnd, height);
+    ctx.closePath();
+    ctx.fill();
+    runStart = runEnd + 1;
   }
-  ctx.lineTo(width, height);
-  ctx.closePath();
-  ctx.fill();
 
   // Spectrum line
   ctx.strokeStyle = lineColor;
   ctx.lineWidth = lineWidth;
   ctx.beginPath();
+  let lineOpen = false;
   for (let x = 0; x < width; x++) {
-    if (x === 0) ctx.moveTo(0, yPoints[x]);
-    else ctx.lineTo(x, yPoints[x]);
+    if (!covered[x]) { lineOpen = false; continue; }
+    if (lineOpen) ctx.lineTo(x, yPoints[x]);
+    else { ctx.moveTo(x, yPoints[x]); lineOpen = true; }
   }
   ctx.stroke();
 
@@ -283,6 +332,7 @@ export class SpectrumRenderer {
   private peakTimestamps: number[] = [];
   private avgEnabled = true;
   private peakHoldEnabled = true;
+  private lastGeometryKey: string | null = null;
   private readonly _gradCache: { current: GradCache | null } = { current: null };
 
   setAvgEnabled(enabled: boolean): void {
@@ -306,6 +356,14 @@ export class SpectrumRenderer {
     options: SpectrumOptions,
   ): void {
     const now = performance.now();
+
+    // A changed SOURCE window invalidates sample-space state (MOR-2464).
+    if (options.geometryKey !== this.lastGeometryKey) {
+      this.lastGeometryKey = options.geometryKey;
+      this.frameHistory = [];
+      this.peakValues = [];
+      this.peakTimestamps = [];
+    }
 
     // --- Moving average ---
     let displayData = data;
@@ -357,28 +415,32 @@ export class SpectrumRenderer {
     options: SpectrumOptions,
   ): void {
     // Draw peak hold as subtle gray fill between current spectrum and peak line
-    const n = currentData.length;
-    
+    const shiftPx = panoramaShiftPixels(options, width);
+    const yPoints = new Float32Array(width);
+    const covered = new Uint8Array(width);
+    mapShiftedPoints(currentData, width, height, shiftPx, options.refLevel, yPoints, covered);
+
     ctx.fillStyle = 'rgba(200, 200, 200, 0.25)';
     ctx.beginPath();
-    
+
     // Start from left, draw current spectrum line
+    let lineOpen = false;
     for (let x = 0; x < width; x++) {
-      const idx = Math.min(n - 1, Math.floor((x / width) * n));
-      const amplitude = spectrumDisplayAmplitude(currentData[idx], options.refLevel);
-      const y = height * (1 - amplitude);
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+      if (!covered[x]) { lineOpen = false; continue; }
+      if (lineOpen) ctx.lineTo(x, yPoints[x]);
+      else { ctx.moveTo(x, yPoints[x]); lineOpen = true; }
     }
-    
-    // Draw back along peak line (right to left)
+
+    // Draw back along peak line (right to left) under the same viewport
     for (let i = peaks.length - 1; i >= 0; i--) {
-      const x = (i / peaks.length) * width;
+      const x = ((i / peaks.length) * width) - shiftPx;
+      if (x < 0 || x >= width) continue;
       const amplitude = spectrumDisplayAmplitude(peaks[i], options.refLevel);
       const y = height * (1 - amplitude);
-      ctx.lineTo(x, y);
+      if (lineOpen) ctx.lineTo(x, y);
+      else { ctx.moveTo(x, y); lineOpen = true; }
     }
-    
+
     ctx.closePath();
     ctx.fill();
   }
