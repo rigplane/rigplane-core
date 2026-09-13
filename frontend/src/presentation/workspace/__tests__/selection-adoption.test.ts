@@ -27,8 +27,18 @@ import {
   getTheme, hasExplicitTheme, setTheme, setThemeUserChoice,
 } from '../../../components-v2/theme/theme-switcher';
 import { resolveSkinId } from '../../../skins/registry';
+import type { Capabilities } from '../../../lib/types/capabilities';
 import { fieldline, studioline } from '../../languages/declarations';
 import { validManifest } from '../../languages/__tests__/fixtures';
+
+/** T198: `dual-receiver-cockpit`'s manifest declares only the two dual
+ *  topology classes, and `resolveSkinId` now refuses the preference on any
+ *  other radio — so the QA-override case below has to name one. Only the
+ *  three fields `derivePresentationCapabilities` reads for its topology are
+ *  populated. */
+const MAIN_SUB_CAPABILITIES = {
+  vfoScheme: 'main_sub', receivers: 2, capabilities: ['dual_rx'],
+} as unknown as Capabilities;
 
 const LEGACY_LAYOUT_KEY = 'rigplane-layout';
 const LEGACY_SKIN_KEY = 'rigplane-skin';
@@ -233,7 +243,7 @@ describe('MOR-1257 — the ?layout= QA override survives adoption byte-exactly',
 
     // App's own expression: the override wins for RESOLUTION only.
     expect(resolveSkinId({
-      capabilities: null,
+      capabilities: MAIN_SUB_CAPABILITIES,
       layoutPreference: override ?? getLayoutMode(),
       isMobile: false,
       hasAnyScope: true,
@@ -241,7 +251,7 @@ describe('MOR-1257 — the ?layout= QA override survives adoption byte-exactly',
 
     // …and mobile still wins under 640px.
     expect(resolveSkinId({
-      capabilities: null,
+      capabilities: MAIN_SUB_CAPABILITIES,
       layoutPreference: override ?? getLayoutMode(),
       isMobile: true,
       hasAnyScope: true,
