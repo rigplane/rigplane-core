@@ -684,7 +684,6 @@ class _IcomSerialRadioBase(CoreRadio):
             raise TypeError("callback must be callable and accept AudioPacket | None.")
         self._check_connected()
 
-        self._opus_rx_user_callback = callback
         owner_loop = asyncio.get_running_loop()
 
         sample_rate = self.audio_sample_rate
@@ -726,13 +725,25 @@ class _IcomSerialRadioBase(CoreRadio):
             # owner loop (MOR-2465).
             owner_loop.call_soon_threadsafe(_deliver_rx_frame, pcm_frame)
 
+        # Arm delivery identity and the user callback before the await:
+        # the driver may invoke the callback before start_rx returns. If
+        # the start fails, roll both back so a still-running previous
+        # session keeps delivering instead of being orphaned (MOR-2465).
+        previous_delivery = self._serial_rx_delivery
+        previous_callback = self._opus_rx_user_callback
+        self._opus_rx_user_callback = callback
         self._serial_rx_delivery = _deliver_rx_frame
-        await self._serial_audio_driver.start_rx(
-            _on_pcm_frame,
-            sample_rate=sample_rate,
-            channels=channels,
-            frame_ms=frame_ms,
-        )
+        try:
+            await self._serial_audio_driver.start_rx(
+                _on_pcm_frame,
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+            )
+        except BaseException:
+            self._serial_rx_delivery = previous_delivery
+            self._opus_rx_user_callback = previous_callback
+            raise
 
     async def stop_rx(self) -> None:
         """Stop RX capture (``AudioTransport.stop_rx``)."""

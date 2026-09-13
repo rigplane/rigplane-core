@@ -61,6 +61,20 @@ async def _drain_rx_delivery() -> None:
     await asyncio.sleep(0)
 
 
+class _FailFirstStartUsbAudioDriver(_FakeUsbAudioDriver):
+    """Fake USB driver whose first ``start_rx`` raises (device open failure)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_start = True
+
+    async def start_rx(self, callback, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        if self.fail_next_start:
+            self.fail_next_start = False
+            raise RuntimeError("RX start failed")
+        await super().start_rx(callback, **kwargs)
+
+
 def test_serial_backends_satisfy_audio_transport_protocol() -> None:
     """Both Icom serial backends are runtime instances of AudioTransport."""
     for radio_cls in (Icom7610SerialRadio, Ic705SerialRadio):
@@ -142,6 +156,66 @@ async def test_start_rx_frame_queued_across_stop_restart_is_discarded() -> None:
 
     assert [p.data for p in packets] == [_PCM_FRAMES[1]]
     assert packets[0].send_seq == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_repeated_start_keeps_existing_stream() -> None:
+    """MOR-2465: a rejected repeated start_rx must not orphan the running
+    stream; the previous session keeps delivering frames."""
+    radio, usb_audio = _make_radio()
+    await radio.connect()
+    first_packets: list[AudioPacket] = []
+    first_cb = first_packets.append
+    await radio.start_rx(first_cb)
+
+    usb_audio.emit_rx_pcm(_PCM_FRAMES[0])
+    await _drain_rx_delivery()
+    assert [p.data for p in first_packets] == [_PCM_FRAMES[0]]
+
+    delivery_before = radio._serial_rx_delivery
+    second_packets: list[AudioPacket] = []
+    with pytest.raises(RuntimeError, match="RX stream already started"):
+        await radio.start_rx(second_packets.append)
+
+    assert radio._serial_rx_delivery is delivery_before
+    assert radio._opus_rx_user_callback is first_cb
+
+    usb_audio.emit_rx_pcm(_PCM_FRAMES[1])
+    await _drain_rx_delivery()
+    await radio.stop_rx()
+    await radio.disconnect()
+
+    assert [p.data for p in first_packets] == _PCM_FRAMES
+    assert second_packets == []
+
+
+@pytest.mark.asyncio
+async def test_failed_initial_start_leaves_no_active_delivery() -> None:
+    """MOR-2465: a failed first start_rx arms no delivery and reports no
+    active RX session; the next start delivers from a clean state."""
+    usb_audio = _FailFirstStartUsbAudioDriver()
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=_FakeSerialCivLink(),
+        audio_driver=usb_audio,
+    )
+    await radio.connect()
+    packets: list[AudioPacket] = []
+
+    with pytest.raises(RuntimeError, match="RX start failed"):
+        await radio.start_rx(packets.append)
+
+    assert radio._serial_rx_delivery is None
+    assert radio._opus_rx_user_callback is None
+
+    await radio.start_rx(packets.append)
+    usb_audio.emit_rx_pcm(_PCM_FRAMES[0])
+    await _drain_rx_delivery()
+    await radio.stop_rx()
+    await radio.disconnect()
+
+    assert [p.send_seq for p in packets] == [0]
+    assert [p.data for p in packets] == [_PCM_FRAMES[0]]
 
 
 async def _run_rx_session(*, neutral: bool) -> tuple[list[AudioPacket], int]:
