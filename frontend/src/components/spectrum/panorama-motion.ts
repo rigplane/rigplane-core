@@ -1,8 +1,3 @@
-// Center-panorama viewport motion (MOR-2464).
-//
-// Tracks the displayed viewport center in absolute Hz; timestamps are
-// caller-supplied monotonic milliseconds (rAF/performance.now), so a paused
-// tab resumes settled. Under prefers-reduced-motion every sample snaps.
 import { prefersReducedMotion } from '$lib/utils/smoothing.svelte';
 
 /** Settle duration; the approved band is 80–120 ms. */

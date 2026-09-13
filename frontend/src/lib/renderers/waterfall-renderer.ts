@@ -112,7 +112,8 @@ export class WaterfallRenderer {
   // sampling offset places new rows.
   private anchoredViewportHz: number;
   private appliedViewportPx = 0;
-  private viewportAnchorValid = false;  // Last confirmed (non-zero) spanHz we've rendered rows under. Used to
+  private viewportAnchorValid = false;
+  // Last confirmed (non-zero) spanHz we've rendered rows under. Used to
   // detect a genuine SPAN change (MOR-1479) vs. a same-value re-observation
   // or the initial 0→real transition (first frame / reconnect), neither of
   // which should clear the backlog. Kept separate from `options.spanHz` so

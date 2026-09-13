@@ -66,6 +66,7 @@ describe('PanoramaViewportCenter', () => {
     expect(center.sample(PANORAMA_SETTLE_MS + 5_000)).toBe(14_051_000);
     expect(center.settling(PANORAMA_SETTLE_MS)).toBe(false);
     for (let t = 1; t < PANORAMA_SETTLE_MS * 2; t += 3) {
+      expect(center.sample(t)).toBeGreaterThanOrEqual(14_050_000);
       expect(center.sample(t)).toBeLessThanOrEqual(14_051_000);
     }
   });
