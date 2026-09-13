@@ -7,8 +7,7 @@ interface ColorStop {
   color: string;
 }
 
-// Blank background for uncovered panorama edges and clear(); the RGB twin
-// is used for putImageData rows, which bypass fillStyle.
+// Blank background for uncovered edges and clear(); RGB twin for putImageData rows.
 const WATERFALL_BACKGROUND = '#001020';
 const WATERFALL_BACKGROUND_RGB: readonly [number, number, number] = [0x00, 0x10, 0x20];
 
@@ -110,10 +109,10 @@ export class WaterfallRenderer {
   private rowData: Uint8ClampedArray | null = null;
   private destroyed = false;
   // MOR-2464: history reprojects by viewport-center deltas only; the
-  // sampling offset places new rows. Re-anchored on clear() and resize().
+  // sampling offset places new rows.
   private anchoredViewportHz: number;
   private appliedViewportPx = 0;
-  // Last confirmed (non-zero) spanHz we've rendered rows under. Used to
+  private viewportAnchorValid = false;  // Last confirmed (non-zero) spanHz we've rendered rows under. Used to
   // detect a genuine SPAN change (MOR-1479) vs. a same-value re-observation
   // or the initial 0→real transition (first frame / reconnect), neither of
   // which should clear the backlog. Kept separate from `options.spanHz` so
@@ -141,8 +140,7 @@ export class WaterfallRenderer {
     this.rowData = this.rowBuf.data;
   }
 
-  // Exact device-pixel sampling offset for the NEXT row (viewport center
-  // minus the current sample-window center).
+  // Exact device-pixel sampling offset for the NEXT row.
   private samplingShiftPx(): number {
     const { spanHz, panoramaShiftHz } = this.options;
     if (!(spanHz > 0) || !Number.isFinite(panoramaShiftHz) || this.width <= 0) return 0;
@@ -156,12 +154,18 @@ export class WaterfallRenderer {
     return Math.round(((centerHz - this.anchoredViewportHz) / spanHz) * this.width);
   }
 
-  /**
-   * Reproject the drawn history onto the current viewport: apply the
-   * integer delta between rounded viewport offsets and blank the uncovered
-   * strip (MOR-2464).
-   */
+  // Reproject the drawn history onto the current viewport (MOR-2464):
+  // integer delta between rounded viewport offsets, uncovered strip
+  // blanked; the first binding of a real sample window anchors silently.
   private _applyViewportShift(): void {
+    const { spanHz, centerHz } = this.options;
+    if (!(spanHz > 0)) return;
+    if (!this.viewportAnchorValid) {
+      this.anchoredViewportHz = centerHz;
+      this.appliedViewportPx = 0;
+      this.viewportAnchorValid = true;
+      return;
+    }
     const target = this.viewportOffsetPx();
     const delta = target - this.appliedViewportPx;
     if (delta === 0) return;
@@ -208,29 +212,33 @@ export class WaterfallRenderer {
     }
     const rowData = this.rowData!;
 
-    // Build the new top row using the color LUT. MOR-2464: the row is
-    // sampled at the exact fractional viewport offset; positions outside
-    // the sample window stay at the blank background color.
+    // Build the new top row using the color LUT. MOR-2464: the resting row
+    // keeps the established nearest-bin mapping; a fractional shift
+    // interpolates the translated screen profile; uncovered stays blank.
     const lut = this.lut;
     const shiftPx = this.samplingShiftPx();
+    const profile = (column: number): number =>
+      data[Math.min(n - 1, Math.floor((column / w) * n))];
     // Ref level: maps -30..+30 dB → ±20 on 0-80 scale
     const refAdjust = (this.options.refLevel / 60) * 40;
     for (let x = 0; x < w; x++) {
       const pi = x * 4;
-      const src = ((x + shiftPx) / w) * n;
-      if (src < 0 || src > n - 1) {
+      const p = x + shiftPx;
+      if (p < 0 || p > w - 1) {
         rowData[pi] = WATERFALL_BACKGROUND_RGB[0];
         rowData[pi + 1] = WATERFALL_BACKGROUND_RGB[1];
         rowData[pi + 2] = WATERFALL_BACKGROUND_RGB[2];
         rowData[pi + 3] = 255;
         continue;
       }
-      const i0 = Math.floor(src);
-      const frac = src - i0;
-      const p = i0 >= n - 1 ? data[i0] : data[i0] * (1 - frac) + data[i0 + 1] * frac;
+      const i0 = Math.floor(p);
+      const frac = p - i0;
+      const sample = frac === 0
+        ? profile(i0)
+        : profile(i0) * (1 - frac) + profile(i0 + 1) * frac;
       // Gain boost: map 0-80 → 0-255 with sqrt curve for better contrast
-      // at low signal levels (IC-7610 scope data peaks at ~55)
-      const adjusted = Math.min(80, Math.max(0, p + refAdjust));
+      // at low signal levels (IC-7610 scope data typically peaks at ~55)
+      const adjusted = Math.min(80, Math.max(0, sample + refAdjust));
       const norm = adjusted / 80;
       const v = Math.floor(Math.sqrt(norm) * 255);
       const li = v * 3;
@@ -268,6 +276,7 @@ export class WaterfallRenderer {
     // Scaled content no longer matches the old pixel anchor.
     this.anchoredViewportHz = this.options.centerHz;
     this.appliedViewportPx = 0;
+    this.viewportAnchorValid = this.options.spanHz > 0;
     if (width > 0 && height > 0) {
       this.ctx.canvas.width = width;
       this.ctx.canvas.height = height;
@@ -309,8 +318,7 @@ export class WaterfallRenderer {
       }
       this.lastConfirmedSpanHz = opts.spanHz;
     }
-    // MOR-2464: history follows viewport-center deltas (centerHz); the
-    // sampling offset never moves drawn rows.
+    // MOR-2464: history follows viewport-center deltas (centerHz) only.
     if (opts.centerHz !== undefined || opts.spanHz !== undefined) {
       this._applyViewportShift();
     }
@@ -328,6 +336,7 @@ export class WaterfallRenderer {
     if (this.destroyed || this.width <= 0 || this.height <= 0) return;
     this.anchoredViewportHz = this.options.centerHz;
     this.appliedViewportPx = 0;
+    this.viewportAnchorValid = this.options.spanHz > 0;
     this.ctx.fillStyle = WATERFALL_BACKGROUND;
     this.ctx.fillRect(0, 0, this.width, this.height);
   }

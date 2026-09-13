@@ -11,7 +11,7 @@
   interface Props {
     options?: WaterfallOptions;
     onFreqClick?: (hz: number) => void;
-    onRegisterPush?: (fn: (data: Uint8Array) => void) => void;
+    onRegisterPush?: (fn: (data: Uint8Array, options?: WaterfallOptions) => void) => void;
   }
 
   let { options = defaultWaterfallOptions, onFreqClick, onRegisterPush }: Props = $props();
@@ -19,13 +19,12 @@
   let canvas: HTMLCanvasElement;
   let renderer = $state<WaterfallRenderer | null>(null);
 
-  function directPush(pixels: Uint8Array): void {
+  function directPush(pixels: Uint8Array, frameOptions?: WaterfallOptions): void {
     if (document.hidden) return;
-    // Bind the frame's geometry to its pixels before the row is written:
-    // the push callback fires synchronously from the frame handler, while
-    // the options $effect below runs later — apply the latest options here
-    // so no row is ever sampled under the previous frame's viewport.
-    if (renderer && options) renderer.updateOptions(options);
+    // The push fires synchronously from the frame handler while the options
+    // $effect runs later — prefer the caller's fresh snapshot.
+    const effective = frameOptions ?? options;
+    if (renderer && effective) renderer.updateOptions(effective);
     renderer?.pushRow(pixels);
   }
 

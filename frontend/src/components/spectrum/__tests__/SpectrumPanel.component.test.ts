@@ -396,7 +396,7 @@ vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => ({
 // Import component after mocks
 // ---------------------------------------------------------------------------
 
-import { WaterfallRenderer } from '$lib/renderers/waterfall-renderer';
+import { WaterfallRenderer, type WaterfallOptions } from '$lib/renderers/waterfall-renderer';
 import SpectrumPanel from '../SpectrumPanel.svelte';
 import spectrumPanelSource from '../SpectrumPanel.svelte?raw';
 import {
@@ -2070,45 +2070,31 @@ describe('hardware scope drop clears the trace (R53)', () => {
 });
 
 // MOR-2464 — the center panorama. In CENTER scope the carrier+passband
-// indicator is anchored at 50% while the visual viewport glides toward
-// the commanded frequency; the late recentered frame neither restarts the
-// animation nor shifts stationary content twice. Commands stay immediate.
+// indicator is anchored at 50% while the visual viewport glides toward the
+// commanded frequency; a late recentered frame never restarts or double-shifts.
 describe('center panorama motion (MOR-2464)', () => {
   const PANORAMA_TUPLE = Object.freeze({ frequencyHz: 14_050_000, mode: 'USB',
     widthHz: 2_400, shiftHz: 0, frameMode: 0, startHz: 14_000_000, endHz: 14_100_000 });
-  const PANORAMA_FRAME = Object.freeze({ source: 'hardware', receiver: 'MAIN', freshness: 'fresh',
-    startHz: 14_000_000, endHz: 14_100_000, normalizedBins: Object.freeze([0, 0.5, 1]) });
-  function panoramaProjection(): ScopeDisplayProjection {
-    return Object.freeze({ frame: PANORAMA_FRAME, frameMode: 0, acceptedSequence: 1,
-      passband: Object.freeze({ state: 'current', tuple: PANORAMA_TUPLE }),
-    }) as ScopeDisplayProjection;
-  }
-  function translatedProjection(deltaHz: number): ScopeDisplayProjection {
-    return Object.freeze({ frame: PANORAMA_FRAME, frameMode: 0, acceptedSequence: 1,
-      passband: Object.freeze({ state: 'stale', translated: true,
-        tuple: Object.freeze({ ...PANORAMA_TUPLE, frequencyHz: 14_050_000 + deltaHz }) }),
-    }) as ScopeDisplayProjection;
-  }
-  function recenteredProjection(centerHz: number, sequence: number): ScopeDisplayProjection {
+  // Frame centered on `centerHz` (±halfSpan); `translatedDeltaHz` builds the
+  // translated-stale variant whose frequency leads the frame.
+  function panoramaProjection(centerHz = 14_050_000, halfSpan = 50_000, sequence = 1,
+    translatedDeltaHz?: number): ScopeDisplayProjection {
+    const start = centerHz - halfSpan;
+    const end = centerHz + halfSpan;
+    const tuple = Object.freeze({ ...PANORAMA_TUPLE,
+      frequencyHz: 14_050_000 + (translatedDeltaHz ?? centerHz - 14_050_000),
+      startHz: translatedDeltaHz === undefined ? start : PANORAMA_TUPLE.startHz,
+      endHz: translatedDeltaHz === undefined ? end : PANORAMA_TUPLE.endHz });
     return Object.freeze({
-      frame: Object.freeze({ ...PANORAMA_FRAME, startHz: centerHz - 50_000, endHz: centerHz + 50_000 }),
+      frame: Object.freeze({ source: 'hardware', receiver: 'MAIN', freshness: 'fresh',
+        startHz: start, endHz: end, normalizedBins: Object.freeze([0, 0.5, 1]) }),
       frameMode: 0, acceptedSequence: sequence,
-      passband: Object.freeze({ state: 'current',
-        tuple: Object.freeze({ ...PANORAMA_TUPLE, frequencyHz: centerHz,
-          startHz: centerHz - 50_000, endHz: centerHz + 50_000 }) }),
+      passband: Object.freeze(translatedDeltaHz === undefined
+        ? { state: 'current', tuple }
+        : { state: 'stale', translated: true, tuple }),
     }) as ScopeDisplayProjection;
   }
-  function widenedProjection(sequence: number): ScopeDisplayProjection {
-    return Object.freeze({
-      frame: Object.freeze({ ...PANORAMA_FRAME, startHz: 14_000_000, endHz: 14_200_000 }),
-      frameMode: 0, acceptedSequence: sequence,
-      passband: Object.freeze({ state: 'current',
-        tuple: Object.freeze({ ...PANORAMA_TUPLE, frequencyHz: 14_100_000,
-          startHz: 14_000_000, endHz: 14_200_000 }) }),
-    }) as ScopeDisplayProjection;
-  }
-  function mountPanorama(initial: ScopeDisplayProjection) {
-    const props = new SvelteMap<string, unknown>([['projection', initial], ['demanded', true]]);
+  function mountPanorama(initial: ScopeDisplayProjection) {    const props = new SvelteMap<string, unknown>([['projection', initial], ['demanded', true]]);
     const target = mountPanel({
       get scopeProjection() { return props.get('projection'); },
       get scopeDemanded() { return props.get('demanded') as boolean; },
@@ -2117,15 +2103,27 @@ describe('center panorama motion (MOR-2464)', () => {
   }
   const recordedShifts = (): number[] =>
     spectrumRendererHarness.render.mock.calls.map((call) => call[4]?.panoramaShiftHz ?? 0);
-
+  const bindingOrders = (
+    updateSpy: { mock: { calls: unknown[][]; invocationCallOrder: number[] } },
+    center: number, shift: number,
+  ) => {
+    const orders: number[] = [];
+    updateSpy.mock.calls.forEach((call, index) => {
+      const opts = call[0] as Partial<WaterfallOptions> | undefined;
+      if (opts?.centerHz === center && opts?.panoramaShiftHz === shift) {
+        orders.push(updateSpy.mock.invocationCallOrder[index]);
+      }
+    });
+    return orders;
+  };
   it('glides the panorama across a translated→recentered transition through real intermediate frames', async () => {
     const { target, props } = mountPanorama(panoramaProjection());
-    props.set('projection', translatedProjection(1_000)); flushSync();
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
     expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
     expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('38%');
     await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
     await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
-    props.set('projection', recenteredProjection(14_051_000, 2)); flushSync();
+    props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
     expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
     await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
@@ -2133,8 +2131,8 @@ describe('center panorama motion (MOR-2464)', () => {
 
   it('retargets a rapid reversal without overshoot and keeps the carrier anchored', async () => {
     const { target, props } = mountPanorama(panoramaProjection());
-    props.set('projection', translatedProjection(1_000)); flushSync();
-    props.set('projection', translatedProjection(-1_000)); flushSync();
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, -1_000)); flushSync();
     await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(-1_000));
     const shifts = recordedShifts();
     expect(Math.max(...shifts.map(Math.abs))).toBeLessThanOrEqual(1_000);
@@ -2145,17 +2143,13 @@ describe('center panorama motion (MOR-2464)', () => {
 
   it('snaps the panorama under prefers-reduced-motion with no animated frames', async () => {
     const originalMatchMedia = window.matchMedia;
-    window.matchMedia = vi.fn().mockReturnValue({
-      matches: true,
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      addListener: () => {},
-      removeListener: () => {},
+    window.matchMedia = vi.fn().mockReturnValue({ matches: true, addEventListener: () => {},
+      removeEventListener: () => {}, addListener: () => {}, removeListener: () => {},
     }) as unknown as typeof window.matchMedia;
     try {
       const { target, props } = mountPanorama(panoramaProjection());
       spectrumRendererHarness.render.mockClear();
-      props.set('projection', translatedProjection(1_000)); flushSync();
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
       expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
       await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
       expect(recordedShifts().every((v) => v === 1_000)).toBe(true);
@@ -2168,7 +2162,7 @@ describe('center panorama motion (MOR-2464)', () => {
   it('maps a settled animated viewport click to its carrier frequency', async () => {
     const { target, props } = mountPanorama(panoramaProjection());
     const { waterfall } = prepareGeometry(target);
-    props.set('projection', translatedProjection(1_000)); flushSync();
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
     await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
     const canvas = waterfall.querySelector('canvas')!;
     pointer(canvas, 'pointerdown', 95, 150);
@@ -2181,9 +2175,9 @@ describe('center panorama motion (MOR-2464)', () => {
     const clearSpy = vi.spyOn(WaterfallRenderer.prototype, 'clear');
     try {
       const { target, props } = mountPanorama(panoramaProjection());
-      props.set('projection', translatedProjection(1_000)); flushSync();
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
       await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0)).toBe(true));
-      props.set('projection', widenedProjection(2)); flushSync();
+      props.set('projection', panoramaProjection(14_100_000, 100_000, 2)); flushSync();
       await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
       expect(clearSpy).toHaveBeenCalled();
       expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
@@ -2192,27 +2186,39 @@ describe('center panorama motion (MOR-2464)', () => {
     }
   });
 
+  it('initializes the effective viewport before the first row is written (first mount)', async () => {
+    const updateSpy = vi.spyOn(WaterfallRenderer.prototype, 'updateOptions');
+    const pushSpy = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    try {
+      const { target, props } = mountPanorama(panoramaProjection());
+      props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
+      expect(pushSpy).toHaveBeenCalled();
+      const binding = bindingOrders(updateSpy, 14_050_000, 0);
+      expect(binding.length).toBeGreaterThan(0);
+      expect(Math.min(...binding)).toBeLessThan(pushSpy.mock.invocationCallOrder[0]!);
+      // No update ever binds a stale zero center to a real span.
+      expect(updateSpy.mock.calls.filter((call) => call[0]?.centerHz === 0 && (call[0]?.spanHz ?? 0) > 0)).toHaveLength(0);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
+    } finally {
+      updateSpy.mockRestore();
+      pushSpy.mockRestore();
+    }
+  });
+
   it('binds recentered frame geometry to pixels before the row is written (real component path)', async () => {
     const updateSpy = vi.spyOn(WaterfallRenderer.prototype, 'updateOptions');
     const pushSpy = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     try {
       const { target, props } = mountPanorama(panoramaProjection());
-      props.set('projection', translatedProjection(1_000)); flushSync();
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
       await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
-      updateSpy.mockClear();
-      pushSpy.mockClear();
-      props.set('projection', recenteredProjection(14_051_000, 2)); flushSync();
+      updateSpy.mockClear(); pushSpy.mockClear();
+      props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
       expect(pushSpy).toHaveBeenCalled();
-      const lastPushOrder = pushSpy.mock.invocationCallOrder.at(-1)!;
-      const bindingOrders = updateSpy.mock.calls
-        .map((call, index) => ({
-          matched: call[0]?.centerHz === 14_051_000 && call[0]?.panoramaShiftHz === 0,
-          order: updateSpy.mock.invocationCallOrder[index],
-        }))
-        .filter((entry) => entry.matched)
-        .map((entry) => entry.order);
-      expect(bindingOrders.length).toBeGreaterThan(0);
-      expect(Math.min(...bindingOrders)).toBeLessThan(lastPushOrder);
+      const binding = bindingOrders(updateSpy, 14_051_000, 0);
+      expect(binding.length).toBeGreaterThan(0);
+      expect(Math.min(...binding)).toBeLessThan(pushSpy.mock.invocationCallOrder.at(-1)!);
       expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
     } finally {
       updateSpy.mockRestore();

@@ -90,11 +90,9 @@ export interface SpectrumOptions {
   mode: string;       // current mode (USB/LSB/CW/AM/FM) — affects passband placement
   scopeMode: number;  // 0=CTR, 1=FIX, 2=SCROLL-C, 3=SCROLL-F
   // MOR-2464: viewport center minus sample-window center, Hz. Positive
-  // shifts the sampled content left. Positions outside the sample window
-  // stay blank.
+  // shifts the sampled content left; positions outside stay blank.
   panoramaShiftHz: number;
-  // Identity of the SOURCE sample window (frame edges/receiver/provider).
-  // A change resets sample-space state; viewport animation never changes it.
+  // SOURCE sample-window identity; a change resets sample-space state.
   geometryKey: string;
 }
 
@@ -126,11 +124,11 @@ function panoramaShiftPixels(options: SpectrumOptions, width: number): number {
   return (panoramaShiftHz / spanHz) * width;
 }
 
-/**
- * Map data to canvas y-coordinates for the shifted viewport, linearly
- * interpolating sample positions. Columns whose sample position falls
- * outside [0, n-1] are left uncovered in `covered`.
- */
+// Map data to canvas y-coordinates for the shifted viewport (MOR-2464):
+// the resting profile keeps the established nearest-bin mapping per screen
+// column; a fractional shift interpolates that translated profile between
+// neighbouring columns, so the resting shape never morphs. Columns whose
+// translated position leaves [0, width-1] stay uncovered in `covered`.
 function mapShiftedPoints(
   data: Uint8Array,
   width: number,
@@ -141,12 +139,16 @@ function mapShiftedPoints(
   covered: Uint8Array,
 ): void {
   const n = data.length;
+  const profile = (column: number): number =>
+    data[Math.min(n - 1, Math.floor((column / width) * n))];
   for (let x = 0; x < width; x++) {
-    const src = ((x + shiftPx) * n) / width;
-    if (src < 0 || src > n - 1) continue;
-    const i0 = Math.floor(src);
-    const frac = src - i0;
-    const sample = i0 >= n - 1 ? data[i0] : data[i0] * (1 - frac) + data[i0 + 1] * frac;
+    const p = x + shiftPx;
+    if (p < 0 || p > width - 1) continue;
+    const i0 = Math.floor(p);
+    const frac = p - i0;
+    const sample = frac === 0
+      ? profile(i0)
+      : profile(i0) * (1 - frac) + profile(i0 + 1) * frac;
     yPoints[x] = height * (1 - spectrumDisplayAmplitude(sample, refLevel));
     covered[x] = 1;
   }
@@ -233,8 +235,6 @@ export function renderSpectrum(
   // Gain boost: map 0-80 → full height with sqrt curve for better contrast
   // at low signal levels (IC-7610 scope data typically peaks at ~55)
   // Ref level: -30..+30 dB → ±40 on 0-80 scale (same mapping as waterfall)
-  // MOR-2464: sampling is shifted by the panorama viewport offset; uncovered
-  // columns (sample position outside the frame window) stay blank.
   const shiftPx = panoramaShiftPixels(options, width);
   const yPoints = new Float32Array(width);
   const covered = new Uint8Array(width);
@@ -259,7 +259,9 @@ export function renderSpectrum(
     for (let x = runStart; x <= runEnd; x++) {
       ctx.lineTo(x, yPoints[x]);
     }
-    ctx.lineTo(runEnd, height);
+    // Close at the right edge of the last covered column — a full run
+    // reproduces the pre-MOR-2464 corner at (width, height).
+    ctx.lineTo(runEnd + 1, height);
     ctx.closePath();
     ctx.fill();
     runStart = runEnd + 1;

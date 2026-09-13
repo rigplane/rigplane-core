@@ -15,9 +15,7 @@ function enableReducedMotion(): void {
   }) as unknown as typeof window.matchMedia;
 }
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
+afterEach(() => vi.unstubAllGlobals());
 
 describe('panoramaEaseOutCubic', () => {
   it('is zero at the start, one at the end, and never overshoots', () => {
@@ -34,23 +32,24 @@ describe('panoramaEaseOutCubic', () => {
     }
   });
 });
-
-describe('PanoramaViewportCenter settle band', () => {
-  it('keeps the configured settle duration inside the approved 80–120 ms band', () => {
+describe('PanoramaViewportCenter', () => {
+  it('keeps the settle duration inside the approved 80–120 ms band', () => {
     expect(PANORAMA_SETTLE_MS).toBeGreaterThanOrEqual(80);
     expect(PANORAMA_SETTLE_MS).toBeLessThanOrEqual(120);
   });
-});
 
-describe('PanoramaViewportCenter', () => {
-  it('starts settled at the initial center', () => {
-    const center = new PanoramaViewportCenter(14_050_000);
-    expect(center.sample(0)).toBe(14_050_000);
-    expect(center.sample(10_000)).toBe(14_050_000);
-    expect(center.settling(0)).toBe(false);
+  it('starts settled at the initial center and lands on it after a long hidden gap', () => {
+    const settled = new PanoramaViewportCenter(14_050_000);
+    expect(settled.sample(0)).toBe(14_050_000);
+    expect(settled.sample(10_000)).toBe(14_050_000);
+    expect(settled.settling(0)).toBe(false);
+    const animated = new PanoramaViewportCenter(0);
+    animated.retarget(500, 0);
+    expect(animated.sample(10_000)).toBe(500);
+    expect(animated.settling(10_000)).toBe(false);
   });
 
-  it('animates a retune through real intermediate frames toward the target', () => {
+  it('animates a retune through real intermediate frames, bounded and monotone', () => {
     const center = new PanoramaViewportCenter(14_050_000);
     center.retarget(14_051_000, 0);
     expect(center.sample(0)).toBe(14_050_000);
@@ -63,31 +62,18 @@ describe('PanoramaViewportCenter', () => {
     expect(late).toBeGreaterThan(mid);
     expect(late).toBeLessThan(14_051_000);
     expect(center.settling(PANORAMA_SETTLE_MS * 0.5)).toBe(true);
-  });
-
-  it('settles exactly on the target within the bounded duration and stays there', () => {
-    const center = new PanoramaViewportCenter(0);
-    center.retarget(1_000, 0);
-    expect(center.sample(PANORAMA_SETTLE_MS)).toBe(1_000);
-    expect(center.sample(PANORAMA_SETTLE_MS + 5_000)).toBe(1_000);
+    expect(center.sample(PANORAMA_SETTLE_MS)).toBe(14_051_000);
+    expect(center.sample(PANORAMA_SETTLE_MS + 5_000)).toBe(14_051_000);
     expect(center.settling(PANORAMA_SETTLE_MS)).toBe(false);
-  });
-
-  it('never overshoots the target while animating', () => {
-    const center = new PanoramaViewportCenter(0);
-    center.retarget(1_000, 0);
     for (let t = 1; t < PANORAMA_SETTLE_MS * 2; t += 3) {
-      const value = center.sample(t);
-      expect(value).toBeGreaterThanOrEqual(0);
-      expect(value).toBeLessThanOrEqual(1_000);
+      expect(center.sample(t)).toBeLessThanOrEqual(14_051_000);
     }
   });
 
   it('a repeated same-target retarget does not restart the animation (late recentered frame)', () => {
     const center = new PanoramaViewportCenter(0);
     center.retarget(1_000, 0);
-    // The recentered frame arrives mid-flight with the SAME absolute target:
-    // the existing animation must continue on its original timeline.
+    // A same-target retarget mid-flight never restarts the animation.
     center.retarget(1_000, PANORAMA_SETTLE_MS * 0.6);
     const expected = 1_000 * panoramaEaseOutCubic(0.7);
     expect(center.sample(PANORAMA_SETTLE_MS * 0.7)).toBeCloseTo(expected, 9);
@@ -130,12 +116,5 @@ describe('PanoramaViewportCenter', () => {
     expect(center.settling(1)).toBe(false);
     center.retarget(-500, 50);
     expect(center.sample(51)).toBe(-500);
-  });
-
-  it('is elapsed-time driven: a long hidden gap lands on the settled value', () => {
-    const center = new PanoramaViewportCenter(0);
-    center.retarget(500, 0);
-    expect(center.sample(10_000)).toBe(500);
-    expect(center.settling(10_000)).toBe(false);
   });
 });

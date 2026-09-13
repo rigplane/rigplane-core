@@ -275,16 +275,11 @@ const overlayOpts = (o: Partial<SpectrumOptions> = {}): SpectrumOptions => opts(
 
 // ── Panorama viewport shift (MOR-2464) ───────────────────────────────────────
 //
-// In CENTER scope the visual viewport center animates while the hardware
-// frame still carries the previous geometry. The renderer receives the
-// viewport center as `centerHz` (labels, hit-test mapping) and the
-// sample-to-viewport offset as `panoramaShiftHz` (trace resampling).
-// Uncovered edges must stay blank — no invented data.
-
+// Viewport center arrives as `centerHz` (labels, hit tests); the
+// sample-to-viewport offset as `panoramaShiftHz`. Uncovered edges stay blank.
 describe('panorama viewport shift (MOR-2464)', () => {
   const WIDTH = 100;
   const HEIGHT = 250;
-  // spanHz 100 over WIDTH 100 → 1 sample per pixel, 1 Hz per pixel.
   const baseOpts = (o: Partial<SpectrumOptions> = {}): SpectrumOptions => opts({
     spanHz: 100, centerHz: 50, scopeMode: 0, ...o,
   });
@@ -293,10 +288,12 @@ describe('panorama viewport shift (MOR-2464)', () => {
     data[peakIndex] = peakValue;
     return data;
   };
-  // Trace/fill sample points only: exclude vertical grid (y === HEIGHT) and
-  // the single horizontal grid segment that ends at x === WIDTH.
+  // Trace/fill sample points only (vertical grid ends at y === HEIGHT,
+  // horizontal grid at x === WIDTH).
   const tracePoints = (log: { lineTo: number[][] }) =>
     log.lineTo.filter(([x, y]) => x !== WIDTH && y < HEIGHT);
+  const yAt = (log: { lineTo: number[][] }, x: number) =>
+    log.lineTo.filter(([px]) => px === x).map(([, y]) => y);
 
   it('shifts trace samples left by the viewport shift and blanks the uncovered right edge', () => {
     const { ctx, log } = createMockCtx();
@@ -325,8 +322,8 @@ describe('panorama viewport shift (MOR-2464)', () => {
     const unshifted = createMockCtx();
     renderSpectrum(unshifted.ctx, data, WIDTH, HEIGHT, baseOpts());
     const unshiftedY = HEIGHT * (1 - Math.sqrt(30 / 80));
-    expect(tracePoints(unshifted.log).some(([x, y]) => x === 50 && Math.abs(y - unshiftedY) < 0.01))
-      .toBe(true);
+    expect(tracePoints(unshifted.log)
+      .some(([x, y]) => x === 50 && Math.abs(y - unshiftedY) < 0.01)).toBe(true);
     expect(Math.abs(expectedY - unshiftedY)).toBeGreaterThan(1);
   });
 
@@ -335,9 +332,38 @@ describe('panorama viewport shift (MOR-2464)', () => {
     renderSpectrum(ctx, peakData(50), WIDTH, HEIGHT, baseOpts({
       tuneHz: 55, panoramaShiftHz: 10,
     }));
-    // x = WIDTH/2 is also a grid position: grid contributes exactly one
-    // moveTo; the carrier marker contributes the second.
+    // WIDTH/2 is also a grid position: grid one moveTo, marker the second.
     expect(log.moveTo.filter(([x]) => x === WIDTH / 2)).toHaveLength(2);
+  });
+
+  it('renders the resting profile with the established nearest-bin mapping', () => {
+    // width 40 over 20 samples: bin spans two screen columns.
+    const data = new Uint8Array(20).fill(0);
+    data[10] = 80;
+    const { ctx, log } = createMockCtx();
+    renderSpectrum(ctx, data, 40, 200, opts({ spanHz: 40, centerHz: 20, scopeMode: 0 }));
+    expect(yAt(log, 18)).toContain(200);
+    expect(yAt(log, 19)).toContain(200);
+    expect(yAt(log, 20)).toContain(0);
+    expect(yAt(log, 21)).toContain(0);
+    expect(yAt(log, 22)).toContain(200);
+    // Full-run fill closes at the pre-MOR-2464 right-bottom corner.
+    expect(log.lineTo).toContainEqual([40, 200]);
+  });
+
+  it('interpolates the translated screen profile, not native bins, on fractional shifts', () => {
+    const data = new Uint8Array(20).fill(0);
+    data[10] = 80;
+    const { ctx, log } = createMockCtx();
+    renderSpectrum(ctx, data, 40, 200, opts({
+      spanHz: 40, centerHz: 20, scopeMode: 0, panoramaShiftHz: 0.5,
+    }));
+    // Column 18 is inside the data[9] step; the edge at 19/20 blends
+    // screen columns only (a native-bin mix would lift column 18).
+    expect(yAt(log, 18)).toContain(200);
+    const blended = 200 * (1 - Math.sqrt(40 / 80));
+    expect(yAt(log, 19).some((y) => Math.abs(y - blended) < 1e-6)).toBe(true);
+    expect(yAt(log, 20)).toContain(0);
   });
 
   it('keeps the FIX carrier marker proportional and unaffected by shift semantics', () => {
@@ -372,12 +398,10 @@ describe('panorama viewport shift (MOR-2464)', () => {
 
 // ── Source-geometry reset (MOR-2464) ─────────────────────────────────────────
 //
-// Averaging history and peak hold live in sample coordinates: they reset
-// when the SOURCE window changes (geometryKey) and survive viewport
-// animation.
-
+// Averaging history and peak hold reset when the SOURCE window changes
+// (geometryKey) and survive viewport animation.
 describe('SpectrumRenderer source-geometry reset (MOR-2464)', () => {
-  it('keeps averaging across viewport-only option changes on one sample window', () => {
+  it('keeps averaging across viewport-only changes, resets on geometry change', () => {
     const renderer = new SpectrumRenderer();
     for (let i = 0; i < 5; i++) {
       renderer.render(createMockCtx().ctx, new Uint8Array(10).fill(60), 10, 100, opts({ geometryKey: 'window-a' }));
@@ -385,43 +409,27 @@ describe('SpectrumRenderer source-geometry reset (MOR-2464)', () => {
     const animated = createMockCtx();
     renderer.render(animated.ctx, new Uint8Array(10).fill(10), 10, 100,
       opts({ geometryKey: 'window-a', centerHz: 14_051_000, panoramaShiftHz: 1_000 }));
-    const fresh = createMockCtx();
-    new SpectrumRenderer().render(fresh.ctx, new Uint8Array(10).fill(10), 10, 100, opts({ geometryKey: 'window-a' }));
-    expect(animated.log.lineTo).not.toEqual(fresh.log.lineTo);
-  });
-
-  it('resets averaging when the source geometry changes', () => {
-    const renderer = new SpectrumRenderer();
-    for (let i = 0; i < 5; i++) {
-      renderer.render(createMockCtx().ctx, new Uint8Array(10).fill(60), 10, 100, opts({ geometryKey: 'window-a' }));
-    }
+    const freshA = createMockCtx();
+    new SpectrumRenderer().render(freshA.ctx, new Uint8Array(10).fill(10), 10, 100, opts({ geometryKey: 'window-a' }));
+    expect(animated.log.lineTo).not.toEqual(freshA.log.lineTo);
     const moved = createMockCtx();
     renderer.render(moved.ctx, new Uint8Array(10).fill(10), 10, 100, opts({ geometryKey: 'window-b' }));
-    const fresh = createMockCtx();
-    new SpectrumRenderer().render(fresh.ctx, new Uint8Array(10).fill(10), 10, 100, opts({ geometryKey: 'window-b' }));
-    expect(moved.log.lineTo).toEqual(fresh.log.lineTo);
+    const freshB = createMockCtx();
+    new SpectrumRenderer().render(freshB.ctx, new Uint8Array(10).fill(10), 10, 100, opts({ geometryKey: 'window-b' }));
+    expect(moved.log.lineTo).toEqual(freshB.log.lineTo);
   });
 
-  it('keeps peak hold while the sample window is unchanged', () => {
+  it('keeps peak hold across viewport-only changes, drops it on geometry change', () => {
+    const peakY = 100 * (1 - Math.sqrt(70 / 80));
     const renderer = new SpectrumRenderer();
-    renderer.render(createMockCtx().ctx, new Uint8Array(10).fill(70), 10, 100,
-      opts({ geometryKey: 'window-a' }));
-    const after = createMockCtx();
-    renderer.render(after.ctx, new Uint8Array(10).fill(10), 10, 100,
+    renderer.render(createMockCtx().ctx, new Uint8Array(10).fill(70), 10, 100, opts({ geometryKey: 'window-a' }));
+    const animated = createMockCtx();
+    renderer.render(animated.ctx, new Uint8Array(10).fill(10), 10, 100,
       opts({ geometryKey: 'window-a', panoramaShiftHz: 500 }));
-    const peakY = 100 * (1 - Math.sqrt(70 / 80));
-    expect(after.log.lineTo.some(([, y]) => Math.abs(y - peakY) < 0.5)).toBe(true);
-  });
-
-  it('drops peak hold when the source geometry changes', () => {
-    const renderer = new SpectrumRenderer();
-    renderer.render(createMockCtx().ctx, new Uint8Array(10).fill(70), 10, 100,
-      opts({ geometryKey: 'window-a' }));
-    const after = createMockCtx();
-    renderer.render(after.ctx, new Uint8Array(10).fill(10), 10, 100,
-      opts({ geometryKey: 'window-b' }));
-    const peakY = 100 * (1 - Math.sqrt(70 / 80));
-    expect(after.log.lineTo.some(([, y]) => Math.abs(y - peakY) < 0.5)).toBe(false);
+    expect(animated.log.lineTo.some(([, y]) => Math.abs(y - peakY) < 0.5)).toBe(true);
+    const moved = createMockCtx();
+    renderer.render(moved.ctx, new Uint8Array(10).fill(10), 10, 100, opts({ geometryKey: 'window-b' }));
+    expect(moved.log.lineTo.some(([, y]) => Math.abs(y - peakY) < 0.5)).toBe(false);
   });
 });
 
