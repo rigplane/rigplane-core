@@ -4,10 +4,12 @@ import type { ManagedTransmitDocument } from '../types/managed-transmit';
 let document = $state<ManagedTransmitDocument | null>(null); let countdown = $state<ManagedTransmitCountdown | null>(null); let stale = $state(true);
 let invalidationRevision = 0;
 let refreshRevision = 0;
+let appliedRevision = 0;
 const clock = () => globalThis.performance.now();
 const contextIsCurrent = (revision: number): boolean => revision === invalidationRevision;
 const applyManagedTransmitSnapshot = (value: ManagedTransmitDocument, receivedAt = clock()): void => {
   document = value;
+  appliedRevision += 1;
   const tot = value.managedTransmit.status === 'available' ? value.managedTransmit.tot : null;
   countdown = tot === null || tot.remainingMs === null
     ? null
@@ -16,6 +18,7 @@ const applyManagedTransmitSnapshot = (value: ManagedTransmitDocument, receivedAt
 };
 export function managedTransmitSnapshot(): ManagedTransmitDocument | null { return document; }
 export function managedTransmitIsStale(): boolean { return stale; }
+export function managedTransmitAppliedRevision(): number { return appliedRevision; }
 export function managedTransmitRemainingMs(now = clock()): number | null { return !stale && countdown ? readManagedTransmitCountdown(countdown, now) : null; }
 export function receiveManagedTransmitSnapshot(value: ManagedTransmitDocument, receivedAt = clock()): void { if (document !== null && Date.parse(value.sampledAt) < Date.parse(document.sampledAt)) return; applyManagedTransmitSnapshot(value, receivedAt); }
 export function invalidateManagedTransmit(): void {

@@ -747,6 +747,12 @@ def _log_late_managed_tx_rebind(task: "asyncio.Task[Any]") -> None:
         logger.warning("reconnect: managed TX rebind failed late", exc_info=error)
 
 
+def _is_managed_tx_invalidation(event: dict[str, Any]) -> bool:
+    return (
+        event.get("type") == "event" and event.get("name") == "managed_transmit_changed"
+    )
+
+
 class WebServer:
     """Asyncio HTTP + WebSocket server for the rigplane Web UI.
 
@@ -919,6 +925,8 @@ class WebServer:
         self._bg_tasks: set[asyncio.Task[Any]] = set()
         # Serialises the managed TX rebind; see _service_managed_tx_release.
         self._managed_tx_rebind_lock: asyncio.Lock = asyncio.Lock()
+        # Unsubscribes the managed TX authority invalidation listener on stop.
+        self._managed_tx_change_unsubscribe: Callable[[], None] | None = None
         self._scope_health_max_retries: int = 3  # give up after N failed re-enables
         # Band plan registry
         from .band_plan import BandPlanRegistry  # noqa: TID251
@@ -1428,6 +1436,14 @@ class WebServer:
                 q.put_nowait(event)
             except asyncio.QueueFull:
                 logger.debug("broadcast_event: queue full, dropping event=%s", name)
+
+    def _on_managed_tx_changed(self) -> None:
+        """Queue one coalesced managed-transmit invalidation per control client."""
+        if self._stopping:
+            return
+        event = {"type": "event", "name": "managed_transmit_changed", "data": {}}
+        for q in list(self._control_event_queues):
+            q.replace_matching_with_front(event, _is_managed_tx_invalidation)
 
     def _broadcast_ws_client_state_update(
         self,
@@ -2855,6 +2871,10 @@ class WebServer:
         from .web_startup import stop_web_server  # noqa: TID251
 
         self._stopping = True
+        unsubscribe = self._managed_tx_change_unsubscribe
+        self._managed_tx_change_unsubscribe = None
+        if unsubscribe is not None:
+            unsubscribe()
         self._unsubscribe_provider_generation()
         self._detach_audio_session_listener()
         self._detach_reconnect_status_listener()

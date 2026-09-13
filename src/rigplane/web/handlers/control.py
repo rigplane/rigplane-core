@@ -685,6 +685,13 @@ class ControlHandler:
                     # Always forward state updates (clients need fresh state)
                     await self._send_json(event)
                 elif (
+                    msg_type == "event"
+                    and event.get("name") == "managed_transmit_changed"
+                ):
+                    # Always forward managed-transmit invalidation (clients
+                    # refresh canonical state); no stream subscription needed.
+                    await self._send_json(event)
+                elif (
                     "state" in self._subscribed_streams
                     or "events" in self._subscribed_streams
                 ):

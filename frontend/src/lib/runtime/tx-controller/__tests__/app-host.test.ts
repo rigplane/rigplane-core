@@ -28,6 +28,11 @@ const idle = (): ManagedTxState => ({
   fresh: true, releaseRequired: false, configuredSeconds: 180,
   remainingMs: null, lastOperation: null,
 });
+const keyed = (intent: 'momentary' | 'latched'): ManagedTxState => ({
+  ...idle(), phase: 'active', intent, radioTx: 'on', txRisk: 'confirmed-on',
+  releaseRequired: true, remainingMs: 150_000,
+  lastOperation: intent === 'momentary' ? 'ptt_on' : 'transmit_on',
+});
 const bindings = () => ({
   registerPreDisconnectBarrier: (barrier: () => Promise<void>) => { h.barrier = barrier; return h.offBarrier; },
   lifecycleReleaseSource: (release: () => void) => { h.lifecycle = release; return h.offLifecycle; },
@@ -41,8 +46,16 @@ beforeEach(() => {
   for (const mock of [h.factory, h.offSession, h.offLifecycle, h.offBarrier, h.offAudio,
     h.disposeBrowser, h.refresh, h.invalidate, h.sendPtt, h.submit, h.setTot, h.offPresentationTick,
     h.startAudio, h.stopAudio]) mock.mockReset();
-  h.refresh.mockResolvedValue(undefined); h.sendPtt.mockResolvedValue('accepted');
-  h.submit.mockResolvedValue('accepted'); h.startAudio.mockResolvedValue(null);
+  h.refresh.mockResolvedValue(undefined);
+  h.sendPtt.mockReset().mockImplementation(async (operation) => {
+    h.state = operation === 'ptt_on' ? keyed('momentary') : idle();
+    return 'accepted';
+  });
+  h.submit.mockReset().mockImplementation(async (operation) => {
+    h.state = operation === 'transmit_on' ? keyed('latched') : idle();
+    return 'accepted';
+  });
+  h.startAudio.mockResolvedValue(null);
   h.setTot.mockResolvedValue(undefined);
   h.factory.mockImplementation(() => {
     const dependencies: ManagedTxDependencies = {
