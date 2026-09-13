@@ -613,11 +613,10 @@ def _manual_required_result(
 # TX actuation handlers (MOR-666) — reached ONLY after the full gate stack and
 # an explicit interactive confirm() YES. Each handler's teardown ATTEMPTS to
 # leave the radio un-keyed with power restored via a ``finally`` that contains
-# every ``Exception`` (MOR-1951: backend transport errors are plain
-# ``Exception`` subclasses outside ``_RESTORE_ERRORS`` and must not skip the
-# restore). An unkey that failed or could not be confirmed is recorded
-# (``unkeyed: False`` + ``unkey_error``) and FAILs the check — never a PASS on
-# uncertain teardown. ``BaseException`` cancellation still propagates.
+# every ordinary ``Exception``. An unkey that failed or could not be confirmed
+# is recorded (``unkeyed: False`` + ``unkey_error``) and FAILs the check —
+# never a PASS on uncertain teardown. ``BaseException`` cancellation still
+# propagates.
 #
 # MOR-1222: every PTT *assertion* below goes through the radio's managed TX
 # supervisor when it publishes one. A raw ``set_ptt`` here took no lease, so
