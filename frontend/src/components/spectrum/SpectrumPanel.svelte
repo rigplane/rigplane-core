@@ -21,6 +21,7 @@
   import {
     getFilterHandlers,
     getFilterWidthCommandLifecycle,
+    getPendingFrequencyHz,
     getVfoHandlers,
   } from '../../lib/runtime/adapters/panel-adapters';
   import {
@@ -370,7 +371,19 @@
   let panoramaTargetApplied: number | null = null;
 
   let panoramaActive = $derived(!audioFft && !isFixedScope && spanHz > 0);
-  let panoramaTargetHz = $derived(panoramaActive && displayFrequencyHz != null ? displayFrequencyHz : null);
+  // MOR-2464 follow-up: while a set_freq intent is in flight for the
+  // authority's receiver — pending or acknowledged, until the radio's own
+  // observation confirms it — the panorama chases that pending target so
+  // the viewport answers the intent immediately. Display-only: the
+  // confirmed `displayFrequencyHz` below stays the fallback and authority.
+  let panoramaPendingHz = $derived(
+    panoramaActive && spectrumAuthority !== null
+      ? getPendingFrequencyHz(spectrumAuthority.receiver)
+      : null,
+  );
+  let panoramaTargetHz = $derived(panoramaActive
+    ? panoramaPendingHz ?? (displayFrequencyHz != null ? displayFrequencyHz : null)
+    : null);
   // Receiver/provider/span/mode identity resets the motion on change.
   let panoramaResetKey = $derived(panoramaActive
     ? [spectrumAuthority?.providerGeneration ?? 'x', spectrumAuthority?.receiver ?? 'x',

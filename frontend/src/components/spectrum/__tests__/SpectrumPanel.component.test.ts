@@ -264,6 +264,19 @@ function pendingFilterWidthLifecycle(target: number, receiver: 0 | 1 = 0) {
   };
 }
 
+// MOR-2464 follow-up — the pending set_freq target the panel's optimistic
+// panorama reads. SvelteMap-backed so a write re-runs the panel's `$derived`
+// chain, mirroring the accessor's own reactive source. Keys '0'/'1' are the
+// wire receivers `getPendingFrequencyHz` accepts.
+const pendingFrequencyState = new SvelteMap<string, number | null>([
+  ['0', null],
+  ['1', null],
+]);
+
+function setPendingFrequency(receiver: 0 | 1, hz: number | null): void {
+  pendingFrequencyState.set(String(receiver), hz);
+}
+
 const passbandHarness = vi.hoisted(() => ({
   rawWidth: 2_700 as number | null,
   getFilterWidthFromRightEdgePx: vi.fn(() => 2_700 as number | null),
@@ -310,6 +323,8 @@ vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
     getVfoHandlers: handlerHarness.getVfoHandlers,
     getFilterHandlers: handlerHarness.getFilterHandlers,
     getFilterWidthCommandLifecycle: () => filterWidthLifecycleState.get('value')!,
+    getPendingFrequencyHz: (receiver: 0 | 1) =>
+      pendingFrequencyState.get(String(receiver)) ?? null,
   };
 });
 
@@ -593,6 +608,8 @@ beforeEach(() => {
   authorityHarness.state.current = authority();
   authorityHarness.state.useProductionSelector = false;
   setFilterWidthLifecycle({});
+  pendingFrequencyState.set('0', null);
+  pendingFrequencyState.set('1', null);
   passbandHarness.rawWidth = 2_700;
   passbandHarness.getFilterWidthFromRightEdgePx.mockImplementation(() => passbandHarness.rawWidth);
   spectrumRendererHarness.lastOptions = null;
@@ -2234,5 +2251,86 @@ describe('center panorama motion (MOR-2464)', () => {
     await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
     expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(0);
     expect(spectrumRendererHarness.lastOptions.scopeMode).toBe(1);
+  });
+
+  // MOR-2464 follow-up — the optimistic leg: while a `set_freq` intent is in
+  // flight for the scoped receiver (through ack, until the radio's own
+  // observation confirms it), the panorama chases the pending target instead
+  // of waiting for the confirmed tuple to move. Display-only.
+  describe('optimistic pending target', () => {
+    it('starts gliding toward a pending set_freq target before the confirmed frequency moves', async () => {
+      const initial = panoramaProjection();
+      const { target, props } = mountPanorama(initial);
+      setPendingFrequency(0, 14_051_000);
+      flushSync();
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      expect(props.get('projection')).toBe(initial);
+      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      expect(mockRuntime.send).not.toHaveBeenCalled();
+    });
+
+    it('retargets a rapid pending reversal while the observed frequency stays stale', async () => {
+      const { target } = mountPanorama(panoramaProjection());
+      setPendingFrequency(0, 14_051_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+      setPendingFrequency(0, 14_049_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(-1_000));
+      expect(Math.max(...recordedShifts().map(Math.abs))).toBeLessThanOrEqual(1_000);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+
+    it('does not bounce toward the stale confirmed value while the pending target survives an ack', async () => {
+      const { target, props } = mountPanorama(panoramaProjection());
+      setPendingFrequency(0, 14_051_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+      // A late frame still observes the pre-tune frequency while the command
+      // is only acknowledged — the accessor keeps returning the pending
+      // target, so the viewport must keep gliding, never fall back.
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 2));
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      const shifts = recordedShifts();
+      const firstMoving = shifts.findIndex((v) => v > 0);
+      expect(shifts.slice(firstMoving).every((v) => v > 0)).toBe(true);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+
+    it('falls back to the observed frequency when the pending target clears', async () => {
+      const { target } = mountPanorama(panoramaProjection());
+      setPendingFrequency(0, 14_051_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      setPendingFrequency(0, null);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+
+    it('ignores a pending target scoped to the other receiver', async () => {
+      const { target } = mountPanorama(panoramaProjection());
+      setPendingFrequency(1, 14_051_000);
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(recordedShifts().every((v) => v === 0)).toBe(true);
+      // Authority switches to SUB: a MAIN-scoped pending must not move it.
+      setPendingFrequency(1, null);
+      setPendingFrequency(0, 14_052_000);
+      authorityHarness.state.current = authority({ receiver: 1 });
+      refreshSpectrumAuthority();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(recordedShifts().filter((v) => v !== 0)).toHaveLength(0);
+      // Sanity: the SUB-scoped pending does drive the SUB-authority viewport.
+      setPendingFrequency(0, null);
+      setPendingFrequency(1, 14_053_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(3_000));
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
   });
 });
