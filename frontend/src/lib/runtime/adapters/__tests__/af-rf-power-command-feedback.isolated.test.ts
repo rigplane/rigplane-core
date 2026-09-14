@@ -2,14 +2,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
-
 const h = vi.hoisted(() => ({
   state: null as ServerState | null,
   caps: null as Capabilities | null,
   session: { state: 'disconnected' as 'connected' | 'disconnected', epoch: -1 },
   listeners: new Set<(state: ServerState | null) => void>(),
 }));
-
 // Only the runtime-owned state/capability/session inputs and the radio-store
 // subscription are replaceable boundaries. Descriptor parsing, lifecycle
 // storage, reconciliation, and projection stay real.
@@ -28,12 +26,10 @@ vi.mock('$lib/stores/radio.svelte', () => ({
     return () => h.listeners.delete(listener);
   },
 }));
-
 import {
   acknowledgeCommand, beginCommand, getCommandLifecycle, resetCommandLifecycle,
 } from '$lib/stores/commands.svelte';
 import { getAfLevelControlFeedback, getRfPowerControlFeedback } from '../panel-adapters';
-
 const connected = { state: 'connected' as const, epoch: 7 };
 const fresh = (marker = 1) => ({
   storePath: 'fixture', observed: true, freshness: 'fresh' as const,
@@ -60,7 +56,6 @@ function emitState(next: ServerState): void {
 }
 const begin = (id: string, name: string, originalEpoch = 7) =>
   beginCommand({ id, name, params: name === 'set_rf_power' ? { level: 0.5 } : { level: 0.5, receiver: 0 }, originalEpoch });
-
 describe('admitted-target AF/RF command feedback lanes', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -73,7 +68,6 @@ describe('admitted-target AF/RF command feedback lanes', () => {
     resetCommandLifecycle();
     vi.useRealTimers();
   });
-
   it('fails closed without authority inputs', () => {
     h.state = null; h.caps = null;
     h.session = { state: 'disconnected', epoch: -1 };
@@ -83,14 +77,12 @@ describe('admitted-target AF/RF command feedback lanes', () => {
       });
     }
   });
-
   it('stays idle for a session the command did not originate in', () => {
     acknowledgeCommand(begin('af-old-epoch', 'set_af_level', 6).id, 6, 6, 128 / 255);
     expect(getAfLevelControlFeedback(connected)).toMatchObject({
       phase: 'idle', target: null, confirmed: 0.2, sessionEpoch: 7,
     });
   });
-
   it('keeps an old-server AF command idle and honest without an admitted target', () => {
     begin('af-old-server', 'set_af_level');
     acknowledgeCommand('af-old-server', 7, 7);
@@ -102,7 +94,6 @@ describe('admitted-target AF/RF command feedback lanes', () => {
     expect(getCommandLifecycle('af-old-server', 7)?.status).toBe('acknowledged');
     expect(getAfLevelControlFeedback(connected).phase).toBe('idle');
   });
-
   it('projects awaiting, mismatch-hold, and exact admitted confirmation for AF', () => {
     const command = begin('af-lane', 'set_af_level');
     expect(getAfLevelControlFeedback(connected)).toMatchObject({
