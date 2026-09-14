@@ -516,9 +516,35 @@ def test_serial_watchdog_retry_delay_is_capped_exponential_backoff() -> None:
     assert radio._serial_watchdog_retry_delay(3) == base * 4
     # A very large failure count is clamped to the cap.
     assert radio._serial_watchdog_retry_delay(50) == cap
+    assert radio._serial_watchdog_retry_delay(1025) == cap
+    assert radio._serial_watchdog_retry_delay(10**100) == cap
     # Monotonic non-decreasing.
     delays = [radio._serial_watchdog_retry_delay(n) for n in range(1, 12)]
     assert delays == sorted(delays)
+
+
+@pytest.mark.asyncio
+async def test_serial_watchdog_recovers_after_overflow_sized_outage() -> None:
+    link = _FakeSerialCivLink(fail_connect_calls=set(range(2, 1027)))
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0",
+        civ_link=link,
+    )
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.0  # type: ignore[attr-defined]
+    radio._SERIAL_WATCHDOG_RETRY_S = 0.0  # type: ignore[attr-defined]
+    radio._SERIAL_WATCHDOG_RETRY_MAX_S = 0.0  # type: ignore[attr-defined]
+
+    await radio.connect()
+    link.ready = False
+    link.healthy = False
+
+    assert await _wait_until(lambda: link.connect_calls >= 1027, timeout_s=2.0)
+    assert await _wait_until(lambda: radio.radio_ready)
+    assert radio.conn_state == RadioConnectionState.CONNECTED
+    assert radio._civ_data_watchdog_task is not None
+    assert not radio._civ_data_watchdog_task.done()
+
+    await radio.disconnect()
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import logging
+import math
 import os
 import re
 import time
@@ -1069,12 +1070,16 @@ class _IcomSerialRadioBase(CoreRadio):
         second with a full traceback (MOR-237).
         """
         exponent = max(0, consecutive_failures - 1)
-        multiplier: float = float(2**exponent)
-        delay: float = float(self._SERIAL_WATCHDOG_RETRY_S) * multiplier
+        delay: float = float(self._SERIAL_WATCHDOG_RETRY_S)
         cap: float = float(self._SERIAL_WATCHDOG_RETRY_MAX_S)
-        if delay > cap:
+        if delay >= cap:
             return cap
-        return delay
+        if delay <= 0.0:
+            return delay
+        saturation_exponent = math.ceil(math.log2(cap / delay))
+        if exponent >= saturation_exponent:
+            return cap
+        return math.ldexp(delay, exponent)
 
     def _civ_watchdog_rebaseline(self) -> None:
         """Reset link-death detector baselines against current state.
