@@ -2744,3 +2744,57 @@ describe('MOR-2342 preserved instrument intents', () => {
     expect(split).not.toHaveBeenCalled(); expect(tune).not.toHaveBeenCalled();
   });
 });
+
+// ── MOR-2467: Standard presents main_sub's two receiver-level records ───────
+//
+// The owner-confirmed IC-7610 payload: `main.freqHz`/`main.mode`/`main.filter`
+// and the `sub` equivalents, with NO `vfoA`/`vfoB` and NO `activeSlot` (the
+// radio has no per-receiver A/B slots). Driven through the REAL adapter so the
+// assertion covers the whole producer→Standard chain, not a hand-built model.
+describe('MOR-2467: main_sub Standard displays receiver-level MAIN/SUB records', () => {
+  it('shows qualified main./sub. freq/mode/filter with vfoA/vfoB and activeSlot absent', () => {
+    const caps = {
+      model: 'fixture', receivers: 2, vfoScheme: 'main_sub',
+      capabilities: ['audio', 'tx', 'dual_rx'],
+      stateContractVersion: 1, providerGeneration: 1,
+      freqRanges: [], modes: [], filters: [],
+      txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
+    } as unknown as Capabilities;
+    const freshLeaf = {
+      observed: true, freshness: 'fresh', availability: 'available',
+      lastObservedMonotonic: 0,
+    };
+    const state = {
+      stateContractVersion: 1, providerGeneration: 1,
+      active: 'MAIN', split: false, dualWatch: false,
+      txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
+      main: { freqHz: 14250000, mode: 'USB', filter: 1 },
+      sub: { freqHz: 21295000, mode: 'LSB', filter: 2 },
+      fieldStatus: Object.fromEntries([
+        'active', 'split', 'dualWatch', 'txTarget',
+        'main.freqHz', 'main.mode', 'main.filter',
+        'sub.freqHz', 'sub.mode', 'sub.filter',
+      ].map((path) => [path, freshLeaf])),
+    } as unknown as ServerState;
+
+    const viewModel = toRadioViewModel(state, caps)!;
+    expect(viewModel.vfoScheme).toBe('main_sub');
+    expect(viewModel.vfos.map((vfo) => [vfo.receiver, vfo.slot.kind])).toEqual([
+      ['MAIN', 'unslotted'], ['SUB', 'unslotted'],
+    ]);
+
+    const root = mountSurface({ viewModel, appearance: 'standard' });
+    expect(root.querySelectorAll('[data-receiver-instrument="MAIN"]')).toHaveLength(1);
+    expect(root.querySelectorAll('[data-receiver-instrument="SUB"]')).toHaveLength(1);
+    for (const [receiver, freq, mode, filter] of [
+      ['MAIN', '14.250.000', 'USB', 'FIL1'],
+      ['SUB', '21.295.000', 'LSB', 'FIL2'],
+    ] as const) {
+      const panel = root.querySelector(`[data-receiver-instrument="${receiver}"]`)!;
+      expect(panel.querySelector('[data-vfo-freq]')?.textContent?.replace(/\s/g, ''))
+        .toBe(freq);
+      expect(panel.textContent).toContain(mode);
+      expect(panel.textContent).toContain(filter);
+    }
+  });
+});

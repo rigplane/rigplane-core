@@ -127,6 +127,10 @@ features = [
     # Built-in CI-V 0x13 announcement readback (get_speech below).
     "speech",
 ]
+# MOR-2467: the IC-7610 front panel wires RF gain and squelch as one physical
+# concentric knob, so it declares the combined control model introduced by
+# MOR-1447 leg 2 (same as rigs/ic7300.toml).
+rf_sql_control_model = "combined"
 
 [state_acquisition]
 provider = "icom_civ"
