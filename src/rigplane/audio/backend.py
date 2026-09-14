@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import sys
 import threading
 import time
 from collections import deque
@@ -630,11 +631,7 @@ class _PortAudioRxStream:
     (``stream.read(960)`` on a worker thread), whose 20 ms read straddled the
     WASAPI shared-mode engine period (~10 ms) and dropped/duplicated a sample
     run once per block, producing a ~50 Hz spectral comb on captured TX audio
-    on Windows. The stream is opened with ``blocksize=0`` (engine-native
-    period), mirroring a known-clean ``sd.rec`` capture. The earlier WDM-KS
-    capture face rejected ``blocksize=0`` (PortAudioError -9999), but companion
-    device selection now forces the WASAPI host-API face, on which
-    ``blocksize=0`` opens cleanly.
+    on Windows.
 
     The PortAudio callback runs on the audio thread and must not block. It
     copies the captured PCM (s16le) out of the engine-native, variable-size
@@ -672,10 +669,6 @@ class _PortAudioRxStream:
         self._deliver_channels = (
             config.channels if deliver_channels is None else deliver_channels
         )
-        # Capture is callback-driven with blocksize=0 (engine-native period),
-        # mirroring a clean sd.rec. blocksize=0 was previously rejected by the
-        # WDM-KS capture face (PortAudioError -9999), but companion device
-        # selection now forces the WASAPI face, on which blocksize=0 opens.
         self._blocksize = blocksize
         # The framer owns the downmix + fixed-frame re-chunking (shared with the
         # duplex stream). It carries the sub-frame remainder between audio-thread
@@ -702,8 +695,6 @@ class _PortAudioRxStream:
             raise RuntimeError("RX stream already running.")
         self._callback = callback
         self._framer.reset()
-        # blocksize=0 (engine-native period) mirrors a clean sd.rec on the
-        # WASAPI face. latency="low" matches the (clean) output stream.
         self._stream = self._sd.InputStream(
             samplerate=self._sample_rate,
             channels=self._channels,
@@ -1375,18 +1366,15 @@ class PortAudioBackend:
         rx_audio_channel: str = "mix",
     ) -> RxStream:
         sd, _ = self._ensure_deps()
-        # blocksize=0 lets PortAudio use the engine-native period, mirroring a
-        # clean ``sd.rec`` capture. This is safe now that companion device
-        # selection forces the WASAPI host-API face (the WDM-KS face that
-        # rejected blocksize=0 with PortAudioError -9999 is no longer chosen).
-        # The PortAudio capture period stays engine-native; frame_ms only sizes
-        # the fixed frames re-chunked out to the consumer callback.
-        #
         # ``channels`` is the OS open count; ``deliver_channels`` is what the
         # consumer receives. When ``deliver_channels`` < ``channels`` (mono
         # request on a stereo-native device, MOR-504) the stream software-
         # downmixes before chunking, so the consumer still sees the mono
         # fixed-frame contract while CoreAudio/AUHAL opens the device natively.
+        if sys.platform == "darwin":
+            blocksize = (sample_rate * frame_ms) // 1000
+        else:
+            blocksize = 0
         return _PortAudioRxStream(
             sd,
             device_index=int(device),
@@ -1396,7 +1384,7 @@ class PortAudioBackend:
                 frame_ms=frame_ms,
                 rx_audio_channel=rx_audio_channel,
             ),
-            blocksize=0,
+            blocksize=blocksize,
             deliver_channels=deliver_channels,
         )
 
