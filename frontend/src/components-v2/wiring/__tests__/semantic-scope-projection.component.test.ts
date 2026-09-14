@@ -138,8 +138,12 @@ async function render(layout = true, skinId: 'desktop-v2' | 'sdr-test' = 'deskto
 function toggle() { target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click(); flushSync(); }
 const overlay = () => target.querySelector<HTMLElement>('.passband-overlay');
 function clear() {
-  for (const selector of ['.spectrum-area canvas', '.freq-axis', '.passband-overlay', '.tune-line', '.passband-resize-zone']) {
+  for (const selector of ['.spectrum-area canvas', '.freq-axis', '.passband-overlay', '.passband-resize-zone']) {
     expect(target.querySelector(selector), selector).toBeNull();
+  }
+  // CENTER's static ruler may survive a data gap; RF-dependent geometry must not.
+  for (const line of target.querySelectorAll<HTMLElement>('.tune-line')) {
+    expect(line.style.left).toBe('50%');
   }
   const history = target.querySelector<HTMLElement>('.waterfall-history');
   if (history) expect(history.style.visibility).toBe('hidden');
