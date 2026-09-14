@@ -13,6 +13,16 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-14 — MOR-2467 IC-7610 Standard v3 restoration (head `479dd587`, base `99f4bcd3`)
+
+- [2026-09-14-mechanism-audit-mor-2467-ic7610-v3.md](2026-09-14-mechanism-audit-mor-2467-ic7610-v3.md)
+  — read-only, independently adjudicated PASS with no blockers for the
+  IC-7610 Standard v3 restoration of MAIN/SUB records and one combined
+  RF/SQL control. Preserves one deletion candidate (`vfoLabel` tests-only
+  shim), three follow-ups (panel-commands `main_sub` residue, stale
+  per-receiver A/B comment, slot-view documentation), and the cleared
+  items. Tests were not run by the audit; remote test evidence is separate.
+
 ## 2026-09-06 — instrument mechanism decision audits (source `f2e7969708d5c93890cf1b24d833ce820b36dc15`)
 
 Three independent, bounded mechanism-audit tracts at the pinned source. They
