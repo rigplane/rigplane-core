@@ -14,6 +14,7 @@ from ..._bounded_queue import BoundedQueue
 from ...core.command_service import (
     CommandExecutionResult,
     CommandService,
+    admitted_level_for_intent,
     command_intent_from_request,
     resolve_power_level_target,
 )
@@ -284,6 +285,23 @@ def _level_for_power(value: Any, radio: Any) -> int:
         power_max_watts=getattr(getattr(radio, "profile", None), "max_watts", None),
     )
     return int(native)
+
+
+def _with_admitted_level(
+    intent: CommandIntent, details: dict[str, Any]
+) -> dict[str, Any]:
+    """Attach the intent's admitted normalized target to its response result.
+
+    Additive optional ``admitted_level`` for ``set_af_level``/
+    ``set_rf_power``/``set_power`` only; every legacy key stays untouched,
+    and an intent without a valid target returns *details* as-is.
+    """
+    if intent.name not in ("set_af_level", "set_rf_power", "set_power"):
+        return details
+    admitted = admitted_level_for_intent(intent)
+    if admitted is None or "admitted_level" in details:
+        return details
+    return {**details, "admitted_level": admitted}
 
 
 def _consume_normalized_level_unit(name: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -1699,7 +1717,9 @@ class ControlHandler:
                 connection_generation=connection_generation,
             )
             if future is None:
-                return CommandExecutionResult(details=descriptor.result(intent))
+                return CommandExecutionResult(
+                    details=_with_admitted_level(intent, descriptor.result(intent))
+                )
             try:
                 await asyncio.wait_for(future, timeout=intent.timeout)
             except asyncio.CancelledError:
@@ -1709,7 +1729,9 @@ class ControlHandler:
             finally:
                 if not future.done():
                     future.cancel()
-            return CommandExecutionResult(details=descriptor.result(intent))
+            return CommandExecutionResult(
+                details=_with_admitted_level(intent, descriptor.result(intent))
+            )
 
         params = dict(intent.params)
         params.pop("_control_server", None)
@@ -1720,7 +1742,7 @@ class ControlHandler:
             source=intent.source,
             command_service=self._command_service,
         )
-        return CommandExecutionResult(details=result)
+        return CommandExecutionResult(details=_with_admitted_level(intent, result))
 
     async def _enqueue_legacy_command(
         self,

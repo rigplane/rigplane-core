@@ -456,6 +456,50 @@ describe('WsChannel', () => {
     ]);
   });
 
+  it('captures a sanitized admitted level only from a response-ok result', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const events: CommandDeliveryEvent[] = [];
+    ch.onCommandDelivery((event) => events.push(event));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+
+    const send = (id: string) =>
+      ch.send({ type: 'cmd', name: 'set_af_level', id, params: { level: 0.5 } });
+    const responseOk = (id: string, result: Record<string, unknown>) =>
+      instances[0].simulateMessage(JSON.stringify({ type: 'response', id, ok: true, result }));
+
+    expect(send('af-1')).toBe(true);
+    responseOk('af-1', { level: 128, receiver: 0, admitted_level: 128 / 255 });
+    // Only a finite 0..1 number is evidence; anything else must leave the
+    // delivery without the field.
+    for (const [id, bad] of [['af-2', '0.5'], ['af-3', 1.5], ['af-4', Number.NaN], ['af-5', null]] as const) {
+      expect(send(id)).toBe(true);
+      responseOk(id, bad === null ? { level: 128 } : { level: 128, admitted_level: bad });
+    }
+    expect(send('af-6')).toBe(true);
+    responseOk('af-6', { admitted_level: 0.5 });
+    expect(send('af-7')).toBe(true);
+    instances[0].simulateMessage(JSON.stringify({
+      type: 'response', id: 'af-7', ok: false, error: 'command_failed',
+      result: { admitted_level: 0.5 },
+    }));
+    expect(send('af-8')).toBe(true);
+    instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: 'af-8' }));
+
+    const oks = events.filter((event) => event.kind === 'response-ok');
+    expect(oks).toHaveLength(6);
+    expect(oks.filter((event) => event.admittedLevel !== undefined)).toEqual([
+      { commandId: 'af-1', kind: 'response-ok', originalEpoch: 1, eventEpoch: 1, admittedLevel: 128 / 255 },
+      { commandId: 'af-6', kind: 'response-ok', originalEpoch: 1, eventEpoch: 1, admittedLevel: 0.5 },
+    ]);
+    expect(events.filter((event) => event.commandId === 'af-7').map((event) => event.kind))
+      .toEqual(['transport-sent', 'response-error']);
+    const af8 = events.filter((event) => event.commandId === 'af-8');
+    expect(af8.map((event) => event.kind)).toEqual(['transport-sent', 'ack']);
+    expect(af8.every((event) => event.admittedLevel === undefined)).toBe(true);
+  });
+
   it('strictly decodes correlated private command lifecycle frames', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();

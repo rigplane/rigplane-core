@@ -1330,6 +1330,45 @@ describe('the composed TX/VOX controls consume the real feedback lifecycle', () 
   });
 });
 
+describe('the rfPower scalar consumes the admitted-target lane (MOR-1687 F2)', () => {
+  const slider = () => q<HTMLElement>('[data-testid="tx-aux-rfPower"] [role="slider"]')!;
+  const pushPower = (marker: number, powerLevel: number) => {
+    pushRadioState(({
+      ...liveState(true), powerLevel,
+      fieldStatus: { ...liveState(true).fieldStatus,
+        powerLevel: { ...fresh, lastObservedMonotonic: marker } },
+    }) as ServerState);
+    pushSession({ state: 'connected', epoch: 7 });
+  };
+  const beginRf = (id: string) => beginCommand({ id, name: 'set_rf_power', params: { level: 0.5 }, originalEpoch: 7 });
+
+  it('awaits only once the response admitted a target; a mismatch never confirms', () => {
+    const command = beginRf('rf-admitted');
+    render();
+    expect(slider().dataset.commandPhase).toBe('idle');
+    acknowledgeCommand(command.id, 7, 7, 0.5);
+    flushSync();
+    expect(slider().dataset.commandPhase).toBe('awaiting-confirmation');
+    pushPower(1, 0.75);
+    expect(slider().dataset.commandPhase).toBe('awaiting-confirmation');
+    pushPower(2, 0.5);
+    expect(getCommandLifecycles()[0]?.status).toBe('confirmed');
+    expect(slider().dataset.commandPhase).toBe('confirmed');
+    expect(slider().getAttribute('aria-valuenow')).toBe('0.5');
+  });
+
+  it('keeps an honest idle lane and reading value without an admitted target', () => {
+    const command = beginRf('rf-old-server');
+    render();
+    acknowledgeCommand(command.id, 7, 7);
+    flushSync();
+    pushPower(1, 0.5);
+    expect(slider().dataset.commandPhase).toBe('idle');
+    expect(getCommandLifecycles()[0]?.status).toBe('acknowledged');
+    expect(slider().getAttribute('aria-valuenow')).toBe('0.5');
+  });
+});
+
 // ── MOR-1082: the workspace's per-zone visibility/order, consulted HERE ─────
 //
 // The plans below are built by the real `resolveSurfacePlan` from a real,

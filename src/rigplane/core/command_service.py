@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -54,6 +55,7 @@ __all__ = [
     "CommandService",
     "CommandServiceResult",
     "PendingOverlay",
+    "admitted_level_for_intent",
     "command_intent_from_request",
     "command_response_observation",
     "expected_observations_for_command",
@@ -907,6 +909,25 @@ def _expected_value_for_path(intent: CommandIntent, path: FieldPath) -> Any:
 
 def _should_normalize_level_expectation(name: str, path: FieldPath) -> bool:
     return _NORMALIZED_LEVEL_EXPECTATION_COMMANDS.get(name) == path.name
+
+
+def admitted_level_for_intent(intent: CommandIntent) -> float | None:
+    """The intent's normalized readback target from ``_expected_value_for_path``.
+
+    Re-exports the value the level-expectation owner already computes, so a
+    response consumer can never see a second, parallel quantization.
+    ``None`` when the intent has no normalized 0.0-1.0 level target.
+    """
+    target = intent.target
+    if target is None or not _should_normalize_level_expectation(intent.name, target):
+        return None
+    value = _expected_value_for_path(intent, target)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    level = float(value)
+    if not math.isfinite(level) or not 0.0 <= level <= 1.0:
+        return None
+    return level
 
 
 def resolve_power_level_target(

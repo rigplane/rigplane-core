@@ -190,6 +190,48 @@ describe('typed non-PTT radio intents', () => {
     expect(lifecycle.getCommandLifecycle('mode-1', 7)).not.toHaveProperty('confirmedValue');
   });
 
+  it('stores the admitted target from a response-ok delivery', () => {
+    intents.dispatchRadioIntent({ id: 'af-admit', name: 'set_af_level', params: { level: 0.5, receiver: 0 } });
+    harness.delivery?.({
+      commandId: 'af-admit', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7,
+      admittedLevel: 128 / 255,
+    });
+    expect(lifecycle.getCommandLifecycle('af-admit', 7)).toMatchObject({
+      status: 'acknowledged',
+      admittedTarget: 128 / 255,
+    });
+  });
+
+  it('stores the admitted target even when the ack frame arrived first', () => {
+    intents.dispatchRadioIntent({ id: 'af-ack-first', name: 'set_af_level', params: { level: 0.5, receiver: 0 } });
+    harness.delivery?.({ commandId: 'af-ack-first', kind: 'ack', originalEpoch: 7, eventEpoch: 7 });
+    harness.delivery?.({
+      commandId: 'af-ack-first', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7,
+      admittedLevel: 128 / 255,
+    });
+    expect(lifecycle.getCommandLifecycle('af-ack-first', 7)).toMatchObject({
+      status: 'acknowledged', admittedTarget: 128 / 255,
+    });
+  });
+
+  it('keeps an honest awaiting record when the response carries no admitted level', () => {
+    intents.dispatchRadioIntent({ id: 'af-old', name: 'set_af_level', params: { level: 0.5, receiver: 0 } });
+    harness.delivery?.({ commandId: 'af-old', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7 });
+    const record = lifecycle.getCommandLifecycle('af-old', 7);
+    expect(record).toMatchObject({ status: 'acknowledged' });
+    expect(record?.admittedTarget).toBeUndefined();
+  });
+
+  it('never stores an admitted target from a failure delivery', () => {
+    intents.dispatchRadioIntent({ id: 'rf-fail', name: 'set_rf_power', params: { level: 0.5 } });
+    harness.delivery?.({
+      commandId: 'rf-fail', kind: 'response-error', originalEpoch: 7, eventEpoch: 7,
+      error: 'command_failed', admittedLevel: 0.5,
+    });
+    expect(lifecycle.getCommandLifecycle('rf-fail', 7)).toMatchObject({ status: 'failed' });
+    expect(lifecycle.getCommandLifecycle('rf-fail', 7)?.admittedTarget).toBeUndefined();
+  });
+
   it('projects held truth without changing pending or acknowledged authority', () => {
     const beforeAck = intents.dispatchRadioIntent({ id: 'held-first', name: 'set_freq', params: { freq: 1 } });
     const held = { commandId: 'held-first', kind: 'held', originalEpoch: 7, eventEpoch: 7,

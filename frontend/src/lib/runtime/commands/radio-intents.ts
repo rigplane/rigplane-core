@@ -108,8 +108,10 @@ onCommandDelivery((event) => {
     return;
   }
   if (event.cancelled) cancelPendingCommands(event.originalEpoch, event.error);
-  else if (event.kind === 'ack' || event.kind === 'response-ok') acknowledgeCommand(event.commandId, event.originalEpoch, event.eventEpoch);
-  else failCommand(event.commandId, event.originalEpoch, event.eventEpoch, event.error);
+  else if (event.kind === 'ack') acknowledgeCommand(event.commandId, event.originalEpoch, event.eventEpoch);
+  else if (event.kind === 'response-ok') {
+    acknowledgeCommand(event.commandId, event.originalEpoch, event.eventEpoch, event.admittedLevel);
+  } else failCommand(event.commandId, event.originalEpoch, event.eventEpoch, event.error);
 });
 if (Object.prototype.hasOwnProperty.call(controlTransport, 'onCommandLifecycleDelivery')) {
   controlTransport.onCommandLifecycleDelivery((event) => applyCommandLifecycleProjection(event, getControlSession().epoch));
