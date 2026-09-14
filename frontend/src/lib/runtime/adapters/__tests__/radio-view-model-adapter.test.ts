@@ -227,11 +227,7 @@ describe('qualified VFO display observations', () => {
       const baseline = topologyFixtures[id as keyof typeof topologyFixtures].vfos;
       // Capture the complete pre-change projection separately from display assertions.
       expect(strict).toEqual(strictBaselines[`${id}:${isStale}`]);
-      // MOR-2467: the adapter derives exactly two unslotted receiver-level
-      // records for `main_sub`; the semantic topology fixture still
-      // hand-models the legacy four-slot shape, so its length only pins the
-      // other three schemes here.
-      expect(view.vfos).toHaveLength(id === '2/main_sub' ? 2 : baseline.length);
+      expect(view.vfos).toHaveLength(baseline.length);
       for (const vfo of view.vfos) {
         const rx = vfo.receiver === 'MAIN' ? state.main : state.sub;
         const raw = vfo.slot.kind === 'slotted' ? rx[vfo.slot.id === 'A' ? 'vfoA' : 'vfoB']! : rx;
@@ -1257,12 +1253,10 @@ describe('RF gain additive display observation', () => {
     // MOR-2425/R40+R41: ONE digest for both freshness values. Read off this
     // test's own failure diff for stale=true, not computed by hand.
     // MOR-2467: re-read after `main_sub` became two unslotted receiver-level
-    // records (the strict projection this digest hashes changed with them).
-    // MOR-2467 mixed versions: this suite's default state still carries the
-    // legacy `slot: 'A'` target, which now normalizes to slot null — the
-    // hashed txTarget/txPermit/isTxTarget members change with it, so this
-    // digest is due its re-read from the failure diff on the next run.
-    expect(digest).toBe('bfdc091029e5d8b7ed481c1c3b3c19b24d8dc45bd2f479a0be8c5d643abe8a31');
+    // records (the strict projection this digest hashes changed with them),
+    // including the mixed-version normalization of the legacy `slot: 'A'`
+    // default target to slot null.
+    expect(digest).toBe('c38cb10dec66009e009b9c5eafe923056062478f4e9cae581d7e1f34d920f30f');
   });
   it.each([false, true])('projects the explicit display and HOLDS RF gain, stale=%s', (stale) => {
     const view = model(displayState(stale), displayCaps, RECEIVING);
