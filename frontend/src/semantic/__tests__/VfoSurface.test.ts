@@ -2667,7 +2667,7 @@ describe('MOR-2342 historical instrument presentations', () => {
       viewModel: withReceiverIndicators('2/main_sub'), appearance: 'standard', onSelectVfo,
     });
     expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
-    root.querySelector<HTMLButtonElement>('[data-vfo-receiver="SUB"][data-vfo-slot="unslotted"]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-vfo-receiver="SUB"][data-vfo-slot="unslotted"] [data-vfo-select]')?.click();
     expect(onSelectVfo).toHaveBeenCalledExactlyOnceWith({ receiver: 'SUB', slot: { kind: 'unslotted' } });
   });
 
