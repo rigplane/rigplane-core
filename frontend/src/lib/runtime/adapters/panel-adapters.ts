@@ -55,6 +55,7 @@ import {
   type TxAuxCommandFeedbackField,
 } from '$lib/stores/commands.svelte';
 import { currentControlSessionEpoch } from '../commands/radio-intents';
+import { getTuningBurstTargetHz } from '../commands/tuning-accumulator';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { DisplayObservation } from '../../../semantic/radio-view-model';
@@ -270,6 +271,21 @@ export function getActiveFrequencyHz(): number | null {
 export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
   const value = latestPendingParam('set_freq', 'freq', receiver, 'freqHz');
   return typeof value === 'number' ? value : null;
+}
+
+// ── Tuning burst target (MOR-2464) ──
+/**
+ * The display-only per-gesture tuning target for `receiver` while local
+ * input (arrows/wheel/click) is visually live, or `null`. Reads the
+ * tuning accumulator's own publication — the accumulated target,
+ * paced-unsent steps included — which unlike `getPendingFrequencyHz`
+ * cannot be dropped mid-gesture by an intermediate post-ack field
+ * observation. Held only for a short visual idle past the last input
+ * (200ms, `DEFAULT_VISUAL_HOLD_MS` in `tuning-accumulator.ts`), after
+ * which pending and confirmed truth reconcile the display.
+ */
+export function getTuningBurstFrequencyHz(receiver: 0 | 1): number | null {
+  return getTuningBurstTargetHz(receiver);
 }
 
 export type FilterWidthCommandPhase = 'unavailable' | 'idle' | 'pending' | 'acknowledged' | 'confirmed';

@@ -21,6 +21,8 @@
   import {
     getFilterHandlers,
     getFilterWidthCommandLifecycle,
+    getPendingFrequencyHz,
+    getTuningBurstFrequencyHz,
     getVfoHandlers,
   } from '../../lib/runtime/adapters/panel-adapters';
   import {
@@ -362,6 +364,64 @@
       ? ((tuneHz - startFreq) / spanHz) * 100
       : 50
   );
+  // MOR-2464 focus-gap defect: in CENTER scope mode the carrier reference
+  // is stationary at 50% by construction — showing it needs neither a live
+  // frame's span nor the evidence-bound passband tuple, only the radio's
+  // own observed frequency. During a projection/tuple recovery gap
+  // (browser refocus) the reference stays visible immediately instead of
+  // returning >1s later with the frame. FIX keeps its frame-bound
+  // proportional line, audio FFT shows none, and viewer OFF hides it.
+  // Positive CENTER evidence: the live frame's own mode while a frame is
+  // present, otherwise the authority's observed scope-control mode — the
+  // post-clear frameScopeMode default (0) alone is NOT proof of CENTER,
+  // so a FIX projection that dropped to null grows no false 50% marker.
+  let scopeControlsMode = $derived.by(() => {
+    const reading = spectrumAuthority?.scopeControls?.mode.reading;
+    return reading?.status === 'known' && typeof reading.value === 'number' ? reading.value : null;
+  });
+  let centerReferenceMode = $derived(
+    spanHz > 0
+      ? !isFixedScope
+      : scopeControlsMode !== null && !isFixedScopeFn(scopeControlsMode),
+  );
+  // Remember CENTER/FIX per identity; the static ruler carries no RF geometry.
+  let provenCenterMode = $state<{ providerGeneration: number; receiver: 0 | 1; sessionEpoch: number } | null>(null);
+  $effect(() => {
+    const authority = spectrumAuthority;
+    if (authority === null) return;
+    const center = spanHz > 0 ? !isFixedScope
+      : scopeControlsMode !== null ? !isFixedScopeFn(scopeControlsMode) : null;
+    if (center === null) return;
+    provenCenterMode = center
+      ? {
+          providerGeneration: authority.providerGeneration,
+          receiver: authority.receiver,
+          sessionEpoch: runtime.controlSession.epoch,
+        }
+      : null;
+  });
+  let rememberedCenterReference = $derived.by(() => {
+    const memory = provenCenterMode;
+    if (memory === null) return false;
+    const state = runtime.state;
+    if (!state || state.providerGeneration !== memory.providerGeneration) return false;
+    if (runtime.controlSession.epoch !== memory.sessionEpoch) return false;
+    // Receiver identity via the raw field; on a single-receiver radio
+    // `active` is structurally unobservable and tautologically MAIN
+    // (MOR-1418 doctrine shared with panel-commands).
+    const active = state.active;
+    const receiver = active === 'SUB' ? 1 : active === 'MAIN' ? 0
+      : runtime.caps?.receivers === 1 ? 0 : null;
+    return receiver === memory.receiver;
+  });
+  let tuneLineVisible = $derived(
+    (tuneVisible && spanHz > 0)
+    || (!audioFft && scopeDemandOn && (centerReferenceMode || rememberedCenterReference))
+  );
+  // The spectrum canvas draws its own carrier marker from renderer
+  // options whenever the frame+tuple legs hold; this DOM reference stands
+  // in only when they cannot (span 0 or tuple unavailable).
+  let spectrumCenterReferenceVisible = $derived(tuneLineVisible && !(tuneVisible && spanHz > 0));
 
   // --- Center panorama motion (MOR-2464): display-only, absolute Hz ---
   let panoramaCenter = new PanoramaViewportCenter(0);  let visualCenterHz = $state(0);
@@ -370,7 +430,27 @@
   let panoramaTargetApplied: number | null = null;
 
   let panoramaActive = $derived(!audioFft && !isFixedScope && spanHz > 0);
-  let panoramaTargetHz = $derived(panoramaActive && displayFrequencyHz != null ? displayFrequencyHz : null);
+  // MOR-2464 follow-up: the panorama target takes the freshest display-only
+  // leg available. (1) The local tuning burst — the accumulator's per-gesture
+  // target, paced-unsent steps included — shields the glide from the
+  // intermediate confirmed observations and the pending accessor's post-ack
+  // drop that made rapid arrow tuning jerk. It self-retires shortly after
+  // input ends. (2) A pending/acknowledged set_freq target. (3) Confirmed
+  // `displayFrequencyHz`, which stays the authority. None of the legs emit
+  // commands.
+  let panoramaBurstHz = $derived(
+    panoramaActive && spectrumAuthority !== null
+      ? getTuningBurstFrequencyHz(spectrumAuthority.receiver)
+      : null,
+  );
+  let panoramaPendingHz = $derived(
+    panoramaActive && spectrumAuthority !== null
+      ? getPendingFrequencyHz(spectrumAuthority.receiver)
+      : null,
+  );
+  let panoramaTargetHz = $derived(panoramaActive
+    ? panoramaBurstHz ?? panoramaPendingHz ?? (displayFrequencyHz != null ? displayFrequencyHz : null)
+    : null);
   // Receiver/provider/span/mode identity resets the motion on change.
   let panoramaResetKey = $derived(panoramaActive
     ? [spectrumAuthority?.providerGeneration ?? 'x', spectrumAuthority?.receiver ?? 'x',
@@ -667,7 +747,10 @@
   // --- Drag-to-pan (grab and slide the spectrum window) ---
   function handleDragStart(event: PointerEvent): void {
     if (event.button !== 0 || resizeCapture) return;
-    if (event.target instanceof Element && event.target.closest('button, select, input')) return;
+    // Interactive controls and the band-plan popup dialog stay inert: a
+    // press inside them must neither pan nor resolve as a click-to-tune.
+    if (event.target instanceof Element
+      && event.target.closest('button, select, input, [role="dialog"]')) return;
     const surface = event.currentTarget as HTMLElement | null;
     const accepted = completeFrequencyAuthority();
     const geometry = surface ? readSampleGeometry(surface) : null;
@@ -708,10 +791,27 @@
     if (!capture || capture.pointerId !== event.pointerId || !dragSurface) return;
     const candidate = dragCandidate;
     const stable = captureFrequencyStillCurrent(capture, dragSurface);
+    // MOR-2464 click-to-tune: a release that never crossed the drag
+    // threshold on the spectrum area is a click. The upper canvas has no
+    // tap recognizer of its own (unlike WaterfallCanvas, whose gesture
+    // already tunes exactly once — hence the surface check), so the click
+    // resolves here through the same release-driven path: map the release
+    // point through the CURRENT visual viewport (the animated panorama
+    // window; the fixed sample window in FIX) into the actual radio
+    // command via handleTune. An above-threshold release is a pan and
+    // must never also tune, and the browser's follow-up native click
+    // event has no listener, so one physical click emits one command.
+    const clickTune = !dragging && candidate === null && stable && dragSurface === spectrumArea;
     dragging = false;
     dragCapture = null;
     dragSurface = null;
     dragCandidate = null;
+    if (clickTune) {
+      const fraction = Math.min(1, Math.max(0,
+        (event.clientX - capture.elementLeft) / capture.geometry.elementWidth));
+      handleTune(viewportStartFreq + fraction * spanHz);
+      return;
+    }
     if (!stable || candidate === null || candidate === capture.authority.frequencyHz) return;
     vfoHandlers.onFreqChange(candidate, capture.authority.receiver);
   }
@@ -740,7 +840,7 @@
     dragCandidate = null;
     dragging = false;
     dxSpots = [];
-    if (managed) { spectrumPush = null; waterfallPush = null; }
+    if (managed) { spectrumPush = null; }
   }
 
   // R53: when the scope drops the trace goes dark instead of freezing under
@@ -889,6 +989,9 @@
       {#if scopeTraceLive}
       <SpectrumCanvas data={scopePixels} options={spectrumOptions} {spanHz} {enableAvg} {enablePeakHold} onRegisterPush={(fn) => { spectrumPush = fn; if (managed && scopePixels) fn(scopePixels); }} />
       {/if}
+      {#if spectrumCenterReferenceVisible}
+        <div class="tune-line" style="left:{tuneLinePct}%"></div>
+      {/if}
       {#if tuneVisible && spanHz > 0 && pbWidthPct > 0 && canResizePassband}
         <button
           type="button"
@@ -931,9 +1034,11 @@
   <div class="waterfall-area">
     <div class="waterfall-scale"></div>
     <div class="waterfall-content" class:panning={dragging} class:draggable={canPan} bind:this={waterfallContent} onpointerdown={handleDragStart} role="presentation">
-      {#if !managedUnavailable}
-      <WaterfallCanvas options={waterfallOptions} onFreqClick={audioFft ? undefined : handleTune} onRegisterPush={(fn) => { waterfallPush = fn; if (managed && scopePixels) fn(scopePixels, waterfallOptions); }} />
-      {/if}
+      {#key runtime.state?.providerGeneration}
+      <div class="waterfall-history" style:visibility={managedUnavailable ? 'hidden' : 'visible'} aria-hidden={managedUnavailable}>
+        <WaterfallCanvas options={waterfallOptions} onFreqClick={audioFft || managedUnavailable ? undefined : handleTune} onRegisterPush={(fn) => { waterfallPush = fn; if (managed && scopePixels) fn(scopePixels, waterfallOptions); }} />
+      </div>
+      {/key}
       {#if !audioFft}<DxOverlay spots={dxSpots} startFreq={viewportStartFreq} endFreq={viewportEndFreq} onTune={handleTune} />{/if}
       <!-- Tuning + passband indicator overlays the waterfall -->
       {#if tuneVisible && spanHz > 0}
@@ -951,6 +1056,8 @@
             ></button>
           {/if}
         {/if}
+      {/if}
+      {#if tuneLineVisible}
         <div class="tune-line" style="left:{tuneLinePct}%"></div>
       {/if}
     </div>
@@ -962,6 +1069,7 @@
 {/key}
 
 <style>
+  .waterfall-history { position: absolute; inset: 0; }
   .audio-source-label { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; color: var(--text-muted); font-size: 12px; }
   .audio-fft :global(canvas) { cursor: default; }
   .spectrum-panel {
