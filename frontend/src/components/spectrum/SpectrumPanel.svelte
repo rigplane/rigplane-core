@@ -679,7 +679,7 @@
     dragCandidate = null;
     dragging = false;
     dxSpots = [];
-    if (managed) { spectrumPush = null; waterfallPush = null; }
+    if (managed) { spectrumPush = null; }
   }
 
   // R53: when the scope drops the trace goes dark instead of freezing under
@@ -869,9 +869,11 @@
   <div class="waterfall-area">
     <div class="waterfall-scale"></div>
     <div class="waterfall-content" class:panning={dragging} class:draggable={canPan} bind:this={waterfallContent} onpointerdown={handleDragStart} role="presentation">
-      {#if !managedUnavailable}
-      <WaterfallCanvas options={waterfallOptions} onFreqClick={audioFft ? undefined : handleTune} onRegisterPush={(fn) => { waterfallPush = fn; if (managed && scopePixels) fn(scopePixels); }} />
-      {/if}
+      {#key runtime.state?.providerGeneration}
+      <div class="waterfall-history" style:visibility={managedUnavailable ? 'hidden' : 'visible'} aria-hidden={managedUnavailable}>
+        <WaterfallCanvas options={waterfallOptions} onFreqClick={audioFft || managedUnavailable ? undefined : handleTune} onRegisterPush={(fn) => { waterfallPush = fn; if (managed && scopePixels) fn(scopePixels); }} />
+      </div>
+      {/key}
       {#if !audioFft}<DxOverlay spots={dxSpots} {startFreq} {endFreq} onTune={handleTune} />{/if}
       <!-- Tuning + passband indicator overlays the waterfall -->
       {#if tuneVisible && spanHz > 0}
@@ -900,6 +902,7 @@
 {/key}
 
 <style>
+  .waterfall-history { position: absolute; inset: 0; }
   .audio-source-label { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; color: var(--text-muted); font-size: 12px; }
   .audio-fft :global(canvas) { cursor: default; }
   .spectrum-panel {

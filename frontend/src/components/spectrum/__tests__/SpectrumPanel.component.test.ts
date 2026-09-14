@@ -1572,7 +1572,7 @@ describe('managed scope projection (MOR-2367)', () => {
     return { target, props, onScopeDemandChange };
   }
   function cleared(target: HTMLElement) {
-    for (const selector of ['canvas', '.freq-axis', '.tune-line', '.passband-overlay', '.passband-resize-zone', '.draggable']) {
+    for (const selector of ['.spectrum-area canvas', '.freq-axis', '.tune-line', '.passband-overlay', '.passband-resize-zone', '.draggable']) {
       expect(target.querySelector(selector), selector).toBeNull();
     }
   }
@@ -1584,6 +1584,35 @@ describe('managed scope projection (MOR-2367)', () => {
     if (kind === null) cleared(target);
     else expect(target.querySelector('.passband-overlay')).not.toBeNull();
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+  it('preserves waterfall history across a transient missing projection', () => {
+    const destroy = vi.spyOn(WaterfallRenderer.prototype, 'destroy');
+    const { target, props } = managed(projection());
+    const before = destroy.mock.calls.length;
+    props.set('projection', null); flushSync();
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    props.set('projection', projection()); flushSync();
+    expect(destroy.mock.calls.length).toBe(before);
+    expect(target.querySelector('.waterfall-content canvas')).not.toBeNull();
+    destroy.mockRestore();
+  });
+  it('discards waterfall history when provider generation changes', () => {
+    const generations = new SvelteMap([['current', 17]]);
+    const original = Object.getOwnPropertyDescriptor(runtimeHarness.state, 'currentState')!;
+    Object.defineProperty(runtimeHarness.state, 'currentState', {
+      configurable: true, get: () => ({ providerGeneration: generations.get('current') }),
+    });
+    try {
+      const { target, props } = managed(projection());
+      const first = target.querySelector('.waterfall-content canvas');
+      props.set('projection', null); flushSync();
+      generations.set('current', 18); flushSync();
+      props.set('projection', projection()); flushSync();
+      expect(target.querySelector('.waterfall-content canvas')).not.toBe(first);
+    } finally {
+      Object.defineProperty(runtimeHarness.state, 'currentState', original);
+    }
   });
   it('keeps omitted and explicit undefined projections on the legacy acquisition path', () => {
     mountPanel(); mountPanel({ scopeProjection: undefined });
@@ -1858,9 +1887,11 @@ describe('managed scope projection (MOR-2367)', () => {
       expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
       const firstCanvas = target.querySelector('.waterfall-content canvas');
       props.set('projection', null); flushSync(); const afterClear = push.mock.calls.length;
+      expect(target.querySelector<HTMLElement>('.waterfall-history')?.style.visibility).toBe('hidden');
       emitFrame(); expect(push).toHaveBeenCalledTimes(afterClear);
       props.set('projection', projection()); flushSync();
-      expect(target.querySelector('.waterfall-content canvas')).not.toBe(firstCanvas);
+      expect(target.querySelector('.waterfall-content canvas')).toBe(firstCanvas);
+      expect(target.querySelector<HTMLElement>('.waterfall-history')?.style.visibility).toBe('visible');
       expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
       expect(push).toHaveBeenCalledTimes(afterClear + 1);
     } finally { push.mockRestore(); }
