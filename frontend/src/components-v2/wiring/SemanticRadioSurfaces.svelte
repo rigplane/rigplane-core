@@ -1563,8 +1563,6 @@
     activeReceiverIndex === null ? null : getPendingPreampLevel(activeReceiverIndex),
   );
   let rfSqlFeedback = $derived(getRfSqlControlFeedback(controlSession));
-  /** MOR-1687 F2 admitted-target lanes; AF passes one only while the
-   *  browser stream does not own AF (`onAfLevelChange`'s own gate). */
   let afLevelFeedback = $derived(runtime.rxEnabled
     ? undefined : getAfLevelControlFeedback(controlSession));
   let rfPowerFeedback = $derived(getRfPowerControlFeedback(controlSession));

@@ -224,7 +224,7 @@
         aria-hidden={explicitPresentation ? 'true' : undefined}>{label}</span>
       {#if field === 'rfPower'}
         <ValueControl
-          {...(rfPowerFeedback !== undefined ? feedbackIntegratedControl : {})}
+          {...feedbackIntegratedControl}
           binding={bindings[field]} label="RF Power" renderer={form}
           displayFn={(value) => formatValue(field, value)}
           showLabel={explicitPresentation ? presentation?.showLabel ?? true : false}

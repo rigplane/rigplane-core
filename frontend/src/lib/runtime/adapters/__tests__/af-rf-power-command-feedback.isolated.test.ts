@@ -1,10 +1,4 @@
-/**
- * MOR-1687 F2 — qualified AF/RF-power command feedback lanes. Pins the
- * `panel-adapters` accessors against the real descriptor registry, lifecycle
- * store, and reconciliation: confirmation requires the server-admitted
- * target, a fresh post-ack same-field readback, the session epoch, and the
- * declared capability; an old server leaves the lane idle.
- */
+/** Qualified AF/RF feedback against the real command lifecycle. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';

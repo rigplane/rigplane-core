@@ -1,9 +1,4 @@
-"""MOR-1687 F2: AF/RF command responses export the server-admitted target.
-
-Pins the additive wire contract: the optional ``admitted_level`` float in
-``set_af_level``/``set_rf_power``/``set_power`` results, untouched legacy
-keys, and its honest absence when no valid target exists.
-"""
+"""AF/RF command responses expose backend-admitted targets."""
 
 from __future__ import annotations
 

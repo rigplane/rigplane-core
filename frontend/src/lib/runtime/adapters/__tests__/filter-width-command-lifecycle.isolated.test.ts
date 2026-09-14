@@ -70,7 +70,7 @@ import {
   DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR,
   DSP_COMMAND_DESCRIPTORS, IF_SHIFT_COMMAND_DESCRIPTOR, KEY_SPEED_COMMAND_DESCRIPTOR,
   PBT_INNER_COMMAND_DESCRIPTOR, PBT_OUTER_COMMAND_DESCRIPTOR,
-  RF_GAIN_COMMAND_DESCRIPTOR, SQUELCH_COMMAND_DESCRIPTOR,
+  RF_GAIN_COMMAND_DESCRIPTOR, SQUELCH_COMMAND_DESCRIPTOR, AF_LEVEL_COMMAND_DESCRIPTOR, RF_POWER_COMMAND_DESCRIPTOR,
   STATE_BACKED_COMMAND_DESCRIPTORS,
   TX_AUX_COMMAND_DESCRIPTORS,
   beginCommand, getStateBackedCommandDescriptor,
@@ -116,6 +116,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(getStateBackedCommandDescriptor('set_vfo_freq')).toBe(DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR);
     expect([...STATE_BACKED_COMMAND_DESCRIPTORS.keys()]).toEqual([
       'set_filter_width', 'set_vfo_freq', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
+      'set_af_level', 'set_rf_power',
       'set_cw_pitch', 'set_key_speed', 'set_mic_gain', 'set_drive_gain',
       'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
       'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
@@ -621,6 +622,8 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
       ['set_break_in_delay', BREAK_IN_DELAY_COMMAND_DESCRIPTOR],
       ['set_rf_gain', RF_GAIN_COMMAND_DESCRIPTOR],
       ['set_squelch', SQUELCH_COMMAND_DESCRIPTOR],
+      ['set_af_level', AF_LEVEL_COMMAND_DESCRIPTOR],
+      ['set_rf_power', RF_POWER_COMMAND_DESCRIPTOR],
       ['set_cw_pitch', CW_PITCH_COMMAND_DESCRIPTOR],
       ['set_key_speed', KEY_SPEED_COMMAND_DESCRIPTOR],
       ['set_mic_gain', TX_AUX_COMMAND_DESCRIPTORS.micGain],
