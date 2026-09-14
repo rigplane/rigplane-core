@@ -163,8 +163,11 @@ describe('ReceiverInstrumentHost', () => {
     ['topology', () => publication({ scheme: 'ab_shared' })],
     ['active receiver', () => publication({ active: 'SUB' })],
     ['active receiver known status', () => publication({ activeKnown: false })],
-    ['receiver active slot', () => publication({ mainActiveSlot: 'B' })],
-    ['receiver active slot known status', () => publication({ mainActiveSlotKnown: false })],
+  ] as const;
+
+  const slotAuthorityChanges = [
+    ['receiver active slot', () => publication({ receivers: 1, scheme: 'ab', mainActiveSlot: 'B' })],
+    ['receiver active slot known status', () => publication({ receivers: 1, scheme: 'ab', mainActiveSlotKnown: false })],
   ] as const;
 
   it.each(authorityChanges)('closes the unobserved %s A-B-A gap and steps confirmed Hz', (_name, middle) => {
@@ -175,6 +178,25 @@ describe('ReceiverInstrumentHost', () => {
     const digit = projectFrequencyReadout({ confirmedHz: 14_250_000 }).digits.find((item) => item.multiplier === 1)!;
     oldMain.handleDigitClick(digit, new MouseEvent('click'));
     publisher.emit(middle()); publisher.emit(publication());
+    const staleEvent = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    oldMain.handleWheel(digit, staleEvent);
+    expect(staleEvent.defaultPrevented).toBe(false); expect(oldMain.inert).toBe(true); expect(tune).not.toHaveBeenCalled();
+    flushSync();
+    const readout = root.querySelector<HTMLElement>('[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]')!;
+    expect(readout.dataset.source).toBe('pending');
+    readout.querySelector<HTMLButtonElement>('[data-multiplier="1"]')!.click();
+    readout.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true, bubbles: true }));
+    expect(tune).toHaveBeenCalledExactlyOnceWith('MAIN', 14_250_001);
+  });
+
+  it.each(slotAuthorityChanges)('closes the unobserved %s A-B-A gap and steps confirmed Hz', (_name, middle) => {
+    const publisher = new Publisher(publication({ receivers: 1, scheme: 'ab' })); const tune = vi.fn();
+    const root = mountFixture(publisher, { pendingFrequencyHz: { MAIN: 14_300_000 }, onTuneFrequency: tune });
+    expect(publisher.handlers.size).toBe(1);
+    const oldMain = retainedInteractions()[0];
+    const digit = projectFrequencyReadout({ confirmedHz: 14_250_000 }).digits.find((item) => item.multiplier === 1)!;
+    oldMain.handleDigitClick(digit, new MouseEvent('click'));
+    publisher.emit(middle()); publisher.emit(publication({ receivers: 1, scheme: 'ab' }));
     const staleEvent = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
     oldMain.handleWheel(digit, staleEvent);
     expect(staleEvent.defaultPrevented).toBe(false); expect(oldMain.inert).toBe(true); expect(tune).not.toHaveBeenCalled();
