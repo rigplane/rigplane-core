@@ -34,10 +34,11 @@ const RADIO_WIDE = ['active', 'split', 'dualWatch', 'txTarget'] as const;
 
 /**
  * 2/main_sub (MOR-2467): MAIN and SUB are each one receiver-level VFO —
- * `freqHz`/`mode`/`filter` observed on the receiver itself, and NO
- * `vfoA`/`vfoB`/`activeSlot` anywhere: the IC-7610 has no per-receiver A/B
- * slots to report, so the fixture models exactly the payload its backend
- * sends (2 vfo tiles total).
+ * `freqHz`/`mode`/`filter` observed on the receiver itself. This fixture
+ * intentionally isolates the receiver-level fields the main_sub
+ * presentation consumes; real mixed-version payloads may carry extra
+ * legacy `vfoA`/`vfoB`/`activeSlot` slot keys, which the presentation
+ * ignores (2 vfo tiles total).
  */
 function mainSubState(active: 'MAIN' | 'SUB' = 'MAIN', entry: unknown = fresh): ServerState {
   const paths: string[] = [...RADIO_WIDE];
