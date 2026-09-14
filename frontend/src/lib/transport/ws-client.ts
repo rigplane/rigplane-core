@@ -19,6 +19,8 @@ export interface CommandDeliveryEvent {
   eventEpoch: number;
   error?: string;
   cancelled?: boolean;
+  /** Sanitized finite 0..1 `result.admitted_level`, only on a response-ok frame. */
+  admittedLevel?: number;
 }
 export type CommandLifecycleDeliveryKind = 'held' | 'superseded' | 'timed-out' | 'failed';
 export interface CommandLifecycleDeliveryEvent {
@@ -107,6 +109,14 @@ function reconciliationEvidence(value: unknown): { revision: number; observation
   if (!Number.isSafeInteger(revision.value) || revision.value < 0) return null;
   if (!Number.isSafeInteger(observationSeq.value) || observationSeq.value < 0) return null;
   return { revision: revision.value as number, observationSeq: observationSeq.value as number };
+}
+
+/** Only a finite 0..1 `result.admitted_level` on an ok response frame is evidence. */
+function admittedLevelOf(raw: Record<string, unknown>): number | undefined {
+  if (raw.type !== 'response' || raw.ok === false || !isPlainRecord(raw.result)) return undefined;
+  const value = raw.result['admitted_level'];
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value : undefined;
 }
 
 // ─── Close observability (MOR-1424) ─────────────────────────────────────────
@@ -543,6 +553,7 @@ export class WsChannel {
         raw.ok === false ? 'response-error' : 'response-ok',
         generic.eventEpoch,
         raw.ok === false ? String(raw.message ?? raw.error ?? 'Command failed') : undefined,
+        raw.ok === false ? undefined : admittedLevelOf(raw),
       );
       this.trackedNonPttCommands.delete(id);
     } else if (raw.type === 'error' || raw.status === 'error') {
@@ -634,6 +645,7 @@ export class WsChannel {
     kind: CommandDeliveryKind,
     eventEpoch: number,
     error?: string,
+    admittedLevel?: number,
   ): void {
     if (tracked.seen.has(kind)) return;
     tracked.seen.add(kind);
@@ -643,6 +655,7 @@ export class WsChannel {
       originalEpoch: tracked.originalEpoch,
       eventEpoch,
       ...(error ? { error } : {}),
+      ...(admittedLevel !== undefined ? { admittedLevel } : {}),
     });
   }
 

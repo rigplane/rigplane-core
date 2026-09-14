@@ -556,7 +556,7 @@ def _scope_frame() -> ScopeFrame:
             {"level": 0.4},
             SetPower,
             {"level": 102, "unit": "raw_255"},
-            {"level": 102},
+            {"level": 102, "admitted_level": 0.4},
         ),
         (
             # MOR-1579: set_rf_gain's wire contract is already the raw
@@ -577,7 +577,7 @@ def _scope_frame() -> ScopeFrame:
             {"level": 0.6, "receiver": 1},
             CommandIntent,
             {"af_level": 153, "receiver": 1},
-            {"level": 153, "receiver": 1},
+            {"level": 153, "receiver": 1, "admitted_level": 0.6},
         ),
         (
             "set_sql",

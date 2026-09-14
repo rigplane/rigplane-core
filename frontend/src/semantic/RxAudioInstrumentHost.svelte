@@ -17,6 +17,7 @@
   import {
     createContinuousScalar,
     createHBarContinuousScalarPolicy,
+    type CommandScalarFeedback,
     type ContinuousScalarInput,
     type ContinuousScalarPolicy,
     type ScalarDomain,
@@ -49,6 +50,7 @@
     presentation: RxAudioInstrumentPresentation;
     subscribeControlAuthority: SubscribeRxAudioAuthority;
     onAfLevelChange?: (value: number) => void;
+    afLevelFeedback?: Readonly<CommandScalarFeedback>;
     onMonitorModeChange?: (mode: MonitorMode) => void;
     onFocusChange?: (focus: AudioFocus) => void;
     onSplitStereoChange?: (split: boolean) => void;
@@ -78,7 +80,7 @@
   }
 
   let {
-    presentation, subscribeControlAuthority, onAfLevelChange,
+    presentation, subscribeControlAuthority, onAfLevelChange, afLevelFeedback,
     onMonitorModeChange, onFocusChange, onSplitStereoChange, routingGains = null,
     onChannelGainChange, onModInputChange, onSetModInputLan,
     finiteAppearance, rendererContext, children,
@@ -262,19 +264,29 @@
     const readingMatchesTarget = currentAuthority?.target === 'browser-volume'
       ? presentation.rxAudio?.monitorMode === 'live'
       : presentation.rxAudio?.monitorMode !== 'live';
-    return {
-      evidence: 'reading',
+    const enabled = same(currentAuthority, presentedAuthority)
+      && targetKnown
+      && currentAuthority?.muted === false
+      && readingMatchesTarget
+      && field?.availability.structural === true
+      && field.availability.operational
+      && reading.status === 'known'
+      && Number.isFinite(reading.value)
+      && onAfLevelChange !== undefined;
+    const base = {
       domain: { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 1 },
-      enabled: same(currentAuthority, presentedAuthority)
-        && targetKnown
-        && currentAuthority?.muted === false
-        && readingMatchesTarget
-        && field?.availability.structural === true
-        && field.availability.operational
-        && reading.status === 'known'
-        && Number.isFinite(reading.value)
-        && onAfLevelChange !== undefined,
-      request: (value) => onAfLevelChange?.(value),
+      enabled,
+      request: (value: number) => onAfLevelChange?.(value),
+    } as const;
+    if (afLevelFeedback !== undefined) return {
+      ...base,
+      evidence: 'command-feedback',
+      feedback: afLevelFeedback,
+      command: 'set_af_level',
+    };
+    return {
+      ...base,
+      evidence: 'reading',
       reading,
       ownerKey: key(currentAuthority),
     };

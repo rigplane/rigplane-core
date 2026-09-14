@@ -151,7 +151,10 @@ async def test_web_levels_invoke_canonical_executor_and_literal_receiver(
 ):
     before = path.server.command_state_store.snapshot().fields
     result = await _admit(path, name, 73, receiver)
-    assert result == {"level": 73, "receiver": receiver}
+    expected = {"level": 73, "receiver": receiver}
+    if name == "set_af_level":
+        expected["admitted_level"] = 73 / 255
+    assert result == expected
     path.write.assert_not_awaited()
     assert path.server.command_queue.has_commands
     assert path.server.command_state_store.snapshot().fields == before

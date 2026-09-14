@@ -19,6 +19,7 @@
  * recorded "web voice TX = noise/squeal" guard.
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   validateRadioViewModel, type ModInputReadiness, type RxAudioViewModel,
 } from '../radio-view-model';
@@ -252,5 +253,26 @@ describe('MOD-input readiness is the tx-capabilities derivation, verbatim (web-v
       txTarget: { status: 'unknown', reason: 'not-observed' }, modInputSource: source,
     }).modInputReadiness.status);
     expect(new Set(statuses)).toEqual(new Set(READINESS_STATUSES));
+  });
+});
+
+/**
+ * MOR-1687 F2 — fast-pool pin for the host's admitted-target AF feedback
+ * seam; mounted behavior is covered by the wiring pool. Comments are
+ * stripped so doctrine prose can never satisfy this pin.
+ */
+describe('RxAudioInstrumentHost admitted-target AF feedback seam (MOR-1687 F2)', () => {
+  const CODE = readFileSync('src/semantic/RxAudioInstrumentHost.svelte', 'utf8')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+
+  it('declares the optional feedback prop and binds it to the set_af_level lane', () => {
+    expect(CODE).toMatch(/afLevelFeedback\?: Readonly<CommandScalarFeedback>/);
+    expect(CODE).toMatch(/if \(afLevelFeedback !== undefined\) return/);
+    expect(CODE).toMatch(/command: 'set_af_level'/);
+    expect(CODE).toMatch(/feedback: afLevelFeedback/);
+    expect(CODE).toMatch(/evidence: 'reading'/);
+    expect(CODE).toMatch(/ownerKey: key\(currentAuthority\)/);
   });
 });

@@ -54,8 +54,8 @@
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import {
     bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getDspControlFeedback,
-    projectDspControlFeedbackToDisplay,
-    getFilterWidthControlFeedback,
+    getAfLevelControlFeedback, projectDspControlFeedbackToDisplay,
+    getFilterWidthControlFeedback, getRfPowerControlFeedback,
     getCwPitchControlFeedback, getKeySpeedControlFeedback, getRfSqlControlFeedback,
     getTxAuxControlFeedback, type TxAuxControlFeedbackField,
     getPendingFrequencyHz,
@@ -1563,6 +1563,9 @@
     activeReceiverIndex === null ? null : getPendingPreampLevel(activeReceiverIndex),
   );
   let rfSqlFeedback = $derived(getRfSqlControlFeedback(controlSession));
+  let afLevelFeedback = $derived(runtime.rxEnabled
+    ? undefined : getAfLevelControlFeedback(controlSession));
+  let rfPowerFeedback = $derived(getRfPowerControlFeedback(controlSession));
   let rfFrontEndInstrumentPresentation = $derived({
     state: runtime.state,
     caps: runtime.caps,
@@ -1756,6 +1759,7 @@
     presentation={rxAudioInstrumentPresentation}
     subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
     onAfLevelChange={rxAudioIntents.onAfLevelChange}
+    afLevelFeedback={afLevelFeedback}
     onMonitorModeChange={(mode) => rxAudioIntents.onMonitorModeChange(mode)}
     onFocusChange={(focus) => routingIntents.onFocusChange(focus)}
     onSplitStereoChange={(split) => routingIntents.onSplitStereoChange(split)}
@@ -2852,7 +2856,7 @@
   </TxAuxFiniteHost>
   {/snippet}
   <TxAuxScalarHost
-    {view} levelFeedback={txAuxLevelFeedback}
+    {view} levelFeedback={txAuxLevelFeedback} rfPowerFeedback={rfPowerFeedback}
     onLevelChange={(field, value) => TX_AUX_LEVEL_INTENT[field](value)}
     scalarAppearance={externalPresentation?.record.appearances.scalar}
     presentationIsCurrent={externalPresentation?.isCurrent}

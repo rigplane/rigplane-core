@@ -45,6 +45,7 @@ const h = vi.hoisted(() => ({
     state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 };
     rxAudioTarget: RxAudioTargetSnapshot;
   }) => void>(),
+  radioListeners: new Set<(state: ServerState | null) => void>(),
   txController: null as ManagedAppTxController | null,
   audio: { muted: false, rxEnabled: true, volume: 42 },
   audioRouting: null as null | {
@@ -116,6 +117,11 @@ vi.mock('$lib/stores/radio.svelte', () => ({
     const state = h.state as ServerState | null;
     return state?.active === 'SUB' ? state.sub ?? null : state?.main ?? null;
   }),
+  subscribeRadioState: (listener: (state: ServerState | null) => void) => {
+    h.radioListeners.add(listener);
+    listener(h.state as ServerState | null);
+    return () => { h.radioListeners.delete(listener); };
+  },
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
   patchReceiver: vi.fn(),
@@ -172,6 +178,9 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 
 import { audioManager } from '$lib/audio/audio-manager';
 import { sendCommand } from '$lib/transport/ws-client';
+import {
+  acknowledgeCommand, beginCommand, getCommandLifecycles, resetCommandLifecycle,
+} from '$lib/stores/commands.svelte';
 import { MOD_INPUT_SOURCES, modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import { FOCUS_CHOICES, SPLIT_CHOICES } from '../../../semantic/rx-audio-instruments';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
@@ -321,6 +330,7 @@ beforeEach(() => {
   h.txController = txHarness.controller;
   h.state = liveState();
   h.caps = liveCaps(AUDIO_TAGS);
+  resetCommandLifecycle();
   expect(setCapabilities(h.caps as Capabilities)).toBe(true);
   h.audio = { muted: false, rxEnabled: true, volume: 42 };
   h.audioRouting = null;
@@ -337,6 +347,7 @@ afterEach(() => {
   if (component) unmount(component);
   component = null;
   expect(h.authoritySubscribers.size).toBe(0);
+  resetCommandLifecycle();
   clearCapabilities();
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
@@ -887,5 +898,67 @@ describe('persistent RX-audio composition across a real Standard->SDR plan switc
     staleStandardMonitor!('local');
     expect(h.setRxLive).not.toHaveBeenCalled();
     expect(h.setMuted).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * MOR-1687 F2 — the mounted AF control consumes the admitted-target lane in
+ * radio-AF mode; a browser stream that owns AF keeps the plain reading
+ * control with no lane.
+ */
+describe('the AF control consumes the admitted-target lane (MOR-1687 F2)', () => {
+  const afState = (marker: number, afLevel: number): ServerState => {
+    const state = liveState();
+    return { ...state, stateContractVersion: 1, main: { ...state.main, afLevel },
+      fieldStatus: { ...state.fieldStatus,
+        'main.afLevel': { ...fresh, freshness: 'fresh', availability: 'available', lastObservedMonotonic: marker } } };
+  };
+  const beginAf = (id: string) => beginCommand({ id, name: 'set_af_level', params: { level: 0.5, receiver: 0 }, originalEpoch: 1 });
+  const pushAfState = (marker: number, afLevel: number) => {
+    h.state = afState(marker, afLevel);
+    for (const listener of h.radioListeners) listener(h.state as ServerState | null);
+    publishAuthority();
+    flushSync();
+  };
+
+  it('keeps the browser-volume reading and no lane while the stream owns AF', () => {
+    beginAf('af-live');
+    render();
+    acknowledgeCommand('af-live', 1, 1, 128 / 255);
+    flushSync();
+    expect(afSlider()!.getAttribute('aria-valuenow')).toBe('0.42');
+    expect(afSlider()!.dataset.commandPhase).toBeUndefined();
+  });
+
+  it('awaits the admitted target and confirms only on the exact fresh readback', () => {
+    h.rxEnabled = false;
+    h.audio = { muted: false, rxEnabled: false, volume: 42 };
+    h.state = afState(1, 0.31);
+    const command = beginAf('af-admitted');
+    render();
+    expect(afSlider()!.dataset.commandPhase).toBe('idle');
+    acknowledgeCommand(command.id, 1, 1, 128 / 255);
+    flushSync();
+    expect(afSlider()!.dataset.commandPhase).toBe('awaiting-confirmation');
+    pushAfState(2, 0.9);
+    expect(afSlider()!.dataset.commandPhase).toBe('awaiting-confirmation');
+    pushAfState(3, 128 / 255);
+    expect(getCommandLifecycles()[0]?.status).toBe('confirmed');
+    expect(afSlider()!.dataset.commandPhase).toBe('confirmed');
+    expect(Number(afSlider()!.getAttribute('aria-valuenow'))).toBeCloseTo(128 / 255, 10);
+  });
+
+  it('stays idle without an admitted target and keeps showing the readback', () => {
+    h.rxEnabled = false;
+    h.audio = { muted: false, rxEnabled: false, volume: 42 };
+    h.state = afState(1, 0.31);
+    const command = beginAf('af-old-server');
+    render();
+    acknowledgeCommand(command.id, 1, 1);
+    flushSync();
+    pushAfState(2, 0.31);
+    expect(afSlider()!.dataset.commandPhase).toBe('idle');
+    expect(getCommandLifecycles()[0]?.status).toBe('acknowledged');
+    expect(Number(afSlider()!.getAttribute('aria-valuenow'))).toBeCloseTo(0.31, 10);
   });
 });

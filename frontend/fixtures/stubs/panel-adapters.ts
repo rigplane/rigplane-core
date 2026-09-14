@@ -31,7 +31,7 @@ export function getBreakInDelayControlFeedback() {
   });
 }
 
-function unavailableGlobalCwFeedback(control: 'cw-pitch' | 'keyer-speed') {
+function unavailableScalarFeedback(control: 'cw-pitch' | 'keyer-speed' | 'af-level' | 'rf-power') {
   return Object.freeze({
     confirmed: null, target: null, requestedTarget: null,
     phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
@@ -43,10 +43,10 @@ function unavailableGlobalCwFeedback(control: 'cw-pitch' | 'keyer-speed') {
 
 /** Offline fixtures never fabricate global CW command-feedback authority. */
 export function getCwPitchControlFeedback() {
-  return unavailableGlobalCwFeedback('cw-pitch');
+  return unavailableScalarFeedback('cw-pitch');
 }
 export function getKeySpeedControlFeedback() {
-  return unavailableGlobalCwFeedback('keyer-speed');
+  return unavailableScalarFeedback('keyer-speed');
 }
 
 /** No Filter Width truth or command lifecycle exists in the offline fixture. */
@@ -174,3 +174,6 @@ const memoryHandlers = Object.freeze({
   onClear: (_channel: number): boolean => false,
 });
 export function getMemoryHandlers() { return memoryHandlers; }
+
+export function getAfLevelControlFeedback() { return unavailableScalarFeedback('af-level'); }
+export function getRfPowerControlFeedback() { return unavailableScalarFeedback('rf-power'); }

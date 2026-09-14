@@ -34,6 +34,7 @@ import {
 } from '$lib/stores/capabilities.svelte';
 import { recordQsy } from './qsy-history-adapter';
 import {
+  AF_LEVEL_COMMAND_DESCRIPTOR,
   BREAK_IN_DELAY_COMMAND_DESCRIPTOR,
   CW_PITCH_COMMAND_DESCRIPTOR,
   DSP_COMMAND_DESCRIPTORS,
@@ -43,6 +44,7 @@ import {
   PBT_INNER_COMMAND_DESCRIPTOR,
   PBT_OUTER_COMMAND_DESCRIPTOR,
   RF_GAIN_COMMAND_DESCRIPTOR,
+  RF_POWER_COMMAND_DESCRIPTOR,
   SQUELCH_COMMAND_DESCRIPTOR,
   TX_AUX_COMMAND_DESCRIPTORS,
   getCommandLifecycles,
@@ -720,6 +722,79 @@ export function getRfSqlControlFeedback(
       'set_squelch', SQUELCH_COMMAND_DESCRIPTOR, 'squelch', 'squelch', tags.includes('squelch'),
     ),
   });
+}
+
+function normalizedUsableObservation(
+  observation: DisplayObservation<number>,
+): number | null {
+  if (!hasUsableObservation(observation)) return null;
+  const value = observation.value;
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value : null;
+}
+
+/** Qualified AF-level command feedback; receiver from active-receiver truth. */
+export function getAfLevelControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  const { state, caps } = runtime;
+  const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const feedback = projectControlFeedback(
+    AF_LEVEL_COMMAND_DESCRIPTOR, state, commands,
+    { control: 'af-level', receiver: state?.active === 'SUB' ? 1 : 0 }, epoch,
+    isCommandLifecycleSuperseded,
+  );
+  try {
+    const view = toRadioViewModel(state, caps);
+    const activeReceiver = view === null || view.activeReceiver.status !== 'known'
+      ? null : view.activeReceiver.receiver;
+    const receiverEntries = view?.receiverIndicators?.filter(
+      entry => entry.receiver === activeReceiver,
+    ) ?? [];
+    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+    const observation = qualifyDisplayObservation({
+      state, caps, receiver: activeReceiver ?? 'MAIN',
+      path: activeReceiver === 'SUB' ? 'sub.afLevel' : 'main.afLevel',
+      structural: tags.includes('af_level'),
+      value: (activeReceiver === 'SUB' ? state?.sub : state?.main)?.afLevel,
+    });
+    if (session.state !== 'connected' || epoch < 0 || activeReceiver === null
+      || receiverEntries.length !== 1 || !receiverEntries[0].availability.operational
+      || normalizedUsableObservation(observation) === null) {
+      return unavailableControlFeedback(feedback);
+    }
+    return feedback;
+  } catch {
+    return unavailableControlFeedback(feedback);
+  }
+}
+
+/** Qualified RF-power command feedback on the normalized `powerLevel` scale. */
+export function getRfPowerControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  const { state, caps } = runtime;
+  const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const feedback = projectControlFeedback(
+    RF_POWER_COMMAND_DESCRIPTOR, state, commands,
+    { control: 'rf-power', receiver: 0 }, epoch, isCommandLifecycleSuperseded,
+  );
+  try {
+    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+    const observation = qualifyRadioDisplayObservation({
+      state, caps, path: 'powerLevel', structural: tags.includes('tx'),
+      value: state?.powerLevel,
+    });
+    return session.state === 'connected' && epoch >= 0
+      && normalizedUsableObservation(observation) !== null
+      ? feedback : unavailableControlFeedback(feedback);
+  } catch {
+    return unavailableControlFeedback(feedback);
+  }
 }
 
 /**
