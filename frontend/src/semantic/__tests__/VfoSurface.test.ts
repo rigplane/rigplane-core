@@ -2661,14 +2661,22 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(absent.querySelector('[data-testid="receiver-s-meter"]')).toBeNull();
   });
 
-  it('keeps two receiver-level records and selects the exact Standard receiver slot', () => {
+  it('keeps two receiver-level Standard records without invented slot selection', () => {
     const onSelectVfo = vi.fn();
     const root = mountSurface({
       viewModel: withReceiverIndicators('2/main_sub'), appearance: 'standard', onSelectVfo,
     });
+    expect(root.querySelectorAll('[data-receiver-instrument]')).toHaveLength(2);
     expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
-    root.querySelector<HTMLButtonElement>('[data-vfo-receiver="SUB"][data-vfo-slot="unslotted"] [data-vfo-select]')?.click();
-    expect(onSelectVfo).toHaveBeenCalledExactlyOnceWith({ receiver: 'SUB', slot: { kind: 'unslotted' } });
+    for (const receiver of ['MAIN', 'SUB']) {
+      const tile = root.querySelector(`[data-vfo-tile][data-vfo-receiver="${receiver}"]`)!;
+      expect(tile.getAttribute('data-vfo-slot')).toBe('unslotted');
+      expect(tile.querySelector('[data-vfo-freq]')?.textContent?.replace(/\s/g, ''))
+        .toBe(receiver === 'MAIN' ? '14.250.000' : '21.295.000');
+    }
+    expect(root.querySelectorAll('[data-vfo-select]')).toHaveLength(0);
+    root.querySelector<HTMLElement>('[data-vfo-tile][data-vfo-receiver="SUB"]')?.click();
+    expect(onSelectVfo).not.toHaveBeenCalled();
   });
 
   it('retains both fixed cards without an optimistic highlight when the active slot is unknown', () => {
