@@ -384,10 +384,7 @@
       ? !isFixedScope
       : scopeControlsMode !== null && !isFixedScopeFn(scopeControlsMode),
   );
-  // MOR-2464: remember proven CENTER/FIX mode per provider/session/receiver.
-  // This static 50% ruler survives freshness gaps without retaining RF geometry
-  // or frequency. Unknown startup stays hidden; explicit FIX and identity
-  // changes invalidate the remembered mode.
+  // Remember CENTER/FIX per identity; the static ruler carries no RF geometry.
   let provenCenterMode = $state<{ providerGeneration: number; receiver: 0 | 1; sessionEpoch: number } | null>(null);
   $effect(() => {
     const authority = spectrumAuthority;
