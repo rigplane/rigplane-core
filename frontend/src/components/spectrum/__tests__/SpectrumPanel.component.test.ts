@@ -1079,21 +1079,27 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
   });
 
-  it('emits zero for below-threshold and no-change drags', () => {
+  it('tunes a below-threshold spectrum release to the clicked frequency and emits zero for a no-change drag', () => {
     const target = mountPanel();
     emitFrame();
     const { spectrum } = prepareGeometry(target);
     pointer(spectrum, 'pointerdown', 8, 100);
     pointer(spectrum, 'pointermove', 8, 104);
     pointer(spectrum, 'pointerup', 8, 104);
-    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    // MOR-2464 click-to-tune: below the drag threshold the release is a
+    // click — it tunes to the clicked position (104/200 of the 100 kHz
+    // span → 14_052_000 snapped), not a pan.
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_052_000, 0);
 
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
     rect(spectrum, 0, 100_000);
     pointer(spectrum, 'pointerdown', 9, 100);
     pointer(spectrum, 'pointermove', 9, 106);
     pointer(spectrum, 'pointerup', 9, 106);
-    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    // An above-threshold drag whose snapped target equals the observed
+    // frequency stays silent — and must not fall through to a click tune.
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
   });
 
   it('matching drag cancel emits zero and never finalizes', () => {
@@ -2342,6 +2348,49 @@ describe('center panorama motion (MOR-2464)', () => {
     pointer(canvas, 'pointerup', 95, 150);
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_051_000, 0);
+  });
+
+  // MOR-2464 owner regression: click-to-tune on the panorama. The upper
+  // (spectrum) area has no tap recognizer of its own — unlike WaterfallCanvas
+  // — so a press/release below the drag threshold must resolve as a click
+  // through the SAME release-driven path (pointerup, never the native click
+  // event) and tune to the clicked position through the visual viewport.
+  it('tunes a panorama spectrum-area click to the clicked frequency with the native click inert', () => {
+    const { target } = mountPanorama(panoramaProjection());
+    const { spectrum } = prepareGeometry(target);
+    const canvas = spectrum.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 21, 100);
+    pointer(canvas, 'pointerup', 21, 100);
+    // The browser follows pointerup with a native click — it must stay
+    // inert so one physical click emits exactly one frequency command.
+    canvas.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 100 }));
+    flushSync();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_050_000, 0);
+  });
+
+  it('keeps the waterfall tap at exactly one command when the browser follows with a native click', () => {
+    const { target } = mountPanorama(panoramaProjection());
+    const { waterfall } = prepareGeometry(target);
+    const canvas = waterfall.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 22, 100);
+    pointer(canvas, 'pointerup', 22, 100);
+    canvas.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 100 }));
+    flushSync();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+  });
+
+  it('emits only the pan for an above-threshold spectrum drag followed by the native click', () => {
+    const { target } = mountPanorama(panoramaProjection());
+    const { spectrum } = prepareGeometry(target);
+    const canvas = spectrum.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 23, 100);
+    pointer(canvas, 'pointermove', 23, 120);
+    pointer(canvas, 'pointerup', 23, 120);
+    canvas.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 120 }));
+    flushSync();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
   });
 
   it('resets the panorama and clears waterfall history when the span changes mid-animation', async () => {

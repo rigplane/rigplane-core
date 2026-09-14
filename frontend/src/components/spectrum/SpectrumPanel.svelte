@@ -754,7 +754,10 @@
   // --- Drag-to-pan (grab and slide the spectrum window) ---
   function handleDragStart(event: PointerEvent): void {
     if (event.button !== 0 || resizeCapture) return;
-    if (event.target instanceof Element && event.target.closest('button, select, input')) return;
+    // Interactive controls and the band-plan popup dialog stay inert: a
+    // press inside them must neither pan nor resolve as a click-to-tune.
+    if (event.target instanceof Element
+      && event.target.closest('button, select, input, [role="dialog"]')) return;
     const surface = event.currentTarget as HTMLElement | null;
     const accepted = completeFrequencyAuthority();
     const geometry = surface ? readSampleGeometry(surface) : null;
@@ -795,10 +798,27 @@
     if (!capture || capture.pointerId !== event.pointerId || !dragSurface) return;
     const candidate = dragCandidate;
     const stable = captureFrequencyStillCurrent(capture, dragSurface);
+    // MOR-2464 click-to-tune: a release that never crossed the drag
+    // threshold on the spectrum area is a click. The upper canvas has no
+    // tap recognizer of its own (unlike WaterfallCanvas, whose gesture
+    // already tunes exactly once — hence the surface check), so the click
+    // resolves here through the same release-driven path: map the release
+    // point through the CURRENT visual viewport (the animated panorama
+    // window; the fixed sample window in FIX) into the actual radio
+    // command via handleTune. An above-threshold release is a pan and
+    // must never also tune, and the browser's follow-up native click
+    // event has no listener, so one physical click emits one command.
+    const clickTune = !dragging && candidate === null && stable && dragSurface === spectrumArea;
     dragging = false;
     dragCapture = null;
     dragSurface = null;
     dragCandidate = null;
+    if (clickTune) {
+      const fraction = Math.min(1, Math.max(0,
+        (event.clientX - capture.elementLeft) / capture.geometry.elementWidth));
+      handleTune(viewportStartFreq + fraction * spanHz);
+      return;
+    }
     if (!stable || candidate === null || candidate === capture.authority.frequencyHz) return;
     vfoHandlers.onFreqChange(candidate, capture.authority.receiver);
   }
