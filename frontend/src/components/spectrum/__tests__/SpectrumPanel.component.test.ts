@@ -396,7 +396,7 @@ vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => ({
 // Import component after mocks
 // ---------------------------------------------------------------------------
 
-import { WaterfallRenderer } from '$lib/renderers/waterfall-renderer';
+import { WaterfallRenderer, type WaterfallOptions } from '$lib/renderers/waterfall-renderer';
 import SpectrumPanel from '../SpectrumPanel.svelte';
 import spectrumPanelSource from '../SpectrumPanel.svelte?raw';
 import {
@@ -1669,7 +1669,7 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
   });
-  it('positions translated stale CENTER geometry on the live axis through frame lag and cancels resize', async () => {
+  it('anchors translated stale CENTER geometry at 50% and pans the panorama under it (MOR-2464)', async () => {
     const { target, props } = managed(projection()); const { waterfall } = prepareGeometry(target);
     pointer(waterfall.querySelector('.passband-resize-zone')!, 'pointerdown', 89, 100);
     pointer(waterfall, 'pointermove', 89, 130);
@@ -1678,12 +1678,13 @@ describe('managed scope projection (MOR-2367)', () => {
     const translated = { ...initial, passband: { ...initial.passband, translated: true,
       tuple: { ...initial.passband.tuple, frequencyHz: 14_051_000 } } };
     props.set('projection', translated); flushSync();
-    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('51%');
-    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('39%');
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('38%');
     expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.width).toBe('24%');
     await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions).toMatchObject({
-      tuneHz: 14_051_000, centerHz: 14_050_000, scopeMode: 1, passbandHz: 2400,
+      tuneHz: 14_051_000, scopeMode: 0, passbandHz: 2400,
     }));
+    await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(1_000));
     pointer(window, 'pointerup', 89, 130);
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
@@ -1694,6 +1695,9 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    // The recentered frame must not reset the animation: the offset settles
+    // back to zero on its own, never shifting stationary content twice.
+    await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(0));
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
   });
   it('keeps projector-produced overlays through a stale frequency gap and staggered recovery while tuning', () => {
@@ -1728,7 +1732,7 @@ describe('managed scope projection (MOR-2367)', () => {
     rx.vfoA!.freqHz = 14_075_000; state.fieldStatus['main.vfoA.freqHz'].lastObservedMonotonic = 11;
     present(100, 14_074_000);
     expect(result.display.state).toBe('stale');
-    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('51%');
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
     rx.freqHz = 14_075_000; state.fieldStatus['main.freqHz'].lastObservedMonotonic = 11.1;
     for (let now = 200; now <= 5000; now += 100) {
       present(now, 14_075_000);
@@ -2062,5 +2066,173 @@ describe('hardware scope drop clears the trace (R53)', () => {
     emitFrame({ pixels: new Uint8Array(475).fill(100) });
     await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
     expect(spectrumRendererHarness.render.mock.calls.at(-1)![1][0]).toBe(100);
+  });
+});
+
+// MOR-2464 — the center panorama. In CENTER scope the carrier+passband
+// indicator is anchored at 50% while the visual viewport glides toward the
+// commanded frequency; a late recentered frame never restarts or double-shifts.
+describe('center panorama motion (MOR-2464)', () => {
+  const PANORAMA_TUPLE = Object.freeze({ frequencyHz: 14_050_000, mode: 'USB',
+    widthHz: 2_400, shiftHz: 0, frameMode: 0, startHz: 14_000_000, endHz: 14_100_000 });
+  // Frame centered on `centerHz` (±halfSpan); `translatedDeltaHz` builds the
+  // translated-stale variant whose frequency leads the frame.
+  function panoramaProjection(centerHz = 14_050_000, halfSpan = 50_000, sequence = 1,
+    translatedDeltaHz?: number): ScopeDisplayProjection {
+    const start = centerHz - halfSpan;
+    const end = centerHz + halfSpan;
+    const tuple = Object.freeze({ ...PANORAMA_TUPLE,
+      frequencyHz: 14_050_000 + (translatedDeltaHz ?? centerHz - 14_050_000),
+      startHz: translatedDeltaHz === undefined ? start : PANORAMA_TUPLE.startHz,
+      endHz: translatedDeltaHz === undefined ? end : PANORAMA_TUPLE.endHz });
+    return Object.freeze({
+      frame: Object.freeze({ source: 'hardware', receiver: 'MAIN', freshness: 'fresh',
+        startHz: start, endHz: end, normalizedBins: Object.freeze([0, 0.5, 1]) }),
+      frameMode: 0, acceptedSequence: sequence,
+      passband: Object.freeze(translatedDeltaHz === undefined
+        ? { state: 'current', tuple }
+        : { state: 'stale', translated: true, tuple }),
+    }) as ScopeDisplayProjection;
+  }
+  function mountPanorama(initial: ScopeDisplayProjection) {    const props = new SvelteMap<string, unknown>([['projection', initial], ['demanded', true]]);
+    const target = mountPanel({
+      get scopeProjection() { return props.get('projection'); },
+      get scopeDemanded() { return props.get('demanded') as boolean; },
+    });
+    return { target, props };
+  }
+  const recordedShifts = (): number[] =>
+    spectrumRendererHarness.render.mock.calls.map((call) => call[4]?.panoramaShiftHz ?? 0);
+  const bindingOrders = (
+    updateSpy: { mock: { calls: unknown[][]; invocationCallOrder: number[] } },
+    center: number, shift: number,
+  ) => {
+    const orders: number[] = [];
+    updateSpy.mock.calls.forEach((call, index) => {
+      const opts = call[0] as Partial<WaterfallOptions> | undefined;
+      if (opts?.centerHz === center && opts?.panoramaShiftHz === shift) {
+        orders.push(updateSpy.mock.invocationCallOrder[index]);
+      }
+    });
+    return orders;
+  };
+  it('glides the panorama across a translated→recentered transition through real intermediate frames', async () => {
+    const { target, props } = mountPanorama(panoramaProjection());
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('38%');
+    await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+    await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+    props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it('retargets a rapid reversal without overshoot and keeps the carrier anchored', async () => {
+    const { target, props } = mountPanorama(panoramaProjection());
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, -1_000)); flushSync();
+    await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(-1_000));
+    const shifts = recordedShifts();
+    expect(Math.max(...shifts.map(Math.abs))).toBeLessThanOrEqual(1_000);
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    expect(mockRuntime.send).not.toHaveBeenCalled();
+  });
+
+  it('snaps the panorama under prefers-reduced-motion with no animated frames', async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockReturnValue({ matches: true, addEventListener: () => {},
+      removeEventListener: () => {}, addListener: () => {}, removeListener: () => {},
+    }) as unknown as typeof window.matchMedia;
+    try {
+      const { target, props } = mountPanorama(panoramaProjection());
+      spectrumRendererHarness.render.mockClear();
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+      expect(recordedShifts().every((v) => v === 1_000)).toBe(true);
+      expect(recordedShifts().length).toBeGreaterThan(0);
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+
+  it('maps a settled animated viewport click to its carrier frequency', async () => {
+    const { target, props } = mountPanorama(panoramaProjection());
+    const { waterfall } = prepareGeometry(target);
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+    await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+    const canvas = waterfall.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 95, 150);
+    pointer(canvas, 'pointerup', 95, 150);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_051_000, 0);
+  });
+
+  it('resets the panorama and clears waterfall history when the span changes mid-animation', async () => {
+    const clearSpy = vi.spyOn(WaterfallRenderer.prototype, 'clear');
+    try {
+      const { target, props } = mountPanorama(panoramaProjection());
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0)).toBe(true));
+      props.set('projection', panoramaProjection(14_100_000, 100_000, 2)); flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
+      expect(clearSpy).toHaveBeenCalled();
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    } finally {
+      clearSpy.mockRestore();
+    }
+  });
+
+  it('initializes the effective viewport before the first row is written (first mount)', async () => {
+    const updateSpy = vi.spyOn(WaterfallRenderer.prototype, 'updateOptions');
+    const pushSpy = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    try {
+      const { target, props } = mountPanorama(panoramaProjection());
+      props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
+      expect(pushSpy).toHaveBeenCalled();
+      const binding = bindingOrders(updateSpy, 14_050_000, 0);
+      expect(binding.length).toBeGreaterThan(0);
+      expect(Math.min(...binding)).toBeLessThan(pushSpy.mock.invocationCallOrder[0]!);
+      // No update ever binds a stale zero center to a real span.
+      expect(updateSpy.mock.calls.filter((call) => call[0]?.centerHz === 0 && (call[0]?.spanHz ?? 0) > 0)).toHaveLength(0);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
+    } finally {
+      updateSpy.mockRestore();
+      pushSpy.mockRestore();
+    }
+  });
+
+  it('binds recentered frame geometry to pixels before the row is written (real component path)', async () => {
+    const updateSpy = vi.spyOn(WaterfallRenderer.prototype, 'updateOptions');
+    const pushSpy = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    try {
+      const { target, props } = mountPanorama(panoramaProjection());
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      updateSpy.mockClear(); pushSpy.mockClear();
+      props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
+      expect(pushSpy).toHaveBeenCalled();
+      const binding = bindingOrders(updateSpy, 14_051_000, 0);
+      expect(binding.length).toBeGreaterThan(0);
+      expect(Math.min(...binding)).toBeLessThan(pushSpy.mock.invocationCallOrder.at(-1)!);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    } finally {
+      updateSpy.mockRestore();
+      pushSpy.mockRestore();
+    }
+  });
+
+  it('keeps the FIX marker proportional with no panorama shift', async () => {
+    authorityHarness.state.current = authority({ frequencyHz: 14_025_000 });
+    const target = mountPanel();
+    emitFrame({ mode: 1 });
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('25%');
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(0);
+    expect(spectrumRendererHarness.lastOptions.scopeMode).toBe(1);
   });
 });

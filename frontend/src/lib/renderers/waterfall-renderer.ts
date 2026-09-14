@@ -7,6 +7,10 @@ interface ColorStop {
   color: string;
 }
 
+// Blank background for uncovered edges and clear(); RGB twin for putImageData rows.
+const WATERFALL_BACKGROUND = '#001020';
+const WATERFALL_BACKGROUND_RGB: readonly [number, number, number] = [0x00, 0x10, 0x20];
+
 export const COLOR_SCHEMES = {
   classic: [
     { stop: 0.0, color: '#001020' }, // dark blue
@@ -35,8 +39,11 @@ export interface WaterfallOptions {
   colorScheme: ColorSchemeName;
   refLevel: number;  // -30 to +30 dB brightness offset
   speed: number;     // rows scrolled per pushRow call (1 = normal)
-  centerHz: number;  // center frequency in Hz
+  centerHz: number;  // displayed viewport center in Hz (MOR-2464: animated)
   spanHz: number;    // frequency span in Hz
+  // Viewport center minus sample-window center, Hz (MOR-2464). Samples the
+  // NEW row only; history reprojects by centerHz deltas instead.
+  panoramaShiftHz: number;
 }
 
 export const defaultWaterfallOptions: WaterfallOptions = {
@@ -45,6 +52,7 @@ export const defaultWaterfallOptions: WaterfallOptions = {
   speed: 1,
   centerHz: 0,
   spanHz: 0,
+  panoramaShiftHz: 0,
 };
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -100,6 +108,11 @@ export class WaterfallRenderer {
   private rowBuf: ImageData | null = null;
   private rowData: Uint8ClampedArray | null = null;
   private destroyed = false;
+  // MOR-2464: history reprojects by viewport-center deltas only; the
+  // sampling offset places new rows.
+  private anchoredViewportHz: number;
+  private appliedViewportPx = 0;
+  private viewportAnchorValid = false;
   // Last confirmed (non-zero) spanHz we've rendered rows under. Used to
   // detect a genuine SPAN change (MOR-1479) vs. a same-value re-observation
   // or the initial 0→real transition (first frame / reconnect), neither of
@@ -116,6 +129,7 @@ export class WaterfallRenderer {
     this.lut = buildColorLut(options.colorScheme);
     this.width = canvas.width;
     this.height = canvas.height;
+    this.anchoredViewportHz = this.options.centerHz;
     if (this.width > 0 && this.height > 0) {
       this._initBuffers();
       this.clear();
@@ -125,6 +139,57 @@ export class WaterfallRenderer {
   private _initBuffers(): void {
     this.rowBuf = this.ctx.createImageData(this.width, 1);
     this.rowData = this.rowBuf.data;
+  }
+
+  // Exact device-pixel sampling offset for the NEXT row.
+  private samplingShiftPx(): number {
+    const { spanHz, panoramaShiftHz } = this.options;
+    if (!(spanHz > 0) || !Number.isFinite(panoramaShiftHz) || this.width <= 0) return 0;
+    return (panoramaShiftHz / spanHz) * this.width;
+  }
+
+  // Rounded device-pixel offset of the viewport center from the anchor.
+  private viewportOffsetPx(): number {
+    const { spanHz, centerHz } = this.options;
+    if (!(spanHz > 0) || !Number.isFinite(centerHz) || this.width <= 0) return 0;
+    return Math.round(((centerHz - this.anchoredViewportHz) / spanHz) * this.width);
+  }
+
+  // Reproject the drawn history onto the current viewport (MOR-2464):
+  // integer delta between rounded viewport offsets, uncovered strip
+  // blanked; the first binding of a real sample window anchors silently.
+  private _applyViewportShift(): void {
+    const { spanHz, centerHz } = this.options;
+    if (!(spanHz > 0)) return;
+    if (!this.viewportAnchorValid) {
+      this.anchoredViewportHz = centerHz;
+      this.appliedViewportPx = 0;
+      this.viewportAnchorValid = true;
+      return;
+    }
+    const target = this.viewportOffsetPx();
+    const delta = target - this.appliedViewportPx;
+    if (delta === 0) return;
+    this.appliedViewportPx = target;
+    const ctx = this.ctx;
+    if (this.destroyed || !ctx) return;
+    const canvas = ctx.canvas;
+    const w = canvas.width;
+    const h = canvas.height;
+    if (w <= 0 || h <= 0) return;
+    const copyWidth = w - Math.abs(delta);
+    ctx.fillStyle = WATERFALL_BACKGROUND;
+    if (copyWidth <= 0) {
+      ctx.fillRect(0, 0, w, h);
+      return;
+    }
+    if (delta > 0) {
+      ctx.drawImage(canvas, delta, 0, copyWidth, h, 0, 0, copyWidth, h);
+      ctx.fillRect(copyWidth, 0, delta, h);
+    } else {
+      ctx.drawImage(canvas, 0, 0, copyWidth, h, -delta, 0, copyWidth, h);
+      ctx.fillRect(0, 0, -delta, h);
+    }
   }
 
   /** Add a new scope data row at the top; shift existing content down. */
@@ -148,19 +213,36 @@ export class WaterfallRenderer {
     }
     const rowData = this.rowData!;
 
-    // Build the new top row using the color LUT
+    // Build the new top row using the color LUT. MOR-2464: the resting row
+    // keeps the established nearest-bin mapping; a fractional shift
+    // interpolates the translated screen profile; uncovered stays blank.
     const lut = this.lut;
+    const shiftPx = this.samplingShiftPx();
+    const profile = (column: number): number =>
+      data[Math.min(n - 1, Math.floor((column / w) * n))];
     // Ref level: maps -30..+30 dB → ±20 on 0-80 scale
     const refAdjust = (this.options.refLevel / 60) * 40;
     for (let x = 0; x < w; x++) {
-      const p = data[Math.min(n - 1, Math.floor((x / w) * n))];
+      const pi = x * 4;
+      const p = x + shiftPx;
+      if (p < 0 || p > w - 1) {
+        rowData[pi] = WATERFALL_BACKGROUND_RGB[0];
+        rowData[pi + 1] = WATERFALL_BACKGROUND_RGB[1];
+        rowData[pi + 2] = WATERFALL_BACKGROUND_RGB[2];
+        rowData[pi + 3] = 255;
+        continue;
+      }
+      const i0 = Math.floor(p);
+      const frac = p - i0;
+      const sample = frac === 0
+        ? profile(i0)
+        : profile(i0) * (1 - frac) + profile(i0 + 1) * frac;
       // Gain boost: map 0-80 → 0-255 with sqrt curve for better contrast
-      // at low signal levels (IC-7610 scope data peaks at ~55)
-      const adjusted = Math.min(80, Math.max(0, p + refAdjust));
+      // at low signal levels (IC-7610 scope data typically peaks at ~55)
+      const adjusted = Math.min(80, Math.max(0, sample + refAdjust));
       const norm = adjusted / 80;
       const v = Math.floor(Math.sqrt(norm) * 255);
       const li = v * 3;
-      const pi = x * 4;
       rowData[pi] = lut[li];
       rowData[pi + 1] = lut[li + 1];
       rowData[pi + 2] = lut[li + 2];
@@ -192,6 +274,10 @@ export class WaterfallRenderer {
     this.height = height;
     this.rowBuf = null;
     this.rowData = null;
+    // Scaled content no longer matches the old pixel anchor.
+    this.anchoredViewportHz = this.options.centerHz;
+    this.appliedViewportPx = 0;
+    this.viewportAnchorValid = this.options.spanHz > 0;
     if (width > 0 && height > 0) {
       this.ctx.canvas.width = width;
       this.ctx.canvas.height = height;
@@ -233,6 +319,10 @@ export class WaterfallRenderer {
       }
       this.lastConfirmedSpanHz = opts.spanHz;
     }
+    // MOR-2464: history follows viewport-center deltas (centerHz) only.
+    if (opts.centerHz !== undefined || opts.spanHz !== undefined) {
+      this._applyViewportShift();
+    }
   }
 
   /** Map a canvas x-pixel to the corresponding frequency in Hz. */
@@ -242,10 +332,13 @@ export class WaterfallRenderer {
     return centerHz - spanHz / 2 + (x / this.width) * spanHz;
   }
 
-  /** Fill the canvas with the background color. */
+  /** Fill the canvas with the background color and re-anchor the viewport. */
   clear(): void {
     if (this.destroyed || this.width <= 0 || this.height <= 0) return;
-    this.ctx.fillStyle = '#001020';
+    this.anchoredViewportHz = this.options.centerHz;
+    this.appliedViewportPx = 0;
+    this.viewportAnchorValid = this.options.spanHz > 0;
+    this.ctx.fillStyle = WATERFALL_BACKGROUND;
     this.ctx.fillRect(0, 0, this.width, this.height);
   }
 
