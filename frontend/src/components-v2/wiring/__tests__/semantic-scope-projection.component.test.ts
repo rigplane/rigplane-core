@@ -137,7 +137,13 @@ async function render(layout = true, skinId: 'desktop-v2' | 'sdr-test' = 'deskto
 }
 function toggle() { target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click(); flushSync(); }
 const overlay = () => target.querySelector<HTMLElement>('.passband-overlay');
-function clear() { for (const selector of ['canvas', '.freq-axis', '.passband-overlay', '.tune-line', '.passband-resize-zone']) expect(target.querySelector(selector), selector).toBeNull(); }
+function clear() {
+  for (const selector of ['.spectrum-area canvas', '.freq-axis', '.passband-overlay', '.tune-line', '.passband-resize-zone']) {
+    expect(target.querySelector(selector), selector).toBeNull();
+  }
+  const history = target.querySelector<HTMLElement>('.waterfall-history');
+  if (history) expect(history.style.visibility).toBe('hidden');
+}
 
 beforeEach(() => {
   vi.useFakeTimers(); vi.stubGlobal('requestAnimationFrame', () => 1); vi.stubGlobal('cancelAnimationFrame', () => {});

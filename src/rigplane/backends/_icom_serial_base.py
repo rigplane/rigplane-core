@@ -227,6 +227,12 @@ class _IcomSerialRadioBase(CoreRadio):
             backend=None,  # default PortAudioBackend
         )
         self._serial_audio_seq = 0
+        # MOR-2465: identity of the active RX delivery callable. PCM frames
+        # arriving on the PortAudio thread are marshalled onto the owning
+        # event loop and re-check this identity there, so a frame scheduled
+        # before stop_rx()/a restart cannot enter a new RX session. None
+        # when no RX session is active.
+        self._serial_rx_delivery: Callable[[bytes], None] | None = None
         # MOR-1440 link-down detection: consecutive-timeout evidence tracked
         # against the CI-V request tracker's lifetime counters (see
         # ``_serial_civ_timeout_evidence_crossed_threshold``).
@@ -678,7 +684,7 @@ class _IcomSerialRadioBase(CoreRadio):
             raise TypeError("callback must be callable and accept AudioPacket | None.")
         self._check_connected()
 
-        self._opus_rx_user_callback = callback
+        owner_loop = asyncio.get_running_loop()
 
         sample_rate = self.audio_sample_rate
         channels = self._serial_audio_channels_for_codec()
@@ -693,7 +699,9 @@ class _IcomSerialRadioBase(CoreRadio):
             else None
         )
 
-        def _on_pcm_frame(pcm_frame: bytes) -> None:
+        def _deliver_rx_frame(pcm_frame: bytes) -> None:
+            if self._serial_rx_delivery is not _deliver_rx_frame:
+                return
             payload = pcm_frame
             if transcoder is not None:
                 try:
@@ -712,15 +720,34 @@ class _IcomSerialRadioBase(CoreRadio):
             self._serial_audio_seq = (self._serial_audio_seq + 1) & 0xFFFF
             callback(packet)
 
-        await self._serial_audio_driver.start_rx(
-            _on_pcm_frame,
-            sample_rate=sample_rate,
-            channels=channels,
-            frame_ms=frame_ms,
-        )
+        def _on_pcm_frame(pcm_frame: bytes) -> None:
+            # PortAudio thread: schedule delivery; packet work runs on the
+            # owner loop (MOR-2465).
+            owner_loop.call_soon_threadsafe(_deliver_rx_frame, pcm_frame)
+
+        # Arm delivery identity and the user callback before the await:
+        # the driver may invoke the callback before start_rx returns. If
+        # the start fails, roll both back so a still-running previous
+        # session keeps delivering instead of being orphaned (MOR-2465).
+        previous_delivery = self._serial_rx_delivery
+        previous_callback = self._opus_rx_user_callback
+        self._opus_rx_user_callback = callback
+        self._serial_rx_delivery = _deliver_rx_frame
+        try:
+            await self._serial_audio_driver.start_rx(
+                _on_pcm_frame,
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+            )
+        except BaseException:
+            self._serial_rx_delivery = previous_delivery
+            self._opus_rx_user_callback = previous_callback
+            raise
 
     async def stop_rx(self) -> None:
         """Stop RX capture (``AudioTransport.stop_rx``)."""
+        self._serial_rx_delivery = None
         self._opus_rx_user_callback = None
         await self._serial_audio_driver.stop_rx()
 
@@ -1169,6 +1196,7 @@ class _IcomSerialRadioBase(CoreRadio):
         self._pcm_tx_fmt = None
         self._pcm_rx_user_callback = None
         self._opus_rx_user_callback = None
+        self._serial_rx_delivery = None
         try:
             await self._serial_audio_driver.stop_tx()
         except Exception:

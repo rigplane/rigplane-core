@@ -225,6 +225,9 @@ async def test_serial_audio_seq_wraps_uint16() -> None:
     frame = b"\x01\x02" * 960
     usb_audio.emit_rx_pcm(frame)
     usb_audio.emit_rx_pcm(frame)
+    # MOR-2465: delivery is scheduled onto the owner loop; yield before
+    # stop_rx() or the scheduled packets are discarded as stale.
+    await asyncio.sleep(0)
     await radio.stop_rx()
     await radio.disconnect()
     assert seqs == [0xFFFF, 0x0000]
