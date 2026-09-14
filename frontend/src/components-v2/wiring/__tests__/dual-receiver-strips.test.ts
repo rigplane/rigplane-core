@@ -32,8 +32,12 @@ describe('receiversOf', () => {
     expect(receiversOf(dualAbShared)).toEqual(['MAIN', 'SUB']);
   });
 
-  it('finds both receivers in a slotted dual (main_sub) fixture, de-duplicated', () => {
+  it('finds both receivers in the dual (main_sub) fixture, de-duplicated', () => {
     expect(receiversOf(dualMainSub)).toEqual(['MAIN', 'SUB']);
+    // MOR-2467 left main_sub unslotted, so the de-duplication the old
+    // slotted fixture exercised rides on '1/ab' (two MAIN records):
+    // repeated receiver records collapse to one strip.
+    expect(receiversOf(topologyFixtures['1/ab'])).toEqual(['MAIN']);
   });
 
   // Kills: hardcoding ['MAIN', 'SUB'] instead of reading view.vfos — a
@@ -50,7 +54,7 @@ describe('receiversOf', () => {
 describe('forReceiver', () => {
   it('keeps only the requested receiver\'s VFOs, in original order', () => {
     const sub = forReceiver(dualMainSub, 'SUB');
-    expect(sub.vfos.map((v) => v.label)).toEqual(['S-A', 'S-B']);
+    expect(sub.vfos.map((v) => v.label)).toEqual(['SUB']);
     expect(sub.vfos.every((v) => v.receiver === 'SUB')).toBe(true);
   });
 

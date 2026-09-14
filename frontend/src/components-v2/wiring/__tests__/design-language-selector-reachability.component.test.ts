@@ -371,7 +371,7 @@ const SCENES: readonly Scene[] = [
   {
     // `hasTunableFrequency` (VfoSurface.svelte) needs `vfo.isActiveSlot &&
     // vfo.frequencyHz !== null && onTuneFrequency !== undefined`; `2/main_sub`'s
-    // M-A tile already satisfies the first two, so supplying `onTuneFrequency`
+    // MAIN record already satisfies the first two, so supplying `onTuneFrequency`
     // is the one thing missing to mount `FrequencyDisplayInteractive` — and
     // with it, the `.digit`/`.sep` spans that render the actual per-glyph
     // frequency readout. No scene above ever supplies it, so without this one
