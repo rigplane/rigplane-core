@@ -8,8 +8,9 @@ using :class:`YaesuCatTransport` for serial I/O and
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
 
 from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
@@ -30,7 +31,7 @@ from ...types import AudioCodec, BreakInMode, RepeaterShiftDirection
 from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...radio_state import RadioState
-from ...profiles.rig_loader import validate_control_raw_value
+from ...profiles.control_domain import decode_control_domain, validate_control_raw_value
 from .parser import CatCommandParser, CatParseError, format_command
 from .transport import (
     CatCommandRejected,
@@ -2172,26 +2173,61 @@ class YaesuCatRadio:
         await self._write("set_keyer_speed", wpm=wpm)
 
     async def read_key_pitch(self) -> int:
-        """Read CW pitch index (0–75) without mutating legacy state."""
+        """Read the raw CW key-pitch index without mutating legacy state."""
         result = await self._query("get_key_pitch")
         return int(result["idx"])
 
     async def get_key_pitch(self) -> int:
-        """Get CW pitch index (0–75, maps to 300–1050 Hz)."""
+        """Get the radio's raw CW key-pitch index."""
         return await self.read_key_pitch()
 
     async def set_key_pitch(self, idx: int) -> None:
-        """Set CW pitch index (0–75)."""
+        """Set CW pitch by raw key-pitch index on the CAT wire."""
         await self._write("set_key_pitch", idx=idx)
 
-    async def read_cw_pitch(self) -> int:
-        """Read CW pitch in Hz (300-1050) without mutating legacy state.
+    def _cw_pitch_hz_from_index(self, idx: int) -> int:
+        """Decode a CAT key-pitch index into Hz via the profile domain.
 
-        Maps the FTX-1 idx (0-75) to Hz (``idx → 300 + idx * 10``), matching
-        :meth:`get_cw_pitch`. Pure CAT read used by the observation pipeline.
+        The index addresses the ``cw_pitch`` raw lattice from its first
+        point, so the decoded display value is the pitch in Hz. Raises
+        ``ValueError`` when the profile publishes no usable domain or the
+        index falls outside it.
+        """
+        controls = self.profile.controls
+        domain = controls.get("cw_pitch") if controls is not None else None
+        raw_min = domain.get("raw_min") if isinstance(domain, Mapping) else None
+        raw_step = domain.get("raw_step") if isinstance(domain, Mapping) else None
+        usable = (
+            isinstance(domain, Mapping)
+            and not isinstance(raw_min, bool)
+            and isinstance(raw_min, int)
+            and not isinstance(raw_step, bool)
+            and isinstance(raw_step, int)
+        )
+        if not usable:
+            raise ValueError(
+                "no normalized control domain for 'cw_pitch' in the active profile"
+            )
+        display = decode_control_domain(
+            cast(Mapping[str, object], domain),
+            cast(int, raw_min) + idx * cast(int, raw_step),
+        )
+        if display is None:
+            raise ValueError(
+                f"cw_pitch index {idx!r} is outside the profile's control domain"
+            )
+        return int(display)
+
+    async def read_cw_pitch(self) -> int:
+        """Read CW pitch in Hz without mutating legacy state.
+
+        The Hz value is decoded from the profile's ``cw_pitch`` control
+        domain: the CAT key-pitch index addresses the domain's raw lattice,
+        and the decoded display value is the pitch in Hz. Pure CAT read
+        used by the observation pipeline.
         """
         idx = await self.read_key_pitch()
-        return 300 + idx * 10
+        return self._cw_pitch_hz_from_index(idx)
 
     async def read_break_in(self) -> BreakInMode:
         """Read CW break-in mode without mutating legacy state.
@@ -2653,12 +2689,11 @@ class YaesuCatRadio:
     # -- AdvancedControlCapable aliases ----------------------------------------
 
     async def get_cw_pitch(self) -> int:
-        """CW pitch in Hz (300-1050).
+        """CW pitch in Hz.
 
-        ``read_key_pitch`` is the Yaesu-internal helper and returns the FTX-1
-        idx (0-75). The Icom-spelled ``CwControlCapable`` contract is Hz, so
-        we map ``idx → 300 + idx * 10`` (FTX-1 documented mapping: 0=300 Hz,
-        75=1050 Hz, 10 Hz step).
+        ``read_key_pitch`` is the Yaesu-internal helper and returns the raw
+        CAT index. The Icom-spelled ``CwControlCapable`` contract is Hz, so
+        the value is decoded from the profile's ``cw_pitch`` control domain.
         """
         return await self.read_cw_pitch()
 
@@ -2667,7 +2702,7 @@ class YaesuCatRadio:
 
         The value must lie on the profile's ``cw_pitch`` raw domain;
         off-domain values raise ``ValueError`` before any CAT write. The
-        Hz→index mapping is derived from the same domain
+        Hz→index encoding is derived from the same domain
         (``(freq - raw_origin) // raw_step``).
         """
         _, _, raw_step, raw_origin = validate_control_raw_value(
