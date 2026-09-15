@@ -98,7 +98,7 @@ vi.mock('$lib/stores/audio.svelte', () => ({
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
-    onChange: () => () => {}, getAppliedAudioConfig: () => null, start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn() },
+    onChange: () => () => {}, getAppliedAudioConfig: () => null, start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn(), setOperatorNotifier: vi.fn() },
 }));
 vi.mock('$lib/utils/tx-permit', async (importOriginal) => ({
   ...await importOriginal<typeof import('$lib/utils/tx-permit')>(),

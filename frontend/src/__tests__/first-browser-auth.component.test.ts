@@ -20,7 +20,7 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
 }));
 vi.mock('../lib/media/media-session', () => ({ initMediaSession() {}, destroyMediaSession() {} }));
 vi.mock('$lib/audio/audio-manager', () => ({
-  audioManager: { onChange: () => () => {}, onTxAudioDied: () => () => {}, rxEnabled: false },
+  audioManager: { onChange: () => () => {}, onTxAudioDied: () => () => {}, rxEnabled: false, setOperatorNotifier: vi.fn() },
 }));
 
 import App from '../App.svelte';

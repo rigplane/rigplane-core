@@ -14,6 +14,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
     setAudioConfig: (...args: [unknown]) => setAudioConfigSpy(...args),
     getAppliedAudioConfig: () => applied.config,
+    setOperatorNotifier: vi.fn(),
     onChange: (listener: () => void) => {
       applied.listeners.add(listener);
       return () => applied.listeners.delete(listener);
