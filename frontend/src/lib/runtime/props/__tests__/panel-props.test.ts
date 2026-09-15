@@ -1067,6 +1067,38 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
       expect(toCwProps(null, withControls({})).cwPitchDomain).toBeNull();
       expect(toCwProps(null, null).cwPitchDomain).toBeNull();
     });
+
+    it('derives keySpeedDomain from the profile control entry the same way as the pitch domain (MOR-2475 F1)', () => {
+      const withControls = (controls: Record<string, unknown>) => ({
+        capabilities: ['cw'], controls,
+      }) as any;
+      const x6100 = toCwProps(null, withControls({
+        key_speed: {
+          raw_min: 0, raw_max: 255, display_min: 5, display_max: 50,
+          display_unit: 'WPM', decode_quantum: 1,
+        },
+        cw_pitch: {
+          raw_min: 0, raw_max: 255, display_min: 400, display_max: 1200,
+          display_unit: 'Hz', decode_quantum: 10,
+        },
+      }));
+      expect(x6100.keySpeedDomain).toEqual({ min: 5, max: 50, step: 1, origin: 5 });
+      expect(x6100.cwPitchDomain).toEqual({ min: 400, max: 1200, step: 10, origin: 400 });
+      const icom = toCwProps(null, withControls({
+        key_speed: {
+          raw_min: 0, raw_max: 255, display_min: 6, display_max: 48,
+          display_unit: 'WPM', decode_quantum: 1,
+        },
+        cw_pitch: {
+          raw_min: 0, raw_max: 255, display_min: 300, display_max: 900,
+          display_unit: 'Hz', decode_quantum: 5,
+        },
+      }));
+      expect(icom.keySpeedDomain).toEqual({ min: 6, max: 48, step: 1, origin: 6 });
+      expect(icom.cwPitchDomain).toEqual({ min: 300, max: 900, step: 5, origin: 300 });
+      expect(toCwProps(null, withControls({})).keySpeedDomain).toBeNull();
+      expect(toCwProps(null, null).keySpeedDomain).toBeNull();
+    });
   });
 
   describe('toMeterProps', () => {

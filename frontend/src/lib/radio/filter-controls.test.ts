@@ -133,6 +133,22 @@ describe('controlDisplayDomain (MOR-1682)', () => {
       .toEqual({ min: 300, max: 900, step: 5, origin: 300 });
   });
 
+  it('takes the step from a legacy entry\'s positive integer decode_quantum (MOR-2475 F1)', () => {
+    const X6100_CW_PITCH = {
+      raw_min: 0, raw_max: 255, display_min: 400, display_max: 1200,
+      display_unit: 'Hz', decode_quantum: 10,
+    };
+    expect(controlDisplayDomain(X6100_CW_PITCH, 5))
+      .toEqual({ min: 400, max: 1200, step: 10, origin: 400 });
+  });
+
+  it('keeps the caller fallback step when decode_quantum is not a positive integer', () => {
+    for (const decode_quantum of [0, -3, 2.5, Number.NaN]) {
+      expect(controlDisplayDomain({ ...IC7300_CW_PITCH, decode_quantum }, 5))
+        .toEqual({ min: 300, max: 900, step: 5, origin: 300 });
+    }
+  });
+
   it('returns null for an absent control entry', () => {
     expect(controlDisplayDomain(undefined, 5)).toBeNull();
     expect(controlDisplayDomain(null, 5)).toBeNull();
