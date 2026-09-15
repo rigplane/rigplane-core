@@ -1,97 +1,109 @@
-# Mechanism audit — Standard TX banner → PTT
+# Mechanism audit — Standard TX indication and AGC cleanup
 
-**Method:** `.claude/skills/mechanism-audit/SKILL.md`  
-**Audited revision:** `ed60a1219d44eccb3badd4ff650c1cce6fcc07a3`  
-**Base:** `f27f1132365b002232dd091cdac1518b741fd999`  
-**Mode:** strictly read-only; no edits, tests, browser, radio, or PTT actions.
+- **Method:** complete `.claude/skills/mechanism-audit/SKILL.md` method
+- **Implementation:** `5fa07e1a1955cc63b5b7a16d5fb13dc735655ff3`
+- **Base:** `f27f1132365b002232dd091cdac1518b741fd999`
+**Mode:** read-only; no tests, browser, radio, or PTT actions run.
 
-The auditor observed a pre-existing modified `design-qa.md` and left it untouched.
+`design-qa.md` was already modified in the worktree and was left untouched by
+the auditor. This report is pinned to the implementation commit above.
 
-## Definitions, rulings, and liveness
+## Scope verdict
 
-- **VERIFIED definition sites:** Standard's status row and its only local PTT
-  action/indicator are both defined in
-  `frontend/src/semantic/RxTxSurface.svelte`. The audited revision adds no TX
-  controller, event source, or command path.
-- **VERIFIED consumer:** production has one semantic mount in
-  `frontend/src/components-v2/wiring/SemanticRadioSurfaces.svelte`, passing the
-  same `txState` and existing key/unkey callbacks.
-- **VERIFIED prior ruling:** MOR-982 assigns the single browser-tab TX controller
-  to `App.svelte`; presentations render its projection. The v3 composition
-  contract requires unmistakable danger feedback while forbidding
-  presentation-owned TX authority.
-- **VERIFIED distinct global mechanism:** `AppGlobalHost.svelte` derives the
-  persistent global TX/TX? lamp from the same App controller. It is not a
-  duplicate local-panel banner.
-- **VERIFIED in-flight status:** the existing `data-active={pressed}` and
-  `aria-pressed={pressed}` PTT contract remains. Standard makes the status row
-  semantic-only and intensifies the existing keyed PTT style.
-- **VERIFIED added E2E consumer:**
-  `frontend/tests/e2e/i18n/desktop-geometry.spec.ts` asserts the Standard status
-  row is screen-reader-only and at most 1×1 px, while PTT is active, pressed,
-  fully opaque, and has a non-transparent background and shadow. It also asserts
-  no outgoing radio commands and no console/page errors.
-- **UNKNOWN within this audit:** test outcome, because the audit itself did not
-  execute tests. Mac Mini verification is a separate gate.
+- **VERIFIED — DSP/AGC:** Standard's `part='agc'` call has no `scalarLayout`.
+  The formerly unconditional direct hosted `nbWidth` render is guarded by
+  `part !== 'agc'`. The component test and exact-head browser test both assert
+  that the AGC panel contains no `nbWidth` control.
+- **VERIFIED — preservation:** the persistent `nbWidth` binding remains eager
+  and identity-stable in `DspScalarHost.svelte`, retains its command/feedback
+  mapping and wiring in `SemanticRadioSurfaces.svelte`, and remains present in
+  the Standard DSP layout, NB settings, and generic/SDR path.
+- **VERIFIED — TX → PTT:** Standard's authority row is semantic-only. Keyed
+  visual state is consolidated on the existing PTT through the pre-existing
+  `pressed` value exposed as `data-active` and `aria-pressed`, with strong
+  opaque red styling. No request handler or authority predicate changed.
+
+## Definitions, consumers, rulings, and in-flight proof
+
+- `DspSurface` owns presentation only and receives `part`, persistent handles,
+  and optional layouts. The single composition seam passes those handles
+  unchanged.
+- The concrete AGC consumer is `instruments.dsp(..., 'agc')` in
+  `frontend/src/components-v2/layout/RadioLayout.svelte`. It supplies no scalar
+  layout, so the direct-render guard is decisive.
+- The persistent consumer chain remains `DspScalarHost.bindingFor('nbWidth')`
+  → `nbWidth` snippet → `dspScalars` → Standard DSP / NB settings / default SDR
+  presentation.
+- The prior settings-boundary ruling treats AGC as a leaf of the DSP semantic
+  surface, not as a competing control family. The v3 composition contract also
+  requires unmistakable TX state without presentation-owned TX authority.
+- The existing lifecycle test positively proves the same persistent bindings,
+  a current post-face-switch lease, retained pending evidence, and inert stale
+  lease. The new assertion tests AGC absence only; it does not remove the
+  binding.
 
 ## Dead-code census
 
-- `RxTxSurface.svelte`: all module, prop, derived, and presentation bindings are
-  consumed. `showTxState` remains live for non-Standard paths; `pressed` remains
-  live through `data-active` and `aria-pressed`.
-- Component test: all top-level bindings are live.
-- E2E module: all declarations are live. Newly added `browserErrors` and
-  `txPanelFeedback` values are consumed by assertions.
-- Dynamic-access guard: no dynamic selector construction for `rx-tx-state` or
-  `rx-tx-key`; literal source and test consumers exist.
-- **UNKNOWN:** out-of-repository style consumers. No deletion is proposed.
+| Area | Count / result |
+|---|---|
+| New production named symbols | **0** |
+| Changed `DspSurface` behavior branches | **1** — direct `nbWidth` render guard |
+| Live `nbWidth` render sites remaining | **2** — ordinary non-AGC/default path and NB settings |
+| Eager persistent NB bindings | **2 total**, including `nbWidth`; unchanged |
+| New TX handlers/authority paths | **0** |
+| New E2E result fields | `txPanelFeedback`, `agcNbWidth`, `browserErrors`; all asserted |
+| Unconsumed changed production symbols | **0 found** |
+
+`DspScalarHandles` remains a typed full-handle record; no public field was
+removed or renamed. A scalar layout can theoretically render any supplied
+handle, but no current `part='agc'` production caller supplies one. That is a
+future composition constraint, not a present leak.
 
 ## Deletions
 
-None. The change introduces no dead symbol, branch, or vestigial fork.
+1. **Visible Standard TX row:** removed only as paint. Its status DOM,
+   `role=status`, RF/session/intent attributes, and assistive-technology path
+   remain live.
+2. **Direct AGC NB Width disclosure:** removed only from the default hosted
+   `part='agc'` branch. Binding, feedback, command path, DSP/NB settings, and
+   SDR/default consumers remain intact.
 
 ## Consolidations
 
-### F1 — Standard local keyed feedback is correctly consolidated on PTT
-
-- **Verdict:** C — legitimately local
-- **Rank:** parallel
-- **Elements:** the `rx-tx-state` status row, `rx-tx-key` PTT, and Standard
-  styling in `frontend/src/semantic/RxTxSurface.svelte`
-- **Consumers:** status row → assistive-technology `role=status`; PTT → sole
-  visible local keyed feedback and action; `AppGlobalHost` → independent global
-  TX/TX? warning
-- **Definition site:** existing semantic surface/App host; no new producer
-- **Divergence:** intended scope difference, not divergent truth calculation
-- **Prior ruling:** MOR-982 and the v3 composition contract
-- **In-flight:** complete source contract; E2E assertion added, execution kept
-  outside this read-only audit
-- **Required surface:** exists
-- **Depends on:** none
-- **Confidence:** high
-- **Falsifier:** another visible Standard keyed banner, or a PTT style derived
-  from view-model/radio state instead of the authority snapshot
-- **Fix class:** none
-- **Actionable:** no
+1. **TX feedback:** one local visible keyed indication, the existing PTT. It
+   derives from the same `pressed` predicate already used for accessibility;
+   no parallel TX state machine or command path was created.
+2. **NB Width:** one persistent scalar binding and one feedback/intent route
+   serve Standard DSP, NB settings, and default/SDR rendering. AGC simply stops
+   consuming that handle visually.
 
 ## Steelman
 
-A visible text/shape row could provide color-independent TX feedback. The change
-preserves that semantic channel for assistive technology, retains
-`aria-pressed`, uses a strongly red active PTT, and leaves the App-global TX/TX?
-lamp intact. It removes only redundant visible local chrome.
+The strongest contrary reading is that hiding the Standard TX row could
+conceal safety status, or that suppressing NB Width in AGC could tear down its
+control. Source evidence contradicts both: TX semantic data stays available and
+PTT remains visibly and semantically active; `nbWidth` is owned outside the
+surface by the persistent host with a cross-presentation identity/lifecycle
+witness. The exact-head E2E checks hidden status geometry, active/pressed PTT,
+opaque background and shadow, AGC count zero, zero captured commands, and zero
+page/console errors.
 
 ## Weakest link
 
-Visual rendering is covered by a source-level E2E assertion, including opaque
-background/shadow and console/page-error collection, but its result remains a
-separate Mac Mini gate. This does not affect TX authority or delivery.
+**INFERRED, non-blocking:** `DspScalarLayout` intentionally receives a complete
+handle set. A future `part='agc'` caller could supply a layout that itself
+chooses to render `nbWidth`. Current production composition has one AGC caller
+and no scalar layout, so this is not a defect at the audited head.
 
 ## Cleared
 
-- No second TX authority, PTT transport, or controller.
-- No visible Standard local TX banner.
-- No loss of semantic status, PTT active state, or unkey path.
-- No duplication with the global lamp.
+- No accidental deletion of the persistent `nbWidth` binding or DSP/NB/SDR
+  consumers.
+- No duplicate local visible TX indicator in Standard.
+- No TX command, safety, or authority-route change.
+- No changed-module dead code found.
+- Coordinator-supplied Mac Mini evidence: 133/133 component tests, check 0/0,
+  and build passed at `ea3f2fac`; exact `5fa07e1` E2E passed for AGC absence,
+  TX/PTT visuals, and zero commands/errors. The auditor did not reproduce it.
 
-**Final verdict: PASS for merge readiness.**
+**Final merge-readiness verdict: PASS.**

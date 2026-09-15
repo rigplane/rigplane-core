@@ -1,12 +1,12 @@
-# Design QA — Standard TX indication on PTT
+# Design QA — Standard TX indication and AGC cleanup
 
-- Source visual truth: `/var/folders/gt/c_czgx6x5bxc1sb3ntph9mgr0000gn/T/codex-clipboard-7b90d4d1-43b9-4041-9b1c-42c5e4bd22e1.png`, plus the operator direction that the top `TX / KEY DOWN / latched` banner is removed and keyed state is carried by a strongly red PTT button.
+- Source visual truth: `/var/folders/gt/c_czgx6x5bxc1sb3ntph9mgr0000gn/T/codex-clipboard-7b90d4d1-43b9-4041-9b1c-42c5e4bd22e1.png`, plus the operator direction that the top `TX / KEY DOWN / latched` banner is removed and keyed state is carried by a strongly red PTT button. The follow-up source `/var/folders/gt/c_czgx6x5bxc1sb3ntph9mgr0000gn/T/codex-clipboard-43136a98-ff70-43b4-a14a-5b4427ae53cb.png` identifies `NB width` as foreign to the AGC panel.
 - Rendered implementation: `/Users/moroz/.codex/visualizations/2026/09/14/01a0a12d-1c41-7c63-adc5-cb5ba44cb581/tx-banner-fix/standard-tx-after.png` (SHA-256 `ea2d954df2741ea24387fc8f155b5050936be1ca9fa13578a01d399d6fb7bc02`).
 - Focused before/after comparison: `/Users/moroz/.codex/visualizations/2026/09/14/01a0a12d-1c41-7c63-adc5-cb5ba44cb581/tx-banner-fix/tx-panel-before-after.png` (SHA-256 `415ead1cf075b28e967ff328ee411a38905032a751d3d51f7c1111f2bfa1a826`).
 - Viewport: 1440×900 CSS px, Chromium, `deviceScaleFactor: 1`.
 - Pixel normalization: source crop 466×786 px; implementation full view 1440×900 px; the TX panel was cropped to 235×310 CSS px and scaled 2× to 470×620 px for the focused comparison. Both panels are top-aligned; the unused lower area is padding, not page content.
 - State: Standard desktop, dark theme, simulated authoritative managed-TX state (`intent=transmit`, observed PTT on). The browser harness intercepts API/WS state and forwards no radio command.
-- Audited implementation revision: `ed60a1219d44eccb3badd4ff650c1cce6fcc07a3`.
+- Audited implementation revision: `5fa07e1a1955cc63b5b7a16d5fb13dc735655ff3`.
 
 ## Findings
 
@@ -16,6 +16,7 @@ No actionable P0/P1/P2 visual mismatch remains in the requested TX-panel slice.
 - The existing PTT control is the dominant local TX indication: opaque, saturated red fill, bright red border/glow, white label, and no disabled-opacity washout.
 - UNKEY remains immediately below PTT and visually distinct.
 - The panel keeps its original width, control order, spacing, and surrounding layout.
+- The AGC panel contains only the AGC mode choices; `NB width` is absent there and remains available in the NB/DSP settings path.
 
 ## Required fidelity surfaces
 
@@ -24,6 +25,7 @@ No actionable P0/P1/P2 visual mismatch remains in the requested TX-panel slice.
 - Colors and visual tokens: keyed PTT uses the existing red semantic family with a 76% red fill, explicit full opacity, bright border, and red glow. It is substantially louder than idle without animation or flashing.
 - Image and asset fidelity: no image asset, icon, SVG, or placeholder is introduced; this is native control styling only.
 - Copy and content: the redundant visible `TX / KEY DOWN / latched` text is gone. `PTT` and `UNKEY` remain unchanged. The TX status row remains in the accessibility tree with its authority-derived text and `role=status`.
+- Control placement: `NB width` is suppressed only when the shared DSP surface is presenting its `agc` part. Its persistent scalar binding and non-AGC render paths are unchanged.
 
 ## Full-view and focused-region evidence
 
@@ -34,7 +36,8 @@ The full 1440×900 browser capture confirms the Standard outer grid, panel place
 - Mac Mini Playwright production-path check: `MOR-2458 keeps RX/TX geometry fixed and attributes TX only to the known split target` passed at the exact revision.
 - The test asserts the status row is `sr-only` with a ≤1×1 px visual box, PTT has `data-active=true` and `aria-pressed=true`, computed opacity is `1`, and its computed background and shadow are non-empty.
 - The same run asserts zero outgoing radio commands and zero browser console/page errors. No live radio or PTT action was performed.
-- Component test: 92/92 passed; Svelte/TypeScript check reported 0 errors and 0 warnings; production build passed.
+- Mac Mini component tests: 133/133 passed across the TX surface and semantic DSP wiring suites; Svelte/TypeScript check reported 0 errors and 0 warnings; production build passed.
+- The exact-head Standard browser scenario additionally asserts that the AGC panel contains zero `dsp-nbWidth` controls.
 
 ## Comparison history
 
@@ -49,6 +52,7 @@ The full 1440×900 browser capture confirms the Standard outer grid, panel place
 - [x] Preserve `aria-pressed`, `role=status`, and ungated UNKEY.
 - [x] Verify the production Standard path with mocked TX state and no radio commands.
 - [x] Check the same viewport for layout drift and browser errors.
+- [x] Remove `NB width` from AGC without removing its NB/DSP control path.
 
 ## Follow-up polish
 
