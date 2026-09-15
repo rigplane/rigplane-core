@@ -67,22 +67,74 @@ the auditor. This report is pinned to the implementation commit above.
 
 ## Step 3a — systematic dead-code census
 
-- `RxTxSurface.svelte`: 1 module constant (`RF_BADGE`), 1 props destructure,
-  and 16 derived bindings were enumerated; each has a template or downstream
-  derived consumer. There are 0 locally defined functions, classes, or instance
-  attributes.
-- `DspSurface.svelte`: 1 exported value catalog, 3 exported type declarations,
-  3 fallback constants, 7 module arrow helpers, 1 module function, 1 props
-  destructure, 1 derived binding, 1 instance function, 2 instance constants,
-  and 3 snippets were enumerated. Each is consumed in the module or by its
-  exported public surface.
-- `DspScalarHost.svelte`: its complete persistent field/command maps, binding
-  registry, 10 local functions, 7 exported handle snippets, and lifecycle
-  cleanup were checked. The changed `nbWidth` handle still has production
-  consumers.
-- Changed test modules: the component suite's added selector is directly
-  asserted. The E2E result fields `txPanelFeedback`, `agcNbWidth`, and
-  `browserErrors` each have downstream assertions.
+The production dead-code sweep is bounded to the two changed production
+modules. Counts below are definition/write occurrences and reads in the same
+module, established with literal whole-word searches
+(`rg -ow '\b<name>\b' <file>`) and source inspection to classify assignment
+sites. Type-only declarations are excluded because they emit no runtime symbol.
+Dependency modules such as `DspScalarHost.svelte` were inspected for the
+consumer sets above but were not changed and are outside this dead-code tract.
+
+| `RxTxSurface.svelte` symbol | Written | Read |
+|---|---:|---:|
+| `RF_BADGE` | 1 | 2 |
+| `blockedId` | 1 | 2 |
+| `rf` | 1 | 14 |
+| `session` | 1 | 7 |
+| `blocked` | 1 | 7 |
+| `visibleBlocked` | 1 | 1 |
+| `viewBlocked` | 1 | 2 |
+| `blockedDescription` | 1 | 3 |
+| `keyUnavailable` | 1 | 1 |
+| `pressed` | 1 | 5 |
+| `showTxState` | 1 | 1 |
+| `known` | 1 | 6 |
+| `receiver` | 1 | 4 |
+| `slot` | 1 | 6 |
+| `frequencyHz` | 1 | 2 |
+| `reason` | 1 | 9 |
+| `unknownTargetMessage` | 1 | 1 |
+| `stateFeedback` | 1 | 3 |
+
+`RxTxSurface.svelte` has 0 locally defined methods/functions, classes, or
+instance attributes. Its 1 module constant, 1 component-local constant, and 16
+derived bindings all have reads.
+
+| `DspSurface.svelte` symbol | Written | Read |
+|---|---:|---:|
+| `DSP_LEVELS` | 1 | 3 |
+| `NR_FALLBACK_MIN` | 1 | 3 |
+| `NR_FALLBACK_MAX` | 1 | 1 |
+| `NR_FALLBACK_STEP` | 1 | 1 |
+| `usable` | 1 | 11 |
+| `reasonOf` | 1 | 1 |
+| `numberOf` | 1 | 1 |
+| `fmt` | 1 | 2 |
+| `safeNrInteger` | 1 | 7 |
+| `onNrLattice` | 1 | 3 |
+| `acceptsNrValue` | 1 | 2 |
+| `nrPresentation` | 1 | 2 |
+| `dsp` | 1 | 44 |
+| `level` | 1 | 5 |
+| `showsLevel` | 1 | 1 |
+| `hardwareScalar` | 1 | 7 |
+| `nativeLevel` | 1 | 1 |
+| `adjustableLevels` | 1 | 1 |
+| `compactLevels` | 1 | 1 |
+
+`DspSurface.svelte` has 0 classes or instance attributes. Its 4 runtime
+constants, 8 module helpers, 1 derived binding, 1 instance function, 2 instance
+constants, and 3 snippets all have reads.
+
+Changed test additions were also classified separately:
+
+| Test symbol/assertion | Written | Read |
+|---|---:|---:|
+| `browserErrors` | 3 (initialization + 2 event writes) | 2 |
+| `txPanelFeedback` result field | 1 | 5 |
+| `agcNbWidth` result field | 1 | 1 |
+| component AGC `dsp-nbWidth` selector | 0 bindings | 1 direct assertion |
+
 - Dynamic-access guard: literal selectors and typed handle access are used; no
   string-built `rx-tx-state`, `rx-tx-key`, or `nbWidth` selector/handle
   access was found. Public `DspScalarHandles` retains every field. Possible
@@ -125,9 +177,10 @@ tests-only-consumer guards were checked before making that determination.
   snapshot/controller remains App-owned
 - **Divergence:** intended scope only — semantic local status, actionable local
   control, and persistent global warning all project the same authority snapshot
-- **Prior ruling:** MOR-982, accepted 2026-07-26, assigns one browser-tab TX
-  controller to `App.svelte`; v3 invariants 9 and 11 preserve unmistakable
-  feedback without presentation-owned authority
+- **Prior ruling:** MOR-982, accepted 2026-07-26:
+  “assigns one browser-tab TX controller to `App.svelte`. Presentations and
+  input surfaces request intents and render its snapshot”; v3 invariants 9 and
+  11 preserve unmistakable feedback without presentation-owned authority
 - **In-flight:** complete; the existing semantic mount and callbacks remain
   unchanged
 - **Required surface:** exists — one status channel, one local PTT/UNKEY action
@@ -158,8 +211,9 @@ tests-only-consumer guards were checked before making that determination.
   its exported handle
 - **Divergence:** none — presentations choose placement while sharing identity,
   command, and feedback mechanisms
-- **Prior ruling:** 2026-08-06 settings-boundary ruling, row 2: AGC is the AGC
-  leaf of the DSP surface; NR/NB/notch remain the DSP part
+- **Prior ruling:** settings-boundary ruling dated 2026-08-06, section 3 row 2,
+  5A/MOR-1290: “`DspSurface` (AGC leaf — 5A/MOR-1290 folds AGC into
+  `dsp`)”; row 1 assigns NR/NB/notch to the DSP zone
 - **In-flight:** complete; `part='agc'` has one production caller with no
   `scalarLayout`, and the default direct render is now guarded
 - **Required surface:** exists — persistent typed handle plus part-specific
