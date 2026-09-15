@@ -23,6 +23,15 @@ remainder of `.claude/`.
   per-receiver A/B comment, slot-view documentation), and the cleared
   items. Tests were not run by the audit; remote test evidence is separate.
 
+## 2026-09-14 — IC-7610 state, scope, and canvas stability (head `de50644e`, base `601f27f7`)
+
+- [2026-09-14-mechanism-audit-state-scope-canvas.md](2026-09-14-mechanism-audit-state-scope-canvas.md)
+  — read-only independent PASS for the state/projection/canvas mechanism,
+  held-stale passband display authority, and drag continuity. No TX/RF safety
+  regression or competing canonical mechanism was found. The remaining full
+  `fieldStatus` signature cost is recorded as a non-blocking future producer-
+  side optimization. Tests and live RX-only evidence are separate.
+
 ## 2026-09-06 — instrument mechanism decision audits (source `f2e7969708d5c93890cf1b24d833ce820b36dc15`)
 
 Three independent, bounded mechanism-audit tracts at the pinned source. They
