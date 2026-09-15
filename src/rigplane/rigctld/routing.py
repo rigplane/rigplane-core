@@ -282,10 +282,6 @@ class YaesuRouting:
                 return RigctldResponse(
                     values=[_format_normalized_or_raw_float(value, raw_divisor=255.0)]
                 )
-            if level == "NB":
-                return RigctldResponse(
-                    values=[_format_raw_scaled_float(value, raw_divisor=10.0)]
-                )
             if level == "NR":
                 # Same domain the live read in get_level consults, so a
                 # level answered from StateStore projection agrees with a

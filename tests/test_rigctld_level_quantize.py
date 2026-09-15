@@ -111,6 +111,26 @@ class _NoNbDomainRadio(_DomainRadio):
         return self._ftx1.control_display_bounds(control)
 
 
+class _NbWideBandRadio(_DomainRadio):
+    """Domain double whose ``nb_level`` band is 0-15, not the FTX-1 identity.
+
+    On a 0-10 identity band the domain fraction and a /10 constant
+    coincide, so a test cannot tell which one answered. This double
+    publishes a 0-15 band (raw 5 = display 5), so raw 5 must answer
+    ``5/15`` on every NB answering path.
+    """
+
+    def control_display_bounds(self, control: str) -> tuple[str, str] | None:
+        if control == "nb_level":
+            return ("0", "15")
+        return self._ftx1.control_display_bounds(control)
+
+    def decode_control_raw(self, control: str, raw: int) -> str | None:
+        if control == "nb_level":
+            return str(raw) if 0 <= raw <= 15 else None
+        return self._ftx1.decode_control_raw(control, raw)
+
+
 class _NoNrDomainRadio(_DomainRadio):
     """Domain double whose profile publishes no ``nr_level`` domain.
 
@@ -591,6 +611,30 @@ def test_nb_state_path_unpublished_domain_keeps_legacy_scale() -> None:
     state = routing.format_state_level("NB", 8)
     assert state is not None
     assert state.values == [f"{8 / 10.0:.6f}"]
+
+
+# ---------------------------------------------------------------------------
+# NB band mismatch guard — both answering paths read the published band
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_nb_get_wide_band_reads_domain_not_ten() -> None:
+    """Raw 5 on a 0-15 band answers 5/15, not the /10 constant."""
+    radio = _NbWideBandRadio()
+    radio.nb_level = 5
+    resp = await _routing(radio).get_level("NB")
+    assert resp.ok
+    assert resp.values == ["0.333333"]
+
+
+def test_nb_state_wide_band_agrees_with_live_read() -> None:
+    """Same raw value, live and StateStore paths, same domain fraction."""
+    radio = _NbWideBandRadio()
+    routing = _routing(radio)
+    state = routing.format_state_level("NB", 5)
+    assert state is not None
+    assert state.values == ["0.333333"]
 
 
 # ---------------------------------------------------------------------------
