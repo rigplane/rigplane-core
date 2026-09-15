@@ -115,6 +115,49 @@ async def _set_snapped_level(
     return _ok()
 
 
+def _display_band_bounds(bounds: object) -> tuple[float, float] | None:
+    """Usable ``(min, max)`` display band from protocol bounds.
+
+    Accepts the ``tuple[str, str] | None`` contract of
+    :meth:`~rigplane.core.radio_protocol.ControlDomainCapable.control_display_bounds`;
+    anything a radio or test double returns that is not a two-entry
+    tuple of parseable numbers — ``None`` included — yields ``None`` so
+    callers take their legacy path. Degenerate bands (``max <= min``,
+    NaN) also yield ``None``.
+    """
+    if not isinstance(bounds, tuple) or len(bounds) != 2:
+        return None
+    try:
+        lo, hi = float(bounds[0]), float(bounds[1])
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(lo) and math.isfinite(hi)) or hi <= lo:
+        return None
+    return (lo, hi)
+
+
+def _domain_nr_fraction(radio: "Radio", raw: int) -> float | None:
+    """Normalized hamlib fraction for an NR raw code, from the radio's domain.
+
+    Decodes *raw* through ``decode_control_raw`` and divides the display
+    value by the published display maximum, so the radio's own top of
+    scale answers ``1.0``. ``None`` — caller falls back to the legacy
+    ``/15`` — when the radio does not implement the protocol, publishes
+    no ``nr_level`` domain, or (test doubles) returns unusable values.
+    """
+    if not isinstance(radio, ControlDomainCapable):
+        return None
+    display = radio.decode_control_raw("nr_level", raw)
+    band = _display_band_bounds(radio.control_display_bounds("nr_level"))
+    if not isinstance(display, str) or band is None:
+        return None
+    try:
+        fraction = float(display) / band[1]
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    return fraction if math.isfinite(fraction) else None
+
+
 # ---------------------------------------------------------------------------
 # Protocol
 # ---------------------------------------------------------------------------
@@ -327,6 +370,9 @@ class YaesuRouting:
         if level == "NR":
             raw = await radio.get_nr_level()
             self._observe(self.state_path_for_level(level), raw)
+            fraction = _domain_nr_fraction(radio, raw)
+            if fraction is not None:
+                return RigctldResponse(values=[f"{fraction:.6f}"])
             return RigctldResponse(values=[f"{raw / 15.0:.6f}"])
         if level == "NOTCHF":
             _, freq_idx = await radio.get_manual_notch()
@@ -393,6 +439,20 @@ class YaesuRouting:
             await radio.set_nb_level(max(0, min(10, round(value * 10))))
             return _ok()
         if level == "NR":
+            # hamlib carries NR as a 0.0–1.0 fraction; the radio's own
+            # domain decides the band it maps onto (FTX-1: 0–10, per the
+            # CAT manual — not a code constant).
+            if isinstance(radio, ControlDomainCapable):
+                band = _display_band_bounds(radio.control_display_bounds("nr_level"))
+                if band is not None:
+                    snapped = await _set_snapped_level(
+                        radio,
+                        "nr_level",
+                        band[0] + value * (band[1] - band[0]),
+                        radio.set_nr_level,
+                    )
+                    if snapped is not None:
+                        return snapped
             await radio.set_nr_level(max(0, min(15, round(value * 15))))
             return _ok()
         if level == "NOTCHF":
