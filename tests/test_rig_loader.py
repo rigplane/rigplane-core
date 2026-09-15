@@ -3208,7 +3208,7 @@ class TestIc7610DeclaresAbsentCommands:
 class _X6DeclaresAbsentCommands:
     """Shared body for the X6100/X6200 absent-command pin below.
 
-    MOR-2008 batch 3: both profiles formally declare
+    MOR-2008 batch 3: both profiles at the time formally declared
     ``get_/set_vox``, ``get_/set_break_in`` and ``get_/set_manual_notch``
     absent, promoted from a comment-only note (``rigs/x6200.toml``'s own
     "vox"/"notch"/"break_in" bullets, inherited into ``rigs/x6100.toml``
@@ -3234,11 +3234,18 @@ class _X6DeclaresAbsentCommands:
     class-name renaming this batch made necessary (was
     ``_X6DeclaresAbsentVoxBreakInManualNotch``, no longer describes the
     full set this shared body pins).
+
+    MOR-2488/MOR-2489 splits the vox pair: the X6100's own manual
+    (Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1)
+    lists ``0x16 0x46`` "Get VOX switch" for X6100, so ``get_vox`` is
+    PRESENT on x6100.toml and only ``set_vox`` (GET-only row, no SET
+    row in the table) stays absent there; x6200.toml keeps the full
+    sibling-table basis (its V1.0.6 table has no VOX row of any kind)
+    and stays absent in both directions.
     """
 
-    _EXPECTED_ABSENT = frozenset(
+    _SHARED_ABSENT = frozenset(
         {
-            "get_vox",
             "set_vox",
             "get_break_in",
             "set_break_in",
@@ -3257,6 +3264,9 @@ class _X6DeclaresAbsentCommands:
             "get_tx_band_edge",
         }
     )
+    # Per-profile additions on top of _SHARED_ABSENT, folded into each
+    # subclass's _EXPECTED_ABSENT class attribute (kept a plain
+    # attribute -- tests/test_command_spec.py imports these pins).
     _TOML_NAME: str
 
     def test_absent_command_names_match(self):
@@ -3302,10 +3312,22 @@ class _X6DeclaresAbsentCommands:
 
 class TestX6200DeclaresAbsentCommands(_X6DeclaresAbsentCommands):
     _TOML_NAME = "x6200.toml"
+    _EXPECTED_ABSENT = _X6DeclaresAbsentCommands._SHARED_ABSENT | frozenset({"get_vox"})
 
 
 class TestX6100DeclaresAbsentCommands(_X6DeclaresAbsentCommands):
     _TOML_NAME = "x6100.toml"
+    _EXPECTED_ABSENT = _X6DeclaresAbsentCommands._SHARED_ABSENT
+
+    def test_get_vox_present_at_manual_documented_opcode(self):
+        """MOR-2488/MOR-2489: the X6100 manual's §15 Table 1 lists
+        0x16 0x46 "Get VOX switch" (Rigs: X6100; data 0x00 OFF /
+        0x01 ON), so get_vox is present on this profile while set_vox
+        (no SET row in the table) stays absent."""
+        profile = load_rig(RIGS_DIR / self._TOML_NAME).to_profile()
+        assert "get_vox" in profile.command_names
+        assert "get_vox" not in profile.absent_command_names
+        assert profile.command_map.get("get_vox") == (0x16, 0x46)
 
 
 class _CatOnlyDeclaresAllGroupBAbsent:
