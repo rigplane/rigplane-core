@@ -20,21 +20,29 @@ sampling, and CPU measurements are separate implementation evidence.
 
 ## Definition, liveness, and dead-code census
 
-The census counted definitions and mutable cells in each bounded tract, then
-searched literal names in production and tests in both directions. It also
-searched dynamic access and registries before clearing deletion candidates.
+The census is deliberately limited to private definitions and mutable cells
+introduced or behaviorally changed by the implementation. Unchanged upstream
+transport symbols are traced as provenance in F1, not falsely claimed as a
+whole-module dead-code sweep. Counts below are literal occurrences at the
+audited revision, excluding the definition itself from read counts.
 
-| Scoped module / tract | Enumerated definitions and state | Writer and consumer set | Result |
+| Symbol / cell | Written / read | Production consumer set | Result |
 |---|---|---|---|
-| `src/rigplane/web/_delta_encoder.py` | 1 class; 3 functions (`encode`, `reset`, `apply_delta`); 4 instance attributes (`_previous_state`, `_transport_seq`, `_delta_count`, `_full_state_interval`) | `encode` writes one full/delta envelope for WebServer; `reset` owns its lifecycle; pre-existing `apply_delta` is consumed by tests as a Python protocol utility | 0 dead candidates |
-| `src/rigplane/web/server.py` state-broadcast tract | 6 scoped methods; 7 broadcast/cache/encoder slots | `_broadcast_state_update` is the writer; delayed broadcast, public-state builder, encoder, and WS fanout form its one consumer chain | 0 dead candidates |
-| `frontend/src/lib/transport/ws-client.ts` state-update tract | 1 private function (`applyDeltaEnvelope`) and 2 accepted-state slots | the sole production `state_update` handler consumes it, then calls `setRadioState` | 0 dead candidates |
-| `frontend/src/lib/stores/radio.svelte.ts` state-update tract | 1 class with `current`; 30 module functions; 4 revision cells; 1 subscriber set; 1 live-metadata key set | `setRadioState` is the sole production WS writer; store subscriptions consume accepted snapshots | 0 dead candidates |
-| `SemanticRadioSurfaces.svelte` projection tract | 1 projection type; 2 functions (`radioViewStateSignature`, `projectRadioView`); 2 constants; 2 cache/version cells | canonical view, Station Meters, finite authority, Receiver, RX Audio, RF Front End, and Antenna consume the single projection | 0 dead candidates |
-| `scope-passband-display.ts` | 9 top-level functions plus local `stalePathIsConfirmed` and `read`; 7 constants; no class attributes | `inspect` writes one candidate; `projectScopePassbandDisplay` consumes it into monotonic display/hold state | 0 dead candidates |
-| `SpectrumPanel.svelte` resize tract | 6 resize/gesture functions; 5 capture/candidate cells | start captures authority, move derives a candidate, end revalidates and is the sole commit consumer | 0 dead candidates |
-| `SpectrumCanvas.svelte` and `AudioSpectrumCanvas.svelte` | each has 3 lifecycle functions (`scheduleDraw`, `draw`, visibility observer) plus RAF/visibility/canvas/pixel cells | pushed pixels, options, size, and visibility invalidate one coalesced RAF per canvas | 0 dead candidates |
-| `AudioSpectrumPanel.svelte` visibility tract | 6 visibility/subscription/lease cells; no named tract function | Intersection state is the writer and sole gate for FFT subscription/resource lease | 0 dead candidates |
+| `radioViewStateSignature` | definition 1 / calls 1; source-contract test references 1 | `projectRadioView` | live |
+| `projectRadioView` | definition 1 / calls 7; source-contract test references 4 | canonical view, Station Meters, finite authority, Receiver, RX Audio, RF Front End, Antenna | live |
+| `lastRadioViewProjection` | writes 2 (initialization, cache replacement) / reads 1 | `projectRadioView` cache hit | live |
+| `radioViewProjectionVersion` | writes 2 (initialization, increment) / reads 1 | canonical `$derived` invalidation pulse | live |
+| `VIEW_METADATA_KEYS` | writes 1 / reads 1 | `radioViewStateSignature` top-level metadata filter | live |
+| `immutableStateSignatures` | writes 2 (construction, `.set`) / reads 1 (`.get`) | production snapshot identity memoization | live |
+| `stalePathIsConfirmed` | definition 1 / calls 1 | passband observation reader | live |
+| `heldReadbackConfirmed` | writes 2 (initialization, conjunction update) / reads 1 | `effectiveStale` decision | live |
+| `sameResizeAuthority` | definition 1 / calls 2 | active-drag presentation and end-of-gesture capture validation | live |
+| Spectrum `scheduleDraw` | definition 1 / calls 5 | prop/options effect, pushed pixels, visibility, mount, resize | live |
+| Audio `scheduleDraw` | definition 1 / calls 5 | prop/options effect, pushed pixels, visibility, mount, resize | live |
+| each canvas `rafId` | writes 4 / reads 2 | coalescing guard and unmount cancellation | live |
+| each canvas `visible` | writes 2 / reads 2 | scheduling and draw suppression | live |
+| each canvas `mounted` | writes 3 / reads 1 | pre-mount scheduling guard | live |
+| Audio panel `visible` | writes 3 / reads 2 | FFT lease/subscription gate and diagnostic DOM attribute | live |
 
 Definition sites and the live path are frozen at
 `src/rigplane/web/_delta_encoder.py:DeltaEncoder`,
@@ -48,9 +56,10 @@ and `frontend/src/components/spectrum/SpectrumPanel.svelte:sameResizeAuthority`.
 Literal-name and dynamic-dispatch searches found no second production writer,
 alternate projection cache, or dynamic access path for the newly scoped private
 symbols. Out-of-repository consumers are **UNKNOWN**, but none of these scoped
-private symbols is public API. Python `apply_delta` is not a deletion candidate:
-it predates this change and has test consumers; browser reconstruction is the
-TypeScript implementation.
+private symbols is public API. The unchanged DeltaEncoder module separately
+contains class methods `__init__`, `encode`, `revision`, and `reset`, plus the
+module function `apply_delta`; it is supporting path evidence, not a deletion
+candidate in this tract. Browser reconstruction is the TypeScript mechanism.
 
 ## Deletions
 
@@ -85,10 +94,10 @@ and presentation-only held-readback policy are the simpler mechanisms.
 Verdict:          already-shared
 Rank:             parallel
 Elements:         `src/rigplane/web/_delta_encoder.py:DeltaEncoder.encode`; `src/rigplane/web/server.py:WebServer._encode_state_update`; `frontend/src/lib/transport/ws-client.ts:applyDeltaEnvelope`; `frontend/src/lib/stores/radio.svelte.ts:setRadioState`
-Consumers:        server broadcast: one encoder path; browser: one WS handler; store: one production writer
+Consumers:        `DeltaEncoder.encode`: definition 1 / production calls 1; `_encode_state_update`: definition 1 / production calls 3; `applyDeltaEnvelope`: definition 1 / production calls 1; `setRadioState`: definition 1 / WS production calls 2
 Definition site:  `_delta_encoder.py:53-153`; `server.py:1461-1534,1734-1755`; `ws-client.ts:935-1007`; `radio.svelte.ts:242-307`
 Divergence:       none found
-Prior ruling:     canonical state/freshness revision pipeline; no later contradictory ruling found
+Prior ruling:     none found; the existing pipeline is implementation precedent, not a dated ruling
 In-flight:        none found
 Required surface: exists
 Depends on:       provider generation, capability topology, and revision/freshness/observation ordering
@@ -102,10 +111,10 @@ Actionable:       no — one owner and one live consumer chain already exist
 Verdict:          C
 Rank:             parallel
 Elements:         `frontend/src/components-v2/wiring/SemanticRadioSurfaces.svelte:radioViewStateSignature`; `SemanticRadioSurfaces.svelte:projectRadioView`
-Consumers:        canonical view, Station Meters, finite authority, Receiver, RX Audio, RF Front End, and Antenna
+Consumers:        `radioViewStateSignature`: definition 1 / production calls 1; `projectRadioView`: definition 1 / production calls 7 — canonical view, Station Meters, finite authority, Receiver, RX Audio, RF Front End, and Antenna
 Definition site:  `SemanticRadioSurfaces.svelte:808-902,1277-1284,1860-1937`
 Divergence:       none; scoped semantic hosts route through the same projection
-Prior ruling:     `docs/architecture/building-a-skin.md:33-34` requires one `RadioViewModel` shape and producer
+Prior ruling:     none found; undated `docs/architecture/building-a-skin.md:33-34` is supporting architecture documentation, not a dated ruling
 In-flight:        no parallel cache or direct per-host projection found
 Required surface: exists
 Depends on:       immutable radio snapshot identity plus capability, TX, audio, and scope snapshot identity
@@ -119,10 +128,10 @@ Actionable:       no — this is correctly local to the only composition site ow
 Verdict:          C
 Rank:             displaced
 Elements:         `frontend/src/lib/runtime/adapters/scope-passband-display.ts:stalePathIsConfirmed`; `scope-passband-display.ts:projectScopePassbandDisplay`; `frontend/src/components/spectrum/SpectrumPanel.svelte:canResizePassband`
-Consumers:        one passband projection consumed by one SpectrumPanel display/gesture surface
+Consumers:        `stalePathIsConfirmed`: definition 1 / production calls 1; passband projection has one SpectrumPanel display/gesture consumer
 Definition site:  `scope-passband-display.ts:128-157,227-252,269-376`; `SpectrumPanel.svelte:303-359,611-702`
 Divergence:       confirmed held-stale facts can preserve the passive overlay; unconfirmed stale remains conservative; a stale display cannot resize
-Prior ruling:     `radio-state-pipeline-validation.md:153-162` and `scope-adapter.ts:toSpectrumAuthority` preserve observed stale facts as held readings
+Prior ruling:     none found; `radio-state-pipeline-validation.md:153-162` and `scope-adapter.ts:toSpectrumAuthority` are supporting contract/implementation precedent
 In-flight:        none found
 Required surface: exists
 Depends on:       provider-confirmed quality, monotonic markers, current hardware scope frame, session/epoch/domain checks
@@ -136,7 +145,7 @@ Actionable:       no — presentation continuity does not grant TX or RF authori
 Verdict:          C
 Rank:             name-collision
 Elements:         `frontend/src/components/spectrum/SpectrumCanvas.svelte:scheduleDraw`; `frontend/src/components-v2/panels/audio-scope/AudioSpectrumCanvas.svelte:scheduleDraw`; `AudioSpectrumPanel.svelte` visibility lease
-Consumers:        SpectrumCanvas consumes scope pixels; AudioSpectrumCanvas consumes FFT pixels; AudioSpectrumPanel gates the FFT resource
+Consumers:        each `scheduleDraw`: definition 1 / production calls 5; SpectrumCanvas consumes scope pixels, AudioSpectrumCanvas consumes FFT pixels, AudioSpectrumPanel gates the FFT resource
 Definition site:  `SpectrumCanvas.svelte:42-99`; `AudioSpectrumCanvas.svelte:53-127`; `AudioSpectrumPanel.svelte:16-50`
 Divergence:       pixel inputs, renderers, and resource lifecycles differ; only the one-RAF-per-invalidation pattern is shared
 Prior ruling:     none requiring a generic scheduler
@@ -153,10 +162,10 @@ Actionable:       no — extracting a generic scheduler would add an abstraction
 Verdict:          C
 Rank:             parallel
 Elements:         `frontend/src/components/spectrum/SpectrumPanel.svelte:sameResizeAuthority`; resize capture/candidate/end revalidation
-Consumers:        active resize presentation and the final filter-width commit
+Consumers:        `sameResizeAuthority`: definition 1 / production calls 2 — active resize presentation and final capture validation before the filter-width commit
 Definition site:  `SpectrumPanel.svelte:336-351,611-624,644-702`
 Divergence:       intentionally excludes filter shape, raw PBT, and scope-toolbar fields because they do not alter the edge-to-width mapping
-Prior ruling:     no separate ruling found; existing gesture contract captures only inputs used by the gesture
+Prior ruling:     none found; the existing gesture contract is implementation precedent
 In-flight:        none found
 Required surface: exists
 Depends on:       provider generation, receiver, frequency, mode, DATA, filter, width, shift, rule, and sample geometry
@@ -173,7 +182,8 @@ PTT/TX-capability dependency; TX target and permit remain independently derived
 in `frontend/src/lib/runtime/adapters/tx-capabilities.ts:toTxCapabilityState`.
 A stale passband display is not resizable, and the command path separately
 validates current context in
-`frontend/src/lib/runtime/commands/panel-commands.ts:setFilterWidth`.
+`frontend/src/lib/runtime/commands/panel-commands.ts:makeFilterHandlers.onFilterWidthCommit`
+(lines 848-890 at the audited revision).
 
 ## Weakest link
 
