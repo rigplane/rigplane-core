@@ -641,13 +641,58 @@ class TestPower:
     async def test_set_power_without_capability_refused_before_write(
         self, mock_transport: MockTransport
     ) -> None:
-        """X6200 declares the 14 0A commands but not power_control."""
+        """The pre-write capability gate refuses before any frame goes out.
+
+        Historically pinned on the stock X6200, which declared the 14 0A
+        commands but not power_control; MOR-2488/MOR-2489 declared the
+        capability on both Xiegu profiles (the 14 0A pair is documented
+        in their own manuals), so the refusal is re-pinned here against
+        the same profile with the capability stripped — the gate's
+        contract is unchanged.
+        """
         radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6200")
+        radio._profile = replace(
+            radio._profile,
+            capabilities=radio._profile.capabilities - {"power_control"},
+        )
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
         with pytest.raises(CommandError, match="power_control"):
             await radio.set_rf_power(128)
+        assert mock_transport.sent_packets == []
+
+    @pytest.mark.asyncio
+    async def test_x6200_set_power_now_sends_documented_14_0a_frame(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """MOR-2488/MOR-2489: with power_control declared, the stock X6200
+        sends the 0x14 0x0A set frame its own V1.0.6 table documents
+        (pp.6-7) instead of refusing."""
+        radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        await radio.set_rf_power(128)
+        assert bytes(mock_transport.sent_packets[-1]).endswith(
+            bytes.fromhex("fefea4e0140a0128fd")
+        )
+
+    @pytest.mark.asyncio
+    async def test_x6200_set_powerstat_still_refuses_0x18_undeclared(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """MOR-2488/MOR-2489 safety pin: power_control covers the 14 0A
+        level pair only. power_on/power_off stay undeclared (0x18 is not
+        listed in any official command table), so set_powerstat must
+        refuse at the bound command map — the suspected X6200 wedge
+        trigger 0x18 never reaches the wire."""
+        radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(CommandError):
+            await radio.set_powerstat(False)
         assert mock_transport.sent_packets == []
 
 
