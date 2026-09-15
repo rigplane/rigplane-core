@@ -28,6 +28,7 @@
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import DualParamRenderer from '../components-v2/controls/value-control/DualParamRenderer.svelte';
   import { ValueControl } from '../components-v2/controls/value-control';
+  import AttenuatorControl from '../components-v2/controls/AttenuatorControl.svelte';
   import type {
     DualParamIssuedStatusPresentation,
     DualParamIssuedStatusSnapshot,
@@ -112,7 +113,9 @@
   let preMutex = $derived(
     presentation.view?.disabledReasons.find((reason) => reason.field === 'rfFrontEnd.preamp') ?? null,
   );
-  const pendingPreampId = $props.id();
+  const preampId = $props.id();
+  const pendingPreampId = `${preampId}-pending`;
+  const preampMutexId = `${preampId}-mutex`;
 
   const safeGeneration = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -501,7 +504,10 @@
         data-observed={usable(rf.preamp)}
         data-disabled-reason={preMutex?.code}
         data-preamp-status={pendingPreamp !== null ? 'pending' : 'confirmed'}
-        aria-describedby={pendingPreamp !== null ? pendingPreampId : undefined}
+        aria-describedby={[
+          preMutex === null ? null : preampMutexId,
+          pendingPreamp === null ? null : pendingPreampId,
+        ].filter(Boolean).join(' ') || undefined}
       >
         <span class="rf-front-end-row-label">PRE</span>
         <div class="rf-front-end-choices">
@@ -522,7 +528,7 @@
           <output class="rf-front-end-unknown" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{rf.preamp.reading.status === 'known' ? preampChoiceText(rf.preamp.reading.value) : '?'}</output>
         {/if}
         {#if preMutex}
-          <p data-testid="rf-front-end-preamp-mutex-reason">{DISABLED_REASON_LABEL[preMutex.code]}</p>
+          <p id={preampMutexId} class="sr-only" data-testid="rf-front-end-preamp-mutex-reason">{DISABLED_REASON_LABEL[preMutex.code]}</p>
         {/if}
         {#if pendingPreamp !== null}
           <span id={pendingPreampId} class="sr-only">{t('core.rfFrontEnd.preamp.pendingAnnouncement')}</span>
@@ -540,21 +546,17 @@
       />{/key}{/key}
     {:else}
       <div
-        class="rf-front-end-row" role="radiogroup" aria-label="Attenuator"
+        class="rf-front-end-row" aria-label="Attenuator"
         data-testid="rf-front-end-attenuator" data-observed={usable(rf.attenuator)}
       >
         <span class="rf-front-end-row-label">ATT</span>
-        <div class="rf-front-end-choices">
-          {#each rf.attValues as value (value)}
-            <button
-              type="button" role="radio" class="rf-front-end-choice"
-              data-testid={`rf-front-end-attenuator-${value}`}
-              aria-checked={attenuatorBehavior.isSelected(value)}
-              disabled={!attenuatorBehavior.available}
-              onclick={() => attenuatorBehavior.invoke(value)}
-            >{attenuatorChoiceText(value)}</button>
-          {/each}
-        </div>
+        <fieldset class="rf-front-end-att-control" disabled={!attenuatorBehavior.available}>
+          <AttenuatorControl
+            values={[...rf.attValues]}
+            selected={rf.attenuator.reading.status === 'known' ? rf.attenuator.reading.value : Number.NaN}
+            onchange={(value) => attenuatorBehavior.invoke(value)}
+          />
+        </fieldset>
         {#if rf.attenuator.reading.status === 'known' && rf.attValues.includes(rf.attenuator.reading.value)}
           <output class="sr-only" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{attenuatorChoiceText(rf.attenuator.reading.value)}</output>
         {:else}
@@ -613,6 +615,7 @@
   .rf-front-end-row-label { color: var(--v2-text-dim); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; }
   .rf-front-end-choices { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
   .rf-front-end-choices > button { flex: 1 1 4.5ch; }
+  .rf-front-end-att-control { min-width: 0; margin: 0; padding: 0; border: 0; }
   .rf-front-end-unknown { grid-column: 2; color: var(--v2-text-primary); }
   .rf-front-end-choice[aria-checked='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }

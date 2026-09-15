@@ -2528,7 +2528,6 @@
           compressorLevel: view.txAux.compressorLevel.availability.structural,
           monitorLevel: view.txAux.monitorLevel.availability.structural,
         })}
-        {@render txAuxSurface(txAuxInstruments, txAuxScalars, false, false)}
       {/if}
     {/snippet}
     {@render zoned('rxTx', view !== null && singleOrder.includes('rxTx'), body, allowBare, chrome)}

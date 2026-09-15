@@ -1370,12 +1370,13 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
       // MOR-2425: Standard arranges the two persistent antenna seats itself and
       // mounts no grouped `antenna-surface`; SDR keeps the grouped one. Both
       // stay inside the left column, so the column claim is unchanged.
-      ['left', ['rf-front-end-surface', 'filter-surface', 'band-surface',
+      ['left', ['rf-front-end-surface', 'filter-surface',
+        ...(skinId === 'desktop-v2' ? [] : ['band-surface']),
         skinId === 'desktop-v2' ? 'antenna-control-grid' : 'antenna-surface',
         'ritxit-scan-surface']],
       ['center', ['scope-controls-surface', 'scope-display-surface']],
       ['right', ['rx-tx-surface', 'rx-audio-surface', 'dsp-surface', 'cw-keyer-surface',
-        'tx-aux-surface']],
+        ...(skinId === 'desktop-v2' ? [] : ['tx-aux-surface'])]],
     ] as const) {
       for (const surface of surfaces) {
         const selector = `[data-testid="${surface}"]`;
@@ -2306,8 +2307,11 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
       capabilities: [
         'scope', 'audio', 'tx', 'dual_rx', 'rit', 'xit', 'preamp', 'attenuator',
         'rf_gain', 'af_level', 'nr', 'nb', 'notch', 'agc', 'cw', 'break_in',
-        'apf', 'tuner', 'vox', 'compressor', 'monitor', 'drive_gain',
+        'apf', 'tuner', 'vox', 'compressor', 'monitor', 'drive_gain', 'digisel',
+        'rx_antenna',
       ],
+      preValues: [0, 1, 2],
+      attValues: [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45],
       modes: ['LSB', 'USB', 'CW'],
       filters: ['FIL1', 'FIL2', 'FIL3'],
       freqRanges: HAM_RANGES,
@@ -2315,6 +2319,11 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     const state = liveState() as Record<string, unknown>;
     h.state = {
       ...state,
+      main: { ...(state.main as object), att: 18, preamp: 1, rfGain: 0.82, digisel: true },
+      fieldStatus: {
+        ...(state.fieldStatus as object), 'main.att': fresh, 'main.preamp': fresh,
+        'main.rfGain': fresh, 'main.digisel': fresh, txAntenna: fresh, rxAntenna1: fresh,
+      },
       scanning: false, scanType: 0x34, scanResumeMode: 1,
       txAntenna: 1, rxAntenna1: 0, ritOn: false, ritTx: false, ritFreq: 0,
     };
@@ -2358,7 +2367,9 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   // them mean something.
   it('the fixture actually emits all three groups (non-vacuity)', () => {
     const t = renderAll('desktop-v2');
-    expect(t.querySelector('[data-testid="band-surface"]')).not.toBeNull();
+    expect(t.querySelector('[data-testid="band-surface"]')).toBeNull();
+    expect(t.querySelector('.left-sidebar [data-panel-id="band"] [data-testid="band-entry"]'))
+      .not.toBeNull();
     // MOR-2425: on Standard the antenna group emits as the two seats RadioLayout
     // arranges itself, not as the grouped surface SDR still mounts.
     expect(t.querySelector('[data-testid="antenna-control-grid"]')).not.toBeNull();
@@ -2370,7 +2381,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   // deck", which is the double-presentation defect this slice closes. Run
   // against the real resolved plan (see `renderWithPlan`), because that is the
   // read `zoneOwning()` makes.
-  it.each([['band', 'band-surface', 1], ['antenna', 'antenna-control-grid', 1],
+  it.each([['antenna', 'antenna-control-grid', 1],
     ['rit-xit-scan', 'ritxit-scan-surface', 2]])(
     'mounts %s inside its own declared zone element', (zoneId, testid, count) => {
       const t = renderWithPlan('desktop-v2');
@@ -2402,9 +2413,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     expect(t.querySelector('[data-testid="antenna-control-grid"]')).not.toBeNull();
   });
 
-  /** Unsupported profiles retain the generic lower entry surface because
-   * their active-frequency command is still the only available route. */
-  it('keeps the generic lower entry on unsupported profiles while moving HAM into BANDS', () => {
+  it('keeps HAM choices and typed entry together in BANDS without a lower BAND panel', () => {
     const t = renderAll('desktop-v2');
     const upper = t.querySelector('.left-sidebar [data-panel-id="band"]');
     const settings = t.querySelector('[data-panel-id="desktop-vfo-ops"]');
@@ -2413,10 +2422,12 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     expect(upper?.querySelector('[data-testid="band-choices-compact"]')).not.toBeNull();
     expect(texts(settings, '.band-tab')).toEqual(['LW/MW', 'SWL']);
     expect(texts(settings, '.grid button')).toEqual(LW_MW_PRESETS);
-    expect(t.querySelector('[data-testid="band-surface"] [data-testid="band-choices"]')).not.toBeNull();
+    expect(upper?.querySelector('[data-testid="band-entry"]')).not.toBeNull();
+    expect(t.querySelector('[data-testid="band-surface"]')).toBeNull();
+    expect(t.querySelector('[data-panel-id="semantic-band"]')).toBeNull();
   });
 
-  it('retires the complete lower BAND panel for direct Standard entry without freshness resurrection', () => {
+  it('does not resurrect the retired BAND panel for direct entry or stale state', () => {
     h.caps = {
       ...(h.caps as object),
       capabilities: [...(h.caps as Capabilities).capabilities, 'vfo_freq_direct'],
@@ -2471,9 +2482,10 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   // each surface must render exactly ONCE. This is the double-presentation
   // CLOSED assertion — the shape most likely to reveal a suppression that
   // covers only some of the three zones, or a second mount path.
-  it('presents band, antenna and ritXitScan exactly ONCE each on desktop-v2', () => {
+  it('presents BANDS, antenna and ritXitScan exactly once on desktop-v2', () => {
     const t = renderAll('desktop-v2');
-    expect(t.querySelectorAll('[data-testid="band-surface"]')).toHaveLength(1);
+    expect(t.querySelectorAll('[data-testid="band-surface"]')).toHaveLength(0);
+    expect(t.querySelectorAll('.left-sidebar [data-panel-id="band"]')).toHaveLength(1);
     expect(t.querySelectorAll('[data-testid="antenna-control-grid"]')).toHaveLength(1);
     expect(t.querySelectorAll('[data-testid="ritxit-scan-surface"]')).toHaveLength(2);
     for (const selector of [
@@ -2482,8 +2494,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     ]) {
       expect(t.querySelectorAll(selector).length, selector).toBe(0);
     }
-    // This unsupported fixture retains the generic lower grid plus the compact upper host.
-    expect(t.querySelectorAll('[data-testid="band-choices"]').length).toBe(1);
+    expect(t.querySelectorAll('[data-testid="band-entry"]').length).toBe(1);
     expect(t.querySelectorAll('[data-testid="band-choices-compact"]').length).toBe(1);
     expect([...t.querySelectorAll('.band-tab')].filter((b) => b.textContent?.trim() === 'HAM').length)
       .toBe(1);
@@ -2499,8 +2510,9 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   it('places each Standard service panel once and keeps TX settings in one anchored overlay', async () => {
     enableAllServiceSurfaces();
     const t = renderAll('desktop-v2');
+    const radioLayoutSource = readFileSync('src/components-v2/layout/RadioLayout.svelte', 'utf8');
     for (const panelId of [
-      'semantic-rf-front-end', 'semantic-filter', 'semantic-band', 'semantic-agc',
+      'semantic-rf-front-end', 'semantic-filter', 'semantic-agc',
       'semantic-rit-xit', 'semantic-antenna', 'semantic-scan', 'band',
     ]) {
       const renderedIds = [...t.querySelectorAll('[data-panel-id]')]
@@ -2520,7 +2532,13 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     }
     expect(t.querySelectorAll('[data-panel-id="semantic-tx-aux"]')).toHaveLength(0);
     const txPanel = t.querySelector('[data-panel-id="semantic-rx-tx"]')!;
-    expect(txPanel.querySelector('[data-testid="tx-aux-surface"]')).not.toBeNull();
+    expect(txPanel.querySelector('[data-testid="tx-aux-surface"]')).toBeNull();
+    expect(txPanel.querySelector('[data-testid="rx-tx-state"]')).not.toBeNull();
+    expect(txPanel.querySelector('[data-testid="rx-tx-target"]')).not.toBeNull();
+    expect(txPanel.querySelector('[data-testid="rx-tx-blocked"]')).not.toBeNull();
+    expect(radioLayoutSource).toContain(":global(.rx-tx-state[data-rf='receiving'])");
+    expect(radioLayoutSource).toContain(":global([data-testid='rx-tx-target'])");
+    expect(radioLayoutSource).toContain(':global(.rx-tx-blocked)');
     expect(txPanel.querySelector('[aria-label="TX level settings"]')).toBeNull();
     expect(txPanel.querySelector('.standard-tx-levels')).toBeNull();
     const vox = txPanel.querySelector<HTMLButtonElement>('[aria-label="VOX settings"]')!;
@@ -2547,23 +2565,50 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     expect(txPanel.querySelector('[data-testid="standard-tx-settings-popover"]')).toBeNull();
     expect(t.querySelector('.standard-bottom-dock [data-panel-id="semantic-meters"]'))
       .not.toBeNull();
+
+    const rf = t.querySelector('[data-panel-id="semantic-rf-front-end"]')!;
+    expect(texts(rf, '.att-control > .button-grid button')).toEqual(['OFF', '6dB', '12dB', '18dB']);
+    expect(texts(rf, '.att-control > div:not(.button-grid) > button')).toEqual(['MORE']);
+    expect(rf.querySelector('[data-testid="rf-front-end-preamp-mutex-reason"]')
+      ?.classList.contains('sr-only')).toBe(true);
+
+    const antenna = t.querySelector('[data-panel-id="semantic-antenna"]')!;
+    expect(antenna.querySelector('[data-testid="antenna-blocked"]')?.classList.contains('sr-only'))
+      .toBe(true);
+    expect(antenna.querySelector('[data-testid="antenna-port-value"]')?.classList.contains('sr-only'))
+      .toBe(true);
+    expect(antenna.querySelector('[data-testid="antenna-rx-toggle"]')?.textContent?.trim())
+      .toBe('RX ANT');
+
+    const rxAudio = t.querySelector('[data-panel-id="semantic-rx-audio"]')!;
+    expect(rxAudio.querySelector('[data-testid="rx-audio-monitor-status"]')).not.toBeNull();
+    expect(radioLayoutSource)
+      .toContain(":global([data-testid='rx-audio-monitor-status'])");
+    expect(rxAudio.querySelector('[data-testid="rx-audio-main-gain"]')).toBeNull();
+    expect(rxAudio.querySelector('[data-testid="rx-audio-sub-gain"]')).toBeNull();
+
+    const cw = t.querySelector('[data-panel-id="semantic-cw"]')!;
+    expect(cw.querySelector('[data-testid="cw-keyer-posture"]')).not.toBeNull();
+    expect(radioLayoutSource).toContain(':global(.cw-keyer-sentence)');
   });
 
   it('migrates combined and legacy panel preferences without appending duplicates', () => {
     localStorage.setItem('rigplane:panel-order', JSON.stringify([
-      'semantic-rf-front-end', 'semantic-rit-xit-scan', 'agc', 'band',
+      'semantic-rf-front-end', 'semantic-rit-xit-scan', 'semantic-band', 'agc', 'band',
     ]));
     localStorage.setItem('rigplane:panel-collapsed', JSON.stringify({
-      'semantic-rit-xit-scan': true, agc: true,
+      'semantic-rit-xit-scan': true, 'semantic-band': true, agc: true,
     }));
     renderAll('desktop-v2');
     expect(JSON.parse(localStorage.getItem('rigplane:panel-order')!)).toEqual([
       'semantic-rf-front-end', 'semantic-rit-xit', 'semantic-scan', 'semantic-agc', 'band',
-      'semantic-filter', 'semantic-band', 'semantic-antenna',
+      'semantic-filter', 'semantic-antenna',
     ]);
     expect(JSON.parse(localStorage.getItem('rigplane:panel-collapsed')!)).toMatchObject({
       'semantic-rit-xit': true, 'semantic-scan': true, 'semantic-agc': true,
     });
+    expect(JSON.parse(localStorage.getItem('rigplane:panel-collapsed')!))
+      .not.toHaveProperty('semantic-band');
   });
 
   it('keeps a one-port antenna panel descriptive and non-interactive', () => {

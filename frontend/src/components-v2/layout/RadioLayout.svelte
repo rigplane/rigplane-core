@@ -42,7 +42,6 @@
   import type { RfFrontEndFiniteHandles } from '../../semantic/rf-front-end-instruments';
   import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instruments';
   import type { FilterInstrumentHandles } from '../../semantic/filter-instruments';
-  import type { BandInstrumentHandles } from '../../semantic/band-instruments';
   import { ANTENNA_BLOCKED_LABEL } from '../../semantic/AntennaInstrumentHost.svelte';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import KeyboardHandler from './KeyboardHandler.svelte';
@@ -141,6 +140,7 @@
   const STANDARD_PANEL_ID_REPLACEMENTS: Readonly<Record<string, readonly string[]>> = {
     'semantic-rit-xit-scan': ['semantic-rit-xit', 'semantic-scan'],
     'rit-xit': ['semantic-rit-xit'], scan: ['semantic-scan'], agc: ['semantic-agc'],
+    'semantic-band': [],
   };
   function migrateStandardPanelPreferences(): void {
     if (!standardFaceAtMount || typeof localStorage === 'undefined') return;
@@ -196,7 +196,7 @@
   const standardLeftDrag: PanelDragOwner | null = standardFaceAtMount ? createDragReorder({
     storageKey: 'rigplane:panel-order',
     defaults: [
-      'semantic-rf-front-end', 'semantic-filter', 'semantic-band', 'semantic-agc',
+      'semantic-rf-front-end', 'semantic-filter', 'semantic-agc',
       'semantic-rit-xit', 'semantic-antenna', 'semantic-scan', 'band',
     ],
     containerSelector: '.standard-panel-owner-left',
@@ -322,12 +322,6 @@
   // Reactive state + capabilities — via runtime
   let radioState = $derived(runtime.state);
   let caps = $derived(runtime.caps);
-  let directFrequencyEntrySupported = $derived(
-    caps?.capabilities.includes('vfo_freq_direct') === true
-      && caps.receivers === 1
-      && caps.vfoScheme === 'ab',
-  );
-
   // MOR-1235. The meters dock's TX chrome takes its truth from the App-owned
   // TX controller — the SAME source as the authoritative global lamp
   // (MOR-1008/MOR-1059) — and never from `radioState.ptt`, a command/readback
@@ -631,20 +625,10 @@
   </div>
 {/snippet}
 
-{#snippet bandControlLayout(bandInstruments: BandInstrumentHandles)}
-  <div class="band-control-grid" data-testid="band-control-grid">
-    <div class="band-control-seat" data-field="bandChoice">{@render bandInstruments.bandChoice()}</div>
-    <div class="band-control-seat" data-field="frequencyEntry">
-      {@render bandInstruments.frequencyEntry()}
-    </div>
-  </div>
-{/snippet}
-
 <!--
   MOR-2425. The Standard face arranges the two persistent antenna seats itself
-  instead of mounting the grouped `AntennaSurface`, so the blocked-reason list
-  the seats' `aria-describedby` points at has to be rendered here too — the
-  host hands both the id and the reason codes on `instruments.antennaLayout`.
+  instead of mounting the grouped `AntennaSurface`. Its accessible blocked
+  explanation remains here too without becoming volatile panel text.
 -->
 {#snippet antennaControlLayout()}
   {#if runtime.caps?.antennas === 1}
@@ -659,11 +643,9 @@
       {@render instruments.antennaInstruments.rxAnt()}
     </div>
   </div>{/if}
-  {#if runtime.caps?.antennas !== 1}<ul class="antenna-blocked" id={instruments.antennaLayout.blockedId} data-testid="antenna-blocked">
-    {#each instruments.antennaLayout.blocked as code (code)}
-      <li data-reason={code}>{ANTENNA_BLOCKED_LABEL[code]}</li>
-    {/each}
-  </ul>{/if}
+  {#if runtime.caps?.antennas !== 1}<span class="sr-only" id={instruments.antennaLayout.blockedId} data-testid="antenna-blocked">
+    {instruments.antennaLayout.blocked.map((code) => ANTENNA_BLOCKED_LABEL[code]).join('; ')}
+  </span>{/if}
 {/snippet}
 
 {#snippet vfoOperationControls()}
@@ -692,11 +674,6 @@
         panelId: 'semantic-filter-controls', draggable: false,
         onDragStart: owner.handleDragStart, style: owner.dragStyle('semantic-filter'),
       },
-    )}
-  {/if}
-  {#if owner.order.includes('semantic-band') && !directFrequencyEntrySupported}
-    {@render instruments.band(
-      undefined, bandControlLayout, panelChrome(owner, 'semantic-band'),
     )}
   {/if}
   {#if owner.order.includes('semantic-antenna')}
@@ -749,6 +726,7 @@
     <LeftSidebar
       hideTxPanel={semanticRxTx} {declared} dragOwner={owner} {showReset}
       semanticHamBands={instruments.bandInstruments?.bandChoice}
+      semanticFrequencyEntry={instruments.bandInstruments?.frequencyEntry}
     />
   </div>
   <div class="content-right">
@@ -1220,12 +1198,16 @@
   .standard-bottom-dock :global([data-panel-id='semantic-meters'] .collapsible-content) {
     min-height: 0; overflow: hidden;
   }
-  /* Routine authority explanations remain in the key's accessible description,
-     without growing the Standard panel during an already-active TX session. */
-  .desktop-control-face.standard-face :global(.rx-tx-blocked [data-reason='tx-busy']),
-  .desktop-control-face.standard-face :global(.rx-tx-blocked [data-reason='radio-transmitting']),
-  .desktop-control-face.standard-face :global([data-testid='tx-aux-tune-blocked'] [data-reason='tx-busy']),
-  .desktop-control-face.standard-face :global([data-testid='tx-aux-tune-blocked'] [data-reason='radio-transmitting']) {
+  /* Standard keeps volatile authority diagnostics in the accessibility tree,
+     but out of the fixed operator surface so readback churn cannot reflow it. */
+  .desktop-control-face.standard-face :global([data-testid='rx-tx-target']),
+  .desktop-control-face.standard-face :global(.rx-tx-blocked),
+  .desktop-control-face.standard-face :global(.cw-keyer-sentence),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-monitor-status']) {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+  .desktop-control-face.standard-face :global(.rx-tx-state[data-rf='receiving']) {
     display: none;
   }
   .dsp-finite-grid {
@@ -1264,15 +1246,13 @@
   .filter-finite-grid .filter-finite-seat[data-field='filter'] :global(.filter-choice-group) {
     display: flex;
   }
-  .band-control-grid, .band-control-seat { display: contents; }
   .antenna-control-grid { display: flex; flex-direction: column; gap: 0.25rem; }
   .antenna-fixed-port {
     display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem;
     padding: 0.25rem 0.5rem;
   }
   .antenna-control-seat { display: contents; }
-  .antenna-blocked { margin: 0; padding-inline-start: 1.2em; }
-  .antenna-blocked:empty { display: none; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   .vfo-operation-instrument-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .tx-aux-scalar-grid {
     display: grid;

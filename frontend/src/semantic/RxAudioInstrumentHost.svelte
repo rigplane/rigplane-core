@@ -427,14 +427,14 @@
             onclick={() => focusBehavior.invoke(focus)}
           >{focus}</button>
         {/each}
-        <output data-testid="rx-audio-focus-value">{textOf(rx.routingFocus)}</output>
+        <output class="sr-only" data-testid="rx-audio-focus-value">{textOf(rx.routingFocus)}</output>
       {/if}
     </div>
   {/if}
 {/snippet}
 
 {#snippet channelGain(channel: 'main' | 'sub')}
-  {#if rx?.routingFocus.availability.structural}
+  {#if rx?.routingFocus.availability.structural && routingGains !== null}
     {@const value = channel === 'main' ? routingGains?.main : routingGains?.sub}
     <label class="rx-audio-gain" data-testid={`rx-audio-${channel}-gain`}>
       <span>{channel.toUpperCase()}</span>
@@ -505,10 +505,10 @@
             {/each}
           </select>
         </label>
-        <span data-testid="rx-audio-mod-source">MOD: {rx.modInputSource.reading.status === 'known'
+        <span class="sr-only" data-testid="rx-audio-mod-source">MOD: {rx.modInputSource.reading.status === 'known'
           ? modInputChoices.find(option => option.value === modInputReadingValue)?.label ?? UNKNOWN_TEXT
           : UNKNOWN_TEXT}</span>
-        <span data-testid="rx-audio-mod-readiness"
+        <span class="sr-only" data-testid="rx-audio-mod-readiness"
         >{READINESS_LABEL[rx.modInputReadiness.status]}</span>
       {/if}
     </p>
@@ -551,4 +551,5 @@
      text itself is the primary one and survives forced-colors. */
   [data-observed='false'] { font-style: italic; }
   button:disabled, select:disabled { cursor: not-allowed; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 </style>

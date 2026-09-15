@@ -154,7 +154,7 @@
               aria-checked={lease.view?.selected === port} aria-describedby={layout.blockedId}
               disabled={!lease.view?.available} onclick={() => lease.invoke(port)}>ANT {port}</button>
           {/each}
-          <output data-testid="antenna-port-value">{textOf(ant.txAntenna)}</output>
+          <output class="sr-only" data-testid="antenna-port-value">{textOf(ant.txAntenna)}</output>
         </div>
       {/if}
     {/key}{/key}
@@ -172,7 +172,8 @@
           <button type="button" class="antenna-choice" data-testid="antenna-rx-toggle"
             aria-pressed={lease.view?.confirmed} aria-describedby={layout.blockedId}
             disabled={!lease.view?.available} onclick={() => lease.invoke()}>
-            RX-ANT: {textOf(ant.rxAnt)}</button>
+            RX ANT</button>
+          <output class="sr-only" data-testid="antenna-rx-value">{textOf(ant.rxAnt)}</output>
         </div>
       {/if}
     {/key}{/key}
@@ -185,4 +186,5 @@
   .antenna-choice[aria-checked='true'], .antenna-choice[aria-pressed='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }
   button:disabled { cursor: not-allowed; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 </style>
