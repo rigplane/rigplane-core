@@ -595,7 +595,7 @@ it('shows a distinct role per VFO across single/dual and slotted/unslotted schem
 
   const mainSub = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
   const roles = Array.from(mainSub.querySelectorAll('.vfo-role')).map((e) => e.textContent);
-  expect(roles).toEqual(['MAIN A', 'MAIN B', 'SUB A', 'SUB B']);
+  expect(roles).toEqual(['MAIN', 'SUB']);
 });
 
 // ── MOR-1482: one stable frequency format + role text shown exactly once ───
@@ -905,9 +905,9 @@ describe('VFO selection intent', () => {
   it('clicking a selectable inactive VFO emits onSelectVfo with the exact receiver+slot payload', () => {
     const onSelectVfo = vi.fn();
     const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'], onSelectVfo });
-    target.querySelector<HTMLButtonElement>('[data-vfo-receiver="MAIN"][data-vfo-slot="B"] [data-vfo-select]')!.click();
+    target.querySelector<HTMLButtonElement>('[data-vfo-receiver="SUB"][data-vfo-slot="unslotted"] [data-vfo-select]')!.click();
     expect(onSelectVfo).toHaveBeenCalledOnce();
-    expect(onSelectVfo).toHaveBeenCalledWith({ receiver: 'MAIN', slot: { kind: 'slotted', id: 'B' } });
+    expect(onSelectVfo).toHaveBeenCalledWith({ receiver: 'SUB', slot: { kind: 'unslotted' } });
   });
 
   it('the active VFO renders no select control at all (nothing to choose)', () => {
@@ -1058,8 +1058,8 @@ describe('accessibility basics', () => {
       viewModel: topologyFixtures['2/main_sub'], onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
     });
     const focusable = Array.from(target.querySelectorAll<HTMLButtonElement>('button:not([disabled])'));
-    // MAIN A is active (no select button); expect MAIN B, SUB A, SUB B selects,
-    // then the split and dualWatch toggles, then MOR-1321's four ops — facts
+    // MAIN is active (no select button); expect the SUB select, then the
+    // split and dualWatch toggles, then MOR-1321's four ops — facts
     // before actions, in that DOM order. The classifier NAMES each op rather
     // than letting an unrecognised button fall through to 'dualWatch', which is
     // what made this test read four phantom dualWatch entries when the ops row
@@ -1073,7 +1073,7 @@ describe('accessibility basics', () => {
             : OPS.find((op) => el.hasAttribute(`data-vfo-${op}`)) ?? 'UNCLASSIFIED',
     );
     expect(order).toEqual([
-      'select:MAIN:B', 'select:SUB:A', 'select:SUB:B', 'split', 'dualWatch', ...OPS,
+      'select:SUB:unslotted', 'split', 'dualWatch', ...OPS,
     ]);
   });
 });
@@ -1131,7 +1131,7 @@ describe('showVfoList (MOR-1068) — the radio-wide half, placeable on its own',
   // lose its VFO tiles.
   it('defaults to true: the unsliced surface is unchanged', () => {
     const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
-    expect(target.querySelectorAll('[data-vfo-tile]')).toHaveLength(4);
+    expect(target.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
     expect(target.querySelector('[data-testid="vfo-list"]')).not.toBeNull();
   });
 });
@@ -1783,9 +1783,9 @@ describe('per-digit tuning (MOR-1322) — intents (R9: frequency, never TX)', ()
 
   // Kills: dropping the receiver from the intent — MAIN and SUB tune different
   // radios' halves and a lost receiver silently moves the wrong one.
-  // Index by RECEIVER and by ACTIVE (B1): `2/main_sub` carries four tiles
-  // (MAIN A/B, SUB A/B) and only the active one per receiver is tunable, so a
-  // hardcoded position would test the wrong tile — or a non-tunable one.
+  // Index by RECEIVER and by ACTIVE (B1): `2/main_sub` carries two tiles
+  // (MAIN/SUB, one per receiver) and only the active one per receiver is
+  // tunable, so a hardcoded position would test the wrong tile.
   it.each(['MAIN', 'SUB'] as const)('a digit on the active %s tile tunes that receiver', (receiver) => {
     const onTuneFrequency = vi.fn();
     const model = validateRadioViewModel({
@@ -2004,14 +2004,17 @@ describe('per-digit tuning (MOR-1322) — the operational guard, pinned independ
     // Each receiver's ACTIVE-SLOT tile is the one that mounts a control
     // (MOR-1335), so those are the ones that must be marked inert; the rest are
     // structurally absent (B1) and must NOT claim `aria-disabled` — absent is
-    // not inert. Non-vacuous on both sides: `2/main_sub` has two of each.
+    // not inert. Since MOR-2467 both `2/main_sub` tiles are active-slot (one
+    // per receiver), so the inert half runs there and the absent half on
+    // `1/ab`, whose B tile is not its receiver's active slot.
     const inert = activeSlots(t);
     expect(inert.length).toBeGreaterThan(0);
     for (const slot of inert) {
       expect(slot.dataset.freqTunable, tileId(slot)).toBe('false');
       expect(slot.getAttribute('aria-disabled'), tileId(slot)).toBe('true');
     }
-    const absent = slots(t).filter((sl) => !inert.includes(sl));
+    const ab = mountSurface({ viewModel: topologyFixtures['1/ab'], onTuneFrequency: vi.fn(), disabled: true });
+    const absent = slots(ab).filter((sl) => !activeSlots(ab).includes(sl));
     expect(absent.length).toBeGreaterThan(0);
     for (const slot of absent) {
       expect(slot.hasAttribute('aria-disabled'), tileId(slot)).toBe(false);
@@ -2033,17 +2036,18 @@ describe('per-digit tuning (MOR-1322) — the operational guard, pinned independ
   // absence cannot be a broken mount.
   it('an unknown-frequency tile carries no control while its sibling does', () => {
     const base = topologyFixtures['2/main_sub'];
-    // Index 2 is SUB's ACTIVE-SLOT tile: since MOR-1335 it would otherwise
-    // mount a control, so nulling its frequency is a real structural gate test
-    // rather than a tile that was absent for the slot reason anyway.
+    // Index 1 is SUB's record: since MOR-1335 it would otherwise mount a
+    // control (it is SUB's active slot), so nulling its frequency is a real
+    // structural gate test rather than a tile that was absent for the slot
+    // reason anyway.
     const model = validateRadioViewModel({
       ...base,
-      vfos: base.vfos.map((v, i) => (i === 2 ? { ...v, frequencyHz: null } : v)),
+      vfos: base.vfos.map((v, i) => (i === 1 ? { ...v, frequencyHz: null } : v)),
     });
     const onTuneFrequency = vi.fn();
     const t = mountSurface({ viewModel: model, onTuneFrequency });
     expect(slots(t)[0].querySelectorAll('.digit').length).toBeGreaterThan(0);
-    expect(slots(t)[2].querySelectorAll('.digit')).toHaveLength(0);
+    expect(slots(t)[1].querySelectorAll('.digit')).toHaveLength(0);
     const digits = slots(t)[0].querySelectorAll('.digit');
     wheel(digits[digits.length - 1]);
     flushSync();
@@ -2174,21 +2178,21 @@ describe('per-receiver tuning (MOR-1335) — cross-dispatch is impossible', () =
   };
 
   /**
-   * `2/main_sub` with EACH receiver's active slot named independently — the
-   * IC-7610 axis this ticket exists for. `isActive` stays radio-wide (it is
-   * the active RECEIVER's active slot); `isActiveSlot` is the per-receiver
-   * fact, and `null` models a receiver whose active slot was never observed.
+   * `2/main_sub` with each receiver's active-slot fact set independently —
+   * the IC-7610 axis this ticket exists for. MOR-2467 leaves each receiver
+   * exactly one unslotted record, so a receiver either holds that record as
+   * its own active slot or its active slot was never observed (`false`);
+   * `isActive` stays radio-wide (it is the active RECEIVER's record).
    */
   function mainSubActiveSlots(
-    mainSlot: 'A' | 'B' | null, subSlot: 'A' | 'B' | null,
+    mainActiveSlot: boolean, subActiveSlot: boolean,
   ): RadioViewModel {
     const base = topologyFixtures['2/main_sub'];
     const activeReceiver = base.activeReceiver;
     return validateRadioViewModel({
       ...base,
       vfos: base.vfos.map((v) => {
-        const wanted = v.receiver === 'MAIN' ? mainSlot : subSlot;
-        const isActiveSlot = v.slot.kind === 'slotted' && v.slot.id === wanted;
+        const isActiveSlot = v.receiver === 'MAIN' ? mainActiveSlot : subActiveSlot;
         return {
           ...v,
           isActiveSlot,
@@ -2203,54 +2207,58 @@ describe('per-receiver tuning (MOR-1335) — cross-dispatch is impossible', () =
   // receiver must be tunable again. Red before G4 (one control per RADIO).
   it('2/main_sub mounts exactly one control per RECEIVER, MAIN and SUB', () => {
     const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
-    expect(withDigits(t).map(tileId)).toEqual(['MAIN:A', 'SUB:A']);
+    expect(withDigits(t).map(tileId)).toEqual(['MAIN:unslotted', 'SUB:unslotted']);
   });
 
   // THE ADVERSARIAL PROPERTY. Both controls are exercised in ONE mount, so a
   // gate that leaked a receiver would show up as the wrong pair here — and the
   // frequency proves the VALUE could not have come from another tile either.
   it('each control dispatches its OWN receiver and its OWN tile frequency', () => {
-    const model = mainSubActiveSlots('A', 'B');
+    const model = mainSubActiveSlots(true, true);
     const onTuneFrequency = vi.fn();
     const t = mountSurface({ viewModel: model, onTuneFrequency });
     const controls = withDigits(t);
-    expect(controls.map(tileId)).toEqual(['MAIN:A', 'SUB:B']);
+    expect(controls.map(tileId)).toEqual(['MAIN:unslotted', 'SUB:unslotted']);
     for (const slot of controls) wheelUp(onesDigit(slot));
     flushSync();
-    const mainA = model.vfos.find((v) => v.receiver === 'MAIN' && v.isActiveSlot)!;
-    const subB = model.vfos.find((v) => v.receiver === 'SUB' && v.isActiveSlot)!;
+    const main = model.vfos.find((v) => v.receiver === 'MAIN' && v.isActiveSlot)!;
+    const sub = model.vfos.find((v) => v.receiver === 'SUB' && v.isActiveSlot)!;
     // Non-vacuous: the two tiles hold DIFFERENT frequencies, so a swapped
     // value cannot coincide with the right one.
-    expect(mainA.frequencyHz).not.toBe(subB.frequencyHz);
+    expect(main.frequencyHz).not.toBe(sub.frequencyHz);
     expect(onTuneFrequency.mock.calls).toEqual([
-      ['MAIN', mainA.frequencyHz! + 1],
-      ['SUB', subB.frequencyHz! + 1],
+      ['MAIN', main.frequencyHz! + 1],
+      ['SUB', sub.frequencyHz! + 1],
     ]);
   });
 
-  // The other direction of the same property: SUB active-slot B while MAIN is
-  // the active RECEIVER. A gate that read the radio-wide flag would dispatch
-  // MAIN here; a gate that read slot identity would pick SUB A.
+  // The other direction of the same property: SUB's own record is tunable
+  // while MAIN is the active RECEIVER. A gate that read the radio-wide flag
+  // would dispatch MAIN here.
   it('a SUB gesture never reaches MAIN, even while MAIN is the active receiver', () => {
-    const model = mainSubActiveSlots('A', 'B');
+    const model = mainSubActiveSlots(true, true);
     expect(model.activeReceiver).toEqual({ status: 'known', receiver: 'MAIN' });
     const onTuneFrequency = vi.fn();
     const t = mountSurface({ viewModel: model, onTuneFrequency });
     const sub = withDigits(t).find((sl) => tileOf(sl).dataset.vfoReceiver === 'SUB')!;
-    expect(tileId(sub)).toBe('SUB:B');
+    expect(tileId(sub)).toBe('SUB:unslotted');
     wheelUp(onesDigit(sub));
     flushSync();
     expect(onTuneFrequency).toHaveBeenCalledTimes(1);
     expect(onTuneFrequency.mock.calls[0][0]).toBe('SUB');
   });
 
-  // B1's hazard, still closed: the INACTIVE slot of the SAME receiver mounts
-  // nothing and dispatches nothing, on BOTH receivers at once.
-  it('the inactive slot of the same receiver stays non-tunable on both receivers', () => {
+  // B1's hazard, still closed: a record that is NOT its receiver's active
+  // slot mounts nothing and dispatches nothing, on BOTH receivers at once.
+  // MOR-2467 left each 2/main_sub receiver a single record, so the
+  // inactive-sibling-within-one-receiver case now lives only in the slotted
+  // '1/ab' PD test above; this pin keeps the both-receivers-at-once exercise
+  // the old slotted fixture carried.
+  it('a record that is not its receiver\'s active slot stays non-tunable on both receivers', () => {
     const onTuneFrequency = vi.fn();
-    const t = mountSurface({ viewModel: mainSubActiveSlots('A', 'B'), onTuneFrequency });
+    const t = mountSurface({ viewModel: mainSubActiveSlots(false, false), onTuneFrequency });
     const inactive = slots(t).filter((sl) => tileOf(sl).dataset.vfoActiveSlot !== 'true');
-    expect(inactive.map(tileId)).toEqual(['MAIN:B', 'SUB:A']);
+    expect(inactive.map(tileId)).toEqual(['MAIN:unslotted', 'SUB:unslotted']);
     for (const slot of inactive) {
       expect(slot.querySelectorAll('.digit'), tileId(slot)).toHaveLength(0);
       expect(slot.dataset.freqTunable, tileId(slot)).toBe('false');
@@ -2261,13 +2269,13 @@ describe('per-receiver tuning (MOR-1335) — cross-dispatch is impossible', () =
   });
 
   // FAILS CLOSED. An unobserved active-slot reading for SUB (the adapter's
-  // `activeSlot === null`) leaves NEITHER SUB tile tunable — the unknown is
-  // never guessed into 'A'. MAIN keeps its control, so the absence is the
-  // per-receiver gate and not a dead surface.
+  // `activeSlot === null`) leaves SUB's record untunable — the unknown is
+  // never guessed into an active slot. MAIN keeps its control, so the absence
+  // is the per-receiver gate and not a dead surface.
   it('an unobserved active slot leaves that receiver untunable while the other still tunes', () => {
     const onTuneFrequency = vi.fn();
-    const t = mountSurface({ viewModel: mainSubActiveSlots('A', null), onTuneFrequency });
-    expect(withDigits(t).map(tileId)).toEqual(['MAIN:A']);
+    const t = mountSurface({ viewModel: mainSubActiveSlots(true, false), onTuneFrequency });
+    expect(withDigits(t).map(tileId)).toEqual(['MAIN:unslotted']);
     for (const slot of slots(t).filter((sl) => tileOf(sl).dataset.vfoReceiver === 'SUB')) {
       wheelUp(slot);
     }
@@ -2385,23 +2393,26 @@ describe('per-digit tuning (MOR-1322) — composition with an ACTIVE design lang
     const t = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
     expect(activeSlot(t).querySelectorAll('.digit').length).toBeGreaterThan(0);
 
-    // ...and an INACTIVE tile stays non-tunable even while tuning is wired
-    // elsewhere for a different tile — the mutual-exclusion gate is per-tile,
-    // not a surface-wide switch.
-    const inactive = slots(t).find((sl) => sl !== activeSlot(t))!;
+    // ...and a NON-TUNABLE tile stays on the fallback even while tuning is
+    // wired for a different tile — the mutual-exclusion gate is per-tile,
+    // not a surface-wide switch. Since MOR-2467 every 2/main_sub record is
+    // its receiver's active slot, the non-tunable-with-intent-wired tile
+    // lives on '1/ab' (B is not MAIN's active slot). Selecting it by its
+    // data-vfo-active-slot attribute — structurally, not by element
+    // identity — also keeps the language-on/off comparison below on the
+    // SAME tile position across two separate mounts.
+    const nonTunableOf = (root: HTMLElement) => slots(root).find(
+      (sl) => tileOf(sl).dataset.vfoActiveSlot !== 'true')!;
+    const inactive = nonTunableOf(
+      mountSurface({ viewModel: topologyFixtures['1/ab'], onTuneFrequency: vi.fn() }));
     expect(inactive.querySelectorAll('.digit')).toHaveLength(0);
     const inactiveText = inactive.textContent!.trim();
     expect(inactiveText.length).toBeGreaterThan(0);
 
-    // THE SAME TILE POSITION, language OFF: one mount, so `slots`/`activeSlot`
-    // read the SAME DOM tree — comparing across two separate mounts (each
-    // producing its own, non-`===`-equal elements) would make `.find(sl => sl
-    // !== activeSlot(...))` trivially return the FIRST slot regardless of
-    // which one is active, silently comparing two DIFFERENT VFOs instead of
-    // the same one under two language states.
+    // THE SAME TILE POSITION, language OFF.
     activate(null);
-    const bare = mountSurface({ viewModel: tunableTile, onTuneFrequency: vi.fn() });
-    const bareInactive = slots(bare).find((sl) => sl !== activeSlot(bare))!;
+    const bare = mountSurface({ viewModel: topologyFixtures['1/ab'], onTuneFrequency: vi.fn() });
+    const bareInactive = nonTunableOf(bare);
     expect(bareInactive.querySelectorAll('.digit')).toHaveLength(0);
     expect(inactiveText).toBe(bareInactive.textContent!.trim());
   });
@@ -2650,14 +2661,22 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(absent.querySelector('[data-testid="receiver-s-meter"]')).toBeNull();
   });
 
-  it('keeps four absolute records and selects the exact Standard receiver slot', () => {
+  it('keeps two receiver-level Standard records without invented slot selection', () => {
     const onSelectVfo = vi.fn();
     const root = mountSurface({
       viewModel: withReceiverIndicators('2/main_sub'), appearance: 'standard', onSelectVfo,
     });
-    expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(4);
-    root.querySelector<HTMLButtonElement>('[data-vfo-receiver="SUB"][data-vfo-slot="B"]')?.click();
-    expect(onSelectVfo).toHaveBeenCalledExactlyOnceWith({ receiver: 'SUB', slot: { kind: 'slotted', id: 'B' } });
+    expect(root.querySelectorAll('[data-receiver-instrument]')).toHaveLength(2);
+    expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
+    for (const receiver of ['MAIN', 'SUB']) {
+      const tile = root.querySelector(`[data-vfo-tile][data-vfo-receiver="${receiver}"]`)!;
+      expect(tile.getAttribute('data-vfo-slot')).toBe('unslotted');
+      expect(tile.querySelector('[data-vfo-freq]')?.textContent?.replace(/\s/g, ''))
+        .toBe(receiver === 'MAIN' ? '14.250.000' : '21.295.000');
+    }
+    expect(root.querySelectorAll('[data-vfo-select]')).toHaveLength(0);
+    root.querySelector<HTMLElement>('[data-vfo-tile][data-vfo-receiver="SUB"]')?.click();
+    expect(onSelectVfo).not.toHaveBeenCalled();
   });
 
   it('retains both fixed cards without an optimistic highlight when the active slot is unknown', () => {
@@ -2742,5 +2761,59 @@ describe('MOR-2342 preserved instrument intents', () => {
     const toggle = root.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
     expect(toggle.disabled).toBe(true); toggle.click();
     expect(split).not.toHaveBeenCalled(); expect(tune).not.toHaveBeenCalled();
+  });
+});
+
+// ── MOR-2467: Standard presents main_sub's two receiver-level records ───────
+//
+// The owner-confirmed IC-7610 payload: `main.freqHz`/`main.mode`/`main.filter`
+// and the `sub` equivalents, with NO `vfoA`/`vfoB` and NO `activeSlot` (the
+// radio has no per-receiver A/B slots). Driven through the REAL adapter so the
+// assertion covers the whole producer→Standard chain, not a hand-built model.
+describe('MOR-2467: main_sub Standard displays receiver-level MAIN/SUB records', () => {
+  it('shows qualified main./sub. freq/mode/filter with vfoA/vfoB and activeSlot absent', () => {
+    const caps = {
+      model: 'fixture', receivers: 2, vfoScheme: 'main_sub',
+      capabilities: ['audio', 'tx', 'dual_rx'],
+      stateContractVersion: 1, providerGeneration: 1,
+      freqRanges: [], modes: [], filters: [],
+      txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
+    } as unknown as Capabilities;
+    const freshLeaf = {
+      observed: true, freshness: 'fresh', availability: 'available',
+      lastObservedMonotonic: 0,
+    };
+    const state = {
+      stateContractVersion: 1, providerGeneration: 1,
+      active: 'MAIN', split: false, dualWatch: false,
+      txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
+      main: { freqHz: 14250000, mode: 'USB', filter: 1 },
+      sub: { freqHz: 21295000, mode: 'LSB', filter: 2 },
+      fieldStatus: Object.fromEntries([
+        'active', 'split', 'dualWatch', 'txTarget',
+        'main.freqHz', 'main.mode', 'main.filter',
+        'sub.freqHz', 'sub.mode', 'sub.filter',
+      ].map((path) => [path, freshLeaf])),
+    } as unknown as ServerState;
+
+    const viewModel = toRadioViewModel(state, caps)!;
+    expect(viewModel.vfoScheme).toBe('main_sub');
+    expect(viewModel.vfos.map((vfo) => [vfo.receiver, vfo.slot.kind])).toEqual([
+      ['MAIN', 'unslotted'], ['SUB', 'unslotted'],
+    ]);
+
+    const root = mountSurface({ viewModel, appearance: 'standard' });
+    expect(root.querySelectorAll('[data-receiver-instrument="MAIN"]')).toHaveLength(1);
+    expect(root.querySelectorAll('[data-receiver-instrument="SUB"]')).toHaveLength(1);
+    for (const [receiver, freq, mode, filter] of [
+      ['MAIN', '14.250.000', 'USB', 'FIL1'],
+      ['SUB', '21.295.000', 'LSB', 'FIL2'],
+    ] as const) {
+      const panel = root.querySelector(`[data-receiver-instrument="${receiver}"]`)!;
+      expect(panel.querySelector('[data-vfo-freq]')?.textContent?.replace(/\s/g, ''))
+        .toBe(freq);
+      expect(panel.textContent).toContain(mode);
+      expect(panel.textContent).toContain(filter);
+    }
   });
 });

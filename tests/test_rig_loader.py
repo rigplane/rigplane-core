@@ -708,9 +708,10 @@ labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
         rig = load_rig(RIGS_DIR / "ic7300.toml")
         assert rig.rf_sql_control_model == "combined"
 
-    def test_ic7610_stays_separate_rf_sql_control_model(self):
+    def test_ic7610_declares_combined_rf_sql_control_model(self):
+        """MOR-2467: the IC-7610's concentric RF/SQL knob is declared combined."""
         rig = load_rig(RIGS_DIR / "ic7610.toml")
-        assert rig.rf_sql_control_model == "separate"
+        assert rig.rf_sql_control_model == "combined"
 
     @pytest.mark.parametrize(
         ("name", "expected"),

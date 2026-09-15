@@ -2552,13 +2552,14 @@ async def test_capabilities_reports_combined_rf_sql_control_model_for_ic7300() -
 
 @pytest.mark.asyncio
 async def test_capabilities_defaults_to_separate_rf_sql_control_model() -> None:
-    """A profile that doesn't declare the combined knob stays "separate"."""
+    """A profile that doesn't declare the combined knob (IC-9700) stays
+    "separate" (MOR-2467 moved IC-7610 to an explicit "combined")."""
 
-    class _Ic7610Radio:
-        model = "IC-7610"
+    class _Ic9700Radio:
+        model = "IC-9700"
         capabilities: set[str] = set()
 
-    srv = WebServer(_Ic7610Radio())
+    srv = WebServer(_Ic9700Radio())
     writer = _FakeWriter()
     await srv._serve_capabilities(writer)  # noqa: SLF001
     _, payload = _response_json(writer)

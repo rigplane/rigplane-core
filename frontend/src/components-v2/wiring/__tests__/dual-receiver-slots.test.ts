@@ -105,19 +105,12 @@ const abShared = () => view(
   dualCaps({ vfoScheme: 'ab_shared' }),
 );
 
-/** 2/main_sub: A/B slots on BOTH receivers — four `vfos` entries. */
+/** 2/main_sub (MOR-2467): one unslotted VFO record per receiver — the
+ *  IC-7610 has NO per-receiver A/B slots — with MAIN active. */
 const mainSub = () => view(
   state(
-    {
-      active: 'MAIN',
-      main: { ...rx(14250000), activeSlot: 'A', vfoA: leaf(14250000), vfoB: leaf(14280000) },
-      sub: { ...rx(7100000), activeSlot: 'A', vfoA: leaf(7100000), vfoB: leaf(7150000) },
-    },
-    [
-      'active', ...rxPaths('main'), ...rxPaths('sub'), 'main.activeSlot', 'sub.activeSlot',
-      ...leafPaths('main.vfoA'), ...leafPaths('main.vfoB'),
-      ...leafPaths('sub.vfoA'), ...leafPaths('sub.vfoB'),
-    ],
+    { active: 'MAIN', main: rx(14250000), sub: rx(7100000) },
+    ['active', ...rxPaths('main'), ...rxPaths('sub')],
   ),
   dualCaps({ vfoScheme: 'main_sub' }),
 );
@@ -146,7 +139,7 @@ describe('what the adapter actually produces, per topology', () => {
     ['1/ab slot unknown', abSlotUnknown, [['MAIN', 'unknown']]],
     ['2/ab_shared', abShared, [['MAIN', 'unslotted'], ['SUB', 'unslotted']]],
     ['2/main_sub', mainSub,
-      [['MAIN', 'A'], ['MAIN', 'B'], ['SUB', 'A'], ['SUB', 'B']]],
+      [['MAIN', 'unslotted'], ['SUB', 'unslotted']]],
   ])('%s', (_name, build, expected) => {
     expect((build as () => RadioViewModel)().vfos.map((vfo) => [vfo.receiver, identity(vfo.slot)]))
       .toEqual(expected);
@@ -185,11 +178,12 @@ describe('slotsOf', () => {
   });
 
   // Kills: one slot per `vfos` entry on a two-receiver radio, which would
-  // give 2/main_sub four columns for a two-column deck.
-  it('gives a 2/main_sub radio two slots, each holding its receiver\'s A and B', () => {
+  // give 2/main_sub four columns for a two-column deck. MOR-2467: `main_sub`
+  // carries one unslotted record per receiver, exactly the `ab_shared` shape.
+  it('gives a 2/main_sub radio two slots, one unslotted record each', () => {
     expect(deck(mainSub())).toEqual([
-      { key: 'MAIN', receiver: 'MAIN', holds: ['A', 'B'], owns: true },
-      { key: 'SUB', receiver: 'SUB', holds: ['A', 'B'], owns: true },
+      { key: 'MAIN', receiver: 'MAIN', holds: ['unslotted'], owns: true },
+      { key: 'SUB', receiver: 'SUB', holds: ['unslotted'], owns: true },
     ]);
   });
 

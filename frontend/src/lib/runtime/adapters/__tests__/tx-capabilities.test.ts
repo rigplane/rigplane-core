@@ -3,8 +3,10 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { KnownTxTargetPublic } from '$lib/types/state';
 import { getFrequencyPermit, getTxPermit } from '$lib/utils/tx-permit';
 import { deriveTxCapabilities, type TxCapabilityInput } from '../tx-capabilities';
+// MOR-2467: `main_sub` (this suite's default scheme) is slot-less — the
+// default target names MAIN with no A/B slot, the IC-7610's real shape.
 const TARGET: KnownTxTargetPublic = {
-  status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 150,
+  status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 150,
 };
 function caps(overrides: Partial<Capabilities> = {}): Capabilities {
   return {
@@ -58,7 +60,8 @@ describe('deriveTxCapabilities', () => {
     ['single', 1, { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 150 }],
     ['ab', 1, { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 150 }],
     ['ab_shared', 2, { status: 'known', receiver: 'SUB', slot: null, frequencyHz: 150 }],
-    ['main_sub', 2, { status: 'known', receiver: 'SUB', slot: 'B', frequencyHz: 150 }],
+    // MOR-2467: a `main_sub` target is receiver-level and slot-less.
+    ['main_sub', 2, { status: 'known', receiver: 'SUB', slot: null, frequencyHz: 150 }],
   ] as const)('accepts explicit %s target identity', (vfoScheme, receivers, txTarget) => {
     expect(derive({ vfoScheme, receivers }, {
       txTarget, modInputSource: { status: 'unknown' },
@@ -78,7 +81,9 @@ describe('deriveTxCapabilities', () => {
   it.each([
     [{ status: 'unknown', reason: 'stale' }, 'unknown', 'tx-target-unknown'],
     [{ ...TARGET, frequencyHz: null }, 'known', 'tx-target-unknown'],
-    [{ ...TARGET, slot: null }, 'unknown', 'tx-target-unknown'],
+    // MOR-2467 mixed versions: a legacy A/B slot under `main_sub` is
+    // normalized (test below), so the contradiction row is an invalid receiver.
+    [{ ...TARGET, receiver: 'BOTH' as unknown as typeof TARGET.receiver }, 'unknown', 'tx-target-unknown'],
   ] as const)('fails %s target closed', (txTarget, targetStatus, permitReason) => {
     const result = derive({}, {
       txTarget: txTarget as TxCapabilityInput['txTarget'],
@@ -86,6 +91,21 @@ describe('deriveTxCapabilities', () => {
     });
     expect(result.txTarget.status).toBe(targetStatus);
     expect(result.frequencyPermit).toMatchObject({ status: 'unknown', reason: permitReason });
+  });
+  it.each([null, 'A', 'B'] as const)(
+    'main_sub accepts slot %s and returns a slot-null target', (slot) => {
+      expect(derive({}, {
+        txTarget: { ...TARGET, slot }, modInputSource: { status: 'unknown' },
+      }).txTarget).toEqual({ ...TARGET, slot: null });
+    },
+  );
+  it('still requires an A/B slot under ab, rejecting the slot-less shape', () => {
+    expect(derive({ vfoScheme: 'ab', receivers: 1 }, {
+      txTarget: { ...TARGET, slot: null }, modInputSource: { status: 'unknown' },
+    }).txTarget).toEqual({ status: 'unknown', reason: 'contradiction' });
+    expect(derive({ vfoScheme: 'ab', receivers: 1 }, {
+      txTarget: { ...TARGET, slot: 'B' }, modInputSource: { status: 'unknown' },
+    }).txTarget).toEqual({ ...TARGET, slot: 'B' });
   });
   it('does not mutate capability, target, or band inputs', () => {
     const capabilities = caps();

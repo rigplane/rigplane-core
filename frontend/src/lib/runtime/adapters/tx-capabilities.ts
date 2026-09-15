@@ -29,15 +29,23 @@ function normalizeTarget(caps: Capabilities, target: TxTarget): TxTarget {
   if (target.status === 'unknown') return { ...target };
   const receiver = target.receiver;
   const slot = target.slot;
+  // MOR-2467: `main_sub` is slot-less — a valid target names MAIN or SUB.
+  // Mixed versions: an older state contract reports the target with a legacy
+  // A/B slot; both it and the current slot null normalize to slot null, so no
+  // A/B slot ever reaches the view model. Any other receiver contradicts the
+  // scheme and collapses to unknown.
+  if (caps.vfoScheme === 'main_sub') {
+    return receiver === 'MAIN' || receiver === 'SUB'
+      ? { ...target, slot: null }
+      : { status: 'unknown', reason: 'contradiction' };
+  }
   const valid = caps.vfoScheme === 'single'
     ? receiver === 'MAIN' && slot === null
     : caps.vfoScheme === 'ab'
       ? receiver === 'MAIN' && (slot === 'A' || slot === 'B')
       : caps.vfoScheme === 'ab_shared'
         ? slot === null && (receiver === 'MAIN' || receiver === 'SUB')
-        : caps.vfoScheme === 'main_sub'
-          && (receiver === 'MAIN' || receiver === 'SUB')
-          && (slot === 'A' || slot === 'B');
+        : false;
   return valid ? { ...target } : { status: 'unknown', reason: 'contradiction' };
 }
 

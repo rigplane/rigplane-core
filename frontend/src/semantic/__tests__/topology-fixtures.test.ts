@@ -106,12 +106,28 @@ describe('topology fixtures (MOR-1062)', () => {
   });
 
   it('keeps "no A/B slot" (unslotted) distinct from "slot not observed" (unknown) — B3', () => {
-    // ab_shared has no A/B concept at all: every VFO is structurally unslotted,
-    // never a placeholder for an unobserved slot.
+    // ab_shared and main_sub have no A/B concept at all: every VFO is
+    // structurally unslotted, never a placeholder for an unobserved slot.
     for (const vfo of topologyFixtures['2/ab_shared'].vfos) expect(vfo.slot).toEqual({ kind: 'unslotted' });
-    // ab/main_sub are slotted schemes: every VFO carries a real observed id.
+    for (const vfo of topologyFixtures['2/main_sub'].vfos) expect(vfo.slot).toEqual({ kind: 'unslotted' });
+    // ab is the slotted scheme: every VFO carries a real observed id.
     for (const vfo of topologyFixtures['1/ab'].vfos) expect(vfo.slot.kind).toBe('slotted');
-    for (const vfo of topologyFixtures['2/main_sub'].vfos) expect(vfo.slot.kind).toBe('slotted');
+  });
+
+  it('models 2/main_sub as exactly two receiver-level unslotted MAIN/SUB surfaces, no A/B (MOR-2467)', () => {
+    const { vfos, activeReceiver } = topologyFixtures['2/main_sub'];
+    expect(vfos.map((v) => v.receiver)).toEqual(['MAIN', 'SUB']);
+    expect(vfos.map((v) => v.slot)).toEqual([
+      { kind: 'unslotted' }, { kind: 'unslotted' },
+    ]);
+    // The active receiver fact (MAIN) is separate from each receiver's own
+    // active surface: MAIN is both, while SUB's single unslotted record IS
+    // its own active slot (`isActiveSlot` without `isActive`) — MOR-1335.
+    expect(activeReceiver).toEqual({ status: 'known', receiver: 'MAIN' });
+    const main = vfos.find((v) => v.receiver === 'MAIN');
+    const sub = vfos.find((v) => v.receiver === 'SUB');
+    expect(main).toMatchObject({ isActive: true, isActiveSlot: true, isTxTarget: true });
+    expect(sub).toMatchObject({ isActive: false, isActiveSlot: true, isTxTarget: false });
   });
 
   it('preserves activeReceiver as an explicit known fact, never a bare string (B1)', () => {

@@ -6,6 +6,20 @@ the immutable built-dist i18n suite. They are not fixture-harness captures.
 `scripts/i18n-preview-server.mjs`, while the test stubs only the backend at the
 page boundary and opens `/`.
 
+## Linux re-pin provenance — 2026-09-14 MOR-2467 MAIN/SUB topology
+
+All four production-root scenes are `compared-fail` at source head
+`2776ffdcad0549308c12973265216a10635233d7` in
+[Tests (quick) run 34908938900](https://github.com/rigplane/rigplane-core/actions/runs/34908938900).
+Their Linux ARM64 `actual.png` attachments were inspected and copied
+byte-for-byte from the run's `mor-1400-production-visual-diagnostics` artifact.
+The expected change is confined to the upper receiver deck: the obsolete
+MAIN-A/B/SUB-A/B arrangement becomes exactly two receiver-level records, MAIN
+and SUB. Playwright reported 1,522 changed pixels for StudioLine dark, 1,704
+for StudioLine light, 1,120 for FieldLine dark, and 1,807 for FieldLine light.
+The rest of each production composition remains unchanged. A subsequent
+exact-head quick run must confirm these four comparisons pass.
+
 ## Re-pin procedure: per-scene disposition
 
 When recording the outcome of a re-pin run, report each scene with one of

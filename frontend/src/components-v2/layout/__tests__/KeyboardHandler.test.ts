@@ -753,9 +753,9 @@ describe('KeyboardHandler', () => {
   // hand-rolled DOM or the dead header path: `VfoSurface.svelte`, mounted
   // for real via the `2/main_sub` topology fixture. `hasTunableFrequency`
   // gates on `isActiveSlot`, not radio-wide `isActive`
-  // (`VfoSurface.svelte:269`), so the fixture's SUB-A tile
+  // (`VfoSurface.svelte:269`), so the fixture's SUB record
   // (`isActiveSlot: true`, `isActive: false`) mounts a focusable, tunable
-  // `[data-vfo-freq]` display while MAIN-A is the radio's active receiver —
+  // `[data-vfo-freq]` display while MAIN is the radio's active receiver —
   // exactly the dual-receiver shape `BandSurface.svelte` and
   // `SemanticRadioSurfaces.svelte` produce on the bench.
   describe('digit routing against the real semantic VfoSurface tree (MOR-1480 mechanism + owner ruling A)', () => {
@@ -864,7 +864,7 @@ describe('KeyboardHandler', () => {
       expect(entryInput.value).toBe('7');
     });
 
-    // MOR-1480 owner ruling A, reproduced against the real tree: SUB-A is
+    // MOR-1480 owner ruling A, reproduced against the real tree: SUB is
     // tunable (`isActiveSlot: true`) but NOT the active receiver
     // (`isActive: false`, MAIN is active in this fixture). Pre-rework code
     // (isFrequencyDisplayFocused gating the swallow decision) fell through

@@ -104,30 +104,25 @@ const dualAbShared: RadioViewModel = {
   disabledReasons: [{ field: 'scope.hardwareScope', code: 'field-not-observed' }],
 };
 
+// MOR-2467: MAIN and SUB are receiver-level, unslotted surfaces — the
+// IC-7610 has no per-receiver A/B slots, so each receiver models exactly
+// one unslotted record (same shape as `2/ab_shared`).
 const dualMainSub: RadioViewModel = {
   topologyId: '2/main_sub',
   vfoScheme: 'main_sub',
   activeReceiver: { status: 'known', receiver: 'MAIN' },
   vfos: [
     {
-      receiver: 'MAIN', slot: { kind: 'slotted', id: 'A' }, label: 'M-A', frequencyHz: 14250000,
+      receiver: 'MAIN', slot: { kind: 'unslotted' }, label: 'MAIN', frequencyHz: 14250000,
       mode: 'USB', filter: 'WIDE', isActive: true, isActiveSlot: true, isTxTarget: true,
     },
+    // MOR-1335 still holds without slots: SUB's single unslotted record IS
+    // its own active slot (`isActiveSlot` without `isActive`) while MAIN is
+    // the active receiver — the state the IC-7610 is in whenever the
+    // operator is listening on MAIN.
     {
-      receiver: 'MAIN', slot: { kind: 'slotted', id: 'B' }, label: 'M-B', frequencyHz: 14280000,
-      mode: 'USB', filter: 'WIDE', isActive: false, isActiveSlot: false, isTxTarget: false,
-    },
-    // MOR-1335: `isActiveSlot` without `isActive` — SUB's OWN active slot
-    // while MAIN is the active receiver. This is the state `isActive` alone
-    // could not express, and the one the IC-7610 is in whenever the operator
-    // is listening on MAIN.
-    {
-      receiver: 'SUB', slot: { kind: 'slotted', id: 'A' }, label: 'S-A', frequencyHz: 21295000,
+      receiver: 'SUB', slot: { kind: 'unslotted' }, label: 'SUB', frequencyHz: 21295000,
       mode: 'USB', filter: 'WIDE', isActive: false, isActiveSlot: true, isTxTarget: false,
-    },
-    {
-      receiver: 'SUB', slot: { kind: 'slotted', id: 'B' }, label: 'S-B', frequencyHz: 21330000,
-      mode: 'USB', filter: 'WIDE', isActive: false, isActiveSlot: false, isTxTarget: false,
     },
   ],
   // Both true at once, proving the orthogonal split/dualWatch representation
@@ -135,7 +130,7 @@ const dualMainSub: RadioViewModel = {
   split: { status: 'known', value: true },
   dualWatch: { status: 'known', value: true },
   txTarget: {
-    status: 'known', receiver: 'MAIN', slot: { kind: 'slotted', id: 'A' }, frequencyHz: 14250000,
+    status: 'known', receiver: 'MAIN', slot: { kind: 'unslotted' }, frequencyHz: 14250000,
   },
   txPermit: { status: 'allowed', band: '20m' },
   scope: {

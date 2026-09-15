@@ -988,10 +988,23 @@ describe('the txAux surface mounts only when the view model carries the group', 
    * (MAIN A and SUB A) where it carried one, because the gate is qualified per
    * RECEIVER instead of per radio. MAIN B and SUB B keep their text nodes — the
    * intra-receiver hazard B1 found stays closed.
+   *
+   * MOR-2467 — DELIBERATE CHANGE: `main_sub` is no longer `ab_shared`-shaped.
+   * The adapter derives exactly TWO unslotted receiver-level records (MAIN and
+   * SUB, one VFO position each) instead of four A/B-slotted ones, so the tile
+   * region contracts: the MAIN B and SUB B text-node tiles are GONE, and SUB's
+   * one unslotted position IS its receiver's active slot — a tunable digit
+   * control where the old SUB B text tile stood, plus the surface's only select
+   * button (MAIN is the active receiver and carries the TX target). The
+   * fixture is already receiver-level `main/sub` state, so only this literal
+   * moves; the tail (per-receiver indicator rows, radio-wide row, rx/tx and
+   * rxAudio surfaces) is untouched.
    */
+  // MOR-2467: tile region contracted to TWO unslotted receiver-level tiles —
+  // MAIN (active, TX target: digit control, no select button) then SUB
+  // (unslotted active-slot: its own digit control plus the one select button).
   const DEFAULT_PATH_OUTLINE = 'div p div div span span div span span span span span span span span span span span span span div '
-    + 'span span span button div span span div span span span span span span span span span span span '
-    + 'button div span span span button div section header strong div div div section header strong div '
+    + 'span span div span span span span span span span span span span span button div section header strong div div div section header strong div '
     + 'div div section div span div button button div div button button p span span section p span span '
     // MOR-2438: the idle READY session span is absent; the hidden status row
     // retains only its RF mark/label contract and occupies no layout space.

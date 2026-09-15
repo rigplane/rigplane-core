@@ -574,7 +574,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       await expect(root).toHaveClass(/standard-face/);
       await expect(root).not.toHaveClass(/sdr-test/);
       await expect(page.locator('[data-vfo-appearance]').first()).toHaveAttribute('data-vfo-appearance', 'standard');
-      await expect(page.locator('[data-vfo-tile]')).toHaveCount(topology === 'topology-1-single' ? 1 : 4);
+      await expect(page.locator('[data-vfo-tile]')).toHaveCount(topology === 'topology-1-single' ? 1 : 2);
       const geometry = await standardGeometry(page);
       const boxes = geometry.boxes as Record<string, DOMRect>;
       expect.soft(boxes.receiver.y, 'receiver deck follows status').toBeGreaterThanOrEqual(boxes.status.y + boxes.status.height - 1);

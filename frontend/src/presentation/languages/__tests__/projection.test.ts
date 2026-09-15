@@ -144,19 +144,15 @@ describe('known-value pinning: exact field maps (review cycle 1)', () => {
     });
   });
 
-  it('2/main_sub projects the full, exact field map (4 VFOs, both split and dualWatch true)', () => {
+  it('2/main_sub projects the full, exact field map (2 unslotted MAIN/SUB VFOs, both split and dualWatch true)', () => {
     expect(projectRadioViewModel(topologyFixtures['2/main_sub']).fields).toEqual({
       topologyId: '2/main_sub', vfoScheme: 'main_sub', activeReceiver: 'MAIN', split: true, dualWatch: true,
-      vfoCount: 4, disabledReasonsCount: 1,
-      vfo0Receiver: 'MAIN', vfo0Slot: 'A', vfo0Label: 'M-A', vfo0FrequencyHz: 14250000,
+      vfoCount: 2, disabledReasonsCount: 1,
+      vfo0Receiver: 'MAIN', vfo0Slot: 'unslotted', vfo0Label: 'MAIN', vfo0FrequencyHz: 14250000,
       vfo0Mode: 'USB', vfo0Filter: 'WIDE', vfo0Active: true, vfo0TxTarget: true,
-      vfo1Receiver: 'MAIN', vfo1Slot: 'B', vfo1Label: 'M-B', vfo1FrequencyHz: 14280000,
+      vfo1Receiver: 'SUB', vfo1Slot: 'unslotted', vfo1Label: 'SUB', vfo1FrequencyHz: 21295000,
       vfo1Mode: 'USB', vfo1Filter: 'WIDE', vfo1Active: false, vfo1TxTarget: false,
-      vfo2Receiver: 'SUB', vfo2Slot: 'A', vfo2Label: 'S-A', vfo2FrequencyHz: 21295000,
-      vfo2Mode: 'USB', vfo2Filter: 'WIDE', vfo2Active: false, vfo2TxTarget: false,
-      vfo3Receiver: 'SUB', vfo3Slot: 'B', vfo3Label: 'S-B', vfo3FrequencyHz: 21330000,
-      vfo3Mode: 'USB', vfo3Filter: 'WIDE', vfo3Active: false, vfo3TxTarget: false,
-      txTargetStatus: 'known', txTargetReceiver: 'MAIN', txTargetSlot: 'A', txTargetFrequencyHz: 14250000,
+      txTargetStatus: 'known', txTargetReceiver: 'MAIN', txTargetSlot: 'unslotted', txTargetFrequencyHz: 14250000,
       txTargetUnknownReason: null,
       txPermitStatus: 'allowed', txPermitBand: '20m', txPermitReason: null,
       hardwareScopeStructural: true, hardwareScopeOperational: true,

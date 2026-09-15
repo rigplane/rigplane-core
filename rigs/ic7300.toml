@@ -102,10 +102,12 @@ features = [
 # MOR-1447 leg 2: the IC-7300 front panel wires RF gain and squelch as one
 # physical concentric knob (hard left = RF min/SQL min, center = RF max/SQL
 # min, hard right = SQL max/RF max) — the live gate radio for this control
-# model. Other Icom-family profiles (IC-7610, IC-705, IC-9700) stay on the
-# "separate" default: no CAT audit/manual excerpt in this repo documents
-# their physical RF/SQL layout, so declaring "combined" for them would be a
-# guess rather than a data-driven fact.
+# model. MOR-2467: the IC-7610 likewise wires RF gain and squelch as one
+# physical concentric knob and now declares "combined" in rigs/ic7610.toml.
+# Other Icom-family profiles (IC-705, IC-9700) stay on the "separate" default:
+# no CAT audit/manual excerpt in this repo documents their physical RF/SQL
+# layout, so declaring "combined" for them would be a guess rather than a
+# data-driven fact.
 rf_sql_control_model = "combined"
 
 # Per-check_id validation classification (MOR-2105 part 2), a check_id-grained

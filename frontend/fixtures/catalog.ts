@@ -32,21 +32,24 @@ const statuses = (paths: readonly string[], entry: unknown = fresh): FieldStatus
 
 const RADIO_WIDE = ['active', 'split', 'dualWatch', 'txTarget'] as const;
 
-/** 2/main_sub: MAIN and SUB each carry A/B slots (4 vfo tiles total). */
+/**
+ * 2/main_sub (MOR-2467): MAIN and SUB are each one receiver-level VFO —
+ * `freqHz`/`mode`/`filter` observed on the receiver itself. This fixture
+ * intentionally isolates the receiver-level fields the main_sub
+ * presentation consumes; real mixed-version payloads may carry extra
+ * legacy `vfoA`/`vfoB`/`activeSlot` slot keys, which the presentation
+ * ignores (2 vfo tiles total).
+ */
 function mainSubState(active: 'MAIN' | 'SUB' = 'MAIN', entry: unknown = fresh): ServerState {
   const paths: string[] = [...RADIO_WIDE];
   for (const rx of ['main', 'sub']) {
-    paths.push(`${rx}.activeSlot`);
-    for (const v of ['vfoA', 'vfoB']) {
-      paths.push(`${rx}.${v}.freqHz`, `${rx}.${v}.mode`, `${rx}.${v}.filterNum`);
-    }
+    paths.push(`${rx}.freqHz`, `${rx}.mode`, `${rx}.filter`);
   }
-  const slot = (hz: number) => ({ freqHz: hz, mode: 'USB', filterNum: 1 });
-  const receiver = (hz: number) => ({ vfoA: slot(hz), vfoB: slot(hz + 30000), activeSlot: 'A' });
+  const receiver = (hz: number) => ({ freqHz: hz, mode: 'USB', filter: 1 });
   return {
     stateContractVersion: 1, providerGeneration: 1,
     active, split: true, dualWatch: true, ptt: false,
-    txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
+    txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(21295000),
     fieldStatus: statuses(paths, entry),
   } as unknown as ServerState;
@@ -54,10 +57,7 @@ function mainSubState(active: 'MAIN' | 'SUB' = 'MAIN', entry: unknown = fresh): 
 
 /** 2/main_sub with SUB never observed at all — the startup window. */
 function mainSubSubUnobserved(): ServerState {
-  const paths: string[] = [...RADIO_WIDE, 'main.activeSlot'];
-  for (const v of ['vfoA', 'vfoB']) {
-    paths.push(`main.${v}.freqHz`, `main.${v}.mode`, `main.${v}.filterNum`);
-  }
+  const paths: string[] = [...RADIO_WIDE, 'main.freqHz', 'main.mode', 'main.filter'];
   const base = mainSubState('MAIN') as unknown as Record<string, unknown>;
   const { sub: _absent, ...rest } = base;
   return { ...rest, fieldStatus: statuses(paths) } as unknown as ServerState;
@@ -466,11 +466,13 @@ const DUAL_ZONES_PLANNED = [...DUAL_ZONES, 'tx-aux'] as const;
  */
 const TX_AUX_ZONELESS_CONTROLS = 13;
 
-/** Shared shape of every healthy `2/main_sub` fixture — only TX state varies. */
+/** Shared shape of every healthy `2/main_sub` fixture — only TX state varies.
+ * MOR-2467: two receiver-level tiles (one per receiver); the MAIN record is
+ * active so exactly one select (SUB's) is offered and enabled. */
 const mainSubExpect = (over: Partial<Expectation> = {}): Expectation => ({
   zones: DUAL_ZONES, strips: 2, stripReceivers: ['MAIN', 'SUB'],
   stripOperational: [true, true], stripActive: [true, false],
-  tiles: 4, selectsEnabled: 3, selectsDisabled: 0,
+  tiles: 2, selectsEnabled: 1, selectsDisabled: 0,
   radioWideSwitchesDisabled: false, keyDisabled: false,
   rfLabel: '', sessionLabel: null,
   faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
@@ -614,7 +616,7 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
   },
   {
     id: 'topology-2-main-sub',
-    what: '2/main_sub — the reference dual state: 4 tiles across 2 strips, MAIN A active.',
+    what: '2/main_sub — the reference dual state: 2 receiver-level tiles across 2 strips, MAIN active.',
     state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps, tx: tx({}),
     // MOR-1085 checklist item 5 contrast pair (with `audio-only-scope` below):
     // MOR-1351 gave baseCaps a `scope` tag AND `scope: true` (they must
@@ -662,20 +664,27 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
     }),
   },
   {
+    // MOR-2467: unslotted main_sub records have no `kind: 'unknown'` collapse
+    // (that state belonged to the per-receiver A/B slot view this ticket
+    // removed), so an unobserved SUB keeps its select exactly as enabled as
+    // the healthy baseline — the same capability-gated, not
+    // observedness-gated, doctrine `topology-2-ab-shared-selection-fallback`
+    // already records for the other dual topology.
     id: 'sub-unobserved',
-    what: 'startup window: SUB never observed — strip present, one explicit unknown slot, select disabled.',
+    what: 'startup window: SUB never observed — strip present, receiver-level select UNAFFECTED '
+      + '(unslotted main_sub select-gating is capability-driven, not observedness-driven).',
     state: mainSubSubUnobserved, caps: mainSubCaps, tx: tx({}),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     expect: mainSubExpect({
-      tiles: 3, selectsEnabled: 1, selectsDisabled: 1, zonelessControls: TX_AUX_ZONELESS_CONTROLS,
+      selectsEnabled: 1, selectsDisabled: 0, zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
   {
     id: 'dual-rx-unavailable',
-    what: 'structural dual, operationally degraded (MOR-1256) — SUB present, its selects really disabled.',
+    what: 'structural dual, operationally degraded (MOR-1256) — SUB present, its select really disabled.',
     state: () => mainSubState('MAIN'), caps: dualRxUnavailableCaps, tx: tx({}),
     expect: mainSubExpect({
-      stripOperational: [true, false], selectsEnabled: 1, selectsDisabled: 2,
+      stripOperational: [true, false], selectsEnabled: 0, selectsDisabled: 1,
     }),
   },
   {
@@ -731,10 +740,10 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
     tx: tx({ fresh: false, radioTx: 'unknown' }),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     // MOR-2425/R40: the held facts make the active receiver known again — the
-    // MAIN strip reads active, its tile loses its select button (3, not 4) and
+    // MAIN strip reads active, its tile loses its select button (1, not 2) and
     // the radio-wide switches are live. `keyDisabled` reads the TX snapshot.
     expect: mainSubExpect({
-      stripActive: [true, false], selectsEnabled: 3, selectsDisabled: 0,
+      stripActive: [true, false],
       radioWideSwitchesDisabled: false, keyDisabled: true, rfLabel: '',
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
@@ -748,8 +757,13 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
     // (`radio-view-model-adapter.ts:1195`), so `mainSubCaps`'s txAux evidence
     // still emits the group here even though `state` is null — no plan
     // supplied, so still NO-ZONE.
+    // MOR-2467: with state null the two structural receivers still render
+    // their unslotted records; `slot.kind` is never `'unknown'` (that collapse
+    // belonged to the A/B slot view), so both selects mount and are gated only
+    // by the radio-wide `disabled` wiring — enabled, per the same
+    // capability-driven doctrine `sub-unobserved` records.
     expect: mainSubExpect({
-      stripActive: [false, false], tiles: 2, selectsEnabled: 0, selectsDisabled: 2,
+      stripActive: [false, false], tiles: 2, selectsEnabled: 2, selectsDisabled: 0,
       radioWideSwitchesDisabled: true, keyDisabled: true, rfLabel: '',
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
@@ -846,7 +860,10 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
  */
 const REFERENCE_SELECT_GATING_OVERRIDE: Readonly<Record<string, Pick<Expectation,
   'selectsEnabled' | 'selectsDisabled'>>> = {
-  'dual-rx-unavailable': { selectsEnabled: 3, selectsDisabled: 0 },
+  // MOR-2467: 2 receiver-level tiles on `dual-rx-unavailable` — MAIN active
+  // (no select), SUB's select enabled (the reference wiring never passes the
+  // strip `disabled` prop).
+  'dual-rx-unavailable': { selectsEnabled: 1, selectsDisabled: 0 },
   'topology-2-ab-shared-unsupported-controls': { selectsEnabled: 1, selectsDisabled: 0 },
 };
 

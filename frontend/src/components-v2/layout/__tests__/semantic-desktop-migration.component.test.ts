@@ -213,21 +213,17 @@ const KEY_AUTHORITIES = '[data-testid="rx-tx-surface"], .tx-panel';
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
-const receiver = (hz: number) => ({
-  ...slot(hz), vfoA: slot(hz), vfoB: slot(hz + 50000), activeSlot: 'A', filter: 1,
-});
+// main_sub carries ONE unslotted receiver-level VFO per receiver.
+const receiver = (hz: number) => ({ freqHz: hz, mode: 'USB', filter: 1, dataMode: 0 });
 
 function liveState(): unknown {
   const paths = ['active', 'split', 'dualWatch', 'txTarget'];
   for (const rx of ['main', 'sub']) {
-    paths.push(`${rx}.freqHz`, `${rx}.mode`, `${rx}.filter`, `${rx}.activeSlot`);
-    for (const v of ['vfoA', 'vfoB']) {
-      paths.push(`${rx}.${v}.freqHz`, `${rx}.${v}.mode`, `${rx}.${v}.filterNum`);
-    }
+    paths.push(`${rx}.freqHz`, `${rx}.mode`, `${rx}.filter`);
   }
   return {
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
-    txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
+    txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14300000),
     fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
   };

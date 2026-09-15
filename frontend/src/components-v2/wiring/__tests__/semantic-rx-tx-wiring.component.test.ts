@@ -259,7 +259,8 @@ describe('the surfaces render from the live adapter output', () => {
     render();
     expect(q('[data-testid="vfo-surface"]')).not.toBeNull();
     expect(q('[data-testid="rx-tx-surface"]')).not.toBeNull();
-    expect(target.querySelectorAll('[data-vfo-tile]')).toHaveLength(4);
+    // MOR-2467: `main_sub` is two unslotted receiver-level records, not A/B.
+    expect(target.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
     expect(q('[data-testid="rx-tx-target"]')?.dataset.target).toBe('known');
   });
 
@@ -304,12 +305,16 @@ describe('the surfaces render from the live adapter output', () => {
     expect(q('[data-testid="rx-tx-surface"]')).toBeNull();
   });
 
+  // MOR-2467: `main_sub` renders one select button per receiver; only the
+  // receiver-level `vfos` position is selectable — SUB, with slot null (its
+  // unslotted record; MAIN carries the TX target, so it renders no button).
   it('routes the VFO selection intent to the command bus with the real slot id', () => {
     render();
     const buttons = [...target.querySelectorAll<HTMLButtonElement>('[data-vfo-select]')];
+    expect(buttons).toHaveLength(1);
     buttons[0].click();
     flushSync();
-    expect(h.selectVfo).toHaveBeenCalledWith('MAIN', 'B');
+    expect(h.selectVfo).toHaveBeenCalledWith('SUB', null);
   });
 });
 
