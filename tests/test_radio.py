@@ -679,6 +679,23 @@ class TestPower:
         )
 
     @pytest.mark.asyncio
+    async def test_x6100_set_power_now_sends_documented_14_0a_frame(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """MOR-2488/MOR-2489: with power_control declared, the stock X6100
+        sends the 0x14 0x0A set frame its own manual documents —
+        Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1
+        ("Set Tx power") — instead of refusing."""
+        radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6100")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        await radio.set_rf_power(128)
+        assert bytes(mock_transport.sent_packets[-1]).endswith(
+            bytes.fromhex("fefe70e0140a0128fd")
+        )
+
+    @pytest.mark.asyncio
     async def test_x6200_set_powerstat_still_refuses_0x18_undeclared(
         self, mock_transport: MockTransport
     ) -> None:
