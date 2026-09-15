@@ -16,10 +16,6 @@ from rigplane.commands._codec import bcd_encode_value, filter_hz_to_index
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
-from rigplane.core.tx_interlock_contract import (
-    TxInterlockCommandFamily,
-    TxInterlockDisposition,
-)
 
 __all__ = [
     "ControlLookupPoint",
@@ -461,9 +457,6 @@ class RadioProfile:
     # data only; future schedulers/adapters consume it instead of Web or
     # rigctld delivery code branching on radio model.
     state_acquisition: RadioAcquisitionProfile | None = None
-    tx_interlock_disposition_overrides: dict[
-        TxInterlockCommandFamily, TxInterlockDisposition
-    ] = field(default_factory=dict)
     # Measured per-radio transmit policy (MOR-1912).
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
     # Ordered legal CTCSS domain resolved from the profile's named table.

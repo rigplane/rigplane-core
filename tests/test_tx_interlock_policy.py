@@ -165,28 +165,6 @@ def test_authority_approved_control_families_are_tx_safe_in_every_rf_state() -> 
             assert decision.disposition is TxInterlockDisposition.TX_SAFE
 
 
-def test_profile_overrides_cannot_restore_observed_rf_admission() -> None:
-    cases = (
-        (SetFreq(7_100_000), TxInterlockCommandFamily.FREQUENCY),
-        (SetVfoFreq(7_100_000, 0, "B", "A", 1), TxInterlockCommandFamily.FREQUENCY),
-        (SetMode("USB"), TxInterlockCommandFamily.MODE),
-        (SetBand(4), TxInterlockCommandFamily.BAND),
-        (SelectVfo("MAIN"), TxInterlockCommandFamily.VFO_SELECT),
-        (VfoSwap(), TxInterlockCommandFamily.VFO_CONTENTS),
-        (VfoEqualize(), TxInterlockCommandFamily.VFO_CONTENTS),
-    )
-    for command, family in cases:
-        overrides = {family: TxInterlockDisposition.DEFER}
-        for rf_state in (RfState.RX, RfState.TX, RfState.UNKNOWN):
-            decision = evaluate_tx_interlock(
-                command,
-                rf_state=rf_state,
-                disposition_overrides=overrides,
-            )
-            assert decision.disposition is TxInterlockDisposition.TX_SAFE
-            assert decision.allowed is True
-
-
 def test_defer_does_not_loosen_when_rf_state_is_unknown() -> None:
     decision = evaluate_tx_interlock(SetSplit(on=True), rf_state=RfState.UNKNOWN)
 
@@ -203,62 +181,6 @@ def test_cw_and_modulation_input_controls_are_tx_safe() -> None:
     ):
         assert classify_tx_interlock(command) is TxInterlockDisposition.TX_SAFE
         assert evaluate_tx_interlock(command, rf_state=RfState.UNKNOWN).allowed is True
-
-
-def test_validated_override_produces_one_fail_closed_effective_decision() -> None:
-    command = SetPowerstat(on=True)
-    overrides = {
-        TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.DEFER,
-    }
-
-    base = evaluate_tx_interlock(command, rf_state=RfState.UNKNOWN)
-    assert base.disposition is TxInterlockDisposition.TX_SAFE
-    assert base.allowed is True
-
-    unknown = evaluate_tx_interlock(
-        command, rf_state=RfState.UNKNOWN, disposition_overrides=overrides
-    )
-    transmitting = evaluate_tx_interlock(
-        command, rf_state=RfState.TX, disposition_overrides=overrides
-    )
-    receiving = evaluate_tx_interlock(
-        command, rf_state=RfState.RX, disposition_overrides=overrides
-    )
-    assert (unknown.disposition, unknown.allowed) == (
-        TxInterlockDisposition.DEFER,
-        False,
-    )
-    assert (transmitting.disposition, transmitting.allowed) == (
-        TxInterlockDisposition.DEFER,
-        False,
-    )
-    assert (receiving.disposition, receiving.allowed) == (
-        TxInterlockDisposition.DEFER,
-        True,
-    )
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    (
-        {TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.TX_SAFE},
-        {TxInterlockCommandFamily.PTT_ON: TxInterlockDisposition.DEFER},
-        {"power-on": TxInterlockDisposition.DEFER},
-    ),
-)
-def test_invalid_or_loosening_override_cannot_yield_pass(overrides: object) -> None:
-    with pytest.raises(ValueError, match="override"):
-        evaluate_tx_interlock(
-            SetPowerstat(on=True),
-            rf_state=RfState.UNKNOWN,
-            disposition_overrides=overrides,
-        )
-
-    emergency = evaluate_tx_interlock(
-        PttOff(), rf_state=RfState.UNKNOWN, disposition_overrides=overrides
-    )
-    assert emergency.disposition is TxInterlockDisposition.ALWAYS_PASS
-    assert emergency.allowed is True
 
 
 def test_command_family_metadata_pins_typed_policy_without_classifying_defaults() -> (
@@ -324,28 +246,16 @@ def test_deferred_lane_holds_then_releases_after_continuous_known_rx() -> None:
 
 
 def test_deferred_lane_applies_effective_decision_to_the_bound_command() -> None:
-    overrides = {
-        TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.DEFER,
-    }
-    first = SetPowerstat(on=True)
-    second = SetPowerstat(on=True)
+    first = SetSplit(on=True)
+    second = SetSplit(on=True)
 
     lane = DeferredTxCommandLane()
     for refused in (RfState.UNKNOWN, RfState.RX):
         with pytest.raises(ValueError, match="held"):
-            lane.defer(
-                first,
-                now=10.0,
-                rf_state=refused,
-                disposition_overrides=overrides,
-            )
+            lane.defer(first, now=10.0, rf_state=refused)
 
-    held = lane.defer(
-        first, now=10.0, rf_state=RfState.TX, disposition_overrides=overrides
-    )
-    superseded = lane.defer(
-        second, now=12.5, rf_state=RfState.TX, disposition_overrides=overrides
-    )
+    held = lane.defer(first, now=10.0, rf_state=RfState.TX)
+    superseded = lane.defer(second, now=12.5, rf_state=RfState.TX)
     assert held.expires_at == 13.0
     assert superseded.outcome is TxInterlockDeferredOutcome.SUPERSEDED
     assert superseded.expires_at == 13.0
