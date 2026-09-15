@@ -207,6 +207,7 @@ from rigplane.backends.config import SerialBackendConfig
 
 async def main():
     config = SerialBackendConfig(
+        model="IC-7610",
         device="/dev/cu.usbserial-111120",
         baudrate=115200,
         radio_addr=0x98,
@@ -342,7 +343,7 @@ ls -l /dev/cu.usbserial-*
 1. **Recommended**: Set CI-V USB Baud Rate to **115200** in radio settings
 2. **Override** (use with caution):
    ```python
-   config = SerialBackendConfig(..., allow_low_baud_scope=True)
+   config = SerialBackendConfig(model="IC-7610", ..., allow_low_baud_scope=True)
    ```
    or
    ```bash
@@ -453,7 +454,7 @@ If you're currently using the LAN backend and want to switch to serial:
    
    # After (Serial)
    from rigplane.backends.config import SerialBackendConfig
-   config = SerialBackendConfig(device="/dev/cu.usbserial-111120", ...)
+   config = SerialBackendConfig(model="IC-7610", device="/dev/cu.usbserial-111120", ...)
    
    # Same factory call
    radio = create_radio(config)

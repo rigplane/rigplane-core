@@ -307,11 +307,13 @@ lan_config = LanBackendConfig(
     host="192.168.1.100",
     username="user",
     password="pass",
+    model="IC-7610",
 )
 radio = create_radio(lan_config)
 
 # Serial backend via factory
 serial_config = SerialBackendConfig(
+    model="IC-7610",
     device="/dev/cu.usbserial-111120",
     baudrate=115200,
 )
