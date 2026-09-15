@@ -823,6 +823,29 @@ async def test_get_notch_filter_returns_freq_index(connected_radio):
     assert await connected_radio.get_notch_filter() == 120
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("freq", [1, 160, 320])
+async def test_set_manual_notch_freq_accepts_domain_values(connected_radio, freq):
+    """Values on the profile's manual_notch_freq raw domain (1-320, step 1)
+    are encoded as BP01 frames (MOR-1680)."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_manual_notch_freq(freq)
+    connected_radio._transport.write.assert_called_once_with(f"BP01{freq:03d};")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("freq", [0, 321])
+async def test_set_manual_notch_freq_rejects_off_domain_without_cat_write(
+    connected_radio, freq
+):
+    """Values outside the profile's manual_notch_freq raw domain raise
+    ValueError and never reach the wire (MOR-1680)."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="manual_notch_freq must be within 1-320"):
+        await connected_radio.set_manual_notch_freq(freq)
+    connected_radio._transport.write.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # D4: Filters
 # ---------------------------------------------------------------------------
@@ -878,8 +901,59 @@ async def test_set_if_shift_positive(connected_radio):
 @pytest.mark.asyncio
 async def test_set_if_shift_negative(connected_radio):
     connected_radio._transport.write = AsyncMock()
-    await connected_radio.set_if_shift(-150)
-    connected_radio._transport.write.assert_called_once_with("IS00-0150;")
+    await connected_radio.set_if_shift(-160)
+    connected_radio._transport.write.assert_called_once_with("IS00-0160;")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("offset", "frame"),
+    [
+        (0, "IS00+0000;"),
+        (20, "IS00+0020;"),
+        (-20, "IS00-0020;"),
+        (1200, "IS00+1200;"),
+        (-1200, "IS00-1200;"),
+    ],
+)
+async def test_set_if_shift_accepts_domain_values(connected_radio, offset, frame):
+    """Values on the profile's if_shift raw domain (-1200..1200, step 20)
+    are encoded as IS00 frames (MOR-1681)."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_if_shift(offset)
+    connected_radio._transport.write.assert_called_once_with(frame)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offset", [25, 1210, -1220])
+async def test_set_if_shift_rejects_off_domain_without_cat_write(
+    connected_radio, offset
+):
+    """Off-range or off-lattice values raise ValueError naming the control
+    and never reach the wire (MOR-1681)."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="if_shift must be within -1200-1200"):
+        await connected_radio.set_if_shift(offset)
+    connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_set_if_shift_without_profile_domain_raises(config):
+    """A profile without an if_shift control domain fails honestly instead
+    of passing the value through to the wire (MOR-1681)."""
+    stripped = replace(
+        config,
+        controls={k: v for k, v in (config.controls or {}).items() if k != "if_shift"},
+        _control_domains={
+            k: v for k, v in (config._control_domains or {}).items() if k != "if_shift"
+        },
+    )
+    radio = YaesuCatRadio("/dev/null", profile=stripped)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="no normalized control domain for 'if_shift'"):
+        await radio.set_if_shift(0)
+    radio._transport.write.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1976,6 +2050,28 @@ async def test_set_cw_pitch_rejects_out_of_range(connected_radio):
         await connected_radio.set_cw_pitch(299)
     with pytest.raises(ValueError, match="300-1050"):
         await connected_radio.set_cw_pitch(1051)
+    connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hz", [305, 705])
+async def test_set_cw_pitch_rejects_off_lattice_without_cat_write(connected_radio, hz):
+    """In-range but off-lattice Hz values are rejected, not silently
+    floored to the nearest index (MOR-1682)."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="cw_pitch must be within 300-1050"):
+        await connected_radio.set_cw_pitch(hz)
+    connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hz", [290, 1060])
+async def test_set_cw_pitch_rejects_domain_edges_without_cat_write(connected_radio, hz):
+    """Out-of-domain Hz values from the profile's cw_pitch domain raise
+    ValueError and never reach the wire (MOR-1682)."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="cw_pitch must be within 300-1050"):
+        await connected_radio.set_cw_pitch(hz)
     connected_radio._transport.write.assert_not_called()
 
 

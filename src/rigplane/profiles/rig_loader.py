@@ -6,6 +6,7 @@ import logging
 import tempfile
 import tomllib
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from importlib import resources
@@ -179,6 +180,40 @@ def _on_control_lattice(
     )
     numerator = (value_num * origin_den - origin_num * value_den) * step_den
     return numerator % (value_den * origin_den * step_num) == 0
+
+
+def validate_control_raw_value(
+    controls: Mapping[str, object] | None, control: str, value: int
+) -> tuple[int, int, int, int]:
+    """Validate a raw control value against its published normalized domain.
+
+    Returns the domain's ``(raw_min, raw_max, raw_step, raw_origin)`` when
+    *value* is an integer inside ``[raw_min, raw_max]`` and on the
+    ``raw_origin + k * raw_step`` lattice. Raises ``ValueError`` naming the
+    control, its allowed range and its step otherwise, and when *controls*
+    publishes no normalized scalar domain for *control*.
+    """
+    entry = controls.get(control) if controls is not None else None
+    required = ("raw_min", "raw_max", "raw_step", "raw_origin")
+    if not isinstance(entry, Mapping) or any(
+        isinstance(entry.get(key), bool) or not isinstance(entry.get(key), int)
+        for key in required
+    ):
+        raise ValueError(
+            f"no normalized control domain for {control!r} in the active profile"
+        )
+    raw_min, raw_max, raw_step, raw_origin = (cast(int, entry[key]) for key in required)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not raw_min <= value <= raw_max
+        or not _on_control_lattice(value, raw_origin, raw_step)
+    ):
+        raise ValueError(
+            f"{control} must be within {raw_min}-{raw_max} on the "
+            f"{raw_origin} + k*{raw_step} lattice; got {value!r}"
+        )
+    return raw_min, raw_max, raw_step, raw_origin
 
 
 def _parse_control_lookup(
