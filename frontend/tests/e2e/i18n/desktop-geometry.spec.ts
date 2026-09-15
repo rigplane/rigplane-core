@@ -404,7 +404,9 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
         centerTx: await page.locator('.standard-pair-bridge [data-indicator-fact="rf-authority"], [data-vfo-tx-target-status]').count(),
         centerFacts: await page.locator('.standard-pair-bridge [data-indicator-fact], .standard-pair-bridge [data-vfo-operation-digest]').count(),
         ordinaryReasons: await page.locator('.standard-face [data-reason="tx-busy"], .standard-face [data-reason="radio-transmitting"]').evaluateAll(
-          elements => elements.filter(element => getComputedStyle(element).display !== 'none').length,
+          elements => elements.filter(element => !element.classList.contains('sr-only')
+            && element.closest('.sr-only') === null
+            && getComputedStyle(element).display !== 'none').length,
         ),
         meterClips: await page.locator('[data-panel-id="semantic-meters"]').evaluate(panel => ({
           panel: panel.scrollHeight > panel.clientHeight + 1,

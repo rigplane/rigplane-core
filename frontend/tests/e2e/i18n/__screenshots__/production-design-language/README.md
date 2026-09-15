@@ -452,14 +452,41 @@ This source capture is **compared-fail**, not a visual PASS. A subsequent
 exact-head CI run must compare successfully against the replacements.
 Physical radio/profile acceptance remains separate.
 
+## Linux re-pin provenance (current — 2026-09-14 MOR-2467 Standard panel cleanup)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `bc49462ceb5b4e85322b373e7b7a4182aad18751` |
+| CI run / job | [Tests (quick) #34917273359](https://github.com/rigplane/rigplane-core/actions/runs/34917273359) / job `104217554871` |
+| Runner | `mm-build-core-2`; self-hosted Linux (labels `self-hosted`, `linux`, `build`) |
+| Command | `npm run test:e2e:i18n` (`playwright test -c ./playwright.i18n.config.ts`) |
+| Context / comparator | Chromium; 1280×800; DPR 1; `en-US`; UTC; unchanged `threshold: 0.2`, `maxDiffPixelRatio: 0.001`. |
+| Source | Exact `actual.png` attachments from `mor-1400-production-visual-diagnostics`, copied byte-for-byte; no image transformation or macOS baseline. |
+| Reason | Standard removes the duplicate BAND surface and volatile TX/RX Audio diagnostic prose while retaining BANDS frequency entry and stable operator controls. |
+
+The source run completed 95 i18n cases: 90 passed; one geometry assertion
+needed to recognize clipped `sr-only` reasons as visually hidden, and the four
+production-root comparisons failed against the superseded UI. The coordinator
+inspected all four actual/diff pairs: changes are confined to the intended
+BANDS, TX, RX Audio, and directly displaced panel regions. No comparator,
+mask, threshold, or screenshot-generation code changed. A subsequent exact-head
+CI run must compare successfully against these replacements.
+
+| Scene | Disposition | SHA-256 |
+| --- | --- | --- |
+| StudioLine dark | compared-fail (7,544 px); inspected and accepted | `357a53837101374b37891edebe5e26da50e8036c01a92d185eaa1d033b008567` |
+| StudioLine light | compared-fail (10,890 px); inspected and accepted | `75cbe648157d04ffd49a2b2f93f41426fa9d0686c672fa67bb6dbf0c732e546c` |
+| FieldLine dark | compared-fail (6,867 px); inspected and accepted | `960cb61d8b5e9b5a00a3f8611043603df7723aa70aa4e387ce52036d02b1a7c7` |
+| FieldLine light | compared-fail (13,366 px); inspected and accepted | `2d972c5647ea99eef22ac4bffa99f3e32683427af2ebbb98aab0111142b296d5` |
+
 ## Named expectations
 
 | File | Workspace/theme case | SHA-256 |
 | --- | --- | --- |
-| `studioline--dark--production-root.png` | clean StudioLine × dark | `54bbe78a2eac8ed90193fa332159e17084ed3448ac50de7d72108d376877dd48` |
-| `studioline--light--production-root.png` | persisted StudioLine × light | `8bdb9204889cf8392673d7a248be96c64e0a793b0bc96794b760aeca34acbc3f` |
-| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `41024a2504b70a94fa51adc2135cd9c20905307e4530ee035e3a90dbe7aba459` |
-| `fieldline--light--production-root.png` | persisted FieldLine × light | `dbad846332a8e3a3abe0ff299df1e1d056708eeccd704f7067b1bbe7e41375f2` |
+| `studioline--dark--production-root.png` | clean StudioLine × dark | `357a53837101374b37891edebe5e26da50e8036c01a92d185eaa1d033b008567` |
+| `studioline--light--production-root.png` | persisted StudioLine × light | `75cbe648157d04ffd49a2b2f93f41426fa9d0686c672fa67bb6dbf0c732e546c` |
+| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `960cb61d8b5e9b5a00a3f8611043603df7723aa70aa4e387ce52036d02b1a7c7` |
+| `fieldline--light--production-root.png` | persisted FieldLine × light | `2d972c5647ea99eef22ac4bffa99f3e32683427af2ebbb98aab0111142b296d5` |
 
 All images are RGB PNGs at 1280×800. Changes to any expected image require a
 new reviewed Linux re-pin with the same provenance record; macOS/local output
