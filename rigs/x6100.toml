@@ -253,6 +253,7 @@ raw_max = 255
 display_min = 300
 display_max = 900
 display_unit = "Hz"
+decode_quantum = 10  # CW side-tone menu step 10 Hz -- Radioddity Extended manual for Xiegu X6100 v1.1.8 section 10.3.4 (MOR-2489)
 
 [controls.rit]
 # MOR-1883: exact-form translation of the previously declared range;

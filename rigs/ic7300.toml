@@ -1580,6 +1580,15 @@ raw_max = 255
 display_min = 300
 display_max = 900
 display_unit = "Hz"
+decode_quantum = 5  # reproduces the decode formula it replaces (commands/levels.py: _cw_pitch_from_level, MOR-2481)
+
+[controls.key_speed]
+raw_min = 0
+raw_max = 255
+display_min = 6
+display_max = 48
+display_unit = "WPM"
+decode_quantum = 1  # reproduces the decode formula it replaces (commands/levels.py: _key_speed_from_level, MOR-2481)
 
 [controls.rit]
 # MOR-1883: exact-form domain (MOR-1730 frontend contract). Range is the
