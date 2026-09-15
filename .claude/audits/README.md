@@ -28,8 +28,9 @@ the capabilities it examined and cleared.
 - [2026-09-15-mechanism-audit-command-path.md](2026-09-15-mechanism-audit-command-path.md)
   — the four consumers' paths to the radio across eight concerns. Verdict:
   standalone consumers legitimately run without the web command queue; the
-  duplicated dispatch, receiver validation and value validation are
-  displacement with the shared targets already in place.
+  duplicated dispatch and receiver validation are displacement with the shared
+  targets already in place, while value validation is a gap in the runtime seat
+  with its shared math only emerging.
 
 ## 2026-09-15 — Standard TX indication and AGC cleanup (head `5fa07e1a`, base `f27f1132`)
 
