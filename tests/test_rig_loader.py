@@ -1355,7 +1355,14 @@ choices = [
     # exact validated form (the legacy raw_center shape fail-closes the
     # RIT/XIT control in the MOR-1730 frontend contract).
     _EXACT_DOMAIN_REGISTER = {
-        "ftx1.toml": {"rit", "nr_level", "manual_notch_freq", "if_shift", "cw_pitch"},
+        "ftx1.toml": {
+            "rit",
+            "nr_level",
+            "nb_level",
+            "manual_notch_freq",
+            "if_shift",
+            "cw_pitch",
+        },
         "ic705.toml": {"rit"},
         "ic7300.toml": {"rit"},
         "ic7610.toml": {"rit"},

@@ -135,19 +135,20 @@ def _display_band_bounds(bounds: object) -> tuple[float, float] | None:
     return (lo, hi)
 
 
-def _domain_nr_fraction(radio: "Radio", raw: int) -> float | None:
-    """Normalized hamlib fraction for an NR raw code, from the radio's domain.
+def _domain_level_fraction(radio: "Radio", control: str, raw: int) -> float | None:
+    """Normalized hamlib fraction for a level's raw code, from its domain.
 
     Decodes *raw* through ``decode_control_raw`` and divides the display
     value by the published display maximum, so the radio's own top of
-    scale answers ``1.0``. ``None`` — caller falls back to the legacy
-    ``/15`` — when the radio does not implement the protocol, publishes
-    no ``nr_level`` domain, or (test doubles) returns unusable values.
+    scale answers ``1.0``. ``None`` — caller falls back to its legacy
+    scale divisor — when the radio does not implement the protocol,
+    publishes no domain for *control*, or (test doubles) returns
+    unusable values.
     """
     if not isinstance(radio, ControlDomainCapable):
         return None
-    display = radio.decode_control_raw("nr_level", raw)
-    band = _display_band_bounds(radio.control_display_bounds("nr_level"))
+    display = radio.decode_control_raw(control, raw)
+    band = _display_band_bounds(radio.control_display_bounds(control))
     if not isinstance(display, str) or band is None:
         return None
     try:
@@ -290,11 +291,22 @@ class YaesuRouting:
                 # level answered from StateStore projection agrees with a
                 # live one; /15 remains only for radios publishing no
                 # nr_level domain (MOR-2479).
-                fraction = _domain_nr_fraction(self._radio, int(value))
+                fraction = _domain_level_fraction(self._radio, "nr_level", int(value))
                 if fraction is not None:
                     return RigctldResponse(values=[f"{fraction:.6f}"])
                 return RigctldResponse(
                     values=[_format_raw_scaled_float(value, raw_divisor=15.0)]
+                )
+            if level == "NB":
+                # Same domain the live read in get_level consults, so a
+                # level answered from StateStore projection agrees with a
+                # live one; /10 remains only for radios publishing no
+                # nb_level domain (MOR-2469).
+                fraction = _domain_level_fraction(self._radio, "nb_level", int(value))
+                if fraction is not None:
+                    return RigctldResponse(values=[f"{fraction:.6f}"])
+                return RigctldResponse(
+                    values=[_format_raw_scaled_float(value, raw_divisor=10.0)]
                 )
             if level == "PREAMP":
                 return RigctldResponse(values=[str(int(value))])
@@ -366,11 +378,14 @@ class YaesuRouting:
         if level == "NB":
             raw = await radio.get_nb_level()
             self._observe(self.state_path_for_level(level), raw)
+            fraction = _domain_level_fraction(radio, "nb_level", raw)
+            if fraction is not None:
+                return RigctldResponse(values=[f"{fraction:.6f}"])
             return RigctldResponse(values=[f"{raw / 10.0:.6f}"])
         if level == "NR":
             raw = await radio.get_nr_level()
             self._observe(self.state_path_for_level(level), raw)
-            fraction = _domain_nr_fraction(radio, raw)
+            fraction = _domain_level_fraction(radio, "nr_level", raw)
             if fraction is not None:
                 return RigctldResponse(values=[f"{fraction:.6f}"])
             return RigctldResponse(values=[f"{raw / 15.0:.6f}"])
@@ -436,6 +451,19 @@ class YaesuRouting:
             return _ok()
 
         if level == "NB":
+            # hamlib carries NB as a 0.0–1.0 fraction; the radio's own
+            # domain decides the band it maps onto (MOR-2469).
+            if isinstance(radio, ControlDomainCapable):
+                band = _display_band_bounds(radio.control_display_bounds("nb_level"))
+                if band is not None:
+                    snapped = await _set_snapped_level(
+                        radio,
+                        "nb_level",
+                        band[0] + value * (band[1] - band[0]),
+                        radio.set_nb_level,
+                    )
+                    if snapped is not None:
+                        return snapped
             await radio.set_nb_level(max(0, min(10, round(value * 10))))
             return _ok()
         if level == "NR":

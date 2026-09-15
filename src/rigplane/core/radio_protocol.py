@@ -95,6 +95,7 @@ __all__ = [
     "DspControlCapable",
     "AntennaControlCapable",
     "AttenuatorObservationProjectable",
+    "AttenuatorStepsCapable",
     "CwControlCapable",
     "VoiceControlCapable",
     "SystemControlCapable",
@@ -1701,6 +1702,19 @@ class AttenuatorObservationProjectable(Protocol):
 
     def project_attenuator_observation_value(self, db: int) -> int:
         """Project an already-bound integer without validation or I/O."""
+        ...
+
+
+@runtime_checkable
+class AttenuatorStepsCapable(Protocol):
+    """Radio that publishes the attenuator dB steps it accepts."""
+
+    def attenuator_db_steps(self) -> tuple[int, ...] | None:
+        """Return the legal attenuator dB steps, or ``None`` when unpublished.
+
+        Steps are plain ints on the dB axis ``set_attenuator_level``
+        accepts. Synchronous; never touches the wire.
+        """
         ...
 
 

@@ -4102,6 +4102,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     def project_attenuator_observation_value(self, db: int) -> int:
         return db
 
+    def attenuator_db_steps(self) -> tuple[int, ...] | None:
+        """Legal attenuator dB steps declared by the active profile."""
+        return self._profile.att_values
+
     async def set_attenuator_level(
         self, db: int, receiver: int = RECEIVER_MAIN
     ) -> None:
