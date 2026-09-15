@@ -9,12 +9,14 @@ a divergence here is a contract break.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from rigplane.profiles.control_domain import (
+    control_display_band,
     decode_control_domain,
     encode_control_domain,
     quantize_control_domain,
@@ -391,3 +393,108 @@ def test_ftx1_rejects_off_lattice_and_out_of_axis() -> None:
     assert encode_control_domain(notch, "15") is None
     assert decode_control_domain(notch, 0) is None
     assert decode_control_domain(notch, 321) is None
+
+
+# -- Declared control bands (MOR-2476) -----------------------------------------
+
+
+def _rig_domains(rig: str) -> dict[str, dict[str, Any]]:
+    """Published ``[controls.*]`` tables of a shipped rig profile."""
+    profile = load_rig(_PROFILE_PATH.parent / f"{rig}.toml").to_profile()
+    assert profile.controls is not None
+    return {name: dict(spec) for name, spec in profile.controls.items()}
+
+
+def test_band_normalized_domain_yields_display_band_and_declared_step() -> None:
+    # FTX-1 cw_pitch: identity 300..1050 on a 10 Hz display lattice.
+    assert control_display_band(_ftx1_domains(), "cw_pitch") == (
+        Decimal("300"),
+        Decimal("1050"),
+        Decimal("10"),
+    )
+
+
+def test_band_normalized_linear_domain_yields_display_axis() -> None:
+    assert control_display_band({"pbt": dict(LINEAR)}, "pbt") == (
+        Decimal("-1"),
+        Decimal("1"),
+        Decimal("0.5"),
+    )
+
+
+def test_band_legacy_display_pair_yields_display_band_without_step() -> None:
+    # IC-7610 cw_pitch shape: raw 0-255 with a legacy display 300-900 band.
+    legacy = {
+        "raw_min": 0,
+        "raw_max": 255,
+        "display_min": 300,
+        "display_max": 900,
+        "display_unit": "Hz",
+    }
+    assert control_display_band({"cw_pitch": legacy}, "cw_pitch") == (
+        Decimal(300),
+        Decimal(900),
+        None,
+    )
+
+
+def test_band_band_only_range_pair_yields_that_band() -> None:
+    # FTX-1 nb/nr shape: only range_min/range_max declared.
+    assert control_display_band({"nb": {"range_min": 0, "range_max": 10}}, "nb") == (
+        Decimal(0),
+        Decimal(10),
+        None,
+    )
+
+
+def test_band_raw_only_pair_yields_the_raw_band() -> None:
+    # Icom/Xiegu level-control shape: only raw_min/raw_max declared.
+    assert control_display_band(
+        {"nr_level": {"raw_min": 0, "raw_max": 255}}, "nr_level"
+    ) == (Decimal(0), Decimal(255), None)
+
+
+def test_band_is_none_for_absent_encoded_or_shapeless_controls() -> None:
+    encoded = {
+        "mapping": "encoded",
+        "choices": [{"raw": 0, "label": "Default"}, {"raw": 1, "display": "1"}],
+    }
+    assert control_display_band({}, "cw_pitch") is None
+    assert control_display_band(None, "cw_pitch") is None
+    assert control_display_band({"cw_pitch": 7}, "cw_pitch") is None
+    assert control_display_band({"cw_pitch": {}}, "cw_pitch") is None
+    assert control_display_band({"sql_type": encoded}, "sql_type") is None
+    # A half-declared pair declares no band at all.
+    assert control_display_band({"c": {"display_min": 300}}, "c") is None
+
+
+def test_band_fails_closed_for_malformed_declarations() -> None:
+    # Inverted normalized display strings are refused, not reordered.
+    inverted = dict(LINEAR) | {"display_min": "900", "display_max": "300"}
+    assert control_display_band({"c": inverted}, "c") is None
+    # Inverted legacy display pair likewise.
+    legacy = {"raw_min": 0, "raw_max": 255, "display_min": 900, "display_max": 300}
+    assert control_display_band({"c": legacy}, "c") is None
+    # Non-canonical display strings are rejected, not coerced.
+    noncanonical = dict(LINEAR) | {"display_step": "0.50"}
+    assert control_display_band({"c": noncanonical}, "c") is None
+    missing_step = {k: v for k, v in LINEAR.items() if k != "display_step"}
+    assert control_display_band({"c": missing_step}, "c") is None
+    assert control_display_band({"c": {"range_min": 10, "range_max": 0}}, "c") is None
+    assert control_display_band({"c": {"raw_min": 255, "raw_max": 0}}, "c") is None
+
+
+def test_band_profile_pins_ic7610_and_x6200_cw_pitch() -> None:
+    # The legacy display pair is the profile-declared band: 300-900 on the
+    # IC-7610 but 400-1200 on the X6200 -- the profile decides, not a code
+    # constant.
+    assert control_display_band(_rig_domains("ic7610"), "cw_pitch") == (
+        Decimal(300),
+        Decimal(900),
+        None,
+    )
+    assert control_display_band(_rig_domains("x6200"), "cw_pitch") == (
+        Decimal(400),
+        Decimal(1200),
+        None,
+    )

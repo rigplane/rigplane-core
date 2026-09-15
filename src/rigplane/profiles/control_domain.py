@@ -23,6 +23,7 @@ from decimal import Decimal
 from typing import cast
 
 __all__ = [
+    "control_display_band",
     "decode_control_domain",
     "encode_control_domain",
     "quantize_control_domain",
@@ -33,6 +34,9 @@ __all__ = [
 _QUANTIZATIONS = frozenset(
     {"nearest_ties_down", "nearest_ties_up", "floor", "ceil", "reject"}
 )
+# Mappings that publish a scalar raw<->display domain (``encoded`` publishes
+# discrete choices instead of a band, so it is not a band source).
+_SCALAR_MAPPINGS = frozenset({"identity", "linear", "centered", "lookup"})
 # ``\Z`` (not ``$``) so a trailing newline can never sneak past the end
 # anchor; ``$`` would accept ``'0\n'`` and break parity with the
 # TypeScript mirror, whose ``$`` is a true end-of-input anchor.
@@ -97,6 +101,78 @@ def validate_control_raw_value(
             f"{raw_origin} + k*{raw_step} lattice; got {value!r}"
         )
     return raw_min, raw_max, raw_step, raw_origin
+
+
+def _declared_int_pair(
+    entry: Mapping[str, object], lo_key: str, hi_key: str
+) -> tuple[Decimal, Decimal] | None:
+    """The declared ``(lo, hi)`` band when both bounds are plain ints."""
+    lo, hi = entry.get(lo_key), entry.get(hi_key)
+    if (
+        isinstance(lo, bool)
+        or isinstance(hi, bool)
+        or not isinstance(lo, int)
+        or not isinstance(hi, int)
+        or lo > hi
+    ):
+        return None
+    return (Decimal(lo), Decimal(hi))
+
+
+def control_display_band(
+    controls: Mapping[str, object] | None, control: str
+) -> tuple[Decimal, Decimal, Decimal | None] | None:
+    """Interpret one profile control's declared shape as a ``(min, max, step)`` band.
+
+    Returns the band exactly as the active profile declares it — consumers
+    use it so they never substitute a code constant for missing data — or
+    ``None`` when the control is absent, shapeless, or malformed. Which axis
+    the band lives on is fixed by the declared shape:
+
+    * a **normalized domain** (``mapping`` of identity/linear/centered/
+      lookup, as published on ``profile.controls``) yields its canonical
+      DISPLAY band parsed exactly from the ``display_min``/``display_max``/
+      ``display_step`` strings, step included;
+    * a **legacy control** declaring ``display_min``/``display_max`` ints
+      yields that DISPLAY band with step ``None``;
+    * a **band-only** control (``range_min``/``range_max``) yields that
+      single-axis band with step ``None``;
+    * a control declaring only ``raw_min``/``raw_max`` yields the RAW band
+      with step ``None``.
+
+    Malformed declarations (uncanonical display strings, missing display
+    step, inverted bounds) fail closed to ``None`` rather than guess.
+    """
+    entry = controls.get(control) if controls is not None else None
+    if not isinstance(entry, Mapping):
+        return None
+    mapping = entry.get("mapping")
+    if isinstance(mapping, str) and mapping in _SCALAR_MAPPINGS:
+        bounds = [
+            _parse_decimal(entry.get(key))
+            for key in ("display_min", "display_max", "display_step")
+        ]
+        if any(value is None for value in bounds):
+            return None
+        lo, hi, step = cast(tuple[_Decimal, _Decimal, _Decimal], tuple(bounds))
+        if _compare(lo, hi) >= 0 or _compare(step, (0, 0)) <= 0:
+            return None
+        return (Decimal(_text(lo)), Decimal(_text(hi)), Decimal(_text(step)))
+    for lo_key, hi_key in (
+        ("display_min", "display_max"),
+        ("range_min", "range_max"),
+        ("raw_min", "raw_max"),
+    ):
+        if entry.get(lo_key) is None and entry.get(hi_key) is None:
+            continue
+        band = _declared_int_pair(entry, lo_key, hi_key)
+        if band is None:
+            # Half-declared or inverted bounds: the declared shape is
+            # corrupt, so fail closed rather than fall through to another
+            # pair and guess at what was meant.
+            return None
+        return (band[0], band[1], None)
+    return None
 
 
 def _parse_decimal(value: object) -> _Decimal | None:
