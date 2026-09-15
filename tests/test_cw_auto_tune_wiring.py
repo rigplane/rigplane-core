@@ -214,8 +214,7 @@ class TestCwAutoTuneWiring:
         This replaces test_correction_fails_closed_before_frequency_enqueue,
         which pinned the opposite (now-superseded) behaviour: FREQUENCY was
         reclassified DEFER -> tx-safe (both bench radios accept and apply a
-        frequency write while keyed), so ``evaluate_tx_interlock`` is now
-        unconditionally ``allowed=True`` for the SetFreq this method builds.
+        frequency write while keyed).
         The same four not-confirmed-RX cases that used to raise
         ``CommandError`` before enqueuing (TX, missing/unobserved PTT, stale
         PTT, an unmapped PTT value) now enqueue the correction exactly like
