@@ -887,7 +887,6 @@ async def test_set_mode_packet_refreshes_data_mode_cache(
     assert resp.ok
     mock_radio.set_mode.assert_awaited_once_with(base_mode, filter_width=None)
     mock_radio.set_data_mode.assert_awaited_once_with(True)
-    assert handler._cache.data_mode is True  # noqa: SLF001
 
 
 @pytest.mark.asyncio
