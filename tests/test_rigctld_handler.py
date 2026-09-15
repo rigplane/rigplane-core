@@ -2902,6 +2902,31 @@ async def test_set_level_rfpower(
 
 
 @pytest.mark.asyncio
+async def test_set_level_rfpower_half_unchanged(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    resp = await handler.execute(set_cmd("set_level", "RFPOWER", "0.5"))
+    assert resp.ok
+    # round(0.5 * 255) == 128 — same scaled write as origin/main (MOR-2480).
+    mock_radio.set_rf_power.assert_awaited_once_with(128)
+
+
+@pytest.mark.asyncio
+async def test_set_level_rfpower_out_of_range_rejected(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    """RFPOWER lives on hamlib's normalized 0.0-1.0 domain (MOR-2480).
+
+    An out-of-range value answers EINVAL with no radio call, instead of
+    scaling to an off-band raw level (round(1.5 * 255) == 382).
+    """
+    for bad in ("1.5", "-0.1"):
+        resp = await handler.execute(set_cmd("set_level", "RFPOWER", bad))
+        assert resp.error == HamlibError.EINVAL, bad
+    mock_radio.set_rf_power.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_set_level_no_args(
     handler: RigctldHandler, mock_radio: AsyncMock
 ) -> None:

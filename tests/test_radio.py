@@ -609,6 +609,47 @@ class TestPower:
         await radio.set_rf_power(200)
         assert len(mock_transport.sent_packets) > 0
 
+    @pytest.mark.asyncio
+    async def test_set_power_frames_are_byte_identical(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        """In-range levels keep the exact CI-V 14 0A frames (MOR-2480).
+
+        The pinned bytes are the IC-7610 ``set_rf_power`` frames the
+        unchecked setter produced at origin/main; the entry checks must
+        not alter them.
+        """
+        for level, civ in (
+            (0, bytes.fromhex("fefe98e0140a0000fd")),
+            (128, bytes.fromhex("fefe98e0140a0128fd")),
+            (255, bytes.fromhex("fefe98e0140a0255fd")),
+        ):
+            await radio.set_rf_power(level)
+            assert bytes(mock_transport.sent_packets[-1]).endswith(civ), level
+
+    @pytest.mark.asyncio
+    async def test_set_power_out_of_range_sends_no_frame(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        with pytest.raises(ValueError, match="RF power must be 0-255"):
+            await radio.set_rf_power(256)
+        with pytest.raises(ValueError, match="RF power must be 0-255"):
+            await radio.set_rf_power(-1)
+        assert mock_transport.sent_packets == []
+
+    @pytest.mark.asyncio
+    async def test_set_power_without_capability_refused_before_write(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """X6200 declares the 14 0A commands but not power_control."""
+        radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(CommandError, match="power_control"):
+            await radio.set_rf_power(128)
+        assert mock_transport.sent_packets == []
+
 
 class TestRfGainAfLevel:
     """Test RF Gain and AF Level get/set."""
