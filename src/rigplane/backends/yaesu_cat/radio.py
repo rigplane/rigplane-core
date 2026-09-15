@@ -31,7 +31,12 @@ from ...types import AudioCodec, BreakInMode, RepeaterShiftDirection
 from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...radio_state import RadioState
-from ...profiles.control_domain import decode_control_domain, validate_control_raw_value
+from ...profiles.control_domain import (
+    decode_control_domain,
+    encode_control_domain,
+    snap_control_domain,
+    validate_control_raw_value,
+)
 from .parser import CatCommandParser, CatParseError, format_command
 from .transport import (
     CatCommandRejected,
@@ -2709,6 +2714,52 @@ class YaesuCatRadio:
             self.profile.controls, "cw_pitch", freq
         )
         await self.set_key_pitch((freq - raw_origin) // raw_step)
+
+    # -- ControlDomainCapable --------------------------------------------------
+
+    def _published_control_domain(self, control: str) -> Mapping[str, object] | None:
+        """Return the published normalized domain for *control*, if any."""
+        controls = self.profile.controls
+        domain = controls.get(control) if controls is not None else None
+        return domain if isinstance(domain, Mapping) else None
+
+    def snap_control_display(self, control: str, display: str) -> int | None:
+        """Return the raw code for the display value nearest *display*.
+
+        Implements the
+        :class:`~rigplane.core.radio_protocol.ControlDomainCapable`
+        contract on the active profile's published normalized domain:
+        the display value is snapped to the nearest legal display point
+        (exact ties up) and encoded back to its raw code — all arithmetic
+        delegated to :mod:`rigplane.profiles.control_domain`. Returns
+        ``None`` when the profile publishes no normalized domain for
+        *control* or *display* is not a canonical decimal string; raises
+        ``ValueError`` when the domain is published and *display* is
+        outside its display range.
+        """
+        domain = self._published_control_domain(control)
+        if domain is None:
+            return None
+        try:
+            snapped = snap_control_domain(domain, display)
+        except ValueError as exc:
+            raise ValueError(f"{control} {exc}") from exc
+        if snapped is None:
+            return None
+        return cast(int | None, encode_control_domain(domain, snapped))
+
+    def decode_control_raw(self, control: str, raw: int) -> str | None:
+        """Return the canonical display string for *raw*, or ``None``.
+
+        Implements the
+        :class:`~rigplane.core.radio_protocol.ControlDomainCapable`
+        contract: ``None`` when the profile publishes no normalized
+        domain for *control* or *raw* is not a legal point on it.
+        """
+        domain = self._published_control_domain(control)
+        if domain is None:
+            return None
+        return cast(str | None, decode_control_domain(domain, raw))
 
     async def get_dial_lock(self) -> bool:
         """Alias for AdvancedControlCapable compatibility."""
