@@ -377,6 +377,11 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     const capture = async (txState: 'rx' | 'tx', txTargetSlot: 'B' | 'unknown') => {
       const context = await browser.newContext();
       const page = await context.newPage();
+      const browserErrors: string[] = [];
+      page.on('console', message => {
+        if (message.type() === 'error') browserErrors.push(`console: ${message.text()}`);
+      });
+      page.on('pageerror', error => browserErrors.push(`page: ${error.message}`));
       await boot(page, 'standard', 1440, true, 'studioline', false, undefined, {
         height: 900, absoluteVfoPair: true, txState, txTargetSlot,
       });
@@ -415,6 +420,25 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
               || element.scrollWidth > element.clientWidth + 1)
             .map(element => element.className),
         })),
+        txPanelFeedback: await page.locator('[data-panel-id="semantic-rx-tx"]').evaluate(panel => {
+          const state = panel.querySelector<HTMLElement>('[data-testid="rx-tx-state"]')!;
+          const key = panel.querySelector<HTMLElement>('[data-testid="rx-tx-key"]')!;
+          const stateBox = state.getBoundingClientRect();
+          const keyStyle = getComputedStyle(key);
+          return {
+            stateSrOnly: state.classList.contains('sr-only'),
+            stateBox: { width: stateBox.width, height: stateBox.height },
+            keyActive: key.getAttribute('data-active'),
+            keyPressed: key.getAttribute('aria-pressed'),
+            keyOpacity: keyStyle.opacity,
+            keyBackground: keyStyle.backgroundColor,
+            keyShadow: keyStyle.boxShadow,
+          };
+        }),
+        agcNbWidth: await page.locator(
+          '[data-panel-id="semantic-agc"] [data-testid="dsp-nbWidth"]',
+        ).count(),
+        browserErrors,
         commands: await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
           .geometryCommands.filter(command => command.type === 'cmd')),
         overlay: null as null | {
@@ -489,12 +513,24 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       ]));
     }
     expect(unknown.vfoFacts.some(({ fact }) => fact === 'tx')).toBe(false);
+    expect(tx.txPanelFeedback).toMatchObject({
+      stateSrOnly: true,
+      keyActive: 'true',
+      keyPressed: 'true',
+      keyOpacity: '1',
+    });
+    expect(tx.txPanelFeedback.stateBox.width).toBeLessThanOrEqual(1);
+    expect(tx.txPanelFeedback.stateBox.height).toBeLessThanOrEqual(1);
+    expect(tx.txPanelFeedback.keyBackground).not.toBe('rgba(0, 0, 0, 0)');
+    expect(tx.txPanelFeedback.keyShadow).not.toBe('none');
     for (const result of [rx, tx, unknown]) {
       expect(result.topTx).toBe(0);
       expect(result.centerTx).toBe(0);
       expect(result.centerFacts).toBe(0);
       expect(result.ordinaryReasons).toBe(0);
       expect(result.meterClips).toEqual({ panel: false, children: [] });
+      expect(result.agcNbWidth).toBe(0);
+      expect(result.browserErrors).toEqual([]);
       expect(result.commands).toEqual([]);
     }
   });

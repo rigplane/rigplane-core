@@ -13,6 +13,14 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-15 — Standard TX indication and AGC cleanup (head `5fa07e1a`, base `f27f1132`)
+
+- [2026-09-15-mechanism-audit-standard-tx-ptt.md](2026-09-15-mechanism-audit-standard-tx-ptt.md)
+  — independent read-only PASS: the redundant visible Standard TX banner is
+  removed while semantic status and the existing PTT path remain intact; the
+  stray AGC `NB width` render is removed without deleting its persistent
+  binding or DSP/NB/SDR consumers. Mac Mini evidence is a separate gate.
+
 ## 2026-09-15 — MOR-2467 IC-7610 startup-optional scope state after rebase (head `62a1c107`, base `39c88afd`)
 
 - [2026-09-15-mechanism-audit-mor-2467-ic7610-startup-rebased.md](2026-09-15-mechanism-audit-mor-2467-ic7610-startup-rebased.md)

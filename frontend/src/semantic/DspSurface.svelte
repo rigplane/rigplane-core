@@ -193,7 +193,7 @@
 
   {#each DSP_LEVELS as [field, label, min, max, step, format] (field)}
     {#if field === 'nbWidth'}
-      {#if scalarHandles && !scalarLayout}{@render scalarHandles.nbWidth()}{/if}
+      {#if part !== 'agc' && scalarHandles && !scalarLayout}{@render scalarHandles.nbWidth()}{/if}
     {:else if showsLevel(field) && dsp?.[field].availability.structural}
       {@const nr = field === 'nrLevel' ? nrPresentation(dsp) : null}
       {@render nativeLevel(field, label, min, max, step, format, nr)}
