@@ -500,19 +500,6 @@ class TestLifecycle:
         await srv.stop()
         await srv.stop()  # second call must not raise
 
-    async def test_start_does_not_bind_backend_state_cache_by_default(
-        self, cfg: RigctldConfig
-    ) -> None:
-        radio = SerialMockRadio()
-        await radio.connect()
-        srv = RigctldServer(radio, cfg)
-        await srv.start()
-        try:
-            assert srv._rig_handler is not None
-            assert srv._rig_handler._cache is not radio.state_cache
-        finally:
-            await srv.stop()
-
     async def test_start_passes_state_model_capability_to_default_handler(
         self, mock_radio: MagicMock, cfg: RigctldConfig
     ) -> None:

@@ -411,28 +411,6 @@ def _mode_to_hamlib_str(mode: object) -> str:
     return str(mode).upper()
 
 
-@dataclass(slots=True)
-class _PendingRigState:
-    """Local optimistic write-through state until RadioState catches up."""
-
-    freq: int | None = None
-    mode: str | None = None
-    filter_width: int | None = None
-    data_mode: bool | None = None
-
-
-@dataclass(slots=True)
-class _FallbackRigState:
-    """Handler-local fallback values."""
-
-    data_mode: bool = False
-    data_mode_ts: float = 0.0
-
-    def update_data_mode(self, on: bool) -> None:
-        self.data_mode = on
-        self.data_mode_ts = time.monotonic()
-
-
 @dataclass(frozen=True, slots=True)
 class _RigctldCommandFailure(Exception):
     error: HamlibError
@@ -816,10 +794,6 @@ class RigctldHandler:
         self._key_down_backstop_task: asyncio.Task[None] | None = None
         self._key_down_backstop_token: int = 0
         self._key_down_backstop_session: str | None = None
-        # Handler-local data-mode fallback. Core rigctld GET paths project
-        # from StateStore plus scoped CommandService overlays.
-        self._cache = _FallbackRigState()
-        self._pending = _PendingRigState()
         self._routing = create_routing(radio, getattr(config, "max_power_w", 100.0))
         if state_store is None and isinstance(radio, StateStoreCapable):
             state_store = radio.state_store
@@ -1368,50 +1342,6 @@ class RigctldHandler:
             )
         )
 
-    def _effective_pending_freq(self, main_state: ReceiverState | None) -> int | None:
-        pending_freq = self._pending.freq
-        if pending_freq is None:
-            return None
-        if main_state is not None and main_state.freq == pending_freq:
-            self._pending.freq = None
-            return None
-        return pending_freq
-
-    def _effective_pending_mode(
-        self, main_state: ReceiverState | None
-    ) -> tuple[str, int, int] | None:
-        pending_mode = self._pending.mode
-        if pending_mode is None:
-            return None
-
-        pending_filter = self._pending.filter_width
-        pending_data_mode = self._pending.data_mode
-
-        if main_state is not None:
-            state_mode = main_state.mode.upper()
-            state_filter = main_state.filter
-            state_data_mode = main_state.data_mode
-            if (
-                state_mode == pending_mode
-                and state_filter == pending_filter
-                and (pending_data_mode is None or state_data_mode == pending_data_mode)
-            ):
-                self._pending.mode = None
-                self._pending.filter_width = None
-                self._pending.data_mode = None
-                return None
-
-        data_mode = (
-            pending_data_mode
-            if pending_data_mode is not None
-            else (
-                main_state.data_mode
-                if main_state is not None
-                else self._cache.data_mode
-            )
-        )
-        return pending_mode, _filter_to_passband(pending_filter), data_mode
-
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -1813,8 +1743,6 @@ class RigctldHandler:
             if dropped is not None:
                 return dropped
         await self._execute_write(intent)
-        if requested_mode in packet_modes:
-            self._cache.update_data_mode(True)
         # ``filter_width`` (the local var) is a filter NUMBER, so the readback
         # overlay belongs on ``filter_num`` — that is the key the get_mode
         # projection now reads for the passband. (MOR-895.)
