@@ -8,6 +8,7 @@ import tomllib
 import warnings
 from dataclasses import dataclass, field
 from decimal import Decimal
+from fractions import Fraction
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
@@ -101,6 +102,7 @@ _CONTROL_KEYS = {
     "display_origin",
     "display_center",
     "display_unit",
+    "decode_quantum",
     "mapping",
     "quantization",
     "restoration",
@@ -316,6 +318,48 @@ def _parse_control_spec(
         _control_number(raw["display_center"], f"{prefix}.display_center")
     if "display_unit" in raw and not isinstance(raw["display_unit"], str):
         raise RigLoadError(f"{prefix}.display_unit must be a string")
+    if "decode_quantum" in raw:
+        decode_quantum = raw["decode_quantum"]
+        if (
+            isinstance(decode_quantum, bool)
+            or not isinstance(decode_quantum, int)
+            or decode_quantum <= 0
+        ):
+            raise RigLoadError(f"{prefix}.decode_quantum must be a positive integer")
+        if set(raw) & _EXPLICIT_CONTROL_DOMAIN_KEYS:
+            raise RigLoadError(
+                f"{prefix}.decode_quantum is a legacy-band key and cannot be "
+                "combined with an explicit domain"
+            )
+        missing_band = [
+            key
+            for key in ("raw_min", "raw_max", "display_min", "display_max")
+            if key not in raw
+        ]
+        if missing_band:
+            raise RigLoadError(
+                f"{prefix}.decode_quantum requires the legacy band "
+                f"(raw_min/raw_max and display_min/display_max); missing {missing_band!r}"
+            )
+        # Exhaustive half-step tie guard over every raw in range: decode
+        # rounds to the nearest quantum step, so an exact .5 remainder would
+        # make the value depend on the tie-break rule, not the domain.
+        band_lo_raw = int(raw["raw_min"])
+        band_hi_raw = int(raw["raw_max"])
+        band_lo_display = int(raw["display_min"])
+        band_hi_display = int(raw["display_max"])
+        for candidate in range(band_lo_raw, band_hi_raw + 1):
+            if (
+                Fraction(
+                    (candidate - band_lo_raw) * (band_hi_display - band_lo_display),
+                    (band_hi_raw - band_lo_raw) * decode_quantum,
+                ).denominator
+                == 2
+            ):
+                raise RigLoadError(
+                    f"{prefix} decode domain has an exact half-step tie at raw "
+                    f"{candidate}; declare a decode_quantum that avoids ties"
+                )
 
     explicit = bool(set(raw) & _EXPLICIT_CONTROL_DOMAIN_KEYS)
     if not explicit:

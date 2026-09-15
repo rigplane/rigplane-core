@@ -103,6 +103,25 @@ describe('normalized control capability domains', () => {
     expect(validateCapabilities(payload)).toBe(payload);
     expect(() => parse({ raw_min: 0, raw_max: 1, surprise: true })).toThrow(/unknown/);
   });
+  it('accepts legacy controls carrying decode_quantum, including key_speed', () => {
+    const cwPitch = {
+      raw_min: 0, raw_max: 255, display_min: 300, display_max: 900,
+      display_unit: 'Hz', decode_quantum: 5,
+    };
+    const keySpeed = {
+      raw_min: 0, raw_max: 255, display_min: 6, display_max: 48,
+      display_unit: 'WPM', decode_quantum: 1,
+    };
+    const payload = { ...baseCapabilities, controls: { cw_pitch: cwPitch, key_speed: keySpeed } };
+    const parsed = validateCapabilities(payload);
+    // No explicit domain keys: the controls record passes through unchanged
+    // once decode_quantum is an allowed legacy key.
+    expect(parsed).toBe(payload);
+    expect(() => validateCapabilities({
+      ...baseCapabilities,
+      controls: { gain: { ...cwPitch, decode_bogus: 1 } },
+    })).toThrow(/unknown/);
+  });
   it.each([
     ['identity', { ...linearDomain, mapping: 'identity', display_max: 10, display_step: 2 }],
     ['linear', linearDomain],

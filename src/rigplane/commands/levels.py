@@ -45,18 +45,10 @@ if TYPE_CHECKING:
     from ..command_map import CommandMap
 
 
-def _cw_pitch_from_level(level: int) -> int:
-    return int(round((((600.0 / 255.0) * level) + 300) / 5.0) * 5.0)
-
-
 def _cw_pitch_to_level(pitch_hz: int) -> int:
     if not 300 <= pitch_hz <= 900:
         raise ValueError(f"CW pitch must be 300-900 Hz, got {pitch_hz}")
     return math.ceil((pitch_hz - 300) * (255.0 / 600.0))
-
-
-def _key_speed_from_level(level: int) -> int:
-    return round((level / 6.071) + 6)
 
 
 def _key_speed_to_level(wpm: int) -> int:
