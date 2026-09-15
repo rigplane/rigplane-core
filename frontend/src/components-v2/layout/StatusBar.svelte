@@ -734,16 +734,6 @@
     color: var(--v2-accent-red, #ef4444);
   }
 
-  /* MOR-1673: an unsupported radio keeps the button rendered, disabled,
-     for layout stability. With a known power state it must look exactly
-     like the enabled toggle on main (production visual baselines are
-     pixel-compared), so the generic .control-btn:disabled dimming is
-     undone — same doctrine as the active VFO select in
-     semantic-controls.css. Unknown-state rendering keeps the dimming. */
-  .power-toggle-btn:disabled:not(.power-unknown) {
-    opacity: 1;
-  }
-
   /* MOR-1673: unknown power state renders neutral — no green/red toggle
      styling, just the plain control-button border and dimmed text. */
   .power-toggle-btn.power-unknown {
