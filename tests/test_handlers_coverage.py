@@ -1037,13 +1037,14 @@ async def test_att_web_sub_refusal_happens_before_queue_effects() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("value", [0, 128, 255])
-async def test_enqueue_manual_notch_position_without_domain_defers_to_radio_entry(
+async def test_enqueue_manual_notch_position_without_domain_follows_raw_wire_contract(
     value: int,
 ) -> None:
-    """A radio publishing no manual-notch domain is not range-checked here.
+    """A radio publishing no manual-notch domain takes raw 0-255 integers.
 
-    ``IcomRadio.set_notch_filter`` refuses off-range positions before
-    any wire write, so the handler queues the raw value unchecked.
+    The documented wire contract shared with ``set_rf_gain`` and
+    ``set_sql`` (``command_dispatch._raw_int_level_from_param``)
+    admits these positions unchanged.
     """
     queue = _QueueRecorder()
     handler = _control_handler(
@@ -1060,34 +1061,35 @@ async def test_enqueue_manual_notch_position_without_domain_defers_to_radio_entr
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("value", [-1, 256])
-async def test_websocket_manual_notch_position_off_wire_range_refused_by_radio_entry(
+async def test_websocket_manual_notch_position_off_wire_contract_rejected_before_enqueue(
     value: int,
 ) -> None:
-    """Icom out-of-range positions never reach the wire (MOR-2474).
+    """Domain-less out-of-range positions fail on the WebSocket ingress path.
 
-    The double validates like the Icom command builder
-    (``_level_bcd_encode``); the queue drains into the radio call in
-    ``RadioPoller._execute``, which refuses before any wire write.
+    The raw 0-255 integer wire contract refuses them before anything is
+    queued, matching the behaviour on origin/main.
     """
     queue = _QueueRecorder()
-    radio = _capable_radio()
-    notch_calls: list[int] = []
+    ws = SimpleNamespace(send_text=AsyncMock())
+    handler = _control_handler(
+        ws=ws,
+        radio=_capable_radio(),
+        server=SimpleNamespace(command_queue=queue),
+    )
 
-    async def _set_notch_filter(level: int, receiver: int = 0) -> None:
-        if not 0 <= level <= 255:
-            raise ValueError(f"Level must be 0-255, got {level}")
-        notch_calls.append(level)
+    await handler._dispatch_command(
+        "notch-position", "set_notch_filter", {"value": value}
+    )
 
-    radio.set_notch_filter = _set_notch_filter
-    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
-
-    result = await handler._enqueue_command("set_notch_filter", {"value": value})
-
-    assert result == {"value": value, "receiver": 0}
-    assert queue.items == [SetNotchFilter(value, receiver=0)]
-    with pytest.raises(ValueError, match="Level must be 0-255"):
-        await radio.set_notch_filter(value)
-    assert notch_calls == []
+    response = decode_json(ws.send_text.await_args.args[0])
+    assert response == {
+        "type": "response",
+        "id": "notch-position",
+        "ok": False,
+        "error": "command_failed",
+        "message": f"level {value!r} is out of the raw 0-255 domain",
+    }
+    assert queue.items == []
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ from ...core.command_service import (
 )
 from ...core.command_dispatch import (
     CommandUnsupportedError,
+    _raw_int_level_from_param,
     command_descriptor,
     command_descriptors,
     enqueue_command_intent,
@@ -292,27 +293,30 @@ def _level_for_power(value: Any, radio: Any) -> int:
     return int(native)
 
 
-def _reject_off_domain_notch_position(radio: "Radio | None", level: int) -> None:
-    """Refuse a manual-notch position the radio's published domain rejects.
+def _notch_position_from_param(radio: "Radio | None", params: dict[str, Any]) -> int:
+    """Resolve the manual-notch position for ``set_notch_filter``.
 
     Radios implementing
     :class:`~rigplane.core.radio_protocol.ControlDomainCapable` that
-    publish a ``manual_notch_freq`` domain answer ``decode_control_raw``
-    for every legal raw position; ``None`` alongside a published
-    ``control_display_bounds`` band means the position is off the domain
-    and must not be queued. Radios without the surface, or without a
-    published domain, are range-checked at the radio boundary instead
-    (the Icom command builder's BCD level encoding refuses off-range
-    positions before any wire write).
+    publish a ``manual_notch_freq`` domain take any raw position
+    ``decode_control_raw`` answers for. Every other radio follows the
+    documented raw 0-255 integer wire contract shared with
+    ``set_rf_gain``/``set_sql``/``set_squelch``, enforced by the same
+    coercion (``command_dispatch._raw_int_level_from_param``), which
+    raises before the command is queued.
     """
-    if not isinstance(radio, ControlDomainCapable):
-        return
-    if radio.control_display_bounds("manual_notch_freq") is None:
-        return
-    if radio.decode_control_raw("manual_notch_freq", level) is None:
-        raise ValueError(
-            "manual-notch position is outside the radio's published manual-notch domain"
-        )
+    value = params["value"]
+    if isinstance(radio, ControlDomainCapable):
+        if radio.control_display_bounds("manual_notch_freq") is not None:
+            level = int(value)
+            if radio.decode_control_raw("manual_notch_freq", level) is None:
+                raise ValueError(
+                    "manual-notch position is outside the radio's published "
+                    "manual-notch domain"
+                )
+            return level
+    wire_level: int = _raw_int_level_from_param(value)
+    return wire_level
 
 
 def _with_admitted_level(
@@ -2600,9 +2604,8 @@ class ControlHandler:
                 q.put(SetManualNotch(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_notch_filter":
-                level = int(params["value"])
                 rx = int(params.get("receiver", 0))
-                _reject_off_domain_notch_position(radio, level)
+                level = _notch_position_from_param(radio, params)
                 self._ensure_capability("notch", "set_notch_filter")
                 self._ensure_receiver_supported(rx)
                 q.put(SetNotchFilter(level, receiver=rx))
