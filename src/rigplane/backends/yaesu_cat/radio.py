@@ -1510,7 +1510,12 @@ class YaesuCatRadio:
         return await self.read_nb_level(receiver)
 
     async def set_nb_level(self, level: int, receiver: int = 0) -> None:
-        """Set noise blanker level (0 = OFF, 1–10 = level)."""
+        """Set noise blanker level (0 = OFF, 1–10 = level).
+
+        The value must lie on the profile's ``nb_level`` raw domain;
+        off-domain values raise ``ValueError`` before any CAT write.
+        """
+        validate_control_raw_value(self.profile.controls, "nb_level", level)
         await self._write("set_nb_level", level=level)
 
     async def read_nr_level(self, receiver: int = 0) -> int:

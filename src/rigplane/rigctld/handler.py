@@ -34,6 +34,7 @@ from ..core.command_service import (
 )
 from ..core.command_dispatch import prepare_command_intent
 from ..core.exceptions import CommandError
+from ..core.radio_protocol import AttenuatorStepsCapable
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -2585,6 +2586,24 @@ class RigctldHandler:
         )
         return _ok()
 
+    def _attenuator_db_steps(self) -> tuple[int, ...] | None:
+        """Legal attenuator dB steps the radio publishes, or ``None``.
+
+        Anything a radio or test double returns that is not a non-empty
+        sequence of plain ints yields ``None`` so the caller forwards the
+        unsnapped value.
+        """
+        steps = (
+            self._radio.attenuator_db_steps()
+            if isinstance(self._radio, AttenuatorStepsCapable)
+            else None
+        )
+        if not isinstance(steps, (tuple, list)) or not steps:
+            return None
+        if any(isinstance(step, bool) or not isinstance(step, int) for step in steps):
+            return None
+        return tuple(steps)
+
     async def _execute_set_level(
         self,
         level: str,
@@ -2637,11 +2656,15 @@ class RigctldHandler:
             return HamlibError.OK
 
         if level == "ATT":
-            # Find nearest supported dB (0, 6, 12, 18)
-            _att_steps = [0, 6, 12, 18]
+            # Nearest legal dB from the radio's published steps; an exact
+            # tie between two steps snaps to the larger one. A radio that
+            # publishes no steps gets the rounded dB unsnapped — the
+            # radio (or its downstream service) decides.
+            steps = self._attenuator_db_steps()
             db = round(value)
-            nearest = min(_att_steps, key=lambda x: abs(x - db))
-            await self._radio.set_attenuator_level(nearest)
+            if steps is not None:
+                db = min(steps, key=lambda step: (abs(step - db), -step))
+            await self._radio.set_attenuator_level(db)
             return HamlibError.OK
 
         return HamlibError.EINVAL

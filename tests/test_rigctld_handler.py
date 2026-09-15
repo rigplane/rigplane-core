@@ -21,8 +21,10 @@ from rigplane.core.state_acquisition_policy import (
     FieldCapability,
     RadioAcquisitionProfile,
 )
+from rigplane.exceptions import CommandError as IcomCommandError
 from rigplane.exceptions import ConnectionError as IcomConnectionError
 from rigplane.exceptions import TimeoutError as IcomTimeoutError
+from rigplane.radio import IcomRadio
 from rigplane.core.state_pipeline_contracts import (
     CommandSource,
     FieldPath,
@@ -2880,14 +2882,114 @@ async def test_set_level_att(handler: RigctldHandler, mock_radio: AsyncMock) -> 
     mock_radio.set_attenuator_level.assert_awaited_once_with(18)
 
 
+class _IcomProfileAttRadio:
+    """Icom-path double whose attenuator validates like ``CoreRadio``.
+
+    ``attenuator_db_steps`` delegates to a real :class:`IcomRadio` built
+    from the shipping rig TOML, and ``set_attenuator_level`` refuses any
+    dB the profile does not declare — the same gate
+    ``CoreRadio.set_attenuator_level`` applies before its CI-V write.
+    """
+
+    def __init__(self, model: str) -> None:
+        self._icom = IcomRadio("192.168.1.100", model=model)
+        self.att_calls: list[int] = []
+
+    def attenuator_db_steps(self) -> tuple[int, ...] | None:
+        return self._icom.attenuator_db_steps()
+
+    async def set_attenuator_level(self, db: int, receiver: int = 0) -> None:
+        steps = self._icom.attenuator_db_steps()
+        if steps is None or isinstance(db, bool) or db not in steps:
+            raise IcomCommandError(
+                f"Attenuator level must be one of {sorted(steps or ())} dB (got {db})"
+            )
+        self.att_calls.append(db)
+
+
+def _att_handler(radio: object) -> RigctldHandler:
+    return RigctldHandler(radio, RigctldConfig())
+
+
 @pytest.mark.asyncio
-async def test_set_level_att_rounds_to_nearest(
-    handler: RigctldHandler, mock_radio: AsyncMock
-) -> None:
-    # 10 dB is closest to 12 dB
-    resp = await handler.execute(set_cmd("set_level", "ATT", "10"))
+async def test_set_level_att_ic7610_on_profile_passes_through() -> None:
+    """A dB the IC-7610 profile declares reaches the radio unchanged."""
+    radio = _IcomProfileAttRadio("IC-7610")
+    resp = await _att_handler(radio).execute(set_cmd("set_level", "ATT", "15"))
     assert resp.ok
-    mock_radio.set_attenuator_level.assert_awaited_once_with(12)
+    assert radio.att_calls == [15]
+
+
+@pytest.mark.asyncio
+async def test_set_level_att_ic7300_tie_snaps_up() -> None:
+    """10 dB is equidistant between the IC-7300's two legal steps; ties snap up."""
+    radio = _IcomProfileAttRadio("IC-7300")
+    resp = await _att_handler(radio).execute(set_cmd("set_level", "ATT", "10"))
+    assert resp.ok
+    assert radio.att_calls == [20]
+
+
+@pytest.mark.asyncio
+async def test_set_level_att_ic7610_snaps_to_nearest_step() -> None:
+    radio = _IcomProfileAttRadio("IC-7610")
+    resp = await _att_handler(radio).execute(set_cmd("set_level", "ATT", "10"))
+    assert resp.ok
+    assert radio.att_calls == [9]
+
+
+@pytest.mark.asyncio
+async def test_set_level_att_ic7610_between_steps_snaps_to_nearest() -> None:
+    """16 dB sits between the IC-7610's 15 and 18 steps: 15 is nearer."""
+    radio = _IcomProfileAttRadio("IC-7610")
+    resp = await _att_handler(radio).execute(set_cmd("set_level", "ATT", "16"))
+    assert resp.ok
+    assert radio.att_calls == [15]
+
+
+@pytest.mark.asyncio
+async def test_set_level_att_ic7300_snaps_to_20() -> None:
+    radio = _IcomProfileAttRadio("IC-7300")
+    resp = await _att_handler(radio).execute(set_cmd("set_level", "ATT", "15"))
+    assert resp.ok
+    assert radio.att_calls == [20]
+
+
+@pytest.mark.asyncio
+async def test_set_level_att_ic7300_snaps_to_0() -> None:
+    radio = _IcomProfileAttRadio("IC-7300")
+    resp = await _att_handler(radio).execute(set_cmd("set_level", "ATT", "5"))
+    assert resp.ok
+    assert radio.att_calls == [0]
+
+
+@pytest.mark.asyncio
+async def test_get_level_att_profile_radio_passes_db_through() -> None:
+    radio = _IcomProfileAttRadio("IC-7610")
+
+    async def _get_att(receiver: int = 0) -> int:
+        return 15
+
+    radio.get_attenuator_level = _get_att
+    resp = await _att_handler(radio).execute(get_cmd("get_level", "ATT"))
+    assert resp.ok
+    assert resp.values[0] == "15"
+
+
+@pytest.mark.asyncio
+async def test_set_level_att_no_published_steps_forwards_unsnapped() -> None:
+    """A radio publishing no attenuator steps gets the rounded dB as-is."""
+
+    class _NoStepsRadio:
+        def __init__(self) -> None:
+            self.att_calls: list[int] = []
+
+        async def set_attenuator_level(self, db: int, receiver: int = 0) -> None:
+            self.att_calls.append(db)
+
+    radio = _NoStepsRadio()
+    resp = await _att_handler(radio).execute(set_cmd("set_level", "ATT", "15"))
+    assert resp.ok
+    assert radio.att_calls == [15]
 
 
 @pytest.mark.asyncio
@@ -3925,6 +4027,35 @@ async def test_yaesu_get_level_nr_raw_max_answers_one(
 ) -> None:
     domain_yaesu_radio.get_nr_level.return_value = 10
     resp = await domain_yaesu_handler.execute(get_cmd("get_level", "NR"))
+    assert resp.ok
+    assert resp.values == ["1.000000"]
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_nb_full_maps_onto_domain(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    """hamlib NB 1.0 writes the FTX-1 domain max, not a code constant."""
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "NB", "1.0"))
+    assert resp.ok
+    domain_yaesu_radio.set_nb_level.assert_awaited_once_with(10)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_nb_half_maps_onto_domain(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "NB", "0.5"))
+    assert resp.ok
+    domain_yaesu_radio.set_nb_level.assert_awaited_once_with(5)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_level_nb_raw_max_answers_one(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    domain_yaesu_radio.get_nb_level.return_value = 10
+    resp = await domain_yaesu_handler.execute(get_cmd("get_level", "NB"))
     assert resp.ok
     assert resp.values == ["1.000000"]
 

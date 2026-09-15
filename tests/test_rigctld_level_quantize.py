@@ -19,9 +19,15 @@ domain the fraction is mapped onto the display band and written as its
 raw code; reading decodes the raw code and divides by the band maximum
 so raw 10 answers ``1.000000``. No domain — or a double that cannot
 supply usable bounds — keeps today's /15 numbers exactly.
+
+MOR-2469 gives NB the same dispatch on the published ``nb_level``
+domain; the /10 scaling remains only for radios publishing no
+``nb_level`` domain.
 """
 
 from __future__ import annotations
+
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -46,8 +52,10 @@ class _DomainRadio:
         self.if_shift_calls: list[int] = []
         self.cw_pitch_calls: list[int] = []
         self.nr_calls: list[int] = []
+        self.nb_calls: list[int] = []
         self.notch_state: tuple[bool, int] = (True, 1)
         self.nr_level: int = 0
+        self.nb_level: int = 0
 
     def snap_control_display(self, control: str, display: str) -> int | None:
         return self._ftx1.snap_control_display(control, display)
@@ -82,6 +90,46 @@ class _DomainRadio:
     async def set_nr_level(self, level: int, receiver: int = 0) -> None:
         self.nr_calls.append(level)
 
+    async def get_nb_level(self, receiver: int = 0) -> int:
+        return self.nb_level
+
+    async def set_nb_level(self, level: int, receiver: int = 0) -> None:
+        self.nb_calls.append(level)
+
+
+class _NoNbDomainRadio(_DomainRadio):
+    """Domain double whose profile publishes no ``nb_level`` domain.
+
+    ``control_display_bounds`` answers ``None`` for NB — the contract
+    for "no normalized domain published" — so both NB arms must take
+    the legacy /10 path while the other controls keep domain routing.
+    """
+
+    def control_display_bounds(self, control: str) -> tuple[str, str] | None:
+        if control == "nb_level":
+            return None
+        return self._ftx1.control_display_bounds(control)
+
+
+class _NbWideBandRadio(_DomainRadio):
+    """Domain double whose ``nb_level`` band is 0-15, not the FTX-1 identity.
+
+    On a 0-10 identity band the domain fraction and a /10 constant
+    coincide, so a test cannot tell which one answered. This double
+    publishes a 0-15 band (raw 5 = display 5), so raw 5 must answer
+    ``5/15`` on every NB answering path.
+    """
+
+    def control_display_bounds(self, control: str) -> tuple[str, str] | None:
+        if control == "nb_level":
+            return ("0", "15")
+        return self._ftx1.control_display_bounds(control)
+
+    def decode_control_raw(self, control: str, raw: int) -> str | None:
+        if control == "nb_level":
+            return str(raw) if 0 <= raw <= 15 else None
+        return self._ftx1.decode_control_raw(control, raw)
+
 
 class _NoNrDomainRadio(_DomainRadio):
     """Domain double whose profile publishes no ``nr_level`` domain.
@@ -105,8 +153,10 @@ class _NoDomainRadio:
         self.if_shift_calls: list[int] = []
         self.cw_pitch_calls: list[int] = []
         self.nr_calls: list[int] = []
+        self.nb_calls: list[int] = []
         self.notch_state: tuple[bool, int] = (True, 1)
         self.nr_level: int = 0
+        self.nb_level: int = 0
 
     async def get_manual_notch(self, receiver: int = 0) -> tuple[bool, int]:
         return self.notch_state
@@ -131,6 +181,12 @@ class _NoDomainRadio:
 
     async def set_nr_level(self, level: int, receiver: int = 0) -> None:
         self.nr_calls.append(level)
+
+    async def get_nb_level(self, receiver: int = 0) -> int:
+        return self.nb_level
+
+    async def set_nb_level(self, level: int, receiver: int = 0) -> None:
+        self.nb_calls.append(level)
 
 
 def _routing(radio: object) -> YaesuRouting:
@@ -425,3 +481,189 @@ def test_nr_state_path_unpublished_domain_keeps_legacy_scale() -> None:
     state = routing.format_state_level("NR", 8)
     assert state is not None
     assert state.values == [f"{8 / 15.0:.6f}"]
+
+
+# ---------------------------------------------------------------------------
+# NB — hamlib 0.0-1.0 fraction mapped onto the published nb_level domain
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("value", "applied"), [(1.0, 10), (0.5, 5), (0.0, 0), (0.3, 3), (0.25, 3)]
+)
+async def test_nb_set_maps_fraction_onto_domain(value: float, applied: int) -> None:
+    radio = _DomainRadio()
+    resp = await _routing(radio).set_level("NB", value)
+    assert resp.ok
+    assert radio.nb_calls == [applied]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [1.5, -0.1, 12.0])
+async def test_nb_set_out_of_range_einval_no_call(value: float) -> None:
+    radio = _DomainRadio()
+    resp = await _routing(radio).set_level("NB", value)
+    assert resp.error == int(HamlibError.EINVAL)
+    assert not resp.ok
+    assert radio.nb_calls == []
+
+
+@pytest.mark.asyncio
+async def test_nb_get_decodes_raw_max_to_one() -> None:
+    radio = _DomainRadio()
+    radio.nb_level = 10
+    resp = await _routing(radio).get_level("NB")
+    assert resp.ok
+    assert resp.values == ["1.000000"]
+
+
+@pytest.mark.asyncio
+async def test_nb_get_decodes_mid_raw_to_half() -> None:
+    radio = _DomainRadio()
+    radio.nb_level = 5
+    resp = await _routing(radio).get_level("NB")
+    assert resp.ok
+    assert resp.values == ["0.500000"]
+
+
+# ---------------------------------------------------------------------------
+# NB with no usable domain — today's /10 numbers, pinned exactly
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("value", "applied"), [(1.0, 10), (0.5, 5), (0.0, 0)])
+async def test_nb_set_no_domain_keeps_legacy_scale(value: float, applied: int) -> None:
+    """No protocol implementation → max(0, min(10, round(value * 10)))."""
+    radio = _NoDomainRadio()
+    resp = await _routing(radio).set_level("NB", value)
+    assert resp.ok
+    assert radio.nb_calls == [applied]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("value", "applied"), [(1.0, 10), (0.5, 5), (0.0, 0)])
+async def test_nb_set_unpublished_domain_keeps_legacy_scale(
+    value: float, applied: int
+) -> None:
+    """Protocol implemented but no nb_level domain published → legacy /10."""
+    radio = _NoNbDomainRadio()
+    resp = await _routing(radio).set_level("NB", value)
+    assert resp.ok
+    assert radio.nb_calls == [applied]
+
+
+@pytest.mark.asyncio
+async def test_nb_get_no_domain_keeps_legacy_scale() -> None:
+    radio = _NoDomainRadio()
+    radio.nb_level = 8
+    resp = await _routing(radio).get_level("NB")
+    assert resp.ok
+    assert resp.values == [f"{8 / 10.0:.6f}"]
+
+
+@pytest.mark.asyncio
+async def test_nb_get_unpublished_domain_keeps_legacy_scale() -> None:
+    radio = _NoNbDomainRadio()
+    radio.nb_level = 8
+    resp = await _routing(radio).get_level("NB")
+    assert resp.ok
+    assert resp.values == [f"{8 / 10.0:.6f}"]
+
+
+# ---------------------------------------------------------------------------
+# NB state path — format_state_level must agree with the live read
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_nb_state_path_agrees_with_live_read() -> None:
+    """Same raw value, both answering paths, same fraction."""
+    radio = _DomainRadio()
+    radio.nb_level = 10
+    routing = _routing(radio)
+    live = await routing.get_level("NB")
+    state = routing.format_state_level("NB", 10)
+    assert live.ok and state is not None
+    assert state.values == live.values == ["1.000000"]
+
+
+def test_nb_state_path_agrees_with_live_read_off_max() -> None:
+    radio = _DomainRadio()
+    routing = _routing(radio)
+    state = routing.format_state_level("NB", 5)
+    assert state is not None
+    assert state.values == ["0.500000"]
+
+
+def test_nb_state_path_no_domain_keeps_legacy_scale() -> None:
+    radio = _NoDomainRadio()
+    routing = _routing(radio)
+    state = routing.format_state_level("NB", 8)
+    assert state is not None
+    assert state.values == [f"{8 / 10.0:.6f}"]
+
+
+def test_nb_state_path_unpublished_domain_keeps_legacy_scale() -> None:
+    radio = _NoNbDomainRadio()
+    routing = _routing(radio)
+    state = routing.format_state_level("NB", 8)
+    assert state is not None
+    assert state.values == [f"{8 / 10.0:.6f}"]
+
+
+# ---------------------------------------------------------------------------
+# NB band mismatch guard — both answering paths read the published band
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_nb_get_wide_band_reads_domain_not_ten() -> None:
+    """Raw 5 on a 0-15 band answers 5/15, not the /10 constant."""
+    radio = _NbWideBandRadio()
+    radio.nb_level = 5
+    resp = await _routing(radio).get_level("NB")
+    assert resp.ok
+    assert resp.values == ["0.333333"]
+
+
+def test_nb_state_wide_band_agrees_with_live_read() -> None:
+    """Same raw value, live and StateStore paths, same domain fraction."""
+    radio = _NbWideBandRadio()
+    routing = _routing(radio)
+    state = routing.format_state_level("NB", 5)
+    assert state is not None
+    assert state.values == ["0.333333"]
+
+
+# ---------------------------------------------------------------------------
+# FTX-1 backend surface — published nb_level domain
+# ---------------------------------------------------------------------------
+
+
+def test_ftx1_nb_level_display_bounds() -> None:
+    assert YaesuCatRadio("/dev/null", profile="ftx1").control_display_bounds(
+        "nb_level"
+    ) == ("0", "10")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level", [0, 5, 10])
+async def test_ftx1_set_nb_level_accepts_domain_values(level: int) -> None:
+    radio = YaesuCatRadio("/dev/null", profile="ftx1")
+    radio._write = AsyncMock()
+    await radio.set_nb_level(level)
+    radio._write.assert_called_once_with("set_nb_level", level=level)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level", [11, -1])
+async def test_ftx1_set_nb_level_rejects_off_domain_without_cat_write(
+    level: int,
+) -> None:
+    radio = YaesuCatRadio("/dev/null", profile="ftx1")
+    radio._write = AsyncMock()
+    with pytest.raises(ValueError, match="nb_level must be within 0-10"):
+        await radio.set_nb_level(level)
+    radio._write.assert_not_called()

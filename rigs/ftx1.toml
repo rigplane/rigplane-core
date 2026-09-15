@@ -635,6 +635,22 @@ style = "level_is_toggle"
 range_min = 0
 range_max = 10
 
+# NL (NOISE BLANKER LEVEL) per the FTX-1 CAT Operation Reference Manual
+# rev 2508-C: P2 000 = OFF, 001-010 = NB level.
+[controls.nb_level]
+mapping = "identity"
+raw_min = 0
+raw_max = 10
+raw_step = 1
+raw_origin = 0
+display_min = 0
+display_max = 10
+display_step = 1
+display_origin = 0
+display_unit = "level"
+quantization = "reject"
+restoration = "exact"
+
 [controls.nr]
 style = "level_is_toggle"
 # NR/DNR (RL) level per the FTX-1 CAT OM is 0-10, NOT 1-15 (MOR-695).
