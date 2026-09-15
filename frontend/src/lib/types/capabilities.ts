@@ -79,6 +79,7 @@ export interface ControlRange {
   display_min?: number;
   display_max?: number;
   display_unit?: string;
+  decode_quantum?: number;
   style?: string;
 }
 
@@ -257,7 +258,7 @@ const DOMAIN_REQUIRED_KEYS = [
 ] as const;
 const DOMAIN_KEYS = new Set([
   ...DOMAIN_REQUIRED_KEYS, 'style', 'range_min', 'range_max',
-  'raw_center', 'display_center', 'lookup',
+  'raw_center', 'display_center', 'decode_quantum', 'lookup',
 ]);
 const EXPLICIT_DOMAIN_KEYS = new Set([
   'raw_step', 'raw_origin', 'display_step', 'display_origin', 'display_center',
