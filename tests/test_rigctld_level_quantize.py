@@ -378,3 +378,50 @@ async def test_nr_get_unpublished_domain_keeps_legacy_scale() -> None:
     resp = await _routing(radio).get_level("NR")
     assert resp.ok
     assert resp.values == [f"{8 / 15.0:.6f}"]
+
+
+# ---------------------------------------------------------------------------
+# NR state path — format_state_level must agree with the live read (MOR-2479)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_nr_state_path_agrees_with_live_read() -> None:
+    """Same raw value, both answering paths, same fraction.
+
+    ``get_level`` reads the wire; ``format_state_level`` formats the
+    StateStore projection. Both must consult the published domain, so
+    raw 10 answers ``1.000000`` either way — not ``1.000000`` live and
+    ``0.666667`` from state.
+    """
+    radio = _DomainRadio()
+    radio.nr_level = 10
+    routing = _routing(radio)
+    live = await routing.get_level("NR")
+    state = routing.format_state_level("NR", 10)
+    assert live.ok and state is not None
+    assert state.values == live.values == ["1.000000"]
+
+
+def test_nr_state_path_agrees_with_live_read_off_max() -> None:
+    radio = _DomainRadio()
+    routing = _routing(radio)
+    state = routing.format_state_level("NR", 5)
+    assert state is not None
+    assert state.values == ["0.500000"]
+
+
+def test_nr_state_path_no_domain_keeps_legacy_scale() -> None:
+    radio = _NoDomainRadio()
+    routing = _routing(radio)
+    state = routing.format_state_level("NR", 8)
+    assert state is not None
+    assert state.values == [f"{8 / 15.0:.6f}"]
+
+
+def test_nr_state_path_unpublished_domain_keeps_legacy_scale() -> None:
+    radio = _NoNrDomainRadio()
+    routing = _routing(radio)
+    state = routing.format_state_level("NR", 8)
+    assert state is not None
+    assert state.values == [f"{8 / 15.0:.6f}"]

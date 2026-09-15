@@ -290,6 +290,13 @@ class YaesuRouting:
                     values=[_format_raw_scaled_float(value, raw_divisor=10.0)]
                 )
             if level == "NR":
+                # Same domain the live read in get_level consults, so a
+                # level answered from StateStore projection agrees with a
+                # live one; /15 remains only for radios publishing no
+                # nr_level domain (MOR-2479).
+                fraction = _domain_nr_fraction(self._radio, int(value))
+                if fraction is not None:
+                    return RigctldResponse(values=[f"{fraction:.6f}"])
                 return RigctldResponse(
                     values=[_format_raw_scaled_float(value, raw_divisor=15.0)]
                 )
