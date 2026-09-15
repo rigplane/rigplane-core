@@ -1479,6 +1479,26 @@ choices = [
                 assert isinstance(entry.get("decode_quantum"), int), (path.name, ctl)
                 assert entry["decode_quantum"] > 0, (path.name, ctl)
 
+    def test_every_civ_profile_with_cw_commands_declares_encode_rounding(self):
+        for path in sorted(
+            path for path in RIGS_DIR.glob("*.toml") if not path.name.startswith("_")
+        ):
+            rig = load_rig(path)
+            controls = rig.to_profile().controls
+            for ctl, command in (
+                ("cw_pitch", "set_cw_pitch"),
+                ("key_speed", "set_key_speed"),
+            ):
+                if command not in rig.commands:
+                    continue
+                assert controls is not None, (path.name, ctl)
+                entry = controls.get(ctl)
+                assert isinstance(entry, dict), (path.name, ctl)
+                assert entry.get("encode_rounding") in (
+                    "ceil",
+                    "nearest_half_down",
+                ), (path.name, ctl)
+
     def test_encode_rounding_is_published_on_the_legacy_control(self, tmp_path):
         rig = self._load(tmp_path, self._LEGACY_PITCH + 'encode_rounding = "ceil"\n')
 

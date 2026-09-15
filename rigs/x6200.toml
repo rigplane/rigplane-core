@@ -340,6 +340,7 @@ display_min = 400
 display_max = 1200
 display_unit = "Hz"
 decode_quantum = 1  # no Hz step documented: Radioddity X6200 CI-V V1.0.6 p.6 gives only 0=400Hz/255=1200Hz
+encode_rounding = "ceil"  # band endpoints 400->0 and 1200->255 are pinned by tests/test_control_domain_math.py::test_x6200_cw_pitch_encode_uses_the_declared_400_1200_domain
 
 [controls.key_speed]
 raw_min = 0
@@ -348,6 +349,7 @@ display_min = 6
 display_max = 48
 display_unit = "WPM"
 decode_quantum = 1  # band not documented for this radio: it reproduces the pre-existing shared CI-V key-speed decode; Radioddity X6200 CI-V V1.0.6 p.6 gives no WPM scale
+encode_rounding = "nearest_half_down"  # same 6-48 band and rule as the Icom CI-V encode (pinned by tests/test_control_domain_math.py::test_x6200_key_speed_encode_matches_the_icom_vectors)
 
 [controls.rit]
 # MOR-1883: exact-form translation of the previously declared range;
