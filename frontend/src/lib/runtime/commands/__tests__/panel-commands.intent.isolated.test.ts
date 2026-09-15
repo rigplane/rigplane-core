@@ -117,10 +117,17 @@ import {
   makeKeyboardHandlers,
   dispatchKeyboardRadioAction,
 } from '../panel-commands';
-import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
+import {
+  acknowledgeCommand,
+  failCommand,
+  getCommandLifecycles,
+  resetCommandLifecycle,
+} from '$lib/stores/commands.svelte';
 import { setPendingFocus } from '$lib/radio/pending-focus';
 
-const freshStatus = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
+const freshStatus = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+} as const;
 
 function state(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
   const receiver = {
@@ -195,6 +202,8 @@ function state(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
     scanResumeMode: 2,
     fieldStatus: {
       active: freshStatus,
+      'main.freqHz': { ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: 1 },
+      'sub.freqHz': { ...freshStatus, storePath: 'sub.freqHz', lastObservedMonotonic: 1 },
       'main.dataMode': freshStatus,
       'sub.dataMode': freshStatus,
       data1ModInput: freshStatus,
@@ -247,6 +256,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       modes: ['USB', 'CW'],
       filters: ['FIL1', 'FIL2', 'FIL3'],
       dataModeCount: 3,
+      dataModeInputs: [0, 1, 2, 3, 4, 5].map(value => ({ value, label: String(value) })),
       preValues: [0, 1, 2],
       attValues: [0, 6, 12],
       agcModes: [1, 2, 3],
@@ -431,9 +441,9 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     rxAudio.onAfLevelChange(0.42);
 
     expect(exactCalls()).toEqual([
-      ['set_af_level', { level: 0, receiver: 0 }],
-      ['set_af_level', { level: 50 / 255, receiver: 0 }],
-      ['set_af_level', { level: 0.42, receiver: 0 }],
+      ['set_af_level', { level: 0, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 50 / 255, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 0.42, receiver: 0, level_unit: 'normalized' }],
     ]);
     expectIntentTransport();
     expect(h.setMuted).toHaveBeenNthCalledWith(1, true);
@@ -480,8 +490,8 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     rxAudio.onAfLevelChange(1);
 
     expect(exactCalls()).toEqual([
-      ['set_af_level', { level: 0, receiver: 0 }],
-      ['set_af_level', { level: 1, receiver: 0 }],
+      ['set_af_level', { level: 0, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 1, receiver: 0, level_unit: 'normalized' }],
     ]);
     expectIntentTransport();
 
@@ -590,7 +600,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     tx.onDriveGainChange(100);
 
     expect(exactCalls()).toEqual([
-      ['set_rf_power', { level: 0.42 }],
+      ['set_rf_power', { level: 0.42, level_unit: 'normalized' }],
       ['set_mic_gain', { level: 200 }],
       ['set_tuner_status', { value: 0 }],
       ['set_tuner_status', { value: 2 }],
@@ -604,6 +614,23 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expectIntentTransport();
     expect(exactCalls().map(([name]) => name)).not.toContain('ptt');
     expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('marks only bounded normalized RF-power UI values', () => {
+    const tx = makeTxHandlers();
+    tx.onRfPowerChange(0);
+    tx.onRfPowerChange(0.5);
+    tx.onRfPowerChange(1);
+    for (const invalid of [-0.01, 1.01, Number.NaN, Number.POSITIVE_INFINITY]) {
+      tx.onRfPowerChange(invalid);
+    }
+
+    expect(exactCalls()).toEqual([
+      ['set_rf_power', { level: 0, level_unit: 'normalized' }],
+      ['set_rf_power', { level: 0.5, level_unit: 'normalized' }],
+      ['set_rf_power', { level: 1, level_unit: 'normalized' }],
+    ]);
+    expectIntentTransport();
   });
 
   it('preserves exact antenna and scan command names and params without Store truth', () => {
@@ -729,7 +756,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_preamp', { level: 1, receiver: 0 }],
       ['set_agc', { mode: 2, receiver: 0 }],
       ['set_nb', { on: true, receiver: 0 }],
-      ['set_af_level', { level: 0.5, receiver: 0 }],
+      ['set_af_level', { level: 0.5, receiver: 0, level_unit: 'normalized' }],
       ['set_band', { band: 5 }],
       ['set_rit_status', { on: true }],
     ]);
@@ -1179,6 +1206,59 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
+  it('writes the captured fixed A/B slot without selecting it', () => {
+    h.state = oneReceiverAbState();
+    h.state.fieldStatus = {
+      ...h.state.fieldStatus,
+      'main.activeSlot': { ...freshStatus, storePath: 'main.activeSlot' },
+    };
+    h.caps = {
+      capabilities: ['vfo_freq_direct'], receivers: 1, vfoScheme: 'ab',
+      stateContractVersion: 1, providerGeneration: 31,
+      freqRanges: [{ start: 30_000, end: 74_800_000, label: 'HF' }],
+    };
+
+    const lifecycle = makeVfoHandlers().onDirectFrequencyChange({
+      frequencyHz: 7_075_000, receiver: 'MAIN', slot: 'B', expectedActiveSlot: 'A',
+      providerGeneration: 31, sessionEpoch: 31,
+    });
+
+    expect(lifecycle).toMatchObject({ name: 'set_vfo_freq', status: 'pending' });
+    expect(exactCalls()).toEqual([['set_vfo_freq', {
+      freq: 7_075_000, receiver: 0, slot: 'B', expected_active_slot: 'A', provider_generation: 31,
+    }]]);
+    expect(h.patchActiveReceiver).not.toHaveBeenCalled();
+    expect(h.patchRadioState).not.toHaveBeenCalled();
+    expect(h.patchReceiver).not.toHaveBeenCalled();
+  });
+
+  it('refuses direct slot writes after any captured authority changes', () => {
+    const request = {
+      frequencyHz: 7_075_000, receiver: 'MAIN' as const, slot: 'B' as const,
+      expectedActiveSlot: 'A' as const, providerGeneration: 31, sessionEpoch: 31,
+    };
+    const reset = () => {
+      h.state = oneReceiverAbState();
+      h.state.fieldStatus = { ...h.state.fieldStatus,
+        'main.activeSlot': { ...freshStatus, storePath: 'main.activeSlot' } };
+      h.caps = { capabilities: ['vfo_freq_direct'], receivers: 1, vfoScheme: 'ab',
+        stateContractVersion: 1, providerGeneration: 31,
+        freqRanges: [{ start: 30_000, end: 74_800_000, label: 'HF' }] };
+      h.sendCommand.mockClear(); resetCommandLifecycle(); h.unavailable.clear();
+    };
+    const refuse = (mutate: () => void) => {
+      reset(); mutate();
+      expect(makeVfoHandlers().onDirectFrequencyChange(request)).toBeNull();
+      expect(h.sendCommand).not.toHaveBeenCalled();
+    };
+    refuse(() => { h.state!.main!.activeSlot = 'B'; });
+    refuse(() => { h.state = { ...h.state!, providerGeneration: 32 }; });
+    refuse(() => { h.caps = { ...h.caps!, capabilities: [] }; });
+    refuse(() => { h.unavailable.add('main.activeSlot'); });
+    refuse(() => { h.caps = { ...h.caps!, vfoScheme: 'main_sub' }; });
+    refuse(() => { h.caps = { ...h.caps!, receivers: 2 }; });
+  });
+
   it('MOR-1425: a burst of rapid steps within one round trip accumulates onto the pending target, not the stale confirmed value', () => {
     const vfo = makeVfoHandlers();
     const confirmed = h.state!.main!.freqHz; // 14_074_000, unchanged for the whole burst
@@ -1235,6 +1315,153 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     // The pre-reset paced flush must never fire and emit a stray 3rd call.
     vi.advanceTimersByTime(60);
     expect(h.sendCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it('MOR-1864: associates delayed accepted echoes by exact target and marker across a reversal', () => {
+    const vfo = makeVfoHandlers();
+    const start = h.state!.main!.freqHz;
+    const setObservation = (frequency: number, marker: number) => {
+      h.state = {
+        ...h.state!,
+        main: { ...h.state!.main!, freqHz: frequency },
+        fieldStatus: {
+          ...h.state!.fieldStatus,
+          'main.freqHz': {
+            ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: marker,
+          },
+        },
+      };
+    };
+    const acknowledgeLatest = () => {
+      const command = getCommandLifecycles().at(-1)!;
+      acknowledgeCommand(command.id, command.originalEpoch, command.originalEpoch);
+    };
+
+    vfo.onMainFreqChange(start + 1_000); // R -> S+1
+    expect(getCommandLifecycles()[0]?.params).toEqual({ freq: start + 1_000, receiver: 0 });
+    acknowledgeLatest();
+    vi.advanceTimersByTime(250);
+    vfo.onMainFreqChange(start - 1_000); // L -> net S
+    vi.advanceTimersByTime(0);
+    acknowledgeLatest();
+
+    setObservation(start + 1_000, 2); // delayed echo of the older, obsolete R
+    vi.advanceTimersByTime(250);
+    vfo.onMainFreqChange(start + 2_000); // R -> net S+1, never S+2
+    vi.advanceTimersByTime(0);
+    acknowledgeLatest();
+
+    setObservation(start, 3); // delayed echo of L
+    vi.advanceTimersByTime(250);
+    vfo.onMainFreqChange(start - 1_000); // L -> net S
+    vi.advanceTimersByTime(0);
+
+    expect(exactCalls().filter(([name]) => name === 'set_freq')).toEqual([
+      ['set_freq', { freq: start + 1_000, receiver: 0 }],
+      ['set_freq', { freq: start, receiver: 0 }],
+      ['set_freq', { freq: start + 1_000, receiver: 0 }],
+      ['set_freq', { freq: start, receiver: 0 }],
+    ]);
+    expect(getCommandLifecycles()[0]?.locallyObsolete).toBe(true);
+  });
+
+  it('MOR-1864: preserves all 70 delayed alternating pairs without target drift', () => {
+    const vfo = makeVfoHandlers();
+    const start = h.state!.main!.freqHz;
+    const observed = (frequency: number, marker: number) => {
+      h.state = {
+        ...h.state!, main: { ...h.state!.main!, freqHz: frequency },
+        fieldStatus: { ...h.state!.fieldStatus, 'main.freqHz': {
+          ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: marker,
+        } },
+      };
+    };
+
+    for (let index = 0; index < 140; index++) {
+      if (index > 0) vi.advanceTimersByTime(250);
+      if (index >= 2) observed(index % 2 === 0 ? start + 1_000 : start, index);
+      const shown = h.state!.main!.freqHz;
+      vfo.onMainFreqChange(shown + (index % 2 === 0 ? 1_000 : -1_000));
+      vi.advanceTimersByTime(0);
+      const command = getCommandLifecycles().at(-1)!;
+      acknowledgeCommand(command.id, command.originalEpoch, command.originalEpoch);
+    }
+
+    expect(exactCalls().filter(([name]) => name === 'set_freq').map(([, params]) => params.freq))
+      .toEqual(Array.from({ length: 140 }, (_, index) => index % 2 === 0 ? start + 1_000 : start));
+  });
+
+  it('MOR-1864: stale TTL preserves a known marker, while pending targets cannot explain changed truth', () => {
+    const vfo = makeVfoHandlers();
+    const start = h.state!.main!.freqHz;
+    vfo.onMainFreqChange(start + 1_000);
+    h.state = { ...h.state!, fieldStatus: { ...h.state!.fieldStatus, 'main.freqHz': {
+      ...freshStatus, storePath: 'main.freqHz', freshness: 'stale', availability: 'stale',
+      lastObservedMonotonic: 1, quality: ['confirmed'],
+    } } };
+    vfo.onMainFreqChange(start + 1_000);
+    vi.advanceTimersByTime(60);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 2_000, receiver: 0 }]);
+
+    // The latest target is still merely pending. A changed field value cannot
+    // be attributed to it and therefore starts cold, immediately.
+    h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: start + 2_000 }, fieldStatus: {
+      ...h.state!.fieldStatus, 'main.freqHz': {
+        ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: 2,
+      },
+    } };
+    const count = h.sendCommand.mock.calls.length;
+    vfo.onMainFreqChange(start + 3_000);
+    expect(h.sendCommand).toHaveBeenCalledTimes(count + 1);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 3_000, receiver: 0 }]);
+  });
+
+  it('MOR-1864: explicit A/B selection fences an already queued old-slot flush', () => {
+    h.state = oneReceiverAbState();
+    h.state = { ...h.state, fieldStatus: { ...h.state.fieldStatus,
+      'main.freqHz': { ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: 1 },
+      'main.activeSlot': { ...freshStatus, storePath: 'main.activeSlot', lastObservedMonotonic: 1 },
+    } };
+    h.caps = { ...h.caps!, receivers: 1, vfoScheme: 'ab' };
+    const vfo = makeVfoHandlers();
+    const start = h.state!.main!.freqHz;
+    vfo.onMainFreqChange(start + 1_000);
+    vfo.onMainFreqChange(start + 1_000);
+    vfo.onVfoSelect('MAIN', 'B');
+    vi.advanceTimersByTime(60);
+    expect(exactCalls()).toEqual([
+      ['set_freq', { freq: start + 1_000, receiver: 0 }],
+      ['set_vfo', { vfo: 'B' }],
+    ]);
+  });
+
+  it('MOR-1864: excludes pre-burst, pending, and failed records from changed-value association', () => {
+    const vfo = makeVfoHandlers();
+    const start = h.state!.main!.freqHz;
+    const setObservation = (frequency: number, marker: number) => {
+      h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: frequency }, fieldStatus: {
+        ...h.state!.fieldStatus, 'main.freqHz': {
+          ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: marker,
+        },
+      } };
+    };
+
+    // Same fake-clock millisecond as the later burst anchor: registry order,
+    // not timestamp alone, keeps this accepted historical target out.
+    vfo.onFreqChange(start + 500, 0, 'jump');
+    let record = getCommandLifecycles().at(-1)!;
+    acknowledgeCommand(record.id, record.originalEpoch, record.originalEpoch);
+    vfo.onMainFreqChange(start + 1_000);
+    setObservation(start + 500, 2);
+    vfo.onMainFreqChange(start + 1_500);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 1_500, receiver: 0 }]);
+
+    // A failed current record is equally unable to explain a later change.
+    record = getCommandLifecycles().at(-1)!;
+    failCommand(record.id, record.originalEpoch, record.originalEpoch, 'NAK');
+    setObservation(start + 1_500, 3);
+    vfo.onMainFreqChange(start + 2_500);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 2_500, receiver: 0 }]);
   });
 
   it("MOR-1425 review B1: onFreqChange(freq, receiver, 'step') opts a relative gesture into the accumulate path instead of the 'jump' default", () => {
@@ -1355,7 +1582,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_rit_status', { on: true }],
       ['set_rit_tx_status', { on: false }],
       ['set_rit_frequency', { freq: 0 }],
-      ['set_af_level', { level: 50 / 255 + 0.05, receiver: 0 }],
+      ['set_af_level', { level: 50 / 255 + 0.05, receiver: 0, level_unit: 'normalized' }],
       ['set_rf_gain', { level: Math.round((128 / 255 - 0.05) * 255), receiver: 0 }],
       ['set_monitor', { on: true }], ['set_split', { on: true }],
       ['vfo_swap', {}], ['vfo_equalize', {}],
@@ -1481,7 +1708,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'up' } })).toBe(true);
     expect(dispatchKeyboardRadioAction({ action: 'adjust_rf_gain', params: { direction: 'down' } })).toBe(true);
     expect(exactCalls()).toEqual([
-      ['set_af_level', { level: 1, receiver: 0 }],
+      ['set_af_level', { level: 1, receiver: 0, level_unit: 'normalized' }],
       ['set_rf_gain', { level: 0, receiver: 0 }],
     ]);
     expectIntentTransport();

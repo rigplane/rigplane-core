@@ -3,7 +3,7 @@
 Responsibilities:
 - Command dispatch table (long_cmd → async handler method)
 - Read-only gate (reject set commands with RPRT -22)
-- RadioState-first reads with a small handler-local fallback cache
+- RadioState-first reads
 - Error translation (rigplane exceptions → Hamlib error codes)
 
 This module receives RigctldCommand from protocol.py and returns
@@ -32,6 +32,9 @@ from ..core.command_service import (
     PendingOverlay,
     command_intent_from_request,
 )
+from ..core.command_dispatch import prepare_command_intent
+from ..core.exceptions import CommandError
+from ..core.radio_protocol import AttenuatorStepsCapable
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -55,6 +58,7 @@ from ..radio_state import RadioState, ReceiverState
 from ..runtime import _poller_types as tx_commands  # noqa: TID251
 from ..runtime import tx_interlock
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
+from ..runtime.managed_tx_state import ManagedTxOutcome
 from ..types import Mode
 from .contract import (  # noqa: TID251
     CIV_TO_HAMLIB_MODE,
@@ -68,6 +72,7 @@ from .utils import get_mode_reader  # noqa: TID251
 
 if TYPE_CHECKING:
     from ..radio_protocol import Radio
+    from ..runtime.managed_tx_authority import ManagedTxAuthority
 
 from ..capabilities import CAP_METERS, CAP_RIT
 from .routing import (  # noqa: TID251
@@ -88,6 +93,29 @@ _RIGCTLD_PROVIDER_GENERATION: ContextVar[int | None] = ContextVar(
     "rigctld_provider_generation",
     default=None,
 )
+_RIGCTLD_PREDECESSOR: ContextVar[asyncio.Future[None] | None] = ContextVar(
+    "rigctld_predecessor",
+    default=None,
+)
+_RIGCTLD_PTT_SUBMISSION: ContextVar[asyncio.Task[Any] | None] = ContextVar(
+    "rigctld_ptt_submission", default=None
+)
+_RIGCTLD_PTT_READY: ContextVar[asyncio.Future[None] | None] = ContextVar(
+    "rigctld_ptt_ready", default=None
+)
+
+
+class _RigctldQueueReady(asyncio.Future[None]):
+    """Translate the queue turn into the pre-registered ingress readiness."""
+
+    def __init__(self, release: Callable[[], None]) -> None:
+        super().__init__()
+        self._release = release
+
+    def set_result(self, result: None) -> None:
+        self._release()
+        super().set_result(result)
+
 
 # ---------------------------------------------------------------------------
 # IC-7610 hardcoded dump_state (hamlib protocol v0 positional format)
@@ -384,72 +412,6 @@ def _mode_to_hamlib_str(mode: object) -> str:
     return str(mode).upper()
 
 
-@dataclass(slots=True)
-class _PendingRigState:
-    """Local optimistic write-through state until RadioState catches up."""
-
-    freq: int | None = None
-    mode: str | None = None
-    filter_width: int | None = None
-    data_mode: bool | None = None
-
-
-@dataclass(slots=True)
-class _FallbackRigState:
-    """Handler-local fallback values used only until RadioState becomes valid."""
-
-    freq: int = 0
-    freq_ts: float = 0.0
-    mode: str = "USB"
-    filter_width: int | None = None
-    mode_ts: float = 0.0
-    data_mode: bool = False
-    data_mode_ts: float = 0.0
-    ptt: bool = False
-    ptt_ts: float = 0.0
-    s_meter: int | None = None
-    s_meter_ts: float = 0.0
-    rf_power: float | None = None
-    rf_power_ts: float = 0.0
-    swr: float | None = None
-    swr_ts: float = 0.0
-
-    def is_fresh(self, field: str, ttl: float | None) -> bool:
-        if ttl is None or ttl <= 0.0:
-            return False
-        ts = getattr(self, f"{field}_ts", 0.0)
-        return ts > 0.0 and (time.monotonic() - ts) < ttl
-
-    def update_freq(self, freq: int) -> None:
-        self.freq = freq
-        self.freq_ts = time.monotonic()
-
-    def update_mode(self, mode: str, filter_width: int | None) -> None:
-        self.mode = mode
-        self.filter_width = filter_width
-        self.mode_ts = time.monotonic()
-
-    def update_data_mode(self, on: bool) -> None:
-        self.data_mode = on
-        self.data_mode_ts = time.monotonic()
-
-    def update_ptt(self, on: bool) -> None:
-        self.ptt = on
-        self.ptt_ts = time.monotonic()
-
-    def update_s_meter(self, raw: int) -> None:
-        self.s_meter = raw
-        self.s_meter_ts = time.monotonic()
-
-    def update_rf_power(self, value: float) -> None:
-        self.rf_power = value
-        self.rf_power_ts = time.monotonic()
-
-    def update_swr(self, value: float) -> None:
-        self.swr = value
-        self.swr_ts = time.monotonic()
-
-
 @dataclass(frozen=True, slots=True)
 class _RigctldCommandFailure(Exception):
     error: HamlibError
@@ -458,15 +420,146 @@ class _RigctldCommandFailure(Exception):
 @dataclass(slots=True)
 class _RigctldCommandExecutor:
     handler: "RigctldHandler"
+    predecessor: asyncio.Future[None] | None = None
+
+    async def _wait_predecessor(self) -> None:
+        if self.predecessor is not None:
+            await asyncio.shield(self.predecessor)
+
+    async def _execute_managed_ptt(
+        self,
+        intent: CommandIntent,
+    ) -> CommandExecutionResult:
+        authority = self.handler._managed_tx_authority
+        assert authority is not None
+        on = bool(intent.params["ptt"])
+        owner = intent.params.get("session_id")
+        if not isinstance(owner, str) or not owner:
+            raise _RigctldCommandFailure(HamlibError.EACCESS)
+
+        submission = _RIGCTLD_PTT_SUBMISSION.get()
+        ready = _RIGCTLD_PTT_READY.get()
+        queue = self.handler._command_queue
+        assert queue is not None
+        completion: asyncio.Future[None] | None = None
+        task = asyncio.current_task()
+        cancelling = 0 if task is None else task.cancelling()
+        try:
+            if not on:
+                receipt = (
+                    await submission
+                    if submission is not None
+                    else await authority.submit_ptt(False, owner)
+                )
+            else:
+                loop = asyncio.get_running_loop()
+                if submission is None:
+                    raise _RigctldCommandFailure(HamlibError.EINTERNAL)
+                release_queue = getattr(ready, "release_queue", None)
+                if not callable(release_queue):
+                    raise _RigctldCommandFailure(HamlibError.EINTERNAL)
+                queue_ready = _RigctldQueueReady(release_queue)
+                completion = loop.create_future()
+                expires_at = getattr(ready, "expires_at_monotonic", None)
+                if not isinstance(expires_at, float):
+                    raise _RigctldCommandFailure(HamlibError.EINTERNAL)
+                connection_generation = getattr(ready, "connection_generation", None)
+                if connection_generation is None:
+                    raise _RigctldCommandFailure(HamlibError.EINTERNAL)
+                queue.put_ordered(
+                    None,
+                    future=completion,
+                    source="rigctld",
+                    session_id=owner,
+                    expires_at_monotonic=expires_at,
+                    provider_generation=self.handler._provider_generation_capture(),
+                    connection_generation=connection_generation,
+                    positive_tx_ready=queue_ready,
+                    positive_tx_submission=submission,
+                )
+                if ready is not None and not ready.done():
+                    ready.set_result(None)
+                receipt = await submission
+                await completion
+        except asyncio.CancelledError as exc:
+            if task is not None and task.cancelling() > cancelling:
+                raise
+            raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
+        except CommandError as exc:
+            raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
+        except Exception as exc:
+            raise _RigctldCommandFailure(HamlibError.EIO) from exc
+        finally:
+            if completion is not None:
+                if not completion.done():
+                    completion.cancel()
+                await asyncio.gather(completion, return_exceptions=True)
+
+        if on and receipt.outcome is ManagedTxOutcome.REJECTED:
+            raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        return CommandExecutionResult()
+
+    async def _execute_managed_tuner(
+        self, intent: CommandIntent
+    ) -> CommandExecutionResult:
+        """Normalize the one in-scope rigctld function into the shared leaf."""
+        queue = self.handler._command_queue
+        assert queue is not None
+        raw_session = intent.params.get("session_id")
+        session_id = None if raw_session is None else str(raw_session)
+        normalized = prepare_command_intent(
+            self.handler._radio,
+            "set_tuner_status",
+            {"value": 1 if bool(intent.params["on"]) else 0},
+            source="rigctld",
+            command_id=intent.id,
+            session_id=session_id,
+        )
+        loop = asyncio.get_running_loop()
+        completion: asyncio.Future[None] = loop.create_future()
+        timeout = intent.timeout or self.handler._config.command_timeout
+        expires_at = loop.time() + timeout
+        queue.put_ordered(
+            normalized,
+            future=completion,
+            command_id=normalized.id,
+            source=normalized.source,
+            session_id=session_id,
+            expires_at_monotonic=expires_at,
+            provider_generation=self.handler._provider_generation_capture(),
+            connection_generation=queue.capture_connection_generation(),
+        )
+        try:
+            await asyncio.wait_for(
+                completion, timeout=max(0.0, expires_at - loop.time())
+            )
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            raise _RigctldCommandFailure(HamlibError.ETIMEOUT) from exc
+        except CommandError as exc:
+            raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
+        return CommandExecutionResult()
 
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
-        classification = _classify_rigctld_tx_intent(intent)
+        managed = self.handler._managed_tx_authority is not None
+        if managed and intent.name == "set_ptt":
+            return await self._execute_managed_ptt(intent)
         if (
-            classification.disposition is TxInterlockDisposition.BLOCK
-            and self.handler._has_canonical_state_store
-            and self.handler._resolve_rigctld_rf_state() is not tx_interlock.RfState.RX
+            managed
+            and intent.name == "set_func"
+            and str(intent.params["func"]).upper() == "TUNER"
         ):
-            raise _RigctldCommandFailure(HamlibError.ERJCTED)
+            return await self._execute_managed_tuner(intent)
+
+        if not managed:
+            classification = _classify_rigctld_tx_intent(intent)
+            if (
+                classification.disposition is TxInterlockDisposition.BLOCK
+                and self.handler._has_canonical_state_store
+                and self.handler._resolve_rigctld_rf_state()
+                is not tx_interlock.RfState.RX
+            ):
+                raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        await self._wait_predecessor()
         params = intent.params
         if intent.name == "set_freq":
             await self.handler._radio.set_freq(
@@ -672,7 +765,21 @@ class RigctldHandler:
         *,
         state_store: StateStore | None = None,
         state_model_service: StateModelService | None = None,
+        managed_tx_authority: ManagedTxAuthority | None = None,
+        command_queue: tx_commands.CommandQueue | None = None,
+        command_service: CommandService | None = None,
     ) -> None:
+        supplied = (
+            managed_tx_authority is not None,
+            command_queue is not None,
+            command_service is not None,
+        )
+        if any(supplied) and not all(supplied):
+            raise ValueError(
+                "managed authority, command queue, and service must be supplied together"
+            )
+        self._managed_tx_authority = managed_tx_authority
+        self._command_queue = command_queue
         self._radio = radio
         self._config = config
         self._state_diagnostics = getattr(radio, "_state_diagnostics", None)
@@ -688,14 +795,7 @@ class RigctldHandler:
         self._key_down_backstop_task: asyncio.Task[None] | None = None
         self._key_down_backstop_token: int = 0
         self._key_down_backstop_session: str | None = None
-        # Legacy routing cache is retained only for vendor-specific routing
-        # strategies that still depend on it (Yaesu today). Core rigctld GET
-        # paths project from StateStore plus scoped CommandService overlays.
-        self._cache = _FallbackRigState()
-        self._pending = _PendingRigState()
-        self._routing = create_routing(
-            radio, self._cache, getattr(config, "max_power_w", 100.0)
-        )
+        self._routing = create_routing(radio, getattr(config, "max_power_w", 100.0))
         if state_store is None and isinstance(radio, StateStoreCapable):
             state_store = radio.state_store
         self._has_canonical_state_store = isinstance(state_store, StateStore)
@@ -717,15 +817,15 @@ class RigctldHandler:
             state_model_service = None
         self._state_model_service = state_model_service
         self._install_routing_state_observer()
-        self._command_service = CommandService(
-            executor=_RigctldCommandExecutor(self),
-            state_store=state_store,
-            # Every write this seat makes asks the radio to re-observe the
-            # field it wrote (MOR-1892). Without it, RF truth trails our own
-            # unkey by up to a poll cadence and the next write is dropped
-            # inside that window — see
-            # ``CommandService._request_write_confirmation``.
-            state_model_service=self._state_model_service,
+        self._command_executor = _RigctldCommandExecutor(self)
+        self._command_service = (
+            CommandService(
+                executor=self._command_executor,
+                state_store=state_store,
+                state_model_service=self._state_model_service,
+            )
+            if command_service is None
+            else command_service
         )
 
     def bind_provider_generation(self, capture: Callable[[], int]) -> None:
@@ -875,7 +975,13 @@ class RigctldHandler:
         the socket — post-beta work, tracked separately.
         """
         try:
-            result = await self._command_service.execute(intent)
+            result = await self._command_service.execute(
+                intent,
+                executor=_RigctldCommandExecutor(
+                    self,
+                    predecessor=_RIGCTLD_PREDECESSOR.get(),
+                ),
+            )
         except CommandExecutionInvalidatedError as exc:
             logger.warning(
                 "rigctld: %s was invalidated in flight (%s) — reporting failure",
@@ -1237,50 +1343,6 @@ class RigctldHandler:
             )
         )
 
-    def _effective_pending_freq(self, main_state: ReceiverState | None) -> int | None:
-        pending_freq = self._pending.freq
-        if pending_freq is None:
-            return None
-        if main_state is not None and main_state.freq == pending_freq:
-            self._pending.freq = None
-            return None
-        return pending_freq
-
-    def _effective_pending_mode(
-        self, main_state: ReceiverState | None
-    ) -> tuple[str, int, int] | None:
-        pending_mode = self._pending.mode
-        if pending_mode is None:
-            return None
-
-        pending_filter = self._pending.filter_width
-        pending_data_mode = self._pending.data_mode
-
-        if main_state is not None:
-            state_mode = main_state.mode.upper()
-            state_filter = main_state.filter
-            state_data_mode = main_state.data_mode
-            if (
-                state_mode == pending_mode
-                and state_filter == pending_filter
-                and (pending_data_mode is None or state_data_mode == pending_data_mode)
-            ):
-                self._pending.mode = None
-                self._pending.filter_width = None
-                self._pending.data_mode = None
-                return None
-
-        data_mode = (
-            pending_data_mode
-            if pending_data_mode is not None
-            else (
-                main_state.data_mode
-                if main_state is not None
-                else self._cache.data_mode
-            )
-        )
-        return pending_mode, _filter_to_passband(pending_filter), data_mode
-
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -1290,6 +1352,9 @@ class RigctldHandler:
         cmd: RigctldCommand,
         *,
         session_id: str | None = None,
+        predecessor: asyncio.Future[None] | None = None,
+        ptt_submission: asyncio.Task[Any] | None = None,
+        ptt_ready: asyncio.Future[None] | None = None,
     ) -> RigctldResponse:
         """Execute a parsed rigctld command and return the response.
 
@@ -1303,10 +1368,13 @@ class RigctldHandler:
             self._provider_generation_capture()
         )
         token = _RIGCTLD_SESSION_ID.set(session_id)
+        predecessor_token = _RIGCTLD_PREDECESSOR.set(predecessor)
+        submission_token = _RIGCTLD_PTT_SUBMISSION.set(ptt_submission)
+        ready_token = _RIGCTLD_PTT_READY.set(ptt_ready)
         # Read-only gate
         try:
-            if self._config.read_only and cmd.is_set:
-                logger.debug("read-only: rejecting set command %s", cmd.long_cmd)
+            if self._config.read_only and (cmd.is_set or cmd.long_cmd == "send_raw"):
+                logger.debug("read-only: rejecting command %s", cmd.long_cmd)
                 return _err(HamlibError.EACCESS)
 
             handler_fn = self._DISPATCH.get(cmd.long_cmd)
@@ -1315,6 +1383,8 @@ class RigctldHandler:
                 return _err(HamlibError.ENIMPL)
 
             try:
+                if not cmd.is_set and predecessor is not None:
+                    await asyncio.shield(predecessor)
                 response = cast(RigctldResponse, await handler_fn(self, cmd))
                 if isinstance(self._state_diagnostics, StateDiagnosticsRecorder):
                     self._state_diagnostics.record(
@@ -1345,6 +1415,9 @@ class RigctldHandler:
                 logger.exception("Internal error executing %s", cmd.long_cmd)
                 return _err(HamlibError.EINTERNAL)
         finally:
+            _RIGCTLD_PTT_READY.reset(ready_token)
+            _RIGCTLD_PTT_SUBMISSION.reset(submission_token)
+            _RIGCTLD_PREDECESSOR.reset(predecessor_token)
             _RIGCTLD_SESSION_ID.reset(token)
             _RIGCTLD_PROVIDER_GENERATION.reset(provider_token)
 
@@ -1373,6 +1446,9 @@ class RigctldHandler:
         (Yaesu CAT, rigctld-client).
         """
         try:
+            if self._managed_tx_authority is not None:
+                await self._managed_tx_authority.owner_disconnect(session_id)
+                return
             managed = bind_managed_tx(self._radio, "rigctld", session_id)
             if managed is None:
                 return
@@ -1460,9 +1536,10 @@ class RigctldHandler:
             command_id=f"rigctld-set-freq-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        dropped = self._defer_write_gate(intent)
-        if dropped is not None:
-            return dropped
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
         await self._execute_write(intent)
         return _ok()
 
@@ -1629,9 +1706,10 @@ class RigctldHandler:
                 command_id=f"rigctld-set-mode-{time.monotonic_ns()}",
                 session_id=self._session_id(),
             )
-            dropped = self._defer_write_gate(intent)
-            if dropped is not None:
-                return dropped
+            if self._managed_tx_authority is None:
+                dropped = self._defer_write_gate(intent)
+                if dropped is not None:
+                    return dropped
             await self._execute_write(intent)
             # ``filter_width`` (the local var) is a filter NUMBER, so the
             # readback overlay belongs on ``filter_num`` — that is the key the
@@ -1661,13 +1739,11 @@ class RigctldHandler:
             command_id=f"rigctld-set-mode-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        dropped = self._defer_write_gate(intent)
-        if dropped is not None:
-            return dropped
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
         await self._execute_write(intent)
-        self._cache.update_mode(base_mode_str, filter_width)
-        if requested_mode in packet_modes:
-            self._cache.update_data_mode(True)
         # ``filter_width`` (the local var) is a filter NUMBER, so the readback
         # overlay belongs on ``filter_num`` — that is the key the get_mode
         # projection now reads for the passband. (MOR-895.)
@@ -2014,7 +2090,9 @@ class RigctldHandler:
         try:
             self._resolve_target_vfo(cmd.vfo_arg)
         except ValueError:
-            return _err(HamlibError.EVFO)
+            commit_failure = getattr(_RIGCTLD_PTT_READY.get(), "commit_failure", None)
+            if commit_failure is None or commit_failure():
+                return _err(HamlibError.EVFO)
         await self._execute_write(
             command_intent_from_request(
                 "set_ptt",
@@ -2182,9 +2260,10 @@ class RigctldHandler:
             command_id=f"rigctld-set-vfo-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        dropped = self._defer_write_gate(intent)
-        if dropped is not None:
-            return dropped
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
         await self._execute_write(intent)
         return _ok()
 
@@ -2507,6 +2586,24 @@ class RigctldHandler:
         )
         return _ok()
 
+    def _attenuator_db_steps(self) -> tuple[int, ...] | None:
+        """Legal attenuator dB steps the radio publishes, or ``None``.
+
+        Anything a radio or test double returns that is not a non-empty
+        sequence of plain ints yields ``None`` so the caller forwards the
+        unsnapped value.
+        """
+        steps = (
+            self._radio.attenuator_db_steps()
+            if isinstance(self._radio, AttenuatorStepsCapable)
+            else None
+        )
+        if not isinstance(steps, (tuple, list)) or not steps:
+            return None
+        if any(isinstance(step, bool) or not isinstance(step, int) for step in steps):
+            return None
+        return tuple(steps)
+
     async def _execute_set_level(
         self,
         level: str,
@@ -2521,6 +2618,12 @@ class RigctldHandler:
             )
 
         if level == "RFPOWER":
+            # Hamlib publishes RFPOWER on the normalized 0.0-1.0 domain; an
+            # out-of-range client value (``L RFPOWER 1.5``) answers EINVAL
+            # here with no radio call instead of scaling to an off-band raw
+            # level (MOR-2480).
+            if not 0.0 <= value <= 1.0:
+                return HamlibError.EINVAL
             await self._radio.set_rf_power(round(value * 255))
             return HamlibError.OK
 
@@ -2553,11 +2656,15 @@ class RigctldHandler:
             return HamlibError.OK
 
         if level == "ATT":
-            # Find nearest supported dB (0, 6, 12, 18)
-            _att_steps = [0, 6, 12, 18]
+            # Nearest legal dB from the radio's published steps; an exact
+            # tie between two steps snaps to the larger one. A radio that
+            # publishes no steps gets the rounded dB unsnapped — the
+            # radio (or its downstream service) decides.
+            steps = self._attenuator_db_steps()
             db = round(value)
-            nearest = min(_att_steps, key=lambda x: abs(x - db))
-            await self._radio.set_attenuator_level(nearest)
+            if steps is not None:
+                db = min(steps, key=lambda step: (abs(step - db), -step))
+            await self._radio.set_attenuator_level(db)
             return HamlibError.OK
 
         return HamlibError.EINVAL
@@ -2641,9 +2748,10 @@ class RigctldHandler:
             command_id=f"rigctld-set-func-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        dropped = self._defer_write_gate(intent)
-        if dropped is not None:
-            return dropped
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
         await self._execute_write(intent)
         return _ok()
 
@@ -2729,9 +2837,10 @@ class RigctldHandler:
             command_id=f"rigctld-set-split-vfo-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        dropped = self._defer_write_gate(intent)
-        if dropped is not None:
-            return dropped
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
         await self._execute_write(intent)
         return _ok()
 
@@ -2876,9 +2985,10 @@ class RigctldHandler:
             command_id=f"rigctld-set-rit-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        dropped = self._defer_write_gate(intent)
-        if dropped is not None:
-            return dropped
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
         await self._execute_write(intent)
         return _ok()
 
@@ -2907,9 +3017,10 @@ class RigctldHandler:
             command_id=f"rigctld-set-xit-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        dropped = self._defer_write_gate(intent)
-        if dropped is not None:
-            return dropped
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
         await self._execute_write(intent)
         return _ok()
 

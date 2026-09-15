@@ -33,6 +33,9 @@ tx_codec = "PCM_1CH_16BIT"
 browser_rx_transport = "auto"
 browser_rx_transcode_to_opus = true
 
+[scope]
+span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
+
 # ── Capabilities ─────────────────────────────────────────────────
 
 [capabilities]
@@ -116,6 +119,74 @@ features = [
     "xfc",
     # System
     "system_settings",
+]
+
+# MOR-1983: initial and legacy periodic state acquisition is declared here,
+# using getters already sourced to the IC-705 CI-V Reference Guide below.
+# The runtime resolves these semantic paths through this profile's CommandMap;
+# no model-specific query list exists in code.
+[state_acquisition]
+provider = "icom_civ"
+default_cadence_seconds = 2.0
+default_freshness_ttl_seconds = 8.0
+default_reconciliation_priority = "poll"
+adaptive_decay = true
+adaptive_decay_idle_multiplier = 4.0
+adaptive_decay_max_cadence_seconds = 30.0
+external_cat_pause = "pause_polling"
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.capabilities]
+polling_only = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.main.unselected.freq_mode.freq_hz",
+    "receiver.main.unselected.freq_mode.mode",
+    "receiver.main.operator_controls.af_level",
+    "receiver.main.operator_controls.rf_gain",
+    "receiver.main.operator_controls.squelch",
+    "receiver.main.operator_controls.att",
+    "receiver.main.operator_controls.preamp",
+    "receiver.main.operator_controls.agc",
+    "receiver.main.operator_toggles.nb",
+    "receiver.main.operator_toggles.nr",
+    "global.operator_controls.power_level",
+    "global.tx_state.compressor_on",
+    "global.operator_controls.compressor_level",
+    "global.tx_state.ptt",
+    "global.operator_controls.tuner_status",
+    "global.tx_state.split",
+    "scope_controls.global.display.receiver",
+    "scope_controls.global.display.dual",
+    "scope_controls.global.display.mode",
+    "scope_controls.global.display.span",
+    "scope_controls.global.display.edge",
+    "scope_controls.global.display.hold",
+    "scope_controls.global.display.ref_db",
+    "scope_controls.global.display.speed",
+    "scope_controls.global.display.during_tx",
+    "scope_controls.global.display.center_type",
+    "scope_controls.global.display.vbw_narrow",
+    "scope_controls.global.display.fixed_edge",
+]
+stream_like_meters = [
+    "receiver.main.meters.s_meter",
+    "global.meters.power",
+    "global.meters.swr",
+    "global.meters.alc",
+    "global.meters.comp",
+    "global.meters.vd",
+    "global.meters.id",
+]
+command_response_observable = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "global.tx_state.ptt",
+]
+supported_controls = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "global.tx_state.ptt",
 ]
 
 # ── Parameterized Capabilities ───────────────────────────────────
@@ -206,6 +277,9 @@ width_max = 255
 
 [power]
 max_watts = 10
+
+[ctcss]
+table = "standard_50"
 
 [modes]
 # wfview Modes: LSB, USB, AM, CW, RTTY, FM, CW-R, RTTY-R, DV, WFM
@@ -485,6 +559,13 @@ bsr_code = 0x0F
 # Every opcode from wfview IC-705.rig Commands\1–124 (excluding TRX placeholders 0x00/0x01).
 # NOTE lines: IC-7300.rig has the feature but IC-705.rig does not (or uses different bytes).
 
+# PROVENANCE OPEN (D2, MOR-2008 batch 4): left deliberately undeclared
+# rather than guessed. House pattern: rigs/ic9700.toml "PROVENANCE OPEN
+# (D2, MOR-2015)".
+# - get_memory_mode [0x08]: this guide's own 0x08 row reads "Select the
+#   Memory mode" (imperative), not "Send/read" like the table's other
+#   bidirectional rows -- no live-bench probe has settled whether it
+#   answers a bare read.
 [commands]
 
 # ── Frequency / Mode ──
@@ -501,6 +582,7 @@ set_vfo = [0x07]
 get_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
 # set_dual_watch_off/set_dual_watch_on (not the bare set_dual_watch the
 # pre-migration fallback resolved -- MOR-2007 ruling 1 split the setter key)
+set_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
 set_dual_watch_off = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
 set_dual_watch_on = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
 get_main_sub_band = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table has no D0/D1/D2" }
@@ -511,15 +593,19 @@ get_main_sub_band = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.20
 quick_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5: no Main/Sub receiver on this radio; control 0032 on IC-705 is 'Home CH Beep', not quick dual-watch" }
 
 # ── Memory (wfview MemStart=0, Max=99; Memory Contents Max=101) ──
-get_memory_mode = [0x08]
-set_memory_mode = [0x08]
+# get_memory_mode -- PROVENANCE OPEN above, left undeclared (this guide's
+# own 0x08 row reads "Select the Memory mode", imperative, not "Send/read"
+# like the table's other bidirectional rows -- no live-bench probe has
+# settled whether it answers a bare read)
+set_memory_mode = [0x08]                  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
 set_memory_group = [0x08, 0xA0]
-get_memory_write = [0x09]
-set_memory_write = [0x09]
-get_memory_to_vfo = [0x0A]
-set_memory_to_vfo = [0x0A]
-get_memory_clear = [0x0B]
-set_memory_clear = [0x0B]
+# memory_write/memory_to_vfo/memory_clear: single wire form, bare
+# canonical key (owner ruling, MOR-2008 batch 4) -- collapses the
+# redundant get_X/set_X pair this file used to declare for each (neither
+# half carried a source; the single surviving row below does).
+memory_write = [0x09]                     # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
+memory_to_vfo = [0x0A]                     # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3 -- payload MOR-2055, see commands/memory.py: build_memory_to_vfo
+memory_clear = [0x0B]                      # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3 -- payload MOR-2055, see commands/memory.py: build_memory_clear
 
 # ── Offset / Scan / Split ──
 get_freq_offset = [0x0D]
@@ -674,10 +760,10 @@ get_transceiver_id = [0x19, 0x00]
 set_transceiver_id = [0x19, 0x00]
 
 # ── 0x1A ──
-get_memory_contents = [0x1A, 0x00]
-set_memory_contents = [0x1A, 0x00]
-get_bsr = [0x1A, 0x01]
-set_bsr = [0x1A, 0x01]
+get_memory_contents = [0x1A, 0x00]        # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5 (detail p.17)
+set_memory_contents = [0x1A, 0x00]        # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5 (detail p.17)
+get_bsr = [0x1A, 0x01]                    # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5 (detail p.18)
+set_bsr = [0x1A, 0x01]                    # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.5 (detail p.18)
 get_filter_width = [0x1A, 0x03]
 set_filter_width = [0x1A, 0x03]
 # agc_time_constant (0x1A 0x04) exists on IC-705 -- refutes the earlier "NOT
@@ -706,8 +792,6 @@ get_tuner_status = [0x1C, 0x01]
 set_tuner_status = [0x1C, 0x01]
 get_xfc_status = [0x1C, 0x02]
 set_xfc_status = [0x1C, 0x02]
-get_tx_freq_monitor = [0x1C, 0x03]
-set_tx_freq_monitor = [0x1C, 0x03]
 
 # ── RIT / XIT ──
 get_rit_frequency = [0x21, 0x00]
@@ -718,14 +802,22 @@ get_rit_tx_status = [0x21, 0x02]
 set_rit_tx_status = [0x21, 0x02]
 
 # ── Selected / unselected VFO ──
-get_selected_freq = [0x25, 0x00]
+get_selected_freq = [0x25, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15
+# set_selected_freq: no Python builder exists yet -- orphan key, kept
+# undisturbed by MOR-2008 batch 4 (see that batch's PR body).
 set_selected_freq = [0x25, 0x00]
-get_unselected_freq = [0x25, 0x01]
+get_unselected_freq = [0x25, 0x01]        # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15
 set_unselected_freq = [0x25, 0x01]
-get_selected_mode = [0x26, 0x00]
-set_selected_mode = [0x26, 0x00]
-get_unselected_mode = [0x26, 0x01]
+get_selected_mode = [0x26, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15 (detail p.26)
+set_selected_mode = [0x26, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15 (detail p.26)
+get_unselected_mode = [0x26, 0x01]        # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15 (detail p.26)
+# set_unselected_mode: no Python builder exists yet -- orphan key, kept
+# undisturbed by MOR-2008 batch 4 (see that batch's PR body).
 set_unselected_mode = [0x26, 0x01]
+
+# ── TX Band Edge ──
+get_tx_band_count = [0x1E, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14
+get_tx_band_edge = [0x1E, 0x01]           # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14 (detail p.16)
 
 # ── Scope ──
 get_scope_wave = [0x27, 0x00]
@@ -757,8 +849,8 @@ get_scope_vbw = [0x27, 0x1D]
 set_scope_vbw = [0x27, 0x1D]
 get_scope_fixed_edge = [0x27, 0x1E]
 set_scope_fixed_edge = [0x27, 0x1E]
-get_scope_rbw = [0x27, 0x1F]
-set_scope_rbw = [0x27, 0x1F]
+get_scope_rbw = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15: the 0x27 scope table ends at 1E, with no 1F RBW command" }
+set_scope_rbw = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15: the 0x27 scope table ends at 1E, with no 1F RBW command" }
 
 # ── D-STAR voice / protocol ack ──
 get_voice_tx = [0x28]
@@ -911,6 +1003,17 @@ raw_max = 255
 display_min = 300
 display_max = 900
 display_unit = "Hz"
+decode_quantum = 5  # reproduces the pre-existing CW-pitch decode for every raw level (pinned by tests/test_control_domain_math.py::test_ci_v_cw_pitch_decode_matches_the_deleted_formula_vectors)
+encode_rounding = "ceil"  # reproduces the pre-existing CW-pitch encode for every Hz in 300-900 (pinned by tests/test_control_domain_math.py::test_ci_v_cw_pitch_encode_matches_the_deleted_formula_vectors)
+
+[controls.key_speed]
+raw_min = 0
+raw_max = 255
+display_min = 6
+display_max = 48
+display_unit = "WPM"
+decode_quantum = 1  # reproduces the pre-existing key-speed decode for every raw level (pinned by tests/test_control_domain_math.py::test_ci_v_key_speed_decode_matches_the_deleted_formula_vectors)
+encode_rounding = "nearest_half_down"  # reproduces the pre-existing key-speed encode for every WPM in 6-48 (pinned by tests/test_control_domain_math.py::test_ci_v_key_speed_encode_matches_the_deleted_formula_vectors)
 
 [controls.rit]
 # MOR-1883: exact-form translation of the previously declared range;
@@ -969,9 +1072,9 @@ label = "6.0+"
 # because an absent section and an empty one load identically — only a
 # written section records that this was decided.
 # Nothing on this radio's path reads this map today: the CI-V reply is
-# decoded natively in runtime/radio.py, and core/tx_authority.py is handed
-# the read primitive, not the map. The section is declared so that a later
-# row consumes a stated ruling instead of an absence.
+# decoded natively in runtime/radio.py into the canonical
+# core/tx_observation.py TxStateReading contract. The section records the
+# profile ruling even though the current Icom read path does not consult it.
 # No write-during-transmit battery was run on this radio, so no radio-side
 # refusal is claimed. Empty means "nothing measured", not "nothing refuses".
 refused_during_tx = []

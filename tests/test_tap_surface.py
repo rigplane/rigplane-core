@@ -324,9 +324,12 @@ def test_fft_scope_receives_frames_via_named_post_dsp_stage() -> None:
 async def test_scope_service_lifecycle_and_serializer_matrix(
     hardware: bool, audio: bool, scope_source: str | None
 ) -> None:
-    from rigplane.web.server import WebServer
+    from rigplane.web.server import WebConfig, WebServer
 
-    server = WebServer(_MatrixRadio(hardware=hardware, audio=audio))
+    server = WebServer(
+        _MatrixRadio(hardware=hardware, audio=audio),
+        WebConfig(radio_model="IC-7610"),
+    )
     scope = server._audio_fft_scope
     assert (scope is not None) is audio
     if scope is not None:
@@ -381,11 +384,11 @@ async def test_runtime_hardware_scope_is_cached_for_dispatch_and_teardown() -> N
 async def test_audio_tag_without_proven_route_does_not_advertise_fft(
     hardware: bool,
 ) -> None:
-    from rigplane.web.server import WebServer
+    from rigplane.web.server import WebConfig, WebServer
 
     radio = _MatrixRadio(hardware=hardware, audio=True)
     radio.audio_bus = None
-    server = WebServer(radio)
+    server = WebServer(radio, WebConfig(radio_model="IC-7610"))
     writer = _Writer()
     await server._serve_capabilities(writer)
     capabilities = _json_body(writer)

@@ -1,6 +1,6 @@
 export const LOCAL_EXTENSION_MANIFEST_URL = '/api/local/v1/ui/manifest';
 export const LOCAL_EXTENSION_MANIFEST_VERSION = 1;
-export const LOCAL_EXTENSION_HOST_API_VERSION = '1.0';
+export const LOCAL_EXTENSION_HOST_API_VERSION = '2.0';
 
 export type LocalExtensionMount = 'floating-overlay';
 
@@ -15,7 +15,7 @@ export interface LocalExtensionDescriptor {
 
 export interface LocalExtensionManifest {
   version: typeof LOCAL_EXTENSION_MANIFEST_VERSION;
-  host_api?: typeof LOCAL_EXTENSION_HOST_API_VERSION;
+  host_api: typeof LOCAL_EXTENSION_HOST_API_VERSION;
   extensions: LocalExtensionDescriptor[];
 }
 
@@ -63,10 +63,7 @@ export function parseLocalExtensionManifest(
     return null;
   }
 
-  if (
-    manifest.host_api !== undefined
-    && manifest.host_api !== LOCAL_EXTENSION_HOST_API_VERSION
-  ) {
+  if (manifest.host_api !== LOCAL_EXTENSION_HOST_API_VERSION) {
     return null;
   }
 
@@ -113,13 +110,11 @@ export function parseLocalExtensionManifest(
     return null;
   }
 
-  return typeof manifest.host_api === 'string'
-    ? {
-        version: LOCAL_EXTENSION_MANIFEST_VERSION,
-        host_api: LOCAL_EXTENSION_HOST_API_VERSION,
-        extensions,
-      }
-    : { version: LOCAL_EXTENSION_MANIFEST_VERSION, extensions };
+  return {
+    version: LOCAL_EXTENSION_MANIFEST_VERSION,
+    host_api: LOCAL_EXTENSION_HOST_API_VERSION,
+    extensions,
+  };
 }
 
 export async function loadLocalExtensionManifest(
@@ -146,7 +141,17 @@ export async function loadLocalExtensionManifest(
   }
 
   try {
-    return parseLocalExtensionManifest(await response.json(), options.baseUrl);
+    const value: unknown = await response.json();
+    const manifest = asObject(value);
+    if (manifest?.version === LOCAL_EXTENSION_MANIFEST_VERSION
+      && manifest.host_api !== LOCAL_EXTENSION_HOST_API_VERSION) {
+      console.warn(
+        '[local-extensions] Extension manifest rejected: explicit host_api "2.0" is required. '
+        + 'Migrate to host version 2 canonical command names and parameters, including required receivers. '
+        + 'Command booleans report client transport acceptance only; PTT commands remain unsupported.',
+      );
+    }
+    return parseLocalExtensionManifest(value, options.baseUrl);
   } catch {
     return null;
   }

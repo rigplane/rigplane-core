@@ -11,6 +11,7 @@ import { audioManager } from '$lib/audio/audio-manager';
 import { destroyMediaSession, initMediaSession } from '$lib/media/media-session';
 import { setRadioStatus } from '$lib/stores/connection.svelte';
 import { resetRadioState } from '$lib/stores/radio.svelte';
+import { getAuthHeaders } from '$lib/auth';
 
 export interface EibiStation {
   name?: string;
@@ -60,7 +61,7 @@ export class SystemController {
   async powerOn(): Promise<void> {
     const resp = await fetch('/api/v1/radio/power', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ state: 'on' }),
     });
     if (!resp.ok) throw new Error(await resp.text());
@@ -69,7 +70,7 @@ export class SystemController {
   async powerOff(): Promise<void> {
     const resp = await fetch('/api/v1/radio/power', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ state: 'off' }),
     });
     if (!resp.ok) throw new Error(await resp.text());
@@ -130,7 +131,9 @@ export class SystemController {
 
   async identifyFrequency(freqHz: number): Promise<EibiResult | null> {
     try {
-      const resp = await fetch(`/api/v1/eibi/identify?freq=${freqHz}`);
+      const resp = await fetch(`/api/v1/eibi/identify?freq=${freqHz}`, {
+        headers: getAuthHeaders(),
+      });
       if (!resp.ok) return null;
       return await resp.json();
     } catch {

@@ -124,15 +124,25 @@ function setState(overrides: Record<string, unknown> = {}): void {
 }
 
 function useDualReceiverCapabilities(): void {
-  setCapabilities({ capabilities: ['data_mode'], receivers: 2, vfoScheme: 'main_sub', stateContractVersion: 1, providerGeneration: 0 } as never);
+  setCapabilities({
+    capabilities: ['data_mode'],
+    receivers: 2,
+    vfoScheme: 'main_sub',
+    audioTx: true,
+    audioTxRoute: 'lan',
+    audioTxRequiredModInputSource: 5,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+  } as never);
 }
 
-function missingStatus() {
+/** An unobserved entry carrying one of the three absence values. */
+function unreadStatus(availability = 'missing') {
   return {
     storePath: 'test.path',
     observed: false,
     freshness: 'unknown',
-    availability: 'missing',
+    availability,
   };
 }
 
@@ -191,7 +201,14 @@ beforeEach(() => {
   vi.mocked(runtime.startTx).mockResolvedValue(null);
   vi.mocked(runtime.stopTx).mockClear();
   resetRadioState();
-  setCapabilities({ capabilities: ['data_mode'], stateContractVersion: 1, providerGeneration: 0 } as never);
+  setCapabilities({
+    capabilities: ['data_mode'],
+    audioTx: true,
+    audioTxRoute: 'lan',
+    audioTxRequiredModInputSource: 5,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+  } as never);
   dismissModInputTxGuard();
 });
 
@@ -223,10 +240,28 @@ describe('toggle (MOR-618)', () => {
     setState({
       main: receiver(1),
       data1ModInput: 0,
-      fieldStatus: { data1ModInput: missingStatus() },
+      fieldStatus: { data1ModInput: unreadStatus() },
     });
     expect(deriveAutoLanModInputProps().available).toBe(false);
   });
+
+  // MOR-2425/T201: `unavailable` and `undeclared` are absences too. The
+  // gate read `!== 'missing'` before this change, so both showed the
+  // toggle for a group the backend had never read.
+  it.each(['unavailable', 'undeclared'] as const)(
+    'is not available while the group is %s',
+    (availability) => {
+      setState({ main: receiver(1), data1ModInput: 0 });
+      expect(deriveAutoLanModInputProps().available).toBe(true);
+
+      setState({
+        main: receiver(1),
+        data1ModInput: 0,
+        fieldStatus: { data1ModInput: unreadStatus(availability) },
+      });
+      expect(deriveAutoLanModInputProps().available).toBe(false);
+    },
+  );
 });
 
 describe('OFF behavior is exactly MOR-617 (MOR-618)', () => {
@@ -328,7 +363,7 @@ describe('auto-set at TX start (MOR-618, MOR-1409 A08)', () => {
     setState({
       main: receiver(1),
       data1ModInput: 0,
-      fieldStatus: { data1ModInput: missingStatus() },
+      fieldStatus: { data1ModInput: unreadStatus() },
     });
 
     await getTxAudioControl().startTx();
@@ -336,6 +371,26 @@ describe('auto-set at TX start (MOR-618, MOR-1409 A08)', () => {
     expect(dispatchRadioIntent).not.toHaveBeenCalled();
     expect(sendCommand).not.toHaveBeenCalled();
   });
+
+  // MOR-2425/T201: same for the two other absences. `autoSetLanModInputForTx`
+  // compared `=== 'missing'`, so under either it read the group's stored
+  // value and dispatched a SET the radio never confirmed a source for.
+  it.each(['unavailable', 'undeclared'] as const)(
+    'does nothing when fieldStatus marks the group %s',
+    async (availability) => {
+      setAutoLanModInputEnabled(true);
+      setState({
+        main: receiver(1),
+        data1ModInput: 0,
+        fieldStatus: { data1ModInput: unreadStatus(availability) },
+      });
+
+      await getTxAudioControl().startTx();
+
+      expect(dispatchRadioIntent).not.toHaveBeenCalled();
+      expect(sendCommand).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('confirmed restore after local TX audio stop (MOR-618, MOR-990, MOR-1409 A08)', () => {

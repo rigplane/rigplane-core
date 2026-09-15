@@ -34,38 +34,47 @@
   let cssHeight = 1;
   let rafId = 0;
   let visible = true;
+  let mounted = false;
 
   // Latest scope pixels — updated directly from WS binary, not via Svelte props
   let latestPixels: Uint8Array | null = null;
 
+  function scheduleDraw(): void {
+    if (!mounted || !visible || rafId !== 0) return;
+    rafId = requestAnimationFrame(draw);
+  }
+
   function draw(): void {
-    if (!visible) { rafId = 0; return; } // will be restarted by visibilitychange
+    rafId = 0;
+    if (!visible) return; // restarted by visibilitychange
     const pixels = latestPixels ?? data;
     if (canvas && pixels && cssWidth > 0 && cssHeight > 0) {
       const ctx = canvas.getContext('2d');
       if (ctx) renderer.render(ctx, pixels, cssWidth, cssHeight, options);
     }
-    // Always schedule next frame — data may arrive at any time
-    rafId = requestAnimationFrame(draw);
   }
 
   function onVisibilityChange() {
     visible = !document.hidden;
-    if (visible && rafId === 0) {
-      rafId = requestAnimationFrame(draw);
-    }
+    scheduleDraw();
   }
+
+  // Renderer options and fallback prop data can change without a stream push.
+  $effect(() => {
+    data; options; spanHz; enableAvg; enablePeakHold;
+    scheduleDraw();
+  });
 
   onMount(() => {
     // Register push callback with parent — parent handles WS subscription
     onRegisterPush?.((pixels: Uint8Array) => {
       latestPixels = pixels;
+      scheduleDraw();
     });
 
     document.addEventListener('visibilitychange', onVisibilityChange);
-
-    // Continuous RAF loop for smooth rendering
-    rafId = requestAnimationFrame(draw);
+    mounted = true;
+    scheduleDraw();
 
     const ro = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
@@ -77,6 +86,7 @@
       canvas.height = Math.round(cssHeight * dpr);
       const ctx = canvas.getContext('2d');
       ctx?.setTransform(dpr, 0, 0, dpr, 0, 0);
+      scheduleDraw();
     });
     ro.observe(canvas);
 
@@ -84,13 +94,15 @@
       document.removeEventListener('visibilitychange', onVisibilityChange);
       ro.disconnect();
       cancelAnimationFrame(rafId);
+      rafId = 0;
+      mounted = false;
     };
   });
 </script>
 
 <div class="spectrum-container">
   <canvas bind:this={canvas}></canvas>
-  {#if spanHz > 0}
+  {#if options.showRfOverlays !== false && spanHz > 0}
     <div class="span-indicators">
       <span class="span-left">{formatOffset(spanHz / -2)}</span>
       <span class="span-right">{formatOffset(spanHz / 2)}</span>

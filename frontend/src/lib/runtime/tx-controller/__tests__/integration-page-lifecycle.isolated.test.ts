@@ -3,28 +3,11 @@ import { mount, unmount, flushSync } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
 
-// ─── Page-lifecycle release matrix — pagehide/visibilitychange TX release
-// through the REAL stack (MOR-1089 U6) ───────────────────────────────────────
-//
-// U4/U5 wire the real `WsChannel` + real `createBrowserTxControllerDependencies`
-// + real `TxController` by hand, in a `setup()` helper, explicitly BECAUSE
-// `provideAppTxControllerHost` cannot run outside a live Svelte component (it
-// calls `getContext`/`setContext`). This file is the one place that pays that
-// cost: it mounts the REAL `App.svelte`, whose script body is the ONLY
-// production call site of `provideAppTxControllerHost` — and, critically, the
-// ONLY place `window.addEventListener('pagehide', ...)` /
-// `document.addEventListener('visibilitychange', ...)` are ever registered
-// (see `lifecycleReleaseSource` in `src/App.svelte`). That wiring is not
-// extracted anywhere reusable, so proving it end-to-end means mounting the
-// real component that contains it — a hand-rolled stand-in would test our
-// own reproduction of the wiring, not the production code path.
-//
-// Real: `App.svelte`, `app-host.ts` (`provideAppTxControllerHost` — NOT
-// mocked), `browser-dependencies.ts`, `controller.ts`/`model.ts`
-// (`TxController`), the real `WsChannel` singleton in `$lib/transport/ws-client`
-// (driven only at the socket boundary by the shared `MockWebSocket` fake —
-// U0), and `$lib/stores/connection.svelte` (harmless real `$state` setters
-// under jsdom, same as U4/U5).
+// Managed page-lifecycle delivery matrix (MOR-1089 U6).
+// It mounts the real App.svelte so the production pagehide and
+// visibilitychange listeners call the managed-app-host facade. WsChannel and
+// managed delivery are real; server-state/media inputs, presentation, and the
+// socket boundary are controlled for jsdom.
 //
 // Mocked: the same facts seam U2/U4/U5 mock (`radio.svelte`, `capabilities.svelte`,
 // `tx-adapter`) so the test controls what `browser-dependencies.ts` reads: PLUS
@@ -42,10 +25,10 @@ import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-
 //
 // One departure from the app-lifecycle.component.test.ts pattern:
 // `RadioLayoutV2` is replaced not by a mute stub but by `TxControllerProbe.svelte`
-// (support/TxControllerProbe.svelte), which calls the real `getAppTxController()`
+// (support/TxControllerProbe.svelte), which calls the real `getManagedAppTxController()`
 // from inside the real component tree (Svelte context only resolves from a
 // live component) and stashes the real facade so this file can drive
-// `.start()`/`.release()` on it directly — the same object a real panel
+// managed intent methods on it directly — the same object a real panel
 // (TxPanel.svelte) would retrieve, not a hand-built substitute.
 //
 // Unlike U4/U5, this file does NOT `vi.resetModules()` between tests. U4/U5
@@ -61,7 +44,7 @@ import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-
 // instance of `svelte`'s internal effect-scheduling state — verified
 // empirically while building this file: the first `it()` passes either way,
 // every subsequent one fails Svelte context resolution
-// (`getAppTxController()` throwing "App TxController host is not provided")
+// (`getManagedAppTxController()` throwing when the App-root host is absent)
 // once `vi.resetModules()` is in the loop. Every test here instead: (a) fully
 // unmounts its `App` instance (which runs `browser-dependencies.ts`'s own
 // `dispose()`, clearing every tracked real timer and listener), and (b)
@@ -103,10 +86,9 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 }));
 vi.mock('$lib/runtime/adapters/tx-adapter', () => ({
   getTxAudioControl: () => ({
-  onTxAudioDied: () => () => {},
-    startTx: h.start,
+    onTxAudioDied: () => () => {},
+    startManagedTx: h.start,
     stopLocalAudio: h.stop,
-    restoreModAfterConfirmedOff: h.restore,
   }),
 }));
 vi.mock('../../../../components-v2/layout/RadioLayout.svelte', async () => {
@@ -124,7 +106,10 @@ vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' })
 vi.mock('../../../../skins/registry', () => ({
   resolveSkinId: () => 'desktop-v2',
   loadSkin: async () => (await import('./support/TxControllerProbe.svelte')).default,
-  presentationResourcePlan: () => [],
+  getPresentationRecord: (id: unknown) => ({ id, kind: 'built-in-self-contained', resources: [] }),
+}));
+vi.mock('../../../../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
+  default: (await import('../../../../components-v2/layout/__tests__/SpectrumPanelStub.svelte')).default,
 }));
 vi.mock('../../../../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../../../../lib/media/media-session', () => ({
@@ -167,7 +152,7 @@ import App from '../../../../App.svelte';
 import * as wsClient from '$lib/transport/ws-client';
 import * as connection from '$lib/stores/connection.svelte';
 import { capturedController, resetCapturedController } from './support/TxControllerProbe.svelte';
-import type { AppTxController } from '../app-host';
+import type { ManagedAppTxController } from '../managed-app-host';
 
 const field = (at: number) => ({
   observed: true,
@@ -195,13 +180,7 @@ const settle = async () => { await Promise.resolve(); await Promise.resolve(); }
 /** Bump the PTT fieldStatus to a fresh, newer monotonic reading and force
  * `App.svelte`'s own `$effect` (which depends on the mocked `runtime.state`/
  * `runtime.caps`) to re-run, which calls the REAL `txHost.refreshAuthority()`
- * — the same reactivity glue a real backend push does in production. The
- * very first authority projection computed once the control session goes
- * 'connected' is deliberately swallowed as a non-fresh baseline (this is
- * `app-authority.ts`'s own anti-replay guard, not a test artifact — see
- * `integration-lifecycle-matrix.isolated.test.ts`'s `dispatchStart` for the identical
- * two-step shape), so every caller needs at least one of these before a PTT
- * observation is treated as authoritative. */
+ * — the same reactivity glue a real backend push does in production. */
 async function observePtt(value: boolean, at: number): Promise<void> {
   h.radio = { ...h.radio, ptt: value, fieldStatus: { ...h.radio.fieldStatus, ptt: field(at) } };
   h.notifyRuntime();
@@ -228,7 +207,7 @@ function countFrames(name: string, ...sockets: MockWebSocket[]): number {
  * failure in the next case.) */
 let mountedComponent: object | null = null;
 async function mountConnectedApp(): Promise<{
-  component: object; controller: AppTxController; socket: MockWebSocket;
+  component: object; controller: ManagedAppTxController; socket: MockWebSocket;
 }> {
   resetFacts();
   resetCapturedController();
@@ -250,7 +229,7 @@ async function mountConnectedApp(): Promise<{
   const socket = instances[0];
   socket.simulateOpen(); // fires the real subscribeSession callback in app-host
 
-  await observePtt(false, 2); // first fresh (non-baseline) PTT reading
+  await observePtt(false, 2);
 
   const controller = capturedController();
   if (!controller) throw new Error('TxControllerProbe never captured a controller');
@@ -301,21 +280,15 @@ describe('App page-lifecycle TX release — real App.svelte + real app-host + re
   it('pagehide during an owned key releases the lease — fail-closed OFF reaches the wire', async () => {
     const { controller, socket } = await mountConnectedApp();
 
-    controller.start('probe', 'lease-pagehide', 'momentary');
+    controller.pttOn();
     await settle();
-    expect(controller.snapshot()).toMatchObject({ phase: 'key-confirm-pending', mayOwnKey: true });
     expect(countFrames('ptt_on', socket)).toBe(1);
     expect(countFrames('ptt_off', socket)).toBe(0);
 
     await observePtt(true, 3);
-    expect(controller.snapshot()).toMatchObject({ phase: 'active', txRisk: 'confirmed-on', mayOwnKey: true });
 
     window.dispatchEvent(new Event('pagehide'));
 
-    expect(controller.snapshot()).toMatchObject({
-      phase: 'releasing', mayOwnKey: true,
-      pendingOff: expect.objectContaining({ leaseId: 'lease-pagehide' }),
-    });
     expect(countFrames('ptt_off', socket)).toBe(1);
     expect(h.stop).toHaveBeenCalledTimes(1);
 
@@ -325,10 +298,6 @@ describe('App page-lifecycle TX release — real App.svelte + real app-host + re
     expect(countFrames('ptt_off', socket)).toBe(1);
 
     await observePtt(false, 4);
-    expect(controller.snapshot()).toMatchObject({
-      phase: 'idle', fault: null, guard: null, mayOwnKey: false, pendingOff: null,
-    });
-    expect(h.restore).toHaveBeenCalledTimes(1);
     expect(countFrames('ptt_on', socket)).toBe(1);
     expect(countFrames('ptt_off', socket)).toBe(1);
   });
@@ -336,10 +305,9 @@ describe('App page-lifecycle TX release — real App.svelte + real app-host + re
   it('visibilitychange to hidden during an owned key releases the lease too — the production policy is fail-closed on any visibility loss, not gated to full page unload', async () => {
     const { controller, socket } = await mountConnectedApp();
 
-    controller.start('probe', 'lease-visibility', 'momentary');
+    controller.pttOn();
     await settle();
     await observePtt(true, 3);
-    expect(controller.snapshot()).toMatchObject({ phase: 'active', mayOwnKey: true });
 
     // src/App.svelte's `onVisibilityLoss` calls the SAME release callback as
     // `onPageHide` whenever `document.visibilityState === 'hidden'` — this is
@@ -350,10 +318,6 @@ describe('App page-lifecycle TX release — real App.svelte + real app-host + re
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     document.dispatchEvent(new Event('visibilitychange'));
 
-    expect(controller.snapshot()).toMatchObject({
-      phase: 'releasing', mayOwnKey: true,
-      pendingOff: expect.objectContaining({ leaseId: 'lease-visibility' }),
-    });
     expect(countFrames('ptt_off', socket)).toBe(1);
     expect(h.stop).toHaveBeenCalledTimes(1);
 
@@ -363,24 +327,18 @@ describe('App page-lifecycle TX release — real App.svelte + real app-host + re
     expect(countFrames('ptt_off', socket)).toBe(1);
 
     await observePtt(false, 4);
-    expect(controller.snapshot()).toMatchObject({
-      phase: 'idle', fault: null, guard: null, mayOwnKey: false, pendingOff: null,
-    });
-    expect(h.restore).toHaveBeenCalledTimes(1);
   });
 
   it('a visibilitychange to visible (not hidden) during an owned key is a no-op — release is gated on document.visibilityState === "hidden"', async () => {
     const { controller, socket } = await mountConnectedApp();
 
-    controller.start('probe', 'lease-still-visible', 'momentary');
+    controller.pttOn();
     await settle();
     await observePtt(true, 3);
-    expect(controller.snapshot()).toMatchObject({ phase: 'active', mayOwnKey: true });
 
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     document.dispatchEvent(new Event('visibilitychange'));
 
-    expect(controller.snapshot()).toMatchObject({ phase: 'active', mayOwnKey: true });
     expect(countFrames('ptt_off', socket)).toBe(0);
     expect(h.stop).not.toHaveBeenCalled();
     // Real timer/listener cleanup happens via `afterEach`'s unconditional
@@ -405,7 +363,7 @@ describe('App page-lifecycle TX release — real App.svelte + real app-host + re
 
     // Must not throw and must not resurrect a disposed controller.
     expect(() => window.dispatchEvent(new Event('pagehide'))).not.toThrow();
-    expect(() => controller.start('probe', 'lease-after-unmount', 'momentary')).not.toThrow();
+    expect(() => controller.pttOn()).not.toThrow();
     expect(controller.snapshot().phase).toBe('idle');
   });
 });

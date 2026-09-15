@@ -2,8 +2,8 @@
 
 Architecture
 ~~~~~~~~~~~~
-All serial I/O is serialized through a single ``asyncio.Lock``.  Every public
-method (``write``, ``query``) acquires the lock before touching the wire.
+All serial I/O is serialized through a single exchange gate.  Every public
+method (``write``, ``query``) acquires the gate before touching the wire.
 
 Design principles (learned from production):
 
@@ -14,7 +14,12 @@ Design principles (learned from production):
    lines that don't match the expected command prefix.
 
 3. **``?;`` = hard error.**  Radio returns ``?;`` for unrecognized commands.
-   Detected immediately in both ``write()`` and ``query()``.
+   Detected in ``query()``. In ``write()`` (MOR-2103), detected only for a
+   ``?;`` that arrives among the first ``_DRAIN_MAX_LINES`` post-write
+   lines and within ``_DRAIN_TIMEOUT`` of the read that would see it — one
+   that arrives after the drain has already gone quiet, or as the line
+   behind ``_DRAIN_MAX_LINES`` or more auto-info lines, drains unread and
+   is not detected.
 
 4. **Health tracking.**  Consecutive errors trigger automatic reconnect.
    Stats (queries, writes, errors, reconnects) available for diagnostics.
@@ -28,17 +33,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    pass
+from ...core.priority_exchange import ExchangeTier, PriorityExchangeGate
 
 __all__ = [
     "YaesuCatTransport",
     "CatTransportError",
     "CatTimeoutError",
     "CatCommandRejected",
+    "CatGarbledFrameError",
 ]
 
 logger = logging.getLogger(__name__)
@@ -69,7 +75,24 @@ class CatTimeoutError(CatTransportError):
 
 
 class CatCommandRejected(CatTransportError):
-    """Raised when radio returns ``?;`` (command not recognized)."""
+    """Raised when radio returns ``?;`` (command not recognized).
+
+    ``command`` is the CAT command the radio refused, verbatim, for callers
+    that report the refusal rather than only logging it.
+    """
+
+    def __init__(self, message: str, *, command: str = "") -> None:
+        super().__init__(message)
+        self.command = command
+
+
+class CatGarbledFrameError(CatTransportError):
+    """Raised for a ``;``-terminated line carrying a byte outside 0x20-0x7E.
+
+    Link noise, not an answer: corruption that leaves the prefix ``query()``
+    matches on intact would otherwise reach the parser, where it is
+    indistinguishable from a clean frame of the wrong shape.
+    """
 
 
 # ── Stats ─────────────────────────────────────────────────────────────
@@ -110,7 +133,7 @@ class TransportStats:
 class YaesuCatTransport:
     """Async serial transport for Yaesu CAT protocol.
 
-    All public methods are safe to call concurrently — the internal lock
+    All public methods are safe to call concurrently — the internal gate
     guarantees strict serialization of serial I/O.
 
     Usage::
@@ -138,7 +161,7 @@ class YaesuCatTransport:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._connected = False
-        self._lock = asyncio.Lock()
+        self._exchange_gate = PriorityExchangeGate()
         self._stats = TransportStats()
         self._last_reconnect: float = 0.0
 
@@ -222,13 +245,18 @@ class YaesuCatTransport:
         await asyncio.sleep(0.5)  # Let OS release the port
         await self.connect()
 
-    # ── Low-level I/O (caller MUST hold self._lock) ──────────────────
+    # ── Low-level I/O (caller MUST hold the exchange gate) ───────────
 
     def _check_connected(self) -> None:
         if not self._connected or not self._writer or not self._reader:
             raise CatTransportError("Transport not connected")
 
-    async def _raw_write(self, command: str) -> None:
+    async def _raw_write(
+        self,
+        command: str,
+        *,
+        is_current: Callable[[], bool] | None = None,
+    ) -> None:
         """Send raw bytes to serial port."""
         self._check_connected()
         assert self._writer is not None  # for type checker
@@ -239,6 +267,7 @@ class YaesuCatTransport:
         if self._debug_logging:
             logger.debug("CAT TX: %r", command)
 
+        self._require_write_currency(is_current)
         try:
             self._writer.write(command.encode("ascii"))
             await self._writer.drain()
@@ -249,10 +278,16 @@ class YaesuCatTransport:
     async def readline(self, *, timeout: float | None = None) -> str:
         """Read one semicolon-terminated line.
 
-        .. note:: Caller must hold ``self._lock`` when used internally.
-           External callers should prefer ``query()`` which handles locking.
+        .. note:: Caller must hold the exchange gate when used internally.
+           External callers should prefer ``query()`` which handles serialization.
 
         Returns the line with trailing ``;`` stripped.
+
+        Raises:
+            CatGarbledFrameError: If any byte of the line falls outside
+                printable ASCII (0x20-0x7E).
+            CatTimeoutError: If no ``;`` arrives within *timeout*.
+            CatTransportError: On serial I/O failure.
         """
         self._check_connected()
         assert self._reader is not None  # for type checker
@@ -265,20 +300,27 @@ class YaesuCatTransport:
                 self._reader.readuntil(b";"),
                 timeout=timeout,
             )
+            # Classify before decoding: a byte >= 0x80 would otherwise raise
+            # UnicodeDecodeError and be caught below as CatTransportError.
+            if any(byte < 0x20 or byte > 0x7E for byte in line_bytes):
+                self._stats.record_error(f"garbled frame: {line_bytes!r}")
+                raise CatGarbledFrameError(f"Garbled frame on the wire: {line_bytes!r}")
             line = line_bytes.decode("ascii").rstrip(";")
-
-            if self._debug_logging:
-                logger.debug("CAT RX: %r", line)
-
-            return line
         except asyncio.TimeoutError as exc:
             self._stats.timeouts += 1
             raise CatTimeoutError(
                 f"Read timeout ({timeout}s) waiting for ';' terminator"
             ) from exc
+        except CatGarbledFrameError:
+            raise
         except Exception as exc:
             self._stats.record_error(f"read failed: {exc}")
             raise CatTransportError(f"Read failed: {exc}") from exc
+
+        if self._debug_logging:
+            logger.debug("CAT RX: %r", line)
+
+        return line
 
     async def flush_rx(self) -> int:
         """Discard any bytes sitting in the receive buffer.
@@ -301,25 +343,43 @@ class YaesuCatTransport:
 
     async def _drain_responses(
         self,
+        command: str,
         drain_timeout: float = _DRAIN_TIMEOUT,
         max_lines: int = _DRAIN_MAX_LINES,
     ) -> int:
         """Read and discard echo / auto-info lines until silence.
 
         Returns the number of lines drained.
+
+        Raises:
+            CatCommandRejected: If a drained line is ``?;`` (MOR-2103) — the
+                radio rejected *command*. Silence within *drain_timeout* is
+                the normal, healthy case (the ``CatTimeoutError`` branch
+                below) and must never raise.
         """
         drained = 0
         for _ in range(max_lines):
             try:
                 line = await self.readline(timeout=drain_timeout)
-                drained += 1
-                self._stats.stale_lines_skipped += 1
-                if self._debug_logging:
-                    logger.debug("CAT: drained post-write line: %r", line)
             except CatTimeoutError:
                 break  # Silence — buffer is clean
-            except CatTransportError:
-                break  # Port error — bail out
+            except CatGarbledFrameError:
+                # Noise among the echo/auto-info being discarded anyway; it is
+                # not this SET command's outcome. Pinned by
+                # ``test_drained_garbled_line_after_a_write_is_discarded``.
+                drained += 1
+                self._stats.stale_lines_skipped += 1
+                continue
+            drained += 1
+            if line == "?":
+                self._stats.record_error(f"rejected: {command}")
+                raise CatCommandRejected(
+                    f"Radio rejected command {command!r} (returned '?;')",
+                    command=command,
+                )
+            self._stats.stale_lines_skipped += 1
+            if self._debug_logging:
+                logger.debug("CAT: drained post-write line: %r", line)
         # Flush any partial bytes that didn't form a complete line
         await self.flush_rx()
         return drained
@@ -328,26 +388,34 @@ class YaesuCatTransport:
         """Check if consecutive errors warrant a reconnect."""
         return self._stats.consecutive_errors >= _RECONNECT_AFTER_ERRORS
 
-    # ── Public API (all acquire lock) ─────────────────────────────────
+    # ── Public API (all acquire exchange gate) ────────────────────────
 
-    async def write(self, command: str) -> None:
+    async def write(
+        self,
+        command: str,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        tier: ExchangeTier = ExchangeTier.ORDINARY,
+    ) -> None:
         """Send a SET command and drain echo / auto-info.
 
-        Acquires the transport lock, flushes stale RX data, sends the
+        Acquires the transport gate, flushes stale RX data, sends the
         command, then reads (and discards) any echo or auto-info the radio
-        sends back.  The lock is only released once the wire is clean.
+        sends back.  The gate is only released once the wire is clean.
 
         Args:
             command: CAT command string (e.g. ``"MD0E;"``).
 
         Raises:
+            CatCommandRejected: If the radio returns ``?;`` (MOR-2103).
             CatTransportError: On serial I/O failure.
         """
-        async with self._lock:
+        async with self._exchange_gate.exchange(tier=tier):
             await self.flush_rx()
-            await self._raw_write(command)
+            self._require_write_currency(is_current)
+            await self._raw_write(command, is_current=is_current)
             self._stats.writes += 1
-            drained = await self._drain_responses()
+            drained = await self._drain_responses(command)
             self._stats.record_success()
             if drained and self._debug_logging:
                 logger.debug("CAT: drained %d line(s) after write %r", drained, command)
@@ -355,7 +423,7 @@ class YaesuCatTransport:
     async def query(self, command: str, *, timeout: float | None = None) -> str:
         """Send a GET command and return the matching response.
 
-        Acquires the transport lock, flushes stale RX data, sends the
+        Acquires the transport gate, flushes stale RX data, sends the
         command, then reads lines until one matches the expected prefix.
         Echo lines and stale auto-info are silently skipped.
 
@@ -371,7 +439,7 @@ class YaesuCatTransport:
             CatTimeoutError: If no matching response within timeout.
             CatTransportError: On serial I/O failure.
         """
-        async with self._lock:
+        async with self._exchange_gate.exchange():
             await self.flush_rx()
             await self._raw_write(command)
             self._stats.queries += 1
@@ -391,7 +459,8 @@ class YaesuCatTransport:
                 if response == "?":
                     self._stats.record_error(f"rejected: {command}")
                     raise CatCommandRejected(
-                        f"Radio rejected command {command!r} (returned '?;')"
+                        f"Radio rejected command {command!r} (returned '?;')",
+                        command=command,
                     )
 
                 # ── Echo suppression ──
@@ -420,6 +489,19 @@ class YaesuCatTransport:
                 f"Query {command!r}: exhausted {_QUERY_MAX_ATTEMPTS} attempts, "
                 "no matching response"
             )
+
+    @staticmethod
+    def _require_write_currency(is_current: Callable[[], bool] | None) -> None:
+        if is_current is None:
+            return
+        try:
+            current = is_current()
+        except (Exception, asyncio.CancelledError) as exc:
+            raise CatTransportError(
+                "Managed Yaesu CAT write currency check failed."
+            ) from exc
+        if not current:
+            raise CatTransportError("Managed Yaesu CAT write is no longer current.")
 
     async def query_safe(
         self, command: str, *, timeout: float | None = None, default: Any = None

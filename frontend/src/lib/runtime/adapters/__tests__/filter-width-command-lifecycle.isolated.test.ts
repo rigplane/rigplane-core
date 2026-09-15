@@ -3,9 +3,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 type FakeCommand = { id: string; name: string; params: Record<string, unknown>;
   originalEpoch: number; eventEpoch?: number; createdAt: number;
   status: 'pending' | 'acknowledged' | 'confirmed' | 'failed' | 'cancelled' | 'timed-out';
+  providerGeneration?: number | null;
   error?: string;
   ackObservationSeq?: number;
   ackFieldObservationTimes?: Record<string, number>;
+  dispatchedEventEpoch?: number;
+  hold?: Readonly<{ commandId: string; originalEpoch: number; eventEpoch: number;
+    kind: 'held'; reason: 'tx_active'; expiresAt: number }>;
+  locallyObsolete?: true;
+  terminalOutcome?: 'superseded';
 };
 type FakeState = {
   active: 'MAIN' | 'SUB';
@@ -51,17 +57,22 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: { get state() { return runtimeState.state; }, get caps() { return null; } },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({ getAppTxController: () => null }));
 vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({ toRadioViewModel: () => null }));
 
 import {
   FILTER_WIDTH_FEEDBACK_DESCRIPTOR,
   getBreakInDelayControlFeedback,
   getFilterWidthCommandLifecycle,
+  projectControlFeedback,
 } from '../panel-adapters';
 import {
-  BREAK_IN_DELAY_COMMAND_DESCRIPTOR, FILTER_WIDTH_COMMAND_DESCRIPTOR,
+  BREAK_IN_DELAY_COMMAND_DESCRIPTOR, CW_PITCH_COMMAND_DESCRIPTOR, FILTER_WIDTH_COMMAND_DESCRIPTOR,
+  DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR,
+  DSP_COMMAND_DESCRIPTORS, IF_SHIFT_COMMAND_DESCRIPTOR, KEY_SPEED_COMMAND_DESCRIPTOR,
+  PBT_INNER_COMMAND_DESCRIPTOR, PBT_OUTER_COMMAND_DESCRIPTOR,
+  RF_GAIN_COMMAND_DESCRIPTOR, SQUELCH_COMMAND_DESCRIPTOR, AF_LEVEL_COMMAND_DESCRIPTOR, RF_POWER_COMMAND_DESCRIPTOR,
   STATE_BACKED_COMMAND_DESCRIPTORS,
+  TX_AUX_COMMAND_DESCRIPTORS,
   beginCommand, getStateBackedCommandDescriptor,
 } from '$lib/stores/commands.svelte';
 import {
@@ -74,10 +85,10 @@ function emitAcceptedState(value: FakeState | null): void {
 const command = (over: Partial<FakeCommand> = {}): FakeCommand => ({
   id: 'width-1', name: 'set_filter_width', params: { width: 3000 },
   originalEpoch: controlSession.epoch, eventEpoch: controlSession.epoch,
-  createdAt: 1, status: 'pending', ...over,
+  providerGeneration: 3, createdAt: 1, status: 'pending', ...over,
 });
 const state = (over: Partial<FakeState> = {}): FakeState => ({
-  active: 'MAIN', main: { filterWidth: 2400 }, sub: {}, observationSeq: 4,
+  active: 'MAIN', providerGeneration: 3, main: { filterWidth: 2400 }, sub: {}, observationSeq: 4,
   fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 } }, ...over,
 });
 describe('Filter Width command lifecycle projection (MOR-1664)', () => {
@@ -102,8 +113,16 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   it('shares one canonical registered Filter Width descriptor and exact paths', () => {
     expect(FILTER_WIDTH_FEEDBACK_DESCRIPTOR).toBe(FILTER_WIDTH_COMMAND_DESCRIPTOR);
     expect(getStateBackedCommandDescriptor('set_filter_width')).toBe(FILTER_WIDTH_COMMAND_DESCRIPTOR);
+    expect(getStateBackedCommandDescriptor('set_vfo_freq')).toBe(DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR);
     expect([...STATE_BACKED_COMMAND_DESCRIPTORS.keys()]).toEqual([
-      'set_filter_width', 'set_break_in_delay',
+      'set_filter_width', 'set_vfo_freq', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
+      'set_af_level', 'set_rf_power',
+      'set_cw_pitch', 'set_key_speed', 'set_mic_gain', 'set_drive_gain',
+      'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
+      'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
+      'set_nr_level', 'set_nb_depth',
+      'set_notch_filter', 'set_manual_notch_width', 'set_agc_time_constant',
+      'set_pbt_inner', 'set_pbt_outer', 'set_if_shift',
     ]);
     expect(RADIO_INTENT_NAMES).toContain(FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName);
     const main = FILTER_WIDTH_COMMAND_DESCRIPTOR.scope(command({ params: { width: 3000, receiver: 0 } }))!;
@@ -113,6 +132,23 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(FILTER_WIDTH_COMMAND_DESCRIPTOR.scope(command({ params: { width: 3000, receiver: 2 } }))).toBeNull();
     expect(FILTER_WIDTH_COMMAND_DESCRIPTOR.target(command({ params: { width: 3000.5 } }))).toBeNull();
     expect(FILTER_WIDTH_COMMAND_DESCRIPTOR.repeatPolicy).toBe('latest-target-wins');
+    const fixedB = DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR.scope(command({
+      name: 'set_vfo_freq', params: {
+        freq: 7_074_000, receiver: 0, slot: 'B', expected_active_slot: 'A', provider_generation: 3,
+      },
+    }))!;
+    expect(fixedB).toEqual({ control: 'vfo-frequency', receiver: 0, slot: 'B' });
+    expect(DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR.fieldPath(fixedB)).toBe('main.vfoB.freqHz');
+    expect(DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR.target(command({
+      name: 'set_vfo_freq', params: {
+        freq: 7_074_000, receiver: 0, slot: 'B', expected_active_slot: 'A', provider_generation: 3,
+      },
+    }))).toBe(7_074_000);
+    expect(DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR.scope(command({
+      name: 'set_vfo_freq', params: {
+        freq: 7_074_000, receiver: 0, slot: 'selected', expected_active_slot: 'A', provider_generation: 3,
+      },
+    }))).toBeNull();
   });
   it('stays unavailable rather than fabricating a pending or confirmed value without observed width', () => {
     runtimeState.state = state({ main: {} });
@@ -126,6 +162,25 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     lifecycle.commands = [command()];
     expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 2400, target: 3000, phase: 'pending', busy: true, outcome: null,
+    });
+  });
+  it('excludes unresolved, invalid, and prior-provider records including terminals', () => {
+    runtimeState.state = state({ providerGeneration: 4 });
+    for (const providerGeneration of [undefined, null, -1, 3]) {
+      lifecycle.commands = [command({ providerGeneration })];
+      expect(getFilterWidthCommandLifecycle()).toMatchObject({
+        confirmed: 2400, target: null, phase: 'idle', presentation: null,
+      });
+    }
+    lifecycle.commands = [command({
+      providerGeneration: 3, status: 'failed', error: 'old provider rejected',
+    })];
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
+      confirmed: 2400, target: null, phase: 'idle', outcome: null, presentation: null,
+    });
+    lifecycle.commands = [command({ providerGeneration: 4 })];
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
+      confirmed: 2400, target: 3000, phase: 'pending',
     });
   });
   it('keeps a fresh matching observation acknowledged when a caller only reads the pure accessor', () => {
@@ -149,8 +204,6 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   it.each([
     ['missing status', undefined],
     ['unobserved status', { observed: false, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 }],
-    ['stale status', { observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5 }],
-    ['unavailable status', { observed: true, freshness: 'fresh', availability: 'stale', lastObservedMonotonic: 5 }],
     ['missing marker', { observed: true, freshness: 'fresh', availability: 'available' }],
     ['non-finite marker', { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: Number.NaN }],
   ])('makes the full projection unavailable from %s evidence', (_case, fieldStatus) => {
@@ -158,6 +211,21 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
     expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null,
+    });
+  });
+  it.each([
+    // R29 (MOR-2425): a field that is observed and carries a value stays
+    // available whichever of the two wire signals (`freshness`/`availability`)
+    // records the staleness — the server always sets them together
+    // (`_freshness_availability`, `src/rigplane/web/runtime_helpers.py`), but
+    // this predicate does not require them to agree to accept 'stale'.
+    ['stale status', { observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5 }],
+    ['stale availability', { observed: true, freshness: 'fresh', availability: 'stale', lastObservedMonotonic: 5 }],
+  ])('keeps the full projection available with the last value from %s evidence', (_case, fieldStatus) => {
+    runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': fieldStatus } });
+    lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
+      confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true, outcome: null,
     });
   });
   it('does not let a legacy record without an ACK field boundary confirm', () => {
@@ -208,6 +276,77 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       confirmed: 3000, target: 2800, phase: 'pending', busy: true, outcome: null,
     });
   });
+  it('projects only real dispatch and hold evidence, with stable duplicate identities', () => {
+    vi.useFakeTimers();
+    runtimeState.state = state();
+    const submitted = command();
+    lifecycle.commands = [submitted];
+    const submittedFeedback = projectControlFeedback(
+      FILTER_WIDTH_COMMAND_DESCRIPTOR, runtimeState.state as never, lifecycle.commands as never,
+      { control: 'filter-width', receiver: 0 }, 7,
+      (candidate) => lifecycle.superseded.has(candidate.id),
+    );
+    expect(submittedFeedback.phase).toBe('submitted');
+
+    submitted.dispatchedEventEpoch = 7;
+    const dispatched = projectControlFeedback(
+      FILTER_WIDTH_COMMAND_DESCRIPTOR, runtimeState.state as never, lifecycle.commands as never,
+      { control: 'filter-width', receiver: 0 }, 7,
+      (candidate) => lifecycle.superseded.has(candidate.id),
+    );
+    expect(dispatched).toMatchObject({ phase: 'dispatched', busy: true, target: 3000 });
+    expect(dispatched.transitionId).not.toBe(submittedFeedback.transitionId);
+    expect(projectControlFeedback(
+      FILTER_WIDTH_COMMAND_DESCRIPTOR, runtimeState.state as never, lifecycle.commands as never,
+      { control: 'filter-width', receiver: 0 }, 7,
+      (candidate) => lifecycle.superseded.has(candidate.id),
+    ).transitionId).toBe(dispatched.transitionId);
+
+    submitted.hold = Object.freeze({ commandId: submitted.id, originalEpoch: 7, eventEpoch: 7,
+      kind: 'held', reason: 'tx_active', expiresAt: 12.5 });
+    const queued = projectControlFeedback(
+      FILTER_WIDTH_COMMAND_DESCRIPTOR, runtimeState.state as never, lifecycle.commands as never,
+      { control: 'filter-width', receiver: 0 }, 7,
+      (candidate) => lifecycle.superseded.has(candidate.id),
+    );
+    expect(queued.phase).toBe('queued');
+    expect(queued.transitionId).not.toBe(dispatched.transitionId);
+    expect(vi.getTimerCount()).toBe(0);
+
+    submitted.status = 'acknowledged';
+    expect(projectControlFeedback(
+      FILTER_WIDTH_COMMAND_DESCRIPTOR, runtimeState.state as never, lifecycle.commands as never,
+      { control: 'filter-width', receiver: 0 }, 7,
+      (candidate) => lifecycle.superseded.has(candidate.id),
+    ).phase).toBe('queued');
+  });
+
+  it('shows the latest remote supersession but never revives a locally obsolete record', () => {
+    runtimeState.state = state();
+    const old = command({ id: 'old', createdAt: 1, locallyObsolete: true,
+      terminalOutcome: 'superseded', status: 'cancelled' });
+    const latest = command({ id: 'latest', createdAt: 2, params: { width: 2800 },
+      terminalOutcome: 'superseded', status: 'cancelled' });
+    lifecycle.commands = [old, latest];
+    lifecycle.superseded.add(old.id); lifecycle.superseded.add(latest.id);
+
+    const visible = projectControlFeedback(
+      FILTER_WIDTH_COMMAND_DESCRIPTOR, runtimeState.state as never, lifecycle.commands as never,
+      { control: 'filter-width', receiver: 0 }, 7,
+      (candidate) => lifecycle.superseded.has(candidate.id),
+    );
+    expect(visible).toMatchObject({
+      phase: 'superseded', busy: false, target: null,
+      requestedTarget: 2800, outcome: { phase: 'superseded' },
+    });
+
+    lifecycle.commands = [old];
+    expect(projectControlFeedback(
+      FILTER_WIDTH_COMMAND_DESCRIPTOR, runtimeState.state as never, lifecycle.commands as never,
+      { control: 'filter-width', receiver: 0 }, 7,
+      (candidate) => lifecycle.superseded.has(candidate.id),
+    )).toMatchObject({ phase: 'idle', target: null, outcome: null });
+  });
   it('lets a newer terminal record suppress an older pending target', () => {
     runtimeState.state = state();
     lifecycle.commands = [
@@ -239,7 +378,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       index === 142 ? 'sub.filterWidth' : `other.${index}`,
       { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: index === 142 ? 73 : Number.NaN },
     ]));
-    commandRadio.current = { observationSeq: 41, fieldStatus: fields };
+    commandRadio.current = { providerGeneration: 3, observationSeq: 41, fieldStatus: fields };
     const store = await import('$lib/stores/commands.svelte');
     store.beginCommand({ id: 'real-ack', name: 'set_filter_width', params: { width: 3000, receiver: 1 }, originalEpoch: 9 });
     store.acknowledgeCommand('real-ack', 9, 10);
@@ -259,7 +398,6 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     runtimeState.state = state({ active: 'SUB', sub: { filterWidth: 3000 }, fieldStatus: { 'sub.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 74 } } });
     emitAcceptedState(runtimeState.state);
     expect(store.getCommandLifecycle('real-ack', 9)?.status).toBe('confirmed');
-    const retained = getLiveView().presentation;
     expect(getLiveView()).toMatchObject({ confirmed: 3000, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' }, presentation: {
       receiver: 1, sessionEpoch: 9, target: 3000, status: 'confirmed',
     } });
@@ -270,17 +408,17 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     store.beginCommand({ id: 'cold-ack', name: 'set_filter_width', params: { width: 2800, receiver: 0 }, originalEpoch: 9 });
     store.acknowledgeCommand('cold-ack', 9, 10);
     expect(store.getCommandLifecycle('cold-ack', 9)).toMatchObject({
-      status: 'acknowledged', ackObservationSeq: undefined, ackFieldObservationTimes: {},
+      status: 'acknowledged', providerGeneration: null, ackObservationSeq: undefined, ackFieldObservationTimes: {},
     });
     runtimeState.state = state({ main: { filterWidth: 2400 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
     emitAcceptedState(runtimeState.state);
-    expect(getLiveView()).toMatchObject({ confirmed: 2400, target: 2800, phase: 'acknowledged', busy: true });
-    expect(store.getCommandLifecycle('cold-ack', 9)?.ackFieldObservationTimes).toEqual({ 'main.filterWidth': 5 });
+    expect(getLiveView()).toMatchObject({ confirmed: 2400, target: null, phase: 'idle', busy: false });
+    expect(store.getCommandLifecycle('cold-ack', 9)?.ackFieldObservationTimes).toEqual({});
     runtimeState.state = state({ main: { filterWidth: 2800 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 6 } } });
     emitAcceptedState(runtimeState.state);
-    expect(getLiveView()).toMatchObject({ confirmed: 2800, target: null, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' } });
-    expect(store.getCommandLifecycle('cold-ack', 9)?.status).toBe('confirmed');
-    expect(getLiveView().presentation?.lifecycleId).not.toBe(retained?.lifecycleId);
+    expect(getLiveView()).toMatchObject({ confirmed: 2800, target: null, phase: 'idle', busy: false, outcome: null });
+    expect(store.getCommandLifecycle('cold-ack', 9)?.status).toBe('acknowledged');
+    expect(getLiveView().presentation).toBeNull();
     store.resetCommandLifecycle();
     expect(getLiveView().presentation).toBeNull();
   });
@@ -289,6 +427,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     vi.doUnmock('$lib/stores/commands.svelte');
     vi.resetModules();
     runtimeState.state = state({ main: { filterWidth: 2400 }, sub: { filterWidth: 1800 } });
+    commandRadio.current = runtimeState.state as unknown as Record<string, unknown>;
     const store = await import('$lib/stores/commands.svelte');
     const { getFilterWidthCommandLifecycle: getLiveView } = await import('../panel-adapters');
 
@@ -416,7 +555,14 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     const failed = start('failed', 2800); store.failCommand(failed.id, 12, 12, 'rejected'); assertRetainedThenGc(2800, 'failed');
     start('cancelled', 2600); store.cancelPendingCommands(12); assertRetainedThenGc(2600, 'cancelled');
     start('timed-out', 2400, 1); vi.advanceTimersByTime(1); assertRetainedThenGc(2400, 'timed-out');
-    expect(new Set(transitions)).toHaveLength(6);
+    const superseded = start('superseded', 2200);
+    store.applyCommandLifecycleProjection({ commandId: superseded.id, originalEpoch: 12,
+      eventEpoch: 12, kind: 'superseded' }, 12);
+    expect(getLiveView()).toMatchObject({ confirmed: 2400, target: null, phase: 'idle',
+      busy: false, outcome: { phase: 'superseded' }, presentation: { target: 2200, status: 'cancelled' } });
+    transitions.push(getLiveView().presentation!.transitionId); vi.advanceTimersByTime(5_000);
+    expect(getLiveView().presentation).toBeNull();
+    expect(new Set(transitions)).toHaveLength(7);
     store.resetCommandLifecycle();
   });
   it('isolates receivers and gives reused command ids in a later session a distinct identity', () => {
@@ -450,7 +596,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
 const delayCommand = (over: Partial<FakeCommand> = {}): FakeCommand => ({
   id: 'delay-1', name: 'set_break_in_delay', params: Object.freeze({ level: 64 }),
   originalEpoch: controlSession.epoch, eventEpoch: controlSession.epoch,
-  createdAt: 1, status: 'pending', ...over,
+  providerGeneration: 3, createdAt: 1, status: 'pending', ...over,
 });
 const delayState = (over: Partial<FakeState> = {}): FakeState => ({
   active: 'MAIN', providerGeneration: 3, breakInDelay: 32, main: {}, sub: {},
@@ -472,7 +618,31 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     expect(getStateBackedCommandDescriptor('set_break_in_delay')).toBe(BREAK_IN_DELAY_COMMAND_DESCRIPTOR);
     expect([...STATE_BACKED_COMMAND_DESCRIPTORS.entries()]).toEqual([
       ['set_filter_width', FILTER_WIDTH_COMMAND_DESCRIPTOR],
+      ['set_vfo_freq', DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR],
       ['set_break_in_delay', BREAK_IN_DELAY_COMMAND_DESCRIPTOR],
+      ['set_rf_gain', RF_GAIN_COMMAND_DESCRIPTOR],
+      ['set_squelch', SQUELCH_COMMAND_DESCRIPTOR],
+      ['set_af_level', AF_LEVEL_COMMAND_DESCRIPTOR],
+      ['set_rf_power', RF_POWER_COMMAND_DESCRIPTOR],
+      ['set_cw_pitch', CW_PITCH_COMMAND_DESCRIPTOR],
+      ['set_key_speed', KEY_SPEED_COMMAND_DESCRIPTOR],
+      ['set_mic_gain', TX_AUX_COMMAND_DESCRIPTORS.micGain],
+      ['set_drive_gain', TX_AUX_COMMAND_DESCRIPTORS.driveGain],
+      ['set_vox_gain', TX_AUX_COMMAND_DESCRIPTORS.voxGain],
+      ['set_anti_vox_gain', TX_AUX_COMMAND_DESCRIPTORS.antiVoxGain],
+      ['set_vox_delay', TX_AUX_COMMAND_DESCRIPTORS.voxDelay],
+      ['set_compressor_level', TX_AUX_COMMAND_DESCRIPTORS.compressorLevel],
+      ['set_monitor_gain', TX_AUX_COMMAND_DESCRIPTORS.monitorGain],
+      ['set_nb_level', DSP_COMMAND_DESCRIPTORS.nbLevel],
+      ['set_nb_width', DSP_COMMAND_DESCRIPTORS.nbWidth],
+      ['set_nr_level', DSP_COMMAND_DESCRIPTORS.nrLevel],
+      ['set_nb_depth', DSP_COMMAND_DESCRIPTORS.nbDepth],
+      ['set_notch_filter', DSP_COMMAND_DESCRIPTORS.notchFilter],
+      ['set_manual_notch_width', DSP_COMMAND_DESCRIPTORS.manualNotchWidth],
+      ['set_agc_time_constant', DSP_COMMAND_DESCRIPTORS.agcTimeConstant],
+      ['set_pbt_inner', PBT_INNER_COMMAND_DESCRIPTOR],
+      ['set_pbt_outer', PBT_OUTER_COMMAND_DESCRIPTOR],
+      ['set_if_shift', IF_SHIFT_COMMAND_DESCRIPTOR],
     ]);
     const scope = BREAK_IN_DELAY_COMMAND_DESCRIPTOR.scope(delayCommand());
     expect(scope).toEqual({ control: 'break-in-delay', receiver: 0 });
@@ -514,15 +684,30 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     expect(JSON.stringify([pending])).toBe(before);
     expect(dispatch).not.toHaveBeenCalled();
   });
+  it('publishes current provider identity and rejects old-provider Break-in Delay outcomes', () => {
+    runtimeState.state = delayState({ providerGeneration: 4 });
+    lifecycle.commands = [delayCommand({
+      providerGeneration: 3, status: 'failed', error: 'old provider rejected',
+    })];
+    expect(getBreakInDelayControlFeedback()).toMatchObject({
+      providerGeneration: 4, confirmed: 32, target: null,
+      phase: 'idle', outcome: null, lifecycleId: null,
+    });
+    lifecycle.commands = [delayCommand({ providerGeneration: 4 })];
+    expect(getBreakInDelayControlFeedback()).toMatchObject({
+      providerGeneration: 4, phase: 'submitted', target: 64,
+    });
+    runtimeState.state = null;
+    expect(getBreakInDelayControlFeedback()).toMatchObject({
+      providerGeneration: null, phase: 'unavailable',
+    });
+  });
 
   it.each([
     ['missing state', null],
     ['missing value', delayState({ breakInDelay: undefined })],
     ['non-integer value', delayState({ breakInDelay: 32.5 })],
     ['missing field status', delayState({ fieldStatus: {} })],
-    ['stale field', delayState({ fieldStatus: { breakInDelay: {
-      observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5,
-    } } })],
     ['unavailable field', delayState({ fieldStatus: { breakInDelay: {
       observed: true, freshness: 'fresh', availability: 'unavailable', lastObservedMonotonic: 5,
     } } })],
@@ -531,6 +716,16 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     expect(getBreakInDelayControlFeedback()).toMatchObject({
       confirmed: null, target: null, phase: 'unavailable', busy: false,
       availability: 'unavailable',
+    });
+  });
+
+  it('keeps a stale-but-observed field available with its last value (MOR-2425/R29)', () => {
+    runtimeState.state = delayState({ fieldStatus: { breakInDelay: {
+      observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5,
+    } } });
+    lifecycle.commands = [delayCommand()];
+    expect(getBreakInDelayControlFeedback()).toMatchObject({
+      confirmed: 32, target: 64, phase: 'submitted', busy: true, availability: 'available',
     });
   });
 
@@ -562,7 +757,7 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     expect(getBreakInDelayControlFeedback()).toMatchObject({ phase: 'idle', confirmed: 52 });
   });
 
-  it('confirms only from matching fresh canonical truth newer than the ACK boundary', async () => {
+  it('confirms from the first fresh canonical truth newer than the ACK boundary, whatever value it carries', async () => {
     vi.useFakeTimers(); vi.doUnmock('$lib/stores/commands.svelte'); vi.resetModules();
     const store = await import('$lib/stores/commands.svelte');
     const { getBreakInDelayControlFeedback: getLiveFeedback } = await import('../panel-adapters');
@@ -577,10 +772,13 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     expect(getLiveFeedback()).toMatchObject({ phase: 'awaiting-confirmation', target: 64 });
     emitAcceptedState(delayState({ breakInDelay: 64 }));
     expect(store.getCommandLifecycle(record.id, 7)?.status).toBe('acknowledged');
-    emitAcceptedState(delayState({ breakInDelay: 48, fieldStatus: { breakInDelay: {
+    runtimeState.state = delayState({ breakInDelay: 48, fieldStatus: { breakInDelay: {
       observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5,
-    } } }));
-    expect(store.getCommandLifecycle(record.id, 7)?.status).toBe('acknowledged');
+    } } }); emitAcceptedState(runtimeState.state);
+    expect(store.getCommandLifecycle(record.id, 7)?.status).toBe('confirmed');
+    expect(getLiveFeedback()).toMatchObject({
+      phase: 'confirmed', confirmed: 48, target: null, outcome: { phase: 'confirmed' },
+    });
     runtimeState.state = delayState({ breakInDelay: 64, fieldStatus: { breakInDelay: {
       observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 6,
     } } }); emitAcceptedState(runtimeState.state);

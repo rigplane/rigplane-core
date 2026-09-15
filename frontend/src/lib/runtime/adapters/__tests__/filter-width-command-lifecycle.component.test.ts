@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import FilterWidthLifecycleDerivedProbe from './support/FilterWidthLifecycleDerivedProbe.svelte';
 import { currentControlSessionEpoch } from '$lib/runtime/commands/radio-intents';
+import { getFilterWidthControlFeedback } from '../panel-adapters';
 
 type Command = {
   id: string; name: string; params: { width: number; receiver: 0 | 1 };
-  createdAt: number; originalEpoch: number;
+  providerGeneration: number; createdAt: number; originalEpoch: number;
   status: 'pending' | 'acknowledged' | 'confirmed';
 };
 const h = vi.hoisted(() => ({
@@ -27,11 +28,11 @@ vi.mock('$lib/runtime/commands/radio-intents', async (importOriginal) => {
   return { ...actual, currentControlSessionEpoch: () => h.epoch };
 });
 vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({ toRadioViewModel: () => null }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({ getAppTxController: () => null }));
 
 function observed(width: number, active: 'MAIN' | 'SUB' = 'MAIN', otherWidth = 2400) {
   const path = active === 'MAIN' ? 'main.filterWidth' : 'sub.filterWidth';
   return {
+    providerGeneration: 3,
     active,
     main: { filterWidth: active === 'MAIN' ? width : otherWidth },
     sub: { filterWidth: active === 'SUB' ? width : otherWidth },
@@ -67,7 +68,7 @@ describe('mounted Filter Width lifecycle projection (MOR-1667)', () => {
     const refresh = (mounted[0] as { refresh: () => void }).refresh;
     expect(probe.dataset).toMatchObject({ phase: 'idle', confirmed: '2400', target: '' });
 
-    h.commands = [{ id: 'main', name: 'set_filter_width', params: { width: 3000, receiver: 0 }, createdAt: 1, originalEpoch: currentControlSessionEpoch(), status: 'acknowledged' }];
+    h.commands = [{ id: 'main', name: 'set_filter_width', params: { width: 3000, receiver: 0 }, providerGeneration: 3, createdAt: 1, originalEpoch: currentControlSessionEpoch(), status: 'acknowledged' }];
     refresh(); flushSync();
     expect(probe.dataset).toMatchObject({ phase: 'acknowledged', confirmed: '2400', target: '3000' });
 
@@ -81,9 +82,21 @@ describe('mounted Filter Width lifecycle projection (MOR-1667)', () => {
     expect(error.mock.calls.flat().join(' ')).not.toMatch(/state_unsafe_mutation|mutation.*derived/i);
   });
 
+  it('exposes the complete descriptor evidence without collapsing requested into confirmed truth', () => {
+    h.state = observed(2400);
+    h.commands = [{ id: 'main', name: 'set_filter_width', params: { width: 3000, receiver: 0 },
+      providerGeneration: 3, createdAt: 1, originalEpoch: currentControlSessionEpoch(), status: 'acknowledged' }];
+    expect(getFilterWidthControlFeedback()).toMatchObject({
+      confirmed: 2400, target: 3000, requestedTarget: 3000,
+      phase: 'awaiting-confirmation', busy: true, availability: 'available',
+      sessionEpoch: 7, scope: { control: 'filter-width', receiver: 0 },
+      repeatPolicy: 'latest-target-wins', outcome: null,
+    });
+  });
+
   it('keeps SUB command evidence isolated from MAIN projection', () => {
     h.state = observed(2800, 'MAIN', 2400);
-    h.commands = [{ id: 'sub', name: 'set_filter_width', params: { width: 2800, receiver: 1 }, createdAt: 1, originalEpoch: currentControlSessionEpoch(), status: 'acknowledged' }];
+    h.commands = [{ id: 'sub', name: 'set_filter_width', params: { width: 2800, receiver: 1 }, providerGeneration: 3, createdAt: 1, originalEpoch: currentControlSessionEpoch(), status: 'acknowledged' }];
     expect(render().dataset).toMatchObject({ phase: 'idle', confirmed: '2800', target: '' });
   });
 });

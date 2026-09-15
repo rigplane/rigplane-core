@@ -127,7 +127,7 @@ class TestPcmOpusTranscoder:
 class TestRadioPcmHooks:
     @pytest.mark.asyncio
     async def test_push_audio_tx_pcm_internal_sends_raw_pcm(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio.push_audio_tx_opus = AsyncMock()  # type: ignore[method-assign]
 
         pcm = b"\x01\x02" * 960
@@ -138,7 +138,7 @@ class TestRadioPcmHooks:
     async def test_push_audio_tx_pcm_internal_encodes_when_tx_codec_is_opus(
         self,
     ) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._audio_tx_codec = AudioCodec.OPUS_1CH
         radio.push_audio_tx_opus = AsyncMock()  # type: ignore[method-assign]
 
@@ -153,7 +153,7 @@ class TestRadioPcmHooks:
         radio.push_audio_tx_opus.assert_awaited_once_with(b"opus:\x01\x02")
 
     def test_decode_audio_packet_to_pcm_and_callback_adapter(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
 
         class _DummyTranscoder:
             def opus_to_pcm(self, opus: bytes) -> bytes:
@@ -177,7 +177,7 @@ class TestRadioPcmHooks:
 class TestRadioPcmRxApi:
     @pytest.mark.asyncio
     async def test_start_audio_rx_pcm_decodes_and_forwards_gaps(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._connected = True
         radio._civ_transport = MagicMock()
         fake_stream = FakeAudioStream()
@@ -207,7 +207,7 @@ class TestRadioPcmRxApi:
 
     @pytest.mark.asyncio
     async def test_stop_audio_rx_pcm_delegates(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         fake_stream = FakeAudioStream()
         radio._audio_stream = fake_stream  # type: ignore[assignment]
 
@@ -216,25 +216,25 @@ class TestRadioPcmRxApi:
 
     @pytest.mark.asyncio
     async def test_start_audio_rx_pcm_invalid_callback(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(TypeError, match="callback must be callable"):
             await radio.start_audio_rx_pcm(None)  # type: ignore[arg-type]
 
     @pytest.mark.asyncio
     async def test_start_audio_rx_pcm_invalid_jitter_depth_type(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(TypeError, match="jitter_depth must be an int"):
             await radio.start_audio_rx_pcm(lambda _: None, jitter_depth=1.5)  # type: ignore[arg-type]
 
     @pytest.mark.asyncio
     async def test_start_audio_rx_pcm_invalid_jitter_depth_value(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ValueError, match="jitter_depth must be >= 0"):
             await radio.start_audio_rx_pcm(lambda _: None, jitter_depth=-1)
 
     @pytest.mark.asyncio
     async def test_start_audio_rx_pcm_invalid_format(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._connected = True
         radio._civ_transport = MagicMock()
         with pytest.raises(AudioFormatError, match="Unsupported sample_rate"):
@@ -242,7 +242,7 @@ class TestRadioPcmRxApi:
 
     @pytest.mark.asyncio
     async def test_start_audio_rx_pcm_disconnected(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError, match="Not connected to radio"):
             await radio.start_audio_rx_pcm(lambda _: None)
 
@@ -250,7 +250,7 @@ class TestRadioPcmRxApi:
 class TestRadioPcmTxApi:
     @pytest.mark.asyncio
     async def test_start_audio_tx_pcm_starts_stream_and_tracks_format(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._connected = True
         radio._civ_transport = MagicMock()
         fake_stream = FakeAudioStream()
@@ -265,7 +265,7 @@ class TestRadioPcmTxApi:
 
     @pytest.mark.asyncio
     async def test_push_audio_tx_pcm_sends_raw_pcm(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._connected = True
         radio._civ_transport = MagicMock()
         radio._pcm_tx_fmt = (48000, 1, 20)
@@ -277,7 +277,7 @@ class TestRadioPcmTxApi:
 
     @pytest.mark.asyncio
     async def test_push_audio_tx_pcm_not_started(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._connected = True
         radio._civ_transport = MagicMock()
 
@@ -286,7 +286,7 @@ class TestRadioPcmTxApi:
 
     @pytest.mark.asyncio
     async def test_start_audio_tx_pcm_invalid_types(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(TypeError, match="sample_rate must be an int"):
             await radio.start_audio_tx_pcm(sample_rate=True)  # type: ignore[arg-type]
         with pytest.raises(TypeError, match="channels must be an int"):
@@ -296,7 +296,7 @@ class TestRadioPcmTxApi:
 
     @pytest.mark.asyncio
     async def test_start_audio_tx_pcm_invalid_format(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._connected = True
         radio._civ_transport = MagicMock()
 
@@ -305,7 +305,7 @@ class TestRadioPcmTxApi:
 
     @pytest.mark.asyncio
     async def test_start_audio_tx_pcm_does_not_require_opus_backend(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._connected = True
         radio._civ_transport = MagicMock()
         fake_stream = FakeAudioStream()
@@ -321,7 +321,7 @@ class TestRadioPcmTxApi:
 
     @pytest.mark.asyncio
     async def test_start_audio_tx_pcm_defaults_to_contract_sample_rate(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._connected = True
         radio._civ_transport = MagicMock()
         fake_stream = FakeAudioStream()
@@ -349,7 +349,7 @@ class TestRadioPcmTxApi:
 
     @pytest.mark.asyncio
     async def test_push_audio_tx_pcm_frame_size_error(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._connected = True
         radio._civ_transport = MagicMock()
         radio._pcm_tx_fmt = (48000, 1, 20)
@@ -359,7 +359,7 @@ class TestRadioPcmTxApi:
 
     @pytest.mark.asyncio
     async def test_stop_audio_tx_pcm_delegates_and_clears_state(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         fake_stream = FakeAudioStream()
         radio._audio_stream = fake_stream  # type: ignore[assignment]
         radio._pcm_tx_fmt = (48000, 1, 20)
@@ -370,6 +370,6 @@ class TestRadioPcmTxApi:
 
     @pytest.mark.asyncio
     async def test_start_audio_tx_pcm_disconnected(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError, match="Not connected to radio"):
             await radio.start_audio_tx_pcm()

@@ -4,7 +4,7 @@
  * SAFETY-CRITICAL. This surface carries ATU **TUNE**, which emits a carrier:
  * it is a transmit-causing action, not a settings control. Every test below
  * names the mutation it kills, because the failure modes are operational:
- *   (a) TUNE reachable while the App TX authority would refuse a key intent
+ *   (a) TUNE reachable while the server TX projection reports a blocked key intent
  *       (MOR-1262 §2 slice 1 safety note i);
  *   (b) VOX armed on a field this radio never reported (safety note ii);
  *   (c) this surface growing a key/unkey control and becoming a SECOND TX
@@ -17,16 +17,20 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
 import TxAuxSurface, {
   TX_AUX_LEVELS, TX_AUX_TOGGLES,
   type TxAuxLevelField, type TxAuxToggleField,
 } from '../TxAuxSurface.svelte';
+import TxAuxScalarHostFixture from './fixtures/TxAuxScalarHostFixture.svelte';
 import { topologyFixtures, withTxAux } from '../fixtures/topologies';
 import type { Availability, RadioViewModel, TxAuxViewModel } from '../radio-view-model';
 import { blockedLabel, keyBlockedReasons, type TxAuthoritySnapshot } from '../rx-tx-surface';
+import type { CommandScalarFeedback } from '../../primitives/scalar/continuous-scalar.svelte';
 
 const IDLE_RX: TxAuthoritySnapshot = {
-  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
 };
 const snap = (over: Partial<TxAuthoritySnapshot> = {}): TxAuthoritySnapshot => ({ ...IDLE_RX, ...over });
 
@@ -65,17 +69,45 @@ type Handlers = {
   onToggle?: (field: TxAuxToggleField) => void;
   onLevelChange?: (field: TxAuxLevelField, value: number) => void;
   onAtuTune?: () => void;
+  levelFeedback?: TxAuxFeedbackRecord;
 };
 
+const FEEDBACK_LEVELS = [
+  ['micGain', 'mic-gain', 128], ['driveGain', 'drive-gain', 128],
+  ['voxGain', 'vox-gain', 50], ['antiVoxGain', 'anti-vox-gain', 30],
+  ['voxDelay', 'vox-delay', 20], ['compressorLevel', 'compressor-level', 10],
+  ['monitorLevel', 'monitor-level', 128],
+] as const;
+type FeedbackLevelField = (typeof FEEDBACK_LEVELS)[number][0];
+type TxAuxFeedbackRecord = Readonly<Record<FeedbackLevelField, Readonly<CommandScalarFeedback>>>;
+const feedback = (
+  control: string, confirmed: number, phase: CommandScalarFeedback['phase'] = 'idle',
+  over: Partial<CommandScalarFeedback> = {},
+): Readonly<CommandScalarFeedback> => Object.freeze({
+  confirmed, target: null, requestedTarget: null, phase,
+  busy: ['submitted', 'queued', 'dispatched', 'awaiting-confirmation'].includes(phase),
+  availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+  providerGeneration: 1, sessionEpoch: 1,
+  scope: Object.freeze({ control, receiver: 0 as const }),
+  repeatPolicy: 'latest-target-wins', ...over,
+});
+const feedbackRecord = (
+  replace: Partial<Record<FeedbackLevelField, Readonly<CommandScalarFeedback>>> = {},
+): TxAuxFeedbackRecord => Object.fromEntries(FEEDBACK_LEVELS.map(([field, control, value]) => [
+  field, replace[field] ?? feedback(control, value),
+])) as unknown as TxAuxFeedbackRecord;
+
 function render(view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handlers = {}) {
-  const component = mount(TxAuxSurface, { target, props: { view, tx, ...handlers } });
+  const component = mount(TxAuxScalarHostFixture, {
+    target, props: { view, tx, presentation: 'grouped', ...handlers },
+  });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   return {
     dispose: () => unmount(component),
     root: () => q('[data-testid="tx-aux-surface"]'),
     control: (field: string) => q<HTMLElement>(`[data-testid="tx-aux-${field}"]`),
-    input: (field: string) => q<HTMLInputElement>(`[data-testid="tx-aux-${field}"] input`),
+    input: (field: string) => q<HTMLElement>(`[data-testid="tx-aux-${field}"] [role="slider"]`),
     tune: () => q<HTMLButtonElement>('[data-testid="tx-aux-atu-tune"]'),
     tuneReasons: () => [...target.querySelectorAll('[data-testid="tx-aux-tune-blocked"] [data-reason]')]
       .map((el) => el.getAttribute('data-reason')),
@@ -90,11 +122,28 @@ function withSurface(
   try { fn(s); } finally { s.dispose(); }
 }
 
-/** `disabled` for a <button>, or for the <input> a level control wraps. */
+function renderReactiveFeedback(initial: TxAuxFeedbackRecord = feedbackRecord()) {
+  const onLevelChange = vi.fn();
+  const props = proxy({
+    view: base(), tx: snap(), presentation: 'grouped' as 'grouped' | 'independent',
+    onLevelChange, levelFeedback: initial,
+  });
+  const component = mount(TxAuxScalarHostFixture, {
+    target, props,
+  });
+  flushSync();
+  const row = (field: FeedbackLevelField) => target.querySelector<HTMLElement>(
+    `[data-testid="tx-aux-${field}"]`,
+  )!;
+  const input = (field: FeedbackLevelField) => row(field).querySelector<HTMLElement>('[role="slider"]')!;
+  return { dispose: () => unmount(component), row, input, onLevelChange, props };
+}
+
+/** `disabled` for a button, or `aria-disabled` for a scalar renderer. */
 function isDisabled(s: ReturnType<typeof render>, field: string): boolean {
   const el = s.control(field)!;
   if (el instanceof HTMLButtonElement) return el.disabled;
-  return s.input(field)!.disabled;
+  return s.input(field)!.getAttribute('aria-disabled') === 'true';
 }
 
 // ── 1. Structural gating: absent, never a disabled promise ─────────────────
@@ -195,7 +244,7 @@ describe('the disabled reason is exposed on hover and to screen readers (MOR-142
     const view = withField(base(), 'rfPower', { availability: { structural: true, operational: false } });
     withSurface(view, snap(), (s) => {
       const input = s.input('rfPower')!;
-      expect(input.title).toBe('Not yet observed');
+      expect(s.control('rfPower')!.title).toBe('Not yet observed');
       expect(describedText(input)).toBe('Not yet observed');
     });
   });
@@ -228,7 +277,7 @@ describe('the disabled reason is exposed on hover and to screen readers (MOR-142
         // `isDisabled` above already draws).
         const control = s.control(field)!;
         const el = control instanceof HTMLButtonElement ? control : s.input(field)!;
-        expect(el.title, field).toBe('Not yet observed');
+        expect(control.title || el.title, field).toBe('Not yet observed');
         expect(describedText(el), field).toBe('Not yet observed');
       });
     },
@@ -289,18 +338,19 @@ describe('VOX arming obeys the two-level gate (safety note ii)', () => {
 
 // ── 4. ATU TUNE — safety note (i), a transmit-causing action ───────────────
 
-/** Every way the App TX authority (or the permit) refuses a key intent. */
+/** Every way the server projection (or the permit) reports a blocked key intent. */
 const BLOCKING: readonly (readonly [string, Partial<TxAuthoritySnapshot>])[] = [
   ['a fault is latched', { fault: 'on-timeout' }],
   ['a lease is in progress', { phase: 'key-confirm-pending' }],
-  ['this browser may own the key', { mayOwnKey: true }],
   ['the radio is already transmitting', { radioTx: 'on' }],
   ['the RF state is unknown', { radioTx: 'unknown' }],
   ['TX risk is uncertain', { txRisk: 'uncertain' }],
   ['TX risk is confirmed-on', { txRisk: 'confirmed-on' }],
 ];
+const visibleTuneReasons = (view: RadioViewModel, tx: TxAuthoritySnapshot) =>
+  keyBlockedReasons(view, tx).filter((code) => code !== 'rf-state-unknown');
 
-describe('ATU TUNE is gated by the App TX authority, exactly like the key intent', () => {
+describe('ATU TUNE is gated by the server TX projection, exactly like the key intent', () => {
   it('offers TUNE when the authority is idle and the permit allows', () => {
     withSurface(base(), snap(), (s) => {
       expect(s.tune()).not.toBeNull();
@@ -309,16 +359,15 @@ describe('ATU TUNE is gated by the App TX authority, exactly like the key intent
     });
   });
 
-  // MUTATION KILLED: gating TUNE on anything weaker than the key intent's own
-  // predicate (or on nothing at all). Asserted against the SHARED
-  // `keyBlockedReasons` so the two can never drift apart.
+  // The shared predicate still gates TUNE. Its passive list omits only RF
+  // unknown so observation churn cannot move the surrounding layout.
   it.each(BLOCKING)('disables TUNE while %s', (_label, over) => {
     const view = base();
     const tx = snap(over);
     expect(keyBlockedReasons(view, tx).length).toBeGreaterThan(0);
     withSurface(view, tx, (s) => {
       expect(s.tune()!.disabled).toBe(true);
-      expect(s.tuneReasons()).toEqual([...keyBlockedReasons(view, tx)]);
+      expect(s.tuneReasons()).toEqual(visibleTuneReasons(view, tx));
     });
   });
 
@@ -458,6 +507,64 @@ describe('TUNE carries its own disabled reason (MOR-1481)', () => {
   });
 });
 
+// ── 4b. MOR-2231 — the shared control-button vocabulary ────────────────────
+//
+// Pins on CLASSES and `data-*` attributes only. Every gate, handler and aria
+// attribute the sections above cover is unchanged.
+
+describe('MOR-2231 — the TX-aux buttons carry the shared control-button vocabulary', () => {
+  it.each(TX_AUX_TOGGLES.map(([f]) => f))('the "%s" toggle is a compact hardware button with a cyan dot', (field) => {
+    // Kill-mutation: drop any one of the class/attribute applications on
+    // `.tx-aux-toggle`. Without `v2-control-button` the element inherits no
+    // button face; without `data-surface`/`data-indicator-*` the hardware
+    // gradient and the on-state dot never paint.
+    withSurface(base(), snap(), (s) => {
+      const el = s.control(field)!;
+      expect(el.classList.contains('tx-aux-toggle')).toBe(true);
+      expect(el.classList.contains('v2-control-button')).toBe(true);
+      expect(el.classList.contains('v2-control-button--compact')).toBe(true);
+      expect(el.dataset.surface).toBe('hardware');
+      expect(el.dataset.indicatorStyle).toBe('dot');
+      expect(el.dataset.indicatorColor).toBe('cyan');
+    });
+  });
+
+  it.each(TX_AUX_TOGGLES.map(([f]) => f))('the "%s" toggle\'s data-active restates aria-pressed exactly', (field) => {
+    // Kill-mutation: `data-active={usable(...)}`, or a plain boolean cast of
+    // the reading. The dot lighting up IS the on-state signal, so it must
+    // carry `pressedOf`'s answer — including its ABSENCE on an unobserved
+    // reading, where claiming "off" would be a fabricated fact (the same
+    // doctrine `pressed-of.ts` exists for).
+    withSurface(base(), snap(), (s) => {
+      const el = s.control(field)!;
+      expect(el.dataset.active).toBe(el.getAttribute('aria-pressed'));
+      expect(el.dataset.active).toBeDefined();
+    });
+    withSurface(withField(base(), field, { unknown: true }), snap(), (s) => {
+      const el = s.control(field)!;
+      expect(el.hasAttribute('aria-pressed')).toBe(false);
+      expect(el.hasAttribute('data-active')).toBe(false);
+    });
+  });
+
+  it('TUNE is a compact hardware button and stays double-gated', () => {
+    // Kill-mutation: drop the classes from `.tx-aux-tune`, leaving the
+    // transmit-causing control unstyled beside the styled toggles.
+    withSurface(base(), snap(), (s) => {
+      const tune = s.tune()!;
+      expect(tune.classList.contains('tx-aux-tune')).toBe(true);
+      expect(tune.classList.contains('v2-control-button')).toBe(true);
+      expect(tune.classList.contains('v2-control-button--compact')).toBe(true);
+      expect(tune.dataset.surface).toBe('hardware');
+      expect(tune.disabled).toBe(false);
+    });
+    // The styling must not have loosened the gate (section 3's own doctrine).
+    withSurface(base(), snap({ radioTx: 'on' }), (s) => {
+      expect(s.tune()!.disabled).toBe(true);
+    });
+  });
+});
+
 // ── 5. Exactly one key path — safety note (iii) ────────────────────────────
 
 describe('this surface is never a second key path (safety note iii)', () => {
@@ -468,7 +575,10 @@ describe('this surface is never a second key path (safety note iii)', () => {
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '');
-  const source = withoutComments(readFileSync('src/semantic/TxAuxSurface.svelte', 'utf8'));
+  const source = withoutComments([
+    readFileSync('src/semantic/TxAuxSurface.svelte', 'utf8'),
+    readFileSync('src/semantic/TxAuxFiniteHost.svelte', 'utf8'),
+  ].join('\n'));
 
   // MUTATION KILLED: a TxAuxSurface variant that renders a key/unkey control.
   // This is the named test the 1B brief requires such a variant to fail.
@@ -495,8 +605,8 @@ describe('this surface is never a second key path (safety note iii)', () => {
     expect(source).not.toMatch(/\btx\.(start|release|setIntent|resetFault)\b/);
   });
 
-  // MUTATION KILLED: re-deriving the block predicate locally. A second copy
-  // could disagree with the key button's; the shared import cannot.
+  // MUTATION KILLED: re-deriving the block predicate in the finite owner. A
+  // second copy could disagree with the key button's; the shared import cannot.
   it('imports the block predicate from the shared rx-tx vocabulary', () => {
     expect(source).toMatch(/import\s*\{[^}]*keyBlockedReasons[^}]*\}\s*from\s*'\.\/rx-tx-surface'/);
   });
@@ -509,11 +619,10 @@ describe('level intents reach the caller with the field and the raw value', () =
     const onLevelChange = vi.fn();
     withSurface(base(), snap(), (s) => {
       const input = s.input(field)!;
-      expect(input.min).toBe(String(min));
-      expect(input.max).toBe(String(max));
-      expect(input.step).toBe(String(step));
-      input.value = String(min);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+      expect(input.getAttribute('aria-valuemin')).toBe(String(min));
+      expect(input.getAttribute('aria-valuemax')).toBe(String(max));
+      expect(s.control(field)!.dataset.step).toBe(String(step));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
       flushSync();
       expect(onLevelChange).toHaveBeenCalledExactlyOnceWith(field, min);
     }, { onLevelChange });
@@ -524,10 +633,154 @@ describe('level intents reach the caller with the field and the raw value', () =
   // would silently halve someone's RF power.
   it('passes the raw reading straight into the control value', () => {
     withSurface(base(), snap(), (s) => {
-      expect(s.input('rfPower')!.valueAsNumber).toBe(0.8);
-      expect(s.input('micGain')!.valueAsNumber).toBe(128);
-      expect(s.input('voxDelay')!.valueAsNumber).toBe(20);
+      expect(s.input('rfPower')!.getAttribute('aria-valuenow')).toBe('0.8');
+      expect(s.input('micGain')!.getAttribute('aria-valuenow')).toBe('128');
+      expect(s.input('voxDelay')!.getAttribute('aria-valuenow')).toBe('20');
     });
+  });
+});
+
+describe('seven TX/VOX levels consume command feedback', () => {
+  const describedText = (el: HTMLElement): string | null => {
+    const id = el.getAttribute('aria-describedby');
+    return id ? target.querySelector(`#${id}`)?.textContent ?? null : null;
+  };
+
+  it('declares the adopted ValueControl source feedback-integrated without changing debt inventory', () => {
+    const source = readFileSync('src/semantic/TxAuxScalarHost.svelte', 'utf8');
+    expect(source.match(/'feedback-policy': 'feedback-integrated'/g)).toHaveLength(1);
+    expect(source).toContain('{...feedbackIntegratedControl}');
+  });
+
+  it.each(FEEDBACK_LEVELS)('uses canonical %s feedback and preserves its raw renderer value', (
+    field, _control, canonical,
+  ) => {
+    const r = renderReactiveFeedback();
+    const input = r.input(field);
+    expect(input.getAttribute('aria-valuenow')).toBe(String(canonical));
+    expect(input.dataset.commandPhase).toBe('idle');
+    expect(input.getAttribute('aria-busy')).toBe('false');
+    expect(input.getAttribute('aria-valuetext')).toContain(
+      field === 'voxDelay' ? `${(canonical * 0.1).toFixed(1)}s` : `${Math.round(canonical / 255 * 100)}%`,
+    );
+    const key = field === 'voxDelay' ? 'ArrowLeft' : 'ArrowRight';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    flushSync();
+    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith(
+      field, field === 'voxDelay' ? canonical - 1 : canonical + 1,
+    );
+    r.dispose();
+  });
+
+  it.each(FEEDBACK_LEVELS)(
+    'keeps supplied unavailable %s evidence unavailable instead of borrowing the view reading', (
+      field, control, canonical,
+    ) => {
+    const unavailable = feedback(control, canonical, 'unavailable', {
+      confirmed: null, availability: 'unavailable', providerGeneration: 2, sessionEpoch: 2,
+    });
+    const r = renderReactiveFeedback(feedbackRecord({ [field]: unavailable }));
+    expect(r.input(field).getAttribute('aria-disabled')).toBe('true');
+    expect(r.input(field).dataset.commandPhase).toBe('unavailable');
+    expect(r.row(field).querySelector('output')?.textContent).toContain('?');
+    const status = r.row(field).querySelector<HTMLElement>('[data-command-status]')!;
+    expect(status.textContent).toContain('unavailable');
+    expect(status.classList).toContain('sr-only');
+    expect(r.row(field).title).toBe('Not yet observed');
+    expect(describedText(r.input(field))).toBe('Not yet observed');
+    expect(r.input(field).getAttribute('aria-valuetext')).toContain('unavailable');
+    expect(r.input(field).getAttribute('aria-valuenow')).toBeNull();
+    const visible = r.row(field).cloneNode(true) as HTMLElement;
+    visible.querySelectorAll('.sr-only').forEach((node) => node.remove());
+    expect(visible.textContent).not.toContain('unavailable');
+    r.input(field).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(r.onLevelChange).not.toHaveBeenCalled();
+    r.dispose();
+    },
+  );
+
+  it.each(['submitted', 'queued', 'dispatched', 'awaiting-confirmation'] as const)(
+    'reports a pending target while %s without replacing canonical truth', (phase) => {
+      const pending = feedback('mic-gain', 128, phase, {
+        target: 200, requestedTarget: 200, lifecycleId: 'mic-command',
+        transitionId: `mic-${phase}`,
+      });
+      const r = renderReactiveFeedback(feedbackRecord({ micGain: pending }));
+      expect(r.input('micGain').getAttribute('aria-valuenow')).toBe('128');
+      expect(r.input('micGain').dataset.commandPhase).toBe(phase);
+      expect(r.input('micGain').getAttribute('aria-busy')).toBe('true');
+      expect(r.input('micGain').getAttribute('aria-valuetext')).toContain('requested 78%');
+      expect(r.row('micGain').querySelector('[data-canonical-value]')?.textContent).toContain('50%');
+      expect(r.row('micGain').querySelector('[data-command-status]')?.textContent).toContain('78%');
+      expect(r.row('micGain').querySelector('[data-command-status]')?.classList).not.toContain('sr-only');
+      r.dispose();
+    },
+  );
+
+  it.each([
+    ['confirmed', 200, null], ['failed', 128, 'radio refused'],
+    ['timed-out', 128, null], ['cancelled', 128, null], ['superseded', 128, null],
+  ] as const)('settles %s visibly on canonical truth', (phase, canonical, error) => {
+    const terminal = feedback('mic-gain', canonical, phase, {
+      requestedTarget: 200, lifecycleId: 'mic-command', transitionId: `mic-${phase}`,
+      outcome: { phase, ...(error === null ? {} : { error }) },
+    });
+    const r = renderReactiveFeedback(feedbackRecord({ micGain: terminal }));
+    expect(r.input('micGain').getAttribute('aria-valuenow')).toBe(String(canonical));
+    expect(r.input('micGain').getAttribute('aria-busy')).toBe('false');
+    expect(r.row('micGain').querySelector('[data-command-status]')?.textContent).toContain(
+      phase.replaceAll('-', ' '),
+    );
+    expect(r.row('micGain').querySelector('[data-command-status]')?.classList).not.toContain('sr-only');
+    if (error !== null) expect(r.row('micGain').textContent).toContain(error);
+    if (error !== null) {
+      const status = r.row('micGain').querySelector<HTMLElement>('[data-command-status]')!;
+      expect(status.textContent).toContain('requested 78%');
+      expect(status.textContent).toContain('confirmed 50%');
+      expect(status.textContent).toContain(error);
+      expect(getComputedStyle(status).overflow).not.toBe('hidden');
+    }
+    expect(target.querySelectorAll('[data-feedback-lane="micGain"]')).toHaveLength(1);
+    r.dispose();
+  });
+
+  it.each(FEEDBACK_LEVELS)(
+    'announces one %s transition once and resets retained speech on authority replacement', (
+      field, control, canonical,
+    ) => {
+    const requested = field === 'voxDelay' ? 7 : 200;
+    const failed = (generation: number, session: number) => feedback(control, canonical, 'failed', {
+      requestedTarget: requested, lifecycleId: `${field}-command`, transitionId: `${field}-failed`,
+      providerGeneration: generation, sessionEpoch: session,
+      outcome: { phase: 'failed', error: 'radio refused' },
+    });
+    const r = renderReactiveFeedback(feedbackRecord({ [field]: failed(1, 1) }));
+    const status = () => target.querySelector<HTMLElement>(`[data-feedback-lane="${field}"]`);
+    const first = status()!;
+    r.props.presentation = 'independent';
+    flushSync();
+    expect(status()).toBe(first);
+    r.props.levelFeedback = feedbackRecord({ [field]: failed(1, 1) });
+    flushSync();
+    expect(status()).toBe(first);
+    expect(target.querySelectorAll(`[data-feedback-lane="${field}"]`)).toHaveLength(1);
+    r.props.levelFeedback = feedbackRecord({ [field]: failed(2, 2) });
+    flushSync();
+    expect(status()).not.toBe(first);
+    expect(status()?.getAttribute('aria-live')).toBe('polite');
+    expect(target.querySelectorAll(`[data-feedback-lane="${field}"]`)).toHaveLength(1);
+    r.dispose();
+    },
+  );
+
+  it('retains the named reading compatibility path when feedback is omitted', () => {
+    const onLevelChange = vi.fn();
+    withSurface(base(), snap(), (s) => {
+      expect(s.input('micGain')?.dataset.commandPhase).toBeUndefined();
+      expect(s.input('micGain')?.getAttribute('aria-valuenow')).toBe('128');
+      s.input('micGain')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('micGain', 129);
+    }, { onLevelChange });
   });
 });
 
@@ -536,7 +789,7 @@ describe('level intents reach the caller with the field and the raw value', () =
 describe('every TX-aux level slider reads back as a percent of its own domain', () => {
   /** Same source-stripper the section-5 safety pins use, redefined locally
    *  since it is a plain module-scope const there, not exported. */
-  const source = readFileSync('src/semantic/TxAuxSurface.svelte', 'utf8')
+  const source = readFileSync('src/semantic/TxAuxScalarHost.svelte', 'utf8')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '');
@@ -601,6 +854,6 @@ describe('every TX-aux level slider reads back as a percent of its own domain', 
   // silently going stale.
   it('builds the default percent format from the row\'s own bound min/max, not a bare rawToPercentDisplay reference', () => {
     expect(source).not.toMatch(/,\s*rawToPercentDisplay\s*[,\]]/);
-    expect(source).toMatch(/rawToPercentDisplay\(v,\s*min,\s*max\)/);
+    expect(source).toMatch(/rawToPercentDisplay\(raw,\s*min,\s*max\)/);
   });
 });

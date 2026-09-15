@@ -10,9 +10,8 @@
  * comment in `panel-adapters.ts`). Every accessor here is a thin,
  * no-receiver-arg `ArmedFact`-shaped projection over the exact same
  * primitive `getModeArmed` uses — no re-derivation, same honesty rules
- * (pending survives ack until a confirming post-ack observation or the
- * shared grace backstop, a re-click re-arms at the freshest target, a
- * terminal failure clears armed immediately).
+ * (a re-click re-arms at the freshest target, a terminal failure clears
+ * armed immediately).
  *
  * RIT/XIT/scan/antenna are NOT covered here: their handlers
  * (`makeRitXitHandlers`/`makeScanHandlers`/`makeAntennaHandlers`,
@@ -64,16 +63,13 @@ vi.mock('$lib/stores/commands.svelte', async (importOriginal) => {
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: { get state() { return runtimeState.state; }, get caps() { return null; } },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => null,
-}));
 vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({
   toRadioViewModel: () => null,
 }));
 
 import {
   getAgcArmed, getFilterArmed, getPreampArmed, getAttenuatorArmed,
-  getDataModeArmed, getAutoNotchArmed, getManualNotchArmed,
+  getDataModeArmed, getModInputArmed, getAutoNotchArmed, getManualNotchArmed,
 } from '../panel-adapters';
 
 const actualCommandStore = await vi.importActual<typeof import('$lib/stores/commands.svelte')>(
@@ -108,6 +104,19 @@ const fixtures: Fixture[] = [
   { label: 'getAutoNotchArmed', accessor: getAutoNotchArmed, intentName: 'set_auto_notch', paramKey: 'on', confirmedField: 'autoNotch', target: true, otherTarget: false },
   { label: 'getManualNotchArmed', accessor: getManualNotchArmed, intentName: 'set_manual_notch', paramKey: 'on', confirmedField: 'manualNotch', target: true, otherTarget: false },
 ];
+
+describe('active DATA-group MOD input armed signal', () => {
+  it.each([
+    [0, 'set_data_off_mod_input', 'dataOffModInput'],
+    [3, 'set_data3_mod_input', 'data3ModInput'],
+  ] as const)('tracks DATA %i without inventing a receiver parameter', (dataMode, name, field) => {
+    runtimeState.state = { active: 'MAIN', main: { dataMode }, sub: {}, [field]: 0 } as FakeState;
+    state.commands = [{ name, status: 'pending', createdAt: 1, updatedAt: 1, params: { source: 3 } }];
+    expect(getModInputArmed()).toEqual({ armed: true, value: 3 });
+    state.commands[0]!.status = 'failed';
+    expect(getModInputArmed()).toEqual({ armed: false, value: null });
+  });
+});
 
 // MOR-1541: pin `ControlButton.svelte`'s import of the shared armed-state
 // CSS seat by its literal source string — a regression here (import

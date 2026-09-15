@@ -30,15 +30,16 @@ read-only post-ACK readback; it must never be used by background acquisition.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
 from ..core.exceptions import TimeoutError as RigplaneTimeoutError
 from ..capabilities import (
-    CAP_AF_LEVEL,
     CAP_AGC,
     CAP_ANTENNA,
     CAP_APF,
@@ -62,10 +63,8 @@ from ..capabilities import (
     CAP_POWER_CONTROL,
     CAP_PREAMP,
     CAP_REPEATER_TONE,
-    CAP_RF_GAIN,
     CAP_RX_ANTENNA,
     CAP_SCOPE,
-    CAP_SQUELCH,
     CAP_SSB_TX_BW,
     CAP_SYSTEM_SETTINGS,
     CAP_TSQL,
@@ -76,18 +75,20 @@ from .._queue_pressure import PRESSURE_THRESHOLD
 from ..commands._frame import decode_wire_tuple
 from ..commands.command_map import CommandMap
 from ..commands.commander import Priority
-from ..commands.scope import SCOPE_RECEIVER_SELECTOR_SUBS
 from ..core.command_service import (
     CommandService,
+    expected_observations_for_command,
+    observable_field_path,
 )
+from ..core.acquisition_drain import AcquisitionDrain
+from ..core.command_dispatch import ManagedWriteAdmission, execute_command_intent
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
     AcquisitionPriority,
+    AcquisitionQuery,
     AcquisitionRequest,
     AcquisitionScheduler,
-    MeterObservationCoalescer,
     civ_acquisition_executor_for_provider,
-    split_ctl_mem_sub,
 )
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -97,6 +98,7 @@ from ..core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from ..core.radio_protocol import (
+    CivCommandCapable,
     ManagedTxApi,
     RelativeVfoReadbackCapable,
 )
@@ -110,8 +112,12 @@ from ..core.tx_target import (
     TxTarget,
     UnknownTxTarget,
 )
-from .._state_queries import build_state_queries
 from ..profiles import RadioProfile, resolve_radio_profile
+from ..runtime._state_queries import (
+    acquisition_query_resolver_for_profile,
+    tx_target_max_age,
+    wire_parts_for_query,
+)
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..runtime.tx_interlock import (
     DeferredTxCommandLane,
@@ -200,7 +206,6 @@ __all__ = [
     "SetTunerStatus",
     "SetTuningStep",
     "SetXfcStatus",
-    "SetTxFreqMonitor",
     "SetUtcOffset",
     "SetQuickSplit",
     "SetQuickDualWatch",
@@ -214,11 +219,8 @@ logger = logging.getLogger(__name__)
 
 _GAP: float = 0.012
 _GAP_SERIAL: float = 0.050  # serial CI-V needs more breathing room
-_SEND_TIMEOUT: float = 1.0
-_DEFAULT_POLL_FIELD_TTL: float = 0.2
 _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
-_SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
 _PTT_PATH = FieldPath.global_("tx_state", "ptt")
 _WEB_IMMEDIATE_BLOCK_FAMILIES = (
     TxInterlockCommandFamily.RAW_CIV,
@@ -231,22 +233,6 @@ _WEB_IMMEDIATE_BLOCK_FAMILIES = (
     TxInterlockCommandFamily.PTT_ON,
 )
 
-
-# Fallback for the derived tx_target field's own freshness TTL when a
-# profile has no [state_acquisition] block at all (MOR-1496 review R3, F1
-# follow-up). Renamed from ``_TX_TARGET_MIN_MAX_AGE`` (MOR-1501, #2422
-# review) — despite the "MIN" naming this is a straight substitute, not a
-# ``max()``-clamped floor: when a profile has no acquisition policy at all
-# there is no computed TTL to clamp against, so ``_tx_target_max_age`` swaps
-# this value in outright. ``4 * self._fast_interval`` alone is not a
-# defensible TX-gate horizon: on a LAN profile (``_FAST_INTERVAL`` = 25ms)
-# that floors to 0.1s, which the verifier measured causing 6.6
-# stale-transitions/s on an idle IC-705 (no [state_acquisition] block).
-# Matches the concrete 3.0s ``freshness_ttl_seconds`` IC-7300's own
-# ``[state_acquisition]`` block already uses for this same field via
-# ``policy_for`` — not the unrelated generic ``AcquisitionPolicy`` dataclass
-# default (15.0s, calibrated for slower-changing fields, not a TX gate).
-_TX_TARGET_FALLBACK_MAX_AGE: float = 3.0
 
 _KEY_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})  # lease is ours
 
@@ -354,9 +340,12 @@ def _should_restart_rx(mode: str) -> bool:
 # ------------------------------------------------------------------
 
 from .._poller_types import (  # noqa: E402
+    LEGACY_COMMAND_NAMES,
     Command,
     CommandQueue,
     CommandQueueEntry,
+    execute_positive_tx_queue_entry,
+    validate_command_queue_entry_currency,
     DisableScope,
     EnableScope,
     MemoryClear,
@@ -375,7 +364,7 @@ from .._poller_types import (  # noqa: E402
     SelectVfo,
     SendCiv,
     SetAcc1ModLevel,
-    SetAfLevel,
+    SetAfLevel as SetAfLevel,
     SetAfMute,
     SetAgc,
     SetAgcTimeConstant,
@@ -410,6 +399,7 @@ from .._poller_types import (  # noqa: E402
     SetFilterShape,
     SetFilterWidth,
     SetFreq,
+    SetVfoFreq,
     SetIfShift,
     SetIpPlus,
     SetKeySpeed,
@@ -440,7 +430,7 @@ from .._poller_types import (  # noqa: E402
     SetRefAdjust,
     SetRepeaterTone,
     SetRepeaterTsql,
-    SetRfGain,
+    SetRfGain as SetRfGain,
     SetRitFrequency,
     SetRitStatus,
     SetRitTxStatus,
@@ -460,7 +450,7 @@ from .._poller_types import (  # noqa: E402
     SetScopeSpan,
     SetScopeVbw,
     SetSplit,
-    SetSquelch,
+    SetSquelch as SetSquelch,
     SetSsbTxBandwidth,
     SetSystemDate,
     SetSystemTime,
@@ -469,7 +459,6 @@ from .._poller_types import (  # noqa: E402
     SetTunerStatus,
     SetTuningStep,
     SetTwinPeak,
-    SetTxFreqMonitor,
     SetUsbModLevel,
     SetUtcOffset,
     SetVox,
@@ -480,33 +469,14 @@ from .._poller_types import (  # noqa: E402
     SwitchScopeReceiver,
     VfoEqualize,
     VfoSwap,
+    canonicalize_level_command,
+    execute_command_queue_entry,
 )
 
 
 # ------------------------------------------------------------------
 # MOR-1484: post-write readback jump-queue
 # ------------------------------------------------------------------
-#
-# Forces a fresh readback of the field(s) a write command just changed
-# instead of waiting out that field's normal poll cadence -- the "pending
-# frequency echo" / "slider readouts trail ~1s" symptom the ticket measured
-# on freq/mode/rfGain/squelch. These are the operator-facing writes in this
-# dispatch that carry no ``CommandService`` optimistic-overlay + confirming-
-# observation path the way nb/nr/att/preamp/agc/mic_gain/etc already do (see
-# the "read-after-write via overlays + ... observation" comments on those
-# ``case`` arms below) -- without a forced readback they only refresh on the
-# field's normal cadence tick.
-#
-# Table-driven so covering another command later is a new entry here, not a
-# new call site: ``_request_post_write_readback`` (called once, generically,
-# at the end of ``_execute`` below) looks up ``type(cmd)`` and, on a hit,
-# builds the written ``FieldPath`` set and calls
-# ``AcquisitionScheduler.ensure_fresh`` at ``USER`` priority -- the
-# scheduler's highest rank (``_PRIORITY_RANK`` in ``acquisition_scheduler.py``)
-# -- so the request jumps ahead of whatever BACKGROUND/RECONCILIATION/
-# NORMAL-tier cadence work is already queued and is picked up by the very
-# next ``_send_scheduler_requests`` drain, instead of waiting out the
-# field's own cadence.
 def _post_write_receiver_id(cmd: Any) -> str:
     """Return the ``main``/``sub`` receiver_id spelling.
 
@@ -520,94 +490,6 @@ def _post_write_receiver_id(cmd: Any) -> str:
 
     return "sub" if getattr(cmd, "receiver", 0) == 1 else "main"
 
-
-_POST_WRITE_READBACK_FIELDS: dict[type, Callable[[Any], tuple[FieldPath, ...]]] = {
-    SetFreq: lambda cmd: (
-        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "freq_hz"),
-    ),
-    SetMode: lambda cmd: (
-        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "mode"),
-    ),
-    SetRfGain: lambda cmd: (
-        FieldPath.receiver(
-            _post_write_receiver_id(cmd), "operator_controls", "rf_gain"
-        ),
-    ),
-    SetSquelch: lambda cmd: (
-        FieldPath.receiver(
-            _post_write_receiver_id(cmd), "operator_controls", "squelch"
-        ),
-    ),
-    # MOR-1484 review R1: att/preamp carry the #2452 armed affordance, whose
-    # ONLY confirming path back to the StateStore is this cadence poll --
-    # ``PendingOverlay`` has no web consumer and the CI-V own-frame/transceive
-    # echo this profile relies on for other fields does not reliably cover
-    # these two (see the "read-after-write via overlays + ... observation"
-    # comments on the ``SetAttenuator``/``SetPreamp`` case arms below, which
-    # describe the mechanism but not its actual reach on this profile). This
-    # PR ALSO slows att/preamp's cadence tier from 1.5s to 3.0s
-    # (rigs/ic7300.toml) to fund the freq/mode/rf_gain/squelch tightening
-    # above -- without this entry that give-back alone would widen the
-    # armed-affordance confirm window past the 3000ms ACK_CONFIRM_GRACE for a
-    # slice of clicks (grace expires, armed clears, the button shows the
-    # stale value until the next cadence tick -- the MOR-1478 stale-flash
-    # symptom, reintroduced on a new affordance). Table entries here make the
-    # 1.5s->3.0s give-back free for the operator's own write: confirmation no
-    # longer depends on the slowed cadence tier at all.
-    SetAttenuator: lambda cmd: (
-        FieldPath.receiver(_post_write_receiver_id(cmd), "operator_controls", "att"),
-    ),
-    SetPreamp: lambda cmd: (
-        FieldPath.receiver(_post_write_receiver_id(cmd), "operator_controls", "preamp"),
-    ),
-    # MOR-1546: filter-select and DATA-mode carry the #2452 armed affordance.
-    # Both were ALREADY confirmed incidentally: ``mode``'s own 1.0s cadence
-    # poll (CI-V 0x26 selected/unselected mode readback,
-    # [state_acquisition.field_policies] in rigs/ic7300.toml) returns
-    # ``(mode, data_mode, filter)`` in one frame, and ``_civ_rx.py``'s cmd
-    # 0x26 observation branch already emits ``data_mode``/``filter_num``
-    # observations alongside ``mode`` from that same answer -- so armed was
-    # already clearing via a genuine observation within that cadence's
-    # worst case (~1.0s), comfortably inside the 3000ms ACK_CONFIRM_GRACE.
-    # What was actually missing:
-    #  (1) a DEDICATED event-driven confirm at write time, so the
-    #      operator's own click doesn't have to wait out even the 1.0s
-    #      cadence tick before confirming -- the same class of latency win
-    #      freq/mode/rf_gain/squelch/att/preamp already get from this table;
-    #  (2) an acquisition CAPABILITY declaration for these two paths
-    #      (rigs/ic7300.toml) -- without one, ``ensure_fresh`` rejects the
-    #      path as UNAVAILABLE before it ever reaches the executor, so
-    #      these table entries alone would still be unreachable.
-    # Neither entry funds or is funded by a cadence give-back -- there is no
-    # new cadence here, zero standing budget added either way.
-    #
-    # filter_num has no dedicated CI-V read; it rides the SAME 0x26
-    # selected/unselected mode readback ``SetMode`` above already requests,
-    # as the filter byte in that response (``query_for_path`` in
-    # ``acquisition_scheduler.py``, ``_civ_rx.py``'s cmd 0x26 observation
-    # branch) -- requesting the ``filter_num`` path here still costs exactly
-    # one 0x26 query, identical to what a `mode` post-write readback would
-    # send. This entry fires unconditionally for every ``SetFilter``,
-    # including on a backend without ``CAP_FILTER_WIDTH`` (whose ``case
-    # SetFilter`` arm above never calls ``radio.set_filter`` at all) --
-    # harmless, one extra 0x26 query per click on a filterless backend, not
-    # a wire write.
-    SetFilter: lambda cmd: (
-        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "filter_num"),
-    ),
-    # data_mode DOES have its own dedicated read (CI-V 0x1A 0x06,
-    # ``get_data_mode`` in every profile's ``[commands]`` table), so it gets
-    # its own one-query readback rather than piggybacking on ``mode``.
-    SetDataMode: lambda cmd: (
-        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "data_mode"),
-    ),
-    SetFilterWidth: lambda cmd: (
-        FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "filter_width"),
-    ),
-    SetBreakInDelay: lambda cmd: (
-        FieldPath.global_("operator_controls", "break_in_delay"),
-    ),
-}
 
 # ``ensure_fresh``'s ``max_age`` asks "how old may the CURRENT StateStore
 # observation be and still count as fresh". A write always invalidates
@@ -641,18 +523,21 @@ class RadioPoller:
         diagnostics: StateDiagnosticsRecorder | None = None,
         state_store: StateStore | None = None,
         acquisition_executor: AcquisitionExecutor | None = None,
+        managed_tx_authority: ManagedWriteAdmission | None = None,
     ) -> None:
         queue = legacy_queue if legacy_queue is not None else command_queue
         self._radio = radio
         self._radio_state = radio_state
         self._state_diagnostics = diagnostics
         self._state_store = state_store or StateStore()
+        self._managed_tx_authority = managed_tx_authority
         raw_scheduler = getattr(radio, "_acquisition_scheduler", None)
         self._acquisition_scheduler = (
             raw_scheduler if isinstance(raw_scheduler, AcquisitionScheduler) else None
         )
         self._acquisition_executor = acquisition_executor
         self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
+        self._acquisition_drain: AcquisitionDrain | None = None
         # MOR-874: monotonic time of the FIRST healthy-link deadline expiry per
         # in-flight request id. Seeds the bounded grace window
         # (``_ACQUISITION_HEALTHY_GRACE_SECONDS``) after which a still-uncredited
@@ -661,10 +546,13 @@ class RadioPoller:
         # so the map never leaks.
         self._acquisition_healthy_grace_started: dict[str, float] = {}
         self._queue = queue
+        self._connection_generation_capture: Callable[[], int | None] = lambda: getattr(
+            self._radio, "_civ_epoch", None
+        )
+        self._connection_generation_bound = False
+        self._bind_connection_generation()
         self._on_state_event = on_state_event
-        self._poll_index: int = 0
         self._task: asyncio.Task[None] | None = None
-        self._last_polled: dict[str, float] = {}
         self._caps: set[str] = self._radio_capabilities()
         self._profile: RadioProfile = self._runtime_profile()
         # Bound once at profile-resolution time (MOR-2003 step 3), not
@@ -678,10 +566,6 @@ class RadioPoller:
         self._fast_interval: float = (
             _FAST_INTERVAL_SERIAL if self._is_serial else _FAST_INTERVAL
         )
-        self._FAST_CMDS = (
-            self._FAST_CMDS_SERIAL if self._is_serial else self._FAST_CMDS_LAN
-        )
-        self._STATE_QUERIES = self._build_state_queries()
         self._relative_vfo_retention_max_age: float | None = None
         if self._profile.vfo_readback == "selected_unselected":
             retention_age, coherence_window = self._relative_vfo_retention_policy()
@@ -703,6 +587,7 @@ class RadioPoller:
             self._acquisition_executor = civ_acquisition_executor_for_provider(
                 self._acquisition_scheduler.provider,
                 self._send_one_state_query,
+                resolve_query=acquisition_query_resolver_for_profile(self._profile),
                 supports_cmd29=self._profile.supports_cmd29,
             )
         # Set by default — cleared at _run() start, re-set after initial fetch.
@@ -713,13 +598,11 @@ class RadioPoller:
         self._scope_demand_generation = queue.latest_scope_demand_generation
         self._scope_session_state: tuple[bool, bool] | None = None
         self._scope_session_active = False
-        # Issue #715: track user-initiated freq/mode writes so the unselected-
-        # slot poll subroutine can debounce around them, and per-receiver
-        # timestamps so each receiver's unselected slot is refreshed no more
-        # than once per _UNSELECTED_SLOT_INTERVAL.
-        self._last_user_write_ts: float = 0.0
-        self._last_unselected_poll: dict[int, float] = {}
+        self._vfo_command_lock = asyncio.Lock()
         self._vfo_binding_generation = 0
+        self._vfo_connect_attempt: tuple[int, object] | None = None
+        self._vfo_recovery_generation: tuple[int, object] | None = None
+        self._vfo_connection_started_at = 0.0
         # MOR-615: (main, sub) data_mode pair seen at the last MOD-input fetch;
         # a change triggers a refetch of the per-DATA-group MOD-input sources.
         self._mod_input_data_modes: tuple[int, int] | None = None
@@ -767,6 +650,10 @@ class RadioPoller:
         return RfState.TX if field.value else RfState.RX
 
     def _enforce_tx_interlock(self, cmd: Command) -> None:
+        if self._managed_tx_authority is not None and not isinstance(
+            cmd, (PttOn, PttOff)
+        ):
+            return
         metadata = get_tx_interlock_command_family_metadata(cmd)
         if metadata is None or (
             metadata.family not in _WEB_IMMEDIATE_BLOCK_FAMILIES
@@ -843,9 +730,11 @@ class RadioPoller:
             )
 
     def _stage_tx_interlocked_entries(
-        self, entries: list[CommandQueueEntry]
+        self, entries: list[CommandQueueEntry], *, advance_held: bool = True
     ) -> list[CommandQueueEntry]:
         """Stage DEFER entries before advancing the existing held slot."""
+        if self._managed_tx_authority is not None:
+            return entries
         has_defer = self._deferred_tx_lane.pending is not None or any(
             (metadata := get_tx_interlock_command_family_metadata(entry.command))
             is not None
@@ -880,6 +769,8 @@ class RadioPoller:
                 self._terminate_deferred_entry(previous, defer_result.outcome)
             self._emit_deferred_entry_held(entry, expires_at=defer_result.expires_at)
 
+        if not advance_held:
+            return ready
         observe_result = self._deferred_tx_lane.observe(rf_state=rf_state, now=now)
         if (
             observe_result is None
@@ -897,17 +788,43 @@ class RadioPoller:
         return ready
 
     async def _execute_queued_entry(self, entry: CommandQueueEntry) -> None:
+        await execute_command_queue_entry(entry, self._execute_queued_entry_action)
+
+    async def _execute_queued_entry_action(
+        self, entry: CommandQueueEntry
+    ) -> Observation | None:
+        def validate_currency() -> None:
+            validate_command_queue_entry_currency(
+                entry,
+                now=time.monotonic(),
+                provider_generation=self._provider_generation(),
+                connection_generation=getattr(self._radio, "_civ_epoch", None),
+                session_is_live=self._queue.session_is_live,
+                require_connection_generation=(
+                    self._managed_tx_authority is not None
+                    and (
+                        entry.positive_tx_submission is not None
+                        or isinstance(entry.command, CommandIntent)
+                    )
+                ),
+            )
+
+        validate_currency()
+        if entry.positive_tx_submission is not None:
+            await execute_positive_tx_queue_entry(entry)
+            return None
+        if entry.command is None:
+            raise CommandError("queued command has no dispatch payload")
         # MOR-1884: the interlock seat lives at the head of ``_execute`` now,
         # so queued commands and uncommanded internal emits share one seat.
-        await self._execute(
+        return await self._execute(
             entry.command,
             command_id=entry.command_id,
             source=entry.source or "websocket",
             session_id=entry.session_id,
             command_service=entry.command_service,
+            validate_currency=validate_currency,
         )
-        if entry.future is not None and not entry.future.done():
-            entry.future.set_result(None)
 
     def _relative_vfo_retention_policy(self) -> tuple[float, float]:
         """Derive a finite tuple window from this provider's expected cadence."""
@@ -920,11 +837,14 @@ class RadioPoller:
         cadence = (
             None if acquisition is None else acquisition.default_policy.cadence_seconds
         )
-        expected_rotation = (
-            float(cadence)
-            if cadence is not None
-            else 2.0 * len(self._STATE_QUERIES) * self._fast_interval
-        )
+        # MOR-2221: the ``_STATE_QUERIES``-based fallback this replaced was
+        # dead on every shipped rig -- ``cadence`` is only ``None`` when
+        # ``acquisition`` is ``None`` (every declared ``state_acquisition``
+        # profile pins a numeric ``default_cadence_seconds``, confirmed by
+        # `grep -n cadence_seconds rigs/*.toml`), and ``build_state_queries``
+        # returns ``[]`` for exactly that same ``acquisition is None`` case,
+        # so the old fallback always evaluated to ``0.0`` in practice.
+        expected_rotation = float(cadence) if cadence is not None else 0.0
         return (2.0 * expected_rotation + health_grace, health_grace)
 
     def _apply_bsr_readback_observations(
@@ -1075,10 +995,17 @@ class RadioPoller:
     def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
+        self._bind_connection_generation()
         self._task = asyncio.get_running_loop().create_task(
             self._run(), name="radio-poller"
         )
         logger.info("radio-poller: started")
+
+    def _bind_connection_generation(self) -> None:
+        if self._connection_generation_bound:
+            return
+        self._queue.bind_connection_generation(self._connection_generation_capture)
+        self._connection_generation_bound = True
 
     def stop(self) -> None:
         """Cancel the loop and drop the task; deliberately synchronous.
@@ -1095,6 +1022,11 @@ class RadioPoller:
         # On this path the teardown ``PttOff`` is the whole cover for an
         # unmanaged rig: ``CoreRadio.disconnect`` de-keys the managed path only.
         self._cancel_max_key_down()
+        if self._connection_generation_bound:
+            self._queue.unbind_connection_generation(
+                self._connection_generation_capture
+            )
+            self._connection_generation_bound = False
         if self._task is not None:
             self._task.cancel()
             self._task = None
@@ -1202,15 +1134,6 @@ class RadioPoller:
         t: float = (pressure - 0.5) / (PRESSURE_THRESHOLD - 0.5)
         return self._gap * (1.0 + t)
 
-    def mark_polled(self, field: str) -> None:
-        """Record the last successful poll time for a logical field."""
-        self._last_polled[field] = time.monotonic()
-
-    def state_is_fresh(self, field: str, ttl: float = _DEFAULT_POLL_FIELD_TTL) -> bool:
-        """Return True if *field* was polled recently enough to skip re-query."""
-        last = self._last_polled.get(field)
-        return last is not None and (time.monotonic() - last) < ttl
-
     def _radio_capabilities(self) -> set[str]:
         raw_caps = getattr(self._radio, "capabilities", None)
         return set(raw_caps) if isinstance(raw_caps, set) else set()
@@ -1225,9 +1148,32 @@ class RadioPoller:
                 return resolve_radio_profile(model=raw_model)
         except KeyError:
             pass
-        if "dual_rx" in self._caps:
-            return resolve_radio_profile(model="IC-7610")
-        return resolve_radio_profile(model="IC-7300")
+        raise NotImplementedError(
+            "radio-poller unsupported: unknown profile-less radio"
+        )
+
+    def _validated_ctcss_centihz(self, value: Any) -> int:
+        """Return one exact neutral CTCSS value from the active profile domain.
+
+        The profile loader remains the only owner of catalog resolution and
+        detailed CTCSS limits.  This runtime boundary deliberately performs
+        no model selection, unit conversion, or fallback: it only rejects a
+        profile object that does not carry the loader's immutable, ascending
+        integer-domain shape and rejects values outside that exact domain.
+        """
+
+        domain = self._profile.ctcss_tones_centihz
+        if (
+            type(value) is not int
+            or type(domain) is not tuple
+            or not domain
+            or any(type(candidate) is not int for candidate in domain)
+            or any(first >= second for first, second in zip(domain, domain[1:]))
+        ):
+            raise CommandError("invalid CTCSS profile domain or centiHz value")
+        if value not in domain:
+            raise CommandError("centiHz value is outside the CTCSS profile domain")
+        return value
 
     def _vfo_command_profile(self, command: str) -> RadioProfile:
         """Resolve the exact profile allowed to declare a VFO primitive."""
@@ -1274,9 +1220,6 @@ class RadioPoller:
             await self._civ(command, sub=sub, data=payload)
         return True
 
-    def _supports_capability(self, capability: str) -> bool:
-        return capability in self._caps
-
     def _ensure_receiver_supported(self, receiver: int, *, operation: str) -> None:
         if self._profile.supports_receiver(receiver):
             return
@@ -1285,92 +1228,41 @@ class RadioPoller:
             f"{self._profile.model} (receivers={self._profile.receiver_count})"
         )
 
-    def _build_state_queries(self) -> list[tuple[int, int | bytes | None, int | None]]:
-        result: list[tuple[int, int | bytes | None, int | None]] = build_state_queries(
-            self._profile,
-            self._caps,
-            is_serial=self._is_serial,
-        )
-        return result
-
     async def _send_one_state_query(
         self,
-        cmd_byte: int,
-        sub_byte: int | bytes | None,
-        receiver: int | None,
+        query: AcquisitionQuery,
         *,
         priority: Priority = Priority.BACKGROUND,
     ) -> None:
-        """Send a single state query (shared by initial fetch and slow rotation).
+        """Send a single state query
 
-        Defaults to ``Priority.BACKGROUND`` so both the odd-cycle state poll
-        and the acquisition-scheduler executor (which is bound to this method)
+        Defaults to ``Priority.BACKGROUND`` so
+        the acquisition-scheduler executor (which is bound to this method)
         yield to user commands on the shared CI-V lane (MOR-497i).  All sends
-        here are fire-and-forget (``wait_dispatch=False``) so the poll burst
-        does not park the poll loop on the commander future (MOR-497ii); the
+        here are fire-and-forget (``wait_dispatch=False``) so the
         response still arrives via the CI-V RX path.
 
-        ``sub_byte`` is ``bytes`` where the read carries payload of its own:
-        multi-byte ctl-mem sub-addressing (0x1A/0x05 "quick set" reads, e.g.
-        voxDelay, MOR-1483) and the 0x27 scope reads that take a Main/Sub
-        selector (MOR-1981). Both are global (``receiver is None``) reads
-        today, which is what the cmd29 branch below asserts.
+        The lossless query envelope keeps the CI-V sub-command, payload data,
+        and optional cmd29 receiver route separate. Wire-frame assembly
+        (cmd29 wrap, 0x27 scope-receiver substitution) is shared with the
+        other two acquisition senders via ``wire_parts_for_query``.
+
+        Scope control queries need receiver prefix (00=MAIN, 01=SUB).
+        ``build_state_queries`` emits MAIN because it runs at connect, before
+        the radio has said which scope is selected; where the poller has
+        state to read the live selection from, that replaces the default.
         """
-        civ_sub, extra_data = split_ctl_mem_sub(sub_byte)
-        if (
-            receiver is None
-            and cmd_byte in (0x25, 0x26)
-            and civ_sub == 0x01
-            and self._profile.vfo_readback == "selected_unselected"
-        ):
-            await self._civ(
-                cmd_byte,
-                data=b"\x01",
-                priority=priority,
-                wait_dispatch=False,
-            )
-        elif receiver is not None:
-            assert not isinstance(sub_byte, (bytes, bytearray)), (
-                "a sub element carrying payload is global-only (receiver=None)"
-            )
-            if cmd_byte in (0x25, 0x26):
-                await self._civ(
-                    cmd_byte,
-                    data=bytes([receiver]),
-                    priority=priority,
-                    wait_dispatch=False,
-                )
-            else:
-                inner = bytes([receiver, cmd_byte])
-                if sub_byte is not None:
-                    inner += bytes([sub_byte])
-                await self._civ(
-                    0x29, data=inner, priority=priority, wait_dispatch=False
-                )
-        elif cmd_byte == 0x27 and civ_sub in SCOPE_RECEIVER_SELECTOR_SUBS:
-            # Scope control queries need receiver prefix (00=MAIN, 01=SUB).
-            # ``build_state_queries`` emits MAIN because it runs at connect,
-            # before the radio has said which scope is selected; where the
-            # poller has state to read the live selection from, that
-            # replaces the default.
-            scope_rx = 0
-            if self._radio_state:
-                scope_rx = self._radio_state.scope_controls.receiver
-            await self._civ(
-                cmd_byte,
-                sub=civ_sub,
-                data=bytes([scope_rx]),
-                priority=priority,
-                wait_dispatch=False,
-            )
-        else:
-            await self._civ(
-                cmd_byte,
-                sub=civ_sub,
-                data=extra_data,
-                priority=priority,
-                wait_dispatch=False,
-            )
+        scope_rx = 0
+        if self._radio_state:
+            scope_rx = self._radio_state.scope_controls.receiver
+        command, sub, data = wire_parts_for_query(query, scope_rx)
+        await self._civ(
+            command,
+            sub=sub,
+            data=data,
+            priority=priority,
+            wait_dispatch=False,
+        )
 
     # Per-getter timeout for scope-control fetches.  The IC-7610 scope stream
     # (~225 pkt/s) sometimes drops individual control responses; a long wait
@@ -1477,10 +1369,7 @@ class RadioPoller:
     async def _reconfirm_scope_field(self, label: str, getter: Any) -> None:
         """Force a fresh confirmed observation for one scope-control leaf.
 
-        Scope-control fields are fetched once, at ``EnableScope`` time
-        (``_fetch_scope_controls`` above) and never touched again by the main
-        poll loop — by design, to avoid interfering with the high-rate scope
-        waveform stream. A ``Set*`` write only mutates the optimistic
+        A ``Set*`` write only mutates the optimistic
         ``RadioState.scope_controls`` mirror below; without a follow-up GET,
         the StateStore's confirmed observation for that leaf is never
         refreshed, so the public snapshot keeps re-applying the STALE
@@ -1490,6 +1379,10 @@ class RadioPoller:
         ``_SCOPE_GETTER_TIMEOUT`` for the same reason as
         ``_fetch_scope_controls``: a dropped response on a busy scope stream
         must not stall the command queue.
+
+        Ten scope leaves moved onto ``_request_post_write_readback``; the
+        three callers left could not be folded, and each says why at its
+        own call site.
         """
         try:
             await asyncio.wait_for(getter(), timeout=self._SCOPE_GETTER_TIMEOUT)
@@ -1502,28 +1395,59 @@ class RadioPoller:
         except Exception:
             logger.debug("radio-poller: %s reconfirm failed", label, exc_info=True)
 
-    def _request_post_write_readback(self, cmd: Command) -> None:
-        """Jump the scheduler queue for the field(s) ``cmd`` just wrote (MOR-1484).
+    def _request_post_write_readback(
+        self, cmd: Command, *, selected_receiver: int | None = None
+    ) -> None:
+        """Read back whatever the dispatched command just set (MOR-1484).
 
-        Table-driven counterpart to :meth:`_reconfirm_scope_field` for
-        non-scope fields: looks ``type(cmd)`` up in
-        ``_POST_WRITE_READBACK_FIELDS`` and, on a hit, calls
-        ``AcquisitionScheduler.ensure_fresh`` at ``AcquisitionPriority.USER``
-        (the scheduler's highest rank) for the FieldPath(s) it names. Fire-
-        and-queue like ``ensure_fresh`` itself — this never awaits a backend
-        read; it only ensures the request is queued ahead of any pending
-        BACKGROUND/RECONCILIATION/NORMAL-tier cadence work so the next
-        ``_send_scheduler_requests`` drain fetches a confirmed value instead
-        of waiting out the field's normal cadence. A miss (command not in
-        the table, or no scheduler attached) is a silent no-op.
+        A ``CommandIntent`` carries its ``expected_observations``; a legacy
+        ``Command`` dataclass names the command it is (``LEGACY_COMMAND_NAMES``)
+        and ``core/command_service.py: expected_observations_for_command``
+        answers for it, given the dataclass's own fields as params -- needed
+        so a descriptor-backed name (e.g. ``set_tuner_status``) can bind its
+        target from the value the dataclass actually carries, not just
+        ``receiver`` (MOR-2425 PR-1b). The result is rewritten by
+        ``observable_field_path`` into the spelling profiles declare before
+        it reaches the scheduler.
         """
+
         scheduler = self._acquisition_scheduler
         if scheduler is None:
             return
-        build_paths = _POST_WRITE_READBACK_FIELDS.get(type(cmd))
-        if build_paths is None:
-            return
-        paths = build_paths(cmd)
+        if isinstance(cmd, CommandIntent):
+            expected = cmd.expected_observations
+        elif type(cmd) is SelectVfo and selected_receiver is not None:
+            expected = ()
+        else:
+            name = LEGACY_COMMAND_NAMES.get(type(cmd))
+            if name is None:
+                return
+            params = {
+                field.name: getattr(cmd, field.name)
+                for field in dataclasses.fields(cmd)
+            }
+            params.setdefault("receiver", 0)
+            expected = expected_observations_for_command(name, params)
+        paths = tuple(observable_field_path(path) for path in expected)
+        if type(cmd) is SelectVfo and selected_receiver is not None:
+            # Scheduler/profile paths use the canonical receiver names, not
+            # the command API's integer receiver index.  A numeric spelling
+            # makes every real-profile capability lookup below unsupported,
+            # silently leaving geometry on its ordinary cadence after A/B.
+            receiver_id = "sub" if selected_receiver == 1 else "main"
+            geometry = (
+                FieldPath.active(receiver_id, "freq_mode", "filter_width"),
+                *(
+                    FieldPath.receiver(receiver_id, "operator_controls", leaf)
+                    for leaf in ("if_shift", "pbt_inner", "pbt_outer")
+                ),
+            )
+            paths = tuple(
+                path
+                for path in (*paths, *geometry)
+                if (capability := scheduler._profile.capability_for(path)).can_poll
+                or capability.command_response_observable
+            )
         if type(cmd) is SetMode and CAP_FILTER_WIDTH in self._caps:
             filter_width = FieldPath.active(
                 _post_write_receiver_id(cmd), "freq_mode", "filter_width"
@@ -1538,6 +1462,10 @@ class RadioPoller:
             max_age=_POST_WRITE_READBACK_MAX_AGE,
             priority=AcquisitionPriority.USER,
             reason="post_write_readback",
+            # The answer must come from a query sent after this write. Merged
+            # into the cadence poll's already-sent request, this read-back
+            # would be answered by the query that went out before it.
+            require_fresh_dispatch=True,
         )
 
     def _apply_global_control_observation(
@@ -1550,6 +1478,7 @@ class RadioPoller:
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: CommandService | None = None,
+        validate_currency: Callable[[], None] | None = None,
         provider_generation: int,
     ) -> None:
         """Apply a confirmed global readback value to the StateStore.
@@ -1579,46 +1508,6 @@ class RadioPoller:
             command_service.apply_observation(observation)
         else:
             self._state_store.apply(observation)
-
-    async def _confirm_global_operator_write(
-        self,
-        name: str,
-        expected: int,
-        getter: Callable[[], Awaitable[int]],
-        *,
-        command_id: str | None,
-        source: CommandSource,
-        session_id: str | None,
-        command_service: CommandService | None,
-        provider_generation: int,
-    ) -> None:
-        """Apply a global operator write only after a matching fresh readback."""
-
-        try:
-            confirmed = await asyncio.wait_for(getter(), timeout=_SEND_TIMEOUT)
-        except Exception:
-            logger.debug(
-                "radio-poller: %s post-write readback failed",
-                name,
-                exc_info=True,
-            )
-            return
-        if provider_generation != self._provider_generation():
-            logger.debug("radio-poller: discarded stale %s readback", name)
-            return
-        if confirmed != expected:
-            logger.warning("radio-poller: %s write readback mismatch", name)
-            return
-        self._apply_global_control_observation(
-            name,
-            confirmed,
-            command_id=command_id,
-            source=source,
-            session_id=session_id,
-            command_service=command_service,
-            provider_generation=provider_generation,
-        )
-        self._apply_compatibility_mirror(lambda state: setattr(state, name, confirmed))
 
     def _apply_global_command_echo_observation(
         self,
@@ -1679,12 +1568,7 @@ class RadioPoller:
         known before it will enable the button that would send the very
         first command. Nothing breaks that cycle without an explicit seed.
 
-        PURE LOCAL SEED — never sends anything to the radio. Unlike
-        :meth:`establish_vfo_identity` (its sibling call site in
-        :meth:`_run`'s startup section and in the server's reconnect path),
-        which commands VFO A over the wire and therefore pauses while an
-        external CAT session owns it, this seed touches only the local
-        StateStore and needs no such guard.
+        PURE LOCAL SEED — never sends anything to the radio.
 
         "Not scanning until we command it" is an ASSUMED-UNTIL-COMMANDED
         fact — the same accepted-dishonesty class as this PR's documented
@@ -1832,6 +1716,30 @@ class RadioPoller:
         _backoff = 0.0
         _MAX_BACKOFF = 5.0  # max pause when radio is disconnected
 
+        def entries_for_turn() -> Iterator[CommandQueueEntry]:
+            for _ in range(self._queue.pending_count):
+                entry = self._queue.take_entry()
+                if entry is None:
+                    break
+                if entry.positive_tx_submission is not None:
+                    yield entry
+                    continue
+                yield from self._stage_tx_interlocked_entries(
+                    [entry], advance_held=False
+                )
+            yield from self._stage_tx_interlocked_entries([])
+
+        async def execute_entry(entry: CommandQueueEntry) -> Observation | None:
+            try:
+                return await self._execute_queued_entry_action(entry)
+            except Exception as exc:
+                self._mark_queued_command_failed(
+                    entry,
+                    exc,
+                    timed_out=isinstance(exc, (TimeoutError, RigplaneTimeoutError)),
+                )
+                raise
+
         # Initial state is now fetched by CoreRadio._fetch_initial_state()
         # during connect(). Just signal readiness immediately.
         self._scope_enable_deferred = False
@@ -1852,17 +1760,6 @@ class RadioPoller:
             await self._fetch_mod_inputs()
         except Exception:
             logger.debug("radio-poller: MOD-input initial fetch failed", exc_info=True)
-
-        # MOR-1443: some CI-V radios can never passively report which VFO
-        # slot (A/B) is active; command VFO A once so identity is known.
-        try:
-            await self.establish_vfo_identity()
-        except Exception:
-            # A ruled behaviour (owner decision, MOR-1443) silently not
-            # happening is worth surfacing above debug (review R2).
-            logger.warning(
-                "radio-poller: auto VFO identity establish failed", exc_info=True
-            )
 
         # MOR-1495 review R2: scan (CI-V 0x0E) is SET-ONLY, so nothing else
         # ever seeds scanning/scan_resume_mode — without this, the web UI's
@@ -1887,49 +1784,33 @@ class RadioPoller:
                     await asyncio.sleep(self._adaptive_gap())
                     continue
 
-                # 1. Drain command queue (fire-and-forget writes)
-                queued = self._queue.drain_entries() if self._queue.has_commands else []
-                ready = self._stage_tx_interlocked_entries(queued)
-                if ready:
-                    for entry in ready:
-                        cmd = entry.command
-                        if entry.future is not None and entry.future.cancelled():
-                            logger.debug(
-                                "radio-poller: skipping cancelled queued cmd: %s",
-                                type(cmd).__name__,
-                            )
-                            continue
-                        try:
-                            await self._execute_queued_entry(entry)
-                            _backoff = 0.0
-                        except (TimeoutError, RigplaneTimeoutError) as exc:
-                            self._mark_queued_command_failed(
-                                entry,
-                                exc,
-                                timed_out=True,
-                            )
-                            if entry.future is not None and not entry.future.done():
-                                entry.future.set_exception(exc)
-                            logger.warning(
-                                "radio-poller: cmd timeout: %s",
-                                type(cmd).__name__,
-                                exc_info=True,
-                            )
-                        except (ConnectionError, RadioConnectionError) as exc:
-                            self._mark_queued_command_failed(entry, exc)
-                            if entry.future is not None and not entry.future.done():
-                                entry.future.set_exception(exc)
-                            _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
-                        except Exception as exc:
-                            self._mark_queued_command_failed(entry, exc)
-                            if entry.future is not None and not entry.future.done():
-                                entry.future.set_exception(exc)
-                            logger.warning(
-                                "radio-poller: cmd error: %s",
-                                type(cmd).__name__,
-                                exc_info=True,
-                            )
-                        await asyncio.sleep(self._adaptive_gap())
+                # 1. Claim a finite live-pending turn, then release held work.
+                for entry in entries_for_turn():
+                    cmd = entry.command
+                    if entry.future is not None and entry.future.cancelled():
+                        logger.debug(
+                            "radio-poller: skipping cancelled queued cmd: %s",
+                            type(cmd).__name__,
+                        )
+                        continue
+                    try:
+                        await execute_command_queue_entry(entry, execute_entry)
+                        _backoff = 0.0
+                    except (TimeoutError, RigplaneTimeoutError):
+                        logger.warning(
+                            "radio-poller: cmd timeout: %s",
+                            type(cmd).__name__,
+                            exc_info=True,
+                        )
+                    except (ConnectionError, RadioConnectionError):
+                        _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
+                    except Exception:
+                        logger.warning(
+                            "radio-poller: cmd error: %s",
+                            type(cmd).__name__,
+                            exc_info=True,
+                        )
+                    await asyncio.sleep(self._adaptive_gap())
 
                 # If disconnected, back off to avoid log spam
                 if _backoff > 0:
@@ -1937,6 +1818,12 @@ class RadioPoller:
                     # Still try one query to detect reconnection
                     try:
                         await self._send_query()
+                        if (
+                            getattr(self._radio, "connected", False) is not True
+                            or getattr(self._radio, "radio_ready", False) is not True
+                        ):
+                            _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
+                            continue
                         _backoff = 0.0
                         logger.info("radio-poller: connection restored")
                     except (ConnectionError, RadioConnectionError):
@@ -1974,23 +1861,6 @@ class RadioPoller:
                     await self._refresh_mod_inputs_on_data_mode_change()
                 except Exception:
                     logger.debug("radio-poller: MOD-input refresh error", exc_info=True)
-
-                # 3. Issue #715: opportunistically refresh the unselected
-                # VFO slot on each receiver.  Fully gated (PTT, queue
-                # pressure, debounce, per-rx interval) so it cannot
-                # regress fast-poll cadence.
-                if self._acquisition_scheduler is None:
-                    for _rx in range(self._profile.receiver_count):
-                        try:
-                            await self._poll_unselected_slot(_rx)
-                        except (ConnectionError, RadioConnectionError):
-                            _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
-                            break
-                        except Exception:
-                            logger.debug(
-                                "radio-poller: unselected-slot poll error",
-                                exc_info=True,
-                            )
 
                 # 3b. Re-derive tx_target from currently observed active-VFO
                 # identity/split/frequency facts (MOR-1496). State-store reads
@@ -2237,18 +2107,65 @@ class RadioPoller:
         source: CommandSource = "websocket",
         session_id: str | None = None,
         command_service: CommandService | None = None,
-        connection_epoch_bootstrap: bool = False,
-    ) -> None:
+        validate_currency: Callable[[], None] | None = None,
+    ) -> Observation | None:
+        cmd = canonicalize_level_command(
+            cmd,
+            self._radio,
+            command_id=command_id,
+            source=source,
+            session_id=session_id,
+        )
+        if self._managed_tx_authority is not None and isinstance(cmd, PttOn):
+            raise CommandError("managed PTT ON requires a positive TX queue submission")
+        if isinstance(cmd, CommandIntent):
+            await execute_command_intent(
+                self._radio,
+                cmd,
+                managed_tx_authority=self._managed_tx_authority,
+                validate_currency=validate_currency,
+            )
+            self._request_post_write_readback(cmd)
+            return None
+        # Includes internal connect selection, which bypasses the normal queue.
+        if isinstance(cmd, (SetVfoFreq, SelectVfo, VfoSwap, VfoEqualize, SendCiv)):
+            async with self._vfo_command_lock:
+                if validate_currency is not None:
+                    validate_currency()
+                return await self._execute_unlocked(
+                    cmd,
+                    command_id=command_id,
+                    source=source,
+                    session_id=session_id,
+                    command_service=command_service,
+                    validate_currency=validate_currency,
+                )
+        else:
+            return await self._execute_unlocked(
+                cmd,
+                command_id=command_id,
+                source=source,
+                session_id=session_id,
+                command_service=command_service,
+                validate_currency=validate_currency,
+            )
+
+    async def _execute_unlocked(
+        self,
+        cmd: Command,
+        *,
+        command_id: str | None = None,
+        source: CommandSource = "websocket",
+        session_id: str | None = None,
+        command_service: CommandService | None = None,
+        validate_currency: Callable[[], None] | None = None,
+    ) -> Observation | None:
         # MOR-1884 (MOR-1626 criterion 7): the enforcement seat guards EVERY
         # write this poller issues — queued commands and uncommanded internal
-        # emits alike. The single exemption is the connection-epoch bootstrap
-        # ``SelectVfo`` in :meth:`establish_vfo_identity`: at connection start
-        # RF is structurally UNKNOWN, and that one ruled write (MOR-1443) is
-        # what makes RF/VFO truth observable at all. Emergency commands need
-        # no exemption — ``_enforce_tx_interlock`` is structurally incapable
-        # of blocking them before any table is consulted.
-        if not connection_epoch_bootstrap:
-            self._enforce_tx_interlock(cmd)
+        # emits alike. Emergency commands need no exemption —
+        # ``_enforce_tx_interlock`` is structurally incapable of blocking them
+        # before any table is consulted.
+        self._enforce_tx_interlock(cmd)
         radio = self._radio
         provider_generation = self._provider_generation()
         _r: Any = radio  # cast for capability methods not on base Radio protocol
@@ -2263,8 +2180,6 @@ class RadioPoller:
 
         match cmd:
             case SendCiv(command=command, sub=sub, data=data):
-                from ..radio_protocol import CivCommandCapable
-
                 if not isinstance(radio, CivCommandCapable):
                     raise CommandError("send_civ is not supported by this backend")
                 await radio.send_civ(
@@ -2273,8 +2188,98 @@ class RadioPoller:
                     data=data,
                     wait_response=False,
                 )
+            case SetVfoFreq():
+                from ..commands import parse_ack_nak, parse_selected_freq_response
+                from ..types import bcd_encode
+                from .runtime_helpers import projected_vfo_capability_tags  # noqa: TID251
+
+                if "vfo_freq_direct" not in projected_vfo_capability_tags(radio, None):
+                    raise CommandError("direct VFO frequency is unavailable")
+                if cmd.provider_generation != provider_generation:
+                    raise CommandError("VFO target provider generation changed")
+                if not any(
+                    r.start <= cmd.freq <= r.end for r in self._profile.freq_ranges
+                ):
+                    raise CommandError("VFO frequency outside profile receive ranges")
+                try:
+                    field = self._state_store.snapshot().field(
+                        FieldPath.active_slot("0")
+                    )
+                except KeyError as exc:
+                    raise CommandError("VFO target identity is unknown") from exc
+                if (
+                    field.freshness is not FreshnessState.FRESH
+                    or (
+                        field.max_age is not None
+                        and time.monotonic() - field.last_observed_monotonic
+                        > field.max_age
+                    )
+                    or field.provider_generation != provider_generation
+                    or field.value != cmd.expected_active_slot
+                ):
+                    raise CommandError(
+                        "VFO target identity is unknown, stale, or changed"
+                    )
+                assert isinstance(radio, CivCommandCapable)
+                cmd_map = self._profile.command_map
+                assert cmd_map is not None
+                selected = cmd.slot == field.value
+                role = "selected" if selected else "unselected"
+                opcode, sub, prefix = decode_wire_tuple(cmd_map.get(f"set_{role}_freq"))
+                generation = self._vfo_binding_generation
+                response = await radio.send_civ(
+                    opcode,
+                    sub,
+                    data=prefix + bcd_encode(cmd.freq),
+                    wait_response=True,
+                )
+                if response is None or parse_ack_nak(response) is not True:
+                    raise CommandError("direct VFO frequency was not acknowledged")
+                if validate_currency is not None:
+                    validate_currency()
+                if (
+                    generation != self._vfo_binding_generation
+                    or provider_generation != self._provider_generation()
+                ):
+                    raise CommandError("VFO target changed during write")
+                opcode, sub, data = decode_wire_tuple(cmd_map.get(f"get_{role}_freq"))
+                readback = await radio.send_civ(
+                    opcode, sub, data=data, wait_response=True
+                )
+                if validate_currency is not None:
+                    validate_currency()
+                if (
+                    generation != self._vfo_binding_generation
+                    or provider_generation != self._provider_generation()
+                ):
+                    raise CommandError("VFO target changed during readback")
+                if readback is None:
+                    raise CommandError("direct VFO frequency readback unavailable")
+                selector, observed_freq = parse_selected_freq_response(readback)
+                if selector != (0 if selected else 1):
+                    raise CommandError("direct VFO readback selector mismatch")
+                # Only actual transaction readback carries the command correlation.
+                path = (FieldPath.active if selected else FieldPath.unselected)(
+                    "0", "freq_mode", "freq_hz"
+                )
+                observation = Observation(
+                    path=path,
+                    value=observed_freq,
+                    source=SourceMetadata(
+                        source="command_response",
+                        provider="icom_civ",
+                        command_source=command_source,
+                        session_id=session_id,
+                        native_id="direct_vfo_frequency_readback",
+                    ),
+                    timestamp_monotonic=time.monotonic(),
+                    correlation_id=command_id,
+                    provider_generation=provider_generation,
+                )
+                # CommandService applies this only after its executor returns,
+                # so readback cannot retire an in-flight lifecycle entry.
+                return observation
             case SetFreq(freq=freq, receiver=rx):
-                self._last_user_write_ts = time.monotonic()
                 self._ensure_receiver_supported(rx, operation="set_freq")
                 current = self._current_active()
                 if rx != 0:
@@ -2319,11 +2324,9 @@ class RadioPoller:
                     )
                     if target:
                         target.freq = freq
-                    self.mark_polled("freq")
                 if self._on_state_event:
                     self._on_state_event("freq_changed", {"freq": freq, "receiver": rx})
             case SetMode(mode=mode, filter_width=fw, receiver=rx):
-                self._last_user_write_ts = time.monotonic()
                 self._ensure_receiver_supported(rx, operation="set_mode")
                 if CAP_FILTER_WIDTH in self._caps:
                     self._state_store.discard(
@@ -2365,7 +2368,6 @@ class RadioPoller:
                     )
                     if target:
                         target.mode = mode
-                    self.mark_polled("mode")
                 if self._on_state_event:
                     self._on_state_event("mode_changed", {"mode": mode, "receiver": rx})
             case SetFilter(filter_num=fn, receiver=rx):
@@ -2381,9 +2383,6 @@ class RadioPoller:
                 # Hz↔index translation, profile-aware bounds + cmd29 wrapping
                 # are owned by the backend (P2-04). Issue #1101.
                 await radio.set_filter_width(width, receiver=rx)
-                # filter_width read-after-write now flows through CommandService
-                # pending overlays + the 0x1A 0x03 StateStore observation emitted
-                # by ``_civ_rx.py`` (MOR-437); no legacy RadioState mirror needed.
                 if self._on_state_event:
                     self._on_state_event(
                         "filter_width_changed", {"width": width, "receiver": rx}
@@ -2554,32 +2553,16 @@ class RadioPoller:
                     )
                 if CAP_POWER_CONTROL in self._caps:
                     await radio.set_rf_power(level)
-            case SetRfGain(level=level, receiver=rx):
-                if CAP_RF_GAIN in self._caps:
-                    self._ensure_receiver_supported(rx, operation="set_rf_gain")
-                    await radio.set_rf_gain(level, receiver=rx)
-            case SetAfLevel(level=level, receiver=rx):
-                if CAP_AF_LEVEL in self._caps:
-                    self._ensure_receiver_supported(rx, operation="set_af_level")
-                    await radio.set_af_level(level, receiver=rx)
-            case SetSquelch(level=level, receiver=rx):
-                if CAP_SQUELCH in self._caps:
-                    self._ensure_receiver_supported(rx, operation="set_squelch")
-                    await radio.set_squelch(level, receiver=rx)
             case SetNB(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nb")
                 if CAP_NB in self._caps:
                     await radio.set_nb(on, receiver=rx)
-                # nb read-after-write now flows through CommandService pending
-                # overlays + the 0x16 0x22 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event("nb_changed", {"on": on, "receiver": rx})
             case SetNR(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nr")
                 if CAP_NR in self._caps:
                     await radio.set_nr(on, receiver=rx)
-                # nr read-after-write now flows through CommandService pending
-                # overlays + the 0x16 0x40 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event("nr_changed", {"on": on, "receiver": rx})
             case SetDigiSel(on=on, receiver=rx):
@@ -2598,8 +2581,6 @@ class RadioPoller:
                 self._ensure_receiver_supported(rx, operation="set_attenuator")
                 if CAP_ATTENUATOR in self._caps:
                     await radio.set_attenuator_level(db, receiver=rx)
-                # att read-after-write now flows through CommandService pending
-                # overlays + the 0x11 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event(
                         "attenuator_changed", {"db": db, "receiver": rx}
@@ -2608,8 +2589,6 @@ class RadioPoller:
                 self._ensure_receiver_supported(rx, operation="set_preamp")
                 if CAP_PREAMP in self._caps:
                     await radio.set_preamp(level, receiver=rx)
-                # preamp read-after-write now flows through CommandService pending
-                # overlays + the 0x16 0x02 StateStore observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event(
                         "preamp_changed", {"level": level, "receiver": rx}
@@ -2652,62 +2631,36 @@ class RadioPoller:
                         "if_shift_changed", {"offset": offset, "receiver": rx}
                     )
             case SetNRLevel(level=level, receiver=rx):
-                # nr_level read-after-write via overlays + 0x14 0x06 observation.
                 await _r.set_nr_level(level, receiver=rx)
             case SetNBLevel(level=level, receiver=rx):
-                # nb_level read-after-write via overlays + 0x14 0x12 observation.
                 await _r.set_nb_level(level, receiver=rx)
             case SetAutoNotch(on=on, receiver=rx):
-                # auto_notch read-after-write via overlays + 0x16 0x41 observation.
                 await _r.set_auto_notch(on, receiver=rx)
             case SetManualNotch(on=on, receiver=rx):
-                # manual_notch read-after-write via overlays + 0x16 0x48 observation.
                 await _r.set_manual_notch(on, receiver=rx)
             case SetNotchFilter(level=level, receiver=rx):
-                # notch_filter read-after-write via overlays + 0x14 0x0D
-                # observation (receiver-scoped since MOR-1548); the legacy
-                # global-scalar mirror write is gone with it.
                 await _r.set_notch_filter(level, receiver=rx)
             case SetAgcTimeConstant(value=value, receiver=rx):
-                # agc_time_constant read-after-write via overlays + 0x1A 0x04
-                # StateStore observation (MOR-437).
                 await _r.set_agc_time_constant(value, receiver=rx)
+            # MOR-2425 PR-3: the readback is
+            # ``_request_post_write_readback``'s, like every other covered
+            # arm. These optimistic mirror writes are the only writers of the
+            # three ``RadioState`` attributes on this seat --
+            # ``runtime/_civ_rx.py`` publishes cw_pitch as a StateStore
+            # observation without mirroring it, and ``cw_auto_tune``
+            # (``web/handlers/control.py``) reads ``state.cw_pitch``.
             case SetCwPitch(value=value):
                 await _r.set_cw_pitch(value)
-                await self._confirm_global_operator_write(
-                    "cw_pitch",
-                    value,
-                    _r.get_cw_pitch,
-                    command_id=command_id,
-                    source=command_source,
-                    session_id=session_id,
-                    command_service=command_service,
-                    provider_generation=provider_generation,
-                )
+                if self._radio_state:
+                    self._radio_state.cw_pitch = value
             case SetKeySpeed(speed=speed):
                 await _r.set_key_speed(speed)
-                await self._confirm_global_operator_write(
-                    "key_speed",
-                    speed,
-                    _r.get_key_speed,
-                    command_id=command_id,
-                    source=command_source,
-                    session_id=session_id,
-                    command_service=command_service,
-                    provider_generation=provider_generation,
-                )
+                if self._radio_state:
+                    self._radio_state.key_speed = speed
             case SetBreakIn(mode=mode):
                 await _r.set_break_in(mode)
-                await self._confirm_global_operator_write(
-                    "break_in",
-                    mode,
-                    _r.get_break_in,
-                    command_id=command_id,
-                    source=command_source,
-                    session_id=session_id,
-                    command_service=command_service,
-                    provider_generation=provider_generation,
-                )
+                if self._radio_state:
+                    self._radio_state.break_in = mode
             case SetApf(mode=mode, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_apf")
                 await _r.set_audio_peak_filter(mode, receiver=rx)
@@ -2783,25 +2736,19 @@ class RadioPoller:
                 if not 0 <= mode <= 3:
                     raise CommandError(f"set_data_mode mode must be 0-3, got {mode}")
                 await radio.set_data_mode(mode, receiver=rx)
-                # data_mode read-after-write via overlays + 0x1A 0x06 observation.
                 if self._on_state_event:
                     self._on_state_event(
                         "data_mode_changed", {"mode": mode, "receiver": rx}
                     )
             case SetMicGain(level=level):
-                # mic_gain read-after-write via overlays + 0x14 0x0B observation.
                 await _r.set_mic_gain(level)
             case SetVox(on=on):
-                # vox_on read-after-write via overlays + 0x16 0x46 observation.
                 await _r.set_vox(on)
             case SetCompressorLevel(level=level):
-                # compressor_level read-after-write via overlays + 0x14 0x0E obs.
                 await _r.set_compressor_level(level)
             case SetMonitor(on=on):
-                # monitor_on read-after-write via overlays + 0x16 0x45 observation.
                 await _r.set_monitor(on)
             case SetMonitorGain(level=level):
-                # monitor_gain read-after-write via overlays + 0x14 0x15 observation.
                 await _r.set_monitor_gain(level)
             case SetDialLock(on=on):
                 await _r.set_dial_lock(on)
@@ -2821,7 +2768,6 @@ class RadioPoller:
                     agc_sent = await self._send_cmd(
                         "set_agc", bytes([mode]), receiver=rx
                     )
-                # agc read-after-write via overlays + 0x16 0x12 observation.
                 if agc_sent and self._on_state_event:
                     self._on_state_event("agc_changed", {"mode": mode, "receiver": rx})
             case SetRitStatus(on=on):
@@ -2844,12 +2790,9 @@ class RadioPoller:
                     self._on_state_event("rit_freq_changed", {"hz": freq})
             case SetSplit(on=on):
                 await _r.set_split(on)
-                # split read-after-write via overlays + 0x0F StateStore
-                # observation (MOR-437).
                 if self._on_state_event:
                     self._on_state_event("split_changed", {"on": on})
             case SetBand(band=band):
-                self._last_user_write_ts = time.monotonic()
                 # Band Stack Register recall: 0x1A 0x01 <bsr_code> <register>
                 # Read stored freq/mode from register 01 (latest)
                 from ..commands import bcd_decode
@@ -2897,14 +2840,11 @@ class RadioPoller:
                             command_service=command_service,
                             provider_generation=provider_generation,
                         )
-                        # Update local state immediately (don't wait for transceive echo)
                         if self._radio_state:
                             target = self._radio_state.main
                             if target:
                                 target.freq = freq
                                 target.mode = mode_name
-                            self.mark_polled("freq")
-                            self.mark_polled("mode")
                         if self._on_state_event:
                             self._on_state_event(
                                 "freq_changed", {"freq": freq, "receiver": 0}
@@ -2934,7 +2874,6 @@ class RadioPoller:
                     else:
                         logger.warning("set_band: unknown bsr_code=%d", band)
             case SelectVfo(vfo=vfo):
-                self._last_user_write_ts = time.monotonic()
                 vfo_upper = vfo.upper()
                 slot: str | None = None
                 if vfo_upper in ("A", "B"):
@@ -2973,7 +2912,7 @@ class RadioPoller:
                                     "set_vfo_slot and set_vfo; skipping",
                                     vfo,
                                 )
-                                return
+                                return None
                             await legacy_set_vfo(slot)
                         if self._radio_state is not None:
                             self._radio_state.receiver(active_name).active_slot = slot
@@ -2981,7 +2920,7 @@ class RadioPoller:
                             self._on_state_event(
                                 "vfo_changed", {"vfo": slot, "receiver": receiver}
                             )
-                    return
+                    return None
 
                 if vfo_upper in ("SUB", "1") or (
                     self._profile.receiver_count > 1 and vfo_upper == "VFOB"
@@ -3029,7 +2968,7 @@ class RadioPoller:
                                 "lacks select_receiver and set_vfo; skipping",
                                 vfo,
                             )
-                            return
+                            return None
                         await legacy_set_vfo(target_name)
                         logger.info(
                             "radio-poller: legacy set_vfo=%s "
@@ -3078,7 +3017,6 @@ class RadioPoller:
                         f"VfoSwap unsupported on {profile.model}: "
                         "profile declares no matching primitive"
                     )
-                self._last_user_write_ts = time.monotonic()
                 if swap_ab:
                     await radio.swap_vfo_ab(0)
                 else:
@@ -3100,7 +3038,6 @@ class RadioPoller:
                         f"VfoEqualize unsupported on {profile.model}: "
                         "profile declares no matching primitive"
                     )
-                self._last_user_write_ts = time.monotonic()
                 if equal_ab:
                     await radio.equalize_vfo_ab(0)
                 else:
@@ -3111,7 +3048,7 @@ class RadioPoller:
                     # CI-V packet queue overflow (scope data + fetch).
                     if not self._initial_fetch_done.is_set():
                         if self._scope_demand_is_stale(generation):
-                            return
+                            return None
                         if not self._scope_enable_deferred:
                             logger.info(
                                 "radio-poller: deferring scope enable until initial fetch completes"
@@ -3122,49 +3059,61 @@ class RadioPoller:
                         )
                     else:
                         if self._scope_demand_is_stale(generation):
-                            return
+                            return None
                         await self._enable_scope_session(policy=policy)
                         logger.info("radio-poller: scope enabled")
                         await self._fetch_scope_controls()
             case DisableScope(generation=generation):
                 if CAP_SCOPE in self._caps:
                     if self._scope_demand_is_stale(generation):
-                        return
+                        return None
                     await self.restore_scope_session()
                     logger.info("radio-poller: scope session state restored")
             case SwitchScopeReceiver(receiver=receiver):
-                # Fire-and-forget scope receiver select (0x27 0x12)
+                # Fire-and-forget scope receiver select (0x27 0x12), routed
+                # through the profile-bound command map (self._cmd_map) via
+                # ``_send_cmd`` instead of a hardcoded literal -- a profile
+                # that doesn't declare set_scope_main_sub can now refuse
+                # this write (MOR-2106). ``_send_cmd`` returns False, sending
+                # nothing, on a miss; the mirror/reconfirm/log below are
+                # gated on that return the same way the MOR-2004 SetAgc
+                # branch above gates its state event on ``agc_sent``.
+                #
+                # MOR-2425 PR-3 left this reconfirm inline for that reason:
+                # ``_request_post_write_readback`` runs after the whole
+                # ``match``, unconditionally, so a readback fired from there
+                # would also fire on the refusal branch. IC-7300 is such a
+                # profile -- its command map declares no
+                # ``set_scope_main_sub`` -- while its
+                # ``[state_acquisition.capabilities]`` does declare
+                # ``scope_controls.global.display.receiver``, so the read
+                # would be queued and sent.
                 self._ensure_receiver_supported(
                     receiver,
                     operation="switch_scope_receiver",
                 )
-                await self._civ(0x27, sub=0x12, data=bytes([receiver]))
-                if self._radio_state:
-                    self._radio_state.scope_controls.receiver = receiver
-                if CAP_SCOPE in self._caps:
-                    await self._reconfirm_scope_field(
-                        "get_scope_receiver", radio.get_scope_receiver
+                sent = await self._send_cmd("set_scope_main_sub", bytes([receiver]))
+                if sent:
+                    if self._radio_state:
+                        self._radio_state.scope_controls.receiver = receiver
+                    if CAP_SCOPE in self._caps:
+                        await self._reconfirm_scope_field(
+                            "get_scope_receiver", radio.get_scope_receiver
+                        )
+                    logger.info(
+                        "radio-poller: scope receiver → %s",
+                        "SUB" if receiver else "MAIN",
                     )
-                logger.info(
-                    "radio-poller: scope receiver → %s",
-                    "SUB" if receiver else "MAIN",
-                )
             case SetScopeDuringTx(on=on):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_during_tx(on)
                     if self._radio_state:
                         self._radio_state.scope_controls.during_tx = on
-                    await self._reconfirm_scope_field(
-                        "get_scope_during_tx", radio.get_scope_during_tx
-                    )
             case SetScopeCenterType(center_type=center_type):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_center_type(center_type)
                     if self._radio_state:
                         self._radio_state.scope_controls.center_type = center_type
-                    await self._reconfirm_scope_field(
-                        "get_scope_center_type", radio.get_scope_center_type
-                    )
             case SetScopeFixedEdge(edge=edge, start_hz=start_hz, end_hz=end_hz):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_fixed_edge(
@@ -3184,6 +3133,12 @@ class RadioPoller:
                     # selector addresses ONE specific slot (MOR-662), so a
                     # bare re-read would default back to range 1/edge 1 and
                     # clobber the mirror with an unrelated slot's data.
+                    #
+                    # That is why MOR-2425 PR-3 did not fold this arm onto
+                    # ``_request_post_write_readback``: the shared acquisition
+                    # resolver (``runtime/_state_queries.py``) builds
+                    # ``get_scope_fixed_edge`` with its ``range_index=1,
+                    # edge=1`` defaults, i.e. the bare re-read above.
                     if self._radio_state:
                         written = self._radio_state.scope_controls.fixed_edge
                         await self._reconfirm_scope_field(
@@ -3201,70 +3156,53 @@ class RadioPoller:
                     await radio.set_scope_dual(dual)
                     if self._radio_state:
                         self._radio_state.scope_controls.dual = dual
-                    await self._reconfirm_scope_field(
-                        "get_scope_dual", radio.get_scope_dual
-                    )
             case SetScopeMode(mode=mode):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_mode(mode)
                     if self._radio_state:
                         self._radio_state.scope_controls.mode = mode
-                    await self._reconfirm_scope_field(
-                        "get_scope_mode", radio.get_scope_mode
-                    )
             case SetScopeSpan(span=span):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_span(span)
                     if self._radio_state:
                         self._radio_state.scope_controls.span = span
-                    await self._reconfirm_scope_field(
-                        "get_scope_span", radio.get_scope_span
-                    )
             case SetScopeSpeed(speed=speed):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_speed(speed)
                     if self._radio_state:
                         self._radio_state.scope_controls.speed = speed
-                    await self._reconfirm_scope_field(
-                        "get_scope_speed", radio.get_scope_speed
-                    )
             case SetScopeRef(ref=ref):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_ref(ref)
                     if self._radio_state:
                         self._radio_state.scope_controls.ref_db = float(ref)
-                    await self._reconfirm_scope_field(
-                        "get_scope_ref", radio.get_scope_ref
-                    )
             case SetScopeHold(on=on):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_hold(on)
                     if self._radio_state:
                         self._radio_state.scope_controls.hold = on
-                    await self._reconfirm_scope_field(
-                        "get_scope_hold", radio.get_scope_hold
-                    )
             case SetScopeEdge(edge=edge):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_edge(edge)
                     if self._radio_state:
                         self._radio_state.scope_controls.edge = edge
-                    await self._reconfirm_scope_field(
-                        "get_scope_edge", radio.get_scope_edge
-                    )
             case SetScopeVbw(narrow=narrow):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_vbw(narrow)
                     if self._radio_state:
                         self._radio_state.scope_controls.vbw_narrow = narrow
-                    await self._reconfirm_scope_field(
-                        "get_scope_vbw", radio.get_scope_vbw
-                    )
             case SetScopeRbw(rbw=rbw):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_rbw(rbw)
                     if self._radio_state:
                         self._radio_state.scope_controls.rbw = rbw
+                    # Not folded onto ``_request_post_write_readback``
+                    # (MOR-2425 PR-3): of the profiles in ``rigs/``, only
+                    # ic7610.toml declares
+                    # ``scope_controls.global.display.rbw`` in
+                    # ``[state_acquisition.capabilities]``, so on the
+                    # live-bench IC-7300 ``ensure_fresh`` would answer
+                    # UNAVAILABLE and queue nothing.
                     await self._reconfirm_scope_field(
                         "get_scope_rbw", radio.get_scope_rbw
                     )
@@ -3279,8 +3217,6 @@ class RadioPoller:
             case SetTunerStatus(value=value):
                 if CAP_TUNER in self._caps:
                     await radio.set_tuner_status(value)
-                    # tuner_status read-after-write via overlays + 0x1C 0x01
-                    # StateStore observation (MOR-437).
                     self._emit("tuner_changed", {"value": value})
             case SetAntenna1(on=on):
                 # IC-7610: 0x12 0x00 selects ANT1, data byte encodes RX-ANT OFF/ON.
@@ -3334,6 +3270,7 @@ class RadioPoller:
                     await radio.set_compressor(on)
             case SetToneFreq(freq_hz=freq, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_tone_freq")
+                freq = self._validated_ctcss_centihz(freq)
                 if CAP_REPEATER_TONE in self._caps:
                     await radio.set_tone_freq(freq, receiver=rx)
                 if self._radio_state:
@@ -3343,6 +3280,7 @@ class RadioPoller:
                     target.tone_freq = freq
             case SetTsqlFreq(freq_hz=freq, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_tsql_freq")
+                freq = self._validated_ctcss_centihz(freq)
                 if CAP_TSQL in self._caps:
                     await radio.set_tsql_freq(freq, receiver=rx)
                 if self._radio_state:
@@ -3560,10 +3498,6 @@ class RadioPoller:
                     self._radio_state.tuning_step = step
             case SetXfcStatus(on=on):
                 await _r.set_xfc_status(on)
-            case SetTxFreqMonitor(on=on):
-                await _r.set_tx_freq_monitor(on)
-                if self._radio_state:
-                    self._radio_state.tx_freq_monitor = on
             case SetUtcOffset(hours=hours, minutes=minutes, is_negative=is_negative):
                 await _r.set_utc_offset(hours, minutes, is_negative)
             case QuickSplit():
@@ -3580,7 +3514,6 @@ class RadioPoller:
             case SetQuickDualWatch(on=on):
                 await _r.set_quick_dual_watch(on)
             case QuickDwTrigger():
-                self._last_user_write_ts = time.monotonic()
                 if CAP_DUAL_RX in self._caps:
                     await _r.equalize_main_sub()
                     await _r.set_dual_watch(True)
@@ -3588,7 +3521,6 @@ class RadioPoller:
                     if self._on_state_event:
                         self._on_state_event("dual_watch_changed", {"on": True})
             case QuickSplitTrigger():
-                self._last_user_write_ts = time.monotonic()
                 if CAP_DUAL_RX in self._caps:
                     await _r.equalize_main_sub()
                     await _r.set_split(True)
@@ -3600,81 +3532,8 @@ class RadioPoller:
             case Speak(mode=what):
                 await _r.get_speech(what)
 
-        # MOR-1484: jump the scheduler queue for whatever field(s) this
-        # write just changed (table-driven no-op for any command not in
-        # ``_POST_WRITE_READBACK_FIELDS``). Placed after the match rather
-        # than per-case so covering another command is a table entry, not a
-        # new call site; safe here because none of the mapped commands
-        # (``SetFreq``/``SetMode``/``SetRfGain``/``SetSquelch``) return early
-        # out of the match above.
         self._request_post_write_readback(cmd)
-
-    # Fast: meters (polled on even cycles)
-    # wfview: Priority=Highest, queue interval 25ms for LAN (HasFDComms)
-    # For serial: only high-priority meters to keep S-meter responsive.
-    _FAST_CMDS_LAN: list[tuple[int, int | None]] = [
-        (0x15, 0x02),  # S-meter
-        (0x15, 0x11),  # RF power
-        (0x15, 0x12),  # SWR
-        (0x15, 0x13),  # ALC
-        (0x15, 0x14),  # Compressor meter
-        (0x15, 0x15),  # VD (voltage)
-        (0x15, 0x16),  # Id (PA drain current)
-    ]
-    _FAST_CMDS_SERIAL: list[tuple[int, int | None]] = [
-        (0x15, 0x02),  # S-meter — polled every cycle for responsiveness
-        (0x15, 0x11),  # RF power
-        (0x15, 0x02),  # S-meter again (2:1 ratio vs other meters)
-        (0x15, 0x12),  # SWR
-    ]
-    _FAST_CMDS: list[tuple[int, int | None]] = _FAST_CMDS_LAN  # class default
-
-    # Issue #937 — two-tier meter scheme (LAN only).
-    # HIGH tier — emitted on most meter cycles, gated by PTT.
-    _HIGH_TIER_RX: list[tuple[int, int | None]] = [
-        (0x15, 0x02),  # S-meter
-    ]
-    _HIGH_TIER_TX: list[tuple[int, int | None]] = [
-        (0x15, 0x11),  # RF power
-        (0x15, 0x12),  # SWR
-        (0x15, 0x13),  # ALC
-    ]
-    # LOW tier — emitted every _LOW_STRIDE-th HIGH meter cycle, rotating.
-    _LOW_TIER: list[tuple[int, int | None]] = [
-        (0x15, 0x14),  # Compressor meter
-        (0x15, 0x15),  # Vd
-        (0x15, 0x16),  # Id
-    ]
-    _LOW_STRIDE: int = 5
-
-    # State queries interleaved on odd cycles.
-    # Tuple: (cmd, sub, receiver) where receiver=None means global query.
-    # Populated per instance from runtime profile/capabilities.
-    _STATE_QUERIES: list[tuple[int, int | bytes | None, int | None]] = []
-
-    def _pick_high_meter(self, high_idx: int) -> tuple[int, int | None]:
-        """Choose HIGH-tier meter based on PTT state."""
-        on_tx = (
-            getattr(self._radio_state, "ptt", False)
-            if self._radio_state is not None
-            else False
-        )
-        if not on_tx:
-            return self._HIGH_TIER_RX[0]
-        return self._HIGH_TIER_TX[high_idx % len(self._HIGH_TIER_TX)]
-
-    def _flush_due_meter_observations(self) -> None:
-        coalescer = getattr(self._radio, "_meter_observation_coalescer", None)
-        if not isinstance(coalescer, MeterObservationCoalescer):
-            return
-        runtime = getattr(self._radio, "_civ_runtime", None)
-        flush_due = getattr(runtime, "flush_due_meter_observations", None)
-        if not callable(flush_due):
-            return
-        try:
-            flush_due(now=time.monotonic())
-        except Exception:
-            logger.debug("radio-poller: meter coalescer flush failed", exc_info=True)
+        return None
 
     def _acquisition_request_expired(
         self,
@@ -3720,335 +3579,252 @@ class RadioPoller:
             ready_timeout = 2.0
         return (now - float(last_civ)) <= float(ready_timeout)
 
+    def _record_acquisition_failure(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        reason: str,
+        failed_paths: tuple[FieldPath, ...] | frozenset[FieldPath],
+        now: float,
+    ) -> None:
+        self._record_state_diagnostic(
+            "acquisition_request_failed",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in failed_paths],
+            reason=reason,
+            provider=request.provider,
+        )
+        scheduler.record_acquisition_failure(
+            request,
+            reason=reason,
+            failed_paths=failed_paths,
+            now=now,
+        )
+
+    def _report_acquisition_expiry(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        sent_paths: frozenset[FieldPath],
+        now: float,
+    ) -> bool:
+        """Report one fired deadline; return whether it ends the request.
+
+        MOR-874: when the deadline fires but the CI-V link is healthy, this
+        is (usually) a false timeout — the radio answered and the deadline
+        raced under load. Suppress the false-timeout -> adaptive-decay chain
+        and keep the request in flight so the returning observation can
+        credit it.
+
+        But the health gate reads the GLOBAL last-CI-V timestamp, so under
+        external-CAT load it reads healthy ~permanently; a request whose
+        specific answer is genuinely lost would then be pinned forever. Bound
+        the suppression with a grace window: once it elapses with the request
+        still uncredited, fall back to a REAL timeout (drop it so the
+        scheduler re-queues/re-sends and normal failure accounting/decay
+        applies).
+
+        rigctld injects no expiry report and keeps every timeout terminal —
+        see ``RigctldServer._record_acquisition_failure``'s MOR-874 comment
+        and test_a_timed_out_request_is_terminal_even_on_a_healthy_civ_link.
+        """
+
+        link_healthy = self._civ_link_healthy(now=now)
+        grace_expired = False
+        if link_healthy:
+            grace_started = self._acquisition_healthy_grace_started.get(request.id)
+            if grace_started is None:
+                self._acquisition_healthy_grace_started[request.id] = now
+                grace_started = now
+            if now - grace_started >= _ACQUISITION_HEALTHY_GRACE_SECONDS:
+                grace_expired = True
+        # Treat a grace-expired healthy expiry exactly like an unhealthy one:
+        # count it, drop it, let cadence advance.
+        timeout_is_real = (not link_healthy) or grace_expired
+        self._record_state_diagnostic(
+            "acquisition_request_failed",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in request.paths],
+            reason="acquisition_request_timeout",
+            link_healthy=link_healthy,
+            grace_expired=grace_expired,
+        )
+        scheduler.record_acquisition_failure(
+            request,
+            reason="acquisition_request_timeout",
+            failed_paths=sent_paths or frozenset(request.paths),
+            now=now,
+            link_healthy=not timeout_is_real,
+        )
+        return timeout_is_real
+
+    def _forget_acquisition_grace(self, request_id: str) -> None:
+        """Drop the grace clock of a request the drain dropped (MOR-874).
+
+        Called wherever ``AcquisitionDrain`` removes a ledger entry, so the
+        map never outlives the flight it tracks.
+        """
+
+        self._acquisition_healthy_grace_started.pop(request_id, None)
+
+    def _report_acquisition_executor_missing(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        now: float,
+    ) -> None:
+        self._record_state_diagnostic(
+            "acquisition_executor_missing",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in request.paths],
+            provider=request.provider,
+        )
+        scheduler.record_acquisition_failure(
+            request,
+            reason="acquisition_executor_missing",
+            now=now,
+        )
+
+    def _report_acquisition_executor_error(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        error: BaseException,
+        sent_paths: frozenset[FieldPath],
+        now: float,
+    ) -> None:
+        """Record a send that raised, then re-raise it unchanged.
+
+        Before MOR-2293 this seat had no ``try/except`` here, so every
+        executor exception reached the per-``_send_query`` handlers in
+        ``_run``. Those are not merely a log: they are how ``_run`` learns the
+        link is down — its ``(ConnectionError, RadioConnectionError)`` backoff
+        branch, MOR-1440's branch for any exception raised while the radio is
+        disconnected, and the reconnection probe that clears the backoff on a
+        ``_send_query()`` that returns. Once a scheduler is attached
+        ``_send_query`` has no other body, so swallowing anything here would
+        make that probe always succeed and announce a restored connection to a
+        radio that is still down.
+
+        So every exception is recorded and re-raised, with no type list: which
+        exceptions can reach here is decided by call sites downstream of
+        ``_civ``, and a list kept in this file would neither derive from them
+        nor redden when they change. Raising also skips the drain's forget
+        step, leaving the ledger entry exactly as the pre-change code left it.
+        Pinned by
+        test_send_query_still_raises_any_executor_failure_out_of_the_drain.
+
+        What the migration adds over the pre-change path is this diagnostic
+        and the scheduler failure report; what it takes away is nothing.
+        """
+
+        failed_paths = (
+            tuple(path for path in request.paths if path not in sent_paths)
+            or request.paths
+        )
+        self._record_state_diagnostic(
+            "acquisition_request_failed",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in failed_paths],
+            reason="acquisition_executor_error",
+            provider=request.provider,
+            error=str(error),
+            error_type=type(error).__name__,
+        )
+        scheduler.record_acquisition_failure(
+            request,
+            reason="acquisition_executor_error",
+            failed_paths=failed_paths,
+            now=now,
+        )
+        raise error
+
+    def _report_acquisition_sent(
+        self,
+        request: AcquisitionRequest,
+        *,
+        paths: tuple[FieldPath, ...],
+        pending_request_count: int,
+    ) -> None:
+        self._record_state_diagnostic(
+            "acquisition_request_sent",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in paths],
+            pending_request_count=pending_request_count,
+        )
+
+    def _state_acquisition_drain(self) -> AcquisitionDrain:
+        """Return this seat's drain, built on first use.
+
+        Scheduler and executor are read through callables: both are resolved
+        during ``__init__`` but the scheduler may also be attached to the
+        radio afterwards.
+
+        This seat sends everything the scheduler hands it. Its external-CAT
+        stand-down is the whole-iteration ``continue`` in ``_run``, which
+        holds back queued commands as well as reads, so no dispatch filter
+        belongs here.
+        """
+
+        drain = self._acquisition_drain
+        if drain is None:
+            drain = AcquisitionDrain(
+                scheduler=lambda: self._acquisition_scheduler,
+                executor=lambda: self._acquisition_executor,
+                store=lambda: self._state_store,
+                in_flight=self._acquisition_in_flight,
+                expired=self._acquisition_request_expired,
+                dispatchable=lambda pending: pending,
+                report_failure=self._record_acquisition_failure,
+                report_executor_missing=self._report_acquisition_executor_missing,
+                report_executor_error=self._report_acquisition_executor_error,
+                report_sent=self._report_acquisition_sent,
+                report_expiry=self._report_acquisition_expiry,
+                on_forget=self._forget_acquisition_grace,
+                claimant=self,
+            )
+            self._acquisition_drain = drain
+        return drain
+
     async def _send_scheduler_requests(self) -> None:
-        scheduler = self._acquisition_scheduler
-        if scheduler is None:
-            return
-        now = time.monotonic()
-        # MOR-1525: gate tx_only cadence membership (TX/PA meters: power, SWR,
-        # ALC, comp) on the CANONICAL ``global.tx_state.ptt`` observation, not
-        # the legacy RadioState.ptt mirror the MOR-1485 comment above used to
-        # justify. The mirror was live-proven to desync from the canonical
-        # fact: after a TX it stayed True while the StateStore's own
-        # observation had already flipped False in RX, so the tx_only group
-        # kept polling at ~1s cadence during confirmed RX (operator-visible
-        # as the SWR readout flapping 0<->1, MOR-1525). Read the same field
-        # ``build_public_state_payload_from_snapshot`` serves to the UI, so
-        # this can never disagree with what the operator is shown. Fail
-        # closed: unobserved/stale/unknown ptt -> tx_active False, so
-        # tx_only meters stay idle rather than spuriously poll — the honest
-        # direction when the fact isn't known.
-        try:
-            ptt_field = self._state_store.snapshot().field(
-                FieldPath.global_("tx_state", "ptt")
-            )
-        except KeyError:
-            tx_active = False
-        else:
-            tx_active = ptt_field.freshness is FreshnessState.FRESH and bool(
-                ptt_field.value
-            )
-        scheduler.due_requests(now=now, tx_active=tx_active)
-        # MOR-1533: dispatch must use the tx_active-gated view. Crediting an
-        # already-sent answer (runtime._civ_rx) uses the unfiltered
-        # pending_requests() instead, so an answer landing after de-key is
-        # never blinded by this gate -- see dispatchable_requests()'s
-        # docstring.
-        pending = scheduler.dispatchable_requests()
-        pending_ids = {request.id for request in pending}
-        for request_id in tuple(self._acquisition_in_flight):
-            if request_id not in pending_ids:
-                del self._acquisition_in_flight[request_id]
-                # MOR-874: request left flight (credited / dropped) — drop its
-                # grace bookkeeping so the map never leaks.
-                self._acquisition_healthy_grace_started.pop(request_id, None)
-
-        for request in pending:
-            sent_paths: frozenset[FieldPath] = frozenset()
-            sent_at = 0.0
-            existing = self._acquisition_in_flight.get(request.id)
-            if existing is not None:
-                sent_paths, sent_at = existing
-                if self._acquisition_request_expired(
-                    request,
-                    sent_at=sent_at,
-                    now=now,
-                ):
-                    # MOR-874: when the deadline fires but the CI-V link is
-                    # healthy, this is (usually) a false timeout — the radio
-                    # answered and the deadline raced under load. Suppress the
-                    # false-timeout -> adaptive-decay chain and keep the request
-                    # in flight so the returning observation can credit it.
-                    #
-                    # But the health gate reads the GLOBAL last-CI-V timestamp,
-                    # so under external-CAT load it reads healthy ~permanently;
-                    # a request whose specific answer is genuinely lost would
-                    # then be pinned forever. Bound the suppression with a grace
-                    # window: once it elapses with the request still uncredited,
-                    # fall back to a REAL timeout (drop it so the scheduler
-                    # re-queues/re-sends and normal failure accounting/decay
-                    # applies).
-                    link_healthy = self._civ_link_healthy(now=now)
-                    grace_expired = False
-                    if link_healthy:
-                        grace_started = self._acquisition_healthy_grace_started.get(
-                            request.id
-                        )
-                        if grace_started is None:
-                            self._acquisition_healthy_grace_started[request.id] = now
-                            grace_started = now
-                        if now - grace_started >= _ACQUISITION_HEALTHY_GRACE_SECONDS:
-                            grace_expired = True
-                    # Treat a grace-expired healthy expiry exactly like an
-                    # unhealthy one: count it, drop it, let cadence advance.
-                    timeout_is_real = (not link_healthy) or grace_expired
-                    self._record_state_diagnostic(
-                        "acquisition_request_failed",
-                        "web.radio_poller",
-                        request_id=request.id,
-                        paths=[str(path) for path in request.paths],
-                        reason="acquisition_request_timeout",
-                        link_healthy=link_healthy,
-                        grace_expired=grace_expired,
-                    )
-                    scheduler.record_acquisition_failure(
-                        request,
-                        reason="acquisition_request_timeout",
-                        failed_paths=sent_paths or frozenset(request.paths),
-                        now=now,
-                        link_healthy=not timeout_is_real,
-                    )
-                    if timeout_is_real:
-                        self._acquisition_in_flight.pop(request.id, None)
-                        self._acquisition_healthy_grace_started.pop(request.id, None)
-                        continue
-                    # Healthy link, still within grace: leave in flight, skip
-                    # re-send this cycle (no extra CI-V traffic — important not
-                    # to compete with external CAT).
-                    sent_paths = sent_paths.intersection(request.paths)
-                    if all(path in sent_paths for path in request.paths):
-                        continue
-                else:
-                    sent_paths = sent_paths.intersection(request.paths)
-
-            if all(path in sent_paths for path in request.paths):
-                continue
-
-            executor = self._acquisition_executor
-            if executor is None:
-                self._record_state_diagnostic(
-                    "acquisition_executor_missing",
-                    "web.radio_poller",
-                    request_id=request.id,
-                    paths=[str(path) for path in request.paths],
-                    provider=request.provider,
-                )
-                scheduler.record_acquisition_failure(
-                    request,
-                    reason="acquisition_executor_missing",
-                    now=now,
-                )
-                continue
-
-            result = await executor.execute(
-                request,
-                already_sent_paths=sent_paths,
-            )
-            newly_sent = tuple(result.sent_paths)
-            failed_paths = tuple(result.failed_paths)
-            if failed_paths:
-                reason = result.failure_reason or "acquisition_request_failed"
-                self._record_state_diagnostic(
-                    "acquisition_request_failed",
-                    "web.radio_poller",
-                    request_id=request.id,
-                    paths=[str(path) for path in failed_paths],
-                    reason=reason,
-                    provider=request.provider,
-                )
-                scheduler.record_acquisition_failure(
-                    request,
-                    reason=reason,
-                    failed_paths=failed_paths,
-                    now=now,
-                )
-
-            if newly_sent:
-                self._acquisition_in_flight[request.id] = (
-                    sent_paths.union(newly_sent),
-                    now,
-                )
-                self._record_state_diagnostic(
-                    "acquisition_request_sent",
-                    "web.radio_poller",
-                    request_id=request.id,
-                    paths=[str(path) for path in newly_sent],
-                    # MOR-1533: dispatchable_requests(), matching this
-                    # drain's own dispatch view -- not the unfiltered
-                    # pending_requests(), which would also count entries
-                    # this drain will never send (withheld tx_only hints).
-                    pending_request_count=len(scheduler.dispatchable_requests()),
-                )
+        # MOR-2280: this seat does not call ``due_requests`` -- the profile's
+        # cadence is emitted by ``StateFreshnessService.tick`` and a pass
+        # dispatches what it finds queued. The drain refreshes the cached
+        # transmit fact itself, which that call used to keep current: ``_run``
+        # waits at most ``_fast_interval`` (0.025 s on LAN) between passes
+        # against the freshness service's 0.05 s tick, so a pass usually lands
+        # BETWEEN ticks, and gating on the fact the last tick left would miss
+        # a de-key by up to one tick and send the tx_only group
+        # (power/SWR/ALC/comp) during confirmed RX -- the MOR-1525 SWR-flap
+        # loop. See
+        # test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain.
+        await self._state_acquisition_drain().run_once()
 
     async def _send_query(self) -> None:
-        self._flush_due_meter_observations()
         if self._acquisition_scheduler is not None:
             await self._send_scheduler_requests()
             return
-        # Even cycles → meter query; odd cycles → state query.
-        if self._poll_index % 2 == 0:
-            if self._is_serial:
-                # Serial path UNCHANGED — keep flat round-robin over _FAST_CMDS.
-                fast_idx = (self._poll_index // 2) % len(self._FAST_CMDS)
-                cmd_byte, sub_byte = self._FAST_CMDS[fast_idx]
-            else:
-                # LAN: two-tier scheme (issue #937).
-                high_idx = self._poll_index // 2
-                on_tx = (
-                    getattr(self._radio_state, "ptt", False)
-                    if self._radio_state is not None
-                    else False
-                )
-                if not on_tx and high_idx % self._LOW_STRIDE == 0:
-                    low_idx = (high_idx // self._LOW_STRIDE) % len(self._LOW_TIER)
-                    cmd_byte, sub_byte = self._LOW_TIER[low_idx]
-                else:
-                    cmd_byte, sub_byte = self._pick_high_meter(high_idx)
-            self._record_state_diagnostic(
-                "meter_cadence",
-                "web.radio_poller",
-                command=f"0x{cmd_byte:02x}",
-                sub=None if sub_byte is None else f"0x{sub_byte:02x}",
-                poll_index=self._poll_index,
-                serial=self._is_serial,
-            )
-            self._record_state_diagnostic(
-                "backend_read",
-                "web.radio_poller",
-                family="meters",
-                command=f"0x{cmd_byte:02x}",
-                sub=None if sub_byte is None else f"0x{sub_byte:02x}",
-            )
-            await self._civ(
-                cmd_byte,
-                sub=sub_byte,
-                data=b"",
-                priority=Priority.BACKGROUND,
-                wait_dispatch=False,
-            )
-        else:
-            if not self._STATE_QUERIES:
-                self._poll_index += 1
-                return
-            state_idx = (self._poll_index // 2) % len(self._STATE_QUERIES)
-            cmd_byte, state_sub, receiver = self._STATE_QUERIES[state_idx]
-            # ``sub`` reports the CI-V sub-command byte; a query that also
-            # carries payload in its sub element (see
-            # ``_send_one_state_query``) has that payload split off here
-            # rather than formatted as part of the byte.
-            diag_sub, _ = split_ctl_mem_sub(state_sub)
-            self._record_state_diagnostic(
-                "backend_read",
-                "web.radio_poller",
-                family="state",
-                command=f"0x{cmd_byte:02x}",
-                sub=None if diag_sub is None else f"0x{diag_sub:02x}",
-                receiver=receiver,
-            )
-            await self._send_one_state_query(cmd_byte, state_sub, receiver)
-        self._poll_index += 1
-
-    # Issue #2303: passive observation must never select or exchange a VFO.
-    # Inactive A/B state may therefore remain unknown/stale until a genuinely
-    # non-mutating provider read exists for the active profile.
-    _UNSELECTED_SLOT_INTERVAL: float = 5.0  # sec between refreshes per rx
-    _UNSELECTED_SLOT_DEBOUNCE: float = 0.5  # sec after last user freq/mode write
-
-    def _unselected_slot_gate(self, receiver: int) -> bool:
-        """Return False: exchange-based inactive-slot reads mutate hardware."""
-        _ = receiver
-        return False
-
-    async def _poll_unselected_slot(self, receiver: int) -> None:
-        """Intentionally do nothing; swap/query/swap is not passive polling."""
-        _ = receiver
+        # Without a scheduler there is nothing left to send: the legacy meter
+        # rotation that used to run here was unreachable in production
+        # (MOR-2268) and is deleted. Pinned by
+        # test_send_query_without_scheduler_sends_nothing.
 
     @staticmethod
     def _relative_vfo_fields() -> tuple[str, ...]:
         return ("freq_hz", "mode", "filter_num", "data_mode")
 
-    async def establish_vfo_identity(self) -> None:
-        """Command VFO A once, but only when the radio cannot ever report
-        which slot (A/B) is active on its own (MOR-1443).
-
-        Discriminator: ``vfo_readback == "selected_unselected"`` is
-        profile/capability data (``rigs/<model>.toml``), not a hardcoded
-        model check. It already means "this CI-V radio can read the
-        selected/unselected VFO's frequency+mode, but never which physical
-        slot is selected" — issue #2303 forbids learning that passively
-        (a swap-based probe would itself mutate the radio), so absent a
-        commanded write, ``activeSlot`` stays unknown forever and the UI is
-        stuck behind the manual "Select VFO A/B" fallback.
-
-        Ruled exception to the no-uncommanded-writes doctrine (owner
-        decision, MOR-1443, session 19): the owner explicitly accepted the
-        radio-visible side effect — a radio left on VFO B at app start gets
-        switched to A once. Radios that CAN report identity on their own
-        (absolute CI-V VFO readback, Yaesu CAT ``get_vfo_select``, the
-        rigctld client) declare a different ``vfo_readback`` value (or use a
-        backend that never touches this poller at all) and never reach this
-        branch — they keep reading, never writing.
-
-        Called once per connect from the one-time startup section of
-        :meth:`_run`, and again from the web server's reconnect path
-        (``WebServer._on_radio_reconnect`` → its ``_refetch_and_reenable``
-        closure, right after the poller readiness gate is re-set) so that a
-        soft-reconnect re-establishes identity too, instead of staying
-        unknown until process restart (MOR-1443 review R2, finding 1).
-        ``reset_vfo_session()`` always runs first on that path and
-        unconditionally discards ``active_slot`` — no reconnect path
-        retains it. The already-observed gate below therefore is not about
-        surviving a reconnect: between ``reset_vfo_session()`` clearing
-        identity and this coroutine's own read of the state store, the
-        poll loop is still running and may drain an operator-initiated
-        ``SelectVfo`` in that window, legitimately observing identity again
-        first — the gate exists to avoid a redundant second commanded
-        write over that observation (and to guard any future retention
-        path). Also paused, like the rest of this poller's writes, while an
-        external CAT session owns the wire (MOR-166 slice 2) — a commanded
-        VFO A here would collide with the owner's byte stream.
-
-        Goes through the normal :class:`SelectVfo` command path so the
-        existing confirmed-select readback is what marks identity observed,
-        exactly like an operator-issued "Select VFO A/B" would.
-        """
-
-        # External CAT session (e.g. Hamlib A1 bridge) owns the wire — this
-        # write must not escape that pause any more than the poll loop's own
-        # writes do (MOR-1443 review R2, finding 2). ``is True`` (not just
-        # truthy), matching the poll loop's own guard, so duck-typed / mock
-        # radios never quiesce by accident — only a real bool flag does.
-        if getattr(self._radio, "external_cat_session_active", False) is True:
-            return
-        if self._profile.vfo_readback != "selected_unselected":
-            return
-        receiver = 1 if self._current_active().upper() == "SUB" else 0
-        try:
-            self._state_store.snapshot().field(FieldPath.active_slot(str(receiver)))
-        except KeyError:
-            pass
-        else:
-            return  # identity already observed — nothing to establish
-        logger.info(
-            "radio-poller: active-VFO identity unqueryable and unobserved; "
-            "auto-commanding VFO A once (MOR-1443, receiver=%d)",
-            receiver,
-        )
-        # MOR-1884: the ONE exempted write. RF is structurally UNKNOWN at
-        # connection start, and this ruled bootstrap (MOR-1443) is what makes
-        # identity observable — the seat would otherwise fail it closed forever.
-        await self._execute(SelectVfo(vfo="A"), connection_epoch_bootstrap=True)
-
+    # Issue #2303: passive observation must never select or exchange a VFO.
+    # Inactive A/B state may therefore remain unknown/stale until a genuinely
+    # non-mutating provider read exists for the active profile.
     def _vfo_identity_paths(self, receiver: int) -> tuple[FieldPath, ...]:
         receiver_id = str(receiver)
         paths: list[FieldPath] = [FieldPath.active_slot(receiver_id)]
@@ -4059,9 +3835,97 @@ class RadioPoller:
             )
         return tuple(paths)
 
-    def reset_vfo_session(self) -> None:
+    def _vfo_connection_generation(self) -> tuple[int, object]:
+        return self._provider_generation(), self._connection_generation_capture()
+
+    _VFO_CONNECT_PTT_TIMEOUT: float = 2.0
+
+    async def select_vfo_a_on_connect(self, *, read_only: bool) -> None:
+        """Attempt the application connection policy once, with fresh RX only."""
+        generation = self._vfo_connection_generation()
+        if self._vfo_connect_attempt == generation:
+            return
+        self._vfo_connect_attempt = generation
+        self._vfo_recovery_generation = generation
+        reason: str | None = None
+        if read_only:
+            reason = "read_only"
+        elif (
+            self._profile.receiver_count != 1
+            or self._profile.vfo_scheme != "ab"
+            or self._profile.vfo_readback != "selected_unselected"
+        ):
+            reason = "inapplicable_profile"
+        else:
+            snapshot = self._state_store.snapshot()
+            rf_state = self._current_rf_state(snapshot)
+            if rf_state is RfState.UNKNOWN or (
+                rf_state is RfState.RX
+                and snapshot.field(_PTT_PATH).last_observed_monotonic
+                < self._vfo_connection_started_at
+            ):
+                try:
+                    cmd_map = self._cmd_map
+                    if (
+                        not isinstance(self._radio, CivCommandCapable)
+                        or cmd_map is None
+                        or not cmd_map.has("get_transceiver_status")
+                    ):
+                        raise CommandError("connection PTT read is unavailable")
+                    command, sub, data = decode_wire_tuple(
+                        cmd_map.get("get_transceiver_status")
+                    )
+                    if data:
+                        raise CommandError("connection PTT read must carry no data")
+                    await asyncio.wait_for(
+                        self._radio.send_civ(
+                            command, sub=sub, data=data, wait_response=True
+                        ),
+                        timeout=self._VFO_CONNECT_PTT_TIMEOUT,
+                    )
+                except Exception:
+                    reason = "ptt_refresh_failed"
+                if generation != self._vfo_connection_generation():
+                    reason = "connection_changed"
+                snapshot = self._state_store.snapshot()
+                rf_state = self._current_rf_state(snapshot)
+            if reason is None:
+                if rf_state is not RfState.RX:
+                    reason = "rf_not_confirmed_rx"
+                elif (
+                    snapshot.field(_PTT_PATH).last_observed_monotonic
+                    < self._vfo_connection_started_at
+                ):
+                    reason = "ptt_predates_connection"
+        if reason is not None:
+            self._record_state_diagnostic(
+                "vfo_connect_skipped", "web.radio_poller", reason=reason
+            )
+            logger.info("radio-poller: VFO A connection selection skipped: %s", reason)
+            return
+        try:
+            await self._execute(SelectVfo("A"), source="internal_policy")
+        except Exception:
+            self._record_state_diagnostic(
+                "vfo_connect_failed",
+                "web.radio_poller",
+                reason="selection_or_readback_failed",
+            )
+            logger.warning(
+                "radio-poller: VFO A connection selection failed", exc_info=True
+            )
+
+    def reset_vfo_session(self, *, connection_recovery: bool = False) -> None:
         """Invalidate connection-epoch A/B proof without touching TX facts."""
 
+        if connection_recovery:
+            generation = self._vfo_connection_generation()
+            if self._vfo_recovery_generation == generation:
+                return
+            self._vfo_recovery_generation = generation
+            self._vfo_connection_started_at = (
+                self._state_store.snapshot().generated_at_monotonic
+            )
         self._vfo_binding_generation += 1
         relative_reset = self._state_store.reset_relative_vfo_retention(
             generation=self._provider_generation()
@@ -4091,10 +3955,7 @@ class RadioPoller:
         self._state_store.discard(self._vfo_identity_paths(receiver))
 
     def _tx_target_receiver(self) -> tuple[int, TxReceiver]:
-        """Resolve the receiver index + MAIN/SUB label carrying TX.
-
-        Mirrors :meth:`establish_vfo_identity`'s own resolution (MOR-1443).
-        """
+        """Resolve the receiver index + MAIN/SUB label carrying TX."""
         receiver = 1 if self._current_active().upper() == "SUB" else 0
         label: TxReceiver = "SUB" if receiver == 1 else "MAIN"
         return receiver, label
@@ -4122,9 +3983,7 @@ class RadioPoller:
         ``backends/yaesu_cat/observations.py``), Icom CI-V never reports a TX
         target directly. The facts that determine it are already tracked
         independently in the state store: active-VFO identity
-        (``receiver.<rx>.vfo.active_slot``, established once per connect by
-        :meth:`establish_vfo_identity`, MOR-1443, since this CI-V scheme can
-        never passively report which slot is active), split
+        (``receiver.<rx>.vfo.active_slot``), split
         (``global.tx_state.split``, cmd 0x0F), and the selected/unselected
         frequencies (``receiver.<rx>.[active|unselected].freq_mode.freq_hz``,
         cmd 0x25).
@@ -4137,10 +3996,10 @@ class RadioPoller:
         only ever as good as its weakest input.
 
         Only radios that can never passively report VFO identity
-        (``vfo_readback == "selected_unselected"``, the exact gate
-        :meth:`establish_vfo_identity` uses) get a derivation; other CI-V VFO
-        schemes (absolute readback, MAIN/SUB-only radios like IC-9700/IC-7610)
-        stay ``unsupported`` rather than guess at unvalidated split semantics.
+        (``vfo_readback == "selected_unselected"``) get a derivation; other
+        CI-V VFO schemes (absolute readback, MAIN/SUB-only radios like
+        IC-9700/IC-7610) stay ``unsupported`` rather than guess at unvalidated
+        split semantics.
         """
         if self._profile.vfo_readback != "selected_unselected":
             return UnknownTxTarget(reason="unsupported")
@@ -4184,30 +4043,19 @@ class RadioPoller:
         )
 
     def _tx_target_max_age(self) -> float:
-        """TTL for the derived ``tx_target`` field itself (review R2, F1).
+        """TTL for the derived ``tx_target`` field itself (MOR-2223).
 
-        Without this, ``StateStore.mark_stale_due`` skips the field forever
-        (it only ages entries with ``max_age`` set — see its own docstring),
-        so a stale input would silently freeze ``tx_target`` at its last
-        FRESH value instead of degrading, a fail-open on a TX gate. Reuses
-        this profile's default acquisition TTL — ``policy_for`` falls back
-        to ``default_policy`` for any path with no declared capability (3.0s
-        on IC-7300) — which needs no capability declaration for
-        ``tx_target`` itself; see :meth:`_publish_tx_target` for why that
-        declaration must never exist. Falls back to
-        ``_TX_TARGET_FALLBACK_MAX_AGE`` (a fixed default, not a bare multiple
-        of the poll loop's own fast interval — see that constant's comment)
-        if a profile has no acquisition policy at all.
+        Delegates to :func:`tx_target_max_age`, the single source shared
+        with ``CivRuntime._observation`` — see that function's docstring for
+        the fail-open rationale and the fallback it applies. Needs no
+        capability declaration for ``tx_target`` itself; see
+        :meth:`_publish_tx_target` for why that declaration must never
+        exist.
         """
-        acquisition = self._profile.state_acquisition
-        ttl = (
-            None
-            if acquisition is None
-            else acquisition.policy_for(
-                FieldPath.global_("tx_state", "tx_target")
-            ).freshness_ttl_seconds
-        )
-        return ttl if ttl is not None else _TX_TARGET_FALLBACK_MAX_AGE
+        # mypy --strict src/rigplane/web's own follow_imports=skip means the
+        # cross-package call resolves to Any; float(...) makes the strict
+        # return-type explicit rather than suppressing the check.
+        return float(tx_target_max_age(self._profile))
 
     def _publish_tx_target(self) -> None:
         """Recompute and, if changed or stale, republish tx_target (MOR-1496).
@@ -4235,15 +4083,6 @@ class RadioPoller:
         mark, or it having aged fully past its own TTL, all still write —
         the last of those is what lets a healthy-again re-derivation heal
         the field back to FRESH after it actually went stale.
-
-        Never declare ``global.tx_state.tx_target`` in any profile's
-        polling_only/unsolicited_push capability metadata (rigs/*.toml or
-        ``RadioAcquisitionProfile.field_policies``): its absence from
-        capability metadata is exactly what lets the TTL-driven
-        reconciliation request this ``max_age`` generates drop cleanly
-        instead of looping — ``AcquisitionScheduler.query_for_path`` has no
-        CI-V wire mapping for this derived field, so a declared/pollable
-        capability here would retry forever as ``no_civ_query_mapping``.
 
         Uses ``apply_current`` (not ``apply``): this runs synchronously off
         the just-read snapshot with no ``await`` in between, so it always
@@ -4375,6 +4214,9 @@ class RadioPoller:
                         else FieldPath.unselected(receiver_id, "freq_mode", name)
                     )
                     apply(relative_path, value)
+            self._request_post_write_readback(
+                SelectVfo(slot), selected_receiver=receiver
+            )
             logger.info(
                 "radio-poller: confirmed VFO slot=%s receiver=%d generation=%d",
                 slot,

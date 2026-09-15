@@ -147,14 +147,20 @@ def set_data_mode(
     mode_value = int(on) if isinstance(on, bool) else int(on)
     if not 0 <= mode_value <= 3:
         raise ValueError(f"DATA mode must be 0-3, got {mode_value}")
+
     return _build_from_map(
         cmd_map,
         "set_data_mode",
         to_addr=to_addr,
         from_addr=from_addr,
-        data=bytes([mode_value]),
+        data=(
+            None
+            if cmd_map._has_value_variants("set_data_mode")
+            else bytes([mode_value])
+        ),
         receiver=receiver,
         command29=(receiver != RECEIVER_MAIN),
+        value=mode_value,
     )
 
 

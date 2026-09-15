@@ -22,8 +22,9 @@ import {
   IDLE_TX, type AudioRuntimeState, type ModGuardProps, type TxSnapshot,
 } from './harness-state';
 
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
-const stale = { storePath: 'x', observed: true, freshness: 'stale', availability: 'stale' };
+// Synthetic observation provenance for these fixtures, not a radio measurement.
+const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 0 };
+const stale = { storePath: 'x', observed: true, freshness: 'stale', availability: 'stale', lastObservedMonotonic: 0 };
 
 type FieldStatusMap = Record<string, unknown>;
 const statuses = (paths: readonly string[], entry: unknown = fresh): FieldStatusMap =>
@@ -31,20 +32,24 @@ const statuses = (paths: readonly string[], entry: unknown = fresh): FieldStatus
 
 const RADIO_WIDE = ['active', 'split', 'dualWatch', 'txTarget'] as const;
 
-/** 2/main_sub: MAIN and SUB each carry A/B slots (4 vfo tiles total). */
+/**
+ * 2/main_sub (MOR-2467): MAIN and SUB are each one receiver-level VFO —
+ * `freqHz`/`mode`/`filter` observed on the receiver itself. This fixture
+ * intentionally isolates the receiver-level fields the main_sub
+ * presentation consumes; real mixed-version payloads may carry extra
+ * legacy `vfoA`/`vfoB`/`activeSlot` slot keys, which the presentation
+ * ignores (2 vfo tiles total).
+ */
 function mainSubState(active: 'MAIN' | 'SUB' = 'MAIN', entry: unknown = fresh): ServerState {
   const paths: string[] = [...RADIO_WIDE];
   for (const rx of ['main', 'sub']) {
-    paths.push(`${rx}.activeSlot`);
-    for (const v of ['vfoA', 'vfoB']) {
-      paths.push(`${rx}.${v}.freqHz`, `${rx}.${v}.mode`, `${rx}.${v}.filterNum`);
-    }
+    paths.push(`${rx}.freqHz`, `${rx}.mode`, `${rx}.filter`);
   }
-  const slot = (hz: number) => ({ freqHz: hz, mode: 'USB', filterNum: 1 });
-  const receiver = (hz: number) => ({ vfoA: slot(hz), vfoB: slot(hz + 30000), activeSlot: 'A' });
+  const receiver = (hz: number) => ({ freqHz: hz, mode: 'USB', filter: 1 });
   return {
+    stateContractVersion: 1, providerGeneration: 1,
     active, split: true, dualWatch: true, ptt: false,
-    txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
+    txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(21295000),
     fieldStatus: statuses(paths, entry),
   } as unknown as ServerState;
@@ -52,10 +57,7 @@ function mainSubState(active: 'MAIN' | 'SUB' = 'MAIN', entry: unknown = fresh): 
 
 /** 2/main_sub with SUB never observed at all — the startup window. */
 function mainSubSubUnobserved(): ServerState {
-  const paths: string[] = [...RADIO_WIDE, 'main.activeSlot'];
-  for (const v of ['vfoA', 'vfoB']) {
-    paths.push(`main.${v}.freqHz`, `main.${v}.mode`, `main.${v}.filterNum`);
-  }
+  const paths: string[] = [...RADIO_WIDE, 'main.freqHz', 'main.mode', 'main.filter'];
   const base = mainSubState('MAIN') as unknown as Record<string, unknown>;
   const { sub: _absent, ...rest } = base;
   return { ...rest, fieldStatus: statuses(paths) } as unknown as ServerState;
@@ -73,6 +75,7 @@ function abSharedState(active: 'MAIN' | 'SUB' = 'SUB'): ServerState {
     'sub.freqHz', 'sub.mode', 'sub.filter'];
   const receiver = (hz: number) => ({ freqHz: hz, mode: 'CW', filter: 1 });
   return {
+    stateContractVersion: 1, providerGeneration: 1,
     active, split: false, dualWatch: true, ptt: false,
     txTarget: { status: 'known', receiver: active, slot: null, frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14250000),
@@ -97,6 +100,7 @@ function abSharedSubUnobserved(): ServerState {
 function singleState(): ServerState {
   const paths = [...RADIO_WIDE, 'main.freqHz', 'main.mode', 'main.filter'];
   return {
+    stateContractVersion: 1, providerGeneration: 1,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14195000 },
     main: { freqHz: 14195000, mode: 'USB', filter: 1 },
@@ -110,6 +114,7 @@ function abState(): ServerState {
     'main.vfoA.freqHz', 'main.vfoA.mode', 'main.vfoA.filterNum',
     'main.vfoB.freqHz', 'main.vfoB.mode', 'main.vfoB.filterNum'];
   return {
+    stateContractVersion: 1, providerGeneration: 1,
     active: 'MAIN', split: true, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14195000 },
     main: {
@@ -188,7 +193,11 @@ function withMeters(state: ServerState): ServerState {
     ...s,
     powerMeter: 120, swrMeter: 30, alcMeter: 40, compMeter: 20, vdMeter: 200, idMeter: 90,
     main: rx(s.main, -12), sub: rx(s.sub, -30),
-    fieldStatus: { ...(s.fieldStatus as FieldStatusMap), ...statuses(METER_PATHS) },
+    fieldStatus: {
+      ...(s.fieldStatus as FieldStatusMap), ...statuses(METER_PATHS),
+      'main.sMeter': { ...fresh, quality: ['calibrated'] },
+      'sub.sMeter': { ...fresh, quality: ['calibrated'] },
+    },
   } as unknown as ServerState;
 }
 
@@ -397,13 +406,25 @@ export interface Fixture {
   audioRuntime?: Partial<AudioRuntimeState>;
   /**
    * MOR-1085. Which real component this fixture mounts: the
-   * dual-receiver-cockpit shell (default, unchanged from MOR-1070) or
+   * dual-receiver-cockpit shell (default, unchanged from MOR-1070),
    * `ReferenceLayout.svelte` (`SemanticRadioSurfaces strips="single"` — the
-   * same wiring `desktop-v2`/`sdr-test` compose today). One fixture id is
-   * one grid cell; `toReferenceFixture()` below derives every `--reference`
-   * id from its cockpit sibling.
+   * same wiring `desktop-v2`/`sdr-test` compose today), or — MOR-2153 —
+   * `PeerSplitLayout.svelte` (`skins/segmentline/`), the segmentline
+   * `peer-split` glass chassis. One fixture id is one grid cell;
+   * `toReferenceFixture()` below derives every `--reference` id from its
+   * cockpit sibling; `peer-split` fixtures have no such derivation.
    */
-  layout?: 'cockpit' | 'reference';
+  layout?: 'cockpit' | 'reference' | 'peer-split' | 'unified-instrument' | 'panadapter-first';
+  /**
+   * Fixed-native LCD proof metadata. The harness mounts the real skin route;
+   * this only gives the visual-spec lane one declared expectation to compare
+   * to the mounted DOM/resource seam rather than duplicating it per capture.
+   */
+  lcd?: Readonly<{
+    variant: 'unified-instrument' | 'panadapter-first';
+    canvas: Readonly<{ w: 1280; h: 540 | 594 }>;
+    source: 'audio-fft' | 'hardware';
+  }>;
   /**
    * MOR-1355. `true` ⇒ `fixtures/main.ts` mounts this fixture with a REAL
    * resolved `SurfacePlan` (`resolveSurfacePlan(dualReceiverCockpitLayout,
@@ -412,7 +433,18 @@ export interface Fixture {
    * Default `false`/absent: the pre-MOR-1355 plan-less mount, unchanged.
    */
   planned?: boolean;
-  expect: Expectation;
+  /**
+   * MOR-2153. Absent for `layout: 'peer-split'` ONLY: `runAssertions`
+   * (`assertions.ts`, lines 171-683 — 513 lines) is written against the
+   * cockpit/reference `zonedComposition` binary, which `peer-split`'s
+   * five-band chassis is neither — building a third branch through that
+   * pipeline is real, separately-scoped work this ticket does not take on
+   * (the chassis is mostly empty rows today; MOR-2151(cont.) is what gives
+   * it something to assert against). `fixtures/main.ts` skips
+   * `runAssertions` when this is absent rather than passing it a shape it
+   * was never written to check.
+   */
+  expect?: Expectation;
 }
 
 const DUAL_ZONES = ['primary-vfo', 'secondary-vfo', 'global', 'rx-tx'] as const;
@@ -434,13 +466,15 @@ const DUAL_ZONES_PLANNED = [...DUAL_ZONES, 'tx-aux'] as const;
  */
 const TX_AUX_ZONELESS_CONTROLS = 13;
 
-/** Shared shape of every healthy `2/main_sub` fixture — only TX state varies. */
+/** Shared shape of every healthy `2/main_sub` fixture — only TX state varies.
+ * MOR-2467: two receiver-level tiles (one per receiver); the MAIN record is
+ * active so exactly one select (SUB's) is offered and enabled. */
 const mainSubExpect = (over: Partial<Expectation> = {}): Expectation => ({
   zones: DUAL_ZONES, strips: 2, stripReceivers: ['MAIN', 'SUB'],
   stripOperational: [true, true], stripActive: [true, false],
-  tiles: 4, selectsEnabled: 3, selectsDisabled: 0,
+  tiles: 2, selectsEnabled: 1, selectsDisabled: 0,
   radioWideSwitchesDisabled: false, keyDisabled: false,
-  rfLabel: 'RX', sessionLabel: 'ready',
+  rfLabel: '', sessionLabel: null,
   faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
   ...over,
 });
@@ -450,7 +484,15 @@ const mainSubExpect = (over: Partial<Expectation> = {}): Expectation => ({
  * reference-layout twin of each (except `tx-adjacent-alerts`, a
  * cockpit-zone-specific acceptance gate — see `toReferenceFixture`).
  */
-const CORE_FIXTURES: readonly Fixture[] = [
+/**
+ * MOR-2153 review: typed `Fixture & { expect: Expectation }`, not plain
+ * `Fixture` — every entry below sets `expect`, and this is what lets
+ * `.map(toReferenceFixture)` typecheck now that `expect` is optional on
+ * `Fixture` in general (see `toReferenceFixture`'s own comment). Still
+ * assignable everywhere a `Fixture` is expected (a narrower object type is
+ * a subtype), so `FIXTURES`'s `...CORE_FIXTURES` spread below is unaffected.
+ */
+const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
   {
     id: 'topology-1-single',
     what: '1/single — one receiver, one unslotted VFO; the cockpit degrades to one strip.',
@@ -460,7 +502,7 @@ const CORE_FIXTURES: readonly Fixture[] = [
       stripOperational: [true], stripActive: [true],
       tiles: 1, selectsEnabled: 0, selectsDisabled: 0,
       radioWideSwitchesDisabled: false, keyDisabled: false,
-      rfLabel: 'RX', sessionLabel: 'ready',
+      rfLabel: '', sessionLabel: null,
       faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
     },
   },
@@ -473,7 +515,7 @@ const CORE_FIXTURES: readonly Fixture[] = [
       stripOperational: [true], stripActive: [true],
       tiles: 2, selectsEnabled: 1, selectsDisabled: 0,
       radioWideSwitchesDisabled: false, keyDisabled: false,
-      rfLabel: 'RX', sessionLabel: 'ready',
+      rfLabel: '', sessionLabel: null,
       faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
     },
   },
@@ -500,7 +542,7 @@ const CORE_FIXTURES: readonly Fixture[] = [
       stripOperational: [true], stripActive: [true],
       tiles: 1, selectsEnabled: 0, selectsDisabled: 0,
       radioWideSwitchesDisabled: false, keyDisabled: false,
-      rfLabel: 'RX', sessionLabel: 'ready',
+      rfLabel: '', sessionLabel: null,
       faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
     },
   },
@@ -513,7 +555,7 @@ const CORE_FIXTURES: readonly Fixture[] = [
       stripOperational: [true, true], stripActive: [false, true],
       tiles: 2, selectsEnabled: 1, selectsDisabled: 0,
       radioWideSwitchesDisabled: false, keyDisabled: false,
-      rfLabel: 'RX', sessionLabel: 'ready',
+      rfLabel: '', sessionLabel: null,
       faultResetPresent: false, modInputWarningPresent: false,
       // MOR-1355: `abSharedCaps` inherits `baseCaps`'s txAux evidence and this
       // fixture supplies no plan (`planned` unset), so TxAuxSurface's 13
@@ -538,7 +580,7 @@ const CORE_FIXTURES: readonly Fixture[] = [
       stripOperational: [true, false], stripActive: [true, false],
       tiles: 2, selectsEnabled: 0, selectsDisabled: 1,
       radioWideSwitchesDisabled: false, keyDisabled: false,
-      rfLabel: 'RX', sessionLabel: 'ready',
+      rfLabel: '', sessionLabel: null,
       faultResetPresent: false, modInputWarningPresent: false, zonelessControls: 0,
     },
   },
@@ -566,7 +608,7 @@ const CORE_FIXTURES: readonly Fixture[] = [
       stripOperational: [true, true], stripActive: [true, false],
       tiles: 2, selectsEnabled: 1, selectsDisabled: 0,
       radioWideSwitchesDisabled: false, keyDisabled: false,
-      rfLabel: 'RX', sessionLabel: 'ready',
+      rfLabel: '', sessionLabel: null,
       faultResetPresent: false, modInputWarningPresent: false,
       // MOR-1355: same reasoning as `topology-2-ab-shared` above.
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
@@ -574,7 +616,7 @@ const CORE_FIXTURES: readonly Fixture[] = [
   },
   {
     id: 'topology-2-main-sub',
-    what: '2/main_sub — the reference dual state: 4 tiles across 2 strips, MAIN A active.',
+    what: '2/main_sub — the reference dual state: 2 receiver-level tiles across 2 strips, MAIN active.',
     state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps, tx: tx({}),
     // MOR-1085 checklist item 5 contrast pair (with `audio-only-scope` below):
     // MOR-1351 gave baseCaps a `scope` tag AND `scope: true` (they must
@@ -622,25 +664,32 @@ const CORE_FIXTURES: readonly Fixture[] = [
     }),
   },
   {
+    // MOR-2467: unslotted main_sub records have no `kind: 'unknown'` collapse
+    // (that state belonged to the per-receiver A/B slot view this ticket
+    // removed), so an unobserved SUB keeps its select exactly as enabled as
+    // the healthy baseline — the same capability-gated, not
+    // observedness-gated, doctrine `topology-2-ab-shared-selection-fallback`
+    // already records for the other dual topology.
     id: 'sub-unobserved',
-    what: 'startup window: SUB never observed — strip present, one explicit unknown slot, select disabled.',
+    what: 'startup window: SUB never observed — strip present, receiver-level select UNAFFECTED '
+      + '(unslotted main_sub select-gating is capability-driven, not observedness-driven).',
     state: mainSubSubUnobserved, caps: mainSubCaps, tx: tx({}),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     expect: mainSubExpect({
-      tiles: 3, selectsEnabled: 1, selectsDisabled: 1, zonelessControls: TX_AUX_ZONELESS_CONTROLS,
+      selectsEnabled: 1, selectsDisabled: 0, zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
   {
     id: 'dual-rx-unavailable',
-    what: 'structural dual, operationally degraded (MOR-1256) — SUB present, its selects really disabled.',
+    what: 'structural dual, operationally degraded (MOR-1256) — SUB present, its select really disabled.',
     state: () => mainSubState('MAIN'), caps: dualRxUnavailableCaps, tx: tx({}),
     expect: mainSubExpect({
-      stripOperational: [true, false], selectsEnabled: 1, selectsDisabled: 2,
+      stripOperational: [true, false], selectsEnabled: 0, selectsDisabled: 1,
     }),
   },
   {
     id: 'tx-phase-rx',
-    what: 'TX idle — RF receiving, session ready, key enabled, unkey ungated.',
+    what: 'TX idle — RF receiving, idle session row absent, key enabled, unkey ungated.',
     state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps, tx: tx({}),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     expect: mainSubExpect({ zonelessControls: TX_AUX_ZONELESS_CONTROLS }),
@@ -650,8 +699,8 @@ const CORE_FIXTURES: readonly Fixture[] = [
     what: 'TX keying in progress — RF uncertain, session pending, key blocked, unkey still live.',
     state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps,
     tx: tx({
-      phase: 'key-confirm-pending', intent: 'latched', guard: { leaseId: 'L1' },
-      radioTx: 'off', txRisk: 'uncertain', mayOwnKey: true,
+      phase: 'key-confirm-pending', intent: 'latched',
+      radioTx: 'off', txRisk: 'uncertain',
     }),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     expect: mainSubExpect({
@@ -664,8 +713,8 @@ const CORE_FIXTURES: readonly Fixture[] = [
     what: 'transmitting — RF TX, session key down, key blocked, unkey the only way out.',
     state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps,
     tx: tx({
-      phase: 'active', intent: 'latched', guard: { leaseId: 'L1' },
-      radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true,
+      phase: 'active', intent: 'latched',
+      radioTx: 'on', txRisk: 'confirmed-on',
     }),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     expect: mainSubExpect({
@@ -675,37 +724,47 @@ const CORE_FIXTURES: readonly Fixture[] = [
   },
   {
     id: 'tx-phase-fault',
-    what: 'TX fault — session fault, fault line shown, the App-owned fault reset affordance renders.',
+    what: 'TX fault — session fault and fault line shown; server recovery note renders and unkey stays live.',
     state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps,
     tx: tx({ phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed' }),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     expect: mainSubExpect({
       keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'fault',
-      faultResetPresent: true, zonelessControls: TX_AUX_ZONELESS_CONTROLS,
+      faultResetPresent: false, zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
   {
     id: 'connection-loss-stale',
-    what: 'radio link lost, values retained but every field STALE — every fact degrades to unknown.',
-    state: () => mainSubState('MAIN', stale), caps: mainSubCaps, tx: tx({}),
+    what: 'radio link lost, values retained but every field STALE — every fact HOLDS its last value.',
+    state: () => mainSubState('MAIN', stale), caps: mainSubCaps,
+    tx: tx({ fresh: false, radioTx: 'unknown' }),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
+    // MOR-2425/R40: the held facts make the active receiver known again — the
+    // MAIN strip reads active, its tile loses its select button (1, not 2) and
+    // the radio-wide switches are live. `keyDisabled` reads the TX snapshot.
     expect: mainSubExpect({
-      stripActive: [false, false], selectsEnabled: 4, selectsDisabled: 0,
-      radioWideSwitchesDisabled: true, keyDisabled: true,
+      stripActive: [true, false],
+      radioWideSwitchesDisabled: false, keyDisabled: true, rfLabel: '',
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
   {
     id: 'connection-loss-state-null',
     what: 'reconnect window — capabilities known, no state payload at all; everything present and inert.',
-    state: () => null, caps: mainSubCaps, tx: tx({}),
+    state: () => null, caps: mainSubCaps,
+    tx: tx({ fresh: false, radioTx: 'unknown' }),
     // MOR-1355: `toRadioViewModel` gates only on `caps` being non-null
     // (`radio-view-model-adapter.ts:1195`), so `mainSubCaps`'s txAux evidence
     // still emits the group here even though `state` is null — no plan
     // supplied, so still NO-ZONE.
+    // MOR-2467: with state null the two structural receivers still render
+    // their unslotted records; `slot.kind` is never `'unknown'` (that collapse
+    // belonged to the A/B slot view), so both selects mount and are gated only
+    // by the radio-wide `disabled` wiring — enabled, per the same
+    // capability-driven doctrine `sub-unobserved` records.
     expect: mainSubExpect({
-      stripActive: [false, false], tiles: 2, selectsEnabled: 0, selectsDisabled: 2,
-      radioWideSwitchesDisabled: true, keyDisabled: true,
+      stripActive: [false, false], tiles: 2, selectsEnabled: 2, selectsDisabled: 0,
+      radioWideSwitchesDisabled: true, keyDisabled: true, rfLabel: '',
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
@@ -723,27 +782,27 @@ const CORE_FIXTURES: readonly Fixture[] = [
   },
   {
     // MOR-1085 checklist item 2: renamed from `zoneless-controls`. The old id
-    // and `what` both dated to before MOR-1258 moved these three controls'
-    // render site — `tx-fault-reset` and the two `ModInputTxWarning` buttons
+    // and `what` both dated to before MOR-1258 moved these three items'
+    // render site — `tx-fault-recovery` and the two `ModInputTxWarning` buttons
     // — to sit BESIDE `RxTxSurface` inside the bound `.rx-tx-zone` div. They
     // are formal members of the `rx-tx` zone now (`zonelessControls: 0`
     // below already asserted that; only the name and prose still claimed
     // the pre-MOR-1258 shape). The fixture still earns its keep: it is the
-    // one state where all three conditional controls render simultaneously,
+    // one state where all three conditional items render simultaneously,
     // which is what acceptance gate (b) actually needs proving.
     id: 'tx-adjacent-alerts',
-    what: 'acceptance gate (b): the three conditional controls render INSIDE the rx-tx zone (MOR-1258), '
+    what: 'acceptance gate (b): the three conditional items render INSIDE the rx-tx zone (MOR-1258), '
       + 'never zone-less, even with all three present at once.',
     state: () => mainSubState('MAIN'), caps: mainSubCaps,
     tx: tx({ phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed' }),
     modGuard: { visible: true, sourceLabel: 'MIC' },
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied — the
-    // acceptance gate this fixture proves (the three TX-adjacent alerts are
+    // acceptance gate this fixture proves (the three TX-adjacent items are
     // inside `rx-tx`, never zone-less) is UNCHANGED; the 13 txAux controls
     // are a separate, honestly-disclosed zone-less class alongside it.
     expect: mainSubExpect({
       keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'fault',
-      faultResetPresent: true, modInputWarningPresent: true,
+      faultResetPresent: false, modInputWarningPresent: true,
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
@@ -801,11 +860,25 @@ const CORE_FIXTURES: readonly Fixture[] = [
  */
 const REFERENCE_SELECT_GATING_OVERRIDE: Readonly<Record<string, Pick<Expectation,
   'selectsEnabled' | 'selectsDisabled'>>> = {
-  'dual-rx-unavailable': { selectsEnabled: 3, selectsDisabled: 0 },
+  // MOR-2467: 2 receiver-level tiles on `dual-rx-unavailable` — MAIN active
+  // (no select), SUB's select enabled (the reference wiring never passes the
+  // strip `disabled` prop).
+  'dual-rx-unavailable': { selectsEnabled: 1, selectsDisabled: 0 },
   'topology-2-ab-shared-unsupported-controls': { selectsEnabled: 1, selectsDisabled: 0 },
 };
 
-function toReferenceFixture(f: Fixture): Fixture {
+/**
+ * MOR-2153 review: `f: Fixture` alone made `{ ...f.expect, … }` below
+ * unsound the moment `expect` became optional on `Fixture` — the spread's
+ * inferred type carries every `Expectation` field as possibly `undefined`
+ * (e.g. `tiles: number | undefined`), not assignable to the function's own
+ * `Fixture` return type. Every real call site (`CORE_FIXTURES` entries,
+ * `audioRuntimeFixture`'s inline literal) already always sets `expect`; the
+ * parameter type now says so, closing the gap rather than asserting past
+ * it. Verified with a scratch tsconfig adding `fixtures/**\/*.ts` to
+ * `include`: HEAD reports 1 error here, this fix reports 0.
+ */
+function toReferenceFixture(f: Fixture & { expect: Expectation }): Fixture {
   return {
     id: `${f.id}--reference`,
     what: `${f.what} [reference layout: SemanticRadioSurfaces strips="single", the wiring `
@@ -913,19 +986,84 @@ const PLANNED_FIXTURES: readonly Fixture[] = [
 ];
 
 /**
+ * MOR-2153 — `peer-split` (`skins/segmentline/PeerSplitLayout.svelte`), the
+ * segmentline glass CHASSIS. Reuses `abSharedState`/`abSharedCaps` verbatim
+ * (peer-split's manifest declares `2/ab_shared` as one of its two compatible
+ * topologies — `presentation/layouts/segmentline-declarations.ts` — and it
+ * is also the FTX-1's real topology, the accepted spec's own justification
+ * for building this direction first). `withMeters` overlays the sample
+ * meter readings the same way `topology-2-main-sub` does, so the (currently
+ * bare) meters surface has something to show.
+ *
+ * No `--reference`/`--planned` derivation: those exist for the
+ * cockpit/reference behavior-assertion comparison (`toReferenceFixture`
+ * above), which does not apply here (`expect` is deliberately absent — see
+ * that field's own doc comment on `Fixture`). This fixture is for LOOKING
+ * at the chassis, not for pinning its behavior.
+ */
+const PEER_SPLIT_FIXTURES: readonly Fixture[] = [
+  {
+    id: 'peer-split-chassis',
+    what: 'segmentline peer-split glass chassis: 2/ab_shared, both receivers present, meters '
+      + 'evidence populated. DSP rail, memory rail and the offsets row render EMPTY — no zone '
+      + 'declares dsp/rfFrontEnd/band/ritXitScan yet (MOR-2151(cont.), not this ticket).',
+    state: () => withMeters(abSharedState()), caps: abSharedCaps, tx: tx({}),
+    layout: 'peer-split',
+  },
+];
+
+/**
+ * MOR-2325 B/D are fixture-only acceptance cells for the two selectable LCD
+ * directions. Both reuse the real dual MAIN/SUB shape and mutually coherent
+ * provider/capability generation 1. Their display-frame evidence is supplied
+ * by the runtime fixture seam as an honest null envelope: visible glass may
+ * show a ghost/missing trace, never invented RF or AF samples.
+ */
+const LCD_DIRECTION_FIXTURES: readonly Fixture[] = [
+  {
+    id: 'lcd-unified-instrument',
+    what: 'LCD unified-instrument: 2/main_sub MAIN active, native 1280×540 group, audio-FFT '
+      + 'selection with no received envelope (truthful ghost), and fresh software TOT 180s.',
+    state: () => ({ ...(withMeters(mainSubState('MAIN')) as object), providerGeneration: 1 }) as ServerState,
+    caps: mainSubCaps,
+    tx: tx({ configuredSeconds: 180, remainingMs: null }),
+    layout: 'unified-instrument',
+    lcd: {
+      variant: 'unified-instrument', canvas: { w: 1280, h: 540 }, source: 'audio-fft',
+    },
+  },
+  {
+    id: 'lcd-panadapter-first',
+    what: 'LCD panadapter-first: 2/main_sub MAIN active, native 1280×594 group, hardware '
+      + 'selection with no received envelope (truthful ghost), and fresh software TOT explicitly OFF.',
+    state: () => ({ ...(withMeters(mainSubState('MAIN')) as object), providerGeneration: 1 }) as ServerState,
+    caps: mainSubCaps,
+    tx: tx({ configuredSeconds: null, remainingMs: null }),
+    layout: 'panadapter-first',
+    lcd: {
+      variant: 'panadapter-first', canvas: { w: 1280, h: 594 }, source: 'hardware',
+    },
+  },
+];
+
+/**
  * The full MOR-1085 grid: every `CORE_FIXTURES` (dual-receiver-cockpit)
  * entry, plus its reference-layout twin — except `tx-adjacent-alerts`, whose
  * whole point is the cockpit's OWN zone-containment acceptance gate (b) and
  * has no reference-layout equivalent (the reference/single composition has
  * no zone concept for the three alerts to be "inside" or "outside" of; see
  * `zonedComposition` in `assertions.ts`) — plus MOR-1355's `PLANNED_FIXTURES`
- * (no reference twin either; see the comment above `PLANNED_FIXTURES`).
+ * (no reference twin either; see the comment above `PLANNED_FIXTURES`) and
+ * MOR-2153's `PEER_SPLIT_FIXTURES` (no reference/planned twin either — see
+ * the comment above that array).
  */
 export const FIXTURES: readonly Fixture[] = [
   ...CORE_FIXTURES,
   ...CORE_FIXTURES.filter((f) => f.id !== 'tx-adjacent-alerts').map(toReferenceFixture),
   ...PLANNED_FIXTURES,
   ...AUDIO_RUNTIME_FIXTURES,
+  ...PEER_SPLIT_FIXTURES,
+  ...LCD_DIRECTION_FIXTURES,
 ];
 
 export const fixtureById = (id: string): Fixture | undefined =>

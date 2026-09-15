@@ -69,9 +69,9 @@ class _SyncCommandExecutor:
             await self.wrapper._execute_ptt(bool(params["ptt"]))
         elif intent.name == "set_split":
             await radio.set_split(bool(params["split"]))
-        elif intent.name == "set_attenuator_level":
+        elif intent.name in ("set_att", "set_attenuator_level"):
             await radio.set_attenuator_level(
-                int(params["att"]),
+                int(params["db"] if "db" in params else params["att"]),
                 receiver=int(params.get("receiver", 0)),
             )
         elif intent.name == "set_preamp":

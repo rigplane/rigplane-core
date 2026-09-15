@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { validateRadioViewModel, type RadioViewModel } from '../radio-view-model';
+import { topologyFixtures, withMeters, withModeFilter, withFilterPassband } from '../fixtures/topologies';
 
 function valid(): RadioViewModel {
   return {
@@ -22,10 +23,220 @@ function valid(): RadioViewModel {
   };
 }
 
+describe('VFO display facet', () => {
+  const display = {
+    frequencyHz: { state: 'stale', value: 0 },
+    mode: { state: 'current', value: 'USB' },
+    filter: { state: 'unsupported' },
+  };
+  const withDisplay = (facet: unknown) => {
+    const base = valid();
+    return { ...base, vfos: [{ ...base.vfos[0], display: facet }] };
+  };
+  it('round-trips the opt-in facet and preserves the legacy shape', () => {
+    expect(validateRadioViewModel(valid())).toEqual(valid());
+    expect(validateRadioViewModel(withDisplay(display))).toEqual(withDisplay(display));
+    expect(validateRadioViewModel(withDisplay({ ...display,
+      frequencyHz: { state: 'unknown', reason: 'identity-unresolved' },
+    })).vfos[0].frequencyHz).toBe(14195000);
+  });
+  it.each([
+    null, {}, { ...display, rawState: {} }, { ...display, mode: undefined },
+    { ...display, frequencyHz: { state: 'stale', value: null } },
+    { ...display, frequencyHz: { state: 'current', value: NaN } },
+    { ...display, frequencyHz: { state: 'current', value: false } },
+    { ...display, mode: { state: 'current', value: 1 } },
+    { ...display, filter: { state: 'stale', value: 1 } },
+    { ...display, mode: { state: 'unknown', reason: 'guessed' } },
+    { ...display, filter: { state: 'unsupported', value: 'FIL1' } },
+  ])('rejects malformed facet %#', (facet) => {
+    expect(() => validateRadioViewModel(withDisplay(facet))).toThrow(TypeError);
+  });
+});
+
 describe('validateRadioViewModel', () => {
   it('accepts a well-formed view model and round-trips it unchanged', () => {
     const model = valid();
     expect(validateRadioViewModel(model)).toEqual(model);
+  });
+
+  const receiverIndicator = (receiver: 'MAIN' | 'SUB' = 'MAIN') => ({
+    receiver,
+    availability: { structural: true, operational: true },
+    sMeter: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
+    bandwidthHz: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
+    agcMode: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
+    nbActive: { reading: { status: 'known' as const, value: false }, availability: { structural: true, operational: true } },
+    nrActive: { reading: { status: 'known' as const, value: false }, availability: { structural: true, operational: true } },
+    notchMode: { reading: { status: 'known' as const, value: 'off' as const }, availability: { structural: true, operational: true } },
+    attenuator: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
+    preamp: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
+    rfGain: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
+    digiSel: { reading: { status: 'known' as const, value: false }, availability: { structural: true, operational: true } },
+    ipPlus: { reading: { status: 'known' as const, value: false }, availability: { structural: true, operational: true } },
+  });
+
+  it('round-trips receiver indicators without collapsing known numeric zero or boolean false', () => {
+    const model = validateRadioViewModel({ ...valid(), receiverIndicators: [receiverIndicator()] });
+    expect(model.receiverIndicators?.[0].sMeter.reading).toEqual({ status: 'known', value: 0 });
+    expect(model.receiverIndicators?.[0].nbActive.reading).toEqual({ status: 'known', value: false });
+    expect(model.receiverIndicators?.[0].digiSel.reading).toEqual({ status: 'known', value: false });
+  });
+
+  const MAIN_S_SOURCE = {
+    providerGeneration: 7, scope: 'receiver' as const, receiver: 'MAIN' as const, path: 'main.sMeter' as const,
+  };
+  const SUB_S_SOURCE = {
+    providerGeneration: 7, scope: 'receiver' as const, receiver: 'SUB' as const, path: 'sub.sMeter' as const,
+  };
+  const withReceiverSource = (receiver: 'MAIN' | 'SUB', source: unknown) => {
+    const indicator = receiverIndicator(receiver);
+    return { ...valid(), receiverIndicators: [{
+      ...indicator, sMeter: { ...indicator.sMeter, source },
+    }] };
+  };
+
+  it('preserves omitted, null, and exact receiver-owned S-meter sources', () => {
+    expect(validateRadioViewModel({ ...valid(), receiverIndicators: [receiverIndicator()] })
+      .receiverIndicators![0].sMeter).not.toHaveProperty('source');
+    expect(validateRadioViewModel(withReceiverSource('MAIN', null))
+      .receiverIndicators![0].sMeter.source).toBeNull();
+    expect(validateRadioViewModel(withReceiverSource('MAIN', MAIN_S_SOURCE))
+      .receiverIndicators![0].sMeter.source).toEqual(MAIN_S_SOURCE);
+    expect(validateRadioViewModel(withReceiverSource('SUB', SUB_S_SOURCE))
+      .receiverIndicators![0].sMeter.source).toEqual(SUB_S_SOURCE);
+  });
+
+  it.each([
+    { kind: 'engineering', unit: 'db' }, { kind: 'raw' }, { kind: 'unknown' },
+  ] as const)('round-trips receiver S-meter domain %j', (domain) => {
+    const indicator = receiverIndicator();
+    const model = validateRadioViewModel({
+      ...valid(), receiverIndicators: [{
+        ...indicator, sMeter: { ...indicator.sMeter, domain },
+      }],
+    });
+    expect(model.receiverIndicators![0].sMeter.domain).toEqual(domain);
+  });
+
+  it.each([
+    { kind: 'engineering', unit: 'ratio' },
+    { kind: 'engineering' },
+    { kind: 'raw', unit: 'db' },
+    { kind: 'unknown', source: 'guess' },
+    { kind: 'mystery' },
+  ])('rejects malformed receiver S-meter domain %j', (domain) => {
+    const indicator = receiverIndicator();
+    expect(() => validateRadioViewModel({
+      ...valid(), receiverIndicators: [{
+        ...indicator, sMeter: { ...indicator.sMeter, domain },
+      }],
+    })).toThrow(TypeError);
+  });
+
+  it('preserves omitted legacy station domain and validates explicit station signal domain', () => {
+    const legacy = withMeters(topologyFixtures['1/single']);
+    expect(validateRadioViewModel(legacy).meters!.signal).not.toHaveProperty('domain');
+
+    const explicit = {
+      ...legacy,
+      meters: {
+        ...legacy.meters!,
+        signal: { ...legacy.meters!.signal, domain: { kind: 'engineering', unit: 'db' } },
+      },
+    } as const;
+    expect(validateRadioViewModel(explicit).meters!.signal.domain)
+      .toEqual({ kind: 'engineering', unit: 'db' });
+    expect(() => validateRadioViewModel({
+      ...legacy,
+      meters: {
+        ...legacy.meters!,
+        signal: { ...legacy.meters!.signal, domain: { kind: 'engineering', unit: 'w' } },
+      },
+    })).toThrow(TypeError);
+  });
+
+  it.each([
+    ['unsafe generation', { ...MAIN_S_SOURCE, providerGeneration: Number.MAX_SAFE_INTEGER + 1 }],
+    ['extra key', { ...MAIN_S_SOURCE, provider: 'rigctld' }],
+    ['radio scope', { ...MAIN_S_SOURCE, scope: 'radio', receiver: null }],
+    ['null receiver', { ...MAIN_S_SOURCE, receiver: null }],
+    ['wrong path', { ...MAIN_S_SOURCE, path: 'sub.sMeter' }],
+    ['cross-owner source', SUB_S_SOURCE],
+  ])('rejects %s on a MAIN receiver S-meter', (_label, source) => {
+    expect(() => validateRadioViewModel(withReceiverSource('MAIN', source))).toThrow(TypeError);
+  });
+
+  it('accepts and preserves the exact pre-MOR-2309 receiver RF payload shape', () => {
+    const legacy = { ...receiverIndicator(), rfState: 'receiving' as const };
+    const model = validateRadioViewModel({ ...valid(), receiverIndicators: [legacy] });
+    expect(model.receiverIndicators?.[0]).toEqual(legacy);
+  });
+
+  it('rejects duplicate receiver-indicator entries and extra raw keys', () => {
+    expect(() => validateRadioViewModel({
+      ...valid(), receiverIndicators: [receiverIndicator(), receiverIndicator()],
+    })).toThrow(TypeError);
+    expect(() => validateRadioViewModel({
+      ...valid(), receiverIndicators: [{ ...receiverIndicator(), rawState: { ptt: false } }],
+    })).toThrow(TypeError);
+  });
+
+  const fact = <T>(value: T, structural = true, operational = true) => ({
+    reading: operational ? { status: 'known' as const, value } : { status: 'unknown' as const },
+    availability: { structural, operational },
+  });
+
+  const radioWideIndicators = () => ({
+    rfState: 'receiving' as const, antenna: fact(1),
+    atu: fact<'off' | 'on' | 'tuning'>('off'),
+    ritActive: fact(false), ritOffset: fact(0),
+    xitActive: fact(true), xitOffset: fact(0),
+    actions: {
+      main: { structural: true, operational: true },
+      sub: { structural: true, operational: false },
+      equalize: { structural: true, operational: true },
+      swap: { structural: true, operational: true },
+      quickSplit: { structural: true, operational: true },
+      quickDualWatch: { structural: true, operational: false },
+      speak: { structural: false, operational: false },
+    },
+  });
+
+  it('round-trips the singleton radio-wide contract without collapsing false or zero', () => {
+    const model = validateRadioViewModel({
+      ...valid(), radioWideIndicators: radioWideIndicators(),
+    });
+    expect(model.radioWideIndicators?.antenna.reading).toEqual({ status: 'known', value: 1 });
+    expect(model.radioWideIndicators?.ritActive.reading).toEqual({ status: 'known', value: false });
+    expect(model.radioWideIndicators?.ritOffset.reading).toEqual({ status: 'known', value: 0 });
+    expect(model.radioWideIndicators?.actions.sub).toEqual({ structural: true, operational: false });
+  });
+
+  it('rejects undeclared radio-wide fields and malformed action availability', () => {
+    expect(() => validateRadioViewModel({
+      ...valid(), radioWideIndicators: { ...radioWideIndicators(), rawState: {} },
+    })).toThrow(TypeError);
+    expect(() => validateRadioViewModel({
+      ...valid(),
+      radioWideIndicators: {
+        ...radioWideIndicators(),
+        actions: {
+          ...radioWideIndicators().actions,
+          speak: { structural: 'yes', operational: true },
+        },
+      },
+    })).toThrow(TypeError);
+    expect(() => validateRadioViewModel({
+      ...valid(),
+      radioWideIndicators: {
+        ...radioWideIndicators(),
+        actions: {
+          ...radioWideIndicators().actions,
+          split: { structural: true, operational: true },
+        },
+      },
+    })).toThrow(TypeError);
   });
 
   it('accepts an unknown txTarget with its reason preserved', () => {
@@ -303,5 +514,85 @@ describe('validateRadioViewModel', () => {
     expect(() => validateRadioViewModel({
       ...valid(), disabledReasons: [{ field: 'txTarget', code: 'operator-error' }],
     })).toThrow(TypeError);
+  });
+});
+
+
+describe('receiver RF gain display facet validation', () => {
+  function withDisplay(display: unknown): RadioViewModel {
+    const field = { reading: { status: 'unknown' }, availability: { structural: true, operational: false } };
+    return { ...valid(), receiverIndicators: [{
+      receiver: 'MAIN', availability: field.availability,
+      sMeter: field, bandwidthHz: field, agcMode: field, nbActive: field, nrActive: field,
+      notchMode: field, attenuator: field, preamp: field, digiSel: field, ipPlus: field,
+      rfGain: { ...field, display },
+    }] } as RadioViewModel;
+  }
+  it.each([
+    { state: 'current', value: 0 }, { state: 'stale', value: 0.75 },
+    { state: 'unknown', reason: 'not-observed' }, { state: 'unsupported' },
+  ])('round-trips typed RF gain display %j without changing strict facts', (display) => {
+    const view = withDisplay(display);
+    expect(validateRadioViewModel(view)).toEqual(view);
+  });
+  it.each([
+    { state: 'current', value: false }, { state: 'stale', value: Infinity },
+    { state: 'current' }, { state: 'unknown' }, { state: 'unknown', reason: 'made-up' },
+    { state: 'unknown', reason: 'not-observed', value: 0 }, { state: 'unsupported', value: 0 },
+    { state: 'stale', value: 0, permitted: true },
+  ])('rejects malformed display %j', (display) => {
+    expect(() => validateRadioViewModel(withDisplay(display))).toThrow();
+  });
+  it('keeps unmigrated receiver fields strict rather than accepting arbitrary display facets', () => {
+    const view = withDisplay({ state: 'current', value: 0 });
+    Object.assign(view.receiverIndicators![0].sMeter, { display: { state: 'stale', value: 0 } });
+    expect(() => validateRadioViewModel(view)).toThrow();
+  });
+});
+
+
+describe('MOR-2374 strict filter contract', () => {
+  const configuration = {
+    slots: [{ filter: 1, label: 'FIL1', factoryWidthHz: 2400 }, { filter: 2, label: 'FIL2', factoryWidthHz: null }],
+    fixed: false, minHz: 50, maxHz: 3600, stepHz: 50,
+    segments: [{ hzMin: 50, hzMax: 500, stepHz: 50, indexMin: 0 }], table: [50, 100],
+  };
+  const model = () => {
+    const v = withFilterPassband(withModeFilter(valid()));
+    return { ...v, modeFilter: { ...v.modeFilter!, activeFilterConfiguration: configuration },
+      filterPassband: { ...v.filterPassband!, dataModeChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'D1' }] } };
+  };
+  it('accepts populated and unavailable forms', () => {
+    expect(validateRadioViewModel(model())).toEqual(model());
+    const unlabeled = model();
+    const metadata = { ...unlabeled, filterPassband: { ...unlabeled.filterPassband, dataModeChoices: [{ value: 0, label: null }] } };
+    expect(validateRadioViewModel(metadata)).toEqual(metadata);
+    const v = model();
+    const unavailable = { ...v, modeFilter: { ...v.modeFilter, activeFilterConfiguration: null },
+      filterPassband: { ...v.filterPassband, dataModeChoices: [] } };
+    expect(validateRadioViewModel(unavailable)).toEqual(unavailable);
+  });
+  it.each([
+    undefined, null, [{ value: 1, label: 'D1' }], [{ value: 0, label: '' }],
+    [{ value: 0, label: 'OFF', raw: true }], [{ value: 0, label: 'OFF' }, { value: 0, label: 'D1' }],
+    [{ value: -1, label: 'OFF' }], [{ value: NaN, label: 'OFF' }],
+    [0, 1, 2, 3, 4].map(value => ({ value, label: 'D' + value })),
+  ])('rejects malformed DATA vocabulary %#', (dataModeChoices) => {
+    const v = model();
+    expect(() => validateRadioViewModel({ ...v, filterPassband: { ...v.filterPassband, dataModeChoices } })).toThrow(TypeError);
+  });
+  it.each([
+    undefined, {}, { ...configuration, raw: true }, { ...configuration, fixed: 1 },
+    { ...configuration, slots: [{ filter: 0, label: 'FIL1', factoryWidthHz: 1 }] },
+    { ...configuration, slots: [{ filter: 1, label: ' ', factoryWidthHz: 1 }] },
+    { ...configuration, slots: [{ filter: 1, label: 'FIL1', factoryWidthHz: -1 }] },
+    { ...configuration, minHz: NaN }, { ...configuration, maxHz: Infinity },
+    { ...configuration, minHz: 4000 }, { ...configuration, stepHz: 0 },
+    { ...configuration, table: [100, 100] }, { ...configuration, table: [-1] },
+    { ...configuration, segments: [{ hzMin: 100, hzMax: 50, stepHz: 10, indexMin: 0 }] },
+    { ...configuration, segments: [{ hzMin: 50, hzMax: 100, stepHz: 10, indexMin: 0, raw: true }] },
+  ])('rejects malformed configuration %#', (activeFilterConfiguration) => {
+    const v = model();
+    expect(() => validateRadioViewModel({ ...v, modeFilter: { ...v.modeFilter, activeFilterConfiguration } })).toThrow(TypeError);
   });
 });

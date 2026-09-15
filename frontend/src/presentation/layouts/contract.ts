@@ -1,5 +1,5 @@
 /**
- * Layout manifest v1 schema, runtime validator, and compiled registry
+ * Layout manifest v1 schema, runtime validator, and manifest registry
  * (MOR-1066) — the other side of the design-language handshake in
  * `../languages/contract.ts` (matched against a layout id by
  * `../workspace/activation.ts: designLanguageActivation`).
@@ -10,7 +10,6 @@
  * presentation/ zone (MOR-1061) bans runtime/capability/transport/command
  * imports here and in every manifest.
  */
-import type { Component } from 'svelte';
 import { isValidLanguageId as isValidProductId } from '../languages/contract';
 
 /** Semantic surfaces a layout may mount (MOR-1062/1065 reference vertical;
@@ -19,17 +18,20 @@ import { isValidLanguageId as isValidProductId } from '../languages/contract';
  *  by MOR-1307, `antenna` by MOR-1309, `ritXitScan` by MOR-1308, `cwKeyer` by
  *  MOR-1310, `scopeDisplay` by MOR-1312, `scopeControls` by MOR-1311 — the
  *  LAST B-slice of the vocabulary program). Adding a name makes it
- *  DECLARABLE — it does not mount anything by itself, and no manifest
- *  declares a `meters`, `rxAudio`, `filter`, `dsp`, `rfFrontEnd`, `band`,
- *  `antenna`, `ritXitScan`, `cwKeyer`, `scopeDisplay` or `scopeControls`
- *  zone yet (the cockpit declares only `txAux`, as `tx-aux` — MOR-1336).
+ *  DECLARABLE — it does not mount anything by itself. Which layouts then
+ *  DECLARE a name is recorded in `__tests__/*-declarability.test.ts` for the
+ *  names that have such a file, each pinning its own `DECLARES_*` literal
+ *  against the real barrel. `desktop-v2`'s zones are `desktop-declarations.ts`'s
+ *  `DESKTOP_V2_ZONES`; `__tests__/zone-ownership-coverage.test.ts` holds the
+ *  partition and records, in `RECORDED_REASONS`, every name in this list that
+ *  no `desktop-v2` zone declares.
  *  Distinct from the design-language renderer slot of the same name
  *  (`languages/contract.ts`'s `RENDERER_SLOT_NAMES`): that one says how a
  *  language DRAWS a meter, this one says which layout zone may HOST the
  *  surface. */
 export const SEMANTIC_SURFACE_NAMES = [
   'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band', 'antenna', 'ritXitScan',
-  'cwKeyer', 'scopeDisplay', 'scopeControls',
+  'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory',
 ] as const;
 export type SemanticSurfaceName = (typeof SEMANTIC_SURFACE_NAMES)[number];
 
@@ -45,12 +47,27 @@ export type TopologyClass = (typeof TOPOLOGY_CLASSES)[number];
 export interface LayoutZone {
   readonly id: string;
   readonly surfaces: readonly SemanticSurfaceName[];
+  /**
+   * MOR-2253 slice 1 — the id of the `InstrumentGroup` (`../groups/
+   * contract.ts`) mounted in this zone. A plain `string`, not an imported
+   * `GroupId` type alias: `presentation/workspace/__tests__/purity.isolated
+   * .test.ts` and its two siblings (MOR-1077/78/79) pin this file's own
+   * import closure by hand, and even a type-only import of `../groups/
+   * contract` would pull that module into it — a real edge this manifest
+   * contract does not need, since the id is only ever compared as a string
+   * (`getGroup` in `../groups/contract.ts` also takes a bare `string`).
+   * Optional: most zones mount bare semantic surfaces with no group.
+   * `validateZones` below checks only `id`/`surfaces` — this field is not
+   * exact-key-checked (no `hasExactPlainKeys` call touches a zone object),
+   * so adding it needed no validator change.
+   */
+  readonly group?: string;
 }
 
 /**
  * Sizing axis (MOR-1160, frozen 2026-07-29): `fluid` reflows on declared
  * breakpoints; `fixed-native` scales as one block by
- * `min(w/nativeW, h/nativeH)`, letterboxed, falling back below `minScale`.
+ * `min(w/nativeW, h/nativeH)`, letterboxed.
  * Structurally exclusive at the type level (`FixedNativeSizing` has no
  * `responsiveBreakpoints` slot); the runtime validator enforces the same
  * exclusion against untyped input. See `LayoutManifest.stageSizing` below for
@@ -72,7 +89,6 @@ export interface LayoutManifest {
   readonly schemaVersion: 1;
   readonly id: string;
   readonly displayName: string;
-  readonly loader: () => Promise<{ default: Component }>;
   readonly zones: readonly LayoutZone[];
   readonly compatibleTopologies: readonly TopologyClass[];
   readonly requiredSemanticSurfaces: readonly SemanticSurfaceName[];
@@ -101,7 +117,7 @@ export interface LayoutManifest {
 }
 
 const TOP_LEVEL_KEYS: readonly PropertyKey[] = [
-  'schemaVersion', 'id', 'displayName', 'loader', 'zones',
+  'schemaVersion', 'id', 'displayName', 'zones',
   'compatibleTopologies', 'requiredSemanticSurfaces', 'stageSizing', 'fallbackLayoutId',
 ];
 
@@ -122,8 +138,7 @@ function allIn<T>(values: readonly T[], allowed: readonly T[]): boolean {
 }
 
 /** JSON.stringify-replacer idiom mirrored from the design-language contract's
- *  findCapabilityLikeKey: walks every nested key, skips function values — the
- *  `loader` closure's import specifier is invisible to it, by design. */
+ *  findCapabilityLikeKey: walks every nested key and skips function values. */
 const FORBIDDEN_MANIFEST_KEY_MARKERS = ['capability', 'capabilities', 'radiomodel', 'vendor', 'manufacturer', 'firmware'];
 function findCapabilityLikeKey(manifest: LayoutManifest): string | null {
   let hit: string | null = null;
@@ -138,8 +153,7 @@ function findCapabilityLikeKey(manifest: LayoutManifest): string | null {
  *  import (`./`, `../`), the `$lib/` alias, a bare `src/` reference, or an
  *  absolute path — the forms a real component specifier takes in this
  *  codebase. Not exhaustive (any string could theoretically resolve as a
- *  module elsewhere), but the compiled `loader` closure is the only field
- *  meant to carry one, and the scan never sees inside a function value. */
+ *  module elsewhere), but no manifest field is allowed to carry one. */
 const MODULE_PATH_VALUE_PATTERN = /^(\.{1,2}\/|\$lib\/|src\/|\/)/;
 function findModulePathLikeValue(manifest: LayoutManifest): string | null {
   let hit: string | null = null;
@@ -209,7 +223,6 @@ export function validateLayoutManifest(manifest: LayoutManifest): void {
       `Layout "${id}" has unknown top-level key(s) — only [${TOP_LEVEL_KEYS.join(', ')}] are allowed.`) ||
     (manifest.schemaVersion !== 1 && `Layout "${id}" schemaVersion must be 1.`) ||
     (!isValidProductId(id) && `Layout id "${id}" fails naming policy: kebab-case, no vendor/geographic marker.`) ||
-    (typeof manifest.loader !== 'function' && `Layout "${id}" must declare a compiled Svelte loader function.`) ||
     validateZones(id, manifest.zones) ||
     (manifest.compatibleTopologies.length === 0 &&
       `Layout "${id}" must declare at least one compatible topology class.`) ||
@@ -225,50 +238,45 @@ export function validateLayoutManifest(manifest: LayoutManifest): void {
   if (problem) throw new LayoutValidationError(problem);
 }
 
-// ── Compiled registry. Count-agnostic: any manifest passing validation
+// ── Manifest registry. Count-agnostic: any manifest passing validation
 // registers, same as the design-language registry (MOR-1072 precedent).
 
 const registry = new Map<string, LayoutManifest>();
 
 /**
- * Validates then registers `manifest`. Rejects a duplicate ID — unlike the
- * design-language registry's overwrite semantics, a silently swapped layout
- * loader can replace what is already resolved on screen, so MOR-1066 treats
- * "duplicate IDs" as its own rejection class rather than an overwrite.
+ * Validates and registers a batch atomically. Every manifest and every
+ * collision against the current registry or another batch item is checked
+ * before the first write. Input order is retained in the registry.
+ */
+export function registerLayouts(manifests: readonly LayoutManifest[]): void {
+  const batchIds = new Set<string>();
+  for (const manifest of manifests) {
+    validateLayoutManifest(manifest);
+    if (registry.has(manifest.id)) {
+      throw new LayoutValidationError(`Layout id "${manifest.id}" is already registered.`);
+    }
+    if (batchIds.has(manifest.id)) {
+      throw new LayoutValidationError(`Layout id "${manifest.id}" appears more than once in the batch.`);
+    }
+    batchIds.add(manifest.id);
+  }
+  for (const manifest of manifests) {
+    registry.set(manifest.id, manifest);
+  }
+}
+
+/**
+ * Registers one manifest through the same atomic path used for batches.
+ * Duplicate IDs remain a rejection rather than overwrite semantics.
  */
 export function registerLayout(manifest: LayoutManifest): void {
-  validateLayoutManifest(manifest);
-  if (registry.has(manifest.id)) {
-    throw new LayoutValidationError(`Layout id "${manifest.id}" is already registered.`);
-  }
-  registry.set(manifest.id, manifest);
+  registerLayouts([manifest]);
 }
 export function getLayout(id: string): LayoutManifest | undefined {
   return registry.get(id);
 }
 export function listLayoutIds(): readonly string[] {
   return Array.from(registry.keys());
-}
-
-/** Resolves `manifest.fallbackLayoutId` and re-applies `criterion` to the
- *  fallback itself — a fallback that also fails the criterion (or points
- *  back at `manifest`) is not returned; the caller gets `undefined`, a typed
- *  "unresolvable" signal, not a layout that silently fails what it was
- *  fetched to satisfy (review cycle 1, F1: a self-referential or two-hop
- *  fallback, or a fixed-native fallback that itself fails minScale, used to
- *  come back unvalidated). v1 takes exactly one hop — it does not chase a
- *  chain — but that one hop must still pass. */
-function resolveFallback(
-  manifest: LayoutManifest,
-  criterion: (candidate: LayoutManifest) => boolean,
-): LayoutManifest | undefined {
-  if (!manifest.fallbackLayoutId || manifest.fallbackLayoutId === manifest.id) return undefined;
-  const fallback = getLayout(manifest.fallbackLayoutId);
-  return fallback && criterion(fallback) ? fallback : undefined;
-}
-
-export function supportsTopology(manifest: LayoutManifest, topology: TopologyClass): boolean {
-  return manifest.compatibleTopologies.includes(topology);
 }
 
 /**
@@ -297,36 +305,4 @@ export function declaredSurfaces(
     for (const surface of zone.surfaces) declared.add(surface);
   }
   return declared;
-}
-
-/** Resolves `id` against `topology`, falling back to `fallbackLayoutId` only
- *  when the fallback itself also supports `topology`. */
-export function resolveLayoutForTopology(id: string, topology: TopologyClass): LayoutManifest | undefined {
-  const manifest = getLayout(id);
-  if (!manifest) return undefined;
-  if (supportsTopology(manifest, topology)) return manifest;
-  return resolveFallback(manifest, (candidate) => supportsTopology(candidate, topology));
-}
-
-export interface Viewport { readonly width: number; readonly height: number }
-
-/** `fluid` always fits — breakpoints are reflow hints, not a hard gate in
- *  v1. `fixed-native` compares the achievable uniform scale against
- *  `minScale` (MOR-1160) instead of matching a breakpoint: a portrait
- *  mobile viewport fails this arithmetically (small height vs. a wide
- *  native design), with no separate mobile-detection branch. */
-export function fitsViewport(manifest: LayoutManifest, viewport: Viewport): boolean {
-  if (manifest.stageSizing.mode === 'fluid') return true;
-  const { nativeW, nativeH, minScale } = manifest.stageSizing;
-  return Math.min(viewport.width / nativeW, viewport.height / nativeH) >= minScale;
-}
-
-/** Same fallback path as `resolveLayoutForTopology` — falling below
- *  `minScale` triggers the normal fallback resolution (re-checked against
- *  the same viewport), not a special case and not an unvalidated return. */
-export function resolveLayoutForViewport(id: string, viewport: Viewport): LayoutManifest | undefined {
-  const manifest = getLayout(id);
-  if (!manifest) return undefined;
-  if (fitsViewport(manifest, viewport)) return manifest;
-  return resolveFallback(manifest, (candidate) => fitsViewport(candidate, viewport));
 }

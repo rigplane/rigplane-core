@@ -24,20 +24,32 @@ covered by tests. Pro and other supervisors should depend on the stable routes
 below, not on browser static assets, private handler classes, or routes marked
 diagnostic/experimental.
 
-## Auth Model
+## Application authentication removal
 
-If web server is started with `--auth-token`, `--auth-token-file`, or
-`RIGPLANE_AUTH_TOKEN` in managed mode, all `/api/*` HTTP routes require:
+Core HTTP and WebSocket clients that can reach the listener need no application
+credential. Bearer headers and query tokens no longer authenticate requests.
+This changes the previous token-protected route semantics without changing the
+`/api/v1` route names. See `src/rigplane/web/web_routing.py: dispatch_http_request`
+and `src/rigplane/web/server.py: WebServer._handle_websocket`.
 
-```
-Authorization: Bearer <token>
-```
+Remove `--auth-token` and `--auth-token-file` from `web` and `station` launch
+arguments: they now fail during argument parsing, before radio startup, without
+reading a token file. `RIGPLANE_AUTH_TOKEN` is ignored. Programmatic callers must
+omit `WebConfig.auth_token` or leave it empty; a nonempty value raises
+`ValueError`. See `src/rigplane/cli/__init__.py: _reject_retired_auth_option`,
+`_cmd_web`, and `src/rigplane/web/server.py: WebConfig.__post_init__`.
 
-WebSocket routes additionally allow query token:
+Radio login credentials, bind selection and TLS options retain their existing
+roles. Diagnostic send/save/delete requests still use preview-bound
+`X-Diagnostic-CSRF`; diagnostic submission still requires consent. Diagnostic
+Origin checks apply to those diagnostic handlers, not globally to ordinary
+commands or WebSocket upgrades. See `src/rigplane/web/server.py:
+WebServer._handle_diagnose_send` and `src/rigplane/web/handlers/diagnostics.py:
+check_origin_or_loopback`.
 
-```
-ws://host:8080/api/v1/ws?token=<token>
-```
+The `authRequired` runtime and station fields remain Boolean and are now `false`
+(`src/rigplane/web/server.py: WebServer._serve_runtime`,
+`WebServer._station_readiness_payload`).
 
 ## HTTP Endpoints
 
@@ -102,9 +114,6 @@ Stable supervisor routes:
 | `/api/v1/audio` | Audio control and media frames | when radio/audio backend supports audio |
 | `/api/v1/audio-scope` | Audio FFT spectrum stream | when audio FFT is available |
 
-WebSocket auth accepts the same bearer header as HTTP. Query token auth is also
-accepted for browser/WebSocket clients that cannot set headers.
-
 ### Optional WebRTC DataChannels
 
 WebRTC is optional and requires the `rigplane[webrtc]` extra (`aiortc`). There
@@ -163,8 +172,7 @@ routes are not the Pro supervisor contract unless they are promoted into
 
 ## `GET /healthz`
 
-Process liveness probe for local supervisors. This endpoint is intentionally
-outside `/api/*`, so it does not require bearer auth.
+Process liveness probe for local supervisors.
 
 ```json
 {
@@ -189,8 +197,6 @@ and HTTP `503` while the process is alive but the station is not ready.
 ## `GET /api/v1/runtime`
 
 Machine-readable runtime status for managed local supervisors and diagnostics.
-When auth is configured, this endpoint requires the same bearer token as other
-`/api/*` routes.
 
 ```json
 {
@@ -199,7 +205,7 @@ When auth is configured, this endpoint requires the same bearer token as other
   "version": "2.0.3",
   "bind": { "host": "127.0.0.1", "port": 8080 },
   "logPath": "/Users/me/Library/Logs/rigplane.log",
-  "authRequired": true,
+  "authRequired": false,
   "backend": "rigplane",
   "radio": {
     "model": "IC-7610",
@@ -211,7 +217,7 @@ When auth is configured, this endpoint requires the same bearer token as other
     "readiness": "ready_with_radio",
     "radioAvailable": true,
     "backend": "rigplane",
-    "authRequired": true,
+    "authRequired": false,
     "message": "Station server is ready with an attached radio."
   },
   "rigctld": {
@@ -323,7 +329,6 @@ import json
 import urllib.request
 
 base_url = "http://127.0.0.1:8080"
-token = None  # or "your-token"
 
 payload = {
     "id": "display-type-b",
@@ -340,8 +345,6 @@ request = urllib.request.Request(
     headers={"Content-Type": "application/json"},
     method="POST",
 )
-if token:
-    request.add_header("Authorization", f"Bearer {token}")
 
 with urllib.request.urlopen(request, timeout=5) as response:
     result = json.load(response)
@@ -718,7 +721,7 @@ curl http://127.0.0.1:8080/api/v1/capabilities
 
 Prefer structured commands whenever a command exists. Use `send_civ` for
 vendor-specific CI-V that is not yet abstracted, such as display/menu settings.
-It still lets RigPlane own the radio connection, queueing, pacing, auth policy,
+It still lets RigPlane own the radio connection, queueing, pacing,
 and safety checks; it just does not return response bytes.
 
 Python example:
@@ -728,7 +731,6 @@ import json
 import urllib.request
 
 base_url = "http://127.0.0.1:8080"
-token = None  # or "your-token"
 
 batch = {
     "id": "vara-fm",
@@ -749,8 +751,6 @@ request = urllib.request.Request(
     headers={"Content-Type": "application/json"},
     method="POST",
 )
-if token:
-    request.add_header("Authorization", f"Bearer {token}")
 
 with urllib.request.urlopen(request, timeout=30) as response:
     result = json.load(response)
@@ -822,9 +822,7 @@ client.loop_forever()
 
 ## `GET /api/v1/station`
 
-Friendly station-server status for desktop supervisors and setup tools. When
-auth is configured, this endpoint requires the same bearer token as other
-`/api/*` routes.
+Friendly station-server status for desktop supervisors and setup tools.
 
 ```json
 {
@@ -843,7 +841,7 @@ auth is configured, this endpoint requires the same bearer token as other
     "readiness": "ready_with_radio",
     "radioAvailable": true,
     "backend": "rigplane",
-    "authRequired": true,
+    "authRequired": false,
     "message": "Station server is ready with an attached radio."
   },
   "radio": {
@@ -862,6 +860,10 @@ Current readiness values are:
 - `no_usb_radio_connected`
 - `lan_radio_unsupported_or_not_found`
 - `requires_configuration_or_auth`
+
+`requires_configuration_or_auth` retains its compatibility spelling and refers
+to radio target configuration, not an application credential prompt
+(`src/rigplane/web/server.py: WebServer._station_readiness_payload`).
 
 UDP discovery responses use the same `rigplane.station.discovery.v1` schema.
 Single-station responses keep the same top-level `kind: "station_server"`,

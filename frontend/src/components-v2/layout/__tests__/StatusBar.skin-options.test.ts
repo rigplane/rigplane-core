@@ -28,4 +28,36 @@ describe('StatusBar skinOptions (MOR-1257 F1)', () => {
     const source = readFileSync('src/components-v2/layout/StatusBar.svelte', 'utf8');
     expect(source).toMatch(/const skinOptions:\s*Array<\{\s*value:\s*CanonicalLayoutMode;/);
   });
+
+  // MOR-2152 — `skinOptions` is a plain array with no compile-time guard tying
+  // its membership to `CANONICAL_LAYOUT_MODES`: unlike the `contract.ts`
+  // sync pins (which fail `npm run check` on a missing key), an omitted skin
+  // here compiles cleanly and just leaves the id unreachable through the
+  // picker. This is that missing guard for `peer-split`.
+  it('lists peer-split with an LCD Peer Split label', () => {
+    const source = readFileSync('src/components-v2/layout/StatusBar.svelte', 'utf8');
+    const match = source.match(/const skinOptions[^=]*=\s*\[([\s\S]*?)\n\s*\];/);
+    expect(match, 'expected to find the skinOptions array literal').not.toBeNull();
+    expect(match![1]).toMatch(/\{\s*value:\s*'peer-split',\s*label:\s*'LCD Peer Split'\s*\}/);
+  });
+
+  it.each([
+    ['unified-instrument', 'LCD Unified Instrument'],
+    ['panadapter-first', 'LCD Panadapter'],
+  ])('lists production segmentline layout %s', (value, label) => {
+    const source = readFileSync('src/components-v2/layout/StatusBar.svelte', 'utf8');
+    expect(source).toContain(`{ value: '${value}', label: '${label}' }`);
+  });
+
+  it('pins closed selector geometry independently of its longest option', () => {
+    const source = readFileSync('src/components-v2/layout/StatusBar.svelte', 'utf8');
+    expect(source).toMatch(/\.skin-select\s*\{[^}]*box-sizing:\s*border-box;[^}]*inline-size:\s*128px;/s);
+  });
+
+  it('lists the production dual SDR face', () => {
+    const source = readFileSync('src/components-v2/layout/StatusBar.svelte', 'utf8');
+    const match = source.match(/const skinOptions[^=]*=\s*\[([\s\S]*?)\n\s*\];/);
+    expect(match, 'expected to find the skinOptions array literal').not.toBeNull();
+    expect(match![1]).toMatch(/\{\s*value:\s*'dual-sdr-face',\s*label:\s*'Dual SDR Face'\s*\}/);
+  });
 });

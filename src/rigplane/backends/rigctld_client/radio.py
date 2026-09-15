@@ -11,18 +11,33 @@ from typing import TYPE_CHECKING, Any, Sequence
 
 from ...exceptions import CommandError
 from ...exceptions import TimeoutError as RadioTimeoutError
+from ...core.command_dispatch import ManagedWriteAdmission, execute_command_intent
 from ...core.radio_protocol import (
     PhysicalWriteReadbackResult,
     PhysicalWriteReadbackStatus,
 )
 from ...core.state_pipeline_contracts import (
+    CommandIntent,
     CommandSource,
     FieldPath,
     Observation,
     SourceMetadata,
 )
-from ...core.tx_authority import TxStateReading
+from ...core.tx_observation import TxStateReading
 from ...radio_state import RadioState
+from ...runtime._poller_types import (
+    canonicalize_level_command,
+    execute_command_queue_entry,
+    execute_positive_tx_queue_entry,
+    validate_command_queue_entry_currency,
+)
+from ...runtime.callable_support import supports_explicit_callable
+from ...runtime.managed_tx_state import (
+    AbortOperation,
+    ActuationOperation,
+    ActuationResult,
+    EffectToken,
+)
 from .transport import RigctldTransport
 
 if TYPE_CHECKING:
@@ -39,8 +54,6 @@ _SUPPORTED_COMMANDS = {
     "set_mode",
     "get_ptt",
     "set_ptt",
-    "get_vfo_slot",
-    "set_vfo_slot",
     "get_rf_gain",
     "set_rf_gain",
     "get_af_level",
@@ -79,8 +92,8 @@ class RigctldClientObservationPoller:
         radio: "RigctldClientRadio",
         callback: Callable[[Sequence["Observation"]], None],
         *,
-        medium_interval: float = 2.0,
-        slow_interval: float = 30.0,
+        medium_interval: float,
+        slow_interval: float,
         command_queue: "CommandQueue | None" = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -93,6 +106,27 @@ class RigctldClientObservationPoller:
         self._pending_readback_entries: list[_ReadbackCorrelation] = []
         self._capture_provider_generation: Callable[[], int] | None = None
         self._clock = clock
+        self._managed_tx_authority: ManagedWriteAdmission | None = None
+        self._connection_generation_capture = self._current_connection_generation
+        self._connection_generation_bound = False
+        self._bind_connection_generation()
+
+    def bind_managed_tx_authority(self, authority: ManagedWriteAdmission) -> None:
+        if self._managed_tx_authority is not None:
+            raise RuntimeError("managed transmit authority is already bound")
+        self._managed_tx_authority = authority
+
+    def _current_connection_generation(self) -> object | None:
+        transport = self._radio._transport
+        return transport._writer if transport.connected else None
+
+    def _bind_connection_generation(self) -> None:
+        if self._command_queue is None or self._connection_generation_bound:
+            return
+        self._command_queue.bind_connection_generation(
+            self._connection_generation_capture
+        )
+        self._connection_generation_bound = True
 
     def bind_provider_generation(
         self,
@@ -128,6 +162,7 @@ class RigctldClientObservationPoller:
     async def start(self) -> None:
         if self._tasks:
             return
+        self._bind_connection_generation()
         loop = asyncio.get_running_loop()
         self._tasks = [
             loop.create_task(self._run_loop(self._poll_medium, self._medium_interval)),
@@ -140,6 +175,11 @@ class RigctldClientObservationPoller:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        if self._command_queue is not None and self._connection_generation_bound:
+            self._command_queue.unbind_connection_generation(
+                self._connection_generation_capture
+            )
+            self._connection_generation_bound = False
         self._finish_readbacks(self._pending_readback_entries, "cancelled")
 
     async def _run_loop(
@@ -166,7 +206,29 @@ class RigctldClientObservationPoller:
         observations: list["Observation"] = list(
             await adapter.read_freq_mode_controls()
         )
-        observations.append(await adapter.read_ptt())
+        try:
+            ptt = await adapter.read_ptt()
+        except Exception:
+            if self._provider_generation_is_current(provider_generation):
+                unknown = adapter.observed_ptt_observation(None)
+                try:
+                    self._callback(
+                        self._stamp_provider_generation((unknown,), provider_generation)
+                    )
+                except Exception:
+                    logger.warning(
+                        "rigctld-client PTT error observation publication failed",
+                        exc_info=True,
+                    )
+            raise
+        if self._provider_generation_is_current(provider_generation):
+            observed_ptt = adapter.observed_ptt_observation(
+                ptt.value, timestamp_monotonic=ptt.timestamp_monotonic
+            )
+            self._callback(
+                self._stamp_provider_generation((observed_ptt,), provider_generation)
+            )
+        observations.append(ptt)
         active_vfo = await adapter.read_active_vfo()
         if active_vfo is not None:
             observations.append(active_vfo)
@@ -204,14 +266,27 @@ class RigctldClientObservationPoller:
             return ()
 
         successful: list["CommandQueueEntry"] = []
-        for entry in self._command_queue.drain_entries():
+
+        def validate_currency(entry: "CommandQueueEntry") -> None:
+            assert self._command_queue is not None
+            capture = self._capture_provider_generation
+            validate_command_queue_entry_currency(
+                entry,
+                now=self._clock(),
+                provider_generation=None if capture is None else capture(),
+                connection_generation=self._current_connection_generation(),
+                session_is_live=self._command_queue.session_is_live,
+                require_connection_generation=(
+                    self._managed_tx_authority is not None
+                    and (
+                        entry.positive_tx_submission is not None
+                        or isinstance(entry.command, CommandIntent)
+                    )
+                ),
+            )
+
+        async def execute_entry(entry: "CommandQueueEntry") -> None:
             cmd = entry.command
-            if entry.future is not None and entry.future.cancelled():
-                logger.debug(
-                    "rigctld-client observation poller: skipping cancelled command %s",
-                    type(cmd).__name__,
-                )
-                continue
             capture = self._capture_provider_generation
             correlation = _readback_correlation_for_entry(
                 entry,
@@ -219,17 +294,35 @@ class RigctldClientObservationPoller:
                 provider_generation=None if capture is None else capture(),
             )
             try:
-                await self._execute_command(cmd)
-                successful.append(entry)
-                self._track_readback_entry(cmd, correlation)
-                if entry.future is not None and not entry.future.done():
-                    entry.future.set_result(None)
+                validate_currency(entry)
+                if entry.positive_tx_submission is not None:
+                    await execute_positive_tx_queue_entry(entry)
+                    return
+                await self._execute_command(
+                    cmd, validate_currency=lambda: validate_currency(entry)
+                )
             except Exception as exc:
                 if correlation is not None:
                     self._finish_readbacks((correlation,), "rejected")
                 self._mark_queued_command_failed(entry, exc)
-                if entry.future is not None and not entry.future.done():
-                    entry.future.set_exception(exc)
+                raise
+            successful.append(entry)
+            self._track_readback_entry(cmd, correlation)
+
+        for _ in range(self._command_queue.pending_count):
+            entry = self._command_queue.take_entry()
+            if entry is None:
+                break
+            cmd = entry.command
+            if entry.future is not None and entry.future.cancelled():
+                logger.debug(
+                    "rigctld-client observation poller: skipping cancelled command %s",
+                    type(cmd).__name__,
+                )
+                continue
+            try:
+                await execute_command_queue_entry(entry, execute_entry)
+            except Exception:
                 logger.warning(
                     "rigctld-client observation poller: command %s failed",
                     type(cmd).__name__,
@@ -318,19 +411,28 @@ class RigctldClientObservationPoller:
                 self._finish_readbacks((entry,), "mismatched", mismatch)
         return tuple(annotated)
 
-    async def _execute_command(self, cmd: Any) -> None:
+    async def _execute_command(
+        self, cmd: Any, *, validate_currency: Callable[[], None] | None = None
+    ) -> None:
+        cmd = canonicalize_level_command(cmd, self._radio)
+        if isinstance(cmd, CommandIntent):
+            await execute_command_intent(
+                self._radio,
+                cmd,
+                managed_tx_authority=self._managed_tx_authority,
+                validate_currency=validate_currency,
+            )
+            return
         from ..._poller_types import (
             PttOff,
             PttOn,
             SelectVfo,
-            SetAfLevel,
             SetAttenuator,
             SetFreq,
             SetMode,
             SetNB,
             SetNR,
             SetPreamp,
-            SetRfGain,
         )
 
         match cmd:
@@ -343,15 +445,15 @@ class RigctldClientObservationPoller:
                     receiver=rx,
                 )
             case PttOn():
+                if self._managed_tx_authority is not None:
+                    raise CommandError(
+                        "managed PTT ON requires a positive TX queue submission"
+                    )
                 await self._radio.set_ptt(True)
             case PttOff():
                 await self._radio.set_ptt(False)
             case SelectVfo(vfo=vfo):
                 await self._radio.set_vfo_slot(vfo)
-            case SetRfGain(level=level, receiver=rx):
-                await self._radio.set_rf_gain(level, receiver=rx)
-            case SetAfLevel(level=level, receiver=rx):
-                await self._radio.set_af_level(level, receiver=rx)
             case SetPreamp(level=level, receiver=rx):
                 await self._radio.set_preamp(level, receiver=rx)
             case SetAttenuator(db=db, receiver=rx):
@@ -532,6 +634,10 @@ def _readback_paths_match(readback_path: FieldPath, overlay_path: FieldPath) -> 
 
 
 def _physical_command_targets_path(command: Any, path: FieldPath) -> bool:
+    if isinstance(command, CommandIntent):
+        return command.target is not None and _readback_paths_match(
+            command.target, path
+        )
     command_name = type(command).__name__.lower()
     target_name = path.name.replace("_", "")
     return target_name in command_name or (target_name, command_name) in (
@@ -649,10 +755,28 @@ class RigctldClientRadio:
             caps.add("vfo")
         return caps
 
-    def supports_command(self, command: str) -> bool:
-        if command in {"get_vfo_slot", "set_vfo_slot"}:
-            return self._vfo_supported
-        return command in _SUPPORTED_COMMANDS
+    def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
+        if receiver is not None and (
+            command
+            not in {
+                "set_af_level",
+                "set_rf_gain",
+                "set_squelch",
+                "set_attenuator_level",
+            }
+            or isinstance(receiver, bool)
+            or not isinstance(receiver, int)
+            or receiver != 0
+        ):
+            return False
+        supported = set(_SUPPORTED_COMMANDS)
+        if self._vfo_supported:
+            supported.update({"get_vfo_slot", "set_vfo_slot"})
+        return supports_explicit_callable(
+            command,
+            supported,
+            lambda name: callable(getattr(self, name, None)),
+        )
 
     def create_observation_poller(
         self,
@@ -661,10 +785,22 @@ class RigctldClientRadio:
         command_queue: "CommandQueue | None" = None,
     ) -> RigctldClientObservationPoller:
         """Construct a backend-neutral observation poller for Web startup."""
+        from .observations import (
+            build_external_rigctld_acquisition_profile,
+            resolve_external_rigctld_poll_intervals,
+        )
+
+        medium_interval, slow_interval = resolve_external_rigctld_poll_intervals(
+            build_external_rigctld_acquisition_profile(
+                vfo_supported=self._vfo_supported
+            )
+        )
         return RigctldClientObservationPoller(
             self,
             callback=callback,
             command_queue=command_queue,
+            medium_interval=medium_interval,
+            slow_interval=slow_interval,
         )
 
     async def get_freq(self, receiver: int = 0) -> int:
@@ -745,21 +881,41 @@ class RigctldClientRadio:
         return ptt
 
     async def set_ptt(self, on: bool) -> None:
-        await self._transport.command(f"T {1 if on else 0}")
+        await self._set_ptt(on)
+
+    async def _set_ptt(
+        self,
+        on: bool,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        urgent: bool = False,
+    ) -> None:
+        await self._transport.command(
+            f"T {1 if on else 0}", is_current=is_current, urgent=urgent
+        )
+
+    async def actuate(
+        self,
+        token: EffectToken,
+        operation: ActuationOperation | AbortOperation,
+        *,
+        is_current: Callable[[], bool],
+    ) -> ActuationResult:
+        if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
+            on = True
+        elif operation is ActuationOperation.FORCE_RECEIVE:
+            on = False
+        else:
+            return ActuationResult.REJECTED
+        await self._set_ptt(on, is_current=is_current, urgent=not on)
+        return ActuationResult.ACCEPTED
 
     async def read_transmit_state(self) -> TxStateReading:
-        """One solicited transmit-state read (ADR row 5).
+        """One solicited transmit-state observation.
 
-        Implements :class:`~rigplane.core.radio_protocol.TransmitStateReadable`
-        by adapting the existing :meth:`get_ptt`, but ``verified_readback``
-        is permanently ``False`` (§3.7): the ``t`` command answers from
-        upstream Hamlib's own cache, or from an external rigplane's retained
-        fallback state -- never from a fresh radio read. Claiming otherwise
-        would be exactly the fabricated-freshness class this design exists
-        to forbid, so this backend's hazard families are fail-closed by
-        provenance as a stated consequence, not a defect to fix later.
-        Never raises: a failed or malformed read comes back as a
-        :class:`TxStateReading` with a ``failure`` tag.
+        It adapts :meth:`get_ptt`; ``verified_readback`` remains ``False``
+        because the rigctld ``t`` reply carries no proof that the value came
+        from a fresh physical-radio read. Errors return a ``failure`` tag.
         """
         try:
             value = await self.get_ptt()
@@ -834,6 +990,9 @@ class RigctldClientRadio:
         self._require_main_receiver(receiver, "get_attenuator_level")
         line = (await self._transport.query("l ATT", response_lines=1))[0]
         return _parse_int_level(line, "attenuator")
+
+    def project_attenuator_observation_value(self, db: int) -> int:
+        return db
 
     async def set_attenuator_level(self, db: int, receiver: int = 0) -> None:
         self._require_main_receiver(receiver, "set_attenuator_level")

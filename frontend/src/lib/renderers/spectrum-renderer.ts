@@ -4,12 +4,81 @@
 
 import { getPassbandGeometry } from '../../components/spectrum/passband-geometry';
 
+/**
+ * The colour vocabulary a host may restyle. `renderSpectrum` paints every
+ * role on the canvas; `tuneLine`, `passbandFill` and `passbandEdge` are also
+ * painted by SpectrumPanel's DOM overlay over the waterfall, which reads them
+ * from the same resolved record through CSS custom properties.
+ */
+export interface SpectrumColorRoles {
+  trace: string;
+  /** Vertical gradient under the trace: `top` at y=0, `bottom` at y=height. */
+  traceFill: { top: string; bottom: string };
+  grid: string;
+  axisText: string;
+  tuneLine: string;
+  passbandFill: string;
+  passbandEdge: string;
+}
+
+export const defaultSpectrumColorRoles: SpectrumColorRoles = {
+  trace: 'rgba(210,220,230,0.85)',
+  traceFill: { top: 'rgba(30,58,138,0.30)', bottom: 'rgba(30,58,138,0.02)' },
+  grid: 'rgba(255,255,255,0.15)',
+  axisText: 'rgba(180,200,220,0.6)',
+  tuneLine: 'rgba(239,68,68,0.75)',
+  passbandFill: 'rgba(59,130,246,0.15)',
+  passbandEdge: 'rgba(59,130,246,0.4)',
+};
+
+/**
+ * Fills in every role a host left out. An override whose value is `undefined`
+ * — including one under `traceFill` — resolves to the default, pinned by
+ * `resolves an undefined-valued override to the default, nested fill included`.
+ */
+export function resolveSpectrumColorRoles(
+  overrides?: Partial<SpectrumColorRoles>,
+): SpectrumColorRoles {
+  const fallback = defaultSpectrumColorRoles;
+  const fill = overrides?.traceFill as Partial<SpectrumColorRoles['traceFill']> | undefined;
+  return {
+    trace: overrides?.trace ?? fallback.trace,
+    traceFill: {
+      top: fill?.top ?? fallback.traceFill.top,
+      bottom: fill?.bottom ?? fallback.traceFill.bottom,
+    },
+    grid: overrides?.grid ?? fallback.grid,
+    axisText: overrides?.axisText ?? fallback.axisText,
+    tuneLine: overrides?.tuneLine ?? fallback.tuneLine,
+    passbandFill: overrides?.passbandFill ?? fallback.passbandFill,
+    passbandEdge: overrides?.passbandEdge ?? fallback.passbandEdge,
+  };
+}
+
+export function spectrumColorRolesToOptions(roles: SpectrumColorRoles) {
+  return {
+    lineColor: roles.trace,
+    fillColor: roles.traceFill.top,
+    fillColorBottom: roles.traceFill.bottom,
+    gridColor: roles.grid,
+    textColor: roles.axisText,
+    tuneLineColor: roles.tuneLine,
+    passbandFillColor: roles.passbandFill,
+    passbandEdgeColor: roles.passbandEdge,
+  };
+}
+
 export interface SpectrumOptions {
+  showRfOverlays?: boolean;
   bgColor: string;
   lineColor: string;
   fillColor: string;
+  fillColorBottom: string;
   gridColor: string;
   textColor: string;
+  tuneLineColor: string;
+  passbandFillColor: string;
+  passbandEdgeColor: string;
   refLevel: number;   // dB reference (reserved for future dB axis labels)
   spanHz: number;     // frequency span in Hz
   centerHz: number;   // center frequency in Hz
@@ -20,14 +89,16 @@ export interface SpectrumOptions {
   passbandShiftHz: number; // IF/PBT-derived passband offset from carrier
   mode: string;       // current mode (USB/LSB/CW/AM/FM) — affects passband placement
   scopeMode: number;  // 0=CTR, 1=FIX, 2=SCROLL-C, 3=SCROLL-F
+  // MOR-2464: viewport center minus sample-window center, Hz. Positive
+  // shifts the sampled content left; positions outside stay blank.
+  panoramaShiftHz: number;
+  // SOURCE sample-window identity; a change resets sample-space state.
+  geometryKey: string;
 }
 
 export const defaultSpectrumOptions: SpectrumOptions = {
   bgColor: 'transparent',
-  lineColor: 'rgba(210,220,230,0.85)',
-  fillColor: 'rgba(30,58,138,0.30)',
-  gridColor: 'rgba(255,255,255,0.15)',
-  textColor: 'rgba(180,200,220,0.6)',
+  ...spectrumColorRolesToOptions(defaultSpectrumColorRoles),
   refLevel: 0,
   spanHz: 0,
   centerHz: 0,
@@ -37,13 +108,61 @@ export const defaultSpectrumOptions: SpectrumOptions = {
   passbandShiftHz: 0,
   mode: '',
   scopeMode: 0,
+  panoramaShiftHz: 0,
+  geometryKey: '',
 };
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
-type GradCache = { grad: CanvasGradient; height: number; fillColor: string };
+const SPECTRUM_AMPLITUDE_MAX = 80;
+
+function panoramaShiftPixels(options: SpectrumOptions, width: number): number {
+  const { spanHz, panoramaShiftHz } = options;
+  if (!(spanHz > 0) || !Number.isFinite(panoramaShiftHz)) return 0;
+  return (panoramaShiftHz / spanHz) * width;
+}
+
+// Map data to canvas y-coordinates for the shifted viewport (MOR-2464):
+// the resting profile keeps the established nearest-bin mapping per screen
+// column; a fractional shift interpolates that translated profile between
+// neighbouring columns, so the resting shape never morphs. Columns whose
+// translated position leaves [0, width-1] stay uncovered in `covered`.
+function mapShiftedPoints(
+  data: Uint8Array,
+  width: number,
+  height: number,
+  shiftPx: number,
+  refLevel: number,
+  yPoints: Float32Array,
+  covered: Uint8Array,
+): void {
+  const n = data.length;
+  const profile = (column: number): number =>
+    data[Math.min(n - 1, Math.floor((column / width) * n))];
+  for (let x = 0; x < width; x++) {
+    const p = x + shiftPx;
+    if (p < 0 || p > width - 1) continue;
+    const i0 = Math.floor(p);
+    const frac = p - i0;
+    const sample = frac === 0
+      ? profile(i0)
+      : profile(i0) * (1 - frac) + profile(i0 + 1) * frac;
+    yPoints[x] = height * (1 - spectrumDisplayAmplitude(sample, refLevel));
+    covered[x] = 1;
+  }
+}
+
+export function spectrumDisplayAmplitude(sample: number, refLevel: number): number {
+  const refAdjust = (refLevel / 60) * 40;
+  const adjusted = clamp(sample + refAdjust, 0, SPECTRUM_AMPLITUDE_MAX);
+  return Math.sqrt(adjusted / SPECTRUM_AMPLITUDE_MAX);
+}
+
+type GradCache = {
+  grad: CanvasGradient; height: number; fillColor: string; fillColorBottom: string;
+};
 
 /**
  * Render a spectrum line chart onto an existing 2D canvas context.
@@ -69,7 +188,7 @@ export function renderSpectrum(
   const n = data.length;
   if (!n || width <= 0 || height <= 0) return;
 
-  const { bgColor, lineColor, fillColor, gridColor, textColor, spanHz, centerHz, lineWidth, tuneHz, passbandHz, passbandShiftHz } =
+  const { bgColor, lineColor, fillColor, fillColorBottom, gridColor, textColor, spanHz, centerHz, lineWidth, tuneHz, passbandHz, passbandShiftHz } =
     options;
 
   ctx.clearRect(0, 0, width, height);
@@ -100,7 +219,7 @@ export function renderSpectrum(
   }
 
   // Frequency labels
-  if (spanHz > 0 && centerHz > 0) {
+  if (options.showRfOverlays !== false && spanHz > 0 && centerHz > 0) {
     const startHz = centerHz - spanHz / 2;
     ctx.fillStyle = textColor;
     ctx.font = '9px monospace';
@@ -116,46 +235,52 @@ export function renderSpectrum(
   // Gain boost: map 0-80 → full height with sqrt curve for better contrast
   // at low signal levels (IC-7610 scope data typically peaks at ~55)
   // Ref level: -30..+30 dB → ±40 on 0-80 scale (same mapping as waterfall)
-  const refAdjust = (options.refLevel / 60) * 40;
+  const shiftPx = panoramaShiftPixels(options, width);
   const yPoints = new Float32Array(width);
-  for (let x = 0; x < width; x++) {
-    const idx = Math.min(n - 1, Math.floor((x / width) * n));
-    const adjusted = Math.min(80, Math.max(0, data[idx] + refAdjust));
-    const amp = Math.min(1.0, adjusted / 80);
-    const boosted = Math.sqrt(amp);
-    yPoints[x] = height * (1 - boosted);
-  }
+  const covered = new Uint8Array(width);
+  mapShiftedPoints(data, width, height, shiftPx, options.refLevel, yPoints, covered);
 
-  // Filled area under spectrum (gradient cached per-instance; recreated only when height or fillColor changes)
+  // Filled area under spectrum (gradient cached per-instance; recreated only when height or either stop changes)
   const cache = gradCache ?? { current: null };
-  if (!cache.current || cache.current.height !== height || cache.current.fillColor !== fillColor) {
+  if (!cache.current || cache.current.height !== height
+    || cache.current.fillColor !== fillColor || cache.current.fillColorBottom !== fillColorBottom) {
     const grad = ctx.createLinearGradient(0, 0, 0, height);
     grad.addColorStop(0, fillColor);
-    grad.addColorStop(1, 'rgba(30,58,138,0.02)');
-    cache.current = { grad, height, fillColor };
+    grad.addColorStop(1, fillColorBottom);
+    cache.current = { grad, height, fillColor, fillColorBottom };
   }
   ctx.fillStyle = cache.current.grad;
-  ctx.beginPath();
-  ctx.moveTo(0, height);
-  for (let x = 0; x < width; x++) {
-    ctx.lineTo(x, yPoints[x]);
+  for (let runStart = 0; runStart < width;) {
+    if (!covered[runStart]) { runStart++; continue; }
+    let runEnd = runStart;
+    while (runEnd + 1 < width && covered[runEnd + 1]) runEnd++;
+    ctx.beginPath();
+    ctx.moveTo(runStart, height);
+    for (let x = runStart; x <= runEnd; x++) {
+      ctx.lineTo(x, yPoints[x]);
+    }
+    // Close at the right edge of the last covered column — a full run
+    // reproduces the pre-MOR-2464 corner at (width, height).
+    ctx.lineTo(runEnd + 1, height);
+    ctx.closePath();
+    ctx.fill();
+    runStart = runEnd + 1;
   }
-  ctx.lineTo(width, height);
-  ctx.closePath();
-  ctx.fill();
 
   // Spectrum line
   ctx.strokeStyle = lineColor;
   ctx.lineWidth = lineWidth;
   ctx.beginPath();
+  let lineOpen = false;
   for (let x = 0; x < width; x++) {
-    if (x === 0) ctx.moveTo(0, yPoints[x]);
-    else ctx.lineTo(x, yPoints[x]);
+    if (!covered[x]) { lineOpen = false; continue; }
+    if (lineOpen) ctx.lineTo(x, yPoints[x]);
+    else { ctx.moveTo(x, yPoints[x]); lineOpen = true; }
   }
   ctx.stroke();
 
   // Tuning indicator + passband overlay
-  if (spanHz > 0) {
+  if (options.showRfOverlays !== false && spanHz > 0) {
     // scopeMode: 0=CTR, 1=FIX, 2=SCROLL-C, 3=SCROLL-F
     const isFixedScope = options.scopeMode === 1 || options.scopeMode === 3;
     const startHz = centerHz - spanHz / 2;
@@ -171,11 +296,11 @@ export function renderSpectrum(
         const pbLeft = geometry.leftPx;
         const pbRight = geometry.rightPx;
 
-        ctx.fillStyle = 'rgba(59,130,246,0.15)';
+        ctx.fillStyle = options.passbandFillColor;
         ctx.fillRect(pbLeft, 0, pbRight - pbLeft, height);
 
         // Passband edges
-        ctx.strokeStyle = 'rgba(59,130,246,0.4)';
+        ctx.strokeStyle = options.passbandEdgeColor;
         ctx.lineWidth = 1;
         ctx.setLineDash([3, 3]);
         ctx.beginPath();
@@ -189,7 +314,7 @@ export function renderSpectrum(
     }
 
     // Center frequency line (carrier)
-    ctx.strokeStyle = 'rgba(239,68,68,0.75)';
+    ctx.strokeStyle = options.tuneLineColor;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(tunePx, 0);
@@ -209,6 +334,7 @@ export class SpectrumRenderer {
   private peakTimestamps: number[] = [];
   private avgEnabled = true;
   private peakHoldEnabled = true;
+  private lastGeometryKey: string | null = null;
   private readonly _gradCache: { current: GradCache | null } = { current: null };
 
   setAvgEnabled(enabled: boolean): void {
@@ -232,6 +358,14 @@ export class SpectrumRenderer {
     options: SpectrumOptions,
   ): void {
     const now = performance.now();
+
+    // A changed SOURCE window invalidates sample-space state (MOR-2464).
+    if (options.geometryKey !== this.lastGeometryKey) {
+      this.lastGeometryKey = options.geometryKey;
+      this.frameHistory = [];
+      this.peakValues = [];
+      this.peakTimestamps = [];
+    }
 
     // --- Moving average ---
     let displayData = data;
@@ -283,31 +417,32 @@ export class SpectrumRenderer {
     options: SpectrumOptions,
   ): void {
     // Draw peak hold as subtle gray fill between current spectrum and peak line
-    const refAdjust = (options.refLevel / 60) * 40;
-    const n = currentData.length;
-    
+    const shiftPx = panoramaShiftPixels(options, width);
+    const yPoints = new Float32Array(width);
+    const covered = new Uint8Array(width);
+    mapShiftedPoints(currentData, width, height, shiftPx, options.refLevel, yPoints, covered);
+
     ctx.fillStyle = 'rgba(200, 200, 200, 0.25)';
     ctx.beginPath();
-    
+
     // Start from left, draw current spectrum line
+    let lineOpen = false;
     for (let x = 0; x < width; x++) {
-      const idx = Math.min(n - 1, Math.floor((x / width) * n));
-      const adjusted = Math.min(80, Math.max(0, currentData[idx] + refAdjust));
-      const amp = Math.min(1.0, adjusted / 80);
-      const y = height * (1 - Math.sqrt(amp));
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+      if (!covered[x]) { lineOpen = false; continue; }
+      if (lineOpen) ctx.lineTo(x, yPoints[x]);
+      else { ctx.moveTo(x, yPoints[x]); lineOpen = true; }
     }
-    
-    // Draw back along peak line (right to left)
+
+    // Draw back along peak line (right to left) under the same viewport
     for (let i = peaks.length - 1; i >= 0; i--) {
-      const x = (i / peaks.length) * width;
-      const peakAdjusted = Math.min(80, Math.max(0, peaks[i] + refAdjust));
-      const amp = Math.min(1.0, peakAdjusted / 80);
-      const y = height * (1 - Math.sqrt(amp));
-      ctx.lineTo(x, y);
+      const x = ((i / peaks.length) * width) - shiftPx;
+      if (x < 0 || x >= width) continue;
+      const amplitude = spectrumDisplayAmplitude(peaks[i], options.refLevel);
+      const y = height * (1 - amplitude);
+      if (lineOpen) ctx.lineTo(x, y);
+      else { ctx.moveTo(x, y); lineOpen = true; }
     }
-    
+
     ctx.closePath();
     ctx.fill();
   }

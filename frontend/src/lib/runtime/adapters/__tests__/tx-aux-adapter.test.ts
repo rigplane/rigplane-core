@@ -132,12 +132,14 @@ describe('txAux per-field derivation (MOR-1244)', () => {
     expect(view.txAux!.atu.reading).toEqual({ status: 'known', value: expected });
   });
 
-  it('degrades a stale field to unknown while keeping structural availability true', () => {
+  // MOR-2425/R29: a stale-but-observed field carries its last value and is
+  // `available`, not degraded to unknown.
+  it('keeps a stale field available with its last value (MOR-2425/R29)', () => {
     const view = model(bareState({
       powerLevel: 0.9, fieldStatus: { ...bareState().fieldStatus, powerLevel: stale },
     }), fullCaps);
     expect(view.txAux!.rfPower).toEqual({
-      reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+      reading: { status: 'known', value: 0.9 }, availability: { structural: true, operational: true },
     });
   });
 

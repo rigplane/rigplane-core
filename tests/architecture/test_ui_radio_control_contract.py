@@ -52,8 +52,50 @@ def _is_test_path(path: str) -> bool:
     )
 
 
-def _control_handler_commands() -> set[str]:
-    source = (ROOT / "src/rigplane/web/handlers/control.py").read_text()
+def _descriptor_command_names() -> set[str]:
+    from rigplane.core.command_dispatch import command_descriptors
+
+    return set(command_descriptors())
+
+
+def _command_inventory_from_ast(node: ast.expr) -> set[str]:
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _command_inventory_from_ast(node.left) | _command_inventory_from_ast(
+            node.right
+        )
+
+    assert isinstance(node, ast.Call), "command inventory must use frozenset(...)"
+    assert isinstance(node.func, ast.Name) and node.func.id == "frozenset", (
+        "command inventory must use frozenset(...)"
+    )
+    assert len(node.args) == 1 and not node.keywords, (
+        "frozenset command inventory requires exactly one positional argument"
+    )
+
+    argument = node.args[0]
+    if isinstance(argument, ast.Call):
+        assert (
+            isinstance(argument.func, ast.Name)
+            and argument.func.id == "command_descriptors"
+            and not argument.args
+            and not argument.keywords
+        ), "dynamic command inventory must come from command_descriptors()"
+        return _descriptor_command_names()
+
+    try:
+        literal = ast.literal_eval(argument)
+    except (ValueError, SyntaxError) as exc:
+        raise AssertionError("command inventory must be a literal iterable") from exc
+    assert isinstance(literal, (list, tuple, set, frozenset)), (
+        "command inventory must be a literal iterable"
+    )
+    assert all(isinstance(command, str) for command in literal), (
+        "command inventory must contain only strings"
+    )
+    return set(literal)
+
+
+def _control_handler_commands_from_source(source: str) -> set[str]:
     module = ast.parse(source)
     for node in module.body:
         if not isinstance(node, ast.ClassDef) or node.name != "ControlHandler":
@@ -66,9 +108,21 @@ def _control_handler_commands() -> set[str]:
                 for target in statement.targets
             ):
                 continue
-            assert isinstance(statement.value, ast.Call)
-            return set(ast.literal_eval(statement.value.args[0]))
+            return _command_inventory_from_ast(statement.value)
     raise AssertionError("ControlHandler._COMMANDS inventory not found")
+
+
+def _control_handler_commands() -> set[str]:
+    source = (ROOT / "src/rigplane/web/handlers/control.py").read_text()
+    return _control_handler_commands_from_source(source)
+
+
+def _assert_control_handler_intents_are_exactly_once(commands: set[str]) -> None:
+    counts = Counter(
+        command for family in _contract()["families"] for command in family["intents"]
+    )
+    assert not [command for command, count in counts.items() if count != 1]
+    assert set(counts) == commands
 
 
 def _model_fields(model: type[Any], prefix: str) -> set[str]:
@@ -298,11 +352,69 @@ def test_contract_header_and_family_rows_are_complete() -> None:
 
 
 def test_every_control_handler_intent_is_registered_exactly_once() -> None:
-    counts = Counter(
-        command for family in _contract()["families"] for command in family["intents"]
+    _assert_control_handler_intents_are_exactly_once(_control_handler_commands())
+
+
+def test_control_handler_inventory_accepts_literal_and_descriptor_union(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    literal_source = "class ControlHandler:\n    _COMMANDS = frozenset(['set_freq'])\n"
+    assert _control_handler_commands_from_source(literal_source) == {"set_freq"}
+
+    monkeypatch.setitem(
+        globals(), "_descriptor_command_names", lambda: {"set_repeater_shift"}
     )
-    assert not [command for command, count in counts.items() if count != 1]
-    assert set(counts) == _control_handler_commands()
+    descriptor_source = (
+        "class ControlHandler:\n"
+        "    _COMMANDS = frozenset(['set_freq']) | "
+        "frozenset(command_descriptors())\n"
+    )
+    assert _control_handler_commands_from_source(descriptor_source) == {
+        "set_freq",
+        "set_repeater_shift",
+    }
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "set(['set_freq'])",
+        "frozenset(load_commands())",
+        "frozenset(command_descriptors('unexpected'))",
+        "frozenset(dynamic_inventory)",
+        "frozenset(['set_freq'], unexpected=True)",
+    ],
+)
+def test_control_handler_inventory_fails_closed_on_unknown_ast(expression: str) -> None:
+    source = f"class ControlHandler:\n    _COMMANDS = {expression}\n"
+    with pytest.raises(AssertionError):
+        _control_handler_commands_from_source(source)
+
+
+def test_descriptor_removal_breaks_exact_inventory_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    declared_commands = _control_handler_commands()
+    descriptor_name = min(declared_commands)
+    literal_commands = declared_commands - {descriptor_name}
+    source = (
+        "class ControlHandler:\n"
+        f"    _COMMANDS = frozenset({sorted(literal_commands)!r}) | "
+        "frozenset(command_descriptors())\n"
+    )
+
+    monkeypatch.setitem(
+        globals(), "_descriptor_command_names", lambda: {descriptor_name}
+    )
+    _assert_control_handler_intents_are_exactly_once(
+        _control_handler_commands_from_source(source)
+    )
+
+    monkeypatch.setitem(globals(), "_descriptor_command_names", set)
+    with pytest.raises(AssertionError):
+        _assert_control_handler_intents_are_exactly_once(
+            _control_handler_commands_from_source(source)
+        )
 
 
 def test_every_manifest_field_path_is_canonical_registered_and_unique() -> None:

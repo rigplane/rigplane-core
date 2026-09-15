@@ -23,13 +23,14 @@ import { findActiveBand } from '$lib/radio/band-plan';
 import type { FreqRange } from '$lib/types/capabilities';
 
 function fieldStatus(
-  availability: 'available' | 'missing' | 'stale',
+  availability: 'available' | 'missing' | 'stale' | 'unavailable' | 'undeclared',
   observed = availability === 'available',
 ) {
   return {
     storePath: 'test.path',
     observed,
-    freshness: availability === 'stale' ? 'stale' : availability === 'missing' ? 'unknown' : 'fresh',
+    freshness:
+      availability === 'stale' ? 'stale' : availability === 'available' ? 'fresh' : 'unknown',
     availability,
   };
 }
@@ -300,6 +301,37 @@ describe('panel prop field availability', () => {
     expect(props.showPre).toBe(false);
   });
 
+  // MOR-2425/T201: `unavailable` (declared, absent in this state) and
+  // `undeclared` (not declared for this radio) are absences too, and the
+  // backend now emits both. `activeFieldShown` gated on `!== 'missing'`
+  // before this change, which showed the control for either.
+  it.each(['unavailable', 'undeclared'] as const)(
+    'hides operator controls the backend has not read (%s)',
+    (availability) => {
+      const props = toRfFrontEndProps(
+        makeState({
+          fieldStatus: {
+            'main.rfGain': fieldStatus(availability, false),
+            'main.att': fieldStatus(availability, false),
+            'main.preamp': fieldStatus(availability, false),
+            'main.squelch': fieldStatus('available'),
+          },
+        }),
+        {
+          capabilities: ['rf_gain', 'squelch', 'attenuator', 'preamp'],
+          attValues: [0, 6, 12],
+          preValues: [0, 1, 2],
+        } as any,
+      );
+
+      expect(props.showRfGain).toBe(false);
+      expect(props.showAtt).toBe(false);
+      expect(props.showPre).toBe(false);
+      // Same call, same shape: the gate is not simply false for everything.
+      expect(props.showSquelch).toBe(true);
+    },
+  );
+
   it('does not present missing AGC as the default MID mode', () => {
     // A11 (MOR-1409): this assertion previously pinned the exact bug its own
     // title disclaims — `agcMode` read back the fabricated MID (2) default
@@ -519,7 +551,12 @@ describe('AmberTelemetry props (MOR-483: drop dead TEMP tile)', () => {
 });
 
 describe('Mode panel MOD-input source (MOR-616)', () => {
-  const caps = { capabilities: ['data_mode'], dataModeCount: 3 } as any;
+  const choices = [
+    { value: 0, label: 'MIC' }, { value: 1, label: 'ACC' },
+    { value: 2, label: 'MIC+ACC' }, { value: 3, label: 'USB' },
+    { value: 4, label: 'MIC+USB' }, { value: 5, label: 'LAN' },
+  ];
+  const caps = { capabilities: ['data_mode'], dataModeCount: 3, dataModeInputs: choices } as any;
 
   function modInputState(overrides: Record<string, unknown> = {}) {
     return makeState({
@@ -541,6 +578,7 @@ describe('Mode panel MOD-input source (MOR-616)', () => {
     const props = toModeProps(modInputState(), caps);
     expect(props.modInputSource).toBe(0);
     expect(props.hasModInput).toBe(true);
+    expect(props.modInputChoices).toEqual(choices);
   });
 
   it('follows the active receiver into its DATA group (D1 on SUB)', () => {
@@ -553,6 +591,18 @@ describe('Mode panel MOD-input source (MOR-616)', () => {
   it('hides the control without the data_mode capability', () => {
     const props = toModeProps(modInputState(), { capabilities: [] } as any);
     expect(props.hasModInput).toBe(false);
+  });
+
+  it('hides the control when the profile does not declare a source domain', () => {
+    const props = toModeProps(modInputState(), { capabilities: ['data_mode'], dataModeCount: 1 } as any);
+    expect(props.hasModInput).toBe(false);
+    expect(props.modInputChoices).toEqual([]);
+  });
+
+  it('hides the control for a DATA group outside the profile count', () => {
+    const state = modInputState();
+    state.main.dataMode = 2;
+    expect(toModeProps(state, { ...caps, dataModeCount: 1 }).hasModInput).toBe(false);
   });
 
   it('hides the control while the active group is unread (missing)', () => {
@@ -575,6 +625,25 @@ describe('Mode panel MOD-input source (MOR-616)', () => {
     expect(props.hasModInput).toBe(true);
     expect(props.modInputSource).toBe(0);
   });
+
+  // MOR-2425/T201: the same two new absences. On each of the seven
+  // `rigs/*.toml` profiles that carry a `[state_acquisition]` block the four
+  // `data*ModInput` paths project `undeclared` over an empty snapshot, so
+  // this gate is what stops a dead dropdown appearing.
+  it.each(['unavailable', 'undeclared'] as const)(
+    'hides the control while the active group is %s',
+    (availability) => {
+      const props = toModeProps(
+        modInputState({
+          dataOffModInput: null,
+          fieldStatus: { dataOffModInput: fieldStatus(availability, false) },
+        }),
+        caps,
+      );
+      expect(props.hasModInput).toBe(false);
+      expect(props.modInputSource).toBeNull();
+    },
+  );
 
   it('defaults to hidden/null when state is missing', () => {
     const props = toModeProps(null, caps);
@@ -675,6 +744,24 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
       const props = toFilterProps(makeState(), { filters: ['FIL1', 'FIL2'] } as any);
       expect(props.currentMode).toBe('USB');
       expect(props.filterLabels).toEqual(['FIL1', 'FIL2']);
+    });
+
+    it('derives ifShiftDomain from the profile control entry with a 25 Hz legacy fallback step (MOR-1681)', () => {
+      const withControls = (controls: Record<string, unknown>) => ({
+        capabilities: ['if_shift'], controls,
+      }) as any;
+      expect(toFilterProps(null, withControls({
+        if_shift: {
+          mapping: 'identity', raw_min: -1200, raw_max: 1200, raw_step: 20, raw_origin: 0,
+          display_min: '-1200', display_max: '1200', display_step: '20', display_origin: '0',
+          display_unit: 'Hz', quantization: 'reject', restoration: 'exact',
+        },
+      })).ifShiftDomain).toEqual({ min: -1200, max: 1200, step: 20, origin: 0 });
+      expect(toFilterProps(null, withControls({
+        if_shift: { raw_min: -255, raw_max: 255, display_min: -1000, display_max: 1000, display_unit: 'Hz' },
+      })).ifShiftDomain).toEqual({ min: -1000, max: 1000, step: 25, origin: -1000 });
+      expect(toFilterProps(null, withControls({})).ifShiftDomain).toBeNull();
+      expect(toFilterProps(null, null).ifShiftDomain).toBeNull();
     });
   });
 
@@ -962,15 +1049,59 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
       expect(props.sidetonePitch).toBe(700);
       expect(props.twinPeak).toBe(true);
     });
+
+    it('derives cwPitchDomain from the profile control entry with a 5 Hz legacy fallback step (MOR-1682)', () => {
+      const withControls = (controls: Record<string, unknown>) => ({
+        capabilities: ['cw'], controls,
+      }) as any;
+      expect(toCwProps(null, withControls({
+        cw_pitch: {
+          mapping: 'identity', raw_min: 300, raw_max: 1050, raw_step: 10, raw_origin: 300,
+          display_min: '300', display_max: '1050', display_step: '10', display_origin: '300',
+          display_unit: 'Hz', quantization: 'reject', restoration: 'exact',
+        },
+      })).cwPitchDomain).toEqual({ min: 300, max: 1050, step: 10, origin: 300 });
+      expect(toCwProps(null, withControls({
+        cw_pitch: { raw_min: 0, raw_max: 255, display_min: 300, display_max: 900, display_unit: 'Hz' },
+      })).cwPitchDomain).toEqual({ min: 300, max: 900, step: 5, origin: 300 });
+      expect(toCwProps(null, withControls({})).cwPitchDomain).toBeNull();
+      expect(toCwProps(null, null).cwPitchDomain).toBeNull();
+    });
+
+    it('derives keySpeedDomain from the profile control entry the same way as the pitch domain (MOR-2475 F1)', () => {
+      const withControls = (controls: Record<string, unknown>) => ({
+        capabilities: ['cw'], controls,
+      }) as any;
+      const x6100 = toCwProps(null, withControls({
+        key_speed: {
+          raw_min: 0, raw_max: 255, display_min: 5, display_max: 50,
+          display_unit: 'WPM', decode_quantum: 1,
+        },
+        cw_pitch: {
+          raw_min: 0, raw_max: 255, display_min: 400, display_max: 1200,
+          display_unit: 'Hz', decode_quantum: 10,
+        },
+      }));
+      expect(x6100.keySpeedDomain).toEqual({ min: 5, max: 50, step: 1, origin: 5 });
+      expect(x6100.cwPitchDomain).toEqual({ min: 400, max: 1200, step: 10, origin: 400 });
+      const icom = toCwProps(null, withControls({
+        key_speed: {
+          raw_min: 0, raw_max: 255, display_min: 6, display_max: 48,
+          display_unit: 'WPM', decode_quantum: 1,
+        },
+        cw_pitch: {
+          raw_min: 0, raw_max: 255, display_min: 300, display_max: 900,
+          display_unit: 'Hz', decode_quantum: 5,
+        },
+      }));
+      expect(icom.keySpeedDomain).toEqual({ min: 6, max: 48, step: 1, origin: 6 });
+      expect(icom.cwPitchDomain).toEqual({ min: 300, max: 900, step: 5, origin: 300 });
+      expect(toCwProps(null, withControls({})).keySpeedDomain).toBeNull();
+      expect(toCwProps(null, null).keySpeedDomain).toBeNull();
+    });
   });
 
   describe('toMeterProps', () => {
-    // No live `.svelte` consumer of `panel-props.ts`'s `toMeterProps` was
-    // found repo-wide (the desktop `MetersDockPanel.svelte` reads raw
-    // `radioState` fields directly; the LCD/mobile skins' `toMeterProps`
-    // is an independent, frozen `state-adapter.ts` copy). Zero golden risk
-    // either way — this is a direct unit-level pin, per the A12 re-anchor
-    // plan §5's row (a) resolution.
     it('does not invent zero meter readings when state is absent', () => {
       const props = toMeterProps(null, null);
       expect(props.sValue).toBeNaN();
@@ -1078,6 +1209,20 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
       const props = toMemoryPanelProps(makeState(), null);
       expect(props.activeFreqHz).toBe(14_074_000);
       expect(props.activeMode).toBe('USB');
+    });
+
+    it('MOR-2425/R40: a stale (not just fresh) observed activeSlot still resolves relative VFO identity', () => {
+      // Single-RX A/B radio declaring the provider readback contract
+      // explicitly (`vfoReadback: 'selected_unselected'`) — `activeSlot`
+      // being OBSERVED at all is what settles literal A/B identity, per
+      // `relativeVfoIdentityUnknown`'s own doc comment; `fieldObserved`
+      // (`panel-props.ts`) now admits a held-stale reading the same as a
+      // fresh one (R40), so a stale `activeSlot` must resolve identity too.
+      const state = makeState({
+        fieldStatus: { 'main.activeSlot': fieldStatus('stale', true) },
+      });
+      const caps = { capabilities: [], receivers: 1, vfoScheme: 'ab', vfoReadback: 'selected_unselected' } as any;
+      expect(toMemoryPanelProps(state, caps).vfoIdentityKnown).toBe(true);
     });
   });
 

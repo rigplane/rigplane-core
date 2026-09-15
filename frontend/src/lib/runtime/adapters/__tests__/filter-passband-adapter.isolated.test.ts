@@ -150,10 +150,10 @@ describe('filterPassband per-field structural gates (MOR-1284)', () => {
   it('pbtInner/pbtOuter are structurally absent when pbt is declared but caps carries no usable pbt_inner range', () => {
     const view = model(bareState(), caps({ capabilities: ['pbt'] }));
     expect(view.filterPassband!.pbtInner).toEqual({
-      reading: { status: 'unknown' }, availability: { structural: false, operational: false },
+      reading: { status: 'unknown' }, availability: { structural: false, operational: false }, display: { state: 'unsupported' },
     });
     expect(view.filterPassband!.pbtOuter).toEqual({
-      reading: { status: 'unknown' }, availability: { structural: false, operational: false },
+      reading: { status: 'unknown' }, availability: { structural: false, operational: false }, display: { state: 'unsupported' },
     });
   });
 
@@ -201,12 +201,13 @@ describe('dataMode derivation (MOR-1284)', () => {
     expect(view.filterPassband!.dataMode.reading).toEqual({ status: 'known', value: 1 });
   });
 
-  it('degrades a stale dataMode field to unknown while structural availability stays true', () => {
+  it('holds a stale dataMode field at its last observed value (MOR-2425/R40)', () => {
     const view = model(bareState({
       fieldStatus: { ...bareState().fieldStatus, 'main.dataMode': stale },
     }), dmCaps);
     expect(view.filterPassband!.dataMode).toEqual({
-      reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+      reading: { status: 'known', value: 0 },
+      availability: { structural: true, operational: true },
     });
   });
 });
@@ -375,8 +376,8 @@ describe('pbtInner/pbtOuter/ifShift are deterministic in (state, caps) — MOR-1
       const absent = {
         reading: { status: 'unknown' as const }, availability: { structural: false, operational: false },
       };
-      expect(view.filterPassband!.pbtInner).toEqual(absent);
-      expect(view.filterPassband!.pbtOuter).toEqual(absent);
+      expect(view.filterPassband!.pbtInner).toEqual({ ...absent, display: { state: 'unsupported' } });
+      expect(view.filterPassband!.pbtOuter).toEqual({ ...absent, display: { state: 'unsupported' } });
       expect(view.filterPassband!.ifShift).toEqual(absent);
     },
   );
@@ -524,7 +525,7 @@ describe('ifShiftControlStructural — the presentation-only IF-shift control ga
 
 /**
  * `filterShapeControlStructural` (MOR-1502) — a SEPARATE, presentation-only
- * flag `FilterSurface.svelte` uses to decide whether to show the SHARP/SOFT
+ * flag `FilterInstrumentHost.svelte` uses to decide whether to show the SHARP/SOFT
  * shape ROW, deliberately independent of `filterShape.availability.
  * structural` above (which is `hasFilters` alone — see the "per-field
  * structural gates" block — because `scope-adapter.ts` still needs the
@@ -570,15 +571,16 @@ describe('filterShapeControlStructural — the presentation-only filter-shape co
 describe('filterPassband honesty gate — no derivation from a half-observed input (MOR-1284, F2 lesson)', () => {
   const pbtCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE } });
 
-  it('pbtInner observed, pbtOuter UNOBSERVED — ifShift must NOT derive from a fabricated pbtOuter default', () => {
+  it('pbtInner fresh, pbtOuter stale-but-observed — ifShift derives from its last value (MOR-2425/R29)', () => {
     const view = model(bareState({
       main: { ...bareState().main, pbtInner: 200, pbtOuter: 128 },
       fieldStatus: { ...bareState().fieldStatus, 'main.pbtInner': fresh, 'main.pbtOuter': stale },
     }), pbtCaps);
     expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: pbtRawToHz(200) });
-    expect(view.filterPassband!.pbtOuter.reading).toEqual({ status: 'unknown' });
+    expect(view.filterPassband!.pbtOuter.reading).toEqual({ status: 'known', value: pbtRawToHz(128) });
     expect(view.filterPassband!.ifShift).toEqual({
-      reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+      reading: { status: 'known', value: deriveIfShift(pbtRawToHz(200), pbtRawToHz(128)) },
+      availability: { structural: true, operational: true },
     });
   });
 
@@ -622,5 +624,62 @@ describe('filterPassband validator round-trip (MOR-1284)', () => {
       main: { ...bareState().main, filterShape: 'sharp' as unknown as number },
     }), caps({ filters: ['FIL1'] }));
     expect(view.filterPassband!.filterShape.reading).toEqual({ status: 'unknown' });
+  });
+});
+
+
+describe('PBT display observations (MOR-1692)', () => {
+  const range: ControlRange = { raw_min: 0, raw_max: 200, raw_center: 100, display_min: -900, display_max: 900 };
+  const ownCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: range } });
+  const observed = { ...fresh, lastObservedMonotonic: 310658.42975425 };
+  const source = (status: FieldStatus | undefined = observed, raw = 150): ServerState => bareState({
+    stateContractVersion: 1, providerGeneration: 0,
+    main: { ...bareState().main, pbtInner: raw, pbtOuter: 100 },
+    fieldStatus: { ...bareState().fieldStatus, ...(status ? { 'main.pbtInner': status } : {}), 'main.pbtOuter': observed },
+  });
+
+  it.each(['fresh', 'stale'] as const)('adds %s scaled display; a stale-but-observed reading is available too (MOR-2425/R29)', (freshness) => {
+    const input = source({ ...observed, freshness, availability: freshness === 'fresh' ? 'available' : 'stale' });
+    const result = model(input, ownCaps).filterPassband!;
+    const { display, ...strict } = result.pbtInner;
+    expect(display).toEqual({ state: freshness === 'fresh' ? 'current' : 'stale', value: 450 });
+    // A stale-but-observed reading still carries its last value and is
+    // `available` (R29) — freshness no longer distinguishes the strict facts,
+    // only the `display` cue above does.
+    expect(strict).toEqual({ reading: { status: 'known', value: 450 }, availability: { structural: true, operational: true } });
+    expect(result.pbtOuter.display).toEqual({ state: 'current', value: 0 });
+    const { display: outerDisplay, ...strictOuter } = result.pbtOuter;
+    const absent = { reading: { status: 'unknown' }, availability: { structural: false, operational: false } };
+    expect({ ...result, pbtInner: strict, pbtOuter: strictOuter }).toEqual({
+      filterShape: absent, filterShapeControlStructural: false, ifShiftControlStructural: false, dataMode: absent, dataModeChoices: [],
+      ifShift: { reading: { status: 'known', value: 225 }, availability: { structural: true, operational: true } },
+      pbtInner: strict,
+      pbtOuter: { reading: { status: 'known', value: 0 }, availability: { structural: true, operational: true } },
+    });
+    expect(outerDisplay).toEqual({ state: 'current', value: 0 });
+    expect(validateRadioViewModel(model(input, ownCaps))).toEqual(model(input, ownCaps));
+  });
+
+  it.each([
+    ['missing marker', { ...fresh }, 'invalid-evidence'],
+    ['unobserved', { ...observed, observed: false }, 'not-observed'],
+    ['negative marker', { ...observed, lastObservedMonotonic: -0.5 }, 'invalid-evidence'],
+  ] as const)('rejects %s without fabricating a measurement', (_name, status, reason) => {
+    expect(model(source(status), ownCaps).filterPassband!.pbtInner.display).toEqual({ state: 'unknown', reason });
+  });
+
+  it('rejects missing metadata, invalid values, caps mismatch and absent scale', () => {
+    const missing = source(); delete missing.fieldStatus!['main.pbtInner'];
+    expect(model(missing, ownCaps).filterPassband!.pbtInner.display).toEqual({ state: 'unknown', reason: 'not-observed' });
+    expect(model(source(observed, NaN), ownCaps).filterPassband!.pbtInner.display).toEqual({ state: 'unknown', reason: 'invalid-value' });
+    expect(model(source(), { ...ownCaps, providerGeneration: 2 }).filterPassband!.pbtInner.display).toEqual({ state: 'unknown', reason: 'identity-unresolved' });
+    expect(model(source(), { ...ownCaps, controls: {} }).filterPassband!.pbtInner.display).toEqual({ state: 'unsupported' });
+  });
+
+  it.each(['stale', 'unobserved'] as const)('honors a %s ancestor independently of a fresh leaf', (parent) => {
+    const input = source(); input.fieldStatus!.main = parent === 'stale'
+      ? { ...observed, freshness: 'stale', availability: 'stale' } : { ...observed, observed: false };
+    expect(model(input, ownCaps).filterPassband!.pbtInner.display).toEqual(parent === 'stale'
+      ? { state: 'stale', value: 450 } : { state: 'unknown', reason: 'not-observed' });
   });
 });

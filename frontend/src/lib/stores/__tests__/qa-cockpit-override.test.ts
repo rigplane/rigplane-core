@@ -6,6 +6,13 @@ describe('readQaCockpitLayoutOverride (MOR-1257)', () => {
     expect(readQaCockpitLayoutOverride('?layout=dual-receiver-cockpit')).toBe('dual-receiver-cockpit');
   });
 
+  // T160 PR-1: the flagship geometry probe rides the same param. Kill-test:
+  // dropping it from the module's value list returns null here, which
+  // resolves to the normal preference and leaves the probe unreachable.
+  it('returns the flagship-probe override when the exact query param is present', () => {
+    expect(readQaCockpitLayoutOverride('?layout=flagship-probe')).toBe('flagship-probe');
+  });
+
   it('returns null for an empty search string', () => {
     expect(readQaCockpitLayoutOverride('')).toBeNull();
   });
@@ -18,7 +25,8 @@ describe('readQaCockpitLayoutOverride (MOR-1257)', () => {
   // persisted-style value a user might guess) would wrongly activate the
   // QA-only cockpit.
   it('returns null for any other layout value, including near-misses', () => {
-    for (const value of ['standard', 'lcd-cockpit', 'dual-receiver', 'Dual-Receiver-Cockpit', '']) {
+    for (const value of ['standard', 'lcd-cockpit', 'dual-receiver', 'Dual-Receiver-Cockpit', '',
+      'flagship', 'Flagship-Probe', 'flagship-probe-x']) {
       expect(readQaCockpitLayoutOverride(`?layout=${value}`)).toBeNull();
     }
   });

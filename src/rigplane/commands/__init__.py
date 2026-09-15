@@ -16,7 +16,6 @@ Reference: wfview icomcommander.cpp, IC-7610.rig
 
 # Re-export everything from sub-modules -- no logic in this file.
 
-from . import _fallback_audit
 from ..types import bcd_decode
 
 # --- _frame.py (kernel) ---
@@ -43,6 +42,7 @@ from ._frame import (
     _SUB_SWR_METER,
     build_civ_frame,
     build_cmd29_frame,
+    command_carries_sub,
     parse_ack_nak,
     parse_civ_frame,
 )
@@ -224,7 +224,6 @@ from .dsp import (
     get_vox,
     set_af_mute,
     set_agc,
-    set_attenuator,
     set_attenuator_level,
     set_audio_peak_filter,
     set_auto_notch,
@@ -314,7 +313,6 @@ from .system import (
     get_system_time,
     get_transceiver_id,
     get_tuner_status,
-    get_tx_freq_monitor,
     get_utc_offset,
     get_xfc_status,
     parse_rit_frequency_response,
@@ -327,7 +325,6 @@ from .system import (
     set_system_date,
     set_system_time,
     set_tuner_status,
-    set_tx_freq_monitor,
     set_utc_offset,
     set_xfc_status,
 )
@@ -453,6 +450,7 @@ __all__ = [
     "filter_index_to_hz",
     "table_index_to_hz",
     "hz_to_table_index",
+    "command_carries_sub",
     "parse_civ_frame",
     # TOML canonical names (primary)
     "get_freq",
@@ -479,7 +477,6 @@ __all__ = [
     "power_on",
     "power_off",
     "get_attenuator",
-    "set_attenuator",
     "set_attenuator_level",
     "get_preamp",
     "set_preamp",
@@ -640,8 +637,6 @@ __all__ = [
     "get_id_meter",
     "get_tuner_status",
     "set_tuner_status",
-    "get_tx_freq_monitor",
-    "set_tx_freq_monitor",
     "get_rit_frequency",
     "set_rit_frequency",
     "get_rit_status",
@@ -778,7 +773,3 @@ __all__ = [
     "parse_tx_band_count_response",
     "parse_tx_band_edge_response",
 ]
-
-# --- Step 1 measurement hook (temporary; see LAYER.md and
-# docs/plans/2026-08-29-profile-driven-command-bytes.md Step Z) ---
-_fallback_audit.install(globals())

@@ -537,7 +537,7 @@ async function assertProductionLanguageCss(page: Page, item: ProductionLanguageC
       fieldline: rules.some((rule) => rule.includes('--dl-fieldline-surface')),
       productionCss: [...document.styleSheets]
         .map((sheet) => sheet.href)
-        .some((href) => /\/assets\/[^/]+-[\w-]+\.css$/.test(href)),
+        .some((href) => href !== null && /\/assets\/[^/]+-[\w-]+\.css$/.test(href)),
     };
   })).toEqual({ studioline: true, fieldline: true, productionCss: true });
 }
@@ -554,13 +554,19 @@ async function assertProductionLanguageAccessibility(
   await expect(vfo).toHaveAccessibleName(/VFO/i);
   await expect(txKey).toHaveAccessibleName(/key|transmit|ptt/i);
   await expect(txState).toBeVisible();
-  await expect(txMark).toBeVisible();
-  await expect(txLabel).toBeVisible();
+  await expect(txMark).toBeAttached();
+  await expect(txLabel).toBeAttached();
   await expect(txState).toHaveAttribute('data-rf', 'unknown');
   await expect(txState).toHaveAttribute('data-session', 'idle');
-  await expect(txMark).toHaveText('◇');
-  await expect(txLabel).toHaveText('RF ?');
-  await expect(txState).toContainText('ready');
+  await expect(txMark).toBeEmpty();
+  await expect(txLabel).toBeEmpty();
+  const [stateBox, markBox, labelBox] = await Promise.all([
+    txState.boundingBox(), txMark.boundingBox(), txLabel.boundingBox(),
+  ]);
+  expect(stateBox).not.toBeNull();
+  expect(markBox).not.toBeNull();
+  expect(labelBox).not.toBeNull();
+  await expect(txState).not.toContainText(/ready/i);
 
   // A real keyboard-caused focus target, rather than a programmatic focus,
   // proves the active production family has a visible focus treatment.
@@ -614,15 +620,29 @@ async function assertProductionLanguageAccessibility(
   expect(reducedMotion.flat(2).flatMap(durationMs).every((duration) => duration <= 0.01)).toBe(true);
 }
 
+async function stabilizeProductionCapture(page: Page): Promise<void> {
+  await page.waitForLoadState('networkidle');
+  await page.evaluate(() => document.fonts.ready);
+  await expect(page.getByTestId('scope-display-source')).toHaveText('SRC hardware');
+  await expect(page.getByTestId('scope-display-health')).toHaveText('inactive');
+  await expect(page.getByTestId('scope-display-hardware')).toHaveText('HW off');
+}
+
 test.describe('MOR-1400 production design-language contract', () => {
   for (const item of PRODUCTION_LANGUAGE_CASES) {
     test(`${item.label} activates from production dist`, async ({ page }) => {
       await page.emulateMedia({ reducedMotion: 'reduce' });
-      await preparePage(page, 'en-US', VIEWPORTS[0], { workspace: item.workspace });
+      await preparePage(page, 'en-US', VIEWPORTS[0], {
+        workspace: item.workspace,
+        state: { ...mockState, fieldStatus: Object.fromEntries(['main.sMeter', 'sub.sMeter']
+          .map(path => [path, { storePath: path, observed: false,
+            freshness: 'unknown' as const, availability: 'missing' as const }])) },
+      });
       await gotoApp(page, 'en-US');
       await waitForAppShell(page);
       await assertProductionLanguageCss(page, item);
       await assertProductionLanguageAccessibility(page, item);
+      await stabilizeProductionCapture(page);
       // This is deliberately the real built `/' entry, served via the
       // immutable dist wrapper above. Fixture screenshots live in a separate
       // Playwright config and are not candidates for this expectation.

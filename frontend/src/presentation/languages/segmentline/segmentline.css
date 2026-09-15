@@ -1,0 +1,153 @@
+/*
+  `segmentline` design language — the CSS half of the MOR-2148 token slice.
+  Its arithmetic half is `./tokens.ts`; the glass/bezel tones, ink ramp and
+  meter pitch below restate that file's literal values as custom properties.
+  The bezel-edge tone is this file's own addition — `tokens.ts`'s
+  `SEGMENTLINE_SURFACES` declares only `glass` and `bezel`, no edge tone.
+
+  SCOPING. Everything is rooted at the language attribute, so loading this
+  file changes nothing until a host opts in. Routing a language into the app
+  shell is cutover work (MOR-1048/MOR-1263), not this slice — so registering
+  the language (MOR-2148) does not by itself activate it.
+
+  WHAT IT MAY STYLE. Colour, type, spacing and geometry. Never which facts
+  appear, never whether a control is available: no rule here uses `display:
+  none` or `visibility` to add or remove a fact, and the only `content`
+  declarations are empty strings on decorative pseudo-elements (the glass
+  texture and the TX glow), never text.
+*/
+
+[data-design-language='segmentline'][data-design-language] {
+  --dl-segmentline-glass: #c8a030;
+  --dl-segmentline-bezel: #1a1410;
+  --dl-segmentline-bezel-edge: #8a7020;
+
+  /* Ink ramp — one ink, three alphas. HIGH contrast preset. */
+  --dl-segmentline-ink: 26 16 0;
+  --dl-segmentline-ink-strong: rgba(var(--dl-segmentline-ink) / 1);
+  --dl-segmentline-ink-soft: rgba(var(--dl-segmentline-ink) / 0.34);
+  --dl-segmentline-ink-ghost: rgba(var(--dl-segmentline-ink) / 0.09);
+
+  --dl-segmentline-tx-mark: #7a1a0a;
+  --dl-segmentline-rx-tuning: #a97400;
+
+  --dl-segmentline-cell-border: 1.25px;
+  --dl-segmentline-cell-radius: 2px;
+  --dl-segmentline-grid-opacity: 1;
+
+  color: var(--dl-segmentline-ink-strong);
+  font-family: 'Share Tech Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Glass ───────────────────────────────────────────────────────────── */
+
+[data-design-language='segmentline'][data-design-language] .rx-tx-surface {
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+  padding: 14px;
+  border: 2px solid var(--dl-segmentline-bezel-edge);
+  border-radius: 10px;
+  background: var(--dl-segmentline-glass);
+  /* Set explicitly, never inherited: `app.css` paints `body { color }`,
+     which would otherwise reach the glass ahead of this rule and override
+     it. */
+  color: var(--dl-segmentline-ink-strong);
+  box-shadow: inset 0 0 50px rgba(0, 0, 0, 0.06), 0 0 8px rgba(0, 0, 0, 0.5);
+}
+
+/* Subpixel row texture. Decorative; the grid opacity is themeable to 0 for
+   contrast review, where the texture reads as noise. */
+[data-design-language='segmentline'][data-design-language] .rx-tx-surface::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: var(--dl-segmentline-grid-opacity);
+  background: repeating-linear-gradient(to bottom, transparent 0 3px, rgba(0, 0, 0, 0.04) 3px 6px);
+}
+
+[data-design-language='segmentline'][data-design-language] .rx-tx-surface > * {
+  position: relative;
+  z-index: 2;
+}
+
+/* ── Cells: the family's only control shape ──────────────────────────── */
+
+[data-design-language='segmentline'][data-design-language] .rx-tx-key,
+[data-design-language='segmentline'][data-design-language] .rx-tx-unkey {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: var(--dl-segmentline-cell-border) solid var(--dl-segmentline-ink-soft);
+  border-radius: var(--dl-segmentline-cell-radius);
+  background: none;
+  color: var(--dl-segmentline-ink-soft);
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+[data-design-language='segmentline'][data-design-language] .rx-tx-key[aria-pressed='true'] {
+  border-color: var(--dl-segmentline-ink-strong);
+  color: var(--dl-segmentline-ink-strong);
+}
+
+[data-design-language='segmentline'][data-design-language] .rx-tx-key:focus-visible,
+[data-design-language='segmentline'][data-design-language] .rx-tx-unkey:focus-visible {
+  outline: 2px solid var(--dl-segmentline-ink-strong);
+  outline-offset: 1px;
+}
+
+/* ── Seven-segment readout ───────────────────────────────────────────── */
+
+[data-design-language='segmentline'][data-design-language] .vfo-freq {
+  display: inline-flex;
+  align-items: baseline;
+  flex-shrink: 0;
+  /* Shrink-wrap, always. As a flex item this box would otherwise stretch to
+     the column's full width and the readout's advance would stop being a
+     function of font-size — which is the one property the per-glyph cells
+     below exist to guarantee. */
+  width: max-content;
+  align-self: start;
+  white-space: nowrap;
+  font-family: 'DSEG7 Classic', 'Share Tech Mono', ui-monospace, monospace;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+/* One cell per glyph, width from the renderer. This is what keeps the readout
+   from reflowing when DSEG7 is unavailable. */
+[data-design-language='segmentline'][data-design-language] .digit,
+[data-design-language='segmentline'][data-design-language] .sep {
+  display: inline-block;
+  text-align: center;
+}
+
+/* ── Design-language annotations on the shipped gauges ───────────────────
+   'renderSlot' spreads the meters renderer's flat primitives onto the tile as
+   'data-dl-*'. They are STRINGS: CSS can select on a discrete value but cannot
+   compute a width from one, so the gauge's geometry stays where it already is
+   (the shipped 'LinearSMeter'/'BarGauge' SVG components, ballistics included)
+   and this half only states the family's opinion about tone and texture. */
+
+[data-design-language='segmentline'][data-design-language] [data-dl-unknown='true'] {
+  /* Never a gauge resting at zero — an unread meter reads as unread. */
+  color: var(--dl-segmentline-ink-soft);
+}
+
+[data-design-language='segmentline'][data-design-language] [data-dl-hot='true'] {
+  color: var(--dl-segmentline-tx-mark);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-design-language='segmentline'][data-design-language] .rx-tx-surface {
+    transition: none;
+  }
+}

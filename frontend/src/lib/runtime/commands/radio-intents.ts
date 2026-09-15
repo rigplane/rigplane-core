@@ -1,9 +1,9 @@
-import { acknowledgeCommand, applyCommandLifecycleProjection, beginCommand, cancelPendingCommands, failCommand, type CommandLifecycle } from '$lib/stores/commands.svelte';
+import { acknowledgeCommand, applyCommandLifecycleProjection, beginCommand, cancelPendingCommands, failCommand, markCommandDispatched, type CommandLifecycle } from '$lib/stores/commands.svelte';
 import { makeCommandId } from '$lib/types/protocol';
 import * as controlTransport from '$lib/transport/ws-client';
 import { getControlSession, onCommandDelivery, onControlSessionTransition, sendCommand } from '$lib/transport/ws-client';
 
-type FieldKind = 'boolean' | 'integer' | 'normalized' | 'number' | 'receiver' | 'string' | 'vfo';
+type FieldKind = 'boolean' | 'integer' | 'normalized' | 'normalized-unit' | 'number' | 'receiver' | 'string' | 'vfo' | 'vfo-slot';
 type FieldSpec = FieldKind | `${FieldKind}?`;
 type IntentSpec = { names: readonly string[]; params: Readonly<Record<string, FieldSpec>> };
 
@@ -21,7 +21,7 @@ const intentSpecs = [
     'set_monitor_gain', 'set_nb_depth', 'set_nb_width', 'set_vox_delay', 'set_vox_gain',
   ], params: { level: 'integer' } },
   { names: ['set_af_level'], params: { level: 'normalized', receiver: 'receiver' } },
-  { names: ['set_rf_power'], params: { level: 'number' } },
+  { names: ['set_rf_power'], params: { level: 'number', level_unit: 'normalized-unit?' } },
   { names: ['set_nb_level', 'set_nr_level', 'set_preamp', 'set_rf_gain', 'set_squelch'], params: { level: 'integer', receiver: 'receiver' } },
   { names: ['set_cw_pitch', 'set_tuner_status'], params: { value: 'integer' } },
   { names: ['set_agc_time_constant', 'set_manual_notch_width', 'set_notch_filter', 'set_pbt_inner', 'set_pbt_outer'], params: { value: 'integer', receiver: 'receiver' } },
@@ -38,6 +38,10 @@ const intentSpecs = [
   { names: ['set_filter_shape'], params: { shape: 'integer', receiver: 'receiver' } },
   { names: ['set_filter_width'], params: { width: 'integer', receiver: 'receiver?' } },
   { names: ['set_freq'], params: { freq: 'integer', receiver: 'receiver?' } },
+  { names: ['set_vfo_freq'], params: {
+    freq: 'integer', receiver: 'receiver', slot: 'vfo-slot',
+    expected_active_slot: 'vfo-slot', provider_generation: 'integer',
+  } },
   { names: ['set_if_shift'], params: { offset: 'integer', receiver: 'receiver' } },
   { names: ['set_mode'], params: { mode: 'string', filter: 'integer?', receiver: 'receiver?' } },
   { names: ['set_rit_frequency'], params: { freq: 'integer' } },
@@ -52,8 +56,9 @@ const intentSpecs = [
 ] as const satisfies readonly IntentSpec[];
 
 type Spec = (typeof intentSpecs)[number];
-type KindValue<K extends FieldKind> = K extends 'boolean' ? boolean : K extends 'receiver' ? 0 | 1
-  : K extends 'string' ? string : K extends 'vfo' ? 'A' | 'B' | 'MAIN' | 'SUB' : number;
+type KindValue<K extends FieldKind> = K extends 'boolean' ? boolean : K extends 'normalized-unit' ? 'normalized' : K extends 'receiver' ? 0 | 1
+  : K extends 'string' ? string : K extends 'vfo-slot' ? 'A' | 'B'
+    : K extends 'vfo' ? 'A' | 'B' | 'MAIN' | 'SUB' : number;
 type RequiredKeys<S extends Readonly<Record<string, FieldSpec>>> = {
   [K in keyof S]-?: S[K] extends `${FieldKind}?` ? never : K
 }[keyof S];
@@ -78,9 +83,11 @@ export function isNormalizedLevel(value: unknown): value is number {
 function matchesValue(kind: FieldKind, value: unknown): boolean {
   if (kind === 'integer') return typeof value === 'number' && Number.isSafeInteger(value);
   if (kind === 'normalized') return isNormalizedLevel(value);
+  if (kind === 'normalized-unit') return value === 'normalized';
   if (kind === 'number') return typeof value === 'number' && Number.isFinite(value);
   if (kind === 'boolean') return typeof value === 'boolean';
   if (kind === 'receiver') return value === 0 || value === 1;
+  if (kind === 'vfo-slot') return value === 'A' || value === 'B';
   if (kind === 'vfo') return value === 'A' || value === 'B' || value === 'MAIN' || value === 'SUB';
   return typeof value === 'string' && value.length > 0;
 }
@@ -95,10 +102,16 @@ function matchesParams(spec: Readonly<Record<string, FieldSpec>>, params: Record
 }
 
 onCommandDelivery((event) => {
-  if (event.kind === 'transport-sent') return;
+  if (event.kind === 'transport-sent') {
+    if (event.eventEpoch !== getControlSession().epoch) return;
+    markCommandDispatched(event.commandId, event.originalEpoch, event.eventEpoch);
+    return;
+  }
   if (event.cancelled) cancelPendingCommands(event.originalEpoch, event.error);
-  else if (event.kind === 'ack' || event.kind === 'response-ok') acknowledgeCommand(event.commandId, event.originalEpoch, event.eventEpoch);
-  else failCommand(event.commandId, event.originalEpoch, event.eventEpoch, event.error);
+  else if (event.kind === 'ack') acknowledgeCommand(event.commandId, event.originalEpoch, event.eventEpoch);
+  else if (event.kind === 'response-ok') {
+    acknowledgeCommand(event.commandId, event.originalEpoch, event.eventEpoch, event.admittedLevel);
+  } else failCommand(event.commandId, event.originalEpoch, event.eventEpoch, event.error);
 });
 if (Object.prototype.hasOwnProperty.call(controlTransport, 'onCommandLifecycleDelivery')) {
   controlTransport.onCommandLifecycleDelivery((event) => applyCommandLifecycleProjection(event, getControlSession().epoch));
@@ -115,6 +128,16 @@ export function currentControlSessionEpoch(): number {
 }
 
 export function dispatchRadioIntent(intent: RadioIntent): CommandLifecycle {
+  return dispatchRadioIntentWithResult(intent).lifecycle;
+}
+
+export interface RadioIntentDispatchResult {
+  readonly lifecycle: CommandLifecycle;
+  /** Result of sendCommand; offline queueing can return false without failing the lifecycle. */
+  readonly transportAccepted: boolean;
+}
+
+export function dispatchRadioIntentWithResult(intent: RadioIntent): RadioIntentDispatchResult {
   if (typeof intent !== 'object' || intent === null || Array.isArray(intent)) throw new TypeError('Invalid radio intent envelope');
   const candidate = intent as unknown as Record<PropertyKey, unknown>;
   if (Reflect.ownKeys(candidate).some((key) => typeof key !== 'string' || (key !== 'name' && key !== 'params' && key !== 'id'))) {
@@ -123,14 +146,20 @@ export function dispatchRadioIntent(intent: RadioIntent): CommandLifecycle {
   const name = candidate.name;
   if (typeof name !== 'string' || !specsByName.has(name)) throw new TypeError('Only a known non-PTT radio intent may be dispatched');
   const params = candidate.params;
+  const paramsRecord = params as Record<PropertyKey, unknown>;
   if (typeof params !== 'object' || params === null || Array.isArray(params)
-    || !matchesParams(specsByName.get(name)!, params as Record<PropertyKey, unknown>)
+    || !matchesParams(specsByName.get(name)!, paramsRecord)
+    || (name === 'set_rf_power' && paramsRecord.level_unit === 'normalized'
+      && !isNormalizedLevel(paramsRecord.level))
     || (candidate.id !== undefined && (typeof candidate.id !== 'string' || candidate.id.length === 0))) {
     throw new TypeError('Invalid radio intent envelope');
   }
   const id = (candidate.id as string | undefined) ?? makeCommandId();
   const originalEpoch = getControlSession().epoch;
   const lifecycle = beginCommand({ id, name, params: params as Record<string, unknown>, originalEpoch });
-  sendCommand(name, params as Record<string, unknown>, id);
-  return lifecycle;
+  const wireParams = specsByName.get(name)?.level === 'normalized'
+    ? { ...(params as Record<string, unknown>), level_unit: 'normalized' }
+    : params as Record<string, unknown>;
+  const transportAccepted = sendCommand(name, wireParams, id);
+  return { lifecycle, transportAccepted };
 }

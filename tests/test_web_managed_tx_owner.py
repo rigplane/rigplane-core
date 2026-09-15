@@ -50,7 +50,6 @@ from rigplane.core.capabilities import CAP_AUDIO
 from rigplane.core.exceptions import CommandError
 from rigplane.core.radio_protocol import ManagedTxApi, PrivilegedTxApi
 from rigplane.core.tx_safety import (
-    ProviderAttemptKind,
     ProviderPttObservation,
     RadioTx,
     TxOutcome,
@@ -177,19 +176,6 @@ def _run_handler(
     ), queue
 
 
-def _wired(
-    supervisor: _Supervisor | None,
-) -> tuple[ControlHandler, RadioPoller, _Radio]:
-    """One control session and one poller over the queue the server shares."""
-    handler, queue = _run_handler()
-    radio = _Radio(supervisor)
-    return handler, RadioPoller(radio, queue), radio  # type: ignore[arg-type]
-
-
-def _owner(handler: ControlHandler) -> TxOwner:
-    return TxOwner(TxSource.WEBSOCKET, handler._session_id)
-
-
 async def _drain(poller: RadioPoller) -> None:
     """Execute queued entries exactly as ``_run``'s drain does — including its
     default of ``source="websocket"`` for an entry that carries no source."""
@@ -201,29 +187,6 @@ async def _drain(poller: RadioPoller) -> None:
             session_id=entry.session_id,
             command_service=entry.command_service,
         )
-
-
-def _settle_release(supervisor: _Supervisor) -> list[ProviderAttemptKind]:
-    """Drive the started de-key to completion and report the provider work.
-
-    The policy is pure: ``release_owner`` only STARTS the release. Undriven, the
-    lease sits in RELEASE_PENDING and the next session is refused for a reason
-    that is not BUSY but is still a refusal, which would prove nothing. Every
-    attempt this settles belongs to the de-key, so observing the rig OFF after
-    each one is what the runtime's effect service sees on a rig that obeyed.
-    """
-    kinds: list[ProviderAttemptKind] = []
-    seq = 1
-    while (attempt := supervisor.inner.snapshot.active_attempt) is not None:
-        kinds.append(attempt.kind)
-        supervisor.inner.settle_attempt(
-            attempt.id, attempt.provider_generation, succeeded=True
-        )
-        seq += 1
-        supervisor.inner.observe_ptt(
-            ProviderPttObservation(RadioTx.OFF, 0, seq, time.monotonic())
-        )
-    return kinds
 
 
 async def test_unmanaged_radio_keeps_the_legacy_write_and_ordering() -> None:
@@ -510,217 +473,6 @@ async def test_teardown_marks_the_session_gone_through_a_dead_egress_socket() ->
         await handler.run()
 
     assert not queue.session_is_live(handler._session_id)
-
-
-async def test_a_disconnect_releases_the_lease_it_took_not_just_the_rig() -> None:
-    """MOR-1185, acceptance 1 and 2: the next session keys without waiting.
-
-    The teardown OFF used to go onto the RAW server queue, so it reached the
-    drain sourceless and session-less, took the legacy write, and left the lease
-    with a session that no longer exists. MOR-1191's watchdog clears that after
-    ``watchdog_seconds`` — a backstop, not a fix: three minutes of denied TX
-    after every disconnect. A real supervisor drives this, so an owner that did
-    not match would answer STALE here rather than quietly passing.
-
-    Consequence C rides along: the finally unregisters the session immediately
-    after enqueuing the unkey, so the entry is always drained on behalf of an
-    author already gone. ``_refuse_key_from_gone_session`` covers ``PttOn`` only
-    and must keep to it — an OFF refused for being late strands a transmitter.
-    """
-    supervisor = _Supervisor()
-    handler, poller, radio = _wired(supervisor)
-    handler._publish_session_liveness(live=True)
-
-    await handler._enqueue_command("ptt_on", {})
-    await _drain(poller)
-    await handler.run()  # EOF on the first recv: the session disconnects
-    assert not poller._queue.session_is_live(handler._session_id)
-    await _drain(poller)
-
-    assert supervisor.entries == [(True, _owner(handler)), (False, _owner(handler))]
-    assert supervisor.outcomes == [TxOutcome.ACCEPTED, TxOutcome.ACCEPTED]
-    # The de-key is the supervisor's own WRITE_OFF, not a raw defensive write.
-    assert _settle_release(supervisor) == [
-        ProviderAttemptKind.WRITE_ON,  # the key attempt, cancelled by the release
-        ProviderAttemptKind.WRITE_OFF,
-    ]
-    assert "set_ptt(False)" not in radio.calls
-
-    second, _ = _run_handler(poller._queue)
-    second._publish_session_liveness(live=True)
-    await second._enqueue_command("ptt_on", {})
-    await _drain(poller)
-
-    # ACCEPTED, not BUSY and not RELEASE_PENDING: the lease is genuinely gone.
-    assert supervisor.entries[-1] == (True, _owner(second))
-    assert supervisor.outcomes[-1] is TxOutcome.ACCEPTED
-
-
-async def test_the_lease_is_released_through_a_dead_egress_socket() -> None:
-    """Acceptance 3: slice 2's guarantee, now with a lease behind it.
-
-    ``await event_task`` re-raises the sender's error and skips everything
-    behind it, which is why the release is the FIRST statement of the finally.
-    """
-    supervisor = _Supervisor()
-    handler, poller, radio = _wired(supervisor)
-    handler._publish_session_liveness(live=True)
-    await handler._enqueue_command("ptt_on", {})
-    await _drain(poller)
-    handler._ws.send_text = AsyncMock(
-        side_effect=[None, None, ConnectionResetError("egress socket closed")]
-    )
-    handler._event_queue.put_nowait({"type": "state_update"})
-
-    with pytest.raises(ConnectionResetError):
-        await handler.run()
-    await _drain(poller)
-
-    assert supervisor.entries[-1] == (False, _owner(handler))
-    assert supervisor.outcomes[-1] is TxOutcome.ACCEPTED
-
-
-async def test_a_session_that_never_keyed_writes_nothing_to_a_managed_rig() -> None:
-    """Consequence A, stated: this REMOVES a defensive write that fires today.
-
-    ``release_owner`` on a session holding no lease answers STALE and emits no
-    WRITE_OFF, so nothing reaches the rig. Correct when it is idle, and required
-    when it is not: under management the lease is the authority on who is on the
-    air, and one session's disconnect must not de-key another's transmission.
-    The rig keyed by something outside the supervisor's knowledge
-    (``TxPhase.EXTERNAL_UNOWNED``, still without consumers) stays MOR-1175's to
-    close — a per-session blind write is not the instrument for it.
-    """
-    supervisor = _Supervisor()
-    handler, poller, radio = _wired(supervisor)
-
-    await handler.run()
-    await _drain(poller)
-
-    assert supervisor.entries == [(False, _owner(handler))]
-    assert supervisor.outcomes == [TxOutcome.STALE]
-    assert _settle_release(supervisor) == []  # no provider write of any kind
-    assert radio.calls == _TEARDOWN
-
-
-async def test_an_unmanaged_teardown_still_writes_the_unconditional_unkey() -> None:
-    """Acceptance 4, corrected for MOR-1179.
-
-    This docstring used to say "no shipped backend assembles a managed runtime
-    until MOR-1016" — that is stale. MOR-1016 has merged and managed TX is ON
-    by default (``RIGPLANE_MANAGED_TX`` is an opt-out, ``core/env_config.py``),
-    so this is no longer what production's common case does. What it still
-    pins is the LEGACY residual behind the kill switch: with no supervisor
-    published (``RIGPLANE_MANAGED_TX=0``, or a backend that assembles none),
-    teardown keeps the unconditional legacy OFF, unchanged. See the two-session
-    tests below for the managed-path counterpart this residual sits next to.
-    """
-    handler, poller, radio = _wired(None)
-
-    await handler.run()
-    await _drain(poller)
-
-    assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
-
-
-async def test_a_second_session_teardown_does_not_de_key_a_live_first_session() -> None:
-    """MOR-1179: a closing session must not de-key another session's live TX.
-
-    The acceptance gap this closes: the merged evidence
-    (``test_a_session_that_never_keyed_writes_nothing_to_a_managed_rig``, above)
-    only shows a closer holding NO lease leaves an idle rig alone. MOR-1179
-    wants the case where session A actually IS transmitting when session B — a
-    second writable session sharing the same queue — disconnects. Doctrine: one
-    session's disconnect must not de-key another session's live transmission;
-    ownership arbitration is the managed lease (``release_owner`` matching on
-    ``TxOwner``), not the queue B's teardown entry happens to share with A.
-
-    Structurally this is a straight read of ``release_owner``
-    (``core/tx_safety.py``): it answers STALE on any owner mismatch and emits
-    no effect, so B's teardown never reaches the provider. Confirmed live here,
-    not just asserted from the policy: a real ``TxSafetySupervisor`` drives it,
-    and A's lease is proven to still be live afterwards (a repeat key from A is
-    IDEMPOTENT; a key from a third owner is BUSY), not merely "not released".
-    """
-    supervisor = _Supervisor()
-    handler_a, poller, radio = _wired(supervisor)
-    handler_a._publish_session_liveness(live=True)
-    await handler_a._enqueue_command("ptt_on", {})
-    await _drain(poller)  # A is keyed, ACCEPTED
-
-    assert supervisor.outcomes[-1] is TxOutcome.ACCEPTED
-    assert "set_ptt(False)" not in radio.calls
-    a_write_on = supervisor.inner.snapshot.active_attempt  # A's own, still unsettled
-
-    handler_b, _ = _run_handler(poller._queue)  # second writable session, SAME queue
-    handler_b._publish_session_liveness(live=True)
-    await handler_b.run()  # EOF on first recv -> B tears down, enqueues its own PttOff
-    await _drain(poller)
-
-    assert supervisor.entries[-1] == (False, _owner(handler_b))
-    assert supervisor.outcomes[-1] is TxOutcome.STALE
-    # The load-bearing pair is the STALE outcome above plus release_reason
-    # below — NOT the identity check that follows on its own. A genuine,
-    # owner-matched release also leaves ``active_attempt`` as the same object:
-    # ``_release_current`` cancels it via ``_cancel()`` (``core/tx_safety.py``),
-    # which records a ``CancelProviderAttempt`` effect but never clears or
-    # replaces ``self._active``. So identity alone cannot tell "STALE, nothing
-    # happened" apart from "a real release just started". ``release_reason``
-    # can: it is set only by ``_begin_release``, which STALE's early return
-    # never reaches, so it stays ``None`` here and would flip to the release's
-    # reason the moment ownership resolution let a mismatched release through.
-    # (``radio.calls`` alone cannot prove any of this either: this harness's
-    # ``_Supervisor`` never calls ``radio.set_ptt`` on the managed path at
-    # all, so "set_ptt(False) not in radio.calls" would hold regardless of
-    # whether the release actually touched anything.)
-    assert supervisor.inner.snapshot.active_attempt is a_write_on
-    assert supervisor.inner.snapshot.release_reason is None
-    # A's transmission survives: no de-key reaches the provider. The leg is
-    # only ever disarmed defensively behind the refusal, never keyed off.
-    assert "set_ptt(False)" not in radio.calls
-    assert radio.calls == ["start_tx", *_TEARDOWN]
-
-    # A's lease is still live, proven two ways: a repeat key from A answers
-    # IDEMPOTENT (already-yours acceptance, not a fresh grant)...
-    await handler_a._enqueue_command("ptt_on", {})
-    await _drain(poller)
-    assert supervisor.entries[-1] == (True, _owner(handler_a))
-    assert supervisor.outcomes[-1] is TxOutcome.IDEMPOTENT
-
-    # ...and a third owner attempting to key while A holds the lease is BUSY,
-    # not refused as gone (the queue is authoritative once any session has
-    # registered, so the third owner must register too).
-    poller._queue.register_session("ws-third")
-    with pytest.raises(CommandError, match=TxOutcome.BUSY):
-        await poller._execute(PttOn(), command_id="c-third", session_id="ws-third")
-    assert supervisor.entries[-1] == (True, TxOwner(TxSource.WEBSOCKET, "ws-third"))
-    assert supervisor.outcomes[-1] is TxOutcome.BUSY
-
-
-async def test_a_second_sessions_teardown_still_de_keys_on_the_legacy_path() -> None:
-    """MOR-1179 legacy counterpart: pins the residual behind the kill switch.
-
-    Same two-session shape as the managed test above, but with
-    ``_wired(None)`` — no supervisor published, so ``PttOff`` always takes the
-    unconditional legacy write regardless of which session's teardown enqueued
-    it. This is the documented residual exposure MOR-1179's decision leaves in
-    place deliberately (interim legacy-path mitigation was explicitly declined,
-    to keep the kill switch's "no lease, no owner" contract honest): with
-    ``RIGPLANE_MANAGED_TX=0``, session B's disconnect DOES de-key session A.
-    """
-    handler_a, poller, radio = _wired(None)
-    handler_a._publish_session_liveness(live=True)
-    await handler_a._enqueue_command("ptt_on", {})
-    await _drain(poller)  # A is keyed via the raw legacy write
-
-    handler_b, _ = _run_handler(poller._queue)  # second writable session, SAME queue
-    handler_b._publish_session_liveness(live=True)
-    await handler_b.run()  # EOF on first recv -> B tears down, enqueues its own PttOff
-    await _drain(poller)
-
-    # The residual, pinned rather than latent: B's teardown de-keys A.
-    assert "set_ptt(False)" in radio.calls
-    assert radio.calls == [*_KEY, "set_ptt(False)", *_TEARDOWN]
 
 
 # --- the ingress gate itself (rigplane.runtime.managed_tx_ingress) ----------

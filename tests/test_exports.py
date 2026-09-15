@@ -46,6 +46,7 @@ def test_public_api_surface() -> None:
         "ReceiverBankCapable",
         "RecoverableConnection",
         "RepeaterControlCapable",
+        "RepeaterShiftCapable",
         "RigctldRoutable",
         "RitXitCapable",
         "ScopeCapable",
@@ -56,7 +57,6 @@ def test_public_api_surface() -> None:
         "StatePoller",
         "SystemControlCapable",
         "TransceiverBankCapable",
-        "TransceiverStatusCapable",
         "UsbAudioCapable",
         "VfoSlotCapable",
         "VoiceControlCapable",
@@ -74,6 +74,7 @@ def test_public_api_surface() -> None:
         "Mode",
         "AudioCodec",
         "BreakInMode",
+        "RepeaterShiftDirection",
         # --- Tier 1: Public state types ---
         "RadioState",
         "RadioProfile",

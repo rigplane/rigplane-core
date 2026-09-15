@@ -64,7 +64,6 @@ robots: noindex, follow
 
 ### Priority 1 (High ROI, Low Effort)
 - [x] Cache compiled poller command sequences ✅ ALREADY IMPLEMENTED
-  - `_STATE_QUERIES` built once at init (line 607)
   - `_cmd_map` loaded once at init (line 597)
   - No per-cycle TOML parsing overhead
 - [x] Add performance regression tests ✅ COMPLETE (2026-03-23)

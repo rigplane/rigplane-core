@@ -21,31 +21,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
+import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
-
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
+let txHarness: ManagedAppTxHarness;
 
 const h = vi.hoisted(() => {
   const box = {
     state: null as unknown,
     caps: null as unknown,
+    authoritySubscribers: new Set<(next: {
+      state: unknown;
+      caps: unknown;
+      session: ControlSessionSnapshot;
+      rxAudioTarget: RxAudioTargetSnapshot;
+    }) => void>(),
+    audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },
     audioFft: false,
     /** [resource, consumer] pairs, in order, against the fake App session. */
     acquired: [] as [string, string][],
     released: [] as unknown[],
     leases: [] as unknown[],
-    snapshot: null as unknown,
-    listeners: new Set<(next: unknown) => void>(),
-    start: vi.fn(),
-    release: vi.fn(),
-    resetFault: vi.fn(),
   };
   return {
     ...box,
@@ -68,6 +65,12 @@ const h = vi.hoisted(() => {
     scope: {
       registerPresentationDriver: vi.fn(),
       subscribe: vi.fn(() => () => {}),
+      // B/D resolves its frame inside the existing ScopeFrameHost. This
+      // migration fixture has no frame evidence, so retain the fail-closed
+      // null envelope while exposing the host's complete controller seam.
+      subscribeFrameEvidence: vi.fn(() => () => {}),
+      setFrameAuthority: vi.fn(),
+      snapshotFrameEvidence: vi.fn(() => ({ envelope: null, authority: null })),
       // MOR-1312 slice 12B: `SemanticRadioSurfaces`'s scope-display snapshot
       // reads `runtime.scope.hardwareScopeConnected` directly.
       hardwareScopeConnected: false,
@@ -91,11 +94,24 @@ const h = vi.hoisted(() => {
         return {
           get state() { subscribe(); return h.state; },
           get caps() { subscribe(); return h.caps; },
+          subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+            h.authoritySubscribers.add(handler);
+            handler({
+              state: h.state, caps: h.caps,
+              session: { state: 'disconnected', epoch: -1 },
+              rxAudioTarget: Object.freeze({
+                muted: h.audio.muted,
+                rxEnabled: h.audio.rxEnabled,
+              }),
+            });
+            return () => { h.authoritySubscribers.delete(handler); };
+          },
           get scope() { return h.scope; },
           connectionStatus: 'disconnected',
+          controlSession: Object.freeze({ state: 'disconnected', epoch: -1 }) satisfies ControlSessionSnapshot,
           radioPowerOn: null,
           connection: { status: 'disconnected', radioPowerOn: null },
-          audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },
+          get audio() { return h.audio; },
           connectionAudio: false,
           // MOR-1312 slice 12B: the scope-display snapshot (the FIFTH
           // adapter argument) — no fixture here declares a scope capability.
@@ -103,6 +119,7 @@ const h = vi.hoisted(() => {
             source: null, available: false, resourceSelected: false, demand: 0,
             lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
           },
+          onTxAudioDied: () => () => {},
           bootstrap: async () => () => {},
         };
       })();
@@ -110,6 +127,15 @@ const h = vi.hoisted(() => {
     },
   };
 });
+
+function publishAuthority(): void {
+  const next = {
+    state: h.state, caps: h.caps,
+    session: { state: 'disconnected' as const, epoch: -1 },
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  };
+  for (const subscriber of h.authoritySubscribers) subscriber(next);
+}
 
 vi.mock('../../../lib/local-extensions/LocalExtensionsHost.svelte', async () => {
   const stub = await import('./SpectrumPanelStub.svelte');
@@ -149,26 +175,16 @@ vi.mock('$lib/runtime/frontend-runtime', async () => ({
   runtime: await h.runtime(),
   presentationResources: h.presentationResources,
 }));
-vi.mock('$lib/runtime', async () => ({ runtime: await h.runtime() }));
+vi.mock('$lib/runtime', async () => ({
+  runtime: await h.runtime(),
+  presentationResources: h.presentationResources,
+}));
 
-// The App TX controller is provided by App.svelte in production; LcdLayout is
-// mounted here without it, so the authority is a recording spy (same idiom as
-// the MOR-1065 desktop suite, extended to observe owner/guard identity).
-vi.mock('$lib/runtime/tx-controller/app-host', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/app-host')>();
+vi.mock('$lib/runtime/tx-controller/managed-app-host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/managed-app-host')>();
   return {
     ...actual,
-    getAppTxController: () => ({
-      snapshot: () => h.snapshot,
-      subscribe: (listener: (next: unknown) => void) => {
-        h.listeners.add(listener);
-        return () => { h.listeners.delete(listener); };
-      },
-      start: h.start,
-      setIntent: vi.fn(),
-      release: h.release,
-      resetFault: h.resetFault,
-    }),
+    getManagedAppTxController: () => txHarness.controller,
   };
 });
 
@@ -205,33 +221,29 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getControlRange: vi.fn(() => ({ min: 0, max: 255 })),
 }));
 
-import type { Component } from 'svelte';
 import LcdLayout from '../LcdLayout.svelte';
 import SemanticRadioSurfaces from '../../wiring/SemanticRadioSurfaces.svelte';
 import { hasCapability } from '$lib/stores/capabilities.svelte';
 import { topologyFixtures, type TopologyFixtureId } from '../../../semantic/fixtures/topologies';
-import { lcdCockpitLayout, lcdScopeLayout } from '../../../presentation/layouts/lcd-declarations';
+import { loadSkin } from '../../../skins/registry';
 
 type Variant = 'cockpit' | 'scope';
+type LcdVariant = Variant | 'unified-instrument' | 'panadapter-first';
 const VARIANTS: readonly Variant[] = ['cockpit', 'scope'];
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
-const receiver = (hz: number) => ({
-  ...slot(hz), vfoA: slot(hz), vfoB: slot(hz + 50000), activeSlot: 'A', filter: 1,
-});
+// main_sub carries ONE unslotted receiver-level VFO per receiver.
+const receiver = (hz: number) => ({ freqHz: hz, mode: 'USB', filter: 1, dataMode: 0 });
 
 function liveState(mainHz = 14250000): unknown {
   const paths = ['active', 'split', 'dualWatch', 'txTarget'];
   for (const rx of ['main', 'sub']) {
-    paths.push(`${rx}.freqHz`, `${rx}.mode`, `${rx}.filter`, `${rx}.activeSlot`);
-    for (const v of ['vfoA', 'vfoB']) {
-      paths.push(`${rx}.${v}.freqHz`, `${rx}.${v}.mode`, `${rx}.${v}.filterNum`);
-    }
+    paths.push(`${rx}.freqHz`, `${rx}.mode`, `${rx}.filter`);
   }
   return {
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
-    txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: mainHz },
+    txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: mainHz },
     main: receiver(mainHz), sub: receiver(mainHz + 50000),
     fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
   };
@@ -259,7 +271,7 @@ function capsFor(id: TopologyFixtureId, extra: readonly string[] = []): Capabili
 let mounted: ReturnType<typeof mount>[] = [];
 let target: HTMLElement;
 
-function render(variant: Variant = 'cockpit'): HTMLElement {
+function render(variant: LcdVariant = 'cockpit'): HTMLElement {
   target = document.createElement('div');
   document.body.appendChild(target);
   mounted.push(mount(LcdLayout, { target, props: { variant } }));
@@ -267,14 +279,8 @@ function render(variant: Variant = 'cockpit'): HTMLElement {
   return target;
 }
 
-/** Push a new authority snapshot exactly as the real controller would. */
-function push(next: Partial<Snapshot>): void {
-  h.snapshot = { ...(h.snapshot as Snapshot), ...next };
-  for (const listener of h.listeners) listener(h.snapshot);
-  flushSync();
-}
-
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
   mounted = [];
   h.state = liveState();
   h.caps = capsFor('2/main_sub');
@@ -282,11 +288,6 @@ beforeEach(() => {
   h.acquired = [];
   h.released = [];
   h.leases = [];
-  h.snapshot = { ...IDLE };
-  h.listeners.clear();
-  h.start.mockReset();
-  h.release.mockReset();
-  h.resetFault.mockReset();
   h.scope.registerPresentationDriver.mockClear();
   h.scope.subscribe.mockClear();
   vi.mocked(hasCapability).mockReturnValue(false);
@@ -305,23 +306,23 @@ beforeEach(() => {
 
 afterEach(() => {
   mounted.forEach((c) => unmount(c));
+  expect(h.authoritySubscribers.size).toBe(0);
   document.body.innerHTML = '';
   vi.unstubAllGlobals();
 });
 
-describe('the layout manifest loader reaches the migrated entrypoint (MOR-1066 bridge)', () => {
-  // MUTATION KILLED: a placeholder loader, or a manifest pointing at the
-  // wrong LCD variant. Registration alone proves nothing about what is on
-  // screen — this mounts what the manifest actually resolves to and checks
-  // it is the migrated LCD, in the right variant.
+describe('the canonical skin loader reaches the migrated entrypoint (MOR-2425)', () => {
+  // MUTATION KILLED: a canonical loader pointing at the wrong LCD wrapper.
+  // Layout registration alone proves nothing about what is on screen, so this
+  // mounts what production loadSkin actually resolves and checks the variant.
   it.each([
-    ['cockpit', lcdCockpitLayout],
-    ['scope', lcdScopeLayout],
-  ] as const)('"%s" resolves to the migrated LCD entrypoint', async (variant, manifest) => {
-    const { default: Entrypoint } = await manifest.loader();
+    ['cockpit', 'lcd-cockpit'],
+    ['scope', 'lcd-scope'],
+  ] as const)('"%s" resolves to the migrated LCD entrypoint', async (variant, skinId) => {
+    const Entrypoint = await loadSkin(skinId);
     target = document.createElement('div');
     document.body.appendChild(target);
-    mounted.push(mount(Entrypoint as Component, { target }));
+    mounted.push(mount(Entrypoint, { target }));
     flushSync();
 
     expect(target.querySelector(`.lcd-frame[data-lcd-variant="${variant}"]`)).not.toBeNull();
@@ -337,6 +338,17 @@ describe('the migrated LCD entrypoints own VFO/TX through the semantic surfaces'
     expect(column.querySelector('[data-testid="semantic-radio-surfaces"]')).not.toBeNull();
     expect(column.querySelector('[data-testid="vfo-surface"]')).not.toBeNull();
     expect(column.querySelector('[data-testid="rx-tx-surface"]')).not.toBeNull();
+  });
+
+  // MOR-1413: the retained radio-operation menu is the first top-right block;
+  // semantic VFO/TX facts follow it without changing either component's owner.
+  it.each(VARIANTS)('places the existing VFO menu first in the %s top-right column', (variant) => {
+    const column = render(variant).querySelector('.content-right')!;
+    const menu = column.querySelector('.vfo-ctrl-panel')!;
+    const semantic = column.querySelector('[data-testid="semantic-radio-surfaces"]')!;
+
+    expect(column.firstElementChild).toBe(menu);
+    expect(menu.compareDocumentPosition(semantic) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
   // MUTATION KILLED: adding the surfaces alongside the legacy TX panel. The
@@ -420,6 +432,7 @@ describe('no dead-panel regression in the retained legacy glass (MOR-557 class)'
     expect(digits()).toBe('14.250.000');
 
     h.state = liveState(21300000);
+    publishAuthority();
     h.notify();
     flushSync();
     expect(digits()).toBe('21.300.000');
@@ -434,6 +447,7 @@ describe('no dead-panel regression in the retained legacy glass (MOR-557 class)'
     expect(labels()).not.toContain('TUNE');
 
     h.caps = capsFor('2/main_sub', ['tuner']);
+    publishAuthority();
     h.notify();
     flushSync();
     expect(labels()).toContain('TUNE');
@@ -454,66 +468,70 @@ describe('App-global singletons stay global (MOR-1059)', () => {
   });
 });
 
-describe('TX authority: lease-safe teardown in the LCD context (MOR-1065 F1)', () => {
-  function keyFromLcd(): { owner: string; guard: { leaseId: string } } {
-    (target.querySelector('[data-testid="rx-tx-key"]') as HTMLButtonElement).click();
+describe('TX authority: the LCD consumes one App-root managed controller', () => {
+  const click = (testId: 'rx-tx-key' | 'rx-tx-unkey') => {
+    (target.querySelector(`[data-testid="${testId}"]`) as HTMLButtonElement).click();
     flushSync();
-    const [owner, leaseId] = h.start.mock.calls[0] as [string, string];
-    const guard = { leaseId };
-    push({ phase: 'active', intent: 'latched', guard, radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true });
-    return { owner, guard };
-  }
+  };
 
-  it('keys as a latched lease under one owner identity', () => {
-    render();
-    const { owner } = keyFromLcd();
-    expect(h.start).toHaveBeenCalledTimes(1);
-    expect(h.start.mock.calls[0][2]).toBe('latched');
-    expect(owner).toMatch(/^semantic-rx-tx-\d+$/);
-  });
+  it('emits TRANSMIT without inventing state before the server snapshot arrives', () => {
+    const t = render();
+    expect(t.querySelector('[data-testid="rx-tx-state"]')?.getAttribute('data-rf')).toBe('receiving');
+    click('rx-tx-key');
+    expect(txHarness.trace()).toEqual([{ transport: 'http', operation: 'transmit_on' }]);
+    expect(t.querySelector('[data-testid="rx-tx-state"]')?.getAttribute('data-rf')).toBe('receiving');
 
-  // MUTATION KILLED: dropping the lease release from the LCD teardown path.
-  // MOR-1060 destroys this subtree on any presentation change; the lease is
-  // LATCHED and outlives the component, the model refuses a release from any
-  // other sourceId and AppGlobalHost exposes no unkey — so swapping away
-  // while keyed would strand the transmitter with no UI exit.
-  it('releases the live lease exactly once when the LCD subtree is destroyed', () => {
-    render();
-    const { owner, guard } = keyFromLcd();
-
-    unmount(mounted.pop()!);
-
-    expect(h.release).toHaveBeenCalledTimes(1);
-    expect(h.release).toHaveBeenCalledWith(owner, guard);
-  });
-
-  // MUTATION KILLED: releasing the render-time guard instead of the live one.
-  // A lease regenerated after the last render would be released under a stale
-  // guard, which the model rejects — indistinguishable from never releasing.
-  it('releases the guard the authority holds at teardown, not the last rendered one', () => {
-    render();
-    const { owner } = keyFromLcd();
-    h.snapshot = { ...(h.snapshot as Snapshot), guard: { leaseId: 'gen-2' } };
-
-    unmount(mounted.pop()!);
-
-    expect(h.release).toHaveBeenCalledWith(owner, { leaseId: 'gen-2' });
-  });
-
-  // The operator-visible half: after the swap the incoming LCD is usable.
-  it('lets the LCD key again after a swap, under a fresh owner identity', () => {
-    render();
-    const { owner: first } = keyFromLcd();
-    unmount(mounted.pop()!);
-    expect(h.release).toHaveBeenCalledTimes(1);
-
-    h.snapshot = { ...IDLE };
-    render();
-    (target.querySelector('[data-testid="rx-tx-key"]') as HTMLButtonElement).click();
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     flushSync();
+    expect(t.querySelector('[data-testid="rx-tx-state"]')?.getAttribute('data-rf')).toBe('transmitting');
+  });
 
-    expect(h.start).toHaveBeenCalledTimes(2);
-    expect(h.start.mock.calls[1][0]).not.toBe(first);
+  it('keeps one controller identity across an LCD presentation switch without TX writes', () => {
+    render('cockpit');
+    // The semantic RX/TX surface and the status-bar TOT presentation are
+    // independent consumers of the one injected App-root facade.
+    expect(txHarness.listenerCount()).toBe(2);
+    unmount(mounted.pop()!);
+    expect(txHarness.listenerCount()).toBe(0);
+    render('scope');
+    expect(txHarness.listenerCount()).toBe(2);
+    expect(txHarness.trace()).toEqual([]);
+  });
+
+  it.each(['unified-instrument', 'panadapter-first'] as const)(
+    'mounts one status-bar TOT consumer for %s through the same facade',
+    (variant) => {
+      const t = render(variant);
+      expect(t.querySelectorAll('[data-testid="managed-tot-status"]')).toHaveLength(1);
+      expect(t.querySelectorAll('[data-testid="managed-tot-trigger"]')).toHaveLength(1);
+      expect(t.querySelectorAll('[data-testid="managed-tot-control"]')).toHaveLength(0);
+      expect(txHarness.listenerCount()).toBe(2);
+
+      t.querySelector<HTMLButtonElement>('[data-testid="managed-tot-trigger"]')!.click();
+      flushSync();
+      expect(t.querySelectorAll('[data-testid="managed-tot-control"]')).toHaveLength(1);
+
+      const input = t.querySelector<HTMLInputElement>('[data-testid="managed-tot-draft"]')!;
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      t.querySelector<HTMLButtonElement>('[data-testid="managed-tot-save"]')!.click();
+
+      expect(txHarness.trace()).toEqual([
+        { transport: 'http', operation: 'set_tot', configuredSeconds: null },
+      ]);
+    },
+  );
+
+  it.each([
+    ['momentary PTT', { intent: 'ptt', observedPtt: 'on' }],
+    ['canonical TRANSMIT', { intent: 'transmit', observedPtt: 'on' }],
+    ['server release debt', { intent: 'rx', observedPtt: 'off', releaseRequired: true }],
+  ] as const)('maps explicit Unkey for %s to exactly one HTTP ForceOFF', (_label, snapshot) => {
+    txHarness.emitServerSnapshot(snapshot);
+    render();
+    click('rx-tx-unkey');
+    expect(txHarness.trace()).toEqual([{ transport: 'http', operation: 'force_off' }]);
   });
 });
 

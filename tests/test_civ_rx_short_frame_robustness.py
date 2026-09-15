@@ -28,7 +28,7 @@ from rigplane.types import CivFrame
 
 def _make_radio() -> IcomRadio:
     transport = MockTransport()
-    radio = IcomRadio("192.168.1.100")
+    radio = IcomRadio("192.168.1.100", model="IC-7610")
     radio._civ_transport = transport
     radio._ctrl_transport = transport
     radio._connected = True

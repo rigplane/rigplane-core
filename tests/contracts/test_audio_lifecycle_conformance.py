@@ -104,7 +104,7 @@ class _Harness:
 def _lan_harness() -> _Harness:
     from unittest.mock import MagicMock
 
-    radio = IcomRadio("192.168.99.1")
+    radio = IcomRadio("192.168.99.1", model="IC-7610")
     radio._connected = True
     radio._civ_transport = MagicMock()
     radio._audio_stream = AudioStream(_FakeLanAudioTransport())

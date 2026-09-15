@@ -10,8 +10,8 @@
  *   });
  *
  * Cross-sidebar linking happens automatically via module-level registry.
- * When two instances exist, dragging a panel over the peer sidebar
- * triggers cross-sidebar drop detection and panel transfer.
+ * Dragging a panel over another registered container triggers cross-container
+ * drop detection and panel transfer.
  */
 
 // --- Pure helpers (exported for testing) ---
@@ -52,7 +52,7 @@ export function loadPanelOrder(storageKey: string, defaults: string[]): string[]
     const stored = localStorage.getItem(storageKey);
     if (stored) {
       const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed)) {
         // Accept variable-length orders (cross-sidebar moves change panel count).
         // Filter to strings only, deduplicate, ignore unknowns at render time.
         const seen = new Set<string>();
@@ -63,22 +63,20 @@ export function loadPanelOrder(storageKey: string, defaults: string[]): string[]
             unique.push(id);
           }
         }
-        if (unique.length > 0) {
-          // Append ONLY defaults that the app has never presented to this
-          // sidebar before (i.e. newly introduced panels). Defaults that are
-          // already in `known` but absent from the stored order were
-          // deliberately removed by the user (e.g. dragged to the peer
-          // sidebar) — re-adding them would duplicate the panel across both
-          // sidebars. Unknown (peer-owned) ids stay untouched.
-          for (const id of defaults) {
-            if (!seen.has(id) && !known.has(id)) {
-              seen.add(id);
-              unique.push(id);
-            }
+        // Append ONLY defaults that the app has never presented to this
+        // sidebar before (i.e. newly introduced panels). Defaults that are
+        // already in `known` but absent from the stored order were
+        // deliberately removed by the user (e.g. dragged to the peer
+        // sidebar) — re-adding them would duplicate the panel across both
+        // sidebars. Unknown (peer-owned) ids stay untouched.
+        for (const id of defaults) {
+          if (!seen.has(id) && !known.has(id)) {
+            seen.add(id);
+            unique.push(id);
           }
-          saveKnownDefaults(storageKey, nextKnown);
-          return unique;
         }
+        saveKnownDefaults(storageKey, nextKnown);
+        return unique;
       }
     }
   } catch {
@@ -130,6 +128,7 @@ export function createDragReorder(options: DragReorderOptions): DragInstance {
   let order = $state(loadPanelOrder(storageKey, defaults));
   let dragPanelId = $state<string | null>(null);
   let dropTargetIndex = $state<number>(-1);
+  let cancelActiveDrag: (() => void) | null = null;
 
   // Cross-sidebar state (set by peer during its drag)
   let _incomingDragId = $state<string | null>(null);
@@ -164,7 +163,7 @@ export function createDragReorder(options: DragReorderOptions): DragInstance {
   }
 
   function _acceptPanel(panelId: string, atIndex: number) {
-    const newOrder = [...order];
+    const newOrder = order.filter((id) => id !== panelId);
     newOrder.splice(Math.min(atIndex, newOrder.length), 0, panelId);
     order = newOrder;
   }
@@ -194,12 +193,12 @@ export function createDragReorder(options: DragReorderOptions): DragInstance {
 
   function handleDragStart(panelId: string, event: PointerEvent) {
     const handle = event.currentTarget as HTMLElement;
-    handle.setPointerCapture(event.pointerId);
-    dragPanelId = panelId;
-    dropTargetIndex = order.indexOf(panelId);
-
     const sidebar = handle.closest(containerSelector) as HTMLElement;
     if (!sidebar) return;
+    cancelActiveDrag?.();
+    const pointerId = event.pointerId;
+    dragPanelId = panelId;
+    dropTargetIndex = order.indexOf(panelId);
 
     // Cache own panel rects
     const rects = new Map<string, DOMRect>();
@@ -207,71 +206,105 @@ export function createDragReorder(options: DragReorderOptions): DragInstance {
       rects.set(p.dataset.panelId!, p.getBoundingClientRect());
     }
 
-    // Find peer from registry and cache its rects
-    const peer = _registry.find((r) => r !== instance);
-    let peerRect: DOMRect | null = null;
-    let peerRects: Map<string, DOMRect> | null = null;
-    if (peer) {
+    // Cache every registered peer container and its panel rects.
+    const peers: Array<{
+      instance: DragInstance;
+      rect: DOMRect;
+      panelRects: Map<string, DOMRect>;
+    }> = [];
+    for (const peer of _registry) {
+      if (peer === instance) continue;
       const peerEl = document.querySelector(peer.containerSelector) as HTMLElement;
       if (peerEl) {
-        peerRect = peerEl.getBoundingClientRect();
-        peerRects = new Map();
+        const panelRects = new Map<string, DOMRect>();
         for (const p of peerEl.querySelectorAll<HTMLElement>('[data-panel-id]')) {
-          peerRects.set(p.dataset.panelId!, p.getBoundingClientRect());
+          panelRects.set(p.dataset.panelId!, p.getBoundingClientRect());
         }
+        peers.push({ instance: peer, rect: peerEl.getBoundingClientRect(), panelRects });
       }
     }
 
-    let isOverPeer = false;
+    let activePeer: (typeof peers)[number] | null = null;
+    let ended = false;
 
     function onMove(e: PointerEvent) {
-      if (
-        peer &&
-        peerRect &&
-        peerRects &&
-        e.clientX >= peerRect.left &&
-        e.clientX <= peerRect.right &&
-        e.clientY >= peerRect.top &&
-        e.clientY <= peerRect.bottom
-      ) {
-        // Cursor is over peer sidebar
-        if (!isOverPeer) {
+      if (e.pointerId !== pointerId || ended) return;
+      const target = peers.find(({ rect }) =>
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom
+      ) ?? null;
+
+      if (target) {
+        if (activePeer?.instance !== target.instance) {
+          activePeer?.instance._setIncoming(null, -1);
           dropTargetIndex = -1;
         }
-        isOverPeer = true;
-        const peerOrder = peer.order;
-        const idx = peerOrder.length === 0 ? 0 : findDropIndex(peerOrder, peerRects, e.clientY);
-        peer._setIncoming(panelId, idx);
+        activePeer = target;
+        const targetOrder = target.instance.order;
+        const idx = targetOrder.length === 0
+          ? 0
+          : findDropIndex(targetOrder, target.panelRects, e.clientY);
+        target.instance._setIncoming(panelId, idx);
       } else {
-        // Cursor is over own sidebar (or between)
-        if (isOverPeer && peer) {
-          peer._setIncoming(null, -1);
-        }
-        isOverPeer = false;
+        activePeer?.instance._setIncoming(null, -1);
+        activePeer = null;
         dropTargetIndex = findDropIndex(order, rects, e.clientY);
       }
     }
 
-    function onUp() {
-      if (isOverPeer && peer && dragPanelId) {
-        const targetIdx = peer._incomingDropIndex;
-        peer._acceptPanel(dragPanelId, targetIdx >= 0 ? targetIdx : 0);
+    function cleanup() {
+      if (ended) return;
+      ended = true;
+      activePeer?.instance._setIncoming(null, -1);
+      activePeer = null;
+      dragPanelId = null;
+      dropTargetIndex = -1;
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+      window.removeEventListener('blur', onCancel);
+      handle.removeEventListener('lostpointercapture', onLostPointerCapture);
+      if (cancelActiveDrag === cleanup) cancelActiveDrag = null;
+    }
+
+    function onUp(e: PointerEvent) {
+      if (e.pointerId !== pointerId || ended) return;
+      if (activePeer && dragPanelId) {
+        const targetIdx = activePeer.instance._incomingDropIndex;
+        activePeer.instance._acceptPanel(dragPanelId, targetIdx >= 0 ? targetIdx : 0);
         _removePanel(dragPanelId);
-        peer._setIncoming(null, -1);
       } else if (dragPanelId && dropTargetIndex >= 0) {
         const newOrder = reorderPanels(order, dragPanelId, dropTargetIndex);
         if (newOrder !== order) order = newOrder;
       }
-      dragPanelId = null;
-      dropTargetIndex = -1;
-      handle.removeEventListener('pointermove', onMove);
-      handle.removeEventListener('pointerup', onUp);
-      handle.removeEventListener('pointercancel', onUp);
+      cleanup();
     }
 
-    handle.addEventListener('pointermove', onMove);
-    handle.addEventListener('pointerup', onUp);
-    handle.addEventListener('pointercancel', onUp);
+    function onCancel(e: Event) {
+      if (e instanceof PointerEvent && e.pointerId !== pointerId) return;
+      cleanup();
+    }
+
+    function onLostPointerCapture(e: PointerEvent) {
+      // A Svelte update may replace the original handle while the pointer is
+      // still down. Window listeners keep that drag alive; a capture loss with
+      // no pressed buttons is an end signal and must clear the preview.
+      if (e.pointerId === pointerId && e.buttons === 0) cleanup();
+    }
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('blur', onCancel);
+    handle.addEventListener('lostpointercapture', onLostPointerCapture);
+    cancelActiveDrag = cleanup;
+    try {
+      handle.setPointerCapture(pointerId);
+    } catch {
+      // Global listeners still provide a complete drag lifecycle.
+    }
   }
 
   function reset() {
@@ -318,6 +351,7 @@ export function createDragReorder(options: DragReorderOptions): DragInstance {
   // In Svelte 5, $effect teardown runs on component unmount.
   $effect(() => {
     return () => {
+      cancelActiveDrag?.();
       const idx = _registry.indexOf(instance);
       if (idx >= 0) _registry.splice(idx, 1);
     };

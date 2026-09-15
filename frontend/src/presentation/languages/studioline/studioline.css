@@ -88,8 +88,7 @@
 
 /* Weight, not only colour — 200-weight glyphs read thinner than their
    contrast ratio implies (MOR-977 §3.2 studioline weak point). */
-[data-design-language='studioline'][data-design-language][data-theme='high-contrast'],
-[data-design-language='studioline'][data-design-language] [data-theme='high-contrast'] {
+[data-design-language='studioline'][data-design-language][data-theme='high-contrast'] {
   --dl-studioline-text: #ffffff;
   --dl-studioline-muted: #d5dbde;
   --dl-studioline-numerals: 600;
@@ -132,8 +131,7 @@
 [data-design-language='studioline'][data-design-language] .active-receiver,
 [data-design-language='studioline'][data-design-language] .vfo-role,
 [data-design-language='studioline'][data-design-language] .vfo-mode,
-[data-design-language='studioline'][data-design-language] .rx-tx-session,
-[data-design-language='studioline'][data-design-language] .rx-tx-origin {
+[data-design-language='studioline'][data-design-language] .rx-tx-session {
   font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.22em;
@@ -189,8 +187,7 @@
 [data-design-language='studioline'][data-design-language] .rx-tx-surface:has([data-session='releasing']) {
   border-top: 2px solid var(--dl-studioline-tx-active);
 }
-/* Unknown RF is a THIRD thing, never RX (MOR-977 §1.2.1). */
-[data-design-language='studioline'][data-design-language] .rx-tx-surface:has([data-rf='unknown']),
+/* An uncertain key transition stays explicit; passive unknown uses the quiet baseline. */
 [data-design-language='studioline'][data-design-language] .rx-tx-surface:has([data-rf='uncertain']) {
   border-top: 3px solid var(--dl-studioline-tx-tuning);
 }

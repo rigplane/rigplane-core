@@ -136,7 +136,7 @@ rigplane web --backend serial --model IC-7300 --serial-port /dev/cu.usbserial-A6
 | **Audio RX/TX** | ✅ Full | PCM and Opus codecs |
 | **Meters** | ✅ Full | S-meter, SWR, ALC, Power, Vd, Id |
 | **Filters** | ✅ Full | Filter width selection |
-| **DSP** | ✅ Full | NB, NR, APF, Twin Peak, PBT |
+| **DSP** | ✅ Full | NB, NR, Twin Peak, PBT |
 | **Dual Watch** | ⚠️ Single RX | IC-7300 has single receiver only |
 
 ## Audio Subsystem

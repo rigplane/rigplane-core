@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from rigplane.commands.command_spec import CatCommandSpec
+from rigplane.commands.command_spec import AbsentCommandSpec, CatCommandSpec
 from rigplane.profiles import RadioProfile
 from rigplane.rig_loader import (
     VALID_CONTROL_STYLES,
@@ -22,6 +22,7 @@ from rigplane.rig_loader import (
     discover_rigs,
     load_rig,
 )
+from test_rig_loader import TestTx500DeclaresAbsentCommands as _Tx500AbsentPin
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 
@@ -358,6 +359,9 @@ class TestMultiVendorProfiles:
         # but removes the capability that makes it eligible for speech gating.
         without_speech = rig_path.read_text().replace('    "speech",\n', "", 1)
         assert without_speech != rig_path.read_text()
+        (tmp_path / "_ctcss_tables_v1.toml").write_bytes(
+            (RIGS_DIR / "_ctcss_tables_v1.toml").read_bytes()
+        )
         assert (
             "speech"
             not in load_rig(_write_toml(tmp_path, without_speech, filename))
@@ -365,13 +369,15 @@ class TestMultiVendorProfiles:
             .capabilities
         )
 
-    def test_ic7300_speech_is_the_42nd_profile_capability(self):
-        """MOR-1609: speech is the sole post-A0 IC-7300 capability."""
+    def test_ic7300_speech_remains_after_unsupported_apf_is_removed(self):
+        """MOR-1609/MOR-2144: remove only APF, not supported capabilities."""
         rig = load_rig(RIGS_DIR / "ic7300.toml")
         profile = rig.to_profile()
 
         assert "speech" in profile.capabilities
-        assert len(profile.capabilities) == 42
+        assert "nb" in profile.capabilities
+        assert "apf" not in profile.capabilities
+        assert len(profile.capabilities) == 40
         assert rig.commands["set_speech"].bytes == (0x13,)
 
     def test_ftx1_without_announcement_routes_does_not_advertise_speech(self):
@@ -397,24 +403,46 @@ class TestMultiVendorProfiles:
         assert len(rig.meter_calibrations["s_meter"]) >= 6
 
     def test_ftx1_pa_meters_declare_no_calibration_table(self):
-        """MOR-1527: power/ALC/COMP/Vd/Id have no trustworthy source for the
+        """MOR-1527: power/ALC/COMP have no trustworthy source for the
         FTX-1. Unlike the IC-7300 (hamlib's ic7300.c driver documents its
         PA-meter scales, see rigs/ic7300.toml), no equivalent published
         table exists for the FTX-1 — it postdates hamlib's own FTX-1
         support (Hamlib#1600, "waiting for CAT manual" as of this ticket)
         and the pre-existing [meters.swr] table on this profile is itself
         labelled a best-effort approximation pending bench calibration, not
-        a citable source for the other five meters. Per MOR-1291 doctrine
+        a citable source for the other meters. Per MOR-1291 doctrine
         (no invented defaults), the honest choice is to declare nothing:
-        these five meters stay uncalibrated and render the raw device byte
+        these three meters stay uncalibrated and render the raw device byte
         (tagged "raw" — see meter-utils.ts's formatRaw) until a real
         source (live bench measurement or a matured hamlib driver) exists.
         This test pins that absence so a future change does not
-        accidentally invent unsourced anchors."""
+        accidentally invent unsourced anchors.
+
+        Vd/Id left this list under MOR-2425/T147: the bench measurement the
+        docstring above names as the qualifying source was taken on
+        2026-09-08, and rigs/ftx1.toml now carries a two-point table for
+        each, provenance in the comment above the blocks. They are pinned
+        instead by ``test_ftx1_drain_meters_declare_the_bench_two_point_table``
+        below."""
         rig = load_rig(RIGS_DIR / "ftx1.toml")
         assert rig.meter_calibrations is not None
-        for meter_key in ("power", "alc", "comp", "vd", "id"):
+        for meter_key in ("power", "alc", "comp"):
             assert meter_key not in rig.meter_calibrations
+
+    def test_ftx1_drain_meters_declare_the_bench_two_point_table(self):
+        """MOR-2425/T147: Vd/Id carry exactly the two bench points each.
+
+        Two points, no more: the 2026-09-08 run took one display reading per
+        meter during transmit, and nothing in it establishes the shape of the
+        curve away from those anchors."""
+        rig = load_rig(RIGS_DIR / "ftx1.toml")
+        assert rig.meter_calibrations is not None
+        assert [
+            (point["raw"], point["actual"]) for point in rig.meter_calibrations["vd"]
+        ] == [(0, 0.0), (210, 13.8)]
+        assert [
+            (point["raw"], point["actual"]) for point in rig.meter_calibrations["id"]
+        ] == [(0, 0.0), (29, 1.0)]
 
     def test_ftx1_nb_level_is_toggle(self):
         rig = load_rig(RIGS_DIR / "ftx1.toml")
@@ -441,14 +469,46 @@ class TestMultiVendorProfiles:
     def test_tx500_commands_are_wired(self):
         """MOR-684: kenwood_cat CAT command strings are wired in [commands].
 
-        Previously [commands] was an empty stub; the loaded profile now carries
-        the rev.2 CAT command set as ``CatCommandSpec`` entries.
+        Previously [commands] was an empty stub; the loaded profile now
+        carries the rev.2 CAT command set as ``CatCommandSpec`` entries.
+
+        MOR-2008 batch 4 (D2) added 16 formal ``{ absent = "..." }`` rows
+        for the Group B canonical keys (protocol mismatch -- TX-500 has no
+        CI-V command table at all) -- renamed from a single-branch "every
+        command is CatCommandSpec" assertion, which that batch's own CI
+        run caught failing the moment the first absent row landed, to the
+        exact-split pattern
+        (``test_command_spec.py: test_ic7610_loads_civ_except_the_declared_absent_tone_tsql_family``'s
+        precedent): every command is ``CatCommandSpec`` except the pinned
+        absent set, discriminating both directions so a CAT row silently
+        becoming absent, or an absent row silently reverting to CAT, fails
+        regardless of which name moves. The expected-absent set is
+        imported from ``test_rig_loader.py: TestTx500DeclaresAbsentCommands``
+        rather than duplicated here.
         """
         rig = load_rig(RIGS_DIR / "tx500.toml")
         assert isinstance(rig.commands, dict)
         assert rig.commands  # no longer empty
-        for spec in rig.commands.values():
-            assert isinstance(spec, CatCommandSpec)
+
+        expected_absent = _Tx500AbsentPin._EXPECTED_ABSENT
+        for name, spec in rig.commands.items():
+            if name in expected_absent:
+                assert isinstance(spec, AbsentCommandSpec), (
+                    f"Command {name} is declared absent but not AbsentCommandSpec"
+                )
+            else:
+                assert isinstance(spec, CatCommandSpec), (
+                    f"Command {name} is not CatCommandSpec"
+                )
+        actually_absent = {
+            name
+            for name, spec in rig.commands.items()
+            if isinstance(spec, AbsentCommandSpec)
+        }
+        assert actually_absent == expected_absent, (
+            "tx500.toml's AbsentCommandSpec entries drifted from "
+            "TestTx500DeclaresAbsentCommands._EXPECTED_ABSENT"
+        )
 
     def test_tx500_mode_map_matches_rev2(self):
         """MOR-684: mode list matches Lab599 CAT Protocol rev.2 exactly.

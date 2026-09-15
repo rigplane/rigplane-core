@@ -17,11 +17,10 @@
  * lookup below), and a manifest gaining a real mount must remove it by hand.
  * Each test's doc line names the mutation it exists to kill.
  *
- * MOR-1313 EMPTIED IT. `desktop-v2` was the last entry: RadioLayout.svelte no
- * longer gates its semantic mount on a hardcoded skin id, it derives per-zone
- * suppression from the ACTIVE manifest's zone declarations — so `desktop-v2`'s
- * `receiver-deck: [vfo]` / `rx-tx: [rxTx]` zones are what the rendered tree is
- * built from, and both of the shared shell's families are DOM-backed. The
+ * MOR-1313 EMPTIED IT. `desktop-v2` was the last entry. L1 later moved the
+ * shared semantic host above the replaceable entrypoint, so the proof now
+ * follows App host ownership through the hosted registry mode, entrypoint
+ * forwarding, and RadioLayout's manifest-derived named-handle render. The
  * literal is now `[]` and this file's job flips from "keep the promise
  * honest" to "keep it at zero": any NEW forward-declared manifest must extend
  * the literal by hand and be argued for on its own ticket.
@@ -46,8 +45,7 @@ import { desktopV2Layout, sdrTestLayout } from '../declarations';
 // `mobile-registration.test.ts`) register their own probe manifests into it
 // — `listLayoutIds()` would make this file's inventory depend on cross-file
 // execution order. The barrel's own export surface has no such cross-file
-// state. Same derivation as `loader-identity-inventory.test.ts`'s
-// `BARREL_MANIFESTS` (MOR-2060).
+// state (MOR-2060).
 import * as layoutDeclarationsBarrel from '../declarations';
 
 /** Every manifest currently registered by the barrel (mirrors
@@ -60,35 +58,66 @@ const ALL_MANIFESTS: readonly LayoutManifest[] =
 /** The set this whole file exists to keep honest — see the header comment. */
 const EXPECTED_FORWARD_DECLARED: readonly string[] = [];
 
+const appSource = readFileSync('src/App.svelte', 'utf8');
+const registrySource = readFileSync('src/skins/registry.ts', 'utf8');
+const semanticHostSource = readFileSync('src/components-v2/wiring/SemanticRadioSurfaces.svelte', 'utf8');
 const radioLayoutSource = readFileSync('src/components-v2/layout/RadioLayout.svelte', 'utf8');
+const desktopSkinSource = readFileSync('src/skins/desktop-v2/DesktopSkin.svelte', 'utf8');
+const sdrSkinSource = readFileSync('src/skins/sdr-test/SdrTestSkin.svelte', 'utf8');
 const lcdLayoutSource = readFileSync('src/components-v2/layout/LcdLayout.svelte', 'utf8');
 const mobileLayoutSource = readFileSync('src/components-v2/layout/MobileRadioLayout.svelte', 'utf8');
 const cockpitShellSource = readFileSync('src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte', 'utf8');
+const peerSplitShellSource = readFileSync('src/skins/segmentline/PeerSplitLayout.svelte', 'utf8');
+const unifiedInstrumentShellSource = readFileSync('src/skins/lcd-unified-instrument/LcdUnifiedInstrumentSkin.svelte', 'utf8');
+const panadapterFirstShellSource = readFileSync('src/skins/lcd-panadapter-first/LcdPanadapterFirstSkin.svelte', 'utf8');
+const flagshipProbeShellSource = readFileSync('src/skins/flagship-probe/FlagshipProbeSkin.svelte', 'utf8');
 
 /**
- * MOR-1313. `sdr-test` and `desktop-v2` share the one shell whose semantic
- * mount is now MANIFEST-driven: RadioLayout derives the suppressed set from
- * `declaredSurfaces(getLayout(skinId))` and mounts `<SemanticRadioSurfaces />`
- * exactly where the resolved layout declares the `vfo` surface. Two independent
- * halves must both hold for either family to be DOM-backed, and each is read
- * from its real source: the SHELL still resolving through the registry (text),
- * and the MANIFEST still declaring the surface (the registered object).
+ * L1 hosted path. App owns one semantic host and passes its named composition
+ * into the loaded entrypoint; the entrypoint forwards it to RadioLayout, whose
+ * semantic gate still comes from `declaredSurfaces(getLayout(skinId))`. Every
+ * hop is read from its real source and the manifest must still declare VFO.
  *
  * Deliberately NOT `true`: a prober that ignores both halves would report a
  * DOM-backed inventory for a shell that had gone back to a hardcoded id, or for
  * a manifest that had dropped its VFO zone.
+ *
  */
+const persistentHostPassesInstruments =
+  /<SemanticRadioSurfaces[^>]*>/.test(appSource)
+  && /\{#snippet children\(instruments\)\}[\s\S]*<(?:HostedPresentation|Presentation) \{instruments\} \/>/.test(appSource)
+  && /children\?: Snippet<\[InstrumentComposition\]>;/.test(semanticHostSource)
+  && /\{@render hostedChildren\(\{/.test(semanticHostSource);
 const shellResolvesThroughManifest =
   /let declared = \$derived\(declaredSurfaces\(getLayout\(skinId\)\)\);/.test(radioLayoutSource)
-  && /\{#if semanticDeck\}\s*<SemanticRadioSurfaces \/>/.test(radioLayoutSource);
-const sharedShellMounts = (manifest: LayoutManifest): boolean =>
-  shellResolvesThroughManifest && manifest.zones.some((z) => z.surfaces.includes('vfo'));
+  && /\{@render instruments\.vfo\(/.test(radioLayoutSource);
+const hostedSkinSources: Readonly<Record<string, string>> = {
+  'desktop-v2': desktopSkinSource,
+  'sdr-test': sdrSkinSource,
+};
+const sharedShellMounts = (manifest: LayoutManifest): boolean => {
+  const skinSource = hostedSkinSources[manifest.id];
+  const registryMode = new RegExp(
+    `['"]${manifest.id}['"]:\\s*\\{[^}]*kind:\\s*['"]built-in-instrument-layout['"]`,
+    's',
+  );
+  const forwardsComposition = new RegExp(
+    `<RadioLayout\\s+skinId=['"]${manifest.id}['"]\\s+\\{instruments\\}\\s*/>`,
+  );
+  return skinSource !== undefined
+    && persistentHostPassesInstruments
+    && shellResolvesThroughManifest
+    && registryMode.test(registrySource)
+    && forwardsComposition.test(skinSource)
+    && manifest.zones.some((zone) => zone.surfaces.includes('vfo'));
+};
 
 /**
  * Per-manifest DOM-backing proof, read off the ACTUAL skin source — never a
- * hardcoded boolean. The four dedicated shells each mount
- * `SemanticRadioSurfaces` outright (verified unconditional — not wrapped in any
- * `{#if}` — by direct reading, MOR-1266 pin round).
+ * hardcoded boolean. Five dedicated shells each mount `SemanticRadioSurfaces`
+ * outright (verified unconditional — not wrapped in any `{#if}` — by direct
+ * reading: the original four in the MOR-1266 pin round, `peer-split` here in
+ * MOR-2151).
  */
 const DOM_BACKED: Readonly<Record<string, () => boolean>> = {
   'sdr-test': () => sharedShellMounts(sdrTestLayout),
@@ -97,6 +126,25 @@ const DOM_BACKED: Readonly<Record<string, () => boolean>> = {
   'lcd-scope': () => /<SemanticRadioSurfaces\s*\/>/.test(lcdLayoutSource),
   'mobile': () => /<SemanticRadioSurfaces\s*\/>/.test(mobileLayoutSource),
   'dual-receiver-cockpit': () => /<SemanticRadioSurfaces strips="dual"\s*\/>/.test(cockpitShellSource),
+  // T160 PR-1: the geometry probe mounts the same dual-receiver composition
+  // unconditionally, so every surface its manifest declares has a real DOM
+  // path rather than a forward declaration. Written in `peer-split`'s
+  // attribute-order-free form below, because this shell now passes a
+  // presentation prop beside `strips` — what is asserted is the dual mount,
+  // not the rest of the attribute list.
+  'flagship-probe': () => /<SemanticRadioSurfaces(?=[^>]*\bstrips\s*=\s*"dual")[^>]*\/>/.test(flagshipProbeShellSource),
+  // MOR-2151: PeerSplitLayout.svelte mounts the same dual-receiver
+  // composition unconditionally, so its manifest-declared VFO/RX-TX
+  // surfaces have a real DOM path rather than a forward declaration.
+  'peer-split': () => /<SemanticRadioSurfaces(?=[^>]*\bstrips\s*=\s*"dual")[^>]*\/>/.test(peerSplitShellSource),
+  'unified-instrument': () =>
+    /<LcdLayout\s+variant="unified-instrument"\s*\/>/.test(unifiedInstrumentShellSource)
+    && /<PeerSplitLayout[\s\S]*displayVariant=\{segmentlineDisplay\}/.test(lcdLayoutSource)
+    && /<SemanticRadioSurfaces(?=[^>]*\bstrips\s*=\s*"dual")[^>]*\/>/.test(peerSplitShellSource),
+  'panadapter-first': () =>
+    /<LcdLayout\s+variant="panadapter-first"\s*\/>/.test(panadapterFirstShellSource)
+    && /<PeerSplitLayout[\s\S]*displayVariant=\{segmentlineDisplay\}/.test(lcdLayoutSource)
+    && /<SemanticRadioSurfaces(?=[^>]*\bstrips\s*=\s*"dual")[^>]*\/>/.test(peerSplitShellSource),
 };
 
 describe('forward-declared vs DOM-backed manifest inventory (verify.md N2)', () => {
@@ -132,11 +180,19 @@ describe('forward-declared vs DOM-backed manifest inventory (verify.md N2)', () 
     }
   });
 
+  // Kills: peer-split's real dual-receiver mount losing the explicit
+  // `strips="dual"` registration while another broad inventory condition
+  // still happens to keep the expected set empty.
+  it('discovers the registered peer-split shell as DOM-backed', () => {
+    expect(DOM_BACKED['peer-split']()).toBe(true);
+  });
+
   // Kills the two ways `sharedShellMounts` could go vacuously true: a shell
   // that stopped resolving through the manifest, and a manifest whose VFO zone
   // was dropped. Both halves are asserted independently, because with the
   // literal at `[]` an always-true prober would otherwise be invisible.
-  it('the shared shell resolves its semantic mount through the manifest', () => {
+  it('the hosted App-to-layout path resolves its semantic mount through the manifest', () => {
+    expect(persistentHostPassesInstruments).toBe(true);
     expect(shellResolvesThroughManifest).toBe(true);
     expect(sharedShellMounts({ ...desktopV2Layout, zones: [{ id: 'rx-tx', surfaces: ['rxTx'] }] }))
       .toBe(false);

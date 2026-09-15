@@ -13,9 +13,11 @@
  *       `set_rit_frequency` command — proving `makeRitXitHandlers()`'s two
  *       offset handlers converge, not merely asserting it about a stub.
  *   (b) MOUNTING CANON (MOR-1304 ruling). This is a control-bearing surface
- *       with no manifest-declared zone, so per the canon's option (i) it
- *       mounts in the SINGLE composition only, bare, and renders NOTHING in
- *       the DUAL composition — pinned here with a view model that actually
+ *       the DUAL composition's only layout (`dual-receiver-cockpit.ts`)
+ *       declares no zone for, so per the canon's option (i) it mounts in the
+ *       SINGLE composition only and renders NOTHING in the DUAL composition.
+ *       No longer bare under `desktop-v2`, which declared `rit-xit-scan` in
+ *       MOR-1367 (S8) — pinned here with a view model that actually
  *       CARRIES the `ritXit`/`scan` groups (a fixture that cannot see the
  *       surface would repeat the exact vacuous-green bug the canon exists to
  *       catch, per the rxAudio precedent).
@@ -24,24 +26,31 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { DF_SPANS, RESUME_MODES, SCAN_TYPES } from '../../../semantic/RitXitScanSurface.svelte';
 import type { Capabilities, ControlDomain } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
+  authoritySubscribers: new Set<(next: {
+    state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  txController: null as ManagedAppTxController | null,
   audio: { muted: true, rxEnabled: false, volume: 0 },
   audioConnected: false,
   guardVisible: false,
-  listeners: new Set<(next: unknown) => void>(),
+  selectedFiniteAppearance: undefined as unknown,
 }));
 
+vi.mock('../../../component-kits/activation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../component-kits/activation')>();
+  return { ...actual, getSelectedFiniteControlAppearance: () => h.selectedFiniteAppearance };
+});
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
 vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
@@ -49,8 +58,17 @@ vi.mock('$lib/runtime/commands/radio-intents', async () => {
 });
 vi.mock('$lib/runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({
+        state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 },
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
     get audio() { return h.audio; },
     get connectionAudio() { return h.audioConnected; },
     // MOR-1312 slice 12B (rebase fix): the wiring now also hands the adapter
@@ -66,15 +84,8 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => { h.listeners.delete(listener); };
-    },
-    start: vi.fn(), setIntent: vi.fn(), release: vi.fn(), resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => h.txController,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: h.guardVisible, sourceLabel: 'MIC' }),
@@ -89,11 +100,12 @@ import { sendCommand } from '$lib/transport/ws-client';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+import type { FiniteControlAppearance } from '../../../primitives/control-instruments/control-instrument-renderer.svelte';
+import FiniteControlRendererFixture, {
+  resetRetainedInvocations, retainedInvocations,
+} from '../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
 
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
@@ -152,9 +164,21 @@ const FTX_RIT_DOMAIN: ControlDomain = {
  *  scan commands additionally require the declared `scan` capability. */
 const RIT_XIT_TAGS = ['tx', 'rit', 'xit', 'scan'] as const;
 const SILENT_TAGS = ['tx'] as const;
+/** MOR-2425 restore: `rit`/`xit` present but `scan` absent — the scan FACT
+ *  group still renders (per-field "ever reported", no capability check),
+ *  but the command layer's `hasCapability('scan')` gate means the new
+ *  TYPE/SPAN/RESUME button groups must HIDE while the pre-existing
+ *  toggle/readouts stay unaffected (census §3's "silent trap"). */
+const NO_SCAN_TAGS = ['tx', 'rit', 'xit'] as const;
+const hexId = (value: number) => `0x${value.toString(16).padStart(2, '0')}`;
+const scanTypeCases = SCAN_TYPES.map(([value, label]) => ({ value, label, hex: hexId(value) }));
+const dfSpanSample = [DF_SPANS[0]!, DF_SPANS[DF_SPANS.length - 1]!]
+  .map(([value, label]) => ({ value, label, hex: hexId(value) }));
+const resumeCases = RESUME_MODES.map(([value, label]) => ({ value, label, hex: hexId(value) }));
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 
 function render(props: { strips?: 'single' | 'dual' } = {}): void {
   target = document.createElement('div');
@@ -173,22 +197,37 @@ function useState(state: ServerState): void {
   setRadioState(state);
 }
 
+/** Re-publishes control authority to every currently-mounted subscriber —
+ *  used only by the finite-appearance A-B-A witness below; the initial
+ *  publication on subscribe (above) covers every other test in this file. */
+function publishAuthority(state: unknown, caps: unknown): void {
+  for (const handler of h.authoritySubscribers) handler({
+    state, caps, session: { state: 'connected', epoch: 1 },
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  });
+}
+
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   resetRadioState();
   setCapabilities(liveCaps(RIT_XIT_TAGS));
   useState(liveState());
   h.caps = liveCaps(RIT_XIT_TAGS);
-  h.snapshot = { ...IDLE };
   h.audio = { muted: true, rxEnabled: false, volume: 0 };
   h.audioConnected = false;
   h.guardVisible = false;
-  h.listeners.clear();
+  h.selectedFiniteAppearance = undefined;
+  resetRetainedInvocations();
   vi.mocked(sendCommand).mockClear();
 });
 
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(txHarness.listenerCount()).toBe(0);
+  expect(txHarness.trace()).toEqual([]);
+  expect(h.authoritySubscribers.size).toBe(0);
   document.body.innerHTML = '';
 });
 
@@ -321,11 +360,6 @@ describe('MOR-1731 exact RIT domain', () => {
     ['unknown receiver', liveState({ active: undefined } as Partial<ServerState>)],
     ['wrong VFO', liveState({ active: 'OTHER' } as never)],
     ['unread offset', (() => { const state = liveState({ ritFreq: undefined }); return state; })()],
-    ['stale offset', (() => {
-      const state = liveState();
-      return { ...state, fieldStatus: { ...state.fieldStatus,
-        ritFreq: { ...fresh, freshness: 'stale', availability: 'stale' } } } as ServerState;
-    })()],
   ] as const)('%s emits no exact-domain offset intent', (_name, state) => {
     const input = renderExact(state);
     expect(input.disabled).toBe(true);
@@ -335,6 +369,19 @@ describe('MOR-1731 exact RIT domain', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
     expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  // MOR-2425/R40: a HELD offset is an offset, not a refusal.
+  it('a held (stale) offset stays adjustable and emits an exact-domain intent', () => {
+    const base = liveState();
+    const input = renderExact({ ...base, fieldStatus: { ...base.fieldStatus,
+      ritFreq: { ...fresh, freshness: 'stale', availability: 'stale' } } } as ServerState);
+    expect(input.disabled).toBe(false);
+    input.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'ArrowRight', bubbles: true, cancelable: true,
+    }));
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledOnce();
   });
 });
 
@@ -391,12 +438,165 @@ describe('the surface intents reach the shipped command vocabulary', () => {
     flushSync();
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_stop', {});
   });
+});
 
-  it('cycling resume mode sends scan_set_resume with the advanced mask', () => {
+/* ── MOR-2425 restore: TYPE, ΔF SPAN, RESUME reach the real command bus ── */
+
+describe('MOR-2425: scan TYPE buttons reach the real command bus', () => {
+  it.each(scanTypeCases)('$label ($hex) sends scan_start with its own byte exactly once', ({ value, hex }) => {
     render();
-    el('scan-resume-cycle')!.click();
+    el(`scan-type-${hex}`)!.click();
     flushSync();
-    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_set_resume', { mode: 0xD2 });
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_start', { type: value });
+  });
+
+  it('hides the TYPE group — not merely disables it — when the radio has no scan capability', () => {
+    h.caps = liveCaps(NO_SCAN_TAGS);
+    setCapabilities(liveCaps(NO_SCAN_TAGS));
+    render();
+    expect(el('scan-type-group')).toBeNull();
+    // The pre-existing scan toggle/readouts stay unaffected — this PR adds
+    // no new gate on them.
+    expect(el('scan-toggle')).not.toBeNull();
+    expect(el('scan-type-value')).not.toBeNull();
+  });
+});
+
+describe('MOR-2425: ΔF SPAN buttons reach the real command bus', () => {
+  it('is absent by default (PROG selected, no active ΔF scan)', () => {
+    render();
+    expect(el('scan-span-group')).toBeNull();
+  });
+
+  // Representative sample, not the full seven: `RitXitScanSurface.test.ts`
+  // already exhaustively pins all seven ΔF-SPAN bytes against the surface's
+  // own `onDfSpanChange` callback (its `dfSpanCases` `it.each`) — this layer
+  // additionally proves the wire shape (`scan_set_df_span`, `span` key) is
+  // correct, which the surface-level test cannot see.
+  it.each(dfSpanSample)('$label ($hex) sends scan_set_df_span with its own byte exactly once, once ΔF is selected', ({ value, hex }) => {
+    render();
+    el('scan-type-0x03')!.click();
+    flushSync();
+    // Selecting ΔF itself fires `scan_start` (v2.11.1 `handleTypeClick`,
+    // restored above) — clear it so the assertion below is about the SPAN
+    // click alone, not "was ever called with this value".
+    vi.mocked(sendCommand).mockClear();
+    el(`scan-span-${hex}`)!.click();
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_set_df_span', { span: value });
+  });
+
+  it('hides the SPAN group when the radio has no scan capability, even were ΔF selectable', () => {
+    h.caps = liveCaps(NO_SCAN_TAGS);
+    setCapabilities(liveCaps(NO_SCAN_TAGS));
+    render();
+    expect(el('scan-type-group')).toBeNull();
+    expect(el('scan-span-group')).toBeNull();
+  });
+});
+
+describe('MOR-2425: RESUME buttons reach the real command bus (replacing the cycle)', () => {
+  it.each(resumeCases)('$label ($hex) sends scan_set_resume with its own literal byte exactly once', ({ value, hex }) => {
+    render();
+    el(`scan-resume-${hex}`)!.click();
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_set_resume', { mode: value });
+  });
+
+  // The load-bearing divergence from the old single cycle button (which
+  // required a KNOWN reading to compute its next value): none of the four
+  // explicit buttons reads `scanResumeMode.reading` at all, so all four must
+  // still reach the wire even when the radio has never reported it.
+  it('fires and shows its last value while scanResumeMode is stale-but-observed (MOR-2425/R29)', () => {
+    const state = liveState();
+    useState({
+      ...state,
+      fieldStatus: {
+        ...state.fieldStatus,
+        scanResumeMode: { ...fresh, freshness: 'stale', availability: 'stale' },
+      },
+    } as ServerState);
+    render();
+    // A stale-but-observed reading still carries its last value (R29) —
+    // `liveState()`'s raw `scanResumeMode` is 1.
+    expect(el('scan-resume-value')!.textContent?.trim()).toBe('1');
+    el('scan-resume-0xd1')!.click();
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_set_resume', { mode: 0xD1 });
+  });
+
+  it('hides the RESUME group when the radio has no scan capability', () => {
+    h.caps = liveCaps(NO_SCAN_TAGS);
+    setCapabilities(liveCaps(NO_SCAN_TAGS));
+    render();
+    expect(el('scan-resume-group')).toBeNull();
+    expect(el('scan-resume-value')).not.toBeNull();
+  });
+});
+
+/* ── MOR-2425: RIT/XIT/CLEAR now live in `RitXitScanInstrumentHost`, joined
+ * into `SemanticRadioSurfaces`'s provider chain. These witnesses prove the
+ * two refusal shapes the host itself defines (`control-instrument-behavior`'s
+ * `canInvoke`: an unknown reading and a `blocked` field both refuse
+ * invocation) survive being wired through the real command bus, and that a
+ * finite-appearance renderer swap keeps the composed tree's owner identity
+ * discipline `semantic-dsp-wiring.component.test.ts`'s own A-B-A describe
+ * already proves for that sibling host. ────────────────────────────────── */
+
+describe('MOR-2425: the host refuses the same two shapes it defines, end to end', () => {
+  it('an unread RIT/XIT reading disables both toggles and reaches no command', () => {
+    useState(liveState({ ritOn: undefined, ritTx: undefined } as Partial<ServerState>));
+    render();
+    const rit = el('ritxit-rit-toggle') as HTMLButtonElement;
+    const xit = el('ritxit-xit-toggle') as HTMLButtonElement;
+    expect(rit.disabled).toBe(true);
+    expect(xit.disabled).toBe(true);
+    rit.click();
+    xit.click();
+    flushSync();
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('an unknown active receiver blocks RIT, XIT and CLEAR alike and reaches no command', () => {
+    useState(liveState({ active: undefined } as Partial<ServerState>));
+    render();
+    const rit = el('ritxit-rit-toggle') as HTMLButtonElement;
+    const xit = el('ritxit-xit-toggle') as HTMLButtonElement;
+    const clear = el('ritxit-clear') as HTMLButtonElement;
+    expect(rit.disabled).toBe(true);
+    expect(xit.disabled).toBe(true);
+    expect(clear.disabled).toBe(true);
+    rit.click();
+    xit.click();
+    clear.click();
+    flushSync();
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe('MOR-2425: persistent finite RIT/XIT authority', () => {
+  const finiteAppearance = {
+    action: FiniteControlRendererFixture as FiniteControlAppearance<string | number>['action'],
+    toggle: FiniteControlRendererFixture as FiniteControlAppearance<string | number>['toggle'],
+    choice: FiniteControlRendererFixture as FiniteControlAppearance<string | number>['choice'],
+  } satisfies FiniteControlAppearance<string | number>;
+
+  it('synchronously fences RIT across an active-receiver A-B-A and admits only the current seat', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    render();
+    const state = h.state as ServerState;
+    const caps = h.caps as Capabilities;
+    const retainedA1 = retainedInvocations.get('RIT')!;
+    publishAuthority({ ...state, active: 'SUB' } as ServerState, caps);
+    publishAuthority(state, caps);
+    retainedA1();
+    expect(sendCommand).not.toHaveBeenCalled();
+
+    flushSync();
+    const retainedA2 = retainedInvocations.get('RIT')!;
+    expect(retainedA2).not.toBe(retainedA1);
+    retainedA2();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_rit_status', { on: false });
   });
 });
 
@@ -433,7 +633,8 @@ describe('the surface mounts only in the single composition, never in dual', () 
   it('leaves the cockpit composition with no focusable control outside a declared zone', () => {
     render({ strips: 'dual' });
     const outside = [...target.querySelectorAll<HTMLElement>('button, input, select, [tabindex]')]
-      .filter((node) => !node.matches(':disabled') && node.closest('[data-zone-id]') === null);
+      .filter((node) => !node.matches(':disabled') && node.tabIndex >= 0
+        && node.closest('[data-zone-id]') === null);
     expect(outside).toEqual([]);
   });
 });

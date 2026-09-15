@@ -21,8 +21,11 @@ regress the Icom radios that share the same checks.
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.core.radio_protocol import Radio
 from rigplane.core.types import AgcMode
 from rigplane.validation.hardware import execute_hardware_checks
@@ -33,6 +36,7 @@ from rigplane.validation.schema import (
     MatrixTemplate,
     OperatorSafetyBlock,
     RadioTarget,
+    RmvrOutcome,
     ValidationLevel,
 )
 
@@ -368,6 +372,103 @@ async def test_nb_bool_getter_icom_unchanged():
 
 
 # ---------------------------------------------------------------------------
+# MOR-2086 review round — attenuator.set: route by declared domain, not by
+# radio type. An earlier version of that fix routed every profile-backed
+# radio onto get_attenuator_level/set_attenuator_level unconditionally.
+# ftx1.toml declares [attenuator] values = [0, 1] -- a truthy,
+# profile-backed domain -- so the FTX-1 took that path too, and
+# YaesuCatRadio.get_attenuator_level raises NotImplementedError("Attenuator
+# level (Icom) not supported on Yaesu radios"), downgrading attenuator.set
+# from PASS to UNSUPPORTED. Same shape as FIX 3's nb.set/nr.set downgrade.
+# The fix: a profile declaring at most one non-zero value (FTX-1's [0, 1]
+# included) makes the boolean form exactly equivalent to the level form, so
+# the check stays on get_attenuator/set_attenuator and never calls the
+# level API at all. Only a profile declaring more than one non-zero value
+# (IC-7610's 3..45 dB steps, always Icom-backed) moves onto the level API.
+# ---------------------------------------------------------------------------
+
+
+def _ftx1_attenuator_mock(*, on: bool = False):
+    """FTX-1-shaped attenuator: boolean get/set present and working; the
+    level API exists but raises NotImplementedError, exactly like the real
+    YaesuCatRadio.get_attenuator_level."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "FTX-1"
+    radio.capabilities = {"attenuator"}
+    radio.profile = SimpleNamespace(att_values=(0, 1))
+    store = {"on": on}
+
+    async def _get(receiver: int = 0) -> bool:
+        return store["on"]
+
+    async def _set(state: bool, receiver: int = 0) -> None:
+        store["on"] = state
+
+    async def _get_level(receiver: int = 0) -> int:
+        raise NotImplementedError(
+            "Attenuator level (Icom) not supported on Yaesu radios"
+        )
+
+    radio.get_attenuator = AsyncMock(side_effect=_get)
+    radio.set_attenuator = AsyncMock(side_effect=_set)
+    radio.get_attenuator_level = AsyncMock(side_effect=_get_level)
+    return radio, store
+
+
+async def test_attenuator_ftx1_stays_on_boolean_path():
+    """FTX-1 declares a single non-zero attenuator value: the boolean form
+    is exactly equivalent, so the check must PASS without ever calling
+    get_attenuator_level -- which raises on the real backend."""
+    radio, store = _ftx1_attenuator_mock(on=False)
+    check = await _run(radio, check_id="attenuator.set", capability="attenuator")
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["original"] is False
+    assert check.evidence["changed"] is True
+    assert check.evidence["readback"] is True
+    assert store["on"] is False  # restored
+    radio.get_attenuator_level.assert_not_awaited()
+
+
+def _ic7610_attenuator_mock(*, level: int = 0):
+    """IC-7610-shaped attenuator: stepped domain, no bool getter/setter at
+    all -- the level API is the only correct path."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "IC-7610"
+    radio.capabilities = {"attenuator"}
+    radio.profile = SimpleNamespace(
+        att_values=(0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45)
+    )
+    del radio.get_attenuator
+    del radio.set_attenuator
+    store = {"level": level}
+
+    async def _get(receiver: int = 0) -> int:
+        return store["level"]
+
+    async def _set(db: int, receiver: int = 0) -> None:
+        store["level"] = db
+
+    radio.get_attenuator_level = AsyncMock(side_effect=_get)
+    radio.set_attenuator_level = AsyncMock(side_effect=_set)
+    return radio, store
+
+
+async def test_attenuator_ic7610_stepped_stays_on_level_path():
+    """IC-7610 declares 15 non-zero steps: the boolean form cannot
+    disambiguate them, so this must stay on the level API (no regression
+    on the radio the stepped case actually protects)."""
+    radio, store = _ic7610_attenuator_mock(level=0)
+    check = await _run(radio, check_id="attenuator.set", capability="attenuator")
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["original"] == 0
+    assert check.evidence["changed"] != 0
+    assert check.evidence["readback"] == check.evidence["changed"]
+    assert store["level"] == 0  # restored
+
+
+# ---------------------------------------------------------------------------
 # FIX 4 — agc.set / xit.set named handlers exercise FTX-1 correctly
 # ---------------------------------------------------------------------------
 
@@ -536,3 +637,177 @@ async def test_ctcss_tone_read_unsupported_without_getter():
     del radio.get_ctcss_tone
     check = await _run(radio, check_id="ctcss_tone.read", capability="sql_type")
     assert check.status is CheckStatus.UNSUPPORTED
+
+
+# ---------------------------------------------------------------------------
+# MOR-2103 — write-path ``?;`` rejection: the three-way RMVR outcome
+# ---------------------------------------------------------------------------
+
+
+def test_rmvr_outcome_is_pinned() -> None:
+    """A fourth outcome must not appear unnoticed."""
+    assert {member.value for member in RmvrOutcome} == {
+        "rejected",
+        "ignored",
+        "timed_out",
+    }
+
+
+#
+# Drives a REAL YaesuCatTransport + YaesuCatRadio (not a MagicMock(spec=Radio),
+# unlike the fixtures above) against a scripted serial wire, so the fix under
+# test -- YaesuCatTransport._drain_responses inspecting the drained line for
+# "?;" -- runs for real. tests/tx_observation_fakes.py: ScriptedCatTransport is
+# a pattern to copy, not an object to reuse here: it fakes the whole
+# transport and its write() never raises. The rejection below comes from
+# this fake's own scripting, independent of any shipped rigs/ftx1.toml entry
+# (sibling ticket MOR-2104 fixed sql_type's CAT write-template width there,
+# merged as 4efe071a).
+
+
+class _ScriptedModeWire:
+    """Fake serial wire understanding only the FTX-1 ``MD0`` mode command.
+
+    Assigned as both ``_reader`` and ``_writer`` on a real
+    ``YaesuCatTransport`` instance. ``behavior`` selects one of the three
+    RMVR outcomes under test:
+
+    * ``"reject"`` -- every ``MD0{code};`` SET gets ``?;`` back, regardless
+      of the value, so the initial write AND the RMVR restore-write both
+      hit the same rejection.
+    * ``"ignore"`` -- a SET gets silence (the real accepted-write response,
+      bench-measured for MOR-2103) but the stored mode code never changes.
+    * ``"hang"`` -- any SET's ``drain()`` blocks until cancelled, so the
+      write leg itself times out at ``_guard``'s per-check timeout.
+      ``YaesuCatTransport._raw_write`` awaits the writer's ``drain()``
+      before ``_drain_responses`` ever runs and with no timeout of its own
+      -- unlike the post-write response read, which the transport bounds
+      with its own 30 ms drain window -- so a stalled writer genuinely
+      reaches ``_guard``'s per-check timeout on the write coroutine, not
+      only on a read.
+    """
+
+    def __init__(self, *, behavior: str, initial_code: str) -> None:
+        self.behavior = behavior
+        self.code = initial_code
+        self._last_write = b""
+        self.closed = False
+
+    # -- StreamWriter side ---------------------------------------------
+    def write(self, data: bytes) -> None:
+        self._last_write = data
+
+    async def drain(self) -> None:
+        if self.behavior == "hang" and self._last_write != b"MD0;":
+            await asyncio.sleep(30)  # cut off by _guard's per-check timeout
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        return None
+
+    # -- StreamReader side ---------------------------------------------
+    async def readuntil(self, separator: bytes) -> bytes:
+        cmd = self._last_write.decode("ascii")
+        if cmd == "MD0;":  # GET
+            return f"MD0{self.code};".encode("ascii")
+        if cmd.startswith("MD0") and cmd.endswith(";") and cmd != "MD0;":  # SET
+            if self.behavior == "reject":
+                return b"?;"
+            if self.behavior != "ignore":
+                self.code = cmd[3:-1]
+            raise asyncio.TimeoutError("accepted write: silence")
+        raise asyncio.TimeoutError(f"unscripted CAT frame: {cmd!r}")
+
+
+def _scripted_mode_radio(wire: _ScriptedModeWire) -> YaesuCatRadio:
+    radio = YaesuCatRadio("/dev/null", profile="ftx1")
+    radio._transport._connected = True
+    radio._transport._reader = wire
+    radio._transport._writer = wire
+    return radio
+
+
+async def test_mode_set_rejected_reports_outcome_and_frame():
+    """A Yaesu ``?;`` on the write surfaces as outcome=rejected, naming the
+    rejected frame in ``check.error`` -- not the old 'control did not react'
+    guess (MOR-2103)."""
+    wire = _ScriptedModeWire(behavior="reject", initial_code="1")  # LSB
+    radio = _scripted_mode_radio(wire)
+    check = await _run(radio, check_id="mode.set", capability="")
+    assert check.status is CheckStatus.FAIL
+    assert check.evidence["outcome"] == "rejected"
+    assert "MD02;" in check.error  # the rejected SET frame (LSB -> USB)
+
+
+async def test_mode_set_ignored_reports_outcome():
+    """A write that returns cleanly but never moves the readback is a
+    genuinely different diagnosis from a rejection (MOR-2103)."""
+    wire = _ScriptedModeWire(behavior="ignore", initial_code="1")  # LSB
+    radio = _scripted_mode_radio(wire)
+    check = await _run(radio, check_id="mode.set", capability="")
+    assert check.status is CheckStatus.FAIL
+    assert check.evidence["outcome"] == "ignored"
+    assert check.error == "control did not react: readback equals original"
+
+
+async def test_mode_set_timed_out_reports_outcome():
+    """A per-check ``_guard`` timeout on the write coroutine itself (a
+    stalled writer, MOR-2103) is the third, distinct outcome -- not the
+    transport's own 30 ms post-write drain silence, which is the healthy
+    accepted-write path."""
+    wire = _ScriptedModeWire(behavior="hang", initial_code="1")  # LSB
+    radio = _scripted_mode_radio(wire)
+    template = _single_entry_template(check_id="mode.set", capability="")
+    levels = await execute_hardware_checks(
+        radio,
+        template,
+        OperatorSafetyBlock(),
+        allow_writes=True,
+        per_check_timeout=0.05,
+    )
+    check = _flatten(levels)["mode.set"]
+    assert check.status is CheckStatus.FAIL
+    assert check.evidence["outcome"] == "timed_out"
+
+
+async def test_mode_set_local_value_error_is_not_rejected():
+    """A local encoder ``ValueError`` never reached the radio at all -- it
+    must not be labelled outcome=rejected (MOR-2103). Uses a
+    ``MagicMock(spec=Radio)`` directly, not the scripted wire: the failure
+    originates in the radio call itself, before any frame would be sent."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "FTX-1"
+    radio.capabilities = set()
+    radio.get_mode = AsyncMock(return_value=("LSB", None))
+    radio.set_mode = AsyncMock(side_effect=ValueError("mode 'XYZ' out of range"))
+    check = await _run(radio, check_id="mode.set", capability="")
+    assert check.status is CheckStatus.FAIL
+    assert "outcome" not in check.evidence
+
+
+async def test_mode_set_readback_parse_error_is_not_rejected():
+    """The worst case: the SET was accepted and the radio answered
+    correctly -- a parse-template mismatch on the verify read is our own
+    bug, not a radio rejection (MOR-2103). A width mismatch like this is
+    the same class of defect MOR-2104 fixed for sql_type's write
+    template -- this scenario is its parse-template analogue, not the
+    same bug."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "FTX-1"
+    radio.capabilities = set()
+    radio.get_mode = AsyncMock(
+        side_effect=[
+            ("LSB", None),  # original read
+            ValueError("Parse error for 'MD0{mode};' against 'MD;'"),  # verify read
+            ("LSB", None),  # restore read
+        ]
+    )
+    radio.set_mode = AsyncMock()  # both the changed-write and the restore succeed
+    check = await _run(radio, check_id="mode.set", capability="")
+    assert check.status is CheckStatus.FAIL
+    assert "outcome" not in check.evidence
+    assert check.evidence["restored"] is True

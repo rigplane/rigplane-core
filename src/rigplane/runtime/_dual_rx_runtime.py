@@ -24,11 +24,6 @@ from rigplane.commands import (
     parse_ack_nak,
     parse_mode_response,
 )
-from rigplane.commands import get_selected_freq as _get_selected_freq_cmd
-from rigplane.commands import get_selected_mode as _get_selected_mode_cmd
-from rigplane.commands import set_selected_mode as _set_selected_mode_cmd
-from rigplane.commands import get_unselected_freq as _get_unselected_freq_cmd
-from rigplane.commands import get_unselected_mode as _get_unselected_mode_cmd
 from rigplane.core.radio_protocol import RelativeVfoState
 from rigplane.commands import (
     parse_selected_freq_response as _parse_selected_freq_response,
@@ -227,7 +222,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 if filter_width is not None
                 else (self._filter_width if self._filter_width is not None else 1)
             )
-            civ = _set_selected_mode_cmd(
+            civ = self._commands.set_selected_mode(
                 mode, data_mode, resolved_filter, to_addr=self._radio_addr
             )
         else:
@@ -253,28 +248,28 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
 
     async def _get_selected_freq(self) -> int:
         """Read the selected (active) receiver frequency via CI-V 0x25 0x00."""
-        civ = _get_selected_freq_cmd(to_addr=self._radio_addr)
+        civ = self._commands.get_selected_freq(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_selected_freq")
         _rcvr, freq = _parse_selected_freq_response(resp)
         return freq
 
     async def _get_unselected_freq(self) -> int:
         """Read the unselected (inactive) receiver frequency via CI-V 0x25 0x01."""
-        civ = _get_unselected_freq_cmd(to_addr=self._radio_addr)
+        civ = self._commands.get_unselected_freq(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_unselected_freq")
         _rcvr, freq = _parse_selected_freq_response(resp)
         return freq
 
     async def _get_selected_mode(self) -> tuple[Mode, int | None]:
         """Read the selected (active) receiver mode via CI-V 0x26 0x00."""
-        civ = _get_selected_mode_cmd(to_addr=self._radio_addr)
+        civ = self._commands.get_selected_mode(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_selected_mode")
         _rcvr, mode, _data_mode, filt = _parse_selected_mode_response(resp)
         return mode, filt
 
     async def _get_unselected_mode(self) -> tuple[Mode, int | None]:
         """Read the unselected (inactive) receiver mode via CI-V 0x26 0x01."""
-        civ = _get_unselected_mode_cmd(to_addr=self._radio_addr)
+        civ = self._commands.get_unselected_mode(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_unselected_mode")
         _rcvr, mode, _data_mode, filt = _parse_selected_mode_response(resp)
         return mode, filt
@@ -282,8 +277,16 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
     async def read_relative_vfo(self, *, selected: bool) -> RelativeVfoState:
         """Read one Selected/Unselected tuple without changing radio state."""
 
-        freq_cmd = _get_selected_freq_cmd if selected else _get_unselected_freq_cmd
-        mode_cmd = _get_selected_mode_cmd if selected else _get_unselected_mode_cmd
+        freq_cmd = (
+            self._commands.get_selected_freq
+            if selected
+            else self._commands.get_unselected_freq
+        )
+        mode_cmd = (
+            self._commands.get_selected_mode
+            if selected
+            else self._commands.get_unselected_mode
+        )
         role = "selected" if selected else "unselected"
         freq_resp = await self._send_civ_expect(
             freq_cmd(to_addr=self._radio_addr), label=f"get_{role}_freq"

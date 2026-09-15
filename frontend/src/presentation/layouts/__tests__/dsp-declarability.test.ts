@@ -1,8 +1,10 @@
 /**
- * MOR-1305 — `dsp` is DECLARABLE, and nothing declares it yet.
+ * MOR-1305 — `dsp` is DECLARABLE. MOR-1368 (S9) declares it for real.
  *
- * Slice 5B adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
- * the surface later; it deliberately does not touch any manifest. Mirrors
+ * Slice 5B added the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
+ * the surface later; it deliberately did not touch any manifest. MOR-1368
+ * flips the second half, on `desktop-v2` ONLY; the inventory below is a
+ * LITERAL of who declares it. Mirrors
  * `tx-aux-declarability.test.ts`/`meters-declarability.test.ts`.
  */
 import { describe, it, expect } from 'vitest';
@@ -19,7 +21,7 @@ describe('dsp is a declarable semantic surface', () => {
   it('is in the declarable set alongside vfo, rxTx, txAux, meters and rxAudio', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
       'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
-      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls',
+      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory',
     ]);
   });
 
@@ -41,7 +43,14 @@ describe('dsp is a declarable semantic surface', () => {
 
 describe('exactly the reviewed manifests declare a dsp zone (MOR-1368)', () => {
   /** The literal — extend by hand, with a layout review, never silently. */
-  const DECLARES_DSP = ['desktop-v2'];
+  // MOR-2231 (step 1, batch 3) added `sdr-test`, by hand and with the layout
+  // review this literal exists to force. This is the WIDEST of that batch's
+  // four: on that face the declaration retires five legacy hosts at once —
+  // `DspPanel` in both sidebars, `AgcPanel` in the left one, and the settings
+  // modal's `desktop-dsp` AND `desktop-agc` sections — because `DspSurface`
+  // owns the AGC leaf (5A/MOR-1290) and AGC has no zone of its own.
+  // T160 PR-1 added `flagship-probe`, which places this surface in its left rail.
+  const DECLARES_DSP = ['desktop-v2', 'flagship-probe', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

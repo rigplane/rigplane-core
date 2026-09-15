@@ -27,17 +27,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
-
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
-  listeners: new Set<(next: unknown) => void>(),
+  controlSession: { state: 'connected' as const, epoch: 1 as const },
+  authoritySubscribers: new Set<(next: {
+    state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  audio: { muted: false, rxEnabled: true, volume: 42 },
+  txController: null as ManagedAppTxController | null,
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
@@ -60,6 +62,8 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   capabilitiesMatchGeneration: vi.fn(() => true),
   getCapabilities: vi.fn(() => h.caps),
   getControlRange: vi.fn(() => null),
+  getSmeterCalibration: vi.fn(() => null),
+  getSmeterRedline: vi.fn(() => null),
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
@@ -69,9 +73,19 @@ vi.mock('$lib/audio/audio-manager', () => ({
 }));
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
-    get audio() { return { muted: false, rxEnabled: true, volume: 42 }; },
+    get controlSession() { return h.controlSession; },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({
+        state: h.state, caps: h.caps, session: h.controlSession,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
+    get audio() { return h.audio; },
     get connectionAudio() { return true; },
     get rxEnabled() { return true; },
     setVolume: vi.fn(), setMuted: vi.fn(), setRxLive: vi.fn(), setRxVolume: vi.fn(),
@@ -87,15 +101,11 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 vi.mock('$lib/runtime', async () => ({
   runtime: (await import('$lib/runtime/frontend-runtime')).runtime,
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => { h.listeners.delete(listener); };
-    },
-    start: vi.fn(), setIntent: vi.fn(), release: vi.fn(), resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => {
+    if (!h.txController) throw new Error('managed TX harness is not installed');
+    return h.txController;
+  },
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: 'MIC' }),
@@ -104,11 +114,8 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 
 /** The BAND PLAN this file's fixtures declare — `freqRanges` is the band
@@ -133,6 +140,7 @@ const BAND_PLAN = [{
 function singleRxLiveState(over: Partial<ServerState> = {}): ServerState {
   const paths = ['split', 'dualWatch', 'txTarget', 'main.freqHz', 'main.mode', 'main.filter'];
   return {
+    providerGeneration: 1,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
     main: {
@@ -145,6 +153,7 @@ function singleRxLiveState(over: Partial<ServerState> = {}): ServerState {
 }
 
 const singleRxCaps = (freqRanges: unknown[]): Capabilities => ({
+  providerGeneration: 1,
   model: 'IC-7300', scope: false, audio: true, tx: true,
   capabilities: ['audio', 'tx'],
   receivers: 1, vfoScheme: 'ab', vfoReadback: 'selected_unselected',
@@ -186,6 +195,7 @@ const dualRxCaps = (freqRanges: unknown[]): Capabilities => ({
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 
 function render(): void {
   target = document.createElement('div');
@@ -206,14 +216,16 @@ function typeFrequency(value: string): void {
 }
 
 beforeEach(() => {
-  h.snapshot = { ...IDLE };
-  h.listeners.clear();
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   vi.mocked(sendCommand).mockClear();
 });
 
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(h.authoritySubscribers.size).toBe(0);
+  expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';
 });
 

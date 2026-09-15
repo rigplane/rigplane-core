@@ -23,9 +23,10 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import AntennaSurface, {
+import {
   ANTENNA_BLOCKED_LABEL, ANTENNA_PORTS, UNKNOWN_TEXT, antennaSwitchBlocks, tunerIdle,
 } from '../AntennaSurface.svelte';
+import AntennaSurface from './fixtures/AntennaInstrumentHostFixture.svelte';
 import { topologyFixtures, withAntenna, withTxAux } from '../fixtures/topologies';
 import { keyBlockedReasons, type TxAuthoritySnapshot } from '../rx-tx-surface';
 import type {
@@ -33,6 +34,7 @@ import type {
 } from '../radio-view-model';
 
 const SOURCE = readFileSync('src/semantic/AntennaSurface.svelte', 'utf8');
+const HOST = readFileSync('src/semantic/AntennaInstrumentHost.svelte', 'utf8');
 /** Comments stripped, so the file's own doctrine prose can never be what a
  *  source-scanning test matches. */
 const CODE = SOURCE
@@ -45,10 +47,10 @@ const OFF: Availability = { structural: false, operational: false };
 const DEGRADED: Availability = { structural: true, operational: false };
 
 /** The canonical permitted snapshot: transmitter positively observed OFF, no
- *  lease, no risk, authority idle.
+ *  risk, authority idle.
  *
  *  MOR-1906 — it is NOT the only one, and saying so hid a real behaviour
- *  change. This gate reads the RF FACTS (`radioTx` / `txRisk` / `mayOwnKey`),
+ *  change. This gate reads the RF FACTS (`radioTx` / `txRisk`),
  *  never the authority's session bookkeeping, so a LATCHED FAULT sitting over
  *  those same observed-OFF facts is permitted too. That is the file's own
  *  doctrine, stated at `RF_MUST_BE_IDLE`: `tx-fault` is deliberately not a
@@ -56,11 +58,10 @@ const DEGRADED: Availability = { structural: true, operational: false };
  *  hot. The two `phase: 'failed'` pins below hold that in BOTH directions.
  *  MOR-1361 tracks the allow-list itself. */
 const RECEIVING: TxAuthoritySnapshot = {
-  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
 };
 const TRANSMITTING: TxAuthoritySnapshot = {
   ...RECEIVING, phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on',
-  mayOwnKey: true,
 };
 /** The fail-closed case: nobody keyed anything here, the RF state simply was
  *  never confirmed. It must gate exactly as hard as TRANSMITTING. */
@@ -116,20 +117,17 @@ function forceClick(node: HTMLElement): void {
 describe('the antenna surface owns no state and no TX authority (R9)', () => {
   // Kills: importing the runtime, the command bus, transport or the capability
   // store — the layering the semantic vertical exists to remove.
-  // `./pressed-of` (MOR-1358, migrated onto this surface by MOR-1383) is
-  // allow-listed alongside the fact contract and the RX/TX vocabulary: it is
-  // a pure, dependency-free `aria-pressed` derivation shared with sibling
-  // surfaces, itself importing only a TYPE from `./radio-view-model` — it
-  // cannot reach the TX controller, the transport or the permit utility any
-  // more than the fact contract can. This check regexes THIS file's
-  // specifiers only, so that premise is pinned one level down by
-  // `pressed-of.test.ts`'s `'has no runtime import'` case (verify-MOR-1358
-  // F1) — the two together are the closure.
-  it('imports nothing but the fact contract and the shared RX/TX vocabulary', () => {
+  // MOR-2425 — the control-behavior and `./pressed-of` imports are gone with
+  // the surface's own port/RX-ANT markup: both controls now arrive as the
+  // host's two rendered handles, so this file imports nothing but the fact
+  // contract, the RX/TX vocabulary and the host module it consumes.
+  it('imports only facts, shared TX vocabulary and the host module', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
     expect([...new Set(specifiers)].sort())
-      .toEqual(['./pressed-of', './radio-view-model', './rx-tx-surface']);
+      .toEqual(['./AntennaInstrumentHost.svelte', './radio-view-model', './rx-tx-surface']);
+    expect(CODE).toContain('handles.txPort()');
+    expect(CODE).toContain('handles.rxAnt()');
   });
 
   // Kills: a lifecycle hook, an effect, or a dynamic import that could reach a
@@ -154,11 +152,11 @@ describe('the antenna surface owns no state and no TX authority (R9)', () => {
   });
 
   // Kills: the surface growing a live-state prop beyond the view model and the
-  // App-owned authority snapshot.
+  // server-owned authority projection.
   it('takes exactly two state props — the view model and the TX snapshot', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
     expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1]))
-      .toEqual(['view', 'tx', 'onSelectPort', 'onToggleRxAnt']);
+      .toEqual(['view', 'tx', 'handles', 'layout']);
   });
 });
 
@@ -229,6 +227,21 @@ describe('an unread TX port renders as unknown, never as ANT 1 (CF3)', () => {
     expect(r.btn('port-2')!.getAttribute('aria-checked')).toBe('true');
     expect(r.btn('port-1')!.getAttribute('aria-checked')).toBe('false');
     expect(r.text('port-value')).toBe('2');
+    r.dispose();
+  });
+
+  it('permits an absolute port choice while the current port is unread', () => {
+    const onSelectPort = vi.fn();
+    const r = render(
+      withAnt({ txAntenna: unread<number>(DEGRADED) }), RECEIVING, { onSelectPort },
+    );
+    expect(r.btn('port-2')!.disabled).toBe(false);
+    r.btn('port-2')!.click();
+    flushSync();
+    expect(onSelectPort).toHaveBeenCalledExactlyOnceWith(2);
+    for (const port of ANTENNA_PORTS) {
+      expect(r.btn(`port-${port}`)!.getAttribute('aria-checked')).toBe('false');
+    }
     r.dispose();
   });
 
@@ -327,7 +340,7 @@ describe('antenna switching is gated while the transmitter is not provably idle'
 
   // Kills: a local re-derivation of TX truth drifting from the shared one.
   it('shares the transmitter-busy vocabulary with the key gate', () => {
-    expect(CODE).toContain('keyBlockedReasons');
+    expect(HOST).toContain('keyBlockedReasons');
     expect(antennaSwitchBlocks(base(), TRANSMITTING)).toContain('radio-transmitting');
     expect(antennaSwitchBlocks(base(), { ...RECEIVING, phase: 'key-confirm-pending' }))
       .toContain('tx-busy');
@@ -338,9 +351,8 @@ describe('antenna switching is gated while the transmitter is not provably idle'
    *
    * MOR-1906 moved a `failed` phase out of `tx-busy` and into `tx-fault`, and
    * `tx-fault` is deliberately not a member of `RF_MUST_BE_IDLE`. That
-   * DELIBERATELY relaxes this gate for exactly two of the 216 (phase ×
-   * radioTx × txRisk × mayOwnKey × fault) combinations — both of them
-   * `radioTx: 'off'`, `txRisk: 'none'`, `!mayOwnKey`, i.e. provably idle RF by
+   * DELIBERATELY relaxes this gate for the failed-phase combinations with
+   * `radioTx: 'off'` and `txRisk: 'none'`, i.e. provably idle RF by
    * the very standard the `idle` phase already passes on. Nothing tightened,
    * nothing else loosened, and only a 2-port radio renders this surface at
    * all. The relaxation matches the doctrine at `RF_MUST_BE_IDLE`; what it did
@@ -383,7 +395,7 @@ describe('ATU readiness comes from txAux.atu and fails closed (CF1, CF2)', () =>
   // quietly preferring it.
   it('reads no tuner fact from the antenna group, which carries none', () => {
     expect(Object.keys(base().antenna!).sort()).toEqual(['antennaCount', 'rxAnt', 'txAntenna']);
-    expect(CODE).toContain('view.txAux?.atu');
+    expect(HOST).toContain('view.txAux?.atu');
     expect(CODE).not.toMatch(/antenna[^\n]*\.(atu|tuner)/);
   });
 

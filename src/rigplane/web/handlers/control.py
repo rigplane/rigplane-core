@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -13,15 +14,24 @@ from ..._bounded_queue import BoundedQueue
 from ...core.command_service import (
     CommandExecutionResult,
     CommandService,
-    _af_level_from_param,
-    _raw_int_level_from_param,
+    admitted_level_for_intent,
     command_intent_from_request,
+    resolve_power_level_target,
 )
-from ...core.exceptions import CommandError
+from ...core.command_dispatch import (
+    CommandUnsupportedError,
+    command_descriptor,
+    command_descriptors,
+    enqueue_command_intent,
+    prepare_command_intent,
+)
+from ...core.exceptions import CommandError, CommandRejectedError
+from ...core.exceptions import TimeoutError as RigplaneTimeoutError
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
 from ...core.state_store import FreshnessState, StateStore
 from ...profiles import RadioProfile, resolve_radio_profile
 from ...runtime.tx_interlock import RfState, evaluate_tx_interlock
+from ...runtime.managed_tx_state import ManagedTxOutcome
 from ..protocol import (  # noqa: TID251
     decode_json,
     encode_json,
@@ -37,13 +47,11 @@ from ..radio_poller import (  # noqa: TID251
     SelectVfo,
     SendCiv,
     SetAcc1ModLevel,
-    SetAfLevel,
     SetAgc,
     SetAgcTimeConstant,
     SetAntenna1,
     SetAntenna2,
     SetApf,
-    SetAttenuator,
     SetAutoNotch,
     SetBand,
     SetCompressor,
@@ -59,6 +67,7 @@ from ..radio_poller import (  # noqa: TID251
     SetFilterShape,
     SetFilterWidth,
     SetFreq,
+    SetVfoFreq,
     SetIfShift,
     SetIpPlus,
     SetLanModLevel,
@@ -77,7 +86,6 @@ from ..radio_poller import (  # noqa: TID251
     SetPower,
     SetPowerstat,
     SetPreamp,
-    SetRfGain,
     SetRitFrequency,
     SetRitStatus,
     SetRitTxStatus,
@@ -96,7 +104,6 @@ from ..radio_poller import (  # noqa: TID251
     SetScopeHold,
     SetScopeVbw,
     SetSplit,
-    SetSquelch,
     SetSystemDate,
     SetSystemTime,
     SetTwinPeak,
@@ -140,7 +147,6 @@ from ..radio_poller import (  # noqa: TID251
     SetAfMute,
     SetTuningStep,
     SetXfcStatus,
-    SetTxFreqMonitor,
     SetUtcOffset,
     SetQuickSplit,
     SetQuickDualWatch,
@@ -161,6 +167,7 @@ from ..websocket import WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
     from ...radio_protocol import Radio
+    from ...runtime.managed_tx_authority import ManagedTxAuthority
 
 from ...capabilities import (
     CAP_AF_LEVEL,
@@ -172,12 +179,9 @@ from ...capabilities import (
     CAP_DATA_MODE,
     CAP_DUAL_WATCH,
     CAP_POWER_CONTROL,
-    CAP_RF_GAIN,
-    CAP_SQUELCH,
     CAP_SYSTEM_SETTINGS,
     CAP_TUNER,
     CAP_TUNING_STEP,
-    CAP_TX,
     CAP_XFC,
 )
 from ...radio_protocol import CivCommandCapable, MemoryCapable, PowerControlCapable
@@ -211,18 +215,12 @@ class RadioNotReadyError(RuntimeError):
 @dataclass(slots=True)
 class _ControlCommandExecutor:
     handler: "ControlHandler"
+    wait_for_completion: bool = True
 
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
-        params = dict(intent.params)
-        params.pop("_control_server", None)
-        result = await self.handler._enqueue_legacy_command(  # noqa: SLF001
-            intent.name,
-            params,
-            command_id=intent.id,
-            source=intent.source,
-            command_service=self.handler._command_service,  # noqa: SLF001
+        return await self.handler._execute_intent(  # noqa: SLF001
+            intent, wait_for_completion=self.wait_for_completion
         )
-        return CommandExecutionResult(details=result)
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,24 +279,50 @@ def _level_for_power(value: Any, radio: Any) -> int:
     produced (any value ``> 1`` passed through raw) but by accident of
     bucketing on magnitude rather than by declared type.
     """
-    if isinstance(value, bool):
-        raise ValueError(f"level {value!r} must be an int or a normalized float")
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        if not (0.0 <= value <= 1.0):
-            raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
-        if getattr(radio, "native_power_unit", "raw_255") == "watts":
-            profile = getattr(radio, "profile", None)
-            max_watts = getattr(profile, "max_watts", None)
-            if (
-                isinstance(max_watts, (int, float))
-                and not isinstance(max_watts, bool)
-                and max_watts > 0
-            ):
-                return max(0, min(int(max_watts), round(value * max_watts)))
-        return max(0, min(255, round(value * 255)))
-    raise ValueError(f"level {value!r} must be an int or a normalized float")
+    native, _ = resolve_power_level_target(
+        value,
+        power_native_unit=getattr(radio, "native_power_unit", "raw_255"),
+        power_max_watts=getattr(getattr(radio, "profile", None), "max_watts", None),
+    )
+    return int(native)
+
+
+def _with_admitted_level(
+    intent: CommandIntent, details: dict[str, Any]
+) -> dict[str, Any]:
+    """Attach the intent's admitted normalized target to its response result.
+
+    Additive optional ``admitted_level`` for ``set_af_level``/
+    ``set_rf_power``/``set_power`` only; every legacy key stays untouched,
+    and an intent without a valid target returns *details* as-is.
+    """
+    if intent.name not in ("set_af_level", "set_rf_power", "set_power"):
+        return details
+    admitted = admitted_level_for_intent(intent)
+    if admitted is None or "admitted_level" in details:
+        return details
+    return {**details, "admitted_level": admitted}
+
+
+def _consume_normalized_level_unit(name: str, params: dict[str, Any]) -> dict[str, Any]:
+    if "level_unit" not in params:
+        return dict(params)
+    if name not in {"set_af_level", "set_rf_power", "set_power"}:
+        raise ValueError("level_unit is only valid for AF level and RF power")
+    if params["level_unit"] != "normalized":
+        raise ValueError("level_unit must be 'normalized'")
+    level = params.get("level")
+    if (
+        isinstance(level, bool)
+        or not isinstance(level, (int, float))
+        or not math.isfinite(level)
+        or not 0.0 <= level <= 1.0
+    ):
+        raise ValueError("normalized level must be a finite number from 0.0 to 1.0")
+    normalized = dict(params)
+    normalized.pop("level_unit")
+    normalized["level"] = float(level)
+    return normalized
 
 
 class ControlHandler:
@@ -319,6 +343,7 @@ class ControlHandler:
     _COMMANDS = frozenset(
         [
             "set_freq",
+            "set_vfo_freq",
             "set_band",
             "set_mode",
             "send_civ",
@@ -464,8 +489,6 @@ class ControlHandler:
             "get_band_edge_freq",
             "get_xfc_status",
             "set_xfc_status",
-            "get_tx_freq_monitor",
-            "set_tx_freq_monitor",
             "get_quick_split",
             "set_quick_split",
             "get_quick_dual_watch",
@@ -480,7 +503,7 @@ class ControlHandler:
             # Issue #677 — CW auto-tune via FFT peak detection
             "cw_auto_tune",
         ]
-    )
+    ) | frozenset(command_descriptors())
 
     # Commands that can transmit or send arbitrary radio writes — rejected when read_only=True.
     # set_tuner_status value=2 (TUNING) is handled inline in _enqueue_read_only.
@@ -493,6 +516,7 @@ class ControlHandler:
             "send_cw_text",
         }
     )
+    _MANAGED_PTT_COMMANDS: frozenset[str] = frozenset({"ptt", "ptt_on", "ptt_off"})
 
     # MOR-1499: SELECTOR commands — the param carries a discrete TARGET
     # (which filter/VFO/band), not a continuous magnitude — so the
@@ -520,6 +544,7 @@ class ControlHandler:
         server: Any = None,
         read_only: bool = False,
         session_id: str | None = None,
+        managed_tx_authority: "ManagedTxAuthority | None" = None,
     ) -> None:
         self._ws = ws
         self._radio = radio
@@ -530,6 +555,7 @@ class ControlHandler:
         self._session_id = (
             session_id if session_id is not None else f"websocket-{time.monotonic_ns()}"
         )
+        self._managed_tx_authority = managed_tx_authority
         self._subscribed_streams: set[str] = set()
         # MOR-624: (command_name, previous_source) armed by the frontend auto-LAN
         # feature at TX start. MOR-993 forbids replaying it on teardown; MOR-1013
@@ -626,19 +652,44 @@ class ControlHandler:
             # socket ``await event_task`` re-raises the sender's error and
             # unregister broadcasts, so either would skip the unkey on exactly
             # the abrupt drops that need it most. The release needs neither.
-            self._release_ptt_on_teardown()
+            disconnect_task = self._start_managed_ptt_disconnect()
+            deferred_cancel: asyncio.CancelledError | None = None
+            if disconnect_task is not None:
+                try:
+                    await asyncio.shield(disconnect_task)
+                except asyncio.CancelledError as exc:
+                    # The retained authority operation must outlive this
+                    # handler, but cancellation must not skip the synchronous
+                    # session cleanup below. Re-raise it once cleanup is done.
+                    deferred_cancel = exc
+                except Exception:
+                    logger.warning(
+                        "control: managed PTT owner disconnect failed",
+                        exc_info=True,
+                    )
             self._publish_session_liveness(live=False)
             self._clear_mod_input_restore_on_teardown()
             self._cancel_pending_command_flushes()
             event_task.cancel()
+            teardown_error: Exception | None = None
+            if self._server is not None:
+                try:
+                    self._server.unregister_control_event_queue(
+                        self._event_queue, session_id=self._session_id
+                    )
+                except Exception as exc:
+                    teardown_error = exc
             try:
                 await event_task
             except asyncio.CancelledError:
                 pass
-            if self._server is not None:
-                self._server.unregister_control_event_queue(
-                    self._event_queue, session_id=self._session_id
-                )
+            except Exception as exc:
+                if teardown_error is None:
+                    teardown_error = exc
+            if deferred_cancel is not None:
+                raise deferred_cancel
+            if teardown_error is not None:
+                raise teardown_error
 
     async def _event_sender_loop(self) -> None:
         """Drain event queue and forward events to WebSocket."""
@@ -650,6 +701,13 @@ class ControlHandler:
                     await self._send_json(event)
                 elif msg_type == "state_update":
                     # Always forward state updates (clients need fresh state)
+                    await self._send_json(event)
+                elif (
+                    msg_type == "event"
+                    and event.get("name") == "managed_transmit_changed"
+                ):
+                    # Always forward managed-transmit invalidation (clients
+                    # refresh canonical state); no stream subscription needed.
                     await self._send_json(event)
                 elif (
                     "state" in self._subscribed_streams
@@ -710,7 +768,7 @@ class ControlHandler:
             return
         caps = self._capabilities()
         # Also check profile capabilities (runtime_capabilities may strip
-        # protocol-gated tags like dual_rx even when the profile supports them).
+        # protocol-gated tags even when the profile supports them).
         raw_profile = getattr(self._radio, "profile", None)
         if isinstance(raw_profile, RadioProfile):
             if capability in raw_profile.capabilities:
@@ -1008,12 +1066,23 @@ class ControlHandler:
             )
             return
 
+        if (
+            isinstance(name, str)
+            and name in self._COMMANDS
+            and isinstance(params, dict)
+        ):
+            try:
+                params = _consume_normalized_level_unit(name, params)
+            except Exception as exc:
+                await self._send_command_failure(cmd_id, name, exc)
+                return
+
         # ── Server-side rate limiting (per client, per command) ──
         # Only pace SET commands (continuous slider/knob drag). GET and
         # read-only commands pass through. MOR-1427: a command arriving
         # inside the pacing window is coalesced (last-value-wins) instead
         # of hard-dropped — see _coalesce_command / _flush_coalesced_command.
-        if name.startswith("set_"):
+        if name.startswith("set_") and name != "set_vfo_freq":
             now = time.monotonic()
             key = self._coalesce_key(name, params)
             last = self._cmd_last.get(key, 0.0)
@@ -1246,25 +1315,40 @@ class ControlHandler:
                 )
             )
         except Exception as exc:
-            logger.warning("control: command %r failed: %s", name, exc)
-            message = str(exc)
-            if isinstance(exc, RadioNotReadyError):
-                error = "radio_not_ready"
-            elif "does not support" in message or "not supported" in message:
-                error = "unsupported_command"
-            else:
-                error = "command_failed"
-            await self._ws.send_text(
-                encode_json(
-                    {
-                        "type": "response",
-                        "id": cmd_id,
-                        "ok": False,
-                        "error": error,
-                        "message": message,
-                    }
-                )
+            await self._send_command_failure(cmd_id, name, exc)
+
+    async def _send_command_failure(
+        self, cmd_id: Any, name: str, exc: Exception
+    ) -> None:
+        logger.warning("control: command %r failed: %s", name, exc)
+        message = str(exc)
+        if isinstance(exc, RadioNotReadyError):
+            error = "radio_not_ready"
+        elif isinstance(exc, CommandUnsupportedError):
+            error = "unsupported_command"
+        elif isinstance(exc, CommandRejectedError):
+            error = "radio_nak"
+        elif isinstance(exc, (TimeoutError, RigplaneTimeoutError)):
+            error = "command_timeout"
+        elif isinstance(exc, CommandError):
+            error = "command_failed"
+        elif command_descriptor(name) is None and (
+            "does not support" in message or "not supported" in message
+        ):
+            error = "unsupported_command"
+        else:
+            error = "command_failed"
+        await self._ws.send_text(
+            encode_json(
+                {
+                    "type": "response",
+                    "id": cmd_id,
+                    "ok": False,
+                    "error": error,
+                    "message": message,
+                }
             )
+        )
 
     def _apply_mod_input_restore_cmd(
         self, name: str, params: dict[str, Any]
@@ -1371,6 +1455,20 @@ class ControlHandler:
                 self._session_id,
             )
 
+    def _start_managed_ptt_disconnect(self) -> asyncio.Task[ManagedTxOutcome] | None:
+        authority = self._managed_tx_authority
+        if authority is None:
+            return None
+        release = authority.owner_disconnect(self._session_id)
+        server = self._server
+        spawn = None if server is None else getattr(type(server), "_spawn", None)
+        if callable(spawn):
+            return cast(asyncio.Task[ManagedTxOutcome], spawn(server, release))
+        explicit_spawn = None if server is None else vars(server).get("_spawn")
+        if callable(explicit_spawn):
+            return cast(asyncio.Task[ManagedTxOutcome], explicit_spawn(release))
+        return asyncio.create_task(release)
+
     def _publish_session_liveness(self, *, live: bool) -> None:
         """Publish this session's liveness on the queue the poller drains.
 
@@ -1408,6 +1506,8 @@ class ControlHandler:
         command_id: str | None = None,
         source: CommandSource = "websocket",
     ) -> dict[str, Any]:
+        if name in self._MANAGED_PTT_COMMANDS:
+            return await self._enqueue_managed_ptt(name, params, source=source)
         intent_params = dict(params)
         if self._server is not None:
             intent_params["_control_server"] = self._server
@@ -1418,20 +1518,231 @@ class ControlHandler:
             if isinstance(receiver_count, int) and not isinstance(receiver_count, bool):
                 intent_params["receiver_count"] = receiver_count
         power_max_watts = None
-        if getattr(self._radio, "native_power_unit", "raw_255") == "watts":
+        power_native_unit = getattr(self._radio, "native_power_unit", "raw_255")
+        if power_native_unit == "watts":
             power_max_watts = getattr(
                 getattr(self._radio, "profile", None), "max_watts", None
             )
-        intent = command_intent_from_request(
-            name,
-            intent_params,
-            source=source,
-            command_id=command_id,
-            session_id=self._session_id if source == "websocket" else None,
-            power_max_watts=power_max_watts,
+        descriptor = command_descriptor(name)
+        if (
+            descriptor is not None
+            and descriptor.name == "set_tuner_status"
+            and self._managed_tx_authority is None
+        ):
+            descriptor = None
+        if descriptor is not None and (
+            self._server is None or getattr(self._server, "command_queue", None) is None
+        ):
+            raise RuntimeError("no command queue available")
+        if descriptor is not None:
+            intent = prepare_command_intent(
+                self._radio,
+                name,
+                intent_params,
+                source=source,
+                command_id=command_id,
+                session_id=self._session_id if source == "websocket" else None,
+            )
+        else:
+            intent = command_intent_from_request(
+                name,
+                intent_params,
+                source=source,
+                command_id=command_id,
+                session_id=self._session_id if source == "websocket" else None,
+                power_native_unit=power_native_unit,
+                power_max_watts=power_max_watts,
+            )
+        executor = (
+            _ControlCommandExecutor(self, wait_for_completion=False)
+            if descriptor is not None and descriptor.queue_policy == "coalesced"
+            else None
         )
-        result = await self._command_service.execute(intent)
+        result = await self._command_service.execute(intent, executor=executor)
         return dict(result.executor_result.details or {})
+
+    async def _enqueue_managed_ptt(
+        self,
+        name: str,
+        params: dict[str, Any],
+        *,
+        source: CommandSource,
+    ) -> dict[str, Any]:
+        if self._read_only:
+            raise PermissionError(f"read-only mode: {name} rejected")
+        if source != "websocket":
+            raise CommandUnsupportedError(
+                "momentary PTT requires a stable WebSocket owner; "
+                "use managed force_off for unconditional release"
+            )
+        authority = self._managed_tx_authority
+        if authority is None:
+            raise CommandRejectedError("managed transmit authority unavailable")
+        if name == "ptt":
+            on = params.get("state")
+            if type(on) is not bool:
+                raise ValueError("PTT state must be a boolean")
+        else:
+            on = name == "ptt_on"
+        try:
+            if on:
+                if self._server is None:
+                    raise RuntimeError("no command queue available")
+                loop = asyncio.get_running_loop()
+                ready: asyncio.Future[None] = loop.create_future()
+                expires_at = loop.time() + 10.0
+                connection_generation = (
+                    self._server.command_queue.capture_connection_generation()
+                )
+                pending = authority.start_ptt_submission(
+                    True,
+                    self._session_id,
+                    ready=ready,
+                    expires_at_monotonic=expires_at,
+                )
+                submission = await self._server.enqueue_managed_positive_tx(
+                    ready=ready,
+                    submission=pending,
+                    source=source,
+                    session_id=self._session_id,
+                    expires_at_monotonic=expires_at,
+                    connection_generation=connection_generation,
+                )
+            else:
+                submission = await authority.submit_ptt(False, self._session_id)
+        except (CommandError, RuntimeError, TimeoutError) as exc:
+            raise CommandRejectedError(
+                "managed transmit authority unavailable"
+            ) from exc
+        if submission.outcome is not ManagedTxOutcome.ACCEPTED:
+            raise CommandRejectedError("managed PTT admission rejected")
+        return {"state": on} if name == "ptt" else {}
+
+    async def _execute_intent(
+        self, intent: CommandIntent, *, wait_for_completion: bool = True
+    ) -> CommandExecutionResult:
+        if intent.name == "set_vfo_freq":
+            if self._read_only:
+                raise PermissionError("read-only mode: set_vfo_freq rejected")
+            if "vfo_freq_direct" not in self._capabilities():
+                raise CommandUnsupportedError("direct VFO frequency is unavailable")
+            params = dict(intent.params)
+            if self._server is None:
+                raise RuntimeError("no command queue available")
+            queue = self._server.command_queue
+            vfo_future = asyncio.get_running_loop().create_future()
+            vfo_generation = queue.capture_connection_generation()
+            result = self._enqueue_rc_frequency(
+                intent.name,
+                params,
+                queue,
+                self._radio,
+                ordered_context=dict(
+                    future=vfo_future,
+                    command_id=intent.id,
+                    source=intent.source,
+                    session_id=params.get("session_id"),
+                    command_service=self._command_service,
+                    provider_generation=params["provider_generation"],
+                    connection_generation=vfo_generation,
+                    expires_at_monotonic=time.monotonic() + (intent.timeout or 2.0),
+                ),
+            )
+            observation = await asyncio.wait_for(
+                vfo_future, timeout=intent.timeout or 2.0
+            )
+            # No await between this guard and executor-result delivery: another
+            # selection may have run after the poller's transaction lock released.
+            store = self._server.command_state_store
+            try:
+                field = store.snapshot().field(FieldPath.active_slot("0"))
+            except KeyError as exc:
+                raise CommandRejectedError(
+                    "VFO identity lost before readback delivery"
+                ) from exc
+            if (
+                queue.capture_connection_generation() != vfo_generation
+                or store.provider_generation != params["provider_generation"]
+                or field.provider_generation != params["provider_generation"]
+                or field.freshness is not FreshnessState.FRESH
+                or field.value != params["expected_active_slot"]
+            ):
+                raise CommandRejectedError(
+                    "VFO identity changed before readback delivery"
+                )
+            return CommandExecutionResult(
+                observations=() if observation is None else (observation,),
+                details=result,
+            )
+        descriptor = command_descriptor(intent.name)
+        if (
+            descriptor is not None
+            and descriptor.name == "set_tuner_status"
+            and self._managed_tx_authority is None
+        ):
+            descriptor = None
+        if descriptor is not None:
+            if self._server is None:
+                raise RuntimeError("no command queue available")
+            queue = self._server.command_queue
+            future: asyncio.Future[None] | None = (
+                asyncio.get_running_loop().create_future()
+                if wait_for_completion
+                else None
+            )
+            raw_session_id = intent.params.get("session_id")
+            session_id = None if raw_session_id is None else str(raw_session_id)
+            provider_generation: int | None = None
+            connection_generation: object | None = None
+            if self._managed_tx_authority is not None:
+                provider_generation = (
+                    self._server.command_state_store.provider_generation
+                )
+                connection_generation = queue.capture_connection_generation()
+            enqueue_command_intent(
+                queue,
+                intent,
+                future=future,
+                command_id=intent.id,
+                source=intent.source,
+                session_id=session_id,
+                command_service=self._command_service,
+                timeout=intent.timeout,
+                expires_at_monotonic=(
+                    None
+                    if intent.timeout is None
+                    else asyncio.get_running_loop().time() + intent.timeout
+                ),
+                provider_generation=provider_generation,
+                connection_generation=connection_generation,
+            )
+            if future is None:
+                return CommandExecutionResult(
+                    details=_with_admitted_level(intent, descriptor.result(intent))
+                )
+            try:
+                await asyncio.wait_for(future, timeout=intent.timeout)
+            except asyncio.CancelledError:
+                if not future.done():
+                    future.cancel()
+                raise
+            finally:
+                if not future.done():
+                    future.cancel()
+            return CommandExecutionResult(
+                details=_with_admitted_level(intent, descriptor.result(intent))
+            )
+
+        params = dict(intent.params)
+        params.pop("_control_server", None)
+        result = await self._enqueue_legacy_command(
+            intent.name,
+            params,
+            command_id=intent.id,
+            source=intent.source,
+            command_service=self._command_service,
+        )
+        return CommandExecutionResult(details=_with_admitted_level(intent, result))
 
     async def _enqueue_legacy_command(
         self,
@@ -1795,16 +2106,6 @@ class ControlHandler:
         on = await radio.get_xfc_status()
         return {"on": on}
 
-    async def _ro_get_tx_freq_monitor(
-        self, params: dict[str, Any], radio: "Radio | None"
-    ) -> dict[str, Any]:
-        if radio is None:
-            raise RuntimeError("radio connection not available")
-        if CAP_TX not in radio.capabilities:
-            raise RuntimeError("radio does not support this command")
-        on = await radio.get_tx_freq_monitor()
-        return {"on": on}
-
     async def _ro_cw_auto_tune(
         self, params: dict[str, Any], radio: "Radio | None"
     ) -> dict[str, Any]:
@@ -1846,7 +2147,6 @@ class ControlHandler:
         "get_utc_offset": _ro_get_utc_offset,
         "get_band_edge_freq": _ro_get_band_edge_freq,
         "get_xfc_status": _ro_get_xfc_status,
-        "get_tx_freq_monitor": _ro_get_tx_freq_monitor,
         "cw_auto_tune": _ro_cw_auto_tune,
     }
 
@@ -1911,18 +2211,24 @@ class ControlHandler:
         if hz is None:
             return {"detected": None, "applied": False}
 
-        # Read current CW pitch from state, compute VFO shift
-        cw_pitch = state.cw_pitch if state.cw_pitch else 600
+        # Read current CW pitch from state, compute VFO shift.
+        # MOR-2482: an unobserved pitch (never reported by the radio) must
+        # not be replaced by a fabricated default — without it no honest
+        # delta exists, so the VFO stays put and the response says so.
+        cw_pitch = state.cw_pitch
+        if cw_pitch <= 0:
+            return {
+                "detected": hz,
+                "cw_pitch": None,
+                "delta": None,
+                "applied": False,
+                "reason": "cw_pitch_unknown",
+            }
         delta = hz - cw_pitch
 
         if abs(delta) > 5:
             # Shift VFO frequency to zero-beat
             command = SetFreq(freq + delta, receiver=receiver)
-            decision = evaluate_tx_interlock(
-                command, rf_state=self._observed_rf_state()
-            )
-            if not decision.allowed:
-                raise CommandError(decision.reason)
             q = self._server.command_queue
             q.put(command)
 
@@ -1943,8 +2249,35 @@ class ControlHandler:
         params: dict[str, Any],
         q: Any,
         radio: "Radio | None",
+        *,
+        ordered_context: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         match name:
+            case "set_vfo_freq":
+                if ordered_context is None:
+                    raise CommandRejectedError(
+                        "direct VFO write requires completion context"
+                    )
+                q.put_ordered(
+                    SetVfoFreq(
+                        freq=params["freq"],
+                        receiver=params["receiver"],
+                        slot=params["slot"],
+                        expected_active_slot=params["expected_active_slot"],
+                        provider_generation=params["provider_generation"],
+                    ),
+                    **ordered_context,
+                )
+                return {
+                    key: params[key]
+                    for key in (
+                        "freq",
+                        "receiver",
+                        "slot",
+                        "expected_active_slot",
+                        "provider_generation",
+                    )
+                }
             case "send_civ":
                 if radio is None or not isinstance(radio, CivCommandCapable):
                     raise RuntimeError("radio does not support send_civ")
@@ -2340,48 +2673,6 @@ class ControlHandler:
         radio: "Radio | None",
     ) -> dict[str, Any] | None:
         match name:
-            case "set_rf_gain":
-                if radio is None:
-                    raise RuntimeError("radio connection not available")
-                if CAP_RF_GAIN not in radio.capabilities:
-                    raise ValueError(
-                        "command set_rf_gain is not supported by this radio "
-                        "(missing rf_gain capability)"
-                    )
-                level = _raw_int_level_from_param(params["level"])
-                rx = int(params.get("receiver", 0))
-                self._ensure_capability("rf_gain", "set_rf_gain")
-                self._ensure_receiver_supported(rx)
-                q.put(SetRfGain(level, receiver=rx))
-                return {"level": level, "receiver": rx}
-            case "set_af_level":
-                if radio is None:
-                    raise RuntimeError("radio connection not available")
-                if CAP_AF_LEVEL not in radio.capabilities:
-                    raise ValueError(
-                        "command set_af_level is not supported by this radio "
-                        "(missing af_level capability)"
-                    )
-                level = _af_level_from_param(params["level"])
-                rx = int(params.get("receiver", 0))
-                self._ensure_capability("af_level", "set_af_level")
-                self._ensure_receiver_supported(rx)
-                q.put(SetAfLevel(level, receiver=rx))
-                return {"level": level, "receiver": rx}
-            case "set_sql" | "set_squelch":
-                if radio is None:
-                    raise RuntimeError("radio connection not available")
-                if CAP_SQUELCH not in radio.capabilities:
-                    raise ValueError(
-                        f"command {name!r} is not supported by this radio "
-                        "(missing squelch capability)"
-                    )
-                level = _raw_int_level_from_param(params["level"])
-                rx = int(params.get("receiver", 0))
-                self._ensure_capability("squelch", name)
-                self._ensure_receiver_supported(rx)
-                q.put(SetSquelch(level, receiver=rx))
-                return {"level": level, "receiver": rx}
             case "set_mic_gain":
                 level = int(params["level"])
                 q.put(SetMicGain(level))
@@ -2542,13 +2833,6 @@ class ControlHandler:
         radio: "Radio | None",
     ) -> dict[str, Any] | None:
         match name:
-            case "set_att" | "set_attenuator":
-                db = int(params.get("level", params.get("db", 0)))
-                rx = int(params.get("receiver", 0))
-                self._ensure_capability("attenuator", name)
-                self._ensure_receiver_supported(rx)
-                q.put(SetAttenuator(db, receiver=rx))
-                return {"db": db, "receiver": rx}
             case "set_preamp":
                 level = int(params["level"])
                 rx = int(params.get("receiver", 0))
@@ -2845,10 +3129,6 @@ class ControlHandler:
             case "set_xfc_status":
                 on = bool(params["on"])
                 q.put(SetXfcStatus(on))
-                return {"on": on}
-            case "set_tx_freq_monitor":
-                on = bool(params["on"])
-                q.put(SetTxFreqMonitor(on))
                 return {"on": on}
             case "get_quick_split":
                 q.put(QuickSplit())

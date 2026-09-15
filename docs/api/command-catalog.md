@@ -28,6 +28,33 @@ protocol examples.
 
 **Response shape:** on success the `result` object echoes accepted parameter values. Non-trivial response fields are listed in the Notes column.
 
+## Explicit normalized levels
+
+Browser controls that operate in the normalized `0.0`–`1.0` domain send
+`level_unit: "normalized"` with `set_af_level` and `set_rf_power`. The server
+validates that marker, consumes it before command binding, and converts the
+level to the radio's native integer scale. Untagged integer levels keep their
+native meaning. An untagged JSON decimal token such as `1.0` keeps the existing
+normalized-float meaning.
+
+The matching server must be installed before enabling a client that emits the
+marker. An older server can ignore the additional field and therefore can
+still misinterpret normalized endpoint `1` as native integer `1`.
+
+These are the canonical WebSocket wire examples used for the normalized AF/RF
+boundary:
+
+<!-- normalized-level-wire-vectors:start -->
+```jsonl
+{"type":"cmd","name":"set_af_level","id":"af-normalized-0","params":{"level":0,"receiver":0,"level_unit":"normalized"}}
+{"type":"cmd","name":"set_af_level","id":"af-normalized-half","params":{"level":0.5,"receiver":0,"level_unit":"normalized"}}
+{"type":"cmd","name":"set_af_level","id":"af-normalized-1","params":{"level":1,"receiver":0,"level_unit":"normalized"}}
+{"type":"cmd","name":"set_rf_power","id":"rf-normalized-0","params":{"level":0,"level_unit":"normalized"}}
+{"type":"cmd","name":"set_rf_power","id":"rf-normalized-half","params":{"level":0.5,"level_unit":"normalized"}}
+{"type":"cmd","name":"set_rf_power","id":"rf-normalized-1","params":{"level":1,"level_unit":"normalized"}}
+```
+<!-- normalized-level-wire-vectors:end -->
+
 ## Rate limiting
 
 `set_*` commands over WebSocket are physically enqueued at most once per 50 ms per client, per command name. Commands arriving before the interval expires are coalesced with last-value-wins semantics (MOR-1427) rather than dropped: the newest frame in the window always survives to the next paced enqueue. Any frame it replaces before that flush receives an immediate ACK with `{"superseded": true}` and is never enqueued; the surviving frame gets the normal enqueue ACK at the pacing boundary. HTTP endpoints are not throttled at this layer.
@@ -53,6 +80,7 @@ Maximum batch size: 128 steps. Per-step timeout: 10 seconds.
 | Command | Params | Capability | Batch | Notes |
 |---------|--------|------------|-------|-------|
 | `set_freq` | `freq: int` (Hz), `receiver?: int=0` | — | Yes | |
+| `set_vfo_freq` | `freq: int` (Hz), `receiver: int`, `slot: A/B`, `expected_active_slot: A/B`, `provider_generation: int` | `vfo_freq_direct` | Yes | IC-7300 receiver 0 only; direct write without selection. Requires current identity and generation; completes after ACK and target readback. |
 | `set_band` | `band: int` (BSR code) | — | Yes | BSR code from `freqRanges[].bands[].bsrCode` in capabilities. See BSR workflow below. |
 | `set_mode` | `mode: str`, `receiver?: int=0` | — | Yes | Mode strings from profile `modes[]`, e.g. `"USB"`, `"FM"`, `"CW"`. |
 | `set_filter` | `filter?: str="FIL1"`, `receiver?: int=0` | — | Yes | Accepted: `"FIL1"`, `"FIL2"`, `"FIL3"`. |
@@ -87,8 +115,8 @@ Use `set_freq` directly for bands that have no `bsrCode` in capabilities.
 | `ptt` | `state: bool` | — | Yes | `true`=TX on, `false`=TX off. Rejected in read-only mode. |
 | `ptt_on` | — | — | Yes | Equivalent to `ptt` with `state: true`. Rejected in read-only mode. |
 | `ptt_off` | — | — | Yes | Equivalent to `ptt` with `state: false`. Rejected in read-only mode. |
-| `set_rf_power` | `level: int` | `power_control` | Yes | Canonical. Level scale: 0–255 raw (Icom CI-V); watts (Yaesu CAT). Requires `PowerControlCapable`. |
-| `set_power` | `level: int` | `power_control` | Yes | Alias for `set_rf_power`. |
+| `set_rf_power` | `level: int \| float`, `level_unit?: "normalized"` | `power_control` | Yes | Canonical. Untagged integers are native: 0–255 raw (Icom CI-V) or watts (Yaesu CAT). Tagged levels are normalized 0.0–1.0. Requires `PowerControlCapable`. |
+| `set_power` | `level: int \| float`, `level_unit?: "normalized"` | `power_control` | Yes | Alias for `set_rf_power`. |
 | `set_powerstat` | `on?: bool=true` | `power_control` | Yes | Power the radio on or off via CI-V. |
 | `set_drive_gain` | `level: int` | `drive_gain` | Yes | Drive gain; radio-specific range. |
 
@@ -126,7 +154,7 @@ Use `set_freq` directly for bands that have no `bsrCode` in capabilities.
 
 | Command | Params | Capability | Batch | Notes |
 |---------|--------|------------|-------|-------|
-| `set_af_level` | `level: int`, `receiver?: int=0` | `af_level` | Yes | AF volume; 0–255 raw scale. |
+| `set_af_level` | `level: int \| float`, `level_unit?: "normalized"`, `receiver?: int=0` | `af_level` | Yes | Untagged integers use the native 0–255 scale. Tagged levels are normalized 0.0–1.0. |
 | `set_rf_gain` | `level: int`, `receiver?: int=0` | `rf_gain` | Yes | |
 | `set_sql` | `level: int`, `receiver?: int=0` | `squelch` | Yes | Canonical. |
 | `set_squelch` | `level: int`, `receiver?: int=0` | `squelch` | Yes | Alias for `set_sql`. |
@@ -213,6 +241,7 @@ All scope commands require the `scope` capability.
 | `set_tone_freq` | `freq: int`, `receiver?: int=0` | `repeater_tone` | Yes | CTCSS tone frequency. |
 | `set_repeater_tsql` | `on?: bool=false`, `receiver?: int=0` | `tsql` | Yes | |
 | `set_tsql_freq` | `freq: int`, `receiver?: int=0` | `tsql` | Yes | CTCSS squelch frequency. |
+| `set_repeater_shift` | `direction: int`, `receiver?: int=0` | `repeater_shift` | Yes | Repeater shift direction; see `RepeaterShiftDirection` (0=Simplex, 1=Plus, 2=Minus, 3=ARS). |
 | `set_ref_adjust` | `value: int` | — | Yes | Reference frequency adjustment. |
 | `set_civ_transceive` | `on: bool` | — | Yes | CI-V transceive mode. `on` is required. |
 | `set_tuning_step` | `step: int` | — | Yes | Tuning step in Hz. |
@@ -236,13 +265,12 @@ the memory protocol reject these commands.
 
 ---
 
-## Miscellaneous — XFC, TX freq monitor, quick split/dual watch
+## Miscellaneous — XFC, quick split/dual watch
 
 | Command | Params | Capability | Batch | Notes |
 |---------|--------|------------|-------|-------|
 | `send_civ` | `command: int`, `sub?: int`, `data?: str=""`, `wait_response?: bool=false` | CivCommandCapable | Yes | Fire-and-forget raw CI-V write through the ordered queue. `command` and `sub` are byte values; `data` is compact even-length hex. `wait_response: true` is rejected; use `POST /api/v1/civ/transaction` for ACK/data responses. Rejected in read-only mode. |
 | `set_xfc_status` | `on: bool` | — | Yes | XFC on/off. `on` is required. |
-| `set_tx_freq_monitor` | `on: bool` | — | Yes | TX frequency monitor. `on` is required. |
 | `get_quick_split` | — | — | Yes | Enqueues `QuickSplit`, which reads the IC-7300 `1A 05 0030`-style persistent Quick Split menu toggle (`CoreRadio.get_quick_split`, MOR-2007). |
 | `set_quick_split` | `on: bool` | — | Yes | Enqueues `SetQuickSplit`, which writes the persistent Quick Split menu toggle via `CoreRadio.set_quick_split` (MOR-2007 ruling 2; wired MOR-2045). `on` is required. |
 | `get_quick_dual_watch` | — | — | Yes | Enqueues `QuickDualWatch`, which reads the equivalent persistent Quick Dual Watch menu toggle (`CoreRadio.get_quick_dual_watch`, MOR-2007). |
@@ -284,7 +312,6 @@ directly and/or use `asyncio`). They are **not** batch-eligible. Use
 | `get_utc_offset` | — | `system_settings` | No | Returns `{hours, minutes, is_negative}`. |
 | `get_band_edge_freq` | — | `band_edge` | No | Returns `{freq: int}` (Hz). |
 | `get_xfc_status` | — | `xfc` | No | Returns `{on: bool}`. |
-| `get_tx_freq_monitor` | — | `tx` | No | Returns `{on: bool}`. |
 | `cw_auto_tune` | — | — | No | Detects CW tone via audio FFT and shifts VFO to zero-beat. Requires active audio relay; times out after 3 s. On successful detection: `{detected: int, cw_pitch: int, delta: int, applied: bool}`. On timeout or no tone found: `{detected: null, applied: false}`. Experimental. |
 
 <!-- catalog:end -->

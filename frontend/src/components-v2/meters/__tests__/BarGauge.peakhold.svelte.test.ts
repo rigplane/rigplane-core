@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import BarGauge from '../BarGauge.svelte';
+import type { BarMeterFrame } from '../bar-meter-motion.svelte';
+import type {
+  MeterContinuitySession,
+  MeterSourceIdentity,
+} from '../../../primitives/meters/meter-ballistics.svelte';
 
 // MOR-1282: BarGauge's optional peak-hold marker channel. Reuses
 // meter-utils::updatePeakHold/peakHoldDisplay — the single MOR-1252 semantics
@@ -54,6 +59,15 @@ function markerX(t: HTMLElement): number | null {
   return x === null || x === undefined ? null : parseFloat(x);
 }
 
+function fillCount(t: HTMLElement): number {
+  return t.querySelectorAll('[data-gauge-fill]').length;
+}
+
+const MAIN_SOURCE = {
+  providerGeneration: 1, scope: 'receiver', receiver: 'MAIN', path: 'main.sMeter',
+} as const satisfies MeterSourceIdentity;
+const SESSION_1 = { controlSessionEpoch: 1 } as const satisfies MeterContinuitySession;
+
 describe('BarGauge peak-hold marker (MOR-1282)', () => {
   it('renders no marker when showPeak is not set', () => {
     const { t } = mountReactive({ value: 0.8, label: 'Po', displayValue: '80W' });
@@ -104,6 +118,181 @@ describe('BarGauge peak-hold marker (MOR-1282)', () => {
 
     t.querySelector('svg')!.dispatchEvent(new Event('dblclick', { bubbles: true }));
     flushSync();
+    expect(markerCount(t)).toBe(0);
+  });
+
+  it('renders hosted frame updates and keeps the reset action revocable', () => {
+    const onResetPeak = vi.fn();
+    const { t, state } = mountReactive({
+      frame: { smoothedFraction: 0.4, peakFraction: 0.8 } satisfies BarMeterFrame,
+      label: 'Po', displayValue: '40W', onResetPeak,
+    });
+    expect(fillCount(t)).toBe(4);
+    expect(markerX(t)).toBe(211);
+
+    t.querySelector('svg')!.dispatchEvent(new Event('dblclick', { bubbles: true }));
+    expect(onResetPeak).toHaveBeenCalledOnce();
+    state.onResetPeak = undefined;
+    t.querySelector('svg')!.dispatchEvent(new Event('dblclick', { bubbles: true }));
+    expect(onResetPeak).toHaveBeenCalledOnce();
+
+    state.frame = { smoothedFraction: 0.2, peakFraction: null } satisfies BarMeterFrame;
+    flushSync();
+    expect(fillCount(t)).toBe(2);
+    expect(markerCount(t)).toBe(0);
+  });
+
+  it('clamps rendered fill while retaining an over-range peak sample through decay', () => {
+    const { t, state } = mountReactive({
+      value: 1.5, label: 'Po', displayValue: '150W', showPeak: true,
+    });
+    vi.advanceTimersByTime(600);
+    flushSync();
+    expect(fillCount(t)).toBe(10);
+    expect(markerX(t)).toBe(253);
+
+    state.value = 1.6;
+    state.displayValue = '160W';
+    flushSync();
+    state.value = 0;
+    state.displayValue = '0W';
+    flushSync();
+    vi.advanceTimersByTime(300);
+    flushSync();
+
+    // The freshly retained 1.6 sample has only decayed to 1.28, so visual clamping
+    // keeps the marker at the right edge. Clamping the peak sample itself
+    // to 1 would instead move the marker inward on this first decay step.
+    expect(markerX(t)).toBe(253);
+  });
+
+  it('clamps below-range smoothing and peak projection at the left edge', () => {
+    const { t } = mountReactive({
+      value: -0.5, label: 'Po', displayValue: '0W', showPeak: true,
+    });
+    vi.advanceTimersByTime(100);
+    flushSync();
+    expect(fillCount(t)).toBe(0);
+    expect(markerX(t)).toBe(43);
+  });
+});
+
+it('null empties immediately and clears old fill/peak before a smaller sample', () => {
+  const { t, state } = mountReactive({ value: 1, label: 'Po', displayValue: '100W', showPeak: true, fault: true });
+  vi.advanceTimersByTime(600);
+  flushSync();
+  const svg = t.querySelector('svg');
+  const track = t.querySelector('rect[x="44"]');
+  expect(t.querySelectorAll('rect').length).toBeGreaterThan(13);
+  expect(svg?.getAttribute('data-fault')).toBe('true');
+  state.value = null;
+  state.displayValue = 'IDLE';
+  state.showPeak = false;
+  flushSync();
+  expect(t.querySelector('svg') === svg).toBe(true);
+  expect(t.querySelector('rect[x="44"]') === track).toBe(true);
+  expect(t.querySelectorAll('rect')).toHaveLength(12);
+  expect(svg?.getAttribute('data-fault')).toBe('false');
+  expect(markerCount(t)).toBe(0);
+  state.value = 0.1;
+  state.displayValue = '10W';
+  state.showPeak = true;
+  flushSync();
+  expect(markerX(t)).toBe(64);
+  expect(t.querySelectorAll('rect')).toHaveLength(13);
+  vi.advanceTimersByTime(100);
+  flushSync();
+  expect(t.querySelectorAll('rect').length).toBeLessThanOrEqual(14);
+});
+
+describe('BarGauge source continuity (MOR-2402)', () => {
+  const highThenLow = (source: MeterSourceIdentity = MAIN_SOURCE) => {
+    const mounted = mountReactive({
+      value: 1, label: 'Po', displayValue: '100W', showPeak: true,
+      source, session: SESSION_1,
+    });
+    vi.advanceTimersByTime(600);
+    flushSync();
+    const retainedFill = fillCount(mounted.t);
+    expect(retainedFill).toBeGreaterThan(5);
+    mounted.state.value = 0.1;
+    mounted.state.displayValue = '10W';
+    flushSync();
+    expect(fillCount(mounted.t)).toBe(retainedFill);
+    const retainedPeak = markerX(mounted.t)!;
+    expect(retainedPeak).toBeGreaterThan(64);
+    return { ...mounted, retainedFill, retainedPeak };
+  };
+
+  it('keeps omitted context legacy-compatible, then clears at legacy/qualified boundaries', () => {
+    const { t, state } = mountReactive({
+      value: 1, label: 'Po', displayValue: '100W', showPeak: true,
+    });
+    vi.advanceTimersByTime(600);
+    flushSync();
+    const retainedFill = fillCount(t);
+    expect(retainedFill).toBeGreaterThan(5);
+    state.value = 0.1;
+    state.displayValue = '10W';
+    flushSync();
+    expect(fillCount(t)).toBe(retainedFill);
+    const retainedPeak = markerX(t)!;
+    expect(retainedPeak).toBeGreaterThan(64);
+
+    state.source = MAIN_SOURCE;
+    state.session = SESSION_1;
+    flushSync();
+    expect(fillCount(t)).toBe(1);
+    expect(markerX(t)).toBe(64);
+
+    state.value = 1;
+    flushSync();
+    state.value = 0.1;
+    flushSync();
+    expect(markerX(t)).toBeGreaterThan(64);
+    state.source = undefined;
+    state.session = undefined;
+    flushSync();
+    expect(fillCount(t)).toBe(1);
+    expect(markerX(t)).toBe(64);
+  });
+
+  it('treats reconstructed equal tuples as the same source and observes the equal sample', () => {
+    const { t, state, retainedFill, retainedPeak } = highThenLow();
+    state.source = { ...MAIN_SOURCE };
+    state.session = { ...SESSION_1 };
+    flushSync();
+    expect(fillCount(t)).toBe(retainedFill);
+    expect(markerX(t)).toBe(retainedPeak);
+  });
+
+  it.each([
+    ['provider generation', { ...MAIN_SOURCE, providerGeneration: 2 }, SESSION_1],
+    ['scope', { ...MAIN_SOURCE, scope: 'radio' }, SESSION_1],
+    ['receiver', { ...MAIN_SOURCE, receiver: 'SUB' }, SESSION_1],
+    ['path', { ...MAIN_SOURCE, path: 'sub.sMeter' }, SESSION_1],
+    ['control-session epoch', MAIN_SOURCE, { controlSessionEpoch: 2 }],
+  ] as readonly [string, MeterSourceIdentity, MeterContinuitySession][])(
+    're-seeds segment fill and raw-sample peak when only %s changes',
+    (_label, nextSource, nextSession) => {
+      const { t, state } = highThenLow();
+      state.source = nextSource;
+      state.session = nextSession;
+      flushSync();
+      expect(fillCount(t)).toBe(1);
+      expect(markerX(t)).toBe(64);
+    },
+  );
+
+  it.each([
+    ['source', null, undefined],
+    ['session', undefined, null],
+  ] as const)('gives explicit null %s precedence over an omitted peer', (_label, source, session) => {
+    const { t, state } = highThenLow();
+    state.source = source;
+    state.session = session;
+    flushSync();
+    expect(fillCount(t)).toBe(0);
     expect(markerCount(t)).toBe(0);
   });
 });

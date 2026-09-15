@@ -13,12 +13,23 @@
  * Each test names the mutation it exists to kill.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+const txHarness = new ManagedAppTxHarness();
 import { mount, unmount, flushSync } from 'svelte';
 
 vi.mock('../../../lib/local-extensions/LocalExtensionsHost.svelte', async () => {
   const stub = await import('./SpectrumPanelStub.svelte');
   return { default: stub.default };
 });
+const segmentlineMounts = vi.hoisted(() => [] as Array<{
+  canvasW: number; canvasH: number; minScale: number; displayVariant: string;
+}>);
+vi.mock('../../../skins/segmentline/PeerSplitLayout.svelte', () => ({
+  default: (_anchor: unknown, props: (typeof segmentlineMounts)[number]) => {
+    segmentlineMounts.push(props);
+  },
+}));
 vi.mock('$lib/stores/layout.svelte', () => ({
   useLcdLayout: vi.fn(() => true),
   getLayoutMode: vi.fn(() => 'lcd-cockpit'),
@@ -49,8 +60,16 @@ const rt = vi.hoisted(() => ({ state: null as unknown }));
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return rt.state; },
     caps: null,
+    subscribeControlAuthority(handler: (publication: unknown) => void) {
+      handler({
+        state: rt.state, caps: null, session: { state: 'disconnected', epoch: 0 },
+        rxAudioTarget: Object.freeze({ muted: false, rxEnabled: false }),
+      });
+      return () => {};
+    },
     connectionStatus: 'disconnected',
     radioPowerOn: null,
     connection: { status: 'disconnected', radioPowerOn: null },
@@ -71,18 +90,11 @@ vi.mock('$lib/runtime', () => ({
   },
 }));
 
-vi.mock('$lib/runtime/tx-controller/app-host', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/app-host')>();
+vi.mock('$lib/runtime/tx-controller/managed-app-host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/managed-app-host')>();
   return {
     ...actual,
-    getAppTxController: () => ({
-      snapshot: () => ({ phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null }),
-      subscribe: () => () => {},
-      start: vi.fn(),
-      setIntent: vi.fn(),
-      release: vi.fn(),
-      resetFault: vi.fn(),
-    }),
+    getManagedAppTxController: () => txHarness.controller,
   };
 });
 
@@ -126,6 +138,9 @@ vi.stubGlobal('ResizeObserver', class {
 });
 
 import LcdLayout from '../LcdLayout.svelte';
+import LcdPeerSplitSkin from '../../../skins/lcd-peer-split/LcdPeerSplitSkin.svelte';
+import LcdUnifiedInstrumentSkin from '../../../skins/lcd-unified-instrument/LcdUnifiedInstrumentSkin.svelte';
+import LcdPanadapterFirstSkin from '../../../skins/lcd-panadapter-first/LcdPanadapterFirstSkin.svelte';
 import lcdLayoutSource from '../LcdLayout.svelte?raw';
 
 let components: ReturnType<typeof mount>[] = [];
@@ -140,7 +155,9 @@ function mountLayout(variant: 'cockpit' | 'scope' = 'cockpit') {
 }
 
 beforeEach(() => {
+  txHarness.reset();
   components = [];
+  segmentlineMounts.length = 0;
   rt.state = null;
 });
 
@@ -173,6 +190,19 @@ describe('LcdLayout canonical module surface (MOR-1409 A13b)', () => {
 });
 
 describe('LcdLayout mounts on the migrated handler surface (MOR-1409 A13b)', () => {
+  it.each([
+    [LcdPeerSplitSkin, 'peer', 540],
+    [LcdUnifiedInstrumentSkin, 'dominant', 540],
+    [LcdPanadapterFirstSkin, 'panadapter', 594],
+  ] as const)('maps a production skin through the real LCD shell', (Skin, displayVariant, canvasH) => {
+    const t = document.body.appendChild(document.createElement('div'));
+    components.push(mount(Skin, { target: t }));
+    flushSync();
+    expect(segmentlineMounts).toEqual([{
+      canvasW: 1280, canvasH, minScale: 0.5, displayVariant,
+    }]);
+  });
+
   it('renders .lcd-layout for the cockpit variant without throwing', () => {
     const t = mountLayout('cockpit');
     expect(t.querySelector('.lcd-layout')).not.toBeNull();

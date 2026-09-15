@@ -11,7 +11,7 @@ const h = vi.hoisted(() => ({
   initMedia: vi.fn(),
   destroyMedia: vi.fn(),
   resolveSkin: vi.fn(),
-  radio: null as { stateRevision: number; freshnessRevision: number; observationSeq: number; ptt: boolean } | null,
+  radio: null as { stateRevision: number; freshnessRevision: number; observationSeq: number; ptt: boolean; providerGeneration: number } | null,
   caps: null as { tx: boolean; capabilities: string[] } | null,
   notifyRuntime: () => {},
   barrier: undefined as (() => Promise<void>) | undefined,
@@ -37,7 +37,10 @@ vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' })
 vi.mock('../../../../skins/registry', () => ({
   resolveSkinId: h.resolveSkin,
   loadSkin: async () => (await import('../../../../components-v2/layout/__tests__/SpectrumPanelStub.svelte')).default,
-  presentationResourcePlan: () => [],
+  getPresentationRecord: (id: unknown) => ({ id, kind: 'built-in-self-contained', resources: [] }),
+}));
+vi.mock('../../../../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
+  default: (await import('../../../../components-v2/layout/__tests__/SpectrumPanelStub.svelte')).default,
 }));
 vi.mock('../../../../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../../../../lib/media/media-session', () => ({ initMediaSession: h.initMedia, destroyMediaSession: h.destroyMedia }));
@@ -48,6 +51,7 @@ vi.mock('../../../../lib/runtime/frontend-runtime', async () => {
   h.notifyRuntime = () => update();
   return {
     runtime: {
+      onTxAudioDied: () => () => {},
       get state() { subscribe(); return h.radio; },
       get caps() { subscribe(); return h.caps; },
       bootstrap: h.bootstrap,
@@ -62,7 +66,7 @@ vi.mock('../../../../lib/runtime/frontend-runtime', async () => {
 });
 vi.mock('$lib/runtime/system-controller', () => ({ systemController: { registerPreDisconnectBarrier: h.registerBarrier } }));
 vi.mock('$lib/i18n', () => ({ t: (key: string) => key }));
-vi.mock('../app-host', () => ({ provideAppTxControllerHost: h.provide }));
+vi.mock('../managed-app-host', () => ({ provideManagedAppTxHost: h.provide }));
 // The App-global status host (MOR-1059) is stubbed here: these tests own the
 // TX controller lifecycle, and the host has its own focused suite.
 vi.mock('../../../../AppGlobalHost.svelte', async () => {
@@ -84,7 +88,7 @@ beforeEach(() => {
   h.barrier = undefined;
   h.host = undefined;
   h.inFlight = null;
-  h.radio = { stateRevision: 1, freshnessRevision: 1, observationSeq: 1, ptt: false };
+  h.radio = { stateRevision: 1, freshnessRevision: 1, observationSeq: 1, ptt: false, providerGeneration: 3 };
   h.caps = { tx: true, capabilities: ['tx'] };
   document.body.innerHTML = '';
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 });
@@ -133,6 +137,21 @@ describe('App TX lifecycle', () => {
     await settle();
     expect(h.provide).toHaveBeenCalledOnce();
     expect(h.host!.refreshAuthority).toHaveBeenCalledOnce();
+    expect(h.host!.refreshAuthority).toHaveBeenLastCalledWith(3);
+    // MOR-2425 C1 PR-2 follow-up: the loaded presentation (SpectrumPanelStub,
+    // via `loadSkin`) must actually be in the mounted tree, not merely
+    // implied by the TX-host assertions above — AppGlobalHost and
+    // LocalExtensionsHost are stubbed with the same component and always
+    // render as siblings, so a failed presentation load (2 stubs) is
+    // distinguishable from a successful one (3 stubs: presentation + the
+    // two siblings). `loadSkin`'s dynamic import settles a macrotask after
+    // `settle()`'s microtask drain, so poll rather than assert immediately —
+    // same idiom as `integration-page-lifecycle.isolated.test.ts`'s
+    // `capturedController` wait.
+    await vi.waitFor(() => {
+      flushSync();
+      expect(document.querySelectorAll('.spectrum-panel-stub')).toHaveLength(3);
+    });
     h.radio!.ptt = true;
     h.radio!.observationSeq++;
     h.caps!.capabilities.push('voice_tx');

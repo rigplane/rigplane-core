@@ -68,6 +68,12 @@ const mockFilterArmed: { armed: boolean; value: number | null } = { armed: false
 const mockFilterWidthLifecycle = {
   confirmed: 2400, target: null, phase: 'idle' as const, busy: false, outcome: null, presentation: null,
 };
+const mockFilterWidthFeedback = {
+  confirmed: 2400, target: null, requestedTarget: null, phase: 'idle' as const,
+  busy: false, availability: 'available' as const, outcome: null,
+  lifecycleId: null, transitionId: null, providerGeneration: 1, sessionEpoch: 7,
+  scope: { control: 'filter-width', receiver: 0 as const }, repeatPolicy: 'latest-target-wins' as const,
+};
 
 const mockRfProps = {
   rfGain: 1, squelch: 0, att: 0, pre: 0, digiSel: false, ipPlus: false,
@@ -107,14 +113,22 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getFilterHandlers: () => mockFilterHandlers,
   getFilterArmed: () => mockFilterArmed,
   getFilterWidthCommandLifecycle: () => mockFilterWidthLifecycle,
+  getFilterWidthControlFeedback: () => mockFilterWidthFeedback,
   deriveRfFrontEndProps: () => mockRfProps,
   getRfFrontEndHandlers: () => mockRfHandlers,
+  getRfSqlControlFeedback: () => null,
   getPreampArmed: () => mockPreArmed,
   getAttenuatorArmed: () => mockAttArmed,
   deriveDspProps: () => mockDspProps,
   getDspHandlers: () => mockDspHandlers,
   getAutoNotchArmed: () => mockAutoNotchArmed,
   getManualNotchArmed: () => mockManualNotchArmed,
+  getDspControlFeedback: (field: string) => ({
+    confirmed: null, target: null, requestedTarget: null, phase: 'unavailable' as const,
+    busy: false, availability: 'unavailable' as const, outcome: null,
+    lifecycleId: null, transitionId: null, providerGeneration: null, sessionEpoch: -1,
+    scope: { control: field, receiver: 0 as const }, repeatPolicy: 'latest-target-wins' as const,
+  }),
 }));
 
 import AgcPanel from '../AgcPanel.svelte';

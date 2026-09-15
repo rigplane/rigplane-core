@@ -4,10 +4,17 @@
  * child component slots, and event wiring.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mount, unmount, flushSync } from 'svelte';
+import { createRawSnippet, mount, unmount, flushSync } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { ScopeDisplayProjection } from '$lib/runtime/adapters/scope-display-projection';
+import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
+  type ScopePassbandDisplayInput } from '$lib/runtime/adapters/scope-passband-display';
+import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
+import { qualifyScopeFrameEnvelope, toScopeDisplayFrame } from '$lib/runtime/adapters/scope-adapter';
+import { resolveLcdSpectrumFrame } from '../../../skins/segmentline/lcd-display-contract';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
 // ---------------------------------------------------------------------------
 // Global mocks (must be before component import)
@@ -119,8 +126,9 @@ const runtimeHarness = vi.hoisted(() => {
   const state = {
     capturedHardwareFrame: null as ((frame: TestScopeFrame) => void) | null,
     capturedDxMessage: null as ((message: unknown) => void) | null,
-    currentState: Object.freeze({ source: 'test-state' }) as unknown,
+    currentState: Object.freeze({ source: 'test-state', providerGeneration: 17, active: 'MAIN' }) as unknown,
     currentCaps: Object.freeze({ source: 'test-capabilities' }) as unknown,
+    currentSession: { state: 'connected' as const, epoch: 1 },
     mockScopeConnected: true,
     tuningStep: 1_000,
     nextLeaseId: 0,
@@ -130,7 +138,12 @@ const runtimeHarness = vi.hoisted(() => {
   const runtime = {
     get state() { return state.currentState; },
     get caps() { return state.currentCaps; },
+    get controlSession() { return state.currentSession; },
+    onTxAudioDied: () => () => {},
+    defaultScopeStatus: { transport: 'connected' },
     scope: {
+      registerPresentationDriver: vi.fn(),
+      subscribe: vi.fn(() => () => {}),
       get hardwareScopeConnected() { return state.mockScopeConnected; },
       subscribeHardware: vi.fn((handler: (frame: TestScopeFrame) => void) => {
         state.capturedHardwareFrame = handler;
@@ -154,6 +167,16 @@ const runtimeHarness = vi.hoisted(() => {
 
 const mockRuntime = runtimeHarness.runtime;
 
+// SvelteMap-backed so that a write to `state.mockScopeConnected` during a
+// mounted test re-runs the panel's `$derived` chain; the plain-property
+// writes the rest of this file makes keep working through the setter.
+const hardwareScopeTransport = new SvelteMap<string, boolean>([['connected', true]]);
+Object.defineProperty(runtimeHarness.state, 'mockScopeConnected', {
+  configurable: true,
+  get: () => hardwareScopeTransport.get('connected')!,
+  set: (value: boolean) => hardwareScopeTransport.set('connected', value),
+});
+
 const authorityHarness = vi.hoisted(() => {
   const state = { current: null as any, useProductionSelector: false };
   return {
@@ -176,6 +199,17 @@ const authorityRefreshState = new SvelteMap<string, number>([['value', 0]]);
 function refreshSpectrumAuthority(): void {
   authorityRefreshState.set('value', (authorityRefreshState.get('value') ?? 0) + 1);
 }
+
+// The real runtime.state is store-backed and reactive; make the mock's
+// reads participate in refreshSpectrumAuthority() pokes so panel deriveds
+// re-evaluate raw identity-field changes the same way (MOR-2464).
+Object.defineProperty(mockRuntime, 'state', {
+  configurable: true,
+  get() {
+    authorityRefreshState.get('value');
+    return runtimeHarness.state.currentState;
+  },
+});
 
 const handlerHarness = vi.hoisted(() => {
   const vfo = Object.freeze({ onFreqChange: vi.fn() });
@@ -243,6 +277,31 @@ function pendingFilterWidthLifecycle(target: number, receiver: 0 | 1 = 0) {
   };
 }
 
+// MOR-2464 follow-up — the pending set_freq target the panel's optimistic
+// panorama reads. SvelteMap-backed so a write re-runs the panel's `$derived`
+// chain, mirroring the accessor's own reactive source. Keys '0'/'1' are the
+// wire receivers `getPendingFrequencyHz` accepts.
+const pendingFrequencyState = new SvelteMap<string, number | null>([
+  ['0', null],
+  ['1', null],
+]);
+
+function setPendingFrequency(receiver: 0 | 1, hz: number | null): void {
+  pendingFrequencyState.set(String(receiver), hz);
+}
+
+// MOR-2464 follow-up — the display-only tuning-burst target the panel
+// prefers ahead of pending while a local gesture is live. Same
+// SvelteMap-backed harness shape as `pendingFrequencyState`.
+const tuningBurstState = new SvelteMap<string, number | null>([
+  ['0', null],
+  ['1', null],
+]);
+
+function setTuningBurstFrequency(receiver: 0 | 1, hz: number | null): void {
+  tuningBurstState.set(String(receiver), hz);
+}
+
 const passbandHarness = vi.hoisted(() => ({
   rawWidth: 2_700 as number | null,
   getFilterWidthFromRightEdgePx: vi.fn(() => 2_700 as number | null),
@@ -250,6 +309,8 @@ const passbandHarness = vi.hoisted(() => ({
 
 const spectrumRendererHarness = vi.hoisted(() => ({
   lastOptions: null as any,
+  constructed: 0,
+  resolveColorRolesCalls: 0,
   render: vi.fn((_ctx: unknown, _data: Uint8Array, _width: number, _height: number, options: any) => {
     spectrumRendererHarness.lastOptions = options;
   }),
@@ -257,22 +318,12 @@ const spectrumRendererHarness = vi.hoisted(() => ({
   setPeakHoldEnabled: vi.fn(),
 }));
 
-const appTxHostHarness = vi.hoisted(() => {
-  const controller = Object.freeze({
-    snapshot: vi.fn(() => Object.freeze({
-      phase: 'idle', intent: null, sourceId: null, leaseId: null, guard: null,
-      fault: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false,
-    })),
-    subscribe: vi.fn(() => () => {}),
-    start: vi.fn(),
-    setIntent: vi.fn(),
-    release: vi.fn(),
-    resetFault: vi.fn(),
-  });
-  return { controller, getAppTxController: vi.fn(() => controller) };
-});
+const appTxHostHarness = vi.hoisted(() => ({
+  controller: null as ManagedAppTxController | null,
+}));
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
+  presentationResources: { acquire: vi.fn(() => ({ resource: 'audio-fft', id: 1 })), release: vi.fn() },
   runtime: runtimeHarness.runtime,
 }));
 
@@ -297,21 +348,38 @@ vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
     getVfoHandlers: handlerHarness.getVfoHandlers,
     getFilterHandlers: handlerHarness.getFilterHandlers,
     getFilterWidthCommandLifecycle: () => filterWidthLifecycleState.get('value')!,
+    getPendingFrequencyHz: (receiver: 0 | 1) =>
+      pendingFrequencyState.get(String(receiver)) ?? null,
+    // Delegates to the REAL accumulator publication first so reactive
+    // seam tests can drive a real accumulator; the SvelteMap stands in
+    // only when no real burst is live.
+    getTuningBurstFrequencyHz: (receiver: 0 | 1) =>
+      actual.getTuningBurstFrequencyHz(receiver)
+      ?? tuningBurstState.get(String(receiver))
+      ?? null,
   };
 });
 
 vi.mock('$lib/renderers/spectrum-renderer', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/renderers/spectrum-renderer')>();
   class SpectrumRenderer {
+    constructor() { spectrumRendererHarness.constructed++; }
     setAvgEnabled = spectrumRendererHarness.setAvgEnabled;
     setPeakHoldEnabled = spectrumRendererHarness.setPeakHoldEnabled;
     render = spectrumRendererHarness.render;
   }
-  return { ...actual, SpectrumRenderer };
+  return {
+    ...actual,
+    resolveSpectrumColorRoles: (...args: Parameters<typeof actual.resolveSpectrumColorRoles>) => {
+      spectrumRendererHarness.resolveColorRolesCalls++;
+      return actual.resolveSpectrumColorRoles(...args);
+    },
+    SpectrumRenderer,
+  };
 });
 
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: appTxHostHarness.getAppTxController,
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => appTxHostHarness.controller,
 }));
 
 vi.mock('$lib/stores/radio.svelte', () => ({
@@ -361,10 +429,6 @@ vi.mock('../passband-geometry', () => ({
   }),
 }));
 
-vi.mock('../../../../components-v2/panels/filter-controls', () => ({
-  deriveIfShift: vi.fn(() => 0),
-}));
-
 vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => ({
   ...await importOriginal<typeof import('$lib/runtime/props/panel-props')>(),
   resolveFilterModeConfig: vi.fn((caps: { filterConfig?: Record<string, unknown> }, mode: string) =>
@@ -375,8 +439,18 @@ vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => ({
 // Import component after mocks
 // ---------------------------------------------------------------------------
 
+import { WaterfallRenderer, type WaterfallOptions } from '$lib/renderers/waterfall-renderer';
 import SpectrumPanel from '../SpectrumPanel.svelte';
 import spectrumPanelSource from '../SpectrumPanel.svelte?raw';
+import {
+  createTuningAccumulator,
+  resetSharedTuningAccumulatorForTests,
+} from '$lib/runtime/commands/tuning-accumulator';
+import {
+  defaultSpectrumColorRoles,
+  spectrumColorRolesToOptions,
+} from '$lib/renderers/spectrum-renderer';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 const authorityPluginSource = readFileSync(
   resolve(process.cwd(), 'scripts/radio-authority-eslint-plugin.mjs'),
   'utf8',
@@ -397,6 +471,7 @@ import { IC7300_CAPABILITIES, IC7300_STATE } from '../../../lib/runtime/adapters
 // ---------------------------------------------------------------------------
 
 let components: ReturnType<typeof mount>[] = [];
+let txHarness: ManagedAppTxHarness;
 
 type TestRule = Readonly<{
   kind: 'step';
@@ -418,7 +493,7 @@ type TestAuthority = Readonly<{
   pbtOuterHz: number | null;
   dataMode: number | null;
   rule: TestRule | null;
-  scopeControls: Readonly<{ mode: number }>;
+  scopeControls: Readonly<{ mode: Readonly<{ reading: Readonly<{ status: 'known'; value: number } | { status: 'unknown' }> }> }>;
   digest: string;
 }>;
 
@@ -440,7 +515,7 @@ function authority(overrides: Partial<Omit<TestAuthority, 'digest'>> = {}): Test
     pbtOuterHz: 0,
     dataMode: 0,
     rule: defaultRule,
-    scopeControls: Object.freeze({ mode: 2 }),
+    scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 2 }) }) }),
     ...overrides,
   };
   return Object.freeze({ ...core, digest: JSON.stringify(core) });
@@ -499,7 +574,7 @@ function rect(element: Element, left = 0, width = 200): void {
 
 function pointer(
   element: EventTarget,
-  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel',
+  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel' | 'lostpointercapture',
   pointerId: number,
   clientX: number,
   init: Partial<PointerEventInit> = {},
@@ -514,6 +589,16 @@ function pointer(
     ...init,
   }));
   flushSync();
+}
+
+function verticalRect(element: Element, top: number, height: number): void {
+  Object.defineProperty(element, 'getBoundingClientRect', {
+    configurable: true,
+    value: vi.fn(() => ({
+      x: 0, y: top, left: 0, top, right: 800, bottom: top + height,
+      width: 800, height, toJSON: () => ({}),
+    })),
+  });
 }
 
 function prepareGeometry(target: HTMLElement, width = 200): {
@@ -540,6 +625,9 @@ function mountPanel(props: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   components = [];
+  storageMap.clear();
+  txHarness = new ManagedAppTxHarness();
+  appTxHostHarness.controller = txHarness.controller;
   runtimeHarness.state.capturedHardwareFrame = null;
   runtimeHarness.state.capturedDxMessage = null;
   runtimeHarness.state.mockScopeConnected = true;
@@ -547,11 +635,17 @@ beforeEach(() => {
   runtimeHarness.state.nextLeaseId = 0;
   runtimeHarness.state.hardwareUnsubscribe = vi.fn();
   runtimeHarness.state.dxUnsubscribe = vi.fn();
-  runtimeHarness.state.currentState = Object.freeze({ source: 'test-state' });
+  runtimeHarness.state.currentState = Object.freeze({ source: 'test-state', providerGeneration: 17, active: 'MAIN' });
   runtimeHarness.state.currentCaps = Object.freeze({ source: 'test-capabilities' });
+  runtimeHarness.state.currentSession = { state: 'connected', epoch: 1 };
   authorityHarness.state.current = authority();
   authorityHarness.state.useProductionSelector = false;
   setFilterWidthLifecycle({});
+  pendingFrequencyState.set('0', null);
+  pendingFrequencyState.set('1', null);
+  tuningBurstState.set('0', null);
+  tuningBurstState.set('1', null);
+  resetSharedTuningAccumulatorForTests();
   passbandHarness.rawWidth = 2_700;
   passbandHarness.getFilterWidthFromRightEdgePx.mockImplementation(() => passbandHarness.rawWidth);
   spectrumRendererHarness.lastOptions = null;
@@ -560,6 +654,9 @@ beforeEach(() => {
 
 afterEach(() => {
   components.forEach((c) => unmount(c));
+  expect(txHarness.trace()).toEqual([]);
+  expect(txHarness.listenerCount()).toBe(0);
+  appTxHostHarness.controller = null;
   document.body.innerHTML = '';
 });
 
@@ -571,15 +668,8 @@ describe('SpectrumPanel component', () => {
   it('mounts without errors', () => {
     const target = mountPanel();
     expect(target.querySelector('.spectrum-panel')).not.toBeNull();
-    expect(appTxHostHarness.getAppTxController).toHaveBeenCalledOnce();
-    for (const surface of [
-      appTxHostHarness.controller.snapshot,
-      appTxHostHarness.controller.subscribe,
-      appTxHostHarness.controller.start,
-      appTxHostHarness.controller.setIntent,
-      appTxHostHarness.controller.release,
-      appTxHostHarness.controller.resetFault,
-    ]) expect(surface).not.toHaveBeenCalled();
+    expect(appTxHostHarness.controller).toBe(txHarness.controller);
+    expect(txHarness.trace()).toEqual([]);
   });
 
   it('renders the toolbar section', () => {
@@ -706,9 +796,14 @@ describe('SpectrumPanel component', () => {
     expect(target.querySelector('.freq-axis')).toBeNull();
   });
 
-  it('does not render tune-line when no span data', () => {
+  it('shows the static CENTER reference from frequency evidence before any frame data', () => {
     const target = mountPanel();
-    expect(target.querySelector('.tune-line')).toBeNull();
+    // No frame has arrived (span 0), but the radio's observed frequency is
+    // evidence enough for the stationary CENTER reference in BOTH areas
+    // (MOR-2464); the passband shade stays absent — its geometry is not
+    // available without the tuple.
+    expect(target.querySelectorAll('.spectrum-area .tune-line, .waterfall-content .tune-line')).toHaveLength(2);
+    expect(target.querySelector('.passband-overlay')).toBeNull();
   });
 
   it('unmounts cleanly without errors', () => {
@@ -787,6 +882,126 @@ describe('SpectrumPanel component', () => {
   });
 });
 
+describe('SpectrumPanel spectrum/waterfall separator (MOR-2461)', () => {
+  function splitElements(target: HTMLElement) {
+    const region = target.querySelector<HTMLElement>('.spectrum-split-region')!;
+    const axis = target.querySelector<HTMLElement>('.freq-axis');
+    const separator = target.querySelector<HTMLElement>('[role="separator"]')!;
+    verticalRect(region, 0, 400);
+    if (axis) verticalRect(axis, 120, 20);
+    verticalRect(separator, 140, 8);
+    return { region, axis, separator };
+  }
+
+  it('renders a focusable horizontal separator and falls back safely for invalid storage', () => {
+    storageMap.set('rigplane-spectrum-split-ratio', 'not-a-ratio');
+    const target = mountPanel();
+    const { region, separator } = splitElements(target);
+
+    expect(separator.getAttribute('aria-orientation')).toBe('horizontal');
+    expect(separator.tabIndex).toBe(0);
+    expect(separator.getAttribute('aria-valuenow')).toBe('30');
+    expect(separator.getAttribute('aria-valuemin')).toBe('20');
+    expect(separator.getAttribute('aria-valuemax')).toBe('80');
+    expect(region.style.gridTemplateRows).toContain('0.3fr');
+    expect(region.style.gridTemplateRows).toContain('0.7fr');
+    expect(region.style.gridTemplateRows).toContain('20px 8px');
+  });
+
+  it('restores a normalized persisted ratio without remounting either canvas', () => {
+    storageMap.set('rigplane-spectrum-split-ratio', '0.62');
+    const target = mountPanel();
+    const { region, separator } = splitElements(target);
+    const spectrumCanvas = target.querySelector('.spectrum-area canvas');
+    const waterfallCanvas = target.querySelector('.waterfall-content canvas');
+
+    expect(separator.getAttribute('aria-valuenow')).toBe('62');
+    expect(region.style.gridTemplateRows).toContain('0.62fr');
+    window.dispatchEvent(new Event('resize'));
+    target.querySelector<HTMLButtonElement>('[title="Toggle fullscreen"]')!.click();
+    flushSync();
+
+    expect(target.querySelector('.spectrum-panel')?.classList.contains('fullscreen')).toBe(true);
+    expect(separator.getAttribute('aria-valuenow')).toBe('62');
+    expect(region.style.gridTemplateRows).toContain('0.62fr');
+    expect(target.querySelector('.spectrum-area canvas')).toBe(spectrumCanvas);
+    expect(target.querySelector('.waterfall-content canvas')).toBe(waterfallCanvas);
+  });
+
+  it('captures pointer drag, clamps to practical minimum heights, and persists the ratio', () => {
+    const target = mountPanel();
+    const { separator } = splitElements(target);
+    const spectrumCanvas = target.querySelector('.spectrum-area canvas');
+    const waterfallCanvas = target.querySelector('.waterfall-content canvas');
+
+    pointer(separator, 'pointerdown', 71, 10, { clientY: 250 });
+    expect(HTMLElement.prototype.setPointerCapture).toHaveBeenCalledWith(71);
+    expect(Number(separator.getAttribute('aria-valuenow'))).toBe(61);
+    expect(Number(storageMap.get('rigplane-spectrum-split-ratio'))).toBeCloseTo(226 / 372);
+
+    pointer(separator, 'pointermove', 71, 10, { clientY: -100 });
+    expect(separator.getAttribute('aria-valuenow')).toBe('20');
+    pointer(separator, 'pointermove', 71, 10, { clientY: 1000 });
+    expect(Number(separator.getAttribute('aria-valuenow'))).toBe(78);
+
+    pointer(separator, 'pointerup', 71, 10, { clientY: 300 });
+    expect(HTMLElement.prototype.releasePointerCapture).toHaveBeenCalledWith(71);
+    const completed = separator.getAttribute('aria-valuenow');
+    pointer(separator, 'pointermove', 71, 10, { clientY: 100 });
+    expect(separator.getAttribute('aria-valuenow')).toBe(completed);
+    expect(target.querySelector('.spectrum-area canvas')).toBe(spectrumCanvas);
+    expect(target.querySelector('.waterfall-content canvas')).toBe(waterfallCanvas);
+  });
+
+  it('cleans up matching cancel and lost capture without emitting a radio command', () => {
+    const target = mountPanel();
+    const { separator } = splitElements(target);
+
+    pointer(separator, 'pointerdown', 72, 10, { clientY: 200 });
+    pointer(separator, 'pointercancel', 72, 10, { clientY: 200 });
+    const afterCancel = separator.getAttribute('aria-valuenow');
+    pointer(separator, 'pointermove', 72, 10, { clientY: 300 });
+    expect(separator.getAttribute('aria-valuenow')).toBe(afterCancel);
+
+    pointer(separator, 'pointerdown', 73, 10, { clientY: 220 });
+    pointer(separator, 'lostpointercapture', 73, 10, { clientY: 220 });
+    const afterLost = separator.getAttribute('aria-valuenow');
+    pointer(separator, 'pointermove', 73, 10, { clientY: 300 });
+    expect(separator.getAttribute('aria-valuenow')).toBe(afterLost);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+    expect(mockRuntime.send).not.toHaveBeenCalled();
+  });
+
+  it('supports ArrowUp, ArrowDown, Home, and End while isolating wheel intent', () => {
+    storageMap.set('rigplane-spectrum-split-ratio', '0.5');
+    const target = mountPanel();
+    const { separator } = splitElements(target);
+    const key = (value: string) => {
+      separator.dispatchEvent(new KeyboardEvent('keydown', { key: value, bubbles: true }));
+      flushSync();
+    };
+
+    key('ArrowUp');
+    expect(separator.getAttribute('aria-valuenow')).toBe('45');
+    key('ArrowDown');
+    expect(separator.getAttribute('aria-valuenow')).toBe('50');
+    key('Home');
+    expect(separator.getAttribute('aria-valuenow')).toBe('20');
+    key('End');
+    expect(separator.getAttribute('aria-valuenow')).toBe('78');
+
+    separator.dispatchEvent(new WheelEvent('wheel', {
+      deltaY: -100, bubbles: true, cancelable: true,
+    }));
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+    expect(mockRuntime.send).not.toHaveBeenCalled();
+    expect(Number(storageMap.get('rigplane-spectrum-split-ratio')))
+      .toBeCloseTo(1 - 80 / 372);
+  });
+});
+
 describe('SpectrumPanel Observation authority and final-gesture intents', () => {
   it('binds the existing handler singletons once and uses the merged selector with state and caps', () => {
     mountPanel();
@@ -802,7 +1017,6 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(spectrumPanelSource.match(/getFilterHandlers\(\)/g)).toHaveLength(1);
     expect(spectrumPanelSource).toContain('toSpectrumAuthority(runtime.state, runtime.caps)');
     expect(spectrumPanelSource).toContain('let scopeMode = $derived(frameScopeMode)');
-    expect(spectrumPanelSource).toContain('spanHz: tuneVisible ? spanHz : 0');
     expect(spectrumPanelSource).not.toContain('function toSpectrumAuthority');
     expect(spectrumPanelSource).not.toContain('function snapSpectrumFilterWidth');
   });
@@ -861,21 +1075,27 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
   });
 
-  it('emits zero for below-threshold and no-change drags', () => {
+  it('tunes a below-threshold spectrum release to the clicked frequency and emits zero for a no-change drag', () => {
     const target = mountPanel();
     emitFrame();
     const { spectrum } = prepareGeometry(target);
     pointer(spectrum, 'pointerdown', 8, 100);
     pointer(spectrum, 'pointermove', 8, 104);
     pointer(spectrum, 'pointerup', 8, 104);
-    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    // MOR-2464 click-to-tune: below the drag threshold the release is a
+    // click — it tunes to the clicked position (104/200 of the 100 kHz
+    // span → 14_052_000 snapped), not a pan.
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_052_000, 0);
 
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
     rect(spectrum, 0, 100_000);
     pointer(spectrum, 'pointerdown', 9, 100);
     pointer(spectrum, 'pointermove', 9, 106);
     pointer(spectrum, 'pointerup', 9, 106);
-    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    // An above-threshold drag whose snapped target equals the observed
+    // frequency stays silent — and must not fall through to a click tune.
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
   });
 
   it('matching drag cancel emits zero and never finalizes', () => {
@@ -1053,15 +1273,32 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledOnce();
   });
 
-  it('rejects resize completion after authority or frame-geometry drift', () => {
+  it.each([
+    ['filter shape', { filterShape: 2 }],
+    ['scope controls', { scopeControls: Object.freeze({
+      mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 3 }) }),
+    }) }],
+  ])('keeps resize completion through unrelated %s churn', (_label, overrides) => {
     const target = mountPanel();
     emitFrame();
     const { waterfall } = prepareGeometry(target);
     const zone = waterfall.querySelector<HTMLButtonElement>('.passband-resize-zone')!;
     pointer(zone, 'pointerdown', 26, 100);
     pointer(waterfall, 'pointermove', 26, 130);
-    authorityHarness.state.current = authority({ filterShape: 2 });
+    authorityHarness.state.current = authority(overrides);
     pointer(waterfall, 'pointerup', 26, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledOnce();
+  });
+
+  it('rejects resize completion after passband identity or frame-geometry drift', () => {
+    const target = mountPanel();
+    emitFrame();
+    const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector<HTMLButtonElement>('.passband-resize-zone')!;
+    pointer(zone, 'pointerdown', 27, 100);
+    pointer(waterfall, 'pointermove', 27, 130);
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_100 });
+    pointer(waterfall, 'pointerup', 27, 130);
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
 
     authorityHarness.state.current = authority();
@@ -1113,7 +1350,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     ['filter shape', { filterShape: 2 }],
     ['DATA', { dataMode: 1 }],
     ['rule', { rule: Object.freeze({ kind: 'step' as const, minHz: 200, maxHz: 5_000, stepHz: 100 }) }],
-    ['scope controls', { scopeControls: Object.freeze({ mode: 3 }) }],
+    ['scope controls', { scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 3 }) }) }) }],
   ])('completes final drag despite %s drift, which plain panning does not depend on (MOR-1497)', (_label, overrides) => {
     const target = mountPanel();
     emitFrame();
@@ -1197,7 +1434,10 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     const target = mountPanel();
     emitFrame();
     expect(target.querySelector('.freq-axis')).not.toBeNull();
-    expect(target.querySelector('.tune-line')).toBeNull();
+    // MOR-2464 ruling: the CENTER frame itself proves the ruler's
+    // position — the static reference shows without a strict frequency
+    // Observation, in both areas; the passband stays hidden.
+    expect(target.querySelectorAll('.spectrum-area .tune-line, .waterfall-content .tune-line')).toHaveLength(2);
     expect(target.querySelector('.passband-overlay')).toBeNull();
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
     await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
@@ -1218,7 +1458,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
   it('keeps frame mode and pixel geometry authoritative over canonical scope-control metadata', async () => {
     authorityHarness.state.current = authority({
       frequencyHz: 14_025_000,
-      scopeControls: Object.freeze({ mode: 3 }),
+      scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 3 }) }) }),
     });
     const target = mountPanel();
     emitFrame({ mode: 0 });
@@ -1370,5 +1610,1096 @@ describe('StatusBar default scope status consumption', () => {
     ['connected', 'green'],
   ] as const)('%s uses the %s tone', (state, expected) => {
     expect(indicatorTone(state)).toBe(expected);
+  });
+});
+
+
+describe('opaque semantic scope snippet forwarding (MOR-2358)', () => {
+  const scopeControls = createRawSnippet(() => ({ render: () => '<div data-testid="hosted-scope-probe">Semantic scope probe</div>' }));
+  it('renders the opaque snippet once inside the hardware toolbar', () => {
+    const target = mountPanel({ hideScopeControls: true, scopeControls });
+    expect(target.querySelectorAll('[data-testid="hosted-scope-probe"]')).toHaveLength(1);
+    expect(target.querySelector('[data-testid="hosted-scope-probe"]')?.closest('.spectrum-toolbar')).not.toBeNull();
+    expect(target.querySelector('.settings-group')).toBeNull();
+  });
+  it('keeps audio FFT source label and Viewer without rendering the hardware snippet', () => {
+    runtimeHarness.state.currentCaps = { scopeSource: 'audio_fft' };
+    const target = mountPanel({ hideScopeControls: true, scopeControls });
+    expect(target.querySelector('[data-testid="hosted-scope-probe"]')).toBeNull();
+    expect(target.querySelector('.spectrum-toolbar')).toBeNull();
+    expect(target.querySelector('.audio-source-label')?.textContent).toContain('Audio FFT · AF');
+    // Audio FFT keeps no carrier reference at all (MOR-2464 ruling).
+    expect(target.querySelector('.tune-line')).toBeNull();
+    const viewer = target.querySelector<HTMLButtonElement>('[aria-label="Scope viewer"]')!;
+    expect(viewer.textContent).toContain('Viewer ON'); viewer.click(); flushSync(); expect(viewer.textContent).toContain('Viewer OFF');
+    expect(mockRuntime.scope.subscribeHardware).not.toHaveBeenCalled();
+  });
+});
+
+describe('managed scope projection (MOR-2367)', () => {
+  function projection(state: 'current' | 'stale' | 'unknown' | 'unsupported' = 'current', frameMode = 0): ScopeDisplayProjection {
+    return Object.freeze({
+      frame: Object.freeze({ source: 'hardware', receiver: 'MAIN', freshness: 'fresh',
+        startHz: 14_000_000, endHz: 14_100_000, normalizedBins: Object.freeze([0, 0.5, 1]) }),
+      frameMode, acceptedSequence: 1,
+      passband: state === 'current' || state === 'stale'
+        ? Object.freeze({ state, tuple: Object.freeze({ frequencyHz: 14_050_250, mode: 'USB',
+          widthHz: 2_400, shiftHz: 0, frameMode, startHz: 14_000_000, endHz: 14_100_000 }) })
+        : { state, reason: 'not-observed' },
+    });
+  }
+  // MOR-2464: the static CENTER reference must appear in BOTH the spectrum
+  // area and over the waterfall — asserted together, never via one generic
+  // `.tune-line` query.
+  function expectCenterReference(target: HTMLElement, present: boolean): void {
+    const refs = target.querySelectorAll('.spectrum-area .tune-line, .waterfall-content .tune-line');
+    if (present) {
+      expect(refs).toHaveLength(2);
+      refs.forEach((el) => expect((el as HTMLElement).style.left).toBe('50%'));
+    } else {
+      expect(refs).toHaveLength(0);
+    }
+  }
+  function managed(initial: ReturnType<typeof projection> | null | undefined) {
+    const props = new SvelteMap<string, unknown>([['projection', initial], ['demanded', true]]);
+    const onScopeDemandChange = vi.fn((enabled: boolean) => props.set('demanded', enabled));
+    const target = mountPanel({
+      get scopeProjection() { return props.get('projection'); },
+      get scopeDemanded() { return props.get('demanded'); }, onScopeDemandChange,
+    });
+    return { target, props, onScopeDemandChange };
+  }
+  function cleared(target: HTMLElement) {
+    // The static CENTER tune-line is deliberately NOT in this list: it is
+    // reference-only and survives projection/demand gaps per call-site
+    // expectations (MOR-2464 focus-gap fix). The data plane clears.
+    for (const selector of ['.spectrum-area canvas', '.freq-axis', '.passband-overlay', '.passband-resize-zone', '.draggable']) {
+      expect(target.querySelector(selector), selector).toBeNull();
+    }
+  }
+  it.each([null, 'current'] as const)('never acquires or subscribes raw scope for managed %s', (kind) => {
+    const { target } = managed(kind === null ? null : projection());
+    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalled();
+    expect(mockRuntime.scope.subscribeHardware).not.toHaveBeenCalled();
+    emitFrame();
+    if (kind === null) {
+      cleared(target);
+      // MOR-2464: with frequency evidence the static CENTER reference
+      // stays visible in BOTH areas through the projection gap.
+      expectCenterReference(target, true);
+    } else expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+  it('preserves waterfall history across a transient missing projection', () => {
+    const destroy = vi.spyOn(WaterfallRenderer.prototype, 'destroy');
+    const { target, props } = managed(projection());
+    const before = destroy.mock.calls.length;
+    props.set('projection', null); flushSync();
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    props.set('projection', projection()); flushSync();
+    expect(destroy.mock.calls.length).toBe(before);
+    expect(target.querySelector('.waterfall-content canvas')).not.toBeNull();
+    destroy.mockRestore();
+  });
+  it('discards waterfall history when provider generation changes', () => {
+    const generations = new SvelteMap([['current', 17]]);
+    const original = Object.getOwnPropertyDescriptor(runtimeHarness.state, 'currentState')!;
+    Object.defineProperty(runtimeHarness.state, 'currentState', {
+      configurable: true, get: () => ({ providerGeneration: generations.get('current') }),
+    });
+    try {
+      const { target, props } = managed(projection());
+      const first = target.querySelector('.waterfall-content canvas');
+      props.set('projection', null); flushSync();
+      generations.set('current', 18); flushSync();
+      props.set('projection', projection()); flushSync();
+      expect(target.querySelector('.waterfall-content canvas')).not.toBe(first);
+    } finally {
+      Object.defineProperty(runtimeHarness.state, 'currentState', original);
+    }
+  });
+  it('keeps omitted and explicit undefined projections on the legacy acquisition path', () => {
+    mountPanel(); mountPanel({ scopeProjection: undefined });
+    expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledTimes(2);
+    expect(mockRuntime.scope.subscribeHardware).toHaveBeenCalledTimes(2);
+  });
+  it('clears after legacy-to-managed null and rejects a captured late raw callback', () => {
+    const { target, props } = managed(undefined);
+    emitFrame(); const oldCallback = runtimeHarness.state.capturedHardwareFrame!;
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    props.set('projection', null); flushSync(); cleared(target);
+    expectCenterReference(target, true);
+    oldCallback({ receiver: 0, mode: 0, startFreq: 14_000_000, endFreq: 14_100_000, pixels: new Uint8Array([90, 90]) });
+    flushSync(); cleared(target);
+    expectCenterReference(target, true);
+    expect(runtimeHarness.state.hardwareUnsubscribe).toHaveBeenCalledOnce();
+    expect(mockRuntime.releaseHardwareScope).toHaveBeenCalledOnce();
+  });
+  it.each(['null', 'off'] as const)('clears pixels, coordinates and active captures on %s while shared health stays true', async (boundary) => {
+    const shared = mockRuntime.acquireHardwareScope();
+    const { target, props, onScopeDemandChange } = managed(projection());
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect([...spectrumRendererHarness.render.mock.calls.at(-1)![1]]).toEqual([0, 128, 255]);
+    const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector('.passband-resize-zone')!;
+    pointer(zone, 'pointerdown', 80, 100); pointer(waterfall, 'pointermove', 80, 130);
+    const oldCanvas = target.querySelector('canvas');
+    if (boundary === 'null') props.set('projection', null);
+    else target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click();
+    flushSync(); cleared(target);
+    // MOR-2464: a projection gap keeps the static CENTER reference in both
+    // areas; the viewer-OFF boundary keeps hiding it.
+    if (boundary === 'off') expectCenterReference(target, false);
+    else expectCenterReference(target, true);
+    expect(oldCanvas?.isConnected).toBe(false);
+    expect(runtimeHarness.state.mockScopeConnected).toBe(true);
+    expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledOnce();
+    expect(mockRuntime.releaseHardwareScope).not.toHaveBeenCalled();
+    pointer(window, 'pointerup', 80, 130);
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 81, 100); pointer(spectrum, 'pointermove', 81, 130); pointer(spectrum, 'pointerup', 81, 130);
+    target.querySelector('.spectrum-panel')!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 1 }));
+    emitFrame(); cleared(target);
+    if (boundary === 'off') expectCenterReference(target, false);
+    else expectCenterReference(target, true);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+    if (boundary === 'off') {
+      expect(onScopeDemandChange).toHaveBeenCalledWith(false);
+      props.set('projection', null); flushSync();
+      target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click(); flushSync();
+      expect(onScopeDemandChange).toHaveBeenLastCalledWith(true); cleared(target);
+      // Demand back ON with the projection still gone: reference returns.
+      expectCenterReference(target, true);
+    }
+    props.set('projection', projection()); flushSync();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    mockRuntime.releaseHardwareScope(shared);
+  });
+  it.each(['unknown', 'unsupported'] as const)('keeps the managed sample plane without raw RF fallback for %s passband', (state) => {
+    const { target } = managed(projection(state));
+    expect(target.querySelector('canvas')).not.toBeNull();
+    expect(target.querySelector('.freq-axis')).not.toBeNull();
+    // MOR-2464: the static CENTER carrier reference is not passband
+    // geometry — in BOTH areas it shows from frequency evidence while the
+    // tuple lags; the filter shade itself stays absent (its geometry is
+    // intentionally unavailable until the tuple recovers).
+    expectCenterReference(target, true);
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+  });
+  it('keeps the static CENTER reference through a focus-like projection gap and restores passband on recovery', () => {
+    const { target, props } = managed(projection());
+    expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
+    expect(target.querySelector('.spectrum-area .tune-line')).toBeNull();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    // Focus pause: the projection drops; only the static reference
+    // survives in both areas — no passband geometry is invented from it.
+    props.set('projection', null); flushSync();
+    expectCenterReference(target, true);
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+    props.set('projection', projection()); flushSync();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
+  });
+  it('pins no false CENTER marker when a FIX projection drops to null', () => {
+    authorityHarness.state.current = authority({
+      scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 1 }) }) }),
+    });
+    refreshSpectrumAuthority();
+    const { target, props } = managed(projection('current', 1));
+    // FIX with live frame+tuple: proportional waterfall line, canvas
+    // marker, no spectrum-area DOM stand-in.
+    expect(target.querySelector<HTMLElement>('.waterfall-content .tune-line')).not.toBeNull();
+    expect(target.querySelector('.spectrum-area .tune-line')).toBeNull();
+    // The post-clear frameScopeMode default (0) is NOT proof of CENTER —
+    // the authority's observed FIX scope-control mode must keep the
+    // reference hidden in both areas.
+    props.set('projection', null); flushSync();
+    expectCenterReference(target, false);
+  });
+  it('keeps the static CENTER reference through a strict authority freshness gap in the same session', () => {
+    const { target, props } = managed(projection());
+    expect(target.querySelector('.spectrum-area .tune-line')).toBeNull();
+    expect(target.querySelector('.waterfall-content .tune-line')).not.toBeNull();
+    // Focus gap: the projection drops AND the strict authority nulls
+    // while provider/session/receiver identity is unchanged. The static
+    // ruler must not require a strictly fresh frequency to stay drawn.
+    props.set('projection', null); flushSync();
+    authorityHarness.state.current = null; refreshSpectrumAuthority(); flushSync();
+    expectCenterReference(target, true);
+    // Refocus: frames and authority return; the normal path resumes.
+    authorityHarness.state.current = authority(); refreshSpectrumAuthority(); flushSync();
+    props.set('projection', projection()); flushSync();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
+  });
+  it('clears the remembered mode on a provider identity change', () => {
+    const { target, props } = managed(projection());
+    props.set('projection', null); flushSync();
+    authorityHarness.state.current = null;
+    runtimeHarness.state.currentState = Object.freeze({ source: 'test-state', providerGeneration: 18, active: 'MAIN' });
+    refreshSpectrumAuthority(); flushSync();
+    expectCenterReference(target, false);
+    // The memory is invalidated by the MISMATCH, not consumed by the gap:
+    // identity back — the reference returns.
+    runtimeHarness.state.currentState = Object.freeze({ source: 'test-state', providerGeneration: 17, active: 'MAIN' });
+    refreshSpectrumAuthority(); flushSync();
+    expectCenterReference(target, true);
+  });
+  it('keeps a proven FIX mode hidden through the same freshness gap', () => {
+    authorityHarness.state.current = authority({
+      scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 1 }) }) }),
+    });
+    refreshSpectrumAuthority();
+    const { target, props } = managed(projection('current', 1));
+    expect(target.querySelector<HTMLElement>('.waterfall-content .tune-line')).not.toBeNull();
+    props.set('projection', null); flushSync();
+    authorityHarness.state.current = null; refreshSpectrumAuthority(); flushSync();
+    expectCenterReference(target, false);
+  });
+  it('retains whole stale geometry with no cue while strict fresh frequency still pans', () => {
+    const { target, props } = managed(projection()); const original = target.querySelector('.passband-overlay')!.getAttribute('style');
+    authorityHarness.state.current = authority({ filterWidthHz: null, ifShiftHz: null }); refreshSpectrumAuthority();
+    props.set('projection', projection('stale')); flushSync();
+    expect(target.querySelector('.passband-overlay')!.getAttribute('style')).toBe(original);
+    // MOR-2425/R41: the geometry is retained with NO cue at all.
+    expect(target.querySelector('.passband-freshness')).toBeNull();
+    expect(target.textContent).not.toContain('◷');
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 82, 100); pointer(spectrum, 'pointermove', 82, 120); pointer(spectrum, 'pointerup', 82, 120);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
+    authorityHarness.state.current = authority({ frequencyHz: null }); refreshSpectrumAuthority(); flushSync();
+    pointer(spectrum, 'pointerdown', 83, 100); pointer(spectrum, 'pointermove', 83, 120); pointer(spectrum, 'pointerup', 83, 120);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    props.set('projection', projection()); flushSync();
+    expect(target.querySelector('.passband-freshness')).toBeNull();
+  });
+  it('does not grant stale resize even if a separate strict snapshot is current', () => {
+    const { target, props } = managed(projection()); const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector('.passband-resize-zone')!;
+    pointer(zone, 'pointerdown', 84, 100); pointer(waterfall, 'pointermove', 84, 130);
+    props.set('projection', projection('stale')); flushSync();
+    pointer(window, 'pointerup', 84, 130);
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+  });
+  it('anchors translated stale CENTER geometry at 50% and pans the panorama under it (MOR-2464)', async () => {
+    const { target, props } = managed(projection()); const { waterfall } = prepareGeometry(target);
+    pointer(waterfall.querySelector('.passband-resize-zone')!, 'pointerdown', 89, 100);
+    pointer(waterfall, 'pointermove', 89, 130);
+    const initial = projection('stale');
+    if (initial.passband.state !== 'stale') throw new Error('stale fixture required');
+    const translated = { ...initial, passband: { ...initial.passband, translated: true,
+      tuple: { ...initial.passband.tuple, frequencyHz: 14_051_000 } } };
+    props.set('projection', translated); flushSync();
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('38%');
+    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.width).toBe('24%');
+    await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions).toMatchObject({
+      tuneHz: 14_051_000, scopeMode: 0, passbandHz: 2400,
+    }));
+    await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(1_000));
+    pointer(window, 'pointerup', 89, 130);
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+    props.set('projection', { ...translated, acceptedSequence: 2,
+      frame: { ...translated.frame, startHz: 14_001_000, endHz: 14_101_000 },
+      passband: { ...translated.passband, tuple: { ...translated.passband.tuple, startHz: 14_001_000, endHz: 14_101_000 } } });
+    flushSync();
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    // The recentered frame must not reset the animation: the offset settles
+    // back to zero on its own, never shifting stationary content twice.
+    await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(0));
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+  it('keeps projector-produced overlays through a stale frequency gap and staggered recovery while tuning', () => {
+    authorityHarness.state.useProductionSelector = true;
+    const state = structuredClone(IC7300_STATE); const caps = structuredClone(IC7300_CAPABILITIES);
+    const rx = state.main!;
+    Object.assign(rx, { freqHz: 14_074_000, mode: 'USB', filter: 1, activeSlot: 'A',
+      filterWidth: 2400, pbtInner: 128, pbtOuter: 128, dataMode: 0,
+      vfoA: { freqHz: 14_074_000, mode: 'USB', filterNum: 1, dataMode: 0 } });
+    const paths = ['main', ...Object.keys(rx).map((leaf) => `main.${leaf}`),
+      ...Object.keys(rx.vfoA!).map((leaf) => `main.vfoA.${leaf}`)];
+    state.fieldStatus = Object.fromEntries(paths.map((path) => [path, { storePath: path,
+      observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 10 }]));
+    runtimeHarness.state.currentState = state; runtimeHarness.state.currentCaps = caps;
+    const input: ScopePassbandDisplayInput = { state, caps, selection: { receiver: 'MAIN', slot: 'A' },
+      session: { state: 'connected', epoch: 1 }, frame: null };
+    let result = EMPTY_SCOPE_PASSBAND_DISPLAY; let sequence = 0;
+    const { target, props } = managed(null);
+    function present(now: number, center: number): void {
+      const envelope = qualifyScopeFrameEnvelope({ receiver: 0, mode: 0,
+        startFreq: center - 50_000, endFreq: center + 50_000, pixels: new Uint8Array([10, 100, 200]) },
+      { source: 'hardware', receiver: 0, providerGeneration: 1, transportEpoch: 1,
+        receivedAt: now, acceptedSequence: ++sequence }, 1)!;
+      const authority = { source: 'hardware' as const, receiver: 0 as const, providerGeneration: 1,
+        transportEpoch: 1, demanded: true, transport: 'connected' as const, nowMonotonic: now };
+      const frame = toScopeDisplayFrame(envelope, authority);
+      const resolution = resolveLcdSpectrumFrame(frame, { source: 'hardware', receiver: 'MAIN' });
+      input.frame = { envelope, authority, resolution }; result = projectScopePassbandDisplay(result, input);
+      props.set('projection', { frame, frameMode: 0, acceptedSequence: sequence, passband: result.display }); flushSync();
+    }
+    present(0, 14_074_000); expect(result.display.state).toBe('current');
+    rx.vfoA!.freqHz = 14_075_000; state.fieldStatus['main.vfoA.freqHz'].lastObservedMonotonic = 11;
+    present(100, 14_074_000);
+    expect(result.display.state).toBe('stale');
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    rx.freqHz = 14_075_000; state.fieldStatus['main.freqHz'].lastObservedMonotonic = 11.1;
+    for (let now = 200; now <= 5000; now += 100) {
+      present(now, 14_075_000);
+      expect(result.display.state).toBe('stale');
+      expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
+      expect(target.querySelectorAll('.passband-overlay')).toHaveLength(1);
+      expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    }
+    for (const [index, leaf] of ['filterWidth', 'pbtInner', 'pbtOuter'].entries()) {
+      state.fieldStatus[`main.${leaf}`].lastObservedMonotonic = 15.1 + index / 10;
+      present(5100 + index * 100, 14_075_000);
+      expect(result.display.state).toBe(index === 2 ? 'current' : 'stale');
+      expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    }
+
+    for (const path of ['main.freqHz', 'main.vfoA.freqHz', 'main.mode', 'main.vfoA.mode']) {
+      Object.assign(state.fieldStatus[path], { freshness: 'stale', availability: 'stale' });
+    }
+    for (let step = 0; step < 10; step += 1) {
+      const frequency = step % 2 === 0 ? 14_076_000 : 14_075_000;
+      rx.freqHz = frequency; rx.vfoA!.freqHz = frequency;
+      state.fieldStatus['main.freqHz'].lastObservedMonotonic = 20 + step;
+      state.fieldStatus['main.vfoA.freqHz'].lastObservedMonotonic = 20 + step;
+      if (step === 3) state.fieldStatus['main.filterWidth'].lastObservedMonotonic = 24;
+      if (step === 7) state.fieldStatus['main.pbtInner'].lastObservedMonotonic = 28;
+      present(6000 + step * 250, frequency);
+      expect(result.display).toMatchObject({ state: 'stale', translated: true,
+        tuple: { frequencyHz: 14_075_000 } });
+      expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
+      expect(target.querySelectorAll('.passband-overlay')).toHaveLength(1);
+      expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    }
+
+    for (const path of ['main.freqHz', 'main.vfoA.freqHz', 'main.mode', 'main.vfoA.mode']) {
+      Object.assign(state.fieldStatus[path], { freshness: 'fresh', availability: 'available',
+        lastObservedMonotonic: 40 });
+    }
+    for (let step = 0; step < 8; step += 1) {
+      const frequency = step % 2 === 0 ? 14_076_000 : 14_075_000;
+      rx.freqHz = frequency; rx.vfoA!.freqHz = frequency;
+      state.fieldStatus['main.freqHz'].lastObservedMonotonic = 41 + step;
+      state.fieldStatus['main.vfoA.freqHz'].lastObservedMonotonic = 41 + step;
+      if (step === 7) state.fieldStatus['main.pbtOuter'].lastObservedMonotonic = 48;
+      present(9000 + step * 250, frequency);
+      expect(result.display.state).toBe(step === 7 ? 'current' : 'stale');
+      expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
+      expect(target.querySelectorAll('.passband-overlay')).toHaveLength(1);
+      if (step < 7) expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    }
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+  });
+  it('recovers selected-slot geometry through canonical alias hydration without a second width reading', () => {
+    authorityHarness.state.useProductionSelector = true;
+    const state = structuredClone(IC7300_STATE); const caps = structuredClone(IC7300_CAPABILITIES);
+    const rx = state.main!;
+    Object.assign(rx, { freqHz: 14_074_000, mode: 'USB', filter: 1, activeSlot: 'A',
+      filterWidth: 2400, pbtInner: 128, pbtOuter: 128, dataMode: 0,
+      vfoA: { freqHz: 14_074_000, mode: 'USB', filterNum: 1, dataMode: 0 },
+      vfoB: { freqHz: 14_090_000, mode: 'LSB', filterNum: 2, dataMode: 1 } });
+    const paths = ['main', ...Object.keys(rx).map((leaf) => `main.${leaf}`),
+      ...['vfoA', 'vfoB'].flatMap(slot => Object.keys(rx.vfoA!).map(leaf => `main.${slot}.${leaf}`))];
+    state.fieldStatus = Object.fromEntries(paths.map(path => [path, { storePath: path,
+      observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 10 }]));
+    runtimeHarness.state.currentState = state; runtimeHarness.state.currentCaps = caps;
+    const input: ScopePassbandDisplayInput = { state, caps, selection: null,
+      session: { state: 'connected', epoch: 1 }, frame: null };
+    const { target, props } = managed(null); let result = EMPTY_SCOPE_PASSBAND_DISPLAY; let sequence = 0;
+    function present(center: number): void {
+      const active = toRadioViewModel(state, caps)!.vfos.filter(vfo => vfo.isActive);
+      const vfo = active.length === 1 ? active[0] : null;
+      input.selection = vfo?.slot.kind === 'slotted' ? { receiver: vfo.receiver, slot: vfo.slot.id } : null;
+      const envelope = qualifyScopeFrameEnvelope({ receiver: 0, mode: 0,
+        startFreq: center - 50_000, endFreq: center + 50_000, pixels: new Uint8Array([10, 100, 200]) },
+      { source: 'hardware', receiver: 0, providerGeneration: 1, transportEpoch: 1,
+        receivedAt: 0, acceptedSequence: ++sequence }, 1)!;
+      const authority = { source: 'hardware' as const, receiver: 0 as const, providerGeneration: 1,
+        transportEpoch: 1, demanded: true, transport: 'connected' as const, nowMonotonic: 0 };
+      const frame = toScopeDisplayFrame(envelope, authority);
+      input.frame = { envelope, authority, resolution: resolveLcdSpectrumFrame(frame, { source: 'hardware', receiver: 'MAIN' }) };
+      result = projectScopePassbandDisplay(result, input);
+      props.set('projection', { frame, frameMode: 0, acceptedSequence: sequence, passband: result.display }); flushSync();
+    }
+    present(14_074_000); expect(result.display.state).toBe('current');
+    rx.activeSlot = 'B'; state.fieldStatus['main.activeSlot'].lastObservedMonotonic = 20;
+    for (const leaf of Object.keys(rx.vfoB!)) state.fieldStatus[`main.vfoB.${leaf}`].observed = false;
+    rx.filterWidth = 1800; state.fieldStatus['main.filterWidth'].lastObservedMonotonic = 20.1;
+    present(14_074_000);
+    expect(input.selection).toEqual({ receiver: 'MAIN', slot: 'B' });
+    expect(result.display.state).toBe('unknown');
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    Object.assign(rx, { freqHz: 14_090_000, mode: 'LSB', filter: 2, dataMode: 1 });
+    for (const path of [...Object.keys(rx.vfoB!).map(leaf => `main.vfoB.${leaf}`),
+      'main.freqHz', 'main.mode', 'main.filter', 'main.dataMode']) {
+      Object.assign(state.fieldStatus[path], { observed: true, lastObservedMonotonic: 20.2 });
+    }
+    present(14_090_000); expect(result.display.state).toBe('unknown');
+    for (const [index, leaf] of ['pbtInner', 'pbtOuter'].entries()) {
+      state.fieldStatus[`main.${leaf}`].lastObservedMonotonic = 20.3 + index / 10;
+      present(14_090_000);
+      if (index === 0) expect(target.querySelector('.passband-overlay')).toBeNull();
+    }
+    expect(result.display).toMatchObject({ state: 'current', tuple: { frequencyHz: 14_090_000, mode: 'LSB', widthHz: 1800 } });
+    expect(target.querySelectorAll('.passband-overlay')).toHaveLength(1);
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    Object.assign(state.fieldStatus['main.activeSlot'], {
+      lastObservedMonotonic: 30, source: { source: 'command_response' },
+    });
+    present(14_090_000);
+    expect(result.display.state).toBe('unknown');
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+    for (const [index, leaf] of ['filterWidth', 'pbtInner', 'pbtOuter'].entries()) {
+      state.fieldStatus[`main.${leaf}`].lastObservedMonotonic = 30.1 + index / 10;
+      present(14_090_000);
+    }
+    expect(result.display).toMatchObject({ state: 'current', tuple: { frequencyHz: 14_090_000, widthHz: 1800 } });
+    expect(target.querySelectorAll('.passband-overlay')).toHaveLength(1);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+  });
+  it('pushes normalized managed frames through existing waterfall registrations on mount and recovery', () => {
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    try {
+      const { target, props } = managed(projection());
+      expect(push).toHaveBeenCalledTimes(1);
+      expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
+      const firstCanvas = target.querySelector('.waterfall-content canvas');
+      props.set('projection', null); flushSync(); const afterClear = push.mock.calls.length;
+      expect(target.querySelector<HTMLElement>('.waterfall-history')?.style.visibility).toBe('hidden');
+      emitFrame(); expect(push).toHaveBeenCalledTimes(afterClear);
+      props.set('projection', projection()); flushSync();
+      expect(target.querySelector('.waterfall-content canvas')).toBe(firstCanvas);
+      expect(target.querySelector<HTMLElement>('.waterfall-history')?.style.visibility).toBe('visible');
+      expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
+      expect(push).toHaveBeenCalledTimes(afterClear + 1);
+    } finally { push.mockRestore(); }
+  });
+  it('preserves raw waterfall push delivery in legacy mode', () => {
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    try {
+      mountPanel(); const frame = emitFrame();
+      expect(push).toHaveBeenCalledWith(frame.pixels);
+    } finally { push.mockRestore(); }
+  });
+  it.each(['tap', 'pan'] as const)('cancels an in-flight %s and DX coordinates when managed projection becomes null', (gesture) => {
+    const { target, props } = managed(projection()); const { spectrum, waterfall } = prepareGeometry(target);
+    const surface = gesture === 'tap' ? waterfall.querySelector('canvas')! : spectrum;
+    const spot = { spotter: 'N0CALL', freq: 14_075_410, call: 'K1ABC', comment: 'test', time_utc: '1200', timestamp: 1 };
+    runtimeHarness.state.capturedDxMessage?.({ type: 'dx_spot', spot }); flushSync();
+    expect(target.querySelector('.dx-badge')).not.toBeNull();
+    pointer(surface, 'pointerdown', 86, 100);
+    if (gesture === 'pan') pointer(surface, 'pointermove', 86, 120);
+    props.set('projection', null); flushSync();
+    pointer(surface, 'pointerup', 86, 120);
+    runtimeHarness.state.capturedDxMessage?.({ type: 'dx_spot', spot }); flushSync();
+    expect(target.querySelector('.dx-badge')).toBeNull(); cleared(target);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+  it('routes current managed waterfall tap and wheel through canonical handlers', () => {
+    const { target } = managed(projection()); const { waterfall } = prepareGeometry(target);
+    const canvas = waterfall.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 87, 150); pointer(canvas, 'pointerup', 87, 150);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_050_000, 0);
+    target.querySelector('.spectrum-panel')!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 1 }));
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(2);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenLastCalledWith(14_049_000, 0, 'step');
+  });
+  it('obeys an external demanded=false even if the supplied projection is still live', () => {
+    const { target, props } = managed(projection());
+    props.set('demanded', false); flushSync(); cleared(target);
+    // Viewer OFF keeps hiding the reference (MOR-2464 ruling).
+    expect(target.querySelector('.tune-line')).toBeNull();
+    props.set('projection', projection()); flushSync(); cleared(target);
+    expect(target.querySelector('.tune-line')).toBeNull();
+    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalled();
+    props.set('demanded', true); flushSync();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+  });
+  it.each(['failed', 'cancelled'] as const)('keeps pending resize temporary and returns to the qualified tuple after %s', (phase) => {
+    const input = projection(); const { target } = managed(input); const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector('.passband-resize-zone')!;
+    pointer(zone, 'pointerdown', 85, 100); pointer(waterfall, 'pointermove', 85, 130); pointer(waterfall, 'pointerup', 85, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledWith(2_700, 0, 17);
+    setFilterWidthLifecycle(pendingFilterWidthLifecycle(2_700)); flushSync();
+    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.width).toBe('27%');
+    setFilterWidthLifecycle({ outcome: { phase } }); flushSync();
+    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.width).toBe('24%');
+    expect(input.passband).toEqual(projection().passband);
+  });
+});
+
+describe('SpectrumPanel colour roles', () => {
+  const distinct = {
+    trace: '#010101',
+    traceFill: { top: '#020202', bottom: '#030303' },
+    grid: '#040404',
+    axisText: '#050505',
+    tuneLine: '#060606',
+    passbandFill: '#070707',
+    passbandEdge: '#080808',
+  };
+
+  it('sends every role to the renderer options', async () => {
+    mountPanel({ colorRoles: distinct });
+    emitFrame();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({
+      lineColor: '#010101', fillColor: '#020202', fillColorBottom: '#030303',
+      gridColor: '#040404', textColor: '#050505', tuneLineColor: '#060606',
+      passbandFillColor: '#070707', passbandEdgeColor: '#080808',
+    });
+  });
+
+  it('publishes the DOM-overlay roles as custom properties the overlay styles read', () => {
+    const target = mountPanel({ colorRoles: distinct });
+    emitFrame();
+    const panel = target.querySelector<HTMLElement>('.spectrum-panel')!;
+    expect(panel.style.getPropertyValue('--scope-tune-line')).toBe('#060606');
+    expect(panel.style.getPropertyValue('--scope-passband-fill')).toBe('#070707');
+    expect(panel.style.getPropertyValue('--scope-passband-edge')).toBe('#080808');
+    expect(target.querySelector('.tune-line')).not.toBeNull();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    expect(spectrumPanelSource).toMatch(
+      /\.tune-line\s*\{[^}]*background:\s*var\(--scope-tune-line,\s*rgba\(239, 68, 68, 0\.75\)\)/,
+    );
+    expect(spectrumPanelSource).toMatch(
+      /\.passband-overlay\s*\{[^}]*background:\s*var\(--scope-passband-fill,\s*rgba\(59, 130, 246, 0\.15\)\)/,
+    );
+    expect(spectrumPanelSource).toMatch(
+      /\.passband-overlay\s*\{[^}]*border-left:\s*1px dashed var\(--scope-passband-edge,\s*rgba\(59, 130, 246, 0\.4\)\)/,
+    );
+    expect(spectrumPanelSource).toMatch(
+      /\.passband-overlay\s*\{[^}]*border-right:\s*1px dashed var\(--scope-passband-edge,\s*rgba\(59, 130, 246, 0\.4\)\)/,
+    );
+  });
+
+  it('leaves an omitted prop on the renderer defaults', async () => {
+    mountPanel();
+    emitFrame();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions).toMatchObject(
+      spectrumColorRolesToOptions(defaultSpectrumColorRoles),
+    );
+  });
+
+  it('keeps both paths on the default when a role is passed as undefined', async () => {
+    const target = mountPanel({
+      colorRoles: { tuneLine: undefined, traceFill: { top: undefined, bottom: undefined } },
+    });
+    emitFrame();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({
+      tuneLineColor: defaultSpectrumColorRoles.tuneLine,
+      fillColor: defaultSpectrumColorRoles.traceFill.top,
+      fillColorBottom: defaultSpectrumColorRoles.traceFill.bottom,
+    });
+    const panel = target.querySelector<HTMLElement>('.spectrum-panel')!;
+    expect(panel.style.getPropertyValue('--scope-tune-line')).toBe(defaultSpectrumColorRoles.tuneLine);
+  });
+
+  it('takes the unlisted roles from the defaults when only one is overridden', async () => {
+    mountPanel({ colorRoles: { tuneLine: '#0a0a0a' } });
+    emitFrame();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({
+      ...spectrumColorRolesToOptions(defaultSpectrumColorRoles),
+      tuneLineColor: '#0a0a0a',
+    });
+  });
+
+  function publishedRoles(target: HTMLElement) {
+    const panel = target.querySelector<HTMLElement>('.spectrum-panel')!;
+    return JSON.parse(panel.dataset.scopeColorRoles!);
+  }
+
+  it('publishes on the root the same seven resolved roles it sends to the renderer', async () => {
+    const target = mountPanel({ colorRoles: distinct });
+    emitFrame();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    const published = publishedRoles(target);
+    expect(published).toEqual(distinct);
+    expect(spectrumRendererHarness.lastOptions).toMatchObject(spectrumColorRolesToOptions(published));
+  });
+
+  it('publishes the defaults on the root when no roles are passed', () => {
+    expect(publishedRoles(mountPanel())).toEqual(defaultSpectrumColorRoles);
+  });
+
+  it('publishes the default on the root for an explicit undefined override', () => {
+    const target = mountPanel({
+      colorRoles: { tuneLine: undefined, traceFill: { top: undefined, bottom: undefined } },
+    });
+    expect(publishedRoles(target)).toEqual(defaultSpectrumColorRoles);
+  });
+
+  it('resolves the roles once per mount for both the root attribute and the renderer options', async () => {
+    spectrumRendererHarness.resolveColorRolesCalls = 0;
+    const target = mountPanel({ colorRoles: distinct });
+    emitFrame();
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(publishedRoles(target)).toEqual(distinct);
+    expect(spectrumRendererHarness.resolveColorRolesCalls).toBe(1);
+  });
+});
+
+describe('hardware scope drop clears the trace (R53)', () => {
+  it('stops painting on drop and repaints only from a post-reconnect frame', async () => {
+    const target = mountPanel();
+    const spectrum = target.querySelector('.spectrum-area')!;
+    emitFrame({ pixels: new Uint8Array(475).fill(64) });
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.render.mock.calls.at(-1)![1][0]).toBe(64);
+    const renderersBeforeDrop = spectrumRendererHarness.constructed;
+
+    runtimeHarness.state.mockScopeConnected = false;
+    flushSync();
+
+    // No paint surface while the scope is down: the pre-drop frame cannot be
+    // repainted, and the peak-hold/average state held by the SpectrumRenderer
+    // instance is discarded with it.
+    expect(spectrum.querySelector('canvas')).toBeNull();
+    spectrumRendererHarness.render.mockClear();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(spectrumRendererHarness.render).not.toHaveBeenCalled();
+
+    runtimeHarness.state.mockScopeConnected = true;
+    flushSync();
+    expect(spectrum.querySelector('canvas')).not.toBeNull();
+    expect(spectrumRendererHarness.constructed).toBe(renderersBeforeDrop + 1);
+
+    // Reconnecting alone paints nothing — the panel kept no pixels to repaint.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(spectrumRendererHarness.render).not.toHaveBeenCalled();
+
+    emitFrame({ pixels: new Uint8Array(475).fill(100) });
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.render.mock.calls.at(-1)![1][0]).toBe(100);
+  });
+});
+
+// MOR-2464 — the center panorama. In CENTER scope the carrier+passband
+// indicator is anchored at 50% while the visual viewport glides toward the
+// commanded frequency; a late recentered frame never restarts or double-shifts.
+describe('center panorama motion (MOR-2464)', () => {
+  const PANORAMA_TUPLE = Object.freeze({ frequencyHz: 14_050_000, mode: 'USB',
+    widthHz: 2_400, shiftHz: 0, frameMode: 0, startHz: 14_000_000, endHz: 14_100_000 });
+  // Frame centered on `centerHz` (±halfSpan); `translatedDeltaHz` builds the
+  // translated-stale variant whose frequency leads the frame.
+  function panoramaProjection(centerHz = 14_050_000, halfSpan = 50_000, sequence = 1,
+    translatedDeltaHz?: number): ScopeDisplayProjection {
+    const start = centerHz - halfSpan;
+    const end = centerHz + halfSpan;
+    const tuple = Object.freeze({ ...PANORAMA_TUPLE,
+      frequencyHz: 14_050_000 + (translatedDeltaHz ?? centerHz - 14_050_000),
+      startHz: translatedDeltaHz === undefined ? start : PANORAMA_TUPLE.startHz,
+      endHz: translatedDeltaHz === undefined ? end : PANORAMA_TUPLE.endHz });
+    return Object.freeze({
+      frame: Object.freeze({ source: 'hardware', receiver: 'MAIN', freshness: 'fresh',
+        startHz: start, endHz: end, normalizedBins: Object.freeze([0, 0.5, 1]) }),
+      frameMode: 0, acceptedSequence: sequence,
+      passband: Object.freeze(translatedDeltaHz === undefined
+        ? { state: 'current', tuple }
+        : { state: 'stale', translated: true, tuple }),
+    }) as ScopeDisplayProjection;
+  }
+  function mountPanorama(initial: ScopeDisplayProjection) {    const props = new SvelteMap<string, unknown>([['projection', initial], ['demanded', true]]);
+    const target = mountPanel({
+      get scopeProjection() { return props.get('projection'); },
+      get scopeDemanded() { return props.get('demanded') as boolean; },
+    });
+    return { target, props };
+  }
+  const recordedShifts = (): number[] =>
+    spectrumRendererHarness.render.mock.calls.map((call) => call[4]?.panoramaShiftHz ?? 0);
+  const bindingOrders = (
+    updateSpy: { mock: { calls: unknown[][]; invocationCallOrder: number[] } },
+    center: number, shift: number,
+  ) => {
+    const orders: number[] = [];
+    updateSpy.mock.calls.forEach((call, index) => {
+      const opts = call[0] as Partial<WaterfallOptions> | undefined;
+      if (opts?.centerHz === center && opts?.panoramaShiftHz === shift) {
+        orders.push(updateSpy.mock.invocationCallOrder[index]);
+      }
+    });
+    return orders;
+  };
+  it('glides the panorama across a translated→recentered transition through real intermediate frames', async () => {
+    const { target, props } = mountPanorama(panoramaProjection());
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('38%');
+    await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+    await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+    props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it('retargets a rapid reversal without overshoot and keeps the carrier anchored', async () => {
+    const { target, props } = mountPanorama(panoramaProjection());
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, -1_000)); flushSync();
+    await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(-1_000));
+    const shifts = recordedShifts();
+    expect(Math.max(...shifts.map(Math.abs))).toBeLessThanOrEqual(1_000);
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    expect(mockRuntime.send).not.toHaveBeenCalled();
+  });
+
+  it('snaps the panorama under prefers-reduced-motion with no animated frames', async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockReturnValue({ matches: true, addEventListener: () => {},
+      removeEventListener: () => {}, addListener: () => {}, removeListener: () => {},
+    }) as unknown as typeof window.matchMedia;
+    try {
+      const { target, props } = mountPanorama(panoramaProjection());
+      spectrumRendererHarness.render.mockClear();
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+      expect(recordedShifts().every((v) => v === 1_000)).toBe(true);
+      expect(recordedShifts().length).toBeGreaterThan(0);
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+
+  it('maps a settled animated viewport click to its carrier frequency', async () => {
+    const { target, props } = mountPanorama(panoramaProjection());
+    const { waterfall } = prepareGeometry(target);
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+    await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+    const canvas = waterfall.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 95, 150);
+    pointer(canvas, 'pointerup', 95, 150);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_051_000, 0);
+  });
+
+  // MOR-2464 owner regression: click-to-tune on the panorama. The upper
+  // (spectrum) area has no tap recognizer of its own — unlike WaterfallCanvas
+  // — so a press/release below the drag threshold must resolve as a click
+  // through the SAME release-driven path (pointerup, never the native click
+  // event) and tune to the clicked position through the visual viewport.
+  it('tunes a panorama spectrum-area click to the clicked frequency with the native click inert', () => {
+    const { target } = mountPanorama(panoramaProjection());
+    const { spectrum } = prepareGeometry(target);
+    const canvas = spectrum.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 21, 100);
+    pointer(canvas, 'pointerup', 21, 100);
+    // The browser follows pointerup with a native click — it must stay
+    // inert so one physical click emits exactly one frequency command.
+    canvas.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 100 }));
+    flushSync();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_050_000, 0);
+  });
+
+  it('keeps the waterfall tap at exactly one command when the browser follows with a native click', () => {
+    const { target } = mountPanorama(panoramaProjection());
+    const { waterfall } = prepareGeometry(target);
+    const canvas = waterfall.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 22, 100);
+    pointer(canvas, 'pointerup', 22, 100);
+    canvas.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 100 }));
+    flushSync();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+  });
+
+  it('emits only the pan for an above-threshold spectrum drag followed by the native click', () => {
+    const { target } = mountPanorama(panoramaProjection());
+    const { spectrum } = prepareGeometry(target);
+    const canvas = spectrum.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 23, 100);
+    pointer(canvas, 'pointermove', 23, 120);
+    pointer(canvas, 'pointerup', 23, 120);
+    canvas.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 120 }));
+    flushSync();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
+  });
+
+  it('resets the panorama and clears waterfall history when the span changes mid-animation', async () => {
+    const clearSpy = vi.spyOn(WaterfallRenderer.prototype, 'clear');
+    try {
+      const { target, props } = mountPanorama(panoramaProjection());
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0)).toBe(true));
+      props.set('projection', panoramaProjection(14_100_000, 100_000, 2)); flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
+      expect(clearSpy).toHaveBeenCalled();
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    } finally {
+      clearSpy.mockRestore();
+    }
+  });
+
+  it('initializes the effective viewport before the first row is written (first mount)', async () => {
+    const updateSpy = vi.spyOn(WaterfallRenderer.prototype, 'updateOptions');
+    const pushSpy = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    try {
+      const { target, props } = mountPanorama(panoramaProjection());
+      props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
+      expect(pushSpy).toHaveBeenCalled();
+      const binding = bindingOrders(updateSpy, 14_050_000, 0);
+      expect(binding.length).toBeGreaterThan(0);
+      expect(Math.min(...binding)).toBeLessThan(pushSpy.mock.invocationCallOrder[0]!);
+      // No update ever binds a stale zero center to a real span.
+      expect(updateSpy.mock.calls.filter((call) => call[0]?.centerHz === 0 && (call[0]?.spanHz ?? 0) > 0)).toHaveLength(0);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
+    } finally {
+      updateSpy.mockRestore();
+      pushSpy.mockRestore();
+    }
+  });
+
+  it('binds recentered frame geometry to pixels before the row is written (real component path)', async () => {
+    const updateSpy = vi.spyOn(WaterfallRenderer.prototype, 'updateOptions');
+    const pushSpy = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    try {
+      const { target, props } = mountPanorama(panoramaProjection());
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      updateSpy.mockClear(); pushSpy.mockClear();
+      props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
+      expect(pushSpy).toHaveBeenCalled();
+      const binding = bindingOrders(updateSpy, 14_051_000, 0);
+      expect(binding.length).toBeGreaterThan(0);
+      expect(Math.min(...binding)).toBeLessThan(pushSpy.mock.invocationCallOrder.at(-1)!);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    } finally {
+      updateSpy.mockRestore();
+      pushSpy.mockRestore();
+    }
+  });
+
+  it('keeps the FIX marker proportional with no panorama shift', async () => {
+    authorityHarness.state.current = authority({ frequencyHz: 14_025_000 });
+    const target = mountPanel();
+    emitFrame({ mode: 1 });
+    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('25%');
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(0);
+    expect(spectrumRendererHarness.lastOptions.scopeMode).toBe(1);
+  });
+
+  // MOR-2464 follow-up — the optimistic leg: while a `set_freq` intent is in
+  // flight for the scoped receiver (through ack, until the radio's own
+  // observation confirms it), the panorama chases the pending target instead
+  // of waiting for the confirmed tuple to move. Display-only.
+  describe('optimistic pending target', () => {
+    it('starts gliding toward a pending set_freq target before the confirmed frequency moves', async () => {
+      const initial = panoramaProjection();
+      const { target, props } = mountPanorama(initial);
+      setPendingFrequency(0, 14_051_000);
+      flushSync();
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      expect(props.get('projection')).toBe(initial);
+      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      expect(mockRuntime.send).not.toHaveBeenCalled();
+    });
+
+    it('retargets a rapid pending reversal while the observed frequency stays stale', async () => {
+      const { target } = mountPanorama(panoramaProjection());
+      setPendingFrequency(0, 14_051_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+      setPendingFrequency(0, 14_049_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(-1_000));
+      expect(Math.max(...recordedShifts().map(Math.abs))).toBeLessThanOrEqual(1_000);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+
+    it('does not bounce toward the stale confirmed value while the pending target survives an ack', async () => {
+      const { target, props } = mountPanorama(panoramaProjection());
+      setPendingFrequency(0, 14_051_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+      // A late frame still observes the pre-tune frequency while the command
+      // is only acknowledged — the accessor keeps returning the pending
+      // target, so the viewport must keep gliding, never fall back.
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 2));
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      const shifts = recordedShifts();
+      const firstMoving = shifts.findIndex((v) => v > 0);
+      expect(shifts.slice(firstMoving).every((v) => v > 0)).toBe(true);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+
+    it('falls back to the observed frequency when the pending target clears', async () => {
+      const { target } = mountPanorama(panoramaProjection());
+      setPendingFrequency(0, 14_051_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      setPendingFrequency(0, null);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+
+    it('ignores a pending target scoped to the other receiver', async () => {
+      const { target } = mountPanorama(panoramaProjection());
+      setPendingFrequency(1, 14_051_000);
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(recordedShifts().every((v) => v === 0)).toBe(true);
+      // Authority switches to SUB: a MAIN-scoped pending must not move it.
+      setPendingFrequency(1, null);
+      setPendingFrequency(0, 14_052_000);
+      authorityHarness.state.current = authority({ receiver: 1 });
+      refreshSpectrumAuthority();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(recordedShifts().filter((v) => v !== 0)).toHaveLength(0);
+      // Sanity: the SUB-scoped pending does drive the SUB-authority viewport.
+      setPendingFrequency(0, null);
+      setPendingFrequency(1, 14_053_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(3_000));
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+  });
+
+  // MOR-2464 follow-up — the display-only tuning-burst latch: while local
+  // gesture intent is live (repeated arrows/wheel/clicks), the viewport
+  // chases the accumulator's per-gesture target — including paced-unsent
+  // steps — and intermediate confirmed observations plus the pending
+  // accessor's post-ack drop cannot pull it back mid-gesture. After the
+  // burst ends the pending lifecycle remains the fallback, then confirmed
+  // truth.
+  describe('tuning burst target', () => {
+    it('shields the glide when a mid-gesture observation drops the pending latch on an intermediate value', async () => {
+      const { target, props } = mountPanorama(panoramaProjection());
+      setTuningBurstFrequency(0, 14_051_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+      // The radio's own poll observes freqHz past the last ack boundary, so
+      // `getPendingFrequencyHz` drops to null while the confirmed tuple
+      // still carries an intermediate value — the exact handoff gap. The
+      // burst latch must keep the viewport on the gesture target.
+      setPendingFrequency(0, null);
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 2));
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      const shifts = recordedShifts();
+      const firstMoving = shifts.findIndex((v) => v > 0);
+      expect(shifts.slice(firstMoving).every((v) => v > 0)).toBe(true);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+
+    it('prefers the paced-unsent burst target over the older emitted pending value', async () => {
+      const { target } = mountPanorama(panoramaProjection());
+      setPendingFrequency(0, 14_051_000);
+      setTuningBurstFrequency(0, 14_052_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(2_000));
+      expect(recordedShifts().some((v) => v > 0 && v < 2_000)).toBe(true);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+
+    it('retargets a rapid burst reversal while observations stay stale', async () => {
+      const { target } = mountPanorama(panoramaProjection());
+      setTuningBurstFrequency(0, 14_051_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+      setTuningBurstFrequency(0, 14_049_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(-1_000));
+      expect(Math.max(...recordedShifts().map(Math.abs))).toBeLessThanOrEqual(1_000);
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+
+    it('reconciles through pending after the burst ends, then to confirmed', async () => {
+      const { target } = mountPanorama(panoramaProjection());
+      setTuningBurstFrequency(0, 14_051_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      // Burst hold elapsed: pending (the last emitted command) keeps the
+      // viewport parked at the same target — no bounce.
+      setPendingFrequency(0, 14_051_000);
+      setTuningBurstFrequency(0, null);
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(recordedShifts().at(-1)).toBe(1_000);
+      // Pending resolves: confirmed observed truth takes over.
+      setPendingFrequency(0, null);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
+
+    it('drops the displayed burst reactively when a paced flush emits an already-failed lifecycle', async () => {
+      const emitted: { status: string }[] = [];
+      const acc = createTuningAccumulator({
+        emit: () => {
+          const lifecycle = emitted.length === 0 ? { status: 'pending' } : { status: 'failed' };
+          emitted.push(lifecycle);
+          return lifecycle;
+        },
+        paceMs: 500, quietWindowMs: 4_000, visualHoldMs: 5_000,
+      });
+      mountPanorama(panoramaProjection());
+      acc.step(0, 14_050_000, 14_051_000, 1);
+      acc.step(0, 14_050_000, 14_051_000, 1);
+      // Two rapid steps: the component chases the paced-unsent +2_000
+      // target through the real publication map (glide completes well
+      // inside the 500ms pace window).
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(2_000), { timeout: 2_000 });
+      // The paced flush emits a lifecycle that is ALREADY terminal. The
+      // map must change so the panel's $derived re-reads it and falls back
+      // to the confirmed frequency — a shallow in-place mutation of the
+      // old record would leave the stale target painted.
+      await vi.waitFor(() => {
+        expect(emitted).toHaveLength(2);
+        expect(recordedShifts().at(-1)).toBe(0);
+      });
+      acc.cancel();
+    });
+
+    it('ignores a burst target scoped to the other receiver', async () => {
+      const { target } = mountPanorama(panoramaProjection());
+      setTuningBurstFrequency(1, 14_051_000);
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(recordedShifts().every((v) => v === 0)).toBe(true);
+      // Authority switches to SUB with no SUB-scoped burst: a MAIN-scoped
+      // burst must not move it...
+      setTuningBurstFrequency(1, null);
+      setTuningBurstFrequency(0, 14_052_000);
+      authorityHarness.state.current = authority({ receiver: 1 });
+      refreshSpectrumAuthority();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(recordedShifts().filter((v) => v !== 0)).toHaveLength(0);
+      // ...while a SUB-scoped burst does drive the SUB-authority viewport.
+      setTuningBurstFrequency(0, null);
+      setTuningBurstFrequency(1, 14_053_000);
+      flushSync();
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(3_000));
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+    });
   });
 });

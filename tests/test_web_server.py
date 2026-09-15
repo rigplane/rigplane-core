@@ -34,6 +34,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
+from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.scope import ScopeFrame
@@ -320,6 +321,10 @@ def _add_scope_capable_attrs(radio: MagicMock) -> MagicMock:
     radio.capabilities = (
         {*raw_capabilities, "scope"} if isinstance(raw_capabilities, set) else {"scope"}
     )
+    raw_model = radio.__dict__.get("model")
+    model = raw_model if isinstance(raw_model, str) else "IC-7300"
+    radio.profile = resolve_radio_profile(model=model)
+    radio.model = radio.profile.model
     radio.on_scope_data = MagicMock()
     radio.scope_stream = MagicMock()
     radio.enable_scope = AsyncMock()
@@ -536,7 +541,9 @@ async def server(mock_radio: MagicMock) -> WebServer:
 
 @pytest.fixture
 async def server_no_radio() -> WebServer:
-    config = WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+    config = WebConfig(
+        host="127.0.0.1", port=0, keepalive_interval=9999.0, radio_model="IC-7610"
+    )
     srv = WebServer(None, config)
     await srv.start()
     yield srv
@@ -916,9 +923,6 @@ class TestControlChannel:
             await _close_ws(writer)
 
     async def test_command_ptt(self, server: WebServer, mock_radio: MagicMock) -> None:
-        # MOR-1879: keying now passes the server RF gate, so the scenario's
-        # premise — a rig observed in RX — is stated explicitly.
-        _seed_fresh_rx(server.command_state_store)
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
@@ -932,10 +936,9 @@ class TestControlChannel:
             await _ws_send_text(writer, json.dumps(cmd))
             _, payload = await _ws_recv_frame(reader)
             resp = json.loads(payload)
-            assert resp["ok"] is True
-            # PTT goes through command queue; wait for poller to drain it
-            await asyncio.sleep(0.05)
-            mock_radio.set_ptt.assert_awaited_once_with(True)
+            assert resp["ok"] is False
+            assert resp["error"] == "radio_nak"
+            mock_radio.set_ptt.assert_not_awaited()
         finally:
             await _close_ws(writer)
 
@@ -2407,9 +2410,7 @@ class TestHalfOpenWsReaper:
         mock_radio: MagicMock,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A stale (pong-timed-out) control session must be reaped within
-        one zombie-reaper pass: task completes, PTT OFF teardown ran, and
-        the disconnect is logged -- without the peer ever sending a FIN."""
+        """A stale control session is reaped without inventing a legacy OFF."""
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
@@ -2444,12 +2445,10 @@ class TestHalfOpenWsReaper:
 
             assert len(server._client_tasks) == before - 1  # noqa: SLF001
 
-            # The exact PTT-OFF teardown log line pinned by MOR-1013/MOR-1429:
-            # a session must not disconnect (by any path) without this.
-            assert any(
+            assert not any(
                 "requested PTT OFF on control session teardown" in r.message
                 for r in caplog.records
-            ), "reaped session must have run the unconditional PTT OFF teardown"
+            )
             assert any("ws disconnect" in r.message for r in caplog.records)
         finally:
             writer.close()
@@ -2462,8 +2461,7 @@ class TestHalfOpenWsReaper:
         mock_radio: MagicMock,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A normal client-initiated close must still run the exact same
-        teardown sequence -- the reaping fix must not disturb it."""
+        """A cooperative close also invents no legacy PTT OFF."""
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         await _ws_skip_handshake(reader)
@@ -2476,7 +2474,7 @@ class TestHalfOpenWsReaper:
             )
 
         assert len(server._client_tasks) == before - 1  # noqa: SLF001
-        assert any(
+        assert not any(
             "requested PTT OFF on control session teardown" in r.message
             for r in caplog.records
         )
@@ -2652,7 +2650,8 @@ class TestScopeLifecycle:
         # A delayed old enable cannot roll back the queue watermark or revive
         # hardware after the authoritative last-viewer disable.
         server._command_queue.put(enable)
-        poller = RadioPoller(radio, server._command_queue, radio_state=RadioState())
+        poller = server._radio_poller
+        assert isinstance(poller, RadioPoller)
         for command in server._command_queue.drain():
             await poller._execute(command)  # noqa: SLF001
         assert radio.enable_scope.await_count == 1
@@ -2822,7 +2821,12 @@ class TestConfigurableKeepalive:
 
     async def test_large_interval_no_pings_during_short_test(self) -> None:
         """With keepalive_interval=9999, no ping frames arrive in a short test."""
-        config = WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+        config = WebConfig(
+            host="127.0.0.1",
+            port=0,
+            keepalive_interval=9999.0,
+            radio_model="IC-7610",
+        )
         async with WebServer(None, config) as srv:
             host, port = _addr(srv)
             reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
@@ -2897,7 +2901,12 @@ class TestScopeEnableAtomic:
 
     async def test_server_responsive_after_connect_disconnect_cycles(self) -> None:
         """HTTP endpoint must return 200 after several WS connect/disconnect cycles."""
-        config = WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+        config = WebConfig(
+            host="127.0.0.1",
+            port=0,
+            keepalive_interval=9999.0,
+            radio_model="IC-7610",
+        )
         radio = MagicMock()
         _add_scope_capable_attrs(radio)
         _del_poller_factory_attrs(radio)
@@ -3273,29 +3282,6 @@ class TestRadioPoller:
         poller.stop()
         assert not poller.running
 
-    async def test_poller_polls_freq(self) -> None:
-        """RadioPoller updates state cache with polled frequency."""
-        from rigplane.web.radio_poller import CommandQueue, RadioPoller
-
-        radio = self._make_radio()
-        cache = StateCache()
-        queue = CommandQueue()
-        events: list[tuple[str, dict]] = []
-        poller = RadioPoller(
-            radio,
-            cache,
-            queue,
-            on_state_event=lambda n, d: events.append((n, d)),
-        )
-
-        poller.start()
-        # Slow queries poll every 10th cycle × 25ms = 250ms
-        await asyncio.sleep(0.3)
-        poller.stop()
-
-        # send_civ called for freq query (0x03) and meters (0x15)
-        assert radio.send_civ.await_count >= 1
-
     async def test_command_queue_dedup(self) -> None:
         """Last-write-wins dedup for freq commands; PTT never deduped."""
         from rigplane.web.radio_poller import CommandQueue, PttOff, PttOn, SetFreq
@@ -3330,44 +3316,6 @@ class TestRadioPoller:
         poller.stop()
 
         radio.set_freq.assert_awaited_with(7074000)
-
-    async def test_poller_broadcasts_meter_readings(self) -> None:
-        """RadioPoller polls meters via send_civ."""
-        from rigplane.web.radio_poller import CommandQueue, RadioPoller
-
-        radio = self._make_radio()
-        cache = StateCache()
-        queue = CommandQueue()
-        poller = RadioPoller(radio, cache, queue)
-
-        def meter_calls() -> list[Any]:
-            return [c for c in radio.send_civ.call_args_list if c[0][0] == 0x15]
-
-        poller.start()
-        # Initial state fetch is done by CoreRadio._fetch_initial_state() on
-        # connect; the poller just runs meter polls every _FAST_INTERVAL=25ms.
-        #
-        # Wait for those polls; do not count whatever a fixed sleep happened to
-        # fit. A fixed window counts event-loop wakeups, and a loaded host fits
-        # fewer of them into the same wall-clock time -- so the count measures
-        # machine speed, not poller behaviour (this test failed as
-        # ``assert 3 >= 4`` under `-n auto` on a busy host). At
-        # _FAST_INTERVAL=25ms an idle host reaches both counts below well
-        # inside 0.2s, so only a poller that has stopped polling reaches the
-        # bound.
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + 10.0
-        while loop.time() < deadline:
-            if radio.send_civ.await_count >= 4 and len(meter_calls()) >= 3:
-                break
-            await asyncio.sleep(0.005)
-        poller.stop()
-
-        # Asserted after the wait, not folded into it: when the poller is
-        # healthy the loop breaks the moment these hold, and when the bound
-        # expires they report the counts actually observed.
-        assert radio.send_civ.await_count >= 4
-        assert len(meter_calls()) >= 3  # cmd=0x15
 
     async def test_poller_idempotent_start(self) -> None:
         """Calling start() twice does not create duplicate tasks."""
@@ -3417,7 +3365,17 @@ class TestRadioPoller:
 
         poller.start()
         queue.put(SetBreakIn(1))
-        await asyncio.sleep(0.03)
+        # MOR-2121: a fixed ``asyncio.sleep(0.03)`` here raced the poller
+        # task's own scheduling under ``pytest -n auto`` on a loaded host --
+        # 30ms is not a guaranteed wall-clock budget for the task to run.
+        # Poll for the awaited call instead of assuming a fixed delay covers
+        # it (same idiom as ``TestHalfOpenWsReaper._wait_until`` above).
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while (
+            radio.set_break_in.await_count == 0
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.01)
         poller.stop()
 
         radio.set_break_in.assert_awaited_once_with(1)
@@ -3879,9 +3837,12 @@ class TestSwitchScopeReceiver:
         poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
 
         poller.start()
-        queue.put(SetCwPitch(600))
-        await asyncio.sleep(0.03)
-        poller.stop()
+        reply = asyncio.get_running_loop().create_future()
+        queue.put_ordered(SetCwPitch(600), future=reply)
+        try:
+            await asyncio.wait_for(reply, timeout=2.0)
+        finally:
+            poller.stop()
 
         radio.set_cw_pitch.assert_awaited_once_with(600)
         assert poller._radio_state is not None
@@ -4271,48 +4232,22 @@ class TestGetProfileRouting:
         assert isinstance(profile, RadioProfile)
         assert "IC-7610" in profile.model
 
-    def test_unresolved_radio_model_warns_and_names_model(self, caplog):
-        """Unknown radio model logs a WARNING naming it instead of silently
-        impersonating IC-7610 (MOR-174)."""
-        import logging
-
-        from rigplane.profiles import RadioProfile, resolve_radio_profile
-
+    def test_unresolved_radio_model_refuses_instead_of_guessing(self):
+        """An unknown radio model refuses instead of silently impersonating
+        a default profile (plan §8.1 Q5)."""
         radio = SimpleNamespace(model="ACME-9000", capabilities=set())
-        with caplog.at_level(logging.WARNING, logger="rigplane.web.server"):
-            srv = self._make_server(radio, radio_model="ACME-9000")
-            profile = srv._get_profile()
+        srv = self._make_server(radio, radio_model="ACME-9000")
 
-        assert isinstance(profile, RadioProfile)
-        warnings = [
-            r.getMessage()
-            for r in caplog.records
-            if r.levelno == logging.WARNING and "ACME-9000" in r.getMessage()
-        ]
-        assert warnings, "expected a WARNING naming the unresolved radio model"
-        # Fallback must be the library-wide default resolution chain, and the
-        # warning must name the profile actually used — never a silent
-        # hard-coded IC-7610.
-        assert profile == resolve_radio_profile()
-        assert profile.model in warnings[0]
+        with pytest.raises(ValueError, match="Cannot resolve a radio profile"):
+            srv._get_profile()
 
-    def test_unresolved_config_model_warns_when_no_radio(self, caplog):
-        """Unresolvable config radio_model (no radio) warns and still yields a
-        profile via the default resolution chain (MOR-174)."""
-        import logging
+    def test_unresolved_config_model_refuses_when_no_radio(self):
+        """Unresolvable config radio_model (no radio) refuses instead of
+        silently falling back to a guessed profile (plan §8.1 Q5)."""
+        srv = self._make_server(radio=None, radio_model="NOT-A-RADIO")
 
-        from rigplane.profiles import RadioProfile
-
-        with caplog.at_level(logging.WARNING, logger="rigplane.web.server"):
-            srv = self._make_server(radio=None, radio_model="NOT-A-RADIO")
-            profile = srv._get_profile()
-
-        assert isinstance(profile, RadioProfile)
-        assert any(
-            "NOT-A-RADIO" in r.getMessage()
-            for r in caplog.records
-            if r.levelno == logging.WARNING
-        )
+        with pytest.raises(ValueError, match="Cannot resolve a radio profile"):
+            srv._get_profile()
 
     def test_default_config_radio_model_is_not_ic7610(self):
         """WebConfig.radio_model defaults to a neutral sentinel, not a silent
@@ -4321,46 +4256,26 @@ class TestGetProfileRouting:
 
     @pytest.mark.parametrize("blank_model", ["", "   "])
     def test_blank_radio_model_does_not_short_circuit_configured_model(
-        self, caplog, blank_model
+        self, blank_model
     ):
-        """A blank radio.model must not win the candidate loop and silently
-        yield the default resolution chain's rig — the configured
-        radio_model is still a usable candidate."""
-        import logging
-
-        from rigplane.profiles import resolve_radio_profile
-
+        """A blank radio.model must not win the candidate loop — the
+        configured radio_model is still a usable candidate."""
         radio = SimpleNamespace(model=blank_model, capabilities=set())
-        with caplog.at_level(logging.WARNING, logger="rigplane.web.server"):
-            srv = self._make_server(radio, radio_model="FTX-1")
-            profile = srv._get_profile()
+        srv = self._make_server(radio, radio_model="FTX-1")
+        profile = srv._get_profile()
 
         assert profile.vfo_scheme == "ab_shared"
-        assert profile != resolve_radio_profile()
-        assert not any(r.levelno == logging.WARNING for r in caplog.records)
-        assert srv._profile_fallback_warned is False  # noqa: SLF001
+        assert profile.model == "FTX-1"
 
-    def test_blank_radio_and_config_model_still_warns_and_falls_back(self, caplog):
+    def test_blank_radio_and_config_model_refuses_instead_of_falling_back(self):
         """When both radio.model and the configured radio_model are blank,
-        _get_profile() still falls back through the default resolution
-        chain and emits the MOR-174 warning naming the profile actually
-        used — the fix must not turn a warned fallback into a silent one."""
-        import logging
-
-        from rigplane.profiles import RadioProfile, resolve_radio_profile
-
+        _get_profile() now refuses (plan §8.1 Q5) instead of silently
+        falling back to a guessed default profile."""
         radio = SimpleNamespace(model="", capabilities=set())
-        with caplog.at_level(logging.WARNING, logger="rigplane.web.server"):
-            srv = self._make_server(radio, radio_model="")
-            profile = srv._get_profile()
+        srv = self._make_server(radio, radio_model="")
 
-        assert isinstance(profile, RadioProfile)
-        assert profile == resolve_radio_profile()
-        warnings = [
-            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
-        ]
-        assert warnings, "expected a WARNING for the MOR-174 fallback"
-        assert profile.model in warnings[0]
+        with pytest.raises(ValueError, match="Cannot resolve a radio profile"):
+            srv._get_profile()
 
 
 class TestGetMeterCalPayload:

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { HardwareButton } from '$lib/Button';
   import { getCapabilities } from '$lib/stores/capabilities.svelte';
   import { flattenBands, findActiveBand } from './band-utils';
@@ -22,12 +23,18 @@
    * only production consumer of. Suppressing the whole component would delete
    * that affordance with no remaining host.
    *
-   * Hence a prop, not a mount gate: hosts pass `hamBands={!declared.has('band')}`
-   * and keep mounting the component unconditionally. `true` by default, so
-   * every caller that does not know about the split (LCD, mobile, tests)
-   * renders exactly the pre-split three-tab component.
+   * Hence props, not a mount gate: hosts keep mounting the component
+   * unconditionally. Standard supplies `semanticHamBands`, which restores the
+   * HAM tab through the retained semantic instrument authority; settings keeps
+   * only the two broadcast tabs. `hamBands` remains true by default, so every
+   * older caller (LCD, mobile, tests) renders the pre-split three-tab component.
    */
-  let { hamBands = true }: { hamBands?: boolean } = $props();
+  let {
+    hamBands = true, semanticHamBands,
+  }: {
+    hamBands?: boolean;
+    semanticHamBands?: Snippet<[compact?: boolean]>;
+  } = $props();
 
   const bandH = getBandHandlers();
   const presetH = getPresetHandlers();
@@ -39,13 +46,14 @@
   const onFreqPreset = presetH.onFreqPreset;
 
   let bandMode = $state<'ham' | 'broadcast' | 'lwmw'>('ham');
+  let hasHamBands = $derived(hamBands || semanticHamBands !== undefined);
 
   // S10 §4a explicitly gates the DEFAULT too, not just the tab: with the HAM
   // tab gone there would be no control able to leave a `'ham'` selection, so
   // the component would open on an empty grid and stay there. Derived rather
   // than baked into `$state`'s initialiser so the fallback also holds if a host
   // flips the prop after mount.
-  let shownMode = $derived(!hamBands && bandMode === 'ham' ? 'lwmw' : bandMode);
+  let shownMode = $derived(!hasHamBands && bandMode === 'ham' ? 'lwmw' : bandMode);
 
   let bands = $derived(flattenBands(getCapabilities()?.freqRanges ?? []));
   let activeBand = $derived(findActiveBand(currentFreq, getCapabilities()?.freqRanges ?? []));
@@ -65,7 +73,7 @@
 </script>
 
 <div class="band-tabs">
-  {#if hamBands}
+  {#if hasHamBands}
     <button
       class="band-tab"
       class:active={shownMode === 'ham'}
@@ -86,19 +94,23 @@
 
 {#if shownMode === 'ham'}
   <div class="grid">
-    {#each bands as band (band.name)}
-      {@const isActive = activeBand === band.name}
-      <HardwareButton
-        active={isActive}
-        indicator="edge-left"
-        color="cyan"
-        title={bandShortcut(band.bsrCode)}
-        shortcutHint={bandShortcut(band.bsrCode)}
-        onclick={() => handleClick(band.name, band.defaultFreq, band.bsrCode)}
-      >
-        {band.name}
-      </HardwareButton>
-    {/each}
+    {#if semanticHamBands}
+      {@render semanticHamBands(true)}
+    {:else}
+      {#each bands as band (band.name)}
+        {@const isActive = activeBand === band.name}
+        <HardwareButton
+          active={isActive}
+          indicator="edge-left"
+          color="cyan"
+          title={bandShortcut(band.bsrCode)}
+          shortcutHint={bandShortcut(band.bsrCode)}
+          onclick={() => handleClick(band.name, band.defaultFreq, band.bsrCode)}
+        >
+          {band.name}
+        </HardwareButton>
+      {/each}
+    {/if}
   </div>
 {:else if shownMode === 'lwmw'}
   <div class="grid">
@@ -181,6 +193,14 @@
   }
 
   .grid > :global(button) {
+    min-width: 0;
+  }
+
+  .grid > :global([data-testid='band-choices-compact']) {
+    display: contents;
+  }
+
+  .grid > :global([data-testid='band-choices-compact']) > :global(button) {
     min-width: 0;
   }
 </style>

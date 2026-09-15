@@ -28,7 +28,7 @@ from rigplane.radio import IcomRadio
 
 def _make_radio() -> tuple[IcomRadio, FakeAudioStream]:
     """Build a 'connected' IcomRadio with a FakeAudioStream installed."""
-    radio = IcomRadio("192.168.1.100")
+    radio = IcomRadio("192.168.1.100", model="IC-7610")
     radio._connected = True
     radio._civ_transport = MagicMock()
     stream = FakeAudioStream()
@@ -50,11 +50,11 @@ def _use_opus_tx_contract(radio: IcomRadio) -> None:
 
 class TestAudioTransportConformance:
     def test_icom_radio_satisfies_audio_transport(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         assert isinstance(radio, AudioTransport)
 
     def test_neutral_methods_present(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         for name in ("start_rx", "stop_rx", "start_tx", "push_tx", "stop_tx"):
             assert callable(getattr(radio, name))
 

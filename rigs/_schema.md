@@ -99,60 +99,38 @@ Known capability strings (grouped by area):
 
 **Scope:** `scope`
 
-**Tone:** `repeater_tone`, `tsql`
+**Tone:** `repeater_tone`, `tsql`, `sql_type`
 
 **Data:** `data_mode`
 
 **System:** `power_control`, `dial_lock`, `scan`, `bsr`, `main_sub_tracking`, `lcd_backlight`
 
-## `[tx_interlock]` — Profile Tightening Metadata
+## `[ctcss]` — Named CTCSS Frequency Domain
 
-Optional section reserved for evidence-backed, profile-driven tightening of the
-shared TX interlock policy. It is metadata only: it does not replace the
-runtime policy or grant a profile permission to loosen a command's base
-disposition.
+Profiles declaring `repeater_tone`, `tsql`, or `sql_type` must reference a
+named table from the versioned sibling catalog `_ctcss_tables_v1.toml`.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `disposition_overrides` | inline table (string → string) | no | A mapping from one stable command-family identifier to the only permitted override value, `"defer"`. |
+| Field   | Type   | Required | Description |
+|---------|--------|----------|-------------|
+| `table` | string | yes for CTCSS-capable profiles | Table name under `[tables]` in `_ctcss_tables_v1.toml`. |
 
-### `disposition_overrides` grammar
-
-Each key is a command-family identifier exported by the shared TX interlock
-policy. Keys containing `-` must be TOML-quoted. Each value must be the
-lowercase string `"defer"`; no other override value is valid.
-
-The current stable family identifiers and their fixed base dispositions are:
-
-| Base disposition | Family identifiers |
-|------------------|--------------------|
-| `always-pass` | `ptt-off`, `power-off`, `scan-stop`, `tuner-off` |
-| `tx-safe` | `power-on`, `frequency`, `rit-xit` |
-| `block` | `ptt-on`, `raw-civ`, `scan-start`, `antenna-switch`, `tuner-engage` |
-| `defer` | `mode`, `band`, `vfo-select`, `vfo-topology`, `memory` |
-
-Only a known family whose fixed base disposition is `tx-safe` may appear in
-`disposition_overrides`, and its value must be `"defer"`. This is a one-way
-tightening: it causes a TX-SAFE family to use the existing deferred handling;
-it cannot create a new disposition or override any other base disposition.
-
-Structural `always-pass` families and hard `block` families are
-non-negotiable. A profile must not list them, alter them, or make them less
-restrictive. Existing `defer` families also must not be listed because they
-are already deferred. A profile loader must reject an unknown family,
-non-string value, unsupported disposition, or mapping for an ineligible base
-disposition rather than silently accepting it.
-
-Example (generic only):
+Example:
 
 ```toml
-[tx_interlock]
-disposition_overrides = { "power-on" = "defer" }
+[ctcss]
+table = "standard_50"
 ```
 
-No profile schema key represents an unknown-RF-state fail-open exception.
-Such an exception is intentionally omitted until explicit, radio-specific
-provider/profile evidence establishes a separately documented contract.
+The loader resolves the selected `values_centihz` array to an immutable,
+ordered tuple on `RigConfig` and `RadioProfile`. Values are exact integer
+centiHz (`8850` = 88.5 Hz). The order is the provider's table-index mapping;
+the public/backend-neutral value is always the centiHz value, never the index.
+
+Catalog tables must be non-empty, strictly ascending, duplicate-free, within
+6700..25410 centiHz, and exactly representable in 0.1 Hz increments. Missing,
+unknown, or malformed references fail profile loading. A table reference only
+defines a legal domain and index mapping: it does not add a capability or grant
+a read or write command.
 
 ## `[state_acquisition]` — State Capability And Policy Metadata
 
@@ -163,8 +141,8 @@ these fields directly.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `provider` | string | no | Lowercase provider identifier such as `"icom_civ"`, `"yaesu_cat"`, `"xiegu_civ"`, or `"external_rigctld"`. Defaults to `"profile"`. |
-| `default_cadence_seconds` | float | no | Conservative default polling cadence for supported fields. Defaults to `5.0`. |
-| `default_freshness_ttl_seconds` | float | no | TTL before a value should be considered stale. Must be greater than or equal to cadence. Defaults to `15.0`. |
+| `default_cadence_seconds` | float or `"never"` | no | Conservative default polling cadence for supported fields. Defaults to `5.0`. `"never"` resolves to no cadence. |
+| `default_freshness_ttl_seconds` | float or `"never"` | no | TTL before a value should be considered stale. Must be greater than or equal to cadence. Defaults to `15.0`. `"never"` resolves to no expiry. |
 | `default_reconciliation_priority` | string | no | `"unsolicited"`, `"command_response"`, `"poll"`, or `"last_observation"`. Defaults to `"poll"`. |
 | `adaptive_decay` | bool | no | Whether a scheduler may widen cadence while idle. Defaults to `false`. |
 | `adaptive_decay_idle_multiplier` | float | no | Multiplier for idle cadence when adaptive decay is enabled. Must be greater than `1.0` when enabled. |
@@ -192,8 +170,42 @@ Each field path uses the canonical `FieldPath` strings from
 Optional per-field policy overrides. Supported keys are `cadence_seconds`,
 `freshness_ttl_seconds`, `reconciliation_priority`, `external_cat_pause`,
 `adaptive_decay`, `adaptive_decay_idle_multiplier`,
-`adaptive_decay_max_cadence_seconds`, and `meter_coalescing_window_seconds`.
+`adaptive_decay_max_cadence_seconds`, `meter_coalescing_window_seconds`,
+`tx_only`, and `available_when` (the set the loader accepts is
+`_ACQUISITION_POLICY_KEYS` in `rig_loader.py`; anything else is rejected).
 Field-specific `meter_coalescing_window_seconds` is valid only for meter paths.
+
+`available_when` declares the conditions under which the field exists on the
+radio at all — a mode, band or state in which the rig has no such function.
+It is a list of clauses, all of which must hold. Each clause names a `field`
+(a canonical `FieldPath` string) and exactly one comparison against that
+field's value, in one of three shapes:
+
+| Shape | Spelling | Holds when the source field's value |
+|-------|----------|-------------------------------------|
+| membership | `in = [...]`, `not_in = [...]` | is (is not) one of the listed values |
+| bound | `min = <number>`, `max = <number>` | is at or above (at or below) the bound |
+| equality | `equals = <value>` | equals this value |
+
+An unknown key, no comparison, more than one comparison, a `field` that does
+not parse, a non-list `in`/`not_in`, or a non-numeric `min`/`max` is a load
+error naming the policy path and the clause
+(`rig_loader.py: _parse_available_when`).
+
+```toml
+[state_acquisition.field_policies."receiver.main.operator_controls.manual_notch_freq"]
+available_when = [
+    { field = "receiver.main.active.freq_mode.mode", not_in = ["FM", "FM-N", "DATA-FM", "DATA-FM-N"] },
+]
+```
+
+An omitted key inherits the profile-level default rather than clearing it, so
+`freshness_ttl_seconds` also accepts the string `"never"` to mean "this field
+has no expiry". Use it only for a path whose loaded capability cannot be
+polled — in neither `polling_only` nor `stream_like_meters` (either one makes
+`can_poll` true, and the loader does not reject that combination). The
+section-level `default_freshness_ttl_seconds` and both `cadence_seconds` keys
+accept the same token.
 
 Example:
 
@@ -218,6 +230,27 @@ cadence_seconds = 1.0
 freshness_ttl_seconds = 4.0
 reconciliation_priority = "command_response"
 ```
+
+## `[scope]` — Panoramic Scope Settings
+
+Optional section. Reference-level range and span presets for the panoramic
+scope, where the radio supports one.
+
+| Field             | Type    | Required | Description                                              |
+|-------------------|---------|----------|-----------------------------------------------------------|
+| `ref_min_db`      | float   | no       | Minimum scope reference level, dB.                         |
+| `ref_max_db`      | float   | no       | Maximum scope reference level, dB.                         |
+| `ref_step_db`     | float   | no       | Scope reference level step size, dB.                       |
+| `span_presets_hz` | int[]   | no       | Scope span presets in Hz, index-ordered (index 0-7 matches the CI-V `0x27 0x15` span code the radio itself uses). Must be non-empty and strictly ascending. |
+
+`span_presets_hz` is the only place these values live. The
+waveform-stream span derivation (`runtime/_civ_rx.py:
+CivRuntime._publish_scope_span_observation`) resolves a frame's displayed
+width to a span index against it, and the 0x15 reply-path decoder/encoder
+(`commands/scope.py: parse_scope_span_response`/`scope_set_span`) take it
+as an argument — `commands/` may not import `profiles/`, so the runtime
+reads the resolved profile and passes the list in. A profile that omits
+this key therefore decodes and encodes no span at all.
 
 ## `[attenuator]` — Attenuator Steps
 
@@ -489,6 +522,22 @@ get_af_level = [0x14, 0x01] # Command + sub-command
 
 All byte values must be integers in the range `0x00`–`0xFF`.
 
+When one semantic value selects a complete model-specific wire tuple, use the
+additive `bytes` + `value_variants` descriptor under that same command name:
+
+```toml
+set_data_mode = { bytes = [0x1A, 0x06], value_variants = { "0" = [0x1A, 0x06, 0x00, 0x00], "1" = [0x1A, 0x06, 0x01, 0x01] } }
+```
+
+`bytes` is the non-empty base tuple. `value_variants` is a non-empty table
+whose keys are canonical decimal integers and whose values are unique,
+non-empty byte arrays. Every variant must strictly extend and start with the
+base tuple. The descriptor accepts exactly these two keys. The loader retains
+the variants behind the one command-map entry, so command discovery, map
+iteration, and reverse lookup continue to see only the base command name and
+tuple. Builders that opt into semantic-value selection reject values absent
+from the table; profiles using the original byte-array form are unchanged.
+
 ### Format 2: CAT Command Spec (Yaesu/Kenwood)
 
 For `yaesu_cat` and `kenwood_cat` protocols, commands are inline tables with a
@@ -530,7 +579,8 @@ read/write commands, or a verb like `ptt_on`, `scope_on`, `send_cw`.
 ### `[commands.overrides]` — Model-Specific Overrides
 
 Commands in this sub-table override the defaults for a specific radio model.
-Same format as `[commands]`: CI-V byte arrays or CAT inline tables.
+Same format as `[commands]`: CI-V byte arrays, CI-V value-variant descriptors,
+or CAT inline tables.
 
 ## Additional Parameterized Sections
 

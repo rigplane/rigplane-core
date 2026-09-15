@@ -100,6 +100,7 @@ class ReceiverState:
     repeater_tsql: bool = False
     tone_freq: int = 0  # centihz, e.g. 8850 = 88.50 Hz
     tsql_freq: int = 0  # centihz, e.g. 8850 = 88.50 Hz
+    repeater_shift: int = 0  # 0=Simplex,1=Plus,2=Minus,3=ARS (RepeaterShiftDirection)
 
     # --- VFO-slot-derived properties (legacy compat) ---------------------
 
@@ -235,7 +236,8 @@ class YaesuStateExtension:
     consumers (e.g. a Yaesu-specific panel).
 
     Fields:
-        rx_func_mode: ``FR`` command — 0=dual RX off, 1=single RX.
+        rx_func_mode: ``FR`` command — 0=Dual receive, 1=Single receive
+            (FTX-1 CAT manual, edition 2508-C, FR FUNCTION RX).
         tx_func_mode: ``FT`` command — 0=MAIN TX, 1=SUB TX.
 
     ``None`` for any field means "not yet polled / unknown".
@@ -265,7 +267,6 @@ class RadioState:
     tuning_step: int = 0
     overflow: bool = False
     tuner_status: int = 0  # 0=off, 1=on, 2=tuning
-    tx_freq_monitor: bool = False
     rit_freq: int = 0  # signed Hz (±9999)
     rit_on: bool = False
     rit_tx: bool = False
@@ -332,7 +333,6 @@ class RadioState:
             "tuning_step": self.tuning_step,
             "overflow": self.overflow,
             "tuner_status": self.tuner_status,
-            "tx_freq_monitor": self.tx_freq_monitor,
             "rit_freq": self.rit_freq,
             "rit_on": self.rit_on,
             "rit_tx": self.rit_tx,

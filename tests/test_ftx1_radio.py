@@ -15,11 +15,12 @@ from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat import radio as yaesu_radio
 from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.transport import CatTimeoutError
+from rigplane.commands.command_spec import CatCommandSpec
 from rigplane.exceptions import CommandError
 from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.profiles import TxPolicy
 from rigplane.rig_loader import load_rig
-from rigplane.types import BreakInMode
+from rigplane.types import BreakInMode, RepeaterShiftDirection
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -66,7 +67,11 @@ def test_string_profile_loads_from_non_filesystem_package_resources(
     """The Yaesu consumer resolves bundled profiles without a source tree."""
     archive_path = tmp_path / "rigplane.zip"
     with ZipFile(archive_path, "w") as archive:
-        for name in ("ftx1.toml", "_keyboard-default.toml"):
+        for name in (
+            "ftx1.toml",
+            "_keyboard-default.toml",
+            "_ctcss_tables_v1.toml",
+        ):
             archive.writestr(f"rigplane/rigs/{name}", (_RIGS_DIR / name).read_bytes())
 
     with ZipFile(archive_path) as archive:
@@ -323,9 +328,9 @@ async def test_set_powerstat_off(connected_radio):
 @pytest.mark.asyncio
 async def test_set_ptt_on(connected_radio):
     """MOR-1941: ``set_ptt`` no longer self-writes the legacy mirror. Our
-    own command is a claim about the wire, never receive/transmit truth
-    (§3.7 of the transmit-authority ADR) -- the mirror is left exactly as
-    it was, and only a real read-back (``get_ptt``) may change it.
+    own command is a wire-write outcome, not a ``TxStateReading`` from
+    ``core.tx_observation``. The mirror is left exactly as it was, and only
+    a real read-back (``get_ptt``) may change it.
     """
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_ptt(True)
@@ -544,6 +549,31 @@ async def test_get_s_meter_sub(connected_radio):
 
 
 @pytest.mark.asyncio
+async def test_sub_s_meter_accepts_the_echoed_main_side_digit(connected_radio):
+    """Recorded FTX-1 frame pair: ``SM1;`` -> ``SM0052;`` and ``SM0;`` -> ``SM0000;``.
+
+    The radio echoes P1 as ``0`` for the SUB query while the value is the
+    SUB's, so the SUB read attributes the value to the side it queried.
+    """
+    frames = {"SM0;": "SM0000", "SM1;": "SM0052"}
+    connected_radio._transport.query = AsyncMock(side_effect=lambda cmd: frames[cmd])
+
+    assert await connected_radio.get_s_meter(receiver=1) == 52
+    assert await connected_radio.get_s_meter(receiver=0) == 0
+    assert connected_radio.radio_state.sub.s_meter == 52
+    assert connected_radio.radio_state.main.s_meter == 0
+
+
+@pytest.mark.asyncio
+async def test_main_s_meter_rejects_a_sub_side_digit(connected_radio):
+    """The MAIN read stays strict: an ``SM1`` frame is not a MAIN reading."""
+    connected_radio._transport.query = AsyncMock(return_value="SM1052")
+
+    with pytest.raises(CatParseError):
+        await connected_radio.get_s_meter(receiver=0)
+
+
+@pytest.mark.asyncio
 async def test_get_s_meter_zero(connected_radio):
     connected_radio._transport.query = AsyncMock(return_value="SM0000")
     raw = await connected_radio.get_s_meter()
@@ -735,6 +765,30 @@ async def test_get_nr_level(connected_radio):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("level", [0, 5, 10])
+async def test_set_nr_level_accepts_domain_values(connected_radio, level):
+    """Values on the profile's nr_level raw domain (0-10, step 1) are
+    encoded as RL0 frames (MOR-2479)."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_nr_level(level)
+    connected_radio._transport.write.assert_called_once_with(f"RL0{level:02d};")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level", [11, 15, -1])
+async def test_set_nr_level_rejects_off_domain_without_cat_write(
+    connected_radio, level
+):
+    """Values outside the profile's nr_level raw domain raise ValueError
+    and never reach the wire (MOR-2479). 15 — the old hamlib ceiling —
+    is off-domain: the FTX-1 manual caps RL at 10."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="nr_level must be within 0-10"):
+        await connected_radio.set_nr_level(level)
+    connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_auto_notch_on(connected_radio):
     connected_radio._transport.query = AsyncMock(return_value="BC01")
     assert await connected_radio.get_auto_notch() is True
@@ -793,6 +847,29 @@ async def test_get_notch_filter_returns_freq_index(connected_radio):
     assert await connected_radio.get_notch_filter() == 120
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("freq", [1, 160, 320])
+async def test_set_manual_notch_freq_accepts_domain_values(connected_radio, freq):
+    """Values on the profile's manual_notch_freq raw domain (1-320, step 1)
+    are encoded as BP01 frames (MOR-1680)."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_manual_notch_freq(freq)
+    connected_radio._transport.write.assert_called_once_with(f"BP01{freq:03d};")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("freq", [0, 321])
+async def test_set_manual_notch_freq_rejects_off_domain_without_cat_write(
+    connected_radio, freq
+):
+    """Values outside the profile's manual_notch_freq raw domain raise
+    ValueError and never reach the wire (MOR-1680)."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="manual_notch_freq must be within 1-320"):
+        await connected_radio.set_manual_notch_freq(freq)
+    connected_radio._transport.write.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # D4: Filters
 # ---------------------------------------------------------------------------
@@ -848,8 +925,59 @@ async def test_set_if_shift_positive(connected_radio):
 @pytest.mark.asyncio
 async def test_set_if_shift_negative(connected_radio):
     connected_radio._transport.write = AsyncMock()
-    await connected_radio.set_if_shift(-150)
-    connected_radio._transport.write.assert_called_once_with("IS00-0150;")
+    await connected_radio.set_if_shift(-160)
+    connected_radio._transport.write.assert_called_once_with("IS00-0160;")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("offset", "frame"),
+    [
+        (0, "IS00+0000;"),
+        (20, "IS00+0020;"),
+        (-20, "IS00-0020;"),
+        (1200, "IS00+1200;"),
+        (-1200, "IS00-1200;"),
+    ],
+)
+async def test_set_if_shift_accepts_domain_values(connected_radio, offset, frame):
+    """Values on the profile's if_shift raw domain (-1200..1200, step 20)
+    are encoded as IS00 frames (MOR-1681)."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_if_shift(offset)
+    connected_radio._transport.write.assert_called_once_with(frame)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offset", [25, 1210, -1220])
+async def test_set_if_shift_rejects_off_domain_without_cat_write(
+    connected_radio, offset
+):
+    """Off-range or off-lattice values raise ValueError naming the control
+    and never reach the wire (MOR-1681)."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="if_shift must be within -1200-1200"):
+        await connected_radio.set_if_shift(offset)
+    connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_set_if_shift_without_profile_domain_raises(config):
+    """A profile without an if_shift control domain fails honestly instead
+    of passing the value through to the wire (MOR-1681)."""
+    stripped = replace(
+        config,
+        controls={k: v for k, v in (config.controls or {}).items() if k != "if_shift"},
+        _control_domains={
+            k: v for k, v in (config._control_domains or {}).items() if k != "if_shift"
+        },
+    )
+    radio = YaesuCatRadio("/dev/null", profile=stripped)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="no normalized control domain for 'if_shift'"):
+        await radio.set_if_shift(0)
+    radio._transport.write.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1010,6 +1138,57 @@ async def test_set_cross_band_split_rejects_out_of_range_tx(connected_radio):
     with pytest.raises(ValueError, match="tx_xcvr"):
         await connected_radio.set_cross_band_split(rx_xcvr=0, tx_xcvr=2)
     connected_radio._transport.write.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# set_dual_watch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_dual_watch_on_sends_fr00(connected_radio):
+    """On the bundled FTX-1 profile, set_dual_watch(True) sends exactly FR00;."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_dual_watch(True)
+    assert connected_radio._transport.write.call_args_list == [call("FR00;")]
+
+
+@pytest.mark.asyncio
+async def test_set_dual_watch_off_sends_fr01(connected_radio):
+    """On the bundled FTX-1 profile, set_dual_watch(False) sends exactly FR01;."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_dual_watch(False)
+    assert connected_radio._transport.write.call_args_list == [call("FR01;")]
+
+
+@pytest.mark.asyncio
+async def test_set_dual_watch_prefers_a_declared_set_dual_watch_command(config):
+    """A declared ``set_dual_watch`` write is used instead of the FR fallback."""
+    config.commands["set_dual_watch"] = CatCommandSpec(write="DW{state};")
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    await radio.set_dual_watch(True)
+    await radio.set_dual_watch(False)
+    assert radio._transport.write.call_args_list == [call("DW1;"), call("DW0;")]
+
+
+@pytest.mark.asyncio
+async def test_set_dual_watch_without_either_command_warns_and_writes_nothing(
+    config, caplog
+):
+    """With neither ``set_dual_watch`` nor ``set_rx_func``, nothing is written."""
+    del config.commands["set_rx_func"]
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    with caplog.at_level("WARNING"):
+        await radio.set_dual_watch(True)
+    radio._transport.write.assert_not_called()
+    assert any(
+        record.levelname == "WARNING" and "set_dual_watch" in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
@@ -1244,10 +1423,17 @@ async def test_set_clarifier_freq(connected_radio):
 
 
 @pytest.mark.asyncio
-async def test_reset_clarifier(connected_radio):
+@pytest.mark.parametrize("receiver", [0, 1])
+async def test_reset_clarifier_is_undeclared_before_transport(
+    connected_radio, receiver
+):
     connected_radio._transport.write = AsyncMock()
-    await connected_radio.reset_clarifier()
-    connected_radio._transport.write.assert_called_once_with("RC;")
+    connected_radio._transport.query = AsyncMock()
+    with pytest.raises(CommandError, match="reset_clarifier.*not found in profile"):
+        await connected_radio.reset_clarifier(receiver=receiver)
+    assert not connected_radio.supports_command("reset_clarifier")
+    connected_radio._transport.write.assert_not_awaited()
+    connected_radio._transport.query.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1450,8 +1636,8 @@ async def test_get_sql_type_tone(connected_radio):
 @pytest.mark.asyncio
 async def test_set_sql_type(connected_radio):
     connected_radio._transport.write = AsyncMock()
-    await connected_radio.set_sql_type(3)
-    connected_radio._transport.write.assert_called_once_with("CT003;")
+    await connected_radio.set_sql_type(2)
+    connected_radio._transport.write.assert_called_once_with("CT02;")
 
 
 # -- CTCSS tone frequency (CN command, MOR-458) -----------------------------
@@ -1497,6 +1683,95 @@ async def test_get_ctcss_tone_returns_centihz(connected_radio):
     assert await connected_radio.get_ctcss_tone() == 8850
 
 
+# -- Repeater shift (OS command, MOR-2111) ----------------------------------
+
+
+@pytest.mark.parametrize(("receiver", "direction"), [(0, 0), (1, 3)])
+@pytest.mark.asyncio
+async def test_read_repeater_shift_routes_receiver_and_is_pure(
+    connected_radio, receiver: int, direction: int
+):
+    """OS P1 selects MAIN/SUB; a pure read leaves both legacy sides intact."""
+    connected_radio.radio_state.main.repeater_shift = 98
+    connected_radio.radio_state.sub.repeater_shift = 99
+    state_before = connected_radio.radio_state
+    connected_radio._transport.query = AsyncMock(
+        return_value=f"OS{receiver}{direction}"
+    )
+
+    assert await connected_radio.read_repeater_shift(receiver) == direction
+    connected_radio._transport.query.assert_called_once_with(f"OS{receiver};")
+    assert connected_radio.radio_state is state_before
+    assert connected_radio.radio_state.main.repeater_shift == 98
+    assert connected_radio.radio_state.sub.repeater_shift == 99
+
+
+@pytest.mark.asyncio
+async def test_get_repeater_shift_returns_enum_for_sub(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="OS13")
+    result = await connected_radio.get_repeater_shift(1)
+    assert result is RepeaterShiftDirection.ARS
+    connected_radio._transport.query.assert_called_once_with("OS1;")
+
+
+@pytest.mark.parametrize("receiver", [-1, 2, True, False, 0.0, "0"])
+@pytest.mark.asyncio
+async def test_repeater_shift_rejects_invalid_receiver_before_io(
+    connected_radio, receiver: object
+):
+    connected_radio._transport.query = AsyncMock()
+    connected_radio._transport.write = AsyncMock()
+
+    with pytest.raises((TypeError, ValueError), match="receiver"):
+        await connected_radio.read_repeater_shift(receiver)  # type: ignore[arg-type]
+    with pytest.raises((TypeError, ValueError), match="receiver"):
+        await connected_radio.set_repeater_shift(0, receiver=receiver)  # type: ignore[arg-type]
+
+    connected_radio._transport.query.assert_not_awaited()
+    connected_radio._transport.write.assert_not_awaited()
+
+
+@pytest.mark.parametrize("direction", [-1, 4, True, False, 1.0, "1"])
+@pytest.mark.asyncio
+async def test_repeater_shift_rejects_invalid_direction_before_io(
+    connected_radio, direction: object
+):
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises((TypeError, ValueError), match="direction"):
+        await connected_radio.set_repeater_shift(direction)  # type: ignore[arg-type]
+    connected_radio._transport.write.assert_not_awaited()
+
+
+@pytest.mark.parametrize("receiver", [0, 1])
+@pytest.mark.parametrize("direction", list(RepeaterShiftDirection))
+@pytest.mark.asyncio
+async def test_set_repeater_shift_routes_all_values(
+    connected_radio, receiver: int, direction: RepeaterShiftDirection
+):
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_repeater_shift(direction, receiver=receiver)
+    connected_radio._transport.write.assert_called_once_with(
+        f"OS{receiver}{int(direction)};"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_repeater_shift_rejects_answer_for_other_receiver(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="OS12")
+    with pytest.raises(CommandError, match="receiver.*mismatch"):
+        await connected_radio.read_repeater_shift(0)
+
+
+@pytest.mark.parametrize("answer", ["OS04", "OS0X"])
+@pytest.mark.asyncio
+async def test_read_repeater_shift_rejects_invalid_answer_direction(
+    connected_radio, answer: str
+):
+    connected_radio._transport.query = AsyncMock(return_value=answer)
+    with pytest.raises(CommandError, match="direction in answer"):
+        await connected_radio.read_repeater_shift(0)
+
+
 @pytest.mark.parametrize(
     ("index", "expected_centihz"),
     [
@@ -1509,23 +1784,30 @@ async def test_get_ctcss_tone_returns_centihz(connected_radio):
     ],
 )
 def test_ctcss_index_to_centihz_matches_chart(index, expected_centihz):
-    """Spot-check the index -> Hz -> centiHz mapping against the tone chart.
+    """Spot-check CN mapping through the active profile's resolved domain.
 
-    The 50-tone EIA CTCSS chart is verbatim from FTX-1_CAT_OM_ENG_2507; the
-    centiHz emission matches the Icom convention (round(Hz * 100)).
+    The profile catalog owns the 50-tone EIA domain; the Yaesu provider only
+    applies the CAT CN index to that resolved tuple.
     """
     from rigplane.backends.yaesu_cat.radio import _ctcss_index_to_centihz
 
-    assert _ctcss_index_to_centihz(index) == expected_centihz
+    profile = load_rig(_RIGS_DIR / "ftx1.toml").to_profile()
+    assert (
+        _ctcss_index_to_centihz(index, domain=profile.ctcss_tones_centihz)
+        == expected_centihz
+    )
 
 
-def test_ctcss_table_has_50_standard_tones():
-    """The FTX-1 CTCSS chart is the standard 50-tone EIA set (indices 0-49)."""
-    from rigplane.backends.yaesu_cat.radio import _CTCSS_TONE_CENTIHZ
+@pytest.mark.asyncio
+async def test_get_ctcss_tone_uses_active_profile_domain(connected_radio):
+    """A provider/model-independent profile tuple controls CN index mapping."""
+    connected_radio._profile_cache = replace(
+        connected_radio.profile,
+        ctcss_tones_centihz=(1234, 5678),
+    )
+    connected_radio._transport.query = AsyncMock(return_value="CN00001")
 
-    assert len(_CTCSS_TONE_CENTIHZ) == 50
-    assert _CTCSS_TONE_CENTIHZ[0] == 6700
-    assert _CTCSS_TONE_CENTIHZ[49] == 25410
+    assert await connected_radio.get_ctcss_tone() == 5678
 
 
 # ---------------------------------------------------------------------------
@@ -1796,10 +2078,139 @@ async def test_set_cw_pitch_rejects_out_of_range(connected_radio):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hz", [305, 705])
+async def test_set_cw_pitch_rejects_off_lattice_without_cat_write(connected_radio, hz):
+    """In-range but off-lattice Hz values are rejected, not silently
+    floored to the nearest index (MOR-1682)."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="cw_pitch must be within 300-1050"):
+        await connected_radio.set_cw_pitch(hz)
+    connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hz", [290, 1060])
+async def test_set_cw_pitch_rejects_domain_edges_without_cat_write(connected_radio, hz):
+    """Out-of-domain Hz values from the profile's cw_pitch domain raise
+    ValueError and never reach the wire (MOR-1682)."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="cw_pitch must be within 300-1050"):
+        await connected_radio.set_cw_pitch(hz)
+    connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_key_pitch_still_returns_idx(connected_radio):
     """Yaesu-named get_key_pitch keeps idx contract (no break). (#1162)"""
     connected_radio._transport.query = AsyncMock(return_value="KP40")
     assert await connected_radio.get_key_pitch() == 40
+
+
+# ---------------------------------------------------------------------------
+# ControlDomainCapable surface (MOR-2469)
+# ---------------------------------------------------------------------------
+
+
+def test_snap_control_display_notch_hz_to_raw(radio):
+    """1500 Hz snaps to the raw code 150 on the FTX-1 notch domain."""
+    assert radio.snap_control_display("manual_notch_freq", "1500") == 150
+
+
+def test_snap_control_display_notch_tie_rounds_up(radio):
+    """1505 Hz is exactly between 1500 and 1510 — nearest_ties_up → 1510."""
+    assert radio.snap_control_display("manual_notch_freq", "1505") == 151
+
+
+@pytest.mark.parametrize("display", ["5", "3300", "-10"])
+def test_snap_control_display_notch_out_of_range_raises(radio, display):
+    with pytest.raises(ValueError, match="manual_notch_freq"):
+        radio.snap_control_display("manual_notch_freq", display)
+
+
+@pytest.mark.parametrize(
+    ("display", "raw"),
+    [("15", 20), ("-10", 0), ("-15", -20), ("1195", 1200)],
+)
+def test_snap_control_display_if_shift(radio, display, raw):
+    """Signed IF-shift snapping; ties (±10, ±15 when step is 20) round up."""
+    assert radio.snap_control_display("if_shift", display) == raw
+
+
+def test_snap_control_display_if_shift_out_of_range_raises(radio):
+    with pytest.raises(ValueError, match="if_shift"):
+        radio.snap_control_display("if_shift", "1210")
+    with pytest.raises(ValueError, match="if_shift"):
+        radio.snap_control_display("if_shift", "-1210")
+
+
+@pytest.mark.parametrize(
+    ("display", "raw"),
+    [("301", 300), ("305", 310), ("700", 700), ("1050", 1050), ("300", 300)],
+)
+def test_snap_control_display_cw_pitch(radio, display, raw):
+    assert radio.snap_control_display("cw_pitch", display) == raw
+
+
+def test_snap_control_display_cw_pitch_out_of_range_raises(radio):
+    with pytest.raises(ValueError, match="cw_pitch"):
+        radio.snap_control_display("cw_pitch", "1060")
+    with pytest.raises(ValueError, match="cw_pitch"):
+        radio.snap_control_display("cw_pitch", "299")
+
+
+def test_snap_control_display_no_domain_returns_none(radio):
+    assert radio.snap_control_display("no_such_control", "100") is None
+
+
+def test_snap_control_display_non_canonical_display_returns_none(radio):
+    """A domain exists but the display string is not a canonical decimal."""
+    assert radio.snap_control_display("cw_pitch", "07") is None
+    assert radio.snap_control_display("cw_pitch", "300.0") is None
+
+
+def test_decode_control_raw_notch_linear(radio):
+    assert radio.decode_control_raw("manual_notch_freq", 1) == "10"
+    assert radio.decode_control_raw("manual_notch_freq", 150) == "1500"
+    assert radio.decode_control_raw("manual_notch_freq", 320) == "3200"
+
+
+def test_decode_control_raw_if_shift_identity(radio):
+    assert radio.decode_control_raw("if_shift", -1200) == "-1200"
+    assert radio.decode_control_raw("if_shift", 0) == "0"
+
+
+def test_decode_control_raw_off_lattice_returns_none(radio):
+    assert radio.decode_control_raw("if_shift", 10) is None
+    assert radio.decode_control_raw("cw_pitch", 301) is None
+
+
+def test_decode_control_raw_out_of_range_returns_none(radio):
+    assert radio.decode_control_raw("manual_notch_freq", 0) is None
+    assert radio.decode_control_raw("manual_notch_freq", 321) is None
+
+
+def test_decode_control_raw_no_domain_returns_none(radio):
+    assert radio.decode_control_raw("no_such_control", 100) is None
+
+
+def test_control_display_bounds_nr_level(radio):
+    """The FTX-1 publishes nr_level as an identity 0-10 domain (MOR-2479)."""
+    assert radio.control_display_bounds("nr_level") == ("0", "10")
+
+
+def test_control_display_bounds_other_domains(radio):
+    assert radio.control_display_bounds("cw_pitch") == ("300", "1050")
+    assert radio.control_display_bounds("manual_notch_freq") == ("10", "3200")
+
+
+def test_control_display_bounds_no_domain_returns_none(radio):
+    assert radio.control_display_bounds("no_such_control") is None
+
+
+def test_control_domain_capable_isinstance(radio):
+    from rigplane.core.radio_protocol import ControlDomainCapable
+
+    assert isinstance(radio, ControlDomainCapable)
 
 
 @pytest.mark.asyncio
@@ -1862,14 +2273,15 @@ async def test_set_compressor_off_delegates_to_set_processor(connected_radio):
 
 
 @pytest.mark.asyncio
-async def test_get_tuner_status_delegates_to_get_tuner(connected_radio):
+async def test_get_tuner_status_reads_atu(connected_radio):
     connected_radio._transport.query = AsyncMock(return_value="AC001")
     result = await connected_radio.get_tuner_status()
     assert isinstance(result, int)
 
 
 @pytest.mark.asyncio
-async def test_set_tuner_status_delegates_to_set_tuner(connected_radio):
+async def test_set_tuner_status_acquires_atu_route(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="AC101")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_tuner_status(1)
     connected_radio._transport.write.assert_called_once()
@@ -2367,7 +2779,6 @@ class TestProfileSourcedCommands:
 
 
 from rigplane.backends.yaesu_cat.parser import CatCommandParser  # noqa: E402
-from rigplane.command_spec import CatCommandSpec  # noqa: E402
 from rigplane.radio_protocol import (  # noqa: E402
     ReceiverBankCapable,
     VfoSlotCapable,

@@ -16,8 +16,9 @@
  * boolean or a default is the failure mode this contract exists to prevent.
  */
 import type { VfoScheme } from '$lib/types/capabilities';
-import type { NrLevelProjection } from '$lib/radio/filter-controls';
+import type { NrLevelProjection, ControlDisplayDomain } from '$lib/radio/filter-controls';
 import type { FrequencyPermit, TxPermit } from '$lib/utils/tx-permit';
+import type { MeterSourceIdentity as PrimitiveMeterSourceIdentity } from '../primitives/meters/meter-ballistics.svelte';
 import { invalid, record, exactKeys, str } from './validator-primitives';
 
 export type ReceiverId = 'MAIN' | 'SUB';
@@ -67,6 +68,11 @@ export interface VfoViewModel {
   frequencyHz: number | null;
   mode: string | null;
   filter: string | null;
+  readonly display?: {
+    readonly frequencyHz: DisplayObservation<number>;
+    readonly mode: DisplayObservation<string>;
+    readonly filter: DisplayObservation<string>;
+  };
   /** The ACTIVE RECEIVER's active VFO — globally unique across the radio. */
   isActive: boolean;
   /**
@@ -134,6 +140,15 @@ export interface TxAuxField<T> {
   reading: TxAuxReading<T>;
   availability: Availability;
 }
+export type DisplayObservation<T> =
+  | { readonly state: 'current' | 'stale'; readonly value: T }
+  | { readonly state: 'unknown'; readonly reason: 'not-observed' | 'invalid-value' | 'invalid-evidence' | 'identity-unresolved' }
+  | { readonly state: 'unsupported' };
+
+export interface DisplayObservedField<T> extends TxAuxField<T> {
+  readonly display?: DisplayObservation<T>;
+}
+
 export type AtuStatus = 'off' | 'on' | 'tuning';
 
 /**
@@ -172,10 +187,34 @@ export interface TxAuxViewModel {
  * authority's conclusion, it never computes one.
  */
 export type MeterReading = { status: 'known'; value: number } | { status: 'unknown' };
+export type MeterEngineeringUnit = 'db' | 'normalized' | 'w' | 'ratio' | 'v' | 'a';
+export type MeterValueDomain =
+  | { readonly kind: 'engineering'; readonly unit: MeterEngineeringUnit }
+  | { readonly kind: 'raw' }
+  | { readonly kind: 'unknown' };
+export type MeterSourcePath =
+  | 'main.sMeter' | 'sub.sMeter'
+  | 'powerMeter' | 'swrMeter' | 'alcMeter' | 'compMeter' | 'vdMeter' | 'idMeter';
+export type MeterSourceIdentity = Readonly<
+  Omit<PrimitiveMeterSourceIdentity, 'path'> & { readonly path: MeterSourcePath }
+>;
+export type MeterPresence = 'present' | 'unavailable' | 'absent';
 export interface MeterField {
+  presence?: MeterPresence;
   reading: MeterReading;
   availability: Availability;
   relevant: boolean;
+  /**
+   * Omitted only by pre-MOR-2425 internal fixtures/callers. Live adapters emit
+   * an explicit domain, including `unknown`; consumers must not infer an
+   * explicit unknown domain from profile calibration metadata.
+   */
+  domain?: MeterValueDomain;
+  source?: MeterSourceIdentity | null;
+}
+
+export interface DisplayObservedMeterField extends MeterField {
+  readonly display?: DisplayObservation<number>;
 }
 
 /**
@@ -195,9 +234,9 @@ export type MeterRfState = 'receiving' | 'transmitting' | 'uncertain' | 'unknown
 export interface MetersViewModel {
   rfState: MeterRfState;
   signal: MeterField;
-  power: MeterField;
-  swr: MeterField;
-  alc: MeterField;
+  power: DisplayObservedMeterField;
+  swr: DisplayObservedMeterField;
+  alc: DisplayObservedMeterField;
   compression: MeterField;
   drainVoltage: MeterField;
   drainCurrent: MeterField;
@@ -261,6 +300,7 @@ export interface RxAudioViewModel {
   routingSplit: RxAudioField<boolean>;
   /** The active DATA group's MOD-input source enum (`$lib/radio/mod-input`). */
   modInputSource: RxAudioField<number>;
+  readonly modInputChoices?: readonly { readonly value: number; readonly label: string }[];
   modInputReadiness: ModInputReadiness;
 }
 
@@ -270,6 +310,16 @@ export interface RxAudioViewModel {
  * `RxAudioField` is: one field shape per fact family, no near-duplicate.
  */
 export type ModeFilterField<T> = TxAuxField<T>;
+
+export interface ActiveFilterConfiguration {
+  readonly slots: readonly { readonly filter: number; readonly label: string; readonly factoryWidthHz: number | null }[];
+  readonly fixed: boolean;
+  readonly minHz: number | null;
+  readonly maxHz: number | null;
+  readonly stepHz: number | null;
+  readonly segments: readonly { readonly hzMin: number; readonly hzMax: number; readonly stepHz: number; readonly indexMin: number }[];
+  readonly table: readonly number[];
+}
 
 /**
  * Mode/filter facts (MOR-1262 decomposition slice 4A). Facts only — no
@@ -283,14 +333,9 @@ export type ModeFilterField<T> = TxAuxField<T>;
  * selection and the width bounds ARE readings, and degrade to `unknown`
  * rather than to `toFilterProps`'s fabricated defaults ('USB', 2400 Hz,
  * 50..9999 Hz) — see `radio-view-model-adapter.ts`'s `deriveModeFilter`.
- *
- * `filterWidthMin`/`filterWidthMax` are the ONE remaining consumer of
- * `resolveFilterModeConfig`'s per-mode table lookup that this slice adds;
- * the X6200 CAT-audit lesson (filter-width codecs are radio-specific) is why
- * this group never re-derives that table itself — it reads the shipped
- * resolver's own output, like `modInputReadiness` reads `deriveTxCapabilities`.
  */
 export interface ModeFilterViewModel {
+  readonly activeFilterConfiguration: ActiveFilterConfiguration | null;
   currentMode: ModeFilterField<string>;
   modeChoices: readonly string[];
   currentFilter: ModeFilterField<number>;
@@ -347,7 +392,7 @@ export interface FilterPassbandViewModel {
    * The FTX-1 has none — showing its SHARP/SOFT shape CONTROL permanently
    * disabled is a dead control (same class of defect `ifShiftControlStructural`
    * fixed, MOR-1494 ruling: hide capability-absent controls, don't show them
-   * dead). `FilterSurface.svelte` gates the filter-shape ROW on this flag,
+   * dead). `FilterInstrumentHost.svelte` gates the filter-shape ROW on this flag,
    * and ONLY this flag — never on `filterShape.availability.structural`,
    * which stays reserved for consumers of the derived fact itself (see
    * `deriveFilterPassband`'s doc comment). A plain boolean, not
@@ -378,9 +423,22 @@ export interface FilterPassbandViewModel {
    * fact about the radio MODEL, not a live reading that can itself go stale.
    */
   ifShiftControlStructural: boolean;
-  pbtInner: FilterPassbandField<number>;
-  pbtOuter: FilterPassbandField<number>;
+  /**
+   * The IF-shift control's numeric display domain from the profile's
+   * published `controls.if_shift` entry (MOR-1681): `{min, max, step,
+   * origin}` when the radio declares a usable one, absent when it declares
+   * nothing usable — the fact group states the DOMAIN, never a fallback;
+   * consumers keep their own today-behaviour constants for the absent
+   * case. Not a per-field reading: one control, one domain, so it sits on
+   * the group beside the field it governs.
+   */
+  ifShiftDomain?: ControlDisplayDomain;
+  pbtInner: DisplayObservedField<number>;
+  pbtOuter: DisplayObservedField<number>;
   dataMode: FilterPassbandField<number>;
+  readonly dataModeChoices: readonly { readonly value: number; readonly label: string | null }[];
+  modInputSource?: FilterPassbandField<number>;
+  readonly modInputChoices?: readonly { readonly value: number; readonly label: string }[];
 }
 
 /**
@@ -484,7 +542,7 @@ export type RfFrontEndField<T> = TxAuxField<T>;
  * `'mutually-exclusive-control'` code. See
  * `radio-view-model-adapter.ts`'s `deriveRfFrontEnd` for the derivation,
  * which reads the mutex condition off THIS group's own `digiSel` fact —
- * never off raw state again — so a stale/unobserved DIGI-SEL reading FAILS
+ * never off raw state again — so an unobserved DIGI-SEL reading FAILS
  * CLOSED (the reason is present, disabling PRE) rather than silently
  * re-enabling the control the way a naive `rawDigisel ?? false` would.
  */
@@ -596,7 +654,7 @@ export interface BandViewModel {
    * the tri-state (`$lib/utils/tx-permit`: "unknown fails closed").
    * `'allowed'` requires ALL of: a POSITIVELY known current band, a choice
    * entry for it, and a POSITIVELY `allowed` live-frequency permit. An
-   * unobserved/stale/malformed frequency, an out-of-plan frequency, a band
+   * unobserved/malformed frequency, an out-of-plan frequency, a band
    * absent from the choice set, an out-of-segment frequency and unconfigured
    * TX ranges all read `'denied'`. An unknown input must never enable a
    * TX-adjacent affordance — see `radio-view-model-adapter.ts`'s `deriveBand`,
@@ -784,6 +842,27 @@ export interface CwKeyerViewModel {
   keyerSpeed: CwKeyerField<number>;
   /** CW pitch / sidetone pitch in Hz (`state.cwPitch`); `unknown`, never 600. */
   pitchHz: CwKeyerField<number>;
+  /**
+   * The pitch control's numeric display domain from the profile's published
+   * `controls.cw_pitch` entry (MOR-1682): `{min, max, step, origin}` when the
+   * radio declares a usable one (an exact domain's own lattice, or a legacy
+   * range whose step is its `decode_quantum` when published, else the
+   * adapter's fallback step), absent when it declares nothing usable — the
+   * fact group states the DOMAIN, never a fallback; consumers keep their own
+   * today-behaviour constants for the absent case. Not a per-field reading:
+   * one control, one domain, so it sits on the group beside the fields it
+   * governs.
+   */
+  pitchDomain?: ControlDisplayDomain;
+  /**
+   * The key-speed control's numeric display domain from the profile's
+   * published `controls.key_speed` entry (MOR-2475 F1): same shape and
+   * same absence semantics as `pitchDomain` above — one control, one
+   * domain, sitting on the group beside the field it governs; absent when
+   * the radio declares nothing usable, and consumers keep their own
+   * today-behaviour constants for the absent case.
+   */
+  keySpeedDomain?: ControlDisplayDomain;
   reversePaddle: CwKeyerField<boolean>;
   /** Audio peak filter type/level ordinal (`rx.apfTypeLevel`, 0 = off). */
   apf: CwKeyerField<number>;
@@ -992,6 +1071,81 @@ export interface ScopeDisplayViewModel {
   hardwareConnected: ScopeDisplayField<boolean>;
 }
 
+/**
+ * Receiver-addressed facts mounted with the semantic VFO deck (MOR-2299
+ * slice 1). One entry represents one structural receiver, never one VFO
+ * slot: an A/B radio therefore still has one entry. Every live reading uses
+ * the existing `{reading, availability}` fact shape so zero and `false`
+ * survive without becoming an unknown/default.
+ */
+export type ReceiverIndicatorField<T> = TxAuxField<T>;
+export interface ReceiverSMeterField extends ReceiverIndicatorField<number> {
+  /** Same compatibility rule as `MeterField.domain`. */
+  domain?: MeterValueDomain;
+  source?: MeterSourceIdentity | null;
+}
+export interface ReceiverIndicatorViewModel {
+  receiver: ReceiverId;
+  availability: Availability;
+  /**
+   * @deprecated Pre-MOR-2309 payload compatibility only. Live adapters no
+   * longer emit receiver-scoped RF authority; consumers must use the one
+   * radio-wide `radioWideIndicators.rfState` fact.
+   */
+  rfState?: MeterRfState;
+  sMeter: ReceiverSMeterField;
+  bandwidthHz: ReceiverIndicatorField<number>;
+  /** Capability label when declared for the ordinal; raw ordinal otherwise. */
+  agcMode: ReceiverIndicatorField<number | string>;
+  nbActive: ReceiverIndicatorField<boolean>;
+  nrActive: ReceiverIndicatorField<boolean>;
+  notchMode: ReceiverIndicatorField<'off' | 'auto' | 'manual'>;
+  attenuator: ReceiverIndicatorField<number>;
+  preamp: ReceiverIndicatorField<number>;
+  rfGain: DisplayObservedField<number>;
+  digiSel: ReceiverIndicatorField<boolean>;
+  ipPlus: ReceiverIndicatorField<boolean>;
+}
+
+/**
+ * One radio-wide action in the VFO deck's DUAL block (MOR-2309). Structural
+ * answers whether the loaded radio contract supports the action at all;
+ * operational answers whether the existing command handler can accept it
+ * from the current observed topology/state. The callback remains wiring-owned
+ * and is deliberately absent from this serializable semantic contract.
+ */
+export type RadioWideActionAvailability = Availability;
+
+export interface DualActionBlockViewModel {
+  main: RadioWideActionAvailability;
+  sub: RadioWideActionAvailability;
+  equalize: RadioWideActionAvailability;
+  swap: RadioWideActionAvailability;
+  /** Composite quick intents, distinct from the ordinary split/DW facts. */
+  quickSplit: RadioWideActionAvailability;
+  quickDualWatch: RadioWideActionAvailability;
+  speak: RadioWideActionAvailability;
+}
+
+/**
+ * Singleton radio-wide facts mounted beside the receiver-addressed indicator
+ * rows (MOR-2309). These are references to the same semantic readings already
+ * owned by `antenna`, `txAux.atu`, and `ritXit`; this group does not introduce
+ * a second state reader or command owner. A single-antenna radio still has an
+ * ANT fact even though it has no antenna-selection surface.
+ */
+export interface RadioWideIndicatorsViewModel {
+  /** One live RF fact from the existing App authority; never `ptt` or assignment. */
+  rfState: MeterRfState;
+  antenna: AntennaField<number>;
+  atu: TxAuxField<AtuStatus>;
+  ritActive: RitXitField<boolean>;
+  ritOffset: RitXitField<number>;
+  xitActive: RitXitField<boolean>;
+  xitOffset: RitXitField<number>;
+  actions: DualActionBlockViewModel;
+}
+
 export interface RadioViewModel {
   topologyId: string;
   vfoScheme: VfoScheme;
@@ -1005,6 +1159,14 @@ export interface RadioViewModel {
   txPermit: FrequencyPermit;
   scope: ScopeAvailabilityViewModel;
   disabledReasons: readonly DisabledReason[];
+  /**
+   * Optional for payload compatibility with pre-MOR-2299 fixtures; the live
+   * adapter always emits the complete structural receiver collection.
+   */
+  readonly receiverIndicators?: readonly ReceiverIndicatorViewModel[];
+  /** Absent only for payload compatibility with pre-MOR-2309 fixtures. The
+   *  live adapter emits exactly one singleton radio-wide projection. */
+  readonly radioWideIndicators?: RadioWideIndicatorsViewModel;
   /** Absent (MOR-1264 optional group) ⇒ structurally unavailable: this radio
    *  model has no TX-adjacent controls at all. Never emitted as a placeholder
    *  of all-unknowns — see `radio-view-model-adapter.ts`'s evidence gate. */
@@ -1093,6 +1255,9 @@ function nullableString(value: unknown, path: string): string | null {
 function num(value: unknown, path: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) invalid(path, 'a finite number');
   return value;
+}
+function strOrNum(value: unknown, path: string): string | number {
+  return typeof value === 'string' ? value : num(value, path);
 }
 
 /**
@@ -1186,7 +1351,7 @@ function validateVfo(value: unknown, path: string): VfoViewModel {
   const v = record(value, path);
   exactKeys(
     v,
-    ['receiver', 'slot', 'label', 'frequencyHz', 'mode', 'filter', 'isActive', 'isActiveSlot', 'isTxTarget'],
+    ['receiver', 'slot', 'label', 'frequencyHz', 'mode', 'filter', 'isActive', 'isActiveSlot', 'isTxTarget', 'display'],
     path,
   );
   return {
@@ -1199,6 +1364,17 @@ function validateVfo(value: unknown, path: string): VfoViewModel {
     isActive: bool(v.isActive, `${path}.isActive`),
     isActiveSlot: bool(v.isActiveSlot, `${path}.isActiveSlot`),
     isTxTarget: bool(v.isTxTarget, `${path}.isTxTarget`),
+    ...(v.display !== undefined ? { display: validateVfoDisplay(v.display, `${path}.display`) } : {}),
+  };
+}
+
+function validateVfoDisplay(value: unknown, path: string): NonNullable<VfoViewModel['display']> {
+  const v = record(value, path);
+  exactKeys(v, ['frequencyHz', 'mode', 'filter'], path);
+  return {
+    frequencyHz: validateDisplayObservation(v.frequencyHz, `${path}.frequencyHz`, num),
+    mode: validateDisplayObservation(v.mode, `${path}.mode`, str),
+    filter: validateDisplayObservation(v.filter, `${path}.filter`, str),
   };
 }
 
@@ -1250,10 +1426,67 @@ function validateDisabledReason(value: unknown, path: string): DisabledReason {
 }
 
 const METER_RF_STATES: readonly MeterRfState[] = ['receiving', 'transmitting', 'uncertain', 'unknown'];
+const METER_SOURCE_PATHS: readonly MeterSourcePath[] = [
+  'main.sMeter', 'sub.sMeter', 'powerMeter', 'swrMeter', 'alcMeter', 'compMeter', 'vdMeter', 'idMeter',
+];
+type MeterSourceExpectation = 'signal' | Exclude<MeterSourcePath, 'main.sMeter' | 'sub.sMeter'>;
+const METER_UNIT_BY_SOURCE = {
+  'main.sMeter': 'db', 'sub.sMeter': 'db', powerMeter: 'w', swrMeter: 'ratio',
+  alcMeter: 'normalized', compMeter: 'db', vdMeter: 'v', idMeter: 'a',
+} as const satisfies Readonly<Record<MeterSourcePath, MeterEngineeringUnit>>;
 
-function validateMeterField(value: unknown, path: string): MeterField {
+function validateMeterValueDomain(
+  value: unknown, path: string, expectedSource: MeterSourceExpectation,
+): MeterValueDomain {
   const v = record(value, path);
-  exactKeys(v, ['reading', 'availability', 'relevant'], path);
+  if (v.kind === 'engineering') {
+    exactKeys(v, ['kind', 'unit'], path);
+    const unit = oneOf(
+      v.unit, ['db', 'normalized', 'w', 'ratio', 'v', 'a'] as const, `${path}.unit`,
+    );
+    const expectedUnit = expectedSource === 'signal' ? 'db' : METER_UNIT_BY_SOURCE[expectedSource];
+    if (unit !== expectedUnit) invalid(`${path}.unit`, expectedUnit);
+    return { kind: 'engineering', unit };
+  }
+  if (v.kind === 'raw' || v.kind === 'unknown') {
+    exactKeys(v, ['kind'], path);
+    return { kind: v.kind };
+  }
+  return invalid(`${path}.kind`, "'engineering' | 'raw' | 'unknown'");
+}
+
+function validateMeterSource(
+  value: unknown, path: string, expected: MeterSourceExpectation,
+): MeterSourceIdentity {
+  const v = record(value, path);
+  exactKeys(v, ['providerGeneration', 'scope', 'receiver', 'path'], path);
+  if (typeof v.providerGeneration !== 'number'
+    || !Number.isSafeInteger(v.providerGeneration) || v.providerGeneration < 0) {
+    invalid(`${path}.providerGeneration`, 'a non-negative safe integer');
+  }
+  const scope = oneOf(v.scope, ['radio', 'receiver'] as const, `${path}.scope`);
+  const receiver = v.receiver === null
+    ? null : oneOf(v.receiver, ['MAIN', 'SUB'] as const, `${path}.receiver`);
+  const sourcePath = oneOf(v.path, METER_SOURCE_PATHS, `${path}.path`);
+  const source: MeterSourceIdentity = {
+    providerGeneration: v.providerGeneration, scope, receiver, path: sourcePath,
+  };
+  if (expected === 'signal') {
+    const coherent = scope === 'receiver'
+      && ((receiver === 'MAIN' && sourcePath === 'main.sMeter')
+        || (receiver === 'SUB' && sourcePath === 'sub.sMeter'));
+    if (!coherent) invalid(path, 'a canonical MAIN/main.sMeter or SUB/sub.sMeter receiver source');
+  } else if (scope !== 'radio' || receiver !== null || sourcePath !== expected) {
+    invalid(path, `the canonical radio source for ${expected}`);
+  }
+  return source;
+}
+
+function validateMeterField(
+  value: unknown, path: string, expectedSource: MeterSourceExpectation,
+): MeterField {
+  const v = record(value, path);
+  exactKeys(v, ['reading', 'availability', 'relevant', 'domain', 'source', 'presence'], path);
   const r = record(v.reading, `${path}.reading`);
   let reading: MeterReading;
   if (r.status === 'known') {
@@ -1267,8 +1500,33 @@ function validateMeterField(value: unknown, path: string): MeterField {
   }
   return {
     reading,
+    ...(v.presence !== undefined ? { presence: oneOf(v.presence,
+      ['present', 'unavailable', 'absent'] as const, `${path}.presence`) } : {}),
     availability: validateAvailability(v.availability, `${path}.availability`),
     relevant: bool(v.relevant, `${path}.relevant`),
+    ...(v.domain !== undefined
+      ? { domain: validateMeterValueDomain(v.domain, `${path}.domain`, expectedSource) }
+      : {}),
+    ...(v.source !== undefined
+      ? { source: v.source === null ? null : validateMeterSource(v.source, `${path}.source`, expectedSource) }
+      : {}),
+  };
+}
+
+function validateDisplayObservedMeterField(
+  value: unknown, path: string, expectedSource: MeterSourceExpectation,
+): DisplayObservedMeterField {
+  const v = record(value, path);
+  exactKeys(v, ['reading', 'availability', 'relevant', 'display', 'domain', 'source', 'presence'], path);
+  const strict = validateMeterField({
+    reading: v.reading, availability: v.availability, relevant: v.relevant,
+    ...(v.presence !== undefined ? { presence: v.presence } : {}),
+    ...(v.domain !== undefined ? { domain: v.domain } : {}),
+    ...(v.source !== undefined ? { source: v.source } : {}),
+  }, path, expectedSource);
+  return {
+    ...strict,
+    ...(v.display !== undefined ? { display: validateDisplayObservation(v.display, `${path}.display`, num) } : {}),
   };
 }
 
@@ -1282,13 +1540,13 @@ function validateMeters(value: unknown, path: string): MetersViewModel {
   ], path);
   return {
     rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`),
-    signal: validateMeterField(v.signal, `${path}.signal`),
-    power: validateMeterField(v.power, `${path}.power`),
-    swr: validateMeterField(v.swr, `${path}.swr`),
-    alc: validateMeterField(v.alc, `${path}.alc`),
-    compression: validateMeterField(v.compression, `${path}.compression`),
-    drainVoltage: validateMeterField(v.drainVoltage, `${path}.drainVoltage`),
-    drainCurrent: validateMeterField(v.drainCurrent, `${path}.drainCurrent`),
+    signal: validateMeterField(v.signal, `${path}.signal`, 'signal'),
+    power: validateDisplayObservedMeterField(v.power, `${path}.power`, 'powerMeter'),
+    swr: validateDisplayObservedMeterField(v.swr, `${path}.swr`, 'swrMeter'),
+    alc: validateDisplayObservedMeterField(v.alc, `${path}.alc`, 'alcMeter'),
+    compression: validateMeterField(v.compression, `${path}.compression`, 'compMeter'),
+    drainVoltage: validateMeterField(v.drainVoltage, `${path}.drainVoltage`, 'vdMeter'),
+    drainCurrent: validateMeterField(v.drainCurrent, `${path}.drainCurrent`, 'idMeter'),
   };
 }
 
@@ -1338,6 +1596,124 @@ function validateTxAux(value: unknown, path: string): TxAuxViewModel {
   };
 }
 
+function validateDisplayObservation<T>(
+  value: unknown, path: string, validateValue: (v: unknown, p: string) => T,
+): DisplayObservation<T> {
+  const v = record(value, path);
+  if (v.state === 'current' || v.state === 'stale') {
+    exactKeys(v, ['state', 'value'], path);
+    return { state: v.state, value: validateValue(v.value, `${path}.value`) };
+  }
+  if (v.state === 'unknown') {
+    exactKeys(v, ['state', 'reason'], path);
+    return { state: 'unknown', reason: oneOf(v.reason,
+      ['not-observed', 'invalid-value', 'invalid-evidence', 'identity-unresolved'] as const, `${path}.reason`) };
+  }
+  if (v.state === 'unsupported') {
+    exactKeys(v, ['state'], path);
+    return { state: 'unsupported' };
+  }
+  return invalid(`${path}.state`, "'current' | 'stale' | 'unknown' | 'unsupported'");
+}
+
+function validateDisplayObservedField<T>(
+  value: unknown, path: string, validateValue: (v: unknown, p: string) => T,
+): DisplayObservedField<T> {
+  const v = record(value, path);
+  exactKeys(v, ['reading', 'availability', 'display'], path);
+  const strict = validateTxAuxField({ reading: v.reading, availability: v.availability }, path, validateValue);
+  return {
+    ...strict,
+    ...(v.display !== undefined ? { display: validateDisplayObservation(v.display, `${path}.display`, validateValue) } : {}),
+  };
+}
+
+function validateReceiverSMeterField(
+  value: unknown, path: string, receiver: ReceiverId,
+): ReceiverSMeterField {
+  const v = record(value, path);
+  exactKeys(v, ['reading', 'availability', 'domain', 'source'], path);
+  const strict = validateTxAuxField(
+    { reading: v.reading, availability: v.availability }, path, num,
+  );
+  const domain = v.domain === undefined
+    ? {} : { domain: validateMeterValueDomain(v.domain, `${path}.domain`, 'signal') };
+  if (v.source === undefined) return { ...strict, ...domain };
+  if (v.source === null) return { ...strict, ...domain, source: null };
+  const source = validateMeterSource(v.source, `${path}.source`, 'signal');
+  if (source.receiver !== receiver) {
+    invalid(`${path}.source`, `the canonical ${receiver} receiver source`);
+  }
+  return { ...strict, ...domain, source };
+}
+
+function validateReceiverIndicator(value: unknown, path: string): ReceiverIndicatorViewModel {
+  const v = record(value, path);
+  exactKeys(v, [
+    'receiver', 'availability', 'rfState', 'sMeter', 'bandwidthHz', 'agcMode',
+    'nbActive', 'nrActive', 'notchMode', 'attenuator', 'preamp', 'rfGain',
+    'digiSel', 'ipPlus',
+  ], path);
+  const receiver = oneOf(v.receiver, RECEIVER_IDS, `${path}.receiver`);
+  return {
+    receiver,
+    availability: validateAvailability(v.availability, `${path}.availability`),
+    ...(v.rfState !== undefined
+      ? { rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`) }
+      : {}),
+    sMeter: validateReceiverSMeterField(v.sMeter, `${path}.sMeter`, receiver),
+    bandwidthHz: validateTxAuxField(v.bandwidthHz, `${path}.bandwidthHz`, num),
+    agcMode: validateTxAuxField(v.agcMode, `${path}.agcMode`, strOrNum),
+    nbActive: validateTxAuxField(v.nbActive, `${path}.nbActive`, bool),
+    nrActive: validateTxAuxField(v.nrActive, `${path}.nrActive`, bool),
+    notchMode: validateTxAuxField(
+      v.notchMode, `${path}.notchMode`,
+      (candidate, candidatePath) => oneOf(
+        candidate, ['off', 'auto', 'manual'] as const, candidatePath,
+      ),
+    ),
+    attenuator: validateTxAuxField(v.attenuator, `${path}.attenuator`, num),
+    preamp: validateTxAuxField(v.preamp, `${path}.preamp`, num),
+    rfGain: validateDisplayObservedField(v.rfGain, `${path}.rfGain`, num),
+    digiSel: validateTxAuxField(v.digiSel, `${path}.digiSel`, bool),
+    ipPlus: validateTxAuxField(v.ipPlus, `${path}.ipPlus`, bool),
+  };
+}
+
+function validateDualActionBlock(value: unknown, path: string): DualActionBlockViewModel {
+  const v = record(value, path);
+  exactKeys(v, [
+    'main', 'sub', 'equalize', 'swap', 'quickSplit', 'quickDualWatch', 'speak',
+  ], path);
+  return {
+    main: validateAvailability(v.main, `${path}.main`),
+    sub: validateAvailability(v.sub, `${path}.sub`),
+    equalize: validateAvailability(v.equalize, `${path}.equalize`),
+    swap: validateAvailability(v.swap, `${path}.swap`),
+    quickSplit: validateAvailability(v.quickSplit, `${path}.quickSplit`),
+    quickDualWatch: validateAvailability(v.quickDualWatch, `${path}.quickDualWatch`),
+    speak: validateAvailability(v.speak, `${path}.speak`),
+  };
+}
+
+function validateRadioWideIndicators(value: unknown, path: string): RadioWideIndicatorsViewModel {
+  const v = record(value, path);
+  exactKeys(v, [
+    'rfState', 'antenna', 'atu', 'ritActive', 'ritOffset', 'xitActive', 'xitOffset', 'actions',
+  ], path);
+  return {
+    rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`),
+    antenna: validateTxAuxField(v.antenna, `${path}.antenna`, num),
+    atu: validateTxAuxField(v.atu, `${path}.atu`, (candidate, candidatePath) =>
+      oneOf(candidate, ATU_STATUSES, candidatePath)),
+    ritActive: validateTxAuxField(v.ritActive, `${path}.ritActive`, bool),
+    ritOffset: validateTxAuxField(v.ritOffset, `${path}.ritOffset`, num),
+    xitActive: validateTxAuxField(v.xitActive, `${path}.xitActive`, bool),
+    xitOffset: validateTxAuxField(v.xitOffset, `${path}.xitOffset`, num),
+    actions: validateDualActionBlock(v.actions, `${path}.actions`),
+  };
+}
+
 const MONITOR_MODES: readonly MonitorMode[] = ['local', 'live', 'mute'];
 const AUDIO_FOCUSES: readonly AudioFocus[] = ['main', 'sub', 'both'];
 
@@ -1373,7 +1749,7 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
   const v = record(value, path);
   exactKeys(v, [
     'monitorMode', 'liveAudio', 'afLevel', 'routingFocus', 'routingSplit',
-    'modInputSource', 'modInputReadiness',
+    'modInputSource', 'modInputChoices', 'modInputReadiness',
   ], path);
   return {
     monitorMode: oneOf(v.monitorMode, MONITOR_MODES, `${path}.monitorMode`),
@@ -1384,6 +1760,9 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
     ),
     routingSplit: validateTxAuxField(v.routingSplit, `${path}.routingSplit`, bool),
     modInputSource: validateTxAuxField(v.modInputSource, `${path}.modInputSource`, num),
+    ...(v.modInputChoices === undefined ? {} : {
+      modInputChoices: validateModInputChoices(v.modInputChoices, `${path}.modInputChoices`),
+    }),
     modInputReadiness: validateModInputReadiness(v.modInputReadiness, `${path}.modInputReadiness`),
   };
 }
@@ -1401,15 +1780,81 @@ function numArray(value: unknown, path: string): number[] {
   return value.map((item, i) => num(item, `${path}[${i}]`));
 }
 
-/** N4 again: exactly the seven facts the adapter reads, no speculative keys.
- *  See `radio-view-model-adapter.ts::deriveModeFilter`. */
+function positiveHz(value: unknown, path: string): number {
+  const n = num(value, path);
+  if (n <= 0) invalid(path, 'positive Hz');
+  return n;
+}
+
+function nonBlank(value: unknown, path: string): string {
+  const label = str(value, path);
+  if (!label.trim()) invalid(path, 'a non-empty label');
+  return label;
+}
+
+function validateFilterConfiguration(value: unknown, path: string): ActiveFilterConfiguration | null {
+  if (value === null) return null;
+  const v = record(value, path);
+  exactKeys(v, ['slots', 'fixed', 'minHz', 'maxHz', 'stepHz', 'segments', 'table'], path);
+  if (!Array.isArray(v.slots) || !Array.isArray(v.segments) || !Array.isArray(v.table)) invalid(path, 'configuration arrays');
+  const nullableHz = (n: unknown, p: string) => n === null ? null : positiveHz(n, p);
+  const minHz = nullableHz(v.minHz, path + '.minHz');
+  const maxHz = nullableHz(v.maxHz, path + '.maxHz');
+  if (minHz !== null && maxHz !== null && minHz > maxHz) invalid(path, 'ordered bounds');
+  const table = v.table.map((n, i) => positiveHz(n, path + '.table[' + i + ']'));
+  if (table.some((n, i) => i > 0 && n <= table[i - 1])) invalid(path, 'increasing table widths');
+  return {
+    slots: v.slots.map((item, i) => {
+      const slot = record(item, path + '.slots[' + i + ']');
+      exactKeys(slot, ['filter', 'label', 'factoryWidthHz'], path);
+      if (slot.filter !== i + 1) invalid(path, 'contiguous filter slots from one');
+      return { filter: i + 1, label: nonBlank(slot.label, path), factoryWidthHz: nullableHz(slot.factoryWidthHz, path) };
+    }),
+    fixed: bool(v.fixed, path + '.fixed'), minHz, maxHz, stepHz: nullableHz(v.stepHz, path + '.stepHz'),
+    segments: v.segments.map((item) => {
+      const segment = record(item, path + '.segments');
+      exactKeys(segment, ['hzMin', 'hzMax', 'stepHz', 'indexMin'], path);
+      const hzMin = positiveHz(segment.hzMin, path), hzMax = positiveHz(segment.hzMax, path);
+      const indexMin = num(segment.indexMin, path);
+      if (hzMin > hzMax || !Number.isSafeInteger(indexMin) || indexMin < 0) invalid(path, 'valid segment bounds and index');
+      return { hzMin, hzMax, stepHz: positiveHz(segment.stepHz, path), indexMin };
+    }), table,
+  };
+}
+
+function validateDataModeChoices(value: unknown, path: string): FilterPassbandViewModel['dataModeChoices'] {
+  if (!Array.isArray(value) || value.length > 4) invalid(path, 'DATA choices in 0..3');
+  return value.map((item, i) => {
+    const choice = record(item, path + '[' + i + ']');
+    exactKeys(choice, ['value', 'label'], path);
+    if (choice.value !== i) invalid(path, 'contiguous DATA choices from zero');
+    return { value: i, label: choice.label === null ? null : nonBlank(choice.label, path) };
+  });
+}
+
+function validateModInputChoices(value: unknown, path: string): NonNullable<FilterPassbandViewModel['modInputChoices']> {
+  if (!Array.isArray(value) || value.length > 6) invalid(path, 'MOD input choices in 0..5');
+  const seen = new Set<number>();
+  return value.map((item, i) => {
+    const choice = record(item, path + '[' + i + ']');
+    exactKeys(choice, ['value', 'label'], path);
+    const value = num(choice.value, `${path}[${i}].value`);
+    if (!Number.isSafeInteger(value) || value < 0 || value > 5 || seen.has(value)) {
+      invalid(`${path}[${i}].value`, 'a unique integer in 0..5');
+    }
+    seen.add(value);
+    return { value, label: nonBlank(choice.label, `${path}[${i}].label`) };
+  });
+}
+
 function validateModeFilter(value: unknown, path: string): ModeFilterViewModel {
   const v = record(value, path);
   exactKeys(v, [
     'currentMode', 'modeChoices', 'currentFilter', 'filterChoices',
-    'filterWidth', 'filterWidthMin', 'filterWidthMax',
+    'filterWidth', 'filterWidthMin', 'filterWidthMax', 'activeFilterConfiguration',
   ], path);
   return {
+    activeFilterConfiguration: validateFilterConfiguration(v.activeFilterConfiguration, `${path}.activeFilterConfiguration`),
     currentMode: validateTxAuxField(v.currentMode, `${path}.currentMode`, str),
     modeChoices: strArray(v.modeChoices, `${path}.modeChoices`),
     currentFilter: validateTxAuxField(v.currentFilter, `${path}.currentFilter`, num),
@@ -1420,26 +1865,37 @@ function validateModeFilter(value: unknown, path: string): ModeFilterViewModel {
   };
 }
 
-/** N4 again: exactly the six facts the adapter reads, no speculative keys.
- *  See `radio-view-model-adapter.ts::deriveFilterPassband`. */
 function validateFilterPassband(value: unknown, path: string): FilterPassbandViewModel {
   const v = record(value, path);
   exactKeys(
     v,
     [
       'filterShape', 'filterShapeControlStructural', 'ifShift', 'ifShiftControlStructural',
-      'pbtInner', 'pbtOuter', 'dataMode',
+      'ifShiftDomain', 'pbtInner', 'pbtOuter', 'dataMode', 'dataModeChoices', 'modInputSource',
+      'modInputChoices',
     ],
     path,
+  );
+  const hasModInputSource = v.modInputSource !== undefined;
+  const hasModInputChoices = v.modInputChoices !== undefined;
+  if (hasModInputSource !== hasModInputChoices) invalid(path, 'MOD input source and choices together');
+  const ifShiftDomain = optionalGroup(
+    v.ifShiftDomain, `${path}.ifShiftDomain`, validateNrLevelDisplayDomain,
   );
   return {
     filterShape: validateTxAuxField(v.filterShape, `${path}.filterShape`, num),
     filterShapeControlStructural: bool(v.filterShapeControlStructural, `${path}.filterShapeControlStructural`),
     ifShift: validateTxAuxField(v.ifShift, `${path}.ifShift`, num),
     ifShiftControlStructural: bool(v.ifShiftControlStructural, `${path}.ifShiftControlStructural`),
-    pbtInner: validateTxAuxField(v.pbtInner, `${path}.pbtInner`, num),
-    pbtOuter: validateTxAuxField(v.pbtOuter, `${path}.pbtOuter`, num),
+    ...(ifShiftDomain !== undefined ? { ifShiftDomain } : {}),
+    pbtInner: validateDisplayObservedField(v.pbtInner, `${path}.pbtInner`, num),
+    pbtOuter: validateDisplayObservedField(v.pbtOuter, `${path}.pbtOuter`, num),
+    dataModeChoices: validateDataModeChoices(v.dataModeChoices, `${path}.dataModeChoices`),
     dataMode: validateTxAuxField(v.dataMode, `${path}.dataMode`, num),
+    ...(hasModInputSource ? {
+      modInputChoices: validateModInputChoices(v.modInputChoices, `${path}.modInputChoices`),
+      modInputSource: validateTxAuxField(v.modInputSource, `${path}.modInputSource`, num),
+    } : {}),
   };
 }
 
@@ -1630,18 +2086,28 @@ function validateScan(value: unknown, path: string): ScanViewModel {
 
 const BREAK_IN_MODES: readonly BreakInMode[] = ['off', 'semi', 'full'];
 
-/** Exactly the seven facts the adapter reads. See
- *  `radio-view-model-adapter.ts::deriveCwKeyer`. */
+/** Exactly the seven facts the adapter reads, plus the optional
+ *  profile-declared pitch and key-speed domains (MOR-1682, MOR-2475 F1).
+ *  See `radio-view-model-adapter.ts::deriveCwKeyer`. */
 function validateCwKeyer(value: unknown, path: string): CwKeyerViewModel {
   const v = record(value, path);
   exactKeys(v, [
-    'breakIn', 'breakInDelay', 'keyerSpeed', 'pitchHz', 'reversePaddle', 'apf', 'twinPeak',
+    'breakIn', 'breakInDelay', 'keyerSpeed', 'pitchHz', 'pitchDomain', 'keySpeedDomain',
+    'reversePaddle', 'apf', 'twinPeak',
   ], path);
+  const pitchDomain = optionalGroup(
+    v.pitchDomain, `${path}.pitchDomain`, validateNrLevelDisplayDomain,
+  );
+  const keySpeedDomain = optionalGroup(
+    v.keySpeedDomain, `${path}.keySpeedDomain`, validateNrLevelDisplayDomain,
+  );
   return {
     breakIn: validateTxAuxField(v.breakIn, `${path}.breakIn`, (val, p) => oneOf(val, BREAK_IN_MODES, p)),
     breakInDelay: validateTxAuxField(v.breakInDelay, `${path}.breakInDelay`, num),
     keyerSpeed: validateTxAuxField(v.keyerSpeed, `${path}.keyerSpeed`, num),
     pitchHz: validateTxAuxField(v.pitchHz, `${path}.pitchHz`, num),
+    ...(pitchDomain !== undefined ? { pitchDomain } : {}),
+    ...(keySpeedDomain !== undefined ? { keySpeedDomain } : {}),
     reversePaddle: validateTxAuxField(v.reversePaddle, `${path}.reversePaddle`, bool),
     apf: validateTxAuxField(v.apf, `${path}.apf`, num),
     twinPeak: validateTxAuxField(v.twinPeak, `${path}.twinPeak`, bool),
@@ -1702,7 +2168,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
     'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio', 'modeFilter',
     'filterPassband', 'dsp', 'rfFrontEnd', 'band', 'ritXit', 'antenna', 'scan', 'cwKeyer',
-    'scopeControls', 'scopeDisplay',
+    'scopeControls', 'scopeDisplay', 'receiverIndicators', 'radioWideIndicators',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -1764,6 +2230,19 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const cwKeyer = optionalGroup(v.cwKeyer, '$.cwKeyer', validateCwKeyer);
   const scopeControls = optionalGroup(v.scopeControls, '$.scopeControls', validateScopeControls);
   const scopeDisplay = optionalGroup(v.scopeDisplay, '$.scopeDisplay', validateScopeDisplay);
+  const radioWideIndicators = optionalGroup(
+    v.radioWideIndicators, '$.radioWideIndicators', validateRadioWideIndicators,
+  );
+  let receiverIndicators: readonly ReceiverIndicatorViewModel[] | undefined;
+  if (v.receiverIndicators !== undefined) {
+    if (!Array.isArray(v.receiverIndicators)) invalid('$.receiverIndicators', 'an array');
+    receiverIndicators = v.receiverIndicators.map((indicator, i) =>
+      validateReceiverIndicator(indicator, `$.receiverIndicators[${i}]`));
+    const receiverIds = receiverIndicators.map((indicator) => indicator.receiver);
+    if (new Set(receiverIds).size !== receiverIds.length) {
+      invalid('$.receiverIndicators', 'at most one entry per receiver');
+    }
+  }
 
   const disabledReasons = v.disabledReasons.map((r, i) => validateDisabledReason(r, `$.disabledReasons[${i}]`));
   // SAFETY, MOR-1296 — the fail-closed half of "no second permit", enforced
@@ -1793,6 +2272,8 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
       audioFftScope: validateAvailability(scope.audioFftScope, '$.scope.audioFftScope'),
     },
     disabledReasons,
+    ...(receiverIndicators !== undefined ? { receiverIndicators } : {}),
+    ...(radioWideIndicators !== undefined ? { radioWideIndicators } : {}),
     ...(txAux !== undefined ? { txAux } : {}),
     ...(meters !== undefined ? { meters } : {}),
     ...(rxAudio !== undefined ? { rxAudio } : {}),

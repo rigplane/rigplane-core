@@ -33,7 +33,7 @@ describe('band is a declarable semantic surface', () => {
     expect([...SEMANTIC_SURFACE_NAMES])
       .toEqual([
         'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
-        'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls',
+        'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory',
       ]);
   });
 
@@ -57,7 +57,15 @@ describe('band is a declarable semantic surface', () => {
 
 describe('exactly the reviewed manifests declare a band zone (MOR-1367)', () => {
   /** The literal — extend by hand, with a layout review, never silently. */
-  const DECLARES_BAND = ['desktop-v2'];
+  // MOR-2231 (step 1, batch 2) added `sdr-test`, by hand and with the layout
+  // review this literal exists to force. UNLIKE the other four families in that
+  // batch, this declaration UNMOUNTS NOTHING: `declared.has('band')` feeds the
+  // `hamBands={!declared.has('band')}` PROP (S10 §4a), so both `BandSelector`
+  // mounts on that face drop their HAM tab and HAM grid while the BAND panel
+  // itself keeps rendering — it is the only production host of the broadcast
+  // presets. Measured on the rendered face, not inferred from the channel.
+  // T160 PR-1 added `flagship-probe`, which places this surface in its left rail.
+  const DECLARES_BAND = ['desktop-v2', 'flagship-probe', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

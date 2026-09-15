@@ -29,16 +29,25 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from rigplane.core.command_service import _is_yaesu_cat_readback, _yaesu_receiver_alias
+from rigplane.core.command_dispatch import ManagedWriteAdmission, execute_command_intent
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
+from rigplane.core.tx_observation import OBSERVED_PTT_PATH
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
+from rigplane.runtime._poller_types import (
+    PttOn,
+    canonicalize_level_command,
+    execute_command_queue_entry,
+    execute_positive_tx_queue_entry,
+    validate_command_queue_entry_currency,
+)
 from rigplane.runtime.tx_interlock import (
     DeferredTxCommandLane,
     RfState,
     TxInterlockDeferredOutcome,
+    TxInterlockDecision,
     TxInterlockDisposition,
-    TxInterlockDispositionOverrides,
     classify_tx_interlock,
     evaluate_tx_interlock,
 )
@@ -105,6 +114,10 @@ class YaesuCatPoller:
         self._callback = callback
         self._observation_callback = observation_callback
         self._command_queue = command_queue
+        self._connection_generation_capture = self._current_tx_target_generation
+        self._connection_generation_bound = False
+        self._bind_connection_generation()
+        self._managed_tx_authority: ManagedWriteAdmission | None = None
         self._fast_interval = fast_interval
         self._medium_interval = medium_interval
         self._slow_interval = slow_interval
@@ -150,7 +163,14 @@ class YaesuCatPoller:
         if self._capture_provider_generation is not None:
             self._cancel_deferred_entry("provider binding replaced")
         self._capture_provider_generation = capture
+        self._radio._bind_tuner_provider_generation(capture)
         self._advance_provider_generation = advance
+
+    def bind_managed_tx_authority(self, authority: ManagedWriteAdmission) -> None:
+        """Bind the composition-owned admission object before polling starts."""
+        if self._managed_tx_authority is not None:
+            raise RuntimeError("managed transmit authority is already bound")
+        self._managed_tx_authority = authority
 
     def _captured_provider_generation(self) -> int | None:
         capture = self._capture_provider_generation
@@ -197,11 +217,6 @@ class YaesuCatPoller:
             return RfState.UNKNOWN
         return RfState.TX if observation.value else RfState.RX
 
-    def _tx_interlock_disposition_overrides(
-        self,
-    ) -> TxInterlockDispositionOverrides:
-        return self._radio.profile.tx_interlock_disposition_overrides
-
     def _stamp_provider_generation(
         self,
         observations: Sequence["Observation"],
@@ -222,6 +237,7 @@ class YaesuCatPoller:
         """Start all three polling loops."""
         if self._tasks:
             return
+        self._bind_connection_generation()
         self._paused.set()
         loop = asyncio.get_running_loop()
         self._tasks = [
@@ -239,7 +255,20 @@ class YaesuCatPoller:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         self._cancel_deferred_entry("poller stopped")
+        if self._command_queue is not None and self._connection_generation_bound:
+            self._command_queue.unbind_connection_generation(
+                self._connection_generation_capture
+            )
+            self._connection_generation_bound = False
         logger.info("YaesuCatPoller: stopped")
+
+    def _bind_connection_generation(self) -> None:
+        if self._command_queue is None or self._connection_generation_bound:
+            return
+        self._command_queue.bind_connection_generation(
+            self._connection_generation_capture
+        )
+        self._connection_generation_bound = True
 
     async def pause(self) -> None:
         """Suspend polling.  In-flight requests complete; new ones wait."""
@@ -329,19 +358,57 @@ class YaesuCatPoller:
             self._cancel_deferred_entry("connection generation changed")
             self._invalidate_ptt_observation()
             self._invalidate_tx_target()
+            self._publish_unknown_ptt(self._captured_provider_generation())
         return generation
 
+    def _publish_unknown_ptt(self, provider_generation: int | None) -> None:
+        callback = self._observation_callback
+        profile = getattr(
+            getattr(self._radio, "profile", None), "state_acquisition", None
+        )
+        if (
+            callback is None
+            or not isinstance(profile, RadioAcquisitionProfile)
+            or not profile.capability_for(FieldPath.global_("tx_state", "ptt")).can_poll
+        ):
+            return
+        from .observations import YaesuObservationAdapter
+
+        observation = YaesuObservationAdapter.from_radio(
+            self._radio
+        ).observed_ptt_observation(None)
+        if provider_generation is None:
+            provider_generation = self._captured_provider_generation()
+        observations = self._stamp_provider_generation(
+            (observation,), provider_generation
+        )
+        try:
+            callback(observations)
+        except (Exception, asyncio.CancelledError):
+            logger.warning("Yaesu PTT boundary callback failed", exc_info=True)
+
     async def _emit_medium_observations(self) -> bool:
-        if self._observation_callback is None:
+        callback = self._observation_callback
+        if callback is None:
             return False
         from .observations import YAESU_PTT_PATH, YaesuObservationAdapter
 
         provider_generation = self._captured_provider_generation()
         generation = self._sync_tx_target_generation()
+
+        def publish_ptt(observation: Observation) -> None:
+            if (
+                self._provider_generation_is_current(provider_generation)
+                and self._current_tx_target_generation() == generation
+            ):
+                callback(
+                    self._stamp_provider_generation((observation,), provider_generation)
+                )
+
         try:
             observations = await YaesuObservationAdapter.from_radio(
                 self._radio
-            ).poll_medium()
+            ).poll_medium(ptt_callback=publish_ptt)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -357,7 +424,7 @@ class YaesuCatPoller:
             observations = tuple(
                 item
                 for item in observations
-                if item.path not in (_TX_TARGET_PATH, YAESU_PTT_PATH)
+                if item.path not in (_TX_TARGET_PATH, YAESU_PTT_PATH, OBSERVED_PTT_PATH)
             )
             self._invalidate_ptt_observation()
             self._invalidate_tx_target(provider_generation=provider_generation)
@@ -559,11 +626,25 @@ class YaesuCatPoller:
         self._cancel_deferred_entry("serial reconnect")
         advance = self._advance_provider_generation
         provider_generation = None if advance is None else advance()
+        reconnect_generation = self._captured_provider_generation()
+        previous_writer = getattr(transport, "_writer", None)
         try:
             logger.warning("YaesuCatPoller: triggering auto-reconnect")
             self._invalidate_ptt_observation()
             self._invalidate_tx_target(provider_generation=provider_generation)
+            self._publish_unknown_ptt(provider_generation)
             await transport.reconnect()
+            composition = getattr(self._radio, "_managed_tx_composition", None)
+            writer = getattr(transport, "_writer", None)
+            if (
+                composition is not None
+                and transport is getattr(self._radio, "_transport", None)
+                and getattr(transport, "connected", False) is True
+                and writer is not None
+                and writer is not previous_writer
+                and self._provider_generation_is_current(reconnect_generation)
+            ):
+                await composition.transport_ready(writer)
             logger.info("YaesuCatPoller: reconnected successfully")
         except Exception:
             logger.error("YaesuCatPoller: reconnect failed", exc_info=True)
@@ -635,46 +716,39 @@ class YaesuCatPoller:
         if self._command_queue is None:
             return
 
-        boundary = self._deferred_generation_change()
-        if boundary is not None:
-            self._cancel_deferred_entry(boundary)
-        now = time.monotonic()
-        transition = self._deferred_tx_lane.observe(
-            rf_state=self._current_rf_state(), now=now
-        )
-        entries: list[CommandQueueEntry] = []
-        if (
-            transition is not None
-            and transition.outcome is not TxInterlockDeferredOutcome.HELD
-        ):
-            entry, self._deferred_tx_entry = self._deferred_tx_entry, None
-            self._deferred_tx_generation = None
-            if entry is not None:
-                if transition.outcome is TxInterlockDeferredOutcome.RELEASED:
-                    if self._deferred_release_is_live(entry):
-                        entries.append(entry)
-                else:
-                    self._finish_deferred_entry(entry, superseded=False)
-        if self._command_queue.has_commands:
-            entries.extend(self._command_queue.drain_entries())
-        for entry in entries:
+        released: list[CommandQueueEntry] = []
+        if self._managed_tx_authority is None:
+            boundary = self._deferred_generation_change()
+            if boundary is not None:
+                self._cancel_deferred_entry(boundary)
+            now = time.monotonic()
+            transition = self._deferred_tx_lane.observe(
+                rf_state=self._current_rf_state(), now=now
+            )
+            if (
+                transition is not None
+                and transition.outcome is not TxInterlockDeferredOutcome.HELD
+            ):
+                entry, self._deferred_tx_entry = self._deferred_tx_entry, None
+                self._deferred_tx_generation = None
+                if entry is not None:
+                    if transition.outcome is TxInterlockDeferredOutcome.RELEASED:
+                        if self._deferred_release_is_live(entry):
+                            released.append(entry)
+                    else:
+                        self._finish_deferred_entry(entry, superseded=False)
+
+        pending_count = self._command_queue.pending_count
+
+        def stage_entry(
+            entry: CommandQueueEntry,
+        ) -> TxInterlockDecision | Exception | None:
             cmd = entry.command
-            if entry.future is not None and entry.future.cancelled():
-                logger.debug(
-                    "YaesuCatPoller: skipping cancelled queued command %s",
-                    type(cmd).__name__,
-                )
-                continue
             now = time.monotonic()
             rf_state = self._current_rf_state()
             transition = None
             try:
-                overrides = self._tx_interlock_disposition_overrides()
-                decision = evaluate_tx_interlock(
-                    cmd,
-                    rf_state=rf_state,
-                    disposition_overrides=overrides,
-                )
+                decision = evaluate_tx_interlock(cmd, rf_state=rf_state)
                 if (
                     decision.disposition is TxInterlockDisposition.DEFER
                     and not decision.allowed
@@ -684,18 +758,9 @@ class YaesuCatPoller:
                         cmd,
                         now=now,
                         rf_state=rf_state,
-                        disposition_overrides=overrides,
                     )
             except Exception as exc:
-                self._mark_queued_command_failed(entry, exc)
-                if entry.future is not None and not entry.future.done():
-                    entry.future.set_exception(exc)
-                logger.warning(
-                    "YaesuCatPoller: command %s failed policy validation",
-                    type(cmd).__name__,
-                    exc_info=True,
-                )
-                continue
+                return exc
             if transition is not None:
                 held = self._deferred_tx_lane.observe(rf_state=RfState.TX, now=now)
                 if held is None:
@@ -717,26 +782,109 @@ class YaesuCatPoller:
                         ),
                     )
                 self._emit_deferred_entry_held(entry, expires_at=held.expires_at)
-                continue
+                return None
+            return decision
+
+        async def finish_entry(
+            entry: CommandQueueEntry,
+            decision: TxInterlockDecision | Exception | None,
+        ) -> None:
+            cmd = entry.command
             try:
-                if (
+                if isinstance(decision, BaseException):
+                    raise decision
+                if decision is not None and (
                     decision.disposition is TxInterlockDisposition.DEFER
                     and not decision.allowed
                 ):
                     raise CommandError(decision.reason)
-                await self._execute_command(cmd)
+                if cmd is None:
+                    raise CommandError("queued command has no dispatch payload")
+                if isinstance(cmd, CommandIntent):
+                    await self._execute_command(
+                        cmd, validate_currency=lambda: validate_currency(entry)
+                    )
+                else:
+                    await self._execute_command(cmd)
                 self._track_receiver_select_readback(entry)
-                if entry.future is not None and not entry.future.done():
-                    entry.future.set_result(None)
             except Exception as exc:
                 self._mark_queued_command_failed(entry, exc)
-                if entry.future is not None and not entry.future.done():
-                    entry.future.set_exception(exc)
+                raise
+
+        async def process_entry(entry: CommandQueueEntry) -> None:
+            cmd = entry.command
+            if entry.future is not None and entry.future.cancelled():
+                logger.debug(
+                    "YaesuCatPoller: skipping cancelled queued command %s",
+                    type(cmd).__name__,
+                )
+                return
+            if entry.positive_tx_submission is not None:
+
+                async def finish_positive(claimed: CommandQueueEntry) -> None:
+                    validate_currency(claimed)
+                    await execute_positive_tx_queue_entry(claimed)
+
+                try:
+                    await execute_command_queue_entry(entry, finish_positive)
+                except Exception:
+                    logger.warning(
+                        "YaesuCatPoller: positive TX queue entry failed",
+                        exc_info=True,
+                    )
+                return
+            try:
+                validate_currency(entry)
+            except Exception as exc:
+                self._mark_queued_command_failed(entry, exc)
                 logger.warning(
-                    "YaesuCatPoller: command %s failed",
+                    "YaesuCatPoller: command %s failed currency validation",
                     type(cmd).__name__,
                     exc_info=True,
                 )
+                return
+            bypass_legacy_policy = self._managed_tx_authority is not None
+            decision = None if bypass_legacy_policy else stage_entry(entry)
+            if decision is None and not bypass_legacy_policy:
+                return
+            policy_error = isinstance(decision, BaseException)
+            try:
+                await execute_command_queue_entry(
+                    entry,
+                    lambda claimed: finish_entry(claimed, decision),
+                )
+            except Exception:
+                logger.warning(
+                    "YaesuCatPoller: command %s failed%s",
+                    type(cmd).__name__,
+                    " policy validation" if policy_error else "",
+                    exc_info=True,
+                )
+
+        def validate_currency(entry: CommandQueueEntry) -> None:
+            assert self._command_queue is not None
+            validate_command_queue_entry_currency(
+                entry,
+                now=time.monotonic(),
+                provider_generation=self._captured_provider_generation(),
+                connection_generation=self._current_tx_target_generation(),
+                session_is_live=self._command_queue.session_is_live,
+                require_connection_generation=(
+                    self._managed_tx_authority is not None
+                    and (
+                        entry.positive_tx_submission is not None
+                        or isinstance(entry.command, CommandIntent)
+                    )
+                ),
+            )
+
+        for entry in released:
+            await process_entry(entry)
+        for _ in range(pending_count):
+            entry = self._command_queue.take_entry()
+            if entry is None:
+                break
+            await process_entry(entry)
 
     def _deferred_release_is_live(self, entry: CommandQueueEntry) -> bool:
         reason = None
@@ -889,28 +1037,42 @@ class YaesuCatPoller:
         0x0A: 10,  # 6m   → 50M
     }
 
-    async def _execute_command(self, cmd: Any) -> None:
+    async def _execute_command(
+        self,
+        cmd: Any,
+        *,
+        validate_currency: Callable[[], None] | None = None,
+    ) -> None:
         """Dispatch a single command to the radio.
 
         Commands come from the web UI CommandQueue.  The dispatcher handles
         all command types; unsupported commands fail truthfully.
         """
-        decision = evaluate_tx_interlock(
-            cmd,
-            rf_state=self._current_rf_state(),
-            disposition_overrides=self._tx_interlock_disposition_overrides(),
-        )
-        if not decision.allowed and (
-            decision.disposition is TxInterlockDisposition.BLOCK
-            or classify_tx_interlock(cmd) is TxInterlockDisposition.TX_SAFE
-        ):
-            raise CommandError(decision.reason)
+        cmd = canonicalize_level_command(cmd, self._radio)
+        if self._managed_tx_authority is not None and isinstance(cmd, PttOn):
+            raise CommandError("managed PTT ON requires a positive TX queue submission")
+        if isinstance(cmd, CommandIntent):
+            await execute_command_intent(
+                self._radio,
+                cmd,
+                managed_tx_authority=self._managed_tx_authority,
+                validate_currency=validate_currency,
+            )
+            return
+        if self._managed_tx_authority is None:
+            decision = evaluate_tx_interlock(
+                cmd,
+                rf_state=self._current_rf_state(),
+            )
+            if not decision.allowed and (
+                decision.disposition is TxInterlockDisposition.BLOCK
+                or classify_tx_interlock(cmd) is TxInterlockDisposition.TX_SAFE
+            ):
+                raise CommandError(decision.reason)
 
         from ..._poller_types import (
             PttOff,
-            PttOn,
             SelectVfo,
-            SetAfLevel,
             SetAgc,
             SetApf,
             SetAttenuator,
@@ -947,12 +1109,10 @@ class YaesuCatPoller:
             SetPower,
             SetPowerstat,
             SetPreamp,
-            SetRfGain,
             SetRitFrequency,
             SetRitStatus,
             SetRitTxStatus,
             SetSplit,
-            SetSquelch,
             SetTwinPeak,
             SetVox,
             SetTunerStatus,
@@ -1021,12 +1181,6 @@ class YaesuCatPoller:
                 await radio.set_powerstat(on)
 
             # ── Audio / RF Levels ──
-            case SetAfLevel(level=level):
-                await radio.set_af_level(level)
-            case SetRfGain(level=level):
-                await radio.set_rf_gain(level)
-            case SetSquelch(level=level):
-                await radio.set_squelch(level)
             case SetMicGain(level=level):
                 await radio.set_mic_gain(level)
             case SetPower(level=level, unit=unit):
@@ -1085,7 +1239,7 @@ class YaesuCatPoller:
             case SetKeySpeed(speed=speed):
                 await radio.set_keyer_speed(speed)
             case SetCwPitch(value=value):
-                await radio.set_key_pitch(value)
+                await radio.set_cw_pitch(value)
             case SetBreakIn(mode=mode):
                 await radio.set_break_in(bool(mode))
 
@@ -1097,7 +1251,7 @@ class YaesuCatPoller:
             case SetVox(on=on):
                 await radio.set_vox(on)
             case SetTunerStatus(value=value):
-                await radio.set_tuner(value)
+                await radio.set_tuner_status(value)
             case SetMonitor(on=on):
                 await radio.set_monitor_on(on)
             case SetMonitorGain(level=level):
@@ -1411,11 +1565,13 @@ class YaesuCatPoller:
                 logger.debug("YaesuCatPoller: get_if_shift failed", exc_info=True)
 
         # -- Clarifier (RIT/XIT) --
-        if "rit" in caps:
+        if "rit" in caps or "xit" in caps:
             try:
                 rx_clar, tx_clar = await radio.get_clarifier()
-                state.rit_on = rx_clar
-                state.rit_tx = tx_clar
+                if "rit" in caps:
+                    state.rit_on = rx_clar
+                if "xit" in caps:
+                    state.rit_tx = tx_clar
                 state.rit_freq = await radio.get_clarifier_freq()
             except NotImplementedError:
                 pass

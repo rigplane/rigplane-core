@@ -28,7 +28,7 @@ describe('txAux is a declarable semantic surface', () => {
   it('is in the declarable set alongside vfo and rxTx', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
       'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
-      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls',
+      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory',
     ]);
   });
 
@@ -52,7 +52,14 @@ describe('txAux is a declarable semantic surface', () => {
 
 describe('exactly the reviewed manifests declare a txAux zone (MOR-1336)', () => {
   /** The literal — extend by hand, with a layout review, never silently. */
-  const DECLARES_TX_AUX = ['desktop-v2', 'dual-receiver-cockpit'];
+  // MOR-2231 (step 1, batch 3) added `sdr-test`, by hand and with the layout
+  // review this literal exists to force. UNLIKE the other three families in
+  // that batch, this declaration RETIRES NOTHING: no `declared.has('txAux')`
+  // predicate exists on any host, so the zone only places `TxAuxSurface`.
+  // The sidebars' `<TxPanel>` is a different channel (`hideTxPanel`, which
+  // follows the semantic deck for R9), already suppressed on that face.
+  // T160 PR-1 added `flagship-probe`, which places this surface in its right rail.
+  const DECLARES_TX_AUX = ['desktop-v2', 'dual-receiver-cockpit', 'flagship-probe', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

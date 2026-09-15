@@ -8,6 +8,7 @@ import tomllib
 import warnings
 from dataclasses import dataclass, field
 from decimal import Decimal
+from fractions import Fraction
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
@@ -17,6 +18,7 @@ from rigplane.core.capabilities import KNOWN_CAPABILITIES
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     AdaptiveDecayPolicy,
+    AvailabilityClause,
     ExternalCatPauseBehavior,
     FieldAvailability,
     FieldCapability,
@@ -25,12 +27,12 @@ from rigplane.core.state_acquisition_policy import (
     ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.tx_interlock_contract import (
-    TX_INTERLOCK_COMMAND_FAMILY_METADATA,
-    TxInterlockCommandFamily,
-    TxInterlockDisposition,
+from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
+from rigplane.profiles.control_domain import (
+    _on_control_lattice,
+    _public_decimal,
+    validate_control_raw_value,
 )
-from rigplane.commands.command_map import CommandMap
 
 __all__ = [
     "RigConfig",
@@ -38,6 +40,9 @@ __all__ = [
     "load_rig",
     "discover_rigs",
     "discover_available_rigs",
+    # Re-exported from control_domain (MOR-2472) so pre-existing import
+    # paths keep working; the mechanism itself lives in one module only.
+    "validate_control_raw_value",
 ]
 from rigplane.commands.command_spec import (
     AbsentCommandSpec,
@@ -82,6 +87,7 @@ VALID_CONTROL_QUANTIZATION = {
     "reject",
 }
 VALID_CONTROL_RESTORATION = {"exact", "unavailable"}
+VALID_CONTROL_ENCODE_ROUNDINGS = {"ceil", "nearest_half_down"}
 _CONTROL_KEYS = {
     "style",
     "range_min",
@@ -97,6 +103,8 @@ _CONTROL_KEYS = {
     "display_origin",
     "display_center",
     "display_unit",
+    "decode_quantum",
+    "encode_rounding",
     "mapping",
     "quantization",
     "restoration",
@@ -127,6 +135,10 @@ VALID_VFO_READBACK = {"absolute", "selected_unselected", "none"}
 # every other rig uses.
 VALID_RF_SQL_CONTROL_MODELS = {"separate", "combined"}
 DEFAULT_KEYBOARD_PROFILE_NAME = "_keyboard-default.toml"
+DEFAULT_CTCSS_TABLES_PROFILE_NAME = "_ctcss_tables_v1.toml"
+CTCSS_TONE_MIN_CENTIHZ = 6700
+CTCSS_TONE_MAX_CENTIHZ = 25410
+_CTCSS_CAPABILITIES = frozenset({"repeater_tone", "tsql", "sql_type"})
 
 _REQUIRED_SECTIONS = ("radio", "capabilities", "modes", "filters", "vfo")
 _REQUIRED_RADIO_FIELDS = ("id", "model", "receiver_count", "has_lan", "has_wifi")
@@ -141,14 +153,6 @@ _EncodedChoice = tuple[int, Decimal | str]
 _ScalarControlDomain = dict[
     str, str | int | Decimal | tuple[_LookupPoint, ...] | tuple[_EncodedChoice, ...]
 ]
-
-
-def _public_decimal(value: Decimal) -> str:
-    """Render an exact Decimal as the frontend's canonical fixed-point string."""
-    rendered = format(value, "f")
-    if "." in rendered:
-        rendered = rendered.rstrip("0").rstrip(".")
-    return "0" if rendered in {"0", "-0"} else rendered
 
 
 def _control_number(value: object, path: str, *, integer: bool = False) -> int | float:
@@ -169,16 +173,6 @@ def _control_decimal(value: object, path: str) -> Decimal:
     if not decimal.is_finite():
         raise RigLoadError(f"{path} must be a finite number")
     return decimal
-
-
-def _on_control_lattice(
-    value: int | Decimal, origin: int | Decimal, step: int | Decimal
-) -> bool:
-    (value_num, value_den), (origin_num, origin_den), (step_num, step_den) = (
-        Decimal(item).as_integer_ratio() for item in (value, origin, step)
-    )
-    numerator = (value_num * origin_den - origin_num * value_den) * step_den
-    return numerator % (value_den * origin_den * step_num) == 0
 
 
 def _parse_control_lookup(
@@ -326,6 +320,73 @@ def _parse_control_spec(
         _control_number(raw["display_center"], f"{prefix}.display_center")
     if "display_unit" in raw and not isinstance(raw["display_unit"], str):
         raise RigLoadError(f"{prefix}.display_unit must be a string")
+    if "decode_quantum" in raw:
+        decode_quantum = raw["decode_quantum"]
+        if (
+            isinstance(decode_quantum, bool)
+            or not isinstance(decode_quantum, int)
+            or decode_quantum <= 0
+        ):
+            raise RigLoadError(f"{prefix}.decode_quantum must be a positive integer")
+        if set(raw) & _EXPLICIT_CONTROL_DOMAIN_KEYS:
+            raise RigLoadError(
+                f"{prefix}.decode_quantum is a legacy-band key and cannot be "
+                "combined with an explicit domain"
+            )
+        missing_band = [
+            key
+            for key in ("raw_min", "raw_max", "display_min", "display_max")
+            if key not in raw
+        ]
+        if missing_band:
+            raise RigLoadError(
+                f"{prefix}.decode_quantum requires the legacy band "
+                f"(raw_min/raw_max and display_min/display_max); missing {missing_band!r}"
+            )
+        # Exhaustive half-step tie guard over every raw in range: decode
+        # rounds to the nearest quantum step, so an exact .5 remainder would
+        # make the value depend on the tie-break rule, not the domain.
+        band_lo_raw = int(raw["raw_min"])
+        band_hi_raw = int(raw["raw_max"])
+        band_lo_display = int(raw["display_min"])
+        band_hi_display = int(raw["display_max"])
+        for candidate in range(band_lo_raw, band_hi_raw + 1):
+            if (
+                Fraction(
+                    (candidate - band_lo_raw) * (band_hi_display - band_lo_display),
+                    (band_hi_raw - band_lo_raw) * decode_quantum,
+                ).denominator
+                == 2
+            ):
+                raise RigLoadError(
+                    f"{prefix} decode domain has an exact half-step tie at raw "
+                    f"{candidate}; declare a decode_quantum that avoids ties"
+                )
+    if "encode_rounding" in raw:
+        encode_rounding = raw["encode_rounding"]
+        if (
+            not isinstance(encode_rounding, str)
+            or encode_rounding not in VALID_CONTROL_ENCODE_ROUNDINGS
+        ):
+            raise RigLoadError(
+                f"{prefix}.encode_rounding must be one of "
+                f"{sorted(VALID_CONTROL_ENCODE_ROUNDINGS)!r}"
+            )
+        if set(raw) & _EXPLICIT_CONTROL_DOMAIN_KEYS:
+            raise RigLoadError(
+                f"{prefix}.encode_rounding is a legacy-band key and cannot be "
+                "combined with an explicit domain"
+            )
+        missing_band = [
+            key
+            for key in ("raw_min", "raw_max", "display_min", "display_max")
+            if key not in raw
+        ]
+        if missing_band:
+            raise RigLoadError(
+                f"{prefix}.encode_rounding requires the legacy band "
+                f"(raw_min/raw_max and display_min/display_max); missing {missing_band!r}"
+            )
 
     explicit = bool(set(raw) & _EXPLICIT_CONTROL_DOMAIN_KEYS)
     if not explicit:
@@ -547,6 +608,7 @@ class RigConfig:
     max_watts: int | None = None
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
+    data_mode_inputs: tuple[tuple[int, str], ...] | None = None
     protocol_type: str = "civ"
     protocol_address: int | None = None
     protocol_baud: int | None = None
@@ -568,6 +630,7 @@ class RigConfig:
     scope_ref_min_db: float | None = None
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
+    scope_span_presets_hz: tuple[int, ...] = ()
     codec_preference: tuple[str, ...] | None = None
     tx_codec: str | None = None
     default_sample_rate_hz: int | None = None
@@ -581,11 +644,14 @@ class RigConfig:
     # average with a silent R loses 6 dB).
     rx_audio_channel: str = "mix"
     write_only_controls: tuple[str, ...] = ()
+    # Per-check_id fixed-value declarations (MOR-2105 part 2): check_id ->
+    # source establishing that this radio has only one legal value for that
+    # control. See ``RadioProfile.fixed_value_checks`` (profiles/__init__.py)
+    # for the full rationale.
+    fixed_value_checks: dict[str, str] = field(default_factory=dict)
     state_acquisition: RadioAcquisitionProfile | None = None
-    tx_interlock_disposition_overrides: dict[
-        TxInterlockCommandFamily, TxInterlockDisposition
-    ] = field(default_factory=dict)
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
+    ctcss_tones_centihz: tuple[int, ...] | None = None
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -690,6 +756,8 @@ class RigConfig:
                 published_controls[name] = cast(ControlDomainSpec, published_domain)
             controls = published_controls
 
+        command_map = self.to_command_map()
+
         return RadioProfile(
             id=self.id,
             model=self.model,
@@ -724,7 +792,8 @@ class RigConfig:
                 for name, spec in self.commands.items()
                 if isinstance(spec, AbsentCommandSpec)
             },
-            command_map=self.to_command_map(),
+            command_map=command_map,
+            reverse_index=ReverseCommandIndex(command_map),
             filter_width_min=self.filter_width_min,
             filter_width_max=self.filter_width_max,
             filter_width_encoding=self.filter_width_encoding,
@@ -736,6 +805,7 @@ class RigConfig:
             pre_labels=self.pre_labels,
             agc_modes=self.agc_modes,
             agc_labels=self.agc_labels,
+            ctcss_tones_centihz=self.ctcss_tones_centihz,
             break_in_modes=self.break_in_modes,
             break_in_labels=self.break_in_labels,
             notch_width_values=self.notch_width_values,
@@ -751,6 +821,7 @@ class RigConfig:
             rf_sql_control_model=self.rf_sql_control_model,
             data_mode_count=self.data_mode_count,
             data_mode_labels=self.data_mode_labels,
+            data_mode_inputs=self.data_mode_inputs,
             # isinstance, not membership: a declared-absent entry
             # (AbsentCommandSpec, MOR-2005 step 4a) is a dict key too, but
             # it means the opposite of "the radio has this command" — see
@@ -770,10 +841,12 @@ class RigConfig:
             rules=self.rules,
             keyboard=self.keyboard,
             antenna_tx_count=self.antenna_tx_count,
+            antenna_has_rx_ant=self.antenna_has_rx_ant,
             transceiver_count=self.transceiver_count,
             scope_ref_min_db=self.scope_ref_min_db,
             scope_ref_max_db=self.scope_ref_max_db,
             scope_ref_step_db=self.scope_ref_step_db,
+            scope_span_presets_hz=self.scope_span_presets_hz,
             codec_preference=self.codec_preference,
             tx_codec=self.tx_codec,
             default_sample_rate_hz=self.default_sample_rate_hz,
@@ -782,8 +855,8 @@ class RigConfig:
             browser_rx_transport=self.browser_rx_transport,
             browser_rx_transcode_to_opus=self.browser_rx_transcode_to_opus,
             write_only_controls=frozenset(self.write_only_controls),
+            fixed_value_checks=dict(self.fixed_value_checks),
             state_acquisition=self.state_acquisition,
-            tx_interlock_disposition_overrides=self.tx_interlock_disposition_overrides,
             tx_policy=self.tx_policy,
         )
 
@@ -796,10 +869,13 @@ class RigConfig:
         .test_absent_name_excluded_from_command_map`).
         """
         civ_commands: dict[str, tuple[int, ...]] = {}
+        value_variants: dict[str, dict[int, tuple[int, ...]]] = {}
         for name, spec in self.commands.items():
             if isinstance(spec, CivCommandSpec):
                 civ_commands[name] = spec.bytes
-        return CommandMap(civ_commands)
+                if spec.value_variants:
+                    value_variants[name] = dict(spec.value_variants)
+        return CommandMap(civ_commands, value_variants=value_variants)
 
 
 def _parse_keyboard_binding(
@@ -917,6 +993,98 @@ def _load_default_keyboard_config(path: Path) -> KeyboardConfig | None:
     )
 
 
+def _load_ctcss_tables(path: Path) -> dict[str, tuple[int, ...]]:
+    catalog_path = path.parent / DEFAULT_CTCSS_TABLES_PROFILE_NAME
+    if not catalog_path.exists():
+        raise RigLoadError(
+            f"{path.name}: CTCSS table catalog file not found: {catalog_path.name}"
+        )
+    try:
+        data = tomllib.loads(catalog_path.read_text())
+    except Exception as exc:
+        raise RigLoadError(
+            f"{path.name}: failed to parse CTCSS table catalog "
+            f"{catalog_path.name}: {exc}"
+        ) from exc
+
+    if set(data) != {"schema_version", "tables"}:
+        raise RigLoadError(
+            f"{catalog_path.name}: root must contain exactly schema_version and tables"
+        )
+    if (
+        isinstance(data["schema_version"], bool)
+        or not isinstance(data["schema_version"], int)
+        or data["schema_version"] != 1
+    ):
+        raise RigLoadError(f"{catalog_path.name}: schema_version must be 1")
+    raw_tables = data["tables"]
+    if not isinstance(raw_tables, dict) or not raw_tables:
+        raise RigLoadError(f"{catalog_path.name}: [tables] must be a non-empty table")
+
+    tables: dict[str, tuple[int, ...]] = {}
+    for name, raw_table in raw_tables.items():
+        prefix = f"{catalog_path.name}: [tables.{name}]"
+        if not isinstance(name, str) or not name:
+            raise RigLoadError(f"{catalog_path.name}: table names must be non-empty")
+        if not isinstance(raw_table, dict) or set(raw_table) != {"values_centihz"}:
+            raise RigLoadError(f"{prefix} must contain exactly values_centihz")
+        values = raw_table["values_centihz"]
+        if (
+            not isinstance(values, list)
+            or not values
+            or any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in values
+            )
+        ):
+            raise RigLoadError(
+                f"{prefix}.values_centihz must be a non-empty integer array"
+            )
+        if len(values) != len(set(values)):
+            raise RigLoadError(f"{prefix}.values_centihz must not contain duplicates")
+        if any(first >= second for first, second in zip(values, values[1:])):
+            raise RigLoadError(f"{prefix}.values_centihz must be strictly ascending")
+        if any(
+            not CTCSS_TONE_MIN_CENTIHZ <= value <= CTCSS_TONE_MAX_CENTIHZ
+            for value in values
+        ):
+            raise RigLoadError(
+                f"{prefix}.values_centihz must be within "
+                f"{CTCSS_TONE_MIN_CENTIHZ}..{CTCSS_TONE_MAX_CENTIHZ} centiHz"
+            )
+        if any(value % 10 for value in values):
+            raise RigLoadError(f"{prefix}.values_centihz must use exact 0.1 Hz steps")
+        tables[name] = tuple(values)
+    return tables
+
+
+def _resolve_ctcss_table(
+    path: Path, data: dict[str, Any], features: tuple[str, ...] | list[str]
+) -> tuple[int, ...] | None:
+    filename = path.name
+    section = data.get("ctcss")
+    requires_table = bool(_CTCSS_CAPABILITIES.intersection(features))
+    if section is None:
+        if requires_table:
+            raise RigLoadError(f"{filename}: missing required [ctcss].table")
+        return None
+    if not isinstance(section, dict):
+        raise RigLoadError(f"{filename}: [ctcss] must be a table")
+    if set(section) != {"table"}:
+        raise RigLoadError(f"{filename}: [ctcss] must contain exactly table")
+    table_name = section["table"]
+    if not isinstance(table_name, str) or not table_name:
+        raise RigLoadError(f"{filename}: [ctcss].table must be a non-empty string")
+    tables = _load_ctcss_tables(path)
+    try:
+        return tables[table_name]
+    except KeyError as exc:
+        raise RigLoadError(
+            f"{filename}: unknown CTCSS table {table_name!r} in "
+            f"{DEFAULT_CTCSS_TABLES_PROFILE_NAME}"
+        ) from exc
+
+
 def _parse_command_value(
     filename: str,
     command_name: str,
@@ -967,6 +1135,63 @@ def _parse_command_value(
                 f"got {value!r}"
             )
         return CivCommandSpec(bytes=tuple(value))
+
+    # Additive CI-V descriptor: one public command name with complete wire
+    # tuples selected by an integer semantic value.
+    if isinstance(value, dict) and ({"bytes", "value_variants"} & set(value)):
+        prefix = f"{filename}: [commands].{command_name}"
+        if set(value) != {"bytes", "value_variants"}:
+            raise RigLoadError(
+                f"{prefix} value-variant descriptor must contain exactly "
+                "bytes and value_variants"
+            )
+
+        base_raw = value["bytes"]
+        if not isinstance(base_raw, list) or not base_raw:
+            raise RigLoadError(f"{prefix}.bytes must be a non-empty byte array")
+        if any(
+            isinstance(byte, bool) or not isinstance(byte, int) for byte in base_raw
+        ):
+            raise RigLoadError(f"{prefix}.bytes must contain only integers")
+        if any(not 0 <= byte <= 0xFF for byte in base_raw):
+            raise RigLoadError(f"{prefix}.bytes must contain only values 0..255")
+        base = tuple(base_raw)
+
+        variants_raw = value["value_variants"]
+        if not isinstance(variants_raw, dict) or not variants_raw:
+            raise RigLoadError(f"{prefix}.value_variants must be a non-empty table")
+
+        variants: dict[int, tuple[int, ...]] = {}
+        seen_wires: set[tuple[int, ...]] = set()
+        for raw_key, wire_raw in variants_raw.items():
+            variant_path = f"{prefix}.value_variants.{raw_key}"
+            try:
+                semantic_value = int(raw_key)
+            except (TypeError, ValueError):
+                semantic_value = 0
+            if not isinstance(raw_key, str) or str(semantic_value) != raw_key:
+                raise RigLoadError(
+                    f"{variant_path} key must be a canonical decimal integer"
+                )
+            if not isinstance(wire_raw, list) or not wire_raw:
+                raise RigLoadError(f"{variant_path} must be a non-empty byte array")
+            if any(
+                isinstance(byte, bool) or not isinstance(byte, int) for byte in wire_raw
+            ):
+                raise RigLoadError(f"{variant_path} must contain only integers")
+            if any(not 0 <= byte <= 0xFF for byte in wire_raw):
+                raise RigLoadError(f"{variant_path} must contain only values 0..255")
+            wire = tuple(wire_raw)
+            if len(wire) <= len(base) or wire[: len(base)] != base:
+                raise RigLoadError(
+                    f"{variant_path} must strictly extend and prefix-match "
+                    f"{prefix}.bytes"
+                )
+            if wire in seen_wires:
+                raise RigLoadError(f"{variant_path} duplicates another variant value")
+            variants[semantic_value] = wire
+            seen_wires.add(wire)
+        return CivCommandSpec(bytes=base, value_variants=variants)
 
     # Format 3: declared-absent (dict with 'absent' key, MOR-2005 step 4a)
     if isinstance(value, dict) and "absent" in value:
@@ -1236,6 +1461,14 @@ def _strict_policy_float(
     return float(value)
 
 
+#: TOML has no null literal, and an omitted acquisition-policy key inherits
+#: the profile default rather than clearing it, so ``cadence_seconds`` and
+#: ``freshness_ttl_seconds`` (the two keys ``_policy_seconds`` parses) spell
+#: "no value here" with this token. It resolves to ``None``, which
+#: ``StateStore.mark_stale_due`` skips instead of ageing.
+_POLICY_SECONDS_NEVER = "never"
+
+
 def _policy_seconds(
     filename: str,
     prefix: str,
@@ -1253,6 +1486,8 @@ def _policy_seconds(
     else:
         value = fallback
     key_label = label if label is not None else key
+    if value == _POLICY_SECONDS_NEVER:
+        return None
     return (
         None
         if value is None
@@ -1271,8 +1506,59 @@ _ACQUISITION_POLICY_KEYS = frozenset(
         "external_cat_pause",
         "meter_coalescing_window_seconds",
         "tx_only",
+        "available_when",
     }
 )
+
+#: Operator keys an ``available_when`` clause may carry; a clause must use
+#: exactly one of them alongside its ``field``.
+_AVAILABILITY_OPERATOR_KEYS = ("in", "not_in", "min", "max", "equals")
+_AVAILABILITY_CLAUSE_KEYS = frozenset({"field", *_AVAILABILITY_OPERATOR_KEYS})
+
+
+def _parse_available_when(
+    filename: str,
+    prefix: str,
+    value: Any,
+) -> tuple[AvailabilityClause, ...]:
+    if not isinstance(value, list):
+        raise RigLoadError(
+            f"{filename}: {prefix}.available_when must be a list of clauses"
+        )
+    clauses: list[AvailabilityClause] = []
+    for index, raw_clause in enumerate(value):
+        label = f"{prefix}.available_when[{index}]"
+        if not isinstance(raw_clause, dict):
+            raise RigLoadError(f"{filename}: {label} must be a table")
+        _reject_unknown_keys(filename, label, raw_clause, _AVAILABILITY_CLAUSE_KEYS)
+        if not isinstance(raw_clause.get("field"), str):
+            raise RigLoadError(f"{filename}: {label}.field must be a field path string")
+        try:
+            path = FieldPath.parse(raw_clause["field"])
+        except ValueError as exc:
+            raise RigLoadError(
+                f"{filename}: {label}.field is not a field path: {exc}"
+            ) from exc
+        present = [key for key in _AVAILABILITY_OPERATOR_KEYS if key in raw_clause]
+        if len(present) != 1:
+            raise RigLoadError(
+                f"{filename}: {label} must use exactly one of "
+                f"{list(_AVAILABILITY_OPERATOR_KEYS)}, got {present}"
+            )
+        operator = present[0]
+        operand = raw_clause[operator]
+        if operator in ("in", "not_in") and not isinstance(operand, list):
+            raise RigLoadError(f"{filename}: {label}.{operator} must be a list")
+        if operator in ("min", "max"):
+            operand = _strict_policy_float(filename, label, operator, operand)
+        try:
+            clauses.append(
+                AvailabilityClause(field=path, operator=operator, value=operand)
+            )
+        except ValueError as exc:
+            raise RigLoadError(f"{filename}: {label} invalid: {exc}") from exc
+    return tuple(clauses)
+
 
 _STATE_ACQUISITION_KEYS = frozenset(
     {
@@ -1296,6 +1582,7 @@ _STATE_ACQUISITION_CAPABILITY_KEYS = frozenset(
         "polling_only",
         "stream_like_meters",
         "command_response_observable",
+        "startup_optional",
         "supported_controls",
         "unsupported",
         "unknown",
@@ -1313,6 +1600,11 @@ def _parse_acquisition_policy(
 ) -> AcquisitionPolicy:
     _reject_unknown_keys(filename, prefix, raw, _ACQUISITION_POLICY_KEYS)
     labels = key_labels or {}
+    available_when = (
+        _parse_available_when(filename, prefix, raw["available_when"])
+        if "available_when" in raw
+        else ()
+    )
     try:
         return AcquisitionPolicy(
             cadence_seconds=_policy_seconds(
@@ -1428,6 +1720,7 @@ def _parse_acquisition_policy(
                     defaults.tx_only if defaults is not None else False,
                 ),
             ),
+            available_when=available_when,
         )
     except (TypeError, ValueError) as exc:
         raise RigLoadError(
@@ -1487,6 +1780,24 @@ def _parse_state_acquisition(
             caps_raw.get("command_response_observable"),
         )
     )
+    startup_optional = set(
+        _state_path_list(
+            filename,
+            f"{section}.startup_optional",
+            caps_raw.get("startup_optional"),
+        )
+    )
+    optional_without_acquisition = startup_optional - (
+        unsolicited | polling | stream | command_response
+    )
+    if optional_without_acquisition:
+        formatted = ", ".join(
+            str(path) for path in sorted(optional_without_acquisition, key=str)
+        )
+        raise RigLoadError(
+            f"{filename}: {section}.startup_optional paths must also be "
+            f"declared acquisitive: {formatted}"
+        )
     supported_controls = set(
         _state_path_list(
             filename,
@@ -1508,6 +1819,7 @@ def _parse_state_acquisition(
         | polling
         | stream
         | command_response
+        | startup_optional
         | supported_controls
         | unsupported
         | unknown
@@ -1531,6 +1843,7 @@ def _parse_state_acquisition(
                     polling=path in polling or path in stream,
                     stream_like=path in stream,
                     command_response_observable=path in command_response,
+                    startup_required=path not in startup_optional,
                     supported_controls=(
                         ("profile_control",) if path in supported_controls else ()
                     ),
@@ -1617,195 +1930,6 @@ def _parse_state_acquisition(
         raise RigLoadError(f"{filename}: [state_acquisition] invalid: {exc}") from exc
 
 
-_TX_INTERLOCK_METADATA_BY_FAMILY = {
-    metadata.family: metadata for metadata in TX_INTERLOCK_COMMAND_FAMILY_METADATA
-}
-
-
-def _toml_shape_statements(source: str) -> list[list[tuple[str, str]]]:
-    """Expose only table/key punctuation while shielding strings and comments."""
-
-    statements: list[list[tuple[str, str]]] = []
-    statement: list[tuple[str, str]] = []
-    punctuation = "[]{}.="
-    index = 0
-    while index < len(source):
-        char = source[index]
-        if char == "\n":
-            if statement:
-                statements.append(statement)
-                statement = []
-            index += 1
-            continue
-        if char in " \t\r":
-            index += 1
-            continue
-        if char == "#":
-            newline = source.find("\n", index)
-            index = len(source) if newline < 0 else newline
-            continue
-        if source.startswith(('"""', "'''"), index):
-            delimiter = source[index : index + 3]
-            index += 3
-            while index < len(source) and not source.startswith(delimiter, index):
-                if delimiter == '"""' and source[index] == "\\":
-                    index += 2
-                else:
-                    index += 1
-            index += 3
-            for _ in range(2):
-                if index < len(source) and source[index] == delimiter[0]:
-                    index += 1
-            statement.append(("string", ""))
-            continue
-        if char in "\"'":
-            delimiter = char
-            start = index
-            index += 1
-            while index < len(source) and source[index] != delimiter:
-                if delimiter == '"' and source[index] == "\\":
-                    index += 2
-                else:
-                    index += 1
-            index += 1
-            literal = source[start:index]
-            value = tomllib.loads(f"key = {literal}")["key"]
-            statement.append(("key", value))
-            continue
-        if char in punctuation:
-            statement.append((char, char))
-            index += 1
-            continue
-        start = index
-        while index < len(source) and source[index] not in f" \t\r\n#{punctuation}\"'":
-            index += 1
-        statement.append(("key", source[start:index]))
-    if statement:
-        statements.append(statement)
-    return statements
-
-
-def _toml_key_path(tokens: list[tuple[str, str]]) -> tuple[str, ...] | None:
-    """Return a dotted key path, or ``None`` for tokens outside that shape."""
-
-    path: list[str] = []
-    expect_key = True
-    for kind, value in tokens:
-        if expect_key and kind == "key":
-            path.append(value)
-            expect_key = False
-        elif not expect_key and kind == ".":
-            expect_key = True
-        else:
-            return None
-    return tuple(path) if path and not expect_key else None
-
-
-def _validate_tx_interlock_override_syntax(filename: str, source: str) -> None:
-    """Require the documented table plus one non-dotted inline mapping key."""
-
-    current_table: tuple[str, ...] = ()
-    forbidden_prefix = ("tx_interlock", "disposition_overrides")
-    container_depth = 0
-    for tokens in _toml_shape_statements(source):
-        if container_depth == 0 and tokens[0][0] == "[" and tokens[-1][0] == "]":
-            inner = tokens[1:-1]
-            if inner and inner[0][0] == "[" and inner[-1][0] == "]":
-                inner = inner[1:-1]
-            path = _toml_key_path(inner)
-            current_table = path or ()
-            if current_table[:2] == forbidden_prefix:
-                raise RigLoadError(
-                    f"{filename}: [tx_interlock].disposition_overrides "
-                    "must use inline table syntax"
-                )
-            continue
-
-        if container_depth == 0:
-            equals = next(
-                (position for position, token in enumerate(tokens) if token[0] == "="),
-                None,
-            )
-            key_path = _toml_key_path(tokens[:equals]) if equals is not None else None
-            if key_path is not None:
-                assert equals is not None
-                dotted_in_table = (
-                    current_table == ("tx_interlock",)
-                    and key_path[:1] == ("disposition_overrides",)
-                    and len(key_path) > 1
-                )
-                dotted_at_root = (
-                    current_table == () and key_path[:2] == forbidden_prefix
-                )
-                outer_inline = (
-                    current_table == ()
-                    and key_path == ("tx_interlock",)
-                    and tokens[equals + 1][0] == "{"
-                )
-                if dotted_in_table or dotted_at_root or outer_inline:
-                    raise RigLoadError(
-                        f"{filename}: [tx_interlock].disposition_overrides "
-                        "must use inline table syntax"
-                    )
-        container_depth += sum(token[0] in "[{" for token in tokens)
-        container_depth -= sum(token[0] in "]}" for token in tokens)
-
-
-def _parse_tx_interlock_disposition_overrides(
-    filename: str, raw: object
-) -> dict[TxInterlockCommandFamily, TxInterlockDisposition]:
-    """Validate the profile-only, one-way TX interlock tightening mapping."""
-
-    if raw is None:
-        return {}
-    if not isinstance(raw, dict):
-        raise RigLoadError(f"{filename}: [tx_interlock] must be a table")
-
-    unknown_keys = set(raw) - {"disposition_overrides"}
-    if unknown_keys:
-        raise RigLoadError(
-            f"{filename}: [tx_interlock] unknown key(s): {sorted(unknown_keys)}"
-        )
-
-    overrides_raw = raw.get("disposition_overrides", {})
-    if not isinstance(overrides_raw, dict):
-        raise RigLoadError(
-            f"{filename}: [tx_interlock].disposition_overrides must be an inline table"
-        )
-
-    overrides: dict[TxInterlockCommandFamily, TxInterlockDisposition] = {}
-    for family_value, disposition_value in overrides_raw.items():
-        try:
-            family = TxInterlockCommandFamily(family_value)
-        except ValueError as exc:
-            raise RigLoadError(
-                f"{filename}: [tx_interlock].disposition_overrides has unknown "
-                f"command family {family_value!r}"
-            ) from exc
-
-        if not isinstance(disposition_value, str):
-            raise RigLoadError(
-                f"{filename}: [tx_interlock].disposition_overrides[{family_value!r}] "
-                "must be a string"
-            )
-        if disposition_value != TxInterlockDisposition.DEFER.value:
-            raise RigLoadError(
-                f"{filename}: [tx_interlock].disposition_overrides[{family_value!r}] "
-                "must be 'defer'"
-            )
-
-        metadata = _TX_INTERLOCK_METADATA_BY_FAMILY[family]
-        if metadata.base_disposition is not TxInterlockDisposition.TX_SAFE:
-            raise RigLoadError(
-                f"{filename}: [tx_interlock].disposition_overrides family "
-                f"{family_value!r} has base disposition "
-                f"{metadata.base_disposition.value!r}, not tx-safe"
-            )
-        overrides[family] = TxInterlockDisposition.DEFER
-
-    return overrides
-
-
 _TX_POLICY_KEYS = frozenset({"refused_during_tx", "tx_state_map"})
 
 
@@ -1813,11 +1937,9 @@ def _parse_tx_policy(filename: str, raw: Any) -> TxPolicy:
     """Parse the measured per-radio ``[tx_policy]`` section (MOR-1912).
 
     ``refused_during_tx`` entries are validated for shape only — a list of
-    unique, non-empty strings — never against a fixed vocabulary. The
-    command-family vocabulary's single source of truth is
-    ``core/tx_authority.py``, which is not yet on ``main``; duplicating its
-    membership list here would create a second copy with no mechanism
-    keeping it in step with the first.
+    unique, non-empty strings — never against a fixed vocabulary. The parser
+    owns only shape and uniqueness; it does not couple profile loading to a
+    runtime command-family membership list.
     """
     if raw is None:
         return TxPolicy()
@@ -1879,8 +2001,6 @@ def load_rig(path: Path) -> RigConfig:
     except Exception as exc:
         raise RigLoadError(f"{filename}: failed to parse TOML: {exc}") from exc
 
-    _validate_tx_interlock_override_syntax(filename, source)
-
     # Validate required sections
     for section in _REQUIRED_SECTIONS:
         if section not in data:
@@ -1920,6 +2040,7 @@ def load_rig(path: Path) -> RigConfig:
             f"{filename}: [capabilities].rf_sql_control_model must be one of "
             f"{sorted(VALID_RF_SQL_CONTROL_MODELS)}, got {rf_sql_control_model!r}"
         )
+    ctcss_tones_centihz = _resolve_ctcss_table(path, data, features)
 
     # Validate [validation].write_only_controls — each entry must be a declared
     # capability. These route through the validate set-and-observe engine path
@@ -1933,6 +2054,34 @@ def load_rig(path: Path) -> RigConfig:
                 f"is not a declared capability"
             )
     write_only_controls = tuple(write_only_raw)
+
+    # Validate [validation.fixed_value] — a check_id-grained sibling to
+    # write_only_controls above (MOR-2105 part 2), for a fact with no other
+    # home in RadioProfile: some controls genuinely have only one legal
+    # value on this radio (e.g. IC-7300's single scope), so the RMVR harness
+    # must SKIP the flip instead of reporting a false FAIL for a value
+    # nothing on the radio can ever report back. Keyed by check_id, finer
+    # than write_only_controls' per-capability grain -- a capability like
+    # "scope" mixes fixed-value checks with genuinely multi-valued ones
+    # (e.g. scope_span.set). Each source is required non-empty, in the
+    # spirit of the `{ absent = "<source>" }` convention in [commands].
+    # check_id existence cannot be cross-checked here against the live
+    # registry (`validation/registry/_assembly.py: REGISTRY_BY_ID`) --
+    # `rigplane.profiles` may not import `rigplane.validation`, per
+    # `.importlinter`'s validation-leaf contract -- so that cross-check is
+    # a test (`tests/test_rig_loader.py:
+    # test_every_shipped_profiles_fixed_value_check_ids_are_real_registry_
+    # check_ids`), not a parameter here (F4, MOR-2105 part 2 owner ruling:
+    # an unused ``known_check_ids`` parameter with no production caller was
+    # an orphan).
+    fixed_value_raw = data.get("validation", {}).get("fixed_value", {})
+    for check_id, source in fixed_value_raw.items():
+        if not isinstance(source, str) or not source.strip():
+            raise RigLoadError(
+                f"{filename}: [validation.fixed_value].{check_id!r} must be "
+                f"a non-empty string naming the source, got {source!r}"
+            )
+    fixed_value_checks = dict(fixed_value_raw)
 
     # Validate [vfo]
     vfo = data["vfo"]
@@ -2082,6 +2231,7 @@ def load_rig(path: Path) -> RigConfig:
     scope_ref_min_db: float | None = None
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
+    scope_span_presets_hz: tuple[int, ...] = ()
     if scope_section:
         scope_ref_min_db = (
             float(scope_section["ref_min_db"])
@@ -2098,6 +2248,20 @@ def load_rig(path: Path) -> RigConfig:
             if "ref_step_db" in scope_section
             else None
         )
+        if "span_presets_hz" in scope_section:
+            raw_span_presets = scope_section["span_presets_hz"]
+            if not raw_span_presets:
+                raise RigLoadError(
+                    f"{filename}: [scope].span_presets_hz must be a non-empty array"
+                )
+            scope_span_presets_hz = tuple(int(v) for v in raw_span_presets)
+            if any(
+                scope_span_presets_hz[i] >= scope_span_presets_hz[i + 1]
+                for i in range(len(scope_span_presets_hz) - 1)
+            ):
+                raise RigLoadError(
+                    f"{filename}: [scope].span_presets_hz must be strictly ascending"
+                )
 
     # Parse attenuator/preamp/agc (optional sections)
     att_section = data.get("attenuator", {})
@@ -2151,12 +2315,47 @@ def load_rig(path: Path) -> RigConfig:
         data_mode_labels = (
             dict(data_mode_section["labels"]) if "labels" in data_mode_section else None
         )
+        raw_inputs = data_mode_section.get("inputs")
+        if raw_inputs is not None:
+            if not isinstance(raw_inputs, list) or not raw_inputs:
+                raise RigLoadError(
+                    f"{filename}: [data_mode].inputs must be a non-empty array"
+                )
+            parsed_inputs: list[tuple[int, str]] = []
+            for index, item in enumerate(raw_inputs):
+                if not isinstance(item, dict) or set(item) != {"value", "name"}:
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].inputs[{index}] must contain value and name"
+                    )
+                value, name = item["value"], item["name"]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or not 0 <= value <= 5
+                ):
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].inputs[{index}].value must be an integer from 0 to 5"
+                    )
+                if not isinstance(name, str) or not name.strip():
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].inputs[{index}].name must be non-empty"
+                    )
+                parsed_inputs.append((value, name))
+            if len({value for value, _ in parsed_inputs}) != len(parsed_inputs):
+                raise RigLoadError(
+                    f"{filename}: [data_mode].inputs values must be unique"
+                )
+            data_mode_inputs = tuple(parsed_inputs)
+        else:
+            data_mode_inputs = None
     elif has_data_mode_feature:
         data_mode_count = 1
         data_mode_labels = {"0": "OFF", "1": "DATA"}
+        data_mode_inputs = None
     else:
         data_mode_count = 0
         data_mode_labels = None
+        data_mode_inputs = None
 
     # Parse [controls] (optional)
     controls_raw = data.get("controls")
@@ -2346,10 +2545,6 @@ def load_rig(path: Path) -> RigConfig:
         filename,
         data.get("state_acquisition"),
     )
-    tx_interlock_disposition_overrides = _parse_tx_interlock_disposition_overrides(
-        filename,
-        data.get("tx_interlock"),
-    )
     tx_policy = _parse_tx_policy(filename, data.get("tx_policy"))
 
     return RigConfig(
@@ -2388,6 +2583,7 @@ def load_rig(path: Path) -> RigConfig:
         pre_labels=pre_labels,
         agc_modes=agc_modes,
         agc_labels=agc_labels,
+        ctcss_tones_centihz=ctcss_tones_centihz,
         break_in_modes=break_in_modes,
         break_in_labels=break_in_labels,
         notch_width_values=notch_width_values,
@@ -2403,6 +2599,7 @@ def load_rig(path: Path) -> RigConfig:
         rf_sql_control_model=rf_sql_control_model,
         data_mode_count=data_mode_count,
         data_mode_labels=data_mode_labels,
+        data_mode_inputs=data_mode_inputs,
         protocol_type=protocol_type,
         protocol_address=protocol_address,
         protocol_baud=protocol_baud,
@@ -2417,6 +2614,7 @@ def load_rig(path: Path) -> RigConfig:
         scope_ref_min_db=scope_ref_min_db,
         scope_ref_max_db=scope_ref_max_db,
         scope_ref_step_db=scope_ref_step_db,
+        scope_span_presets_hz=scope_span_presets_hz,
         codec_preference=codec_preference,
         tx_codec=tx_codec,
         default_sample_rate_hz=default_sample_rate_hz,
@@ -2426,8 +2624,8 @@ def load_rig(path: Path) -> RigConfig:
         browser_rx_transcode_to_opus=browser_rx_transcode_to_opus,
         rx_audio_channel=rx_audio_channel,
         write_only_controls=write_only_controls,
+        fixed_value_checks=fixed_value_checks,
         state_acquisition=state_acquisition,
-        tx_interlock_disposition_overrides=tx_interlock_disposition_overrides,
         tx_policy=tx_policy,
     )
 

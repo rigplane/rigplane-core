@@ -124,7 +124,7 @@ def backend_fixture(request: pytest.FixtureRequest) -> _BackendFixture:
     name = str(request.param)
     if name == "lan":
         transport = _MockLanTransport()
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._civ_transport = transport
         radio._ctrl_transport = transport
         radio._connected = True

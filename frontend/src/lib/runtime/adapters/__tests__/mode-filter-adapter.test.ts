@@ -131,12 +131,14 @@ describe('modeFilter per-field derivation (MOR-1280)', () => {
     expect(view.modeFilter!.currentMode.availability.structural).toBe(true);
   });
 
-  it('degrades a stale mode field to unknown while keeping structural availability true', () => {
+  // MOR-2425/R29: a stale-but-observed mode field carries its last value
+  // (`bareState()`'s `main.mode` is 'USB') and is `available`, not degraded.
+  it('keeps a stale mode field available with its last value (MOR-2425/R29)', () => {
     const view = model(bareState({
       fieldStatus: { ...bareState().fieldStatus, 'main.mode': stale },
     }), fullCaps);
     expect(view.modeFilter!.currentMode).toEqual({
-      reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+      reading: { status: 'known', value: 'USB' }, availability: { structural: true, operational: true },
     });
   });
 
@@ -263,20 +265,28 @@ describe('filterWidthMin/Max observation gate (MOR-1280, F2)', () => {
     filterWidthMin: 50, filterWidthMax: 9999,
   });
 
-  it('mode UNOBSERVED, filterWidth observed — bounds must NOT fabricate the mode-derived table', () => {
+  // MOR-2425/R29: a stale-but-observed mode is `available` (last value
+  // 'USB'), so `modeObserved` — the bounds' own operational gate (F2 above)
+  // — is now true too. This describe block's `fullCaps` sets no per-mode
+  // `filterConfig`, so `resolveFilterModeConfig` resolves to `null` and the
+  // bounds fall back to the capability-level `filterWidthMin`/`filterWidthMax`
+  // (50/9999) — known, not fabricated: it is the same value the "mode
+  // OBSERVED, filterWidth UNOBSERVED" pin below reports for a fresh mode.
+  // Measured by running this exact scenario through `toRadioViewModel`
+  // (probe rerun 2026-09-07, corrected after first missing this describe
+  // block's own local `fullCaps`) rather than computed by hand.
+  it('mode stale-but-observed, filterWidth observed — bounds resolve from the capability-level fallback (MOR-2425/R29)', () => {
     const view = model(bareState({
       fieldStatus: {
         ...bareState().fieldStatus, 'main.mode': stale, 'main.filterWidth': fresh,
       },
     }), fullCaps);
-    expect(view.modeFilter!.currentMode.reading).toEqual({ status: 'unknown' });
-    // The bounds derive from the SAME unobserved mode as currentMode — they
-    // must degrade with it, not publish a confidently-wrong table.
+    expect(view.modeFilter!.currentMode.reading).toEqual({ status: 'known', value: 'USB' });
     expect(view.modeFilter!.filterWidthMin).toEqual({
-      reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+      reading: { status: 'known', value: 50 }, availability: { structural: true, operational: true },
     });
     expect(view.modeFilter!.filterWidthMax).toEqual({
-      reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+      reading: { status: 'known', value: 9999 }, availability: { structural: true, operational: true },
     });
   });
 

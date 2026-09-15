@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { getTuningStep, adjustTuningStep, isAutoStep, setAutoStep, formatStep } from '../../lib/stores/tuning.svelte';
   import { t } from '$lib/i18n';
   import { type ColorSchemeName } from '../../lib/renderers/waterfall-renderer';
@@ -6,6 +7,7 @@
   import { runtime } from '$lib/runtime/frontend-runtime';
   import { toSpectrumAuthority } from '$lib/runtime/adapters/scope-adapter';
   import { bindSemanticSurfaceHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import { getAuthHeaders } from '$lib/auth';
   import ScopeSettingsPopover from './ScopeSettingsPopover.svelte';
   import {
     SPAN_LABELS, SPEED_LABELS, SPEED_STATIC_LABEL, MODE_BUTTONS,
@@ -18,6 +20,23 @@
     name: string;
     layer: string;
     file: string;
+  }
+
+  interface Props {
+    enableAvg?: boolean;
+    enablePeakHold?: boolean;
+    brtLevel?: number;
+    colorScheme?: ColorSchemeName;
+    fullscreen?: boolean;
+    showBandPlan?: boolean;
+    hiddenLayers?: string[];
+    showEiBi?: boolean;
+    scopeDemandOn?: boolean;
+    onScopeDemandChange?: (enabled: boolean) => void;
+    hideSourceControls?: boolean;
+    hideScopeControls?: boolean;
+    hideAutoStepToggle?: boolean;
+    scopeControls?: Snippet;
   }
 
   let {
@@ -58,9 +77,14 @@
      * (`scopeDemandOn`) is client-side scope-streaming demand, not a
      * `scopeControls.*` field either, and also stays unconditional.
      *
-     * Landed INERT (MOR-1369, S6b-1): no manifest declares a `scopeControls`
-     * zone yet, so this defaults `false` and nothing renders differently.
-     * Safe only because an omitting caller keeps the prop `false` — the same
+     * Landed INERT with MOR-1369 (S6b-1) and is LIVE now: MOR-1370 (S6b-2)
+     * declared the `scopeControls` zone on `desktop-v2`, so
+     * `RadioLayout.svelte` forwards
+     * `hideScopeControls={declared.has('scopeControls')}` — `true` on the
+     * flagship skin, pinned by "passes hideScopeControls=true on real
+     * desktop-v2, which declares the scope-controls zone" in
+     * `components-v2/layout/__tests__/RadioLayout.isolated.test.ts`. It still
+     * defaults `false`, which is what keeps an omitting caller safe — the same
      * shape as `hideSourceControls` above and the MOR-1364 `hideTxPanel`/
      * `declared` channel (S5-N3: safe because the surface degrades to a bare
      * render when unzoned, a guarantee that lives in
@@ -85,7 +109,8 @@
      * needs no change; `MobileRadioLayout` passes `true` explicitly.
      */
     hideAutoStepToggle = false,
-  } = $props();
+    scopeControls,
+  }: Props = $props();
 
   const scopeHandlers = bindSemanticSurfaceHandlers().scopeControls;
 
@@ -108,8 +133,8 @@
   async function fetchLayers() {
     try {
       const [layerResp, configResp] = await Promise.all([
-        fetch('/api/v1/band-plan/layers'),
-        fetch('/api/v1/band-plan/config'),
+        fetch('/api/v1/band-plan/layers', { headers: getAuthHeaders() }),
+        fetch('/api/v1/band-plan/config', { headers: getAuthHeaders() }),
       ]);
       if (layerResp.ok) {
         const data = await layerResp.json();
@@ -127,7 +152,7 @@
     try {
       const resp = await fetch('/api/v1/band-plan/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ region }),
       });
       if (resp.ok) {
@@ -366,6 +391,12 @@
     </div>
     {/if}
   {/if}
+  {#if hasCapability('scope') && hideScopeControls && scopeControls}
+    <div class="toolbar-separator"></div>
+    <div class="semantic-scope-controls-host toolbar-group-c">
+      {@render scopeControls()}
+    </div>
+  {/if}
   <div class="toolbar-separator"></div>
   <!-- Group D: Display (neutral wash) -->
   <div class="toolbar-group-d">
@@ -532,6 +563,31 @@
     background: rgba(255, 255, 255, 0.02);
   }
 
+  .semantic-scope-controls-host {
+    min-width: 0;
+    max-width: 100%;
+    height: auto;
+    flex-wrap: wrap;
+  }
+
+  .semantic-scope-controls-host :global(.surface-zone),
+  .semantic-scope-controls-host :global(.semantic-control-panel) { display: contents; }
+
+  .semantic-scope-controls-host :global(.scope-controls-surface) {
+    min-width: 0;
+    max-width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .semantic-scope-controls-host :global(.scope-row),
+  .semantic-scope-controls-host :global(.scope-stepper) {
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
   .toolbar-separator {
     width: 2px;
     height: 20px;
@@ -617,6 +673,16 @@
     background: rgba(251, 191, 36, 0.12);
   }
 
+  :global(.desktop-control-face.standard-face) .auto-step-toggle.active {
+    color: var(--v2-text-bright, #fff);
+    border-color: var(--v2-accent-cyan, #00d4ff);
+    background: linear-gradient(180deg,
+      var(--hw-gradient-top-1) 0%,
+      var(--hw-gradient-top-2) 14%,
+      var(--hw-gradient-mid) 52%,
+      var(--hw-gradient-bottom) 100%);
+  }
+
   .step-group {
     gap: 0 !important;
   }
@@ -633,6 +699,14 @@
   .step-arrow:hover {
     opacity: 1;
     color: #00d4ff !important;
+  }
+
+  :global(.desktop-control-face.standard-face) .step-arrow {
+    color: var(--v2-text-subdued, var(--text-muted)) !important;
+  }
+
+  :global(.desktop-control-face.standard-face) .step-arrow:hover:not(:disabled) {
+    color: var(--v2-text-bright, var(--text)) !important;
   }
 
   .toolbar-select {

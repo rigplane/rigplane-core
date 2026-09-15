@@ -105,6 +105,7 @@ class _StatefulFakeStream(FakeAudioStream):
 
 
 def _make_radio(**kwargs: object) -> IcomRadio:
+    kwargs.setdefault("model", "IC-7610")
     radio = IcomRadio("192.168.1.100", **kwargs)  # type: ignore[arg-type]
     radio._ctrl_transport = MagicMock()
     radio._civ_transport = MagicMock()

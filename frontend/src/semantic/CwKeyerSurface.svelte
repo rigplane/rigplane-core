@@ -3,8 +3,9 @@
 
   Presentation only. It renders the MOR-1296 `cwKeyer` fact group — break-in
   posture (+delay), keyer speed, CW pitch, reverse paddle, APF and the twin-peak
-  filter — and emits control intents as callbacks. It holds no state, consults
-  no controller and owns no TX authority (v3 ADR invariant 11).
+  filter — and emits control intents as callbacks. It owns only local renderer
+  interaction and issued presentation events; it consults no controller and
+  owns no TX authority (v3 ADR invariant 11).
 
   SAFETY. Five rules govern this file and nothing may relax them:
 
@@ -51,6 +52,7 @@
 -->
 <script module lang="ts">
   import { t } from '$lib/i18n';
+  import { CW_CONTINUOUS_LEVELS } from './CwKeyerInstrumentHost.svelte';
   import type { BreakInMode, CwKeyerField, DisabledReasonCode } from './radio-view-model';
   import { pressedOf } from './pressed-of';
 
@@ -64,8 +66,8 @@
   /** `[field, label, min, max, step, unit]` in the RAW wire units `CwPanel`
    *  has always used — rescaling here would silently move a setting. */
   export const CW_LEVELS = [
-    ['keyerSpeed', 'Keyer speed', 6, 48, 1, 'WPM'],
-    ['pitchHz', 'CW pitch', 300, 900, 5, 'Hz'],
+    ...CW_CONTINUOUS_LEVELS.map(([field, label, min, max, step, unit]) =>
+      [field, label, min, max, step, unit] as const),
     ['breakInDelay', 'Break-in delay', 0, 255, 1, ''],
   ] as const;
   export type CwLevelField = (typeof CW_LEVELS)[number][0];
@@ -123,34 +125,52 @@
 </script>
 
 <script lang="ts">
+  import { onDestroy, untrack } from 'svelte';
   import {
-    projectControlFeedbackPresentation,
-    type ControlFeedbackPresentation,
     type ControlFeedbackPresentationInput,
-    type ControlFeedbackPresentationState,
     type PresentationPhase,
   } from '../primitives/control-feedback/control-feedback-presentation';
+  import { createCommittedScalar } from '../primitives/scalar/committed-scalar.svelte';
+  import { clamp, snapToStep } from '../primitives/scalar/value-control-core';
+  import {
+    bindChoiceInstrument,
+    bindToggleInstrument,
+  } from '../primitives/control-instruments/control-instrument-behavior';
+  import type { CwKeyerInstrumentHandles } from './CwKeyerInstrumentHost.svelte';
   import type { RadioViewModel } from './radio-view-model';
+
+  type BreakInDelayFeedback = ControlFeedbackPresentationInput<number> & {
+    readonly sessionEpoch?: number;
+    readonly scope?: Readonly<{ control: string; receiver: number; slot?: string }>;
+  };
 
   interface Props {
     view: RadioViewModel;
+    continuousHandles: CwKeyerInstrumentHandles;
+    showKeyerSpeed?: boolean;
+    showPitchHz?: boolean;
+    standard?: boolean;
     onBreakInMode?: (mode: number) => void;
     onLevelChange?: (field: CwLevelField, value: number) => void;
     onApfOn?: (on: boolean) => void;
     onTwinPeakToggle?: () => void;
     onReversePaddleToggle?: () => void;
-    breakInDelayFeedback?: Readonly<ControlFeedbackPresentationInput<number>>;
+    breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
     autoTuneAvailable?: boolean;
     onAutoTune?: () => void;
   }
   let {
-    view, onBreakInMode, onLevelChange, onApfOn, onTwinPeakToggle, onReversePaddleToggle,
+    view, continuousHandles, showKeyerSpeed = true, showPitchHz = true, standard = false,
+    onBreakInMode, onLevelChange, onApfOn, onTwinPeakToggle, onReversePaddleToggle,
     breakInDelayFeedback,
     autoTuneAvailable = false, onAutoTune,
   }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
   let cw = $derived(view.cwKeyer);
+  let extraOpen = $state(false);
+  let rxMode = $derived(view.modeFilter?.currentMode.reading.status === 'known'
+    ? view.modeFilter.currentMode.reading.value : UNKNOWN_TEXT);
   /** Rule 2. The model's ONE permit, READ. No second derivation exists here —
    *  `getFrequencyPermit`, `txBands` and `band` are not imported at all. */
   let permitAllowed = $derived(view.txPermit.status === 'allowed');
@@ -158,8 +178,38 @@
   let breakInReason = $derived(
     view.disabledReasons.find((r) => r.field === 'cwKeyer.breakIn')?.code,
   );
+  const breakInId = $props.id();
+  const breakInPostureId = `${breakInId}-posture`;
+  const breakInReasonId = `${breakInId}-reason`;
   const mutexed = (field: 'apf' | 'twinPeak'): boolean =>
     view.disabledReasons.some((r) => r.field === `cwKeyer.${field}`);
+  const reversePaddleToggle = bindToggleInstrument(() => ({
+    field: cw?.reversePaddle,
+    // The handler owns its zero-argument inversion; the binding's next value
+    // is intentionally not forwarded.
+    invoke: () => onReversePaddleToggle?.(),
+  }));
+  const twinPeakToggle = bindToggleInstrument(() => ({
+    field: cw?.twinPeak,
+    blocked: mutexed('twinPeak'),
+    // The handler owns its zero-argument inversion; the binding's next value
+    // is intentionally not forwarded.
+    invoke: () => onTwinPeakToggle?.(),
+  }));
+  const apfChoice = bindChoiceInstrument(() => {
+    const field = cw?.apf;
+    return {
+      field: field === undefined ? undefined : {
+        availability: field.availability,
+        reading: field.reading.status === 'known'
+          ? { status: 'known' as const, value: field.reading.value > 0 }
+          : { status: 'unknown' as const },
+      },
+      blocked: mutexed('apf'),
+      choices: APF_CHOICES.map(([, on]) => on),
+      invoke: (on: boolean) => onApfOn?.(on),
+    };
+  });
 
   /** The handler half of every gate. `disabled` alone is not enough: a design
    *  language may restyle these controls, and a programmatic click must not
@@ -167,9 +217,15 @@
   function setBreakIn(mode: number): void {
     if (cw && usable(cw.breakIn) && permitAllowed) onBreakInMode?.(mode);
   }
+  function toggleBreakIn(label: 'semi' | 'full', mode: 1 | 2): void {
+    setBreakIn(cw?.breakIn.reading.status === 'known' && cw.breakIn.reading.value === label ? 0 : mode);
+  }
   function setLevel(field: CwLevelField, value: number): void {
     if (cw && usable(cw[field])) onLevelChange?.(field, value);
   }
+  onDestroy(() => {
+    breakInDelayScalar.destroy();
+  });
   const BUSY_BREAK_IN_DELAY_PHASES: ReadonlySet<PresentationPhase> = new Set([
     'submitted', 'queued', 'dispatched', 'awaiting-confirmation',
   ]);
@@ -204,8 +260,8 @@
     return target === null && requestedTarget !== null && outcome?.phase === phase
       && typeof transitionId === 'string' && transitionId.length > 0;
   }
-  let effectiveBreakInDelayFeedback = $derived.by<Readonly<ControlFeedbackPresentationInput<number>>>(() => {
-    let candidate: Readonly<ControlFeedbackPresentationInput<number>>;
+  let effectiveBreakInDelayFeedback = $derived.by<Readonly<BreakInDelayFeedback>>(() => {
+    let candidate: Readonly<BreakInDelayFeedback>;
     if (breakInDelayFeedback !== undefined) candidate = breakInDelayFeedback;
     else {
       const field = cw?.breakInDelay;
@@ -220,125 +276,78 @@
     catch { return unavailableFeedback; }
   });
   let hasBreakInDelayFeedback = $derived(breakInDelayFeedback !== undefined);
-  let breakInDelayPresentationMemory: Readonly<{
-    state: ControlFeedbackPresentationState; announcement: string | null;
-  }> = { state: { announcedTransitionIds: [] }, announcement: null };
-  let breakInDelayPresentation = $derived.by<Readonly<ControlFeedbackPresentation> & {
-    readonly announcement: string | null;
-  }>(() => {
-    const next = projectControlFeedbackPresentation(
-      effectiveBreakInDelayFeedback,
-      breakInDelayPresentationMemory.state,
-      (target) => String(target),
-    );
-    const announcement = next.politeAnnouncement?.message
-      ?? breakInDelayPresentationMemory.announcement;
-    breakInDelayPresentationMemory = { state: next.state, announcement };
-    return Object.freeze({ ...next, announcement });
-  });
-
+  let breakInDelayContextKey = $derived(JSON.stringify([
+    'cw-keyer.break-in-delay',
+    breakInDelayFeedback?.sessionEpoch ?? null,
+    breakInDelayFeedback?.scope?.control ?? null,
+    breakInDelayFeedback?.scope?.receiver ?? null,
+    breakInDelayFeedback?.scope?.slot ?? null,
+  ]));
   const INTEGRATED_RANGE_POLICY = { 'feedback-policy': 'feedback-integrated' } as const;
-  const RADIO_BACKED_RANGE_POLICY = { 'feedback-policy': 'radio-backed' } as const;
-  let breakInDelayBusy = $derived(BUSY_BREAK_IN_DELAY_PHASES.has(effectiveBreakInDelayFeedback.phase));
   let breakInDelayEditable = $derived(
     cw !== undefined && usable(cw.breakInDelay)
       && effectiveBreakInDelayFeedback.phase !== 'unavailable',
   );
-  let breakInDelayAuthority = $derived(JSON.stringify([
-    effectiveBreakInDelayFeedback.transitionId, effectiveBreakInDelayFeedback.phase,
-    effectiveBreakInDelayFeedback.confirmed, effectiveBreakInDelayFeedback.target,
-    effectiveBreakInDelayFeedback.requestedTarget, effectiveBreakInDelayFeedback.outcome?.phase ?? null,
-  ]));
-  let breakInDelayDraft: number | null = $state(null);
-  let breakInDelayDraftAuthority: string | null = $state(null);
-  let activeBreakInDelayDraft = $derived(
-    breakInDelayDraftAuthority === breakInDelayAuthority ? breakInDelayDraft : null,
+  const breakInDelayScalar = createCommittedScalar(
+    () => ({
+      feedback: effectiveBreakInDelayFeedback,
+      editable: breakInDelayEditable,
+      contextKey: breakInDelayContextKey,
+    }),
+    {
+      accepts: validLevel,
+      normalize: (value) => snapToStep(clamp(
+        value, breakInDelayDomain[2], breakInDelayDomain[3],
+      ), breakInDelayDomain[4], breakInDelayDomain[2]),
+      draftPolicy: 'reject-invalid',
+      describeTarget: String,
+    },
+    (value) => setLevel('breakInDelay', value),
   );
-  let breakInDelayDisplayed = $derived(
-    activeBreakInDelayDraft
-      ?? (breakInDelayBusy
-        ? (effectiveBreakInDelayFeedback.target
-          ?? effectiveBreakInDelayFeedback.requestedTarget
-          ?? effectiveBreakInDelayFeedback.confirmed)
-        : effectiveBreakInDelayFeedback.confirmed),
+  const breakInDelayLease = breakInDelayScalar.attachRenderer();
+  let breakInDelayView = $state(untrack(() => breakInDelayLease.view));
+  $effect.pre(() => { breakInDelayView = breakInDelayLease.view; });
+  let breakInDelayBusy = $derived(
+    breakInDelayView.presentation.attributes['aria-busy'] === 'true',
   );
   let breakInDelayPhaseLabel = $derived(
-    activeBreakInDelayDraft !== null
+    breakInDelayView.editing
       ? 'draft'
-      : effectiveBreakInDelayFeedback.phase.replaceAll('-', ' '),
+      : breakInDelayView.feedback.phase.replaceAll('-', ' '),
   );
   let breakInDelayValueText = $derived.by(() => {
-    const confirmed = effectiveBreakInDelayFeedback.confirmed;
-    if (effectiveBreakInDelayFeedback.phase === 'unavailable' || confirmed === null) {
+    const confirmed = breakInDelayView.confirmed;
+    if (confirmed === null) {
       return 'Break-in delay unavailable';
     }
-    if (activeBreakInDelayDraft !== null) {
-      return `Draft ${activeBreakInDelayDraft}; last confirmed ${confirmed}`;
+    if (breakInDelayView.draft !== null) {
+      return `Draft ${breakInDelayView.draft}; last confirmed ${confirmed}`;
     }
     if (breakInDelayBusy) {
-      return `Requested ${breakInDelayDisplayed}; last confirmed ${confirmed}`;
+      return `Requested ${breakInDelayView.displayed}; last confirmed ${confirmed}`;
     }
-    const requested = effectiveBreakInDelayFeedback.requestedTarget;
-    if (effectiveBreakInDelayFeedback.outcome !== null && requested !== null
-      && effectiveBreakInDelayFeedback.outcome.phase !== 'confirmed') {
-      return `Confirmed ${confirmed}; request ${requested} ${effectiveBreakInDelayFeedback.outcome.phase}`;
+    const requested = breakInDelayView.feedback.requestedTarget;
+    if (breakInDelayView.feedback.outcome !== null && requested !== null
+      && breakInDelayView.feedback.outcome.phase !== 'confirmed') {
+      return `Confirmed ${confirmed}; request ${requested} ${breakInDelayView.feedback.outcome.phase}`;
     }
     return `Confirmed ${confirmed}`;
   });
-  let breakInDelayCancelled = false;
-  function restoreBreakInDelay(target: HTMLInputElement): void {
-    target.value = String(effectiveBreakInDelayFeedback.confirmed ?? Number(target.min));
-  }
   function noteBreakInDelayInput(target: HTMLInputElement): void {
-    breakInDelayCancelled = false;
-    const candidate = target.valueAsNumber;
-    if (breakInDelayEditable && validLevel(candidate)) {
-      breakInDelayDraft = candidate;
-      breakInDelayDraftAuthority = breakInDelayAuthority;
-    }
+    breakInDelayLease.input(target.valueAsNumber);
   }
   function commitBreakInDelay(target: HTMLInputElement): void {
-    if (breakInDelayCancelled) {
-      breakInDelayCancelled = false;
-      restoreBreakInDelay(target);
-      return;
-    }
-    if (breakInDelayDraft !== null && breakInDelayDraftAuthority !== breakInDelayAuthority) {
-      breakInDelayDraft = null;
-      breakInDelayDraftAuthority = null;
-      restoreBreakInDelay(target);
-      return;
-    }
-    const candidate = activeBreakInDelayDraft ?? target.valueAsNumber;
-    const min = Number(target.min);
-    const max = Number(target.max);
-    if (Number.isFinite(candidate) && Number.isFinite(min) && Number.isFinite(max)) {
-      if (breakInDelayEditable) {
-        setLevel('breakInDelay', Math.min(max, Math.max(min, Math.round(candidate))));
-      }
-    }
-    breakInDelayDraft = null;
-    breakInDelayDraftAuthority = null;
+    const restored = breakInDelayLease.commit(target.valueAsNumber);
+    if (restored !== null) target.value = String(restored);
   }
   function cancelBreakInDelay(target: HTMLInputElement): void {
-    breakInDelayCancelled = true;
-    breakInDelayDraft = null;
-    breakInDelayDraftAuthority = null;
-    restoreBreakInDelay(target);
+    const restored = breakInDelayLease.cancel();
+    if (restored !== null) target.value = String(restored);
   }
   function keyBreakInDelay(event: KeyboardEvent & { currentTarget: HTMLInputElement }): void {
     if (event.key !== 'Escape') return;
     event.preventDefault();
     cancelBreakInDelay(event.currentTarget);
-  }
-  function setApf(on: boolean): void {
-    if (cw && usable(cw.apf) && !mutexed('apf')) onApfOn?.(on);
-  }
-  function toggleTwinPeak(): void {
-    if (cw && usable(cw.twinPeak) && !mutexed('twinPeak')) onTwinPeakToggle?.();
-  }
-  function toggleReversePaddle(): void {
-    if (cw && usable(cw.reversePaddle)) onReversePaddleToggle?.();
   }
   function requestRxFrequencyCorrection(): void {
     if (autoTuneAvailable) onAutoTune?.();
@@ -348,54 +357,88 @@
 {#if cw}
   <!-- Rule 4: named for what it actually holds, not "CW". -->
   <section
-    class="cw-keyer-surface" data-testid="cw-keyer-surface"
+    class="cw-keyer-surface" class:standard data-testid="cw-keyer-surface"
     aria-label="CW keyer and audio peak filters"
   >
+    {#if standard}
+      <div class="cw-mode-line" data-testid="cw-keyer-rx-mode">
+        <span>RX MODE</span><output>{rxMode}</output>
+      </div>
+      {#if showPitchHz}
+        {@render continuousHandles.pitchHz({
+          form: 'hbar', compact: false, showLabel: true, showValue: true,
+          variant: 'hardware-illuminated',
+        })}
+      {/if}
+      {#if showKeyerSpeed}
+        {@render continuousHandles.keyerSpeed({
+          form: 'hbar', compact: false, showLabel: true, showValue: true,
+          variant: 'hardware-illuminated',
+        })}
+      {/if}
+    {/if}
     {#if cw.breakIn.availability.structural}
       <div
-        class="cw-keyer-row" role="radiogroup" aria-label="Break-in"
-        data-testid="cw-keyer-break-in"
+        class="cw-keyer-block" data-testid="cw-keyer-break-in"
         data-posture={breakInPosture(cw.breakIn)}
         data-permitted={permitAllowed}
       >
-        {#each BREAK_IN_CHOICES as [label, mode] (mode)}
-          <button
-            type="button" role="radio" class="cw-keyer-choice"
-            data-testid={`cw-keyer-break-in-${label}`}
-            aria-checked={cw.breakIn.reading.status === 'known'
-              && cw.breakIn.reading.value === label}
-            disabled={!usable(cw.breakIn) || !permitAllowed}
-            onclick={() => setBreakIn(mode)}
-          >{label}</button>
-        {/each}
+        <div class="cw-keyer-row" role="radiogroup" aria-label="Break-in">
+          {#each (standard ? BREAK_IN_CHOICES.filter(([label]) => label !== 'off') : BREAK_IN_CHOICES) as [label, mode] (mode)}
+            <button
+              type="button" role="radio" class="cw-keyer-choice"
+              data-testid={`cw-keyer-break-in-${label}`}
+              aria-checked={cw.breakIn.reading.status === 'known'
+                && cw.breakIn.reading.value === label}
+              aria-describedby={`${breakInPostureId}${!permitAllowed && breakInReason ? ` ${breakInReasonId}` : ''}`}
+              disabled={!usable(cw.breakIn) || !permitAllowed}
+              onclick={() => standard && mode !== 0 ? toggleBreakIn(label as 'semi' | 'full', mode) : setBreakIn(mode)}
+            >{standard ? label.toUpperCase() : label}</button>
+          {/each}
+        </div>
         <!-- Rule 5: the posture is TEXT, so it survives forced-colors and so
              "armed but not permitted" reads differently from "off and not
              permitted" — the operator's radio can still key from its own
-             paddle while this UI refuses to change the setting. -->
-        <output data-testid="cw-keyer-posture">{POSTURE_LABEL[breakInPosture(cw.breakIn)]}</output>
+             paddle while this UI refuses to change the setting. It is a
+             SENTENCE, so it gets its own line below the keys and may wrap. -->
+        <p id={breakInPostureId} class="cw-keyer-sentence" class:sr-only={standard}>
+          <output data-testid="cw-keyer-posture">{POSTURE_LABEL[breakInPosture(cw.breakIn)]}</output>
+        </p>
         {#if !permitAllowed && breakInReason}
-          <output data-testid="cw-keyer-break-in-blocked" data-reason={breakInReason}
-          >{breakInBlockedLabel(breakInReason)}</output>
+          <p id={breakInReasonId} class="cw-keyer-sentence" class:sr-only={standard}>
+            <output data-testid="cw-keyer-break-in-blocked" data-reason={breakInReason}
+            >{breakInBlockedLabel(breakInReason)}</output>
+          </p>
         {/if}
       </div>
     {/if}
 
-    {#each CW_LEVELS as [field, label, min, max, step, unit] (field)}
+    {#if !standard}
+      {#if showKeyerSpeed}{@render continuousHandles.keyerSpeed()}{/if}
+      {#if showPitchHz}{@render continuousHandles.pitchHz()}{/if}
+    {/if}
+
+    {#snippet cwSettings()}
+    {#each CW_LEVELS.filter(([field]) => field !== 'keyerSpeed' && field !== 'pitchHz') as [field, label, min, max, step, unit] (field)}
       {@const f = cw[field]}
-      {#if f.availability.structural}
-        <label class="cw-keyer-level" data-testid={`cw-keyer-${field}`} data-observed={usable(f)}>
+      {#if f.availability.structural && (!standard || field !== 'breakInDelay'
+        || (cw.breakIn.reading.status === 'known' && cw.breakIn.reading.value === 'semi'))}
+        <label
+          class="cw-keyer-level" data-testid={`cw-keyer-${field}`}
+          data-observed={usable(f)}
+        >
           <span class="cw-keyer-name">{label}</span>
           {#if field === 'breakInDelay'}
             <input
               {...INTEGRATED_RANGE_POLICY} type="range" {min} {max} {step}
-              value={breakInDelayDisplayed ?? (hasBreakInDelayFeedback ? undefined : min)}
-              disabled={hasBreakInDelayFeedback ? !breakInDelayEditable : !usable(f)}
+              value={breakInDelayView.displayed ?? (hasBreakInDelayFeedback ? undefined : min)}
+              disabled={hasBreakInDelayFeedback ? !breakInDelayView.editable : !usable(f)}
               data-command-phase={hasBreakInDelayFeedback
-                ? breakInDelayPresentation.attributes['data-command-phase'] : undefined}
+                ? breakInDelayView.presentation.attributes['data-command-phase'] : undefined}
               aria-busy={hasBreakInDelayFeedback
-                ? breakInDelayPresentation.attributes['aria-busy'] : undefined}
-              aria-valuenow={hasBreakInDelayFeedback && breakInDelayDisplayed !== null
-                ? breakInDelayDisplayed : undefined}
+                ? breakInDelayView.presentation.attributes['aria-busy'] : undefined}
+              aria-valuenow={hasBreakInDelayFeedback && breakInDelayView.displayed !== null
+                ? breakInDelayView.displayed : undefined}
               aria-valuetext={hasBreakInDelayFeedback ? breakInDelayValueText : undefined}
               oninput={(event) => noteBreakInDelayInput(event.currentTarget)}
               onchange={(event) => commitBreakInDelay(event.currentTarget)}
@@ -405,47 +448,47 @@
             {#if hasBreakInDelayFeedback}
             <output
               data-testid="cw-keyer-breakInDelay-value"
-              data-command-phase={effectiveBreakInDelayFeedback.phase}
-            >{effectiveBreakInDelayFeedback.phase === 'unavailable'
-              || breakInDelayDisplayed === null ? UNKNOWN_TEXT : breakInDelayDisplayed}
+              data-command-phase={breakInDelayView.feedback.phase}
+            >{breakInDelayView.displayed === null ? UNKNOWN_TEXT : breakInDelayView.displayed}
               <span class:command-pending={breakInDelayBusy}>{breakInDelayPhaseLabel}</span>
             </output>
-            {#if breakInDelayPresentation.announcement !== null}
+            {#if breakInDelayView.announcement !== null}
               <span
                 class="sr-only" role="status" aria-live="polite" aria-atomic="true"
                 data-control-feedback-status
-              >{breakInDelayPresentation.announcement}</span>
+              >{breakInDelayView.announcement}</span>
             {/if}
             {:else}
               <output data-testid="cw-keyer-breakInDelay-value">{textOf(f)} {unit}</output>
             {/if}
-          {:else}
-            <input
-              {...RADIO_BACKED_RANGE_POLICY} type="range" {min} {max} {step}
-              value={f.reading.status === 'known' ? f.reading.value : min}
-              disabled={!usable(f)}
-              oninput={(event) => setLevel(field, event.currentTarget.valueAsNumber)}
-            />
-            <output data-testid={`cw-keyer-${field}-value`}>{textOf(f)} {unit}</output>
           {/if}
         </label>
       {/if}
     {/each}
 
-    {#if autoTuneAvailable}
-      <button
-        type="button" class="cw-keyer-toggle" data-testid="cw-keyer-auto-tune"
-        onclick={requestRxFrequencyCorrection}
-      >RX frequency correction</button>
-    {/if}
-
     {#if cw.reversePaddle.availability.structural}
       <button
         type="button" class="cw-keyer-toggle" data-testid="cw-keyer-reverse-paddle"
         aria-pressed={pressedOf(cw.reversePaddle)}
-        disabled={!usable(cw.reversePaddle)}
-        onclick={toggleReversePaddle}
+        disabled={!reversePaddleToggle.available}
+        onclick={() => reversePaddleToggle.invoke()}
       >Reverse paddle: {textOf(cw.reversePaddle)}</button>
+    {/if}
+    {/snippet}
+
+    {#if standard}
+      <div id="cw-extra-settings" class="cw-extra-settings" role="group"
+        aria-label="CW additional settings" hidden={!extraOpen}>
+        {@render cwSettings()}
+        {#if view.txAux}
+          <p class="cw-keyer-row" data-testid="cw-keyer-sidetone"
+            data-observed={usable(view.txAux.monitorLevel)}>
+            Sidetone level: {textOf(view.txAux.monitorLevel)}
+          </p>
+        {/if}
+      </div>
+    {:else}
+      {@render cwSettings()}
     {/if}
 
     {#if cw.apf.availability.structural}
@@ -454,46 +497,73 @@
            ordinal and the ordinal itself is shown verbatim; "which type" would
            need an `apfOn`/`apfType` fact that slice 9A deliberately did not
            promote (MOR-1296 open question 2) — flagged, not guessed. -->
-      <div
-        class="cw-keyer-row" role="radiogroup" aria-label="Audio peak filter"
-        data-testid="cw-keyer-apf" data-observed={usable(cw.apf)}
-      >
-        {#each APF_CHOICES as [label, on] (label)}
-          <button
-            type="button" role="radio" class="cw-keyer-choice"
-            data-testid={`cw-keyer-apf-${label}`}
-            aria-checked={cw.apf.reading.status === 'known'
-              && (cw.apf.reading.value > 0) === on}
-            disabled={!usable(cw.apf) || mutexed('apf')}
-            onclick={() => setApf(on)}
-          >APF {label}</button>
-        {/each}
-        <output data-testid="cw-keyer-apf-value">{textOf(cw.apf)}</output>
+      <div class="cw-keyer-block" class:cw-standard-filter={standard}>
+        <div
+          class="cw-keyer-row" role={standard ? undefined : 'radiogroup'} aria-label="Audio peak filter"
+          data-testid="cw-keyer-apf" data-observed={usable(cw.apf)}
+        >
+          {#if standard}
+            <button
+              type="button" class="cw-keyer-toggle" data-testid="cw-keyer-apf-on"
+              aria-pressed={apfChoice.isSelected(true)}
+              aria-describedby={mutexed('apf') ? 'cw-keyer-apf-reason' : undefined}
+              disabled={!apfChoice.available}
+              onclick={() => apfChoice.invoke(!apfChoice.isSelected(true))}
+            >APF</button>
+          {:else}
+            {#each APF_CHOICES as [label, on] (label)}
+              <button
+                type="button" role="radio" class="cw-keyer-choice"
+                data-testid={`cw-keyer-apf-${label}`}
+                aria-checked={apfChoice.isSelected(on)}
+                aria-describedby={mutexed('apf') ? 'cw-keyer-apf-reason' : undefined}
+                disabled={!apfChoice.available}
+                onclick={() => apfChoice.invoke(on)}
+              >APF {label}</button>
+            {/each}
+          {/if}
+          <output class:sr-only={standard} data-testid="cw-keyer-apf-value">{textOf(cw.apf)}</output>
+        </div>
         {#if mutexed('apf')}
-          <output data-testid="cw-keyer-apf-mutex" data-reason="mutually-exclusive-control"
-          >{MUTEX_LABEL.apf}</output>
+          <p class="cw-keyer-sentence" class:sr-only={standard}>
+            <output id="cw-keyer-apf-reason" data-testid="cw-keyer-apf-mutex" data-reason="mutually-exclusive-control"
+            >{MUTEX_LABEL.apf}</output>
+          </p>
         {/if}
       </div>
     {/if}
 
     {#if cw.twinPeak.availability.structural}
-      <div class="cw-keyer-row" data-testid="cw-keyer-twin-peak" data-observed={usable(cw.twinPeak)}>
-        <button
-          type="button" class="cw-keyer-toggle" data-testid="cw-keyer-twin-peak-toggle"
-          aria-pressed={pressedOf(cw.twinPeak)}
-          disabled={!usable(cw.twinPeak) || mutexed('twinPeak')}
-          onclick={toggleTwinPeak}
-        >TPF: {textOf(cw.twinPeak)}</button>
+      <div class="cw-keyer-block" class:cw-standard-filter={standard}>
+        <div class="cw-keyer-row" data-testid="cw-keyer-twin-peak" data-observed={usable(cw.twinPeak)}>
+          <button
+            type="button" class="cw-keyer-toggle" data-testid="cw-keyer-twin-peak-toggle"
+            aria-pressed={pressedOf(cw.twinPeak)}
+            aria-describedby={mutexed('twinPeak') ? 'cw-keyer-twin-peak-reason' : undefined}
+            disabled={!twinPeakToggle.available}
+            onclick={() => twinPeakToggle.invoke()}
+          >{standard ? 'TPF' : `TPF: ${textOf(cw.twinPeak)}`}</button>
+        </div>
         {#if mutexed('twinPeak')}
           <!-- Rule 4: RTTY is named, so a permanently-disabled control in a
-               block the operator reads as "CW" is never unexplained. -->
-          <output data-testid="cw-keyer-twin-peak-mutex" data-reason="mutually-exclusive-control"
-          >{MUTEX_LABEL.twinPeak}</output>
+               block the operator reads as "CW" is never unexplained. It is a
+               SENTENCE, so it leaves the keys row for its own line. -->
+          <p class="cw-keyer-sentence" class:sr-only={standard}>
+            <output id="cw-keyer-twin-peak-reason" data-testid="cw-keyer-twin-peak-mutex" data-reason="mutually-exclusive-control"
+            >{MUTEX_LABEL.twinPeak}</output>
+          </p>
         {/if}
       </div>
     {/if}
 
-    {#if view.txAux}
+    {#if autoTuneAvailable}
+      <button
+        type="button" class="cw-keyer-toggle" data-testid="cw-keyer-auto-tune"
+        onclick={requestRxFrequencyCorrection}
+      >{standard ? 'AUTO TUNE' : 'RX frequency correction'}</button>
+    {/if}
+
+    {#if view.txAux && !standard}
       <!-- Sidetone level IS `txAux.monitorLevel` (MOR-1296 §4): read there,
            never duplicated as a second fact and never given a second control —
            the one control lives in `TxAuxSurface`. Readout only. -->
@@ -501,17 +571,51 @@
         Sidetone level: {textOf(view.txAux.monitorLevel)}
       </p>
     {/if}
+
+    {#if standard && (cw.reversePaddle.availability.structural
+      || cw.breakInDelay.availability.structural || view.txAux !== undefined)}
+      <button type="button" class="cw-keyer-toggle cw-extra-toggle"
+        aria-label="CW additional settings" aria-expanded={extraOpen}
+        aria-controls="cw-extra-settings"
+        onclick={() => (extraOpen = !extraOpen)}
+      >SETTINGS {extraOpen ? '▴' : '▾'}</button>
+    {/if}
   </section>
 {/if}
 
 <style>
   /* Structure only — a design language owns colour and must never become the
      sole state channel (MOR-977, forced-colors). Nothing here animates. */
-  .cw-keyer-surface { display: flex; flex-direction: column; gap: 0.25rem; }
+  .cw-keyer-surface, .cw-keyer-block { display: flex; flex-direction: column; gap: 0.25rem; }
   .cw-keyer-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
+  .cw-keyer-sentence { margin: 0; }
   .cw-keyer-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .cw-keyer-name { min-width: 12ch; }
   .cw-keyer-choice[aria-checked='true'], .cw-keyer-toggle[aria-pressed='true'] { font-weight: 700; }
+  .cw-keyer-surface.standard {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;
+  }
+  .standard .cw-mode-line {
+    grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .standard .cw-mode-line span { color: var(--v2-text-dim); }
+  .standard .cw-mode-line output { color: var(--v2-text-bright); }
+  .standard :global(.cw-keyer-level--presented) { grid-column: 1 / -1; }
+  .standard [data-testid='cw-keyer-break-in'] { grid-column: span 2; }
+  .standard [data-testid='cw-keyer-break-in'] .cw-keyer-row {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
+  }
+  .standard [data-testid='cw-keyer-apf'],
+  .standard [data-testid='cw-keyer-twin-peak'] { display: contents; }
+  .standard .cw-standard-filter { display: contents; }
+  .standard [data-testid='cw-keyer-auto-tune'], .standard .cw-extra-toggle { grid-column: span 2; }
+  .standard .cw-extra-settings {
+    grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px;
+  }
+  .standard .cw-extra-settings[hidden] { display: none; }
+  .standard .cw-keyer-level, .standard [data-testid='cw-keyer-reverse-paddle'],
+  .standard [data-testid='cw-keyer-sidetone'] { grid-column: 1 / -1; }
+  .standard button { min-width: 0; }
   /* Second channel beside the unknown TEXT, never the only one. */
   [data-observed='false'] { font-style: italic; }
   .command-pending { font-style: italic; }

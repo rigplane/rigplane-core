@@ -881,8 +881,10 @@ async def _run_hardware(
         return 3, artifact
 
     # Resolve the radio profile for per-radio validation classification
-    # (write-only controls, MOR-208). Best-effort: unknown model → no profile.
+    # (write-only controls, MOR-208; fixed-value checks, MOR-2105 part 2).
+    # Best-effort: unknown model → no profile.
     write_only_capabilities: frozenset[str] = frozenset()
+    fixed_value_checks: dict[str, str] = {}
     if config.model:
         from rigplane.profiles import get_radio_profile
 
@@ -892,6 +894,7 @@ async def _run_hardware(
             profile = None
         if profile is not None:
             write_only_capabilities = profile.write_only_controls
+            fixed_value_checks = profile.fixed_value_checks
 
     transport = _transport_info_from_config(config)
     radio = create_radio(config)
@@ -910,6 +913,7 @@ async def _run_hardware(
                 allow_writes=not bool(getattr(args, "read_only", False)),
                 per_check_timeout=getattr(args, "timeout", 5.0) or 5.0,
                 write_only_capabilities=write_only_capabilities,
+                fixed_value_checks=fixed_value_checks,
                 prompter=_build_prompter(args),
                 tx_actuate=_tx_actuate_enabled(args),
                 audio_probe_frames=audio_probe_frames,
@@ -1101,6 +1105,9 @@ async def _run_hardware_hamlib(
                         per_check_timeout=timeout,
                         write_only_capabilities=(
                             profile.write_only_controls if profile else frozenset()
+                        ),
+                        fixed_value_checks=(
+                            profile.fixed_value_checks if profile else {}
                         ),
                         prompter=_build_prompter(args),
                         tx_actuate=_tx_actuate_enabled(args),

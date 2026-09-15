@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from rigplane.exceptions import AuthenticationError
+from rigplane.exceptions import AuthenticationError, CommandError
 from rigplane.radio import IcomRadio
 from rigplane.types import Mode
 
@@ -31,6 +31,7 @@ class TestConnect:
             port=mock_radio.control_port,
             username="testuser",
             password="testpass",
+            model="IC-7610",
         )
         with fast_connect():
             await radio.connect()
@@ -46,6 +47,7 @@ class TestConnect:
                 port=mock_radio.control_port,
                 username="testuser",
                 password="testpass",
+                model="IC-7610",
             ) as radio:
                 assert radio.connected
         # After __aexit__, should be disconnected
@@ -59,6 +61,7 @@ class TestConnect:
             port=mock_radio.control_port,
             username="wronguser",
             password="wrongpass",
+            model="IC-7610",
         )
         with fast_connect():
             with pytest.raises(AuthenticationError):
@@ -76,6 +79,7 @@ class TestConnect:
                     port=mock_radio.control_port,
                     username="testuser",
                     password="testpass",
+                    model="IC-7610",
                 )
                 await radio.connect()
                 assert radio.connected
@@ -227,9 +231,14 @@ class TestAttPreamp:
         level = await connected_radio.get_attenuator_level()
         assert level == 18
 
-    async def test_attenuator_bool_on(self, connected_radio: IcomRadio) -> None:
-        await connected_radio.set_attenuator(True)
-        assert await connected_radio.get_attenuator() is True
+    async def test_attenuator_bool_on_refused_for_stepped_attenuator(
+        self, connected_radio: IcomRadio
+    ) -> None:
+        """MOR-2086: the mock defaults to IC-7610, which declares 15
+        non-zero attenuator steps -- the boolean "on" form has no single
+        defined answer there, so it is refused rather than guessing."""
+        with pytest.raises(CommandError, match="set_attenuator_level"):
+            await connected_radio.set_attenuator(True)
 
     async def test_attenuator_bool_off(self, connected_radio: IcomRadio) -> None:
         await connected_radio.set_attenuator_level(18)

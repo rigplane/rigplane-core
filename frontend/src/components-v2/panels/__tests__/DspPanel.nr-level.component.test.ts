@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 
 import type { Capabilities, ControlDomain } from '$lib/types/capabilities';
+import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 
 const handlers = {
   onNrModeChange: vi.fn(),
@@ -21,6 +22,9 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
     get state() { return runtimeState.state; },
     get caps() { return runtimeState.caps; },
+    get controlSession() {
+      return { state: 'disconnected', epoch: -1 } satisfies ControlSessionSnapshot;
+    },
   },
 }));
 

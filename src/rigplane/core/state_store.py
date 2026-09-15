@@ -769,7 +769,7 @@ class StateStore:
         This is deliberately not an observation: removing prior-session proof
         must not manufacture a fresh value or source. A semantic revision is
         emitted when at least one field existed so snapshot consumers publish
-        the corresponding ``missing`` field status.
+        the field as unobserved again.
         """
 
         removed: list[FieldChange] = []

@@ -110,13 +110,7 @@ describe('the declared reflow breakpoints and the shell agree, in both direction
 });
 
 describe('portrait-mobile ruling: STACK, not exclude', () => {
-  // The ruling, pinned at the manifest end. A fluid layout has no arithmetic
-  // exclusion from a portrait phone the way a fixed-native one does, and the
-  // two ways to build one back (a viewport consumer of the frozen sizing
-  // field, or a second mobile behavior state machine) are both banned. Kills:
-  // repurposing `fallbackLayoutId` as a viewport escape hatch, which would
-  // also silently break MOR-1068's frozen topology table.
-  it('stays fluid, and keeps a TOPOLOGY fallback rather than a viewport one', () => {
+  it('stays fluid and keeps its fallback', () => {
     expect(dualReceiverCockpitLayout.stageSizing.mode).toBe('fluid');
     expect(dualReceiverCockpitLayout.fallbackLayoutId).toBe('sdr-test');
   });

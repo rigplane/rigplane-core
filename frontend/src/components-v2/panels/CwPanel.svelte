@@ -1,25 +1,29 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import '../controls/control-button.css';
   import { HardwareButton } from '$lib/Button';
-  import { ValueControl, rawToPercentDisplay } from '../controls/value-control';
+  import { ValueControl } from '../controls/value-control';
+  import { clamp, rawToPercentDisplay, snapToStep } from '../../primitives/scalar/value-control-core';
   import { getLocale } from '$lib/i18n';
+  import type { PresentationPhase } from '../../primitives/control-feedback/control-feedback-presentation';
+  import { createCommittedScalar } from '../../primitives/scalar/committed-scalar.svelte';
   import {
-    projectControlFeedbackPresentation,
-    type PresentationPhase,
-  } from '../../primitives/control-feedback/control-feedback-presentation';
+    createContinuousScalar, createDiscreteContinuousScalarPolicy,
+    createHBarContinuousScalarPolicy,
+  } from '../../primitives/scalar/continuous-scalar.svelte';
 
   import { isApfActive } from './cw-panel-logic';
   import {
     deriveCwProps,
     getBreakInDelayControlFeedback,
+    getCwPitchControlFeedback,
     getCwHandlers,
+    getKeySpeedControlFeedback,
   } from '$lib/runtime/adapters/panel-adapters';
 
   const handlers = getCwHandlers();
   let p = $derived(deriveCwProps());
 
-  let cwPitch = $derived(p.cwPitch ?? 600);
-  let keySpeed = $derived(p.keySpeed ?? 12);
   let breakIn = $derived(p.breakIn ?? 0);
   let apfMode = $derived(p.apfMode ?? 0);
   let twinPeak = $derived(p.twinPeak ?? false);
@@ -63,50 +67,31 @@
     ? candidateBreakInDelayFeedback : { ...candidateBreakInDelayFeedback,
       confirmed: null, target: null, requestedTarget: null, phase: 'unavailable' as const,
       busy: false, availability: 'unavailable' as const, outcome: null, transitionId: null });
-  let breakInDelayAvailable = $derived(
+  let breakInDelayEditable = $derived(
     breakInDelayFeedback.availability === 'available'
       && breakInDelayFeedback.confirmed !== null,
   );
-  let breakInDelayTruth = $derived(
-    breakInDelayFeedback.busy && breakInDelayFeedback.target !== null
-      ? breakInDelayFeedback.target
-      : breakInDelayFeedback.confirmed,
-  );
-  let breakInDelayDraft = $state(0);
-  let breakInDelayEditing = $state(false);
-  let breakInDelayCancelled = $state(false);
-  let breakInDelayDraftAuthority = $state('');
-  let breakInDelayAnnouncement = $state<string | null>(null);
-  const announcedBreakInDelayTransitions = new Set<string>();
   const feedbackIntegratedRange = { 'feedback-policy': 'feedback-integrated' } as const;
-  let breakInDelayPresentation = $derived(projectControlFeedbackPresentation(
-    breakInDelayFeedback,
-    { announcedTransitionIds: [] },
-    rawToPercentDisplay,
-  ));
-  let breakInDelayAuthority = $derived(JSON.stringify([
-    breakInDelayFeedback.sessionEpoch, breakInDelayFeedback.transitionId,
-    breakInDelayFeedback.phase, breakInDelayFeedback.confirmed,
-  ]));
-  $effect(() => {
-    const truth = breakInDelayTruth, authority = breakInDelayAuthority;
-    if (breakInDelayEditing && breakInDelayDraftAuthority !== authority) {
-      breakInDelayCancelled = true;
-      breakInDelayEditing = false;
-    }
-    if (!breakInDelayEditing && truth !== null) breakInDelayDraft = truth;
-  });
-  $effect(() => {
-    const transition = breakInDelayPresentation.politeAnnouncement;
-    if (transition && !announcedBreakInDelayTransitions.has(transition.transitionId)) {
-      announcedBreakInDelayTransitions.add(transition.transitionId);
-      breakInDelayAnnouncement = breakInDelayMessage(
-        transition.phase,
-        breakInDelayFeedback.requestedTarget,
-        breakInDelayFeedback.confirmed,
-      );
-    }
-  });
+  const breakInDelayScalar = createCommittedScalar(
+    () => ({
+      feedback: breakInDelayFeedback,
+      editable: breakInDelayEditable,
+      contextKey: JSON.stringify([
+        breakInDelayFeedback.sessionEpoch,
+        breakInDelayFeedback.scope.control,
+        breakInDelayFeedback.scope.receiver,
+        breakInDelayFeedback.scope.slot ?? null,
+      ]),
+    }),
+    {
+      accepts: validDelay,
+      normalize: (value) => snapToStep(clamp(value, 0, 255), 1, 0),
+      draftPolicy: 'normalize',
+      describeTarget: rawToPercentDisplay,
+    },
+    onBreakInDelayChange,
+  );
+  let breakInDelayView = $derived(breakInDelayScalar.view);
   const delayText = (value: number | null): string =>
     value === null ? '—' : rawToPercentDisplay(value);
   const delayLabel = (): string =>
@@ -129,50 +114,41 @@
     if (phase === 'idle' || phase === 'confirmed') return `${label}: ${canonical}`;
     return `${label} ${delayText(target)}; ${ru ? 'подтверждено' : 'confirmed'} ${canonical}`;
   }
+  let retainedBreakInDelayAnnouncement: string | null = null;
+  let breakInDelayAnnouncement = $derived.by(() => {
+    const transition = breakInDelayView.presentation.politeAnnouncement;
+    if (transition !== null) {
+      retainedBreakInDelayAnnouncement = breakInDelayMessage(
+        transition.phase,
+        breakInDelayView.feedback.requestedTarget,
+        breakInDelayView.confirmed,
+      );
+    }
+    return retainedBreakInDelayAnnouncement;
+  });
   let breakInDelayValueText = $derived(
-    !breakInDelayAvailable
+    !breakInDelayView.editable
       ? breakInDelayMessage('unavailable', null, null)
-      : breakInDelayEditing
-        ? `${getLocale() === 'ru-RU' ? 'Черновик' : 'Draft'} ${delayText(breakInDelayDraft)}; ${getLocale() === 'ru-RU' ? 'подтверждено' : 'last confirmed'} ${delayText(breakInDelayFeedback.confirmed)}`
+      : breakInDelayView.editing
+        ? `${getLocale() === 'ru-RU' ? 'Черновик' : 'Draft'} ${delayText(breakInDelayView.draft)}; ${getLocale() === 'ru-RU' ? 'подтверждено' : 'last confirmed'} ${delayText(breakInDelayView.confirmed)}`
         : breakInDelayMessage(
-          breakInDelayFeedback.phase,
-          breakInDelayFeedback.target ?? breakInDelayFeedback.requestedTarget,
-          breakInDelayFeedback.confirmed,
+          breakInDelayView.feedback.phase,
+          breakInDelayView.feedback.target ?? breakInDelayView.feedback.requestedTarget,
+          breakInDelayView.confirmed,
         ),
   );
-  function restoreBreakInDelay(): void {
-    breakInDelayEditing = false;
-    breakInDelayDraft = breakInDelayTruth ?? 0;
-  }
   function updateBreakInDelayDraft(event: Event): void {
-    if (!breakInDelayAvailable) return;
-    if (!breakInDelayEditing) breakInDelayDraftAuthority = breakInDelayAuthority;
-    breakInDelayCancelled = false;
-    breakInDelayEditing = true;
-    breakInDelayDraft = Math.min(255, Math.max(0, Math.round(
-      (event.currentTarget as HTMLInputElement).valueAsNumber,
-    )));
+    breakInDelayScalar.input((event.currentTarget as HTMLInputElement).valueAsNumber);
   }
   function commitBreakInDelay(event: Event): void {
-    if (breakInDelayCancelled) {
-      breakInDelayCancelled = false;
-      restoreBreakInDelay();
-      (event.currentTarget as HTMLInputElement).value = String(breakInDelayDraft);
-      return;
-    }
-    const candidate = (event.currentTarget as HTMLInputElement).valueAsNumber;
-    if (breakInDelayAvailable && Number.isFinite(candidate)) {
-      const bounded = Math.min(255, Math.max(0, Math.round(candidate)));
-      breakInDelayDraft = bounded;
-      onBreakInDelayChange(bounded);
-    }
-    breakInDelayEditing = false;
+    const target = event.currentTarget as HTMLInputElement;
+    const restored = breakInDelayScalar.commit(target.valueAsNumber);
+    if (restored !== null) target.value = String(restored);
   }
   function cancelBreakInDelay(event?: Event): void {
-    breakInDelayCancelled = true;
-    restoreBreakInDelay();
+    const restored = breakInDelayScalar.cancel();
     if (event?.currentTarget instanceof HTMLInputElement) {
-      event.currentTarget.value = String(breakInDelayDraft);
+      if (restored !== null) event.currentTarget.value = String(restored);
     }
   }
   function handleBreakInDelayKeydown(event: KeyboardEvent): void {
@@ -181,24 +157,54 @@
     cancelBreakInDelay(event);
   }
 
-  // MOR-1409 A12 (coordinator adjudication, Core #2317, comment 5246487510):
-  // `cwPitch`/`keySpeed` are `?? 600`/`?? 12` guarded above, but `??` does
-  // not catch `NaN` (only `null`/`undefined`) — a connected receiver that
-  // has never reported these optional fields still passes through as
-  // `NaN`, and neither `ValueControl` call below has a `displayFn`, so the
-  // default `${value}${unit}` renders the literal "NaN Hz"/"NaN WPM".
-  // Guard locally, same shape as FilterPanel.svelte's `formatWidthDisplay`.
-  // Preserves the exact prior finite-value format (the renderers' own
-  // unguarded default is `${localValue}${unit ? ' ' + unit : ''}`,
-  // a non-breaking space before the unit) — the guard only changes
-  // behavior for the non-finite case, per the grant's "no behavior/logic
-  // changes beyond the guards" restriction.
+  // MOR-1409 A12: keep the established placeholder when canonical feedback
+  // is unavailable, and preserve the exact finite-value/unit rendering.
   function formatCwPitchDisplay(hz: number): string {
     return Number.isFinite(hz) ? `${hz} Hz` : '--- Hz';
   }
   function formatKeySpeedDisplay(wpm: number): string {
     return Number.isFinite(wpm) ? `${wpm} WPM` : '--- WPM';
   }
+  let cwPitchFeedback = $derived(getCwPitchControlFeedback());
+  let keySpeedFeedback = $derived(getKeySpeedControlFeedback());
+  // MOR-1682: the pitch domain comes from the profile's `controls.cw_pitch`
+  // entry when it publishes a usable one; 300/900/5 is the explicit
+  // today-behaviour fallback for a radio that publishes none.
+  let cwPitchDomain = $derived(p.cwPitchDomain ?? { min: 300, max: 900, step: 5 });
+  // MOR-2475 F1: same derivation for key speed from `controls.key_speed`;
+  // 6/48/1 is the fallback for a radio that publishes none.
+  let keySpeedDomain = $derived(p.keySpeedDomain ?? { min: 6, max: 48, step: 1 });
+  const cwPitchBinding = createContinuousScalar(
+    () => ({
+      evidence: 'command-feedback', feedback: cwPitchFeedback, command: 'set_cw_pitch',
+      domain: {
+        min: cwPitchDomain.min, max: cwPitchDomain.max, step: cwPitchDomain.step,
+        defaultValue: null, fineStepDivisor: 10,
+      },
+      enabled: showCw, request: onCwPitchChange,
+    }),
+    createHBarContinuousScalarPolicy({
+      preview: 'optimistic', debounceMs: 50, describeTarget: formatCwPitchDisplay,
+    }),
+  );
+  const keySpeedBinding = createContinuousScalar(
+    () => ({
+      evidence: 'command-feedback', feedback: keySpeedFeedback, command: 'set_key_speed',
+      domain: {
+        min: keySpeedDomain.min, max: keySpeedDomain.max, step: keySpeedDomain.step,
+        defaultValue: null, fineStepDivisor: 10,
+      },
+      enabled: showCw, request: onKeySpeedChange,
+    }),
+    createDiscreteContinuousScalarPolicy({
+      debounceMs: 50, describeTarget: formatKeySpeedDisplay,
+    }),
+  );
+  onDestroy(() => {
+    cwPitchBinding.destroy();
+    keySpeedBinding.destroy();
+  });
+  const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
 </script>
 
 {#if showCw}
@@ -209,30 +215,24 @@
     </div>
 
     <ValueControl
+      {...feedbackIntegratedControl}
       label="CW Pitch"
-      value={cwPitch}
-      min={300}
-      max={900}
-      step={5}
+      binding={cwPitchBinding}
       unit="Hz"
       renderer="hbar"
       accentColor="var(--v2-accent-cyan)"
-      onChange={onCwPitchChange}
       variant="hardware-illuminated"
       displayFn={formatCwPitchDisplay}
     />
 
     <ValueControl
+      {...feedbackIntegratedControl}
       label="Key Speed"
-      value={keySpeed}
-      min={6}
-      max={48}
-      step={1}
+      binding={keySpeedBinding}
       unit="WPM"
       renderer="discrete"
       tickStyle="notch"
       accentColor="var(--v2-accent-orange)"
-      onChange={onKeySpeedChange}
       variant="hardware-illuminated"
       displayFn={formatKeySpeedDisplay}
     />
@@ -263,26 +263,26 @@
         <span class="break-in-delay-header">
           <span>{delayLabel()}</span>
           <output data-testid="cw-break-in-delay-value">
-            {breakInDelayAvailable ? delayText(breakInDelayDraft) : '—'}
+            {breakInDelayView.editable ? delayText(breakInDelayView.displayed) : '—'}
           </output>
         </span>
         <input
           data-testid="cw-break-in-delay"
-          type="range" min="0" max="255" step="1" value={breakInDelayDraft}
+          type="range" min="0" max="255" step="1" value={breakInDelayView.displayed ?? undefined}
           {...feedbackIntegratedRange}
-          disabled={!breakInDelayAvailable}
+          disabled={!breakInDelayView.editable}
           aria-label={delayLabel()}
-          aria-valuenow={breakInDelayAvailable ? breakInDelayDraft : undefined}
+          aria-valuenow={breakInDelayView.displayed ?? undefined}
           aria-valuetext={breakInDelayValueText}
-          aria-busy={breakInDelayPresentation.attributes['aria-busy']}
-          data-command-phase={breakInDelayPresentation.attributes['data-command-phase']}
+          aria-busy={breakInDelayView.presentation.attributes['aria-busy']}
+          data-command-phase={breakInDelayView.presentation.attributes['data-command-phase']}
           oninput={updateBreakInDelayDraft}
           onchange={commitBreakInDelay}
           onpointercancel={cancelBreakInDelay}
           onkeydown={handleBreakInDelayKeydown}
         />
         <span class="break-in-delay-phase" aria-hidden="true">
-          ● {breakInDelayFeedback.phase}
+          ● {breakInDelayView.feedback.phase}
         </span>
         {#if breakInDelayAnnouncement}
           <span

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -12,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, call as mock_call, patch
 
 import pytest
 
+from rigplane.core.command_dispatch import bind_command_intent
 from rigplane.core.command_service import CommandService
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import (
@@ -19,24 +21,47 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
-from rigplane.core.state_store import StateStore
-from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
-from rigplane.core.tx_interlock_contract import (
-    TxInterlockCommandFamily,
-    TxInterlockDisposition,
+from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.tx_observation import (
+    OBSERVED_PTT_PATH,
+    ObservedPtt,
+    TxStateReading,
+    project_observed_ptt,
 )
+from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.exceptions import CommandError
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
-from rigplane.backends.yaesu_cat.transport import CatTimeoutError
+from rigplane.backends.yaesu_cat.parser import CatParseError
+from rigplane.backends.yaesu_cat.transport import (
+    CatCommandRejected,
+    CatTimeoutError,
+    CatTransportError,
+)
 from rigplane.profiles import get_radio_profile
 from rigplane.radio_state import RadioState
+from rigplane.runtime.managed_tx_composition import (
+    ManagedTxComposition,
+    install_managed_tx_composition,
+)
+from rigplane.runtime.managed_tx_state import (
+    AbortOperation,
+    ActuationOperation,
+    ActuationResult,
+    EffectToken,
+    ManagedTxIntentKind,
+    ManagedTxOutcome,
+)
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import (
     CommandQueue,
+    SelectVfo,
+    SetBand,
+    SetCwPitch,
     SetFreq,
     SetMode,
+    SetSplit,
     VfoEqualize,
     VfoSwap,
 )
@@ -45,6 +70,746 @@ from rigplane.web.radio_poller import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+class _ReconnectActuator:
+    def __init__(self) -> None:
+        self.operations: list[
+            tuple[EffectToken, ActuationOperation | AbortOperation]
+        ] = []
+        self.currency: list[Callable[[], bool]] = []
+        self.on_started = asyncio.Event()
+        self.finish_on = asyncio.Event()
+        self.finish_on.set()
+
+    async def actuate(
+        self,
+        token: EffectToken,
+        operation: ActuationOperation | AbortOperation,
+        *,
+        is_current: Callable[[], bool],
+    ) -> ActuationResult:
+        assert is_current()
+        self.operations.append((token, operation))
+        self.currency.append(is_current)
+        if operation is ActuationOperation.PTT_ON:
+            self.on_started.set()
+            await self.finish_on.wait()
+        return ActuationResult.ACCEPTED
+
+
+async def _managed_reconnect_path(tmp_path: Path):
+    radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
+    transport = radio._transport
+    transport._connected = True
+    transport._writer = SimpleNamespace(close=lambda: None, wait_closed=AsyncMock())
+    for _ in range(5):
+        transport._stats.record_error("fixture disconnect")
+
+    async def connect() -> None:
+        transport._writer = SimpleNamespace(close=lambda: None, wait_closed=AsyncMock())
+        transport._connected = True
+        transport._stats.record_success()
+
+    transport.connect = AsyncMock(side_effect=connect)
+    actuator = _ReconnectActuator()
+    composition = ManagedTxComposition(actuator, config_path=tmp_path / "tx.json")
+    install_managed_tx_composition(radio, composition)
+    store = StateStore()
+    await composition.transport_ready(radio)
+    await composition.bind_state_store(store)
+    composition.transport_ready = AsyncMock(wraps=composition.transport_ready)
+    poller = radio.create_observation_poller(callback=lambda observations: None)
+    poller.bind_provider_generation(
+        capture=lambda: store.provider_generation,
+        advance=store.begin_provider_generation,
+    )
+    poller.bind_managed_tx_authority(composition.authority)
+    return radio, poller, store, composition, actuator
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_on", [False, True])
+async def test_managed_reconnect_restores_current_provider_without_replaying_on(
+    tmp_path: Path,
+    late_on: bool,
+) -> None:
+    radio, poller, store, composition, actuator = await _managed_reconnect_path(
+        tmp_path
+    )
+    authority = composition.authority
+    try:
+        if late_on:
+            actuator.finish_on.clear()
+        old = await authority.submit_ptt(True, "old-owner")
+        assert old.outcome is ManagedTxOutcome.ACCEPTED
+        await asyncio.wait_for(actuator.on_started.wait(), 1)
+        if not late_on:
+            await old.wait_settlement()
+        original_connect = radio._transport.connect
+
+        async def connect() -> None:
+            await original_connect()
+            before = await authority.snapshot()
+            assert before.provider_generation is None
+            assert before.state.release_required
+            actuator.finish_on.set()
+            await old.wait_settlement()
+            assert (await authority.snapshot()).state.release_required
+
+        radio._transport.connect = AsyncMock(side_effect=connect)
+        old_currency = actuator.currency[0]
+        for generation in (1, 2):
+            for _ in range(5):
+                radio._transport._stats.record_error("fixture disconnect")
+            radio._transport._last_reconnect = 0
+            await poller._try_reconnect()
+
+            composition.transport_ready.assert_awaited_with(radio._transport._writer)
+            assert composition.transport_ready.await_count == generation
+            composition.validate_state_store(store)
+            snapshot = await authority.snapshot()
+            assert store.provider_generation == generation
+            assert snapshot.provider_generation == generation + 1
+            assert snapshot.state.intent.kind is ManagedTxIntentKind.RX
+            assert not snapshot.state.release_required
+            assert not old_currency()
+            assert (
+                sum(op is ActuationOperation.PTT_ON for _, op in actuator.operations)
+                == generation
+            )
+            assert actuator.operations[-1][1] is ActuationOperation.FORCE_RECEIVE
+            assert actuator.operations[-1][0].provider_generation == generation + 1
+
+            assert (
+                await authority.ptt_down(f"fresh-{generation}")
+                is ManagedTxOutcome.ACCEPTED
+            )
+            assert actuator.operations[-1][1] is ActuationOperation.PTT_ON
+            assert actuator.operations[-1][0].provider_generation == generation + 1
+    finally:
+        actuator.finish_on.set()
+        termination = asyncio.Event()
+        termination.set()
+        await composition.shutdown(termination)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["failure", "provider", "transport", "cooldown"])
+async def test_managed_reconnect_does_not_publish_failed_or_stale_readiness(
+    tmp_path: Path, boundary: str
+) -> None:
+    radio, poller, store, composition, actuator = await _managed_reconnect_path(
+        tmp_path
+    )
+    transport = radio._transport
+    original_connect = transport.connect
+
+    async def connect() -> None:
+        if boundary == "failure":
+            raise CatTransportError("reconnect failed")
+        await original_connect()
+        if boundary == "provider":
+            store.begin_provider_generation()
+        elif boundary == "transport":
+            radio._transport = SimpleNamespace(stats=SimpleNamespace(reconnects=0))
+
+    transport.connect = AsyncMock(side_effect=connect)
+    if boundary == "cooldown":
+        transport._last_reconnect = time.monotonic()
+    try:
+        await poller._try_reconnect()
+        composition.transport_ready.assert_not_awaited()
+        assert (await composition.authority.snapshot()).provider_generation is None
+        assert (
+            await composition.authority.ptt_down("fresh") is ManagedTxOutcome.REJECTED
+        )
+        assert not actuator.operations
+        with pytest.raises(RuntimeError, match="not current"):
+            composition.validate_state_store(store)
+    finally:
+        termination = asyncio.Event()
+        termination.set()
+        await composition.shutdown(termination)
+
+
+def _canonical_ptt_path(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    state_map: dict[str, str] | None = None,
+    later_field: bool = False,
+) -> tuple[
+    YaesuCatRadio, YaesuCatPoller, StateStore, FreshnessClock, list[Observation]
+]:
+    radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
+    legacy = FieldPath.global_("tx_state", "ptt")
+    width = FieldPath.active("main", "freq_mode", "filter_width")
+    profile = radio.profile
+    acquisition = profile.state_acquisition
+    assert acquisition is not None
+    acquisition = replace(
+        acquisition,
+        capabilities=tuple(
+            item
+            for item in acquisition.capabilities
+            if item.path == legacy or (later_field and item.path == width)
+        ),
+        field_policies={
+            legacy: replace(
+                acquisition.policy_for(legacy),
+                freshness_ttl_seconds=2.0,
+                meter_coalescing=None,
+            )
+        },
+    )
+    radio._profile_cache = replace(  # noqa: SLF001
+        profile,
+        state_acquisition=acquisition,
+        tx_policy=(
+            profile.tx_policy
+            if state_map is None
+            else replace(profile.tx_policy, tx_state_map=state_map)
+        ),
+    )
+    radio._transport._connected = True  # noqa: SLF001
+    radio._transport.query = AsyncMock(return_value="TX1")  # noqa: SLF001
+    clock = FreshnessClock(start=128.0)
+    store = StateStore(freshness_clock=clock)
+    service = CommandService(executor=AsyncMock(), state_store=store, clock=clock.now)
+    emitted: list[Observation] = []
+
+    def accept(observations: Sequence[Observation]) -> None:
+        emitted.extend(observations)
+        for observation in observations:
+            service.apply_observation(observation)
+
+    factory = YaesuObservationAdapter.from_radio
+    monkeypatch.setattr(
+        YaesuObservationAdapter,
+        "from_radio",
+        lambda radio: factory(radio, clock=clock.now),
+    )
+    poller = radio.create_observation_poller(callback=accept)
+    poller.bind_provider_generation(
+        capture=lambda: store.provider_generation,
+        advance=store.begin_provider_generation,
+    )
+    return radio, poller, store, clock, emitted
+
+
+def _seed_canonical_ptt(
+    radio: YaesuCatRadio,
+    store: StateStore,
+    clock: FreshnessClock,
+    value: ObservedPtt,
+) -> None:
+    acquisition = radio.profile.state_acquisition
+    assert acquisition is not None
+    store.apply_current(
+        ProviderObservationAdapter(
+            acquisition, "yaesu_poll_response", "serial", clock.now
+        ).observation(
+            OBSERVED_PTT_PATH,
+            value,
+            native_id="fixture_seed",
+            max_age=acquisition.policy_for(
+                FieldPath.global_("tx_state", "ptt")
+            ).freshness_ttl_seconds,
+        )
+    )
+    assert project_observed_ptt(store.snapshot()) is value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("later_field", [False, True])
+async def test_canonical_ptt_fixture_has_valid_non_meter_policy(
+    monkeypatch: pytest.MonkeyPatch, later_field: bool
+) -> None:
+    radio, _, store, clock, emitted = _canonical_ptt_path(
+        monkeypatch, later_field=later_field
+    )
+    acquisition = radio.profile.state_acquisition
+    assert acquisition is not None
+    legacy = FieldPath.global_("tx_state", "ptt")
+    assert acquisition.policy_for(legacy).meter_coalescing is None
+    assert acquisition.policy_for(legacy).freshness_ttl_seconds == 2.0
+    assert set(acquisition.pollable_paths()) == (
+        {legacy, FieldPath.active("main", "freq_mode", "filter_width")}
+        if later_field
+        else {legacy}
+    )
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    assert store.snapshot().field(OBSERVED_PTT_PATH).provider_generation == 0
+    assert emitted == []
+
+
+@pytest.mark.asyncio
+async def test_stopped_poller_releases_connection_generation_binding() -> None:
+    queue = CommandQueue()
+    retired = YaesuCatPoller(make_radio(), command_queue=queue)
+    with pytest.raises(RuntimeError, match="already bound"):
+        YaesuCatPoller(make_radio(), command_queue=queue)
+
+    await retired.stop()
+    fresh = YaesuCatPoller(make_radio(), command_queue=queue)
+    assert queue.capture_connection_generation() == (
+        fresh._current_tx_target_generation()  # noqa: SLF001
+    )
+    await fresh.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("frame", "state_map", "expected", "legacy"),
+    [
+        ("TX0", None, ObservedPtt.OFF, False),
+        ("TX1", None, ObservedPtt.ON, True),
+        ("TX2", None, ObservedPtt.ON, True),
+        ("TX9", None, ObservedPtt.UNKNOWN, True),
+        ("TX0", {}, ObservedPtt.UNKNOWN, False),
+        ("TX7", {"7": "rx"}, ObservedPtt.OFF, False),
+        ("TX0", {"0": "tx_other"}, ObservedPtt.ON, True),
+        ("TX1", {"1": "unrecognized"}, ObservedPtt.UNKNOWN, True),
+    ],
+)
+async def test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+    frame: str,
+    state_map: dict[str, str] | None,
+    expected: ObservedPtt,
+    legacy: bool,
+) -> None:
+    radio, poller, store, clock, emitted = _canonical_ptt_path(
+        monkeypatch, state_map=state_map
+    )
+    radio._transport.query.return_value = frame  # noqa: SLF001
+    await poller._emit_medium_observations()  # noqa: SLF001
+    assert [call.args[0] for call in radio._transport.query.await_args_list] == ["TX;"]  # noqa: SLF001
+    by_path = {item.path: item for item in emitted}
+    old = by_path[FieldPath.global_("tx_state", "ptt")]
+    assert old.value is legacy
+    assert OBSERVED_PTT_PATH in by_path, "PTT_READ_PUBLICATION"
+    observed = by_path[OBSERVED_PTT_PATH]
+    assert observed.value is expected
+    assert observed.timestamp_monotonic == old.timestamp_monotonic == clock.now()
+    assert observed.max_age == old.max_age == 2.0
+    assert observed.provider_generation == old.provider_generation == 0
+    assert observed.source.source == old.source.source == "yaesu_poll_response"
+    assert observed.source.provider == old.source.provider == "yaesu_cat"
+    assert observed.source.transport == old.source.transport == "serial"
+    assert radio.radio_state.ptt is False
+    assert project_observed_ptt(store.snapshot()) is expected
+    clock.advance(1.0)
+    assert project_observed_ptt(store.snapshot()) is expected
+    clock.advance(1.0)
+    assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reading", "expected"),
+    [
+        (TxStateReading(1, "tx_cat"), ObservedPtt.UNKNOWN),
+        (TxStateReading(True, "tx_cat"), ObservedPtt.ON),
+        (TxStateReading(0, "rx"), ObservedPtt.UNKNOWN),
+        (TxStateReading(False, "rx"), ObservedPtt.OFF),
+    ],
+    ids=["integer-one", "valid-on", "integer-zero", "valid-off"],
+)
+async def test_canonical_ptt_typed_reading_requires_strict_value(
+    monkeypatch: pytest.MonkeyPatch, reading: TxStateReading, expected: ObservedPtt
+) -> None:
+    radio, poller, store, _, emitted = _canonical_ptt_path(monkeypatch)
+    reading = replace(reading, source="yaesu_poll_response", verified_readback=True)
+    radio.read_transmit_state = AsyncMock(return_value=reading)
+    await poller._emit_medium_observations()  # noqa: SLF001
+    assert radio.read_transmit_state.await_args_list == [mock_call()], (
+        "PTT_TYPED_READER"
+    )
+    radio._transport.query.assert_not_awaited()  # noqa: SLF001
+    assert [item.value for item in emitted if item.path == OBSERVED_PTT_PATH] == [
+        expected
+    ], "PTT_TYPED_VALUE_PUBLICATION"
+    assert store.snapshot().field(OBSERVED_PTT_PATH).value is expected
+    assert project_observed_ptt(store.snapshot()) is expected
+    legacy = [item.value for item in emitted if str(item.path) == "global.tx_state.ptt"]
+    assert legacy == ([reading.value] if type(reading.value) is bool else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "qualification",
+    [
+        {"source": "command_response"},
+        {"verified_readback": False},
+        {"verified_readback": 1},
+        {"failure": "read-error"},
+        {"attributed": None},
+        {"attributed": "unrecognized"},
+    ],
+)
+async def test_canonical_ptt_requires_qualified_readback(
+    monkeypatch: pytest.MonkeyPatch, qualification: dict[str, object]
+) -> None:
+    radio, poller, store, _, emitted = _canonical_ptt_path(monkeypatch)
+    radio.read_transmit_state = AsyncMock(
+        return_value=replace(
+            TxStateReading(True, "tx_cat", "yaesu_poll_response", True),
+            **qualification,
+        )
+    )
+    await poller._emit_medium_observations()  # noqa: SLF001
+    assert [item.value for item in emitted if item.path == OBSERVED_PTT_PATH] == [
+        ObservedPtt.UNKNOWN
+    ]
+    assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+    radio.read_transmit_state.assert_awaited_once_with()
+    radio._transport.query.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("later_failure", [False, True])
+async def test_canonical_ptt_publishes_before_later_read(
+    monkeypatch: pytest.MonkeyPatch, later_failure: bool
+) -> None:
+    radio, poller, store, _, emitted = _canonical_ptt_path(
+        monkeypatch, later_field=True
+    )
+
+    async def width(receiver: int, *, mode: str | None) -> int:
+        assert (receiver, mode) == (0, None)
+        assert project_observed_ptt(store.snapshot()) is ObservedPtt.ON
+        assert [item.value for item in emitted] == [ObservedPtt.ON]
+        if later_failure:
+            raise CatTimeoutError("later")
+        return 2400
+
+    radio.read_filter_width = AsyncMock(side_effect=width)
+    if later_failure:
+        with pytest.raises(CatTimeoutError, match="later"):
+            await poller._emit_medium_observations()  # noqa: SLF001
+    else:
+        await poller._emit_medium_observations()  # noqa: SLF001
+    radio.read_filter_width.assert_awaited_once_with(0, mode=None)
+    assert [item.value for item in emitted if item.path == OBSERVED_PTT_PATH] == [
+        ObservedPtt.ON
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        "NOTTX",
+        CatParseError("TX{state};", "bad TX", "mismatch"),
+        CatCommandRejected("reject"),
+    ],
+)
+@pytest.mark.parametrize("later_failure", [False, True])
+async def test_canonical_ptt_read_error_reaches_store_even_if_later_field_fails(
+    monkeypatch: pytest.MonkeyPatch, error: str | Exception, later_failure: bool
+) -> None:
+    radio, poller, store, clock, emitted = _canonical_ptt_path(
+        monkeypatch, later_field=later_failure
+    )
+    for _ in range(2):
+        radio._transport.query.side_effect = None  # noqa: SLF001
+        radio._transport.query.return_value = "TX1"  # noqa: SLF001
+        radio.read_filter_width = AsyncMock(return_value=2400)
+        await poller._emit_medium_observations()  # noqa: SLF001
+        _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+        emitted.clear()
+        radio._transport.query.reset_mock()  # noqa: SLF001
+        radio._transport.query.side_effect = (
+            error if isinstance(error, Exception) else None
+        )  # noqa: SLF001
+        radio._transport.query.return_value = error  # noqa: SLF001
+        if later_failure:
+
+            async def width(receiver: int, *, mode: str | None) -> int:
+                assert (receiver, mode) == (0, None)
+                assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+                assert [item.value for item in emitted] == [ObservedPtt.UNKNOWN]
+                raise CatTimeoutError("later")
+
+            radio.read_filter_width = AsyncMock(side_effect=width)
+            with pytest.raises(CatTimeoutError):
+                await poller._emit_medium_observations()  # noqa: SLF001
+        else:
+            await poller._emit_medium_observations()  # noqa: SLF001
+        assert not any(str(item.path) == "global.tx_state.ptt" for item in emitted)
+        assert [call.args[0] for call in radio._transport.query.await_args_list] == [
+            "TX;"
+        ]  # noqa: SLF001
+        if later_failure:
+            radio.read_filter_width.assert_awaited_once_with(0, mode=None)
+        else:
+            radio.read_filter_width.assert_not_awaited()
+        assert [item.value for item in emitted if item.path == OBSERVED_PTT_PATH] == [
+            ObservedPtt.UNKNOWN
+        ], "PTT_READ_ERROR_PUBLICATION"
+        assert store.snapshot().field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error", [CatTimeoutError("TX timeout"), CatTransportError("TX link")]
+)
+async def test_canonical_ptt_transport_failure_preserves_reconnect_path(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    radio, poller, store, clock, emitted = _canonical_ptt_path(monkeypatch)
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    radio._transport.query.side_effect = error  # noqa: SLF001
+    poller._try_reconnect = AsyncMock(side_effect=asyncio.CancelledError)  # noqa: SLF001
+    with pytest.raises(asyncio.CancelledError):
+        await poller._run_poll_cycle("medium", poller._poll_medium, 0.1)  # noqa: SLF001
+    poller._try_reconnect.assert_awaited_once_with()  # noqa: SLF001
+    assert [call.args[0] for call in radio._transport.query.await_args_list] == ["TX;"]  # noqa: SLF001
+    assert [item.value for item in emitted if item.path == OBSERVED_PTT_PATH] == [
+        ObservedPtt.UNKNOWN
+    ], "PTT_TRANSPORT_ERROR_PUBLICATION"
+    assert store.snapshot().field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
+    assert not any(str(item.path) == "global.tx_state.ptt" for item in emitted)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "transport"])
+@pytest.mark.parametrize("sink_error", [RuntimeError, asyncio.CancelledError])
+async def test_canonical_ptt_error_sink_failure_preserves_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    sink_error: type[BaseException],
+) -> None:
+    radio, poller, _, _, _ = _canonical_ptt_path(monkeypatch)
+    radio.read_transmit_state = AsyncMock(
+        return_value=TxStateReading(None, failure=failure)
+    )
+    sink = MagicMock(side_effect=sink_error("sink failed"))
+    poller._observation_callback = sink  # noqa: SLF001
+    error_type = CatTimeoutError if failure == "timeout" else CatTransportError
+    with pytest.raises(error_type, match=f"PTT read failed: {failure}"):
+        await poller._emit_medium_observations()  # noqa: SLF001
+    poller._try_reconnect = AsyncMock(side_effect=asyncio.CancelledError)  # noqa: SLF001
+    with pytest.raises(asyncio.CancelledError):
+        await poller._run_poll_cycle("medium", poller._poll_medium, 0.1)  # noqa: SLF001
+    poller._try_reconnect.assert_awaited_once_with()  # noqa: SLF001
+    assert [args.args[0][0].value for args in sink.call_args_list] == [
+        ObservedPtt.UNKNOWN,
+        ObservedPtt.UNKNOWN,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_canonical_ptt_boundary_sink_failure_preserves_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio, poller, store, _, _ = _canonical_ptt_path(monkeypatch)
+    sink = MagicMock(side_effect=RuntimeError("sink failed"))
+    poller._observation_callback = sink  # noqa: SLF001
+    radio._transport._maybe_reconnect_needed = lambda: True  # noqa: SLF001
+    radio._transport.reconnect = AsyncMock()  # noqa: SLF001
+    await poller._try_reconnect()  # noqa: SLF001
+    radio._transport.reconnect.assert_awaited_once_with()  # noqa: SLF001
+    sink.assert_called_once()
+    observation = sink.call_args.args[0][0]
+    assert (observation.value, observation.provider_generation) == (
+        ObservedPtt.UNKNOWN,
+        store.provider_generation,
+    )
+    assert store.provider_generation == 1
+
+
+@pytest.mark.asyncio
+async def test_canonical_ptt_capture_only_reconnect_uses_current_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio, poller, store, clock, emitted = _canonical_ptt_path(monkeypatch)
+    poller.bind_provider_generation(capture=lambda: store.provider_generation)
+    generation = store.begin_provider_generation()
+    assert generation > 0
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    radio._transport._maybe_reconnect_needed = lambda: True  # noqa: SLF001
+
+    async def reconnect() -> None:
+        assert store.provider_generation == generation
+        assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+        assert [(item.value, item.provider_generation) for item in emitted] == [
+            (ObservedPtt.UNKNOWN, generation)
+        ]
+        await asyncio.sleep(0)
+        radio._transport.stats.reconnects += 1  # noqa: SLF001
+
+    radio._transport.reconnect = AsyncMock(side_effect=reconnect)  # noqa: SLF001
+    await poller._try_reconnect()  # noqa: SLF001
+    radio._transport.reconnect.assert_awaited_once_with()  # noqa: SLF001
+    assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+    assert store.provider_generation == generation
+    assert store.snapshot().field(OBSERVED_PTT_PATH).provider_generation == generation
+    assert radio._transport.stats.reconnects == 1  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_canonical_ptt_cancelled_read_does_not_emit_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio, poller, _, _, emitted = _canonical_ptt_path(monkeypatch)
+    radio._transport.query.side_effect = asyncio.CancelledError  # noqa: SLF001
+    with pytest.raises(asyncio.CancelledError):
+        await poller._emit_medium_observations()  # noqa: SLF001
+    assert emitted == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("advance_store", [False, True])
+async def test_canonical_ptt_reconnect_discards_late_old_read(
+    monkeypatch: pytest.MonkeyPatch, advance_store: bool
+) -> None:
+    radio, poller, store, clock, emitted = _canonical_ptt_path(monkeypatch)
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    started = asyncio.get_running_loop().create_future()
+    release: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+
+    async def delayed(*args: object, **kwargs: object) -> str:
+        started.set_result(asyncio.current_task())
+        return await release
+
+    radio._transport.query.side_effect = delayed  # noqa: SLF001
+    task = asyncio.create_task(poller._emit_medium_observations())  # noqa: SLF001
+    try:
+        assert await asyncio.wait_for(asyncio.shield(started), 5.0) is task
+        assert not task.done() and not release.done()
+        assert store.provider_generation == 0
+        assert project_observed_ptt(store.snapshot()) is ObservedPtt.ON
+        if advance_store:
+            radio._transport._maybe_reconnect_needed = lambda: True  # noqa: SLF001
+
+            async def reconnect() -> None:
+                assert store.provider_generation == 1
+                assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+                assert [item.value for item in emitted] == [ObservedPtt.UNKNOWN]
+                radio._transport.stats.reconnects += 1  # noqa: SLF001
+
+            radio._transport.reconnect = AsyncMock(side_effect=reconnect)  # noqa: SLF001
+            await poller._try_reconnect()  # noqa: SLF001
+            radio._transport.reconnect.assert_awaited_once_with()  # noqa: SLF001
+        else:
+            radio._transport.stats.reconnects += 1  # noqa: SLF001
+            poller._sync_tx_target_generation()  # noqa: SLF001
+        assert store.provider_generation == int(advance_store)
+        assert radio._transport.stats.reconnects == 1  # noqa: SLF001
+        assert not task.done() and not release.done()
+        boundary_snapshot = store.snapshot()
+        boundary = len(emitted)
+        release.set_result("TX1")
+        assert await asyncio.wait_for(asyncio.shield(task), 5.0) is True
+    finally:
+        if not release.done():
+            release.set_result("TX1")
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert task.done() and not task.cancelled() and task.exception() is None
+    assert [call.args[0] for call in radio._transport.query.await_args_list] == ["TX;"]  # noqa: SLF001
+    assert project_observed_ptt(boundary_snapshot) is ObservedPtt.UNKNOWN, (
+        "PTT_BOUNDARY_INVALIDATION"
+    )
+    assert any(
+        item.path == OBSERVED_PTT_PATH
+        and item.value is ObservedPtt.UNKNOWN
+        and item.provider_generation == store.provider_generation
+        for item in emitted[:boundary]
+    ), "PTT_BOUNDARY_PUBLICATION"
+    assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+    assert store.snapshot().field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
+    assert not any(
+        item.path in (OBSERVED_PTT_PATH, FieldPath.global_("tx_state", "ptt"))
+        for item in emitted[boundary:]
+    )
+
+
+@pytest.mark.asyncio
+async def test_canonical_ptt_store_only_generation_discards_held_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio, poller, store, clock, emitted = _canonical_ptt_path(monkeypatch)
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    started = asyncio.get_running_loop().create_future()
+    release: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+
+    async def delayed(*args: object, **kwargs: object) -> str:
+        started.set_result(asyncio.current_task())
+        return await release
+
+    radio._transport.query.side_effect = delayed  # noqa: SLF001
+    task = asyncio.create_task(poller._emit_medium_observations())  # noqa: SLF001
+    try:
+        assert await asyncio.wait_for(asyncio.shield(started), 5.0) is task
+        assert not task.done() and not release.done()
+        assert store.provider_generation == 0
+        assert radio._transport.stats.reconnects == 0  # noqa: SLF001
+        assert project_observed_ptt(store.snapshot()) is ObservedPtt.ON
+        assert store.begin_provider_generation() == 1
+        assert not task.done() and not release.done()
+        assert radio._transport.stats.reconnects == 0  # noqa: SLF001
+        assert emitted == []
+        release.set_result("TX1")
+        assert await asyncio.wait_for(asyncio.shield(task), 5.0) is True
+    finally:
+        if not release.done():
+            release.set_result("TX1")
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert task.done() and not task.cancelled() and task.exception() is None
+    assert store.provider_generation == 1
+    assert radio._transport.stats.reconnects == 0  # noqa: SLF001
+    assert [call.args[0] for call in radio._transport.query.await_args_list] == ["TX;"]  # noqa: SLF001
+    assert emitted == []
+    assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("frame", "expected"), [("TX0", ObservedPtt.OFF), ("TX1", ObservedPtt.ON)]
+)
+async def test_canonical_ptt_current_generation_held_read_publishes_after_release(
+    monkeypatch: pytest.MonkeyPatch, frame: str, expected: ObservedPtt
+) -> None:
+    radio, poller, store, clock, emitted = _canonical_ptt_path(monkeypatch)
+    previous = ObservedPtt.OFF if expected is ObservedPtt.ON else ObservedPtt.ON
+    _seed_canonical_ptt(radio, store, clock, previous)
+    started = asyncio.get_running_loop().create_future()
+    release: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+
+    async def delayed(*args: object, **kwargs: object) -> str:
+        started.set_result(asyncio.current_task())
+        return await release
+
+    radio._transport.query.side_effect = delayed  # noqa: SLF001
+    task = asyncio.create_task(poller._emit_medium_observations())  # noqa: SLF001
+    try:
+        assert await asyncio.wait_for(asyncio.shield(started), 5.0) is task
+        assert not task.done() and not release.done()
+        assert emitted == []
+        assert project_observed_ptt(store.snapshot()) is previous
+        release.set_result(frame)
+        assert await asyncio.wait_for(asyncio.shield(task), 5.0) is True
+    finally:
+        if not release.done():
+            release.set_result(frame)
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert task.done() and not task.cancelled() and task.exception() is None
+    assert store.provider_generation == 0
+    assert radio._transport.stats.reconnects == 0  # noqa: SLF001
+    assert [call.args[0] for call in radio._transport.query.await_args_list] == ["TX;"]  # noqa: SLF001
+    assert [item.value for item in emitted if item.path == OBSERVED_PTT_PATH] == [
+        expected
+    ], "PTT_CURRENT_COMPLETION_PUBLICATION"
+    assert project_observed_ptt(store.snapshot()) is expected
+    assert store.snapshot().field(OBSERVED_PTT_PATH).provider_generation == 0
 
 
 def make_radio(
@@ -89,6 +854,7 @@ def make_radio(
         "compressor",
         "cw",
         "rit",
+        "xit",
         "tuner",
         "meters",
         "repeater_tone",
@@ -97,7 +863,6 @@ def make_radio(
         "scan",
         "dial_lock",
     }
-    radio.profile.tx_interlock_disposition_overrides = {}
 
     radio.get_s_meter = AsyncMock(
         side_effect=lambda r=0: s_meter_main if r == 0 else s_meter_sub
@@ -119,6 +884,11 @@ def make_radio(
     )
     radio.get_ptt = AsyncMock(return_value=ptt)
     radio.read_ptt = AsyncMock(return_value=ptt)
+    radio.read_transmit_state = AsyncMock(
+        return_value=TxStateReading(
+            ptt, "tx_cat" if ptt else "rx", "yaesu_poll_response", True
+        )
+    )
     radio.get_agc = AsyncMock(return_value=agc)
     radio.get_af_level = AsyncMock(return_value=af_level)
     radio.read_af_level = AsyncMock(return_value=af_level)
@@ -290,6 +1060,9 @@ class _SideEffectingYaesuRadio:
     async def read_ptt(self) -> bool:
         return False
 
+    async def read_transmit_state(self) -> TxStateReading:
+        return TxStateReading(await self.read_ptt(), "rx", "yaesu_poll_response", True)
+
     async def get_ptt(self) -> bool:
         self.legacy_getter_calls += 1
         value = await self.read_ptt()
@@ -298,6 +1071,18 @@ class _SideEffectingYaesuRadio:
 
     async def get_tx_func(self) -> int:
         """Pure native FT0 fixture; unlike legacy getters it mutates no state."""
+        return 0
+
+    async def get_rx_func(self) -> int:
+        """Pure native FR00 fixture: 0 = dual receive."""
+        return 0
+
+    # Drain meters (MOR-2425/T147): pure ``_read_meter`` calls on the real
+    # backend — no legacy mirror, so no ``legacy_getter_calls`` bump here.
+    async def get_vd_meter(self) -> int:
+        return 212
+
+    async def get_id_meter(self) -> int:
         return 0
 
     async def read_s_meter(self, receiver: int = 0) -> int:
@@ -512,6 +1297,34 @@ def _set_fresh_ptt_observation(poller: YaesuCatPoller, *, active: bool) -> None:
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["cancel", "replace", "error", "readback"])
+async def test_yaesu_drain_claims_live_pending_finite_turn(mode, monkeypatch):
+    from test_command_queue_execution import assert_live_pending_turn
+
+    queue = CommandQueue()
+    poller = YaesuCatPoller(make_radio(), command_queue=queue)
+    _set_fresh_ptt_observation(poller, active=False)
+
+    def install_readback(note):
+        original = poller._track_receiver_select_readback
+
+        def track(entry):
+            original(entry)
+            if entry.command == SetFreq(1):
+                note()
+
+        monkeypatch.setattr(poller, "_track_receiver_select_readback", track)
+
+    await assert_live_pending_turn(
+        queue,
+        poller._drain_commands,
+        lambda leaf: monkeypatch.setattr(poller, "_execute_command", leaf),
+        mode=mode,
+        install_readback=install_readback,
+    )
+
+
 async def _drain_with_ptt(
     poller: YaesuCatPoller,
     clock: list[float],
@@ -529,6 +1342,37 @@ async def _drain_with_ptt(
             poller._current_tx_target_generation()  # noqa: SLF001
         )
     await poller._drain_commands()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_yaesu_releases_held_entry_before_finite_current_turn(monkeypatch):
+    clock, queue, seen = [20.0], CommandQueue(), []
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    poller = YaesuCatPoller(make_radio(), command_queue=queue)
+    reply = asyncio.get_running_loop().create_future()
+    held = SetSplit(True)
+
+    async def leaf(command):
+        seen.append(command)
+        if command == SetFreq(1):
+            queue.put_ordered(SetFreq(3))
+
+    monkeypatch.setattr(poller, "_execute_command", leaf)
+    queue.put_ordered(held, future=reply)
+    try:
+        await _drain_with_ptt(poller, clock, 20.0, True)
+        await _drain_with_ptt(poller, clock, 20.1, False)
+        assert not reply.done()
+        queue.put_ordered(SetFreq(1))
+        queue.put_ordered(SetFreq(2))
+        await _drain_with_ptt(poller, clock, 21.1, False)
+        assert seen == [held, SetFreq(1), SetFreq(2)]
+        assert reply.result() is None
+        assert [e.command for e in queue.drain_entries()] == [SetFreq(3)]
+    finally:
+        reply.cancel()
 
 
 @pytest.mark.asyncio
@@ -575,7 +1419,7 @@ async def test_yaesu_immediate_hard_block_families_fail_before_dispatch(
     for command in commands:
         radio = make_radio()
         radio.set_ptt = AsyncMock()
-        radio.set_tuner = AsyncMock()
+        radio.set_tuner_status = AsyncMock()
         poller = YaesuCatPoller(radio, callback=lambda _: None)
         if active is not None:
             _set_fresh_ptt_observation(poller, active=active)
@@ -584,7 +1428,7 @@ async def test_yaesu_immediate_hard_block_families_fail_before_dispatch(
             await poller._execute_command(command)  # noqa: SLF001
 
         radio.set_ptt.assert_not_awaited()
-        radio.set_tuner.assert_not_awaited()
+        radio.set_tuner_status.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -600,7 +1444,7 @@ async def test_yaesu_emergency_off_commands_bypass_immediate_gate(
     radio = make_radio()
     radio.set_ptt = AsyncMock()
     radio.set_powerstat = AsyncMock()
-    radio.set_tuner = AsyncMock()
+    radio.set_tuner_status = AsyncMock()
     poller = YaesuCatPoller(radio, callback=lambda _: None)
     if active is not None:
         _set_fresh_ptt_observation(poller, active=active)
@@ -611,7 +1455,7 @@ async def test_yaesu_emergency_off_commands_bypass_immediate_gate(
 
     radio.set_ptt.assert_awaited_once_with(False)
     radio.set_powerstat.assert_awaited_once_with(False)
-    radio.set_tuner.assert_awaited_once_with(0)
+    radio.set_tuner_status.assert_awaited_once_with(0)
 
 
 @pytest.mark.asyncio
@@ -637,172 +1481,28 @@ async def test_yaesu_known_rx_preserves_immediate_dispatch(
 
 
 @pytest.mark.asyncio
-async def test_yaesu_profile_power_on_defer_is_command_bound_across_queue_and_execute(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from rigplane.runtime._poller_types import SetPowerstat
-
-    clock = [10.0]
-    monkeypatch.setattr(
-        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
-    )
-    radio, queue = make_radio(), CommandQueue()
-    radio.set_powerstat = AsyncMock()
-    poller = YaesuCatPoller(radio, command_queue=queue)
-    override = {TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.DEFER}
-    radio.profile.tx_interlock_disposition_overrides = override
-
-    with pytest.raises(CommandError, match="unknown"):
-        await poller._execute_command(SetPowerstat(on=True))  # noqa: SLF001
-
-    future = asyncio.get_running_loop().create_future()
-    queue.put_ordered(SetPowerstat(on=True), future=future)
-    await _drain_with_ptt(poller, clock, 10.0, True)
-    await _drain_with_ptt(poller, clock, 10.5, False)
-    await _drain_with_ptt(poller, clock, 11.5, False)
-    await poller._drain_commands()  # noqa: SLF001
-    assert future.result() is None
-
-    trapping = MagicMock(wraps=override)
-    trapping.items.side_effect = (override.items(), RuntimeError("second access"))
-    radio.profile.tx_interlock_disposition_overrides = trapping
-    trapped, service = asyncio.get_running_loop().create_future(), MagicMock()
-    queue.put_ordered(
-        SetPowerstat(on=True),
-        future=trapped,
-        command_id="trap",
-        command_service=service,
-    )
-    await _drain_with_ptt(poller, clock, 12.0, True)
-    assert isinstance(trapped.exception(), RuntimeError)
-    service.fail_command.assert_called_once()
-    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
-    radio.set_powerstat.assert_awaited_once_with(True)
-
-
-@pytest.mark.asyncio
-async def test_yaesu_profile_override_unknown_and_invalid_mapping_never_fail_open(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from rigplane.runtime._poller_types import SetPowerstat
-
-    monkeypatch.setattr(
-        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 30.0
-    )
-    radio, queue = make_radio(), CommandQueue()
-    radio.set_powerstat = AsyncMock()
-    poller = YaesuCatPoller(radio, command_queue=queue)
-    radio.profile.tx_interlock_disposition_overrides = {
-        TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.DEFER
-    }
-    unknown = asyncio.get_running_loop().create_future()
-    queue.put_ordered(SetPowerstat(on=True), future=unknown)
-    await poller._drain_commands()  # noqa: SLF001
-    assert isinstance(unknown.exception(), CommandError)
-    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
-
-    radio.profile.tx_interlock_disposition_overrides = {
-        TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.ALWAYS_PASS
-    }
-    malformed = asyncio.get_running_loop().create_future()
-    queue.put_ordered(SetPowerstat(on=True), future=malformed)
-    await poller._drain_commands()  # noqa: SLF001
-    assert isinstance(malformed.exception(), ValueError)
-    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
-    radio.set_powerstat.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_yaesu_trapping_profile_override_accessor_terminally_fails_entry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from rigplane.runtime._poller_types import SetPowerstat
-
-    class TrappingProfile:
-        state_acquisition = None
-
-        @property
-        def tx_interlock_disposition_overrides(self) -> object:
-            raise RuntimeError("trapping profile override accessor")
-
-    monkeypatch.setattr(
-        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 35.0
-    )
-    radio, queue = make_radio(), CommandQueue()
-    radio.profile = TrappingProfile()
-    radio.set_powerstat = AsyncMock()
-    radio._transport.reconnect = AsyncMock()
-    poller = YaesuCatPoller(radio, command_queue=queue)
-    future = asyncio.get_running_loop().create_future()
-    service = MagicMock()
-    queue.put_ordered(
-        SetPowerstat(on=True),
-        future=future,
-        command_id="trapping-profile",
-        command_service=service,
-    )
-
-    await poller._drain_commands()  # noqa: SLF001
-
-    assert isinstance(future.exception(), RuntimeError)
-    service.fail_command.assert_called_once()
-    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
-    radio.set_powerstat.assert_not_awaited()
-    radio._transport.reconnect.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_yaesu_profile_override_cannot_change_structural_floors(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from rigplane.runtime._poller_types import PttOff, PttOn, SetPowerstat
-
-    monkeypatch.setattr(
-        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 40.0
-    )
-    radio = make_radio()
-    radio.profile.tx_interlock_disposition_overrides = {
-        TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.DEFER
-    }
-    radio.set_ptt = AsyncMock()
-    radio.set_powerstat = AsyncMock()
-    poller = YaesuCatPoller(radio)
-    _set_fresh_ptt_observation(poller, active=True)
-
-    with pytest.raises(CommandError, match="RF state is TX"):
-        await poller._execute_command(PttOn())  # noqa: SLF001
-    await poller._execute_command(PttOff())  # noqa: SLF001
-    await poller._execute_command(SetPowerstat(on=False))  # noqa: SLF001
-    radio.set_ptt.assert_awaited_once_with(False)
-    radio.set_powerstat.assert_awaited_once_with(False)
-
-
-@pytest.mark.asyncio
 async def test_yaesu_deferred_command_supersedes_without_extending_expiry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # MOR-1940: MODE is the DEFER exemplar here -- FREQUENCY was reclassified
-    # tx-safe (see test_yaesu_frequency_now_dispatches_without_entering_the_
-    # deferred_lane below, which pins the opposite contrast for SetFreq).
     clock = [10.0]
     monkeypatch.setattr(
         "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
     )
     radio, queue = make_radio(), CommandQueue()
-    radio.set_mode = AsyncMock()
+    radio.set_split = AsyncMock()
     poller = YaesuCatPoller(radio, command_queue=queue)
     service = MagicMock()
     first = asyncio.get_running_loop().create_future()
     second = asyncio.get_running_loop().create_future()
     queue.put_ordered(
-        SetMode("LSB"),
+        SetSplit(False),
         future=first,
         command_id="first",
         command_service=service,
     )
     await _drain_with_ptt(poller, clock, 10.0, True)
     assert not first.done()
-    queue.put_ordered(SetMode("USB"), future=second)
+    queue.put_ordered(SetSplit(True), future=second)
     await _drain_with_ptt(poller, clock, 12.5, True)
     assert isinstance(first.exception(), CommandError)
     assert "superseded" in str(first.exception())
@@ -810,7 +1510,7 @@ async def test_yaesu_deferred_command_supersedes_without_extending_expiry(
     assert service.emit_lifecycle.call_args.args[1] == "superseded"
     await _drain_with_ptt(poller, clock, 13.0, False)
     assert isinstance(second.exception(), TimeoutError)
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -826,7 +1526,7 @@ async def test_yaesu_deferred_command_emits_held_lifecycle_once(
         executor=MagicMock(), state_store=StateStore(), clock=lambda: clock[0]
     )
     poller = YaesuCatPoller(radio, command_queue=queue)
-    queue.put_ordered(SetMode("USB"), command_id="held", command_service=service)
+    queue.put_ordered(SetSplit(True), command_id="held", command_service=service)
 
     await _drain_with_ptt(poller, clock, 10.0, True)
     event = service.lifecycle_events()[0]
@@ -866,14 +1566,11 @@ async def test_ftx1_web_deferred_hold_preserves_ingress_lifecycle_context(
     )
     radio, handler, poller, _store, _accept = _real_ftx1_control_path()
     service = handler._command_service  # noqa: SLF001
-    # MOR-1940: MODE is the DEFER exemplar (FREQUENCY was reclassified
-    # tx-safe); the assertions below compare `held` against `ingress`
-    # generically, so the swap needs no other change in this test.
-    params = {"mode": "USB", "receiver": 1}
+    params = {"on": True}
     original_params = dict(params)
 
     await handler._enqueue_command(  # noqa: SLF001
-        "set_mode", params, command_id=f"held-{source}", source=source
+        "set_split", params, command_id=f"held-{source}", source=source
     )
     ingress = service.lifecycle_events()[0]
     assert params == original_params
@@ -919,13 +1616,13 @@ async def test_yaesu_deferred_replacement_lifecycle_preserves_deadline_truth(
     poller = YaesuCatPoller(radio, command_queue=queue)
     first = asyncio.get_running_loop().create_future()
     queue.put_ordered(
-        SetMode("LSB"),
+        SetSplit(False),
         future=first,
         command_id="first",
         command_service=service,
     )
     await _drain_with_ptt(poller, clock, 20.0, True)
-    queue.put_ordered(SetMode("USB"), command_id="replacement", command_service=service)
+    queue.put_ordered(SetSplit(True), command_id="replacement", command_service=service)
     await _drain_with_ptt(poller, clock, replacement_at, True)
 
     events = service.lifecycle_events()
@@ -952,32 +1649,27 @@ async def test_yaesu_deferred_release_requires_continuous_fresh_rx(
         "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
     )
     radio, queue = make_radio(), CommandQueue()
-    radio.set_mode = AsyncMock()
+    radio.set_split = AsyncMock()
     poller = YaesuCatPoller(radio, command_queue=queue)
     future = asyncio.get_running_loop().create_future()
-    queue.put_ordered(SetMode("USB"), future=future)
+    queue.put_ordered(SetSplit(True), future=future)
     await _drain_with_ptt(poller, clock, 20.0, True)
     await _drain_with_ptt(poller, clock, 20.5, False)
     await _drain_with_ptt(poller, clock, 21.0, None)
     await _drain_with_ptt(poller, clock, 21.1, False)
     await _drain_with_ptt(poller, clock, 22.099, False)
     assert not future.done()
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
     await _drain_with_ptt(poller, clock, 22.1, False)
     await poller._drain_commands()  # noqa: SLF001
     assert future.result() is None
-    radio.set_mode.assert_awaited_once_with("USB", receiver=0)
+    radio.set_split.assert_awaited_once_with(True)
 
 
 @pytest.mark.asyncio
 async def test_yaesu_frequency_now_dispatches_without_entering_the_deferred_lane(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MOR-1940: the exact contrast to the MODE tests above. FREQUENCY was
-    reclassified DEFER -> tx-safe (both bench radios accept and apply it
-    while keyed), so it dispatches immediately even under known TX -- it
-    never reaches ``poller._deferred_tx_lane`` at all.
-    """
     clock = [20.0]
     monkeypatch.setattr(
         "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
@@ -996,6 +1688,150 @@ async def test_yaesu_frequency_now_dispatches_without_entering_the_deferred_lane
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "method", "expected_args"),
+    (
+        (SetFreq(7_100_000), "set_freq", (7_100_000,)),
+        (SetMode("USB"), "set_mode", ("USB",)),
+        (SetBand(3), "set_band", (3,)),
+        (SelectVfo("A"), "set_vfo_select", (0,)),
+        (VfoSwap(), "swap_vfo_ab", (0,)),
+        (VfoEqualize(), "equalize_vfo_ab", (0,)),
+    ),
+)
+async def test_yaesu_authority_approved_commands_dispatch_during_observed_tx(
+    command: object,
+    method: str,
+    expected_args: tuple[object, ...],
+) -> None:
+    radio = make_radio()
+    radio.receiver_count = 1
+    setattr(radio, method, AsyncMock())
+    poller = YaesuCatPoller(radio)
+    _set_fresh_ptt_observation(poller, active=True)
+
+    await poller._execute_command(command)  # type: ignore[arg-type] # noqa: SLF001
+
+    getattr(radio, method).assert_awaited_once()
+    assert getattr(radio, method).await_args.args == expected_args
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active", (True, None), ids=("tx", "unknown"))
+async def test_yaesu_managed_queue_bypasses_legacy_deferred_policy(
+    active: bool | None,
+) -> None:
+    radio, queue = make_radio(), CommandQueue()
+    radio.set_split = AsyncMock()
+    authority = MagicMock()
+    authority.admit_managed_write = AsyncMock(return_value=True)
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    poller.bind_managed_tx_authority(authority)
+    future = asyncio.get_running_loop().create_future()
+    queue.put_ordered(SetSplit(True), future=future)
+    if active is not None:
+        _set_fresh_ptt_observation(poller, active=active)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert future.result() is None
+    radio.set_split.assert_awaited_once_with(True)
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_yaesu_managed_non_ptt_execute_does_not_inspect_legacy_rf() -> None:
+    from rigplane.runtime._poller_types import SetPowerstat
+
+    radio = make_radio()
+    radio.set_powerstat = AsyncMock()
+    authority = MagicMock()
+    authority.admit_managed_write = AsyncMock(return_value=True)
+    poller = YaesuCatPoller(radio)
+    poller.bind_managed_tx_authority(authority)
+    poller._current_rf_state = MagicMock(  # type: ignore[method-assign] # noqa: SLF001
+        side_effect=AssertionError("managed non-PTT dispatch inspected legacy RF state")
+    )
+
+    await poller._execute_command(SetPowerstat(on=True))  # noqa: SLF001
+
+    radio.set_powerstat.assert_awaited_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_descriptor_intent_uses_bound_authority_once() -> None:
+    radio = make_radio()
+    radio.set_civ_output_ant = AsyncMock()
+    authority = MagicMock()
+    authority.admit_managed_write = AsyncMock(return_value=True)
+    poller = YaesuCatPoller(radio)
+    poller.bind_managed_tx_authority(authority)
+    _set_fresh_ptt_observation(poller, active=True)
+    intent = bind_command_intent("set_civ_output_ant", {"on": True}, source="websocket")
+
+    await poller._execute_command(intent)  # noqa: SLF001
+
+    authority.admit_managed_write.assert_awaited_once_with(intent)
+    radio.set_civ_output_ant.assert_awaited_once_with(on=True)
+    with pytest.raises(RuntimeError, match="already bound"):
+        poller.bind_managed_tx_authority(authority)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_descriptor_refusal_occurs_once_at_bound_authority() -> None:
+    radio = make_radio()
+    radio.set_antenna_1 = AsyncMock()
+    authority = MagicMock()
+    authority.admit_managed_write = AsyncMock(return_value=False)
+    poller = YaesuCatPoller(radio)
+    poller.bind_managed_tx_authority(authority)
+    intent = bind_command_intent("set_antenna_1", {"on": True}, source="websocket")
+
+    with pytest.raises(CommandError, match="transmit authority"):
+        await poller._execute_command(intent)  # noqa: SLF001
+
+    authority.admit_managed_write.assert_awaited_once_with(intent)
+    radio.set_antenna_1.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_managed_typed_ptt_on_fails_before_raw_write() -> None:
+    from rigplane.runtime._poller_types import PttOn
+
+    radio = make_radio()
+    radio.set_ptt = AsyncMock()
+    authority = MagicMock()
+    authority.admit_managed_write = AsyncMock(return_value=True)
+    poller = YaesuCatPoller(radio)
+    poller.bind_managed_tx_authority(authority)
+    _set_fresh_ptt_observation(poller, active=False)
+
+    with pytest.raises(CommandError, match="positive TX queue submission"):
+        await poller._execute_command(PttOn())  # noqa: SLF001
+
+    radio.set_ptt.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_managed_typed_ptt_off_remains_unconditionally_attemptable() -> (
+    None
+):
+    from rigplane.runtime._poller_types import PttOff
+
+    radio = make_radio()
+    radio.set_ptt = AsyncMock()
+    authority = MagicMock()
+    authority.admit_managed_write = AsyncMock(return_value=True)
+    poller = YaesuCatPoller(radio)
+    poller.bind_managed_tx_authority(authority)
+
+    await poller._execute_command(PttOff())  # noqa: SLF001
+
+    radio.set_ptt.assert_awaited_once_with(False)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("knownness", ("missing", "stale", "generation_mismatch"))
 async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
     monkeypatch: pytest.MonkeyPatch,
@@ -1005,7 +1841,7 @@ async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
         "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 30.0
     )
     radio, queue = make_radio(), CommandQueue()
-    radio.set_mode = AsyncMock()
+    radio.set_split = AsyncMock()
     poller = YaesuCatPoller(radio, command_queue=queue)
     service = MagicMock()
     if knownness == "stale":
@@ -1021,7 +1857,7 @@ async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
         )
     future = asyncio.get_running_loop().create_future()
     queue.put_ordered(
-        SetMode("USB"),
+        SetSplit(True),
         future=future,
         command_id="unknown",
         command_service=service,
@@ -1030,7 +1866,7 @@ async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
     error = future.exception()
     assert isinstance(error, CommandError)
     assert "unknown" in str(error)
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
     assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
     service.emit_lifecycle.assert_not_called()
 
@@ -1058,7 +1894,7 @@ async def test_yaesu_lifecycle_boundary_retires_held_deferred_command(
         "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
     )
     radio, queue, store = _tx_target_radio(), CommandQueue(), StateStore()
-    radio.set_mode = AsyncMock()
+    radio.set_split = AsyncMock()
     poller = YaesuCatPoller(radio, command_queue=queue)
     poller.bind_provider_generation(
         capture=lambda: store.provider_generation,
@@ -1068,7 +1904,7 @@ async def test_yaesu_lifecycle_boundary_retires_held_deferred_command(
     service = MagicMock()
     queue.register_session("ws")
     queue.put_ordered(
-        SetMode("USB"),
+        SetSplit(True),
         future=future,
         command_id="held",
         source="websocket",
@@ -1114,7 +1950,7 @@ async def test_yaesu_lifecycle_boundary_retires_held_deferred_command(
     clock[0] = 11.5
     _set_fresh_ptt_observation(poller, active=False)
     await poller._drain_commands()  # noqa: SLF001
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1139,7 +1975,9 @@ async def test_stale_yaesu_medium_has_no_side_effects(error: bool) -> None:
     radio, store, gate = _tx_target_radio(), StateStore(), asyncio.Event()
     emitted: list[Observation] = []
 
-    async def delayed_medium() -> tuple[Observation, ...]:
+    async def delayed_medium(
+        *, ptt_callback: Callable[[Observation], None] | None = None
+    ) -> tuple[Observation, ...]:
         await gate.wait()
         if error:
             raise CatTimeoutError("stale")
@@ -1324,7 +2162,11 @@ async def test_each_serialized_reconnect_invalidates_its_store_generation() -> N
     await poller._try_reconnect()  # noqa: SLF001
     poller._invalidate_tx_target(provider_generation=2)  # noqa: SLF001
     assert (radio._transport.reconnect.await_count, store.provider_generation) == (2, 2)
-    assert [item.provider_generation for item in emitted] == [1, 2]
+    assert [(item.path, item.provider_generation) for item in emitted] == [
+        (path, generation)
+        for generation in (1, 2)
+        for path in (FieldPath.global_("tx_state", "tx_target"), OBSERVED_PTT_PATH)
+    ]
 
 
 def _state_write_target(node: ast.AST) -> str | None:
@@ -1553,6 +2395,7 @@ async def test_medium_poll_emits_observations_without_legacy_state_callback() ->
     # filter_width shares the freq/mode lane (MOR-445); ``make_radio`` declares
     # the ``filter_width`` cap, so it emits after PTT, MAIN-only.
     assert [(str(item.path), item.value) for item in observations] == [
+        ("global.tx_state.observed_ptt", ObservedPtt.ON),
         ("receiver.main.active.freq_mode.freq_hz", 14_074_000),
         ("receiver.main.active.freq_mode.mode", "USB"),
         ("receiver.sub.active.freq_mode.freq_hz", 7_074_000),
@@ -1588,7 +2431,10 @@ async def test_invalidation_callback_failure_preserves_transport_flow(
         radio._transport._maybe_reconnect_needed = lambda: True
         await poller._try_reconnect()  # noqa: SLF001
         radio._transport.reconnect.assert_awaited_once()
-    callback.assert_called_once()
+    assert [args.args[0][0].path for args in callback.call_args_list] == (
+        [FieldPath.global_("tx_state", "tx_target")]
+        + ([OBSERVED_PTT_PATH] if operation == "reconnect" else [])
+    )
 
 
 @pytest.mark.parametrize("boundary", ["reconnect", "provider"])
@@ -1618,7 +2464,9 @@ async def test_tx_target_known_state_is_generation_scoped(
     assert [item.value for item in emitted] == [
         known,
         UnknownTxTarget(reason="stale"),
+        ObservedPtt.UNKNOWN,
         UnknownTxTarget(reason="not-observed"),
+        ObservedPtt.UNKNOWN,
     ]
     unsupported = UnknownTxTarget(reason="unsupported")
     monkeypatch.setattr(
@@ -1630,7 +2478,11 @@ async def test_tx_target_known_state_is_generation_scoped(
     assert emitted[-1].value == unsupported
     radio._transport.reconnect.assert_not_awaited()
 
-    async def late(_adapter: YaesuObservationAdapter) -> tuple[Observation, ...]:
+    async def late(
+        _adapter: YaesuObservationAdapter,
+        *,
+        ptt_callback: Callable[[Observation], None] | None = None,
+    ) -> tuple[Observation, ...]:
         radio._transport.stats.reconnects += 1
         return (_target_observation(radio, known),)
 
@@ -1693,6 +2545,7 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
 
     assert legacy_calls == []
     assert [(str(item.path), item.value) for item in observations] == [
+        ("global.tx_state.observed_ptt", ObservedPtt.OFF),
         ("receiver.main.active.freq_mode.freq_hz", 14_074_000),
         ("receiver.main.active.freq_mode.mode", "USB"),
         ("receiver.sub.active.freq_mode.freq_hz", 7_074_000),
@@ -1701,6 +2554,7 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
         ("global.tx_state.ptt", False),
         ("receiver.main.meters.s_meter", 6),
         ("receiver.sub.meters.s_meter", -37),
+        ("global.tx_state.dual_watch", True),
         (
             "receiver.main.operator_controls.af_level",
             pytest.approx(_normalized_255(128)),
@@ -1731,10 +2585,15 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
         # filter_width/if_shift need their runtime caps (absent here); narrow
         # is unconditional and MAIN-only, like AGC (MOR-445).
         ("receiver.main.operator_toggles.narrow", True),
-        # active-slot (MOR-446) closes the slow-control lane; unconditional like
-        # AGC/narrow, the SUB index coerces to the neutral "SUB" str. split is
-        # skipped: this radio lacks the ``split`` runtime cap.
+        # active-slot (MOR-446): unconditional like AGC/narrow, the SUB index
+        # coerces to the neutral "SUB" str. split is skipped: this radio lacks
+        # the ``split`` runtime cap.
         ("global.slow_state.active", "SUB"),
+        # Drain voltage/current (MOR-2425/T147) close the slow-control lane,
+        # scaled through the FTX-1 profile's two-point tables. cw_spot is
+        # skipped: this radio lacks the ``cw`` runtime cap.
+        ("global.meters.vd", 13.8),
+        ("global.meters.id", 0.0),
         (
             "global.operator_controls.power_level",
             pytest.approx(_normalized_power(55)),
@@ -1775,6 +2634,41 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
     assert radio.radio_state.split is False
     assert radio.radio_state.active == "MAIN"
     assert radio.radio_state.vfo_select == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("capabilities", "expected"),
+    [
+        ({"rit"}, (True, True, -250)),
+        ({"xit"}, (False, False, -250)),
+        ({"rit", "xit"}, (True, False, -250)),
+        (set(), (False, True, 123)),
+    ],
+)
+async def test_legacy_slow_poll_scopes_clarifier_state_to_declared_capabilities(
+    capabilities: set[str], expected: tuple[bool, bool, int]
+) -> None:
+    radio = make_radio(clarifier=(True, False), clarifier_freq=-250)
+    radio.capabilities = capabilities
+    radio.radio_state.rit_on = False
+    radio.radio_state.rit_tx = True
+    radio.radio_state.rit_freq = 123
+    poller = YaesuCatPoller(radio)
+
+    await poller._poll_slow()  # noqa: SLF001
+
+    assert (
+        radio.radio_state.rit_on,
+        radio.radio_state.rit_tx,
+        radio.radio_state.rit_freq,
+    ) == expected
+    if capabilities:
+        radio.get_clarifier.assert_awaited_once()
+        radio.get_clarifier_freq.assert_awaited_once()
+    else:
+        radio.get_clarifier.assert_not_awaited()
+        radio.get_clarifier_freq.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -2191,6 +3085,52 @@ async def test_fast_poll_reads_tx_meters_when_ptt_active() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("pitch_hz", "expected_frame"),
+    [(300, "KP00;"), (700, "KP40;"), (1050, "KP75;")],
+)
+async def test_ftx1_queued_cw_pitch_uses_hz_semantic_setter(
+    pitch_hz: int,
+    expected_frame: str,
+) -> None:
+    radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
+    radio._transport._connected = True  # noqa: SLF001
+    radio._transport.write = AsyncMock()  # noqa: SLF001
+    queue = CommandQueue()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    _set_fresh_ptt_observation(poller, active=False)
+    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    queue.put_ordered(SetCwPitch(pitch_hz), future=future)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert future.result() is None
+    radio._transport.write.assert_awaited_once_with(expected_frame)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pitch_hz", [299, 1051])
+async def test_ftx1_queued_cw_pitch_rejects_out_of_range_without_cat_write(
+    pitch_hz: int,
+) -> None:
+    radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
+    radio._transport._connected = True  # noqa: SLF001
+    radio._transport.write = AsyncMock()  # noqa: SLF001
+    queue = CommandQueue()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    _set_fresh_ptt_observation(poller, active=False)
+    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    queue.put_ordered(SetCwPitch(pitch_hz), future=future)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    error = future.exception()
+    assert isinstance(error, ValueError)
+    assert "300-1050" in str(error)
+    radio._transport.write.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_ftx1_web_receiver_selection_writes_once_and_waits_for_vs_readback() -> (
     None
 ):
@@ -2303,6 +3243,68 @@ async def test_ftx1_web_receiver_selection_writes_once_and_waits_for_vs_readback
         observed.source, command_source="websocket", session_id="ws-ftx1"
     )
     accept((matched,))
+    assert service.lifecycle_events()[-1].state == "reconciled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("requested", "native", "readback", "expected"),
+    [
+        (0.5, 50, "PC2050", 0.5),
+        (1, 1, "PC2001", 0.01),
+    ],
+)
+async def test_ftx1_power_readback_exactly_reconciles_native_target(
+    requested: int | float,
+    native: int,
+    readback: str,
+    expected: float,
+) -> None:
+    radio, handler, poller, store, accept = _real_ftx1_control_path()
+    service = handler._command_service  # noqa: SLF001
+    command_id = f"power-{native}"
+
+    await handler._enqueue_command(  # noqa: SLF001
+        "set_rf_power",
+        {"level": requested},
+        command_id=command_id,
+    )
+    [pending] = service.pending_overlays(
+        source="websocket", session_id="ws-ftx1", command_id=command_id
+    )
+    assert pending.value == expected
+
+    await poller._drain_commands()  # noqa: SLF001
+    radio._transport.write.assert_awaited_once_with(  # noqa: SLF001
+        f"PC2{native:03d};"
+    )
+
+    radio._transport.query = AsyncMock(return_value=readback)  # noqa: SLF001
+    radio.read_mic_gain = AsyncMock(return_value=0)
+    radio._config = replace(  # noqa: SLF001
+        radio._config,
+        capabilities=frozenset({"tx"}),  # noqa: SLF001
+    )
+    radio._profile_cache = None  # noqa: SLF001
+    observations = await YaesuObservationAdapter.from_radio(radio).poll_tx_controls()
+    [power] = [
+        observation
+        for observation in observations
+        if str(observation.path) == "global.operator_controls.power_level"
+    ]
+    assert power.value == expected
+
+    [matched] = poller._annotate_yaesu_readbacks(  # noqa: SLF001
+        poller._stamp_provider_generation((power,), store.provider_generation)  # noqa: SLF001
+    )
+    assert matched.correlation_id == command_id
+    accept((matched,))
+    assert (
+        service.pending_overlays(
+            source="websocket", session_id="ws-ftx1", command_id=command_id
+        )
+        == ()
+    )
     assert service.lifecycle_events()[-1].state == "reconciled"
 
 
@@ -2837,3 +3839,23 @@ async def test_execute_command_set_power_raw_255_unit_rejected() -> None:
         await poller._execute_command(SetPower(level=200))  # default unit='raw_255'
 
     radio.set_power.assert_not_awaited()
+
+
+def test_slow_group_interval_matches_the_profile_slow_control_cadence() -> None:
+    """The FTX-1 profile's slow tier must name the interval that re-reads it.
+
+    ``YaesuCatPoller`` is what actually polls an FTX-1: the AGC, gain, notch,
+    RIT, tuner, keyer and tone paths all ride ``_SLOW_INTERVAL``. The profile's
+    ``cadence_seconds`` for those paths never reaches the CAT link (the
+    ``AcquisitionScheduler`` is not drained on this backend), so the only thing
+    keeping the declared number honest is this equality.
+    """
+    from rigplane.backends.yaesu_cat.poller import _SLOW_INTERVAL
+    from rigplane.profiles import get_radio_profile
+
+    assert _SLOW_INTERVAL == 1.0
+
+    acquisition = get_radio_profile("FTX-1").state_acquisition
+    assert acquisition is not None
+    slow_control = FieldPath.receiver("main", "operator_controls", "af_level")
+    assert acquisition.policy_for(slow_control).cadence_seconds == _SLOW_INTERVAL

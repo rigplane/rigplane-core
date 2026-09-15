@@ -113,12 +113,16 @@ import {
   compLevel,
   sLevel,
   isSwrFault,
+  hasSwrRatioScale,
   isAlcFault,
   updatePeakHold,
   peakHoldDisplay,
+  vdScale,
+  SUPPLY_VOLTAGE_WINDOW,
   type PeakHoldState,
 } from './meter-utils';
-import { isSmeterCalibrated } from '../meters/smeter-scale';
+import { calibratedToRaw as calibratedToRawFromFacade, isSmeterCalibrated } from '../meters/smeter-scale';
+import { calibratedToSegments } from '../../primitives/meters/s-meter-scale';
 
 beforeEach(() => {
   setCapabilities(makeCaps({
@@ -254,6 +258,99 @@ describe('formatAlc / alcLevel / isAlcFault (calibrated: input is normalized 0-1
   });
 });
 
+describe('explicit meter domains override capability metadata (MOR-2425)', () => {
+  const raw = { kind: 'raw' } as const;
+  const unknown = { kind: 'unknown' } as const;
+
+  it('keeps an explicit raw sample raw even when calibrated tables exist', () => {
+    expect(hasSwrRatioScale(raw)).toBe(false);
+    expect(formatPowerWatts(50, raw)).toBe('50 raw');
+    expect(normalizePower(50, raw)).toBeCloseTo(50 / 255);
+    expect(formatSwr(3, raw)).toBe('3 raw');
+    expect(swrLevel(120, raw)).toBeCloseTo(120 / 255);
+    expect(isSwrFault(3, raw)).toBe(false);
+    expect(formatAlc(0.95, raw)).toBe('1 raw');
+    expect(alcLevel(120, raw)).toBeCloseTo(120 / 255);
+    expect(isAlcFault(255, raw)).toBe(false);
+    expect(formatVolts(13.8, raw)).toBe('14 raw');
+    expect(vdLevel(13.8, raw)).toBeCloseTo(13.8 / 255);
+    expect(formatAmps(10, raw)).toBe('10 raw');
+    expect(idLevel(10, raw)).toBeCloseTo(10 / 255);
+    expect(formatCompDb(15, raw)).toBe('15 raw');
+    expect(compLevel(15, raw)).toBeCloseTo(15 / 255);
+  });
+
+  it('retains known numeric evidence for an unknown unit without geometry or faults', () => {
+    expect(hasSwrRatioScale(unknown)).toBe(false);
+    expect(formatPowerWatts(50, unknown)).toBe('50 unit unknown');
+    expect(normalizePower(50, unknown)).toBeNull();
+    expect(formatSwr(3, unknown)).toBe('3 unit unknown');
+    expect(swrLevel(3, unknown)).toBeNull();
+    expect(isSwrFault(3, unknown)).toBe(false);
+    expect(formatAlc(0.95, unknown)).toBe('0.95 unit unknown');
+    expect(alcLevel(0.95, unknown)).toBeNull();
+    expect(isAlcFault(0.95, unknown)).toBe(false);
+    expect(formatVolts(13.8, unknown)).toBe('13.8 unit unknown');
+    expect(vdLevel(13.8, unknown)).toBeNull();
+    expect(formatAmps(10, unknown)).toBe('10 unit unknown');
+    expect(idLevel(10, unknown)).toBeNull();
+    expect(formatCompDb(15, unknown)).toBe('15 unit unknown');
+    expect(compLevel(15, unknown)).toBeNull();
+  });
+
+  it('keeps declared engineering units when a physical scale is unavailable', () => {
+    clearCapabilities();
+    expect(hasSwrRatioScale({ kind: 'engineering', unit: 'ratio' })).toBe(false);
+    expect(formatPowerWatts(50, { kind: 'engineering', unit: 'w' })).toBe('50W');
+    expect(normalizePower(50, { kind: 'engineering', unit: 'w' })).toBeNull();
+    expect(formatVolts(13.8, { kind: 'engineering', unit: 'v' })).toBe('13.8 V');
+    expect(vdLevel(13.8, { kind: 'engineering', unit: 'v' })).toBeNull();
+    expect(formatSwr(2.25, { kind: 'engineering', unit: 'ratio' })).toBe('2.3');
+    expect(swrLevel(2.25, { kind: 'engineering', unit: 'ratio' })).toBeNull();
+    expect(isSwrFault(2.25, { kind: 'engineering', unit: 'ratio' })).toBe(true);
+    expect(formatAlc(0.95, { kind: 'engineering', unit: 'normalized' })).toBe('95%');
+    expect(alcLevel(0.95, { kind: 'engineering', unit: 'normalized' })).toBe(0.95);
+    expect(isAlcFault(0.95, { kind: 'engineering', unit: 'normalized' })).toBe(true);
+    expect(formatAmps(10, { kind: 'engineering', unit: 'a' })).toBe('10.0 A');
+    expect(idLevel(10, { kind: 'engineering', unit: 'a' })).toBeNull();
+    expect(formatCompDb(15, { kind: 'engineering', unit: 'db' })).toBe('15 dB');
+    expect(compLevel(15, { kind: 'engineering', unit: 'db' })).toBeNull();
+  });
+
+  it('keeps ratio-scale availability independent of the current sample', () => {
+    expect(hasSwrRatioScale({ kind: 'engineering', unit: 'ratio' })).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The supply-voltage window (T168; the art direction chose 11-15 V on
+// 2026-09-08). `vdLevel`'s calibrated branch maps against this window and not
+// against the profile's calibration top, so a voltage lands in the same place
+// whatever table the profile declares. This ladder is asserted verbatim under
+// the three vd tables below — top 16 V twice, top 13.8 V once; the rows are
+// [volts, expected vdLevel].
+// ---------------------------------------------------------------------------
+const SUPPLY_VOLTAGE_WINDOW_LADDER: readonly (readonly [number, number])[] = [
+  [10.5, 0],
+  [11, 0],
+  [12.0, 0.25],
+  [13.8, 0.7],
+  [15, 1],
+  [16, 1],
+];
+
+function expectWindowedVdLevel(): void {
+  for (const [volts, fraction] of SUPPLY_VOLTAGE_WINDOW_LADDER) {
+    expect(vdLevel(volts), `vdLevel(${volts})`).toBeCloseTo(fraction);
+  }
+}
+
+describe('SUPPLY_VOLTAGE_WINDOW', () => {
+  it('is the 11-15 V window the level function and every face label share', () => {
+    expect(SUPPLY_VOLTAGE_WINDOW).toEqual({ min: 11, max: 15 });
+  });
+});
+
 describe('formatVolts / vdLevel (calibrated: input is volts)', () => {
   it('renders the bench supply voltage as-is', () => {
     expect(formatVolts(13.8)).toBe('13.8 V');
@@ -261,9 +358,11 @@ describe('formatVolts / vdLevel (calibrated: input is volts)', () => {
   it('renders 0 V', () => {
     expect(formatVolts(0)).toBe('0.0 V');
   });
-  it('vdLevel normalizes against the 16 V top knot', () => {
-    expect(vdLevel(13.8)).toBeCloseTo(13.8 / 16);
-    expect(vdLevel(16)).toBeCloseTo(1.0);
+  it('vdLevel maps into the fixed window, not against this table top of 16 V', () => {
+    expectWindowedVdLevel();
+  });
+  it('vdScale reports the window this profile\'s bar is drawn against', () => {
+    expect(vdScale()).toEqual(SUPPLY_VOLTAGE_WINDOW);
   });
 });
 
@@ -442,8 +541,72 @@ describe('TX meters — IC-7300 profile anchors (MOR-1527)', () => {
     expect(formatAmps(10)).toBe('10.0 A');
   });
 
-  it('vdLevel normalizes against the 16 V top knot from this profile', () => {
-    expect(vdLevel(13.8)).toBeCloseTo(13.8 / 16);
+  it('vdLevel maps into the fixed window, not against this profile\'s 16 V top knot', () => {
+    expectWindowedVdLevel();
+  });
+
+  it('marks a reading at this profile’s own drain tops with "+" (T164)', () => {
+    expect(formatVolts(16)).toBe('16.0+ V');
+    expect(formatAmps(25)).toBe('25.0+ A');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Drain readings clamped at the calibration top (T164, owner ruling R57
+// 2026-09-08).
+//
+// `src/rigplane/runtime/meter_cal.py: interpolate_meter` returns the last
+// knot's `actual` for every raw at or above that knot's `raw`. The FTX-1
+// drain tables mirrored below top out at raw 210 and raw 29 — both under the
+// 255 device-scale ceiling — so any larger raw publishes exactly the top
+// value. Rendering that as an exact reading would state a number the table
+// cannot support, so the top is rendered with a trailing "+" instead.
+// ---------------------------------------------------------------------------
+
+const FTX1_DRAIN_METER_CALS = {
+  vd: [
+    { raw: 0, actual: 0.0, label: '0' },
+    { raw: 210, actual: 13.8, label: '13.8' },
+  ],
+  id: [
+    { raw: 0, actual: 0.0, label: '0' },
+    { raw: 29, actual: 1.0, label: '1.0' },
+  ],
+};
+
+describe('formatVolts / formatAmps — clamped at the calibration top (T164)', () => {
+  beforeEach(() => {
+    setCapabilities(makeCaps({
+      model: 'FTX-1',
+      meterCalibrations: FTX1_DRAIN_METER_CALS,
+    }));
+  });
+
+  it('renders the drain voltage top as "13.8+ V", at the top and beyond it', () => {
+    expect(formatVolts(13.8)).toBe('13.8+ V');
+    expect(formatVolts(20)).toBe('13.8+ V');
+  });
+
+  it('renders the drain current top as "1.0+ A", at the top and beyond it', () => {
+    expect(formatAmps(1.0)).toBe('1.0+ A');
+    expect(formatAmps(5)).toBe('1.0+ A');
+  });
+
+  it('leaves readings below the top as plain numbers', () => {
+    expect(formatVolts(0)).toBe('0.0 V');
+    expect(formatVolts(12.4)).toBe('12.4 V');
+    expect(formatAmps(0)).toBe('0.0 A');
+    expect(formatAmps(0.5)).toBe('0.5 A');
+  });
+
+  it('maps vdLevel into the same window as every other profile, though this table tops out at 13.8 V (T168)', () => {
+    expectWindowedVdLevel();
+  });
+
+  it('mirrors the drain tables rigs/ftx1.toml declares', () => {
+    const tomlSource = readFileSync('../rigs/ftx1.toml', 'utf8');
+    expect(parseTomlCalibrationTable(tomlSource, 'vd')).toEqual(FTX1_DRAIN_METER_CALS.vd);
+    expect(parseTomlCalibrationTable(tomlSource, 'id')).toEqual(FTX1_DRAIN_METER_CALS.id);
   });
 });
 
@@ -474,7 +637,7 @@ function parseTomlCalibrationTable(tomlSource: string, meterKey: string): TomlCa
       const actual = body.match(/actual\s*=\s*(-?[\d.]+)/)?.[1];
       const label = body.match(/label\s*=\s*"([^"]*)"/)?.[1];
       if (raw === undefined || actual === undefined || label === undefined) {
-        throw new Error(`Unparseable [[meters.${meterKey}.calibration]] knot while reading rigs/ic7300.toml`);
+        throw new Error(`Unparseable [[meters.${meterKey}.calibration]] knot`);
       }
       return { raw: Number(raw), actual: Number(actual), label };
     });
@@ -664,6 +827,26 @@ describe('sLevel (calibrated bar)', () => {
   });
   it('returns the S9 marker position for a calibrated 0 dB-rel-S9 reading', () => {
     expect(sLevel(0)).toBeCloseTo(130 / 240);
+    expect(sLevel(0)).not.toBeCloseTo(calibratedToSegments(0, IC7610_LIKE_S_METER_CAL) / 20);
+  });
+});
+
+describe('S-meter live profile replacement', () => {
+  it('uses the current profile on each facade and panel-adapter call', () => {
+    setCapabilities(makeCaps({
+      meterCalibrations: { s_meter: IC7610_LIKE_S_METER_CAL },
+    }));
+    expect(calibratedToRawFromFacade(0)).toBe(130);
+    expect(sLevel(0)).toBeCloseTo(130 / 240);
+
+    const ic7300Calibration = [
+      { raw: 0, actual: -54, label: 'S0' },
+      { raw: 120, actual: 0, label: 'S9' },
+      { raw: 241, actual: 60, label: 'S9+60' },
+    ];
+    setCapabilities(makeCaps({ meterCalibrations: { s_meter: ic7300Calibration } }));
+    expect(calibratedToRawFromFacade(0)).toBe(120);
+    expect(sLevel(0)).toBeCloseTo(120 / 241);
   });
 });
 

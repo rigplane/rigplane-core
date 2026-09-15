@@ -13,6 +13,7 @@ __all__ = [
     "BreakInMode",
     "FilterShape",
     "SsbTxBandwidth",
+    "RepeaterShiftDirection",
     "AudioCodec",
     "AudioCapabilities",
     "get_audio_capabilities",
@@ -127,6 +128,21 @@ class SsbTxBandwidth(IntEnum):
     WIDE = 0x00
     MID = 0x01
     NAR = 0x02
+
+
+class RepeaterShiftDirection(IntEnum):
+    """Repeater shift direction (FTX-1 CAT ``OS`` P2 codes, MOR-2111).
+
+    Values match the FTX-1's wire codes exactly. ``ARS`` (Automatic Repeater
+    Shift) is not a universal value — it is this radio's, not every radio's;
+    see :class:`rigplane.core.radio_protocol.RepeaterShiftCapable` for the
+    protocol-level caveat about which radios can represent which values.
+    """
+
+    SIMPLEX = 0x00
+    PLUS = 0x01
+    MINUS = 0x02
+    ARS = 0x03
 
 
 class ScopeCompletionPolicy(StrEnum):

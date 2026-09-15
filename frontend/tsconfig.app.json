@@ -18,6 +18,7 @@
     "moduleDetection": "force",
     "baseUrl": ".",
     "paths": {
+      "@rigplane/component-kit-api": ["component-kit-api/src/index.ts"],
       "$lib": ["src/lib"],
       "$lib/*": ["src/lib/*"]
     }

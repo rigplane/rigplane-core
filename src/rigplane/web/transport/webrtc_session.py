@@ -247,6 +247,11 @@ class WebRtcSessionManager:
                     if self._server is not None
                     else False
                 ),
+                managed_tx_authority=(
+                    self._server._managed_tx_authority()  # noqa: SLF001
+                    if self._server is not None
+                    else None
+                ),
             )
         elif label == _SCOPE:
             handler = ScopeHandler(conn, self._radio, server=self._server)

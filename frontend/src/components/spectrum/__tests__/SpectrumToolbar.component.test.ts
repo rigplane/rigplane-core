@@ -4,7 +4,7 @@
  * from the merged spectrum selector while actions use the bound scope family.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mount, unmount, flushSync } from 'svelte';
+import { createRawSnippet, mount, unmount, flushSync, tick } from 'svelte';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -128,6 +128,7 @@ vi.mock('../ScopeSettingsPopover.svelte', () => ({ default: vi.fn() }));
 globalThis.fetch = vi.fn(() =>
   Promise.resolve({ ok: false, json: () => Promise.resolve({}) } as Response),
 );
+const fetchMock = vi.mocked(globalThis.fetch);
 
 import SpectrumToolbar from '../SpectrumToolbar.svelte';
 
@@ -242,7 +243,11 @@ function clearIntentSpies() {
 
 beforeEach(() => {
   components = [];
+  localStorage.clear();
   vi.clearAllMocks();
+  fetchMock.mockImplementation(() =>
+    Promise.resolve({ ok: false, json: () => Promise.resolve({}) } as Response),
+  );
   tuningHarness.state.autoStep = false;
   capabilityHarness.scope = true;
   capabilityHarness.dual = true;
@@ -258,6 +263,7 @@ beforeEach(() => {
 afterEach(() => {
   components.forEach((component) => unmount(component));
   document.body.innerHTML = '';
+  localStorage.clear();
 });
 
 // ── Canonical selector and one-time binder ─────────────────────────────────
@@ -544,6 +550,62 @@ describe('structural and browser-local behavior', () => {
   });
 });
 
+describe('band-plan credential-free HTTP', () => {
+  it('omits retired credentials from GETs and the existing config POST', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/layers')) {
+        return {
+          ok: true,
+          json: async () => ({ layers: [{ layer: 'ham', name: 'Ham' }, { layer: 'eibi', name: 'EiBi' }] }),
+        } as Response;
+      }
+      if (url.endsWith('/config') && init?.method === 'POST') {
+        return { ok: true, json: async () => ({}) } as Response;
+      }
+      if (url.endsWith('/config')) {
+        return {
+          ok: true,
+          json: async () => ({ region: 'US', availableRegions: ['US', 'CA'] }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    localStorage.setItem('rigplane-auth-token', 'read-token');
+    const target = mountToolbar();
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/band-plan/layers', {
+      headers: {},
+    });
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/band-plan/config', {
+      headers: {},
+    });
+
+    localStorage.setItem('rigplane-auth-token', 'write-token');
+    await tick();
+    await vi.waitFor(() => {
+      expect(target.querySelector<HTMLButtonElement>('.layer-toggle-btn')).not.toBeNull();
+    });
+    target.querySelector<HTMLButtonElement>('.layer-toggle-btn')!.click();
+    flushSync();
+    const caButton = Array.from(target.querySelectorAll<HTMLButtonElement>('.region-btn'))
+      .find((item) => item.textContent?.trim() === 'CA');
+    expect(caButton).toBeDefined();
+    caButton!.click();
+
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/v1/band-plan/config', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ region: 'CA' }),
+      });
+    });
+  });
+});
+
 // ── Auto-step toggle (MOR-1486) ─────────────────────────────────────────────
 //
 // Prior to this ticket, `_autoStep` could only ever be re-enabled by wiping
@@ -712,16 +774,43 @@ describe('source and enforcement boundary', () => {
     expect(contract).not.toContain('  { path = "src/components/spectrum/EiBiBrowser.svelte", count = 1, owner = "MOR-1409" },');
   });
 
-  it('releases the old popover hash pin while keeping all Toolbar CSS byte-frozen', () => {
+  it('keeps the selector boundaries and pins the scoped toolbar CSS', () => {
     const popover = readFileSync(popoverPath, 'utf8');
     expect(popover).toContain('toSpectrumAuthority(runtime.state, runtime.caps)');
     expect(popover).toContain('bindSemanticSurfaceHandlers().scopeControls');
     expect(popover).not.toMatch(/stores\/radio\.svelte|sendCommand|\?\? false/);
     const source = readFileSync(sourcePath, 'utf8');
     const cssHash = createHash('sha256').update(source.slice(source.indexOf('<style>'))).digest('hex');
-    // MOR-1486: `.auto-badge` (the passive 'A' glyph) was removed and
-    // `.auto-step-toggle.active` (the new real toggle's amber styling) was
-    // added — this hash is re-pinned to that legitimate CSS change.
-    expect(cssHash).toBe('42438ae899f89f4f7b6aef982755c1e1e166945a98b5cb1d6cb246c4eef96e57');
+    // MOR-2358 adds host-scoped wrapping for the semantic scope surface.
+    expect(cssHash).toBe('78b3e1d873bf88fc6d763177d8a677edc3eff2fe2e03b6580645ef1d74fd7a51');
+  });
+});
+
+
+describe('semantic scope host (MOR-2358)', () => {
+  const scopeControls = createRawSnippet(() => ({ render: () => '<div data-testid="semantic-scope-probe">Semantic scope</div>' }));
+  it.each([
+    [true, true, true, true], [false, true, true, false],
+    [true, false, true, false], [true, true, false, false],
+  ])('scope=%s, suppression=%s, snippet=%s gates host=%s', (scope, hidden, snippet, hosted) => {
+    capabilityHarness.scope = scope;
+    const target = mountToolbar({ hideScopeControls: hidden, scopeControls: snippet ? scopeControls : undefined });
+    expect(target.querySelectorAll('[data-testid="semantic-scope-probe"]')).toHaveLength(hosted ? 1 : 0);
+    expect(target.querySelector('.semantic-scope-controls-host') !== null).toBe(hosted);
+  });
+
+  it('preserves local controls and suppresses the legacy radio subtree with the host', () => {
+    const target = mountToolbar({ hideScopeControls: true, scopeControls });
+    expect(target.querySelectorAll('.semantic-scope-controls-host')).toHaveLength(1);
+    for (const label of ['CTR', 'FIX', 'S-C', 'S-F', 'HOLD', 'DUAL', 'MAIN']) expect(button(target, label)).toBeUndefined();
+    expect(target.querySelector('.settings-group')).toBeNull();
+    for (const label of ['AUTO', 'AVG', 'PEAK', 'BANDS']) expect(button(target, label)).toBeDefined();
+    for (const label of ['STEP', 'VIEW', 'BRT']) expect(target.textContent).toContain(label);
+    expect(target.querySelector('.toolbar-select')).not.toBeNull(); expect(target.querySelector('.icon-btn')).not.toBeNull();
+    const step = buttons(target).find((item) => item.title === 'Increase tuning step')!; step.click();
+    button(target, 'AVG')!.click(); button(target, 'PEAK')!.click(); flushSync();
+    expect(tuningHarness.adjustTuningStep).toHaveBeenCalledExactlyOnceWith('up');
+    for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+    expect(sendCommandAlarm).not.toHaveBeenCalled();
   });
 });

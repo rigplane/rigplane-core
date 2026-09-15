@@ -16,9 +16,10 @@ Safety posture (read/write by default, with automatic restore):
   authorization and only ever reported as ``MANUAL_REQUIRED`` when authorized
   — they are NEVER actuated (no PTT keying, no tune cycle).
 
-This module imports only the standard library, ``rigplane.core.*`` and
-``rigplane.validation.*`` — it must not depend on the CLI, backends, or
-runtime layers. The caller owns connection lifecycle.
+This module imports only the standard library, ``rigplane.core.*``,
+``rigplane.profiles.control_domain`` (the shared control-shape interpreter
+for declared bands), and ``rigplane.validation.*`` — it must not depend on
+the CLI, backends, or runtime layers. The caller owns connection lifecycle.
 """
 
 from __future__ import annotations
@@ -29,11 +30,13 @@ import datetime
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
+from decimal import Decimal
 from typing import Any, TypeVar, cast
 
 from rigplane.core.exceptions import (
     AuthenticationError,
     CommandError,
+    CommandRejectedError,
     ConnectionError as RigConnectionError,
     RigplaneError,
     TimeoutError as RigTimeoutError,
@@ -48,10 +51,12 @@ from rigplane.core.radio_protocol import (
     RitXitCapable,
     ScopeCapable,
     SystemControlCapable,
+    TransmitStateReadable,
     UsbAudioCapable,
 )
 from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource, TxTransition
 from rigplane.core.types import AgcMode
+from rigplane.profiles.control_domain import control_display_band
 from rigplane.validation.interactive import InteractivePrompter
 from rigplane.validation.registry import CheckKind, CheckSpec, ValueRule, get_spec
 from rigplane.validation.runner import _is_authorized, _is_safety_gated
@@ -64,6 +69,7 @@ from rigplane.validation.schema import (
     LevelResult,
     MatrixTemplate,
     OperatorSafetyBlock,
+    RmvrOutcome,
     ValidationLevel,
 )
 
@@ -208,6 +214,7 @@ async def execute_hardware_checks(
     allow_writes: bool,
     per_check_timeout: float = DEFAULT_PER_CHECK_TIMEOUT,
     write_only_capabilities: frozenset[str] = frozenset(),
+    fixed_value_checks: dict[str, str] = {},  # noqa: B006 -- read-only
     prompter: InteractivePrompter | None = None,
     tx_actuate: bool = False,
     audio_probe_frames: Sequence[bytes | None] | None = None,
@@ -237,6 +244,13 @@ async def execute_hardware_checks(
     it (dry-run/CI, or a non-AudioCapable radio) those probes keep their
     MANUAL_REQUIRED behaviour. ``audio.tx.byte_perfect`` is out of scope here
     and is never run against live hardware (it needs TX loopback).
+
+    *fixed_value_checks* (MOR-2105 part 2) names, by check_id, RMVR_SAFE_WRITE
+    checks this radio has only one legal value for (e.g. IC-7300's
+    scope_receiver.set/scope_dual.set — single receiver, single scope). Such
+    a check reports SKIP, quoting the source, instead of flipping to a value
+    the radio can never report back and reporting a false FAIL. Empty by
+    default: every check uses the standard RMVR path.
     """
     # MOR-666: resolve the single pre-TX confirmation up front so it is asked at
     # most once per run (not per check). ``confirm()`` ignores ``--assume-yes``,
@@ -256,6 +270,7 @@ async def execute_hardware_checks(
                 allow_writes=allow_writes,
                 per_check_timeout=per_check_timeout,
                 write_only_capabilities=write_only_capabilities,
+                fixed_value_checks=fixed_value_checks,
                 prompter=prompter,
                 tx_actuate_confirmed=tx_actuate_confirmed,
                 audio_probe_frames=audio_probe_frames,
@@ -311,8 +326,14 @@ def _base_result(
     failure_domain: FailureDomain | None = None,
     evidence: dict[str, object] | None = None,
     error: str | None = None,
+    outcome: RmvrOutcome | None = None,
 ) -> CheckResult:
-    """Build a :class:`CheckResult` carrying ``entry``'s static fields."""
+    """Build a :class:`CheckResult` carrying ``entry``'s static fields.
+
+    ``outcome`` is the internal-only ``CheckResult.outcome`` carrier
+    (MOR-2103) -- every existing caller omits it and gets ``None``, exactly
+    as before this parameter existed.
+    """
     return CheckResult(
         check_id=entry.check_id,
         capability=entry.capability,
@@ -323,6 +344,7 @@ def _base_result(
         failure_domain=failure_domain,
         evidence=evidence or {},
         error=error,
+        outcome=outcome,
     )
 
 
@@ -334,6 +356,7 @@ async def _run_one_check(
     allow_writes: bool,
     per_check_timeout: float,
     write_only_capabilities: frozenset[str] = frozenset(),
+    fixed_value_checks: dict[str, str] = {},  # noqa: B006 -- read-only
     prompter: InteractivePrompter | None = None,
     tx_actuate_confirmed: bool = False,
     audio_probe_frames: Sequence[bytes | None] | None = None,
@@ -412,6 +435,56 @@ async def _run_one_check(
             return await _set_and_observe(
                 radio, entry, spec, per_check_timeout=per_check_timeout
             )
+
+    # Per-radio fixed-value classification (MOR-2105 part 2): a control this
+    # radio has only one legal value for reports SKIP, naming the source,
+    # instead of the RMVR cycle flipping to a value the radio can never
+    # report back and reporting a false FAIL. Two sources, both checked
+    # before any radio I/O and independent of --read-only:
+    # - scope_receiver.set is DERIVED from RadioProfile.receiver_count (F1,
+    #   owner ruling): a single-receiver radio already says so via
+    #   receiver_count/supports_receiver, so this is not restated as TOML
+    #   data that could silently disagree with it.
+    # - every other entry is TOML-DECLARED, via [validation.fixed_value] in
+    #   the rig TOML (fixed_value_checks, keyed by check_id -- finer than
+    #   write_only_capabilities' per-capability grain above, since a
+    #   capability like "scope" mixes fixed-value checks with genuinely
+    #   multi-valued ones, e.g. scope_span.set), for a fact with no other
+    #   home in RadioProfile (IC-7300's scope_dual.set: single scope).
+    # Checked ahead of Pre-gate 4 (not inside a per-check_id handler) so it
+    # applies uniformly whether or not entry.check_id has a named handler in
+    # _SUPPORTED_HANDLERS -- a fixed-value declaration for one of those 15
+    # would otherwise be silently ignored.
+    if entry.check_id == "scope_receiver.set":
+        receiver_count = getattr(
+            getattr(radio, "profile", None), "receiver_count", None
+        )
+        if isinstance(receiver_count, int) and receiver_count <= 1:
+            return _base_result(
+                entry,
+                CheckStatus.SKIP,
+                evidence={
+                    "reason": (
+                        "scope_receiver.set is fixed-value: this radio's "
+                        f"profile declares receiver_count={receiver_count}, "
+                        "so there is no second receiver to select; not "
+                        "attempting the flip"
+                    )
+                },
+            )
+    fixed_source = fixed_value_checks.get(entry.check_id)
+    if fixed_source is not None:
+        return _base_result(
+            entry,
+            CheckStatus.SKIP,
+            evidence={
+                "reason": (
+                    f"{entry.check_id} is declared fixed-value (single "
+                    f"legal value) by the profile, per {fixed_source}; "
+                    "not attempting the flip"
+                )
+            },
+        )
 
     # Pre-gate 4: SUPPORTED -> check-specific logic.
     handler = _SUPPORTED_HANDLERS.get(entry.check_id)
@@ -541,8 +614,12 @@ def _manual_required_result(
 
 # ---------------------------------------------------------------------------
 # TX actuation handlers (MOR-666) — reached ONLY after the full gate stack and
-# an explicit interactive confirm() YES. Each guarantees the radio is left in a
-# safe (un-keyed, power-restored) state via a finally that never raises.
+# an explicit interactive confirm() YES. Each handler's teardown ATTEMPTS to
+# leave the radio un-keyed with power restored via a ``finally`` that contains
+# every ordinary ``Exception``. An unkey that failed or could not be confirmed
+# is recorded (``unkeyed: False`` + ``unkey_error``) and FAILs the check —
+# never a PASS on uncertain teardown. ``BaseException`` cancellation still
+# propagates.
 #
 # MOR-1222: every PTT *assertion* below goes through the radio's managed TX
 # supervisor when it publishes one. A raw ``set_ptt`` here took no lease, so
@@ -579,16 +656,22 @@ async def _release_validation_lease(
     supervisor to release a lease this owner never took is free (it answers
     ``STALE`` and touches no wire).
 
-    A refusal is recorded, never escalated. ``force_unkey`` exists for a rig an
-    *external* process left keyed (MOR-1182); reaching for it here would let
-    the validation harness adopt — and de-key — a live transmission belonging
-    to somebody else. This tool only ever releases keys it took itself.
+    A refusal — or any release-path ``Exception`` — is recorded, never
+    escalated. The OFF write rides the same wire as the key, so the release
+    can fail with the backend's own transport error (a plain ``Exception``
+    outside ``_RESTORE_ERRORS``, e.g. Yaesu ``CatTransportError``); raising it
+    past the caller's ``finally`` would skip the power restore (MOR-1951).
+    ``BaseException`` cancellation still propagates. ``force_unkey`` exists
+    for a rig an *external* process left keyed (MOR-1182); reaching for it
+    here would let the validation harness adopt — and de-key — a live
+    transmission belonging to somebody else. This tool only ever releases
+    keys it took itself.
     """
     try:
         transition = await asyncio.wait_for(
             managed.set_ptt(False), timeout=per_check_timeout
         )
-    except _RESTORE_ERRORS as exc:
+    except Exception as exc:
         evidence["unkey_error"] = str(exc)
         return False
     refusal = _tx_refusal(transition, "release")
@@ -607,15 +690,23 @@ async def _actuate_tx_ptt(
     """ACTUALLY key PTT briefly at minimum power, verify, then always unkey.
 
     Sequence: read original TX power → set power to MINIMUM → key PTT → brief
-    wait → verify it keyed, preferring a real read-back (``get_ptt``) over the
-    legacy ``radio_state`` mirror where the backend offers one (MOR-1941; see
-    ``ptt_state_source`` in the evidence) → unkey → restore power.
+    wait → verify it keyed, preferring a real read-back
+    (:meth:`~rigplane.core.radio_protocol.TransmitStateReadable.read_transmit_state`)
+    over the legacy ``radio_state`` mirror on a backend that implements the
+    protocol (MOR-1941 introduced the preference; MOR-2089 moved the
+    capability check off a hardcoded ``get_ptt`` probe onto the protocol
+    itself, so an Icom radio -- which never had ``get_ptt`` -- gets a real
+    read too; see ``ptt_state_source`` in the evidence) → unkey → restore
+    power.
     The unkey AND power-restore run in a ``finally`` that ALWAYS executes and
-    never raises (contained by ``_RESTORE_ERRORS``, which includes ``OSError``),
-    so a mid-check exception/timeout/LAN drop can never leave the radio keyed or
-    at the wrong power. (A pre-existing gap in that same ``finally`` — a
-    Yaesu transport error from the unkey call itself escaping uncontained —
-    is filed separately as MOR-1951; not this row's fix.)
+    never raises: each leg catches ``Exception`` — backend-agnostic, because a
+    Yaesu ``CatTransportError`` from the unkey write itself is a plain
+    ``Exception`` outside ``_RESTORE_ERRORS`` and must not skip the power
+    restore (MOR-1951) — while ``BaseException`` cancellation still
+    propagates. A failed or unconfirmed unkey is recorded (``unkeyed: False``
+    + ``unkey_error``) and the check FAILs: the harness never reports a PASS
+    on teardown it could not confirm, nor claims the radio is unkeyed when the
+    wire write failed.
 
     MOR-1222: on a managed rig both the key and the unkey go through the
     supervisor under :data:`_VALIDATION_TX_OWNER`. A refused key is a FAIL, not
@@ -713,46 +804,63 @@ async def _actuate_tx_ptt(
             # takes (MOR-1941 review).
             await asyncio.sleep(_TX_PTT_KEY_SECONDS)
             # Verify the keyed state from a real read-back where the backend
-            # offers one, rather than the legacy ``radio_state`` mirror
-            # (MOR-1941): some backends no longer self-write that mirror
-            # from ``set_ptt``, so it is not radio truth on its own.
+            # implements ``TransmitStateReadable`` (MOR-1914), rather than
+            # the legacy ``radio_state`` mirror (MOR-1941): some backends no
+            # longer self-write that mirror from ``set_ptt``, so it is not
+            # radio truth on its own. MOR-2089: this used to probe for a
+            # ``get_ptt`` attribute, which no Icom backend defines, so on an
+            # Icom the check fell back to the ``radio_state`` mirror instead
+            # of any solicited read; on the IC-7300 bench that mirror read
+            # ``False`` and a good key reported ``keyed: False``. The
+            # capability check is now ``isinstance(radio,
+            # TransmitStateReadable)``, which ``runtime.radio.CoreRadio``
+            # satisfies too.
             #
-            # Best-effort means genuinely best-effort here, on the one
-            # backend (Yaesu) this repoint exists for: a read failure must
-            # not report a confident "did not key" when the write itself
-            # was accepted (``key_refusal is None`` already means
-            # ``set_ptt(True)`` did not raise) -- reporting `keyed: false`
-            # from a measurement that never happened would be a fabricated
-            # observation, and a false negative at that, not merely an
-            # unconfirmed positive. Note what this reasoning does and does
-            # not lean on: the transmit-authority ADR's rule that our own
-            # commands may source "transmitting" but never "receiving"
-            # licenses declining to say ``False`` here. It does not license
-            # claiming the value was verified, which is why the provenance
-            # tag below is not optional. So a read failure falls back to
-            # trusting the accepted write
-            # (``ptt_state = True``), not to the mirror -- on Yaesu the
-            # mirror is now permanently stale (the self-write is deleted),
-            # so it is exactly as fabricated a signal as a bare ``False``
-            # would be. ``ptt_state_source`` records which of "readback" /
-            # "mirror" / "unverified-write" produced the reported value, so
-            # a PASS backed by a real read stays distinguishable from one
-            # that is not, and the failure itself is never silent — see
-            # ``ptt_read_error``. Deliberately ``except Exception``, not
-            # ``_RESTORE_ERRORS``: this function is generic across backends
-            # and must not import a specific backend's transport exception
-            # types to enumerate them (MOR-1941 review).
+            # Best-effort means genuinely best-effort: neither an exception
+            # from ``read_transmit_state()`` nor a normal return with no
+            # usable value (``TxStateReading.value is None`` -- a timed-out
+            # or malformed reply) may report a confident "did not key" when
+            # the write itself was accepted (``key_refusal is None`` already
+            # means ``set_ptt(True)`` did not raise) -- reporting
+            # ``keyed: false`` from a measurement that never happened would
+            # be a fabricated observation, and a false negative at that, not
+            # merely an unconfirmed positive. The canonical
+            # ``core.tx_observation.TxStateReading`` contract distinguishes
+            # an unavailable observation (``value is None``) from receiving
+            # (``False``), so declining to say ``False`` follows the read
+            # result. It does not license claiming the value was verified,
+            # which is why the provenance tag below is not optional. So
+            # either failure falls back to trusting the accepted write
+            # (``ptt_state = True``), not to the mirror -- as fabricated a
+            # signal as a bare ``False`` would be.
+            #
+            # A radio that does not implement ``TransmitStateReadable`` at
+            # all is a distinct case: the mirror is reported (unchanged from
+            # before this ticket), but ``ptt_read_unavailable`` says so in
+            # the evidence -- a consumer must not have to already know that
+            # ``ptt_state_source == "mirror"`` can mean "no read capability"
+            # (MOR-2089).
+            #
+            # ``ptt_state_source`` records which of "readback" / "mirror" /
+            # "unverified-write" produced the value, so neither failure mode
+            # is silent -- see ``ptt_read_error`` / ``ptt_read_unavailable``.
+            # Deliberately ``except Exception``, not ``_RESTORE_ERRORS``:
+            # generic across backends, must not import a specific backend's
+            # transport exception types (MOR-1941 review). Its own protocol
+            # docstring is explicit that ``read_transmit_state()`` is not a
+            # blanket "never raises" guarantee: besides the ahead-of-wire
+            # ``_check_connected()`` precondition, ``CoreRadio`` can also
+            # raise from a transport-recovery failure reached mid-send
+            # (``runtime/_civ_rx.py: _send_civ_raw`` ->
+            # ``_wait_for_civ_transport_recovery``) -- this catch is not
+            # narrowed to either.
             ptt_state = bool(radio.radio_state.ptt)
             ptt_state_source = "mirror"
-            _get_ptt_attr = getattr(radio, "get_ptt", None)
-            if callable(_get_ptt_attr):
+            if isinstance(radio, TransmitStateReadable):
                 try:
-                    ptt_state = bool(
-                        await asyncio.wait_for(
-                            _get_ptt_attr(), timeout=per_check_timeout
-                        )
+                    reading = await asyncio.wait_for(
+                        radio.read_transmit_state(), timeout=per_check_timeout
                     )
-                    ptt_state_source = "readback"
                 except Exception as exc:
                     evidence["ptt_read_error"] = str(exc)
                     _LOGGER.warning(
@@ -763,16 +871,47 @@ async def _actuate_tx_ptt(
                     )
                     ptt_state = True
                     ptt_state_source = "unverified-write"
+                else:
+                    if reading.value is None:
+                        evidence["ptt_read_error"] = reading.failure or "unverifiable"
+                        _LOGGER.warning(
+                            "tx.ptt readback returned no value after a "
+                            "successful key (failure=%s); trusting the "
+                            "accepted write rather than reporting an "
+                            "unverified key as a failure",
+                            reading.failure,
+                        )
+                        ptt_state = True
+                        ptt_state_source = "unverified-write"
+                    else:
+                        ptt_state = reading.value
+                        ptt_state_source = "readback"
+            else:
+                evidence["ptt_read_unavailable"] = (
+                    "radio does not implement TransmitStateReadable"
+                )
+                _LOGGER.warning(
+                    "tx.ptt has no TransmitStateReadable capability; "
+                    "falling back to the radio_state mirror (%s), which is "
+                    "not a solicited read of radio truth",
+                    ptt_state,
+                )
             evidence["ptt_state"] = ptt_state
             evidence["ptt_state_source"] = ptt_state_source
             keyed = ptt_state
             evidence["keyed"] = keyed
-    except _RESTORE_ERRORS as exc:
+    except Exception as exc:
+        # Backend-agnostic containment (MOR-1951): a plain-``Exception``
+        # transport failure must land in the evidence like every mapped error,
+        # so the ``finally`` teardown below is legible on the result instead of
+        # being discarded by the run-loop backstop. Cancellation
+        # (``BaseException``) still propagates.
         verify_error = str(exc)
         evidence["actuate_error"] = verify_error
     finally:
-        # ALWAYS unkey, no matter what — the radio must never be left keyed.
-        # Never gated on whether the key was believed to succeed.
+        # ALWAYS attempt the unkey, no matter what — never gated on whether
+        # the key was believed to succeed. A failed attempt is recorded
+        # (``unkeyed: False`` + ``unkey_error``), never reported as success.
         unkeyed = False
         if managed is not None:
             unkeyed = await _release_validation_lease(
@@ -782,7 +921,7 @@ async def _actuate_tx_ptt(
             try:
                 await asyncio.wait_for(set_ptt(False), timeout=per_check_timeout)
                 unkeyed = True
-            except _RESTORE_ERRORS as exc:
+            except Exception as exc:
                 evidence["unkey_error"] = str(exc)
         evidence["unkeyed"] = unkeyed
         # ALWAYS restore the original power if we lowered it.
@@ -797,7 +936,7 @@ async def _actuate_tx_ptt(
                 power_restored = rf is None
                 if rf is not None:
                     evidence["power_restore_error"] = rf.error
-            except _RESTORE_ERRORS as exc:
+            except Exception as exc:
                 evidence["power_restore_error"] = str(exc)
         evidence["power_restored"] = power_restored
 
@@ -821,12 +960,19 @@ async def _actuate_tx_ptt(
         )
     if keyed and bool(evidence.get("unkeyed")):
         return _base_result(entry, CheckStatus.PASS, evidence=evidence)
+    unkey_error = evidence.get("unkey_error")
+    if unkey_error:
+        # MOR-1951: a failed/unconfirmed unkey must be legible in the error
+        # itself, not only in evidence — the radio may still be keyed.
+        error = f"unkey failed; radio may still be keyed: {unkey_error}"
+    else:
+        error = "PTT did not key/unkey cleanly"
     return _base_result(
         entry,
         CheckStatus.FAIL,
         failure_domain=FailureDomain.COMMAND_EXECUTION,
         evidence=evidence,
-        error="PTT did not key/unkey cleanly",
+        error=error,
     )
 
 
@@ -885,15 +1031,21 @@ async def _actuate_tuner_tune(
     _get_tuner_attr = getattr(radio, "get_tuner_status", None)
     if callable(_get_tuner_attr):
         get_tuner = cast(Callable[[], Awaitable[int]], _get_tuner_attr)
-        status, sf = await _guard(
-            get_tuner(),
-            entry,
-            per_check_timeout=per_check_timeout,
-        )
-        if sf is None:
-            evidence["tuner_status_readback"] = status
-        else:
-            evidence["tuner_status_read_error"] = sf.error
+        try:
+            status, sf = await _guard(
+                get_tuner(),
+                entry,
+                per_check_timeout=per_check_timeout,
+            )
+            if sf is None:
+                evidence["tuner_status_readback"] = status
+            else:
+                evidence["tuner_status_read_error"] = sf.error
+        except Exception as exc:
+            # Best-effort readback (MOR-1951): a backend transport error
+            # outside ``_guard``'s mapped family must be recorded as evidence,
+            # not discard the PASS the successful trigger earned.
+            evidence["tuner_status_read_error"] = str(exc)
     return _base_result(entry, CheckStatus.PASS, evidence=evidence)
 
 
@@ -907,6 +1059,14 @@ async def _guard(
 
     Returns ``(value, None)`` on success or ``(None, failure_result)`` on any
     handled error. Never swallows ``KeyboardInterrupt``/``SystemExit``.
+
+    The returned ``CheckResult.outcome`` (MOR-2103) is set structurally, at
+    the point each exception is caught, for the two cases an RMVR write or
+    verify-read leg can positively identify: a per-check timeout, or a
+    :class:`CommandRejectedError`. Every other except clause below leaves it
+    at its default ``None`` -- ``_guard`` does not guess; a caller that
+    wants a label for those must not invent one either (see
+    ``_rmvr_failure_outcome`` in this module).
     """
     try:
         value = await asyncio.wait_for(coro, timeout=per_check_timeout)
@@ -917,6 +1077,7 @@ async def _guard(
             CheckStatus.FAIL,
             failure_domain=FailureDomain.COMMAND_EXECUTION,
             error=f"timeout after {per_check_timeout}s",
+            outcome=RmvrOutcome.TIMED_OUT,
         )
     except (RigConnectionError, AuthenticationError) as exc:
         return None, _base_result(
@@ -924,6 +1085,19 @@ async def _guard(
             CheckStatus.FAIL,
             failure_domain=FailureDomain.TRANSPORT,
             error=str(exc),
+        )
+    except CommandRejectedError as exc:
+        # MOR-2103: a positively-identified command rejection (a Yaesu "?;",
+        # translated by YaesuCatRadio._write) is structurally distinct from
+        # every other CommandError below it in this except chain — those
+        # never reached the radio at all (no write template, a local
+        # encoder ValueError, any other RigplaneError).
+        return None, _base_result(
+            entry,
+            CheckStatus.FAIL,
+            failure_domain=FailureDomain.COMMAND_EXECUTION,
+            error=str(exc),
+            outcome=RmvrOutcome.REJECTED,
         )
     except CommandError as exc:
         return None, _base_result(
@@ -962,6 +1136,28 @@ async def _guard(
             failure_domain=FailureDomain.COMMAND_EXECUTION,
             error=str(exc),
         )
+
+
+def _rmvr_failure_outcome(fail: CheckResult, *, leg: str) -> RmvrOutcome | None:
+    """Read ``_guard``'s own RMVR classification for the write or
+    verify-read leg, applying the one constraint ``_guard`` itself cannot
+    know (MOR-2103).
+
+    ``leg`` is ``"write"`` for the changed-value write, or ``"read"`` for
+    the post-write verify read (the write already succeeded by the time
+    this leg runs). ``fail.outcome`` was set structurally by ``_guard`` --
+    at the point it caught the underlying exception, from the exception's
+    type -- not re-derived here from ``failure_domain``, ``error`` text, or
+    ``evidence``.
+
+    The read leg can never report REJECTED: a read-leg failure happens
+    after the write already succeeded, so a rejection there could never
+    mean the write was refused -- a category error regardless of what
+    ``_guard``'s classification says. TIMED_OUT is valid on either leg.
+    """
+    if leg == "read" and fail.outcome is RmvrOutcome.REJECTED:
+        return None
+    return fail.outcome
 
 
 def _default_equal(a: T, b: T) -> bool:
@@ -1013,43 +1209,80 @@ _IF_SHIFT_LIMIT_HZ = 1200
 _IF_SHIFT_NUDGE_HZ = 200
 
 
-# MOR-679 — CW pitch is a sidetone frequency in Hz, NOT a 0-255 level. The Icom
-# encoder (``commands/levels.py::_cw_pitch_to_level``) raises ValueError outside
-# 300-900 Hz, and the getter snaps the readback to the nearest 5 Hz. The RMVR
-# mutation must stay inside that band so the written test value is always
-# restorable and never out of range.
-_CW_PITCH_MIN_HZ = 300
-_CW_PITCH_MAX_HZ = 900
+# MOR-679 / MOR-2476 — CW pitch is a sidetone frequency in Hz whose band
+# comes from the active profile's ``[controls.cw_pitch]`` (normalized domain
+# or legacy display pair), never from code constants. This value is a HARNESS
+# nudge magnitude only — how far the RMVR mutation moves — quantized to a
+# whole number of declared display steps when the profile declares a step.
 _CW_PITCH_NUDGE_HZ = 50
 
+_CW_PITCH_CONTROL_KEY = "cw_pitch"
 
-def _nudge_cw_pitch(pitch_hz: int) -> int:
-    """Mutate a CW pitch (Hz) to a DIFFERENT in-range value on the 5 Hz grid.
 
-    Nudge by +50 Hz, but if that would exceed the 900 Hz ceiling, step the other
-    way (-50 Hz) instead. The original is assumed in-band (300-900 Hz), so the
-    result is always within 300-900 Hz, on the radio's 5 Hz grid, and always
-    differs from the original. NEVER writes out of range.
+def _resolve_cw_pitch_band(
+    radio: Radio,
+) -> tuple[Decimal, Decimal, Decimal | None] | None:
+    """Resolve the profile-declared CW pitch band (display axis, Hz).
+
+    Returns ``(min, max, step)`` from ``[controls.cw_pitch]`` in the active
+    profile — a normalized domain yields the display band plus its declared
+    step; a legacy display pair yields that band with no step — or ``None``
+    when the profile declares no band (including a profile-less radio).
     """
-    if int(pitch_hz) + _CW_PITCH_NUDGE_HZ <= _CW_PITCH_MAX_HZ:
-        return int(pitch_hz) + _CW_PITCH_NUDGE_HZ
-    return int(pitch_hz) - _CW_PITCH_NUDGE_HZ
+    profile = getattr(radio, "profile", None)
+    controls = getattr(profile, "controls", None)
+    if not isinstance(controls, dict):
+        return None
+    return control_display_band(controls, _CW_PITCH_CONTROL_KEY)
 
 
-# MOR-695 — level RMVR value rules must respect the control's settable range.
-# The historical ``200 if v < 128 else 50`` nudge assumes a 0-255 ICOM scale;
-# on the Yaesu FTX-1 comp/nr/nb levels have SMALL ranges (nr/nb 0-10, comp
-# 0-100), so the fixed nudge lands out of range, the radio ignores the write,
-# and the readback equals the original -> false FAIL. We resolve each level
-# check's ``[min, max]`` band from ``radio.profile.controls`` and nudge inside
-# it, defaulting to 0-255 when no range is declared.
-_DEFAULT_LEVEL_RANGE: tuple[int, int] = (0, 255)
+def _cw_pitch_nudge(
+    lo: Decimal, hi: Decimal, step: Decimal | None
+) -> Callable[[Any], Any]:
+    """Build a ``make_changed`` that nudges CW pitch inside ``[lo, hi]``.
 
+    Moves by the harness magnitude — a WHOLE number of declared steps when
+    the profile declares a display step (so the written value stays on the
+    radio's lattice), by the raw magnitude for a stepless legacy band. If
+    stepping up would exceed ``hi`` it steps DOWN instead. The result always
+    differs from the original.
+    """
+    if step is not None and step > 0:
+        magnitude = step * max(1, int(_CW_PITCH_NUDGE_HZ // step))
+    else:
+        magnitude = Decimal(_CW_PITCH_NUDGE_HZ)
+
+    def _nudge(orig: Any) -> Any:
+        value = Decimal(int(orig))
+        result = value + magnitude if value + magnitude <= hi else value - magnitude
+        return int(result) if result == result.to_integral_value() else result
+
+    return _nudge
+
+
+def _cw_pitch_band_midpoint(band: tuple[Decimal, Decimal, Decimal | None]) -> Decimal:
+    """The band's midpoint, snapped down onto the step lattice when declared."""
+    lo, hi, step = band
+    midpoint = (lo + hi) / 2
+    if step is not None and step > 0:
+        midpoint = lo + ((midpoint - lo) // step) * step
+    return midpoint
+
+
+# MOR-695 / MOR-2476 — level RMVR value rules must respect the control's
+# settable range, resolved from ``radio.profile.controls`` — never a
+# hardcoded default for a profiled radio. The historical ``200 if v < 128
+# else 50`` nudge assumes a 0-255 ICOM scale; on the Yaesu FTX-1 comp/nr/nb
+# levels have SMALL ranges (nr/nb 0-10, comp 0-100), so the fixed nudge lands
+# out of range, the radio ignores the write, and the readback equals the
+# original -> false FAIL. A profile that declares no band for the control
+# yields no band at all: the check SKIPs honestly instead of assuming one.
+#
 # Per level check, the ORDERED candidate control keys to look up in
 # ``radio.profile.controls``. The IC-7610 uses ``nr_level``/``nb_level``/
 # ``compressor_level``; the FTX-1 uses the shorter ``nr``/``nb`` (and a
 # ``compressor_level`` block added by MOR-695). First key whose control table
-# carries a min/max wins; otherwise the default 0-255 applies.
+# carries a declared band wins.
 _LEVEL_RANGE_CANDIDATE_KEYS: dict[str, tuple[str, ...]] = {
     "rf_gain.set": ("rf_gain",),
     "af_level.set": ("af_level",),
@@ -1058,50 +1291,78 @@ _LEVEL_RANGE_CANDIDATE_KEYS: dict[str, tuple[str, ...]] = {
     "comp_level.set": ("compressor_level", "compressor", "comp"),
     "nr_level.set": ("nr_level", "nr"),
     "nb_level.set": ("nb_level", "nb"),
+    "squelch.set": ("squelch",),
 }
 
 
-def _control_range(control: object) -> tuple[int, int] | None:
-    """Extract a ``(min, max)`` band from one raw control table, or None.
+def _declared_raw_band(control: object) -> tuple[int, int] | None:
+    """The ``raw_min``/``raw_max`` pair when a control declares both.
 
-    Accepts both key conventions found in the rig TOMLs: ``range_min``/
-    ``range_max`` (FTX-1) and ``raw_min``/``raw_max`` (IC-7610). A control that
-    declares neither pair (or only one half) yields None so the caller can fall
-    through to the next candidate key.
+    Level wire ops (``set_nr_level``, ``set_rf_power``, ``set_squelch``, ...)
+    write the RAW scale, so a control declaring raw bounds resolves those —
+    not its panel-display band — even when it also declares a legacy
+    ``display_min``/``display_max`` pair (IC-7610 ``nr_level``: display 0-15
+    over raw 0-255). Normalized domains carry the same raw pair.
     """
     if not isinstance(control, dict):
         return None
-    for lo_key, hi_key in (("range_min", "range_max"), ("raw_min", "raw_max")):
-        lo = control.get(lo_key)
-        hi = control.get(hi_key)
-        if lo is not None and hi is not None:
-            try:
-                lo_i, hi_i = int(lo), int(hi)
-            except (TypeError, ValueError):
-                continue
-            if lo_i <= hi_i:
-                return (lo_i, hi_i)
-    return None
+    lo, hi = control.get("raw_min"), control.get("raw_max")
+    if (
+        isinstance(lo, bool)
+        or isinstance(hi, bool)
+        or not isinstance(lo, int)
+        or not isinstance(hi, int)
+        or lo > hi
+    ):
+        return None
+    return (lo, hi)
 
 
-def _resolve_level_range(radio: Radio, check_id: str) -> tuple[int, int]:
-    """Resolve a level check's settable band from the radio's profile.
+# Applies only to radios with NO profile. Owner decision of 2026-09-15:
+# interim for MOR-2476, pending a radio-published band.
+_PROFILELESS_LEVEL_RANGE: tuple[int, int] = (0, 255)
 
-    Walks the ordered candidate keys for ``check_id`` against
+
+def _no_declared_range_reason(check_id: str, *, control: str | None = None) -> str:
+    """The evidence reason for a check on a profiled radio whose control
+    declares no band (a profile-less radio resolves
+    ``_PROFILELESS_LEVEL_RANGE`` and never reaches this reason)."""
+    key = control or (_LEVEL_RANGE_CANDIDATE_KEYS.get(check_id) or (check_id,))[0]
+    return (
+        f"no declared range for control '{key}' in the active profile; "
+        "refusing to assume one"
+    )
+
+
+def _resolve_level_range(radio: Radio, check_id: str) -> tuple[int, int] | None:
+    """Resolve a level check's settable band.
+
+    A radio with no profile at all — no ``profile`` attribute, or ``profile``
+    being ``None`` — resolves ``_PROFILELESS_LEVEL_RANGE``. A profiled radio
+    walks the ordered candidate keys for ``check_id`` against
     ``radio.profile.controls`` and returns the first declared ``(min, max)``
-    band. Falls back to 0-255 when the radio has no profile, the control is not
-    declared, or no range is present — keeping the historical ICOM behaviour for
-    radios (and tests) that declare nothing.
+    band on the RAW wire axis those ops write (see ``_declared_raw_band``),
+    falling back to ``control_display_band`` for band-only declarations
+    (``range_min``/``range_max``). Returns ``None`` — and the caller SKIPs —
+    when the profile is present but declares no band for the control
+    (MOR-2476: no assumed band for a profiled radio).
     """
     profile = getattr(radio, "profile", None)
+    if profile is None:
+        return _PROFILELESS_LEVEL_RANGE
     controls = getattr(profile, "controls", None)
     if not isinstance(controls, dict):
-        return _DEFAULT_LEVEL_RANGE
+        return None
     for key in _LEVEL_RANGE_CANDIDATE_KEYS.get(check_id, ()):
-        rng = _control_range(controls.get(key))
-        if rng is not None:
-            return rng
-    return _DEFAULT_LEVEL_RANGE
+        raw = _declared_raw_band(controls.get(key))
+        if raw is not None:
+            return raw
+        band = control_display_band(controls, key)
+        # ``control_display_band`` returns integral bounds for the
+        # non-normalized shapes.
+        if band is not None:
+            return (int(band[0]), int(band[1]))
+    return None
 
 
 def _range_aware_level_nudge(lo: int, hi: int) -> Callable[[int], int]:
@@ -1184,7 +1445,7 @@ async def _read_modify_verify_restore(
             evidence={
                 "original": original,
                 "reason": (
-                    "current value outside settable range; not mutated to "
+                    "current value outside active settable domain; not mutated to "
                     "keep the run non-destructive"
                 ),
             },
@@ -1207,6 +1468,9 @@ async def _read_modify_verify_restore(
         if w_fail is not None:
             evidence["write_error"] = w_fail.error
             outcome = w_fail
+            write_outcome = _rmvr_failure_outcome(w_fail, leg="write")
+            if write_outcome is not None:
+                evidence["outcome"] = write_outcome.value
         else:
             readback, r_fail = await _guard(
                 read(), entry, per_check_timeout=per_check_timeout
@@ -1214,6 +1478,9 @@ async def _read_modify_verify_restore(
             if r_fail is not None:
                 evidence["readback_error"] = r_fail.error
                 outcome = r_fail
+                read_outcome = _rmvr_failure_outcome(r_fail, leg="read")
+                if read_outcome is not None:
+                    evidence["outcome"] = read_outcome.value
             else:
                 evidence["readback"] = readback
                 reacted = equal(cast(T, readback), changed)
@@ -1249,6 +1516,7 @@ async def _read_modify_verify_restore(
     if reacted and restored:
         return _base_result(entry, CheckStatus.PASS, evidence=evidence)
     if not reacted:
+        evidence["outcome"] = RmvrOutcome.IGNORED.value
         return _base_result(
             entry,
             CheckStatus.FAIL,
@@ -1449,6 +1717,9 @@ async def _check_mode_set(
         if w_fail is not None:
             evidence["write_error"] = w_fail.error
             outcome = w_fail
+            write_outcome = _rmvr_failure_outcome(w_fail, leg="write")
+            if write_outcome is not None:
+                evidence["outcome"] = write_outcome.value
         else:
             readback, r_fail = await _guard(
                 radio.get_mode(0), entry, per_check_timeout=per_check_timeout
@@ -1456,6 +1727,9 @@ async def _check_mode_set(
             if r_fail is not None:
                 evidence["readback_error"] = r_fail.error
                 outcome = r_fail
+                read_outcome = _rmvr_failure_outcome(r_fail, leg="read")
+                if read_outcome is not None:
+                    evidence["outcome"] = read_outcome.value
             else:
                 assert readback is not None
                 evidence["readback_mode"] = readback[0]
@@ -1493,6 +1767,7 @@ async def _check_mode_set(
     if reacted and restored:
         return _base_result(entry, CheckStatus.PASS, evidence=evidence)
     if not reacted:
+        evidence["outcome"] = RmvrOutcome.IGNORED.value
         return _base_result(
             entry,
             CheckStatus.FAIL,
@@ -1542,7 +1817,14 @@ async def _check_rf_gain_set(
     if gate is not None:
         return gate
     levels = cast(LevelsCapable, radio)
-    lo, hi = _resolve_level_range(radio, entry.check_id)
+    band = _resolve_level_range(radio, entry.check_id)
+    if band is None:
+        return _base_result(
+            entry,
+            CheckStatus.SKIP,
+            evidence={"reason": _no_declared_range_reason(entry.check_id)},
+        )
+    lo, hi = band
     return await _read_modify_verify_restore(
         radio,
         entry,
@@ -1566,7 +1848,14 @@ async def _check_af_level_set(
     if gate is not None:
         return gate
     levels = cast(LevelsCapable, radio)
-    lo, hi = _resolve_level_range(radio, entry.check_id)
+    band = _resolve_level_range(radio, entry.check_id)
+    if band is None:
+        return _base_result(
+            entry,
+            CheckStatus.SKIP,
+            evidence={"reason": _no_declared_range_reason(entry.check_id)},
+        )
+    lo, hi = band
     return await _read_modify_verify_restore(
         radio,
         entry,
@@ -1697,6 +1986,22 @@ async def _check_preamp_set(
     return _merge_evidence(result, extra)
 
 
+def _attenuator_probe_value(values: tuple[int, ...], *, avoid: int | None) -> int:
+    """An attenuator dB probe value from *values* (a profile's declared
+    ``[attenuator] values`` domain, MOR-2086) that differs from ``avoid``,
+    preferring a non-zero candidate -- never a hardcoded constant. Prefers
+    non-zero for the same reason ``_agc_probe_value`` does: the meaningful
+    RMVR probe is "turn the control on", not "turn it off" -- but with only
+    one non-zero value declared and ``avoid`` equal to it, the only
+    remaining candidate is 0, which this returns rather than raising.
+    """
+    candidates = (
+        [v for v in values if v != avoid] if avoid is not None else list(values)
+    )
+    non_zero = [v for v in candidates if v != 0]
+    return (non_zero or candidates or values)[0]
+
+
 async def _check_attenuator_set(
     radio: Radio,
     entry: CapabilityDeclarationEntry,
@@ -1704,10 +2009,71 @@ async def _check_attenuator_set(
     allow_writes: bool,
     per_check_timeout: float,
 ) -> CheckResult:
+    """RMVR the attenuator, boolean or level-based depending on the radio's
+    declared attenuator domain.
+
+    A profile declaring at most one non-zero ``[attenuator] values`` entry
+    (every shipped CI-V/Yaesu profile except IC-7610: IC-7300/705/9700,
+    FTX-1, X6100/X6200) makes the boolean form exactly equivalent to the
+    level form -- "on" IS the single declared value -- so this stays on
+    the boolean ``get_attenuator``/``set_attenuator`` RMVR, which every
+    backend implements. Routing every profiled radio onto the level API
+    unconditionally (an earlier version of this fix) regressed the FTX-1
+    from PASS to UNSUPPORTED (MOR-2086 review, MOR-2095):
+    ``backends/yaesu_cat/radio.py: YaesuCatRadio.get_attenuator_level``
+    raises ``NotImplementedError("Attenuator level (Icom) not supported on
+    Yaesu radios")`` even though ``rigs/ftx1.toml`` declares
+    ``[attenuator] values = [0, 1]`` (a truthy, profile-backed domain) --
+    the same downgrade shape MOR-499 already fixed once for ``nb.set``/
+    ``nr.set`` (see ``tests/validation/test_hardware_ftx1.py``).
+
+    A profile declaring more than one non-zero value (IC-7610's 3..45 dB
+    steps -- the only shipped profile shaped this way, and always
+    Icom/``CoreRadio``-backed, where ``get_attenuator_level`` is real) has
+    no such equivalence, so only that case moves onto
+    ``get_attenuator_level``/``set_attenuator_level``, the same resolution
+    ``runtime/radio.py: CoreRadio.set_attenuator`` itself performs. A
+    profile consulted but declaring no attenuator values at all is refused
+    (SKIP), never a guess. A radio with no RigPlane profile at all
+    (external Hamlib rigctld, e.g. ``RigctldClientRadio``, which never
+    defines ``.profile`` -- the same duck-typed test ``_resolve_level_range``
+    above already uses) keeps the boolean path unconditionally: there is
+    no profile to consult, and non_zero is always empty for it, so it
+    never reaches the level branch below.
+    """
     gate = _write_gate(radio, entry, allow_writes=allow_writes)
     if gate is not None:
         return gate
     antenna = cast(AntennaControlCapable, radio)
+    profile = getattr(radio, "profile", None)
+    values = (
+        tuple(getattr(profile, "att_values", None) or ()) if profile is not None else ()
+    )
+    if profile is not None and not values:
+        # Data-driven only, same as CoreRadio.set_attenuator (MOR-2086): a
+        # profile was consulted and declares nothing, so there is no safe
+        # probe value to guess -- SKIP before any write rather than
+        # falling back to a constant.
+        return _base_result(
+            entry,
+            CheckStatus.SKIP,
+            evidence={
+                "reason": (
+                    "profile declares no attenuator values; refusing to "
+                    "guess a probe value (MOR-2086)"
+                ),
+            },
+        )
+    non_zero = [v for v in values if v != 0]
+    if len(non_zero) > 1:
+        return await _read_modify_verify_restore(
+            radio,
+            entry,
+            read=lambda: antenna.get_attenuator_level(0),
+            write=lambda value: antenna.set_attenuator_level(value, 0),
+            make_changed=lambda current: _attenuator_probe_value(values, avoid=current),
+            per_check_timeout=per_check_timeout,
+        )
     return await _read_modify_verify_restore(
         radio,
         entry,
@@ -1962,6 +2328,34 @@ async def _check_xit_set(
 # Generic dispatch: value-rule map + _check_from_spec
 # ---------------------------------------------------------------------------
 
+
+def _declared_ctcss_tones_centihz(radio: Radio) -> tuple[int, ...]:
+    """Return the active profile's exact CTCSS domain, or fail closed."""
+    profile = getattr(radio, "profile", None)
+    tones = getattr(profile, "ctcss_tones_centihz", None)
+    if not isinstance(tones, tuple) or not tones:
+        return ()
+    if any(type(tone) is not int for tone in tones):
+        return ()
+    return tones
+
+
+def _ctcss_probe_value(radio: Radio, *, avoid: int) -> int:
+    """Choose a different tone from the active profile's exact domain."""
+    for tone in _declared_ctcss_tones_centihz(radio):
+        if tone != avoid:
+            return tone
+    raise ValueError("active profile has no alternate CTCSS tone")
+
+
+def _ctcss_original_is_restorable(radio: Radio, value: object) -> bool:
+    """Admit RMVR only when the original and an alternate are profile members."""
+    if type(value) is not int:
+        return False
+    domain = _declared_ctcss_tones_centihz(radio)
+    return value in domain and any(tone != value for tone in domain)
+
+
 # Standalone test value to SET for a write-only control (no original is readable).
 _WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
     ValueRule.TOGGLE_BOOL: True,
@@ -1980,7 +2374,6 @@ _WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
     # fallback happens to equal this same constant — a coincidence of the
     # chosen value, not a shared code path.
     ValueRule.AGC_FLIP: int(AgcMode.FAST),
-    ValueRule.TONE_FREQ_CYCLE: 88.5,
     ValueRule.VFO_AB_FLIP: "A",
     ValueRule.KEY_SPEED_WPM: 20,
     # T11 / MOR-646 — scope controls: index 1 and edge 1 are valid for every
@@ -1994,8 +2387,10 @@ _WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
     # MOR-678 — MOD-input routing: LAN (index 3) is the documented digital
     # source and always a valid setting on DATA-OFF/1/2/3.
     ValueRule.MOD_SRC_FLIP: 3,
-    # MOR-679 — CW pitch: a mid-band 600 Hz is always in 300-900 and on-grid.
-    ValueRule.CW_PITCH_HZ: 600,
+    # MOR-2476 — CW pitch has NO static entry: ``_set_and_observe`` derives
+    # the probe from the profile-declared band midpoint (snapped onto the
+    # declared step lattice) below; a profile declaring no band leaves the
+    # probe undefined (UNSUPPORTED), never a hardcoded Hz constant.
 }
 
 # Benign value to restore a write-only control to afterwards (best-effort).
@@ -2025,9 +2420,6 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
         int(AgcMode.SLOW) if m != AgcMode.SLOW else int(AgcMode.FAST)
     ),
     ValueRule.BUMP_HZ: lambda v: v + 100,
-    # MOR-642..645 command-coverage families.
-    # Flip between two standard CTCSS tones (Hz).
-    ValueRule.TONE_FREQ_CYCLE: lambda f: 100.0 if float(f) == 88.5 else 88.5,
     # VFO slot select: "A" <-> "B".
     ValueRule.VFO_AB_FLIP: lambda s: "B" if str(s).upper() == "A" else "A",
     # CW keyer speed in WPM (real range 6-48): pick a DIFFERENT in-range value.
@@ -2049,8 +2441,9 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
     # Flip between two always-valid digital sources: USB (2) <-> LAN (3).
     # Never writes an invalid source; restores the original afterwards.
     ValueRule.MOD_SRC_FLIP: lambda v: 3 if int(v) != 3 else 2,
-    # MOR-679 — CW pitch: nudge +/-50 Hz, clamped to 300-900 (never OOR).
-    ValueRule.CW_PITCH_HZ: _nudge_cw_pitch,
+    # MOR-679 / MOR-2476 — CW pitch: no static mutation entry. The
+    # profile-declared band (from ``[controls.cw_pitch]``) supplies the
+    # mutation in ``_check_from_spec`` below; there is no hardcoded band.
     # MOR-672 — FTX-1 SQL-type select (CAT ``CT``): 0=off / 1=TONE / 2=TSQL.
     # Flip between the two always-valid active codes TONE (1) <-> TSQL (2);
     # never writes an invalid code; restores the original afterwards.
@@ -2058,13 +2451,9 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
 }
 
 # Restore-safety predicates (MOR-659): when the CURRENT value of an RMVR
-# control is outside the encoder's settable band, the check must SKIP without
-# writing — a test value could never be restored from. Bounds mirror the real
-# encoder: ``commands/tone.py::_encode_tone_freq`` (67.0-254.1 Hz, shared by
-# ``set_tone_freq`` and ``set_tsql_freq``). The live IC-7610 read back 16.5 Hz
-# (tone not configured), which aborted an entire validation run.
+# control is outside its settable domain, the check must SKIP without writing
+# because a test value could never be restored from.
 _VALUE_RULE_RESTORABLE: dict[str, Callable[[Any], bool]] = {
-    ValueRule.TONE_FREQ_CYCLE: lambda v: 67.0 <= float(v) <= 254.1,
     # MOR-672 — only the valid ``CT`` SQL-type codes (0=off / 1=TONE / 2=TSQL)
     # are restorable; an out-of-range read must SKIP rather than write.
     ValueRule.SQL_TYPE_CYCLE: lambda v: 0 <= int(v) <= 2,
@@ -2103,6 +2492,20 @@ async def _set_and_observe(
         # classification does not inherit the same hazard MOR-1529 fixed for
         # the named RMVR handler.
         test_value = _agc_probe_value(radio, avoid=None)
+    elif spec.value_rule == ValueRule.TONE_FREQ_CYCLE:
+        domain = _declared_ctcss_tones_centihz(radio)
+        test_value = domain[0] if domain else None
+    elif spec.value_rule == ValueRule.CW_PITCH_HZ:
+        # MOR-2476 — the write-only probe is the profile-declared band's
+        # midpoint, snapped onto the declared step lattice when the profile
+        # declares a step. No declared band leaves test_value None, which
+        # resolves UNSUPPORTED below — never a hardcoded Hz constant.
+        band = _resolve_cw_pitch_band(radio)
+        if band is not None:
+            midpoint = _cw_pitch_band_midpoint(band)
+            test_value = (
+                int(midpoint) if midpoint == midpoint.to_integral_value() else midpoint
+            )
     if test_value is None:
         return _base_result(
             entry,
@@ -2215,7 +2618,33 @@ async def _check_from_spec(
                 },
             )
         make_changed = _VALUE_RULE_FNS.get(spec.value_rule)
-        if make_changed is None:
+        restorable = _VALUE_RULE_RESTORABLE.get(spec.value_rule)
+        if spec.value_rule == ValueRule.TONE_FREQ_CYCLE:
+            make_changed = lambda current: _ctcss_probe_value(  # noqa: E731
+                radio, avoid=current
+            )
+            restorable = lambda value: _ctcss_original_is_restorable(  # noqa: E731
+                radio, value
+            )
+        elif spec.value_rule == ValueRule.CW_PITCH_HZ:
+            # MOR-2476 — the CW pitch band (and step, when declared) comes
+            # from the active profile's ``[controls.cw_pitch]``; a profile
+            # declaring no band SKIPs honestly rather than assume one.
+            cw_band = _resolve_cw_pitch_band(radio)
+            if cw_band is None:
+                return _base_result(
+                    entry,
+                    CheckStatus.SKIP,
+                    evidence={
+                        "reason": _no_declared_range_reason(
+                            entry.check_id, control=_CW_PITCH_CONTROL_KEY
+                        )
+                    },
+                )
+            cw_lo, cw_hi, cw_step = cw_band
+            make_changed = _cw_pitch_nudge(cw_lo, cw_hi, cw_step)
+            restorable = lambda value: cw_lo <= value <= cw_hi  # noqa: E731
+        elif make_changed is None:
             return _base_result(
                 entry,
                 CheckStatus.UNSUPPORTED,
@@ -2223,7 +2652,6 @@ async def _check_from_spec(
                     "reason": f"value_rule {spec.value_rule!r} not supported by generic handler"
                 },
             )
-        restorable = _VALUE_RULE_RESTORABLE.get(spec.value_rule)
         extra_evidence: dict[str, object] = {
             "handler": "generic",
             "value_rule": str(spec.value_rule),
@@ -2242,12 +2670,20 @@ async def _check_from_spec(
         # MOR-695 — level controls (STEP_LEVEL_255) must nudge inside the
         # control's settable band, not the fixed 0-255 ICOM scale. Resolve the
         # band from the radio profile and SKIP an out-of-band original rather
-        # than risk an unrestorable write.
+        # than risk an unrestorable write. MOR-2476: a profile declaring no
+        # band SKIPs the check outright — no assumed 0-255.
         equal: Callable[[Any, Any], bool] = (
             _tolerant_equal(spec.tolerance) if spec.tolerance else _default_equal
         )
         if spec.value_rule == ValueRule.STEP_LEVEL_255:
-            lo, hi = _resolve_level_range(radio, entry.check_id)
+            level_band = _resolve_level_range(radio, entry.check_id)
+            if level_band is None:
+                return _base_result(
+                    entry,
+                    CheckStatus.SKIP,
+                    evidence={"reason": _no_declared_range_reason(entry.check_id)},
+                )
+            lo, hi = level_band
             make_changed = _range_aware_level_nudge(lo, hi)
             restorable = lambda v: lo <= int(v) <= hi  # noqa: E731
             extra_evidence["range_min"] = lo

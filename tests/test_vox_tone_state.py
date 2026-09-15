@@ -14,6 +14,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState, ReceiverState
 from rigplane.rigctld.state_cache import StateCache
+from rigplane.runtime._state_queries import build_state_queries
 from rigplane.types import CivFrame
 from rigplane.web.radio_poller import (
     CommandQueue,
@@ -53,11 +54,11 @@ def _make_frame(
     )
 
 
-def _make_radio_with_state() -> IcomRadio:
+def _make_radio_with_state(*, model: str = "IC-7610") -> IcomRadio:
     """IcomRadio with RadioState wired up for _update_radio_state_from_frame tests."""
     from test_civ_rx_coverage import MockTransport  # type: ignore[import]
 
-    r = IcomRadio("192.168.1.100")
+    r = IcomRadio("192.168.1.100", model=model)
     r._civ_transport = MockTransport()
     r._ctrl_transport = r._civ_transport
     r._connected = True
@@ -65,8 +66,10 @@ def _make_radio_with_state() -> IcomRadio:
     return r
 
 
-def _make_poller(*, with_state: bool = True) -> tuple[RadioPoller, RadioState]:
-    profile = resolve_radio_profile(model="IC-7610")
+def _make_poller(
+    *, with_state: bool = True, model: str = "IC-7610"
+) -> tuple[RadioPoller, RadioState]:
+    profile = resolve_radio_profile(model=model)
     radio = MagicMock()
     radio.profile = profile
     radio.model = profile.model
@@ -201,11 +204,17 @@ def test_civ_rx_0x16_0x43_notify_event(tmp_path: object) -> None:
 
 
 def _bcd_tone_freq(hundreds: int, tens_units: int, tenths: int) -> bytes:
-    """3-byte BCD encoding: [hundreds, tens+units, tenths digit]."""
-    h = ((hundreds // 10) << 4) | (hundreds % 10)
-    tu = ((tens_units // 10) << 4) | (tens_units % 10)
-    t = ((tenths // 10) << 4) | (tenths % 10)
-    return bytes([h, tu, t])
+    """3-byte BCD encoding for a tone frequency split into its
+    hundreds-of-Hz / tens-and-units-of-Hz / tenths-of-Hz components.
+
+    MOR-2091: the wire layout packs six BCD digits as
+    [0][0][100Hz digit][10Hz digit][1Hz digit][0.1Hz digit] (see
+    tests/test_tone_tsql.py's ``_BCD_TABLE`` header comment for the
+    manual sourcing) -- one byte per *component* (as this helper
+    originally, incorrectly, assumed) is not the same split.
+    """
+    tens_digit, units_digit = divmod(tens_units, 10)
+    return bytes([0x00, (hundreds << 4) | tens_digit, (units_digit << 4) | tenths])
 
 
 def test_civ_rx_0x1b_0x00_sets_tone_freq_main(tmp_path: object) -> None:
@@ -214,9 +223,9 @@ def test_civ_rx_0x1b_0x00_sets_tone_freq_main(tmp_path: object) -> None:
     The legacy RadioState mirror was removed; the StateStore is the source of
     truth and the ReceiverState mirror stays at its default 0.
     """
-    r = _make_radio_with_state()
+    r = _make_radio_with_state(model="IC-9700")
     rs = r._radio_state
-    # 88.5 Hz → [0x00, 0x88, 0x05]
+    # 88.5 Hz → [0x00, 0x08, 0x85]
     data = _bcd_tone_freq(0, 88, 5)
     frame = _make_frame(cmd=0x1B, sub=0x00, data=data, receiver=0x00)
     r._civ_runtime._update_state_cache_from_frame(frame)
@@ -227,9 +236,9 @@ def test_civ_rx_0x1b_0x00_sets_tone_freq_main(tmp_path: object) -> None:
 
 def test_civ_rx_0x1b_0x01_sets_tsql_freq_sub(tmp_path: object) -> None:
     """0x1B 0x01 with receiver=1 observes sub tsql_freq in centihz (MOR-451)."""
-    r = _make_radio_with_state()
+    r = _make_radio_with_state(model="IC-9700")
     rs = r._radio_state
-    # 100.0 Hz → [0x01, 0x00, 0x00]
+    # 100.0 Hz → [0x00, 0x10, 0x00]
     data = _bcd_tone_freq(1, 0, 0)
     frame = _make_frame(cmd=0x1B, sub=0x01, data=data, receiver=0x01)
     r._civ_runtime._update_state_cache_from_frame(frame)
@@ -331,55 +340,46 @@ def test_build_state_queries_omits_repeater_tone_and_tsql_on_ic7610() -> None:
     simply filtered out here because the IC-7610 profile no longer declares it.
     """
     profile = resolve_radio_profile(model="IC-7610")
-    radio = MagicMock()
-    radio.profile = profile
-    radio.model = profile.model
-    radio.capabilities = set(profile.capabilities)
-    radio._radio_state = SimpleNamespace(active="MAIN")
-    radio.send_civ = AsyncMock()
-    poller = RadioPoller(radio, StateCache(), CommandQueue())
+    queries = build_state_queries(profile)
 
-    queries = poller._STATE_QUERIES  # noqa: SLF001
-    cmd_sub_pairs = {(cmd, sub) for cmd, sub, _ in queries}
-    assert (0x16, 0x42) not in cmd_sub_pairs, "repeater_tone should not be polled"
-    assert (0x16, 0x43) not in cmd_sub_pairs, "repeater_tsql should not be polled"
-    assert (0x1B, 0x00) not in cmd_sub_pairs, "tone_freq should not be polled"
-    assert (0x1B, 0x01) not in cmd_sub_pairs, "tsql_freq should not be polled"
-    # vox queries are unrelated and must still be polled.
-    assert (0x14, 0x16) in cmd_sub_pairs, "vox_gain not polled"
-    assert (0x14, 0x17) in cmd_sub_pairs, "anti_vox_gain not polled"
+    assert not any(q.command == 0x16 and q.sub == 0x42 for q in queries), (
+        "repeater_tone should not be polled"
+    )
+    assert not any(q.command == 0x16 and q.sub == 0x43 for q in queries), (
+        "repeater_tsql should not be polled"
+    )
+    assert not any(q.command == 0x1B and q.sub == 0x00 for q in queries), (
+        "tone_freq should not be polled"
+    )
+    assert not any(q.command == 0x1B and q.sub == 0x01 for q in queries), (
+        "tsql_freq should not be polled"
+    )
+    assert any(q.command == 0x14 and q.sub == 0x16 for q in queries), (
+        "vox_gain not polled"
+    )
+    assert any(q.command == 0x14 and q.sub == 0x17 for q in queries), (
+        "anti_vox_gain not polled"
+    )
 
 
 def test_build_state_queries_includes_notch_width() -> None:
-    """_build_state_queries includes 0x16/0x57 (manual notch width) for IC-7610."""
+    """build_state_queries includes 0x16/0x57 (manual notch width) for IC-7610."""
     profile = resolve_radio_profile(model="IC-7610")
-    radio = MagicMock()
-    radio.profile = profile
-    radio.model = profile.model
-    radio.capabilities = set(profile.capabilities)
-    radio._radio_state = SimpleNamespace(active="MAIN")
-    radio.send_civ = AsyncMock()
-    poller = RadioPoller(radio, StateCache(), CommandQueue())
+    queries = build_state_queries(profile)
 
-    queries = poller._STATE_QUERIES  # noqa: SLF001
-    cmd_sub_pairs = {(cmd, sub) for cmd, sub, _ in queries}
-    assert (0x16, 0x57) in cmd_sub_pairs, "manual notch width (0x16/0x57) not polled"
+    assert any(
+        q.command == 0x16 and q.sub == 0x57 and q.receiver == 0x00 for q in queries
+    ), "manual notch width (0x16/0x57) not polled through command 29"
 
 
 def test_build_state_queries_includes_break_in_delay() -> None:
-    """_build_state_queries includes 0x14/0x0F (break-in delay) as common query."""
+    """build_state_queries includes 0x14/0x0F (break-in delay) as common query."""
     profile = resolve_radio_profile(model="IC-7610")
-    radio = MagicMock()
-    radio.profile = profile
-    radio.model = profile.model
-    radio.capabilities = set(profile.capabilities)
-    radio._radio_state = SimpleNamespace(active="MAIN")
-    radio.send_civ = AsyncMock()
-    poller = RadioPoller(radio, StateCache(), CommandQueue())
+    queries = build_state_queries(profile)
 
-    queries = poller._STATE_QUERIES  # noqa: SLF001
-    cmd_sub_pairs = {(cmd, sub) for cmd, sub, _ in queries}
-    assert (0x14, 0x0F) in cmd_sub_pairs, "break_in_delay (0x14/0x0F) not polled"
+    assert any(
+        q.command == 0x14 and q.sub == 0x0F and q.receiver is None for q in queries
+    ), "break_in_delay (0x14/0x0F) not polled"
 
 
 # ---------------------------------------------------------------------------
@@ -431,28 +431,28 @@ async def test_execute_set_repeater_tsql_updates_sub_state() -> None:
 
 @pytest.mark.asyncio
 async def test_execute_set_tone_freq_updates_main_state() -> None:
-    poller, state = _make_poller()
+    poller, state = _make_poller(model="IC-9700")
     await poller._execute(SetToneFreq(freq_hz=8850, receiver=0))  # noqa: SLF001
     assert state.main.tone_freq == 8850
 
 
 @pytest.mark.asyncio
 async def test_execute_set_tone_freq_updates_sub_state() -> None:
-    poller, state = _make_poller()
-    await poller._execute(SetToneFreq(freq_hz=9700, receiver=1))  # noqa: SLF001
-    assert state.sub.tone_freq == 9700
+    poller, state = _make_poller(model="IC-9700")
+    await poller._execute(SetToneFreq(freq_hz=9740, receiver=1))  # noqa: SLF001
+    assert state.sub.tone_freq == 9740
 
 
 @pytest.mark.asyncio
 async def test_execute_set_tsql_freq_updates_main_state() -> None:
-    poller, state = _make_poller()
+    poller, state = _make_poller(model="IC-9700")
     await poller._execute(SetTsqlFreq(freq_hz=10000, receiver=0))  # noqa: SLF001
     assert state.main.tsql_freq == 10000
 
 
 @pytest.mark.asyncio
 async def test_execute_set_tsql_freq_updates_sub_state() -> None:
-    poller, state = _make_poller()
+    poller, state = _make_poller(model="IC-9700")
     await poller._execute(SetTsqlFreq(freq_hz=8850, receiver=1))  # noqa: SLF001
     assert state.sub.tsql_freq == 8850
 

@@ -5,17 +5,13 @@
  * `semantic/__tests__/RfFrontEndSurface.test.ts` proves what the surface does
  * with a view model. This file proves what only the composed tree can prove:
  *
- *   (a) every intent reaches its OWN mapped `makeRfFrontEndHandlers` spy,
- *       none cross-wired to a neighbor — mirrors
+ *   (a) ordinary intents reach their OWN mapped command-handler spies, with
+ *       none cross-wired to a neighbor — mirroring
  *       `semantic-tx-aux-wiring.component.test.ts`'s own "every intent
- *       reaches its own command-bus handler" section, and `../command-bus` is
- *       mocked wholesale for the same reason that file mocks it: the real
- *       `makeRfFrontEndHandlers` reads/writes the LEGACY `$lib/stores/
- *       radio.svelte` singleton (`getRadioState`/`patchActiveReceiver`), a
- *       different seam than `runtime.state` — agreement between the real
- *       module and this file's names is a name/arity fact, already covered
- *       by `stub-export-parity.test.ts` and TypeScript itself (the real
- *       factory is imported for its type in the toggle-flip test below);
+ *       reaches its own command-bus handler" section. RF gain and squelch
+ *       additionally wrap and execute shipped `makeRfFrontEndHandlers` calls
+ *       through mocked transport plus the real command/radio stores and
+ *       projector, proving their command-feedback lifecycle end to end;
  *   (b) THE MOUNTING CANON (MOR-1304 ruling): the surface mounts through
  *       `zoned(...)` in the SINGLE composition only, and is ABSENT — zoned or
  *       unzoned — from the DUAL composition, with a view model that actually
@@ -35,19 +31,32 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
+import {
+  acknowledgeCommand, beginCommand, confirmCommand, failCommand, resetCommandLifecycle,
+} from '$lib/stores/commands.svelte';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
+type TestControlSession = {
+  state: 'connected' | 'disconnected' | 'reconnecting'; epoch: number;
+};
+type TestCommandDelivery = {
+  commandId: string; kind: 'transport-sent' | 'ack' | 'response-ok' | 'response-error' | 'error';
+  originalEpoch: number; eventEpoch: number; error?: string; cancelled?: boolean;
+};
+type TestLifecycleDelivery = {
+  commandId: string; kind: 'held' | 'superseded' | 'timed-out' | 'failed';
+  originalEpoch: number; eventEpoch: number; reason?: string; expiresAt?: number; error?: string;
 };
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
-  listeners: new Set<(next: unknown) => void>(),
+  txController: null as ManagedAppTxController | null,
   noop: vi.fn(),
   att: vi.fn(),
   pre: vi.fn(),
@@ -55,14 +64,71 @@ const h = vi.hoisted(() => ({
   squelch: vi.fn(),
   digiSel: vi.fn(),
   ipPlus: vi.fn(),
+  session: { state: 'connected', epoch: 7 } as TestControlSession,
+  sessionListeners: new Set<(next: TestControlSession) => void>(),
+  authorityListeners: new Set<(next: {
+    state: unknown; caps: unknown; session: TestControlSession;
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  audio: { muted: true, rxEnabled: false, volume: 0 },
+  sentCommands: [] as Array<{
+    name: string; params: Record<string, unknown>; id: string; originalEpoch: number;
+  }>,
+  deliveryListeners: new Set<(event: TestCommandDelivery) => void>(),
+  lifecycleDeliveryListeners: new Set<(event: TestLifecycleDelivery) => void>(),
+  transportSessionListeners: new Set<(next: TestControlSession) => void>(),
+  selectedFiniteAppearance: undefined as unknown,
+}));
+
+vi.mock('../../../component-kits/activation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../component-kits/activation')>();
+  return { ...actual, getSelectedFiniteControlAppearance: () => h.selectedFiniteAppearance };
+});
+
+vi.mock('$lib/transport/ws-client', () => ({
+  getControlSession: () => h.session,
+  sendCommand(name: string, params: Record<string, unknown>, id?: string) {
+    if (id === undefined) throw new Error('radio intent did not supply a command id');
+    h.sentCommands.push({ name, params, id, originalEpoch: h.session.epoch });
+    return true;
+  },
+  onCommandDelivery(handler: (event: TestCommandDelivery) => void) {
+    h.deliveryListeners.add(handler);
+    return () => h.deliveryListeners.delete(handler);
+  },
+  onCommandLifecycleDelivery(
+    handler: (event: TestLifecycleDelivery) => void,
+  ) {
+    h.lifecycleDeliveryListeners.add(handler);
+    return () => h.lifecycleDeliveryListeners.delete(handler);
+  },
+  onControlSessionTransition(
+    handler: (event: TestControlSession) => void,
+  ) {
+    h.transportSessionListeners.add(handler);
+    return () => h.transportSessionListeners.delete(handler);
+  },
 }));
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
-    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get audio() { return h.audio; },
     get connectionAudio() { return false; },
+    get controlSession() { return h.session; },
+    subscribeControlSession(handler: (next: typeof h.session) => void) {
+      h.sessionListeners.add(handler); return () => h.sessionListeners.delete(handler);
+    },
+    subscribeControlAuthority(handler: (typeof h.authorityListeners extends Set<infer T> ? T : never)) {
+      h.authorityListeners.add(handler);
+      handler({
+        state: h.state, caps: h.caps, session: h.session,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
+      return () => { h.authorityListeners.delete(handler); };
+    },
     // MOR-1312 slice 12B (rebase fix): the wiring now also hands the adapter
     // a scope-display snapshot (the FIFTH argument). This file tests
     // rfFrontEnd, so this stays on its pre-1312 path regardless of these
@@ -76,23 +142,31 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => { h.listeners.delete(listener); };
+vi.mock('$lib/runtime/frontend-runtime', () => ({
+  runtime: {
+    get state() { return h.state; },
+    get caps() { return h.caps; },
+    subscribeControlAuthority(handler: (typeof h.authorityListeners extends Set<infer T> ? T : never)) {
+      h.authorityListeners.add(handler);
+      handler({
+        state: h.state, caps: h.caps, session: h.session,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
+      return () => { h.authorityListeners.delete(handler); };
     },
-    start: vi.fn(), setIntent: vi.fn(), release: vi.fn(), resetFault: vi.fn(),
-  }),
+  },
+}));
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => h.txController,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }),
   getModInputTxGuardHandlers: () => ({ onSetLan: vi.fn(), onDismiss: vi.fn() }),
 }));
-// The real module's names/arities are covered by `stub-export-parity.test.ts`
-// and by TypeScript; this file only proves ROUTING, mirroring
-// `semantic-tx-aux-wiring.component.test.ts`'s own wholesale mock.
+// Most handlers remain routing spies. RF gain/squelch wrappers below also call
+// the shipped handlers through mocked transport and real command/radio stores
+// plus the projector; export names/arities remain covered by
+// `stub-export-parity.test.ts` and TypeScript.
 vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/runtime/commands/panel-commands')>();
   return {
@@ -128,10 +202,23 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
       onManualNotchWidthChange: h.noop, onAgcTimeChange: h.noop,
     }),
     makeAgcHandlers: () => ({ onAgcModeChange: h.noop }),
-    makeRfFrontEndHandlers: () => ({
-      onAttChange: h.att, onPreChange: h.pre, onRfGainChange: h.rfGain,
-      onSquelchChange: h.squelch, onDigiSelToggle: h.digiSel, onIpPlusToggle: h.ipPlus,
-    }),
+    makeRfFrontEndHandlers: () => {
+      const shipped = actual.makeRfFrontEndHandlers();
+      return {
+        onAttChange: h.att,
+        onPreChange: h.pre,
+        onRfGainChange: (level: number) => {
+          h.rfGain(level);
+          shipped.onRfGainChange(level);
+        },
+        onSquelchChange: (level: number) => {
+          h.squelch(level);
+          shipped.onSquelchChange(level);
+        },
+        onDigiSelToggle: h.digiSel,
+        onIpPlusToggle: h.ipPlus,
+      };
+    },
     // MOR-1307 slice 7B: the band-select intent the band surface composes.
     // This fixture declares no band capability, so it is never reachable —
     // same stand-in role as the noop handlers above.
@@ -172,21 +259,48 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
   };
 });
 
+/** MOR-2425 — the `createContinuousPair` capture wrapper
+ *  `semantic-dsp-wiring.component.test.ts`'s own `createContinuousScalar`
+ *  recipe establishes (its `dspBindings()`), transplanted here so the
+ *  persistence witness below can name the host-owned RF/SQL pair OBJECT: a
+ *  DOM testid is re-created by the zone wrapper on both sides of the switch
+ *  and proves nothing (measured independently — see the witness's comment). */
+const rfPair = vi.hoisted(() => ({ bindings: [] as unknown[] }));
+vi.mock('../../../primitives/scalar/continuous-pair.svelte', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../../../primitives/scalar/continuous-pair.svelte')>();
+  return {
+    ...actual,
+    createContinuousPair: (...args: Parameters<typeof actual.createContinuousPair>) => {
+      const binding = actual.createContinuousPair(...args);
+      rfPair.bindings.push(binding);
+      return binding;
+    },
+  };
+});
+
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import HostedRadioLayoutFixture from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 // MOR-1366 (S7), N1 fold (verify-MOR-1365 ruling item 3): the REAL manifest +
 // the REAL resolution seam, mirroring `semantic-scope-display-wiring
 // .component.test.ts`'s S6a context-injection recipe — the only way to prove
 // the `rf-front-end` zone binding, since `useSurfacePlan()` falls back to
 // `NO_PLAN` on a standalone mount.
-import { desktopV2Layout } from '../../../presentation/layouts/declarations';
+import { desktopV2Layout, sdrTestLayout } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan } from '../../../presentation/workspace/resolution';
+import FiniteControlRendererFixture, {
+  resetRetainedInvocations, retainedInvocations,
+} from '../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
+import type { FiniteControlAppearance } from '../../../primitives/control-instruments/control-instrument-renderer.svelte';
 
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
+const fresh = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+  lastObservedMonotonic: 5,
 };
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
 /** Every rfFrontEnd raw field the MOR-1292/1293 adapter reads, all observed fresh. */
@@ -207,6 +321,7 @@ function liveState(withRfFrontEnd: boolean): ServerState {
     ...(withRfFrontEnd ? RF_FRONT_END_STATE : {}),
   });
   return {
+    stateContractVersion: 1, providerGeneration: 3,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14300000),
@@ -218,6 +333,7 @@ function liveState(withRfFrontEnd: boolean): ServerState {
 // combined-knob describe block below passes 'combined' explicitly, so every
 // pre-existing test in this file keeps exercising the unchanged two-slider path.
 const liveCaps = (withRfFrontEnd: boolean, rfSqlControlModel?: 'separate' | 'combined'): Capabilities => ({
+  stateContractVersion: 1, providerGeneration: 3,
   model: 'fixture', scope: false, audio: true, tx: true,
   capabilities: withRfFrontEnd
     ? ['audio', 'tx', 'dual_rx', 'preamp', 'attenuator', 'rf_gain', 'squelch', 'digisel', 'ip_plus']
@@ -231,8 +347,18 @@ const liveCaps = (withRfFrontEnd: boolean, rfSqlControlModel?: 'separate' | 'com
   ...(rfSqlControlModel !== undefined ? { rfSqlControlModel } : {}),
 } as unknown as Capabilities);
 
+/** MOR-2425 RF-B — same shared external-renderer fixture the DSP/CW-keyer
+ *  wiring tests use, so a mounted choice/toggle seat can be identified by its
+ *  own accessible label (`retainedInvocations`) across a re-render. */
+const finiteAppearance = {
+  action: FiniteControlRendererFixture as FiniteControlAppearance['action'],
+  toggle: FiniteControlRendererFixture as FiniteControlAppearance['toggle'],
+  choice: FiniteControlRendererFixture as FiniteControlAppearance['choice'],
+} satisfies FiniteControlAppearance;
+
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 
 function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan): void {
   target = document.createElement('div');
@@ -244,14 +370,171 @@ function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan):
   flushSync();
 }
 
+function renderHosted() {
+  target = document.createElement('div');
+  document.body.appendChild(target);
+  const props = proxy<{ rfFrontEndLayout: 'grouped' | 'independent' }>({
+    rfFrontEndLayout: 'grouped',
+  });
+  component = mount(HostedRadioLayoutFixture, { target, props });
+  flushSync();
+  return props;
+}
+
+/**
+ * MOR-2425 RF-B (cycle 2): the REAL per-skin `SURFACE_PLAN_CONTEXT_KEY`
+ * override (mirrors `semantic-dsp-wiring.component.test.ts`'s own
+ * `renderHosted()` recipe), through the actual `RadioLayout.svelte` — the
+ * only mount that places the four finite handles differently by skin
+ * (named Standard seats on `desktop-v2`, the grouped surface on `sdr-test`).
+ */
+function renderHostedFace(skinId: 'desktop-v2' | 'sdr-test' = 'desktop-v2') {
+  target = document.createElement('div');
+  document.body.appendChild(target);
+  const props = proxy({ skinId });
+  const context = new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () =>
+    resolveSurfacePlan(props.skinId === 'desktop-v2' ? desktopV2Layout : sdrTestLayout,
+      readWorkspace({ version: 1 }).workspace)]]);
+  component = mount(HostedRadioLayoutFixture, { target, props, context });
+  flushSync();
+  return props;
+}
+
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 const el = (id: string) => q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`);
+interface LevelDriver {
+  readonly slider: HTMLElement;
+  readonly frame: HTMLElement;
+  readonly value: () => number;
+  readonly disabled: () => boolean;
+  readonly input: (value: number, pointerId?: number) => void;
+}
+
+function levelDriver(root: ParentNode): LevelDriver {
+  const slider = root.querySelector<HTMLElement>('[role="slider"]');
+  if (slider === null) throw new Error('Expected rendered RF level slider');
+  const frame = slider.closest<HTMLElement>('.vc-hbar, .vc-dual');
+  if (frame === null) throw new Error('Expected RF level renderer frame');
+  const dual = frame.classList.contains('vc-dual');
+  return {
+    slider,
+    frame,
+    value: () => Number.parseFloat(frame.style.getPropertyValue(
+      dual ? '--vc-thumb-pct' : '--vc-fill-percent',
+    )) / 100,
+    disabled: () => slider.getAttribute('aria-disabled') === 'true',
+    input: (value, pointerId = 1) => {
+      frame.getBoundingClientRect = () => ({ left: 0, width: 100 } as DOMRect);
+      Object.assign(slider, {
+        setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn(),
+      });
+      slider.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true, clientX: value * 100, pointerId,
+      }));
+      slider.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId }));
+    },
+  };
+}
+
+const level = (id: string) => levelDriver(el(id)!);
+let acceptedState: ServerState;
+
+function publishAuthority(): void {
+  const next = {
+    state: h.state, caps: h.caps, session: h.session,
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  };
+  for (const listener of h.authorityListeners) listener(next);
+}
+
+function acceptedStoreState(state: ServerState): ServerState {
+  const receiver = (value: ServerState['main']) => ({
+    ...value,
+    dataMode: value.dataMode ?? 0,
+    sMeter: value.sMeter ?? 0,
+    att: value.att ?? 0,
+    preamp: value.preamp ?? 0,
+    nb: value.nb ?? false,
+    nr: value.nr ?? false,
+    afLevel: value.afLevel ?? 0.5,
+    rfGain: value.rfGain ?? 0.8,
+    squelch: value.squelch ?? 0.1,
+  });
+  return {
+    ...state,
+    revision: state.revision ?? 1,
+    stateRevision: state.stateRevision ?? 1,
+    freshnessRevision: state.freshnessRevision ?? 1,
+    observationSeq: state.observationSeq ?? 1,
+    updatedAt: state.updatedAt ?? '2026-09-06T00:00:00.000Z',
+    tunerStatus: state.tunerStatus ?? 0,
+    connection: state.connection
+      ?? { rigConnected: true, radioReady: true, controlConnected: true },
+    main: receiver(state.main),
+    sub: receiver(state.sub ?? state.main),
+  };
+}
+
+function observedMainLevels(
+  state: ServerState,
+  levels: Readonly<{ rfGain?: number; squelch?: number }>,
+  marker: number,
+): ServerState {
+  const next = {
+    ...state,
+    main: { ...state.main, ...levels },
+    fieldStatus: {
+      ...state.fieldStatus,
+      ...(levels.rfGain === undefined ? {} : {
+        'main.rfGain': { ...state.fieldStatus?.['main.rfGain'], lastObservedMonotonic: marker },
+      }),
+      ...(levels.squelch === undefined ? {} : {
+        'main.squelch': { ...state.fieldStatus?.['main.squelch'], lastObservedMonotonic: marker },
+      }),
+    },
+  } as ServerState;
+  h.state = next;
+  acceptedState = {
+    ...acceptedState,
+    revision: (acceptedState.revision ?? 0) + 1,
+    stateRevision: (acceptedState.stateRevision ?? 0) + 1,
+    freshnessRevision: (acceptedState.freshnessRevision ?? 0) + 1,
+    observationSeq: (acceptedState.observationSeq ?? 0) + 1,
+    updatedAt: `2026-09-06T00:00:0${marker}.000Z`,
+    main: { ...acceptedState.main, ...levels },
+    fieldStatus: next.fieldStatus,
+  };
+  expect(setRadioState(acceptedState)).toBe(true);
+  publishAuthority();
+  return next;
+}
+
+function acknowledgeSent(command: (typeof h.sentCommands)[number]): void {
+  for (const listener of h.deliveryListeners) listener({
+    commandId: command.id,
+    kind: 'ack',
+    originalEpoch: command.originalEpoch,
+    eventEpoch: command.originalEpoch,
+  });
+}
 
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   h.state = liveState(true);
   h.caps = liveCaps(true);
-  h.snapshot = { ...IDLE };
-  h.listeners.clear();
+  h.session = { state: 'connected', epoch: 7 };
+  h.sessionListeners.clear();
+  h.sentCommands.length = 0;
+  h.selectedFiniteAppearance = undefined;
+  rfPair.bindings.length = 0;
+  resetRetainedInvocations();
+  resetCommandLifecycle();
+  resetRadioState();
+  clearCapabilities();
+  expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+  acceptedState = acceptedStoreState(h.state as ServerState);
+  expect(setRadioState(acceptedState)).toBe(true);
   for (const value of Object.values(h)) {
     if (typeof value === 'function' && 'mockReset' in value) (value as ReturnType<typeof vi.fn>).mockReset();
   }
@@ -260,6 +543,14 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(txHarness.listenerCount()).toBe(0);
+  expect(txHarness.trace()).toEqual([]);
+  expect(h.sessionListeners.size).toBe(0);
+  expect(h.authorityListeners.size).toBe(0);
+  resetCommandLifecycle();
+  resetRetainedInvocations();
+  resetRadioState();
+  clearCapabilities();
   document.body.innerHTML = '';
 });
 
@@ -268,19 +559,25 @@ afterEach(() => {
 describe('every rfFrontEnd intent reaches its own command-bus handler, none cross-wired', () => {
   const ALL = [h.att, h.pre, h.rfGain, h.squelch, h.digiSel, h.ipPlus];
 
-  it('routes the preamp choice to onPreChange, verbatim', () => {
+  // MOR-2425 RF-B: every offered preamp level, not a single sample — a fresh
+  // mount per value (`liveCaps`'s `preValues: [0, 1, 2]`), matching the
+  // per-value discipline `RfFrontEndInstrumentHost.isolated.test.ts` already
+  // established at the host level, now proven through the LIVE composed tree.
+  it.each([0, 1, 2])('routes preamp choice %i to onPreChange, verbatim', (level) => {
     render();
-    el('preamp-2')!.click();
+    el(`preamp-${level}`)!.click();
     flushSync();
-    expect(h.pre).toHaveBeenCalledExactlyOnceWith(2);
+    expect(h.pre).toHaveBeenCalledExactlyOnceWith(level);
     for (const other of ALL.filter((s) => s !== h.pre)) expect(other).not.toHaveBeenCalled();
   });
 
-  it('routes the attenuator choice to onAttChange, verbatim', () => {
+  // Every offered attenuator step (`liveCaps`'s `attValues: [0, 6, 12, 18]`),
+  // same per-value discipline as preamp above.
+  it.each([0, 6, 12, 18])('routes attenuator choice %i dB to onAttChange, verbatim', (db) => {
     render();
-    el('attenuator-18')!.click();
+    el(`attenuator-${db}`)!.click();
     flushSync();
-    expect(h.att).toHaveBeenCalledExactlyOnceWith(18);
+    expect(h.att).toHaveBeenCalledExactlyOnceWith(db);
     for (const other of ALL.filter((s) => s !== h.att)) expect(other).not.toHaveBeenCalled();
   });
 
@@ -297,9 +594,7 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
   // pinned as the literal 140.
   it('routes the RF-gain slider to onRfGainChange, converted to the raw 0-255 wire level', () => {
     render();
-    const input = el('rfGain')!.querySelector('input')!;
-    input.value = '0.55';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rfGain').input(0.55);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(140);
     for (const other of ALL.filter((s) => s !== h.rfGain)) expect(other).not.toHaveBeenCalled();
@@ -307,9 +602,7 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
 
   it('routes the squelch slider to onSquelchChange, converted to the raw 0-255 wire level', () => {
     render();
-    const input = el('squelch')!.querySelector('input')!;
-    input.value = '0.2';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('squelch').input(0.2);
     flushSync();
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(51);
     for (const other of ALL.filter((s) => s !== h.squelch)) expect(other).not.toHaveBeenCalled();
@@ -321,9 +614,7 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
   // proves `Math.round` specifically, not merely "some" integer conversion.
   it('rounds a 0.5 drag to the raw wire level 128, not the truncated 127', () => {
     render();
-    const input = el('rfGain')!.querySelector('input')!;
-    input.value = '0.5';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rfGain').input(0.5);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(128);
   });
@@ -345,6 +636,81 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
     flushSync();
     expect(h.ipPlus).toHaveBeenCalledExactlyOnceWith(true);
     for (const other of ALL.filter((s) => s !== h.ipPlus)) expect(other).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * MOR-2425 RF-B. Each of the four finite controls has exactly ONE owner
+ * (`RfFrontEndInstrumentHost`) and must render exactly once in the composed
+ * tree — a double owner (grouped surface AND a named seat both rendering the
+ * same field) would show two `[data-testid]` matches here.
+ *
+ * Cycle 2 landed the second layout shape this NOTE previously said did not
+ * exist: `RadioLayout.svelte`'s `desktop-v2` branch now places the four in
+ * NAMED Standard seats (`rfFrontEndFiniteLayout`, `.rf-front-end-finite-seat`)
+ * instead of the grouped surface's own default order. `sdr-test` still gets
+ * the grouped shape unchanged. Both are proven "exactly once" below, through
+ * the real `RadioLayout.svelte` (`renderHostedFace`) rather than the bare
+ * `SemanticRadioSurfaces` mount `render()` uses for the first case.
+ */
+describe('each finite control has exactly one owner in the composed tree', () => {
+  it('renders preamp, attenuator, DIGI-SEL and IP+ exactly once (bare SemanticRadioSurfaces mount)', () => {
+    render();
+    for (const id of ['preamp', 'attenuator', 'digiSel', 'ipPlus']) {
+      expect(target.querySelectorAll(`[data-testid="rf-front-end-${id}"]`)).toHaveLength(1);
+    }
+  });
+
+  it.each(['desktop-v2', 'sdr-test'] as const)(
+    'renders preamp, attenuator, DIGI-SEL and IP+ exactly once on %s',
+    (skinId) => {
+      renderHostedFace(skinId);
+      for (const id of ['preamp', 'attenuator', 'digiSel', 'ipPlus']) {
+        expect(target.querySelectorAll(`[data-testid="rf-front-end-${id}"]`)).toHaveLength(1);
+      }
+    },
+  );
+
+  it('places the four in the NAMED Standard seat grid on desktop-v2', () => {
+    renderHostedFace('desktop-v2');
+    const seats = [...target.querySelectorAll<HTMLElement>('.rf-front-end-finite-seat')]
+      .map((seat) => seat.dataset.field);
+    expect(seats).toEqual(['attenuator', 'preamp', 'digiSel', 'ipPlus']);
+  });
+
+  it('has no Standard seat grid on sdr-test — the grouped surface owns placement there', () => {
+    renderHostedFace('sdr-test');
+    expect(target.querySelectorAll('.rf-front-end-finite-seat')).toHaveLength(0);
+  });
+});
+
+/* ── the preamp mutex, through the live composed tree ────────────── */
+
+describe('the preamp mutex (MOR-479/MOR-1293) survives the live wiring seam', () => {
+  it('disables every preamp choice and blocks onPreChange while DIGI-SEL reads ON', () => {
+    const state = liveState(true);
+    (state as unknown as { main: Record<string, unknown> }).main.digisel = true;
+    h.state = state;
+    render();
+    for (const value of [0, 1, 2]) expect(el(`preamp-${value}`)!.hasAttribute('disabled')).toBe(true);
+    expect(el('preamp-mutex-reason')).not.toBeNull();
+    el('preamp-1')!.click();
+    flushSync();
+    expect(h.pre).not.toHaveBeenCalled();
+    // The mutex is preamp-specific — it must never reach the neighbor fields.
+    expect(el('attenuator-6')!.hasAttribute('disabled')).toBe(false);
+    el('digiSel')!.click();
+    flushSync();
+    expect(h.digiSel).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it('leaves preamp enabled and routed once DIGI-SEL reads OFF', () => {
+    render();
+    expect(el('preamp-0')!.hasAttribute('disabled')).toBe(false);
+    expect(el('preamp-mutex-reason')).toBeNull();
+    el('preamp-0')!.click();
+    flushSync();
+    expect(h.pre).toHaveBeenCalledExactlyOnceWith(0);
   });
 });
 
@@ -390,10 +756,10 @@ describe('the surface mounts only when the view model carries the group', () => 
   it('never changes with the App TX authority or the raw transmit bit', () => {
     render();
     const before = el('surface')!.outerHTML;
-    h.snapshot = { ...IDLE, phase: 'transmitting', radioTx: 'on', mayOwnKey: true };
-    for (const listener of h.listeners) listener(h.snapshot);
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     h.state = liveState(true);
     (h.state as unknown as { ptt: boolean }).ptt = true;
+    publishAuthority();
     flushSync();
     expect(el('surface')!.outerHTML).toBe(before);
   });
@@ -416,6 +782,37 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     expect(el('rf-sql')).not.toBeNull();
     expect(el('rfGain')).toBeNull();
     expect(el('squelch')).toBeNull();
+    expect(el('rf-sql')!.dataset.feedbackIntegration).toBe('command-feedback');
+  });
+
+  it('fails closed through explicit null when the actual control session is disconnected', () => {
+    h.caps = liveCaps(true, 'combined');
+    h.session = { state: 'disconnected', epoch: 8 };
+    render();
+    const group = el('rf-sql')!;
+    expect(group.dataset.feedbackIntegration).toBe('authority-unresolved');
+    expect(levelDriver(group).disabled()).toBe(true);
+    expect(group.textContent).toContain('?');
+  });
+
+  it('projects real lifecycle phases and independent terminal outcomes into the mounted pair', () => {
+    h.caps = liveCaps(true, 'combined');
+    const rf = beginCommand({
+      id: 'mounted-rf', name: 'set_rf_gain', params: { level: 128, receiver: 0 }, originalEpoch: 7,
+    });
+    const sql = beginCommand({
+      id: 'mounted-sql', name: 'set_squelch', params: { level: 51, receiver: 0 }, originalEpoch: 7,
+    });
+    rf.providerGeneration = 3; sql.providerGeneration = 3;
+    render();
+    expect(el('rf-sql')!.dataset.rfCommandPhase).toBe('submitted');
+    expect(el('rf-sql')!.dataset.sqlCommandPhase).toBe('submitted');
+    acknowledgeCommand(rf.id, 7, 7); acknowledgeCommand(sql.id, 7, 7); flushSync();
+    expect(el('rf-sql')!.dataset.rfCommandPhase).toBe('awaiting-confirmation');
+    confirmCommand(rf.id, 7, 7); failCommand(sql.id, 7, 7, 'denied'); flushSync();
+    expect(el('rf-sql')!.dataset.rfCommandPhase).toBe('confirmed');
+    expect(el('rf-sql')!.dataset.sqlCommandPhase).toBe('failed');
+    expect(target.querySelectorAll('[data-control-feedback-status]')).toHaveLength(2);
   });
 
   it('keeps rendering the two separate sliders when the profile omits the declaration', () => {
@@ -424,15 +821,127 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     expect(el('rf-sql')).toBeNull();
     expect(el('rfGain')).not.toBeNull();
     expect(el('squelch')).not.toBeNull();
+    expect(el('rfGain')!.dataset.feedbackIntegration).toBe('command-feedback');
+    expect(el('squelch')!.dataset.feedbackIntegration).toBe('command-feedback');
+  });
+
+  it('fails both separate controls closed on disconnect and recovers from fresh connected authority', () => {
+    render();
+    const rfInput = level('rfGain');
+    const sqlInput = level('squelch');
+    expect([rfInput.disabled(), sqlInput.disabled()]).toEqual([false, false]);
+
+    h.session = { state: 'disconnected', epoch: 8 };
+    for (const listener of h.sessionListeners) listener(h.session);
+    publishAuthority();
+    flushSync();
+    expect([level('rfGain').disabled(), level('squelch').disabled()]).toEqual([true, true]);
+    expect(el('rfGain')!.textContent).toContain('?');
+    expect(el('squelch')!.textContent).toContain('?');
+
+    h.session = { state: 'connected', epoch: 9 };
+    for (const listener of h.sessionListeners) listener(h.session);
+    publishAuthority();
+    flushSync();
+    expect([level('rfGain').disabled(), level('squelch').disabled()]).toEqual([false, false]);
+    expect(level('rfGain').value()).toBe(0.8);
+    expect(level('squelch').value()).toBe(0.1);
+    expect(h.rfGain).not.toHaveBeenCalled();
+    expect(h.squelch).not.toHaveBeenCalled();
+  });
+
+  it('projects independent lifecycle outcomes into the two separate controls', () => {
+    const rf = beginCommand({
+      id: 'separate-rf', name: 'set_rf_gain', params: { level: 128, receiver: 0 }, originalEpoch: 7,
+    });
+    const sql = beginCommand({
+      id: 'separate-sql', name: 'set_squelch', params: { level: 51, receiver: 0 }, originalEpoch: 7,
+    });
+    rf.providerGeneration = 3;
+    sql.providerGeneration = 3;
+    render();
+    expect(el('rfGain')!.dataset.commandPhase).toBe('submitted');
+    expect(el('squelch')!.dataset.commandPhase).toBe('submitted');
+    expect(level('rfGain').value()).toBe(0.8);
+    expect(level('squelch').value()).toBe(0.1);
+    expect(el('rfGain')!.querySelector('output')!.textContent).toBe('50%');
+    expect(el('squelch')!.querySelector('output')!.textContent).toBe('20%');
+    acknowledgeCommand(rf.id, 7, 7);
+    acknowledgeCommand(sql.id, 7, 7);
+    flushSync();
+    expect(el('rfGain')!.dataset.commandPhase).toBe('awaiting-confirmation');
+    expect(el('squelch')!.dataset.commandPhase).toBe('awaiting-confirmation');
+    confirmCommand(rf.id, 7, 7);
+    failCommand(sql.id, 7, 7, 'denied');
+    flushSync();
+    expect(el('rfGain')!.dataset.commandPhase).toBe('confirmed');
+    expect(el('squelch')!.dataset.commandPhase).toBe('failed');
+    expect(target.querySelectorAll('[data-feedback-lane="rf"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-feedback-lane="sql"]')).toHaveLength(1);
+    expect(target.textContent).toContain('denied');
+  });
+
+  it('retires an RF draft after real raw-command confirmation and follows later truth while SQL is pending', () => {
+    render();
+    const rfInput = level('rfGain');
+    const sqlInput = level('squelch');
+
+    rfInput.input(0.7);
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(179);
+    expect(h.sentCommands).toHaveLength(1);
+    const rfCommand = h.sentCommands[0];
+    expect(rfCommand).toMatchObject({
+      name: 'set_rf_gain', params: { level: 179, receiver: 0 }, originalEpoch: 7,
+    });
+    expect(el('rfGain')!.dataset.commandPhase).toBe('submitted');
+
+    acknowledgeSent(rfCommand);
+    flushSync();
+    expect(el('rfGain')!.dataset.commandPhase).toBe('awaiting-confirmation');
+    let state = observedMainLevels(h.state as ServerState, { rfGain: 179 / 255 }, 6);
+    flushSync();
+    expect(el('rfGain')!.dataset.commandPhase).toBe('confirmed');
+
+    sqlInput.input(0.6);
+    flushSync();
+    expect(h.squelch).toHaveBeenCalledExactlyOnceWith(153);
+    expect(h.sentCommands).toHaveLength(2);
+    const sqlCommand = h.sentCommands[1];
+    expect(sqlCommand).toMatchObject({
+      name: 'set_squelch', params: { level: 153, receiver: 0 }, originalEpoch: 7,
+    });
+
+    state = observedMainLevels(state, { rfGain: 204 / 255 }, 7);
+    acknowledgeSent(sqlCommand);
+    flushSync();
+    expect(level('rfGain').value()).toBe(0.8);
+    expect(el('rfGain')!.querySelector('output')!.textContent).toBe('80%');
+    expect(el('squelch')!.dataset.commandPhase).toBe('awaiting-confirmation');
+    expect(level('squelch').value()).toBe(0.1);
+    expect(el('squelch')!.querySelector('output')!.textContent).toBe('60%');
+
+    observedMainLevels(state, { squelch: 153 / 255 }, 8);
+    flushSync();
+    expect(el('squelch')!.dataset.commandPhase).toBe('confirmed');
+    expect(h.rfGain).toHaveBeenCalledTimes(1);
+    expect(h.squelch).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes separate endpoint requests once through the unchanged raw conversion seam', () => {
+    render();
+    level('rfGain').input(0);
+    level('squelch').input(1);
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(0);
+    expect(h.squelch).toHaveBeenCalledExactlyOnceWith(255);
   });
 
   // Hard left: RF min, SQL min — both converted to the raw 0-255 wire level.
   it('routes a hard-left drag to RF min / SQL min, both raw wire integers', () => {
     h.caps = liveCaps(true, 'combined');
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    input.value = '0';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rf-sql').input(0);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(0);
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(0);
@@ -446,9 +955,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
   it('routes the knob center to RF max / SQL min', () => {
     h.caps = liveCaps(true, 'combined');
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    input.value = '0.5';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rf-sql').input(0.5);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(255);
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(0);
@@ -459,9 +966,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
   it('routes a hard-right drag to SQL max / RF max, both raw wire integers', () => {
     h.caps = liveCaps(true, 'combined');
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    input.value = '1';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rf-sql').input(1);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(255);
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(255);
@@ -470,13 +975,11 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
   // Left-of-center: RF sweeps, SQL stays pinned at min. Literal expected
   // values (not re-derived from the mapping formula) — 0.23 lands exactly
   // halfway across the left leg (`dualParamValuesFromNormX`'s own math,
-  // ported from `DualParamRenderer`/`value-control-core.ts`).
+  // ported from `DualParamRenderer`/`primitives/scalar/value-control-core.ts`).
   it('sweeps RF only on a left-of-center drag, leaving SQL pinned at min', () => {
     h.caps = liveCaps(true, 'combined');
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    input.value = '0.23';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rf-sql').input(0.23);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(128);
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(0);
@@ -486,9 +989,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
   it('sweeps SQL only on a right-of-center drag, leaving RF pinned at max', () => {
     h.caps = liveCaps(true, 'combined');
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    input.value = '0.77';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rf-sql').input(0.77);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(255);
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(128);
@@ -503,8 +1004,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.rfGain = 0.8196078431372549;
     (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.squelch = 0.2;
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    expect(input.valueAsNumber).toBeCloseTo(0.632, 3);
+    expect(level('rf-sql').value()).toBeCloseTo(0.632, 3);
   });
 
   // Verifier follow-up R1, pinned end-to-end through the real
@@ -519,9 +1019,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.rfGain = 1;
     (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.squelch = 0;
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    input.value = '0.5';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rf-sql').input(0.5);
     flushSync();
     expect(h.rfGain).not.toHaveBeenCalled();
     expect(h.squelch).not.toHaveBeenCalled();
@@ -533,12 +1031,72 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.rfGain = 1;
     (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.squelch = 0;
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    input.value = '0'; // hard left: RF -> 0 (changes), SQL stays 0 (unchanged)
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rf-sql').input(0); // hard left: RF -> 0 (changes), SQL stays 0 (unchanged)
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(0);
     expect(h.squelch).not.toHaveBeenCalled();
+  });
+});
+
+describe('the hosted RF owner survives replaceable presentation layouts', () => {
+  it('retains authority while replacing renderers, and cancels detached or revoked drafts', () => {
+    const props = renderHosted();
+    const originalSubscribers = [...h.authorityListeners];
+    const old = level('rfGain');
+    old.frame.getBoundingClientRect = () => ({ left: 0, width: 100 } as DOMRect);
+    Object.assign(old.slider, {
+      setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn(),
+    });
+    old.slider.dispatchEvent(new PointerEvent('pointerdown', {
+      pointerId: 7, clientX: 70, bubbles: true,
+    }));
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(179);
+    h.rfGain.mockClear();
+
+    props.rfFrontEndLayout = 'independent';
+    flushSync();
+    const replacement = level('rfGain');
+    expect(replacement.slider).not.toBe(old.slider);
+    expect(target.querySelector('[data-rf-layout="independent"]')).not.toBeNull();
+    expect(target.querySelectorAll('[data-testid="rf-front-end-rfGain"]')).toHaveLength(1);
+    expect([...h.authorityListeners]).toEqual(originalSubscribers);
+    expect(replacement.value()).toBe(0.8);
+
+    old.slider.dispatchEvent(new PointerEvent('pointermove', {
+      pointerId: 7, clientX: 90, bubbles: true,
+    }));
+    old.slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 7, bubbles: true }));
+    old.slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(h.rfGain).not.toHaveBeenCalled();
+
+    replacement.input(0.55, 8);
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(140);
+    h.rfGain.mockClear();
+    h.session = { state: 'disconnected', epoch: 8 };
+    for (const listener of h.sessionListeners) listener(h.session);
+    publishAuthority();
+    flushSync();
+    const revoked = level('rfGain');
+    expect(revoked.disabled()).toBe(true);
+    expect(el('rfGain')!.textContent).toContain('?');
+    revoked.input(0.9, 9);
+    expect(h.rfGain).not.toHaveBeenCalled();
+    expect([...h.authorityListeners]).toEqual(originalSubscribers);
+
+    h.session = { state: 'connected', epoch: 9 };
+    for (const listener of h.sessionListeners) listener(h.session);
+    publishAuthority();
+    flushSync();
+    expect(level('rfGain').value()).toBe(0.8);
+    props.rfFrontEndLayout = 'grouped';
+    flushSync();
+    expect(level('rfGain').value()).toBe(0.8);
+    expect([...h.authorityListeners]).toEqual(originalSubscribers);
+    unmount(component!);
+    component = null;
+    expect(h.authorityListeners.size).toBe(0);
   });
 });
 
@@ -549,5 +1107,74 @@ describe('desktop-v2 declares a REAL rf-front-end zone (MOR-1366, S7)', () => {
     const plan = resolveSurfacePlan(desktopV2Layout, readWorkspace({ version: 1 }).workspace);
     render({ strips: 'single' }, plan);
     expect(el('surface')!.closest('[data-zone-id="rf-front-end"]')).not.toBeNull();
+  });
+});
+
+/**
+ * MOR-2425 RF-B persistence witness, over a REAL per-skin
+ * `SURFACE_PLAN_CONTEXT_KEY` override (mirrors `semantic-dsp-wiring
+ * .component.test.ts`'s own `renderHosted()` recipe) so the resolved
+ * `SurfacePlan` genuinely changes between `desktop-v2` and `sdr-test` — not
+ * merely a `skinId` string flip with no consequence.
+ *
+ * Cycle 2 gave `RadioLayout.svelte`'s `rfFrontEnd` composition call a real
+ * `finiteLayout` argument: `desktop-v2` now places the four in NAMED
+ * Standard seats (`rfFrontEndFiniteLayout`) while `sdr-test` keeps the
+ * grouped surface's own order. Measured empirically (this test failing
+ * against the pre-cycle-2 assertion, then passing against this one — see the
+ * PR's mutation record): the switch moves the attenuator's rendered seat to
+ * a DIFFERENT `{#if finiteLayout}` branch of `RfFrontEndSurface.svelte`, so
+ * its retained external-renderer invocation is REBUILT, not the same
+ * function — the exact shape `semantic-dsp-wiring.component.test.ts`'s own
+ * "moves one hosted set from named Standard seats to grouped SDR without
+ * replacing its host" proves for DSP's NR/NB/notch/AGC handles. The witness
+ * below proves four things, in the order `semantic-dsp-wiring.component
+ * .test.ts`'s own comment requires (identity first, so a rebuilt host can't
+ * pass on inertness alone): (i) the host-owned RF/SQL pair is the SAME
+ * object across the switch — a DOM testid is NOT a valid anchor here, since
+ * the zone wrapper re-creates it on both sides regardless of whether the
+ * host survives; (ii) a fresh current attenuator invocation still commands;
+ * (iii) the confirmed display reading is unaffected by the switch itself;
+ * and only then (iv) the stale pre-switch invocation is inert.
+ */
+describe('persistent RF front-end composition across a real Standard->SDR plan switch (MOR-2425 RF-B)', () => {
+  it('detaches the pre-switch attenuator invocation and keeps the new one live', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    const props = renderHostedFace('desktop-v2');
+    const staleStandardAttenuator = retainedInvocations.get('Attenuator');
+    expect(staleStandardAttenuator).toBeDefined();
+    expect(target.querySelectorAll('.rf-front-end-finite-seat[data-field="attenuator"]')).toHaveLength(1);
+    const externalAttenuator = () => target.querySelector<HTMLElement>('[data-testid="external-Attenuator"]');
+    const beforeReading = externalAttenuator()!.dataset.reading;
+    const hostPair = rfPair.bindings.at(-1);
+
+    props.skinId = 'sdr-test';
+    flushSync();
+    expect(target.querySelectorAll('.rf-front-end-finite-seat')).toHaveLength(0);
+
+    // (i) Identity, positively: the SAME host-owned pair object, not a
+    // rebuilt one — the host survives the switch.
+    expect(rfPair.bindings).toHaveLength(1);
+    expect(rfPair.bindings.at(-1)).toBe(hostPair);
+
+    // (ii) A fresh, CURRENT invocation exists for the new (grouped)
+    // placement and commands normally.
+    const currentSdrAttenuator = retainedInvocations.get('Attenuator');
+    expect(currentSdrAttenuator).toBeDefined();
+    expect(currentSdrAttenuator).not.toBe(staleStandardAttenuator);
+    currentSdrAttenuator!(18);
+    flushSync();
+    expect(h.att).toHaveBeenCalledExactlyOnceWith(18);
+
+    // (iii) Display state (the confirmed reading) is unchanged by the switch
+    // itself — only the click above changes anything downstream, and that
+    // command is not yet acknowledged/observed.
+    expect(externalAttenuator()!.dataset.reading).toBe(beforeReading);
+
+    // (iv) Only now: the stale pre-switch invocation is DETACHED — its named
+    // Standard seat was torn down when the layout moved to the grouped
+    // surface.
+    staleStandardAttenuator!(18);
+    expect(h.att).toHaveBeenCalledTimes(1);
   });
 });

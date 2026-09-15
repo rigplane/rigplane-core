@@ -3,30 +3,30 @@
 Issue #410: system/config commands (ref_adjust, civ_transceive, civ_output_ant,
             af_mute, tuning_step, utc_offset)
 Issue #411: band/split advanced commands (band_edge_freq, xfc_status,
-            tx_freq_monitor, quick_split, quick_dual_watch)
+            quick_split, quick_dual_watch)
 """
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from _caps import FULL_ICOM_CAPS
+from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web.handlers import ControlHandler
 from rigplane.web.radio_poller import (
     QuickDualWatch,
     QuickSplit,
     SetAfMute,
-    SetCivOutputAnt,
     SetCivTransceive,
     SetQuickDualWatch,
     SetQuickSplit,
     SetRefAdjust,
     SetTuningStep,
-    SetTxFreqMonitor,
     SetUtcOffset,
     SetXfcStatus,
 )
@@ -38,10 +38,11 @@ from rigplane.web.radio_poller import (
 
 
 def _capable_radio() -> SimpleNamespace:
-    """Radio mock satisfying AdvancedControlCapable + TransceiverStatusCapable."""
+    """Radio mock satisfying AdvancedControlCapable + RitXitCapable."""
     return SimpleNamespace(
         capabilities=set(FULL_ICOM_CAPS),
         profile=resolve_radio_profile(model="IC-7610"),
+        supports_command=MagicMock(return_value=True),
         # ScopeCapable attrs required for isinstance check
         enable_scope=AsyncMock(),
         disable_scope=AsyncMock(),
@@ -165,15 +166,13 @@ def _capable_radio() -> SimpleNamespace:
         get_band_edge_freq=AsyncMock(return_value=14_350_000),
         get_xfc_status=AsyncMock(return_value=False),
         set_xfc_status=AsyncMock(),
-        # TransceiverStatusCapable methods
+        # RitXitCapable methods
         get_rit_frequency=AsyncMock(return_value=0),
         set_rit_frequency=AsyncMock(),
         get_rit_status=AsyncMock(return_value=False),
         set_rit_status=AsyncMock(),
         get_rit_tx_status=AsyncMock(return_value=False),
         set_rit_tx_status=AsyncMock(),
-        get_tx_freq_monitor=AsyncMock(return_value=True),
-        set_tx_freq_monitor=AsyncMock(),
         # Persistent menu toggles (MOR-2007 ruling 2 renamed these from the
         # dead one-shot quick_split()/quick_dual_watch() triggers)
         get_quick_split=AsyncMock(return_value=False),
@@ -187,8 +186,14 @@ class _QueueRecorder:
     def __init__(self) -> None:
         self.items: list[object] = []
 
-    def put(self, item: object) -> None:
+    def put(self, item: object, **_metadata: object) -> None:
         self.items.append(item)
+
+    def put_ordered(self, item: object, **_metadata: object) -> None:
+        self.items.append(item)
+        future = _metadata.get("future")
+        if isinstance(future, asyncio.Future) and not future.done():
+            future.set_result(None)
 
 
 def _handler(
@@ -289,8 +294,8 @@ async def test_set_civ_output_ant() -> None:
     h = _handler(radio=_capable_radio(), server=srv)
     result = await h._enqueue_command("set_civ_output_ant", {"on": True})
     assert result == {"on": True}
-    assert isinstance(q.items[0], SetCivOutputAnt)
-    assert q.items[0].on is True
+    assert isinstance(q.items[0], CommandIntent)
+    assert q.items[0].params["on"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -443,46 +448,6 @@ async def test_set_xfc_status_off() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Issue #411: get_tx_freq_monitor / set_tx_freq_monitor
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_get_tx_freq_monitor() -> None:
-    radio = _capable_radio()
-    h = _handler(radio=radio)
-    result = await h._enqueue_command("get_tx_freq_monitor", {})
-    assert result == {"on": True}
-    radio.get_tx_freq_monitor.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_get_tx_freq_monitor_no_radio() -> None:
-    h = _handler(radio=None)
-    with pytest.raises(RuntimeError, match="radio connection not available"):
-        await h._enqueue_command("get_tx_freq_monitor", {})
-
-
-@pytest.mark.asyncio
-async def test_set_tx_freq_monitor_on() -> None:
-    srv, q = _server()
-    h = _handler(radio=_capable_radio(), server=srv)
-    result = await h._enqueue_command("set_tx_freq_monitor", {"on": True})
-    assert result == {"on": True}
-    assert isinstance(q.items[0], SetTxFreqMonitor)
-    assert q.items[0].on is True
-
-
-@pytest.mark.asyncio
-async def test_set_tx_freq_monitor_off() -> None:
-    srv, q = _server()
-    h = _handler(radio=_capable_radio(), server=srv)
-    result = await h._enqueue_command("set_tx_freq_monitor", {"on": False})
-    assert result == {"on": False}
-    assert q.items[0].on is False
-
-
-# ---------------------------------------------------------------------------
 # Issue #411: get_quick_split / set_quick_split
 # ---------------------------------------------------------------------------
 
@@ -576,8 +541,6 @@ def test_new_commands_registered() -> None:
         "get_band_edge_freq",
         "get_xfc_status",
         "set_xfc_status",
-        "get_tx_freq_monitor",
-        "set_tx_freq_monitor",
         "get_quick_split",
         "set_quick_split",
         "get_quick_dual_watch",

@@ -17,6 +17,7 @@ path with its ``codec_preference`` removed.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 import pytest
 
@@ -28,6 +29,7 @@ from rigplane.audio.backend import (
 )
 from rigplane.audio.usb_driver import UsbAudioDriver
 from rigplane.backends.ic705.serial import Ic705SerialRadio
+from rigplane.exceptions import CommandError
 from rigplane.types import AudioCodec
 
 
@@ -130,6 +132,13 @@ class _FakeSerialCivLink:
 
     async def send(self, frame: bytes) -> None:
         _ = frame
+
+    async def send_written(
+        self, frame: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        if is_current is not None and not is_current():
+            raise CommandError("Serial CI-V write is no longer current.")
+        await self.send(frame)
 
     async def receive(self, timeout: float | None = None) -> bytes | None:
         await asyncio.sleep(0.02 if timeout is None else min(timeout, 0.02))

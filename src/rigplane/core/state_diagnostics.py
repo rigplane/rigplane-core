@@ -16,7 +16,6 @@ __all__ = [
 StateDiagnosticKind = Literal[
     "backend_read",
     "direct_state_write",
-    "meter_cadence",
     "revision_producing_event",
     "rigctld_delivery_trigger",
     "web_delivery_trigger",

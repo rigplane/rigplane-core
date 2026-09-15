@@ -24,15 +24,23 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import RxAudioSurface, {
+import { SvelteMap } from 'svelte/reactivity';
+import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
+import { t } from '$lib/i18n';
+import {
   FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES, UNKNOWN_TEXT,
 } from '../RxAudioSurface.svelte';
+import Fixture from './fixtures/RxAudioInstrumentHostFixture.svelte';
 import { topologyFixtures, withRxAudio } from '../fixtures/topologies';
+import type { Capabilities } from '$lib/types/capabilities';
+import type { ServerState } from '$lib/types/state';
 import type {
   AudioFocus, Availability, MonitorMode, RadioViewModel, RxAudioField, RxAudioViewModel,
 } from '../radio-view-model';
+import type { RxAudioAuthorityPublication } from '../rx-audio-instruments';
 
 const SOURCE = readFileSync('src/semantic/RxAudioSurface.svelte', 'utf8');
+const FORMAT_LEVEL_SOURCE = readFileSync('src/semantic/format-level.ts', 'utf8');
 /** Comments stripped, so the file's own doctrine prose can never be what a
  *  source-scanning test matches. */
 const CODE = SOURCE
@@ -65,17 +73,37 @@ type Handlers = {
   onRoutingFocus?: (focus: AudioFocus) => void;
   onRoutingSplit?: (split: boolean) => void;
   onSetModInputLan?: () => void;
+  onModInputChange?: (source: number) => void;
 };
 
+const AUTHORITY_STATE = { providerGeneration: 1 } as ServerState;
+const AUTHORITY_CAPS = {
+  model: 'TEST', receivers: 1, vfoScheme: 'single', providerGeneration: 1,
+  capabilities: ['audio', 'af_level'], scope: false, audio: true, tx: false,
+  freqRanges: [], modes: [], filters: [],
+  audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },
+  webrtc: { available: false, enabled: false }, txBands: null, stateContractVersion: 1,
+} as Capabilities;
+
 function render(view: RadioViewModel, handlers: Handlers = {}) {
-  const component = mount(RxAudioSurface, { target, props: { view, ...handlers } });
+  const mode = view.rxAudio?.monitorMode;
+  const publication: RxAudioAuthorityPublication = {
+    state: AUTHORITY_STATE, caps: AUTHORITY_CAPS,
+    session: { state: 'connected', epoch: 1 },
+    rxAudioTarget: { muted: mode === 'mute', rxEnabled: mode === 'live' },
+  };
+  const component = mount(Fixture, { target, props: {
+    view, publication, ...handlers,
+    onAfLevelChange: handlers.onAfLevel,
+    subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+  } });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   return {
     dispose: () => unmount(component),
     root: () => q('[data-testid="rx-audio-surface"]'),
     el: (id: string) => q<HTMLElement>(`[data-testid="rx-audio-${id}"]`),
-    input: () => q<HTMLInputElement>('[data-testid="rx-audio-af"] input'),
+    slider: () => q<HTMLElement>('[data-testid="rx-audio-af"] [role="slider"]'),
     text: (id: string) => q<HTMLElement>(`[data-testid="rx-audio-${id}"]`)?.textContent?.trim(),
   };
 }
@@ -86,10 +114,13 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
   /** The whole static import closure of the file, allow-listed. Kills: adding
    *  ANY import that could reach transport or the audio manager — including
    *  through a relative specifier, which a `$lib/...` regex would miss. */
-  it('imports nothing but the fact contract and the pure MOD-input constants', () => {
+  it('imports only facts, the level formatter and the RxAudioInstrumentHost handle contract', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
-    expect([...new Set(specifiers)].sort()).toEqual(['$lib/radio/mod-input', './radio-view-model']);
+    expect([...new Set(specifiers)].sort()).toEqual([
+      './format-level', './radio-view-model', './rx-audio-instruments',
+    ]);
+    expect(FORMAT_LEVEL_SOURCE).not.toMatch(/\b(?:import|require)\b/);
   });
 
   // Kills: `onMount(() => audioManager.startRx())` and every relative of it.
@@ -109,13 +140,13 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
     }
   });
 
-  // Kills: the surface growing a second props member and reading live state.
-  it('takes exactly one state prop — the view model — plus intent callbacks', () => {
+  // Kills: the surface reading live state, restoring a private AF owner, or
+  // regrowing a second owner of a finite control `RxAudioInstrumentHost`
+  // already owns.
+  it('takes one state prop, the required instrument handles and an optional finiteLayout', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
-    expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1])).toEqual([
-      'view', 'onMonitorMode', 'onAfLevel', 'onRoutingFocus', 'onRoutingSplit',
-      'onSetModInputLan',
-    ]);
+    expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1]))
+      .toEqual(['view', 'handles', 'finiteLayout']);
   });
 
   // Kills: rendering an empty audio panel for a radio that has no audio chain.
@@ -125,6 +156,29 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
     const r = render(view);
     expect(r.root()).toBeNull();
     expect(target.textContent).toBe('');
+    r.dispose();
+  });
+});
+
+/**
+ * MOR-2425 RX-B/RX-C. The default grouped order — pinned so the
+ * `finiteLayout` branch (which replaces the finite five with one call) can
+ * never silently reorder the DEFAULT rendering, which stays what
+ * `RxAudioInstrumentHost`'s phase A hand-off documented: monitor mode BEFORE
+ * the AF scalar, the remaining four AFTER it.
+ */
+describe('the default (no finiteLayout) order is fixed by testid sequence', () => {
+  it('renders monitor, AF, focus, split, MOD input, then Set LAN — in that order', () => {
+    const r = render(withRx({ modInputReadiness: { status: 'mismatch', source: 0 } }));
+    const testids = [...target.querySelectorAll('[data-testid^="rx-audio-"]')]
+      .map((node) => node.getAttribute('data-testid'));
+    const order = [
+      'rx-audio-monitor', 'rx-audio-af', 'rx-audio-focus', 'rx-audio-split',
+      'rx-audio-mod-input', 'rx-audio-mod-set-lan',
+    ];
+    const indices = order.map((id) => testids.indexOf(id));
+    expect(indices.every((index) => index >= 0)).toBe(true);
+    expect(indices).toEqual([...indices].sort((a, b) => a - b));
     r.dispose();
   });
 });
@@ -271,11 +325,10 @@ describe('every unread fact renders honestly, never as the v2 default', () => {
   it('makes the AF slider inert while the level is unread, and emits nothing', () => {
     const onAfLevel = vi.fn();
     const r = render(withRx({ afLevel: unread<number>() }), { onAfLevel });
-    const input = r.input()!;
-    expect(input.disabled).toBe(true);
-    expect(input.valueAsNumber).toBe(0);
-    input.value = '0.7';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const slider = r.slider()!;
+    expect(slider.getAttribute('aria-disabled')).toBe('true');
+    expect(slider.hasAttribute('aria-valuenow')).toBe(false);
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     flushSync();
     expect(onAfLevel).not.toHaveBeenCalled();
     r.dispose();
@@ -340,37 +393,39 @@ describe('every unread fact renders honestly, never as the v2 default', () => {
 describe('AF level is 0..1 end to end — converted exactly once, in the adapter', () => {
   // Kills: `value / 100` or `value * 100` on the way IN. 0.42 is the fixture's
   // level, i.e. an RxAudioSnapshot volume of 42 already divided by the adapter.
-  it('renders the fact verbatim, with no second scaling', () => {
-    const r = render(base());
-    expect(r.input()!.valueAsNumber).toBeCloseTo(0.42, 10);
-    expect(r.text('af-value')).toBe('0.42');
-    r.dispose();
-  });
-
-  it.each([0, 0.01, 0.5, 1])('renders the level %s verbatim', (value) => {
+  it.each([
+    [0, '0%'],
+    [0.42, '42%'],
+    [1, '100%'],
+    [0.24705882352941178, '25%'],
+  ] as const)('renders the level %s as %s while preserving its control value', (value, text) => {
     const r = render(withRx({ afLevel: known(value) }));
-    expect(r.input()!.valueAsNumber).toBe(value);
+    expect(Number(r.slider()!.getAttribute('aria-valuenow'))).toBe(value);
+    expect(r.text('af-value')).toBe(text);
+    expect(r.text('af-value')).not.toBe(String(value));
     r.dispose();
   });
 
   // Kills: `level / 100` or `level * 100` on the way OUT. The command handler
   // (`makeRxAudioHandlers().onAfLevelChange`) takes 0..1, so the round trip
   // must be the identity.
-  it.each([0, 0.25, 0.7, 1])('emits the slider level %s verbatim', (value) => {
+  it('emits one 0.01 AF step with no rescaling', () => {
     const onAfLevel = vi.fn();
     const r = render(base(), { onAfLevel });
-    const input = r.input()!;
-    input.value = String(value);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    r.slider()!.dispatchEvent(new KeyboardEvent(
+      'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
+    ));
     flushSync();
-    expect(onAfLevel).toHaveBeenCalledExactlyOnceWith(value);
+    expect(onAfLevel).toHaveBeenCalledExactlyOnceWith(0.43);
     r.dispose();
   });
 
   // Kills: a range whose bounds silently rescale the fact.
   it('declares the slider on the contract`s own 0..1 scale', () => {
     const r = render(base());
-    expect([r.input()!.min, r.input()!.max]).toEqual(['0', '1']);
+    expect([
+      r.slider()!.getAttribute('aria-valuemin'), r.slider()!.getAttribute('aria-valuemax'),
+    ]).toEqual(['0', '1']);
     r.dispose();
   });
 });
@@ -396,6 +451,20 @@ describe('routing focus and split are rendered from the facts and emitted absolu
     r.dispose();
   });
 
+  it('allows an absolute focus choice while the saved preference is unread', () => {
+    const onRoutingFocus = vi.fn();
+    const r = render(
+      withRx({ routingFocus: unread<AudioFocus>(DEGRADED) }), { onRoutingFocus },
+    );
+    r.el('focus-main')!.click();
+    flushSync();
+    expect(onRoutingFocus).toHaveBeenCalledExactlyOnceWith('main');
+    for (const focus of FOCUS_CHOICES) {
+      expect(r.el(`focus-${focus}`)!.getAttribute('aria-checked')).toBe('false');
+    }
+    r.dispose();
+  });
+
   it.each(SPLIT_CHOICES)('checks exactly the observed split %s', (value, label) => {
     const r = render(withRx({ routingSplit: known(value) }));
     expect(r.el(`split-${label}`)!.getAttribute('aria-checked')).toBe('true');
@@ -417,6 +486,112 @@ describe('routing focus and split are rendered from the facts and emitted absolu
 });
 
 /* ── (e) MOD-input readiness keeps a one-click remedy ──────────── */
+
+describe('MOD-input selection uses observed facts and absolute intents (MOR-2366)', () => {
+  it.each(MOD_INPUT_SOURCES)('offers the full vocabulary and emits $label once', ({ value }) => {
+    const onModInputChange = vi.fn();
+    const r = render(base(), { onModInputChange });
+    const select = r.el('mod-select') as HTMLSelectElement;
+    expect(select).not.toBeNull();
+    expect([...select.options].map((option) => [Number(option.value), option.text]))
+      .toEqual(MOD_INPUT_SOURCES.map((option) => [option.value, option.label]));
+    expect(select.disabled).toBe(false);
+    expect(select.getAttribute('aria-label')).toBe(t('core.modePanel.modInputAria'));
+    expect(select.closest('label')?.textContent).toContain(t('core.modePanel.modInputLabel'));
+    select.value = String(value);
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
+    expect(onModInputChange).toHaveBeenCalledExactlyOnceWith(value);
+    expect(select.value).toBe('5');
+    expect(r.text('mod-source')).toBe('MOD: LAN');
+    r.dispose();
+  });
+
+  it.each([
+    ['unread', unread<number>()],
+    ['unavailable', known(3, DEGRADED)],
+    ['unrecognized', known(99)],
+  ] as const)('keeps %s selection inert even for a synthetic change', (_name, field) => {
+    const onModInputChange = vi.fn();
+    const r = render(withRx({ modInputSource: field }), { onModInputChange });
+    const select = r.el('mod-select') as HTMLSelectElement;
+    expect(select).not.toBeNull();
+    expect(select.disabled).toBe(true);
+    expect(select.value).toBe(field.reading.status === 'known' && field.reading.value === 3 ? '3' : '');
+    if (select.value === '') expect(select.selectedOptions[0].text).toBe(UNKNOWN_TEXT);
+    select.value = '0';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onModInputChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('rejects a source outside the shared vocabulary', () => {
+    const onModInputChange = vi.fn();
+    const r = render(base(), { onModInputChange });
+    const select = r.el('mod-select') as HTMLSelectElement;
+    expect(select).not.toBeNull();
+    select.add(new Option('invalid', '99'));
+    select.value = '99';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onModInputChange).not.toHaveBeenCalled();
+    expect(select.value).toBe('5');
+    r.dispose();
+  });
+
+  it('follows unknown, readback and unavailable transitions without emitting', () => {
+    const facts = new SvelteMap([['view', withRx({ modInputSource: unread<number>() })]]);
+    const onModInputChange = vi.fn();
+    const publication: RxAudioAuthorityPublication = {
+      state: AUTHORITY_STATE, caps: AUTHORITY_CAPS,
+      session: { state: 'connected', epoch: 1 },
+      rxAudioTarget: { muted: false, rxEnabled: false },
+    };
+    const component = mount(Fixture, { target, props: {
+      get view() { return facts.get('view')!; },
+      publication, onModInputChange,
+      subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+    } });
+    flushSync();
+    const select = target.querySelector<HTMLSelectElement>('[data-testid="rx-audio-mod-select"]');
+    expect(select).not.toBeNull();
+    for (const [field, value, disabled] of [
+      [known(4), '4', false], [known(1), '1', false],
+      [known(1, DEGRADED), '1', true], [unread<number>(), '', true],
+    ] as const) {
+      facts.set('view', withRx({ modInputSource: field }));
+      flushSync();
+      expect(select!.value).toBe(value);
+      expect(select!.disabled).toBe(disabled);
+    }
+    expect(onModInputChange).not.toHaveBeenCalled();
+    unmount(component);
+  });
+
+  it('refuses a stale DOM selection and restores the latest observed source', () => {
+    const facts = new SvelteMap([['view', base()]]);
+    const onModInputChange = vi.fn();
+    const publication: RxAudioAuthorityPublication = {
+      state: AUTHORITY_STATE, caps: AUTHORITY_CAPS,
+      session: { state: 'connected', epoch: 1 },
+      rxAudioTarget: { muted: false, rxEnabled: false },
+    };
+    const component = mount(Fixture, { target, props: {
+      get view() { return facts.get('view')!; },
+      publication, onModInputChange,
+      subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+    } });
+    flushSync();
+    const select = target.querySelector<HTMLSelectElement>('[data-testid="rx-audio-mod-select"]')!;
+    facts.set('view', withRx({ modInputSource: known(1, DEGRADED) }));
+    flushSync();
+    select.value = '4';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
+    expect(onModInputChange).not.toHaveBeenCalled();
+    expect(select.value).toBe('1');
+    unmount(component);
+  });
+});
 
 describe('MOD-input readiness is stated, and a mismatch is never a dead end', () => {
   it('names the observed source and reports LAN readiness', () => {

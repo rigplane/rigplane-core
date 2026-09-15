@@ -4,8 +4,7 @@ Strategy
 --------
 - Use the REAL protocol module and handler (not mocked) so we exercise the
   full parse → execute → format pipeline over a genuine TCP socket.
-- Inject AsyncMock radio and a MagicMock poller so no real CI-V traffic is
-  generated.  The poller mock suppresses background polling tasks.
+- Inject an AsyncMock radio so no real CI-V traffic is generated.
 - Bind on port 0 (OS assigns a free ephemeral port).
 - Send raw bytes, read raw bytes, assert exact wire format.
 
@@ -17,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -107,23 +106,13 @@ def _make_mock_radio() -> _MockRadio:
     return radio
 
 
-def _make_mock_poller() -> MagicMock:
-    """MagicMock poller that suppresses background RadioPoller creation."""
-    poller = MagicMock()
-    poller.start = AsyncMock()
-    poller.stop = AsyncMock()
-    poller.write_busy = False
-    return poller
-
-
 @pytest.fixture
 async def wire_server() -> RigctldServer:  # type: ignore[misc]
-    """Real RigctldServer bound to 127.0.0.1:0 with mock radio + poller."""
+    """Real RigctldServer bound to 127.0.0.1:0 with a mock radio."""
     from rigplane.rigctld.handler import RigctldHandler
     from rigplane.rigctld.state_cache import StateCache
 
     radio = _make_mock_radio()
-    poller = _make_mock_poller()
     cache = StateCache()  # Real cache to avoid AsyncMock.state_cache confusion
     # Populate level cache so get_level (STRENGTH/RFPOWER/SWR) returns numeric values
     cache.update_s_meter(120)
@@ -137,7 +126,7 @@ async def wire_server() -> RigctldServer:  # type: ignore[misc]
         cache_ttl=0.0,  # always fresh → deterministic radio calls
     )
     handler = RigctldHandler(radio, cfg)
-    srv = RigctldServer(radio, cfg, _handler=handler, _poller=poller)
+    srv = RigctldServer(radio, cfg, _handler=handler)
     async with srv:
         yield srv  # type: ignore[misc]
 
@@ -148,7 +137,6 @@ async def ro_wire_server() -> RigctldServer:  # type: ignore[misc]
     from rigplane.rigctld.handler import RigctldHandler
 
     radio = _make_mock_radio()
-    poller = _make_mock_poller()
     cfg = RigctldConfig(
         host="127.0.0.1",
         port=0,
@@ -158,7 +146,7 @@ async def ro_wire_server() -> RigctldServer:  # type: ignore[misc]
         cache_ttl=0.0,
     )
     handler = RigctldHandler(radio, cfg)
-    srv = RigctldServer(radio, cfg, _handler=handler, _poller=poller)
+    srv = RigctldServer(radio, cfg, _handler=handler)
     async with srv:
         yield srv  # type: ignore[misc]
 
@@ -629,7 +617,6 @@ class TestLevelWire:
         from rigplane.rigctld.handler import RigctldHandler
 
         radio = _make_mock_radio()
-        poller = _make_mock_poller()
         store = StateStore()
         store.apply(
             Observation(
@@ -647,7 +634,7 @@ class TestLevelWire:
             cache_ttl=0.0,
         )
         handler = RigctldHandler(radio, cfg, state_store=store)
-        srv = RigctldServer(radio, cfg, _handler=handler, _poller=poller)
+        srv = RigctldServer(radio, cfg, _handler=handler)
 
         async with srv:
             r, w = await _connect(srv)

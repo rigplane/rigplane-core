@@ -28,7 +28,7 @@ describe('meters is a declarable semantic surface', () => {
   it('is in the declarable set alongside vfo, rxTx and txAux', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
       'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
-      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls',
+      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory',
     ]);
   });
 
@@ -51,8 +51,13 @@ describe('meters is a declarable semantic surface', () => {
 });
 
 describe('exactly the reviewed manifests declare a meters zone (MOR-1341)', () => {
-  /** The literal — extend by hand, with a layout review, never silently. */
-  const DECLARES_METERS = ['desktop-v2'];
+  /** The literal — extend by hand, with a layout review, never silently.
+   *  MOR-1346 appended `sdr-test`: its manifest declared no `meters` zone,
+   *  so `SemanticRadioSurfaces`'s bare-render fallback (MOR-1273) mounted the
+   *  semantic surface ALONGSIDE the never-suppressed legacy dock — the same
+   *  double MOR-1341 closed for `desktop-v2`. */
+  // T160 PR-1 added `flagship-probe`, which places this surface in its bottom dock.
+  const DECLARES_METERS = ['desktop-v2', 'flagship-probe', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

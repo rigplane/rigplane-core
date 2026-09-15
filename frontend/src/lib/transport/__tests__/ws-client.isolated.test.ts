@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { WsCommand, WsMessage } from '../../types/protocol';
 import type { ReceiverState, ServerState } from '../../types/state';
@@ -10,9 +12,17 @@ type ServerStateWithObservation = ServerState & {
   fieldStatus?: Record<string, unknown>;
 };
 
+function normalizedLevelWireVectors(): string[] {
+  const catalog = readFileSync(resolve(process.cwd(), '../docs/api/command-catalog.md'), 'utf8');
+  const match = catalog.match(/<!-- normalized-level-wire-vectors:start -->\n```jsonl\n([\s\S]*?)\n```\n<!-- normalized-level-wire-vectors:end -->/u);
+  if (!match) throw new Error('normalized level wire vectors are missing');
+  return match[1].split('\n').filter(Boolean);
+}
+
 // ─── Mock store before importing ws-client ──────────────────────────────────
 const radioStoreMock = vi.hoisted(() => ({
   current: null as ServerStateWithObservation | null,
+  listeners: new Set<(state: ServerStateWithObservation | null) => void>(),
 }));
 
 vi.mock('../../stores/connection.svelte', () => ({
@@ -32,7 +42,13 @@ vi.mock('../../stores/radio.svelte', () => ({
   getRadioState: vi.fn(() => radioStoreMock.current),
   resetRadioState: vi.fn(() => {
     radioStoreMock.current = null;
+    for (const handler of radioStoreMock.listeners) handler(null);
   }),
+  subscribeRadioState: (handler: (state: ServerStateWithObservation | null) => void) => {
+    radioStoreMock.listeners.add(handler);
+    handler(radioStoreMock.current);
+    return () => radioStoreMock.listeners.delete(handler);
+  },
   isValidServerState: vi.fn(() => true),
   matchesCurrentCapabilityTopology: vi.fn(() => true),
   setRadioState: vi.fn((state: ServerStateWithObservation) => {
@@ -57,6 +73,7 @@ vi.mock('../../stores/radio.svelte', () => ({
     );
     if (current === null || semanticAdvanced || metadataAdvanced) {
       radioStoreMock.current = state;
+      for (const handler of radioStoreMock.listeners) handler(state);
     }
   }),
 }));
@@ -67,7 +84,8 @@ vi.mock('../../stores/capabilities.svelte', () => ({
   setCapabilities: vi.fn(() => true),
 }));
 
-vi.mock('../http-client', () => ({
+vi.mock('../http-client', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../http-client')>(),
   fetchCapabilities: vi.fn(() => new Promise(() => {})),
 }));
 
@@ -77,9 +95,11 @@ import {
   setWsConnected,
 } from '../../stores/connection.svelte';
 import { resetRadioState, setRadioState } from '../../stores/radio.svelte';
+import { clearCapabilities } from '../../stores/capabilities.svelte';
 
 beforeEach(() => {
   radioStoreMock.current = null;
+  radioStoreMock.listeners.clear();
   vi.mocked(isLiveRadioAvailable).mockReturnValue(true);
   vi.mocked(resetRadioState).mockClear();
   vi.mocked(setRadioState).mockClear();
@@ -305,6 +325,92 @@ describe('WsChannel', () => {
     expect(received[0].type).toBe('ack');
   });
 
+  it('drops binary frames from a replaced socket while delivering the current socket', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const received: ArrayBuffer[] = [];
+    ch.onBinary((frame) => received.push(frame));
+
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    instances[0].simulateClose();
+    vi.advanceTimersByTime(1_300);
+    instances[1].simulateOpen();
+
+    const staleFrame = new ArrayBuffer(1);
+    const currentFrame = new ArrayBuffer(2);
+    instances[0].simulateMessage(staleFrame);
+    instances[1].simulateMessage(currentFrame);
+
+    expect(received).toEqual([currentFrame]);
+  });
+
+  it('ignores a delayed close from a socket replaced after intentional disconnect', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const received: ArrayBuffer[] = [];
+    ch.onBinary((frame) => received.push(frame));
+
+    ch.connect('ws://test');
+    const first = instances[0];
+    first.simulateOpen();
+    first.close = vi.fn(() => { first.readyState = MockWebSocket.CLOSED; });
+
+    ch.disconnect();
+    ch.connect('ws://test');
+    const replacement = instances[1];
+    replacement.simulateOpen();
+
+    first.simulateClose(1000, 'delayed close', true);
+    const currentFrame = new ArrayBuffer(2);
+    replacement.simulateMessage(currentFrame);
+    vi.advanceTimersByTime(60_000);
+
+    expect(ch.state).toBe('connected');
+    expect(ch.isConnected()).toBe(true);
+    expect(received).toEqual([currentFrame]);
+    expect(instances).toHaveLength(2);
+  });
+
+  it('keeps one channel across a deferred-close hardware demand reacquisition', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const { ScopeController } = await import('../../runtime/scope-controller.svelte');
+    const { PresentationResourceHost } = await import('../../runtime/resource-host');
+    const ch = new WsChannel();
+    const controller = new ScopeController(() => ch);
+    const host = new PresentationResourceHost<unknown>('orientation-session');
+    host.configure('hardware-scope', {
+      available: true,
+      selected: true,
+      driver: controller.hardwareScopeDriver,
+    });
+
+    const portrait = host.acquire('hardware-scope', 'portrait');
+    await Promise.resolve();
+    await Promise.resolve();
+    const first = instances[0];
+    first.simulateOpen();
+    first.close = vi.fn(() => { first.readyState = MockWebSocket.CLOSED; });
+
+    host.release(portrait);
+    const landscape = host.acquire('hardware-scope', 'landscape');
+    await Promise.resolve();
+    await Promise.resolve();
+    const replacement = instances[1];
+    replacement.simulateOpen();
+
+    first.simulateClose(1000, 'delayed close', true);
+    vi.advanceTimersByTime(60_000);
+
+    expect(host.snapshot('hardware-scope')).toMatchObject({ demand: 1, health: 'streaming' });
+    expect(ch.state).toBe('connected');
+    expect(ch.isConnected()).toBe(true);
+    expect(instances).toHaveLength(2);
+
+    host.release(landscape);
+    await host.teardown();
+  });
+
   it('emits correlated PTT delivery events without fabricating RF state', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
@@ -348,6 +454,50 @@ describe('WsChannel', () => {
       { commandId: 'freq', kind: 'ack', originalEpoch: 1, eventEpoch: 1 },
       { commandId: 'freq', kind: 'response-ok', originalEpoch: 1, eventEpoch: 1 },
     ]);
+  });
+
+  it('captures a sanitized admitted level only from a response-ok result', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const events: CommandDeliveryEvent[] = [];
+    ch.onCommandDelivery((event) => events.push(event));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+
+    const send = (id: string) =>
+      ch.send({ type: 'cmd', name: 'set_af_level', id, params: { level: 0.5 } });
+    const responseOk = (id: string, result: Record<string, unknown>) =>
+      instances[0].simulateMessage(JSON.stringify({ type: 'response', id, ok: true, result }));
+
+    expect(send('af-1')).toBe(true);
+    responseOk('af-1', { level: 128, receiver: 0, admitted_level: 128 / 255 });
+    // Only a finite 0..1 number is evidence; anything else must leave the
+    // delivery without the field.
+    for (const [id, bad] of [['af-2', '0.5'], ['af-3', 1.5], ['af-4', Number.NaN], ['af-5', null]] as const) {
+      expect(send(id)).toBe(true);
+      responseOk(id, bad === null ? { level: 128 } : { level: 128, admitted_level: bad });
+    }
+    expect(send('af-6')).toBe(true);
+    responseOk('af-6', { admitted_level: 0.5 });
+    expect(send('af-7')).toBe(true);
+    instances[0].simulateMessage(JSON.stringify({
+      type: 'response', id: 'af-7', ok: false, error: 'command_failed',
+      result: { admitted_level: 0.5 },
+    }));
+    expect(send('af-8')).toBe(true);
+    instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: 'af-8' }));
+
+    const oks = events.filter((event) => event.kind === 'response-ok');
+    expect(oks).toHaveLength(6);
+    expect(oks.filter((event) => event.admittedLevel !== undefined)).toEqual([
+      { commandId: 'af-1', kind: 'response-ok', originalEpoch: 1, eventEpoch: 1, admittedLevel: 128 / 255 },
+      { commandId: 'af-6', kind: 'response-ok', originalEpoch: 1, eventEpoch: 1, admittedLevel: 0.5 },
+    ]);
+    expect(events.filter((event) => event.commandId === 'af-7').map((event) => event.kind))
+      .toEqual(['transport-sent', 'response-error']);
+    const af8 = events.filter((event) => event.commandId === 'af-8');
+    expect(af8.map((event) => event.kind)).toEqual(['transport-sent', 'ack']);
+    expect(af8.every((event) => event.admittedLevel === undefined)).toBe(true);
   });
 
   it('strictly decodes correlated private command lifecycle frames', async () => {
@@ -942,6 +1092,42 @@ describe('control channel singleton', () => {
     vi.resetModules();
   });
 
+  it('serializes the documented normalized AF/RF intents byte-for-byte', async () => {
+    const { connect } = await import('../ws-client');
+    const { dispatchRadioIntent } = await import('../../runtime/commands/radio-intents');
+    const vectors = normalizedLevelWireVectors();
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    for (const raw of vectors) {
+      const command = JSON.parse(raw) as {
+        name: 'set_af_level' | 'set_rf_power';
+        id: string;
+        params: Record<string, unknown>;
+      };
+      const params = { ...command.params };
+      if (command.name === 'set_af_level') delete params.level_unit;
+      dispatchRadioIntent({ name: command.name, id: command.id, params } as never);
+    }
+
+    expect(instances[0].sent).toEqual(vectors);
+  });
+
+  it('preserves normalized marker bytes through the offline reconnect queue', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const queued = {
+      type: 'cmd', name: 'set_freq', id: 'marker-reconnect',
+      params: { level: 0.5, level_unit: 'normalized' },
+    } as const;
+
+    expect(ch.send(queued)).toBe(false);
+    ch.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    expect(instances[0].sent).toEqual([JSON.stringify(queued)]);
+  });
+
   it('publishes each control session epoch before draining a pinned OFF', async () => {
     const {
       connect,
@@ -1006,6 +1192,28 @@ describe('control channel singleton', () => {
       { state: 'connecting', epoch: 0 },
       { state: 'connected', epoch: 1 },
     ]);
+  });
+
+  it('clears canonical stores before publishing a disconnected session', async () => {
+    const { connect, disconnect, onControlSessionTransition } = await import('../ws-client');
+    radioStoreMock.current = makeState();
+    vi.mocked(resetRadioState).mockClear();
+    vi.mocked(clearCapabilities).mockClear();
+    const observed: Array<{ state: ServerStateWithObservation | null; capsCleared: boolean }> = [];
+    const unsubscribe = onControlSessionTransition((transition) => {
+      if (transition.state === 'disconnected') observed.push({
+        state: radioStoreMock.current,
+        capsCleared: vi.mocked(clearCapabilities).mock.calls.length === 1,
+      });
+    });
+
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    instances[0].simulateClose();
+
+    expect(observed).toEqual([{ state: null, capsCleared: true }]);
+    unsubscribe();
+    disconnect();
   });
 
   it('keeps the seeded snapshot byte-identical for representative three-argument dispatches', async () => {
@@ -1184,6 +1392,56 @@ describe('control channel singleton', () => {
       { commandId: 'provider-pending', kind: 'transport-sent', originalEpoch: 1, eventEpoch: 1 },
       { commandId: 'provider-pending', kind: 'error', cancelled: true, error: 'provider session replaced' },
     ]);
+  });
+
+  it('fences an acknowledged successful command from matching replacement-provider evidence on the same socket', async () => {
+    const { connect, disconnect, getControlSession, onCommandDelivery } = await import('../ws-client');
+    const { dispatchRadioIntent } = await import('../../runtime/commands/radio-intents');
+    const lifecycle = await import('../../stores/commands.svelte');
+    const deliveries: CommandDeliveryEvent[] = [];
+    onCommandDelivery((event) => deliveries.push(event));
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({
+      providerGeneration: 0, revision: 4, observationSeq: 4,
+      main: makeReceiver({ filterWidth: 3000 }),
+      fieldStatus: { 'main.filterWidth': {
+        storePath: 'main.filterWidth', observed: true, freshness: 'fresh', availability: 'available',
+        lastObservedMonotonic: 4,
+      } },
+    })));
+
+    dispatchRadioIntent({
+      id: 'provider-acknowledged', name: 'set_filter_width',
+      params: { width: 3000, receiver: 0 },
+    });
+    instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: 'provider-acknowledged' }));
+    instances[0].simulateMessage(JSON.stringify({
+      type: 'response', id: 'provider-acknowledged', ok: true,
+    }));
+    expect(lifecycle.getCommandLifecycle('provider-acknowledged', 1)).toMatchObject({
+      status: 'acknowledged', providerGeneration: 0,
+      ackFieldObservationTimes: { 'main.filterWidth': 4 },
+    });
+
+    sendStateUpdate(instances[0], fullEnvelope(makeState({
+      providerGeneration: 1, revision: 5, observationSeq: 5,
+      main: makeReceiver({ filterWidth: 3000 }),
+      fieldStatus: { 'main.filterWidth': {
+        storePath: 'main.filterWidth', observed: true, freshness: 'fresh', availability: 'available',
+        lastObservedMonotonic: 5,
+      } },
+    })));
+
+    expect(getControlSession().epoch).toBe(1);
+    expect(deliveries).not.toContainEqual(expect.objectContaining({
+      commandId: 'provider-acknowledged', cancelled: true,
+    }));
+    expect(lifecycle.getCommandLifecycle('provider-acknowledged', 1)).toMatchObject({
+      status: 'acknowledged', providerGeneration: 0,
+    });
+    lifecycle.resetCommandLifecycle();
+    disconnect();
   });
 
   it('keeps all 100 live correlations and rejects the 101st facade send', async () => {

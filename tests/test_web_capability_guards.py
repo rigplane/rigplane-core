@@ -94,7 +94,7 @@ async def _endpoint_vfo_tags(
     info = _parse_json_body(info_writer)
     capabilities = _parse_json_body(capabilities_writer)
     hello = json.loads(ws_payloads.pop())
-    reserved = {"vfo_swap", "vfo_equalize"}
+    reserved = {"vfo_swap", "vfo_equalize", "vfo_freq_direct"}
     return (
         set(info["capabilities"]["tags"]) & reserved,
         set(capabilities["capabilities"]) & reserved,
@@ -264,10 +264,18 @@ class TestInfoEndpoint:
     ):
         """Empty-candidate guard: neither side ever reaches resolve_radio_profile.
 
-        ``resolve_radio_profile``'s empty-input path silently returns a
-        default rig profile, so ``projected_vfo_capability_tags`` must
-        short-circuit before calling it when both ``radio.model`` (absent
-        here) and ``configured_model`` (an empty string here) are unusable.
+        ``projected_vfo_capability_tags`` must short-circuit before calling
+        ``resolve_radio_profile`` when both ``radio.model`` (absent here)
+        and ``configured_model`` (an empty string here) are unusable. The
+        capabilities leg is checked against
+        ``_projected_runtime_capabilities()`` directly rather than through
+        ``_serve_capabilities()``: unlike ``_serve_info()``, that endpoint
+        has no fielded no-radio-attached case (MOR-2012 follow-up) and
+        still requires an identified radio for its other, unrelated
+        fields -- there is no candidate that identifies the radio for
+        ``_get_profile()`` without also making it a usable candidate for
+        ``projected_vfo_capability_tags``, since both check the same two
+        attributes in the same order.
         """
         reserved = {"vfo_swap", "vfo_equalize"}
         radio = _make_radio("IC-7300", caps=reserved)
@@ -279,9 +287,7 @@ class TestInfoEndpoint:
         await server._serve_info(info_writer)  # noqa: SLF001
         info = _parse_json_body(info_writer)
 
-        capabilities_writer = _FakeWriter()
-        await server._serve_capabilities(capabilities_writer)  # noqa: SLF001
-        capabilities = _parse_json_body(capabilities_writer)
+        capabilities_tags = sorted(server._projected_runtime_capabilities())  # noqa: SLF001
 
         sent: list[str] = []
 
@@ -294,7 +300,7 @@ class TestInfoEndpoint:
         hello = json.loads(sent.pop())
 
         assert not (reserved & set(info["capabilities"]["tags"]))
-        assert not (reserved & set(capabilities["capabilities"]))
+        assert not (reserved & set(capabilities_tags))
         assert not (reserved & set(hello["capabilities"]))
 
     @pytest.mark.asyncio
@@ -517,6 +523,40 @@ class TestCapabilitiesEndpoint:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
+        ("tx_count", "has_rx_antenna", "has_rx_actuator"),
+        [
+            (2, False, True),
+            (1, True, False),
+        ],
+    )
+    async def test_capabilities_keeps_antenna_topology_and_actuator_independent(
+        self, tx_count: int, has_rx_antenna: bool, has_rx_actuator: bool
+    ):
+        radio = _make_radio("IC-7610")
+        capabilities = set(radio.profile.capabilities)
+        if has_rx_actuator:
+            capabilities.add("rx_antenna")
+        else:
+            capabilities.discard("rx_antenna")
+        radio.profile = replace(
+            radio.profile,
+            antenna_tx_count=tx_count,
+            antenna_has_rx_ant=has_rx_antenna,
+            capabilities=frozenset(capabilities),
+        )
+        radio.capabilities = capabilities
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+
+        data = _parse_json_body(writer)
+        assert data["antennas"] == tx_count
+        assert data["hasRxAntenna"] is has_rx_antenna
+        assert ("rx_antenna" in data["capabilities"]) is has_rx_actuator
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
         ("model", "expected"),
         [
             ("IC-705", {"vfo_swap", "vfo_equalize"}),
@@ -705,3 +745,136 @@ class TestCommandGuards:
         # Should not raise
         handler._ensure_capability("dual_rx", "set_dual_watch")
         handler._ensure_capability("dual_rx", "set_dual_watch")
+
+
+# ── Profile-declared second receiver (owner ruling, 2026-09-08) ─
+
+
+class TestProfileDeclaredSecondReceiver:
+    """A profile-declared ``dual_rx`` reaches the served surface.
+
+    Owner ruling, 2026-09-08: structural existence of the second receiver
+    follows the rig profile, not the swap-and-equalize protocol. The swap
+    and equalize *actions* keep their own gates, so a backend that declares
+    ``dual_rx`` without implementing the MAIN/SUB primitives serves the
+    receiver and refuses the actions.
+
+    The radio here is a real :class:`YaesuCatRadio` on the bundled ``ftx1``
+    profile — a ``MagicMock`` would satisfy every Protocol check trivially
+    and could not distinguish the two behaviours.
+    """
+
+    def test_runtime_capabilities_keeps_dual_rx_without_the_protocol(self) -> None:
+        from rigplane.radio_protocol import DualReceiverCapable
+        from rigplane.web.runtime_helpers import runtime_capabilities
+
+        radio = _yaesu()
+        assert "dual_rx" in radio.capabilities
+        assert not isinstance(radio, DualReceiverCapable)
+        assert "dual_rx" in runtime_capabilities(radio)
+
+    @pytest.mark.asyncio
+    async def test_info_reports_the_second_receiver(self) -> None:
+        radio = _yaesu()
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+        await srv._serve_info(writer)  # noqa: SLF001
+        data = _parse_json_body(writer)
+        assert data["capabilities"]["hasDualReceiver"] is True
+        assert data["capabilities"]["maxReceivers"] == 2
+        assert "dual_rx" in data["capabilities"]["tags"]
+
+    @pytest.mark.asyncio
+    async def test_capabilities_endpoint_reports_the_second_receiver(self) -> None:
+        radio = _yaesu()
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+        data = _parse_json_body(writer)
+        assert "dual_rx" in data["capabilities"]
+        assert data["receivers"] == 2
+
+    def test_swap_and_equalize_tags_absent_without_the_primitives(self) -> None:
+        from rigplane.web.runtime_helpers import projected_vfo_capability_tags
+
+        radio = _yaesu()
+        assert not hasattr(radio, "swap_main_sub")
+        assert not hasattr(radio, "equalize_main_sub")
+        assert projected_vfo_capability_tags(radio, None) == frozenset()
+
+    @pytest.mark.parametrize("name", ["vfo_swap", "vfo_equalize"])
+    def test_swap_and_equalize_commands_are_refused(self, name: str) -> None:
+        from rigplane.web.handlers import ControlHandler
+
+        radio = _yaesu()
+        handler = ControlHandler.__new__(ControlHandler)
+        handler._radio = radio
+        queue: list[object] = []
+
+        expected = f"command '{name}' is not supported by active profile"
+        with pytest.raises(ValueError, match=expected):
+            handler._enqueue_rc_frequency(  # noqa: SLF001
+                name, {}, SimpleNamespace(put=queue.append), radio
+            )
+        assert queue == []
+
+
+# ── Profile-declared dual watch (MOR-2425) ─────────────────────
+
+
+class TestProfileDeclaredDualWatch:
+    """The bundled FTX-1 profile's ``dual_watch`` tag reaches the served surface.
+
+    The radio here is a real :class:`YaesuCatRadio` on the bundled ``ftx1``
+    profile, so the tag is read from the shipped TOML rather than from a
+    hand-built capability set.
+    """
+
+    def test_runtime_capabilities_serve_dual_watch(self) -> None:
+        from rigplane.web.runtime_helpers import runtime_capabilities
+
+        radio = _yaesu()
+        assert "dual_watch" in radio.capabilities
+        assert "dual_watch" in runtime_capabilities(radio)
+
+    @pytest.mark.asyncio
+    async def test_capabilities_endpoint_serves_dual_watch(self) -> None:
+        radio = _yaesu()
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+        data = _parse_json_body(writer)
+        assert "dual_watch" in data["capabilities"]
+
+    @pytest.mark.asyncio
+    async def test_info_endpoint_serves_dual_watch(self) -> None:
+        radio = _yaesu()
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+        await srv._serve_info(writer)  # noqa: SLF001
+        data = _parse_json_body(writer)
+        assert "dual_watch" in data["capabilities"]["tags"]
+
+
+async def test_direct_vfo_frequency_capability_requires_real_supported_route():
+    from unittest.mock import AsyncMock
+
+    radio = _make_radio("IC-7300")
+    radio.send_civ = AsyncMock()
+    for tags in await _endpoint_vfo_tags(radio):
+        assert "vfo_freq_direct" in tags
+    del radio.send_civ
+    radio.capabilities.add("vfo_freq_direct")
+    for tags in await _endpoint_vfo_tags(radio):
+        assert "vfo_freq_direct" not in tags
+
+
+async def test_direct_vfo_frequency_profile_keys_are_both_required():
+    import dataclasses
+    from unittest.mock import AsyncMock
+
+    radio = _make_radio("IC-7300")
+    radio.send_civ = AsyncMock()
+    radio.profile = dataclasses.replace(radio.profile, command_map=None)
+    for tags in await _endpoint_vfo_tags(radio):
+        assert "vfo_freq_direct" not in tags

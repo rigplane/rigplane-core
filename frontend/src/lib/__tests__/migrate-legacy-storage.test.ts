@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import {
   __resetMigrationStateForTests,
@@ -34,19 +34,39 @@ Object.defineProperty(globalThis, 'localStorage', {
 });
 
 describe('migrateLegacyStorage', () => {
+  afterEach(() => vi.restoreAllMocks());
+
   beforeEach(() => {
     localStorageMock.clear();
     __resetMigrationStateForTests();
   });
 
   it('copies a hyphenated legacy key to its new key and removes the legacy entry', () => {
-    localStorageMock.setItem('icom-lan-auth-token', 'tok-abc');
+    localStorageMock.setItem('icom-lan-layout', 'lcd');
 
     migrateLegacyStorage();
 
-    expect(localStorageMock.getItem('rigplane-auth-token')).toBe('tok-abc');
-    expect(localStorageMock.getItem('icom-lan-auth-token')).toBeNull();
+    expect(localStorageMock.getItem('rigplane-layout')).toBe('lcd');
+    expect(localStorageMock.getItem('icom-lan-layout')).toBeNull();
     expect(localStorageMock.getItem(SENTINEL_KEY)).toBe('1');
+  });
+
+  it.each([null, 'retired-current-token'])('leaves retired credentials untouched with current token %s', (currentToken) => {
+    localStorageMock.setItem('icom-lan-auth-token', 'retired-legacy-token');
+    if (currentToken !== null) localStorageMock.setItem('rigplane-auth-token', currentToken);
+    const before = localStorageMock._dump();
+    const getItem = vi.spyOn(localStorageMock, 'getItem');
+    const setItem = vi.spyOn(localStorageMock, 'setItem');
+    const removeItem = vi.spyOn(localStorageMock, 'removeItem');
+
+    migrateLegacyStorage();
+
+    for (const key of ['icom-lan-auth-token', 'rigplane-auth-token']) {
+      expect(getItem).not.toHaveBeenCalledWith(key);
+      expect(setItem.mock.calls.some(([writtenKey]) => writtenKey === key)).toBe(false);
+      expect(removeItem).not.toHaveBeenCalledWith(key);
+    }
+    expect(localStorageMock._dump()).toEqual({ ...before, [SENTINEL_KEY]: '1' });
   });
 
   it('copies a colon-namespaced legacy key to its new key', () => {
@@ -88,24 +108,24 @@ describe('migrateLegacyStorage', () => {
 
   it('is a no-op when sentinel is already set', () => {
     localStorageMock.setItem(SENTINEL_KEY, '1');
-    localStorageMock.setItem('icom-lan-auth-token', 'should-not-migrate');
+    localStorageMock.setItem('icom-lan-layout', 'should-not-migrate');
 
     migrateLegacyStorage();
 
     // Already-migrated sentinel means we don't touch the legacy key.
-    expect(localStorageMock.getItem('icom-lan-auth-token')).toBe('should-not-migrate');
-    expect(localStorageMock.getItem('rigplane-auth-token')).toBeNull();
+    expect(localStorageMock.getItem('icom-lan-layout')).toBe('should-not-migrate');
+    expect(localStorageMock.getItem('rigplane-layout')).toBeNull();
   });
 
   it('does not overwrite existing new-key data when both legacy and new are present', () => {
-    localStorageMock.setItem('icom-lan-auth-token', 'old-token');
-    localStorageMock.setItem('rigplane-auth-token', 'new-token-already-set');
+    localStorageMock.setItem('icom-lan-layout', 'standard');
+    localStorageMock.setItem('rigplane-layout', 'lcd');
 
     migrateLegacyStorage();
 
-    expect(localStorageMock.getItem('rigplane-auth-token')).toBe('new-token-already-set');
+    expect(localStorageMock.getItem('rigplane-layout')).toBe('lcd');
     // Legacy still removed so it can't drift.
-    expect(localStorageMock.getItem('icom-lan-auth-token')).toBeNull();
+    expect(localStorageMock.getItem('icom-lan-layout')).toBeNull();
   });
 
   it('repeated calls in the same session do not re-do work', () => {
@@ -128,7 +148,6 @@ describe('migrateLegacyStorage', () => {
   });
 
   it('migrates a representative sample of all key categories at once', () => {
-    localStorageMock.setItem('icom-lan-auth-token', 'tok');
     localStorageMock.setItem('icom-lan-layout', 'lcd');
     localStorageMock.setItem('icom-lan-lcd-display-mode', 'dim');
     localStorageMock.setItem('icom-lan-hidden-layers', '[]');
@@ -141,7 +160,6 @@ describe('migrateLegacyStorage', () => {
 
     migrateLegacyStorage();
 
-    expect(localStorageMock.getItem('rigplane-auth-token')).toBe('tok');
     expect(localStorageMock.getItem('rigplane-layout')).toBe('lcd');
     expect(localStorageMock.getItem('rigplane-lcd-display-mode')).toBe('dim');
     expect(localStorageMock.getItem('rigplane-hidden-layers')).toBe('[]');

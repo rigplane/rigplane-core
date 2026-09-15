@@ -24,7 +24,8 @@
   const vfoContext = bindVfoTunerContext();
 
   // MOR-429: gate per-receiver indicators on fieldStatus availability so an
-  // unobserved/stale/default value is never presented as a confirmed reading.
+  // unobserved/default value is never presented as a confirmed reading (a stale
+  // observed value stays available — owner ruling R29, 2026-09-07).
   // The cockpit's VFO A strip always renders MAIN, VFO B always SUB, so each
   // token gates on its own receiver path (e.g. `main.agc` / `sub.agc`).
   function rxAvailable(rxKey: 'main' | 'sub', field: string): boolean {
@@ -204,7 +205,7 @@
   // Per-receiver token builder — gates every indicator on fieldStatus
   // availability (MOR-429). Unavailable fields are suppressed entirely rather
   // than shown as confirmed defaults; AGC in particular no longer emits
-  // `active: true` when `${rxKey}.agc` is missing/stale.
+  // `active: true` when `${rxKey}.agc` is missing.
   function vfoTokens(rxKey: 'main' | 'sub'): IndToken[] {
     const rxState = radioState?.[rxKey];
     return [

@@ -13,14 +13,28 @@
  * Fast-pool-safe by construction (MOR-1272): no `vi.mock`, no global spy.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
-import RfFrontEndSurface, {
+import { SvelteMap } from 'svelte/reactivity';
+import {
   DISABLED_REASON_LABEL, RF_FRONT_END_LEVELS, RF_FRONT_END_TOGGLES, UNKNOWN_TEXT,
 } from '../RfFrontEndSurface.svelte';
+import Fixture, {
+  rfTestAuthorityPublication,
+} from './fixtures/RfFrontEndInstrumentHostFixture.svelte';
 import { topologyFixtures, withRfFrontEnd } from '../fixtures/topologies';
 import type {
   Availability, DisabledReason, RadioViewModel, RfFrontEndField, RfFrontEndViewModel,
 } from '../radio-view-model';
+import type {
+  RfFrontEndAuthorityPublication, RfFrontEndLevelFeedback,
+} from '../rf-front-end-instruments';
+
+const SOURCE = readFileSync('src/semantic/RfFrontEndSurface.svelte', 'utf8');
+const CODE = SOURCE
+  .replace(/<!--[\s\S]*?-->/g, '')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/.*$/gm, '');
 
 const ON: Availability = { structural: true, operational: true };
 const OFF: Availability = { structural: false, operational: false };
@@ -39,13 +53,70 @@ const unread = <T>(availability: Availability = ON): RfFrontEndField<T> =>
   ({ reading: { status: 'unknown' }, availability });
 const known = <T>(value: T, availability: Availability = ON): RfFrontEndField<T> =>
   ({ reading: { status: 'known', value }, availability });
+type PairFeedback = RfFrontEndLevelFeedback;
+const pairFeedback = (
+  over: Partial<Record<'rf' | 'sql', Record<string, unknown>>> = {},
+  providerGeneration = 3,
+): PairFeedback => {
+  const lane = (name: 'rf' | 'sql', confirmed: number) => ({
+    command: name === 'rf' ? 'set_rf_gain' : 'set_squelch',
+    feedback: {
+      confirmed, target: null, requestedTarget: null, phase: 'idle' as const,
+      busy: false, availability: 'available' as const, outcome: null,
+      lifecycleId: null, transitionId: null, providerGeneration, sessionEpoch: 7,
+      scope: { control: name === 'rf' ? 'rf-gain' : 'squelch', receiver: 0 as const },
+      repeatPolicy: 'latest-target-wins' as const,
+      ...over[name],
+    },
+  });
+  return { rf: lane('rf', 0.5), sql: lane('sql', 0.2) };
+};
 
 let target: HTMLDivElement;
+
+interface LevelDriver {
+  readonly range: () => readonly [string, string];
+  readonly value: () => number;
+  readonly disabled: () => boolean;
+  readonly input: (value: number) => void;
+}
+
+function levelDriver(root: ParentNode): LevelDriver {
+  const slider = root.querySelector<HTMLElement>('[role="slider"]');
+  if (slider === null) throw new Error('Expected rendered RF level slider');
+  const frame = slider.closest<HTMLElement>('.vc-hbar, .vc-dual');
+  if (frame === null) throw new Error('Expected RF level renderer frame');
+  const dual = frame.classList.contains('vc-dual');
+  return {
+    range: () => [slider.getAttribute('aria-valuemin')!, slider.getAttribute('aria-valuemax')!],
+    value: () => Number.parseFloat(frame.style.getPropertyValue(
+      dual ? '--vc-thumb-pct' : '--vc-fill-percent',
+    )) / 100,
+    disabled: () => slider.getAttribute('aria-disabled') === 'true',
+    input: (value) => {
+      frame.getBoundingClientRect = () => ({ left: 0, width: 100 } as DOMRect);
+      Object.assign(slider, {
+        setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn(),
+      });
+      slider.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true, clientX: value * 100, pointerId: 1,
+      }));
+      slider.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+    },
+  };
+}
 
 function render(view: RadioViewModel, handlers: Record<string, unknown> = {}) {
   target = document.createElement('div');
   document.body.appendChild(target);
-  const component = mount(RfFrontEndSurface, { target, props: { view, ...handlers } });
+  const controlModel = handlers.controlModel === 'combined' ? 'combined' : 'separate';
+  const publication = rfTestAuthorityPublication(controlModel);
+  const component = mount(Fixture, { target, props: {
+    publication, view, controlModel, renderSurface: true,
+    subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+    onLevelChange: () => undefined,
+    ...handlers,
+  } });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   return {
@@ -53,6 +124,10 @@ function render(view: RadioViewModel, handlers: Record<string, unknown> = {}) {
     root: () => q('[data-testid="rf-front-end-surface"]'),
     el: (id: string) => q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`),
     text: (id: string) => q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`)?.textContent?.trim(),
+    level: (id: string) => {
+      const root = q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`);
+      return root === null ? null : levelDriver(root);
+    },
   };
 }
 
@@ -64,7 +139,7 @@ describe('the surface self-gates on the rfFrontEnd group', () => {
     delete (view as { rfFrontEnd?: unknown }).rfFrontEnd;
     const r = render(view);
     expect(r.root()).toBeNull();
-    expect(target.textContent).toBe('');
+    expect(target.textContent?.trim()).toBe('');
     r.dispose();
   });
 
@@ -104,11 +179,10 @@ describe('carry-forward 1: a stale/unread reading renders unknown, never its las
   it('makes the RF-gain slider inert while the level is unread, and emits nothing', () => {
     const onLevelChange = vi.fn();
     const r = render(withRf({ rfGain: unread<number>(DEGRADED) }), { onLevelChange });
-    const input = r.el('rfGain')!.querySelector('input')!;
-    expect(input.disabled).toBe(true);
-    expect(input.valueAsNumber).toBe(0);
-    input.value = '0.7';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rfGain')!;
+    expect(input.disabled()).toBe(true);
+    expect(input.value()).toBe(0);
+    input.input(0.7);
     flushSync();
     expect(onLevelChange).not.toHaveBeenCalled();
     r.dispose();
@@ -130,6 +204,17 @@ describe('carry-forward 1: a stale/unread reading renders unknown, never its las
     flushSync();
     expect(onPreampChange).not.toHaveBeenCalled();
     expect(onAttenuatorChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('keeps every radio unchecked for unread choices while exposing unknown output', () => {
+    const r = render(
+      withRf({ preamp: unread<number>(DEGRADED), attenuator: unread<number>(DEGRADED) }),
+    );
+    for (const value of [0, 1, 2]) expect(r.el(`preamp-${value}`)!.getAttribute('aria-checked')).toBe('false');
+    for (const value of [0, 6, 12, 18]) expect(r.el(`attenuator-${value}`)!.getAttribute('aria-checked')).toBe('false');
+    expect(r.text('preamp-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('attenuator-value')).toBe(UNKNOWN_TEXT);
     r.dispose();
   });
 });
@@ -184,8 +269,8 @@ describe('carry-forwards 2+3: the PREAMP mutex disables the control WITH AN EXPL
   it('never disables the attenuator, RF gain or squelch controls for the preamp mutex', () => {
     const r = render(withReasons([MUTEX]));
     expect(r.el('attenuator-6')!.hasAttribute('disabled')).toBe(false);
-    expect(r.el('rfGain')!.querySelector('input')!.disabled).toBe(false);
-    expect(r.el('squelch')!.querySelector('input')!.disabled).toBe(false);
+    expect(r.level('rfGain')!.disabled()).toBe(false);
+    expect(r.level('squelch')!.disabled()).toBe(false);
     r.dispose();
   });
 });
@@ -212,7 +297,7 @@ describe('preamp and attenuator render as choice groups from the capability-deri
     for (const value of [0, 1, 2]) {
       expect(r.el(`preamp-${value}`)!.getAttribute('aria-checked')).toBe(String(value === 2));
     }
-    expect(r.text('preamp-value')).toBe('2');
+    expect(r.text('preamp-value')).toBe('P2');
     r.dispose();
   });
 
@@ -225,6 +310,20 @@ describe('preamp and attenuator render as choice groups from the capability-deri
     r.dispose();
   });
 
+  it('does not select an offered radio for a known out-of-offered preamp value', () => {
+    const onPreampChange = vi.fn();
+    const r = render(withRf({ preamp: known(3) }), { onPreampChange });
+    for (const value of [0, 1, 2]) expect(r.el(`preamp-${value}`)!.getAttribute('aria-checked')).toBe('false');
+    const unmatched = r.el('preamp-value')!;
+    expect(unmatched.textContent).toBe('P3');
+    expect(unmatched.classList.contains('sr-only')).toBe(false);
+    r.el('preamp-1')!.click();
+    flushSync();
+    expect(onPreampChange).toHaveBeenCalledExactlyOnceWith(1);
+    expect(r.el('preamp-1')!.getAttribute('aria-checked')).toBe('false');
+    r.dispose();
+  });
+
   it('checks exactly the observed attenuator step and emits it verbatim', () => {
     const onAttenuatorChange = vi.fn();
     const r = render(withRf({ attenuator: known(12) }), { onAttenuatorChange });
@@ -234,22 +333,32 @@ describe('preamp and attenuator render as choice groups from the capability-deri
     expect(onAttenuatorChange).toHaveBeenCalledExactlyOnceWith(18);
     r.dispose();
   });
+
+  it('keeps a known out-of-offered attenuator reading visible without selecting an offered step', () => {
+    const r = render(withRf({ attenuator: known(30) }));
+    for (const value of [0, 6, 12, 18]) {
+      expect(r.el(`attenuator-${value}`)!.getAttribute('aria-checked')).toBe('false');
+    }
+    const unmatched = r.el('attenuator-value')!;
+    expect(unmatched.textContent).toBe('30 dB');
+    expect(unmatched.classList.contains('sr-only')).toBe(false);
+    r.dispose();
+  });
 });
 
 describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
   it.each(RF_FRONT_END_LEVELS)('declares the %s slider on the 0..1 scale', (field, _label, min, max) => {
     const r = render(base());
-    const input = r.el(field)!.querySelector('input')!;
-    expect([input.min, input.max]).toEqual([String(min), String(max)]);
+    const input = r.level(field)!;
+    expect(input.range()).toEqual([String(min), String(max)]);
     r.dispose();
   });
 
   it('emits the slider value verbatim, on the way out', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { onLevelChange });
-    const input = r.el('squelch')!.querySelector('input')!;
-    input.value = '0.33';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('squelch')!;
+    input.input(0.33);
     flushSync();
     expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('squelch', 0.33);
     r.dispose();
@@ -259,9 +368,8 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
   it('the level handler refuses to emit for an unusable field, independent of `disabled`', () => {
     const onLevelChange = vi.fn();
     const r = render(withRf({ squelch: unread<number>(DEGRADED) }), { onLevelChange });
-    const input = r.el('squelch')!.querySelector('input')!;
-    input.value = '0.5';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('squelch')!;
+    input.input(0.5);
     flushSync();
     expect(onLevelChange).not.toHaveBeenCalled();
     r.dispose();
@@ -272,6 +380,7 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
   // pins reads `main.rfGain` back as the literal `0.8196078431372549`.
   it('renders a known RF-gain reading as a rounded percent, not the raw wire float', () => {
     const r = render(withRf({ rfGain: known(0.8196078431372549) }));
+    expect(r.el('rfGain')!.dataset.feedbackIntegration).toBe('compatibility-reading');
     expect(r.text('rfGain')).toContain('82%');
     expect(r.text('rfGain')).not.toContain('0.8196078431372549');
     r.dispose();
@@ -282,11 +391,176 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     expect(r.text('squelch')).toContain('20%');
     r.dispose();
   });
+
+  it('treats explicit null as unresolved for both separate controls without raw fallback', () => {
+    const onLevelChange = vi.fn();
+    const r = render(base(), { rfSqlFeedback: null, onLevelChange });
+    for (const field of ['rfGain', 'squelch'] as const) {
+      const group = r.el(field)!;
+      const input = levelDriver(group);
+      expect(group.dataset.feedbackIntegration).toBe('authority-unresolved');
+      expect(group.dataset.observed).toBe('false');
+      expect(input.disabled()).toBe(true);
+      expect(group.querySelector('output')?.textContent).toBe(UNKNOWN_TEXT);
+      input.input(0.5);
+    }
+    flushSync();
+    expect(onLevelChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('keeps command-feedback values, phases, and eligibility independent per separate lane', () => {
+    const onLevelChange = vi.fn();
+    const feedback = pairFeedback({
+      rf: {
+        target: 0.75, requestedTarget: 0.75, phase: 'awaiting-confirmation', busy: true,
+        lifecycleId: 'rf-pending', transitionId: 'rf-awaiting',
+      },
+      sql: {
+        confirmed: null, availability: 'unavailable', phase: 'unavailable',
+      },
+    });
+    const r = render(withRf({ rfGain: known(0.1), squelch: known(0.9) }), {
+      rfSqlFeedback: feedback, onLevelChange,
+    });
+    const rfGroup = r.el('rfGain')!;
+    const sqlGroup = r.el('squelch')!;
+    const rfInput = levelDriver(rfGroup);
+    const sqlInput = levelDriver(sqlGroup);
+    expect(rfGroup.dataset.feedbackIntegration).toBe('command-feedback');
+    expect(rfGroup.dataset.commandPhase).toBe('awaiting-confirmation');
+    expect(rfGroup.getAttribute('aria-busy')).toBe('true');
+    expect(rfGroup.dataset.observed).toBe('true');
+    expect(rfInput.value()).toBe(0.5);
+    expect(rfInput.range()).toEqual(['0', '1']);
+    expect(rfGroup.querySelector('output')?.textContent).toBe('75%');
+    expect(r.el('rfGain-status')).toBeNull();
+    expect(rfInput.disabled()).toBe(false);
+    expect(sqlGroup.dataset.commandPhase).toBe('unavailable');
+    expect(sqlGroup.dataset.observed).toBe('false');
+    expect(sqlGroup.querySelector('output')?.textContent).toBe(UNKNOWN_TEXT);
+    expect(sqlInput.disabled()).toBe(true);
+    rfInput.input(0.55);
+    sqlInput.input(0.4);
+    flushSync();
+    expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('rfGain', 0.55);
+    r.dispose();
+  });
+
+  it('keeps the surviving separate lane eligible for a structurally incomplete combined profile', () => {
+    const onLevelChange = vi.fn();
+    const r = render(withRf({ squelch: unread(OFF) }), {
+      controlModel: 'combined',
+      rfSqlFeedback: pairFeedback({ rf: { target: 0.4, requestedTarget: 0.4 } }),
+      onLevelChange,
+    });
+    expect(r.el('rf-sql')).toBeNull();
+    expect(r.el('squelch')).toBeNull();
+    const rfInput = r.level('rfGain')!;
+    expect(rfInput.disabled()).toBe(false);
+    expect(rfInput.value()).toBe(0.5);
+    rfInput.input(0.3);
+    flushSync();
+    expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('rfGain', 0.3);
+    r.dispose();
+  });
+
+  it('invalidates separate drafts and announcements across provider and null authority replacement', () => {
+    const feedback = new SvelteMap<string, PairFeedback>([['current', pairFeedback()]]);
+    const onLevelChange = vi.fn();
+    const publication = rfTestAuthorityPublication('separate');
+    target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(Fixture, { target, props: {
+      publication, view: base(), controlModel: 'separate', renderSurface: true, onLevelChange,
+      subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+      get rfSqlFeedback() { return feedback.get('current') ?? null; },
+    } });
+    flushSync();
+    const input = levelDriver(target.querySelector('[data-testid="rf-front-end-rfGain"]')!);
+    input.input(0.9);
+    flushSync();
+    expect(input.value()).toBe(0.9);
+    feedback.set('current', pairFeedback({ rf: { confirmed: 0.4 } }, 4));
+    flushSync();
+    expect(input.value()).toBe(0.4);
+    expect(target.querySelectorAll('[data-testid="rf-front-end-rfGain"] [data-control-feedback-status]')).toHaveLength(0);
+    feedback.delete('current');
+    flushSync();
+    expect(input.disabled()).toBe(true);
+    expect(target.querySelector('[data-testid="rf-front-end-rfGain"] output')?.textContent).toBe(UNKNOWN_TEXT);
+    unmount(component);
+    target.remove();
+  });
+
+  it('retires only the represented lane draft and follows later same-authority canonical truth', () => {
+    const feedback = new SvelteMap<string, PairFeedback>([['current', pairFeedback()]]);
+    const onLevelChange = vi.fn();
+    const publication = rfTestAuthorityPublication('separate');
+    target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(Fixture, { target, props: {
+      publication, view: base(), controlModel: 'separate', renderSurface: true, onLevelChange,
+      subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+      get rfSqlFeedback() { return feedback.get('current')!; },
+    } });
+    flushSync();
+    const rfInput = levelDriver(target.querySelector('[data-testid="rf-front-end-rfGain"]')!);
+    const sqlInput = levelDriver(target.querySelector('[data-testid="rf-front-end-squelch"]')!);
+    rfInput.input(0.7);
+    sqlInput.input(0.6);
+    flushSync();
+    expect(onLevelChange).toHaveBeenCalledTimes(2);
+
+    feedback.set('current', pairFeedback({
+      rf: {
+        target: 179 / 255, requestedTarget: 179 / 255, phase: 'awaiting-confirmation',
+        busy: true, lifecycleId: 'rf-179', transitionId: 'rf-awaiting-179',
+      },
+    }));
+    flushSync();
+    expect(sqlInput.value()).toBe(0.6);
+
+    feedback.set('current', pairFeedback({
+      rf: {
+        confirmed: 179 / 255, requestedTarget: 179 / 255, phase: 'confirmed',
+        lifecycleId: 'rf-179', transitionId: 'rf-confirmed-179',
+        outcome: { phase: 'confirmed' },
+      },
+    }));
+    flushSync();
+    feedback.set('current', pairFeedback({ rf: { confirmed: 204 / 255 } }));
+    flushSync();
+    expect(rfInput.value()).toBe(0.8);
+    expect(target.querySelector('[data-testid="rf-front-end-rfGain"] output')?.textContent)
+      .toBe('80%');
+    expect(sqlInput.value()).toBe(0.6);
+    expect(onLevelChange).toHaveBeenCalledTimes(2);
+    unmount(component);
+    target.remove();
+  });
+
+  it('requires host handles and owns no continuous binding or renderer lifecycle', () => {
+    const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
+    expect(props).toContain('levelHandles: RfFrontEndLevelHandles');
+    for (const forbidden of ['controlModel', 'rfSqlFeedback', 'onLevelChange']) {
+      expect(props).not.toContain(forbidden);
+    }
+    for (const forbidden of [
+      'createContinuousPair', 'createContinuousScalar', 'attachRenderer', 'nativeRangeContinuous',
+      'onDestroy', '$effect', '.destroy()',
+    ]) expect(CODE).not.toContain(forbidden);
+  });
 });
 
 /* ── MOR-1447 leg 2: the combined RF/SQL knob ────────────────────── */
 
 describe('the combined RF/SQL knob (controlModel="combined")', () => {
+  it('renders the required host handle and stays free of runtime imports', () => {
+    expect(CODE).toContain('{@render levelHandles.rfSql()}');
+    expect(CODE).not.toMatch(/from ['"]\$lib\/runtime|from ['"][^'"]*runtime\/adapters/);
+  });
+
   it('renders one rf-sql control instead of the two separate sliders', () => {
     const r = render(base(), { controlModel: 'combined' });
     expect(r.el('rf-sql')).not.toBeNull();
@@ -311,15 +585,116 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     r.dispose();
   });
 
-  it('declares the combined slider on the 0..1 scale', () => {
+  it('exposes the combined renderer position on its actual 0..100 ARIA scale', () => {
     const r = render(base(), { controlModel: 'combined' });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    expect([input.min, input.max]).toEqual(['0', '1']);
+    const input = r.level('rf-sql')!;
+    expect(input.range()).toEqual(['0', '100']);
+    expect(r.el('rf-sql')!.dataset.feedbackIntegration).toBe('compatibility-reading');
     r.dispose();
   });
 
-  // Per-field change guard (verifier follow-up R1, mirrors
-  // `DualParamRenderer.svelte`'s `emitPair`): only a field whose mapped
+  it('treats explicit null as unresolved integration with no raw fallback', () => {
+    const onLevelChange = vi.fn();
+    const r = render(base(), { controlModel: 'combined', rfSqlFeedback: null, onLevelChange });
+    const group = r.el('rf-sql')!;
+    const input = levelDriver(group);
+    expect(group.dataset.feedbackIntegration).toBe('authority-unresolved');
+    expect(group.dataset.observed).toBe('false');
+    expect(input.disabled()).toBe(true);
+    expect(r.text('rf-sql-rf-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('rf-sql-sql-value')).toBe(UNKNOWN_TEXT);
+    input.input(1);
+    flushSync();
+    expect(onLevelChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('uses command feedback for position, readout, observation, and request gating', () => {
+    const onLevelChange = vi.fn();
+    const r = render(withRf({ rfGain: unread(DEGRADED), squelch: unread(DEGRADED) }), {
+      controlModel: 'combined', rfSqlFeedback: pairFeedback(), onLevelChange,
+    });
+    const group = r.el('rf-sql')!;
+    const input = levelDriver(group);
+    expect(group.dataset.feedbackIntegration).toBe('command-feedback');
+    expect(group.dataset.observed).toBe('true');
+    expect(input.disabled()).toBe(false);
+    expect(input.value()).toBeCloseTo(0.632, 3);
+    expect(r.text('rf-sql-rf-value')).toBe('50%');
+    expect(r.text('rf-sql-sql-value')).toBe('20%');
+    input.input(1);
+    flushSync();
+    expect(onLevelChange.mock.calls).toEqual([['rfGain', 1], ['squelch', 1]]);
+    r.dispose();
+  });
+
+  it('keeps routine lane phases out of view while showing concise failures and announcements', () => {
+    const values = new SvelteMap<string, PairFeedback>([['feedback', pairFeedback()]]);
+    const publication = rfTestAuthorityPublication('combined');
+    target = document.createElement('div'); document.body.appendChild(target);
+    const component = mount(Fixture, { target, props: {
+      publication, view: base(), controlModel: 'combined', renderSurface: true,
+      subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+      get rfSqlFeedback() { return values.get('feedback')!; },
+    } });
+    flushSync();
+    values.set('feedback', pairFeedback({
+      rf: {
+        phase: 'confirmed', requestedTarget: 0.5,
+        outcome: { phase: 'confirmed' }, lifecycleId: 'rf-1', transitionId: 'rf-confirmed',
+      },
+      sql: {
+        phase: 'failed', requestedTarget: 0.4, outcome: { phase: 'failed', error: 'denied' },
+        lifecycleId: 'sql-1', transitionId: 'sql-failed',
+      },
+    }));
+    flushSync();
+    const group = target.querySelector<HTMLElement>('[data-testid="rf-front-end-rf-sql"]')!;
+    expect(group.dataset.rfCommandPhase).toBe('confirmed');
+    expect(group.dataset.sqlCommandPhase).toBe('failed');
+    expect(group.getAttribute('aria-busy')).toBe('false');
+    expect(group.querySelector('[data-testid="rf-front-end-rf-sql-rf-status"]')).toBeNull();
+    expect(group.querySelector('[data-testid="rf-front-end-rf-sql-sql-status"]')?.textContent)
+      .toBe('denied');
+    expect(target.querySelectorAll('[data-control-feedback-status]')).toHaveLength(2);
+    expect(group.textContent).not.toContain('requested');
+    expect(group.textContent).not.toContain('confirmed;');
+    unmount(component); target.remove();
+  });
+
+  it('keeps requested and last-confirmed lane values distinct while pending', () => {
+    const feedback = pairFeedback({ rf: {
+      target: 0.75, requestedTarget: 0.75, phase: 'awaiting-confirmation', busy: true,
+      lifecycleId: 'rf-pending', transitionId: 'rf-awaiting',
+    } });
+    const r = render(base(), { controlModel: 'combined', rfSqlFeedback: feedback });
+    expect(r.text('rf-sql-rf-value')).toBe('75%');
+    expect(r.el('rf-sql-rf-status')).toBeNull();
+    expect(r.el('rf-sql')!.getAttribute('aria-busy')).toBe('true');
+    r.dispose();
+  });
+
+  it('invalidates a local draft when provider authority is replaced', () => {
+    const values = new SvelteMap<string, PairFeedback>([['feedback', pairFeedback()]]);
+    const publication = rfTestAuthorityPublication('combined');
+    target = document.createElement('div'); document.body.appendChild(target);
+    const component = mount(Fixture, { target, props: {
+      publication, view: base(), controlModel: 'combined', renderSurface: true,
+      subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+      get rfSqlFeedback() { return values.get('feedback')!; },
+      onLevelChange: vi.fn(),
+    } });
+    flushSync();
+    const input = levelDriver(target.querySelector('[data-testid="rf-front-end-rf-sql"]')!);
+    input.input(1); flushSync();
+    expect(input.value()).toBe(1);
+    values.set('feedback', pairFeedback({ rf: { confirmed: 1 }, sql: { confirmed: 0 } }, 4));
+    flushSync();
+    expect(input.value()).toBe(0.5);
+    unmount(component); target.remove();
+  });
+
+  // Per-field change guard (verifier follow-up R1): only a field whose mapped
   // value actually differs from its current confirmed reading emits. `base()`
   // starts at rfGain=known(1)/squelch=known(0) — the knob's own "center, at
   // rest" position — so each case below is chosen to isolate exactly ONE
@@ -329,9 +704,8 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
   it('a hard-left drag emits ONLY rfGain — squelch is already at min, unchanged', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { controlModel: 'combined', onLevelChange });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    input.value = '0';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rf-sql')!;
+    input.input(0);
     flushSync();
     expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('rfGain', 0);
     r.dispose();
@@ -340,20 +714,80 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
   it('the knob center emits NOTHING — RF is already max and SQL already min, the "at rest" position', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { controlModel: 'combined', onLevelChange });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    input.value = '0.5';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rf-sql')!;
+    input.input(0.5);
     flushSync();
     expect(onLevelChange).not.toHaveBeenCalled();
     r.dispose();
   });
 
+  it('uses the pair binding to dispatch a canonical reversal after an unconfirmed request', () => {
+    const onLevelChange = vi.fn();
+    const r = render(base(), { controlModel: 'combined', onLevelChange });
+    const input = r.level('rf-sql')!;
+    expect(r.el('rf-sql')!.dataset.feedbackIntegration).toBe('compatibility-reading');
+    input.input(1);
+    input.input(0.5);
+    flushSync();
+    expect(onLevelChange.mock.calls).toEqual([
+      ['squelch', 1],
+      ['squelch', 0],
+    ]);
+    r.dispose();
+  });
+
+  it('clears identical lane draft and request state when topology and authority are replaced', () => {
+    const views = new SvelteMap([['current', base()]]);
+    const publications = new SvelteMap([['current', rfTestAuthorityPublication('combined')]]);
+    const subscribers = new Set<(next: RfFrontEndAuthorityPublication) => void>();
+    const onLevelChange = vi.fn();
+    target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(Fixture, {
+      target,
+      props: {
+        get publication() { return publications.get('current')!; },
+        get view() { return views.get('current')!; },
+        controlModel: 'combined', renderSurface: true, onLevelChange,
+        subscribeControlAuthority: (handler) => {
+          subscribers.add(handler); handler(publications.get('current')!);
+          return () => subscribers.delete(handler);
+        },
+      },
+    });
+    flushSync();
+    const input = levelDriver(target.querySelector('[data-testid="rf-front-end-rf-sql"]')!);
+    input.input(1);
+    flushSync();
+    expect(input.value()).toBe(1);
+    expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('squelch', 1);
+
+    views.set('current', withRfFrontEnd(topologyFixtures['2/ab_shared']));
+    publications.set('current', rfTestAuthorityPublication('combined', 4));
+    subscribers.forEach((handler) => handler(publications.get('current')!));
+    flushSync();
+    const replacement = levelDriver(
+      target.querySelector('[data-testid="rf-front-end-rf-sql"]')!,
+    );
+    expect(replacement.value()).toBe(0.5);
+    input.input(1);
+    flushSync();
+    expect(onLevelChange).toHaveBeenCalledTimes(1);
+    replacement.input(1);
+    flushSync();
+    expect(onLevelChange.mock.calls).toEqual([
+      ['squelch', 1],
+      ['squelch', 1],
+    ]);
+    unmount(component);
+    target.remove();
+  });
+
   it('a hard-right drag emits ONLY squelch — RF is already at max, unchanged (owner semantics: "hard right = SQL max (RF max)")', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { controlModel: 'combined', onLevelChange });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    input.value = '1';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rf-sql')!;
+    input.input(1);
     flushSync();
     expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('squelch', 1);
     r.dispose();
@@ -366,9 +800,8 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     const r = render(withRf({ rfGain: known(1), squelch: known(0.5) }), {
       controlModel: 'combined', onLevelChange,
     });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    input.value = '0.23';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rf-sql')!;
+    input.input(0.23);
     flushSync();
     expect(onLevelChange).toHaveBeenCalledTimes(2);
     expect(onLevelChange).toHaveBeenCalledWith('rfGain', 0.5);
@@ -383,8 +816,8 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     const r = render(withRf({ rfGain: known(0.8196078431372549), squelch: known(0.2) }), {
       controlModel: 'combined',
     });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    expect(input.valueAsNumber).toBeCloseTo(0.632, 3);
+    const input = r.level('rf-sql')!;
+    expect(input.value()).toBeCloseTo(0.632, 3);
     r.dispose();
   });
 
@@ -392,8 +825,8 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
   // left leg.
   it('positions the knob on the left leg when RF reads below max and SQL is at min', () => {
     const r = render(withRf({ rfGain: known(0.5), squelch: known(0) }), { controlModel: 'combined' });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    expect(input.valueAsNumber).toBeCloseTo(0.23, 3);
+    const input = r.level('rf-sql')!;
+    expect(input.value()).toBeCloseTo(0.23, 3);
     r.dispose();
   });
 
@@ -409,10 +842,9 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     const r = render(withRf({ squelch: unread<number>(DEGRADED) }), {
       controlModel: 'combined', onLevelChange,
     });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    expect(input.disabled).toBe(true);
-    input.value = '1';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rf-sql')!;
+    expect(input.disabled()).toBe(true);
+    input.input(1);
     flushSync();
     expect(onLevelChange).not.toHaveBeenCalled();
     r.dispose();
@@ -427,10 +859,9 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     const r = render(withRf({ rfGain: unread<number>(DEGRADED) }), {
       controlModel: 'combined', onLevelChange,
     });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    expect(input.disabled).toBe(true);
-    input.value = '0';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rf-sql')!;
+    expect(input.disabled()).toBe(true);
+    input.input(0);
     flushSync();
     expect(onLevelChange).not.toHaveBeenCalled();
     r.dispose();
@@ -461,10 +892,12 @@ describe('pending-target affordance (MOR-1441 leg 2)', () => {
 
   it('renders a screen-reader announcement only while pending', () => {
     const pending = render(base(), { pendingPreamp: 1 });
-    expect(pending.el('preamp')!.querySelector('.sr-only')).not.toBeNull();
+    const describedBy = pending.el('preamp')!.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(pending.el('preamp')!.querySelector(`#${describedBy}`)).not.toBeNull();
     pending.dispose();
     const confirmed = render(base());
-    expect(confirmed.el('preamp')!.querySelector('.sr-only')).toBeNull();
+    expect(confirmed.el('preamp')!.getAttribute('aria-describedby')).toBeNull();
     confirmed.dispose();
   });
 

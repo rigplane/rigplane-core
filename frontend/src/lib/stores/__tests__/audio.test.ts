@@ -95,4 +95,48 @@ describe('audio store', () => {
       expect(store.getAudioState().bridgeRunning).toBe(false);
     });
   });
+
+  it('publishes frozen RX target changes synchronously and excludes no-ops and audio noise', () => {
+    const seen: Array<{ muted: boolean; rxEnabled: boolean }> = [];
+    const unsubscribe = store.subscribeRxAudioTarget((snapshot) => {
+      expect(Object.isFrozen(snapshot)).toBe(true);
+      seen.push(snapshot);
+    });
+
+    expect(seen).toEqual([{ muted: false, rxEnabled: false }]);
+    store.setMuted(true);
+    expect(seen.at(-1)).toEqual({ muted: true, rxEnabled: false });
+    store.setMuted(false);
+    expect(seen.at(-1)).toEqual({ muted: false, rxEnabled: false });
+    store.setRxEnabled(true);
+    expect(seen.at(-1)).toEqual({ muted: false, rxEnabled: true });
+    store.setRxEnabled(false);
+    expect(seen.at(-1)).toEqual({ muted: false, rxEnabled: false });
+    store.toggleMute();
+    expect(seen.at(-1)).toEqual({ muted: true, rxEnabled: false });
+
+    const publications = seen.length;
+    store.setMuted(true);
+    store.setRxEnabled(false);
+    store.setVolume(23);
+    store.setTxEnabled(true);
+    store.setMicEnabled(true);
+    store.setBridgeRunning(true);
+    store.setTxCodecFallback(true);
+    expect(seen).toHaveLength(publications);
+
+    unsubscribe();
+    unsubscribe();
+    store.setMuted(false);
+    expect(seen).toHaveLength(publications);
+  });
+
+  it('removes a subscriber whose synchronous initial delivery fails', () => {
+    const failure = new Error('initial delivery failed');
+    const subscriber = vi.fn(() => { throw failure; });
+
+    expect(() => store.subscribeRxAudioTarget(subscriber)).toThrow(failure);
+    store.toggleMute();
+    expect(subscriber).toHaveBeenCalledTimes(1);
+  });
 });

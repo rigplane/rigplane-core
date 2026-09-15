@@ -6,8 +6,8 @@ let mockTrack: any, mockEncoder: any, mockReader: any;
 beforeEach(() => {
   delete (globalThis as any).AudioContext;
   delete (globalThis as any).webkitAudioContext;
-  mockTrack = { stop: vi.fn(), kind: 'audio' };
-  mockReader = { read: vi.fn(() => Promise.resolve({ done: true })), cancel: vi.fn().mockResolvedValue(undefined) };
+  mockTrack = Object.assign(new EventTarget(), { stop: vi.fn(), kind: 'audio' });
+  mockReader = { read: vi.fn(() => new Promise(() => {})), cancel: vi.fn().mockResolvedValue(undefined) };
   mockEncoder = { configure: vi.fn(), encode: vi.fn(), close: vi.fn(), state: 'configured' };
   (globalThis as any).AudioEncoder = function (this: any) { Object.assign(this, mockEncoder); return mockEncoder; };
   (globalThis as any).MediaStreamTrackProcessor = function () {

@@ -39,30 +39,47 @@ describe('field-status parent/child resolution', () => {
     expect(isFieldAvailable(state, 'scopeControls.span')).toBe(false);
   });
 
-  it('inherits a stale parent when the child has no own entry', () => {
+  it('inherits a stale-but-observed parent as available when the child has no own entry (MOR-2425/R29)', () => {
     const state = stateWith({
       scopeControls: { availability: 'stale', freshness: 'stale', observed: true },
     });
-    expect(getFieldAvailability(state, 'scopeControls.refDb')).toBe('stale');
+    expect(getFieldAvailability(state, 'scopeControls.refDb')).toBe('available');
   });
 
-  it('lets a missing/stale parent override a child that claims available', () => {
+  it('lets a missing parent override a child that claims available', () => {
     const state = stateWith({
       scopeControls: { availability: 'missing', freshness: 'unknown', observed: false },
       'scopeControls.span': { availability: 'available', freshness: 'fresh', observed: true },
     });
-    // The group is unobserved as a whole — one stale-by-inheritance leaf must
-    // not be confirmed even if it carries an `available` own entry.
+    // The group is unobserved as a whole — a leaf inheriting from a missing
+    // parent must not be confirmed even if it carries an `available` own entry.
     expect(getFieldAvailability(state, 'scopeControls.span')).toBe('missing');
   });
 
-  it('keeps an own stale entry unavailable regardless of parent', () => {
+  it('treats an own stale-but-observed entry as available regardless of parent (MOR-2425/R29)', () => {
     const state = stateWith({
       'scopeControls.span': { availability: 'stale', freshness: 'stale', observed: true },
     });
-    expect(getFieldAvailability(state, 'scopeControls.span')).toBe('stale');
-    expect(isFieldAvailable(state, 'scopeControls.span')).toBe(false);
+    expect(getFieldAvailability(state, 'scopeControls.span')).toBe('available');
+    expect(isFieldAvailable(state, 'scopeControls.span')).toBe(true);
   });
+
+  // MOR-2425/T201: the backend now distinguishes `unavailable` (declared,
+  // absent in this state) and `undeclared` (not declared for this radio)
+  // from `missing`. Neither is a reading, so neither may pass as available.
+  it.each(['unavailable', 'undeclared'] as const)(
+    'does not treat %s as an available reading',
+    (availability) => {
+      const state = stateWith({
+        'global.powerMeter': { availability, freshness: 'unknown', observed: false },
+      });
+      expect(getFieldAvailability(state, 'global.powerMeter')).toBe(availability);
+      expect(isFieldAvailable(state, 'global.powerMeter')).toBe(false);
+      expect(areFieldsAvailable(state, ['global.powerMeter'])).toBe(false);
+      // A child with no own entry inherits it, and is not available either.
+      expect(isFieldAvailable(state, 'global.powerMeter.value')).toBe(false);
+    },
+  );
 });
 
 describe('field-status anchored to the real backend payload', () => {

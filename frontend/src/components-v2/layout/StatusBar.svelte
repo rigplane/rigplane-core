@@ -55,6 +55,7 @@
 <script lang="ts">
   import { Radio, Cable, Activity, Volume2, ArrowDownUp, Power, Unplug, Palette, Monitor, Tv, Settings, Bug } from 'lucide-svelte';
   import ThemePicker from '../controls/ThemePicker.svelte';
+  import ManagedTotStatusControl from '../controls/ManagedTotStatusControl.svelte';
   import SendReportDialog from '../dialogs/SendReportDialog.svelte';
   import { runtime } from '$lib/runtime';
   import { t } from '$lib/i18n';
@@ -70,12 +71,17 @@
   } from '$lib/stores/connection.svelte';
   import { getActiveFrequencyHz } from '$lib/runtime/adapters/panel-adapters';
   import { getAudioState } from '$lib/stores/audio.svelte';
-  import { hasAnyScope, hasAudio, hasSpectrum } from '$lib/stores/capabilities.svelte';
+  import { hasAnyScope, hasAudio, hasSpectrum, hasCapability } from '$lib/stores/capabilities.svelte';
   import { getLayoutMode, setLayoutMode, type CanonicalLayoutMode, type LayoutMode } from '$lib/stores/layout.svelte';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
 
   interface Props {
     onSettings?: () => void;
+    /**
+     * The App-root managed-TX facade remains the only authority. This shell
+     * merely decides whether its existing presentation consumer is visible.
+     */
+    showManagedTotControl?: boolean;
     /** MOR-1364 (v3-rework S6-pre) — the manifest-driven legacy-twin
      *  suppression channel, reaching the status bar for its one twin: the
      *  scope indicator, whose semantic replacement is `ScopeDisplaySurface`
@@ -87,7 +93,11 @@
      *  (radio/control/audio/http) have no semantic twin and are never gated. */
     declared?: ReadonlySet<SemanticSurfaceName>;
   }
-  let { onSettings, declared = new Set<SemanticSurfaceName>() }: Props = $props();
+  let {
+    onSettings,
+    showManagedTotControl = false,
+    declared = new Set<SemanticSurfaceName>(),
+  }: Props = $props();
 
   // Canonicalize legacy 'lcd' to 'lcd-cockpit' for UI binding — the persisted
   // value may still be 'lcd' (from pre-#889 installs), but the dropdown only
@@ -110,7 +120,11 @@
     { value: 'standard', label: 'Standard' },
     { value: 'lcd-cockpit', label: 'LCD Cockpit' },
     { value: 'lcd-scope', label: 'LCD Scope' },
+    { value: 'peer-split', label: 'LCD Peer Split' },
+    { value: 'unified-instrument', label: 'LCD Unified Instrument' },
+    { value: 'panadapter-first', label: 'LCD Panadapter' },
     { value: 'sdr-test', label: 'SDR Screen (test)' },
+    { value: 'dual-sdr-face', label: 'Dual SDR Face' },
   ];
 
   function handleSkinChange(ev: Event) {
@@ -120,13 +134,28 @@
 
   let radioPowerOn = $derived(getRadioPowerOn());
   let isPoweredOff = $derived(radioPowerOn === false);
+  // MOR-1673: radios without power_control (e.g. FTX-1) cannot toggle
+  // power — the button stays rendered but disabled so the status-bar
+  // layout does not shift (owner decision 2026-09-15), and
+  // handlePowerToggle re-checks this before confirming or dispatching.
+  let powerControlSupported = $derived(hasCapability('power_control'));
 
   let powerTooltip = $derived(
-    radioPowerOn === true
+    !powerControlSupported
+      ? t('core.statusbar.power.unsupported')
+      : radioPowerOn === true
       ? t('core.statusbar.power.toggleOn')
       : radioPowerOn === false
         ? t('core.statusbar.power.toggleOff')
         : t('core.statusbar.power.toggleUnknown')
+  );
+
+  let powerLabel = $derived(
+    radioPowerOn === true
+      ? t('core.statusbar.power.labelOff')
+      : radioPowerOn === false
+        ? t('core.statusbar.power.labelOn')
+        : t('core.statusbar.power.labelUnknown')
   );
 
   // When radio is powered off, override statuses that depend on the radio.
@@ -153,6 +182,16 @@
   let httpState = $derived(
     getWsConnected() && getRadioHealth()?.serverReachable !== false ? 'connected' : 'disconnected',
   ); // server link — always real
+  // MOR-2425 R29(3): connection.svelte.ts already computes staleness from
+  // state_update timing (`isStale()`, exposed here as `runtime.connectionStale`)
+  // but had zero consumers before this chip. `getWsConnected()` is required
+  // because `setWsConnected(false)` (ws-client.ts's disconnect/reconnect
+  // path) is the only writer that clears it — `staleState` itself is never
+  // reset on disconnect — so gating on it here is what keeps this chip and
+  // the existing disconnected indicators from ever doubling up on one root
+  // cause: the WS transport can only be 'connected' (true) once it is fully
+  // up, never while connecting/reconnecting/disconnected.
+  let badLink = $derived(getWsConnected() && runtime.connectionStale);
   let rigConnected = $derived(getRigConnected());
   let radioReady = $derived(getRadioReady());
   let radioHealth = $derived(getRadioHealth());
@@ -230,6 +269,9 @@
   }
 
   async function handlePowerToggle() {
+    // Defence in depth: never confirm or dispatch when the capability is
+    // absent or the power state is unknown.
+    if (!powerControlSupported || radioPowerOn === null) return;
     if (radioPowerOn === true) {
       if (!confirm(t('core.statusbar.power.confirmTurnOff'))) return;
       try {
@@ -294,6 +336,13 @@
       <span class="indicator-dot"></span>
       <Cable size={12} color="currentColor" strokeWidth={2.5} />
     </span>
+    {#if badLink}
+      <span class="indicator" role="status" data-testid="bad-link-chip" title={t('core.statusbar.badLink.tooltip')} style="--indicator-color: {stateColor('degraded')}">
+        <span class="indicator-dot"></span>
+        <Unplug size={12} color="currentColor" strokeWidth={2.5} />
+        <span class="bad-link-label">{t('core.statusbar.badLink.label')}</span>
+      </span>
+    {/if}
     {#if hasAnyScope() && !declared.has('scopeDisplay')}
       <span class="indicator" role="status" title={t('core.statusbar.indicator.scope', { state: scopeState })} style="--indicator-color: {stateColor(scopeState)}">
         <span class="indicator-dot"></span>
@@ -365,6 +414,9 @@
   </div>
 
   <div class="status-controls">
+    {#if showManagedTotControl}
+      <ManagedTotStatusControl />
+    {/if}
     <button
       type="button"
       class="control-btn report-btn"
@@ -418,11 +470,13 @@
       type="button"
       class="control-btn power-toggle-btn"
       class:is-on={radioPowerOn === true}
+      class:power-unknown={radioPowerOn === null}
+      disabled={radioPowerOn === null || !powerControlSupported}
       onclick={handlePowerToggle}
       title={powerTooltip}
     >
       <Power size={14} strokeWidth={2} />
-      <span class="btn-label">{radioPowerOn === true ? t('core.statusbar.power.labelOff') : t('core.statusbar.power.labelOn')}</span>
+      <span class="btn-label">{powerLabel}</span>
     </button>
   </div>
 </div>
@@ -446,6 +500,18 @@
   .http-lost-label {
     font-size: 9px;
     color: var(--v2-accent-red, #ef4444);
+    font-weight: 700;
+    margin-left: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* MOR-2425 R29(3): bad-link chip — the WS transport is up but state
+     updates have stalled, so it borrows the yellow "degraded" tone rather
+     than the red fault tone used for a real disconnect. */
+  .bad-link-label {
+    font-size: 9px;
+    color: var(--v2-accent-yellow, #facc15);
     font-weight: 700;
     margin-left: 2px;
     text-transform: uppercase;
@@ -562,6 +628,8 @@
 
   .skin-select {
     appearance: none;
+    box-sizing: border-box;
+    inline-size: 128px;
     background: transparent;
     border: none;
     color: inherit;
@@ -627,6 +695,13 @@
     color: var(--v2-accent-green, #4ade80);
   }
 
+  :global(.desktop-control-face.standard-face) .status-bar .status-controls .power-toggle-btn {
+    --indicator-color: var(--v2-accent-green, #4ade80);
+    --glow-color: var(--v2-accent-green, #4ade80);
+    border-color: var(--v2-accent-green, #4ade80);
+    color: var(--v2-accent-green, #4ade80);
+  }
+
   .power-toggle-btn:hover {
     border-color: var(--v2-accent-green, #4ade80);
     background: rgba(74, 222, 128, 0.1);
@@ -637,9 +712,40 @@
     color: var(--v2-accent-red, #ef4444);
   }
 
+  :global(.desktop-control-face.standard-face) .status-bar .status-controls .power-toggle-btn.is-on {
+    --indicator-color: var(--v2-accent-red, #ef4444);
+    --glow-color: var(--v2-accent-red, #ef4444);
+    border-color: var(--v2-accent-red, #ef4444);
+    color: var(--v2-accent-red, #ef4444);
+  }
+
   .power-toggle-btn.is-on:hover {
     border-color: var(--v2-accent-red, #ef4444);
     background: rgba(239, 68, 68, 0.1);
+  }
+
+  :global(.desktop-control-face.standard-face) .status-bar .status-controls .power-toggle-btn.power-toggle-btn:hover:not(:disabled) {
+    border-color: var(--v2-accent-green, #4ade80);
+    color: var(--v2-accent-green, #4ade80);
+  }
+
+  :global(.desktop-control-face.standard-face) .status-bar .status-controls .power-toggle-btn.power-toggle-btn.is-on:hover:not(:disabled) {
+    border-color: var(--v2-accent-red, #ef4444);
+    color: var(--v2-accent-red, #ef4444);
+  }
+
+  /* MOR-1673: unknown power state renders neutral — no green/red toggle
+     styling, just the plain control-button border and dimmed text. */
+  .power-toggle-btn.power-unknown {
+    border-color: var(--v2-border, #2a2a3e);
+    color: var(--v2-text-dim, #666);
+  }
+
+  :global(.desktop-control-face.standard-face) .status-bar .status-controls .power-toggle-btn.power-unknown {
+    --indicator-color: var(--v2-text-dim, #666);
+    --glow-color: var(--v2-text-dim, #666);
+    border-color: var(--v2-border, #2a2a3e);
+    color: var(--v2-text-dim, #666);
   }
 
   /* Now Playing badge */

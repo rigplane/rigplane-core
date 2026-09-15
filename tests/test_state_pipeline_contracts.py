@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from rigplane.core.state_store import StateSnapshot, StateStore
+from rigplane.core.tx_observation import OBSERVED_PTT_PATH
 from rigplane.core.tx_target import (
     KnownTxTarget,
     UnknownTxTarget,
@@ -131,7 +132,7 @@ def _server_with_conflicting_legacy_state() -> tuple[WebServer, StateSnapshot]:
     legacy_state.ptt = True
     server = WebServer(
         _StateStoreRadio(store, legacy_state),
-        WebConfig(state_diagnostics=True),
+        WebConfig(state_diagnostics=True, radio_model="IC-7610"),
     )
     server._radio_state = legacy_state  # noqa: SLF001
     server._radio_poller = _LegacyRevisionPoller()  # noqa: SLF001
@@ -333,6 +334,16 @@ def test_tx_target_registry_and_observation_contract() -> None:
         _store_observation(path, {**target.to_dict(), "backend": "icom"}, at=3.0)
 
 
+def test_observed_ptt_registry_contract_is_read_only_string_state() -> None:
+    spec = DEFAULT_FIELD_REGISTRY.require(OBSERVED_PTT_PATH)
+
+    assert spec.path == FieldPath.global_("tx_state", "observed_ptt")
+    assert spec.family is FieldFamily.TX_STATE
+    assert spec.value_type == "str"
+    assert spec.readable is True
+    assert spec.writable is False
+
+
 def test_global_dial_lock_registered_as_tx_state_bool() -> None:
     """MOR-455: ``global.tx_state.dial_lock`` is a registered tx_state bool.
 
@@ -346,6 +357,15 @@ def test_global_dial_lock_registered_as_tx_state_bool() -> None:
     assert spec.family is FieldFamily.TX_STATE
     assert spec.value_type == "bool"
     assert spec.writable is True
+
+
+def test_global_tx_freq_monitor_has_no_registered_spec() -> None:
+    """MOR-2246: the misnamed ``tx_freq_monitor`` field was deleted from the
+    registry; XFC (``get_xfc_status``/``set_xfc_status``) is the real
+    transmit-frequency monitor and is unaffected."""
+    path = FieldPath.global_("tx_state", "tx_freq_monitor")
+    with pytest.raises(KeyError):
+        DEFAULT_FIELD_REGISTRY.require(path)
 
 
 def test_global_scope_control_display_leaves_registered() -> None:

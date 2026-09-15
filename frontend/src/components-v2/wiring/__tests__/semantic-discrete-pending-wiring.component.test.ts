@@ -36,27 +36,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
+const h = vi.hoisted(() => ({
+  txController: null as ManagedAppTxController | null,
+}));
 
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
-
-// The App TX controller lives in Svelte context, provided by `AppGlobalHost`
-// in production; a standalone mount needs a stand-in or `getAppTxController`
-// throws. Not the seam this file tests — same stand-in role as every other
-// wiring-component test in this directory.
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => IDLE,
-    subscribe: () => () => {},
-    start: vi.fn(), setIntent: vi.fn(), release: vi.fn(), resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => h.txController,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }),
@@ -75,11 +62,33 @@ vi.mock('$lib/transport/ws-client', async (importOriginal) => {
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import { setCapabilities, clearCapabilities } from '$lib/stores/capabilities.svelte';
 import { setRadioState, resetRadioState } from '$lib/stores/radio.svelte';
-import { acknowledgeCommand, getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
+import {
+  acknowledgeCommand, failCommand, getCommandLifecycles, resetCommandLifecycle,
+} from '$lib/stores/commands.svelte';
 import { dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
+import { sendCommand } from '$lib/transport/ws-client';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 const PROVIDER_GENERATION = 0;
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh' as const, availability: 'available' as const };
+const fresh = {
+  storePath: 'x', observed: true, freshness: 'fresh' as const,
+  availability: 'available' as const, lastObservedMonotonic: 1,
+};
+
+/**
+ * One field's own observation marker advanced — `lastObservedMonotonic`
+ * (`runtime_helpers.py: _observed_field_status`), the per-field "the radio
+ * answered for THIS field" signal. Every fixture below starts from
+ * `fresh`'s marker of 1, so any value above it is a post-ack re-read of
+ * that one field.
+ */
+function observedAgain(base: ServerState, path: string, marker: number): ServerState {
+  return {
+    ...base,
+    observationSeq: marker, freshnessRevision: marker,
+    fieldStatus: { ...base.fieldStatus, [path]: { ...fresh, lastObservedMonotonic: marker } },
+  } as unknown as ServerState;
+}
 
 /**
  * Single-receiver (IC-7300/FTX-1-shaped) fixture — the live-bench topology
@@ -133,32 +142,21 @@ function liveState(): ServerState {
  */
 function nbConfirmedState(): ServerState {
   const base = liveState();
-  return {
+  return observedAgain({
     ...base,
-    revision: 2, stateRevision: 2, freshnessRevision: 2, observationSeq: 2,
+    revision: 2, stateRevision: 2,
     main: { ...base.main, nb: true },
-  } as unknown as ServerState;
+  } as unknown as ServerState, 'main.nb', 2);
 }
 
 /**
- * A non-transitioning observation (MOR-1488 review R2, F2 test-theatre
- * fix; reused for review R3): `liveState()` with `main.nb` left at `false`
- * (unchanged) but `observationSeq`/`freshnessRevision` advanced past the
- * fixture's initial value — `stateRevision`/`revision` deliberately stay
- * put. This is "the radio was freshly re-polled (or an unrelated field's
- * meter poll landed) and nb is still off": no field value moved, so
- * `core.state_store._apply_one` would never bump `stateRevision` for a
- * push like this (it only bumps on `semantic_changed`), but `observationSeq`
- * bumps unconditionally, on every applied observation.
- *
- * Dual role by test: whether this push CONFIRMS or MISMATCHES depends only
- * on what the in-flight command's own target is at each call site — this
- * fixture always reports `nb: false`.
- *   - R2's double-toggle test targets OFF (`false`): this push MATCHES and
- *     is the genuine confirming observation that settles the record.
- *   - R3's tests target ON (`true`, a single click): this push MISMATCHES
- *     — proving a mismatched post-ack push must NOT retire the record (R3's
- *     asymmetric settle), only a matching one or the grace backstop can.
+ * A push that observed something OTHER than `main.nb`: `liveState()` with
+ * `main.nb` left at `false` and every field's own `lastObservedMonotonic`
+ * left at the fixture's initial value, while `observationSeq`/
+ * `freshnessRevision` advance. `core.state_store._apply_one` bumps
+ * `observationSeq` on every applied observation but only touches the
+ * observed field's own marker, so this is the shape of an unrelated meter
+ * poll landing while the commanded field has not been re-read yet.
  */
 function nbReobservedState(): ServerState {
   const base = liveState();
@@ -176,17 +174,17 @@ function nbReobservedState(): ServerState {
  */
 function freqConfirmedState(freqHz: number): ServerState {
   const base = liveState();
-  return {
+  return observedAgain({
     ...base,
-    revision: 2, stateRevision: 2, freshnessRevision: 2, observationSeq: 2,
+    revision: 2, stateRevision: 2,
     main: { ...base.main, freqHz },
-  } as unknown as ServerState;
+  } as unknown as ServerState, 'main.freqHz', 2);
 }
 
 /**
  * Leg-1 sibling of `nbReobservedState`: a post-ack push that advances
- * `observationSeq` (an unrelated meter poll) without confirming `freqHz` —
- * `main.freqHz` stays at the ORIGINAL `liveState()` value.
+ * `observationSeq` (an unrelated meter poll) while `main.freqHz` is neither
+ * re-observed (its own marker stays put) nor changed.
  */
 function freqReobservedState(seq = 2): ServerState {
   const base = liveState();
@@ -198,6 +196,7 @@ function freqReobservedState(seq = 2): ServerState {
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 
 function render(): void {
   target = document.createElement('div');
@@ -209,6 +208,9 @@ function render(): void {
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 
 beforeEach(() => {
+  vi.mocked(sendCommand).mockClear();
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   // Assert acceptance, not just call it — a rejected fixture would leave
   // `runtime.state`/`runtime.caps` at `null` and every assertion below would
   // pass or fail for the wrong reason (mirrors
@@ -220,6 +222,8 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(txHarness.listenerCount()).toBe(0);
+  expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';
   resetRadioState();
   clearCapabilities();
@@ -227,6 +231,81 @@ afterEach(() => {
 });
 
 describe('discrete pending markers reach the mounted DOM over the real wiring path (MOR-1488, closes MOR-1473)', () => {
+  function seedData(active: 'MAIN' | 'SUB' = 'SUB', unavailable?: 'active' | 'dataMode' | 'staleDataMode'): ServerState {
+    resetRadioState();
+    clearCapabilities();
+    expect(setCapabilities({ ...liveCaps(), receivers: 2, vfoScheme: 'main_sub',
+      capabilities: [...liveCaps().capabilities, 'data_mode'], dataModeCount: 1,
+      dataModeLabels: { '0': 'OFF', '1': 'DATA' },
+    })).toBe(true);
+    const state = liveState();
+    const fieldStatus: NonNullable<ServerState['fieldStatus']> = { ...state.fieldStatus, 'main.dataMode': fresh,
+      ...Object.fromEntries(Object.entries(state.fieldStatus!).filter(([key]) => key.startsWith('main.'))
+        .map(([key, value]) => [key.replace('main.', 'sub.'), value])), 'sub.dataMode': fresh,
+    };
+    if (unavailable) fieldStatus[unavailable === 'active' ? 'active' : `${active.toLowerCase()}.dataMode`] = {
+      ...fresh, ...(unavailable === 'staleDataMode' ? { freshness: 'stale' as const } : { observed: false }),
+    };
+    const dataState = { ...state, active, sub: { ...state.main, dataMode: 0 }, fieldStatus };
+    expect(setRadioState(dataState)).toBe(true);
+    return dataState;
+  }
+
+  it.each(['MAIN', 'SUB'] as const)('DATA click emits one receiver-specific frame for %s and pending never becomes confirmed', active => {
+    const state = seedData(active);
+    render();
+    expect(sendCommand).not.toHaveBeenCalled();
+    const off = q<HTMLButtonElement>('[data-testid="filter-data-mode-0"]')!;
+    const on = q<HTMLButtonElement>('[data-testid="filter-data-mode-1"]')!;
+    expect(on).not.toBeNull();
+    on.click();
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_data_mode',
+      { mode: 1, receiver: active === 'MAIN' ? 0 : 1 }, expect.any(String));
+    expect(on.dataset.pending).toBe('true');
+    expect(off.dataset.pending).toBe('false');
+    expect(off.getAttribute('aria-pressed')).toBe('true');
+    expect(on.getAttribute('aria-pressed')).toBe('false');
+    const commands = getCommandLifecycles().filter(command => command.name === 'set_data_mode');
+    expect(commands).toHaveLength(1);
+    acknowledgeCommand(commands[0].id, commands[0].originalEpoch, commands[0].originalEpoch);
+    flushSync();
+    expect(on.dataset.pending).toBe('true');
+    const receiver = active === 'MAIN' ? 'main' : 'sub';
+    expect(setRadioState(observedAgain({ ...state, revision: 2, stateRevision: 2,
+      [receiver]: { ...state[receiver], dataMode: 1 },
+    } as unknown as ServerState, `${receiver}.dataMode`, 2))).toBe(true);
+    flushSync();
+    expect(on.dataset.pending).toBe('false');
+    expect(off.getAttribute('aria-pressed')).toBe('false');
+    expect(on.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it.each(['active', 'dataMode'] as const)('DATA with unavailable %s emits nothing on mount or forced click', unavailable => {
+    seedData('SUB', unavailable);
+    render();
+    const on = q<HTMLButtonElement>('[data-testid="filter-data-mode-1"]')!;
+    expect(on).not.toBeNull();
+    expect(on.disabled).toBe(true);
+    expect(on.getAttribute('aria-pressed')).toBe('false');
+    on.disabled = false;
+    on.click();
+    flushSync();
+    expect(sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  // MOR-2425/R40: a HELD dataMode leaves the control live.
+  it('DATA with a held (stale) dataMode stays enabled and emits on click', () => {
+    seedData('SUB', 'staleDataMode');
+    render();
+    const on = q<HTMLButtonElement>('[data-testid="filter-data-mode-1"]')!;
+    expect(on.disabled).toBe(false);
+    on.click();
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledOnce();
+  });
+
   it('marks the clicked filter choice pending while set_filter is in flight (FilterSurface)', () => {
     render();
     expect(q('[data-testid="filter-select"]')!.dataset.filterStatus).toBe('confirmed');
@@ -240,6 +319,45 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     // accessor (e.g. reading `pendingPreamp` here) would mark every choice,
     // or none, rather than the one actually in flight.
     expect(q('[data-testid="filter-select-1"]')!.dataset.pending).toBe('false');
+  });
+
+  it('clears the native Filter Width announcement when its real-store evidence becomes unavailable', () => {
+    vi.useFakeTimers();
+    try {
+      render();
+      const input = q<HTMLInputElement>('[data-testid="filter-width"] input')!;
+      expect(input.disabled).toBe(false);
+      input.value = '3000';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      vi.advanceTimersByTime(201);
+      flushSync();
+
+      const command = getCommandLifecycles().find(candidate => candidate.name === 'set_filter_width');
+      expect(command).toBeDefined();
+      failCommand(command!.id, command!.originalEpoch, command!.originalEpoch, 'radio refused width');
+      flushSync();
+
+      const first = q<HTMLElement>('[data-testid="filter-width"] [data-control-feedback-status]');
+      expect(first).not.toBeNull();
+      expect(sendCommand).toHaveBeenCalledExactlyOnceWith(
+        'set_filter_width', { width: 3000, receiver: 0 }, expect.any(String),
+      );
+
+      const unavailable = liveState();
+      expect(setRadioState({
+        ...unavailable, revision: 2, stateRevision: 2, freshnessRevision: 2, observationSeq: 2,
+        fieldStatus: {
+          ...unavailable.fieldStatus,
+          'main.filterWidth': { ...fresh, observed: false, lastObservedMonotonic: 2 },
+        },
+      })).toBe(true);
+      flushSync();
+
+      expect(q('[data-testid="filter-width"] [data-control-feedback-status]')).toBeNull();
+      expect(sendCommand).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('marks the clicked preamp choice pending while set_preamp is in flight (RfFrontEndSurface)', () => {
@@ -331,13 +449,12 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
   });
 
   /**
-   * MOR-1478 (leg-1 parity with the leg-2 R3 finding above): a post-ack
-   * push that advances `observationSeq` without confirming `freqHz` (an
-   * unrelated meter poll landing before the commanded field's own
-   * round-robin slot) must not clear the marker — that would collapse the
-   * pending window right back to the reported symptom.
+   * A post-ack push that observed a DIFFERENT field (an unrelated meter
+   * poll landing before the commanded field's own read-back) must not clear
+   * the marker — that would collapse the pending window right back to the
+   * MOR-1478 symptom.
    */
-  it('does not clear the VFO frequency marker on a post-ack push that advances observationSeq without confirming the target (MOR-1478)', () => {
+  it('does not clear the VFO frequency marker on a post-ack push that observed another field (MOR-1478)', () => {
     render();
     const freqEl = () => target.querySelector('[data-vfo-receiver="MAIN"] [data-freq-status]') as HTMLElement | null;
 
@@ -351,12 +468,37 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     flushSync();
     expect(freqEl()?.dataset.freqStatus).toBe('pending');
 
-    // A post-ack push arrives (observationSeq advances) but `main.freqHz`
-    // is still the pre-spin value — NOT the commanded target.
-    expect(setRadioState(freqReobservedState())).toBe(true);
+    expect(setRadioState(observedAgain(liveState(), 'main.mode', 2))).toBe(true);
     flushSync();
 
     expect(freqEl()?.dataset.freqStatus).toBe('pending');
+  });
+
+  /**
+   * The read-back the core issues at USER priority for the commanded field
+   * ends the marker on arrival, whatever it reports. Here
+   * `main.freqHz` is re-observed still holding the pre-spin value (the
+   * radio refused the tune) — the marker must end anyway, because the field
+   * now shows what the radio reports.
+   */
+  it('clears the VFO frequency marker when main.freqHz is re-observed after the ack still holding the old value', () => {
+    render();
+    const freqEl = () => target.querySelector('[data-vfo-receiver="MAIN"] [data-freq-status]') as HTMLElement | null;
+
+    dispatchRadioIntent({ name: 'set_freq', params: { freq: 14260000, receiver: 0 } });
+    flushSync();
+    const command = getCommandLifecycles().find(
+      (candidate) => candidate.name === 'set_freq' && candidate.status === 'pending',
+    );
+    expect(command).toBeDefined();
+    acknowledgeCommand(command!.id, command!.originalEpoch, command!.originalEpoch);
+    flushSync();
+    expect(freqEl()?.dataset.freqStatus).toBe('pending');
+
+    expect(setRadioState(observedAgain(liveState(), 'main.freqHz', 2))).toBe(true);
+    flushSync();
+
+    expect(freqEl()?.dataset.freqStatus).toBe('confirmed');
   });
 
   /**
@@ -392,7 +534,7 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
       expect(freqEl()?.dataset.freqStatus).toBe('pending');
 
       vi.advanceTimersByTime(501); // now past 3000ms
-      // Still non-confirming (`main.freqHz` stays at the pre-spin value) —
+      // `main.freqHz` was never re-observed (its own marker never moves) —
       // only the elapsed grace window retires it. (seq advances again so the
       // second push is accepted by the store.)
       expect(setRadioState(freqReobservedState(3))).toBe(true);
@@ -438,9 +580,7 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
    * confirmed"). This drives the command to 'acknowledged' directly
    * (`acknowledgeCommand`, the same primitive `radio-intents.ts`'s
    * `onCommandDelivery` ack handler calls) WITHOUT changing the confirmed
-   * radio state, and requires the marker to survive that ack — only a
-   * `setRadioState` observation that actually confirms the target
-   * (`main.nb === true`) may clear it.
+   * radio state, and requires the marker to survive that ack.
    */
   it('keeps the NB marker pending across a transport ack until a confirming state observation arrives (MOR-1488)', () => {
     render();
@@ -475,13 +615,11 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
    * plain "does the target match the current confirmed reading" comparison
    * (the pre-R2 implementation) would clear the marker the instant OFF
    * acks, even though nothing has actually been re-observed since either
-   * click. This proves the sequence guard blocks exactly that, and that the
-   * FIRST genuine post-ack push (even one that only reconfirms the
-   * already-correct value, never advancing `stateRevision`) is what
-   * actually settles it — the counters `nbConfirmedState()`'s sibling
-   * `nbReobservedState()` bumps are not decorative.
+   * click. This proves that coincidence alone does not settle it, and that
+   * the field's OWN post-ack re-read does — even one that only reconfirms
+   * the already-correct value and never advances `stateRevision`.
    */
-  it('does not clear the marker from a stale pre-ack snapshot on a fast double-toggle, only on the next real push (MOR-1488 review R2, closes F2)', () => {
+  it('does not clear the marker from a stale pre-ack snapshot on a fast double-toggle, only on the field\'s own re-read (MOR-1488 review R2, closes F2)', () => {
     render();
     expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('confirmed');
 
@@ -502,28 +640,21 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     // must NOT clear from that coincidence alone.
     expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
 
-    // The first real post-ack push, even a non-transitioning reconfirmation.
-    expect(setRadioState(nbReobservedState())).toBe(true);
+    // The field's own post-ack re-read, even a non-transitioning one.
+    expect(setRadioState(observedAgain(liveState(), 'main.nb', 2))).toBe(true);
     flushSync();
 
     expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('confirmed');
   });
 
   /**
-   * MOR-1488 review R3: `observationSeq` bumps on EVERY applied field
-   * observation, not just a re-read of THIS command's field — a 25ms meter
-   * poll advances it exactly as much as the commanded field's own confirming
-   * re-read would, but that confirming re-read is a full poll round-robin
-   * away (~1.3s worst case), not the very next push. R2 settled the record
-   * on the first post-ack push regardless of match, which fired on the next
-   * unrelated meter poll (~50ms after ack) — collapsing the pending window
-   * right back to a few frames, the original bench symptom. `nbReobservedState()`
-   * (defined above, `main.nb` still `false`) doubles here as a stand-in for
-   * exactly that unrelated meter-poll push: it advances `observationSeq` but
-   * does not confirm THIS command's target (`true`). It must not clear the
-   * marker.
+   * `observationSeq` bumps on EVERY applied field observation, not just a
+   * re-read of THIS command's field — a 25ms meter poll advances it exactly
+   * as much as the commanded field's own read-back would. Only the field's
+   * own `lastObservedMonotonic` separates the two, so a push that observed
+   * some other field must leave the marker pending.
    */
-  it('does not clear the marker on a post-ack push that advances observationSeq without confirming the target (MOR-1488 review R3)', () => {
+  it('does not clear the marker on a post-ack push that observed another field (MOR-1488 review R3)', () => {
     render();
     q<HTMLButtonElement>('[data-testid="dsp-nbActive"]')!.click();
     flushSync();
@@ -537,14 +668,36 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     flushSync();
     expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
 
-    // A post-ack push arrives (observationSeq advances) but `main.nb` is
-    // still `false` — NOT the commanded `true`. Not evidence of failure,
-    // just an observation that has not reached this field's round-robin
-    // slot yet.
-    expect(setRadioState(nbReobservedState())).toBe(true);
+    expect(setRadioState(observedAgain(liveState(), 'main.freqHz', 2))).toBe(true);
     flushSync();
 
     expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
+  });
+
+  /**
+   * The commanded field's own post-ack observation ends the marker
+   * whatever it reports. `main.nb` is re-observed still `false`
+   * while the click commanded `true` — the radio refused, or has not
+   * applied it — and the operator is shown what the radio reports rather
+   * than a marker that outlives the answer.
+   */
+  it('clears the marker when main.nb is re-observed after the ack still holding the old value', () => {
+    render();
+    q<HTMLButtonElement>('[data-testid="dsp-nbActive"]')!.click();
+    flushSync();
+
+    const command = getCommandLifecycles().find(
+      (candidate) => candidate.name === 'set_nb' && candidate.status === 'pending',
+    );
+    expect(command).toBeDefined();
+    acknowledgeCommand(command!.id, command!.originalEpoch, command!.originalEpoch);
+    flushSync();
+    expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
+
+    expect(setRadioState(observedAgain(liveState(), 'main.nb', 2))).toBe(true);
+    flushSync();
+
+    expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('confirmed');
   });
 
   /**
@@ -570,9 +723,8 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
       expect(q('[data-testid="dsp-nbActive"]')!.dataset.pendingStatus).toBe('pending');
 
       vi.advanceTimersByTime(3_001);
-      // Still non-confirming (`main.nb` stays `false`, target is `true`) —
-      // the sequence guard alone would leave this pending forever; only the
-      // elapsed grace window retires it.
+      // `main.nb` was never re-observed (its own marker never moves), so
+      // only the elapsed grace window retires the marker.
       expect(setRadioState(nbReobservedState())).toBe(true);
       flushSync();
 

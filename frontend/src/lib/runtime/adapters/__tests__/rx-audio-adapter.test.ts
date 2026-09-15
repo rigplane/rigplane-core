@@ -9,9 +9,8 @@
  * assertions stand unchanged.
  *
  * Three safety blocks:
- *  1. MOD-input readiness IS `deriveTxCapabilities`'s conclusion, and the
- *     source projection IS the App TX authority's — both pinned against the
- *     shipped originals, not against a hand-copied expectation.
+ *  1. MOD-input readiness IS `deriveTxCapabilities`'s conclusion, and source
+ *     projection follows the canonical observed field status.
  *  2. TX truth (R9): the whole group is invariant to `radioState.ptt`.
  *  3. Honest degradation: the group never fabricates the shipped panel's
  *     0.5 AF / 'both' focus defaults.
@@ -24,7 +23,6 @@ import type { FieldStatus, ServerState } from '$lib/types/state';
 import { validateRadioViewModel, type RadioViewModel } from '../../../../semantic/radio-view-model';
 import { toRadioViewModel, type RxAudioSnapshot } from '../radio-view-model-adapter';
 import { deriveTxCapabilities } from '../tx-capabilities';
-import { createAppAuthorityProjector } from '../../tx-controller/app-authority';
 import { toRxAudioProps } from '../../props/panel-props';
 
 const fresh: FieldStatus = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
@@ -40,6 +38,8 @@ function caps(overrides: Partial<Capabilities> = {}): Capabilities {
     webrtc: { available: false, enabled: false },
     txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
     scopeSource: 'hardware', audioFftAvailable: false,
+    dataModeCount: 3,
+    dataModeInputs: [0, 1, 2, 3, 4, 5].map(value => ({ value, label: String(value) })),
     audioTxRequiredModInputSource: 5, ...overrides,
   } as Capabilities;
 }
@@ -98,6 +98,12 @@ describe('rxAudio group gate (MOR-1262 slice 3A, kill-test 4)', () => {
     expect(rxAudio.liveAudio).toEqual({ structural: false, operational: false });
   });
 
+  it('hides MOD input when profile source metadata is absent', () => {
+    const rxAudio = model(audioState(), caps({ dataModeInputs: undefined }), SNAP).rxAudio!;
+    expect(rxAudio.modInputChoices).toEqual([]);
+    expect(rxAudio.modInputSource.availability).toEqual({ structural: false, operational: false });
+  });
+
   it('emits no model at all when capabilities are absent', () => {
     expect(toRadioViewModel(audioState(), null, null, SNAP)).toBeNull();
   });
@@ -114,9 +120,7 @@ describe('rxAudio group gate (MOR-1262 slice 3A, kill-test 4)', () => {
 
 /**
  * SAFETY CONSTRAINT 2. The readiness fact is the shipped `deriveTxCapabilities`
- * conclusion and the source projection is the App TX authority's own — both
- * asserted against the REAL functions, so re-deriving either with new logic in
- * the adapter goes red instead of quietly disagreeing with the TX guard.
+ * conclusion and source projection stays on the observed field contract.
  */
 describe('MOD-input readiness mirrors the shipped derivation (web-voice-TX guard)', () => {
   const SOURCES = [0, 1, 2, 3, 4, 5];
@@ -148,17 +152,26 @@ describe('MOD-input readiness mirrors the shipped derivation (web-voice-TX guard
       .toEqual({ status: 'mismatch', source: 0 });
   });
 
-  it.each([
-    ['unobserved', missing],
-    ['stale', stale],
-  ])('degrades a %s source to unknown readiness — never assumed ready', (_label, status) => {
+  it('degrades an unobserved source to unknown readiness — never assumed ready', () => {
     const state = audioState({
-      fieldStatus: { ...audioState().fieldStatus, dataOffModInput: status },
+      fieldStatus: { ...audioState().fieldStatus, dataOffModInput: missing },
     });
     const rxAudio = model(state, caps(), SNAP).rxAudio!;
     expect(rxAudio.modInputReadiness).toEqual({ status: 'unknown' });
     expect(rxAudio.modInputSource.reading).toEqual({ status: 'unknown' });
     expect(rxAudio.modInputSource.availability).toEqual({ structural: true, operational: false });
+  });
+
+  // MOR-2425/R40: a held source still answers "which input", so readiness derives.
+  it('holds a stale source and keeps deriving readiness from it', () => {
+    const state = audioState({
+      fieldStatus: { ...audioState().fieldStatus, dataOffModInput: stale },
+    });
+    const rxAudio = model(state, caps(), SNAP).rxAudio!;
+    const fresh = model(audioState(), caps(), SNAP).rxAudio!;
+    expect(rxAudio.modInputSource.reading).toEqual(fresh.modInputSource.reading);
+    expect(rxAudio.modInputSource.availability).toEqual({ structural: true, operational: true });
+    expect(rxAudio.modInputReadiness).toEqual(fresh.modInputReadiness);
   });
 
   it('marks the source structurally absent on a radio without MOD-input routing', () => {
@@ -170,27 +183,21 @@ describe('MOD-input readiness mirrors the shipped derivation (web-voice-TX guard
 
   it.each([
     ['LAN', 5], ['MIC', 0], ['USB', 3],
-  ])('projects the %s source exactly as the App TX authority does', (_label, source) => {
+  ])('projects the observed %s source without a browser TX authority', (_label, source) => {
     const state = audioState({ dataOffModInput: source });
-    const project = createAppAuthorityProjector();
-    const authority = project(state, caps(), { state: 'connected', epoch: 0 });
-    const reading = model(state, caps(), SNAP).rxAudio!.modInputSource.reading;
-    expect(authority.modInputSource.status).toBe('known');
-    expect(reading).toEqual({
-      status: 'known',
-      value: (authority.modInputSource as { status: 'known'; source: number }).source,
-    });
+    const rxAudio = model(state, caps(), SNAP).rxAudio!;
+    expect(rxAudio.modInputSource.reading).toEqual({ status: 'known', value: source });
     expect(model(state, caps(), SNAP).rxAudio!.modInputReadiness)
-      .toEqual(authority.facts!.modInputReadiness);
+      .toEqual(deriveTxCapabilities(caps(), {
+        txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14195000 },
+        modInputSource: { status: 'known', source },
+      }).modInputReadiness);
   });
 
-  it('projects an unobserved source as unknown, exactly as the App TX authority does', () => {
+  it('projects an unobserved source as unknown', () => {
     const state = audioState({
       fieldStatus: { ...audioState().fieldStatus, dataOffModInput: missing },
     });
-    const project = createAppAuthorityProjector();
-    const authority = project(state, caps(), { state: 'connected', epoch: 0 });
-    expect(authority.modInputSource).toEqual({ status: 'unknown' });
     expect(model(state, caps(), SNAP).rxAudio!.modInputSource.reading).toEqual({ status: 'unknown' });
   });
 });
@@ -298,11 +305,13 @@ describe('rxAudio degrades honestly rather than to the shipped panel defaults', 
     });
     expect(model(onSub, caps(), local).rxAudio!.afLevel.reading)
       .toEqual({ status: 'known', value: 0.77 });
+    // MOR-2425/R29: a stale-but-observed afLevel carries its last value
+    // (`onSub`'s `sub.afLevel` is 0.77) and is `available`, not degraded.
     const staleSub = audioState({
       ...onSub,
       fieldStatus: { ...audioState().fieldStatus, 'sub.afLevel': stale },
     });
-    expect(model(staleSub, caps(), local).rxAudio!.afLevel.reading).toEqual({ status: 'unknown' });
+    expect(model(staleSub, caps(), local).rxAudio!.afLevel.reading).toEqual({ status: 'known', value: 0.77 });
   });
 });
 

@@ -56,9 +56,8 @@ export const STUDIOLINE_TOKENS: DesignLanguageTokens = {
   // studioline allows lives on the PTT pill and is declared with it, in
   // `state-feedback-renderer.ts`.
   geometry: { radius: '0px', borderWidth: '1px' },
-  // Continuous bar rail: a 4px track with no gap is what makes it a rail
-  // rather than the segment form `fieldline` owns.
-  meters: { trackWidth: '4px', segmentGap: '0px' },
+  // Continuous bar rail: a 4px track.
+  meters: { trackWidth: '4px', segmentGap: '1px' },
   frequency: { digitWeight: 200, rankedGroups: true },
   // The only animation is the tuning underline slide, which is decorative and
   // dropped outright under prefers-reduced-motion (MOR-977 §3.2).

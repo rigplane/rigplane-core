@@ -14,19 +14,20 @@
   import { onDestroy } from 'svelte';
   import Toast from './components/shared/Toast.svelte';
   import { runtime } from '$lib/runtime';
-  import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
+  import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import { t } from '$lib/i18n';
+
+  let { showTxIndication = true }: { showTxIndication?: boolean } = $props();
 
   // The App-owned TX controller (MOR-1008/MOR-982) is the ONLY legitimate
   // source for this lamp. Radio-state PTT is a command/readback echo that can
   // read RX while the key is still down, so it is never consulted here.
-  const tx = getAppTxController();
+  const tx = getManagedAppTxController();
   let txState = $state.raw(tx.snapshot());
   const stopWatchingTx = tx.subscribe((next) => { txState = next; });
   onDestroy(() => stopWatchingTx());
 
-  // Fail closed: 'uncertain' means the browser may own the key without a
-  // confirmed readback, and must still be shown as a transmitting radio.
+  // Fail closed: server-reported intent/debt without confirmed readback remains TX?.
   let txIndication = $derived(
     txState.radioTx === 'on' || txState.txRisk === 'confirmed-on'
       ? 'on'
@@ -47,7 +48,7 @@
 <div class="app-global-host" data-testid="app-global-host">
   <Toast />
 
-  {#if txIndication}
+  {#if showTxIndication && txIndication}
     <div class="global-tx" data-testid="global-tx-indication" data-tx={txIndication} aria-live="assertive">
       <span class="global-tx-lamp" aria-hidden="true"></span>
       <span>{txIndication === 'on' ? 'TX' : 'TX?'}</span>

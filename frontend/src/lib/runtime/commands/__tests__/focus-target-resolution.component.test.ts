@@ -77,17 +77,22 @@ vi.mock('$lib/stores/tuning.svelte', () => ({
 }));
 
 import { makeKeyboardHandlers } from '../panel-commands';
-import RxAudioSurface from '../../../../semantic/RxAudioSurface.svelte';
-import RfFrontEndSurface from '../../../../semantic/RfFrontEndSurface.svelte';
-import FilterSurface from '../../../../semantic/FilterSurface.svelte';
+import RxAudioInstrumentHostFixture from '../../../../semantic/__tests__/fixtures/RxAudioInstrumentHostFixture.svelte';
+import RfFrontEndInstrumentHostFixture, {
+  rfTestAuthorityPublication,
+} from '../../../../semantic/__tests__/fixtures/RfFrontEndInstrumentHostFixture.svelte';
+import FilterInstrumentHostFixture from '../../../../semantic/__tests__/fixtures/FilterInstrumentHostFixture.svelte';
 import VfoSurface from '../../../../semantic/VfoSurface.svelte';
 import {
   topologyFixtures, withRxAudio, withModeFilter, withFilterPassband, withRfFrontEnd,
 } from '../../../../semantic/fixtures/topologies';
+import type { Capabilities } from '$lib/types/capabilities';
+import type { ServerState } from '$lib/types/state';
+import type { RxAudioAuthorityPublication } from '../../../../semantic/rx-audio-instruments';
 
 let mounted: ReturnType<typeof mount>[] = [];
 
-function render<P extends Record<string, unknown>>(component: Component<P>, props: P): void {
+function render<P extends object>(component: Component<P>, props: P): void {
   const target = document.createElement('div');
   document.body.appendChild(target);
   mounted.push(mount(component, { target, props }));
@@ -111,27 +116,51 @@ afterEach(() => {
 
 describe('focus_target dispatch resolves to a real, focusable anchor in the production DOM (MOR-1456)', () => {
   it('"af" focuses the AF-gain slider in RxAudioSurface (rx-audio zone)', () => {
-    render(RxAudioSurface, { view: withRxAudio(topologyFixtures['1/single']) });
-    const input = document.querySelector('[data-testid="rx-audio-af"] input');
-    expect(input).not.toBeNull();
+    const publication: RxAudioAuthorityPublication = {
+      state: { providerGeneration: 1 } as ServerState,
+      caps: {
+        model: 'TEST', receivers: 1, vfoScheme: 'single', providerGeneration: 1,
+        capabilities: ['audio', 'af_level'], scope: false, audio: true, tx: false,
+        freqRanges: [], modes: [], filters: [],
+        audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },
+        webrtc: { available: false, enabled: false }, txBands: null,
+        stateContractVersion: 1,
+      } as Capabilities,
+      session: { state: 'connected', epoch: 1 },
+      rxAudioTarget: { muted: false, rxEnabled: true },
+    };
+    render(RxAudioInstrumentHostFixture, {
+      view: withRxAudio(topologyFixtures['1/single']), publication,
+      subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+      onAfLevelChange: vi.fn(),
+    });
+    const slider = document.querySelector('[data-testid="rx-audio-af"] [role="slider"]');
+    expect(slider).not.toBeNull();
 
     dispatchFocusTarget('af');
 
-    expect(document.activeElement).toBe(input);
+    expect(document.activeElement).toBe(slider);
   });
 
   it('"rf" focuses the RF-gain slider in RfFrontEndSurface (rfFrontEnd zone)', () => {
-    render(RfFrontEndSurface, { view: withRfFrontEnd(topologyFixtures['1/single']) });
-    const input = document.querySelector('[data-testid="rf-front-end-rfGain"] input');
-    expect(input).not.toBeNull();
+    const publication = rfTestAuthorityPublication('separate');
+    render(RfFrontEndInstrumentHostFixture, {
+      publication, view: withRfFrontEnd(topologyFixtures['1/single']),
+      controlModel: 'separate', renderSurface: true, onLevelChange: vi.fn(),
+      subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+    });
+    const slider = document.querySelector('[data-testid="rf-front-end-rfGain"] [role="slider"]');
+    expect(slider).not.toBeNull();
 
     dispatchFocusTarget('rf');
 
-    expect(document.activeElement).toBe(input);
+    expect(document.activeElement).toBe(slider);
   });
 
   it('"mode" focuses the first mode choice in FilterSurface (filter zone)', () => {
-    render(FilterSurface, { view: withFilterPassband(withModeFilter(topologyFixtures['1/single'])) });
+    render(FilterInstrumentHostFixture, {
+      view: withFilterPassband(withModeFilter(topologyFixtures['1/single'])), renderSurface: true,
+    });
     const button = document.querySelector('[data-testid="filter-mode"] button');
     expect(button).not.toBeNull();
 
@@ -141,7 +170,9 @@ describe('focus_target dispatch resolves to a real, focusable anchor in the prod
   });
 
   it('"filter" focuses the first filter choice in FilterSurface (filter zone)', () => {
-    render(FilterSurface, { view: withFilterPassband(withModeFilter(topologyFixtures['1/single'])) });
+    render(FilterInstrumentHostFixture, {
+      view: withFilterPassband(withModeFilter(topologyFixtures['1/single'])), renderSurface: true,
+    });
     const button = document.querySelector('[data-testid="filter-select"] button');
     expect(button).not.toBeNull();
 
@@ -151,7 +182,9 @@ describe('focus_target dispatch resolves to a real, focusable anchor in the prod
   });
 
   it('"pbt" focuses the PBT-inner slider in FilterSurface (filter zone)', () => {
-    render(FilterSurface, { view: withFilterPassband(withModeFilter(topologyFixtures['1/single'])) });
+    render(FilterInstrumentHostFixture, {
+      view: withFilterPassband(withModeFilter(topologyFixtures['1/single'])), renderSurface: true,
+    });
     const input = document.querySelector('[data-testid="filter-pbtInner"] input');
     expect(input).not.toBeNull();
 

@@ -32,6 +32,7 @@ def _make_radio(**kwargs) -> IcomRadio:
         reconnect_max_delay=0.2,
         watchdog_timeout=0.3,
         auto_recover_audio=True,
+        model="IC-7610",
     )
     defaults.update(kwargs)
     radio = IcomRadio("192.168.1.100", **defaults)
@@ -77,20 +78,20 @@ class _DummyTranscoder:
 @pytest.mark.e2e
 class TestAudioRecoveryConfig:
     def test_default_auto_recover_true(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         assert radio._auto_recover_audio is True
 
     def test_disable_auto_recover(self) -> None:
-        radio = IcomRadio("192.168.1.100", auto_recover_audio=False)
+        radio = IcomRadio("192.168.1.100", auto_recover_audio=False, model="IC-7610")
         assert radio._auto_recover_audio is False
 
     def test_on_audio_recovery_callback_stored(self) -> None:
         cb = MagicMock()
-        radio = IcomRadio("192.168.1.100", on_audio_recovery=cb)
+        radio = IcomRadio("192.168.1.100", on_audio_recovery=cb, model="IC-7610")
         assert radio._on_audio_recovery is cb
 
     def test_on_audio_recovery_default_none(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         assert radio._on_audio_recovery is None
 
 

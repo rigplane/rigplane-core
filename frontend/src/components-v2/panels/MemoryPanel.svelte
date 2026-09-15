@@ -8,21 +8,17 @@
    */
   import { deriveMemoryPanelProps, getMemoryHandlers } from '$lib/runtime/adapters/panel-adapters';
   import { formatFrequencyString } from '../display/frequency-format';
+  import {
+    loadMemoryChannels, persistMemoryChannels, MAX_MEMORY_CHANNELS, type MemoryEntry,
+  } from '../../semantic/memory-channels';
 
   let p = $derived(deriveMemoryPanelProps());
   const memory = getMemoryHandlers();
 
-  const STORAGE_KEY = 'rigplane:memory-channels';
-  const MAX_CHANNELS = 99;
-
-  interface MemoryEntry {
-    freq: number;
-    mode: string;
-    name: string;
-  }
+  const MAX_CHANNELS = MAX_MEMORY_CHANNELS;
 
   // Local state
-  let channels = $state<Map<number, MemoryEntry>>(new Map());
+  let channels = $state<Map<number, MemoryEntry>>(loadMemoryChannels());
   let selectedChannel = $state(1);
   let showEmpty = $state(false);
   let editingName = $state<number | null>(null);
@@ -30,29 +26,8 @@
   let confirmClear = $state<number | null>(null);
   let storeTarget = $state<number | null>(null);
 
-  // Load from localStorage on init
-  if (typeof window !== 'undefined') {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored) as Record<string, MemoryEntry>;
-        const map = new Map<number, MemoryEntry>();
-        for (const [k, v] of Object.entries(parsed)) {
-          map.set(Number(k), v);
-        }
-        channels = map;
-      }
-    } catch { /* ignore */ }
-  }
-
   function persist() {
-    try {
-      const obj: Record<string, MemoryEntry> = {};
-      for (const [k, v] of channels) {
-        obj[String(k)] = v;
-      }
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(obj));
-    } catch { /* ignore */ }
+    persistMemoryChannels(channels);
   }
 
   function recallChannel(ch: number) {

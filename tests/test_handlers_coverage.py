@@ -4,6 +4,8 @@ import asyncio
 import json
 import struct
 import time
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,14 +16,18 @@ from rigplane.audio.bus import AudioBus
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.profiles import resolve_radio_profile
 from rigplane.audio.route import AudioConfigSource, AudioStreamContract
+from rigplane.core.command_dispatch import CommandUnsupportedError
+from rigplane.core.exceptions import CommandError
 from rigplane.core.radio_protocol import AudioCapable
 from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
     FieldPath,
     Observation,
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
 from rigplane.runtime.radio import IcomRadio
+from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.scope import ScopeFrame
 from rigplane.types import AudioCodec
 from rigplane.web import server as server_module
@@ -43,15 +49,11 @@ from rigplane.web.protocol import (
     encode_json,
 )
 from rigplane.web.radio_poller import (
-    PttOff,
-    PttOn,
     QuickDwTrigger,
     QuickSplitTrigger,
     SelectVfo,
-    SetAfLevel,
     SetAgc,
     SetAgcTimeConstant,
-    SetAttenuator,
     SetAutoNotch,
     SetBand,
     SetCompressor,
@@ -82,7 +84,6 @@ from rigplane.web.radio_poller import (
     SetPbtOuter,
     SetPower,
     SetPreamp,
-    SetRfGain,
     SetRitFrequency,
     SetRitStatus,
     SetRitTxStatus,
@@ -91,7 +92,6 @@ from rigplane.web.radio_poller import (
     SetScopeVbw,
     SetSplit,
     Speak,
-    SetSquelch,
     SetVox,
     SwitchScopeReceiver,
     VfoEqualize,
@@ -100,6 +100,13 @@ from rigplane.web.radio_poller import (
 from rigplane.web.runtime_helpers import runtime_capabilities
 from rigplane.web.server import WebServer
 from rigplane.web.websocket import WS_OP_BINARY, WS_OP_TEXT
+
+
+def _normalized_level_wire_vectors() -> list[str]:
+    catalog = (Path(__file__).parents[1] / "docs/api/command-catalog.md").read_text()
+    block = catalog.split("<!-- normalized-level-wire-vectors:start -->", 1)[1]
+    block = block.split("<!-- normalized-level-wire-vectors:end -->", 1)[0]
+    return [line for line in block.splitlines() if line.startswith("{")]
 
 
 class _RelayRadio:
@@ -167,6 +174,7 @@ def _capable_radio() -> SimpleNamespace:
         get_powerstat=AsyncMock(return_value=True),
         set_powerstat=AsyncMock(),
         native_power_unit="raw_255",
+        supports_command=MagicMock(return_value=True),
         set_rf_gain=AsyncMock(),
         set_af_level=AsyncMock(),
         set_squelch=AsyncMock(),
@@ -200,6 +208,7 @@ def _capable_radio() -> SimpleNamespace:
         stop_cw_text=AsyncMock(),
         set_attenuator=AsyncMock(),
         set_attenuator_level=AsyncMock(),
+        project_attenuator_observation_value=lambda db: int(db),
         get_attenuator_level=AsyncMock(return_value=0),
         set_preamp=AsyncMock(),
         get_preamp=AsyncMock(return_value=0),
@@ -314,9 +323,82 @@ def _capable_radio() -> SimpleNamespace:
 class _QueueRecorder:
     def __init__(self) -> None:
         self.items: list[object] = []
+        self.metadata: list[dict[str, object]] = []
 
-    def put(self, item: object) -> None:
+    def put(
+        self,
+        item: object,
+        *,
+        future: asyncio.Future[None] | None = None,
+        command_id: str | None = None,
+        source: str | None = None,
+        session_id: str | None = None,
+        command_service: object | None = None,
+        **dispatch_currency: object,
+    ) -> None:
         self.items.append(item)
+        self.metadata.append(
+            {
+                "future": future,
+                "command_id": command_id,
+                "source": source,
+                "session_id": session_id,
+                "command_service": command_service,
+                **dispatch_currency,
+            }
+        )
+
+    def put_ordered(self, item: object, **metadata: object) -> None:
+        self.put(item, **metadata)
+
+    def capture_connection_generation(self) -> object:
+        return "test-connection"
+
+
+class _AttenuatorIngressRadio:
+    def __init__(
+        self,
+        *,
+        model: str = "IC-7610",
+        projection: object = None,
+        admitted_receiver: int | None = 0,
+    ) -> None:
+        self.profile = resolve_radio_profile(model=model)
+        self.model = self.profile.model
+        self.capabilities = set(self.profile.capabilities)
+        self.projection_calls: list[int] = []
+        self.support_calls: list[tuple[str, int | None]] = []
+        self._projection = projection if projection is not None else (lambda db: db)
+        self._admitted_receiver = admitted_receiver
+
+    def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
+        self.support_calls.append((command, receiver))
+        return receiver == self._admitted_receiver
+
+    def project_attenuator_observation_value(self, db: int) -> int:
+        self.projection_calls.append(db)
+        return self._projection(db)
+
+
+def _assert_canonical_level_intent(
+    command: object,
+    *,
+    name: str,
+    level: int,
+    receiver: int,
+) -> None:
+    field = {
+        "set_af_level": "af_level",
+        "set_rf_gain": "rf_gain",
+        "set_sql": "squelch",
+        "set_squelch": "squelch",
+    }[name]
+    canonical_name = "set_squelch" if name == "set_sql" else name
+    assert isinstance(command, CommandIntent)
+    assert command.name == canonical_name
+    assert command.params[field] == level
+    assert type(command.params[field]) is int
+    assert command.params["receiver"] == receiver
 
 
 def _control_handler(
@@ -340,6 +422,8 @@ def _control_handler(
             )
         )
         server = SimpleNamespace(command_state_store=store, command_queue=None)
+    elif server is not None and not hasattr(server, "command_state_store"):
+        server.command_state_store = StateStore()
     return ControlHandler(
         ws,
         radio,
@@ -347,6 +431,9 @@ def _control_handler(
         "IC-7610",
         server=server,
         session_id=session_id,
+        managed_tx_authority=(
+            None if server is None else vars(server).get("managed_tx_authority")
+        ),
     )
 
 
@@ -460,8 +547,6 @@ def _scope_frame() -> ScopeFrame:
             {"shape": 1, "receiver": 1},
             {"shape": 1, "receiver": 1},
         ),
-        ("ptt", {"state": True}, PttOn, {}, {"state": True}),
-        ("ptt", {"state": False}, PttOff, {}, {"state": False}),
         (
             # MOR-1579: set_rf_power's wire contract is a normalized 0.0-1.0
             # float (frontend ValueControl min=0/max=1/step=0.01) — 0.4 is
@@ -471,7 +556,7 @@ def _scope_frame() -> ScopeFrame:
             {"level": 0.4},
             SetPower,
             {"level": 102, "unit": "raw_255"},
-            {"level": 102},
+            {"level": 102, "admitted_level": 0.4},
         ),
         (
             # MOR-1579: set_rf_gain's wire contract is already the raw
@@ -479,8 +564,8 @@ def _scope_frame() -> ScopeFrame:
             # 77 must pass through unchanged.
             "set_rf_gain",
             {"level": 77, "receiver": 1},
-            SetRfGain,
-            {"level": 77, "receiver": 1},
+            CommandIntent,
+            {"rf_gain": 77, "receiver": 1},
             {"level": 77, "receiver": 1},
         ),
         (
@@ -490,15 +575,15 @@ def _scope_frame() -> ScopeFrame:
             # 255) == 153), not pass through unchanged.
             "set_af_level",
             {"level": 0.6, "receiver": 1},
-            SetAfLevel,
-            {"level": 153, "receiver": 1},
-            {"level": 153, "receiver": 1},
+            CommandIntent,
+            {"af_level": 153, "receiver": 1},
+            {"level": 153, "receiver": 1, "admitted_level": 0.6},
         ),
         (
             "set_sql",
             {"level": 55, "receiver": 1},
-            SetSquelch,
-            {"level": 55, "receiver": 1},
+            CommandIntent,
+            {"squelch": 55, "receiver": 1},
             {"level": 55, "receiver": 1},
         ),
         (
@@ -567,15 +652,15 @@ def _scope_frame() -> ScopeFrame:
         (
             "set_att",
             {"db": 12, "receiver": 1},
-            SetAttenuator,
-            {"db": 12, "receiver": 1},
+            CommandIntent,
+            {"db": 12, "att": 12, "receiver": 1},
             {"db": 12, "receiver": 1},
         ),
         (
             "set_attenuator",
             {"db": 12, "receiver": 1},
-            SetAttenuator,
-            {"db": 12, "receiver": 1},
+            CommandIntent,
+            {"db": 12, "att": 12, "receiver": 1},
             {"db": 12, "receiver": 1},
         ),
         (
@@ -715,8 +800,6 @@ def _scope_frame() -> ScopeFrame:
         ("set_split", {"on": True}, SetSplit, {"on": True}, {"on": True}),
         ("set_split", {"on": False}, SetSplit, {"on": False}, {"on": False}),
         ("set_vfo", {"vfo": "SUB"}, SelectVfo, {"vfo": "SUB"}, {"vfo": "SUB"}),
-        ("ptt_on", {}, PttOn, {}, {}),
-        ("ptt_off", {}, PttOff, {}, {}),
         ("vfo_swap", {}, VfoSwap, {}, {}),
         ("vfo_equalize", {}, VfoEqualize, {}, {}),
         (
@@ -764,9 +847,156 @@ async def test_enqueue_command_variants(
     assert result == expected_result
     assert len(queue.items) == 1
     cmd = queue.items[0]
+    if expected_type is CommandIntent:
+        if name in ("set_att", "set_attenuator"):
+            assert cmd.name == "set_att"
+            for key, value in expected_attrs.items():
+                assert cmd.params[key] == value
+            assert cmd.target == FieldPath.receiver(
+                str(expected_attrs["receiver"]), "operator_controls", "att"
+            )
+            return
+        field = {
+            "set_af_level": "af_level",
+            "set_rf_gain": "rf_gain",
+            "set_sql": "squelch",
+        }[name]
+        _assert_canonical_level_intent(
+            cmd,
+            name=name,
+            level=expected_attrs[field],
+            receiver=expected_attrs["receiver"],
+        )
+        return
     assert isinstance(cmd, expected_type)
     for key, value in expected_attrs.items():
         assert getattr(cmd, key) == value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "params", "expected_db"),
+    [
+        ("set_att", {"level": 20, "db": 3, "receiver": 0}, 20),
+        ("set_attenuator", {"db": 6, "receiver": 0}, 6),
+        ("set_att", {"level": 3, "receiver": 0}, 3),
+        ("set_attenuator", {"receiver": 0}, 0),
+        ("set_att", {"value": 99, "receiver": 0}, 0),
+    ],
+    ids=("level-wins", "db-only", "level-only", "missing-defaults-zero", "value-only"),
+)
+async def test_att_web_aliases_bind_one_canonical_intent(
+    name: str, params: dict[str, object], expected_db: int
+) -> None:
+    queue = _QueueRecorder()
+    radio = _AttenuatorIngressRadio()
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
+
+    result = await handler._enqueue_command(name, params)
+
+    assert result == {"db": expected_db, "receiver": 0}
+    assert len(queue.items) == 1
+    intent = queue.items[0]
+    assert isinstance(intent, CommandIntent)
+    assert intent.name == "set_att"
+    assert intent.params["db"] == expected_db
+    assert intent.params["att"] == expected_db
+    assert intent.params["receiver"] == 0
+    assert intent.target == FieldPath.receiver("0", "operator_controls", "att")
+    assert radio.projection_calls == [expected_db]
+    assert radio.support_calls == [("set_attenuator_level", 0)]
+    assert queue.metadata[0]["future"] is None
+
+
+@pytest.mark.asyncio
+async def test_att_web_projection_uses_provider_native_expectation() -> None:
+    queue = _QueueRecorder()
+    radio = _AttenuatorIngressRadio(model="FTX-1", projection=lambda db: int(db > 0))
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
+
+    result = await handler._enqueue_command("set_attenuator", {"db": 20})
+
+    assert result == {"db": 20, "receiver": 0}
+    intent = queue.items[0]
+    assert isinstance(intent, CommandIntent)
+    assert intent.params["db"] == 20
+    assert intent.params["att"] == 1
+    assert type(intent.params["att"]) is int
+    assert radio.projection_calls == [20]
+    service = handler._command_service  # noqa: SLF001
+    session_id = intent.params.get("session_id")
+    assert intent.source == "websocket"
+    assert isinstance(session_id, str)
+    overlays = service.pending_overlays(
+        source=intent.source,
+        session_id=session_id,
+        command_id=intent.id,
+        path=intent.target,
+    )
+    expectations = service.readback_expectations(
+        source=intent.source,
+        session_id=session_id,
+        command_id=intent.id,
+    )
+    assert len(overlays) == 1
+    assert len(expectations) == 1
+    for item in (*overlays, *expectations):
+        assert item.source == intent.source
+        assert item.session_id == session_id
+        assert item.command_id == intent.id
+        assert item.path == intent.target
+        assert type(item.value) is int
+        assert item.value == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "projection",
+    [None, lambda db: True, lambda db: 1.0],
+    ids=("missing", "bool-result", "float-result"),
+)
+async def test_att_web_refuses_missing_or_non_integer_projection(
+    projection: object,
+) -> None:
+    queue = _QueueRecorder()
+    radio = _AttenuatorIngressRadio(projection=projection)
+    if projection is None:
+        radio.project_attenuator_observation_value = None
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
+
+    with pytest.raises(CommandError):
+        await handler._enqueue_command("set_att", {"db": 20})
+
+    assert queue.items == []
+    assert handler._command_service.lifecycle_events() == ()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_att_web_explicit_none_receiver_fails_before_enqueue() -> None:
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        radio=_AttenuatorIngressRadio(), server=SimpleNamespace(command_queue=queue)
+    )
+
+    with pytest.raises(TypeError):
+        await handler._enqueue_command("set_att", {"db": 20, "receiver": None})
+
+    assert queue.items == []
+
+
+@pytest.mark.asyncio
+async def test_att_web_sub_refusal_happens_before_queue_effects() -> None:
+    queue = _QueueRecorder()
+    radio = _AttenuatorIngressRadio(model="FTX-1", admitted_receiver=0)
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
+
+    with pytest.raises(CommandUnsupportedError):
+        await handler._enqueue_command("set_att", {"db": 20, "receiver": 1})
+
+    assert queue.items == []
+    assert radio.projection_calls == []
+    assert radio.support_calls == [("set_attenuator_level", 1)]
+    assert handler._command_service.lifecycle_events() == ()  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -875,13 +1105,348 @@ async def test_enqueue_set_rf_power_yaesu_tags_watts_unit() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("native_power_unit", "max_watts", "expected_power"),
+    [
+        ("raw_255", 100, [0, 128, 255]),
+        ("watts", 100, [0, 50, 100]),
+    ],
+)
+async def test_documented_normalized_wire_vectors_reach_native_effects(
+    native_power_unit: str,
+    max_watts: int,
+    expected_power: list[int],
+) -> None:
+    vectors = _normalized_level_wire_vectors()
+    af_vectors = [raw for raw in vectors if '"name":"set_af_level"' in raw]
+    power_vectors = [raw for raw in vectors if '"name":"set_rf_power"' in raw]
+
+    for raw, expected in zip(af_vectors, [0, 128, 255], strict=True):
+        ws = SimpleNamespace(send_text=AsyncMock())
+        queue = _QueueRecorder()
+        handler = _control_handler(
+            ws=ws,
+            radio=_capable_radio(),
+            server=SimpleNamespace(command_queue=queue),
+            session_id="normalized-wire",
+        )
+
+        await handler._handle_text(raw)  # noqa: SLF001
+
+        response = decode_json(ws.send_text.await_args.args[0])
+        assert response["ok"] is True
+        _assert_canonical_level_intent(
+            queue.items[-1], name="set_af_level", level=expected, receiver=0
+        )
+        assert "level_unit" not in queue.items[-1].params  # type: ignore[union-attr]
+
+    for raw, expected in zip(power_vectors, expected_power, strict=True):
+        ws = SimpleNamespace(send_text=AsyncMock())
+        queue = _QueueRecorder()
+        radio = _capable_radio()
+        radio.native_power_unit = native_power_unit
+        radio.profile = replace(radio.profile, max_watts=max_watts)
+        handler = _control_handler(
+            ws=ws,
+            radio=radio,
+            server=SimpleNamespace(command_queue=queue),
+            session_id="normalized-wire",
+        )
+
+        await handler._handle_text(raw)  # noqa: SLF001
+
+        response = decode_json(ws.send_text.await_args.args[0])
+        assert response["ok"] is True
+        assert queue.items == [SetPower(expected, unit=native_power_unit)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "native_power_unit", "wire_level", "expected"),
+    [
+        ("set_af_level", "raw_255", "1", 1),
+        ("set_af_level", "raw_255", "1.0", 255),
+        ("set_rf_power", "raw_255", "1", 1),
+        ("set_rf_power", "raw_255", "1.0", 255),
+        ("set_power", "watts", "1", 1),
+        ("set_power", "watts", "1.0", 100),
+    ],
+)
+async def test_untagged_wire_level_type_dispatch_remains_compatible(
+    name: str,
+    native_power_unit: str,
+    wire_level: str,
+    expected: int,
+) -> None:
+    ws = SimpleNamespace(send_text=AsyncMock())
+    queue = _QueueRecorder()
+    radio = _capable_radio()
+    radio.native_power_unit = native_power_unit
+    radio.profile = replace(radio.profile, max_watts=100)
+    handler = _control_handler(
+        ws=ws,
+        radio=radio,
+        server=SimpleNamespace(command_queue=queue),
+        session_id="untagged-wire",
+    )
+    receiver = ',"receiver":0' if name == "set_af_level" else ""
+    raw = (
+        f'{{"type":"cmd","name":"{name}","id":"untagged",'
+        f'"params":{{"level":{wire_level}{receiver}}}}}'
+    )
+
+    await handler._handle_text(raw)  # noqa: SLF001
+
+    response = decode_json(ws.send_text.await_args.args[0])
+    assert response["ok"] is True
+    if name == "set_af_level":
+        _assert_canonical_level_intent(
+            queue.items[-1], name=name, level=expected, receiver=0
+        )
+    else:
+        assert queue.items == [SetPower(expected, unit=native_power_unit)]
+
+
+@pytest.mark.asyncio
+async def test_normalized_wire_marker_supports_power_alias_and_af_validation() -> None:
+    for name, receiver in [("set_power", ""), ("set_af_level", ',"receiver":0')]:
+        ws = SimpleNamespace(send_text=AsyncMock())
+        queue = _QueueRecorder()
+        radio = _capable_radio()
+        radio.native_power_unit = "watts"
+        radio.profile = replace(radio.profile, max_watts=100)
+        handler = _control_handler(
+            ws=ws,
+            radio=radio,
+            server=SimpleNamespace(command_queue=queue),
+            session_id="normalized-alias",
+        )
+        raw = (
+            f'{{"type":"cmd","name":"{name}","id":"normalized-alias",'
+            f'"params":{{"level":1{receiver},"level_unit":"normalized"}}}}'
+        )
+
+        await handler._handle_text(raw)  # noqa: SLF001
+
+        response = decode_json(ws.send_text.await_args.args[0])
+        assert response["ok"] is True
+        if name == "set_power":
+            assert queue.items == [SetPower(100, unit="watts")]
+        else:
+            _assert_canonical_level_intent(
+                queue.items[-1], name=name, level=255, receiver=0
+            )
+
+    ws = SimpleNamespace(send_text=AsyncMock())
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        ws=ws,
+        radio=_capable_radio(),
+        server=SimpleNamespace(command_queue=queue),
+    )
+    await handler._handle_text(  # noqa: SLF001
+        '{"type":"cmd","name":"set_af_level","id":"bad-af-marker",'
+        '"params":{"level":0.5,"receiver":0,"level_unit":"raw_255"}}'
+    )
+    assert decode_json(ws.send_text.await_args.args[0])["ok"] is False
+    assert queue.items == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "valid_params", "invalid_params", "expected"),
+    [
+        (
+            "set_af_level",
+            {"level": 0.5, "receiver": 0, "level_unit": "normalized"},
+            {"level": 1.01, "receiver": 0, "level_unit": "normalized"},
+            128,
+        ),
+        (
+            "set_rf_power",
+            {"level": 0.5, "level_unit": "normalized"},
+            {"level": 1.01, "level_unit": "normalized"},
+            128,
+        ),
+    ],
+)
+async def test_malformed_tagged_level_cannot_displace_valid_pending_command(
+    name: str,
+    valid_params: dict[str, object],
+    invalid_params: dict[str, object],
+    expected: int,
+) -> None:
+    ws = SimpleNamespace(send_text=AsyncMock())
+    queue = _QueueRecorder()
+    radio = _capable_radio()
+    handler = _control_handler(
+        ws=ws,
+        radio=radio,
+        server=SimpleNamespace(command_queue=queue),
+        session_id="normalized-pacing",
+    )
+    handler._CMD_MIN_INTERVAL = 10.0  # noqa: SLF001
+    key = handler._coalesce_key(name, valid_params)  # noqa: SLF001
+    handler._cmd_last[key] = time.monotonic()  # noqa: SLF001
+
+    valid = {"type": "cmd", "name": name, "id": "valid-pending", "params": valid_params}
+    malformed = {
+        "type": "cmd",
+        "name": name,
+        "id": "malformed",
+        "params": invalid_params,
+    }
+
+    try:
+        await handler._handle_text(json.dumps(valid, separators=(",", ":")))  # noqa: SLF001
+        pending_before = dict(handler._cmd_pending)  # noqa: SLF001
+        last_before = dict(handler._cmd_last)  # noqa: SLF001
+        coalesced_before = dict(handler._cmd_coalesced)  # noqa: SLF001
+        flush_task = handler._cmd_flush_tasks[key]  # noqa: SLF001
+        assert queue.items == []
+
+        await handler._handle_text(json.dumps(malformed, separators=(",", ":")))  # noqa: SLF001
+
+        responses = [decode_json(call.args[0]) for call in ws.send_text.await_args_list]
+        assert responses == [
+            {
+                "type": "response",
+                "id": "malformed",
+                "ok": False,
+                "error": "command_failed",
+                "message": "normalized level must be a finite number from 0.0 to 1.0",
+            }
+        ]
+        assert handler._cmd_pending == pending_before  # noqa: SLF001
+        assert handler._cmd_last == last_before  # noqa: SLF001
+        assert handler._cmd_coalesced == coalesced_before  # noqa: SLF001
+        assert handler._cmd_flush_tasks[key] is flush_task  # noqa: SLF001
+        assert queue.items == []
+        radio.set_af_level.assert_not_awaited()
+        radio.set_rf_power.assert_not_awaited()
+
+        flush_task.cancel()
+        await asyncio.gather(flush_task, return_exceptions=True)
+        await handler._flush_coalesced_command(key, 0.0)  # noqa: SLF001
+
+        responses = [decode_json(call.args[0]) for call in ws.send_text.await_args_list]
+        assert [response["id"] for response in responses] == [
+            "malformed",
+            "valid-pending",
+        ]
+        assert all(
+            response.get("result") != {"superseded": True} for response in responses
+        )
+        if name == "set_af_level":
+            _assert_canonical_level_intent(
+                queue.items[-1], name=name, level=expected, receiver=0
+            )
+        else:
+            assert queue.items == [SetPower(expected, unit="raw_255")]
+        radio.set_af_level.assert_not_awaited()
+        radio.set_rf_power.assert_not_awaited()
+    finally:
+        handler._cancel_pending_command_flushes()  # noqa: SLF001
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["set_af_level", "set_rf_power", "set_power"])
+@pytest.mark.parametrize(
+    "params",
+    [
+        '{"level":false,"level_unit":"normalized"}',
+        '{"level":"0.5","level_unit":"normalized"}',
+        '{"level":NaN,"level_unit":"normalized"}',
+        '{"level":Infinity,"level_unit":"normalized"}',
+        '{"level":-Infinity,"level_unit":"normalized"}',
+        '{"level":-0.01,"level_unit":"normalized"}',
+        '{"level":1.01,"level_unit":"normalized"}',
+        '{"level":0.5,"level_unit":"raw_255"}',
+        '{"level":0.5,"level_unit":null}',
+        '{"level_unit":"normalized"}',
+    ],
+)
+async def test_normalized_wire_marker_rejects_malformed_requests(
+    name: str, params: str
+) -> None:
+    ws = SimpleNamespace(send_text=AsyncMock())
+    queue = _QueueRecorder()
+    radio = _capable_radio()
+    handler = _control_handler(
+        ws=ws,
+        radio=radio,
+        server=SimpleNamespace(command_queue=queue),
+        session_id="invalid-normalized-wire",
+    )
+    raw = f'{{"type":"cmd","name":"{name}","id":"invalid","params":{params}}}'
+    pacing_before = (
+        dict(handler._cmd_last),  # noqa: SLF001
+        dict(handler._cmd_pending),  # noqa: SLF001
+        dict(handler._cmd_flush_tasks),  # noqa: SLF001
+        dict(handler._cmd_coalesced),  # noqa: SLF001
+    )
+
+    await handler._handle_text(raw)  # noqa: SLF001
+
+    response = decode_json(ws.send_text.await_args.args[0])
+    assert response["ok"] is False
+    assert response["error"] == "command_failed"
+    assert queue.items == []
+    assert (
+        handler._cmd_last,  # noqa: SLF001
+        handler._cmd_pending,  # noqa: SLF001
+        handler._cmd_flush_tasks,  # noqa: SLF001
+        handler._cmd_coalesced,  # noqa: SLF001
+    ) == pacing_before
+    radio.set_af_level.assert_not_awaited()
+    radio.set_rf_power.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "max_watts", "requested", "native", "expected"),
+    [
+        ("set_rf_power", 10, 0.25, 2, 0.2),
+        ("set_power", 100, 0.5, 50, 0.5),
+        ("set_rf_power", 100, 1, 1, 0.01),
+        ("set_power", 200, 0.5, 100, 0.5),
+    ],
+)
+async def test_enqueue_watts_power_uses_exact_native_pending_target(
+    name: str,
+    max_watts: int,
+    requested: int | float,
+    native: int,
+    expected: float,
+) -> None:
+    queue = _QueueRecorder()
+    server = SimpleNamespace(command_queue=queue, command_state_store=StateStore())
+    radio = _capable_radio()
+    radio.native_power_unit = "watts"
+    radio.profile = replace(radio.profile, max_watts=max_watts)
+    handler = _control_handler(radio=radio, server=server, session_id="ws-power")
+
+    await handler._enqueue_command(name, {"level": requested})
+
+    assert isinstance(queue.items[-1], SetPower)
+    assert queue.items[-1].level == native
+    assert queue.items[-1].unit == "watts"
+    [pending] = handler._command_service.pending_overlays(  # noqa: SLF001
+        source="websocket",
+        session_id="ws-power",
+    )
+    assert pending.value == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("name", "params", "expected_type", "expected_level"),
     [
         # MOR-1579: set_rf_power and set_af_level are type-dispatched — a
         # JSON *float* is the frontend's normalized 0.0-1.0 wire contract
         # (radio-intents.ts) and converts to the raw 0-255 scale.
         ("set_rf_power", {"level": 0.5}, SetPower, 128),
-        ("set_af_level", {"level": 0.25, "receiver": 0}, SetAfLevel, 64),
+        ("set_af_level", {"level": 0.25, "receiver": 0}, CommandIntent, 64),
     ],
 )
 async def test_enqueue_normalized_level_controls_convert_to_raw_wire_scale(
@@ -897,8 +1462,16 @@ async def test_enqueue_normalized_level_controls_convert_to_raw_wire_scale(
     result = await handler._enqueue_command(name, params)
 
     assert result["level"] == expected_level
-    assert isinstance(queue.items[-1], expected_type)
-    assert queue.items[-1].level == expected_level
+    if expected_type is CommandIntent:
+        _assert_canonical_level_intent(
+            queue.items[-1],
+            name=name,
+            level=expected_level,
+            receiver=0,
+        )
+    else:
+        assert isinstance(queue.items[-1], expected_type)
+        assert queue.items[-1].level == expected_level
 
 
 @pytest.mark.asyncio
@@ -909,13 +1482,13 @@ async def test_enqueue_normalized_level_controls_convert_to_raw_wire_scale(
         # int passes through unchanged, never scaled as if normalized
         # (radio-intents.ts declares 'integer'; PR #2491 confirmed
         # set_rf_gain sends a raw integer).
-        ("set_rf_gain", {"level": 128, "receiver": 0}, SetRfGain, 128),
-        ("set_squelch", {"level": 191, "receiver": 0}, SetSquelch, 191),
+        ("set_rf_gain", {"level": 128, "receiver": 0}, CommandIntent, 128),
+        ("set_squelch", {"level": 191, "receiver": 0}, CommandIntent, 191),
         # MOR-1579: set_af_level is type-dispatched — a JSON *int* is the
         # documented HTTP/WS raw 0-255 contract (docs/api/command-catalog.md,
         # live-hardware validation recipe's level:35→raw 0035 example) and
         # also passes through unchanged.
-        ("set_af_level", {"level": 72, "receiver": 0}, SetAfLevel, 72),
+        ("set_af_level", {"level": 72, "receiver": 0}, CommandIntent, 72),
     ],
 )
 async def test_enqueue_raw_level_controls_pass_through_unscaled(
@@ -931,16 +1504,24 @@ async def test_enqueue_raw_level_controls_pass_through_unscaled(
     result = await handler._enqueue_command(name, params)
 
     assert result["level"] == expected_level
-    assert isinstance(queue.items[-1], expected_type)
-    assert queue.items[-1].level == expected_level
+    if expected_type is CommandIntent:
+        _assert_canonical_level_intent(
+            queue.items[-1],
+            name=name,
+            level=expected_level,
+            receiver=0,
+        )
+    else:
+        assert isinstance(queue.items[-1], expected_type)
+        assert queue.items[-1].level == expected_level
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("name", "params", "expected_type"),
     [
-        ("set_rf_gain", {"level": 1, "receiver": 0}, SetRfGain),
-        ("set_squelch", {"level": 1, "receiver": 0}, SetSquelch),
+        ("set_rf_gain", {"level": 1, "receiver": 0}, CommandIntent),
+        ("set_squelch", {"level": 1, "receiver": 0}, CommandIntent),
     ],
 )
 async def test_enqueue_raw_level_one_is_not_reinterpreted_as_full_scale(
@@ -962,8 +1543,16 @@ async def test_enqueue_raw_level_one_is_not_reinterpreted_as_full_scale(
     result = await handler._enqueue_command(name, params)
 
     assert result["level"] == 1
-    assert isinstance(queue.items[-1], expected_type)
-    assert queue.items[-1].level == 1
+    if expected_type is CommandIntent:
+        _assert_canonical_level_intent(
+            queue.items[-1],
+            name=name,
+            level=1,
+            receiver=0,
+        )
+    else:
+        assert isinstance(queue.items[-1], expected_type)
+        assert queue.items[-1].level == 1
 
 
 async def test_enqueue_af_level_int_one_is_raw_but_float_one_is_full_scale() -> None:
@@ -980,13 +1569,17 @@ async def test_enqueue_af_level_int_one_is_raw_but_float_one_is_full_scale() -> 
 
     result = await handler._enqueue_command("set_af_level", {"level": 1, "receiver": 0})
     assert result["level"] == 1
-    assert queue.items[-1].level == 1
+    _assert_canonical_level_intent(
+        queue.items[-1], name="set_af_level", level=1, receiver=0
+    )
 
     result = await handler._enqueue_command(
         "set_af_level", {"level": 1.0, "receiver": 0}
     )
     assert result["level"] == 255
-    assert queue.items[-1].level == 255
+    _assert_canonical_level_intent(
+        queue.items[-1], name="set_af_level", level=255, receiver=0
+    )
 
 
 @pytest.mark.asyncio
@@ -2747,13 +3340,53 @@ async def test_event_sender_loop_forwards_notifications_without_subscription() -
 
 
 def _degraded_server() -> SimpleNamespace:
-    return SimpleNamespace(command_queue=_QueueRecorder())
+    authority = SimpleNamespace(
+        submit_ptt=AsyncMock(
+            return_value=SimpleNamespace(outcome=ManagedTxOutcome.ACCEPTED)
+        )
+    )
+
+    def start_ptt_submission(
+        on: bool,
+        owner: str,
+        *,
+        ready: asyncio.Future[None],
+        expires_at_monotonic: float,
+    ) -> asyncio.Task[object]:
+        async def complete() -> object:
+            await ready
+            return await authority.submit_ptt(on, owner)
+
+        del expires_at_monotonic
+        return asyncio.create_task(complete())
+
+    authority.start_ptt_submission = start_ptt_submission
+    queue = _QueueRecorder()
+
+    async def enqueue_managed_positive_tx(
+        *,
+        ready: asyncio.Future[None],
+        submission: asyncio.Task[object],
+        **_kwargs: object,
+    ) -> object:
+        queue.put_ordered(
+            None,
+            positive_tx_ready=ready,
+            positive_tx_submission=submission,
+        )
+        ready.set_result(None)
+        return await submission
+
+    return SimpleNamespace(
+        command_queue=queue,
+        command_state_store=StateStore(),
+        enqueue_managed_positive_tx=enqueue_managed_positive_tx,
+        managed_tx_authority=authority,
+    )
 
 
 @pytest.mark.asyncio
-async def test_ptt_on_rejected_when_radio_not_ready() -> None:
-    """connected:true + radio_ready:false (degraded LAN session) must not
-    silently ACK a PTT ON the radio will never execute (MOR-620)."""
+async def test_ptt_on_uses_authority_when_radio_not_ready() -> None:
     ws = SimpleNamespace(send_text=AsyncMock())
     server = _degraded_server()
     radio = _capable_radio()
@@ -2766,14 +3399,15 @@ async def test_ptt_on_rejected_when_radio_not_ready() -> None:
     )
 
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["ok"] is False
-    assert msg["error"] == "radio_not_ready"
-    assert server.command_queue.items == []
+    assert msg["ok"] is True
+    server.managed_tx_authority.submit_ptt.assert_awaited_once_with(
+        True, handler._session_id
+    )
+    assert server.command_queue.items == [None]
 
 
 @pytest.mark.asyncio
-async def test_ptt_on_alias_rejected_when_radio_not_ready() -> None:
-    """The bare ptt_on command honors the same degraded-session gate."""
+async def test_ptt_on_alias_uses_authority_when_radio_not_ready() -> None:
     ws = SimpleNamespace(send_text=AsyncMock())
     server = _degraded_server()
     radio = _capable_radio()
@@ -2784,14 +3418,15 @@ async def test_ptt_on_alias_rejected_when_radio_not_ready() -> None:
     await handler._handle_command({"id": "p2", "name": "ptt_on", "params": {}})
 
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["ok"] is False
-    assert msg["error"] == "radio_not_ready"
-    assert server.command_queue.items == []
+    assert msg["ok"] is True
+    server.managed_tx_authority.submit_ptt.assert_awaited_once_with(
+        True, handler._session_id
+    )
+    assert server.command_queue.items == [None]
 
 
 @pytest.mark.asyncio
-async def test_ptt_on_rejected_while_backend_reconnecting() -> None:
-    """A reconnect cycle in flight (conn_state=reconnecting) blocks PTT ON."""
+async def test_ptt_on_uses_authority_while_backend_reconnecting() -> None:
     ws = SimpleNamespace(send_text=AsyncMock())
     server = _degraded_server()
     radio = _capable_radio()
@@ -2803,9 +3438,11 @@ async def test_ptt_on_rejected_while_backend_reconnecting() -> None:
     )
 
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["ok"] is False
-    assert msg["error"] == "radio_not_ready"
-    assert server.command_queue.items == []
+    assert msg["ok"] is True
+    server.managed_tx_authority.submit_ptt.assert_awaited_once_with(
+        True, handler._session_id
+    )
+    assert server.command_queue.items == [None]
 
 
 @pytest.mark.asyncio
@@ -2824,12 +3461,17 @@ async def test_ptt_off_allowed_when_radio_not_ready() -> None:
     )
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
     assert msg["ok"] is True
-    assert isinstance(server.command_queue.items[-1], PttOff)
 
     await handler._handle_command({"id": "p5", "name": "ptt_off", "params": {}})
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
     assert msg["ok"] is True
-    assert isinstance(server.command_queue.items[-1], PttOff)
+    assert [
+        call.args for call in server.managed_tx_authority.submit_ptt.await_args_list
+    ] == [
+        (False, handler._session_id),
+        (False, handler._session_id),
+    ]
+    assert server.command_queue.items == []
 
 
 @pytest.mark.asyncio
@@ -2849,4 +3491,7 @@ async def test_ptt_on_allowed_when_radio_ready() -> None:
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
     assert msg["ok"] is True
     assert msg["result"] == {"state": True}
-    assert isinstance(server.command_queue.items[-1], PttOn)
+    server.managed_tx_authority.submit_ptt.assert_awaited_once_with(
+        True, handler._session_id
+    )
+    assert server.command_queue.items == [None]

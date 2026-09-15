@@ -163,7 +163,6 @@ def test_to_dict_structure() -> None:
         "tuning_step",
         "overflow",
         "tuner_status",
-        "tx_freq_monitor",
         "rit_freq",
         "rit_on",
         "rit_tx",
@@ -260,6 +259,7 @@ def test_to_dict_main_keys() -> None:
         "repeater_tsql",
         "tone_freq",
         "tsql_freq",
+        "repeater_shift",
         "manual_notch_freq",
         "manual_notch_width",
         # notch_filter (MOR-1548): reclassified receiver-scoped, matching the
@@ -356,9 +356,12 @@ class TestTransceiverStatusState:
         d = rs.to_dict()
         assert d["tuner_status"] == 2
 
-    def test_tx_freq_monitor_default(self) -> None:
+    def test_to_dict_has_no_tx_freq_monitor_key(self) -> None:
+        """MOR-2246: the misnamed ``tx_freq_monitor`` field was deleted; XFC
+        (``get_xfc_status``/``set_xfc_status``) is the real transmit-
+        frequency monitor and is unaffected."""
         rs = RadioState()
-        assert rs.tx_freq_monitor is False
+        assert "tx_freq_monitor" not in rs.to_dict()
 
     def test_rit_fields_defaults(self) -> None:
         rs = RadioState()

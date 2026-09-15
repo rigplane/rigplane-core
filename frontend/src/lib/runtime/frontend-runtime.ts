@@ -11,7 +11,7 @@
  * @see docs/plans/2026-04-12-target-frontend-architecture.md
  */
 
-import { radio } from '$lib/stores/radio.svelte';
+import { radio, subscribeRadioState } from '$lib/stores/radio.svelte';
 import { getCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 import {
   getConnectionStatus,
@@ -23,9 +23,18 @@ import {
   getRadioStatus,
   getRadioPowerOn,
 } from '$lib/stores/connection.svelte';
-import { getAudioState, setVolume, setMuted, toggleMute } from '$lib/stores/audio.svelte';
+import {
+  getAudioState,
+  getRxAudioTargetSnapshot,
+  setVolume,
+  setMuted,
+  subscribeRxAudioTarget,
+  toggleMute,
+} from '$lib/stores/audio.svelte';
 import * as transport from '$lib/transport/ws-client';
+import { fetchInfo } from '$lib/transport/http-client';
 import { audioManager } from '$lib/audio/audio-manager';
+import { makeAudioRoutingHandlers } from './commands/panel-commands';
 import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.svelte';
 import { derivePresentationCapabilities } from './adapters/presentation-capabilities';
 import { systemController } from './system-controller';
@@ -39,6 +48,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { WsIncoming } from '$lib/types/protocol';
 import type { ConnectionState } from '$lib/transport/ws-client';
 import type { ControlSessionTransition } from '$lib/transport/ws-client';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 export const presentationResources = new PresentationResourceHost<unknown>('app');
 // ── Types ──
 
@@ -65,6 +75,13 @@ export interface DefaultScopeStatus {
 }
 export type ControlSessionSnapshot = Readonly<ControlSessionTransition>;
 export type ControlSessionSubscriber = (next: ControlSessionSnapshot) => void;
+export interface ControlAuthorityPublication {
+  readonly state: ServerState | null;
+  readonly caps: Capabilities | null;
+  readonly session: ControlSessionSnapshot;
+  readonly rxAudioTarget: RxAudioTargetSnapshot;
+}
+export type ControlAuthoritySubscriber = (next: ControlAuthorityPublication) => void;
 const CLOSED_CONTROL_SESSION: ControlSessionSnapshot = Object.freeze({ state: 'disconnected', epoch: -1 });
 
 // ── Runtime class ──
@@ -75,6 +92,7 @@ class FrontendRuntime {
   private _capabilitiesUnsubscribe: (() => void) | null = null;
   private _rxAudioLease: ResourceLease | null = null;
   private _ended = false;
+  private _audioRoutingSubscribe = createSubscriber((update) => audioManager.onChange(update));
   private _dxSubscribers = new Map<number, (message: DxMessage) => void>();
   private _dxControlUnsubscribe: (() => void) | null = null;
   private _nextDxSubscriber = 0;
@@ -104,6 +122,11 @@ class FrontendRuntime {
   });
 
   constructor() {
+    // TX audio failures reach the operator through the existing notification
+    // bus; lib/audio must not import transport directly
+    // (radio-authority/structural-boundary), so the sink is injected here.
+    audioManager.setOperatorNotifier((level, message, code) => transport.emitLocalNotification(level, message, code));
+
     presentationResources.configure('hardware-scope', {
       available: false,
       selected: false,
@@ -142,6 +165,43 @@ class FrontendRuntime {
     return 'onControlSessionTransition' in transport ? transport.onControlSessionTransition(handler) : () => undefined;
   }
 
+  /**
+   * Synchronous fan-in for sources that jointly establish command authority.
+   * It deliberately retains no derived state: every source publication reads
+   * the other two sources and publishes their current references immediately.
+   */
+  subscribeControlAuthority(handler: ControlAuthoritySubscriber): () => void {
+    let active = true;
+    let initializing = true;
+    const publish = (session: ControlSessionSnapshot) => {
+      if (!active || initializing) return;
+      handler(Object.freeze({
+        state: this.state,
+        caps: this.caps,
+        session,
+        rxAudioTarget: getRxAudioTargetSnapshot(),
+      }));
+    };
+    const stops: Array<() => void> = [];
+    try {
+      stops.push(subscribeRadioState(() => publish(this.controlSession)));
+      stops.push(subscribeCapabilities(() => publish(this.controlSession)));
+      stops.push(subscribeRxAudioTarget(() => publish(this.controlSession)));
+      stops.push(this.subscribeControlSession(publish));
+      initializing = false;
+      publish(this.controlSession);
+    } catch (error) {
+      active = false;
+      for (const stop of stops.reverse()) stop();
+      throw error;
+    }
+    return () => {
+      if (!active) return;
+      active = false;
+      for (const stop of stops.reverse()) stop();
+    };
+  }
+
   /** Radio capabilities (modes, filters, features, etc.) */
   get caps(): Capabilities | null {
     return getCapabilities();
@@ -178,6 +238,11 @@ class FrontendRuntime {
   /** Audio UI state — returns the live $state object directly. */
   get audio() {
     return getAudioState();
+  }
+
+  get audioRouting() {
+    this._audioRoutingSubscribe();
+    return audioManager.getAppliedAudioConfig();
   }
 
   /** Whether the runtime has a radio connection. */
@@ -267,7 +332,7 @@ class FrontendRuntime {
    *
    * @returns A cleanup function that tears down presentation resources when called.
    */
-  async bootstrap(): Promise<() => void> {
+  async bootstrap(signal?: AbortSignal): Promise<() => void> {
     // If already completed, return cached cleanup.
     if (this._bootstrapCleanup !== null) {
       return this._bootstrapCleanup;
@@ -279,7 +344,7 @@ class FrontendRuntime {
     }
 
     // Set sentinel before first await to serialize concurrent callers.
-    this._bootstrapInFlight = this._doBootstrap();
+    this._bootstrapInFlight = this._doBootstrap(signal);
 
     try {
       return await this._bootstrapInFlight;
@@ -293,7 +358,10 @@ class FrontendRuntime {
    * Private implementation of bootstrap. Separated so the sentinel
    * can be set before this async function starts.
    */
-  private async _doBootstrap(): Promise<() => void> {
+  private async _doBootstrap(signal?: AbortSignal): Promise<() => void> {
+    await fetchInfo(signal);
+    signal?.throwIfAborted();
+
     // A new App instance re-arms the runtime: `_ended` is latched by the
     // previous instance's cleanup and would otherwise fail every facade
     // (`acquireHardwareScope`, `subscribeDx`, `setRxLive`) closed forever.
@@ -313,6 +381,8 @@ class FrontendRuntime {
 
     // 3. Subscribe to the events stream (re-sent automatically on reconnect by WsChannel).
     transport.sendRaw({ type: 'subscribe', streams: ['events'] });
+
+    makeAudioRoutingHandlers().restoreFromStorage();
 
     // Only latch as started after the entire chain succeeds.
     let cleanupInFlight: Promise<void> | undefined;

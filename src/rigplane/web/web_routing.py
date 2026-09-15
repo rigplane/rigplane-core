@@ -17,7 +17,6 @@ reference rather than an early ``from .server import _send_response``.
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -51,22 +50,6 @@ async def dispatch_http_request(
 
     _send_response = _server_mod._send_response
 
-    # Auth check for API endpoints
-    if server._config.auth_token and path.startswith("/api/"):
-        auth_header = (headers or {}).get("authorization", "")
-        expected = f"Bearer {server._config.auth_token}"
-        if not hmac.compare_digest(
-            auth_header.encode("utf-8"), expected.encode("utf-8")
-        ):
-            await _send_response(
-                writer,
-                401,
-                "Unauthorized",
-                b'{"error":"unauthorized","message":"Valid auth token required"}',
-                {"Content-Type": "application/json", "WWW-Authenticate": "Bearer"},
-            )
-            return
-
     if path == "/healthz":
         if method not in ("GET", "HEAD"):
             await _send_response(writer, 405, "Method Not Allowed", b"", {})
@@ -82,6 +65,22 @@ async def dispatch_http_request(
         return
 
     # Routes that accept POST/DELETE
+    if path in (
+        "/api/v1/managed-transmit",
+        "/api/v1/managed-transmit/command",
+        "/api/v1/managed-transmit/tot",
+    ):
+        expected_methods = {
+            "/api/v1/managed-transmit": ("GET",),
+            "/api/v1/managed-transmit/command": ("POST",),
+            "/api/v1/managed-transmit/tot": ("PUT",),
+        }[path]
+        if method not in expected_methods:
+            await _send_response(writer, 405, "Method Not Allowed", b"", {})
+            return
+        await server._handle_http_managed_tx(path, writer, headers, reader)
+        return
+
     if path == "/api/v1/bridge":
         if method not in ("GET", "HEAD", "POST", "DELETE"):
             await _send_response(writer, 405, "Method Not Allowed", b"", {})

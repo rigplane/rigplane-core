@@ -139,6 +139,7 @@ class ReceiverStatePublic(_Strict):
     repeaterTsql: bool = False
     toneFreq: int = 0
     tsqlFreq: int = 0
+    repeaterShift: int = 0
 
     # Snapshot-path only: ``dcd`` is the canonical squelch-open status; it is
     # also dual-published as the deprecated ``sMeterSqlOpen`` alias (MOR-466).
@@ -181,12 +182,26 @@ class FieldStatusPublic(_Strict):
     ``quality``. All five extras are therefore optional. ``quality`` (a
     ``string[]``) is emitted at runtime but was absent from the old TS
     interface (MOR-881 contract correction).
+
+    ``available`` and ``stale`` come from an observed entry's freshness
+    (``runtime_helpers._freshness_availability``). ``missing``,
+    ``unavailable`` and ``undeclared`` are what
+    ``runtime_helpers._absence_availability`` makes of a path with no
+    observation: ``undeclared`` when the caller's declared set does not
+    carry it, ``unavailable`` when the caller's resolved availability map
+    reads its ``available_when`` clauses as ``False`` or ``None``
+    (``acquisition_scheduler.resolve_available_when``), ``missing``
+    otherwise. ``unavailable`` needs the availability argument and
+    ``undeclared`` needs the declared argument at
+    ``runtime_helpers.build_public_state_payload_from_snapshot``; either can
+    be emitted when its corresponding argument is passed alone. A caller that
+    passes neither gets ``missing``.
     """
 
     storePath: str
     observed: bool
     freshness: Literal["unknown", "fresh", "stale"]
-    availability: Literal["missing", "available", "stale"]
+    availability: Literal["missing", "available", "stale", "unavailable", "undeclared"]
     lastObservedMonotonic: float | None = None
     maxAge: float | None = None
     source: dict[str, object] | None = None
@@ -301,7 +316,6 @@ class ServerStatePublic(_Strict):
     tuningStep: int = 0
     overflow: bool = False
     tunerStatus: int = 0
-    txFreqMonitor: bool = False
     ritFreq: int = 0
     ritOn: bool = False
     ritTx: bool = False

@@ -58,8 +58,10 @@ const h = vi.hoisted(() => ({
 }));
 
 // ── Bottom boundary only: transport, HTTP, audio, scope channels ──
-vi.mock('$lib/transport/http-client', () => ({
+vi.mock('$lib/transport/http-client', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/transport/http-client')>(),
   fetchCapabilities: vi.fn(),
+  fetchInfo: vi.fn().mockResolvedValue({}),
 }));
 vi.mock('$lib/transport/ws-client', () => ({
   connect: vi.fn(),
@@ -81,6 +83,7 @@ vi.mock('$lib/transport/ws-client', () => ({
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
+    onTxAudioDied: () => () => {},
     rxEnabled: false,
     startRx: vi.fn(),
     stopRx: vi.fn(),
@@ -88,6 +91,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
     stopTx: vi.fn(),
     setRxVolume: vi.fn(),
     destroy: vi.fn(),
+    setOperatorNotifier: vi.fn(),
   },
 }));
 vi.mock('$lib/stores/radio.svelte', () => ({
@@ -169,12 +173,17 @@ vi.mock('$lib/stores/layout.svelte', () => ({
 vi.mock('../skins/registry', () => ({
   resolveSkinId: () => widthToSkin(),
   loadSkin: h.loadSkin,
-  presentationResourcePlan: (id: SkinId) => SKIN_PLAN[id] ?? [],
+  getPresentationRecord: (id: SkinId) => ({
+    id, kind: 'built-in-self-contained', resources: SKIN_PLAN[id] ?? [],
+  }),
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
+vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
+  default: (await import('./LayoutStub.svelte')).default,
+}));
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   // TX controller identity across a switch has its own real-stack proof
   // (presentation-switch-tx.component.test.ts). Inert here.
-  provideAppTxControllerHost: h.provide,
+  provideManagedAppTxHost: h.provide,
 }));
 vi.mock('../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../lib/media/media-session', () => ({
@@ -212,7 +221,17 @@ const SKIN_PLAN: Record<SkinId, readonly AppResource[]> = {
   'lcd-cockpit': ['audio-fft'],
   'lcd-scope': ['audio-fft'],
   'mobile': ['hardware-scope'],
+  // MOR-2153 PR-1: `peer-split` now mounts the LCD shell, reusing
+  // `RightSidebar`'s `AudioSpectrumPanel` — the same `audio-fft` producer
+  // `lcd-cockpit`/`lcd-scope` already demand it for.
+  'peer-split': ['audio-fft'],
+  'unified-instrument': ['audio-fft'],
+  'panadapter-first': ['hardware-scope', 'audio-fft'],
   'sdr-test': ['hardware-scope', 'audio-fft'],
+  'dual-sdr-face': ['hardware-scope'],
+  // T160 PR-1: one SpectrumPanel and no audio-FFT surface — the same plan
+  // `mobile` above carries, for the same reason.
+  'flagship-probe': ['hardware-scope'],
 };
 
 const WIDTH_FOR: Record<SkinId, number> = {
@@ -222,6 +241,16 @@ const WIDTH_FOR: Record<SkinId, number> = {
   'lcd-scope': 900,
   'sdr-test': 1400,
   'mobile': 390,
+  'peer-split': 1600,
+  'unified-instrument': 1280,
+  'panadapter-first': 1281,
+  'dual-sdr-face': 1700,
+  // T160 PR-1: `flagship-probe` is reached only through the QA
+  // `?layout=flagship-probe` override (`lib/stores/qa-cockpit-override.ts`),
+  // which this file's width knob does not set, so this entry only satisfies
+  // `Record<SkinId, number>` exhaustiveness. 1800 is unused by every other
+  // entry in this table.
+  'flagship-probe': 1800,
 };
 function widthToSkin(): SkinId {
   const width = window.innerWidth;
@@ -414,9 +443,11 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     // If production ever diverges from the table this file switches on, the
     // whole matrix below is measuring the wrong thing.
     const source = readFileSync('src/skins/registry.ts', 'utf8');
-    const table = source.slice(source.indexOf('const SKIN_RESOURCE_PLAN'));
+    const table = source.slice(source.indexOf('const SKIN_LOADERS'));
     for (const [id, plan] of Object.entries(SKIN_PLAN)) {
-      const line = table.match(new RegExp(`'${id}':\\s*\\[([^\\]]*)\\]`));
+      const line = table.match(new RegExp(
+        `'${id}':\\s*\\{[\\s\\S]*?resources:\\s*\\[([^\\]]*)\\]`,
+      ));
       expect(line, `no plan entry for ${id}`).not.toBeNull();
       const declared = [...line![1].matchAll(/'([^']+)'/g)].map((m) => m[1]).sort();
       expect(declared).toEqual([...plan].sort());
@@ -441,9 +472,12 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     const globalHost = document.querySelector('.spectrum-panel-stub');
     expect(globalHost).not.toBeNull();
 
-    // Every presentation family: desktop → LCD (both variants) → SDR →
-    // mobile → desktop.
-    for (const id of ['lcd-cockpit', 'lcd-scope', 'sdr-test', 'mobile', 'desktop-v2'] as const) {
+    // Every presentation family: desktop → LCD (legacy and selected B/D
+    // variants) → SDR → mobile → desktop.
+    for (const id of [
+      'lcd-cockpit', 'lcd-scope', 'unified-instrument', 'panadapter-first',
+      'sdr-test', 'mobile', 'desktop-v2',
+    ] as const) {
       await switchTo(id);
       expect(mountedSkin()).toBe(id);
       expect(mountedCount()).toBe(1);

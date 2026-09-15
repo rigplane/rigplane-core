@@ -103,6 +103,22 @@ class FailureDomain(StrEnum):
     SCOPE_WATERFALL = "scope_waterfall"
 
 
+class RmvrOutcome(StrEnum):
+    """Closed vocabulary for how an RMVR write or verify-read leg failed
+    (MOR-2103). NOT a member of :class:`FailureDomain` -- that enum is
+    frozen under ``SCHEMA_VERSION`` and
+    ``docs/contracts/validation-matrix-v1.md`` enumerates its members
+    verbatim. This is a sibling vocabulary for a narrower, hardware.py-local
+    question ("how did this write attempt fail"), populated into the
+    free-form ``evidence["outcome"]`` key the contract already declares
+    open, not into a new top-level schema field.
+    """
+
+    REJECTED = "rejected"
+    IGNORED = "ignored"
+    TIMED_OUT = "timed_out"
+
+
 @dataclass(frozen=True, slots=True)
 class CheckResult:
     """Observed result for a single validation check."""
@@ -118,6 +134,15 @@ class CheckResult:
     error: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
+    # Internal-only carrier for _guard's own RMVR classification (MOR-2103):
+    # set exclusively by validation/hardware.py: _guard on the intermediate
+    # CheckResult it returns to _read_modify_verify_restore/_check_mode_set,
+    # so those callers read a structural value instead of re-deriving one
+    # from evidence or error text. Deliberately excluded from to_dict() --
+    # not part of the published artifact schema; the RMVR callers copy it
+    # into their own evidence["outcome"] (already free-form per the
+    # contract) when they build the check's real, published result.
+    outcome: RmvrOutcome | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -637,6 +662,7 @@ __all__ = [
     "CapabilityDeclaration",
     "ValidationLevel",
     "FailureDomain",
+    "RmvrOutcome",
     "CheckResult",
     "LevelResult",
     "OperatorSafetyBlock",

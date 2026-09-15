@@ -126,21 +126,27 @@ describe('scan per-field derivation (MOR-1295)', () => {
     expect(view.scan!.scanResumeMode.reading).toEqual({ status: 'known', value: 0x02 });
   });
 
-  const STALE_FIELDS: ReadonlyArray<readonly [rawField: 'scanning' | 'scanType' | 'scanResumeMode', value: boolean | number]> = [
-    ['scanning', true],
-    ['scanType', 0x01],
-    ['scanResumeMode', 0xd0],
+  // MOR-2425/R29: a stale-but-observed field carries its last value and is
+  // `available`, not degraded to unknown. `scanResumeMode`'s expected view
+  // value is masked by the shipped `& 0x0F` (0xd0 & 0x0f = 0x00), same as the
+  // "applies the shipped 0x0F resume-mode mask" pin above.
+  const STALE_FIELDS: ReadonlyArray<readonly [
+    rawField: 'scanning' | 'scanType' | 'scanResumeMode', value: boolean | number, viewValue: boolean | number,
+  ]> = [
+    ['scanning', true, true],
+    ['scanType', 0x01, 0x01],
+    ['scanResumeMode', 0xd0, 0x00],
   ];
 
   it.each(STALE_FIELDS)(
-    'degrades a stale %s field to unknown while keeping structural availability true',
-    (rawField, value) => {
+    'keeps a stale %s field available with its last value (MOR-2425/R29)',
+    (rawField, value, viewValue) => {
       const state = bareState({
         [rawField]: value, fieldStatus: { ...bareState().fieldStatus, [rawField]: stale },
       });
       const view = model(state, caps());
       expect(view.scan![rawField]).toEqual({
-        reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+        reading: { status: 'known', value: viewValue }, availability: { structural: true, operational: true },
       });
     },
   );

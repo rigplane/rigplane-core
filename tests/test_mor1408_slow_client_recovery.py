@@ -17,7 +17,7 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.web._delta_encoder import apply_delta
 from rigplane.web.handlers.control import ControlHandler
-from rigplane.web.server import WebServer
+from rigplane.web.server import WebConfig, WebServer
 
 
 _SOURCE = SourceMetadata(source="test", provider="mor1408", transport="fake")
@@ -51,7 +51,7 @@ def _state_data(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def test_overflow_replaces_all_queued_state_frames_with_same_encode_full() -> None:
-    server = WebServer(None)
+    server = WebServer(None, WebConfig(radio_model="IC-7610"))
     slow: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=3)
     initial = server.register_control_event_queue(slow)
     assert initial["type"] == "full"
@@ -82,7 +82,7 @@ def test_overflow_replaces_all_queued_state_frames_with_same_encode_full() -> No
 
 
 def test_mixed_queue_overflow_preserves_nonstate_order_after_recovery_full() -> None:
-    server = WebServer(None)
+    server = WebServer(None, WebConfig(radio_model="IC-7610"))
     slow: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=4)
     server.register_control_event_queue(slow)
     slow.put_nowait({"type": "notification", "name": "a", "data": {}})
@@ -100,7 +100,7 @@ def test_mixed_queue_overflow_preserves_nonstate_order_after_recovery_full() -> 
 
 
 def test_registration_and_subscribe_share_one_encoder_sequence_with_peers() -> None:
-    server = WebServer(None)
+    server = WebServer(None, WebConfig(radio_model="IC-7610"))
     peer: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=8)
     first = server.register_control_event_queue(peer)
     assert first["type"] == "full"
@@ -134,7 +134,7 @@ def test_registration_and_subscribe_share_one_encoder_sequence_with_peers() -> N
 
 
 def test_repeated_overflow_keeps_only_the_latest_recovery_full() -> None:
-    server = WebServer(None)
+    server = WebServer(None, WebConfig(radio_model="IC-7610"))
     slow: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=3)
     server.register_control_event_queue(slow)
 
@@ -149,7 +149,7 @@ def test_repeated_overflow_keeps_only_the_latest_recovery_full() -> None:
 
 
 def test_fast_and_two_independently_slow_clients_share_one_encode() -> None:
-    server = WebServer(None)
+    server = WebServer(None, WebConfig(radio_model="IC-7610"))
     fast: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=8)
     slow_a: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=2)
     slow_b: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=2)
@@ -189,7 +189,7 @@ def test_fast_and_two_independently_slow_clients_share_one_encode() -> None:
 
 
 def test_inflight_delta_precedes_recovery_full_after_overflow() -> None:
-    server = WebServer(None)
+    server = WebServer(None, WebConfig(radio_model="IC-7610"))
     slow: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=3)
     direct_baseline = server.register_control_event_queue(slow)
     _observe(server, 14_070_000)
@@ -210,7 +210,7 @@ def test_inflight_delta_precedes_recovery_full_after_overflow() -> None:
 
 
 def test_provider_generation_full_evicts_all_old_generation_state_frames() -> None:
-    server = WebServer(None)
+    server = WebServer(None, WebConfig(radio_model="IC-7610"))
     slow: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=3)
     server.register_control_event_queue(slow)
     old_generation = server.command_state_store.provider_generation
@@ -231,7 +231,7 @@ def test_provider_generation_full_evicts_all_old_generation_state_frames() -> No
 
 
 def test_handshake_b_to_h_to_d_missing_key_counterexample_converges() -> None:
-    server = WebServer(None)
+    server = WebServer(None, WebConfig(radio_model="IC-7610"))
     peer: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=8)
     base = server.register_control_event_queue(peer)
     _observe(server, 14_070_000)  # B -> H changes the key.
@@ -269,7 +269,7 @@ async def test_initial_send_cancellation_unregisters_before_liveness() -> None:
                 "receive loop must not start after initial-send cancellation"
             )
 
-    server = WebServer(None)
+    server = WebServer(None, WebConfig(radio_model="IC-7610"))
     handler = ControlHandler(
         CancelInitialSend(),
         None,
@@ -285,7 +285,7 @@ async def test_initial_send_cancellation_unregisters_before_liveness() -> None:
 
 
 def test_registration_encode_failure_is_transactional() -> None:
-    server = WebServer(None)
+    server = WebServer(None, WebConfig(radio_model="IC-7610"))
     queue: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=3)
 
     def fail() -> tuple[object, dict[str, Any]]:
@@ -298,7 +298,7 @@ def test_registration_encode_failure_is_transactional() -> None:
 
 
 def test_disconnect_reconnect_has_no_recovery_structure_and_new_full() -> None:
-    server = WebServer(None)
+    server = WebServer(None, WebConfig(radio_model="IC-7610"))
     old: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=2)
     server.register_control_event_queue(old)
     _observe(server, 14_070_000)
@@ -324,7 +324,7 @@ async def test_subscribe_queues_full_then_dx_and_future_delta_converges() -> Non
                 "subscribe must not direct-send beside the sender loop"
             )
 
-    server = WebServer(None)
+    server = WebServer(None, WebConfig(radio_model="IC-7610"))
     peer: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=8)
     peer_base = server.register_control_event_queue(peer)
     handler = ControlHandler(Ws(), None, "test", "IC-TEST", server=server)

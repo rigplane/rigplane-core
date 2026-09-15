@@ -248,7 +248,10 @@ Definition: any external import path where the segment immediately after
 `icom_lan.` (or the trailing component within a subpackage) starts with `_`.
 These are shim landmines for Phase 2.
 
-- Total leak occurrences in `tests/`: **43** (across **15** test files)
+- One entry was removed from the `tests/` list in §5.1 below, because the
+  file it cited (`tests/test_shared_state_runtime.py`) was deleted; that
+  list is therefore no longer the complete verbatim scan its heading
+  describes, and the total that stood here is not restated.
 - Total leak occurrences in `docs/`: **0**
 - Total leak occurrences in `icom-lan-pro`: **0**
 
@@ -266,7 +269,6 @@ tests/test_yaesu_cat_poller.py:905:    from icom_lan._poller_types import SetPow
 tests/test_yaesu_cat_poller.py:923:    from icom_lan._poller_types import SetPower
 tests/test_state_queries.py:9:from icom_lan._state_queries import build_state_queries
 tests/test_web_audio_streaming_profile.py:18:from icom_lan._audio_codecs import decode_ulaw_to_pcm16
-tests/test_shared_state_runtime.py:7:from icom_lan._shared_state_runtime import (
 tests/test_audio_bridge.py:12:from icom_lan._bridge_metrics import BridgeMetrics
 tests/test_audio_bridge.py:13:from icom_lan._bridge_state import BridgeState, BridgeStateChange
 tests/test_audio_transcoder.py:9:from icom_lan._audio_transcoder import PcmAudioFormat, PcmOpusTranscoder

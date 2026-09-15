@@ -13,14 +13,21 @@ fallback (`tests/test_radio.py`, `tests/test_icom7610_serial_radio.py`,
 `tests/_helpers.py`, others) -- ``tests/test_civ_command_profiling.py``
 is the only one of these that also imports ``_CMD_FREQ_SET``.
 
-The rest of this module (``get_selected_freq``/``get_unselected_freq``/
-``get_selected_mode``/``get_unselected_mode``/``set_selected_mode`` and
-their parsers) is out of this batch's scope: none of the five has a
-``cmd_map`` parameter at all today -- no dual implementation exists to
-delete a fallback from. MOR-2008's Group B (`memory.py`, `tx_band.py`,
-these five) is a separate, later piece of work (owner ruling on the
-ticket): fill the missing/inconsistent TOML declarations from the
-manuals first, then migrate under this same contract.
+``get_selected_freq``/``get_unselected_freq``/``get_selected_mode``/
+``get_unselected_mode``/``set_selected_mode`` migrated the same way in
+MOR-2008 (batch 4, "Group B"): each now requires ``cmd_map`` too -- no
+dual implementation ever existed for these five either, since none of
+them took a ``cmd_map`` parameter at all before this batch
+(`tests/command_map_parity_uncovered.txt`'s own ``hardcode_only_builders``
+census, pre-migration: 16, this module's share of it: 5).
+``set_selected_mode`` is left deliberately undeclared (D1 state 3) on
+IC-7300/IC-7610/IC-9700: the exact GET/SET wire convention for the full
+``(mode, data_mode, filter)`` tuple this builder sends was not
+independently confirmed against those three manuals' own detail pages
+before this batch, so calling it now raises `core.exceptions.CommandError`
+(undeclared-command refusal) on those three profiles rather than
+declaring bytes nobody has verified -- IC-705, X6200 and X6100 already
+declare it and are unaffected.
 """
 
 from __future__ import annotations
@@ -36,7 +43,6 @@ from ._frame import (
     _CMD_SELECTED_FREQ,
     _CMD_SELECTED_MODE,
     _build_from_map,
-    build_civ_frame,
     expose_command_key,
     require_cmd_map,
 )
@@ -112,20 +118,32 @@ def parse_frequency_response(frame: CivFrame) -> int:
 # --- Selected / Unselected receiver freq & mode (0x25/0x26) ---
 
 
+@expose_command_key(lambda cmd_map: "get_selected_freq")
+@require_cmd_map
 def get_selected_freq(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a 'get selected receiver frequency' CI-V command (0x25 0x00)."""
-    return build_civ_frame(to_addr, from_addr, _CMD_SELECTED_FREQ, data=bytes([0x00]))
+    return _build_from_map(
+        cmd_map, "get_selected_freq", to_addr=to_addr, from_addr=from_addr
+    )
 
 
+@expose_command_key(lambda cmd_map: "get_unselected_freq")
+@require_cmd_map
 def get_unselected_freq(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a 'get unselected receiver frequency' CI-V command (0x25 0x01)."""
-    return build_civ_frame(to_addr, from_addr, _CMD_SELECTED_FREQ, data=bytes([0x01]))
+    return _build_from_map(
+        cmd_map, "get_unselected_freq", to_addr=to_addr, from_addr=from_addr
+    )
 
 
 def parse_selected_freq_response(frame: CivFrame) -> tuple[int, int]:
@@ -145,28 +163,44 @@ def parse_selected_freq_response(frame: CivFrame) -> tuple[int, int]:
     return receiver_byte, freq
 
 
+@expose_command_key(lambda cmd_map: "get_selected_mode")
+@require_cmd_map
 def get_selected_mode(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a 'get selected receiver mode' CI-V command (0x26 0x00)."""
-    return build_civ_frame(to_addr, from_addr, _CMD_SELECTED_MODE, data=bytes([0x00]))
+    return _build_from_map(
+        cmd_map, "get_selected_mode", to_addr=to_addr, from_addr=from_addr
+    )
 
 
+@expose_command_key(lambda cmd_map: "get_unselected_mode")
+@require_cmd_map
 def get_unselected_mode(
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a 'get unselected receiver mode' CI-V command (0x26 0x01)."""
-    return build_civ_frame(to_addr, from_addr, _CMD_SELECTED_MODE, data=bytes([0x01]))
+    return _build_from_map(
+        cmd_map, "get_unselected_mode", to_addr=to_addr, from_addr=from_addr
+    )
 
 
+@expose_command_key(lambda cmd_map: "set_selected_mode")
+@require_cmd_map
 def set_selected_mode(
     mode: Mode,
     data_mode: int,
     filter_index: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
+    *,
+    cmd_map: CommandMap,
 ) -> bytes:
     """Build a "set selected receiver mode" CI-V command (0x26 0x00).
 
@@ -176,11 +210,12 @@ def set_selected_mode(
     full tuple so a mode-only change preserves the radio's current data-mode
     and filter.
     """
-    return build_civ_frame(
-        to_addr,
-        from_addr,
-        _CMD_SELECTED_MODE,
-        data=bytes([0x00, int(Mode(mode)), int(data_mode), int(filter_index)]),
+    return _build_from_map(
+        cmd_map,
+        "set_selected_mode",
+        to_addr=to_addr,
+        from_addr=from_addr,
+        data=bytes([int(Mode(mode)), int(data_mode), int(filter_index)]),
     )
 
 

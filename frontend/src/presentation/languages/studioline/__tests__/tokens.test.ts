@@ -108,9 +108,9 @@ describe('studioline token set implements the MOR-977 §2.3 grammar', () => {
     expect(STUDIOLINE_TOKENS.geometry.borderWidth).toBe('1px');
   });
 
-  it('the meter is a continuous 4px rail, not segments', () => {
+  it('the meter track is 4px wide with a 1px segment gap', () => {
     expect(STUDIOLINE_TOKENS.meters.trackWidth).toBe('4px');
-    expect(STUDIOLINE_TOKENS.meters.segmentGap).toBe('0px');
+    expect(STUDIOLINE_TOKENS.meters.segmentGap).toBe('1px');
   });
 
   it('frequency groups are ranked at the numeral weight', () => {

@@ -14,6 +14,7 @@
  *   &theme=v2|none   load the components-v2 theme layer (default `v2`)
  *   &language=<id>   opt into a design language (MOR-1073; default: none)
  *   &mode=light      the language's light variant (explicit; dark is primary)
+ *   &display=<id>    peer|dominant|centerstage|panadapter for peer-split glass
  *
  * `theme=none` is not a styling preference — it is the honest reading of what
  * the cockpit gets today: `components-v2/theme/index` is imported by
@@ -27,29 +28,60 @@ import { desktopV2Layout, dualReceiverCockpitLayout } from '../src/presentation/
 import { readWorkspace } from '../src/presentation/workspace/contract';
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../src/presentation/workspace/resolution';
 import DualReceiverCockpit from '../src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte';
+import PeerSplitLayout from '../src/skins/segmentline/PeerSplitLayout.svelte';
+import LcdUnifiedInstrumentSkin from '../src/skins/lcd-unified-instrument/LcdUnifiedInstrumentSkin.svelte';
+import LcdPanadapterFirstSkin from '../src/skins/lcd-panadapter-first/LcdPanadapterFirstSkin.svelte';
+// MOR-2253 slice 1 F1 (verifier BLOCKED): this is the harness's own mount of
+// the peer-split glass, the one other production/harness call site besides
+// `components-v2/layout/LcdLayout.svelte` — that file passes canvasW/canvasH
+// as required props now; this one did not, and mounted with an implicit
+// `undefined` for both, which `ScaledStage` cannot guard against (`NaN`
+// compares false against `<= 0`) and Svelte's `style:` directive drops
+// silently rather than writing `"undefinedpx"`. Sourced from the group
+// declaration, not literals: this file sits outside `src/`, where the
+// "declared once" contour scan (`presentation/groups/__tests__/
+// contract.test.ts`) does not reach, so a literal here would be invisible
+// to the very guard this slice exists to add.
+import { peerSplitGlassGroup } from '../src/presentation/groups/declarations';
 import ReferenceLayout from './ReferenceLayout.svelte';
 import {
   runAssertions, styleProbe, tokenSnapshot, type AssertionOptions,
 } from './assertions';
-import { setCapabilities } from '../src/lib/stores/capabilities.svelte';
-import { fixtureById } from './catalog';
+import { clearCapabilities, setCapabilities } from '../src/lib/stores/capabilities.svelte';
+import { fixtureById, type Fixture } from './catalog';
 import { DEFAULT_AUDIO_RUNTIME, harness, IDLE_TX } from './harness-state';
 
 const params = new URLSearchParams(window.location.search);
 const id = params.get('fixture') ?? 'topology-2-main-sub';
 const fixture = fixtureById(id);
 if (!fixture) throw new Error(`MOR-1070 harness: unknown fixture id "${id}"`);
+const displayParam = params.get('display') ?? 'peer';
+const displayVariants = ['peer', 'dominant', 'centerstage', 'panadapter'] as const;
+if (!displayVariants.includes(displayParam as typeof displayVariants[number])) {
+  throw new Error(`MOR-2309 harness: unknown display variant "${displayParam}"`);
+}
+const displayVariant = displayParam as typeof displayVariants[number];
 
 /**
- * MOR-1085 — which of the two layouts this fixture mounts. The fixture ITSELF
+ * MOR-1085 — which of the layouts this fixture mounts. The fixture ITSELF
  * carries this (not a separate `&layout=` query param) so one fixture id is
  * one grid cell: `catalog.ts`'s `toReferenceFixture` derives every
  * `--reference` id from its `dual-receiver-cockpit` sibling, and the two
  * always mount the corresponding real component. See `ReferenceLayout.svelte`
  * for why that component, rather than the full `RadioLayout`, stands in for
  * "the reference current layout" here.
+ *
+ * MOR-2153 adds `'peer-split'`, rooted at `PeerSplitLayout.svelte`'s own
+ * `data-testid="peer-split-glass"` wrapper — the glass, not the stage holder
+ * around it, since the holder is chrome-adjacent plumbing (Lesson 4 in that
+ * file's header) rather than the composition `focusOrder()`/`activeControl()`
+ * below are describing.
  */
-const ROOT_TEST_ID = fixture.layout === 'reference' ? 'reference-layout' : 'dual-receiver-cockpit';
+const isLcdDirection = fixture.layout === 'unified-instrument' || fixture.layout === 'panadapter-first';
+const ROOT_TEST_ID = fixture.layout === 'reference' ? 'reference-layout'
+  : fixture.layout === 'peer-split' ? 'peer-split-glass'
+    : isLcdDirection ? 'fixture-lcd-layout'
+    : 'dual-receiver-cockpit';
 
 if ((params.get('theme') ?? 'v2') === 'v2') {
   await import('../src/components-v2/theme/index');
@@ -63,8 +95,17 @@ if ((params.get('theme') ?? 'v2') === 'v2') {
 const LANGUAGE_STYLESHEETS: Record<string, () => Promise<unknown>> = {
   studioline: () => import('../src/presentation/languages/studioline/studioline.css'),
   fieldline: () => import('../src/presentation/languages/fieldline/fieldline.css'),
+  segmentline: () => import('../src/presentation/languages/segmentline/segmentline.css'),
 };
-const language = params.get('language');
+/**
+ * MOR-2153 — `peer-split` is segmentline's OWN skin: with no language
+ * activated it renders as unstyled markup (no amber glass, no bezel colour,
+ * no cell/readout treatment), which defeats the point of looking at it. The
+ * explicit `&language=` param still wins when given (e.g. to inspect the
+ * bare DOM), matching how every other fixture already lets the query
+ * string override any default.
+ */
+const language = params.get('language') ?? (fixture.layout === 'peer-split' ? 'segmentline' : null);
 if (language) {
   const load = LANGUAGE_STYLESHEETS[language];
   if (!load) throw new Error(`MOR-1074 harness: unknown design language "${language}"`);
@@ -87,11 +128,19 @@ harness.caps = fixture.caps();
 // singleton must be populated directly here for the S-meter (or any other
 // capabilities-calibrated readout) to render as the fixture intends rather
 // than falling back to the honest-uncalibrated path.
-setCapabilities(fixture.caps());
+// `Fixture.caps` is nullable — `caps-unloaded` returns null — so the unloaded
+// case clears the singleton instead of pushing null through `setCapabilities`,
+// which takes a non-null `Capabilities`.
+const fixtureCaps = fixture.caps();
+if (fixtureCaps) setCapabilities(fixtureCaps);
+else clearCapabilities();
 harness.tx = { ...IDLE_TX, ...fixture.tx };
 harness.modGuard = fixture.modGuard ?? { visible: false, sourceLabel: null };
 harness.audioRuntime = { ...DEFAULT_AUDIO_RUNTIME, ...fixture.audioRuntime };
 harness.calls = [];
+harness.frameAuthority = null;
+harness.frameEvidence = null;
+harness.presentationAcquires = [];
 
 /**
  * MOR-1355 — the ONE place this harness can supply a real resolved
@@ -130,6 +179,18 @@ harness.calls = [];
  * unconditionally, not a per-fixture experiment — the same default-workspace
  * recipe as the cockpit's `dualReceiverCockpitLayout` resolution above.
  */
+/**
+ * MOR-2153 — `peer-split` fixtures never set `fixture.planned` (see
+ * `PEER_SPLIT_FIXTURES` in `catalog.ts`), so `plan` falls through to `null`
+ * for them here unchanged, on purpose: `PeerSplitLayout.svelte`'s single
+ * declared zone (`peer-columns`: vfo+rxTx) does not gate anything this
+ * chassis currently mounts — `.channel-strips`/`.cockpit-global-row`/
+ * `.rx-tx-zone` render unconditionally and `txAux`/`meters`/`scopeDisplay`
+ * render bare either way (their `allowBare` default is `true`) — so
+ * resolving a plan here would add plumbing with no observable effect. See
+ * `SemanticRadioSurfaces.svelte`'s MOR-2150 comment for the nine surfaces a
+ * plan WOULD matter for; none is declared for `peer-split` yet.
+ */
 const plan = fixture.layout === 'reference'
   ? resolveSurfacePlan(desktopV2Layout, readWorkspace({ version: 1 }).workspace)
   : fixture.planned
@@ -140,10 +201,34 @@ const context = plan === null
   : new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]);
 
 document.title = `MOR-1070 · ${fixture.id}`;
-mount(fixture.layout === 'reference' ? ReferenceLayout : DualReceiverCockpit, {
-  target: document.getElementById('app')!,
-  context,
-});
+const target = document.getElementById('app')!;
+// `peer-split` needs its own mount call: it is the only one of the three
+// with required props (canvasW/canvasH, see the import comment above), and
+// `mount()`'s Props parameter cannot be inferred correctly across a single
+// call shared with two components that take none.
+if (fixture.layout === 'peer-split') {
+  mount(PeerSplitLayout, {
+    target,
+    context,
+    props: {
+      canvasW: peerSplitGlassGroup.canvas.w,
+      canvasH: peerSplitGlassGroup.canvas.h,
+      minScale: peerSplitGlassGroup.scaling.minScale,
+      displayVariant,
+    },
+  });
+} else if (fixture.layout === 'unified-instrument' || fixture.layout === 'panadapter-first') {
+  // This attribute is fixture chrome only (no visual/CSS effect): it gives
+  // the later visual-spec lane a stable root for assertions around the real
+  // skin's fixed-native stage, one compact TOT consumer, and source lease.
+  target.dataset.testid = ROOT_TEST_ID;
+  mount(fixture.layout === 'unified-instrument' ? LcdUnifiedInstrumentSkin : LcdPanadapterFirstSkin, {
+    target,
+    context,
+  });
+} else {
+  mount(fixture.layout === 'reference' ? ReferenceLayout : DualReceiverCockpit, { target, context });
+}
 flushSync();
 
 declare global {
@@ -162,6 +247,23 @@ declare global {
        *  this before and after a viewport resize to prove focus survives an
        *  orientation/layout reflow rather than silently dropping to `body`. */
       activeControl: () => string;
+      /** B/D fixture evidence from the real skin + fixture-only seams. */
+      lcd: () => null | {
+        variant: 'unified-instrument' | 'panadapter-first';
+        canvas: { w: 1280; h: 540 | 594 };
+        source: 'audio-fft' | 'hardware';
+        frameAuthority: { source: 'hardware' | 'audio_fft'; receiver: 0 | 1 | null; providerGeneration: number | null } | null;
+        frameEvidence: {
+          envelope: null;
+          authority: { source: 'hardware' | 'audio_fft'; receiver: 0 | 1 | null; providerGeneration: number | null };
+          transportEpoch: null;
+          demanded: false;
+          transport: 'disconnected';
+          nowMonotonic: 0;
+        } | null;
+        presentationAcquires: ReadonlyArray<{ resource: 'hardware-scope' | 'audio-fft'; consumer: string }>;
+        compactTotConsumers: number;
+      };
     };
   }
 }
@@ -169,10 +271,25 @@ declare global {
 window.__harness = {
   fixture: fixture.id,
   what: fixture.what,
-  assert: (options: AssertionOptions = {}) =>
-    runAssertions(fixture.expect, { ...options, rootTestId: ROOT_TEST_ID }),
+  // MOR-2153: `fixture.expect` is absent for `peer-split` fixtures —
+  // `runAssertions` (`assertions.ts`, lines 171-683 — 513 lines) is written
+  // against the cockpit/reference `zonedComposition` binary, which the
+  // five-band chassis is neither; see the field's own doc comment on
+  // `Fixture` in catalog.ts. Skip the pipeline rather than pass it a shape
+  // it cannot check.
+  assert: (options: AssertionOptions = {}) => (fixture.expect
+    ? runAssertions(fixture.expect, { ...options, rootTestId: ROOT_TEST_ID })
+    : fixture.layout === 'peer-split'
+      ? [{
+        name: 'peer-split-no-assertion-pipeline', ok: true,
+        detail: 'peer-split fixtures carry no behavior-assertion pipeline yet (MOR-2153) — this '
+          + 'confirms the harness mounted, not that the composition is correct.',
+      }]
+      : lcdFixtureAssertions(fixture.lcd!)),
   tokens: tokenSnapshot,
-  paint: styleProbe,
+  // `styleProbe` takes its root explicitly (it cannot infer one) and
+  // peer-split fixtures never call `runAssertions` — see `assert` above.
+  paint: () => styleProbe(ROOT_TEST_ID),
   calls: () => harness.calls,
   /** A stable identifier per focusable control, in DOM order — the tab sequence. */
   focusOrder: () => [...document.querySelectorAll<HTMLElement>(
@@ -186,7 +303,63 @@ window.__harness = {
     const el = document.activeElement;
     return el === null || el === document.body ? 'NONE' : describe(el as HTMLElement);
   },
+  lcd: () => fixture.lcd === undefined ? null : ({
+    variant: fixture.lcd.variant,
+    canvas: { ...fixture.lcd.canvas },
+    source: fixture.lcd.source,
+    // Actual host-written authority/evidence, never a catalog substitute.
+    frameAuthority: harness.frameAuthority === null ? null : { ...harness.frameAuthority },
+    frameEvidence: harness.frameEvidence === null ? null : {
+      ...harness.frameEvidence,
+      authority: { ...harness.frameEvidence.authority },
+    },
+    presentationAcquires: harness.presentationAcquires.map((entry) => ({ ...entry })),
+    compactTotConsumers: document.querySelectorAll('[data-testid="managed-tot-status"]').length,
+  }),
 };
+
+function lcdFixtureAssertions(expected: NonNullable<Fixture['lcd']>) {
+  const expectedAuthority = {
+    source: expected.source === 'audio-fft' ? 'audio_fft' : 'hardware',
+    receiver: 0,
+    providerGeneration: 1,
+  } as const;
+  const authority = harness.frameAuthority;
+  const evidence = harness.frameEvidence;
+  const expectedResource = expected.source === 'audio-fft' ? 'audio-fft' : 'hardware-scope';
+  return [
+    {
+      name: 'lcd-fixed-native-glass-fixture-mounted', ok: true,
+      detail: 'B/D mounts its real fixed-native skin; the visual-spec lane checks the rendered stage geometry.',
+    },
+    {
+      name: 'lcd-frame-authority-from-real-host',
+      ok: authority?.source === expectedAuthority.source
+        && authority.receiver === expectedAuthority.receiver
+        && authority.providerGeneration === expectedAuthority.providerGeneration,
+      detail: `actual=${JSON.stringify(authority)} expected=${JSON.stringify(expectedAuthority)}`,
+    },
+    {
+      name: 'lcd-frame-evidence-is-honest-ghost',
+      ok: evidence?.envelope === null
+        && evidence.demanded === false
+        && evidence.transport === 'disconnected'
+        && evidence.transportEpoch === null,
+      detail: `actual=${JSON.stringify(evidence)}`,
+    },
+    {
+      name: 'lcd-selected-source-acquires-one-presentation-lease',
+      ok: harness.presentationAcquires.length === 1
+        && harness.presentationAcquires[0]?.resource === expectedResource,
+      detail: `actual=${JSON.stringify(harness.presentationAcquires)} expected=${expectedResource}`,
+    },
+    {
+      name: 'lcd-has-one-compact-tot-consumer',
+      ok: document.querySelectorAll('[data-testid="managed-tot-status"]').length === 1,
+      detail: `actual=${document.querySelectorAll('[data-testid="managed-tot-status"]').length}`,
+    },
+  ];
+}
 
 function describe(el: HTMLElement): string {
   const zone = (el.closest('[data-zone-id]') as HTMLElement | null)?.dataset.zoneId ?? 'NO-ZONE';

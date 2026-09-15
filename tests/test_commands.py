@@ -43,6 +43,17 @@ from rigplane.types import (
 from _command_test_helpers import bind_default_addr_globals, bind_default_addr_module
 
 RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
+_CTCSS_DOMAIN = load_rig(RIG_DIR / "ic7300.toml").ctcss_tones_centihz
+assert _CTCSS_DOMAIN is not None
+
+# The eight Icom CI-V scope span presets (span code 0-7 -> Hz), copied
+# verbatim from the module constant `commands/scope.py` held at c23d8cbd
+# -- the commit before this change deleted it. Written out here rather
+# than imported so these tests pin the decoded/encoded values against a
+# table this file owns, independent of whatever any profile happens to
+# declare -- ``TestScopeSpanPresets`` in ``test_rig_loader.py`` is what
+# asserts the shipped profiles still declare exactly these.
+_SPAN_PRESETS_HZ = (2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000)
 
 _ORIGINAL_COMMANDS = {
     name: getattr(raw_commands, name) for name in raw_commands.__all__
@@ -976,9 +987,9 @@ class TestDspLevelParityCommands:
     @pytest.mark.parametrize(
         ("getter_name", "setter_name", "sub", "value"),
         [
-            ("get_cw_pitch", "set_cw_pitch", 0x09, 600),
+            ("get_cw_pitch", "set_cw_pitch", 0x09, 128),
             ("get_mic_gain", "set_mic_gain", 0x0B, 128),
-            ("get_key_speed", "set_key_speed", 0x0C, 30),
+            ("get_key_speed", "set_key_speed", 0x0C, 128),
             ("get_compressor_level", "set_compressor_level", 0x0E, 128),
             ("get_break_in_delay", "set_break_in_delay", 0x0F, 128),
             ("get_drive_gain", "set_drive_gain", 0x14, 128),
@@ -1007,6 +1018,24 @@ class TestDspLevelParityCommands:
             bytes([0xFE, 0xFE, 0x98, 0xE0, 0x14, sub])
         )
         assert setter(value, cmd_map=cmd_map).endswith(b"\xfd")
+
+    def test_cw_pitch_and_key_speed_builders_encode_raw_levels(self, cmd_map) -> None:
+        import rigplane.commands as commands
+
+        # The builders take the raw 0-255 level; the Hz/WPM -> level
+        # conversion lives in the profile control domain
+        # (profiles/control_domain.py: encode_legacy_control). to_addr is
+        # the module-level bound default (IC-7610, 0x98).
+        assert commands.set_cw_pitch(128, cmd_map=cmd_map) == bytes(
+            [0xFE, 0xFE, 0x98, 0xE0, 0x14, 0x09, 0x01, 0x28, 0xFD]
+        )
+        assert commands.set_key_speed(146, cmd_map=cmd_map) == bytes(
+            [0xFE, 0xFE, 0x98, 0xE0, 0x14, 0x0C, 0x01, 0x46, 0xFD]
+        )
+        with pytest.raises(ValueError, match="0-255"):
+            commands.set_cw_pitch(256, cmd_map=cmd_map)
+        with pytest.raises(ValueError, match="0-255"):
+            commands.set_key_speed(-1, cmd_map=cmd_map)
 
     @pytest.mark.parametrize(
         ("getter_name", "setter_name", "prefix", "value", "expected_payload"),
@@ -1301,12 +1330,10 @@ class TestTransceiverStatusBuilders:
 
     Migrated onto the bound command map in MOR-2008
     (`docs/plans/2026-08-29-profile-driven-command-bytes.md` §4 Steps 5..N):
-    batch 1 for the system.py builders here -- band edge, tuner/XFC/
-    TX-freq-monitor status, RIT/XIT; batch 2 for the meters.py builders --
-    various-squelch and the power/comp/Vd/Id meters. Every builder here now
-    requires ``cmd_map`` -- zero divergence rows, so IC-7610's own map
-    declares the identical bytes the fallback used to build, and the
-    expected frames below are unchanged.
+    batch 1 for the system.py builders here -- band edge, tuner/XFC
+    status, RIT/XIT; batch 2 for the meters.py builders -- various-squelch
+    and the power/comp/Vd/Id meters. Every builder here now requires
+    ``cmd_map``.
     """
 
     @pytest.fixture()
@@ -1403,24 +1430,6 @@ class TestTransceiverStatusBuilders:
 
         with pytest.raises(TypeError, match="MOR-2006"):
             set_tuner_status(1, cmd_map=None)
-
-    def test_get_tx_freq_monitor(self, cmd_map) -> None:
-        from rigplane.commands import get_tx_freq_monitor
-
-        frame = get_tx_freq_monitor(cmd_map=cmd_map)
-        assert b"\xfe\xfe\x98\xe0\x1c\x03\xfd" == frame
-
-    def test_set_tx_freq_monitor_on(self, cmd_map) -> None:
-        from rigplane.commands import set_tx_freq_monitor
-
-        frame = set_tx_freq_monitor(True, cmd_map=cmd_map)
-        assert b"\x1c\x03\x01" in frame
-
-    def test_set_tx_freq_monitor_off(self, cmd_map) -> None:
-        from rigplane.commands import set_tx_freq_monitor
-
-        frame = set_tx_freq_monitor(False, cmd_map=cmd_map)
-        assert b"\x1c\x03\x00" in frame
 
     def test_get_rit_frequency(self, cmd_map) -> None:
         from rigplane.commands import get_rit_frequency
@@ -1540,7 +1549,7 @@ class TestAdvancedScopeParsers:
         from rigplane.types import bcd_encode
 
         frame = CivFrame(0xE0, 0x98, 0x27, 0x15, b"\x00" + bcd_encode(250_000))
-        receiver, span = parse_scope_span_response(frame)
+        receiver, span = parse_scope_span_response(frame, _SPAN_PRESETS_HZ)
         assert receiver == 0
         assert span == 6
 
@@ -1607,7 +1616,7 @@ class TestAdvancedScopeParsers:
         from rigplane.commands import parse_scope_span_response
 
         frame = CivFrame(0xE0, 0x98, 0x27, 0x15, b"\x05")
-        receiver, span = parse_scope_span_response(frame)
+        receiver, span = parse_scope_span_response(frame, _SPAN_PRESETS_HZ)
         assert receiver is None
         assert span == 5
 
@@ -1727,7 +1736,7 @@ class TestAdvancedScopeValidation:
         from rigplane.commands import scope_set_span
 
         with pytest.raises(ValueError, match="scope span must be 0-7"):
-            scope_set_span(-1, cmd_map=cmd_map)
+            scope_set_span(-1, cmd_map=cmd_map, presets=_SPAN_PRESETS_HZ)
 
     def test_scope_set_edge_rejects_zero(self, cmd_map) -> None:
         from rigplane.commands import scope_set_edge
@@ -1883,63 +1892,73 @@ class TestToneTsqlCommands:
             set_repeater_tsql(True, cmd_map=None)
 
     # --- Tone frequency encoding/decoding ---
+    #
+    # MOR-2091: this class duplicated test_tone_tsql.py's _BCD_TABLE bug --
+    # byte values pinned from the buggy encoder's own output, not from the
+    # radio or the manuals (both landed in the same commit as the codec
+    # itself, d21d2d66, #134). Corrected here the same way; see
+    # tests/test_tone_tsql.py's _BCD_TABLE header comment for the
+    # documented layout, the four manuals checked against it, and the live
+    # IC-7300 capture for 88.5 Hz (00 08 85).
 
     def test_encode_tone_freq_88_5(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(88.5) == bytes([0x00, 0x88, 0x05])
+        assert _encode_tone_freq(8850) == bytes([0x00, 0x08, 0x85])
 
     def test_encode_tone_freq_110_9(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(110.9) == bytes([0x01, 0x10, 0x09])
+        assert _encode_tone_freq(11090) == bytes([0x00, 0x11, 0x09])
 
     def test_encode_tone_freq_100_0(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(100.0) == bytes([0x01, 0x00, 0x00])
+        assert _encode_tone_freq(10000) == bytes([0x00, 0x10, 0x00])
 
     def test_encode_tone_freq_67_0(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(67.0) == bytes([0x00, 0x67, 0x00])
+        assert _encode_tone_freq(6700) == bytes([0x00, 0x06, 0x70])
 
     def test_encode_tone_freq_254_1(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(254.1) == bytes([0x02, 0x54, 0x01])
+        assert _encode_tone_freq(25410) == bytes([0x00, 0x25, 0x41])
 
     def test_encode_tone_freq_rejects_out_of_range(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        with pytest.raises(ValueError, match="67.0-254.1"):
-            _encode_tone_freq(60.0)
-        with pytest.raises(ValueError, match="67.0-254.1"):
-            _encode_tone_freq(300.0)
+        with pytest.raises(ValueError, match="0.1 Hz"):
+            _encode_tone_freq(8851)
 
     def test_decode_tone_freq_88_5(self) -> None:
         from rigplane.commands import _decode_tone_freq
 
-        assert _decode_tone_freq(bytes([0x00, 0x88, 0x05])) == pytest.approx(88.5)
+        assert _decode_tone_freq(bytes([0x00, 0x08, 0x85])) == 8850
 
     def test_decode_tone_freq_110_9(self) -> None:
         from rigplane.commands import _decode_tone_freq
 
-        assert _decode_tone_freq(bytes([0x01, 0x10, 0x09])) == pytest.approx(110.9)
+        assert _decode_tone_freq(bytes([0x00, 0x11, 0x09])) == 11090
 
     def test_decode_tone_freq_roundtrip(self) -> None:
         from rigplane.commands import _decode_tone_freq, _encode_tone_freq
 
-        for freq in [67.0, 88.5, 100.0, 110.9, 127.3, 203.5, 254.1]:
+        for freq in [6700, 8850, 10000, 11090, 12730, 20350, 25410]:
             encoded = _encode_tone_freq(freq)
-            assert _decode_tone_freq(encoded) == pytest.approx(freq, abs=0.05)
+            assert _decode_tone_freq(encoded) == freq
 
     # --- Tone Frequency command (0x1B 0x00) ---
 
     def test_get_tone_freq_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, get_tone_freq
 
-        frame = get_tone_freq(receiver=RECEIVER_MAIN, cmd_map=cmd_map)
+        frame = get_tone_freq(
+            receiver=RECEIVER_MAIN,
+            cmd_map=cmd_map,
+            ctcss_tones_centihz=_CTCSS_DOMAIN,
+        )
         assert frame[4] == 0x29
         assert frame[5] == RECEIVER_MAIN
         assert frame[6] == 0x1B
@@ -1948,24 +1967,33 @@ class TestToneTsqlCommands:
     def test_set_tone_freq_encodes_bcd(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_tone_freq
 
-        frame = set_tone_freq(88.5, receiver=RECEIVER_MAIN, cmd_map=cmd_map)
+        frame = set_tone_freq(
+            8850,
+            receiver=RECEIVER_MAIN,
+            cmd_map=cmd_map,
+            ctcss_tones_centihz=_CTCSS_DOMAIN,
+        )
         assert frame[4] == 0x29
         assert frame[6] == 0x1B
         assert frame[7] == 0x00
-        assert frame[8:11] == bytes([0x00, 0x88, 0x05])
+        assert frame[8:11] == bytes([0x00, 0x08, 0x85])
 
     def test_set_tone_freq_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import set_tone_freq
 
-        with pytest.raises(ValueError, match="67.0-254.1"):
-            set_tone_freq(50.0, cmd_map=cmd_map)
+        with pytest.raises(ValueError, match="not declared"):
+            set_tone_freq(5000, cmd_map=cmd_map, ctcss_tones_centihz=_CTCSS_DOMAIN)
 
     # --- TSQL Frequency command (0x1B 0x01) ---
 
     def test_get_tsql_freq_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_SUB, get_tsql_freq
 
-        frame = get_tsql_freq(receiver=RECEIVER_SUB, cmd_map=cmd_map)
+        frame = get_tsql_freq(
+            receiver=RECEIVER_SUB,
+            cmd_map=cmd_map,
+            ctcss_tones_centihz=_CTCSS_DOMAIN,
+        )
         assert frame[4] == 0x29
         assert frame[5] == RECEIVER_SUB
         assert frame[6] == 0x1B
@@ -1974,11 +2002,16 @@ class TestToneTsqlCommands:
     def test_set_tsql_freq_encodes_bcd(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_tsql_freq
 
-        frame = set_tsql_freq(110.9, receiver=RECEIVER_MAIN, cmd_map=cmd_map)
+        frame = set_tsql_freq(
+            11090,
+            receiver=RECEIVER_MAIN,
+            cmd_map=cmd_map,
+            ctcss_tones_centihz=_CTCSS_DOMAIN,
+        )
         assert frame[4] == 0x29
         assert frame[6] == 0x1B
         assert frame[7] == 0x01
-        assert frame[8:11] == bytes([0x01, 0x10, 0x09])
+        assert frame[8:11] == bytes([0x00, 0x11, 0x09])
 
     # --- Response parsers ---
 
@@ -1997,13 +2030,15 @@ class TestToneTsqlCommands:
             IC_7610_ADDR,
             0x1B,
             sub=0x00,
-            data=bytes([0x00, 0x88, 0x05]),
+            data=bytes([0x00, 0x08, 0x85]),
             receiver=RECEIVER_MAIN,
         )
         frame = parse_civ_frame(civ)
-        receiver, freq = parse_tone_freq_response(frame)
+        receiver, freq = parse_tone_freq_response(
+            frame, ctcss_tones_centihz=_CTCSS_DOMAIN
+        )
         assert receiver == RECEIVER_MAIN
-        assert freq == pytest.approx(88.5)
+        assert freq == 8850
 
     def test_parse_tsql_freq_response(self) -> None:
         from rigplane import IC_7610_ADDR
@@ -2020,35 +2055,50 @@ class TestToneTsqlCommands:
             IC_7610_ADDR,
             0x1B,
             sub=0x01,
-            data=bytes([0x01, 0x10, 0x09]),
+            data=bytes([0x00, 0x11, 0x09]),
             receiver=RECEIVER_SUB,
         )
         frame = parse_civ_frame(civ)
-        receiver, freq = parse_tsql_freq_response(frame)
+        receiver, freq = parse_tsql_freq_response(
+            frame, ctcss_tones_centihz=_CTCSS_DOMAIN
+        )
         assert receiver == RECEIVER_SUB
-        assert freq == pytest.approx(110.9)
+        assert freq == 11090
 
     def test_build_memory_mode_get(self) -> None:
+        """get_memory_mode is PROVENANCE OPEN on every shipped Icom profile
+        (MOR-2008 batch 4) -- no profile declares it, so this pins pure
+        byte assembly against a synthetic literal map, the same pattern
+        ``TestExpect: test_expect_on_speech_resolves_per_map_probe`` uses.
+        """
+        from rigplane.command_map import CommandMap
         from rigplane.commands import build_memory_mode_get
 
-        civ = build_memory_mode_get()
+        civ = build_memory_mode_get(cmd_map=CommandMap({"get_memory_mode": (0x08,)}))
         # FE FE 98 E0 08 FD
         assert civ == b"\xfe\xfe\x98\xe0\x08\xfd"
 
-    def test_build_memory_mode_set(self) -> None:
+    def test_build_memory_mode_get_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        from rigplane.commands import build_memory_mode_get
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            build_memory_mode_get()  # type: ignore[call-arg]
+
+    def test_build_memory_mode_set(self, cmd_map) -> None:
         from rigplane.commands import build_memory_mode_set
 
-        civ = build_memory_mode_set(42)
+        civ = build_memory_mode_set(42, cmd_map=cmd_map)
         # FE FE 98 E0 08 00 42 FD (channel 42 in BCD)
         assert civ == b"\xfe\xfe\x98\xe0\x08\x00\x42\xfd"
 
-    def test_build_memory_mode_set_validates_range(self) -> None:
+    def test_build_memory_mode_set_validates_range(self, cmd_map) -> None:
         from rigplane.commands import build_memory_mode_set
 
         with pytest.raises(ValueError, match="Channel must be 1-101"):
-            build_memory_mode_set(0)
+            build_memory_mode_set(0, cmd_map=cmd_map)
         with pytest.raises(ValueError, match="Channel must be 1-101"):
-            build_memory_mode_set(102)
+            build_memory_mode_set(102, cmd_map=cmd_map)
 
     def test_parse_memory_mode_response(self) -> None:
         from rigplane.commands import parse_civ_frame, parse_memory_mode_response
@@ -2059,35 +2109,42 @@ class TestToneTsqlCommands:
         channel = parse_memory_mode_response(frame)
         assert channel == 42
 
-    def test_build_memory_write(self) -> None:
+    def test_build_memory_write(self, cmd_map) -> None:
         from rigplane.commands import build_memory_write
 
-        civ = build_memory_write()
+        civ = build_memory_write(cmd_map=cmd_map)
         # FE FE 98 E0 09 FD
         assert civ == b"\xfe\xfe\x98\xe0\x09\xfd"
 
-    def test_build_memory_to_vfo(self) -> None:
+    def test_build_memory_to_vfo(self, cmd_map) -> None:
         from rigplane.commands import build_memory_to_vfo
 
-        civ = build_memory_to_vfo(99)
+        civ = build_memory_to_vfo(99, cmd_map=cmd_map)
         # FE FE 98 E0 0A 00 99 FD (channel 99 in BCD)
         assert civ == b"\xfe\xfe\x98\xe0\x0a\x00\x99\xfd"
 
-    def test_build_memory_clear(self) -> None:
+    def test_build_memory_clear(self, cmd_map) -> None:
         from rigplane.commands import build_memory_clear
 
-        civ = build_memory_clear(1)
+        civ = build_memory_clear(1, cmd_map=cmd_map)
         # FE FE 98 E0 0B 00 01 FD (channel 1 in BCD)
         assert civ == b"\xfe\xfe\x98\xe0\x0b\x00\x01\xfd"
 
-    def test_build_memory_contents_get(self) -> None:
+    def test_build_memory_clear_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        from rigplane.commands import build_memory_clear
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            build_memory_clear(1)  # type: ignore[call-arg]
+
+    def test_build_memory_contents_get(self, cmd_map) -> None:
         from rigplane.commands import build_memory_contents_get
 
-        civ = build_memory_contents_get(50)
+        civ = build_memory_contents_get(50, cmd_map=cmd_map)
         # FE FE 98 E0 1A 00 00 50 FD (0x1A sub=0x00, channel 50 BCD)
         assert civ == b"\xfe\xfe\x98\xe0\x1a\x00\x00\x50\xfd"
 
-    def test_build_memory_contents_set(self) -> None:
+    def test_build_memory_contents_set(self, cmd_map) -> None:
         from rigplane.commands import build_memory_contents_set
         from rigplane.types import MemoryChannel
 
@@ -2103,7 +2160,7 @@ class TestToneTsqlCommands:
             tsql_freq_hz=None,
             name="FT8",
         )
-        civ = build_memory_contents_set(mem)
+        civ = build_memory_contents_set(mem, cmd_map=cmd_map)
         # FE FE 98 E0 1A 00 <channel 2 bytes> <payload 26 bytes> FD
         # Structure: FE FE(2) + to/from(2) + cmd(1) + sub(1) + data(28) + FD(1) = 35 bytes
         assert len(civ) == 35
@@ -2140,24 +2197,31 @@ class TestToneTsqlCommands:
         assert mem.scan == 0
         assert mem.name == "TEST"
 
-    def test_build_band_stack_get(self) -> None:
+    def test_build_band_stack_get(self, cmd_map) -> None:
         from rigplane.commands import build_band_stack_get
 
-        civ = build_band_stack_get(15, 1)  # band 15 (20m), register 1
+        civ = build_band_stack_get(15, 1, cmd_map=cmd_map)  # band 15 (20m), register 1
         # FE FE 98 E0 1A 01 0F 01 FD (0x1A sub=0x01, band=15, reg=1)
         assert civ == b"\xfe\xfe\x98\xe0\x1a\x01\x0f\x01\xfd"
 
-    def test_build_band_stack_get_validates_range(self) -> None:
+    def test_build_band_stack_get_validates_range(self, cmd_map) -> None:
         from rigplane.commands import build_band_stack_get
 
         with pytest.raises(ValueError, match="Band must be 0-24"):
-            build_band_stack_get(25, 1)
+            build_band_stack_get(25, 1, cmd_map=cmd_map)
         with pytest.raises(ValueError, match="Register must be 1-3"):
-            build_band_stack_get(15, 0)
+            build_band_stack_get(15, 0, cmd_map=cmd_map)
         with pytest.raises(ValueError, match="Register must be 1-3"):
-            build_band_stack_get(15, 4)
+            build_band_stack_get(15, 4, cmd_map=cmd_map)
 
-    def test_build_band_stack_set(self) -> None:
+    def test_build_band_stack_get_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        from rigplane.commands import build_band_stack_get
+
+        with pytest.raises(TypeError, match="MOR-2006"):
+            build_band_stack_get(15, 1)  # type: ignore[call-arg]
+
+    def test_build_band_stack_set(self, cmd_map) -> None:
         from rigplane.commands import set_bsr
         from rigplane.types import BandStackRegister
 
@@ -2168,7 +2232,7 @@ class TestToneTsqlCommands:
             mode=1,  # USB
             filter=1,
         )
-        civ = set_bsr(bsr)
+        civ = set_bsr(bsr, cmd_map=cmd_map)
         # FE FE 98 E0 1A 01 0F 01 <freq 5 bytes> <mode 1 byte> <filter 1 byte> FD
         assert civ[:8] == b"\xfe\xfe\x98\xe0\x1a\x01\x0f\x01"
         # freq 14.200 MHz = 00 00 20 14 00 (BCD little-endian)
@@ -3020,3 +3084,163 @@ class TestSystemConfigCommands:
 
         frame = set_xfc_status(False, cmd_map=cmd_map)
         assert b"\x1c\x02\x00" in frame
+
+
+class TestFallbackAuditRemoved:
+    """Step Z (cmd-map epic) deletes the Step 1 fallback-audit scaffolding.
+
+    Guards against the three pieces `commands/LAYER.md` named for deletion
+    coming back: the module, its env-config knob, and the charter-exception
+    section that documented it.
+    """
+
+    def test_fallback_audit_module_is_gone(self) -> None:
+        with pytest.raises(ModuleNotFoundError):
+            import rigplane.commands._fallback_audit  # noqa: F401
+
+    def test_env_config_knob_is_gone(self) -> None:
+        import rigplane.core.env_config as env_config
+
+        assert not hasattr(env_config, "get_command_fallback_audit_enabled")
+        assert "get_command_fallback_audit_enabled" not in env_config.__all__
+
+    def test_layer_md_charter_exception_is_gone(self) -> None:
+        layer_md = (
+            Path(__file__).resolve().parents[1] / "src/rigplane/commands/LAYER.md"
+        )
+        text = layer_md.read_text()
+        assert "_fallback_audit" not in text
+        assert "Charter exception: Step 1 measurement hook" not in text
+
+
+class TestScopeSpanPresetsAreCallerSupplied:
+    """The span table reaches `commands/scope.py` as an argument, not as a
+    module constant.
+
+    ``commands/`` may not import ``profiles/`` (``.importlinter``), so
+    ``parse_scope_span_response`` and ``scope_set_span`` take the presets
+    as a parameter and every caller reads
+    ``RadioProfile.scope_span_presets_hz`` off the resolved profile.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        return load_rig(RIG_DIR / "ic7610.toml").to_command_map()
+
+    @pytest.mark.parametrize("index", range(len(_SPAN_PRESETS_HZ)))
+    def test_decode_and_encode_match_the_pre_change_outputs(
+        self, cmd_map, index: int
+    ) -> None:
+        """Every preset decodes to its index and encodes back to its BCD
+        payload, matching the outputs recorded at c23d8cbd (the commit
+        before the constant was deleted) by calling the then-current
+        ``parse_scope_span_response``/``scope_set_span`` over all eight
+        presets. The eight ``encode=`` frames recorded there are the eight
+        ``expected_frame`` values below."""
+        from rigplane.commands import parse_scope_span_response, scope_set_span
+        from rigplane.types import bcd_encode
+
+        hz = _SPAN_PRESETS_HZ[index]
+
+        reply = CivFrame(0xE0, 0x98, 0x27, 0x15, b"\x00" + bcd_encode(hz))
+        assert parse_scope_span_response(reply, _SPAN_PRESETS_HZ) == (0, index)
+
+        # to_addr is bound to IC_7610_ADDR module-wide by
+        # bind_default_addr_module above, matching the recorded frames.
+        expected_frame = bytes.fromhex("fefe98e02715") + bcd_encode(hz) + b"\xfd"
+        assert (
+            scope_set_span(index, cmd_map=cmd_map, presets=_SPAN_PRESETS_HZ)
+            == expected_frame
+        )
+
+    @pytest.mark.parametrize("preset_hz", _SPAN_PRESETS_HZ)
+    @pytest.mark.parametrize("offset", ["minus1", "plus1", "half", "double"])
+    def test_near_miss_widths_decode_exactly_as_before(
+        self, preset_hz: int, offset: str
+    ) -> None:
+        """Each preset +/-1 Hz, halved and doubled: an exact table member
+        decodes to its own index (the table is roughly 2x-spaced, so some
+        halves and doubles ARE other presets), and anything else raises.
+        Both branches were recorded at c23d8cbd over these same 32 inputs
+        and are reproduced here."""
+        from rigplane.commands import parse_scope_span_response
+        from rigplane.types import bcd_encode
+
+        value = {
+            "minus1": preset_hz - 1,
+            "plus1": preset_hz + 1,
+            "half": preset_hz // 2,
+            "double": preset_hz * 2,
+        }[offset]
+        frame = CivFrame(0xE0, 0x98, 0x27, 0x15, b"\x00" + bcd_encode(value))
+
+        if value in _SPAN_PRESETS_HZ:
+            assert parse_scope_span_response(frame, _SPAN_PRESETS_HZ) == (
+                0,
+                _SPAN_PRESETS_HZ.index(value),
+            )
+        else:
+            with pytest.raises(
+                ValueError, match=f"Unknown scope span frequency {value}"
+            ):
+                parse_scope_span_response(frame, _SPAN_PRESETS_HZ)
+
+    def test_a_different_preset_table_moves_the_decoded_index(self) -> None:
+        """The presets argument -- not any table inside `commands/scope.py`
+        -- decides the index. 25000 Hz is index 3 in the shipped table and
+        index 1 in this one; the SET encoder follows the same table."""
+        from rigplane.commands import parse_scope_span_response
+        from rigplane.types import bcd_encode
+
+        other = (10_000, 25_000, 100_000)
+        frame = CivFrame(0xE0, 0x98, 0x27, 0x15, b"\x00" + bcd_encode(25_000))
+
+        assert parse_scope_span_response(frame, _SPAN_PRESETS_HZ) == (0, 3)
+        assert parse_scope_span_response(frame, other) == (0, 1)
+
+    def test_a_different_preset_table_moves_the_encoded_payload(self, cmd_map) -> None:
+        from rigplane.commands import scope_set_span
+        from rigplane.types import bcd_encode
+
+        other = (10_000, 25_000, 100_000)
+        frame = scope_set_span(1, cmd_map=cmd_map, presets=other)
+        assert frame[6:11] == bcd_encode(25_000)
+
+    def test_a_shorter_table_bounds_both_directions(self, cmd_map) -> None:
+        """The legal index range comes from the table's length, in the
+        one-byte reply branch as well as in the SET encoder."""
+        from rigplane.commands import parse_scope_span_response, scope_set_span
+
+        other = (10_000, 25_000, 100_000)
+        with pytest.raises(ValueError, match="scope span must be 0-2"):
+            scope_set_span(3, cmd_map=cmd_map, presets=other)
+        with pytest.raises(ValueError, match="scope span must be 0-2"):
+            parse_scope_span_response(CivFrame(0xE0, 0x98, 0x27, 0x15, b"\x03"), other)
+
+    def test_a_profile_declaring_no_presets_decodes_and_encodes_nothing(
+        self, cmd_map
+    ) -> None:
+        """``RadioProfile.scope_span_presets_hz`` defaults to ``()``. Both
+        directions then refuse through the errors they already raised --
+        the BCD branch's "Unknown scope span frequency" and
+        ``_validate_scope_range``'s message -- rather than a new sentinel.
+        No shipped profile is in this state: at this commit the four rigs
+        declaring ``get_scope_span`` (ic7300, ic705, ic7610, ic9700) are
+        exactly the four declaring ``[scope].span_presets_hz``.
+        ``test_rig_loader.py: TestScopeSpanPresets`` pins the values those
+        four declare, not that correspondence."""
+        from rigplane.commands import parse_scope_span_response, scope_set_span
+        from rigplane.types import bcd_encode
+
+        frame = CivFrame(0xE0, 0x98, 0x27, 0x15, b"\x00" + bcd_encode(25_000))
+        with pytest.raises(ValueError, match="Unknown scope span frequency 25000"):
+            parse_scope_span_response(frame, ())
+        with pytest.raises(ValueError, match="scope span must be 0--1"):
+            scope_set_span(0, cmd_map=cmd_map, presets=())
+
+    def test_shipped_ic7610_profile_supplies_the_same_table(self) -> None:
+        """The presets the production caller passes are the ones these
+        tests pin: `runtime/_scope_runtime.py: ScopeRuntimeMixin` reads
+        ``self._profile.scope_span_presets_hz``."""
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        assert rig.to_profile().scope_span_presets_hz == _SPAN_PRESETS_HZ

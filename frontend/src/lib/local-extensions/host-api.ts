@@ -2,22 +2,24 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
 import { getRadioState, subscribeRadioState } from '$lib/stores/radio.svelte';
-import { dispatchRadioIntent, type RadioIntent } from '$lib/runtime/commands/radio-intents';
+import { dispatchRadioIntentWithResult, type RadioIntent } from '$lib/runtime/commands/radio-intents';
 import {
   resetLocalExtensionKeyboardScope,
   setLocalExtensionKeyboardScope,
 } from './keyboard-scope';
 
-export const LOCAL_EXTENSION_HOST_API_VERSION = 1;
+export const LOCAL_EXTENSION_HOST_API_VERSION = 2;
 
 export type RadioStateSubscriber = (state: ServerState | null) => void;
 
-export interface LocalExtensionHostApiV1 {
+export interface LocalExtensionHostApiV2 {
   version: typeof LOCAL_EXTENSION_HOST_API_VERSION;
   getState(): ServerState | null;
   getCapabilities(): Capabilities | null;
   subscribeState(handler: RadioStateSubscriber): () => void;
+  /** Returns the client transport result, not radio delivery, server admission or completion. */
   sendCommand(name: string, params?: Record<string, unknown>): boolean;
+  /** Same acceptance result as sendCommand. */
   dispatchCommand(name: string, params?: Record<string, unknown>): boolean;
   setKeyboardScope(scope: string | null): void;
   register(extension: LocalExtensionRegistration): void;
@@ -36,18 +38,13 @@ export interface LocalExtensionRegistration {
   id: string;
   title?: string;
   mount?: string;
-  render(container: HTMLElement, api: LocalExtensionHostApiV1): void | (() => void);
+  render(container: HTMLElement, api: LocalExtensionHostApiV2): void | (() => void);
 }
 
 export interface LocalExtensionHostWindow extends Window {
-  /** Primary v2.x global. Pro local-extensions written for rigplane should read this. */
-  rigplaneExtensionHost?: LocalExtensionHostApiV1;
-  /**
-   * @deprecated Alias kept for v1.x extensions written against icom-lan.
-   * Will be removed in a future major. New code should use
-   * `rigplaneExtensionHost` instead.
-   */
-  icomLanExtensionHost?: LocalExtensionHostApiV1;
+  rigplaneExtensionHost?: LocalExtensionHostApiV2;
+  /** @deprecated Naming alias for the same v2 API; use rigplaneExtensionHost. */
+  icomLanExtensionHost?: LocalExtensionHostApiV2;
 }
 
 function cloneParams(params: Record<string, unknown> | undefined): Record<string, unknown> {
@@ -67,7 +64,7 @@ function dispatchVia(
 
 export function createLocalExtensionHostApi(
   deps: LocalExtensionHostDependencies,
-): LocalExtensionHostApiV1 {
+): LocalExtensionHostApiV2 {
   return {
     version: LOCAL_EXTENSION_HOST_API_VERSION,
     getState: deps.getState,
@@ -102,8 +99,7 @@ function dispatchThroughIntentFacade(
     return false;
   }
   try {
-    dispatchRadioIntent({ name, params: params ?? {} } as RadioIntent);
-    return true;
+    return dispatchRadioIntentWithResult({ name, params: params ?? {} } as RadioIntent).transportAccepted;
   } catch {
     return false;
   }
@@ -111,7 +107,7 @@ function dispatchThroughIntentFacade(
 
 export function createDefaultLocalExtensionHostApi(
   register: (extension: LocalExtensionRegistration) => void = () => {},
-): LocalExtensionHostApiV1 {
+): LocalExtensionHostApiV2 {
   return createLocalExtensionHostApi({
     getState: getRadioState,
     getCapabilities,
@@ -124,13 +120,9 @@ export function createDefaultLocalExtensionHostApi(
 
 export function installLocalExtensionHostApi(
   targetWindow: LocalExtensionHostWindow = window as LocalExtensionHostWindow,
-  api: LocalExtensionHostApiV1 = createDefaultLocalExtensionHostApi(),
+  api: LocalExtensionHostApiV2 = createDefaultLocalExtensionHostApi(),
 ): () => void {
-  // Primary v2.x global.
   targetWindow.rigplaneExtensionHost = api;
-  // Backwards-compat: Pro local-extensions written for v1.x icom-lan read
-  // `window.icomLanExtensionHost`. Expose the same instance under both names
-  // so existing extensions keep working without modification.
   targetWindow.icomLanExtensionHost = api;
   return () => {
     if (targetWindow.rigplaneExtensionHost === api) {

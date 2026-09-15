@@ -30,7 +30,7 @@ def test_radio_gc_with_active_connection_logs_warning(
 ) -> None:
     """When a Radio is collected while still 'connected', a WARN is emitted."""
     with caplog.at_level(logging.WARNING, logger="rigplane.runtime.radio"):
-        radio = IcomRadio("192.168.1.1")
+        radio = IcomRadio("192.168.1.1", model="IC-7610")
         # Simulate still connected (e.g. user forgot disconnect() or async with exit)
         radio._conn_state = RadioConnectionState.CONNECTED
         del radio
@@ -49,11 +49,17 @@ def test_radio_gc_when_disconnected_does_not_log_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """When a Radio is collected after disconnect, no WARN is emitted."""
-    # Collect cyclic garbage from prior tests before caplog starts observing this
-    # test's warning boundary.
+    foreign_radio = IcomRadio("192.168.1.2", model="IC-7610")
+    foreign_radio._conn_state = RadioConnectionState.CONNECTED
+    foreign_radio._gc_cycle = foreign_radio  # type: ignore[attr-defined]
+    del foreign_radio
+
+    # Model cyclic garbage from an unrelated test, then exclude its diagnostics
+    # from this instance's warning boundary.
     gc.collect()
+    caplog.clear()
     with caplog.at_level(logging.WARNING, logger="rigplane.runtime.radio"):
-        radio = IcomRadio("192.168.1.1")
+        radio = IcomRadio("192.168.1.1", model="IC-7610")
         assert radio._conn_state == RadioConnectionState.DISCONNECTED
         del radio
         gc.collect()
@@ -165,10 +171,6 @@ async def _force_rigctld_gc_ready(server: RigctldServer) -> None:
     for attr in (
         "_state_store_freshness_task",
         "_state_acquisition_drain_task",
-        # MOR-1903: the CI-V PTT re-read task holds a reference to the server
-        # for as long as it runs, so it delays collection exactly like the
-        # two above.
-        "_ptt_reread_task",
     ):
         task = getattr(server, attr, None)
         if task is not None and not task.done():

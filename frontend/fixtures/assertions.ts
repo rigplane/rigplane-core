@@ -69,6 +69,35 @@ function visible(el: HTMLElement): boolean {
 const controls = (): HTMLElement[] =>
   qa<HTMLElement>('button, input, select, a[href], [tabindex]');
 
+function isOperableRadio(el: HTMLElement): boolean {
+  return el.getAttribute('role') === 'radio'
+    && !el.matches(':disabled')
+    && el.getAttribute('aria-disabled') !== 'true';
+}
+
+function hasAccessibleGroupName(group: HTMLElement): boolean {
+  if (group.getAttribute('aria-label')?.trim()) return true;
+  return (group.getAttribute('aria-labelledby') ?? '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .some((id) => document.getElementById(id)?.textContent?.trim());
+}
+
+function isValidRovingRadio(el: HTMLElement): boolean {
+  if (!isOperableRadio(el) || el.getAttribute('tabindex') !== '-1') return false;
+  const group = el.closest<HTMLElement>('[role="radiogroup"]');
+  if (!group || !hasAccessibleGroupName(group)) return false;
+  const enabledPeers = [...group.querySelectorAll<HTMLElement>('[role="radio"]')]
+    .filter((peer) => peer.closest('[role="radiogroup"]') === group && isOperableRadio(peer));
+  return enabledPeers.every((peer) => ['0', '-1'].includes(peer.getAttribute('tabindex') ?? ''))
+    && enabledPeers.filter((peer) => peer.getAttribute('tabindex') === '0').length === 1;
+}
+
+function isInertSlider(el: HTMLElement): boolean {
+  return el.matches('[role="slider"][aria-disabled="true"][tabindex="-1"]');
+}
+
 /** MOR-1087 item 5 — WCAG contrast ratio on a real `getComputedStyle()`
  *  `rgb()`/`rgba()` string (same formula the `studioline`/`fieldline`
  *  `tokens.test.ts` arithmetic uses on the DECLARED palette; this measures
@@ -125,11 +154,7 @@ const TEXT_CONTRAST_FLOOR: Readonly<Record<string, number>> = {
  * Module scope, computed once: importing the manifest directly is what
  * keeps this immune to that trap — the alternative, a hardcoded zone-id
  * list here, would need a human to remember to touch it on every future
- * S-slice. `receiver-deck`/`rx-tx` are excluded: `SemanticRadioSurfaces
- * .svelte`'s `zoned()` snippet is deliberately never applied to `vfo`/
- * `rxTx` (MOR-1069 — "a zone element exists only where an arrangement must
- * place it, and the single composition places nothing"), a structural fact
- * about the wiring component, not a zone list that goes stale.
+ * S-slice.
  *
  * A SET, not an order: measured live against a real resolved plan (see the
  * MOR-1379 build report), the single composition's `{#each singleOrder}` +
@@ -480,7 +505,16 @@ export function runAssertions(
       + `expected ${structurallyZoneless} (vfo/rx-tx surface controls, MOR-1069 exempt)`);
   }
   check('no-negative-tabindex-and-no-aria-hidden-control',
-    controls().every((el) => Number(el.getAttribute('tabindex') ?? '0') >= 0
+    controls().every((el) => (Number(el.getAttribute('tabindex') ?? '0') >= 0
+      // Retained inert readouts keep focus context but are not native Tab stops.
+      || (el.matches('div.freq[role="group"][aria-disabled="true"][tabindex="-1"]')
+        && el.closest('[data-vfo-freq][data-freq-tunable="false"]') !== null)
+      // A named radiogroup keeps exactly one enabled radio in the Tab order;
+      // arrow keys move focus among its other operable, programmatic stops.
+      || isValidRovingRadio(el)
+      // Value-control renderers retain an inert focus anchor without exposing
+      // the disabled slider in the sequential Tab order.
+      || isInertSlider(el))
       && el.closest('[aria-hidden="true"]') === null),
     `${controls().length} focusable controls`);
 
@@ -575,11 +609,14 @@ export function runAssertions(
   if (expected.rxAudio !== undefined) {
     const monitor = q<HTMLElement>('[data-testid="rx-audio-monitor"]');
     const liveChoice = q<HTMLElement>('[data-testid="rx-audio-monitor-live"]');
-    const af = q<HTMLInputElement>('[data-testid="rx-audio-af"] input[type="range"]');
+    const af = q<HTMLElement>('[data-testid="rx-audio-af"] [role="slider"]');
+    const afNow = af?.getAttribute('aria-valuenow') ?? null;
+    const normalizedAf = afNow !== null && afNow.trim() !== '' ? Number(afNow) : Number.NaN;
     const actualMode = monitor?.dataset.monitorMode ?? null;
     const actualConnection = liveChoice?.dataset.liveLink === undefined
       ? null : liveChoice.dataset.liveLink === 'true';
-    const actualVolume = actualMode === 'live' && af ? af.valueAsNumber * 100 : null;
+    const actualVolume = actualMode === 'live' && Number.isFinite(normalizedAf)
+      ? normalizedAf * 100 : null;
     check('rx-audio-runtime-axis',
       actualMode === expected.rxAudio.monitorMode
       && actualConnection === expected.rxAudio.connectionAudio
@@ -619,6 +656,7 @@ export function runAssertions(
   for (const [label, sel] of TEXT_TARGETS) {
     const el = q<HTMLElement>(sel);
     if (!el) continue;
+    if (label === 'rx-tx-rf-label' && el.textContent?.trim() === '') continue;
     const ratio = contrastRatio(getComputedStyle(el).color, effectiveBackground(el));
     const floor = TEXT_CONTRAST_FLOOR[`${activeLanguage}:${label}`] ?? 4.5;
     const belowIdealText = ratio !== null && ratio < 4.5;
@@ -686,8 +724,18 @@ export function runAssertions(
  * Resolved paint of the controls that carry the most safety weight, recorded
  * per capture so a `prefers-contrast` / `forced-colors` variant is provable in
  * TEXT and not only in pixels.
+ *
+ * MOR-2243 — `rootTestId` is explicit because `currentRootTestId` is only ever
+ * assigned by `runAssertions`, which a fixture without an `expect` never calls
+ * (`fixtures/main.ts`). This probe then read the stale default against a page
+ * that has no such element, and `root()`'s non-null assertion turned that
+ * missing element into a TypeError that killed the whole capture run rather
+ * than a value this loop could skip. Passing the id in makes the probe
+ * independent of whether the optional assertion step ran first. A missing
+ * root is reported as `__rootMissing` rather than as an empty probe, so it
+ * stays distinguishable from a root that simply carries none of the targets.
  */
-export function styleProbe(): Record<string, Record<string, string>> {
+export function styleProbe(rootTestId: string): Record<string, Record<string, string>> {
   const targets: Record<string, string> = {
     key: '[data-testid="rx-tx-key"]',
     unkey: '[data-testid="rx-tx-unkey"]',
@@ -700,9 +748,15 @@ export function styleProbe(): Record<string, Record<string, string>> {
     inactiveStrip: '[data-testid^="channel-strip-"][data-strip-active="false"]',
     txBadge: '[data-vfo-tx-badge]',
   };
+  const scope = document.querySelector<HTMLElement>(`[data-testid="${rootTestId}"]`);
+  // An empty probe otherwise has two causes the manifest cannot tell apart:
+  // this root is absent, so nothing was searched at all, or it is present and
+  // carries none of the targets, which is a legitimate reading. Returning a
+  // named entry for the first keeps `{}` meaning only the second.
+  if (!scope) return { __rootMissing: { rootTestId } };
   const out: Record<string, Record<string, string>> = {};
   for (const [name, sel] of Object.entries(targets)) {
-    const el = q<HTMLElement>(sel);
+    const el = scope.querySelector<HTMLElement>(sel);
     if (!el) continue;
     const cs = getComputedStyle(el);
     out[name] = {

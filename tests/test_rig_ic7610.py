@@ -139,6 +139,12 @@ class TestProfileParity:
         # MOR-1655: speech is the only allowed transition (48 → 49).
         assert len(profile.capabilities) == 48 + ("speech" in profile.capabilities)
 
+    def test_rf_sql_control_model_combined(self, profile):
+        """MOR-2467: the IC-7610 front panel wires RF gain and squelch as one
+        physical concentric knob, so the profile must declare the combined
+        control model (MOR-1447 leg 2) like rigs/ic7300.toml already does."""
+        assert profile.rf_sql_control_model == "combined"
+
     def test_cmd29_routes_exact(self, profile):
         expected = frozenset(
             {
@@ -170,6 +176,7 @@ class TestProfileParity:
                 (0x16, 0x4F),
                 (0x16, 0x53),
                 (0x16, 0x56),
+                (0x16, 0x57),
                 (0x16, 0x65),
                 (0x1A, 0x03),
                 (0x1A, 0x04),
@@ -181,7 +188,7 @@ class TestProfileParity:
         assert profile.cmd29_routes == expected
 
     def test_cmd29_routes_count(self, profile):
-        assert len(profile.cmd29_routes) == 34
+        assert len(profile.cmd29_routes) == 35
 
     def test_vfo_main_code(self, profile):
         assert profile.vfo_main_code == 0xD0

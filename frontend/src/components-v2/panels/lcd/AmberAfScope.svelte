@@ -277,6 +277,12 @@
     slopeExtra: number,
     passbandHz: number,
   ): void {
+    if (!pixels || pixels.length === 0) {
+      smoothed = null;
+      runningMax = null;
+      return;
+    }
+
     const maxVal = 160;
     const barW = 2;
     const gap = 1;
@@ -310,22 +316,17 @@
       const barCenterX = x + barW / 2;
 
       // Get raw amplitude — map bar position to passband FFT bins only
-      let rawAmp: number;
-      if (pixels && pixels.length > 0) {
-        // pixels[] is symmetric: [-Nyquist ... DC ... +Nyquist]
-        // DC is at center (pixels.length / 2), positive freqs are right half
-        const dcIdx = Math.floor(pixels.length / 2);
-        const positiveLen = pixels.length - dcIdx; // DC → Nyquist
+      // pixels[] is symmetric: [-Nyquist ... DC ... +Nyquist]
+      // DC is at center (pixels.length / 2), positive freqs are right half
+      const dcIdx = Math.floor(pixels.length / 2);
+      const positiveLen = pixels.length - dcIdx; // DC → Nyquist
 
-        // Bar position 0→1 within trapezoid
-        const barFrac = (barCenterX - startX) / (endX - startX);
-        // Map to positive-side FFT bin within passband only
-        const pixIdx = dcIdx + Math.floor(barFrac * passbandFrac * positiveLen);
-        const clamped = Math.max(dcIdx, Math.min(pixels.length - 1, pixIdx));
-        rawAmp = Math.min(pixels[clamped], maxVal) / maxVal;
-      } else {
-        rawAmp = Math.random() * 0.06 + 0.02;
-      }
+      // Bar position 0→1 within trapezoid
+      const barFrac = (barCenterX - startX) / (endX - startX);
+      // Map to positive-side FFT bin within passband only
+      const pixIdx = dcIdx + Math.floor(barFrac * passbandFrac * positiveLen);
+      const clamped = Math.max(dcIdx, Math.min(pixels.length - 1, pixIdx));
+      const rawAmp = Math.min(pixels[clamped], maxVal) / maxVal;
 
       // Smooth
       const prev = smoothed[i];

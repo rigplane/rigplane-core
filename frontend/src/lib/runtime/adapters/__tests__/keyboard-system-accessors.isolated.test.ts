@@ -25,9 +25,6 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => ({
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: { get state() { return null; }, get caps() { return null; } },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => null,
-}));
 
 import { getKeyboardHandlers, getSystemHandlers } from '../panel-adapters';
 

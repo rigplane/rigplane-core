@@ -26,30 +26,76 @@
  * Isolated pool by name (`*.component.test.ts`), per the MOR-1272 doctrine —
  * no `vite.config.ts` edit was needed.
  */
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
+  authoritySubscribers: new Set<(next: {
+    state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  radioListeners: new Set<(state: ServerState | null) => void>(),
+  txController: null as ManagedAppTxController | null,
   audio: { muted: false, rxEnabled: true, volume: 42 },
+  audioRouting: null as null | {
+    focus: 'main' | 'sub' | 'both'; split_stereo: boolean;
+    main_gain_db: number; sub_gain_db: number;
+  },
   audioConnected: true,
   rxEnabled: true,
   guardVisible: false,
-  listeners: new Set<(next: unknown) => void>(),
   setVolume: vi.fn(),
   setMuted: vi.fn(),
   setRxLive: vi.fn(),
   setRxVolume: vi.fn(),
+  selectedFiniteAppearance: undefined as unknown,
 }));
+
+/** MOR-2425 RX-B/RX-C — same recipe `semantic-rf-front-end-wiring
+ *  .component.test.ts` uses to feed a real external-renderer appearance
+ *  through `component-kits/activation`'s selection seam. */
+vi.mock('../../../component-kits/activation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../component-kits/activation')>();
+  return { ...actual, getSelectedFiniteControlAppearance: () => h.selectedFiniteAppearance };
+});
+
+/** MOR-2425 persistence witness anchor: `RxAudioInstrumentHost.svelte`
+ *  creates its AF `createContinuousScalar` binding ONCE, at component-script
+ *  top level — capturing it here (same recipe `semantic-rf-front-end-wiring
+ *  .component.test.ts`'s own `createContinuousPair` capture uses) proves
+ *  whether the host itself survives a real Standard->SDR skin switch,
+ *  independent of whether any one finite seat's own external lease does.
+ *  `createContinuousScalar` is shared by every scalar-backed host in the
+ *  composed tree (DSP, TxAux, CW keyer...), so a bare capture would count
+ *  ALL of them — filtered here to RX-audio's own by its `input().ownerKey`,
+ *  which `RxAudioInstrumentHost.svelte`'s own `key()` always stamps with the
+ *  literal `'rx-af'` (`'rx-af:inactive'` or the `["rx-af", ...]` JSON form). */
+const rxAudioScalar = vi.hoisted(() => ({ bindings: [] as unknown[] }));
+vi.mock('../../../primitives/scalar/continuous-scalar.svelte', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../../../primitives/scalar/continuous-scalar.svelte')>();
+  return {
+    ...actual,
+    createContinuousScalar: (...args: Parameters<typeof actual.createContinuousScalar>) => {
+      const binding = actual.createContinuousScalar(...args);
+      const [input] = args;
+      const ownerKey = typeof input === 'function' ? (input() as { ownerKey?: unknown }).ownerKey : undefined;
+      if (typeof ownerKey === 'string' && ownerKey.includes('rx-af')) rxAudioScalar.bindings.push(binding);
+      return binding;
+    },
+  };
+});
 
 vi.mock('$lib/transport/ws-client', () => ({
   getControlSession: vi.fn(() => ({ state: 'connected', epoch: 1 })),
@@ -71,6 +117,11 @@ vi.mock('$lib/stores/radio.svelte', () => ({
     const state = h.state as ServerState | null;
     return state?.active === 'SUB' ? state.sub ?? null : state?.main ?? null;
   }),
+  subscribeRadioState: (listener: (state: ServerState | null) => void) => {
+    h.radioListeners.add(listener);
+    listener(h.state as ServerState | null);
+    return () => { h.radioListeners.delete(listener); };
+  },
   patchActiveReceiver: vi.fn(),
   patchRadioState: vi.fn(),
   patchReceiver: vi.fn(),
@@ -83,9 +134,20 @@ vi.mock('$lib/audio/audio-manager', () => ({
 }));
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    get controlSession() { return { state: 'connected' as const, epoch: 1 }; },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({
+        state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 },
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
     get audio() { return h.audio; },
+    get audioRouting() { return h.audioRouting; },
     get connectionAudio() { return h.audioConnected; },
     get rxEnabled() { return h.rxEnabled; },
     setVolume: h.setVolume, setMuted: h.setMuted,
@@ -106,15 +168,8 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 vi.mock('$lib/runtime', async () => ({
   runtime: (await import('$lib/runtime/frontend-runtime')).runtime,
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => { h.listeners.delete(listener); };
-    },
-    start: vi.fn(), setIntent: vi.fn(), release: vi.fn(), resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => h.txController,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: h.guardVisible, sourceLabel: 'MIC' }),
@@ -123,13 +178,36 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 
 import { audioManager } from '$lib/audio/audio-manager';
 import { sendCommand } from '$lib/transport/ws-client';
+import {
+  acknowledgeCommand, beginCommand, getCommandLifecycles, resetCommandLifecycle,
+} from '$lib/stores/commands.svelte';
+import { MOD_INPUT_SOURCES, modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
+import { FOCUS_CHOICES, SPLIT_CHOICES } from '../../../semantic/rx-audio-instruments';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import HostedRadioLayoutFixture from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import { makeAudioRoutingHandlers, makeModeHandlers, makeRxAudioHandlers } from '$lib/runtime/commands/panel-commands';
-import { desktopV2Layout } from '../../../presentation/layouts/declarations';
+import { desktopV2Layout, sdrTestLayout } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import {
   resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
 } from '../../../presentation/workspace/resolution';
+import FiniteControlRendererFixture, {
+  resetRetainedInvocations, retainedInvocations,
+} from '../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
+import type { FiniteControlAppearance } from '../../../primitives/control-instruments/control-instrument-renderer.svelte';
+
+/** MOR-2425 RX-B/RX-C — same shared external-renderer fixture the DSP/RF
+ *  wiring tests use, so a mounted choice seat can be identified by its own
+ *  accessible label (`retainedInvocations`) across a re-render. */
+const finiteAppearance = {
+  action: FiniteControlRendererFixture as FiniteControlAppearance['action'],
+  toggle: FiniteControlRendererFixture as FiniteControlAppearance['toggle'],
+  choice: FiniteControlRendererFixture as FiniteControlAppearance['choice'],
+} satisfies FiniteControlAppearance;
+
+const RADIO_LAYOUT_SOURCE = readFileSync('src/components-v2/layout/RadioLayout.svelte', 'utf8');
+const DESKTOP_V2_CONTROL_CSS = readFileSync('src/skins/desktop-v2/semantic-controls.css', 'utf8');
 
 /**
  * (a), half one. Read BEFORE any `mockClear()` — the only pin that can see a
@@ -141,10 +219,6 @@ const LOAD_TIME_CALLS = [
   audioManager.setAudioConfig, sendCommand, h.setRxLive, h.setVolume, h.setMuted,
 ].map((spy) => vi.mocked(spy).mock.calls.length);
 
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
@@ -160,6 +234,7 @@ function liveState(over: Partial<ServerState> = {}): ServerState {
     ...slot(hz), vfoA: slot(hz), vfoB: slot(hz + 50000), activeSlot: 'A', filter: 1, afLevel: 0.31,
   });
   return {
+    providerGeneration: 1,
     active: 'MAIN', split: false, dualWatch: false, ptt: false, dataOffModInput: 5,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14300000),
@@ -172,10 +247,14 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   model: 'fixture', scope: false, audio: tags.includes('audio'), tx: true,
   capabilities: tags, audioTxRequiredModInputSource: 5,
   receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: [], filters: [],
+  dataModeCount: 3,
+  dataModeInputs: MOD_INPUT_SOURCES.map(({ value, label }) => ({ value, label })),
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: null, audioFftAvailable: false,
+  stateContractVersion: 1,
+  providerGeneration: 1,
 } as unknown as Capabilities);
 
 const AUDIO_TAGS = ['audio', 'tx', 'dual_rx', 'af_level', 'mod_input_routing'] as const;
@@ -185,6 +264,16 @@ const SILENT_TAGS = ['tx'] as const;
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
+
+function publishAuthority(): void {
+  for (const subscriber of h.authoritySubscribers) {
+    subscriber({
+      state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 },
+      rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+    });
+  }
+}
 
 function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan): void {
   target = document.createElement('div');
@@ -196,9 +285,40 @@ function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan):
   flushSync();
 }
 
+function renderHosted() {
+  target = document.createElement('div');
+  document.body.appendChild(target);
+  const props = proxy<{ rxAudioLayout: 'grouped' | 'independent' }>({
+    rxAudioLayout: 'grouped',
+  });
+  component = mount(HostedRadioLayoutFixture, { target, props });
+  flushSync();
+  return props;
+}
+
+/**
+ * MOR-2425 RX-B/RX-C — the REAL per-skin `SURFACE_PLAN_CONTEXT_KEY` override
+ * (mirrors `semantic-rf-front-end-wiring.component.test.ts`'s own
+ * `renderHostedFace()`), through the actual `RadioLayout.svelte` — the only
+ * mount that places the finite five differently by skin (named Standard
+ * seats on `desktop-v2`, the grouped surface on `sdr-test`).
+ */
+function renderHostedFace(skinId: 'desktop-v2' | 'sdr-test' = 'desktop-v2') {
+  target = document.createElement('div');
+  document.body.appendChild(target);
+  const props = proxy({ skinId });
+  const context = new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () =>
+    resolveSurfacePlan(props.skinId === 'desktop-v2' ? desktopV2Layout : sdrTestLayout,
+      readWorkspace({ version: 1 }).workspace)]]);
+  component = mount(HostedRadioLayoutFixture, { target, props, context });
+  flushSync();
+  return props;
+}
+
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 const el = (id: string) => q<HTMLElement>(`[data-testid="rx-audio-${id}"]`);
 const text = (id: string) => el(id)?.textContent?.trim();
+const afSlider = () => q<HTMLElement>('[data-testid="rx-audio-af"] [role="slider"]');
 
 const SEAM_SPIES = () => [
   audioManager.startRx, audioManager.stopRx, audioManager.setRxVolume,
@@ -206,20 +326,31 @@ const SEAM_SPIES = () => [
 ];
 
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   h.state = liveState();
   h.caps = liveCaps(AUDIO_TAGS);
-  h.snapshot = { ...IDLE };
+  resetCommandLifecycle();
+  expect(setCapabilities(h.caps as Capabilities)).toBe(true);
   h.audio = { muted: false, rxEnabled: true, volume: 42 };
+  h.audioRouting = null;
   h.audioConnected = true;
   h.rxEnabled = true;
   h.guardVisible = false;
-  h.listeners.clear();
+  h.selectedFiniteAppearance = undefined;
+  rxAudioScalar.bindings.length = 0;
+  resetRetainedInvocations();
   for (const spy of SEAM_SPIES()) vi.mocked(spy).mockClear();
 });
 
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(h.authoritySubscribers.size).toBe(0);
+  resetCommandLifecycle();
+  clearCapabilities();
+  expect(txHarness.listenerCount()).toBe(0);
+  expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';
 });
 
@@ -237,6 +368,7 @@ describe('the composed tree owns no audio lifetime', () => {
   it('mounts, renders the surface and still starts no stream and sends no command', () => {
     render();
     expect(el('surface')).not.toBeNull();
+    expect(afSlider()?.closest('.vc-hbar')?.classList.contains('hw-illum')).toBe(false);
     for (const spy of SEAM_SPIES()) expect(spy).not.toHaveBeenCalled();
   });
 
@@ -253,31 +385,31 @@ describe('the composed tree owns no audio lifetime', () => {
 describe('AF level: 0..100 becomes 0..1 exactly once, at the adapter seam', () => {
   // MUTATION KILLED: a second `/ 100` (renders 0.0042) or a missing one
   // (renders 42, clamped by the range to 1).
-  it('renders a browser volume of 42 as an AF level of 0.42', () => {
+  it('renders a browser volume of 42 as 42% while keeping an AF control value of 0.42', () => {
     render();
-    expect(q<HTMLInputElement>('[data-testid="rx-audio-af"] input')!.valueAsNumber)
+    expect(Number(afSlider()!.getAttribute('aria-valuenow')))
       .toBeCloseTo(0.42, 10);
-    expect(text('af-value')).toBe('0.42');
+    expect(text('af-value')).toBe('42%');
   });
 
   it.each([0, 7, 50, 100])('renders a browser volume of %i on the 0..1 scale', (volume) => {
     h.audio = { muted: false, rxEnabled: true, volume };
     render();
-    expect(q<HTMLInputElement>('[data-testid="rx-audio-af"] input')!.valueAsNumber)
+    expect(Number(afSlider()!.getAttribute('aria-valuenow')))
       .toBeCloseTo(volume / 100, 10);
   });
 
   // MUTATION KILLED: a rescale on the way OUT. Driven through the REAL
   // `makeRxAudioHandlers` the wiring composes, so the round trip 42 → 0.42 →
-  // 42 is proven end to end rather than asserted about a stub.
-  it('returns the same level to the runtime as a 0..100 volume, through the real bus', () => {
+  // 43 is proven end to end rather than asserted about a stub.
+  it('returns one 0.01 step to the runtime as a 0..100 volume, through the real bus', () => {
     render();
-    const input = q<HTMLInputElement>('[data-testid="rx-audio-af"] input')!;
-    input.value = '0.42';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    afSlider()!.dispatchEvent(new KeyboardEvent(
+      'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
+    ));
     flushSync();
-    expect(h.setRxVolume).toHaveBeenCalledExactlyOnceWith(0.42);
-    expect(h.setVolume).toHaveBeenCalledExactlyOnceWith(42);
+    expect(h.setRxVolume).toHaveBeenCalledExactlyOnceWith(0.43);
+    expect(h.setVolume).toHaveBeenCalledExactlyOnceWith(43);
   });
 
   // The command bus this wiring composes IS the shipped one — a fork would
@@ -294,6 +426,109 @@ describe('AF level: 0..100 becomes 0..1 exactly once, at the adapter seam', () =
   });
 });
 
+describe('v2.11.1 monitor and dual-routing behavior in the Standard composition', () => {
+  it('keeps RADIO, LIVE and MUTE distinct and reports the selected output route', () => {
+    renderHostedFace('desktop-v2');
+    expect(q('[data-testid="rx-audio-monitor"]')?.textContent).toContain('RADIO');
+    expect(q('[data-testid="rx-audio-monitor"]')?.textContent).toContain('LIVE');
+    expect(q('[data-testid="rx-audio-monitor"]')?.textContent).toContain('MUTE');
+    expect(text('monitor-status')).toBe('Browser audio stream');
+    expect(text('af-value')).toBe('42%');
+    expect(afSlider()?.closest('.vc-hbar')?.classList.contains('hw-illum')).toBe(true);
+  });
+
+  it('dispatches dual channel gain through the existing audio-routing handler', () => {
+    h.audioRouting = { focus: 'both', split_stereo: false, main_gain_db: -6, sub_gain_db: 2 };
+    renderHostedFace('desktop-v2');
+    const main = q<HTMLInputElement>('[data-testid="rx-audio-main-gain"] input');
+    expect(main).not.toBeNull();
+    Object.defineProperty(main!, 'valueAsNumber', { configurable: true, value: -12 });
+    main!.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ main_gain_db: -12 });
+  });
+
+  it('does not render dual controls for a single-receiver radio', () => {
+    h.caps = { ...liveCaps(AUDIO_TAGS.filter(tag => tag !== 'dual_rx')), receivers: 1 };
+    renderHostedFace('desktop-v2');
+    expect(el('focus')).toBeNull();
+    expect(el('split')).toBeNull();
+    expect(el('main-gain')).toBeNull();
+    expect(el('sub-gain')).toBeNull();
+  });
+});
+
+describe('the hosted AF owner survives replaceable presentation layouts', () => {
+  it('cancels route A-B-A and detached drafts while retaining canonical readback', () => {
+    h.audio = proxy({ muted: false, rxEnabled: true, volume: 42 });
+    const props = renderHosted();
+    const originalSubscribers = [...h.authoritySubscribers];
+    const oldSlider = afSlider()!;
+    const frame = oldSlider.closest<HTMLElement>('.vc-hbar')!;
+    frame.getBoundingClientRect = () => ({
+      left: 0, right: 100, top: 0, bottom: 10, width: 100, height: 10, x: 0, y: 0,
+      toJSON: () => ({}),
+    });
+    Object.assign(oldSlider, {
+      setPointerCapture: vi.fn(), releasePointerCapture: vi.fn(), hasPointerCapture: () => true,
+    });
+    oldSlider.dispatchEvent(new PointerEvent(
+      'pointerdown', { pointerId: 7, clientX: 42, bubbles: true },
+    ));
+    h.audio.rxEnabled = false;
+    publishAuthority();
+    h.audio.rxEnabled = true;
+    publishAuthority();
+    h.setRxVolume.mockClear();
+    h.setVolume.mockClear();
+    oldSlider.dispatchEvent(new PointerEvent(
+      'pointermove', { pointerId: 7, clientX: 90, bubbles: true },
+    ));
+    oldSlider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 7, bubbles: true }));
+    expect(h.setVolume).not.toHaveBeenCalled();
+
+    oldSlider.dispatchEvent(new PointerEvent(
+      'pointerdown', { pointerId: 8, clientX: 70, bubbles: true },
+    ));
+    flushSync();
+    expect(frame.style.getPropertyValue('--vc-fill-percent')).toBe('70%');
+    expect(h.setVolume).toHaveBeenCalledExactlyOnceWith(70);
+    h.setRxVolume.mockClear();
+    h.setVolume.mockClear();
+
+    props.rxAudioLayout = 'independent';
+    flushSync();
+    const newSlider = q<HTMLElement>('[role="slider"][aria-label="AF"]')!;
+    expect(newSlider).not.toBe(oldSlider);
+    expect(target.querySelector('[data-af-layout="independent"]')).not.toBeNull();
+    expect(target.querySelectorAll('[role="slider"][aria-label="AF"]')).toHaveLength(1);
+    expect([...h.authoritySubscribers]).toEqual(originalSubscribers);
+    expect(h.authoritySubscribers.size).toBe(6);
+    expect(newSlider.closest<HTMLElement>('.vc-hbar')!.style
+      .getPropertyValue('--vc-fill-percent')).toBe('42%');
+    expect(newSlider.getAttribute('aria-valuenow')).toBe('0.42');
+    oldSlider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 8, bubbles: true }));
+    oldSlider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(h.setVolume).not.toHaveBeenCalled();
+
+    newSlider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    flushSync();
+    expect(h.setRxVolume).toHaveBeenCalledExactlyOnceWith(0.43);
+    expect(h.setVolume).toHaveBeenCalledExactlyOnceWith(43);
+
+    h.audio.volume = 43;
+    flushSync();
+    expect(newSlider.getAttribute('aria-valuenow')).toBe('0.43');
+    props.rxAudioLayout = 'grouped';
+    flushSync();
+    expect(afSlider()!.getAttribute('aria-valuenow')).toBe('0.43');
+    expect(target.querySelectorAll('[role="slider"][aria-label="AF"]')).toHaveLength(1);
+    expect([...h.authoritySubscribers]).toEqual(originalSubscribers);
+    unmount(component!);
+    component = null;
+    expect(h.authoritySubscribers.size).toBe(0);
+  });
+});
+
 /* ── monitor mode + routing intents reach the real bus ─────────── */
 
 describe('the surface intents reach the shipped command vocabulary', () => {
@@ -306,18 +541,21 @@ describe('the surface intents reach the shipped command vocabulary', () => {
     expect(h.setMuted).toHaveBeenCalledWith(false);
   });
 
-  it('routes a routing-focus pick to the shipped audio-config command', () => {
+  // MOR-2425 RX-B: every offered focus, not a single sample — a fresh mount
+  // per value, matching the per-value discipline the RF-front-end wiring
+  // test already established for preamp/attenuator.
+  it.each(FOCUS_CHOICES)('routes the %s routing-focus pick to the shipped audio-config command', (focus) => {
     render();
-    el('focus-sub')!.click();
+    el(`focus-${focus}`)!.click();
     flushSync();
-    expect(audioManager.setAudioConfig).toHaveBeenCalledExactlyOnceWith({ focus: 'sub' });
+    expect(audioManager.setAudioConfig).toHaveBeenCalledExactlyOnceWith({ focus });
   });
 
-  it('routes a stereo-split pick to the shipped audio-config command', () => {
+  it.each(SPLIT_CHOICES)('routes the %s stereo-split pick to the shipped audio-config command', (value, label) => {
     render();
-    el('split-on')!.click();
+    el(`split-${label}`)!.click();
     flushSync();
-    expect(audioManager.setAudioConfig).toHaveBeenCalledExactlyOnceWith({ split_stereo: true });
+    expect(audioManager.setAudioConfig).toHaveBeenCalledExactlyOnceWith({ split_stereo: value });
   });
 });
 
@@ -352,6 +590,76 @@ describe('routing prefs stay unowned by this layer (MOR-1274 carry-forward 2)', 
 });
 
 /* ── (d) the MOD-input remedy, and the untouched warning ───────── */
+
+describe('common MOD-input selector reaches the existing mode handler (MOR-2366)', () => {
+  function selectSource(source: number): HTMLSelectElement {
+    const select = el('mod-select') as HTMLSelectElement;
+    expect(select).not.toBeNull();
+    select.value = String(source);
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
+    return select;
+  }
+
+  it.each(MOD_INPUT_SOURCES)('dispatches the $label source exactly once', ({ value }) => {
+    render();
+    expect(selectSource(value).disabled).toBe(false);
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_data_off_mod_input', { source: value });
+    expect(text('mod-source')).toBe('MOD: LAN');
+    expect(el('mod-input')!.dataset.readiness).toBe('ready');
+  });
+
+  it.each([0, 1, 2, 3])('routes DATA group %i to its own source command', (dataMode) => {
+    const state = liveState();
+    h.state = {
+      ...state, main: { ...state.main, dataMode },
+      [modInputStateKey(dataMode)]: 3,
+      fieldStatus: { ...state.fieldStatus, [modInputStateKey(dataMode)]: fresh },
+    };
+    render();
+    selectSource(1);
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith(modInputCommand(dataMode), { source: 1 });
+  });
+
+  it.each(['active', 'main.dataMode', 'dataOffModInput'])(
+    'preserves command admission when %s becomes unavailable after rendering', (path) => {
+      render();
+      const state = liveState();
+      h.state = {
+        ...state,
+        fieldStatus: { ...state.fieldStatus, [path]: { ...fresh, availability: 'missing' } },
+      };
+      publishAuthority();
+      selectSource(3);
+      expect(sendCommand).not.toHaveBeenCalled();
+    },
+  );
+
+  it('renders an unread source as disabled and sends nothing', () => {
+    h.state = liveState({ dataOffModInput: null });
+    render();
+    expect(selectSource(0).disabled).toBe(true);
+    expect(text('mod-source')).toBe('MOD: —');
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([-1, 4, null])('preserves admission for invalid DATA group %s', (dataMode) => {
+    render();
+    const state = liveState();
+    h.state = { ...state, main: { ...state.main, dataMode } };
+    publishAuthority();
+    selectSource(3);
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('omits the selector without modulation routing capability', () => {
+    h.caps = liveCaps(AUDIO_TAGS.filter((tag) => tag !== 'mod_input_routing'));
+    render();
+    expect(el('surface')).not.toBeNull();
+    expect(el('mod-select')).toBeNull();
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+});
 
 describe('a MOD-input mismatch keeps exactly one one-click remedy', () => {
   const mismatched = () => { h.state = liveState({ dataOffModInput: 0 } as Partial<ServerState>); };
@@ -415,13 +723,15 @@ describe('the surface mounts only when the view model carries the group', () => 
 
   /**
    * MUTATION KILLED: mounting this surface bare in the cockpit. It is the
-   * first semantic surface carrying interactive controls that no manifest
-   * declares a zone for, and MOR-1069's cockpit rule is that every focusable
+   * first semantic surface carrying interactive controls that the DUAL
+   * composition's only layout (`dual-receiver-cockpit.ts`) declares no zone
+   * for, and MOR-1069's cockpit rule is that every focusable
    * control lives inside a declared zone with rx-tx last in the tab order
    * (`skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component.test.ts`
    * enforces it). Mounted bare it breaks both clauses; folded into the rx-tx
    * zone it would put an AF slider between the operator and the unkey button.
-   * It waits for a declared zone — which this slice made possible.
+   * It waited for a declared zone, which this slice made possible;
+   * `desktop-v2` supplied one in MOR-1368 (S9), and the cockpit still has not.
    */
   it('renders NO rx-audio surface in the dual composition, zoned or unzoned', () => {
     render({ strips: 'dual' });
@@ -441,9 +751,9 @@ describe('the surface mounts only when the view model carries the group', () => 
   it('never changes with the App TX authority or the raw transmit bit', () => {
     render();
     const before = el('surface')!.outerHTML;
-    h.snapshot = { ...IDLE, phase: 'transmitting', radioTx: 'on', mayOwnKey: true };
-    for (const listener of h.listeners) listener(h.snapshot);
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     h.state = liveState({ ptt: true } as Partial<ServerState>);
+    publishAuthority();
     flushSync();
     expect(el('surface')!.outerHTML).toBe(before);
   });
@@ -458,5 +768,197 @@ describe('desktop-v2 declares a real rx-audio zone; the cockpit does not (MOR-13
     h.caps = liveCaps(AUDIO_TAGS);
     render({ strips: 'single' }, planFor(desktopV2Layout, {}));
     expect(q('[data-testid="rx-audio-surface"]')!.closest('[data-zone-id="rx-audio"]')).not.toBeNull();
+  });
+});
+
+/**
+ * MOR-2425 RX-B/RX-C. Each of the five finite controls has exactly ONE owner
+ * (`RxAudioInstrumentHost`) and must render exactly once in the composed
+ * tree — a double owner (grouped surface AND a named seat both rendering the
+ * same field) would show two `[data-testid]` matches here. `desktop-v2`
+ * places the five in NAMED Standard seats (`rxAudioFiniteLayout`,
+ * `.rx-audio-finite-seat`); `sdr-test` keeps the grouped surface's own
+ * default order — both proven through the real `RadioLayout.svelte`
+ * (`renderHostedFace`).
+ */
+describe('each finite control has exactly one owner in the composed tree', () => {
+  const ALWAYS = ['monitor', 'focus', 'split', 'mod-input'] as const;
+
+  it('renders monitor, focus, split and MOD input exactly once (bare SemanticRadioSurfaces mount)', () => {
+    render();
+    for (const id of ALWAYS) {
+      expect(target.querySelectorAll(`[data-testid="rx-audio-${id}"]`)).toHaveLength(1);
+    }
+  });
+
+  it.each(['desktop-v2', 'sdr-test'] as const)(
+    'renders monitor, focus, split and MOD input exactly once on %s',
+    (skinId) => {
+      renderHostedFace(skinId);
+      for (const id of ALWAYS) {
+        expect(target.querySelectorAll(`[data-testid="rx-audio-${id}"]`)).toHaveLength(1);
+      }
+    },
+  );
+
+  it('places the finite five in the NAMED Standard seat grid on desktop-v2', () => {
+    h.state = liveState({ dataOffModInput: 0 } as Partial<ServerState>);
+    renderHostedFace('desktop-v2');
+    expect(target.querySelectorAll('[data-testid="rx-audio-mod-set-lan"]')).toHaveLength(1);
+    const seats = [...target.querySelectorAll<HTMLElement>('.rx-audio-finite-seat')]
+      .map((seat) => seat.dataset.field);
+    expect(seats).toEqual([
+      'monitorMode', 'afLevel', 'monitorStatus', 'routingFocus', 'routingSplit',
+      'mainGain', 'subGain', 'modInputSource', 'setModInputLan',
+    ]);
+  });
+
+  // The shipped Standard face stretches these buttons across the panel, and
+  // the only rule that does it is `skins/desktop-v2/semantic-controls.css`'s
+  // `… .rx-audio-row … > button { flex: 1 1 0 }`, which reaches the panel
+  // width only while `.rx-audio-row` is itself panel-wide. jsdom computes no
+  // layout, so the rules are pinned where they are written.
+  it('stacks the Standard seats panel-wide, so the row buttons still stretch', () => {
+    renderHostedFace('desktop-v2');
+    expect(q('.rx-audio-finite-seat[data-field="monitorMode"] > .rx-audio-row')).not.toBeNull();
+    expect(DESKTOP_V2_CONTROL_CSS)
+      .toMatch(/\.rx-audio-row[^{]*\)\s*>\s*button\s*\{\s*flex:\s*1\s+1\s+0/);
+    // A row-direction wrap grid sizes each seat to its content instead, which
+    // stops the stretch at the widest label.
+    const grid = /\.rx-audio-finite-grid\s*\{([^}]*)\}/.exec(RADIO_LAYOUT_SOURCE)?.[1] ?? '';
+    expect(grid).toMatch(/flex-direction:\s*column/);
+    expect(grid).not.toMatch(/wrap/);
+    // Box-less seats: a structurally absent handle renders nothing, and a
+    // seat box would still spend a column gap and push the rows apart.
+    expect(RADIO_LAYOUT_SOURCE)
+      .toMatch(/\.rx-audio-finite-seat\s*\{\s*display:\s*contents;\s*\}/);
+  });
+
+  it('has no Standard seat grid on sdr-test — the grouped surface owns placement there', () => {
+    renderHostedFace('sdr-test');
+    expect(target.querySelectorAll('.rx-audio-finite-seat')).toHaveLength(0);
+  });
+});
+
+/**
+ * MOR-2425 RX-B/RX-C persistence witness, over a REAL per-skin
+ * `SURFACE_PLAN_CONTEXT_KEY` override so the resolved `SurfacePlan` genuinely
+ * changes between `desktop-v2` and `sdr-test` (mirrors `semantic-rf-front-end
+ * -wiring.component.test.ts`'s own fixed witness, transplanted here rather
+ * than re-derived ad hoc, per that file's own review history: a DOM testid
+ * or a plain "not the stale one" identity check both proved vacuous there).
+ * Proves, in the same required order: (i) the host-owned AF
+ * `createContinuousScalar` binding is the SAME object across the switch — a
+ * DOM testid is not a valid anchor, since the zone wrapper recreates it on
+ * both sides regardless of whether the host survives; (ii) a fresh current
+ * monitor-mode invocation still commands normally; (iii) the confirmed
+ * monitor-mode reading is unaffected by the switch itself; and only then
+ * (iv) the stale pre-switch invocation is inert.
+ */
+describe('persistent RX-audio composition across a real Standard->SDR plan switch (MOR-2425 RX-B/RX-C)', () => {
+  it('detaches the pre-switch monitor-mode invocation and keeps the new one live', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    const props = renderHostedFace('desktop-v2');
+    const staleStandardMonitor = retainedInvocations.get('Monitor mode');
+    expect(staleStandardMonitor).toBeDefined();
+    expect(target.querySelectorAll('.rx-audio-finite-seat[data-field="monitorMode"]')).toHaveLength(1);
+    const externalMonitor = () => target.querySelector<HTMLElement>('[data-testid="external-Monitor mode"]');
+    const beforeReading = externalMonitor()!.dataset.reading;
+    const hostBinding = rxAudioScalar.bindings.at(-1);
+
+    props.skinId = 'sdr-test';
+    flushSync();
+    expect(target.querySelectorAll('.rx-audio-finite-seat')).toHaveLength(0);
+
+    // (i) Identity, positively: the SAME host-owned AF binding object, not a
+    // rebuilt one — the host survives the switch.
+    expect(rxAudioScalar.bindings).toHaveLength(1);
+    expect(rxAudioScalar.bindings.at(-1)).toBe(hostBinding);
+
+    // (ii) A fresh, CURRENT invocation exists for the new (grouped)
+    // placement and commands normally, through the real `makeRxAudioHandlers`.
+    const currentSdrMonitor = retainedInvocations.get('Monitor mode');
+    expect(currentSdrMonitor).toBeDefined();
+    expect(currentSdrMonitor).not.toBe(staleStandardMonitor);
+    currentSdrMonitor!('mute');
+    flushSync();
+    expect(h.setRxLive).toHaveBeenCalledExactlyOnceWith(false);
+    expect(h.setMuted).toHaveBeenCalledExactlyOnceWith(true);
+
+    // (iii) Display state (the confirmed reading) is unchanged by the switch
+    // itself — only the click above changes anything downstream, and that
+    // command is not reflected back into `h.state` here.
+    expect(externalMonitor()!.dataset.reading).toBe(beforeReading);
+
+    // (iv) Only now: the stale pre-switch invocation is DETACHED — its named
+    // Standard seat was torn down when the layout moved to the grouped
+    // surface.
+    h.setRxLive.mockClear();
+    h.setMuted.mockClear();
+    staleStandardMonitor!('local');
+    expect(h.setRxLive).not.toHaveBeenCalled();
+    expect(h.setMuted).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * MOR-1687 F2 — the mounted AF control consumes the admitted-target lane in
+ * radio-AF mode; a browser stream that owns AF keeps the plain reading
+ * control with no lane.
+ */
+describe('the AF control consumes the admitted-target lane (MOR-1687 F2)', () => {
+  const afState = (marker: number, afLevel: number): ServerState => {
+    const state = liveState();
+    return { ...state, stateContractVersion: 1, main: { ...state.main, afLevel },
+      fieldStatus: { ...state.fieldStatus,
+        'main.afLevel': { ...fresh, freshness: 'fresh', availability: 'available', lastObservedMonotonic: marker } } };
+  };
+  const beginAf = (id: string) => beginCommand({ id, name: 'set_af_level', params: { level: 0.5, receiver: 0 }, originalEpoch: 1 });
+  const pushAfState = (marker: number, afLevel: number) => {
+    h.state = afState(marker, afLevel);
+    for (const listener of h.radioListeners) listener(h.state as ServerState | null);
+    publishAuthority();
+    flushSync();
+  };
+
+  it('keeps the browser-volume reading and no lane while the stream owns AF', () => {
+    beginAf('af-live');
+    render();
+    acknowledgeCommand('af-live', 1, 1, 128 / 255);
+    flushSync();
+    expect(afSlider()!.getAttribute('aria-valuenow')).toBe('0.42');
+    expect(afSlider()!.dataset.commandPhase).toBeUndefined();
+  });
+
+  it('awaits the admitted target and confirms only on the exact fresh readback', () => {
+    h.rxEnabled = false;
+    h.audio = { muted: false, rxEnabled: false, volume: 42 };
+    h.state = afState(1, 0.31);
+    const command = beginAf('af-admitted');
+    render();
+    expect(afSlider()!.dataset.commandPhase).toBe('idle');
+    acknowledgeCommand(command.id, 1, 1, 128 / 255);
+    flushSync();
+    expect(afSlider()!.dataset.commandPhase).toBe('awaiting-confirmation');
+    pushAfState(2, 0.9);
+    expect(afSlider()!.dataset.commandPhase).toBe('awaiting-confirmation');
+    pushAfState(3, 128 / 255);
+    expect(getCommandLifecycles()[0]?.status).toBe('confirmed');
+    expect(afSlider()!.dataset.commandPhase).toBe('confirmed');
+    expect(Number(afSlider()!.getAttribute('aria-valuenow'))).toBeCloseTo(128 / 255, 10);
+  });
+
+  it('stays idle without an admitted target and keeps showing the readback', () => {
+    h.rxEnabled = false;
+    h.audio = { muted: false, rxEnabled: false, volume: 42 };
+    h.state = afState(1, 0.31);
+    const command = beginAf('af-old-server');
+    render();
+    acknowledgeCommand(command.id, 1, 1);
+    flushSync();
+    pushAfState(2, 0.31);
+    expect(afSlider()!.dataset.commandPhase).toBe('idle');
+    expect(getCommandLifecycles()[0]?.status).toBe('acknowledged');
+    expect(Number(afSlider()!.getAttribute('aria-valuenow'))).toBeCloseTo(0.31, 10);
   });
 });

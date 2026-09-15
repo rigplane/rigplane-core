@@ -94,8 +94,6 @@ async def test_single_profile_poller_rejects_sub_receiver() -> None:
     with pytest.raises(CommandError, match="receiver=1"):
         await poller._execute(SetMode("USB", receiver=1))  # noqa: SLF001
 
-    assert all(receiver in {0, None} for _, _, receiver in poller._STATE_QUERIES)  # noqa: SLF001
-
 
 async def test_control_handler_checks_capabilities_not_model_name() -> None:
     """IC-7300 has nb capability (from TOML) — verify it DOES NOT raise.
@@ -171,24 +169,91 @@ def _count_self_civ_call_sites() -> int:
 
 
 def test_radio_poller_raw_civ_call_count_is_pinned() -> None:
-    """Ratchet: exactly 11 raw ``self._civ(...)`` sites remain.
+    """Ratchet: exactly 5 raw ``self._civ(...)`` sites remain.
 
     The 8 hand-rolled ``self._civ(0x07, ...)`` VFO-switch frames that used
     to live in ``SetFreq``/``SetMode`` (the ``receiver!=0`` fallback dance
     and the ``receiver=0``-while-SUB-active restore dance) were removed:
     the former now delegates to ``CoreRadio.set_freq``/``set_mode``, which
     already owns that decision; the latter now calls the public
-    ``select_receiver`` API instead of building the raw frame itself. The
-    11 that remain:
+    ``select_receiver`` API instead of building the raw frame itself.
+    ``SwitchScopeReceiver`` was the 11th (MOR-2106): it now resolves
+    ``set_scope_main_sub`` through ``_send_cmd`` instead of building
+    ``0x27 0x12`` as a literal in ``_execute`` -- reusing ``_send_cmd``'s
+    existing two call sites below rather than adding a new one.
+    ``_send_one_state_query`` used to hold 5 of its own branches (cmd29
+    wrap x2, the scope-receiver rewrite, and a sub-is-None/sub-is-set
+    split that only differed in whether ``sub=None`` was spelled out) --
+    those collapsed into the one call below when the wire-frame assembly
+    moved into the shared ``runtime._state_queries.wire_parts_for_query``,
+    also used by ``RigctldServer._send_one_state_query`` and
+    ``runtime.radio_initial_state.fetch_initial_state``. The 5 that
+    remain:
 
     - ``_send_cmd``: 2 — cmd29-wrapped vs. plain generic command dispatch.
-    - ``_send_one_state_query``: 5 — selected/unselected freq/mode state
-      reads plus the scope-receiver default read.
-    - ``_execute``: 3 — the BSR band-switch stored-freq read, ``SelectVfo``'s
-      scope-follow (0x27 0x12), and ``SwitchScopeReceiver`` (0x27 0x12).
-    - ``_send_query``: 1 — the meter poll read.
+    - ``_send_one_state_query``: 1 — dispatches whatever
+      ``wire_parts_for_query`` resolved.
+    - ``_execute``: 2 — the BSR band-switch stored-freq read and
+      ``SelectVfo``'s scope-follow (0x27 0x12).
+
+    ``_send_query`` held the 6th — the meter poll read — until the legacy
+    meter rotation it lived in was deleted as unreachable behind the
+    acquisition scheduler.
 
     Changing this literal deliberately means recounting the real call
     sites above, not just editing the number.
     """
-    assert _count_self_civ_call_sites() == 11
+    assert _count_self_civ_call_sites() == 5
+
+
+# ---------------------------------------------------------------------------
+# resolve_radio_profile fails closed (plan §8.1 Q5, MOR-2012)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveRadioProfileFailsClosed:
+    """The silent IC-7610/first-LAN-profile default fallback is removed:
+    an unidentified radio must refuse, never guess."""
+
+    def test_no_identifying_information_raises_a_clear_refusal(self) -> None:
+        """No profile, no model, no radio_addr — resolve_radio_profile()
+        must raise rather than silently return a default profile."""
+        with pytest.raises(ValueError) as excinfo:
+            resolve_radio_profile()
+
+        # Must not be KeyError: get_radio_profile() already raises KeyError
+        # for a *named* model that isn't found, so callers need to be able
+        # to tell "nothing identified the radio" apart from "you named an
+        # unknown one" by exception type alone.
+        assert not isinstance(excinfo.value, KeyError)
+        assert type(excinfo.value) is ValueError
+
+    @pytest.mark.parametrize("blank_model", ["", "   "])
+    def test_blank_model_raises_the_same_refusal(self, blank_model: str) -> None:
+        """A blank or whitespace-only model counts as "nothing identifies
+        the radio" — it must not silently resolve to a default profile."""
+        with pytest.raises(ValueError) as excinfo:
+            resolve_radio_profile(model=blank_model)
+
+        assert not isinstance(excinfo.value, KeyError)
+        assert type(excinfo.value) is ValueError
+
+    def test_unmatched_radio_addr_alone_also_refuses(self) -> None:
+        """A radio_addr that matches no loaded profile is also "nothing
+        identifies the radio" -- 0xFF is not any shipped rig's civ_addr."""
+        with pytest.raises(ValueError) as excinfo:
+            resolve_radio_profile(radio_addr=0xFF)
+
+        assert not isinstance(excinfo.value, KeyError)
+
+    def test_explicit_model_override_still_resolves(self) -> None:
+        """A profile/model passed explicitly by the caller remains the
+        deliberate override it already was -- unchanged by this ruling."""
+        profile = resolve_radio_profile(model="IC-7300")
+        assert profile.model == "IC-7300"
+
+        same_profile_object = resolve_radio_profile(profile=profile)
+        assert same_profile_object is profile
+
+        by_name = resolve_radio_profile(profile="IC-9700")
+        assert by_name.model == "IC-9700"

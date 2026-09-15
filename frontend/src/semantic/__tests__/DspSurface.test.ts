@@ -3,8 +3,8 @@
  *
  * Carry-forward pins from the MOR-1290 fact-layer decisions this surface must
  * not relax (see `DspSurface.svelte`'s header for the full statement):
- *  (1) `agcLabels`/`nbLevelMax`/`nbLevelPercent` arrive as plain props, never
- *      read off a capabilities import inside this file — block 5.
+ *  (1) DSP display metadata arrives as plain host/surface props, never read
+ *      off a capabilities import inside this family — block 5.
  *  (2) a structurally-present, never-observed `agcTimeConstant` renders like
  *      any other unobserved present field — no special-casing — block 2.
  *  (3) every reading renders exactly as the fact group states it — no local
@@ -14,9 +14,10 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import DspSurface, { DSP_LEVELS, DSP_TOGGLES, type DspLevelField, type DspToggleField } from '../DspSurface.svelte';
+import { DSP_LEVELS, DSP_TOGGLES, type DspLevelField, type DspToggleField } from '../DspSurface.svelte';
 import { topologyFixtures, withDsp } from '../fixtures/topologies';
 import type { Availability, DspViewModel, RadioViewModel } from '../radio-view-model';
+import DspScalarHostFixture from './fixtures/DspScalarHostFixture.svelte';
 
 /** `1/single` + a fully-observed dsp group (nrActive true, nbActive false —
  *  both toggles exercised at least once by the base fixture). */
@@ -38,6 +39,7 @@ type AnyField = keyof DspViewModel;
 const NUMERIC_FIELDS: readonly AnyField[] = [
   ...DSP_TOGGLES.map(([f]) => f), ...DSP_LEVELS.map(([f]) => f), 'nbLevel',
 ] as readonly AnyField[];
+const NATIVE_LEVELS = DSP_LEVELS.filter(([field]) => field !== 'nbWidth');
 /** The thumb position an unread level control MUST claim (MOR-1304/1305 F2)
  *  — `numberOf`'s own fallback, verbatim, so a fallback-value mutation is
  *  pinned rather than left free to claim any position. `nbLevel` falls back
@@ -97,7 +99,9 @@ type Props = Handlers & {
 };
 
 function render(view: RadioViewModel, props: Props = {}) {
-  const component = mount(DspSurface, { target, props: { view, ...props } });
+  const component = mount(DspScalarHostFixture, {
+    target, props: { view, presentation: 'grouped', ...props },
+  });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   return {
@@ -105,6 +109,7 @@ function render(view: RadioViewModel, props: Props = {}) {
     root: () => q('[data-testid="dsp-surface"]'),
     control: (field: string) => q<HTMLElement>(`[data-testid="dsp-${field}"]`),
     input: (field: string) => q<HTMLInputElement>(`[data-testid="dsp-${field}"] input`),
+    slider: (field: string) => q<HTMLElement>(`[data-testid="dsp-${field}"] [role="slider"]`),
     notchButton: (mode: string) => q<HTMLButtonElement>(`[data-testid="dsp-notchMode-${mode}"]`),
     agcButton: (mode: number) => q<HTMLButtonElement>(`[data-testid="dsp-agcMode-${mode}"]`),
   };
@@ -119,7 +124,8 @@ function withSurface(view: RadioViewModel, fn: (s: ReturnType<typeof render>) =>
 function isDisabled(s: ReturnType<typeof render>, field: string): boolean {
   const el = s.control(field)!;
   if (el instanceof HTMLButtonElement) return el.disabled;
-  return s.input(field)!.disabled;
+  const input = s.input(field);
+  return input ? input.disabled : s.slider(field)?.getAttribute('aria-disabled') === 'true';
 }
 
 // ── 1. Structural gating: absent, never a disabled promise ─────────────────
@@ -187,7 +193,7 @@ describe('operational availability decides whether a control is USABLE', () => {
     });
   });
 
-  // MOR-1304/1305 N1/MD7: `pressedOf` must return `undefined` — never `false`
+  // MOR-1304/1305 N1/MD7: the toggle binding must return `undefined` — never `false`
   // — for an unobserved toggle reading, so Svelte OMITS `aria-pressed`
   // entirely. `aria-pressed="false"` is not the absence of a claim, it is the
   // claim "this control is OFF" about a reading the radio never reported —
@@ -219,6 +225,14 @@ describe('operational availability decides whether a control is USABLE', () => {
     withSurface(view, (s) => {
       expect(s.notchButton('off')!.disabled).toBe(true);
       expect(s.agcButton(1)!.disabled).toBe(true);
+    });
+  });
+
+  it('omits pressed state for unobserved DSP choices', () => {
+    const view = withField(withField(base(), 'notchMode', { unknown: true }), 'agcMode', { unknown: true });
+    withSurface(view, (s) => {
+      expect(s.notchButton('off')!.getAttribute('aria-pressed')).toBeNull();
+      expect(s.agcButton(1)!.getAttribute('aria-pressed')).toBeNull();
     });
   });
 });
@@ -255,7 +269,7 @@ describe('toggle intents compute the next boolean from the current reading', () 
 // ── 4. Level intents carry the field and the raw value ─────────────────────
 
 describe('level intents reach the caller with the field and the raw value', () => {
-  it.each(DSP_LEVELS)('emits (%s, value) on input with the declared range', (field, _label, min, max, step, _fmt?) => {
+  it.each(NATIVE_LEVELS)('emits (%s, value) on input with the declared range', (field, _label, min, max, step, _fmt?) => {
     const onLevelChange = vi.fn();
     withSurface(base(), (s) => {
       const input = s.input(field)!;
@@ -430,15 +444,15 @@ describe('manual-notch position stays in the documented raw domain', () => {
 describe('nbLevel is range-parameterised by the caps-echoed nbLevelMax/nbLevelPercent props', () => {
   it('uses the default 0..255 raw range when no props are supplied', () => {
     withSurface(base(), (s) => {
-      expect(s.input('nbLevel')!.max).toBe('255');
-      expect(s.input('nbLevel')!.valueAsNumber).toBe(64); // withDsp() fixture value
+      expect(s.slider('nbLevel')!.getAttribute('aria-valuemax')).toBe('255');
+      expect(s.slider('nbLevel')!.getAttribute('aria-valuenow')).toBe('64');
       expect(s.control('nbLevel')!.textContent).toContain('64');
     });
   });
 
   it('uses a caller-supplied ceiling (FTX-1-shaped: native 0..10, raw display)', () => {
     withSurface(base(), (s) => {
-      expect(s.input('nbLevel')!.max).toBe('10');
+      expect(s.slider('nbLevel')!.getAttribute('aria-valuemax')).toBe('10');
       // Raw pass-through display (carry-forward 3): the fixture's raw
       // reading (64) renders verbatim, regardless of the ceiling prop.
       expect(s.control('nbLevel')!.textContent).toContain('64');
@@ -454,12 +468,14 @@ describe('nbLevel is range-parameterised by the caps-echoed nbLevelMax/nbLevelPe
 
   it('emits the raw nbLevel value unrescaled regardless of display mode', () => {
     const onLevelChange = vi.fn();
-    withSurface(base(), (s) => {
-      const input = s.input('nbLevel')!;
-      input.value = '5';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+    const view = base();
+    const withLevelFive = { ...view, dsp: { ...view.dsp!, nbLevel: {
+      ...view.dsp!.nbLevel, reading: { status: 'known' as const, value: 5 },
+    } } };
+    withSurface(withLevelFive, (s) => {
+      s.slider('nbLevel')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
       flushSync();
-      expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('nbLevel', 5);
+      expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('nbLevel', 6);
     }, { onLevelChange, nbLevelMax: 10, nbLevelPercent: false });
   });
 });
@@ -485,10 +501,30 @@ describe('notchMode renders as a three-way choice', () => {
     }, { onNotchModeChange });
   });
 
+  it('does not select an offered mode for a known out-of-offered reading', () => {
+    const onNotchModeChange = vi.fn();
+    const view = {
+      ...base(),
+      dsp: {
+        ...base().dsp!,
+        notchMode: { ...base().dsp!.notchMode, reading: { status: 'known' as const, value: 'other' } },
+      },
+    } as unknown as RadioViewModel;
+    withSurface(view, (s) => {
+      for (const mode of ['off', 'auto', 'manual']) {
+        expect(s.notchButton(mode)!.getAttribute('aria-pressed')).toBeNull();
+      }
+      s.notchButton('manual')!.click();
+      flushSync();
+      expect(onNotchModeChange).toHaveBeenCalledExactlyOnceWith('manual');
+      expect(s.notchButton('manual')!.getAttribute('aria-pressed')).toBeNull();
+    }, { onNotchModeChange });
+  });
+
   /**
    * MOR-1304/1305 F3: `.click()` on a disabled button never reaches its
    * `onclick` handler at all — a no-op that would pass this assertion even
-   * with the `notch()` guard deleted. Dispatching the click event directly
+   * with the choice binding's guard deleted. Dispatching the click event directly
    * proves the GUARD rejects it, not merely that `disabled` suppressed the
    * interaction.
    */
@@ -538,7 +574,7 @@ describe('agcMode renders the capability-derived choice set with caps-echoed lab
 
   /**
    * MOR-1304/1305 F3: same bypass discipline as notchMode's guard test — the
-   * event is dispatched directly so a deleted `agc()` guard is what this
+   * event is dispatched directly so a deleted choice-binding guard is what this
    * assertion catches, not merely `disabled` suppressing a plain `.click()`.
    */
   it('emits nothing when clicked on an unobserved reading, even bypassing disabled', () => {
@@ -583,7 +619,7 @@ describe('pending-target affordance (MOR-1441 leg 2)', () => {
   });
 
   // THE seam test — the exact class of defect leg 1's runaway bug belonged
-  // to, applied to a toggle: `toggle()` computes the NEXT boolean from
+  // to, applied to a toggle: the toggle binding computes the NEXT boolean from
   // `dsp[field].reading.value` (CONFIRMED), never from the pending prop. If
   // it instead read pending, an in-flight "turn NR on" (confirmed still
   // false, pending true) would compute `!true = false` and dispatch a
@@ -619,10 +655,13 @@ describe('this surface stays presentation-only', () => {
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '');
   const source = withoutComments(readFileSync('src/semantic/DspSurface.svelte', 'utf8'));
+  const hostSource = withoutComments(readFileSync('src/semantic/DspInstrumentHost.svelte', 'utf8'));
 
   it('imports no transport, store or command-bus module', () => {
-    expect(source).not.toMatch(/\$lib\/transport/);
-    expect(source).not.toMatch(/\$lib\/stores/);
-    expect(source).not.toMatch(/command-bus/);
+    for (const text of [source, hostSource]) {
+      expect(text).not.toMatch(/\$lib\/transport/);
+      expect(text).not.toMatch(/\$lib\/stores/);
+      expect(text).not.toMatch(/command-bus/);
+    }
   });
 });

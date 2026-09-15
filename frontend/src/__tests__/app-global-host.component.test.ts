@@ -12,17 +12,11 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { ManagedAppTxHarness, type ManagedAppTxServerSnapshot } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
-type TxSnapshot = {
-  radioTx: 'on' | 'off' | 'unknown';
-  txRisk: 'none' | 'uncertain' | 'confirmed-on';
-  fault: string | null;
-};
+let txHarness: ManagedAppTxHarness;
 
 const h = vi.hoisted(() => ({
-  tx: { radioTx: 'unknown', txRisk: 'none', fault: null } as TxSnapshot,
-  txListeners: new Set<(s: TxSnapshot) => void>(),
-  stopWatchingTx: vi.fn(),
   onMessage: vi.fn(),
   offMessage: vi.fn(),
   powerOn: vi.fn(),
@@ -61,6 +55,7 @@ vi.mock('$lib/runtime', async () => {
     },
     get scope() { return { hardwareScopeConnected: false }; },
     bootstrap: h.bootstrap,
+    onTxAudioDied: () => () => {},
   };
   return { runtime: h.runtime };
 });
@@ -78,20 +73,17 @@ vi.mock('../lib/runtime/frontend-runtime', async () => {
     },
   };
 });
-vi.mock('../lib/transport/ws-client', () => ({ onMessage: h.onMessage }));
+vi.mock('../lib/transport/ws-client', () => ({
+  onMessage: h.onMessage,
+  onCommandDelivery: () => () => {},
+}));
 vi.mock('$lib/i18n', () => ({
   t: (key: string) => key,
   messageFromReasonCode: (code: string) => code,
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  provideAppTxControllerHost: h.provide,
-  getAppTxController: () => ({
-    snapshot: () => h.tx,
-    subscribe: (listener: (s: TxSnapshot) => void) => {
-      h.txListeners.add(listener);
-      return h.stopWatchingTx;
-    },
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  provideManagedAppTxHost: h.provide,
+  getManagedAppTxController: () => txHarness.controller,
 }));
 vi.mock('$lib/runtime/system-controller', () => ({
   systemController: { registerPreDisconnectBarrier: h.registerBarrier },
@@ -101,10 +93,13 @@ vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' })
 vi.mock('../skins/registry', () => ({
   resolveSkinId: h.resolveSkin,
   loadSkin: h.loadSkin,
-  presentationResourcePlan: () => [],
+  getPresentationRecord: (id: unknown) => ({ id, kind: 'built-in-self-contained', resources: [] }),
 }));
 vi.mock('../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../lib/media/media-session', () => ({ initMediaSession: vi.fn(), destroyMediaSession: vi.fn() }));
+vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
+  default: (await import('./LayoutStub.svelte')).default,
+}));
 vi.mock('../components-v2/layout/RadioLayout.svelte', async () => {
   const stub = await import('./LayoutStub.svelte');
   return { default: stub.default };
@@ -136,10 +131,8 @@ function presentationStub(skinId: string): ClientComponent {
   return stub;
 }
 
-/** Push a new authoritative TX snapshot through the controller subscription. */
-function emitTx(next: Partial<TxSnapshot>): void {
-  h.tx = { ...h.tx, ...next };
-  for (const listener of h.txListeners) listener(h.tx);
+function emitTx(next: ManagedAppTxServerSnapshot): void {
+  txHarness.emitServerSnapshot(next);
   flushSync();
 }
 
@@ -158,8 +151,7 @@ const powerEl = () => document.querySelector('[data-testid="global-power-off"]')
 
 beforeEach(() => {
   vi.clearAllMocks();
-  h.tx = { radioTx: 'unknown', txRisk: 'none', fault: null };
-  h.txListeners.clear();
+  txHarness = new ManagedAppTxHarness({ stale: true });
   h.radioPowerOn = null;
   h.ptt = false;
   document.body.innerHTML = '';
@@ -175,7 +167,7 @@ beforeEach(() => {
 
 describe('AppGlobalHost — standalone, with no layout mounted', () => {
   it('renders global feedback, power/health and TX surfaces without any presentation', () => {
-    h.tx = { radioTx: 'on', txRisk: 'confirmed-on', fault: 'backend-dekeyed' };
+    txHarness.emitServerSnapshot({ observedPtt: 'on', lastError: 'backend-dekeyed' });
     h.radioPowerOn = false;
     const instance = mountAt(AppGlobalHost);
 
@@ -224,7 +216,7 @@ describe('AppGlobalHost — authoritative TX source', () => {
   // down; the operator lamp must follow the controller.
   it('shows TX from the controller even when the state echo claims RX', () => {
     h.ptt = false;
-    h.tx = { radioTx: 'on', txRisk: 'none', fault: null };
+    txHarness.emitServerSnapshot({ observedPtt: 'on' });
     const instance = mountAt(AppGlobalHost);
     expect(txEl()?.getAttribute('data-tx')).toBe('on');
     unmount(instance);
@@ -234,7 +226,7 @@ describe('AppGlobalHost — authoritative TX source', () => {
   // controller is idle must not light the authoritative lamp.
   it('stays dark when the state echo claims TX but the controller is idle', () => {
     h.ptt = true;
-    h.tx = { radioTx: 'off', txRisk: 'none', fault: null };
+    txHarness.emitServerSnapshot({ observedPtt: 'off' });
     const instance = mountAt(AppGlobalHost);
     expect(txEl()).toBeNull();
     unmount(instance);
@@ -244,7 +236,7 @@ describe('AppGlobalHost — authoritative TX source', () => {
   // `txRisk: 'uncertain'` means the browser may own the key without a
   // confirmed readback — the lamp must fail closed, not stay dark.
   it('fails closed while TX risk is uncertain', () => {
-    h.tx = { radioTx: 'unknown', txRisk: 'uncertain', fault: null };
+    txHarness.emitServerSnapshot({ observedPtt: 'unknown', releaseRequired: true });
     const instance = mountAt(AppGlobalHost);
     expect(txEl()?.getAttribute('data-tx')).toBe('uncertain');
     unmount(instance);
@@ -255,11 +247,11 @@ describe('AppGlobalHost — authoritative TX source', () => {
   it('tracks live controller transitions through the subscription', () => {
     const instance = mountAt(AppGlobalHost);
     expect(txEl()).toBeNull();
-    emitTx({ txRisk: 'uncertain' });
+    emitTx({ observedPtt: 'unknown', releaseRequired: true });
     expect(txEl()?.getAttribute('data-tx')).toBe('uncertain');
-    emitTx({ radioTx: 'on', txRisk: 'confirmed-on' });
+    emitTx({ observedPtt: 'on' });
     expect(txEl()?.getAttribute('data-tx')).toBe('on');
-    emitTx({ radioTx: 'off', txRisk: 'none', fault: 'release-not-confirmed' });
+    emitTx({ observedPtt: 'off', lastError: 'release-not-confirmed' });
     expect(txEl()).toBeNull();
     expect(faultEl()?.getAttribute('data-fault')).toBe('release-not-confirmed');
     unmount(instance);
@@ -284,7 +276,7 @@ describe('App composition — one host above the presentation boundary', () => {
   });
 
   it('survives repeated presentation replacement without remount or resubscription', async () => {
-    h.tx = { radioTx: 'on', txRisk: 'confirmed-on', fault: 'on-timeout' };
+    txHarness.emitServerSnapshot({ observedPtt: 'on', lastError: 'on-timeout' });
     const instance = mountAt(App);
     await settle();
     flushSync();
@@ -292,6 +284,7 @@ describe('App composition — one host above the presentation boundary', () => {
     const hostBefore = hostEl();
     const layoutBefore = document.querySelector('.layout-stub');
     expect(layoutBefore?.getAttribute('data-skin')).toBe('desktop-v2');
+    expect(txEl()).toBeNull();
 
     // MOR-1060 made the swap asynchronous (the next presentation is loaded
     // lazily), so each hop settles the loader before asserting. The
@@ -309,6 +302,7 @@ describe('App composition — one host above the presentation boundary', () => {
     const layoutMobile = document.querySelector('.layout-stub');
     expect(layoutMobile?.getAttribute('data-skin')).toBe('mobile');
     expect(layoutMobile).not.toBe(layoutBefore);
+    expect(txEl()?.getAttribute('data-tx')).toBe('on');
     await resize(1200);
     const layoutBack = document.querySelector('.layout-stub');
     expect(layoutBack?.getAttribute('data-skin')).toBe('desktop-v2');
@@ -320,7 +314,7 @@ describe('App composition — one host above the presentation boundary', () => {
     expect(document.querySelectorAll('.toast-container')).toHaveLength(1);
     expect(h.onMessage).toHaveBeenCalledTimes(1);
     expect(h.offMessage).not.toHaveBeenCalled();
-    expect(txEl()?.getAttribute('data-tx')).toBe('on');
+    expect(txEl()).toBeNull();
     expect(faultEl()?.getAttribute('data-fault')).toBe('on-timeout');
 
     unmount(instance);
@@ -330,17 +324,16 @@ describe('App composition — one host above the presentation boundary', () => {
     const instance = mountAt(App);
     await settle();
     flushSync();
-    expect(h.txListeners.size).toBe(1);
+    expect(txHarness.listenerCount()).toBe(1);
 
     unmount(instance);
 
-    expect(h.stopWatchingTx).toHaveBeenCalledTimes(1);
+    expect(txHarness.listenerCount()).toBe(0);
     expect(h.offMessage).toHaveBeenCalledTimes(1);
     expect(hostEl()).toBeNull();
 
     // A late controller emission after teardown must not resurrect any DOM.
-    h.tx = { radioTx: 'on', txRisk: 'confirmed-on', fault: 'backend-dekeyed' };
-    for (const listener of h.txListeners) listener(h.tx);
+    txHarness.emitServerSnapshot({ observedPtt: 'on', lastError: 'backend-dekeyed' });
     flushSync();
     expect(txEl()).toBeNull();
     expect(faultEl()).toBeNull();

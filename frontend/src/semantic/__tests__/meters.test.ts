@@ -20,7 +20,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  validateRadioViewModel, type MeterField, type MeterRfState, type MetersViewModel,
+  validateRadioViewModel, type MeterField, type MeterRfState, type MeterSourceIdentity,
+  type MetersViewModel,
 } from '../radio-view-model';
 import { topologyFixtures, withMeters } from '../fixtures/topologies';
 import { rfState, type RfState, type TxAuthoritySnapshot } from '../rx-tx-surface';
@@ -31,6 +32,91 @@ import type { ServerState } from '$lib/types/state';
 const AVAIL = { structural: true, operational: true } as const;
 const base = topologyFixtures['1/single'];
 const RF_STATES: readonly MeterRfState[] = ['receiving', 'transmitting', 'uncertain', 'unknown'];
+
+describe('target meter display observation contract (MOR-2359)', () => {
+  function withDisplay(meter: string, display: unknown) {
+    const view = withMeters(base);
+    const field = view.meters![meter as keyof Omit<MetersViewModel, 'rfState'>];
+    return { ...view, meters: { ...view.meters, [meter]: { ...field, display } } };
+  }
+  it.each(['power', 'swr', 'alc'])('round-trips optional display only on %s', (meter) => {
+    for (const display of [
+      { state: 'current', value: 0 }, { state: 'stale', value: 0.5 },
+      { state: 'unknown', reason: 'not-observed' }, { state: 'unsupported' },
+    ]) {
+      const view = withDisplay(meter, display);
+      expect(validateRadioViewModel(JSON.parse(JSON.stringify(view)))).toEqual(view);
+    }
+  });
+  it.each(['signal', 'compression', 'drainVoltage', 'drainCurrent'])(
+    'keeps exact-key rejection on unmigrated %s', (meter) => {
+      expect(() => validateRadioViewModel(withDisplay(meter, { state: 'current', value: 1 })))
+        .toThrow(new RegExp(`\\$\\.meters\\.${meter}:.*display`));
+    },
+  );
+  it.each([
+    null, {}, { state: 'current' }, { state: 'current', value: '1' },
+    { state: 'current', value: NaN }, { state: 'stale', value: Infinity },
+    { state: 'stale', value: 1, extra: true }, { state: 'unknown', reason: 'stale' },
+    { state: 'unknown', reason: 'not-observed', value: 0 }, { state: 'unsupported', value: 0 },
+  ])('rejects malformed display %j', (display) => {
+    for (const meter of ['power', 'swr', 'alc']) {
+      expect(() => validateRadioViewModel(withDisplay(meter, display)))
+        .toThrow(new RegExp(`\\$\\.meters\\.${meter}\\.display`));
+    }
+  });
+});
+
+describe('meter source identity contract (MOR-2400)', () => {
+  const SOURCES = {
+    signal: { providerGeneration: 7, scope: 'receiver', receiver: 'MAIN', path: 'main.sMeter' },
+    power: { providerGeneration: 7, scope: 'radio', receiver: null, path: 'powerMeter' },
+    swr: { providerGeneration: 7, scope: 'radio', receiver: null, path: 'swrMeter' },
+    alc: { providerGeneration: 7, scope: 'radio', receiver: null, path: 'alcMeter' },
+    compression: { providerGeneration: 7, scope: 'radio', receiver: null, path: 'compMeter' },
+    drainVoltage: { providerGeneration: 7, scope: 'radio', receiver: null, path: 'vdMeter' },
+    drainCurrent: { providerGeneration: 7, scope: 'radio', receiver: null, path: 'idMeter' },
+  } as const satisfies Record<keyof Omit<MetersViewModel, 'rfState'>, MeterSourceIdentity>;
+
+  function withSource(meter: keyof typeof SOURCES, source: unknown) {
+    const view = withMeters(base);
+    return {
+      ...view,
+      meters: { ...view.meters, [meter]: { ...view.meters![meter], source } },
+    };
+  }
+
+  it('preserves omission and explicit null as different states', () => {
+    const omitted = withMeters(base);
+    expect(validateRadioViewModel(omitted).meters!.signal).not.toHaveProperty('source');
+    expect(validateRadioViewModel(withSource('signal', null)).meters!.signal.source).toBeNull();
+  });
+
+  it.each(Object.entries(SOURCES) as [keyof typeof SOURCES, MeterSourceIdentity][])(
+    'round-trips the canonical source for %s', (meter, source) => {
+      expect(validateRadioViewModel(withSource(meter, source)).meters![meter].source).toEqual(source);
+    },
+  );
+
+  it('accepts the canonical SUB receiver source only on signal', () => {
+    const source = { providerGeneration: 8, scope: 'receiver', receiver: 'SUB', path: 'sub.sMeter' };
+    expect(validateRadioViewModel(withSource('signal', source)).meters!.signal.source).toEqual(source);
+  });
+
+  it.each([
+    ['unsafe generation', 'power', { ...SOURCES.power, providerGeneration: Number.MAX_SAFE_INTEGER + 1 }],
+    ['negative generation', 'power', { ...SOURCES.power, providerGeneration: -1 }],
+    ['extra key', 'power', { ...SOURCES.power, provider: 'rigctld' }],
+    ['wrong radio path', 'power', SOURCES.swr],
+    ['receiver source on radio field', 'power', SOURCES.signal],
+    ['radio source on receiver field', 'signal', SOURCES.power],
+    ['crossed receiver and path', 'signal', { ...SOURCES.signal, receiver: 'SUB' }],
+    ['open path', 'signal', { ...SOURCES.signal, path: 'main.noiseMeter' }],
+  ] as const)('rejects %s', (_label, meter, source) => {
+    expect(() => validateRadioViewModel(withSource(meter, source)))
+      .toThrow(new RegExp(`\\$\\.meters\\.${meter}\\.source`));
+  });
+});
 
 describe('meters (MOR-1262 slice 2A)', () => {
   // ── Kill-test 1: absence is byte-identical, not a new default shape ──────
@@ -192,13 +278,13 @@ describe('meters (MOR-1262 slice 2A)', () => {
  * so it carries a copy; these tests prove the copy is not a fork, and that
  * `MeterRfState` is member-for-member the surface's `RfState`.
  */
-describe('meters RF state is the App TX authority vocabulary, verbatim (R9)', () => {
+describe('meters RF state is the server TX projection vocabulary, verbatim (R9)', () => {
   const RADIO_TX = ['off', 'on', 'unknown'] as const;
   const TX_RISK = ['none', 'uncertain', 'confirmed-on'] as const;
   const snapshot = (
     radioTx: (typeof RADIO_TX)[number], txRisk: (typeof TX_RISK)[number],
   ): TxAuthoritySnapshot => ({
-    phase: 'idle', intent: null, radioTx, txRisk, mayOwnKey: false, fault: null,
+    phase: 'idle', intent: null, radioTx, txRisk, fault: null,
   });
 
   function caps(): Capabilities {
@@ -215,7 +301,7 @@ describe('meters RF state is the App TX authority vocabulary, verbatim (R9)', ()
     txTarget: { status: 'unknown', reason: 'not-observed' },
     main: { freqHz: 14195000, mode: 'USB', filter: 1, sMeter: 120 },
     powerMeter: 0.6, swrMeter: 20, alcMeter: 40, compMeter: 10, vdMeter: 200, idMeter: 80,
-    fieldStatus: {},
+    fieldStatus: { powerMeter: { observed: false, availability: 'missing', freshness: 'unknown' } },
   } as unknown as ServerState);
 
   it('the contract union has exactly the members the RX/TX surface declares', () => {
@@ -241,6 +327,25 @@ describe('meters RF state is the App TX authority vocabulary, verbatim (R9)', ()
       const tx = snapshot(radioTx, txRisk);
       const view = toRadioViewModel(state(), caps(), tx);
       expect(view?.meters?.rfState).toBe(rfState(tx));
+    },
+  );
+});
+
+
+describe('optional meter presence contract', () => {
+  it.each(['signal', 'power', 'swr', 'alc', 'compression', 'drainVoltage', 'drainCurrent'] as const)(
+    'validates presence on %s and preserves legacy omission', (key) => {
+      const view = withMeters(base);
+      expect(validateRadioViewModel(view).meters![key]).not.toHaveProperty('presence');
+      for (const presence of ['present', 'unavailable', 'absent'] as const) {
+        view.meters![key].presence = presence;
+        expect(validateRadioViewModel(view).meters![key].presence).toBe(presence);
+      }
+      for (const presence of ['missing', null, true, 0]) {
+        const invalid = { ...view, meters: { ...view.meters,
+          [key]: { ...view.meters![key], presence } } };
+        expect(() => validateRadioViewModel(invalid)).toThrow(/presence/);
+      }
     },
   );
 });

@@ -78,7 +78,8 @@
   let activeRxKey = $derived<'main' | 'sub'>(radioState?.active === 'SUB' ? 'sub' : 'main');
 
   // MOR-429: gate active-receiver indicators on fieldStatus availability so an
-  // unobserved/stale/default value is never presented as a confirmed reading.
+  // unobserved/default value is never presented as a confirmed reading (a stale
+  // observed value stays available — owner ruling R29, 2026-09-07).
   function rxAvailable(field: string): boolean {
     return isFieldAvailable(radioState, `${activeRxKey}.${field}`);
   }
@@ -307,6 +308,7 @@
   }
 
   .lcd-screen {
+    container-type: inline-size;
     /* Contrast tokens — identical defaults to AmberCockpit. */
     --lcd-alpha-active: 1;
     --lcd-alpha-inactive: 0.08;
@@ -411,6 +413,26 @@
     align-items: center;
     gap: 6px;
     flex-shrink: 0;
+  }
+
+  @container (max-width: 600px) {
+    .vfo-row {
+      flex-wrap: wrap;
+      flex-shrink: 0;
+      gap: 4px 10px;
+    }
+
+    .vfo-freq {
+      --lcd-frequency-major-size: clamp(24px, 8cqw, 48px);
+      --lcd-frequency-hz-size: clamp(18px, 6cqw, 36px);
+      --lcd-frequency-dot-size: clamp(18px, 5cqw, 34px);
+      flex: 1 1 0;
+    }
+
+    .vfo-badges {
+      flex-basis: 100%;
+      flex-wrap: wrap;
+    }
   }
 
   .vfo-band-box,

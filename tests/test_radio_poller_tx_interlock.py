@@ -1,11 +1,12 @@
 import asyncio
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from rigplane.capabilities import CAP_ANTENNA, CAP_AUDIO, CAP_POWER_CONTROL, CAP_TUNER
+from rigplane.core.command_dispatch import bind_command_intent
 from rigplane.core.command_service import CommandExecutionResult, CommandService
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
@@ -24,11 +25,17 @@ from rigplane.runtime._poller_types import (
     SelectVfo,
     SendCiv,
     SetAntenna1,
+    SetBand,
     SetFreq,
     SetMode,
     SetPowerstat,
+    SetSplit,
     SetTunerStatus,
+    VfoEqualize,
+    VfoSwap,
+    validate_command_queue_entry_currency,
 )
+from rigplane.runtime.radio import CoreRadio
 from rigplane.runtime.tx_interlock import (
     RfState,
     TxInterlockCommandFamily,
@@ -46,15 +53,12 @@ from rigplane.web.radio_poller import (
 
 
 _PTT = FieldPath.global_("tx_state", "ptt")
-# MOR-1940: still-DEFER exemplar for the deferred-lane mechanics below
-# (FREQUENCY was reclassified TX_SAFE -- see
-# test_frequency_now_dispatches_without_entering_the_deferred_lane, which
-# pins that contrast directly).
-_MODE = FieldPath.active("main", "freq_mode", "mode")
+_SPLIT = FieldPath.global_("tx_state", "split")
 
 
 def _radio() -> SimpleNamespace:
     return SimpleNamespace(
+        _civ_epoch=1,
         profile=resolve_radio_profile(model="IC-7300"),
         capabilities={CAP_ANTENNA, CAP_POWER_CONTROL, CAP_TUNER},
         send_civ=AsyncMock(),
@@ -63,6 +67,7 @@ def _radio() -> SimpleNamespace:
         set_antenna_1=AsyncMock(),
         set_freq=AsyncMock(),
         set_mode=AsyncMock(),
+        set_split=AsyncMock(),
         set_tuner_status=AsyncMock(),
         set_powerstat=AsyncMock(),
         set_ptt=AsyncMock(),
@@ -105,22 +110,22 @@ async def _lifecycle_entry(
     service: CommandService,
     *,
     command_id: str,
-    mode: str,
+    on: bool,
 ) -> CommandQueueEntry:
     await service.execute(
         CommandIntent(
             id=command_id,
-            name="set_mode",
-            params={"mode": mode, "session_id": "ws-a"},
+            name="set_split",
+            params={"split": on, "session_id": "ws-a"},
             source="websocket",
-            target=_MODE,
+            target=_SPLIT,
             timeout=3.0,
             pending_policy="scoped",
-            expected_observations=(_MODE,),
+            expected_observations=(_SPLIT,),
         )
     )
     return CommandQueueEntry(
-        SetMode(mode),
+        SetSplit(on),
         future=asyncio.get_running_loop().create_future(),
         command_id=command_id,
         source="websocket",
@@ -226,11 +231,11 @@ async def test_deferred_entry_releases_once_with_its_original_future() -> None:
     poller = RadioPoller(radio, queue, state_store=store)
     _observe_ptt(store, True, observed_at=clock.now())
     future = asyncio.get_running_loop().create_future()
-    entry = CommandQueueEntry(SetMode("USB"), future=future)
+    entry = CommandQueueEntry(SetSplit(True), future=future)
 
     assert poller._stage_tx_interlocked_entries([entry]) == []  # noqa: SLF001
     assert future.done() is False
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
     clock.advance(0.1)
     _observe_ptt(store, False, observed_at=clock.now())
@@ -244,9 +249,9 @@ async def test_deferred_entry_releases_once_with_its_original_future() -> None:
 
     await poller._execute_queued_entry(entry)  # noqa: SLF001
     assert future.result() is None
-    radio.set_mode.assert_awaited_once_with("USB", None)
+    radio.set_split.assert_awaited_once_with(True)
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
-    radio.set_mode.assert_awaited_once()
+    radio.set_split.assert_awaited_once()
 
 
 async def test_supersession_keeps_deadline_and_expiry_wins_over_release() -> None:
@@ -256,22 +261,22 @@ async def test_supersession_keeps_deadline_and_expiry_wins_over_release() -> Non
     poller = RadioPoller(radio, queue, state_store=store)
     _observe_ptt(store, True, observed_at=clock.now())
     old_future = asyncio.get_running_loop().create_future()
-    old = CommandQueueEntry(SetMode("LSB"), future=old_future)
+    old = CommandQueueEntry(SetSplit(False), future=old_future)
     assert poller._stage_tx_interlocked_entries([old]) == []  # noqa: SLF001
 
     clock.advance(2.5)
     _observe_ptt(store, False, observed_at=clock.now())
     new_future = asyncio.get_running_loop().create_future()
-    new = CommandQueueEntry(SetMode("USB"), future=new_future)
+    new = CommandQueueEntry(SetSplit(True), future=new_future)
     assert poller._stage_tx_interlocked_entries([new]) == []  # noqa: SLF001
     assert "superseded" in str(old_future.exception())
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
     clock.advance(0.5)
     _observe_ptt(store, False, observed_at=clock.now())
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
     assert "expired" in str(new_future.exception())
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
 
 async def test_unknown_deferred_command_fails_closed_without_entering_lane() -> None:
@@ -280,38 +285,244 @@ async def test_unknown_deferred_command_fails_closed_without_entering_lane() -> 
     store.begin_provider_generation()
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
     service = _service(clock, store)
-    entry = await _lifecycle_entry(service, command_id="unknown", mode="USB")
+    entry = await _lifecycle_entry(service, command_id="unknown", on=True)
     before = service.lifecycle_events()
 
     assert poller._stage_tx_interlocked_entries([entry]) == [entry]  # noqa: SLF001
-    with pytest.raises(CommandError, match="RF state is unknown"):
+    with pytest.raises(CommandError, match="RF state is unknown") as excinfo:
         await poller._execute_queued_entry(entry)  # noqa: SLF001
+    assert entry.future is not None
+    assert entry.future.exception() is excinfo.value
 
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
     assert service.lifecycle_events() == before
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
 
 async def test_fresh_rx_deferred_class_dispatches_immediately_once() -> None:
     poller, radio, store = _poller()
     _observe_ptt(store, False)
     future = asyncio.get_running_loop().create_future()
-    entry = CommandQueueEntry(SetMode("USB"), future=future)
+    entry = CommandQueueEntry(SetSplit(True), future=future)
 
     assert poller._stage_tx_interlocked_entries([entry]) == [entry]  # noqa: SLF001
     await poller._execute_queued_entry(entry)  # noqa: SLF001
 
     assert future.result() is None
-    radio.set_mode.assert_awaited_once_with("USB", None)
+    radio.set_split.assert_awaited_once_with(True)
 
 
-async def test_frequency_now_dispatches_without_entering_the_deferred_lane() -> None:
-    """MOR-1940: the exact contrast to the tests above. FREQUENCY was
-    reclassified DEFER -> tx-safe at this seat too (both bench radios accept
-    and apply it while keyed), so it no longer enters
-    ``_stage_tx_interlocked_entries`` at all -- not even under known TX --
-    unlike MODE (still DEFER) above.
-    """
+def test_authority_approved_commands_do_not_inspect_observed_rf() -> None:
+    commands = [
+        CommandQueueEntry(SetFreq(14_074_000)),
+        CommandQueueEntry(SetMode("USB")),
+        CommandQueueEntry(SetBand(5)),
+        CommandQueueEntry(SelectVfo("A")),
+        CommandQueueEntry(VfoSwap()),
+        CommandQueueEntry(VfoEqualize()),
+    ]
+    poller, _radio, _store = _poller()
+    poller._current_rf_state = lambda *_: pytest.fail(  # type: ignore[method-assign] # noqa: SLF001
+        "observed RF was inspected"
+    )
+
+    for entry in commands:
+        poller._enforce_tx_interlock(entry.command)  # type: ignore[arg-type] # noqa: SLF001
+    assert poller._stage_tx_interlocked_entries(commands) == commands  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_managed_non_ptt_bypasses_legacy_observed_rf_and_deferred_lane() -> None:
+    radio, store, queue = _radio(), StateStore(), CommandQueue()
+    store.begin_provider_generation()
+    authority = SimpleNamespace(admit_managed_write=AsyncMock(return_value=True))
+    poller = RadioPoller(
+        radio,
+        queue,
+        state_store=store,
+        managed_tx_authority=authority,
+    )
+    poller._current_rf_state = lambda *_: pytest.fail(  # type: ignore[method-assign] # noqa: SLF001
+        "managed non-PTT dispatch inspected legacy RF state"
+    )
+    future = asyncio.get_running_loop().create_future()
+    entry = CommandQueueEntry(SetSplit(True), future=future)
+
+    assert poller._stage_tx_interlocked_entries([entry]) == [entry]  # noqa: SLF001
+    await poller._execute_queued_entry(entry)  # noqa: SLF001
+
+    assert future.result() is None
+    radio.set_split.assert_awaited_once_with(True)
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_descriptor_intent_uses_bound_authority_before_radio_write() -> None:
+    radio, store, queue = _radio(), StateStore(), CommandQueue()
+    store.begin_provider_generation()
+    _observe_ptt(store, True)
+    authority = MagicMock()
+    authority.admit_managed_write = AsyncMock(side_effect=(False, True))
+    poller = RadioPoller(
+        radio,
+        queue,
+        state_store=store,
+        managed_tx_authority=authority,
+    )
+    intent = bind_command_intent("set_antenna_1", {"on": True}, source="websocket")
+
+    with pytest.raises(CommandError, match="transmit authority"):
+        await poller._execute(intent)  # noqa: SLF001
+    radio.set_antenna_1.assert_not_awaited()
+
+    await poller._execute(intent)  # noqa: SLF001
+
+    assert authority.admit_managed_write.await_args_list == [
+        ((intent,), {}),
+        ((intent,), {}),
+    ]
+    radio.set_antenna_1.assert_awaited_once_with(on=True)
+
+
+@pytest.mark.parametrize(
+    ("entry_kwargs", "message"),
+    (
+        ({"expires_at_monotonic": 9.0}, "expired"),
+        ({"session_id": "gone"}, "session"),
+        ({"provider_generation": 6}, "provider generation"),
+        ({"connection_generation": "old"}, "connection generation"),
+    ),
+)
+def test_dispatch_currency_rejects_each_captured_causal_mismatch(
+    entry_kwargs: dict[str, object], message: str
+) -> None:
+    entry = CommandQueueEntry(SetFreq(14_074_000), **entry_kwargs)
+    with pytest.raises(CommandError, match=message):
+        validate_command_queue_entry_currency(
+            entry,
+            now=10.0,
+            provider_generation=7,
+            connection_generation="new",
+            session_is_live=lambda _session_id: False,
+        )
+
+
+def test_managed_dispatch_currency_rejects_a_missing_connection_stamp() -> None:
+    entry = CommandQueueEntry(SetFreq(14_074_000))
+    with pytest.raises(CommandError, match="connection generation is missing"):
+        validate_command_queue_entry_currency(
+            entry,
+            now=10.0,
+            provider_generation=7,
+            connection_generation="current",
+            session_is_live=lambda _session_id: True,
+            require_connection_generation=True,
+        )
+
+
+async def test_shared_queue_finishes_descriptor_wire_before_positive_tx() -> None:
+    log: list[str] = []
+
+    class Admission:
+        async def admit_managed_write(self, _intent):
+            log.append("write-admitted")
+            return True
+
+    class Receipt:
+        outcome = SimpleNamespace(value="accepted")
+
+        async def wait_settlement(self):
+            log.append("positive-wire-settled")
+
+    async def positive(ready: asyncio.Future[None]):
+        await ready
+        log.append("positive-admitted")
+        return Receipt()
+
+    radio, store, queue = _radio(), StateStore(), CommandQueue()
+    store.begin_provider_generation()
+    radio.set_antenna_1.side_effect = lambda **_kwargs: log.append("write-finished")
+    poller = RadioPoller(
+        radio, queue, state_store=store, managed_tx_authority=Admission()
+    )
+    intent = bind_command_intent("set_antenna_1", {"on": True}, source="websocket")
+    ready = asyncio.get_running_loop().create_future()
+    submission = asyncio.create_task(positive(ready))
+    connection_generation = queue.capture_connection_generation()
+    queue.put_ordered(
+        intent,
+        provider_generation=store.provider_generation,
+        connection_generation=connection_generation,
+    )
+    queue.put_ordered(
+        None,
+        source="http",
+        provider_generation=store.provider_generation,
+        connection_generation=connection_generation,
+        positive_tx_ready=ready,
+        positive_tx_submission=submission,
+    )
+
+    while (entry := queue.take_entry()) is not None:
+        await poller._execute_queued_entry(entry)  # noqa: SLF001
+
+    assert log == [
+        "write-admitted",
+        "write-finished",
+        "positive-admitted",
+        "positive-wire-settled",
+    ]
+
+
+async def test_reverse_positive_then_descriptor_is_refused_before_wire() -> None:
+    managed = False
+
+    class Admission:
+        async def admit_managed_write(self, _intent):
+            return not managed
+
+    class Receipt:
+        outcome = SimpleNamespace(value="accepted")
+
+        async def wait_settlement(self):
+            nonlocal managed
+            managed = True
+
+    async def positive(ready: asyncio.Future[None]):
+        await ready
+        return Receipt()
+
+    radio, store, queue = _radio(), StateStore(), CommandQueue()
+    store.begin_provider_generation()
+    poller = RadioPoller(
+        radio, queue, state_store=store, managed_tx_authority=Admission()
+    )
+    ready = asyncio.get_running_loop().create_future()
+    connection_generation = queue.capture_connection_generation()
+    queue.put_ordered(
+        None,
+        source="rigctld",
+        provider_generation=store.provider_generation,
+        connection_generation=connection_generation,
+        positive_tx_ready=ready,
+        positive_tx_submission=asyncio.create_task(positive(ready)),
+    )
+    queue.put_ordered(
+        bind_command_intent("set_antenna_1", {"on": True}, source="websocket"),
+        provider_generation=store.provider_generation,
+        connection_generation=connection_generation,
+    )
+
+    first = queue.take_entry()
+    second = queue.take_entry()
+    assert first is not None and second is not None
+    await poller._execute_queued_entry(first)  # noqa: SLF001
+    with pytest.raises(CommandError, match="transmit authority"):
+        await poller._execute_queued_entry(second)  # noqa: SLF001
+    radio.set_antenna_1.assert_not_awaited()
+
+
+async def test_frequency_dispatches_without_entering_the_deferred_lane() -> None:
     clock = FreshnessClock(start=10.0)
     radio, store, queue = _radio(), StateStore(freshness_clock=clock), CommandQueue()
     store.begin_provider_generation()
@@ -335,7 +546,7 @@ async def test_deferred_hold_lifecycle_is_single_and_release_stays_unconfirmed()
     store.begin_provider_generation()
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
     service = _service(clock, store)
-    entry = await _lifecycle_entry(service, command_id="held", mode="USB")
+    entry = await _lifecycle_entry(service, command_id="held", on=True)
     _observe_ptt(store, True, observed_at=clock.now())
 
     assert poller._stage_tx_interlocked_entries([entry]) == []  # noqa: SLF001
@@ -344,7 +555,7 @@ async def test_deferred_hold_lifecycle_is_single_and_release_stays_unconfirmed()
         "held",
         "queued",
         "websocket",
-        _MODE,
+        _SPLIT,
     )
     assert held.details == {
         "heldBy": "tx_interlock",
@@ -365,7 +576,7 @@ async def test_deferred_hold_lifecycle_is_single_and_release_stays_unconfirmed()
 
     assert service.lifecycle_events()[-1] is held
     assert service.pending_overlays(source="websocket", session_id="ws-a")
-    radio.set_mode.assert_awaited_once_with("USB", None)
+    radio.set_split.assert_awaited_once_with(True)
 
 
 async def test_deferred_replacement_and_expiry_emit_ordered_terminal_truth() -> None:
@@ -374,12 +585,12 @@ async def test_deferred_replacement_and_expiry_emit_ordered_terminal_truth() -> 
     store.begin_provider_generation()
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
     service = _service(clock, store)
-    first = await _lifecycle_entry(service, command_id="first", mode="LSB")
+    first = await _lifecycle_entry(service, command_id="first", on=False)
     _observe_ptt(store, True, observed_at=clock.now())
     assert poller._stage_tx_interlocked_entries([first]) == []  # noqa: SLF001
 
     clock.advance(2.5)
-    replacement = await _lifecycle_entry(service, command_id="replacement", mode="USB")
+    replacement = await _lifecycle_entry(service, command_id="replacement", on=True)
     _observe_ptt(store, True, observed_at=clock.now())
     snapshots: list[tuple[str, str, tuple[str, ...]]] = []
     service.subscribe_lifecycle(
@@ -419,7 +630,7 @@ async def test_deferred_replacement_and_expiry_emit_ordered_terminal_truth() -> 
     terminal_count = len(service.lifecycle_events())
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
     assert len(service.lifecycle_events()) == terminal_count
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
 
 # ── MOR-1884 (MOR-1500 B1-e): the seat guards _execute itself ────────────────
@@ -431,45 +642,258 @@ async def test_direct_defer_family_emit_is_refused_at_the_execute_seat(
 ) -> None:
     """An uncommanded internal emit shares the queued commands' seat."""
     poller, radio, store = _poller()
-    radio.set_vfo_slot = AsyncMock()
     if ptt is not None:
         _observe_ptt(store, ptt)
 
     with pytest.raises(CommandError, match="RF state is (unknown|TX)"):
-        await poller._execute(SelectVfo(vfo="A"))  # noqa: SLF001
+        await poller._execute(SetSplit(on=True))  # noqa: SLF001
 
-    radio.set_vfo_slot.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
 
-async def test_bootstrap_exemption_passes_the_seat_under_unknown_rf() -> None:
-    """At connection start RF is structurally UNKNOWN; the one exempted write
-    must reach the dispatch body instead of being refused (MOR-1443).
-
-    Discriminated by WHICH failure it hits: the same command without the
-    exemption never leaves the seat ("RF state is unknown"), while the
-    exempted one gets all the way into the SelectVfo dispatch and fails on
-    that command's own readback contract — proof it passed the interlock.
-    """
+async def test_vfo_selection_is_not_observed_rf_gated() -> None:
     poller, _radio, _store = _poller()
-
-    with pytest.raises(CommandError, match="RF state is unknown"):
+    with pytest.raises(CommandError) as dispatched:
         await poller._execute(SelectVfo(vfo="A"))  # noqa: SLF001
+    assert "RF state" not in str(dispatched.value)
+    assert "VFO selection" in str(dispatched.value)
 
-    with pytest.raises(CommandError) as exempted:
-        await poller._execute(  # noqa: SLF001
-            SelectVfo(vfo="A"), connection_epoch_bootstrap=True
+
+class ConnectVfoRadio(CoreRadio):
+    connected = True
+    radio_ready = True
+    control_connected = True
+
+    def __init__(self, *, selected: str = "B") -> None:
+        from serial_stub import DeterministicSerialCivLink
+
+        super().__init__("127.0.0.1", model="IC-7300")
+        self.wire = DeterministicSerialCivLink()
+        self.selected = selected
+        self.ack = asyncio.Event()
+        self.ack.set()
+        self.reject = False
+        self.refetches = 0
+
+    def _check_connected(self) -> None:
+        pass
+
+    async def _send_civ_expect(self, frame: bytes, **kwargs: object) -> object:
+        from rigplane.core.civ import CivFrame
+        from rigplane.core.types import bcd_encode
+
+        await self.wire.send(frame)
+        command, data = frame[4], frame[5:-1]
+        if command == 0x07:
+            await self.ack.wait()
+            if self.reject:
+                return CivFrame(0xE0, 0x94, 0xFA)
+            self.selected = "A" if data == b"\x00" else "B"
+            return CivFrame(0xE0, 0x94, 0xFB)
+        slot = self.selected if data[0] == 0 else ("B" if self.selected == "A" else "A")
+        if command == 0x25:
+            payload = data + bcd_encode(14_200_000 if slot == "A" else 7_100_000)
+        elif command == 0x26:
+            payload = data + (b"\x01\x00\x01" if slot == "A" else b"\x00\x00\x02")
+        else:
+            raise AssertionError(f"Unexpected write/read: {frame.hex()}")
+        return CivFrame(0xE0, 0x94, command, data=payload)
+
+    async def _fetch_initial_state(self) -> None:
+        self.refetches += 1
+        _observe_ptt(self.state_store, False)
+
+
+def connect_vfo_poller(
+    *, selected: str = "B"
+) -> tuple[RadioPoller, ConnectVfoRadio, StateStore]:
+    radio = ConnectVfoRadio(selected=selected)
+    store = radio.state_store
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    return poller, radio, store
+
+
+@pytest.mark.parametrize("selected", ("A", "B"))
+async def test_application_connect_selects_a_once_and_binds_real_wire(
+    selected: str,
+) -> None:
+    poller, radio, store = connect_vfo_poller(selected=selected)
+    _observe_ptt(store, False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    await poller._send_query()
+    assert radio.wire.sent_frames == [
+        bytes.fromhex(frame)
+        for frame in (
+            "fefe94e00700fd",
+            "fefe94e02500fd",
+            "fefe94e02600fd",
+            "fefe94e02501fd",
+            "fefe94e02601fd",
         )
-    assert "RF state" not in str(exempted.value)
-    assert "VFO selection" in str(exempted.value)
+    ]
+    assert radio.selected == "A"
+    snapshot = store.snapshot()
+    assert snapshot.field(FieldPath.active_slot("0")).value == "A"
+    assert (
+        snapshot.field(FieldPath.vfo_slot("0", "A", "freq_mode", "freq_hz")).value
+        == 14_200_000
+    )
+    assert (
+        snapshot.field(FieldPath.vfo_slot("0", "B", "freq_mode", "freq_hz")).value
+        == 7_100_000
+    )
 
 
-def test_bootstrap_exemption_has_exactly_one_production_call_site() -> None:
-    from pathlib import Path
+@pytest.mark.parametrize(
+    "state", ("read_only", "tx", "unknown", "stale", "old_generation")
+)
+async def test_application_connect_refuses_without_fresh_rx(state: str) -> None:
+    poller, radio, store = connect_vfo_poller()
+    if state != "unknown":
+        _observe_ptt(
+            store,
+            state == "tx",
+            observed_at=time.monotonic() - (5 if state == "stale" else 0),
+        )
+    if state == "old_generation":
+        store.begin_provider_generation()
+    if state in ("read_only", "tx"):
+        radio.send_civ = AsyncMock()
+    await poller.select_vfo_a_on_connect(read_only=state == "read_only")
+    if state in ("read_only", "tx"):
+        radio.send_civ.assert_not_awaited()
+    _observe_ptt(store, False)
+    await poller._send_query()
+    assert radio.wire.sent_frames == []
+    assert str(FieldPath.active_slot("0")) not in store.snapshot().as_dict()
 
-    import rigplane.web.radio_poller as radio_poller_module
 
-    source = Path(radio_poller_module.__file__).read_text()
-    assert source.count("connection_epoch_bootstrap=True") == 1
+@pytest.mark.parametrize(
+    "overrides",
+    ({"receiver_count": 2}, {"vfo_scheme": "main_sub"}, {"vfo_readback": "absolute"}),
+)
+async def test_application_connect_leaves_other_topologies_alone(
+    overrides: dict,
+) -> None:
+    from dataclasses import replace
+
+    poller, radio, store = connect_vfo_poller()
+    poller._profile = replace(poller._profile, **overrides)
+    radio.send_civ = AsyncMock()
+    _observe_ptt(store, False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    radio.send_civ.assert_not_awaited()
+    assert radio.wire.sent_frames == []
+
+
+@pytest.mark.parametrize("reject", (False, True))
+async def test_application_connect_ack_is_honest_and_inflight_calls_do_not_resend(
+    reject: bool,
+) -> None:
+    poller, radio, store = connect_vfo_poller()
+    _observe_ptt(store, False)
+    radio.ack.clear()
+    radio.reject = reject
+    task = asyncio.create_task(poller.select_vfo_a_on_connect(read_only=False))
+    await asyncio.sleep(0)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    assert str(FieldPath.active_slot("0")) not in store.snapshot().as_dict()
+    assert len(radio.wire.sent_frames) == 1
+    radio.ack.set()
+    await task
+    await poller.select_vfo_a_on_connect(read_only=False)
+    assert sum(frame[4] == 0x07 for frame in radio.wire.sent_frames) == 1
+    assert (str(FieldPath.active_slot("0")) in store.snapshot().as_dict()) is not reject
+
+
+async def test_connection_reset_requires_new_rx_and_allows_one_new_select() -> None:
+    poller, radio, store = connect_vfo_poller()
+    _observe_ptt(store, False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    radio._civ_epoch += 1
+    poller.reset_vfo_session(connection_recovery=True)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    assert len(radio.wire.sent_frames) == 5
+    # An unsafe connection attempt has no automatic retry, even after RX arrives.
+    _observe_ptt(store, False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    assert len(radio.wire.sent_frames) == 5
+    radio._civ_epoch += 1
+    poller.reset_vfo_session(connection_recovery=True)
+    _observe_ptt(store, False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    poller.reset_vfo_session(connection_recovery=True)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    assert len(radio.wire.sent_frames) == 10
+    assert store.snapshot().field(FieldPath.active_slot("0")).value == "A"
+
+
+async def observe_connect_ptt_read(radio: ConnectVfoRadio, value: bool | None) -> None:
+    from rigplane.core.civ import CivFrame
+    from rigplane.commands import build_civ_frame
+
+    await radio.wire.send(build_civ_frame(0x94, 0xE0, 0x1C, sub=0))
+    if value is not None:
+        await radio._civ_runtime._route_civ_frame(
+            CivFrame(0xE0, 0x94, 0x1C, sub=0, data=bytes([int(value)])),
+            generation=radio._civ_epoch,
+            store_provider_generation=radio.state_store.provider_generation,
+        )
+
+
+@pytest.mark.parametrize("value", (False, True, None))
+@pytest.mark.parametrize("stale_ptt", (False, True))
+async def test_connect_rechecks_genuine_ptt_after_one_bounded_read(
+    value: bool | None,
+    stale_ptt: bool,
+) -> None:
+    poller, radio, store = connect_vfo_poller()
+    _observe_ptt(store, stale_ptt, observed_at=time.monotonic() - 5.0)
+
+    async def read(command: int, **kwargs: object) -> bool:
+        assert command == 0x1C
+        assert kwargs == {"sub": 0, "data": b"", "wait_response": True}
+        await observe_connect_ptt_read(radio, value)
+        return False
+
+    radio.send_civ = AsyncMock(side_effect=read)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    radio.send_civ.assert_awaited_once()
+    assert radio.wire.sent_frames[0] == bytes.fromhex("fefe94e01c00fd")
+    assert len(radio.wire.sent_frames) == (6 if value is False else 1)
+    assert (str(FieldPath.active_slot("0")) in store.snapshot().as_dict()) is (
+        value is False
+    )
+
+
+@pytest.mark.parametrize("outcome", ("timeout", "new_generation"))
+async def test_connect_read_timeout_or_epoch_change_never_selects(outcome: str) -> None:
+    poller, radio, store = connect_vfo_poller()
+    entered, release = asyncio.Event(), asyncio.Event()
+    radio.send_civ = AsyncMock()
+
+    async def read(*args: object, **kwargs: object) -> None:
+        entered.set()
+        if outcome == "timeout":
+            await asyncio.Event().wait()
+        await release.wait()
+        radio._civ_epoch += 1
+        store.begin_provider_generation()
+        await observe_connect_ptt_read(radio, False)
+
+    radio.send_civ.side_effect = read
+    poller._VFO_CONNECT_PTT_TIMEOUT = 0.01
+    task = asyncio.create_task(poller.select_vfo_a_on_connect(read_only=False))
+    await asyncio.wait_for(entered.wait(), timeout=0.5)
+    await poller.select_vfo_a_on_connect(read_only=False)
+    release.set()
+    await task
+    radio.send_civ.assert_awaited_once()
+    assert all(frame[4] != 0x07 for frame in radio.wire.sent_frames)
+    assert str(FieldPath.active_slot("0")) not in store.snapshot().as_dict()
 
 
 async def test_teardown_drain_unkey_stays_outside_the_execute_seat() -> None:
@@ -545,6 +969,42 @@ async def test_ptt_on_dispatches_in_fresh_rx() -> None:
     radio.set_ptt.assert_awaited_once_with(True)
 
 
+async def test_managed_typed_ptt_on_fails_before_raw_write_or_legacy_timer() -> None:
+    radio, store, queue = _radio(), StateStore(), CommandQueue()
+    store.begin_provider_generation()
+    _observe_ptt(store, False)
+    authority = SimpleNamespace(admit_managed_write=AsyncMock(return_value=True))
+    poller = RadioPoller(
+        radio,
+        queue,
+        state_store=store,
+        managed_tx_authority=authority,
+    )
+    poller._arm_max_key_down = MagicMock()  # type: ignore[method-assign] # noqa: SLF001
+
+    with pytest.raises(CommandError, match="positive TX queue submission"):
+        await poller._execute(PttOn())  # noqa: SLF001
+
+    radio.set_ptt.assert_not_awaited()
+    poller._arm_max_key_down.assert_not_called()  # type: ignore[attr-defined] # noqa: SLF001
+
+
+async def test_managed_typed_ptt_off_remains_unconditionally_attemptable() -> None:
+    radio, store, queue = _radio(), StateStore(), CommandQueue()
+    store.begin_provider_generation()
+    authority = SimpleNamespace(admit_managed_write=AsyncMock(return_value=True))
+    poller = RadioPoller(
+        radio,
+        queue,
+        state_store=store,
+        managed_tx_authority=authority,
+    )
+
+    await poller._execute(PttOff())  # noqa: SLF001
+
+    radio.set_ptt.assert_awaited_once_with(False)
+
+
 @pytest.mark.parametrize("ptt", (None, True), ids=("unknown", "tx"))
 async def test_ptt_off_always_attempts_even_with_corrupted_family_table(
     monkeypatch: pytest.MonkeyPatch, ptt: bool | None
@@ -593,6 +1053,8 @@ async def test_refused_ptt_on_emits_machine_readable_failed_lifecycle() -> None:
 
     with pytest.raises(TxInterlockRefusal) as excinfo:
         await poller._execute_queued_entry(entry)  # noqa: SLF001
+    assert entry.future is not None
+    assert entry.future.exception() is excinfo.value
     poller._mark_queued_command_failed(entry, excinfo.value)  # noqa: SLF001
 
     event = service.lifecycle_events()[-1]

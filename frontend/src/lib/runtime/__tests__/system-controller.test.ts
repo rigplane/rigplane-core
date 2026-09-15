@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SystemController } from '../system-controller';
 
@@ -126,5 +126,68 @@ describe('SystemController HTTP-polling registration removal (A10)', () => {
     };
     expect(surface.registerPolling).toBeUndefined();
     expect(surface.setStopPolling).toBeUndefined();
+  });
+});
+
+describe('SystemController credential-free HTTP', () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    localStorage.clear();
+    fetchMock.mockReset();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  it('ignores retired tokens for power commands and preserves each POST body', async () => {
+    fetchMock.mockResolvedValue({ ok: true } as Response);
+    const { controller } = fixture();
+
+    localStorage.setItem('rigplane-auth-token', 'power-one');
+    await controller.powerOn();
+    localStorage.setItem('rigplane-auth-token', 'power-two');
+    await controller.powerOff();
+    localStorage.setItem('rigplane-auth-token', 'identify-token');
+    await controller.identifyFrequency(14_074_000);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/radio/power', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ state: 'on' }),
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/radio/power', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ state: 'off' }),
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      '/api/v1/eibi/identify?freq=14074000',
+      { headers: {} },
+    );
+  });
+
+  it('omits authorization without a token and preserves existing 401 behavior', async () => {
+    const { controller } = fixture();
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      text: async () => 'Unauthorized',
+    } as Response);
+    await expect(controller.powerOn()).rejects.toThrow('Unauthorized');
+
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 401 } as Response);
+    await expect(controller.identifyFrequency(14_074_000)).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v1/eibi/identify?freq=14074000',
+      { headers: {} },
+    );
   });
 });

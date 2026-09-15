@@ -2,6 +2,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import ValueControl from '../ValueControl.svelte';
+import HBarRenderer from '../HBarRenderer.svelte';
+import BipolarRenderer from '../BipolarRenderer.svelte';
+import DiscreteRenderer from '../DiscreteRenderer.svelte';
+import ProfessionalKnob from '../skins/ProfessionalKnob.svelte';
+import type { Skin } from '../skin';
+import {
+  createBipolarContinuousScalarPolicy,
+  createContinuousScalar,
+  createDiscreteContinuousScalarPolicy,
+  createHBarContinuousScalarPolicy,
+  createKnobContinuousScalarPolicy,
+  createRenderedNativeRangeContinuousScalarPolicy,
+} from '../../../../primitives/scalar/continuous-scalar.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 
@@ -36,6 +49,99 @@ afterEach(() => {
 });
 
 describe('ValueControl wrapper', () => {
+  it('renders a caller-owned HBar binding synchronously without raw bounds', () => {
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading' as const,
+        reading: { status: 'known' as const, value: 40 },
+        ownerKey: 'direct-hbar',
+        domain: { min: 20, max: 60, step: 5, defaultValue: null, fineStepDivisor: 5 },
+        enabled: true,
+        request: vi.fn(),
+      }),
+      createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs: 0 }),
+    );
+
+    const target = mountControl({ binding, label: 'Direct', renderer: 'hbar' });
+
+    expect(getValueDisplay(target)?.textContent).toBe('40');
+    expect(getSlider(target).getAttribute('aria-valuemin')).toBe('20');
+    expect(getSlider(target).getAttribute('aria-valuemax')).toBe('60');
+    expect(target.querySelector('.vc-hbar')?.getAttribute('style'))
+      .toContain('--vc-fill-percent: 50%');
+    binding.destroy();
+  });
+
+  it('renders a caller-owned Bipolar binding synchronously without raw bounds', () => {
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading' as const,
+        reading: { status: 'known' as const, value: -25 },
+        ownerKey: 'direct-bipolar',
+        domain: { min: -100, max: 100, step: 5, defaultValue: 0, fineStepDivisor: 10 },
+        enabled: true,
+        request: vi.fn(),
+      }),
+      createBipolarContinuousScalarPolicy({ debounceMs: 0 }),
+    );
+
+    const target = mountControl({ binding, label: 'Direct', renderer: 'bipolar' });
+
+    expect(getValueDisplay(target)?.textContent).toBe('-25');
+    expect(getSlider(target).getAttribute('aria-valuemin')).toBe('-100');
+    expect(getSlider(target).getAttribute('aria-valuemax')).toBe('100');
+    expect(target.querySelector('.vc-bipolar')?.getAttribute('style'))
+      .toContain('--vc-current: 37.5%');
+    binding.destroy();
+  });
+
+  it('renders a caller-owned Discrete binding synchronously without raw bounds', () => {
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading' as const,
+        reading: { status: 'known' as const, value: 4 },
+        ownerKey: 'direct-discrete',
+        domain: { min: 0, max: 8, step: 1, defaultValue: null, fineStepDivisor: 10 },
+        enabled: true,
+        request: vi.fn(),
+      }),
+      createDiscreteContinuousScalarPolicy({ debounceMs: 0 }),
+    );
+
+    const target = mountControl({
+      binding, label: 'Direct discrete', renderer: 'discrete', tickStyle: 'led',
+    });
+
+    expect(getValueDisplay(target)?.textContent).toBe('4');
+    expect(getSlider(target).getAttribute('aria-valuemin')).toBe('0');
+    expect(getSlider(target).getAttribute('aria-valuemax')).toBe('8');
+    expect(target.querySelector('.vc-discrete')?.getAttribute('style'))
+      .toContain('--vc-fill-percent: 50%');
+    binding.destroy();
+  });
+
+  it('renders a caller-owned Knob binding synchronously without raw bounds', () => {
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading' as const,
+        reading: { status: 'known' as const, value: 40 },
+        ownerKey: 'direct-knob',
+        domain: { min: 20, max: 60, step: 5, defaultValue: null, fineStepDivisor: 5 },
+        enabled: true,
+        request: vi.fn(),
+      }),
+      createKnobContinuousScalarPolicy({ debounceMs: 0 }),
+    );
+
+    const target = mountControl({ binding, label: 'Direct knob', renderer: 'knob' });
+
+    expect(target.querySelector('.vc-knob-value')?.textContent).toBe('40');
+    expect(getSlider(target).getAttribute('aria-valuemin')).toBe('20');
+    expect(getSlider(target).getAttribute('aria-valuemax')).toBe('60');
+    expect(getSlider(target).getAttribute('aria-valuenow')).toBe('40');
+    binding.destroy();
+  });
+
   it('renders HBarRenderer when renderer is hbar', () => {
     const target = mountControl({
       value: 50,
@@ -73,6 +179,34 @@ describe('ValueControl wrapper', () => {
       onChange: vi.fn(),
     });
     expect(target.querySelector('.vc-knob')).toBeTruthy();
+  });
+
+  it.each([
+    ['hbar', '.vc-bipolar'],
+    ['bipolar', '.vc-hbar'],
+    ['discrete', '.vc-discrete'],
+    ['knob', '.pro-knob'],
+  ] as const)('uses the typed skin map for %s', (renderer, selector) => {
+    const skin: Skin = {
+      name: 'complete-test-skin',
+      hbar: BipolarRenderer,
+      bipolar: HBarRenderer,
+      discrete: DiscreteRenderer,
+      knob: ProfessionalKnob,
+    };
+    const target = mountControl({
+      value: 50,
+      min: 0,
+      max: 100,
+      step: 10,
+      label: 'Complete skin',
+      renderer,
+      skin,
+      onChange: vi.fn(),
+    });
+
+    expect(target.querySelector(selector)).toBeTruthy();
+    expect(getSlider(target).getAttribute('aria-valuenow')).toBe('50');
   });
 });
 
@@ -277,6 +411,44 @@ describe('HBarRenderer', () => {
     const slider = getSlider(target);
     slider?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(onchange).toHaveBeenCalledWith(60);
+  });
+
+  it('sends one command per distinct value while a drag jitters inside one step', () => {
+    const request = vi.fn<(value: number) => void>();
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading' as const,
+        reading: { status: 'known' as const, value: 100 },
+        ownerKey: 'nb-level',
+        domain: { min: 0, max: 255, step: 1, defaultValue: null, fineStepDivisor: 1 },
+        enabled: true,
+        request,
+      }),
+      createRenderedNativeRangeContinuousScalarPolicy(),
+    );
+    const target = mountControl({ binding, label: 'NB level', renderer: 'hbar' });
+    const slider = getSlider(target);
+    const container = target.querySelector('.vc-hbar') as HTMLDivElement;
+    vi.spyOn(container, 'getBoundingClientRect')
+      .mockReturnValue({ left: 0, width: 255 } as DOMRect);
+    Object.assign(slider, {
+      setPointerCapture: vi.fn(),
+      releasePointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+    });
+
+    slider.dispatchEvent(new PointerEvent('pointerdown', {
+      pointerId: 1, clientX: 138, bubbles: true,
+    }));
+    for (const clientX of [138.1, 137.9, 138.4, 138.05, 137.6]) {
+      slider.dispatchEvent(new PointerEvent('pointermove', {
+        pointerId: 1, clientX, bubbles: true,
+      }));
+    }
+    slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, bubbles: true }));
+
+    expect(request.mock.calls).toEqual([[138]]);
+    binding.destroy();
   });
 });
 

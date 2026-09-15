@@ -119,14 +119,14 @@ describe('the sheet parses into something worth asserting against', () => {
   });
 });
 
-describe('F1 — the fault rail WINS over the RF-doubt rail, it does not merely exist', () => {
+describe('F1 — passive unknown stays quiet while active TX doubt remains visible', () => {
   it('renders a fault red, not the amber of the doubt rail it overlaps with', () => {
     expect(winner('border-inline-start', FAULT)).toBe('24px solid var(--dl-fieldline-tx-active)');
     expect(winner('border-inline-start', FAULT)).not.toContain('tx-tuning');
   });
 
-  it('still leaves RF doubt amber when the session has NOT failed', () => {
-    expect(winner('border-inline-start', RF_UNKNOWN)).toBe('16px solid var(--dl-fieldline-tx-tuning)');
+  it('uses the RX baseline for passive unknown and amber for uncertain TX', () => {
+    expect(winner('border-inline-start', RF_UNKNOWN)).toBe(winner('border-inline-start', RX));
     expect(winner('border-inline-start', { session: 'idle', rf: 'uncertain' }))
       .toBe('16px solid var(--dl-fieldline-tx-tuning)');
   });
@@ -140,13 +140,14 @@ describe('F1 — the fault rail WINS over the RF-doubt rail, it does not merely 
   });
 
   it('every rail flood is one of the declared 8/16/24px widths', () => {
-    for (const state of [PENDING, KEYED, RELEASING, FAULT, RF_UNKNOWN]) {
+    for (const state of [PENDING, KEYED, RELEASING, FAULT]) {
       expect(winner('border-inline-start', state))
         .toMatch(/^(?:16|24)px solid var\(--dl-fieldline-tx-\w+\)$/);
     }
-    // The RX baseline is the token'd 8px rail, on the RX tone.
-    expect(winner('border-inline-start', RX))
-      .toBe('var(--dl-fieldline-rail) solid var(--dl-fieldline-rx-idle)');
+    for (const state of [RX, RF_UNKNOWN]) {
+      expect(winner('border-inline-start', state))
+        .toBe('var(--dl-fieldline-rail) solid var(--dl-fieldline-rx-idle)');
+    }
   });
 
   it('the carrier is the INLINE-START edge — a top rail would be studioline', () => {
@@ -215,16 +216,18 @@ describe('F3 — the band takes over, and a fault band beats the doubt band', ()
     expect(winner('color', FAULT, 'band')).toBe('var(--dl-fieldline-knockout)');
   });
 
-  it('doubt and pending stay OUTLINED — an unfilled band is a different reading', () => {
-    for (const state of [PENDING, RF_UNKNOWN]) {
+  it('uncertain TX and pending stay OUTLINED — an unfilled band is a different reading', () => {
+    for (const state of [PENDING, { session: 'idle', rf: 'uncertain' } as SurfaceState]) {
       expect(winner('border-color', state, 'band')).toBe('var(--dl-fieldline-tx-tuning)');
       expect(winner('background', state, 'band')).toBe('none');
     }
   });
 
-  it('RX shows no band at all: a transparent edge and no fill', () => {
-    expect(winner('border', RX, 'band')).toBe('var(--dl-fieldline-border) solid transparent');
-    expect(winner('background', RX, 'band')).toBe('none');
+  it('RX and passive unknown show no band: a transparent edge and no fill', () => {
+    for (const state of [RX, RF_UNKNOWN]) {
+      expect(winner('border', state, 'band')).toBe('var(--dl-fieldline-border) solid transparent');
+      expect(winner('background', state, 'band')).toBe('none');
+    }
   });
 });
 

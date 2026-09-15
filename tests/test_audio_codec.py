@@ -32,7 +32,7 @@ class TestAudioCodecEnum:
 
 class TestRadioAudioConfig:
     def test_default_codec(self) -> None:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         assert r.audio_codec == AudioCodec.PCM_2CH_16BIT
         assert r.audio_sample_rate == 48000
         assert r.audio_stream_request.rx_codec == AudioCodec.PCM_2CH_16BIT
@@ -56,6 +56,7 @@ class TestRadioAudioConfig:
             "192.168.1.100",
             audio_codec=AudioCodec.OPUS_1CH,
             audio_sample_rate=16000,
+            model="IC-7610",
         )
         assert r.audio_codec == AudioCodec.OPUS_1CH
         assert r.audio_sample_rate == 16000
@@ -76,16 +77,16 @@ class TestRadioAudioConfig:
         monkeypatch.setenv("ICOM_AUDIO_SAMPLE_RATE", "24000")
         monkeypatch.setattr(radio_module, "_DEFAULT_AUDIO_SAMPLE_RATE", 24000)
 
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
 
         assert r.audio_sample_rate == 24000
 
     def test_codec_from_int(self) -> None:
-        r = IcomRadio("192.168.1.100", audio_codec=0x40)
+        r = IcomRadio("192.168.1.100", audio_codec=0x40, model="IC-7610")
         assert r.audio_codec == AudioCodec.OPUS_1CH
 
     def test_codec_ulaw(self) -> None:
-        r = IcomRadio("192.168.1.100", audio_codec=AudioCodec.ULAW_1CH)
+        r = IcomRadio("192.168.1.100", audio_codec=AudioCodec.ULAW_1CH, model="IC-7610")
         assert r.audio_codec == AudioCodec.ULAW_1CH
 
 

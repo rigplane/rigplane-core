@@ -13,6 +13,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- **The `commands` CW-pitch and key-speed builders take the raw level
+  (MOR-2473, MOR-2481).** `rigplane.commands.set_cw_pitch` and
+  `rigplane.commands.set_key_speed` now take the raw 0-255 level instead
+  of Hz/WPM; a caller still passing Hz gets `ValueError` (Hz 300-900 is
+  outside the 0-255 level band), but a caller still passing WPM does not:
+  6-48 are valid levels and are sent as raw levels. The Hz/WPM conversion
+  moved into `CoreRadio.set_cw_pitch` /
+  `CoreRadio.set_key_speed`, which encode through the active profile's
+  `[controls.cw_pitch]` / `[controls.key_speed]` band and its new
+  `encode_rounding` key (`"ceil"` / `"nearest_half_down"`) via
+  `rigplane.profiles.control_domain.encode_legacy_control`. A CI-V
+  profile control without `encode_rounding` makes the `CoreRadio` setter
+  raise. The X6100's CW pitch and key speed move to its documented
+  400-1200 Hz (10 Hz step) and 5-50 WPM bands, and the X6200 now writes
+  its documented 400-1200 Hz CW-pitch band instead of raising above
+  900 Hz. Callers of the `Radio` protocol methods are unaffected.
+- **The `RigctldFallbackCache` protocol is deleted (MOR-2483).** Removed
+  the exported `rigplane.core.radio_protocol.RigctldFallbackCache`
+  protocol. `RigctldRoutable.rigctld_routing`, `create_routing`,
+  `YaesuRouting.__init__` and `YaesuCatRadio.rigctld_routing` no longer
+  take `cache`; a third-party backend implementing `rigctld_routing`
+  must drop that parameter.
+
+## [3.0.0b1] — 2026-09-05
+
+### Migration from 2.11.1
+
+- Core 3.0 beta uses selective compatibility. The [migration guide](https://rigplane.dev/migrate/)
+  maps the frozen compatibility decisions to Python, receiver-state, HTTP,
+  extension-host, CLI, profile and rigctld consumer examples. All TX consumers
+  must adopt canonical ownership, admission, completion and OFF; the former
+  leave-keyed lifecycle is not emulated. Momentary PTT and latched TRANSMIT
+  are distinct operations.
+- The package version is `3.0.0b1`. HTTP contract version 1 and the
+  extension-host contract (numeric 2, manifest `host_api: "2.0"`) are separate
+  contracts. The host requires the explicit new declaration while retaining
+  manifest schema version 1. Installed-candidate compatibility is a separate
+  release gate; no full 2.x compatibility is claimed.
+- Core includes SDR preservation against the 2.11.1 behavior baseline.
+  Browser, packaging/rollback and hardware acceptance remain release gates;
+  Pro packaging and release follow separately.
+
+- **Profile aliases retain their released behavior.** The 3.0
+  compatibility bridge restores the deprecated read-only
+  `RadioProfile.vfo_swap_code` and `RadioProfile.vfo_equal_code` properties
+  after their development removal. Their exact released expressions are
+  `swap_main_sub_code or swap_ab_code` and
+  `equal_main_sub_code or equal_ab_code`. New consumers should select the
+  explicit A/B or MAIN/SUB operation appropriate to their radio; see the
+  [migration guide](https://rigplane.dev/migrate/).
+- Icom CTCSS tone/TSQL setters accept the public integer-centiHz `freq_hz`
+  keyword and retain `freq_centihz` as an alternative. Supplying both
+  non-`None` spellings or neither raises `TypeError` before transport; there
+  is no unit scaling. See `src/rigplane/runtime/radio.py: CoreRadio.set_tone_freq`
+  and `CoreRadio.set_tsql_freq`, and the [migration guide](https://rigplane.dev/migrate/).
+
+### Breaking changes
+
+- **Tone-capable rig profiles must now declare a named CTCSS table (MOR-2129).**
+  Any profile with `repeater_tone`, `tsql`, or `sql_type` must include
+  `[ctcss] table = "<name>"`, resolving through the versioned sibling catalog
+  `rigs/_ctcss_tables_v1.toml`. Missing, unknown, or malformed references now
+  fail profile loading. The resolved `RigConfig.ctcss_tones_centihz` and
+  `RadioProfile.ctcss_tones_centihz` values are immutable ordered integer
+  centiHz tuples (`8850` = 88.5 Hz); order defines provider index mapping, but
+  a reference does not add capabilities or grant a setter. The four shipped
+  tone profiles (IC-705, IC-7300, IC-9700, FTX-1) reference `standard_50`;
+  IC-7610 remains deliberately unreferenced.
+- **The shared state-cache poll helpers are deleted.** Removed:
+  `rigplane.runtime._shared_state_runtime` (the whole module — its
+  `DEFAULT_STATE_CACHE_TTL`, `is_cache_fresh`, `poll_frequency`,
+  `poll_mode` and `poll_standard_fields`) and the legacy alias shim
+  `rigplane._shared_state_runtime`. Importing either module path now
+  raises `ModuleNotFoundError`. `rigctld` keeps its own TTL in
+  `RigctldConfig.cache_ttl`.
+- **The `rigctld` server's `_poller` constructor hook is deleted.** Removed
+  from `rigplane.rigctld.server`: the `_poller` keyword argument of
+  `RigctldServer.__init__`, the `self._poller` attribute, and the poller
+  start/stop and `write_busy`/`hold_for` pacing sites that read it in
+  `RigctldServer.stop`, `RigctldServer._on_client_done`,
+  `RigctldServer._wsjtx_compat_prewarm` and `RigctldServer._handle_client`,
+  together with the module-level `_is_packet_mode_set` helper that gated the
+  packet-mode hold. Passing `_poller=` to `RigctldServer` now raises
+  `TypeError`.
+- **`rigplane.commands.parse_scope_span_response` and
+  `rigplane.commands.scope_set_span` require the span-preset table as an
+  argument (MOR-2258).** The module constant that held the eight Icom
+  CI-V span values (span code 0-7 -> Hz) inside
+  `src/rigplane/commands/scope.py` is deleted; the table now lives only in
+  `rigs/*.toml` (`[scope].span_presets_hz`) and reaches these two
+  functions as `RadioProfile.scope_span_presets_hz`, passed in by the
+  caller because `commands/` may not import `profiles/`
+  (`.importlinter`). `parse_scope_span_response` takes it as a second
+  positional parameter, `scope_set_span` as a required keyword-only
+  `presets=`; both raise `TypeError` if it is omitted. The legal span
+  index range is now `0..len(presets) - 1` rather than a fixed `0..7`.
+  Every caller in this repository (`runtime/_civ_rx.py: CivRuntime`,
+  `runtime/_scope_runtime.py: ScopeRuntimeMixin`) reads the resolved
+  profile and passes it; an external caller must do the same. At this
+  commit every shipped profile that declares `get_scope_span`
+  (`ic7300`, `ic705`, `ic7610`, `ic9700`) also declares
+  `[scope].span_presets_hz` with the same eight values, so no shipped
+  radio changes behaviour.
+- **The `rigctld` `RadioPoller` is deleted.** Removed: `rigplane.rigctld.poller`
+  (the module, its `RadioPoller` class, `_mode_to_hamlib_str`,
+  `_get_mode_reader`, and `_STATS_LOG_INTERVAL`) and its `## RadioPoller`
+  section in `docs/api/rigctld.md`. At that entry's parent commit nothing
+  under `src/` constructed the class.
+- **The misnamed `tx_freq_monitor` field and commands are deleted; XFC is
+  the real transmit-frequency monitor (MOR-2246).** Removed: the
+  `TransceiverStatusCapable` protocol (and its `rigplane.TransceiverStatusCapable`
+  export) with its `get_tx_freq_monitor`/`set_tx_freq_monitor` methods; the
+  concrete `CoreRadio.get_tx_freq_monitor`/`CoreRadio.set_tx_freq_monitor`
+  implementations; the `rigplane.commands.get_tx_freq_monitor`/
+  `set_tx_freq_monitor` builders (0x1C 0x03); the `get_tx_freq_monitor`/
+  `set_tx_freq_monitor` web command-API entries (`docs/api/command-catalog.md`);
+  the `tx_freq_monitor` key in
+  `RadioState.to_dict()`; and the `txFreqMonitor` field on the JSON/WebSocket
+  state API. `Radio` (the core `Protocol` consumers depend on) never declared
+  `get_tx_freq_monitor`/`set_tx_freq_monitor` — they lived only on
+  `TransceiverStatusCapable`, which `Radio` did not inherit. Every shipped
+  profile already declared these commands absent or left them undeclared,
+  since 0x1C 0x03 is Read transmit frequency, not a transmit-frequency
+  monitor toggle; `get_xfc_status`/`set_xfc_status` (0x1C 0x02) remain the
+  real, unaffected transmit-frequency monitor.
 - **`rigplane.commands.config` builders require `cmd_map`; there is no
   hardcoded fallback (MOR-2006, Steps 5..N module 1 of
   `docs/plans/2026-08-29-profile-driven-command-bytes.md`).**
@@ -138,6 +263,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `runtime/_scope_runtime.py: ScopeRuntimeMixin` and
   `backends/_icom_serial_base.py`, moved onto `self._commands.<builder>`
   in the same change.
+- **`rigplane.commands.scope`'s fifteen `parse_scope_*_response` functions
+  take a map-derived `command`/`sub`, closing the response-side gap the
+  builder migration above left open (MOR-2008).** Each now accepts
+  optional `command`/`sub` keywords, defaulting to the same `_CMD_SCOPE`/
+  `_SUB_SCOPE_*` constants checked before this change, so a caller that
+  never passes them — `runtime/_civ_rx.py`'s unsolicited-frame decoding
+  (no command-map entry to derive a shape from) and every pre-migration
+  direct test call — keeps working unchanged. The sixteen production call
+  sites in `runtime/_scope_runtime.py: ScopeRuntimeMixin` (fifteen getters
+  plus `set_scope_fixed_edge`'s self-reparse of the frame it just built,
+  which shares `get_scope_fixed_edge`'s reply shape) now derive both
+  values via `runtime/radio.py: CoreRadio._expect_shape`, the mechanism
+  batch 1's `system.py` date/time/UTC parsers and batch 3's twelve
+  dsp.py getters already use. No observable behaviour change on any of
+  the four CI-V profiles that declare scope commands: every one already
+  declares the identical `[0x27, sub]` tuple these constants held (this
+  module's own divergence-free history, noted in the entry above).
+  Registered in `tests/test_response_shape_from_profile.py` as three
+  dedicated cases (one generic, covering thirteen of the fifteen parsers;
+  one for `get_scope_session_state`'s two-key round trip; one for
+  `set_scope_fixed_edge`'s self-reparse) rather than a `MATCHER_BACKED_GETTERS`
+  row, since none of the fifteen route through `_get_bcd_level`/
+  `_get_bool_value` — the same reason batch 1's date/time/UTC trio and
+  `get_dual_watch` are each a dedicated case there instead of a table row.
 - **`rigplane.commands.system`/`cw`/`speech`/`power` builders require
   `cmd_map`; there is no hardcoded fallback (MOR-2008, batch 1 of
   `docs/plans/2026-08-29-profile-driven-command-bytes.md`).** All 26
@@ -222,14 +371,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the `Radio` protocol method never took a receiver for this reading —
   so this closes a footgun rather than changing observed behaviour; a caller
   that did pass `receiver=` now gets a `TypeError` instead of a silent SET.
-- **`RadioProfile.vfo_swap_code` and `RadioProfile.vfo_equal_code` are
-  removed** (mechanism-audit D2; both were self-documented deprecated since
-  issue #710). Read `swap_ab_code`/`swap_main_sub_code` (or
-  `equal_ab_code`/`equal_main_sub_code`) directly; the alias resolution the
-  properties performed was `swap_main_sub_code or swap_ab_code` (and the
-  `equal_` equivalent), so a caller that needs the old ordering inlines that
-  expression. No production code in this repository read either property —
-  consumers were tests only.
+
 - **`rigplane.commands.mode`/`tone`/`antenna`/`meters` builders require
   `cmd_map`; there is no hardcoded fallback (MOR-2008, batch 2 of
   `docs/plans/2026-08-29-profile-driven-command-bytes.md`).** All 40
@@ -324,66 +466,178 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remaining to repoint at — its four tests that used to assert "no
   exception, fallback bytes returned" now assert "the wrapper's warning
   still fires, then the builder's own `TypeError` propagates unchanged."
+- **`rigplane.commands.memory`/`tx_band` builders, and `freq.py`'s five
+  remaining selected-receiver builders, require `cmd_map`; none ever had a
+  hardcoded fallback to delete (MOR-2008, batch 4 of
+  `docs/plans/2026-08-29-profile-driven-command-bytes.md`, "Group B" —
+  the last 16 builders in `commands/` with no `cmd_map` parameter at
+  all).** Covers `memory.py`'s nine (`build_memory_mode_get`/`_set`,
+  `build_memory_write`, `build_memory_to_vfo`, `build_memory_clear`,
+  `build_memory_contents_get`/`_set`, `get_bsr`/`set_bsr`), `tx_band.py`'s
+  two (`get_tx_band_count`, `get_tx_band_edge`), and `freq.py`'s five
+  (`get_selected_freq`/`get_unselected_freq`/`get_selected_mode`/
+  `get_unselected_mode`/`set_selected_mode`). Python function names are
+  unchanged — the seven `memory.py` builders with the anomalous
+  `build_X_get`/`build_X_set`/`build_X` shape keep it; only the TOML key
+  spellings were reconciled. Canonical key naming (owner ruling): a
+  genuine get/set value pair keeps its `get_`/`set_` prefix; a
+  single-wire-form action command uses the bare name, matching
+  `power_on`/`ptt_on`/`scan_start` — so `build_memory_write`/
+  `build_memory_to_vfo`/`build_memory_clear` resolve `"memory_write"`/
+  `"memory_to_vfo"`/`"memory_clear"`, not a `get_`/`set_`-prefixed key.
+  IC-705 previously declared redundant `get_X`/`set_X` pairs for these
+  three one-shot actions; the orphan half of each pair is deleted, with a
+  fresh source citation on the single surviving bare-named row (neither
+  half carried one before). The four Icom profiles' 57 DECLARE cells are
+  byte-identical to what these builders sent before migration (verified
+  directly against the deleted hardcoded output, not merely asserted).
+  **Two commands are left deliberately undeclared (D1 state 3) rather
+  than guessed:** `get_memory_mode` on all four Icom profiles (the
+  manuals phrase 0x08 as "Select the Memory mode", imperative, not
+  "Send/read" like the package's other bidirectional rows, and no
+  live-bench probe has settled whether it answers a bare read), and
+  `set_selected_mode` on IC-7300/IC-7610/IC-9700 (the exact
+  (mode, data_mode, filter) SET payload convention was not independently
+  confirmed against those three manuals' own detail pages before this
+  batch — IC-705/X6200/X6100 already declare it and are unaffected).
+  Calling either now raises `CommandError` (undeclared-command refusal)
+  on the affected profiles instead of unconditionally sending the byte
+  the old hardcoded fallback always sent — the honest outcome until a
+  live probe or a manual detail-page read settles the open question.
+  **X6200/X6100 declare all 11 memory.py/tx_band.py keys formally
+  absent:** none of the nine memory-family opcodes nor the two TX-band
+  opcodes appear anywhere in the Radioddity X6200 CI-V V1.0.6 documented
+  opcode table (Table 1, pp.5-9); `get_bsr`/`set_bsr` specifically
+  because the one opcode the table does document at `[0x1A, 0x01]`
+  (already exposed as `get_band_spectrum_display`) is a different,
+  2-byte-payload command, not Icom's own 9-byte band-stacking-register
+  record — same opcode, structurally incompatible wire contract. This
+  migration also **corrects a pre-existing false claim** in
+  `rigs/x6200.toml`'s own "PROVENANCE OPEN" note, which said the
+  band-stacking WRITE side of `[0x1A, 0x01]` was undeclared/undocumented;
+  the same manual page the file already cited documents that SET row too
+  (just not as Icom's `set_bsr`). **`ftx1.toml`/`tx500.toml` (CAT-only,
+  no CI-V command table) declare all 16 canonical keys formally absent**,
+  citing the protocol mismatch rather than leaving them as a silent gap —
+  this removes both profiles from `tests/test_command_map_parity.py`'s
+  `cat_only_profiles` census/`cat-only` rows, since that classification
+  means literally "every `[commands]` entry is `CatCommandSpec`", which a
+  declared-absent row no longer satisfies even though both profiles
+  remain cat-only in every functional sense. The orphan TOML keys
+  `set_selected_freq`/`set_unselected_freq`/`set_unselected_mode` (no
+  Python builder resolves any of the three) are kept, not deleted, on
+  X6200/X6100 — each documents a real, sourced capability the same
+  0x25/0x26 opcodes above confirm — with a one-line comment added noting
+  the absent builder; IC-705's own copies of the same three keys, which
+  carry no source at all, are left untouched. **Hard boundary (MOR-2055,
+  explicitly not touched by this migration):** `build_memory_to_vfo`/
+  `build_memory_clear` still append a 2-byte BCD channel payload that all
+  four Icom manuals show 0x0A/0x0B accepting no data field for at all —
+  this migration re-plumbs the command-map lookup only and does not
+  change those wire bytes; the payload question is MOR-2055's to settle.
+  Three now-dead constants (`_CMD_MEMORY_WRITE`, `_CMD_MEMORY_TO_VFO`,
+  `_CMD_MEMORY_CLEAR`) are deleted from `commands/_frame.py` — an
+  AST-verified census found zero importers anywhere for any of the
+  three once `memory.py`'s own builders stopped reading them directly.
+  The production call sites, in `runtime/radio.py: CoreRadio` and
+  `runtime/_dual_rx_runtime.py: DualRxRuntimeMixin` (the selected/
+  unselected freq/mode readers and the X6200 selected-mode SET path),
+  moved onto `self._commands.<builder>(...)` in the same change.
+  `tests/test_command_fallback_audit.py`'s census is updated: 256 public
+  builders now require `cmd_map` (was 238), and the 33 that lack the
+  parameter entirely are, for the first time, exclusively `parse_*`
+  response decoders — no byte-emitting builder anywhere in `commands/`
+  lacks `cmd_map` any longer.
+- **The command-builder fallback machinery is deleted (Step Z, cmd-map
+  epic).** With every builder's `cmd_map` required and keyword-only, the
+  Step 1 measurement scaffolding that logged a call reaching the
+  hardcoded fallback path has nothing left to catch:
+  `commands/_fallback_audit.py`, its install call in
+  `commands/__init__.py`, the `RIGPLANE_COMMAND_FALLBACK_AUDIT` env var
+  and `core/env_config.py: get_command_fallback_audit_enabled`, and the
+  charter exception recording it in `commands/LAYER.md` are all deleted,
+  along with `tests/test_command_fallback_audit.py` (its tests pinned
+  "wrapper logs then `TypeError` propagates", a behaviour that dies with
+  the wrapper). A regression test
+  (`tests/test_commands.py: TestFallbackAuditRemoved`) pins all three
+  staying gone.
+  Re-running an AST-based reference census over `commands/_frame.py`'s
+  78 private module-level constants — gated on an actual import binding
+  from this module, so a same-named local literal in a test file (several
+  build synthetic CI-V frames independently of `_frame.py`, e.g.
+  `tests/mock_server.py`'s own `_CMD_ATT`) does not count as a reader —
+  found three with zero readers anywhere, internal or external:
+  `_SUB_RX_ANT_ANT1`/`_SUB_RX_ANT_ANT2` (flagged dead but left out of
+  scope at cmd-map batch 2) and `_SUB_AGC_TIME_CONSTANT` (superseded by
+  `mode.py`'s `get_agc_time_constant`/`set_agc_time_constant` reading the
+  byte from the profile's `CommandMap` by name). All three are deleted;
+  the other 75 survive, and the module docstring now names each
+  survivor's actual reader. `docs/api/commands.md` is rewritten: it
+  claimed every builder's `cmd_map` was optional, false since batch 1 —
+  it now documents the required keyword-only contract, the `TypeError`
+  raised for a call that omits it or passes `None`, `commands/bound.py:
+  BoundCommands` as the recommended calling path, and D1's three-state
+  undeclared-command policy (declared / declared-absent-with-source /
+  unknown-refusal). `tests/command_map_parity_divergences.txt` is kept,
+  not retired, despite reading all-zero: reintroducing a builder with a
+  `cmd_map is not None` branch was tested against this file's own
+  machinery (a temporary, reverted mutation) and it still goes red, with
+  the per-row hex frames the bare census in
+  `tests/command_map_parity_uncovered.txt` does not carry; the file is
+  also cited as evidence in ten docstring passages across five other
+  test files, which a deletion would have left dangling.
+- **`rigplane.commands.set_attenuator` (the boolean CI-V frame builder) is
+  deleted (MOR-2086).** It hardcoded `18 if on else 0` -- an IC-7610 dB
+  step invalid on the five other CI-V profiles (IC-705, IC-7300, IC-9700,
+  X6100, X6200 declare a single, *different* non-zero attenuator value;
+  bench-confirmed on the IC-7300, where the radio silently ignored the
+  frame). The released 2.11.1 carries this bug (`git show
+  v2.11.1:src/rigplane/commands/dsp.py` still has the identical constant).
+  `runtime/radio.py: CoreRadio.set_attenuator` no longer builds a frame
+  through the deleted function; it resolves `on` from the connected
+  profile's own declared `[attenuator] values` instead: `on=False` always
+  resolves to 0, `on=True` resolves to the profile's single non-zero
+  value. Each of the five now sends its own declared value on the wire
+  (`fe fe 94 e0 11 20 fd` on the IC-7300); the pre-fix `11 18` frame was
+  bench-confirmed ignored on the IC-7300. A profile that declares more
+  than one non-zero value (IC-7610's 3..45 dB steps) has no well-defined
+  boolean "on", so
+  `CoreRadio.set_attenuator(on=True)` now raises `CommandError` naming
+  `set_attenuator_level` as the call to make instead of guessing a step;
+  the same refusal applies to a profile that declares no `[attenuator]
+  values` at all. `set_attenuator_level` itself is unchanged.
+- **`rigplane.runtime._state_queries.build_state_queries(profile,
+  capabilities, *, is_serial=False)` drops the `capabilities` and
+  `is_serial` parameters (MOR-2244).** After MOR-1983 (#3020, merge
+  `3683b297`) rewrote query membership to come from the profile's own
+  field-level acquisition capabilities, both parameters went unread in the
+  function body. The two production callers,
+  `runtime/radio_initial_state.py: fetch_initial_state` and
+  `web/radio_poller.py: RadioPoller._build_state_queries`, now call
+  `build_state_queries(profile)`; a call still passing either as a keyword
+  now raises `TypeError`. The compatibility re-export at
+  `rigplane._state_queries` (a `sys.modules` alias of the canonical module)
+  carries the same signature change.
 
 ### Changed
 
-- **CLI: `rigplane ptt off` forces an unkey when no lease of its own matches
-  (MOR-1175, MOR-1182).** Under the managed TX runtime a rig keyed by a process
-  that has since died holds a lease no other invocation can match, so the
-  ordinary release was refused and the command warned and exited 0 — the crash
-  recovery `ptt off` exists for was gone. It now escalates to an
-  operator-forced unkey (attributed as such, never as a system release), and
-  its exit code becomes meaningful: `0` only when an unkey reached the wire or
-  was already in flight, `1` — with what the rig may still be doing — when it
-  did not. A *live* lease held by another TX session is refused rather than
-  preempted. `ptt on` is unaffected: its own teardown never escalates.
-
-- **Browser TX surfaces unified (PRs #2125, #2128, #2130, #2134).** Both desktop
-  TxPanel and mobile FAB + landscape strip now key through the single App-owned
-  TX controller with lease-correct gestures; duplicate presentation-local PTT
-  state machines and 3-minute safety timers removed. Operator-visible: re-keying
-  immediately after release waits for fresh authoritative PTT readback (button
-  shows unkeying state in between); latched transmission is released when its
-  panel unmounts, and on mobile also when the device rotates while latched
-  (fail-closed).
-
-- **Max-key-down coverage after the presentation-timer removal (MOR-1220).**
-  The 3-minute presentation-local timers removed above were UI-side and
-  backend-agnostic, so deleting them (MOR-1011/MOR-1012) traded that
-  frontend bound for the managed TX runtime's own supervisor watchdog on the
-  managed path — coverage that only exists where a runtime is armed. A 180s
-  backstop (`BACKEND_MAX_KEY_DOWN_SECONDS`) is now armed around the legacy
-  PTT write on the web UI's Icom poller, so a serial/USB Icom rig keyed from
-  the Web UI is bounded again. Current boundary: managed TX is armed on the
-  LAN `IcomRadio` path only (the supervisor watchdog covers it everywhere,
-  not just Web); serial/USB Icom is legacy, with full managed arm pending
-  MOR-1219; Yaesu CAT and the rigctld-client backend are legacy with no
-  supervisor, pending MOR-1190 (acceptance amended to include the key-down
-  bound; MOR-1190 gates the MOR-1033 FTX-1 hardware cert in the same
-  release). On an unmanaged rig this backstop bounds a key **the web poller
-  itself issued** and no other; see the rigctld entry below for the seat that
-  bounds a `rigctld` key. The CLI hold path (`ptt on --for`) arms no watchdog
-  at all — it unkeys when the hold ends or on Ctrl-C, so a hard-killed
-  process still leaves the rig keyed.
-
-- **Key-down bound for a `rigctld`-issued key on an unmanaged rig
-  (MOR-1904).** A `rigctld` client that keyed a serial/USB Icom, Yaesu CAT or
-  rigctld-client rig and then died left the transmitter up with nothing to
-  time it out: those backends arm no supervisor, MOR-1220's backstop bounds
-  only keys the web poller issued, and rigctld deliberately writes nothing on
-  socket close. `rigctld` now bounds a key it issued itself at the same 180s
-  (`BACKEND_MAX_KEY_DOWN_SECONDS`) and unkeys when it expires. Two
-  differences from the web-poller backstop above: it is cancelled by any PTT
-  write of either polarity from any `rigctld` session, and — unlike MOR-1220,
-  which fires on the deadline whatever the rig is doing — it is also
-  cancelled once the rig is *observed* back in receive by an observation
-  taken after that key. It deliberately outlives the socket that keyed it:
-  a client going away is not evidence the rig came off the air. It is a
-  damage bound only and grants no session any claim on the transmitter;
-  ownership stays with MOR-1219/MOR-1190.
+- **TX consumers migrate to canonical ownership and release.** Earlier
+  development entries described per-consumer leases, poller watchdogs and
+  UI-local teardown behavior that are superseded by the managed TX contract.
+  Use stable-owner WebSocket momentary PTT, explicit latched TRANSMIT only
+  when intended, and canonical ForceOff for unconditional release. Admission
+  is distinct from settlement and observed radio state. The concrete API and
+  timed CLI migration examples, source references and focused witnesses are
+  in the [migration guide](https://rigplane.dev/migrate/).
 
 ### Removed
 
+- The unused pre-v2 `src/rigplane/web/static.old/index.html` source copy was
+  removed in #2400 (`32eb20bd`). The supported UI is built from `frontend/`
+  and bundled with the Python artifact. Rollback uses a known complete
+  package/frontend artifact and retained user preferences, not the deleted
+  snapshot; source removal alone does not prove installed or active-session
+  rollback acceptance.
 - **`rigplane.backends.icom7610.drivers.serial_stub` no longer ships in the
   package (#2129, #2131).** `SerialMockRadio` and the serial framing test
   doubles were test-only code living inside the wheel; they moved to
@@ -402,6 +656,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `set_quick_dual_watch`. Previously they enqueued the same bare read
   marker as their `get_` twins and silently re-read the current toggle
   state instead of changing it.
+- **`get_tone_freq`/`set_tone_freq`/`get_tsql_freq`/`set_tsql_freq` used
+  the wrong CI-V byte layout, on every profile that declares the family
+  (IC-705, IC-7300, IC-9700; IC-7610 declares it `absent`) (MOR-2091).**
+  `commands/tone.py`'s codec packed/read the 3-byte BCD payload as
+  `[hundreds][tens+units][tenths]`; the documented layout (identical in
+  the IC-705, IC-7300, IC-9700 and IC-7610 CI-V references) is six packed
+  BCD digits read as tenths of a Hz: `[0][0][100Hz][10Hz][1Hz][0.1Hz]`.
+  `get_tone_freq`/`get_tsql_freq` returned wrong values -- a live IC-7300
+  capture of an 88.5 Hz tone decoded as 16.5 Hz. `set_tone_freq`/
+  `set_tsql_freq` encoded a 100 Hz BCD digit outside its documented 0-2
+  range for most tones (88.5 Hz encoded as `00 88 05`, digit 8). The
+  released 2.11.1 carries this bug.
+- **FTX-1 `set_sql_type` write template used two digits where the
+  manual documents one (MOR-2104).** `rigs/ftx1.toml`'s write template
+  rendered `CT002;` for squelch-type value 2; the FTX-1 CAT OM ENG
+  2508-C's `CT SQL TYPE` table documents P2 as a single digit (0-5).
+  Narrowed the template to `CT0{type};`, matching the read side's
+  parse, which already used the correct width.
 
 ## [2.11.1] — 2026-06-22
 
@@ -2320,7 +2592,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.10.2...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b1...HEAD
+[3.0.0b1]: https://github.com/rigplane/rigplane-core/compare/v2.11.1...v3.0.0b1
 [2.10.2]: https://github.com/rigplane/rigplane-core/compare/v2.10.1...v2.10.2
 [2.10.1]: https://github.com/rigplane/rigplane-core/compare/v2.10.0...v2.10.1
 [2.10.0]: https://github.com/rigplane/rigplane-core/compare/v2.9.0...v2.10.0

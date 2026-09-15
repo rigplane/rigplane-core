@@ -3,15 +3,16 @@
 // Domain contract (MOR-1470, finishing ADR level-meter-calibrated-domain
 // Phase 3; mirrors the s_meter cutover from MOR-1451):
 //
-// - A meter whose active radio profile declares a
+// - A meter whose explicit domain is engineering and whose active radio
+//   profile declares a
 //   `[[meters.<key>.calibration]]` table arrives here ALREADY in
 //   engineering units — the backend interpolates raw→actual at the
 //   observation boundary (MOR-469): power=W, swr=ratio, alc=normalized
 //   0–1, comp=dB, vd=V, id=A. Formatters render that value directly and
 //   level fns normalize it against the table's top knot. Re-running the
 //   value through the curve would be a double conversion.
-// - A meter with NO declared table arrives as the raw device byte,
-//   flagged uncalibrated server-side. Every function here degrades to an
+// - An explicit raw domain is authoritative even if local capability metadata
+//   also has a table. Every function here degrades to an
 //   honest raw-scale reading tagged "raw" (e.g. "158 raw"; MOR-1527 — a
 //   naked number here was previously indistinguishable from a real
 //   engineering-unit reading), a neutral raw/255 bar, and no fault claims
@@ -26,19 +27,45 @@ import {
   getMeterRedline,
 } from '$lib/runtime/adapters/capabilities-adapter';
 import type { MeterCalPoint } from '$lib/runtime/adapters/capabilities-adapter';
-// `formatSMeter`'s calibrated branch defers to the one table-driven S-unit
-// reader (MOR-2024) instead of keeping a second copy of that math here.
-// `isSmeterCalibrated` is reused from the same import instead of a second
-// local "is there a curve" check -- the two were never byte-for-byte
-// duplicates (this file's check went through `getSmeterKnots()`, gated at
-// `length >= 2`; the imported one tested `length > 0` directly), so the
-// swap silently loosened the gate to one knot until `smeter-scale.ts`'s
-// `isSmeterCalibrated` was fixed (MOR-2024) to also require `length >= 2`
-// -- interpolation needs two points to define a line, so a single knot
-// cannot support a calibrated reading.
-import { calibratedToSUnit, isSmeterCalibrated } from '../meters/smeter-scale';
+import {
+  calibratedToRaw,
+  calibratedToSUnit,
+  getCalibratedScaleMaxRaw,
+  isSmeterCalibrated,
+} from '../../primitives/meters/s-meter-scale';
+import { valueToPosition } from '../../primitives/scalar/value-control-core';
+import type {
+  MeterEngineeringUnit,
+  MeterValueDomain,
+} from '../../semantic/radio-view-model';
 
 export type MeterSource = 'S' | 'SWR' | 'POWER' | 'po';
+
+/**
+ * The two values a bar's ends stand for: `min` at empty, `max` at full.
+ * Every `*Scale` function below returns the domain its matching `*Level`
+ * function positions against; null means that function is not positioning
+ * against a scale at all (an explicit raw domain, a domain it cannot serve,
+ * or no usable calibration data).
+ */
+export interface MeterScaleDomain {
+  readonly min: number;
+  readonly max: number;
+}
+
+/**
+ * The scale the supply-voltage bar is drawn against, in volts — a fixed
+ * window rather than the profile's calibration range, so a sag moves the
+ * bar by the same amount on every radio. The art-direction line chose these
+ * ends on 2026-09-08 (11 V = a 12 V supply in trouble, 15 V = faulty); they
+ * are an instrument choice, not a rating read off a radio.
+ *
+ * `vdScale` returns this and `vdLevel` positions against it, so a face
+ * labelling the scale from `BarMeterProjection.scale` prints the numbers
+ * the fill was computed from. Pinned by meter-utils.test.ts
+ * "SUPPLY_VOLTAGE_WINDOW" and the three profile ladders that follow it.
+ */
+export const SUPPLY_VOLTAGE_WINDOW: MeterScaleDomain = { min: 11, max: 15 };
 
 /** Raw device-scale ceiling (CI-V meter byte range). Used only as the
  *  neutral bar-geometry edge for uncalibrated meters — never a claimed
@@ -56,8 +83,7 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-/** The declared calibration table for a meter, or null when the radio's
- *  profile does not declare one (the honest-raw domain). */
+/** The active profile's calibration table for a meter, when usable. */
 function getCal(meterType: string): MeterCalPoint[] | null {
   const cal = getMeterCalibration(meterType);
   return cal && cal.length >= 2 ? cal : null;
@@ -65,6 +91,42 @@ function getCal(meterType: string): MeterCalPoint[] | null {
 
 function topActual(cal: MeterCalPoint[]): number {
   return cal[cal.length - 1].actual;
+}
+
+/** Zero to the table's top knot. Null when the profile declares no table. */
+function topScale(meterType: string): MeterScaleDomain | null {
+  const cal = getCal(meterType);
+  return cal ? { min: 0, max: topActual(cal) } : null;
+}
+
+/** A reading's place on its own scale: 0 at `min`, 1 at `max`, clamped to
+ *  that interval. A scale with no positive span yields 0. */
+function positionIn(value: number, scale: MeterScaleDomain): number {
+  return scale.max > scale.min ? valueToPosition(value, scale.min, scale.max) : 0;
+}
+
+/**
+ * Renders a one-decimal drain reading against its calibration table.
+ *
+ * `src/rigplane/runtime/meter_cal.py: interpolate_meter` returns the last
+ * knot's `actual` for every raw at or above that knot's `raw`, so a value
+ * that has reached the top is a clamp, not a reading — how far past the top
+ * the rail actually went is not in the table. Such a value is rendered as
+ * the top with a trailing "+" (the shape `formatSwr` already shows through
+ * its top knot's own label); below the top, and with no table at all, the
+ * value is rendered as itself.
+ */
+function formatAgainstTop(
+  value: number,
+  cal: MeterCalPoint[] | null,
+  unit: string,
+): string {
+  const floored = Math.max(0, value);
+  if (cal) {
+    const top = topActual(cal);
+    if (floored >= top) return `${top.toFixed(1)}+ ${unit}`;
+  }
+  return `${floored.toFixed(1)} ${unit}`;
 }
 
 /** Honest raw readout for an uncalibrated meter — the device-scale number
@@ -75,35 +137,88 @@ function formatRaw(value: number): string {
   return `${Math.round(Math.max(0, Math.min(RAW_SCALE_MAX, value)))} raw`;
 }
 
+const ENGINEERING_UNIT_LABEL = {
+  db: 'dB',
+  normalized: 'normalized',
+  w: 'W',
+  ratio: 'ratio',
+  v: 'V',
+  a: 'A',
+} as const satisfies Readonly<Record<MeterEngineeringUnit, string>>;
+
+function formatUnknownUnit(value: number): string {
+  return `${value} unit unknown`;
+}
+
+function formatDeclaredEngineering(value: number, unit: MeterEngineeringUnit): string {
+  return `${value} ${ENGINEERING_UNIT_LABEL[unit]}`;
+}
+
+function matchesEngineering(
+  domain: MeterValueDomain | undefined,
+  unit: MeterEngineeringUnit,
+): boolean {
+  return domain?.kind === 'engineering' && domain.unit === unit;
+}
+
 // ---- RF power (W when calibrated) ----
 
-export function formatPowerWatts(value: number): string {
+export function formatPowerWatts(value: number, domain?: MeterValueDomain): string {
+  if (domain?.kind === 'raw') return formatRaw(value);
+  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'engineering' && domain.unit !== 'w') {
+    return formatDeclaredEngineering(value, domain.unit);
+  }
   const cal = getCal('power');
-  if (!cal) return formatRaw(value);
-  const watts = Math.max(0, Math.min(topActual(cal), value));
+  if (!cal && domain === undefined) return formatRaw(value);
+  const watts = Math.max(0, cal ? Math.min(topActual(cal), value) : value);
   return `${Math.round(watts)}W`;
 }
 
-export function normalizePower(value: number): number {
-  const cal = getCal('power');
-  if (!cal) return normalize(value);
-  const max = topActual(cal);
-  return max > 0 ? clamp01(value / max) : 0;
+/** The watt scale the power bar is drawn against, or null when there is none. */
+export function powerScale(domain?: MeterValueDomain): MeterScaleDomain | null {
+  if (domain?.kind === 'raw') return null;
+  if (domain !== undefined && !matchesEngineering(domain, 'w')) return null;
+  return topScale('power');
+}
+
+export function normalizePower(value: number): number;
+export function normalizePower(value: number, domain: MeterValueDomain): number | null;
+export function normalizePower(value: number, domain?: MeterValueDomain): number | null {
+  if (domain?.kind === 'raw') return normalize(value);
+  if (domain !== undefined && !matchesEngineering(domain, 'w')) return null;
+  const scale = powerScale(domain);
+  if (!scale) return domain === undefined ? normalize(value) : null;
+  return positionIn(value, scale);
 }
 
 // ---- SWR (ratio when calibrated) ----
 
 /**
- * The SWR ratio, or NaN when the radio declares no swr table — an
- * uncalibrated raw byte has no honest ratio interpretation.
+ * The SWR ratio, or NaN when the domain cannot support a ratio claim.
+ * Omitted-domain compatibility still uses the active profile table.
  */
-export function swrRatio(value: number): number {
+export function swrRatio(value: number, domain?: MeterValueDomain): number {
+  if (domain !== undefined) return matchesEngineering(domain, 'ratio') ? value : NaN;
   return getCal('swr') ? value : NaN;
 }
 
-export function formatSwr(value: number): string {
+/** Whether the lower SWR row has a physical ratio scale, independent of sample state. */
+export function hasSwrRatioScale(domain?: MeterValueDomain): boolean {
+  if (domain === undefined) return true;
+  return matchesEngineering(domain, 'ratio') && getCal('swr') !== null;
+}
+
+export function formatSwr(value: number, domain?: MeterValueDomain): string {
+  if (domain?.kind === 'raw') return formatRaw(value);
+  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'engineering' && domain.unit !== 'ratio') {
+    return formatDeclaredEngineering(value, domain.unit);
+  }
   const cal = getCal('swr');
-  if (!cal) return formatRaw(value);
+  if (!cal) {
+    return domain === undefined ? formatRaw(value) : Math.max(1, value).toFixed(1);
+  }
   const top = topActual(cal);
   // At/beyond the table top the true ratio is off-scale — render the
   // profile's own top label (e.g. "6.0+") instead of a fake exact value.
@@ -111,27 +226,40 @@ export function formatSwr(value: number): string {
   return Math.max(cal[0].actual, value).toFixed(1);
 }
 
-/** Bar level for SWR: ratio relative to the table's top knot. */
-export function swrLevel(value: number): number {
-  const cal = getCal('swr');
-  if (!cal) return normalize(value);
-  const max = topActual(cal);
-  return max > 0 ? clamp01(value / max) : 0;
+/** The ratio scale the SWR bar is drawn against, or null when there is none. */
+export function swrScale(domain?: MeterValueDomain): MeterScaleDomain | null {
+  if (domain?.kind === 'raw') return null;
+  if (domain !== undefined && !matchesEngineering(domain, 'ratio')) return null;
+  return topScale('swr');
 }
 
-/** True when SWR exceeds 2.0 — only claimable in the calibrated ratio
- *  domain; an uncalibrated radio never asserts a fault it cannot
- *  measure. */
-export function isSwrFault(value: number): boolean {
-  const ratio = swrRatio(value);
+/** SWR level in its explicit raw domain or against a declared ratio scale. */
+export function swrLevel(value: number): number;
+export function swrLevel(value: number, domain: MeterValueDomain): number | null;
+export function swrLevel(value: number, domain?: MeterValueDomain): number | null {
+  if (domain?.kind === 'raw') return normalize(value);
+  if (domain !== undefined && !matchesEngineering(domain, 'ratio')) return null;
+  const scale = swrScale(domain);
+  if (!scale) return domain === undefined ? normalize(value) : null;
+  return positionIn(value, scale);
+}
+
+/** True when SWR exceeds 2.0 in an explicit or legacy-qualified ratio domain. */
+export function isSwrFault(value: number, domain?: MeterValueDomain): boolean {
+  const ratio = swrRatio(value, domain);
   return Number.isFinite(ratio) && ratio > 2.0;
 }
 
 // ---- ALC (normalized 0-1 when calibrated; redline-relative raw
 //      otherwise; plain raw with no data at all) ----
 
-export function formatAlc(value: number): string {
-  if (getCal('alc')) {
+export function formatAlc(value: number, domain?: MeterValueDomain): string {
+  if (domain?.kind === 'raw') return formatRaw(value);
+  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'engineering' && domain.unit !== 'normalized') {
+    return formatDeclaredEngineering(value, domain.unit);
+  }
+  if (getCal('alc') || matchesEngineering(domain, 'normalized')) {
     return `${Math.round(clamp01(value) * 100)}%`;
   }
   const redline = getMeterRedline('alc');
@@ -141,99 +269,128 @@ export function formatAlc(value: number): string {
   return formatRaw(value);
 }
 
-/** Redline-relative ALC level (0-1). The calibrated domain is already
- *  redline-relative (the table's top knot is the redline). */
-export function alcLevel(value: number): number {
-  if (getCal('alc')) return clamp01(value);
+/** ALC's calibrated scale — the value arrives normalized 0-1 (file header). */
+const NORMALIZED_FULL_SCALE: MeterScaleDomain = { min: 0, max: 1 };
+
+/** The ALC bar's scale: the normalized unit interval when calibrated, zero
+ *  to the declared redline otherwise. Null when the profile declares
+ *  neither. */
+export function alcScale(domain?: MeterValueDomain): MeterScaleDomain | null {
+  if (domain?.kind === 'raw') return null;
+  if (domain !== undefined && !matchesEngineering(domain, 'normalized')) return null;
+  if (getCal('alc') || matchesEngineering(domain, 'normalized')) return NORMALIZED_FULL_SCALE;
   const redline = getMeterRedline('alc');
-  if (redline !== null && redline > 0) {
-    return Math.max(0, Math.min(redline, value)) / redline;
-  }
-  return normalize(value);
+  return redline !== null && redline > 0 ? { min: 0, max: redline } : null;
 }
 
-/** True when ALC is driven past 90% of the redline — only claimable when
- *  the profile declared a table or a redline. */
-export function isAlcFault(value: number): boolean {
+/** Redline-relative ALC level, neutral raw geometry, or no supported motion. */
+export function alcLevel(value: number): number;
+export function alcLevel(value: number, domain: MeterValueDomain): number | null;
+export function alcLevel(value: number, domain?: MeterValueDomain): number | null {
+  if (domain?.kind === 'raw') return normalize(value);
+  if (domain !== undefined && !matchesEngineering(domain, 'normalized')) return null;
+  const scale = alcScale(domain);
+  return scale ? positionIn(value, scale) : normalize(value);
+}
+
+/** True when ALC is past 90% in an explicit normalized or legacy-qualified domain. */
+export function isAlcFault(value: number, domain?: MeterValueDomain): boolean {
+  if (domain !== undefined && !matchesEngineering(domain, 'normalized')) return false;
+  if (matchesEngineering(domain, 'normalized')) return clamp01(value) > 0.9;
   if (!getCal('alc') && getMeterRedline('alc') === null) return false;
   return alcLevel(value) > 0.9;
 }
 
 // ---- Vd / Id / COMP (V / A / dB when calibrated) ----
 
-export function formatVolts(value: number): string {
+export function formatVolts(value: number, domain?: MeterValueDomain): string {
+  if (domain?.kind === 'raw') return formatRaw(value);
+  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'engineering' && domain.unit !== 'v') {
+    return formatDeclaredEngineering(value, domain.unit);
+  }
   const cal = getCal('vd');
-  if (!cal) return formatRaw(value);
-  return `${Math.max(0, Math.min(topActual(cal), value)).toFixed(1)} V`;
+  if (!cal && domain === undefined) return formatRaw(value);
+  return formatAgainstTop(value, cal, 'V');
 }
 
-export function vdLevel(value: number): number {
-  const cal = getCal('vd');
-  if (!cal) return normalize(value);
-  const max = topActual(cal);
-  return max > 0 ? clamp01(value / max) : 0;
+/**
+ * The supply-voltage bar's scale: `SUPPLY_VOLTAGE_WINDOW`, not this profile's
+ * calibration range. Null when the profile declares no vd table.
+ */
+export function vdScale(domain?: MeterValueDomain): MeterScaleDomain | null {
+  if (domain?.kind === 'raw') return null;
+  if (domain !== undefined && !matchesEngineering(domain, 'v')) return null;
+  return getCal('vd') ? SUPPLY_VOLTAGE_WINDOW : null;
 }
 
-export function formatAmps(value: number): string {
+export function vdLevel(value: number): number;
+export function vdLevel(value: number, domain: MeterValueDomain): number | null;
+export function vdLevel(value: number, domain?: MeterValueDomain): number | null {
+  if (domain?.kind === 'raw') return normalize(value);
+  if (domain !== undefined && !matchesEngineering(domain, 'v')) return null;
+  const scale = vdScale(domain);
+  if (!scale) return domain === undefined ? normalize(value) : null;
+  return positionIn(value, scale);
+}
+
+export function formatAmps(value: number, domain?: MeterValueDomain): string {
+  if (domain?.kind === 'raw') return formatRaw(value);
+  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'engineering' && domain.unit !== 'a') {
+    return formatDeclaredEngineering(value, domain.unit);
+  }
   const cal = getCal('id');
-  if (!cal) return formatRaw(value);
-  return `${Math.max(0, Math.min(topActual(cal), value)).toFixed(1)} A`;
+  if (!cal && domain === undefined) return formatRaw(value);
+  return formatAgainstTop(value, cal, 'A');
 }
 
-export function idLevel(value: number): number {
-  const cal = getCal('id');
-  if (!cal) return normalize(value);
-  const max = topActual(cal);
-  return max > 0 ? clamp01(value / max) : 0;
+/** The drain-current bar's scale: zero to the profile table's top, unwindowed. */
+export function idScale(domain?: MeterValueDomain): MeterScaleDomain | null {
+  if (domain?.kind === 'raw') return null;
+  if (domain !== undefined && !matchesEngineering(domain, 'a')) return null;
+  return topScale('id');
 }
 
-export function formatCompDb(value: number): string {
+export function idLevel(value: number): number;
+export function idLevel(value: number, domain: MeterValueDomain): number | null;
+export function idLevel(value: number, domain?: MeterValueDomain): number | null {
+  if (domain?.kind === 'raw') return normalize(value);
+  if (domain !== undefined && !matchesEngineering(domain, 'a')) return null;
+  const scale = idScale(domain);
+  if (!scale) return domain === undefined ? normalize(value) : null;
+  return positionIn(value, scale);
+}
+
+export function formatCompDb(value: number, domain?: MeterValueDomain): string {
+  if (domain?.kind === 'raw') return formatRaw(value);
+  if (domain?.kind === 'unknown') return formatUnknownUnit(value);
+  if (domain?.kind === 'engineering' && domain.unit !== 'db') {
+    return formatDeclaredEngineering(value, domain.unit);
+  }
   const cal = getCal('comp');
-  if (!cal) return formatRaw(value);
-  return `${Math.round(Math.max(0, Math.min(topActual(cal), value)))} dB`;
+  if (!cal && domain === undefined) return formatRaw(value);
+  return `${Math.round(Math.max(0, cal ? Math.min(topActual(cal), value) : value))} dB`;
 }
 
-export function compLevel(value: number): number {
-  const cal = getCal('comp');
-  if (!cal) return normalize(value);
-  const max = topActual(cal);
-  return max > 0 ? clamp01(value / max) : 0;
+/** The compression bar's scale: zero to the profile table's top, in dB. */
+export function compScale(domain?: MeterValueDomain): MeterScaleDomain | null {
+  if (domain?.kind === 'raw') return null;
+  if (domain !== undefined && !matchesEngineering(domain, 'db')) return null;
+  return topScale('comp');
+}
+
+export function compLevel(value: number): number;
+export function compLevel(value: number, domain: MeterValueDomain): number | null;
+export function compLevel(value: number, domain?: MeterValueDomain): number | null {
+  if (domain?.kind === 'raw') return normalize(value);
+  if (domain !== undefined && !matchesEngineering(domain, 'db')) return null;
+  const scale = compScale(domain);
+  if (!scale) return domain === undefined ? normalize(value) : null;
+  return positionIn(value, scale);
 }
 
 // ---- S-meter (dB-rel-S9 when calibrated; MOR-1451) ----
-
-function getSmeterKnots(): [number, number][] {
-  const cal = getMeterCalibration('s_meter');
-  if (!cal || cal.length < 2) return [];
-  return cal.map((p) => [p.raw, p.actual] as [number, number]);
-}
-
-function getSmeterMaxRaw(): number {
-  const knots = getSmeterKnots();
-  return knots.length > 0 ? knots[knots.length - 1][0] : RAW_SCALE_MAX;
-}
-
-/** Identity passthrough when uncalibrated, matching `smeter-scale.ts`'s
- *  `calibratedToRaw`. */
-function calibratedSmeterToRaw(actual: number): number {
-  const knots = getSmeterKnots();
-  if (knots.length === 0) return Math.max(0, Math.min(RAW_SCALE_MAX, actual));
-  const minActual = knots[0][1];
-  const maxActual = knots[knots.length - 1][1];
-  const clamped = Math.max(minActual, Math.min(maxActual, actual));
-
-  for (let i = 0; i < knots.length - 1; i++) {
-    const [raw0, actual0] = knots[i];
-    const [raw1, actual1] = knots[i + 1];
-    if (clamped <= actual1) {
-      const span = actual1 - actual0;
-      const t = span === 0 ? 0 : (clamped - actual0) / span;
-      return raw0 + t * (raw1 - raw0);
-    }
-  }
-
-  return knots[knots.length - 1][0];
-}
 
 /**
  * Formats calibrated S-meter value (dB relative to S9) as an S-unit string.
@@ -250,16 +407,18 @@ function calibratedSmeterToRaw(actual: number): number {
  * FTX-1's real S0-S9 steps are 6/3/3/3/3/3/15/9/9 dB).
  */
 export function formatSMeter(actual: number): string {
-  if (!isSmeterCalibrated()) {
+  const calibration = getMeterCalibration('s_meter') ?? [];
+  if (!isSmeterCalibrated(calibration)) {
     return formatRaw(actual);
   }
-  return calibratedToSUnit(actual);
+  return calibratedToSUnit(actual, calibration);
 }
 
 /** Bar level for calibrated S-meter values relative to the UI scale full-scale. */
 export function sLevel(actual: number): number {
-  const scaleMaxRaw = getSmeterMaxRaw();
-  const scaled = calibratedSmeterToRaw(actual);
+  const calibration = getMeterCalibration('s_meter') ?? [];
+  const scaleMaxRaw = getCalibratedScaleMaxRaw(calibration);
+  const scaled = calibratedToRaw(actual, calibration);
   return scaleMaxRaw > 0 ? Math.max(0, Math.min(1, scaled / scaleMaxRaw)) : 0;
 }
 

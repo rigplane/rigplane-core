@@ -57,6 +57,35 @@ describe('guardRadioViewModel', () => {
       resolve(process.cwd(), 'src/components-v2/wiring/SemanticRadioSurfaces.svelte'),
       'utf8',
     );
-    expect(source).toMatch(/canonicalView[^=]*=\s*\$derived\(\s*guardRadioViewModel\(\s*toRadioViewModel\(/);
+    expect(source).toMatch(/canonicalView[^=]*=\s*\$derived\.by\([\s\S]*?projectRadioView\(/);
+    const projection = source.match(
+      /function projectRadioView[\s\S]*?\n\s*}\n\n\s*\/\/ Belt-and-braces/,
+    )?.[0];
+    expect(projection).toBeDefined();
+    expect(projection).toContain('guardRadioViewModel(');
+    expect(projection?.match(/toRadioViewModel\(/g)).toHaveLength(1);
+    expect(projection).toContain('radioViewStateSignature(state)');
+    expect(projection).toContain('cached.stateSignature === stateSignature');
+  });
+
+  it('reuses one projected view model across authority consumers', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/components-v2/wiring/SemanticRadioSurfaces.svelte'),
+      'utf8',
+    );
+    const builders = source.match(
+      /function scopeFiniteAuthority[\s\S]*?const sameScopeFiniteAuthority/,
+    )?.[0];
+    const subscriber = source.match(
+      /const unsubscribeScopeFiniteAuthority = runtime\.subscribeControlAuthority[\s\S]*?\n\s*\}\);\n\s*onDestroy/,
+    )?.[0];
+
+    expect(builders).toBeDefined();
+    expect(builders).not.toContain('toRadioViewModel(');
+    expect(subscriber).toBeDefined();
+    expect(subscriber).not.toContain('toRadioViewModel(');
+    expect(subscriber).toContain('projectRadioView(publication.state, publication.caps, true)');
+    expect(source.match(/view: projectRadioView\(publication\.state, publication\.caps, true\)/g))
+      .toHaveLength(4);
   });
 });

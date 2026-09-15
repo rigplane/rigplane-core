@@ -20,30 +20,49 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
-  listeners: new Set<(next: unknown) => void>(),
-  start: vi.fn(),
-  release: vi.fn(),
+  txController: null as ManagedAppTxController | null,
+  session: { state: 'connected', epoch: 1 } as ControlSessionSnapshot,
+  sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
+  deferAuthority: false,
+  authoritySubscribers: new Set<(next: {
+    state: unknown; caps: unknown; session: ControlSessionSnapshot;
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  audio: { muted: true, rxEnabled: false, volume: 0 },
   noop: vi.fn(),
 }));
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    get controlSession() { return h.session; },
+    subscribeControlSession(handler: (next: ControlSessionSnapshot) => void) {
+      h.sessionSubscriber = handler;
+      return () => { if (h.sessionSubscriber === handler) h.sessionSubscriber = null; };
+    },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      if (!h.deferAuthority) handler({
+        state: h.state, caps: h.caps, session: h.session,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
     // MOR-1279 slice 3B: the wiring now also hands the adapter an
     // App-owned RX-audio snapshot (the FOURTH argument). Muted with no
     // browser stream keeps every fixture below on its pre-1279 path.
-    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get audio() { return h.audio; },
     get connectionAudio() { return false; },
     // MOR-1312 slice 12B: the wiring now also hands the adapter a
     // scope-display snapshot (the FIFTH argument). Every fixture below
@@ -59,18 +78,8 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => { h.listeners.delete(listener); };
-    },
-    start: h.start,
-    setIntent: vi.fn(),
-    release: h.release,
-    resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => h.txController,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }),
@@ -148,13 +157,15 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
 });
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import {
+  ManagedAppTxHarness, type ManagedAppTxServerSnapshot,
+} from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
+
+const fresh = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+  lastObservedMonotonic: 0,
 };
-
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
 /** Every raw meter the MOR-1269 adapter reads, all observed fresh. The
@@ -166,6 +177,11 @@ const METER_STATE = {
 const METER_PATHS = [
   'powerMeter', 'swrMeter', 'alcMeter', 'compMeter', 'vdMeter', 'idMeter',
   'main.sMeter', 'sub.sMeter', 'compressorOn', 'compressorLevel',
+];
+const S_METER_CAL = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 120, actual: 0, label: 'S9' },
+  { raw: 241, actual: 60, label: 'S9+60' },
 ];
 
 function liveState(withMeters: boolean, over: Partial<ServerState> = {}): ServerState {
@@ -182,17 +198,22 @@ function liveState(withMeters: boolean, over: Partial<ServerState> = {}): Server
     ...(withMeters ? { sMeter: -12 } : {}),
   });
   return {
+    stateContractVersion: 1, providerGeneration: 1,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14300000),
     ...(withMeters ? METER_STATE : {}),
     ...over,
-    fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
+    fieldStatus: Object.fromEntries(paths.map((p) => [
+      p, p === 'main.sMeter' || p === 'sub.sMeter'
+        ? { ...fresh, quality: ['calibrated'] } : fresh,
+    ])),
   } as unknown as ServerState;
 }
 
 const liveCaps = (withMeters: boolean): Capabilities => ({
   model: 'fixture', scope: false, audio: true, tx: true,
+  stateContractVersion: 1, providerGeneration: 1,
   capabilities: withMeters
     ? ['audio', 'tx', 'dual_rx', 'compressor']
     : ['audio', 'tx', 'dual_rx'],
@@ -200,11 +221,13 @@ const liveCaps = (withMeters: boolean): Capabilities => ({
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
+  meterCalibrations: withMeters ? { s_meter: S_METER_CAL } : undefined,
   scopeSource: null, audioFftAvailable: false,
 } as unknown as Capabilities);
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 
 function render(props: { strips?: 'single' | 'dual' } = {}): void {
   target = document.createElement('div');
@@ -213,13 +236,40 @@ function render(props: { strips?: 'single' | 'dual' } = {}): void {
   flushSync();
 }
 
-function push(next: Partial<Snapshot>): void {
-  h.snapshot = { ...(h.snapshot as Snapshot), ...next };
-  for (const listener of h.listeners) listener(h.snapshot);
+function push(next: ManagedAppTxServerSnapshot): void {
+  txHarness.emitServerSnapshot(next);
+  for (const subscriber of h.authoritySubscribers) subscriber({
+    state: h.state, caps: h.caps, session: h.session,
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  });
+  flushSync();
+}
+
+function pushSession(next: ControlSessionSnapshot): void {
+  h.session = next;
+  h.sessionSubscriber?.(next);
+  for (const subscriber of h.authoritySubscribers) subscriber({
+    state: h.state, caps: h.caps, session: h.session,
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  });
   flushSync();
 }
 
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
+/** SVG elements have `.dataset` too, but don't satisfy `q`'s `HTMLElement` bound. */
+const qSvg = (sel: string) => target.querySelector(sel) as SVGSVGElement | null;
+const signalFillCount = (): number => qSvg('[data-testid="meter-signal"] svg')!
+  .querySelectorAll('[data-meter-fill]').length;
+const signalHasPeak = (): boolean => qSvg('[data-testid="meter-signal"] svg')!
+  .querySelector('[data-meter-peak]') !== null;
+const barSvg = (field: string): SVGSVGElement =>
+  qSvg(`[data-testid="meter-${field}"] svg`)!;
+const barFillCount = (field: string): number =>
+  barSvg(field).querySelectorAll('[data-gauge-fill]').length;
+const barPeakX = (field: string): number | null => {
+  const x = barSvg(field).querySelector('[data-testid="bar-gauge-peak-marker"]')?.getAttribute('x');
+  return x === null || x === undefined ? null : Number(x);
+};
 const rfState = (): string | undefined => q('[data-testid="meters-surface"]')!.dataset.rfState;
 /** `data-meter -> data-relevant` for every rendered tile. */
 const relevance = (): Record<string, string> => Object.fromEntries(
@@ -228,19 +278,28 @@ const relevance = (): Record<string, string> => Object.fromEntries(
 );
 
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   h.state = liveState(true);
   h.caps = liveCaps(true);
-  h.snapshot = { ...IDLE };
-  h.listeners.clear();
-  h.start.mockReset();
-  h.release.mockReset();
+  expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+  h.session = { state: 'connected', epoch: 1 };
+  h.sessionSubscriber = null;
+  h.deferAuthority = false;
   h.noop.mockReset();
 });
 
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(h.authoritySubscribers.size).toBe(0);
+  expect(txHarness.listenerCount()).toBe(0);
+  expect(txHarness.trace()).toEqual([]);
+  expect(h.sessionSubscriber).toBeNull();
   document.body.innerHTML = '';
+  clearCapabilities();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 // ── 1. The structural gate: absent group ⇒ no surface, no element drift ────
@@ -257,6 +316,10 @@ describe('the meters surface mounts only when the view model carries the group',
    */
   const DEFAULT_PATH_TESTIDS = [
     'vfo-surface', 'vfo-active-receiver', 'vfo-list',
+    'vfo-receiver-indicators',
+    'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
+    'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
+    'vfo-shared-indicators',
     // MOR-1321 (S3a): the VFO ops row and the split RX/TX digest are part of
     // the vfo surface's radio-wide half now, so they belong to the default
     // path's element shape. This fixture's radio is dual-receiver, so the
@@ -300,11 +363,211 @@ describe('the meters surface mounts only when the view model carries the group',
     render({ strips });
     expect(target.querySelectorAll('[data-testid="meters-surface"]')).toHaveLength(1);
     expect(Object.keys(relevance())).toContain('power');
+    expect(q('[data-testid="meter-signal"]')!.dataset.observed).toBe('true');
+    expect(q('[data-testid="meter-drainVoltage"]')!.dataset.observed).toBe('true');
   });
 
-  // MUTATION KILLED: giving the meters surface a `data-zone-id`. `meters` is
-  // declarable after this slice, but no manifest declares a meters zone — and
-  // the zone schema stays config-free (risk R3).
+  it('keeps one station host across delayed dual-receiver authority', () => {
+    h.deferAuthority = true;
+    render({ strips: 'dual' });
+    expect(h.authoritySubscribers.size).toBe(6);
+    expect(() => push({})).not.toThrow();
+    expect(target.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="meters-surface"]')).toHaveLength(1);
+    expect(h.authoritySubscribers.size).toBe(6);
+  });
+
+  it('keeps mounted meter shells but clears readings across a provider generation mismatch', () => {
+    h.caps = { ...liveCaps(true), providerGeneration: 2 };
+    render();
+    expect(q('[data-testid="meters-surface"]')).not.toBeNull();
+    expect(q('[data-testid="meter-signal"]')!.dataset.observed).toBe('false');
+    expect(q('[data-testid="meter-drainVoltage"]')!.dataset.observed).toBe('false');
+  });
+
+  it('re-seeds the mounted S-meter immediately at source, session, provider, and disconnect boundaries', () => {
+    vi.stubGlobal('matchMedia', (query: string): MediaQueryList => ({
+      matches: query === '(prefers-reduced-motion: reduce)', media: query, onchange: null,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
+    }));
+    const signalState = (
+      active: 'MAIN' | 'SUB', sMeter: number, providerGeneration = 1,
+    ): ServerState => {
+      const state = liveState(true);
+      const key = active === 'MAIN' ? 'main' : 'sub';
+      return {
+        ...state, active, providerGeneration,
+        [key]: { ...state[key], sMeter },
+      } as ServerState;
+    };
+    const setSignal = (
+      active: 'MAIN' | 'SUB', sMeter: number, providerGeneration = 1,
+    ): void => {
+      h.state = signalState(active, sMeter, providerGeneration);
+      h.caps = { ...liveCaps(true), providerGeneration };
+      expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+      push({});
+    };
+    const signalObserved = (): string | undefined =>
+      q('[data-testid="meter-signal"]')!.dataset.observed;
+    const armPeak = (active: 'MAIN' | 'SUB', providerGeneration = 1): number => {
+      setSignal(active, 40, providerGeneration);
+      setSignal(active, -30, providerGeneration);
+      expect(signalObserved()).toBe('true');
+      expect(signalHasPeak()).toBe(true);
+      return signalFillCount();
+    };
+
+    h.state = signalState('MAIN', 40);
+    render();
+    const receiverFill = armPeak('MAIN');
+    setSignal('SUB', -30);
+    expect(signalObserved()).toBe('true');
+    expect(signalFillCount()).toBe(receiverFill);
+    expect(signalHasPeak()).toBe(false);
+
+    const sessionFill = armPeak('SUB');
+    pushSession({ state: 'connected', epoch: 2 });
+    expect(signalObserved()).toBe('true');
+    expect(signalFillCount()).toBe(sessionFill);
+    expect(signalHasPeak()).toBe(false);
+
+    const providerFill = armPeak('SUB');
+    setSignal('SUB', -30, 2);
+    expect(signalObserved()).toBe('true');
+    expect(signalFillCount()).toBe(providerFill);
+    expect(signalHasPeak()).toBe(false);
+
+    const reconnectFill = armPeak('SUB', 2);
+    pushSession({ state: 'disconnected', epoch: 3 });
+    expect(signalFillCount()).toBe(0);
+    expect(signalHasPeak()).toBe(false);
+    pushSession({ state: 'connected', epoch: 4 });
+    expect(signalObserved()).toBe('true');
+    expect(signalFillCount()).toBe(reconnectFill);
+    expect(signalHasPeak()).toBe(false);
+  });
+
+  it('re-seeds and clears a mounted radio-wide BarGauge across real context boundaries', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    vi.stubGlobal('matchMedia', (query: string): MediaQueryList => ({
+      matches: false, media: query, onchange: null,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
+    }));
+    h.session = { state: 'disconnected', epoch: 0 };
+    const initial = liveState(true, { powerMeter: 255 });
+    h.state = {
+      ...initial,
+      fieldStatus: {
+        ...initial.fieldStatus,
+        powerMeter: { ...fresh, quality: ['calibrated'] },
+      },
+    };
+    // This lifecycle test needs known physics to witness a retained peak:
+    // state values are already watts and this synthetic scale supplies only
+    // the display-axis maximum. Raw and unknown domains intentionally do not peak.
+    h.caps = {
+      ...(h.caps as Capabilities),
+      meterCalibrations: {
+        ...(h.caps as Capabilities).meterCalibrations,
+        power: [
+          { raw: 0, actual: 0, label: '0' },
+          { raw: 255, actual: 255, label: '255' },
+        ],
+      },
+    };
+    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+    render();
+    push({ intent: 'transmit', observedPtt: 'on' });
+
+    const setPower = (value: number, providerGeneration: number): void => {
+      h.state = { ...(h.state as ServerState), powerMeter: value, providerGeneration };
+      h.caps = { ...(h.caps as Capabilities), providerGeneration };
+      push({ intent: 'transmit', observedPtt: 'on' });
+    };
+    const armRetainedPeak = (epoch: number, providerGeneration: number): void => {
+      setPower(255, providerGeneration);
+      pushSession({ state: 'connected', epoch });
+      vi.advanceTimersByTime(600);
+      flushSync();
+      const retainedFill = barFillCount('power');
+      expect(retainedFill).toBeGreaterThan(5);
+      setPower(25.5, providerGeneration);
+      expect(barFillCount('power')).toBe(retainedFill);
+      expect(barPeakX('power')).toBeGreaterThan(64);
+    };
+
+    armRetainedPeak(1, 1);
+    const sameTurnPower = barSvg('power');
+    const subscribers = h.authoritySubscribers.size;
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
+    txHarness.emitServerSnapshot({ intent: 'rx', observedPtt: 'off' });
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
+    vi.advanceTimersByTime(100);
+    flushSync();
+    expect(h.authoritySubscribers.size).toBe(subscribers);
+    expect(barSvg('power')).toBe(sameTurnPower);
+    expect(barFillCount('power')).toBe(1);
+    expect(barPeakX('power')).toBe(64);
+
+    armRetainedPeak(1, 1);
+    pushSession({ state: 'connected', epoch: 2 });
+    expect(barFillCount('power')).toBe(1);
+    expect(barPeakX('power')).toBe(64);
+
+    armRetainedPeak(3, 1);
+    setPower(25.5, 2);
+    expect(barFillCount('power')).toBe(1);
+    expect(barPeakX('power')).toBe(64);
+
+    armRetainedPeak(4, 2);
+    pushSession({ state: 'disconnected', epoch: 5 });
+    expect(barFillCount('power')).toBe(0);
+    expect(barPeakX('power')).toBeNull();
+    pushSession({ state: 'connected', epoch: 6 });
+    expect(barFillCount('power')).toBe(1);
+    expect(barPeakX('power')).toBe(64);
+
+    armRetainedPeak(7, 2);
+    const mountedPower = barSvg('power');
+    const preStaleFill = barFillCount('power');
+    const preStalePeakX = barPeakX('power');
+    const state = h.state as ServerState;
+    h.state = {
+      ...state,
+      fieldStatus: {
+        ...state.fieldStatus,
+        // Keep the same calibration quality the meter already had — only
+        // freshness flips. Dropping `quality` here would hide the R29 bug
+        // this test exists to witness behind an unrelated "no calibration
+        // evidence" gap.
+        powerMeter: { ...state.fieldStatus!.powerMeter, freshness: 'stale' },
+      },
+    };
+    push({ intent: 'transmit', observedPtt: 'on' });
+    // R29 (MOR-2425): a stale reading stays observed and keeps its value —
+    // it greys out only on a real disconnect or structural absence, neither
+    // of which applies here. The meter stays operational, so its DOM node
+    // is never torn down, and `meterField`'s calibrated domain (fixed
+    // alongside `bar-meter-projector.ts`'s own R29 fix) keeps the gauge
+    // fill and peak marker exactly where they were the instant before.
+    expect(barSvg('power')).toBe(mountedPower);
+    expect(q('[data-testid="meter-power"]')!.dataset.observed).toBe('true');
+    expect(barFillCount('power')).toBe(preStaleFill);
+    expect(barPeakX('power')).toBe(preStalePeakX);
+  });
+
+  // MUTATION KILLED: giving the meters surface a `data-zone-id` of its own.
+  // This mount is bare because a STANDALONE render resolves no surface plan
+  // (`useSurfacePlan()` falls back to `NO_PLAN`), so `zoneOwning()` answers
+  // `null` whatever any manifest declares — not because the zone is
+  // undeclared program-wide. `desktop-v2` has declared a `meters` zone since
+  // MOR-1341 (S5); the dual composition's own layout
+  // (`dual-receiver-cockpit.ts`) declares none. The zone schema stays
+  // config-free (risk R3) either way.
   it('binds no zone id to the meters surface in either composition', () => {
     render({ strips: 'dual' });
     const zones = [...target.querySelectorAll<HTMLElement>('[data-zone-id]')]
@@ -332,22 +595,42 @@ describe('meter TX relevance follows the App TX authority and nothing else', () 
 
   // MUTATION KILLED: any second derivation — a surface that computed relevance
   // itself would not move when the ONLY thing that changed is the authority.
+  //
+  // `swr` is deliberately absent from the `[data-meter-tile]` loop below
+  // (MOR-2250 PR 2): it no longer has its own tile — it renders on the
+  // S-meter's shared bar (`data-testid="meter-signal"`'s `<svg
+  // data-lower-fault>`), whose own `data-relevant` is the S-meter's, not
+  // SWR's. `relevance()` can't see it because there's no `[data-meter-tile]`
+  // for it to read; the composed-tree "no second derivation" guarantee for
+  // SWR specifically is re-asserted just below instead, through the real
+  // rendered `data-lower-fault` attribute on the same mounted tree — not a
+  // unit-level mock. (`MetersSurface.test.ts` and
+  // `LinearSMeter.lower-scale.test.ts` separately cover the fault VALUE
+  // logic at the unit level; this block only needs to prove the composed
+  // tree wires the same authority through to this DOM location.)
   it('flips every TX-gated meter when the App authority says the radio is transmitting', () => {
     render();
     expect(rfState()).toBe('receiving');
     const rx = relevance();
     expect(rx.signal).toBe('true');
     expect(rx.power).toBe('false');
+    expect(qSvg('[data-testid="meter-signal"] svg')!.dataset.lowerFault).toBe('false');
 
-    push({ radioTx: 'on', txRisk: 'confirmed-on', phase: 'active', mayOwnKey: true });
+    push({ intent: 'transmit', observedPtt: 'on' });
     expect(rfState()).toBe('transmitting');
     const tx = relevance();
     expect(tx.signal).toBe('false');
-    for (const field of ['power', 'swr', 'alc', 'drainCurrent', 'compression']) {
+    for (const field of ['power', 'alc', 'drainCurrent', 'compression']) {
       expect(tx[field]).toBe('true');
     }
     // Vd is the station supply rail, relevant in every RF state.
     expect(tx.drainVoltage).toBe('true');
+    // SWR's own relevance flip reaches the shared bar's `data-lower-fault`
+    // through the same real authority chain — still `'false'` here (no fault
+    // condition set up in this scenario), but present and boolean-valued,
+    // proving the composed tree actually renders it rather than losing the
+    // attribute entirely once SWR left the `[data-meter-tile]` loop.
+    expect(qSvg('[data-testid="meter-signal"] svg')!.dataset.lowerFault).toBe('false');
   });
 
   // MUTATION KILLED: collapsing 'uncertain' onto 'receiving' — the boolean
@@ -355,7 +638,7 @@ describe('meter TX relevance follows the App TX authority and nothing else', () 
   // hide. An uncertain transmitter must not read as RX.
   it('renders an uncertain transmitter as uncertain, never as receiving', () => {
     render();
-    push({ txRisk: 'uncertain' });
+    push({ intent: 'transmit', observedPtt: 'off' });
     expect(rfState()).toBe('uncertain');
     expect(relevance().power).toBe('true');
   });
@@ -368,7 +651,7 @@ describe('the cold-start window renders fail-closed', () => {
   // styling on a radio that may be keyed), or suppressing the surface until
   // the authority speaks (a flash of nothing, then a reflow).
   it('renders the surface with rfState unknown before the authority has spoken', () => {
-    h.snapshot = { ...IDLE, radioTx: 'unknown' };
+    txHarness.emitServerSnapshot({ observedPtt: 'unknown' });
     render();
     expect(q('[data-testid="meters-surface"]')).not.toBeNull();
     expect(rfState()).toBe('unknown');
@@ -378,15 +661,15 @@ describe('the cold-start window renders fail-closed', () => {
   // The adapter emits NO meters group without a TX authority snapshot, so the
   // "no honest relevance can be stated" case is absence, not a guess.
   it('never renders RX styling while the RF state is unknown', () => {
-    h.snapshot = { ...IDLE, radioTx: 'unknown' };
+    txHarness.emitServerSnapshot({ observedPtt: 'unknown' });
     render();
     expect(target.innerHTML).not.toContain('data-rf-state="receiving"');
   });
 });
 
-// ── 4. R9: the meters surface is a readout, never an action path ─────────
+// ── 4. R9: native meters add no radio-command path ───────────────────────
 
-describe('the meters surface adds no control and no TX path', () => {
+describe('the native meters surface adds no control and no TX path', () => {
   it('keeps exactly one key/unkey authority in the composed tree', () => {
     render();
     expect(target.querySelectorAll('[data-testid="rx-tx-surface"]')).toHaveLength(1);
@@ -394,15 +677,14 @@ describe('the meters surface adds no control and no TX path', () => {
     expect(target.querySelectorAll('[data-testid="rx-tx-unkey"]')).toHaveLength(1);
   });
 
-  // MUTATION KILLED: a meters surface that grew a peak-reset / source-select
-  // control. Zero controls also keeps the cockpit's focus order and its
-  // zone-less-control count exactly as MOR-1069/1070 pinned them.
-  it('contributes no focusable control to the composition', () => {
+  // MUTATION KILLED: a native/default meters surface that grew a source-select
+  // or radio-command control. The separately tested public meter appearance
+  // may expose only its host-owned local peak-reset lease.
+  it('contributes no focusable control with no selected meter appearance', () => {
     render({ strips: 'dual' });
     const surface = q('[data-testid="meters-surface"]')!;
     expect(surface.querySelectorAll('button, input, select, a[href], [tabindex]'))
       .toHaveLength(0);
-    expect(h.start).not.toHaveBeenCalled();
-    expect(h.release).not.toHaveBeenCalled();
+    expect(txHarness.trace()).toEqual([]);
   });
 });

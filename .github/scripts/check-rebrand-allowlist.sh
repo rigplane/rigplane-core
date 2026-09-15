@@ -34,7 +34,7 @@ ALLOWLIST=(
     'docs/contracts/diagnostic-bundle-v2.md'
     # Local-extensions deprecation alias (cross-repo Pro contract).
     'frontend/src/lib/local-extensions/host-api.ts'
-    'frontend/src/lib/local-extensions/__tests__/host-api.test.ts'
+    'frontend/src/lib/local-extensions/__tests__/host-api.isolated.test.ts'
     'frontend/src/lib/api/diagnostics.ts'
     'frontend/src/lib/api/__tests__/diagnostics.test.ts'
     # Vendor-protocol diagram label (parallel to IcomSerial / YaesuCAT —
@@ -94,6 +94,10 @@ ALLOWLIST=(
     # exempting the derived index here, rather than the individually-allowed
     # docs, is the correct fix.
     '.github/scripts/doc-citation-baseline.txt'
+    # MOR-2065: the dangling-citation floor baseline is a strict subset of
+    # doc-citation-baseline.txt above, derived from the same docs/**
+    # citations; it introduces no new brand reference of its own.
+    '.github/scripts/doc-citation-dangling-baseline.txt'
     # MOR-1078: legacy workspace migration layer must name historical
     # localStorage keys verbatim (e.g. `rigplane:storage-migrated-from-icom-lan`)
     # to classify and read them correctly. Read-only — the module never writes

@@ -21,7 +21,7 @@ from rigplane.diagnostics._logging import (
     SafeRotatingFileHandler,
     configure_diagnostic_logging,
 )
-from rigplane.web.server import WebServer
+from rigplane.web.server import WebConfig, WebServer
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@ def test_stalled_subscriber_no_log_warnings_on_overflow() -> None:
     maxsize and calling _broadcast_state_update many times — zero warnings
     should be emitted, and the server must not raise.
     """
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     stalled: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=4)
     srv.register_control_event_queue(stalled)
 
@@ -185,7 +185,7 @@ def test_no_subscribers_skips_build(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_connecting_client_still_gets_initial_state() -> None:
     """Fix C (#1877 2a): force=True (used on connect) must still build and deliver."""
-    srv = WebServer(None)
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=8)
     srv.register_control_event_queue(q)
 

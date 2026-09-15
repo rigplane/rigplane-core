@@ -140,3 +140,77 @@ describe('PBT presentation continuity', () => {
     expect(result.state).toEqual(EMPTY_PBT_PRESENTATION);
   });
 });
+
+
+describe('fractional PBT display admission (MOR-1692)', () => {
+  const observedView = (value = 100, state: 'current' | 'stale' = 'current') => {
+    const result = view(value);
+    result.filterPassband!.pbtInner = {
+      reading: state === 'current' ? { status: 'known', value } : { status: 'unknown' },
+      availability: { structural: true, operational: state === 'current' }, display: { state, value },
+    };
+    return result;
+  };
+  const markedStale = (value: number) => ({ status: 'stale', marker: { source: 'field', value } }) as const;
+
+  it('retains fractional current → stale → newer current with independent outer', () => {
+    const first = reduce(EMPTY_PBT_PRESENTATION, observedView(), evidence(fresh('field', 310658.42975425)));
+    expect(first.state.pbtInner?.marker.value).toBe(310658.42975425);
+    const next = reduce(first.state, observedView(100, 'stale'), evidence(markedStale(310658.42975425), fresh('field', 2)));
+    expect(next.view.filterPassband!.pbtInner).toMatchObject({ display: { state: 'stale', value: 100 }, availability: { operational: false } });
+    expect(next.view.filterPassband!.pbtOuter.availability.operational).toBe(true);
+    const final = reduce(next.state, observedView(200), evidence(fresh('field', 310658.5)));
+    expect(final.view.filterPassband!.pbtInner.display).toEqual({ state: 'current', value: 200 });
+  });
+
+  it('admits an already-stale first observation and keeps it inert', () => {
+    const result = reduce(EMPTY_PBT_PRESENTATION, observedView(0, 'stale'), evidence(markedStale(0.25)));
+    expect(result.state.pbtInner?.value).toBe(0);
+    expect(result.view.filterPassband!.pbtInner).toMatchObject({ reading: { status: 'known', value: 0 }, display: { state: 'stale', value: 0 }, availability: { operational: false } });
+  });
+
+  it.each([NaN, Infinity, -0.1])('rejects invalid marker %s without display leakage', (marker) => {
+    const result = reduce(EMPTY_PBT_PRESENTATION, observedView(), evidence(fresh('field', marker)));
+    expect(result.state.pbtInner).toBeNull();
+    expect(result.view.filterPassband!.pbtInner.display?.state).toBe('unknown');
+  });
+
+  it.each([unavailable, stale])('does not admit a raw display without marked evidence: $status', (incoming) => {
+    const result = reduce(EMPTY_PBT_PRESENTATION, observedView(999, 'stale'), evidence(incoming));
+    expect(result.view.filterPassband!.pbtInner.display?.state).toBe('unknown');
+  });
+
+  it('masks display when boundary is null or support disappears', () => {
+    const current = observedView();
+    expect(reduce(EMPTY_PBT_PRESENTATION, current, evidence(unavailable, unavailable, null)).view.filterPassband!.pbtInner.display?.state).toBe('unknown');
+    current.filterPassband!.pbtInner.availability.structural = false;
+    expect(reduce(EMPTY_PBT_PRESENTATION, current).view.filterPassband!.pbtInner.display).toEqual({ state: 'unsupported' });
+  });
+
+  it.each([9.25, 10.25])('does not replace retained display with conflicting marker %s', (marker) => {
+    const first = reduce(EMPTY_PBT_PRESENTATION, observedView(), evidence(fresh('field', 10.25)));
+    const result = reduce(first.state, observedView(999), evidence(fresh('field', marker)));
+    expect(result.view.filterPassband!.pbtInner.display).toEqual({ state: 'stale', value: 100 });
+    expect(result.view.filterPassband!.pbtInner.availability.operational).toBe(false);
+  });
+
+  it.each([
+    { providerGeneration: 2, receiver: 'MAIN', controlSession: 'a', epoch: 1 },
+    { providerGeneration: 1, receiver: 'SUB', controlSession: 'a', epoch: 1 },
+    { providerGeneration: 1, receiver: 'MAIN', controlSession: 'b', epoch: 2 },
+  ])('does not spread display across a changed boundary without new evidence: %j', (boundary) => {
+    const first = reduce(EMPTY_PBT_PRESENTATION, observedView(), evidence(fresh('field', 10.25)));
+    const result = reduce(first.state, observedView(999, 'stale'), evidence(unavailable, unavailable, boundary));
+    expect(result.state.pbtInner).toBeNull();
+    expect(result.view.filterPassband!.pbtInner.display?.state).toBe('unknown');
+    const next = reduce(result.state, observedView(200, 'stale'), evidence(markedStale(0.25), unavailable, boundary));
+    expect(next.view.filterPassband!.pbtInner.display).toEqual({ state: 'stale', value: 200 });
+  });
+
+  it('keeps current display current when an independent gate disables operation', () => {
+    const current = observedView(); current.filterPassband!.pbtInner.availability.operational = false;
+    const result = reduce(EMPTY_PBT_PRESENTATION, current, evidence(fresh('field', 0.5)));
+    expect(result.view.filterPassband!.pbtInner.display).toEqual({ state: 'current', value: 100 });
+    expect(result.view.filterPassband!.pbtInner.availability.operational).toBe(false);
+  });
+});

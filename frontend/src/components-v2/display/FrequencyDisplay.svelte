@@ -1,47 +1,57 @@
 <script lang="ts">
-  import { formatFrequency } from './frequency-format';
+  import { onDestroy } from 'svelte';
+  import { getSelectedFrequencyReadout } from '../../component-kits/activation';
+  import StandardFrequencyReadout from '../../primitives/frequency/StandardFrequencyReadout.svelte';
+  import {
+    createFrequencyInteraction, createFrequencyInteractionLease,
+  } from '../../primitives/frequency/frequency-interaction.svelte';
+  import { projectFrequencyReadout } from '../../primitives/frequency/frequency-readout';
 
   interface Props {
     freq: number;       // frequency in Hz (e.g. 14235000)
     compact?: boolean;  // smaller variant (~18px vs ~28px)
     active?: boolean;   // bright (var(--v2-text-bright)) vs dimmed (var(--v2-text-disabled))
+    receiver?: 'main' | 'sub';
   }
 
-  let { freq, compact = false, active = true }: Props = $props();
+  let { freq, compact = false, active = true, receiver = 'main' }: Props = $props();
 
-  let parts = $derived(formatFrequency(freq));
+  let model = $derived(projectFrequencyReadout({ confirmedHz: freq }));
+  const owner = createFrequencyInteraction({
+    get confirmedHz() { return freq; },
+    get digits() { return model.digits; },
+    disabled: true,
+    get receiver() { return receiver; },
+    minFreq: 0,
+    maxFreq: 999_000_000,
+  });
+  const selectedRenderer = getSelectedFrequencyReadout();
+  const lease = createFrequencyInteractionLease(
+    owner,
+    () => getSelectedFrequencyReadout() === selectedRenderer,
+  );
+  onDestroy(lease.revoke);
 </script>
 
-<div class="freq" class:compact class:inactive={!active}>
-  <span class="digits">{parts.mhz}</span><span class="sep">.</span><span
-    class="digits">{parts.khz}</span><span class="sep">.</span><span
-    class="digits">{parts.hz}</span>
-</div>
-
-<style>
-  .freq {
-    display: inline-flex;
-    align-items: baseline;
-    font-family: 'Roboto Mono', monospace;
-    font-weight: 700;
-    font-size: 24px;
-    line-height: 1;
-    letter-spacing: 0.035em;
-    color: var(--v2-accent-cyan-bright);
-    white-space: nowrap;
-    user-select: none;
-  }
-
-  .freq.compact {
-    font-size: 14px;
-  }
-
-  .freq.inactive {
-    color: var(--v2-text-muted);
-  }
-
-  .sep {
-    opacity: 0.5;
-    margin: 0 0.02em;
-  }
-</style>
+{#if selectedRenderer}
+  {@const Renderer = selectedRenderer}
+  <Renderer
+    {model}
+    interaction={lease.interaction}
+    presentation="passive"
+    {compact}
+    {active}
+    {receiver}
+    vfoFreqHook={false}
+  />
+{:else}
+  <StandardFrequencyReadout
+    {model}
+    interaction={lease.interaction}
+    presentation="passive"
+    {compact}
+    {active}
+    {receiver}
+    vfoFreqHook={false}
+  />
+{/if}

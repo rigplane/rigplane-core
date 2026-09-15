@@ -30,15 +30,21 @@ const LAYOUT_ALIASES: Readonly<Record<string, WorkspaceLayoutId>> = LEGACY_LAYOU
 /** Workspace id space → layout-manifest id space. `auto` is resolved by the existing
  *  `skins/registry.ts::resolveSkinId()` (it needs live scope facts this module must not
  *  see), so it maps to null — "defer", not "unknown". */
-const LAYOUT_MANIFEST_ID: Readonly<Record<WorkspaceLayoutId, string | null>> = { auto: null, 'lcd-cockpit': 'lcd-cockpit', 'lcd-scope': 'lcd-scope', standard: 'desktop-v2', 'sdr-test': 'sdr-test' };
+const LAYOUT_MANIFEST_ID: Readonly<Record<WorkspaceLayoutId, string | null>> = { auto: null, 'lcd-cockpit': 'lcd-cockpit', 'lcd-scope': 'lcd-scope', standard: 'desktop-v2', 'sdr-test': 'sdr-test', 'peer-split': 'peer-split', 'unified-instrument': 'unified-instrument', 'panadapter-first': 'panadapter-first', 'dual-sdr-face': 'dual-sdr-face' };
 
-/** Decision 2: frozen by MOR-977 §4.6. */
-export const WORKSPACE_DESIGN_LANGUAGE_IDS = ['studioline', 'fieldline'] as const;
+/**
+ * Decision 2: frozen by MOR-977 §4.6 for `studioline`/`fieldline`.
+ * `segmentline` added — its `peer-split`-only `layoutCompatibility`
+ * (`../languages/declarations.ts`) is what keeps it from activating on any
+ * currently-shipped v2 skin, not exclusion from this set.
+ */
+export const WORKSPACE_DESIGN_LANGUAGE_IDS = ['studioline', 'fieldline', 'segmentline'] as const;
 export type WorkspaceDesignLanguageId = (typeof WORKSPACE_DESIGN_LANGUAGE_IDS)[number];
 /** Decision 4: each language's `DensityClamp.supported`; index 0 is that language's default. */
 export const WORKSPACE_DENSITY_CLAMP: Readonly<Record<WorkspaceDesignLanguageId, readonly DensityLevel[]>> = {
   studioline: ['comfortable', 'compact', 'dense'],
   fieldline: ['comfortable', 'compact'],
+  segmentline: ['comfortable', 'compact'],
 };
 
 /** Decision 3: the flat 21-id theme list, allow-list validated ON READ. */
@@ -49,8 +55,13 @@ export const WORKSPACE_THEME_IDS = [
 ] as const;
 export type WorkspaceThemeId = (typeof WORKSPACE_THEME_IDS)[number];
 
-/** Every zone id declared by a registered layout manifest (decisions 5 and 6). */
-export const WORKSPACE_ZONE_IDS = ['main', 'receiver-deck', 'rx-tx', 'primary-vfo', 'secondary-vfo', 'global', 'portrait-deck', 'control-column', 'tx-aux', 'meters', 'scope-display', 'filter', 'rf-front-end', 'band', 'antenna', 'rit-xit-scan', 'rx-audio', 'dsp', 'cw-keyer', 'scope-controls'] as const;
+/** Every zone id declared by a registered layout manifest (decisions 5 and 6).
+ *  Derived by hand, and checked against the live union by
+ *  `__tests__/contract.test.ts`'s "zone ids are exactly the zones every
+ *  registered layout manifest declares". `main` left with MOR-2231, which
+ *  split sdr-test's only zone into `receiver-deck` + `rx-tx`; no other
+ *  manifest declared it. */
+export const WORKSPACE_ZONE_IDS = ['receiver-deck', 'rx-tx', 'primary-vfo', 'secondary-vfo', 'global', 'portrait-deck', 'control-column', 'tx-aux', 'meters', 'scope-display', 'filter', 'rf-front-end', 'band', 'antenna', 'rit-xit-scan', 'rx-audio', 'dsp', 'cw-keyer', 'memory', 'scope-controls', 'peer-columns'] as const;
 export type WorkspaceZoneId = (typeof WORKSPACE_ZONE_IDS)[number];
 
 /** Decision 7: command-bus intent names (`set_compressor`), never module paths. */

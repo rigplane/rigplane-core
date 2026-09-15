@@ -126,13 +126,14 @@ describe('antenna per-field derivation (MOR-1295)', () => {
     expect(view.antenna!.rxAnt.reading).toEqual({ status: 'known', value: false });
   });
 
-  it('degrades a stale txAntenna field to unknown while keeping structural availability true', () => {
+  it('holds a stale txAntenna field at its last observed value (MOR-2425/R40)', () => {
     const state = bareState({
       txAntenna: 1, fieldStatus: { ...bareState().fieldStatus, txAntenna: stale },
     });
     const view = model(state, fullCaps);
     expect(view.antenna!.txAntenna).toEqual({
-      reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+      reading: { status: 'known', value: 1 },
+      availability: { structural: true, operational: true },
     });
   });
 
@@ -184,13 +185,13 @@ describe('antenna rxAnt fails closed on an unobserved txAntenna (half-observed-p
     expect(view.antenna!.rxAnt.reading).toEqual({ status: 'unknown' });
   });
 
-  it('rxAnt reads unknown when txAntenna is stale, even though rxAntenna1 is fresh', () => {
+  it('rxAnt reads through a HELD txAntenna: the pair is complete, one half is older (MOR-2425/R40)', () => {
     const state = bareState({
       txAntenna: 1, rxAntenna1: true,
       fieldStatus: { ...bareState().fieldStatus, txAntenna: stale, rxAntenna1: fresh },
     });
     const view = model(state, fullCaps);
-    expect(view.antenna!.rxAnt.reading).toEqual({ status: 'unknown' });
+    expect(view.antenna!.rxAnt.reading).toEqual({ status: 'known', value: true });
   });
 
   it('rxAnt reads unknown when txAntenna selects port 2 but rxAntenna2 was never reported (port-2 half-observed variant)', () => {

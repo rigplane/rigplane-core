@@ -32,6 +32,9 @@
  * Each test names the mutation it exists to kill.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+const txHarness = new ManagedAppTxHarness();
 import { mount, unmount, flushSync } from 'svelte';
 
 vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
@@ -64,8 +67,16 @@ const rt = vi.hoisted(() => ({ state: null as unknown }));
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return rt.state; },
     caps: null,
+    subscribeControlAuthority(handler: (publication: unknown) => void) {
+      handler({
+        state: rt.state, caps: null, session: { state: 'disconnected', epoch: 0 },
+        rxAudioTarget: Object.freeze({ muted: false, rxEnabled: false }),
+      });
+      return () => {};
+    },
     connectionStatus: 'disconnected',
     radioPowerOn: null,
     connection: { status: 'disconnected', radioPowerOn: null },
@@ -82,6 +93,7 @@ vi.mock('$lib/runtime', () => ({
 vi.mock('$lib/stores/connection.svelte', () => ({
   getConnectionStatus: vi.fn(() => ({ connected: false })),
   getWsConnected: vi.fn(() => false),
+  hasEverConnected: vi.fn(() => false),
   getRadioPowerOn: vi.fn(() => null),
   getRadioStatus: vi.fn(() => 'disconnected'),
   getRadioLinkState: vi.fn(() => 'disconnected'),
@@ -97,18 +109,11 @@ vi.mock('$lib/stores/tuning.svelte', () => ({
   applyModeDefault: vi.fn(),
 }));
 
-vi.mock('$lib/runtime/tx-controller/app-host', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/app-host')>();
+vi.mock('$lib/runtime/tx-controller/managed-app-host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/managed-app-host')>();
   return {
     ...actual,
-    getAppTxController: () => ({
-      snapshot: () => ({ phase: 'idle', intent: null, guard: null, radioTx: 'unknown', txRisk: 'none', mayOwnKey: false, fault: null }),
-      subscribe: () => () => {},
-      start: vi.fn(),
-      setIntent: vi.fn(),
-      release: vi.fn(),
-      resetFault: vi.fn(),
-    }),
+    getManagedAppTxController: () => txHarness.controller,
   };
 });
 
@@ -145,7 +150,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getControlRange: vi.fn(() => ({ min: 0, max: 255 })),
 }));
 
-import RadioLayout from '../RadioLayout.svelte';
+import RadioLayout from './fixtures/HostedRadioLayoutFixture.svelte';
 import radioLayoutSource from '../RadioLayout.svelte?raw';
 
 let components: ReturnType<typeof mount>[] = [];
@@ -164,6 +169,7 @@ function mountLayout(skinId: any = UNDECLARED) {
 }
 
 beforeEach(() => {
+  txHarness.reset({ stale: true });
   components = [];
   rt.state = null;
   Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1440 });

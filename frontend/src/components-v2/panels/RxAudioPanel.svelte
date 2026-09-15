@@ -1,6 +1,7 @@
 <script lang="ts">
   import { HardwareButton } from '$lib/Button';
-  import { ValueControl, normalizedPercentDisplay } from '../controls/value-control';
+  import { ValueControl } from '../controls/value-control';
+  import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
   import { deriveRxAudioProps, getRxAudioHandlers } from '$lib/runtime/adapters/audio-adapter';
   import { buildMonitorOptions, formatMonitorStatus } from './audio-utils';
   import { getShortcutHint } from '../layout/shortcut-hints';
@@ -24,7 +25,7 @@
   // connected receiver that has never reported `afLevel` (optional field,
   // local-monitor path) still passes the gate with `props.afLevel === NaN`
   // (panel-props.ts no longer fabricates `?? 0.5`). `normalizedPercentDisplay`
-  // (value-control-core.ts, not an A12 owner) has no NaN guard —
+  // (primitives/scalar/value-control-core.ts, not an A12 owner) has no NaN guard —
   // `Math.round(Math.max(0, Math.min(1, NaN)) * 100)` is `NaN`, rendering
   // the literal "NaN%". Guard locally, same shape as FilterPanel.svelte's
   // `formatWidthDisplay`.

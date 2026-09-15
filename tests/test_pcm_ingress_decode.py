@@ -43,7 +43,7 @@ _MIXIN_MODULE = "rigplane.runtime._audio_runtime_mixin"
 
 def _lan_radio(codec: AudioCodec, stream: FakeAudioStream) -> IcomRadio:
     """Connected LAN radio with a fake audio stream and a forced RX codec."""
-    radio = IcomRadio("192.168.1.100")
+    radio = IcomRadio("192.168.1.100", model="IC-7610")
     radio._connected = True
     radio._civ_transport = MagicMock()
     radio._audio_stream = stream  # type: ignore[assignment]

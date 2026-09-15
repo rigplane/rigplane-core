@@ -10,7 +10,7 @@ import ProfessionalKnob from './ProfessionalKnob.svelte';
 
 export const professionalSkin: Skin = {
   name: 'professional',
-  knob: ProfessionalKnob as Skin['knob'],
+  knob: ProfessionalKnob,
 };
 
 /** All registered skins keyed by name. */

@@ -16,8 +16,12 @@
  *       `defaultScopeStatus` — the composed-tree analogue of the adapter-level
  *       probe in `scope-display-adapter.test.ts`.
  *   (c) Unlike `rxAudio` (control-bearing, single-composition-only), this
- *       surface is PURE READOUT and mounts BARE in BOTH compositions, the
- *       `meters`/`txAux` shape — proved by mounting it in `dual` too.
+ *       surface is PURE READOUT and mounts in BOTH compositions, the
+ *       `meters`/`txAux` shape — proved by mounting it in `dual` too. It is
+ *       zoned wherever `zoneOwning()` finds a zone carrying `scopeDisplay`
+ *       (`desktop-v2` declares one as `scope-display`, MOR-1365/S6a), and
+ *       bare otherwise — the dual composition, a standalone mount with no
+ *       plan, or a workspace subtraction that emptied the zone.
  *   (d) The default path must stay byte-identical: a radio that declares no
  *       scope capability renders exactly the pre-1312 element shape.
  */
@@ -25,11 +29,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
 type ScopeStatus = {
   source: 'hardware' | 'audio_fft' | null;
   available: boolean; resourceSelected: boolean; demand: number;
@@ -50,10 +52,13 @@ const LIVE_SCOPE_STATUS: ScopeStatus = {
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
-  listeners: new Set<(next: unknown) => void>(),
-  start: vi.fn(),
-  release: vi.fn(),
+  controlSession: { state: 'connected' as const, epoch: 1 as const },
+  authoritySubscribers: new Set<(next: {
+    state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  audio: { muted: true, rxEnabled: false, volume: 0 },
+  txController: null as ManagedAppTxController | null,
   noop: vi.fn(),
   scopeStatus: {
     source: null, available: false, resourceSelected: false, demand: 0,
@@ -65,9 +70,19 @@ const h = vi.hoisted(() => ({
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
-    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get controlSession() { return h.controlSession; },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({
+        state: h.state, caps: h.caps, session: h.controlSession,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
+    get audio() { return h.audio; },
     get connectionAudio() { return false; },
     // MOR-1312 slice 12B: the wiring's `scopeDisplaySnapshot` (the FIFTH
     // adapter argument) is built from these three reads.
@@ -76,18 +91,8 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: h.hardwareScopeConnected }; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => { h.listeners.delete(listener); };
-    },
-    start: h.start,
-    setIntent: vi.fn(),
-    release: h.release,
-    resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => h.txController,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }),
@@ -158,6 +163,7 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
 });
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 // MOR-1365 (S6a): the REAL manifests + the REAL resolution seam, mirroring
 // `semantic-tx-aux-wiring.component.test.ts`'s "MOR-1082 — the semantic
 // vertical consults the resolved surface plan" shape — the only way to prove
@@ -171,10 +177,6 @@ import {
   resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
 } from '../../../presentation/workspace/resolution';
 
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
@@ -213,6 +215,7 @@ const liveCaps = (withScope: boolean): Capabilities => ({
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 
 function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan): void {
   target = document.createElement('div');
@@ -227,12 +230,10 @@ function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan):
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   h.state = liveState();
   h.caps = liveCaps(false);
-  h.snapshot = { ...IDLE };
-  h.listeners.clear();
-  h.start.mockReset();
-  h.release.mockReset();
   h.noop.mockReset();
   h.scopeStatus = { ...OFF_SCOPE_STATUS };
   h.radioPowerOn = null;
@@ -242,6 +243,9 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(h.authoritySubscribers.size).toBe(0);
+  expect(txHarness.listenerCount()).toBe(0);
+  expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';
 });
 
@@ -253,6 +257,10 @@ describe('the scope-display surface mounts only when the view model carries the 
    *  radio's default path is provably unaffected by this slice. */
   const DEFAULT_PATH_TESTIDS = [
     'vfo-surface', 'vfo-active-receiver', 'vfo-list',
+    'vfo-receiver-indicators',
+    'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
+    'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
+    'vfo-shared-indicators',
     'vfo-ops', 'vfo-split-digest',
     'rx-tx-surface', 'rx-tx-state', 'rx-tx-rf-mark', 'rx-tx-rf-label',
     'rx-tx-target', 'rx-tx-key', 'rx-tx-unkey', 'rx-tx-blocked',
@@ -295,9 +303,13 @@ describe('the scope-display surface mounts only when the view model carries the 
     },
   );
 
-  // Same shape as `meters`/`txAux`: declarable, but no manifest declares a
-  // `scopeDisplay` zone in this slice — the surface renders bare in BOTH
-  // compositions, unlike `rxAudio`'s single-only mount.
+  // Mounted in BOTH compositions, unlike `rxAudio`'s single-only mount. This
+  // pin renders bare because a STANDALONE mount resolves no surface plan
+  // (`useSurfacePlan()` falls back to `NO_PLAN`), so `zoneOwning()` answers
+  // `null` for every surface here whatever any manifest declares — not
+  // because the zone is undeclared program-wide. `desktop-v2` has declared a
+  // `scopeDisplay` zone since MOR-1365 (S6a); the dual composition's own
+  // layout (`dual-receiver-cockpit.ts`) still declares none.
   it('binds no zone id to the scope-display surface in either composition', () => {
     h.caps = liveCaps(true);
     h.scopeStatus = { ...LIVE_SCOPE_STATUS };
@@ -396,8 +408,7 @@ describe('the scope-display surface adds no control and no TX path', () => {
       const surface = q('[data-testid="scope-display-surface"]')!;
       expect(surface.querySelectorAll('button, input, select, a[href], [tabindex]'))
         .toHaveLength(0);
-      expect(h.start).not.toHaveBeenCalled();
-      expect(h.release).not.toHaveBeenCalled();
+      expect(txHarness.trace()).toEqual([]);
     },
   );
 });

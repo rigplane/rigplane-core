@@ -7,7 +7,7 @@
  * Add new panel adapters here as panels are migrated to self-wiring.
  */
 
-import { runtime } from '../frontend-runtime';
+import { runtime, type ControlSessionSnapshot } from '../frontend-runtime';
 import {
   toAgcProps, toModeProps, toAntennaProps,
   toRfFrontEndProps, toRitXitProps, toScanProps,
@@ -26,24 +26,47 @@ import {
   makeKeyboardHandlers, makeSystemHandlers,
 } from '../commands/panel-commands';
 import { toRadioViewModel } from './radio-view-model-adapter';
-import { getAppTxController, type AppTxController } from '../tx-controller/app-host';
+import {
+  getManagedAppTxController, type ManagedAppTxController,
+} from '../tx-controller/managed-app-host';
 import {
   hasAudioFft, hasDualReceiver, hasCapability,
 } from '$lib/stores/capabilities.svelte';
 import { recordQsy } from './qsy-history-adapter';
 import {
+  AF_LEVEL_COMMAND_DESCRIPTOR,
   BREAK_IN_DELAY_COMMAND_DESCRIPTOR,
+  CW_PITCH_COMMAND_DESCRIPTOR,
+  DSP_COMMAND_DESCRIPTORS,
   FILTER_WIDTH_COMMAND_DESCRIPTOR,
+  IF_SHIFT_COMMAND_DESCRIPTOR,
+  KEY_SPEED_COMMAND_DESCRIPTOR,
+  PBT_INNER_COMMAND_DESCRIPTOR,
+  PBT_OUTER_COMMAND_DESCRIPTOR,
+  RF_GAIN_COMMAND_DESCRIPTOR,
+  RF_POWER_COMMAND_DESCRIPTOR,
+  SQUELCH_COMMAND_DESCRIPTOR,
+  TX_AUX_COMMAND_DESCRIPTORS,
   getCommandLifecycles,
   isCommandLifecycleSuperseded,
   type CommandLifecycle,
   type ControlFeedbackScope,
+  type DspCommandFeedbackField,
   type StateBackedCommandDescriptor,
   type StateBackedRepeatPolicy,
+  type TxAuxCommandFeedbackField,
 } from '$lib/stores/commands.svelte';
 import { currentControlSessionEpoch } from '../commands/radio-intents';
+import { getTuningBurstTargetHz } from '../commands/tuning-accumulator';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
+import type { DisplayObservation } from '../../../semantic/radio-view-model';
+import { modInputCommand, modInputStateKey, type ModInputStateKey } from '$lib/radio/mod-input';
+import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
+import {
+  controlRangeFromCapsOrDefault, deriveIfShift, nbDepthRawToDisplay,
+  pbtRangeFromCaps, pbtRawToHz, projectNrLevel,
+} from '$lib/radio/filter-controls';
 
 // Re-export types for panel imports
 export type {
@@ -245,16 +268,30 @@ export function getActiveFrequencyHz(): number | null {
  * current for the ~500ms until the next poll actually caught up — the
  * reported symptom. Routed through `latestPendingParam` (below) — the same
  * decision table leg 2's four discrete accessors use — so a command now
- * stays pending through ack until the radio's own observed state confirms
- * `freqHz`, or the shared `ACK_CONFIRM_GRACE_MS` backstop elapses.
+ * stays pending through ack.
  */
 export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
   const value = latestPendingParam('set_freq', 'freq', receiver, 'freqHz');
   return typeof value === 'number' ? value : null;
 }
 
+// ── Tuning burst target (MOR-2464) ──
+/**
+ * The display-only per-gesture tuning target for `receiver` while local
+ * input (arrows/wheel/click) is visually live, or `null`. Reads the
+ * tuning accumulator's own publication — the accumulated target,
+ * paced-unsent steps included — which unlike `getPendingFrequencyHz`
+ * cannot be dropped mid-gesture by an intermediate post-ack field
+ * observation. Held only for a short visual idle past the last input
+ * (200ms, `DEFAULT_VISUAL_HOLD_MS` in `tuning-accumulator.ts`), after
+ * which pending and confirmed truth reconcile the display.
+ */
+export function getTuningBurstFrequencyHz(receiver: 0 | 1): number | null {
+  return getTuningBurstTargetHz(receiver);
+}
+
 export type FilterWidthCommandPhase = 'unavailable' | 'idle' | 'pending' | 'acknowledged' | 'confirmed';
-export type FilterWidthCommandOutcome = 'confirmed' | 'failed' | 'timed-out' | 'cancelled';
+export type FilterWidthCommandOutcome = 'confirmed' | 'failed' | 'timed-out' | 'cancelled' | 'superseded';
 export interface FilterWidthLifecyclePresentation {
   /** Opaque correlation value; consumers must compare it, never parse it. */
   readonly lifecycleId: string;
@@ -285,6 +322,7 @@ export interface ControlFeedback<T> {
   readonly outcome: Readonly<{ phase: ControlFeedbackOutcome; error?: string }> | null;
   readonly lifecycleId: string | null;
   readonly transitionId: string | null;
+  readonly providerGeneration?: number | null;
   readonly sessionEpoch: number;
   readonly scope: Readonly<ControlFeedbackScope>;
   readonly repeatPolicy: StateBackedRepeatPolicy;
@@ -303,41 +341,73 @@ export function projectControlFeedback<T>(
   commands: readonly CommandLifecycle[], scope: ControlFeedbackScope, currentSessionEpoch: number,
   superseded: (command: CommandLifecycle) => boolean,
 ): Readonly<ControlFeedback<T>> {
+  const candidateProviderGeneration = state?.providerGeneration;
+  const currentProviderGeneration = typeof candidateProviderGeneration === 'number'
+    && Number.isSafeInteger(candidateProviderGeneration) && candidateProviderGeneration >= 0
+    ? candidateProviderGeneration : null;
   const empty = (availability: 'available' | 'unavailable', confirmed: T | null): Readonly<ControlFeedback<T>> => Object.freeze({
     confirmed, target: null, requestedTarget: null,
     phase: availability === 'available' ? 'idle' : 'unavailable', busy: false, availability,
-    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: currentSessionEpoch,
+    outcome: null, lifecycleId: null, transitionId: null,
+    providerGeneration: currentProviderGeneration, sessionEpoch: currentSessionEpoch,
     scope: Object.freeze({ ...scope }), repeatPolicy: descriptor.repeatPolicy,
   });
   if (state === null) return empty('unavailable', null);
   const field = state.fieldStatus?.[descriptor.fieldPath(scope)];
   const confirmed = descriptor.confirmed(state, scope);
-  if (confirmed === null || field?.observed !== true || field.freshness !== 'fresh'
-    || field.availability !== 'available' || typeof field.lastObservedMonotonic !== 'number'
+  // R29(1): a field that has been observed and carries a value stays
+  // available even once it goes stale — only a field the server has never
+  // resolved (`availability: 'missing'`, or any other non-evidentiary
+  // value) gates the control unavailable. Freshness alone is deliberately
+  // not consulted here: `availability` already folds it in 1:1 on the wire
+  // (`_freshness_availability`, `src/rigplane/web/runtime_helpers.py`).
+  if (confirmed === null || field?.observed !== true
+    || (field.availability !== 'available' && field.availability !== 'stale')
+    || typeof field.lastObservedMonotonic !== 'number'
     || !Number.isFinite(field.lastObservedMonotonic)) return empty('unavailable', null);
 
   let latest: CommandLifecycle | null = null;
   for (const command of commands) {
-    if (command.originalEpoch !== currentSessionEpoch || command.name !== descriptor.intentName
+    const commandProviderGeneration = command.providerGeneration;
+    const remoteSuperseded = command.terminalOutcome === 'superseded';
+    if (currentProviderGeneration === null
+      || typeof commandProviderGeneration !== 'number'
+      || !Number.isSafeInteger(commandProviderGeneration) || commandProviderGeneration < 0
+      || commandProviderGeneration !== currentProviderGeneration
+      || command.originalEpoch !== currentSessionEpoch || command.name !== descriptor.intentName
       || !sameFeedbackScope(descriptor.scope(command), scope) || descriptor.target(command) === null
-      || superseded(command)) continue;
+      || command.locallyObsolete === true || (superseded(command) && !remoteSuperseded)) continue;
     if (latest === null || command.createdAt >= latest.createdAt) latest = command;
   }
   if (latest === null) return empty('available', confirmed);
   const requestedTarget = descriptor.target(latest)!;
-  const terminal = latest.status === 'confirmed' || latest.status === 'failed'
+  const terminal = latest.terminalOutcome === 'superseded' || latest.status === 'confirmed' || latest.status === 'failed'
     || latest.status === 'timed-out' || latest.status === 'cancelled';
-  const phase: ControlFeedbackPhase = latest.status === 'pending' ? 'submitted'
-    : latest.status === 'acknowledged' ? 'awaiting-confirmation' : latest.status;
+  const phase: ControlFeedbackPhase = latest.terminalOutcome === 'superseded' ? 'superseded'
+    : latest.status === 'confirmed' || latest.status === 'failed'
+      || latest.status === 'timed-out' || latest.status === 'cancelled' ? latest.status
+    : latest.hold !== undefined ? 'queued'
+    : latest.status === 'acknowledged' ? 'awaiting-confirmation'
+    : latest.dispatchedEventEpoch !== undefined ? 'dispatched' : 'submitted';
+  const outcomePhase: ControlFeedbackOutcome = latest.terminalOutcome === 'superseded'
+    ? 'superseded' : latest.status as ControlFeedbackOutcome;
   const error = terminal && typeof latest.error === 'string' && latest.error.length > 0
     ? latest.error.slice(0, 256) : undefined;
+  const transitionId = phase === 'dispatched'
+    ? JSON.stringify([latest.originalEpoch, latest.id, phase, latest.dispatchedEventEpoch])
+    : phase === 'queued'
+      ? JSON.stringify([latest.originalEpoch, latest.id, phase, latest.hold?.eventEpoch, latest.hold?.expiresAt])
+      : phase === 'superseded'
+        ? JSON.stringify([latest.originalEpoch, latest.id, phase, latest.eventEpoch])
+        : JSON.stringify([latest.originalEpoch, latest.id, latest.status]);
   return Object.freeze({
     confirmed, target: terminal ? null : requestedTarget, requestedTarget, phase, busy: !terminal,
-    availability: 'available', outcome: terminal ? Object.freeze({ phase: latest.status as ControlFeedbackOutcome,
+    availability: 'available', outcome: terminal ? Object.freeze({ phase: outcomePhase,
       ...(error === undefined ? {} : { error }) }) : null,
     lifecycleId: JSON.stringify([latest.originalEpoch, latest.id]),
-    transitionId: JSON.stringify([latest.originalEpoch, latest.id, latest.status]),
-    sessionEpoch: currentSessionEpoch, scope: Object.freeze({ ...scope }), repeatPolicy: descriptor.repeatPolicy,
+    transitionId,
+    providerGeneration: currentProviderGeneration, sessionEpoch: currentSessionEpoch,
+    scope: Object.freeze({ ...scope }), repeatPolicy: descriptor.repeatPolicy,
   });
 }
 
@@ -349,11 +419,643 @@ export function getBreakInDelayControlFeedback(): Readonly<ControlFeedback<numbe
   );
 }
 
+/** Full Filter Width projection for feedback-aware scalar renderers. */
+export function getFilterWidthControlFeedback(): Readonly<ControlFeedback<number>> {
+  const receiver: 0 | 1 = runtime.state?.active === 'SUB' ? 1 : 0;
+  return projectControlFeedback(
+    FILTER_WIDTH_COMMAND_DESCRIPTOR, runtime.state, getCommandLifecycles(),
+    { control: 'filter-width', receiver }, currentControlSessionEpoch(), isCommandLifecycleSuperseded,
+  );
+}
+
+type GlobalCwControl = 'cw-pitch' | 'keyer-speed';
+type GlobalCwField = 'cwPitch' | 'keySpeed';
+
+/**
+ * R29(1): a `'stale'` `DisplayObservation` still carries a real last-observed
+ * value (`display-observation.ts: qualifyEvidence`) — only `'unknown'`/
+ * `'unsupported'` mean the field was never resolved. Used by every accessor
+ * below that qualifies a `DisplayObservation` before trusting
+ * `projectControlFeedback`'s result. A type predicate (not a plain boolean
+ * over `.state`) so callers keep type-narrowed access to `.value`.
+ */
+function hasUsableObservation<T extends number | string | boolean>(
+  observation: DisplayObservation<T>,
+): observation is Extract<DisplayObservation<T>, { state: 'current' | 'stale' }> {
+  return observation.state === 'current' || observation.state === 'stale';
+}
+
+function unavailableControlFeedback(
+  feedback: Readonly<ControlFeedback<number>>,
+): Readonly<ControlFeedback<number>> {
+  return Object.freeze({
+    ...feedback, confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null,
+  });
+}
+
+function getGlobalCwControlFeedback(
+  currentControlSession: ControlSessionSnapshot | undefined,
+  descriptor: StateBackedCommandDescriptor<number>,
+  control: GlobalCwControl,
+  field: GlobalCwField,
+): Readonly<ControlFeedback<number>> {
+  // These canonical-store reads must precede every unavailable/session return:
+  // they are the legacy panel's reactive invalidation across a WS replacement.
+  const state = runtime.state;
+  const caps = runtime.caps;
+  const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const scope = { control, receiver: 0 } as const;
+  const feedback = projectControlFeedback(
+    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  );
+  try {
+    const observation = qualifyRadioDisplayObservation({
+      state, caps, path: field,
+      structural: caps?.capabilities.includes('cw') === true,
+      value: state?.[field],
+    });
+    return session.state === 'connected' && epoch >= 0
+      && hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
+      ? feedback : unavailableControlFeedback(feedback);
+  } catch {
+    return unavailableControlFeedback(feedback);
+  }
+}
+
+/** Radio-global CW Pitch projection; receiver 0 is only a stable scope encoding. */
+export function getCwPitchControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  return getGlobalCwControlFeedback(
+    currentControlSession, CW_PITCH_COMMAND_DESCRIPTOR, 'cw-pitch', 'cwPitch',
+  );
+}
+
+/** Radio-global Keyer Speed projection; receiver 0 is only a stable scope encoding. */
+export function getKeySpeedControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  return getGlobalCwControlFeedback(
+    currentControlSession, KEY_SPEED_COMMAND_DESCRIPTOR, 'keyer-speed', 'keySpeed',
+  );
+}
+
+export type TxAuxControlFeedbackField = TxAuxCommandFeedbackField;
+const TX_AUX_FEEDBACK_CAPABILITIES: Readonly<Record<
+  TxAuxControlFeedbackField, readonly string[]
+>> = Object.freeze({
+  micGain: Object.freeze(['tx']),
+  driveGain: Object.freeze(['tx', 'drive_gain']),
+  voxGain: Object.freeze(['tx', 'vox']),
+  antiVoxGain: Object.freeze(['tx', 'vox']),
+  voxDelay: Object.freeze(['tx', 'vox']),
+  compressorLevel: Object.freeze(['tx', 'compressor']),
+  monitorGain: Object.freeze(['tx', 'monitor']),
+});
+
+/** Qualified radio-global TX/VOX feedback; receiver 0 is only stable identity. */
+export function getTxAuxControlFeedback(
+  field: TxAuxControlFeedbackField,
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  const state = runtime.state;
+  const caps = runtime.caps;
+  const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const descriptor = TX_AUX_COMMAND_DESCRIPTORS[field];
+  const scope = descriptor.scope({ params: { level: 0 } })!;
+  const feedback = projectControlFeedback(
+    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  );
+  try {
+    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+    const structural = TX_AUX_FEEDBACK_CAPABILITIES[field].every(tag => tags.includes(tag));
+    const observation = qualifyRadioDisplayObservation({
+      state, caps, path: field, structural, value: state?.[field],
+    });
+    return session.state === 'connected' && epoch >= 0
+      && hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
+      ? feedback : unavailableControlFeedback(feedback);
+  } catch {
+    return unavailableControlFeedback(feedback);
+  }
+}
+
+export type DspControlFeedbackField = DspCommandFeedbackField;
+const DSP_FEEDBACK_CAPABILITIES: Readonly<Record<
+  Exclude<DspControlFeedbackField, 'nbWidth' | 'nbDepth'>, string
+>> = Object.freeze({
+  nbLevel: 'nb', nrLevel: 'nr',
+  notchFilter: 'notch', manualNotchWidth: 'notch', agcTimeConstant: 'agc',
+});
+
+/** Qualified raw DSP feedback; NB Width and NB Depth have stable radio-global identity. */
+export function getDspControlFeedback(
+  field: DspControlFeedbackField,
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  const state = runtime.state;
+  const caps = runtime.caps;
+  const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const descriptor = DSP_COMMAND_DESCRIPTORS[field];
+  const receiver: 0 | 1 = state?.active === 'SUB' ? 1 : 0;
+  const scope = Object.freeze({
+    control: field === 'nbLevel' ? 'nb-level'
+      : field === 'nbWidth' ? 'nb-width'
+        : field === 'nrLevel' ? 'nr-level'
+          : field === 'nbDepth' ? 'nb-depth'
+            : field === 'notchFilter' ? 'notch-position'
+              : field === 'manualNotchWidth' ? 'manual-notch-width' : 'agc-time',
+    receiver: field === 'nbWidth' || field === 'nbDepth' ? 0 as const : receiver,
+  });
+  const feedback = projectControlFeedback(
+    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  );
+  try {
+    const view = toRadioViewModel(state, caps);
+    if (session.state !== 'connected' || epoch < 0
+      || view === null || view.activeReceiver.status !== 'known') {
+      return unavailableControlFeedback(feedback);
+    }
+    const activeReceiver = view.activeReceiver.receiver;
+    const receiverEntries = view.receiverIndicators?.filter(
+      entry => entry.receiver === activeReceiver,
+    ) ?? [];
+    if (receiverEntries.length !== 1 || !receiverEntries[0].availability.operational) {
+      return unavailableControlFeedback(feedback);
+    }
+    if (field === 'nbWidth' || field === 'nbDepth') {
+      const observation = qualifyRadioDisplayObservation({
+        state, caps, path: field, structural: caps?.controls?.nb_depth != null,
+        value: state?.[field],
+      });
+      return hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
+        ? feedback : unavailableControlFeedback(feedback);
+    }
+    const receiverId = activeReceiver;
+    const receiverState = receiverId === 'SUB' ? state?.sub : state?.main;
+    const base = receiverId === 'SUB' ? 'sub' : 'main';
+    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+    const observation = qualifyDisplayObservation({
+      state, caps, receiver: receiverId, path: `${base}.${field}`,
+      structural: tags.includes(DSP_FEEDBACK_CAPABILITIES[field]),
+      value: receiverState?.[field],
+    });
+    return hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
+      ? feedback : unavailableControlFeedback(feedback);
+  } catch {
+    return unavailableControlFeedback(feedback);
+  }
+}
+
+type TransformedDspControlFeedbackField = 'nrLevel' | 'nbDepth';
+
+function projectDspRawValueToDisplay(
+  field: TransformedDspControlFeedbackField,
+  raw: number,
+  caps: Capabilities | null | undefined,
+): number | null {
+  if (field === 'nrLevel') {
+    const value = projectNrLevel(caps, raw, true).value;
+    return value !== null && Number.isFinite(value) ? value : null;
+  }
+  try {
+    const range = controlRangeFromCapsOrDefault('nb_depth', caps);
+    const values = [range.rawMin, range.rawMax, range.displayMin, range.displayMax];
+    if (!values.every(value => typeof value === 'number' && Number.isFinite(value))
+      || !Number.isSafeInteger(range.rawMin) || !Number.isSafeInteger(range.rawMax)
+      || range.rawMax <= range.rawMin || range.displayMax <= range.displayMin
+      || !Number.isSafeInteger(raw) || raw < range.rawMin || raw > range.rawMax) return null;
+    const display = nbDepthRawToDisplay(raw, range);
+    return Number.isFinite(display) ? display : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Pure raw-to-display projection; descriptor-unit confirmation remains untouched. */
+export function projectDspControlFeedbackToDisplay(
+  field: TransformedDspControlFeedbackField,
+  rawFeedback: Readonly<ControlFeedback<number>>,
+  caps: Capabilities | null | undefined,
+): Readonly<ControlFeedback<number>> {
+  const project = (raw: number | null): number | null | undefined =>
+    raw === null ? null : projectDspRawValueToDisplay(field, raw, caps) ?? undefined;
+  const confirmed = project(rawFeedback.confirmed);
+  const target = project(rawFeedback.target);
+  const requestedTarget = project(rawFeedback.requestedTarget);
+  if (confirmed === undefined || target === undefined || requestedTarget === undefined) {
+    return unavailableControlFeedback(rawFeedback);
+  }
+  return Object.freeze({ ...rawFeedback, confirmed, target, requestedTarget });
+}
+
+type RfSqlFeedbackLane = Readonly<{
+  command: string;
+  feedback: Readonly<ControlFeedback<number>>;
+}>;
+
+/** One qualified receiver/session snapshot for the two-lane RF/SQL owner. */
+export function getRfSqlControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<{ rf: RfSqlFeedbackLane; sql: RfSqlFeedbackLane }> | null {
+  const state = runtime.state;
+  const caps = runtime.caps;
+  const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const sessionState = session.state;
+  const sessionEpoch = session.epoch;
+  const stateGeneration = state?.providerGeneration;
+  if (sessionState !== 'connected'
+    || !Number.isSafeInteger(sessionEpoch) || sessionEpoch < 0
+    || state === null || caps === null
+    || state.stateContractVersion !== 1 || caps.stateContractVersion !== 1
+    || !Number.isSafeInteger(stateGeneration) || (stateGeneration as number) < 0
+    || caps.providerGeneration !== stateGeneration) return null;
+
+  const view = toRadioViewModel(state, caps);
+  if (view === null || view.activeReceiver.status !== 'known') return null;
+  const receiver = view.activeReceiver.receiver;
+  const receiverEntries = view.receiverIndicators?.filter((entry) => entry.receiver === receiver) ?? [];
+  if (receiverEntries.length !== 1 || !receiverEntries[0].availability.operational) return null;
+  const receiverIndex: 0 | 1 = receiver === 'SUB' ? 1 : 0;
+  const receiverState = receiver === 'SUB' ? state.sub : state.main;
+  const base = receiver === 'SUB' ? 'sub' : 'main';
+  const tags = Array.isArray(caps.capabilities) ? caps.capabilities : [];
+
+  const lane = (
+    command: 'set_rf_gain' | 'set_squelch',
+    descriptor: StateBackedCommandDescriptor<number>,
+    control: 'rf-gain' | 'squelch',
+    leaf: 'rfGain' | 'squelch',
+    structural: boolean,
+  ): RfSqlFeedbackLane => {
+    const scope = { control, receiver: receiverIndex } as const;
+    const feedback = projectControlFeedback(
+      descriptor, state, commands, scope, sessionEpoch, isCommandLifecycleSuperseded,
+    );
+    const observation = qualifyDisplayObservation({
+      state, caps, receiver, path: `${base}.${leaf}`, structural,
+      value: receiverState?.[leaf],
+    });
+    const qualified = hasUsableObservation(observation) ? feedback : Object.freeze({
+      ...feedback,
+      confirmed: null, target: null, requestedTarget: null,
+      phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+      outcome: null, lifecycleId: null, transitionId: null,
+    });
+    return Object.freeze({ command, feedback: qualified });
+  };
+
+  return Object.freeze({
+    rf: lane(
+      'set_rf_gain', RF_GAIN_COMMAND_DESCRIPTOR, 'rf-gain', 'rfGain', tags.includes('rf_gain'),
+    ),
+    sql: lane(
+      'set_squelch', SQUELCH_COMMAND_DESCRIPTOR, 'squelch', 'squelch', tags.includes('squelch'),
+    ),
+  });
+}
+
+function normalizedUsableObservation(
+  observation: DisplayObservation<number>,
+): number | null {
+  if (!hasUsableObservation(observation)) return null;
+  const value = observation.value;
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value : null;
+}
+
+/** Qualified AF-level command feedback; receiver from active-receiver truth. */
+export function getAfLevelControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  const { state, caps } = runtime;
+  const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const feedback = projectControlFeedback(
+    AF_LEVEL_COMMAND_DESCRIPTOR, state, commands,
+    { control: 'af-level', receiver: state?.active === 'SUB' ? 1 : 0 }, epoch,
+    isCommandLifecycleSuperseded,
+  );
+  try {
+    const view = toRadioViewModel(state, caps);
+    const activeReceiver = view === null || view.activeReceiver.status !== 'known'
+      ? null : view.activeReceiver.receiver;
+    const receiverEntries = view?.receiverIndicators?.filter(
+      entry => entry.receiver === activeReceiver,
+    ) ?? [];
+    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+    const observation = qualifyDisplayObservation({
+      state, caps, receiver: activeReceiver ?? 'MAIN',
+      path: activeReceiver === 'SUB' ? 'sub.afLevel' : 'main.afLevel',
+      structural: tags.includes('af_level'),
+      value: (activeReceiver === 'SUB' ? state?.sub : state?.main)?.afLevel,
+    });
+    if (session.state !== 'connected' || epoch < 0 || activeReceiver === null
+      || receiverEntries.length !== 1 || !receiverEntries[0].availability.operational
+      || normalizedUsableObservation(observation) === null) {
+      return unavailableControlFeedback(feedback);
+    }
+    return feedback;
+  } catch {
+    return unavailableControlFeedback(feedback);
+  }
+}
+
+/** Qualified RF-power command feedback on the normalized `powerLevel` scale. */
+export function getRfPowerControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  const { state, caps } = runtime;
+  const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const feedback = projectControlFeedback(
+    RF_POWER_COMMAND_DESCRIPTOR, state, commands,
+    { control: 'rf-power', receiver: 0 }, epoch, isCommandLifecycleSuperseded,
+  );
+  try {
+    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+    const observation = qualifyRadioDisplayObservation({
+      state, caps, path: 'powerLevel', structural: tags.includes('tx'),
+      value: state?.powerLevel,
+    });
+    return session.state === 'connected' && epoch >= 0
+      && normalizedUsableObservation(observation) !== null
+      ? feedback : unavailableControlFeedback(feedback);
+  } catch {
+    return unavailableControlFeedback(feedback);
+  }
+}
+
+/**
+ * Shared qualification for a single raw receiver-scoped "echo" control
+ * (MOR-2425): PBT inner/outer, and the real `if_shift` command on a radio
+ * that has one. Mirrors `getDspControlFeedback`'s active-receiver/
+ * operational/observation gating; `structuralFor` supplies the one thing
+ * that differs per field (PBT needs both the `pbt` capability tag AND a
+ * usable `pbt_inner` range — MOR-1291 — while `if_shift` needs only its own
+ * capability tag).
+ */
+function getReceiverEchoControlFeedback(
+  currentControlSession: ControlSessionSnapshot | undefined,
+  descriptor: StateBackedCommandDescriptor<number>,
+  control: string,
+  field: 'pbtInner' | 'pbtOuter' | 'ifShift',
+  structuralFor: (caps: Capabilities | null | undefined, tags: readonly string[]) => boolean,
+): Readonly<ControlFeedback<number>> {
+  const state = runtime.state;
+  const caps = runtime.caps;
+  const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const receiver: 0 | 1 = state?.active === 'SUB' ? 1 : 0;
+  const scope = Object.freeze({ control, receiver });
+  const feedback = projectControlFeedback(
+    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  );
+  try {
+    const view = toRadioViewModel(state, caps);
+    if (session.state !== 'connected' || epoch < 0
+      || view === null || view.activeReceiver.status !== 'known') {
+      return unavailableControlFeedback(feedback);
+    }
+    const activeReceiver = view.activeReceiver.receiver;
+    const receiverEntries = view.receiverIndicators?.filter(
+      entry => entry.receiver === activeReceiver,
+    ) ?? [];
+    if (receiverEntries.length !== 1 || !receiverEntries[0].availability.operational) {
+      return unavailableControlFeedback(feedback);
+    }
+    const receiverState = activeReceiver === 'SUB' ? state?.sub : state?.main;
+    const base = activeReceiver === 'SUB' ? 'sub' : 'main';
+    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+    const observation = qualifyDisplayObservation({
+      state, caps, receiver: activeReceiver, path: `${base}.${field}`,
+      structural: structuralFor(caps, tags), value: receiverState?.[field],
+    });
+    return observation.state === 'current' && Number.isSafeInteger(observation.value)
+      ? feedback : unavailableControlFeedback(feedback);
+  } catch {
+    return unavailableControlFeedback(feedback);
+  }
+}
+
+const pbtStructural = (caps: Capabilities | null | undefined, tags: readonly string[]): boolean =>
+  tags.includes('pbt') && pbtRangeFromCaps(caps) !== undefined;
+
+/** Qualified raw PBT Inner feedback (MOR-2425); receiver derives from active-receiver truth. */
+export function getPbtInnerControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  return getReceiverEchoControlFeedback(
+    currentControlSession, PBT_INNER_COMMAND_DESCRIPTOR, 'pbt-inner', 'pbtInner', pbtStructural,
+  );
+}
+
+/** Qualified raw PBT Outer feedback (MOR-2425); receiver derives from active-receiver truth. */
+export function getPbtOuterControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  return getReceiverEchoControlFeedback(
+    currentControlSession, PBT_OUTER_COMMAND_DESCRIPTOR, 'pbt-outer', 'pbtOuter', pbtStructural,
+  );
+}
+
+/**
+ * IF-shift feedback is always Hz-domain, never PBT's raw BCD domain: real on
+ * a radio with its own `if_shift` command (raw IS Hz there, identity-
+ * mapped), or derived from the two PBT feedbacks by converting each side's
+ * raw value with `pbtRawToHz` first. `domain` is a real, checkable field —
+ * not a comment that can rot — so a caller or test can assert it instead of
+ * trusting prose about which domain `confirmed`/`target` are in.
+ */
+export interface IfShiftControlFeedback extends ControlFeedback<number> {
+  readonly domain: 'hz';
+}
+
+/**
+ * Non-terminal phases in lifecycle order, least advanced first. Read only
+ * from a side whose `busy` is true, which (per `projectControlFeedback`)
+ * means its `phase` is one of exactly these four — never `'idle'` or a
+ * terminal phase. A `'queued'` (held-for-tx) overlay can land on a command
+ * that is already `'acknowledged'` underneath
+ * (`commands.svelte.ts: applyCommandLifecycleProjection`'s `'held'` branch
+ * accepts both `'pending'` and `'acknowledged'`), so it ranks ahead of
+ * `'awaiting-confirmation'` here: a held command has made less progress
+ * toward confirmation than one merely awaiting its echo, regardless of the
+ * status it was held from.
+ */
+const IN_FLIGHT_ORDER: readonly ControlFeedbackPhase[] = Object.freeze([
+  'submitted', 'queued', 'dispatched', 'awaiting-confirmation',
+]);
+
+/**
+ * The least-advanced of two busy sides' phases, by `IN_FLIGHT_ORDER` — the
+ * derived IF-shift feedback is never more settled than the side that has
+ * made the least progress toward confirmation.
+ */
+function mergeBusyPhase(
+  inner: Readonly<ControlFeedback<number>>, outer: Readonly<ControlFeedback<number>>,
+): ControlFeedbackPhase {
+  if (inner.busy && outer.busy) {
+    return IN_FLIGHT_ORDER.indexOf(inner.phase) <= IN_FLIGHT_ORDER.indexOf(outer.phase)
+      ? inner.phase : outer.phase;
+  }
+  return inner.busy ? inner.phase : outer.phase;
+}
+
+/**
+ * Terminal outcomes ranked worst-first, used only when both sides' records
+ * are live and terminal: a non-`'confirmed'` outcome on either side beats a
+ * `'confirmed'` one on the other. The order among the non-`'confirmed'`
+ * outcomes is otherwise arbitrary but fixed, so two differently-failed
+ * sides still resolve to one deterministic outcome.
+ */
+const TERMINAL_OUTCOME_PRIORITY: readonly ControlFeedbackOutcome[] = Object.freeze([
+  'failed', 'timed-out', 'cancelled', 'superseded', 'confirmed',
+]);
+
+/**
+ * Combines two non-busy sides' phase/outcome. `outcome === null` here means
+ * idle under `getPbtInner/OuterControlFeedback`'s own definition: no
+ * lifecycle ever ran, or one did and its record already retired
+ * (`commands.svelte.ts: retainTerminalOutcome` expires each record
+ * `OUTCOME_RETENTION_MS` after its own terminal transition, independent of
+ * the other side's), or `projectControlFeedback` filtered it out
+ * (`locallyObsolete`, provider-generation mismatch). Idle is therefore not
+ * "no lifecycle ran" — it can equally mean "ran and the evidence is gone" —
+ * which is why an idle side may never promote the other to `'confirmed'`:
+ *
+ *   idle | idle                -> idle       (case A: no evidence either side)
+ *   idle | confirmed           -> idle       (case B: a lone confirmed half
+ *                                              is not corroborated once the
+ *                                              other half's record is gone;
+ *                                              not reported)
+ *   idle | non-confirmed       -> that outcome (case C: while its record
+ *                                                stays live)
+ *   live terminal | live terminal -> `TERMINAL_OUTCOME_PRIORITY` (case D)
+ *
+ * `'confirmed'` is reachable only through case D with both sides confirmed:
+ * a half-failed gesture is never derived as `'confirmed'`, at any point in
+ * its retention window or after.
+ */
+function mergeTerminalOutcome(
+  inner: Readonly<ControlFeedback<number>>, outer: Readonly<ControlFeedback<number>>,
+): { phase: ControlFeedbackPhase; outcome: Readonly<{ phase: ControlFeedbackOutcome; error?: string }> | null } {
+  const bothIdle = inner.outcome === null && outer.outcome === null;
+  if (bothIdle) return { phase: 'idle', outcome: null }; // case A
+
+  const bothLiveTerminal = inner.outcome !== null && outer.outcome !== null;
+  if (bothLiveTerminal) { // case D
+    const winner = TERMINAL_OUTCOME_PRIORITY.indexOf(inner.outcome.phase)
+      <= TERMINAL_OUTCOME_PRIORITY.indexOf(outer.outcome.phase) ? inner : outer;
+    return { phase: winner.phase, outcome: winner.outcome };
+  }
+
+  const live = inner.outcome !== null ? inner : outer; // exactly one side idle
+  if (live.outcome!.phase === 'confirmed') return { phase: 'idle', outcome: null }; // case B
+  return { phase: live.phase, outcome: live.outcome }; // case C
+}
+
+function unavailableIfShiftFeedback(
+  scope: Readonly<ControlFeedbackScope>, sessionEpoch: number,
+  providerGeneration: number | null,
+): Readonly<IfShiftControlFeedback> {
+  return Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null,
+    providerGeneration, sessionEpoch, scope,
+    repeatPolicy: 'latest-target-wins' as const, domain: 'hz' as const,
+  });
+}
+
+/**
+ * Qualified IF-shift feedback (MOR-2425). Real on a radio with its own
+ * `if_shift` command (Yaesu FTX-1) — gated on the SAME predicate
+ * (`caps.capabilities.includes('if_shift')`) `radio-view-model-adapter.ts`'s
+ * `ifShiftControlStructural` uses to decide whether to show a real IF-shift
+ * control at all. Derived from the two PBT feedbacks on a PBT-only radio
+ * (Icom IC-7300): each side's raw value is converted to Hz with
+ * `pbtRawToHz(raw, pbtRangeFromCaps(caps))` before combining with
+ * `deriveIfShift`, mirroring `deriveFilterPassband`'s own `ifShiftValue`
+ * fallback — this is that same formula's pending-target-aware lifecycle
+ * layer, not a second, independent re-derivation of the confirmed reading.
+ */
+export function getIfShiftControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<IfShiftControlFeedback> {
+  const caps = runtime.caps;
+  const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+
+  if (tags.includes('if_shift')) {
+    const real = getReceiverEchoControlFeedback(
+      currentControlSession, IF_SHIFT_COMMAND_DESCRIPTOR, 'if-shift', 'ifShift',
+      (_c, t) => t.includes('if_shift'),
+    );
+    return Object.freeze({ ...real, domain: 'hz' as const });
+  }
+
+  const state = runtime.state;
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const receiver: 0 | 1 = state?.active === 'SUB' ? 1 : 0;
+  const scope = Object.freeze({ control: 'if-shift', receiver });
+  const inner = getPbtInnerControlFeedback(currentControlSession);
+  const outer = getPbtOuterControlFeedback(currentControlSession);
+  const scale = pbtRangeFromCaps(caps);
+  const providerGeneration = typeof inner.providerGeneration === 'number' ? inner.providerGeneration : null;
+  if (inner.availability !== 'available' || outer.availability !== 'available' || scale === undefined
+    || inner.confirmed === null || outer.confirmed === null) {
+    return unavailableIfShiftFeedback(scope, epoch, providerGeneration);
+  }
+  const toHz = (raw: number): number => pbtRawToHz(raw, scale);
+  const confirmed = deriveIfShift(toHz(inner.confirmed), toHz(outer.confirmed));
+  const busy = inner.busy || outer.busy;
+  const innerForTarget = inner.busy && inner.target !== null ? inner.target : inner.confirmed;
+  const outerForTarget = outer.busy && outer.target !== null ? outer.target : outer.confirmed;
+  const target = busy ? deriveIfShift(toHz(innerForTarget), toHz(outerForTarget)) : null;
+  const innerForRequested = inner.requestedTarget ?? inner.confirmed;
+  const outerForRequested = outer.requestedTarget ?? outer.confirmed;
+  const requestedTarget = inner.requestedTarget === null && outer.requestedTarget === null
+    ? null : deriveIfShift(toHz(innerForRequested), toHz(outerForRequested));
+  const { phase, outcome } = busy
+    ? { phase: mergeBusyPhase(inner, outer), outcome: null }
+    : mergeTerminalOutcome(inner, outer);
+  // Idle carries no ids anywhere else in this file (`empty()`,
+  // `unavailableIfShiftFeedback`) — including here, so that
+  // `mergeTerminalOutcome`'s idle-on-a-retired-confirmation case (case B
+  // above) does not compose a fresh id out of the surviving side's live
+  // outcome and trigger a one-shot announcement for a phase nobody reports.
+  const lifecycleId = phase === 'idle' || (inner.lifecycleId === null && outer.lifecycleId === null)
+    ? null : JSON.stringify([inner.lifecycleId, outer.lifecycleId]);
+  const transitionId = phase === 'idle' || (inner.transitionId === null && outer.transitionId === null)
+    ? null : JSON.stringify([inner.transitionId, outer.transitionId]);
+  return Object.freeze({
+    confirmed, target, requestedTarget, phase, busy, availability: 'available' as const,
+    outcome, lifecycleId, transitionId,
+    providerGeneration, sessionEpoch: inner.sessionEpoch,
+    scope, repeatPolicy: 'latest-target-wins' as const, domain: 'hz' as const,
+  });
+}
+
 function filterWidthPresentation(
   feedback: Readonly<ControlFeedback<number>>,
 ): Readonly<FilterWidthLifecyclePresentation> {
   const status = feedback.phase === 'submitted' ? 'pending'
-    : feedback.phase === 'awaiting-confirmation' ? 'acknowledged' : feedback.phase;
+    : feedback.phase === 'queued' || feedback.phase === 'dispatched' ? 'pending'
+    : feedback.phase === 'awaiting-confirmation' ? 'acknowledged'
+    : feedback.phase === 'superseded' ? 'cancelled' : feedback.phase;
   const error = feedback.outcome?.error;
   return Object.freeze({
     lifecycleId: feedback.lifecycleId!, transitionId: feedback.transitionId!,
@@ -364,11 +1066,7 @@ function filterWidthPresentation(
 }
 
 export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleView {
-  const receiver: 0 | 1 = runtime.state?.active === 'SUB' ? 1 : 0;
-  const feedback = projectControlFeedback(
-    FILTER_WIDTH_COMMAND_DESCRIPTOR, runtime.state, getCommandLifecycles(),
-    { control: 'filter-width', receiver }, currentControlSessionEpoch(), isCommandLifecycleSuperseded,
-  );
+  const feedback = getFilterWidthControlFeedback();
   if (feedback.availability === 'unavailable') {
     return { confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null, presentation: null };
   }
@@ -378,7 +1076,8 @@ export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleVie
   const presentation = filterWidthPresentation(feedback);
   if (feedback.phase === 'confirmed') return { confirmed: feedback.confirmed, target: null,
     phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' }, presentation };
-  if (feedback.phase === 'failed' || feedback.phase === 'timed-out' || feedback.phase === 'cancelled') {
+  if (feedback.phase === 'failed' || feedback.phase === 'timed-out'
+    || feedback.phase === 'cancelled' || feedback.phase === 'superseded') {
     return { confirmed: feedback.confirmed, target: null, phase: 'idle', busy: false,
       outcome: { phase: feedback.phase, error: feedback.outcome?.error }, presentation };
   }
@@ -402,9 +1101,9 @@ function confirmedReceiverState(receiver: 0 | 1): ServerState['main'] | undefine
 /**
  * Grace backstop (MOR-1488 review R2, timing revised R3) — retire an
  * acknowledged-pending command this long after its ack even with no
- * confirming observation. Covers the never-confirms-at-all classes the
- * sequence guard below cannot, because none of them ever produce a
- * confirming post-ack push to guard against: (1) MOR-1445 post-ack
+ * observation of the commanded field. Covers the never-answered-at-all
+ * classes the observation rule below cannot, because none of them ever
+ * produce a post-ack read-back to end on: (1) MOR-1445 post-ack
  * execution failure — the server acks `ok:true` at enqueue time, and a
  * later failure reaches only a session notification (`server.py`
  * `commandExecutionFailed`) that `ws-client.ts`'s `_emitCommandResult`
@@ -417,25 +1116,8 @@ function confirmedReceiverState(receiver: 0 | 1): ServerState['main'] | undefine
  * `latestPendingParam` (the next state push, or any other `$derived`
  * recompute), not the instant the clock crosses the threshold.
  *
- * 2000ms (R3, was 1500ms): review R3 found the commanded field's own
- * confirming re-read is a full poll round-robin away, not the next state
- * push — `_state_queries.py` schedules per-field reads across the
- * round-robin and `radio_poller.py:529-531` cycles roughly 25 queries at
- * ~25ms apiece, so worst case is ~1.3s for one full rotation. 1500ms left
- * too little margin: a command acked just after its field's slot in the
- * rotation could retire on the grace backstop moments before the actual
- * confirming readback arrives. 2000ms budgets a full rotation (≈1.3s) plus
- * headroom for scheduling jitter, matching the sequence guard below's
- * "mismatch is not evidence of failure, only of not-yet-observed" doctrine.
- *
- * 3000ms (MOR-1478): leg 2's ~1.3s round-robin is not the binding
- * constraint once leg 1 shares this table — `tuning-accumulator.ts:6,44`
- * records the observed `set_freq` confirm round trip at 0.5–2s on live
- * hardware, so a 2000ms budget expires exactly at the documented worst
- * case and drops the readout back to the stale pre-spin value for the
- * remainder — the MOR-1478 symptom itself. 3000ms keeps ~50% headroom
- * over the slowest documented confirm, matching the margin leg 2's own
- * 2000ms held over its 1.3s rotation.
+ * 3000ms (MOR-1478): `tuning-accumulator.ts:6,44` records the observed
+ * `set_freq` confirm round trip at 0.5–2s on live hardware.
  */
 const ACK_CONFIRM_GRACE_MS = 3_000;
 
@@ -455,63 +1137,37 @@ const ACK_CONFIRM_GRACE_MS = 3_000;
  * window to something imperceptible live, presenting an unconfirmed value
  * as confirmed.
  *
- * MOR-1488 review R2 (sequence guard, closes F2): matching the CURRENT
- * confirmed snapshot at ack time is not enough on its own — that snapshot
- * can predate the command entirely. A fast double-toggle (confirmed
- * nb:false → click ON → click OFF before either is observed) acks the OFF
- * command while the receiver state still reflects the value from BEFORE
- * both clicks; OFF's target (false) happens to equal that stale snapshot,
- * so a plain match would clear the marker immediately even though nothing
- * has actually been re-observed since. `command.ackObservationSeq`
- * (`commands.svelte.ts`, captured the instant a command reaches
- * 'acknowledged') fixes this: the command stays pending until the runtime's
- * current `observationSeq` (`$lib/stores/radio.svelte` — the one counter
- * that increments on every applied state push regardless of whether any
- * field's value actually changed; see `ackObservationSeq`'s own doc comment
- * for why `stateRevision` cannot serve this role) has advanced PAST the
- * ack-time value.
+ * An acknowledged record ends on the commanded field's own post-ack
+ * observation, whatever value that observation carries — the core
+ * re-reads the written field at USER priority after every write
+ * (`radio_poller.py: RadioPoller._request_post_write_readback`), and the
+ * server publishes that read's own `lastObservedMonotonic` per field
+ * (`runtime_helpers.py: _observed_field_status`). `ackFieldObservationTimes`
+ * (`commands.svelte.ts: transition`) captures that marker at ack; a marker
+ * strictly above it is the answer. Pinned by
+ * `semantic-discrete-pending-wiring.component.test.ts`'s "clears the marker
+ * when main.nb is re-observed after the ack still holding the old value"
+ * and "does not clear the marker on a post-ack push that observed another
+ * field".
  *
- * MOR-1488 review R3 (asymmetric settle, revises R2's "either way"):
- * `observationSeq` bumps on EVERY applied field observation — a 25ms meter
- * poll (`core.state_store._apply_one`) advances it exactly as much as a
- * genuine re-read of THIS command's field. But the commanded field's own
- * confirming re-read is scheduled a full poll round-robin away
- * (`_state_queries.py`, `radio_poller.py:529-531`, ~25 queries at ~25ms —
- * up to ~1.3s worst case), not on the very next push. R2 retired the
- * record on the first post-ack push regardless of match, which fires
- * ~50ms after ack (the next unrelated meter poll) — collapsing the
- * pending window back to a few frames, the exact symptom this PR set out
- * to fix. So as of R3: a post-ack push whose confirmed field MATCHES the
- * target is a real confirmation and clears the record (leg-1 "pending is
- * display-only, confirmed reading stays the group's sole selection source"
- * doctrine). A post-ack push that does NOT match is NOT evidence the value
- * failed to take — it is far more likely an unrelated field's observation
- * that simply hasn't reached this one's round-robin slot yet — so the
- * record stays pending and is left to the grace backstop above to bound.
- *
- * When no `ackObservationSeq` was captured (no radio state had ever been
- * observed at ack time — a real gap only in cold-start/test-double
- * scenarios) or the runtime currently has no observed state either, the
- * sequence guard has nothing to compare against and falls back to a direct
- * match against the current confirmed reading (the pre-R2 behavior).
- *
- * The match itself intentionally reads the receiver's plain schema value
- * (`confirmedReceiverState(receiver)?.[confirmedField]`), not `fieldStatus`
- * freshness — a field that has never been observed at all reads as
- * `undefined` here, which never `===`-matches a real target value, so an
- * unobserved field is correctly treated as "not yet confirmed" rather than
- * silently matching.
+ * Without both markers (no boundary captured, or the field carries none)
+ * there is no per-field evidence to read, and the record falls back to the
+ * older rule: the `ackObservationSeq` sequence guard, then a direct
+ * match against the current confirmed reading, bounded by the grace
+ * backstop above.
  */
 function latestPendingParam(
-  intentName: string, paramKey: string, receiver: 0 | 1, confirmedField: keyof ServerState['main'],
+  intentName: string, paramKey: string, receiver: 0 | 1 | null,
+  confirmedField: keyof ServerState['main'] | ModInputStateKey,
 ): unknown {
   let latest: {
     createdAt: number; value: unknown; status: string;
     updatedAt: number; ackObservationSeq: number | undefined;
+    ackFieldObservationTimes: Readonly<Record<string, number>> | undefined;
   } | null = null;
   for (const command of getCommandLifecycles()) {
     if (command.name !== intentName) continue;
-    if (command.params.receiver !== receiver) continue;
+    if (receiver !== null && command.params.receiver !== receiver) continue;
     // Supersession is durable for the older record even after the newer
     // terminal record's bounded presentation retention expires. Never let a
     // superseded lifecycle become the newest selectable pending command.
@@ -524,6 +1180,7 @@ function latestPendingParam(
       latest = {
         createdAt: command.createdAt, value, status: command.status,
         updatedAt: command.updatedAt, ackObservationSeq: command.ackObservationSeq,
+        ackFieldObservationTimes: command.ackFieldObservationTimes,
       };
     }
   }
@@ -534,25 +1191,28 @@ function latestPendingParam(
   if (!latest || (latest.status !== 'pending' && latest.status !== 'acknowledged')) return undefined;
   if (latest.status !== 'acknowledged') return latest.value;
 
-  // Grace backstop: fires regardless of what the sequence guard below would
-  // otherwise decide — see the constant's own doc comment.
+  // Grace backstop: bounds the no-answer case (NAK, or nothing at all).
   if (Date.now() - latest.updatedAt > ACK_CONFIRM_GRACE_MS) return undefined;
+
+  const fieldPath = receiver === null
+    ? String(confirmedField) : `${receiver === 1 ? 'sub' : 'main'}.${String(confirmedField)}`;
+  const boundary = latest.ackFieldObservationTimes?.[fieldPath];
+  const observedAt = runtime.state?.fieldStatus?.[fieldPath]?.lastObservedMonotonic;
+  if (typeof boundary === 'number' && Number.isFinite(boundary)
+    && typeof observedAt === 'number' && Number.isFinite(observedAt)) {
+    return observedAt > boundary ? undefined : latest.value;
+  }
 
   const ackObservationSeq = latest.ackObservationSeq;
   const currentObservationSeq = runtime.state?.observationSeq;
   if (ackObservationSeq !== undefined && currentObservationSeq !== undefined
     && currentObservationSeq <= ackObservationSeq) {
-    // No push observed since ack yet — stay pending regardless of any
-    // coincidental match against the (necessarily stale) current snapshot.
     return latest.value;
   }
-  // Either the guard has no sequencing data to work with (fall back to a
-  // direct match, pre-R2 behavior) or a post-ack push has arrived: either
-  // way, only a MATCH settles the record (R3) — a mismatch here is not
-  // evidence the value failed to take (the commanded field's own
-  // confirming re-read is a full round-robin away, see doc comment above),
-  // so it stays pending for the grace backstop to bound instead.
-  return confirmedReceiverState(receiver)?.[confirmedField] === latest.value ? undefined : latest.value;
+  const confirmed = receiver === null
+    ? runtime.state?.[confirmedField as ModInputStateKey]
+    : confirmedReceiverState(receiver)?.[confirmedField as keyof ServerState['main']];
+  return confirmed === latest.value ? undefined : latest.value;
 }
 
 /** Freshest unconfirmed `set_filter` target for `receiver`, or `null`.
@@ -597,9 +1257,8 @@ export function getPendingNrOn(receiver: 0 | 1): boolean | null {
  * documented on `latestPendingParam` and `ACK_CONFIRM_GRACE_MS` applies
  * unchanged:
  *  - `armed` goes true the instant a command dispatches (`status ===
- *    'pending'`) and stays true through the transport ack (`'acknowledged'`)
- *    until a confirming post-ack observation of the target value arrives, or
- *    `ACK_CONFIRM_GRACE_MS` elapses since ack with no confirmation.
+ *    'pending'`), stays true through the transport ack (`'acknowledged'`),
+ *    and goes false when `latestPendingParam` releases the record.
  *  - A re-click while armed re-arms at the new target: `latestPendingParam`'s
  *    freshest-`createdAt`-wins tie-break already handles this, no separate
  *    "already armed" state to fight.
@@ -650,8 +1309,6 @@ export function getPendingNrOn(receiver: 0 | 1): boolean | null {
  * drift. Left as-is; do not refactor without a concrete reason.
  */
 export interface ArmedFact<T> {
-  /** True from command dispatch until a confirming observation (or grace
-   *  expiry) clears the pending record — see the contract above. */
   armed: boolean;
   /** The in-flight target while `armed`; `null` otherwise. Pending is
    *  display-only (leg-1 doctrine) — never read this as an arithmetic base
@@ -760,6 +1417,20 @@ export function getDataModeArmed(): ArmedFact<number> {
   return armedFact<number>('set_data_mode', 'mode', receiver, 'dataMode');
 }
 
+/** Active DATA group's MOD-input source pending over the same lifecycle
+ * decision table, using its top-level readback rather than a receiver field. */
+export function getModInputArmed(): ArmedFact<number> {
+  const state = runtime.state;
+  const rx = state?.active === 'SUB' ? state.sub : state?.main;
+  const dataMode = rx?.dataMode;
+  if (!Number.isSafeInteger(dataMode) || (dataMode as number) < 0 || (dataMode as number) > 3) {
+    return { armed: false, value: null };
+  }
+  const key = modInputStateKey(dataMode as number);
+  const value = latestPendingParam(modInputCommand(dataMode as number), 'source', null, key);
+  return typeof value === 'number' ? { armed: true, value } : { armed: false, value: null };
+}
+
 /** Auto-notch armed fact (`set_auto_notch`). Notch mode is written as TWO
  *  independent boolean commands (`set_auto_notch`/`set_manual_notch`,
  *  `makeDspHandlers().onNotchModeChange`), never a single `notchMode`
@@ -781,20 +1452,21 @@ export function getManualNotchArmed(): ArmedFact<boolean> {
   return armedFact<boolean>('set_manual_notch', 'on', receiver, 'manualNotch');
 }
 
+export function deriveAudioRoutingConfig() { return runtime.audioRouting; }
 const _audioRoutingHandlers = makeAudioRoutingHandlers();
 export function getAudioRoutingHandlers() { return _audioRoutingHandlers; }
 const _vfoHandlers = makeVfoHandlers();
 export function getVfoHandlers() { return _vfoHandlers; }
 
 export type VfoTunerRead = Readonly<{
-  tx: ReturnType<AppTxController['snapshot']>;
+  tx: ReturnType<ManagedAppTxController['snapshot']>;
   view: ReturnType<typeof toRadioViewModel>;
 }>;
 export type VfoTunerContext = Readonly<{ read(): VfoTunerRead }>;
 
 /** Captures the App TX facade once, while read() projects only live read-only facts. */
 export function bindVfoTunerContext(): VfoTunerContext {
-  const tx = getAppTxController();
+  const tx = getManagedAppTxController();
   return Object.freeze({
     read: () => {
       const snapshot = tx.snapshot();

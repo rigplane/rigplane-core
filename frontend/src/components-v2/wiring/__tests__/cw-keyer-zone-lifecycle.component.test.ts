@@ -34,15 +34,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
+  authoritySubscribers: new Set<(next: {
+    state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
   audio: { muted: false, rxEnabled: true, volume: 42 },
-  txStart: vi.fn(),
-  txRelease: vi.fn(),
-  txSetIntent: vi.fn(),
-  txResetFault: vi.fn(),
+  txController: null as ManagedAppTxController | null,
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
@@ -61,8 +64,17 @@ vi.mock('$lib/audio/audio-manager', () => ({
 }));
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({
+        state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 },
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
     get audio() { return h.audio; },
     get connectionAudio() { return true; },
     get rxEnabled() { return true; },
@@ -79,15 +91,11 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 vi.mock('$lib/runtime', async () => ({
   runtime: (await import('$lib/runtime/frontend-runtime')).runtime,
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => ({
-      phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-      mayOwnKey: false, fault: null,
-    }),
-    subscribe: () => () => {},
-    start: h.txStart, setIntent: h.txSetIntent, release: h.txRelease, resetFault: h.txResetFault,
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => {
+    if (!h.txController) throw new Error('managed TX harness is not installed');
+    return h.txController;
+  },
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: 'LAN' }),
@@ -103,6 +111,7 @@ import { readWorkspace } from '../../../presentation/workspace/contract';
 import {
   resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
 } from '../../../presentation/workspace/resolution';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'CW', filterNum: 1, dataMode: 0 });
@@ -180,14 +189,17 @@ function render(plan: SurfacePlan): HTMLDivElement {
 function tearDown(): void {
   if (component) unmount(component);
   component = null;
+  expect(h.authoritySubscribers.size).toBe(0);
   target.remove();
 }
 
 const commandNames = () => vi.mocked(sendCommand).mock.calls.map(([name]) => name);
-const authorityCalls = () => h.txStart.mock.calls.length + h.txRelease.mock.calls.length
-  + h.txSetIntent.mock.calls.length + h.txResetFault.mock.calls.length;
+let txHarness: ManagedAppTxHarness;
+const authorityCalls = () => txHarness.trace().length;
 
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness({ intent: 'rx', observedPtt: 'off' });
+  h.txController = txHarness.controller;
   h.state = liveState();
   // The REAL capabilities store must carry a matching providerGeneration
   // BEFORE the state lands, and the accept must be asserted — `setRadioState`
@@ -199,10 +211,6 @@ beforeEach(() => {
   expect(setRadioState(liveState())).toBe(true);
   h.caps = liveCaps();
   vi.mocked(sendCommand).mockClear();
-  h.txStart.mockClear();
-  h.txRelease.mockClear();
-  h.txSetIntent.mockClear();
-  h.txResetFault.mockClear();
 });
 
 afterEach(() => {

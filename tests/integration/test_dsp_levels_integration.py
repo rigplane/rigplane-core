@@ -329,6 +329,7 @@ async def dsp_radio(dsp_mock: DspLevelsMockRadio) -> AsyncGenerator[IcomRadio, N
         username="testuser",
         password="testpass",
         timeout=5.0,
+        model="IC-7610",
     )
     with fast_connect():
         await radio.connect()

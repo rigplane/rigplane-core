@@ -98,8 +98,9 @@
  * `expectRefusal` (every field this family reads — `voxOn`, `voxGain`,
  * `antiVoxGain`, `voxDelay`, `cwPitch`, `keySpeed`, `breakIn`,
  * `breakInDelay`, `main.apfTypeLevel`, `main.twinPeakFilter`, `dashRatio` —
- * is unobserved on the real IC-7300 fixture, though every base capability
- * the family needs IS declared); only `cw_auto_tune` genuinely DISPATCHES —
+ * is unobserved on the real IC-7300 fixture. The applicable base capabilities
+ * are declared, while IC-7300 intentionally does not declare `apf`; the APF
+ * handler remains fail-closed. Only `cw_auto_tune` genuinely DISPATCHES —
  * its gate (`hasCapability('cw') && knownActiveReceiver() !== null`) does
  * read one field-status leaf (`active`, via `knownActiveReceiver`'s own
  * `isFieldAvailable(state, 'active')` check), which IS unobserved on this

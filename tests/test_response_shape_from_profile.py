@@ -35,8 +35,11 @@ from typing import Any
 
 import pytest
 
+from rigplane.commands._codec import bcd_encode_value
 from rigplane.commands._frame import decode_wire_tuple
-from rigplane.core.types import CivFrame
+from rigplane.commands.command_map import CommandMap
+from rigplane.core.exceptions import CommandError
+from rigplane.core.types import CivFrame, bcd_encode
 from rigplane.runtime.radio import CoreRadio
 
 from test_profile_command_binding import _civ_rig_configs
@@ -105,7 +108,7 @@ MATCHER_BACKED_GETTERS: tuple[_GetterSpec, ...] = (
     _GetterSpec("get_vox_delay", "_get_bcd_level"),
     # commands/vfo.py's matcher-backed getters (MOR-2007 Steps 5..N,
     # module 3). get_dual_watch is NOT included: 0x07 carries no CI-V
-    # sub-command (_frame.py: _COMMANDS_WITH_SUB excludes it, unlike
+    # sub-command (_frame.py: command_carries_sub excludes it, unlike
     # 0x1A here), so its reply marker lands in data[0] rather than
     # .sub -- it cannot route through _get_bcd_level/_get_bool_value at
     # all, and is instead pinned directly by
@@ -253,28 +256,24 @@ async def test_get_dual_watch_reply_marker_comes_from_the_map(
 ) -> None:
     """Keystone case for ``get_dual_watch``, which cannot register in
     ``MATCHER_BACKED_GETTERS`` above: 0x07 carries no CI-V sub-command
-    (``_frame.py: _COMMANDS_WITH_SUB`` excludes it, unlike 0x1A/0x16 for
+    (``_frame.py: command_carries_sub`` excludes it, unlike 0x1A/0x16 for
     the getters above), so its reply marker is echoed in ``data[0]``
     rather than landing in ``.sub`` -- it cannot route through
     ``_get_bcd_level``/``_get_bool_value`` at all, and
     ``runtime/radio.py: CoreRadio.get_dual_watch`` handles both wire
-    shapes itself instead.
+    shapes itself instead, resolving its shape via
+    ``BoundCommands.expect`` directly rather than ``self._expect_shape``
+    (which asserts a non-``None`` ``sub``, wrong for IC-7610's row).
 
     Proven against two profiles whose ``get_dual_watch`` commands are
-    wire-incompatible -- IC-7610's ``[0x07, 0xC2]`` (marker in data[0])
-    and IC-9700's ``[0x16, 0x59]`` (marker in .sub, since 0x16 IS in
-    ``_COMMANDS_WITH_SUB``) -- so a marker hardcoded to either family's
-    byte answers the OTHER family's reply wrongly regardless of the
-    actual on/off value: exactly the "requests moved, replies not"
-    failure mode this file exists to make impossible (plan §7).
-
-    Manually confirmed red for the half-done shape: reverting
-    ``get_dual_watch`` to its pre-migration check (literal
-    ``resp.data[0] == 0xC2``, ignoring ``resp.sub``/the map) makes
-    ``test_ic9700`` below fail -- IC-9700's real reply is
-    ``command=0x16, sub=0x59, data=[value]``, which never contains
-    ``0xC2`` anywhere, so the reverted check would always return
-    ``False`` regardless of the actual toggle state.
+    wire-incompatible -- IC-7610's ``[0x07, 0xC2]`` (marker in data[0],
+    ``sub=None``, so ``BoundCommands.expect`` puts the marker byte at
+    ``prefix[0]`` instead) and IC-9700's ``[0x16, 0x59]`` (marker in
+    .sub, since 0x16 IS in ``command_carries_sub``) -- so a marker
+    hardcoded to either family's byte answers the OTHER family's reply
+    wrongly regardless of the actual on/off value: exactly the "requests
+    moved, replies not" failure mode this file exists to make impossible
+    (plan §7).
     """
 
     async def _get_dual_watch_answering(radio: CoreRadio, frame) -> bool:
@@ -288,7 +287,7 @@ async def test_get_dual_watch_reply_marker_comes_from_the_map(
     # IC-7610: [0x07, 0xC2] -- 0x07 has no CI-V sub-command, marker in data[0].
     ic7610 = _civ_rig_configs()["IC-7610"].to_profile()
     command, sub, prefix = decode_wire_tuple(ic7610.command_map.get("get_dual_watch"))
-    assert (command, sub, prefix) == (0x07, 0xC2, b"")
+    assert (command, sub, prefix) == (0x07, None, b"\xc2")
     radio_7610 = CoreRadio("198.51.100.1", profile=ic7610)
 
     on_reply = CivFrame(
@@ -308,7 +307,7 @@ async def test_get_dual_watch_reply_marker_comes_from_the_map(
     )
     assert await _get_dual_watch_answering(radio_7610, wrong_marker) is False
 
-    # IC-9700: [0x16, 0x59] -- 0x16 IS in _COMMANDS_WITH_SUB, marker in .sub.
+    # IC-9700: [0x16, 0x59] -- 0x16 IS in command_carries_sub, marker in .sub.
     ic9700 = _civ_rig_configs()["IC-9700"].to_profile()
     command9700, sub9700, prefix9700 = decode_wire_tuple(
         ic9700.command_map.get("get_dual_watch")
@@ -412,3 +411,360 @@ async def test_date_time_utc_reply_prefix_comes_from_the_map(
     monkeypatch.setattr(radio, "_send_civ_expect", _fake_expect_wrong)
     with pytest.raises(ValueError, match="prefix mismatch"):
         await getattr(radio, radio_method)()
+
+
+# commands/scope.py's fifteen parse_scope_*_response functions (MOR-2008,
+# this module's last residual step) are this file's third keystone case:
+# each parses through its own module-level parser, never
+# _get_bcd_level/_get_bool_value, so none can register in
+# MATCHER_BACKED_GETTERS above. Unlike the date/time/utc case, no CI-V
+# profile's declared [0x27, sub] tuple has ever diverged from another's for
+# any scope key (commands/scope.py's module docstring), so there is no real
+# pair of profiles to prove a mismatch with the way IC-7300 vs IC-7610 did
+# for date/time/utc. Each case below instead builds a CommandMap that
+# deliberately DIVERGES one scope key from its real, TOML-declared value --
+# simulating the "a future profile disagrees with the hardcoded default"
+# scenario the retrofit exists to survive -- and checks that
+# ScopeRuntimeMixin's getter follows the mutated map, not the module's
+# constant.
+_SCOPE_DIVERGENT_SUB = 0x7E
+
+
+def _mutate_command_map(
+    cmd_map: CommandMap, key: str, wire: tuple[int, ...]
+) -> CommandMap:
+    return CommandMap({**{k: cmd_map.get(k) for k in cmd_map}, key: wire})
+
+
+@dataclasses.dataclass(frozen=True)
+class _ScopeGetterSpec:
+    """One scope getter parsed by a dedicated ``parse_scope_*_response``.
+
+    ``method`` is the ``ScopeRuntimeMixin`` getter to call (takes no
+    arguments for every entry below). ``map_key`` is the ``CommandMap`` key
+    its request builder resolves -- equal to ``method`` for every entry
+    except ``get_scope_receiver``/``get_scope_dual``, whose builders are
+    named ``get_scope_main_sub``/``get_scope_single_dual``
+    (`commands/scope.py`). ``payload`` is a wire-valid ``CivFrame.data`` for
+    that getter's reply -- sized and ranged to satisfy its parser's own
+    length/value checks, independent of the command/sub shape this test
+    varies.
+    """
+
+    method: str
+    map_key: str
+    payload: bytes
+
+
+_SCOPE_GETTER_SPECS: tuple[_ScopeGetterSpec, ...] = (
+    _ScopeGetterSpec("get_scope_receiver", "get_scope_main_sub", b"\x00"),
+    _ScopeGetterSpec("get_scope_dual", "get_scope_single_dual", b"\x01"),
+    _ScopeGetterSpec("get_scope_mode", "get_scope_mode", b"\x02"),
+    _ScopeGetterSpec("get_scope_span", "get_scope_span", b"\x03"),
+    _ScopeGetterSpec(
+        "get_scope_edge", "get_scope_edge", bcd_encode_value(2, byte_count=1)
+    ),
+    _ScopeGetterSpec("get_scope_hold", "get_scope_hold", b"\x01"),
+    _ScopeGetterSpec("get_scope_ref", "get_scope_ref", b"\x05\x00\x00"),
+    _ScopeGetterSpec("get_scope_speed", "get_scope_speed", b"\x01"),
+    _ScopeGetterSpec("get_scope_during_tx", "get_scope_during_tx", b"\x01"),
+    _ScopeGetterSpec("get_scope_center_type", "get_scope_center_type", b"\x01"),
+    _ScopeGetterSpec("get_scope_vbw", "get_scope_vbw", b"\x01"),
+    _ScopeGetterSpec(
+        "get_scope_fixed_edge",
+        "get_scope_fixed_edge",
+        bcd_encode_value(1, byte_count=1)
+        + bcd_encode_value(1, byte_count=1)
+        + bcd_encode(1_000_000)
+        + bcd_encode(2_000_000),
+    ),
+    _ScopeGetterSpec("get_scope_rbw", "get_scope_rbw", b"\x01"),
+)
+
+
+def _scope_cases() -> list[tuple[str, _ScopeGetterSpec]]:
+    return [
+        (model, spec)
+        for model in sorted(_civ_rig_configs())
+        for spec in _SCOPE_GETTER_SPECS
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    _scope_cases(),
+    ids=[f"{model}-{spec.method}" for model, spec in _scope_cases()],
+)
+async def test_scope_getter_reply_shape_comes_from_the_map(
+    case: tuple[str, _ScopeGetterSpec], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scope getter's reply matcher must follow ITS OWN profile's map entry.
+
+    Manually confirmed red for the half-done shape (evidence in the PR):
+    reverting any one of `runtime/_scope_runtime.py`'s sixteen
+    ``self._expect_shape(get_scope_*)`` call sites to that getter's
+    pre-migration hardcoded ``_CMD_SCOPE``/``_SUB_SCOPE_*`` constants makes
+    this test's second assertion fail for every profile and that one
+    getter -- the divergent-map reply would be rejected (module constant
+    doesn't match the mutated map), while the stale-map reply would be
+    wrongly accepted (module constant happens to equal the pre-mutation
+    value) -- exactly the "requests moved, replies not" failure mode this
+    file exists to make impossible (plan §7).
+    """
+    model, spec = case
+    config = _civ_rig_configs()[model]
+    profile = config.to_profile()
+    cmd_map = profile.command_map
+    assert cmd_map is not None, f"{model}: to_profile() produced no command_map"
+    if not cmd_map.has(spec.map_key):
+        pytest.skip(f"{model} does not declare {spec.map_key}")
+
+    real_command, real_sub, real_prefix = decode_wire_tuple(cmd_map.get(spec.map_key))
+    assert real_prefix == b"", (
+        f"{model}:{spec.map_key} declares a data prefix ({real_prefix!r}) this "
+        "test does not model -- every scope.py wire tuple observed so far is "
+        "a bare [command, sub]."
+    )
+    assert real_sub != _SCOPE_DIVERGENT_SUB
+
+    mutated_map = _mutate_command_map(
+        cmd_map, spec.map_key, (real_command, _SCOPE_DIVERGENT_SUB)
+    )
+    mutated_profile = dataclasses.replace(profile, command_map=mutated_map)
+    monkeypatch.setattr(CoreRadio, "_check_connected", lambda self: None)
+    radio = CoreRadio("198.51.100.1", profile=mutated_profile)
+
+    def _reply(sub: int) -> CivFrame:
+        return CivFrame(
+            to_addr=0xE0,
+            from_addr=profile.civ_addr,
+            command=real_command,
+            sub=sub,
+            data=spec.payload,
+        )
+
+    # A reply carrying the MUTATED map's own sub-command must parse without
+    # error -- proves the shape checked is THIS profile's (here,
+    # deliberately divergent) map entry, not the module's hardcoded default.
+    async def _fake_expect_divergent(civ: bytes, **kwargs: Any) -> CivFrame:
+        return _reply(_SCOPE_DIVERGENT_SUB)
+
+    monkeypatch.setattr(radio, "_send_civ_expect", _fake_expect_divergent)
+    await getattr(radio, spec.method)()
+
+    # A reply carrying the key's REAL (pre-mutation) sub-command must NOT
+    # parse as if it matched -- it no longer does, once this profile's own
+    # map has been mutated away from it.
+    async def _fake_expect_stale(civ: bytes, **kwargs: Any) -> CivFrame:
+        return _reply(real_sub)
+
+    monkeypatch.setattr(radio, "_send_civ_expect", _fake_expect_stale)
+    with pytest.raises(ValueError, match="Not a scope response"):
+        await getattr(radio, spec.method)()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", sorted(_civ_rig_configs()))
+async def test_get_scope_session_state_reply_shape_comes_from_the_map(
+    model: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``get_scope_session_state`` parses TWO replies through TWO different
+    map keys (``scope_on``/``scope_data_output``) in one call, so it cannot
+    register as a single ``_ScopeGetterSpec`` row above. Mutates only the
+    panel key (``scope_on``); the data-output reply stays a real,
+    unmutated match throughout, proving the two replies are checked
+    independently against their own keys rather than one shared shape.
+    """
+    config = _civ_rig_configs()[model]
+    profile = config.to_profile()
+    cmd_map = profile.command_map
+    assert cmd_map is not None
+    if not (cmd_map.has("scope_on") and cmd_map.has("scope_data_output")):
+        pytest.skip(f"{model} does not declare scope_on/scope_data_output")
+
+    panel_command, panel_sub, _ = decode_wire_tuple(cmd_map.get("scope_on"))
+    output_command, output_sub, _ = decode_wire_tuple(cmd_map.get("scope_data_output"))
+    assert panel_sub != _SCOPE_DIVERGENT_SUB
+
+    mutated_map = _mutate_command_map(
+        cmd_map, "scope_on", (panel_command, _SCOPE_DIVERGENT_SUB)
+    )
+    mutated_profile = dataclasses.replace(profile, command_map=mutated_map)
+    monkeypatch.setattr(CoreRadio, "_check_connected", lambda self: None)
+    radio = CoreRadio("198.51.100.1", profile=mutated_profile)
+
+    call_count = {"n": 0}
+
+    async def _fake_expect_divergent(civ: bytes, **kwargs: Any) -> CivFrame:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return CivFrame(
+                to_addr=0xE0,
+                from_addr=profile.civ_addr,
+                command=panel_command,
+                sub=_SCOPE_DIVERGENT_SUB,
+                data=b"\x01",
+            )
+        return CivFrame(
+            to_addr=0xE0,
+            from_addr=profile.civ_addr,
+            command=output_command,
+            sub=output_sub,
+            data=b"\x01",
+        )
+
+    monkeypatch.setattr(radio, "_send_civ_expect", _fake_expect_divergent)
+    assert await radio.get_scope_session_state() == (True, True)
+
+    async def _fake_expect_stale_panel(civ: bytes, **kwargs: Any) -> CivFrame:
+        return CivFrame(
+            to_addr=0xE0,
+            from_addr=profile.civ_addr,
+            command=panel_command,
+            sub=panel_sub,
+            data=b"\x01",
+        )
+
+    monkeypatch.setattr(radio, "_send_civ_expect", _fake_expect_stale_panel)
+    with pytest.raises(ValueError, match="Not a scope response"):
+        await radio.get_scope_session_state()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", sorted(_civ_rig_configs()))
+async def test_set_scope_fixed_edge_reply_shape_comes_from_the_map(
+    model: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``set_scope_fixed_edge`` makes no network round trip: it re-parses the
+    frame it just built (`runtime/_scope_runtime.py`) to recover the
+    resolved ``range_index``, a second call site for
+    ``parse_scope_fixed_edge_response`` sharing ``get_scope_fixed_edge``'s
+    map key. The request builder and this re-parse must read the SAME
+    mutated map for the round trip to still succeed -- checked directly,
+    with no mocked reply to manipulate (there is no network call to mock).
+    """
+    config = _civ_rig_configs()[model]
+    profile = config.to_profile()
+    cmd_map = profile.command_map
+    assert cmd_map is not None
+    if not cmd_map.has("get_scope_fixed_edge"):
+        pytest.skip(f"{model} does not declare get_scope_fixed_edge")
+
+    real_command, real_sub, _ = decode_wire_tuple(cmd_map.get("get_scope_fixed_edge"))
+    assert real_sub != _SCOPE_DIVERGENT_SUB
+    mutated_map = _mutate_command_map(
+        cmd_map, "get_scope_fixed_edge", (real_command, _SCOPE_DIVERGENT_SUB)
+    )
+    mutated_profile = dataclasses.replace(profile, command_map=mutated_map)
+    monkeypatch.setattr(CoreRadio, "_check_connected", lambda self: None)
+    radio = CoreRadio("198.51.100.1", profile=mutated_profile)
+
+    async def _fake_send_civ_raw(civ: bytes, **kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(radio, "_send_civ_raw", _fake_send_civ_raw)
+
+    # The request builder reads this SAME mutated map, so the frame it
+    # builds already carries sub=_SCOPE_DIVERGENT_SUB. A parser still
+    # checking the module's hardcoded _SUB_SCOPE_FIXED_EDGE would reject
+    # its own request's echo; deriving the shape from the same map instead
+    # (this call site's retrofit) must not raise here.
+    await radio.set_scope_fixed_edge(edge=1, start_hz=1_000_000, end_hz=2_000_000)
+
+
+# MOR-2106: `commands/scope.py: scope_main_sub` (the WRITE builder) used to
+# resolve "get_scope_main_sub" -- the READ key -- through `_build_from_map`,
+# so a profile that declared only the getter (or declared the setter
+# explicitly absent) could not refuse the write: the getter's declared bytes
+# went out regardless. The two tests below build a profile explicitly missing
+# `set_scope_main_sub` (never relying on any shipped `rigs/*.toml` staying
+# that way -- sibling ticket MOR-2105 is editing `rigs/ic7300.toml`) and
+# assert both that `CoreRadio.set_scope_receiver` raises `CommandError`
+# naming the setter key AND that no frame reaches the transport.
+def _drop_command_map_key(cmd_map: CommandMap, key: str) -> CommandMap:
+    return CommandMap({k: cmd_map.get(k) for k in cmd_map if k != key})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", sorted(_civ_rig_configs()))
+async def test_scope_main_sub_setter_refuses_when_only_getter_declared(
+    model: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A profile declaring `get_scope_main_sub` but NOT `set_scope_main_sub`
+    must refuse `set_scope_receiver` before any CI-V bytes are sent.
+
+    Pre-fix, this was false: `scope_main_sub` (the write builder) resolved
+    "get_scope_main_sub" through `_build_from_map`, so the getter's declared
+    wire bytes went out on write too, unconditionally.
+    """
+    config = _civ_rig_configs()[model]
+    profile = config.to_profile()
+    cmd_map = profile.command_map
+    assert cmd_map is not None
+    if not cmd_map.has("get_scope_main_sub"):
+        pytest.skip(f"{model} does not declare get_scope_main_sub")
+
+    mutated_map = _drop_command_map_key(cmd_map, "set_scope_main_sub")
+    mutated_profile = dataclasses.replace(profile, command_map=mutated_map)
+    monkeypatch.setattr(CoreRadio, "_check_connected", lambda self: None)
+    radio = CoreRadio("198.51.100.1", profile=mutated_profile)
+
+    frames: list[bytes] = []
+
+    async def _record_send_civ_raw(civ: bytes, **kwargs: Any) -> None:
+        frames.append(civ)
+        return None
+
+    monkeypatch.setattr(radio, "_send_civ_raw", _record_send_civ_raw)
+
+    with pytest.raises(CommandError, match="set_scope_main_sub"):
+        await radio.set_scope_receiver(1)
+
+    assert frames == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", sorted(_civ_rig_configs()))
+async def test_scope_main_sub_setter_refuses_when_declared_absent(
+    model: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stronger form of the test above: `set_scope_main_sub` is declared
+    ABSENT (D1 state 2, `commands/bound.py: BoundCommands._refusal_for`)
+    rather than merely missing (state 3) -- this cannot pass by accident
+    off a KeyError from an unrelated typo, because the refusal message must
+    quote the declared source.
+    """
+    config = _civ_rig_configs()[model]
+    profile = config.to_profile()
+    cmd_map = profile.command_map
+    assert cmd_map is not None
+    if not cmd_map.has("get_scope_main_sub"):
+        pytest.skip(f"{model} does not declare get_scope_main_sub")
+
+    mutated_map = _drop_command_map_key(cmd_map, "set_scope_main_sub")
+    source = "test fixture (MOR-2106): scope MAIN/SUB write declared absent"
+    mutated_profile = dataclasses.replace(
+        profile,
+        command_map=mutated_map,
+        absent_command_sources={
+            **profile.absent_command_sources,
+            "set_scope_main_sub": source,
+        },
+    )
+    monkeypatch.setattr(CoreRadio, "_check_connected", lambda self: None)
+    radio = CoreRadio("198.51.100.1", profile=mutated_profile)
+
+    frames: list[bytes] = []
+
+    async def _record_send_civ_raw(civ: bytes, **kwargs: Any) -> None:
+        frames.append(civ)
+        return None
+
+    monkeypatch.setattr(radio, "_send_civ_raw", _record_send_civ_raw)
+
+    with pytest.raises(CommandError, match="set_scope_main_sub") as excinfo:
+        await radio.set_scope_receiver(1)
+
+    assert source in str(excinfo.value)
+    assert frames == []

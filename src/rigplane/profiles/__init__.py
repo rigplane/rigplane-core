@@ -12,12 +12,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Never, NotRequired, Required, TypedDict
 
-from rigplane.commands.command_map import CommandMap
+from rigplane.commands._codec import bcd_encode_value, filter_hz_to_index
+from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
+from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
-from rigplane.core.tx_interlock_contract import (
-    TxInterlockCommandFamily,
-    TxInterlockDisposition,
-)
 
 __all__ = [
     "ControlLookupPoint",
@@ -77,6 +75,8 @@ class ControlSpec(TypedDict, total=False):
     display_min: int
     display_max: int
     display_unit: str
+    decode_quantum: int
+    encode_rounding: str
 
 
 class _ControlDomainBase(TypedDict):
@@ -241,16 +241,16 @@ class TxPolicy:
 
     ``refused_during_tx`` names the command families this radio refuses on
     its own while transmitting. Entries are opaque, validated strings: the
-    single source of truth for the family vocabulary is
-    ``core/tx_authority.py`` (landing separately), so this type does not
-    check membership, only shape.
+    profile type owns their measured representation and checks shape, not
+    membership in a runtime command-family vocabulary.
 
     ``tx_state_map`` is the positive transmit-state map for the radio's PTT
     read-back: it lists the raw values that mean the radio is receiving.
     Everything else — including a raw value with no entry at all — must be
-    treated as *not receiving* (§3.7 of the transmit-authority ADR). Use
-    :meth:`is_receiving` rather than testing the map directly so that rule
-    cannot be quietly inverted by a later reader.
+    treated as *not receiving*. Backend reads carry that result in the
+    canonical :class:`~rigplane.core.tx_observation.TxStateReading` contract.
+    Use :meth:`is_receiving` rather than testing the map directly so that
+    rule cannot be quietly inverted by a later reader.
     """
 
     refused_during_tx: frozenset[str] = frozenset()
@@ -268,13 +268,13 @@ class TxPolicy:
     def attribution(self, raw_value: str) -> str | None:
         """The vendor label mapped to ``raw_value``, or ``None`` if unmapped.
 
-        Display-grade only (MOR-1941, §3.7 of the transmit-authority ADR):
-        unlike :meth:`is_receiving`, this carries no fail-closed safety
-        rule — an unmapped value is simply ``None``, not a hazard answer.
-        Yaesu's three-valued ``TX;`` answer surfaces here as ``"rx"`` /
-        ``"tx_cat"`` / ``"tx_other"``; a vendor with no attribution (e.g.
-        Icom) never populates ``tx_state_map`` with more than ``"rx"``, so
-        this is honestly ``None`` for every other raw value.
+        Display-grade only (MOR-1941): unlike :meth:`is_receiving`, this
+        carries no fail-closed safety rule — an unmapped value is simply
+        ``None``, not a hazard answer. Yaesu's three-valued ``TX;`` answer
+        surfaces here as ``"rx"`` / ``"tx_cat"`` / ``"tx_other"``; a vendor
+        with no attribution (e.g. Icom) never populates ``tx_state_map`` with
+        more than ``"rx"``, so this is honestly ``None`` for every other raw
+        value.
         """
         return self.tx_state_map.get(raw_value)
 
@@ -337,6 +337,16 @@ class RadioProfile:
     # treats both the same way: it binds an empty `CommandMap` rather than
     # raising.
     command_map: CommandMap | None = None
+    # Reverse of ``command_map`` above (MOR-1993 Z2, `docs/plans/
+    # 2026-09-01-reverse-command-index.md`): resolves an incoming
+    # ``(command, sub, data)`` frame back to a declared command name.
+    # ``None`` under the same rule as ``command_map`` -- a hand-built
+    # ``RadioProfile`` constructed outside ``profiles/rig_loader.py`` with
+    # no map supplied at all. Built from this profile's own
+    # ``command_map`` and only ever consulted for it -- never a union
+    # across profiles (`commands/command_map.py: ReverseCommandIndex`'s
+    # own module docstring has the per-radio-menu evidence for why).
+    reverse_index: ReverseCommandIndex | None = None
     filter_width_min: int = 50
     filter_width_max: int = 9999
     filter_width_encoding: str = "segmented_bcd_index"
@@ -381,6 +391,7 @@ class RadioProfile:
     rf_sql_control_model: str = "separate"
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
+    data_mode_inputs: tuple[tuple[int, str], ...] | None = None
     # When True, MAIN set_mode routes through CI-V 0x26 0x00 (set selected
     # receiver mode) instead of the bare 0x06. Data-driven: derived from the
     # profile declaring a ``set_selected_mode`` command (e.g. Xiegu X6200,
@@ -397,10 +408,19 @@ class RadioProfile:
     rules: tuple[RuleSpec, ...] = ()
     keyboard: KeyboardConfig | None = None
     antenna_tx_count: int = 1
+    antenna_has_rx_ant: bool = False
     transceiver_count: int = 1
     scope_ref_min_db: float | None = None
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
+    # MOR-2258: scope span presets (Hz), index-ordered to match the CI-V
+    # 0x27/0x15 span code. Sole source of the Hz<->index mapping: read by
+    # the waveform-stream span derivation (runtime/_civ_rx.py:
+    # CivRuntime._publish_scope_span_observation) and passed into
+    # commands/scope.py: parse_scope_span_response / scope_set_span,
+    # which take it as a parameter because commands/ may not import
+    # profiles/ (.importlinter).
+    scope_span_presets_hz: tuple[int, ...] = ()
     # Per-profile RX codec preference override (#797). When non-None, the first
     # entry is used as the initial ``audio_codec`` for radios created under this
     # profile (unless the caller passes an explicit non-default value). Values
@@ -417,17 +437,52 @@ class RadioProfile:
     # driven from ``[validation].write_only_controls`` in the rig TOML (MOR-208).
     # Empty by default: every control uses the standard RMVR path.
     write_only_controls: frozenset[str] = frozenset()
+    # Validation check_id -> source establishing that this radio has only one
+    # legal value for that control (MOR-2105 part 2): a check_id-grained
+    # sibling to ``write_only_controls`` above, needed because a capability
+    # like "scope" mixes fixed-value checks with genuinely multi-valued ones
+    # on the same radio (scope_span.set). A check_id named here makes the
+    # RMVR read-modify-verify-restore harness (`validation/hardware.py:
+    # _run_one_check`) report SKIP, quoting the source, instead of flipping
+    # to a value the radio can never report back and reporting a false FAIL.
+    # Data-driven from ``[validation.fixed_value]`` in the rig TOML -- but
+    # only for a fact with no other home. IC-7300's scope_dual.set (single
+    # scope) lives here because nothing else in this dataclass says so;
+    # scope_receiver.set (single receiver) does NOT, even though it is
+    # fixed-value for the same reason, because ``receiver_count``/
+    # ``supports_receiver`` above already say so and the harness derives it
+    # from that instead of restating it as a second, independently-editable
+    # source of truth (F1, MOR-2105 part 2 owner ruling). Empty by default:
+    # every control uses the standard RMVR path.
+    fixed_value_checks: dict[str, str] = field(default_factory=dict)
     # Provider-specific state acquisition metadata (MOR-344). This is profile
     # data only; future schedulers/adapters consume it instead of Web or
     # rigctld delivery code branching on radio model.
     state_acquisition: RadioAcquisitionProfile | None = None
-    tx_interlock_disposition_overrides: dict[
-        TxInterlockCommandFamily, TxInterlockDisposition
-    ] = field(default_factory=dict)
-    # Measured per-radio transmit policy (MOR-1912). Parsed and carried
-    # here; nothing reads it yet — the transmit-authority engine that will
-    # consume it lands in a later row of the same epic.
+    # Measured per-radio transmit policy (MOR-1912).
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
+    # Ordered legal CTCSS domain resolved from the profile's named table.
+    # Values are exact integer centiHz (8850 = 88.5 Hz); the tuple order is
+    # also the provider index mapping. Declaring a table does not add a
+    # capability or command, so this is domain metadata rather than write
+    # authority. Appended to preserve the positional constructor contract.
+    ctcss_tones_centihz: tuple[int, ...] | None = None
+
+    @property
+    def vfo_swap_code(self) -> int | None:
+        """Deprecated alias; use ``swap_ab_code`` or ``swap_main_sub_code``.
+
+        Retained for 3.x compatibility with the v2.11.1 truthy fallback.
+        """
+        return self.swap_main_sub_code or self.swap_ab_code
+
+    @property
+    def vfo_equal_code(self) -> int | None:
+        """Deprecated alias; use ``equal_ab_code`` or ``equal_main_sub_code``.
+
+        Retained for 3.x compatibility with the v2.11.1 truthy fallback.
+        """
+        return self.equal_main_sub_code or self.equal_ab_code
 
     def supports_capability(self, capability: str) -> bool:
         return capability in self.capabilities
@@ -481,6 +536,40 @@ class RadioProfile:
             if rule is not None:
                 return rule
         return None
+
+    def encode_filter_width(
+        self, width_hz: int, mode: str | None, *, data_mode: int = 0
+    ) -> bytes:
+        """Encode a width using the resolved segmented CI-V filter rule."""
+        rule = self.resolve_filter_rule(mode, data_mode=data_mode)
+
+        min_hz = self.filter_width_min
+        max_hz = self.filter_width_max
+        if rule is not None:
+            if rule.fixed:
+                raise CommandError(
+                    f"set_filter_width is unsupported for fixed-width mode {mode}"
+                )
+            if rule.min_hz is not None:
+                min_hz = rule.min_hz
+            if rule.max_hz is not None:
+                max_hz = rule.max_hz
+        if not min_hz <= width_hz <= max_hz:
+            raise CommandError(
+                f"set_filter_width value must be {min_hz}-{max_hz} Hz "
+                f"for {mode}, got {width_hz}"
+            )
+
+        if rule is None or not rule.segments:
+            raise CommandError(
+                f"set_filter_width has no filter-width mapping for mode {mode}"
+            )
+        try:
+            payload_value = filter_hz_to_index(width_hz, segments=rule.segments)
+        except ValueError as exc:
+            raise CommandError(str(exc)) from exc
+
+        return bcd_encode_value(payload_value, byte_count=1)
 
 
 # ── TOML-driven profile registry ──────────────────────────────────
@@ -558,7 +647,16 @@ def resolve_radio_profile(
     model: str | None = None,
     radio_addr: int | None = None,
 ) -> RadioProfile:
-    """Resolve runtime profile from explicit profile/model or CI-V address."""
+    """Resolve a runtime profile from an explicit override or a CI-V address.
+
+    A ``RadioProfile`` or a non-blank profile/model name is a deliberate
+    caller override and always wins over ``radio_addr``. When none of the
+    three identifies the radio — no profile, a ``None`` or
+    blank/whitespace-only model, and either no ``radio_addr`` or one that
+    matches no loaded profile — this raises :class:`ValueError` instead of
+    guessing a default profile (plan §8.1 Q5): an unidentified radio must
+    refuse rather than be silently driven as some other rig.
+    """
     _ensure_loaded()
     if isinstance(profile, RadioProfile):
         return profile
@@ -568,17 +666,11 @@ def resolve_radio_profile(
         return get_radio_profile(model)
     if radio_addr is not None and radio_addr in _by_civ_addr:
         return _by_civ_addr[radio_addr]
-    # Default fallback — prefer IC-7610 (primary LAN reference rig), then any LAN profile
-    profiles = _ensure_loaded()
-    ic7610 = profiles.get("IC-7610")
-    if ic7610 is not None and ic7610.has_lan:
-        return ic7610
-    for p in profiles.values():
-        if p.has_lan:
-            return p
-    if profiles:
-        return next(iter(profiles.values()))
-    raise KeyError("No rig profiles loaded — check rigs/ directory")
+    raise ValueError(
+        "Cannot resolve a radio profile: no profile, model, or matching "
+        "radio_addr identifies the radio. Pass an explicit profile= or "
+        "model= — rigplane no longer guesses a default rig."
+    )
 
 
 def reload_profiles() -> None:

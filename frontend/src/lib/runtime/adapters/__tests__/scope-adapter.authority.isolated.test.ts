@@ -22,7 +22,11 @@ vi.mock('../radio-view-model-adapter', async (importOriginal) => {
 });
 
 import {
-  parseScopeFrame, snapSpectrumFilterWidth, toSpectrumAuthority,
+  parseScopeFrame, SCOPE_FRAME_SILENCE_MS, snapSpectrumFilterWidth,
+  qualifyScopeFrameEnvelope, toScopeDisplayFrame, toSpectrumAuthority,
+} from '../scope-adapter';
+import type {
+  QualifiedScopeFrameEnvelope, ScopeFrameProjectionAuthority,
 } from '../scope-adapter';
 import { toRadioViewModel } from '../radio-view-model-adapter';
 import { deriveIfShift, pbtRawToHz } from '$lib/radio/filter-controls';
@@ -194,8 +198,10 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
     expect(toSpectrumAuthority(s, c)).toBeNull();
   });
 
-  it('rejects unknown active identity and physical SUB without valid dual topology', () => {
-    expect(toSpectrumAuthority(withStatus(state(), 'active', stale), caps())).toBeNull();
+  it('rejects physical SUB without valid dual topology, but reads a HELD active identity', () => {
+    // MOR-2425/R40: staleness alone no longer unmakes the active receiver.
+    expect(toSpectrumAuthority(withStatus(state(), 'active', stale), caps()))
+      .toMatchObject({ receiver: 0 });
     const sub = state({ active: 'SUB' });
     expect(toSpectrumAuthority(sub, caps({ capabilities: ['scope', 'filter_width', 'data_mode'] }))).toBeNull();
   });
@@ -270,22 +276,23 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
     expect(toSpectrumAuthority(state(), caps())).toBeNull();
   });
 
-  it('degrades an independently stale frequency to null without losing receiver identity', () => {
+  it('holds an independently stale frequency without losing receiver identity', () => {
     const result = toSpectrumAuthority(withStatus(state(), 'main.freqHz', stale), caps());
-    expect(result).toMatchObject({ receiver: 0, frequencyHz: null, mode: 'USB' });
+    expect(result).toMatchObject({ receiver: 0, frequencyHz: 14_074_000, mode: 'USB' });
   });
 
+  // MOR-2425/R40: each used to degrade its fact, and three of them the rule.
   it.each([
     ['main.mode', 'mode'], ['main.filterWidth', 'filterWidthHz'],
     ['main.dataMode', 'dataMode'], ['main.filterShape', 'filterShape'],
     ['main.ifShift', 'ifShiftHz'], ['main.pbtInner', 'pbtInnerHz'], ['main.pbtOuter', 'pbtOuterHz'],
-  ] as const)('degrades stale %s only through its projected fact/rule', (path, key) => {
+  ] as const)('holds stale %s at the fresh authority value, rule included', (path, key) => {
+    const live = toSpectrumAuthority(state(), caps());
     const result = toSpectrumAuthority(withStatus(state(), path, stale), caps());
     expect(result).not.toBeNull();
-    expect(result?.[key]).toBeNull();
-    if (path === 'main.mode' || path === 'main.filterWidth' || path === 'main.dataMode') {
-      expect(result?.rule).toBeNull();
-    }
+    expect(live?.[key]).not.toBeNull();
+    expect(result?.[key]).toEqual(live?.[key]);
+    expect(result?.rule).toEqual(live?.rule);
   });
 
   it('requires active-VFO and modeFilter parity before constructing a rule', () => {
@@ -330,7 +337,8 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
       filterConfig: { USB: STEP_RULE },
     });
     expect(toSpectrumAuthority(s, withoutData)).toMatchObject({ dataMode: null, rule: { kind: 'step' } });
-    expect(toSpectrumAuthority(s, caps({ filterConfig: { USB: STEP_RULE } }))).toMatchObject({ rule: null });
+    expect(toSpectrumAuthority(s, caps({ filterConfig: { USB: STEP_RULE } })))
+      .toMatchObject({ dataMode: 1, rule: { kind: 'step' } });
   });
 
   it('changes the digest with canonical facts but not with mutable input identity', () => {
@@ -379,16 +387,24 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
     });
   });
 
-  it.each([
-    ['main.pbtInner', stale], ['main.pbtOuter', stale],
-    ['main.pbtInner', undefined], ['main.pbtOuter', undefined],
-  ] as const)('hides PBT-derived shift when %s is stale or missing (MOR-1649)', (path, status) => {
-    const result = toSpectrumAuthority(
-      withStatus(freshPbtOnlyIc7300State(), path, status), IC7300_CAPABILITIES,
-    );
+  it.each(['main.pbtInner', 'main.pbtOuter'] as const)(
+    'hides PBT-derived shift when %s was never observed (MOR-1649)', (path) => {
+      const result = toSpectrumAuthority(
+        withStatus(freshPbtOnlyIc7300State(), path, undefined), IC7300_CAPABILITIES,
+      );
 
-    expect(result?.ifShiftHz).toBeNull();
-  });
+      expect(result?.ifShiftHz).toBeNull();
+    });
+
+  // MOR-2425/R40 overturns the STALE half of MOR-1649: a derived held value holds.
+  it.each(['main.pbtInner', 'main.pbtOuter'] as const)(
+    'keeps the PBT-derived shift when %s is held (stale)', (path) => {
+      const result = toSpectrumAuthority(
+        withStatus(freshPbtOnlyIc7300State(), path, stale), IC7300_CAPABILITIES,
+      );
+
+      expect(result?.ifShiftHz).toBe(0);
+    });
 
   it('keeps native FTX-1-style IF shift gated by its own raw observation (MOR-1649)', () => {
     const nativeCaps = caps({
@@ -463,5 +479,95 @@ describe('MOR-1409 A06a1 decoder and purity boundary', () => {
     const selector = source.slice(source.indexOf('export function toSpectrumAuthority'));
     expect(selector).toMatch(/toSpectrumAuthority\(\s*state[^,]*,\s*caps/);
     expect(selector).not.toMatch(/ScopeFrame|pixels|Uint8Array|FrontendRuntime|radio\.svelte|transport|sendCommand/);
+  });
+});
+
+describe('MOR-2326 pure scope display-frame projection', () => {
+  const envelope = (
+    overrides: Partial<QualifiedScopeFrameEnvelope> = {},
+  ): QualifiedScopeFrameEnvelope => ({
+    source: 'hardware', receiver: 0, providerGeneration: 7, transportEpoch: 3,
+    receivedAt: 1_000, acceptedSequence: 1, wireSequence: 65_535,
+    frame: Object.freeze({
+      receiver: 0, mode: 1, startFreq: 14_000_000, endFreq: 14_100_000,
+      pixels: new Uint8Array([0, 128, 255]),
+    }),
+    ...overrides,
+  });
+  const authority = (
+    overrides: Partial<ScopeFrameProjectionAuthority> = {},
+  ): ScopeFrameProjectionAuthority => ({
+    source: 'hardware', receiver: 0, providerGeneration: 7, transportEpoch: 3,
+    demanded: true, transport: 'connected', nowMonotonic: 1_499,
+    ...overrides,
+  });
+
+  it.each([
+    ['hardware', 'hardware'], ['audio_fft', 'audio-fft'],
+  ] as const)('projects nominal %s bins without fabricating samples', (source, displaySource) => {
+    const result = toScopeDisplayFrame(envelope({ source }), authority({ source }));
+    expect(result).toEqual({
+      source: displaySource, receiver: 'MAIN', freshness: 'fresh',
+      startHz: 14_000_000, endHz: 14_100_000,
+      normalizedBins: [0, 128 / 255, 1],
+    });
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result?.normalizedBins)).toBe(true);
+  });
+
+  it('uses monotonic age with an exclusive 500 ms live interval', () => {
+    expect(SCOPE_FRAME_SILENCE_MS).toBe(500);
+    expect(toScopeDisplayFrame(envelope(), authority({ nowMonotonic: 1_499 }))?.freshness)
+      .toBe('fresh');
+    expect(toScopeDisplayFrame(envelope(), authority({ nowMonotonic: 1_500 }))?.freshness)
+      .toBe('stale');
+  });
+
+  it.each([
+    ['source', envelope({ source: 'audio_fft' }), authority()],
+    ['receiver', envelope({ receiver: 1 }), authority()],
+    ['provider', envelope({ providerGeneration: 8 }), authority()],
+    ['transport epoch', envelope({ transportEpoch: 4 }), authority()],
+    ['demand', envelope(), authority({ demanded: false })],
+    ['transport state', envelope(), authority({ transport: 'reconnecting' })],
+    ['unknown receiver', envelope(), authority({ receiver: null })],
+    ['unknown provider', envelope(), authority({ providerGeneration: null })],
+  ] as const)('fails a %s authority boundary closed', (_label, candidate, current) => {
+    expect(toScopeDisplayFrame(candidate, current)).toBeNull();
+  });
+
+  it.each([
+    envelope({ acceptedSequence: 0 }),
+    envelope({ receivedAt: Number.NaN }),
+    envelope({ frame: { ...envelope().frame, receiver: 1 } }),
+    envelope({ frame: { ...envelope().frame, endFreq: 14_000_000 } }),
+    envelope({ frame: { ...envelope().frame, pixels: new Uint8Array([1]) } }),
+  ])('rejects malformed receipts and geometry instead of zero-filling', (candidate) => {
+    expect(toScopeDisplayFrame(candidate, authority())).toBeNull();
+  });
+
+  it('keeps the uint16 wire sequence diagnostic rather than generation authority', () => {
+    expect(toScopeDisplayFrame(envelope({ wireSequence: 0 }), authority())).not.toBeNull();
+    expect(toScopeDisplayFrame(envelope({ wireSequence: 65_535 }), authority())).not.toBeNull();
+  });
+
+  it('retains exact accepted bytes independently of mutable raw subscribers', () => {
+    const raw = envelope().frame;
+    const qualified = qualifyScopeFrameEnvelope(raw, {
+      source: 'hardware', receiver: 0, providerGeneration: 7, transportEpoch: 3,
+      receivedAt: 1_000, acceptedSequence: 1,
+    }, 17)!;
+    raw.pixels[0] = 255;
+    expect(qualified.frame.pixels).toEqual(new Uint8Array([0, 128, 255]));
+    expect(qualified.frame.pixels).not.toBe(raw.pixels);
+  });
+
+  it('contains no wall clock, caller freshness, fallback, or long stale threshold', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/lib/runtime/adapters/scope-adapter.ts'), 'utf8');
+    const start = source.indexOf('export function toScopeDisplayFrame');
+    const end = source.indexOf("\n\nimport type { Capabilities", start);
+    const implementation = source.slice(start, end);
+    expect(implementation).not.toMatch(/Date\.now|freshness\s*:\s*authority|5_000|10_000|fallback/i);
+    expect(implementation).not.toMatch(/new Uint8Array\([^)]*length/);
   });
 });

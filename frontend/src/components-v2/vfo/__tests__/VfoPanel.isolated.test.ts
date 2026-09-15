@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mount, unmount, flushSync } from 'svelte';
+import { readFileSync } from 'node:fs';
+import { createRawSnippet, mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import VfoPanel from '../VfoPanel.svelte';
+import LegacyVfoPanelAdapter from '../LegacyVfoPanelAdapter.svelte';
 import { formatBadges, formatRitOffset } from '../vfo-utils';
 
 // ---------------------------------------------------------------------------
@@ -134,10 +136,20 @@ import { getCapabilities, receiverLabel, vfoSlotLabel } from '$lib/stores/capabi
 
 let components: ReturnType<typeof mount>[] = [];
 
-function mountPanel(props: ComponentProps<typeof VfoPanel>) {
+function mountPanel(props: ComponentProps<typeof VfoPanel> | ComponentProps<typeof LegacyVfoPanelAdapter>) {
   const t = document.createElement('div');
   document.body.appendChild(t);
-  const component = mount(VfoPanel, { target: t, props });
+  const Component = 'receiverLabel' in props ? VfoPanel : LegacyVfoPanelAdapter;
+  const component = mount(Component as typeof VfoPanel, { target: t, props: props as ComponentProps<typeof VfoPanel> });
+  flushSync();
+  components.push(component);
+  return t;
+}
+
+function mountLegacyPanel(props: ComponentProps<typeof LegacyVfoPanelAdapter>) {
+  const t = document.createElement('div');
+  document.body.appendChild(t);
+  const component = mount(LegacyVfoPanelAdapter, { target: t, props });
   flushSync();
   components.push(component);
   return t;
@@ -154,7 +166,7 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-const baseProps: ComponentProps<typeof VfoPanel> = {
+const baseProps: ComponentProps<typeof LegacyVfoPanelAdapter> = {
   receiver: 'main',
   freq: 14074000,
   mode: 'USB',
@@ -239,6 +251,51 @@ describe('panel structure', () => {
 });
 
 describe('active/inactive state', () => {
+  it('lets an inactive panel header select its VFO without making the frequency area a selector', () => {
+    const onSelectHeader = vi.fn();
+    const t = mountPanel({
+      receiver: 'main', receiverLabel: 'VFO B', slotTag: 'B', freq: 7150000,
+      mode: 'LSB', filter: 'NARROW', sValue: null, meterPresent: false,
+      isActive: false, badgeItems: [], onSelectHeader,
+    });
+
+    t.querySelector<HTMLButtonElement>('.panel-header')?.click();
+    expect(onSelectHeader).toHaveBeenCalledOnce();
+    t.querySelector<HTMLElement>('[data-vfo-freq]')?.click();
+    t.querySelector<HTMLElement>('[data-vfo-freq]')?.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    t.querySelector<HTMLElement>('[data-vfo-freq]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(onSelectHeader).toHaveBeenCalledOnce();
+  });
+
+  it('keeps inactive mode and frequency controls inert while the header remains selectable', () => {
+    const onModeClick = vi.fn();
+    const t = mountPanel({
+      receiver: 'main', receiverLabel: 'VFO B', slotTag: 'B', freq: 7150000,
+      mode: 'LSB', filter: 'NARROW', sValue: null, meterPresent: false,
+      isActive: false, badgeItems: [], frequencyDisabled: true, controlsDisabled: true,
+      onModeClick, onSelectHeader: vi.fn(),
+    });
+    const mode = t.querySelector<HTMLElement>('.mode-badge-wrapper')!;
+    mode.click();
+    mode.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(onModeClick).not.toHaveBeenCalled();
+    expect(mode.getAttribute('aria-disabled')).toBe('true');
+    expect(mode.getAttribute('title')).toBeNull();
+    expect(t.querySelector('[data-vfo-freq]')?.getAttribute('data-freq-tunable')).toBe('false');
+  });
+
+  it('reserves the meter row for an inactive peer without painting a second meter', () => {
+    const t = mountPanel({
+      receiver: 'main', receiverLabel: 'VFO B', slotTag: 'B', freq: 7150000,
+      mode: 'LSB', filter: 'NARROW', sValue: null, meterPresent: false,
+      isActive: false, badgeItems: [], reserveMeterSpace: true,
+    });
+
+    expect(t.querySelector('[data-meter-space="reserved"]')).not.toBeNull();
+    expect(t.querySelector('[data-testid="receiver-s-meter"]')).toBeNull();
+    expect(Array.from(t.querySelectorAll('.header-tag')).some((tag) => tag.textContent === 'BAR')).toBe(false);
+  });
+
   it('panel has active class when isActive=true', () => {
     const t = mountPanel(baseProps);
     expect(t.querySelector('.panel')?.classList.contains('active')).toBe(true);
@@ -354,33 +411,222 @@ describe('callbacks', () => {
 
 describe('receiverLabel / vfoSlotLabel integration', () => {
   it('uses receiverLabel("MAIN") for receiver=main', () => {
-    mountPanel({ ...baseProps, receiver: 'main' });
+    mountLegacyPanel({ ...baseProps, receiver: 'main' });
     expect(vi.mocked(receiverLabel)).toHaveBeenCalledWith('MAIN');
   });
 
   it('uses receiverLabel("SUB") for receiver=sub', () => {
-    mountPanel({ ...baseProps, receiver: 'sub' });
+    mountLegacyPanel({ ...baseProps, receiver: 'sub' });
     expect(vi.mocked(receiverLabel)).toHaveBeenCalledWith('SUB');
   });
 
   it('uses vfoSlotLabel("A") for receiver=main', () => {
-    mountPanel({ ...baseProps, receiver: 'main' });
+    mountLegacyPanel({ ...baseProps, receiver: 'main' });
     expect(vi.mocked(vfoSlotLabel)).toHaveBeenCalledWith('A');
   });
 
   it('uses vfoSlotLabel("B") for receiver=sub', () => {
-    mountPanel({ ...baseProps, receiver: 'sub' });
+    mountLegacyPanel({ ...baseProps, receiver: 'sub' });
     expect(vi.mocked(vfoSlotLabel)).toHaveBeenCalledWith('B');
   });
 
   it('renders the receiver label in the header', () => {
     vi.mocked(receiverLabel).mockReturnValue('MAIN');
-    const t = mountPanel({ ...baseProps, receiver: 'main' });
+    const t = mountLegacyPanel({ ...baseProps, receiver: 'main' });
     expect(t.querySelector('.vfo-label')?.textContent?.trim()).toBe('MAIN');
   });
 
   it('reads band ranges through getCapabilities()', () => {
-    mountPanel(baseProps);
+    mountLegacyPanel(baseProps);
     expect(vi.mocked(getCapabilities)).toHaveBeenCalled();
+  });
+});
+
+describe('explicit presentation contract', () => {
+  const explicit = {
+    receiver: 'main' as const,
+    receiverLabel: 'MAIN',
+    slotTag: 'A',
+    freq: 14_074_000,
+    displayHz: 14_075_000,
+    pendingDisplayHz: 14_076_000,
+    contextKey: '2/main_sub:MAIN:A',
+    frequencyDisabled: false,
+    mode: 'USB',
+    filter: 'FIL1',
+    sValue: 0,
+    meterPresent: true,
+    meterOperational: true,
+    isActive: true,
+    badgeItems: [],
+  } satisfies ComponentProps<typeof VfoPanel>;
+
+  it('uses confirmed truth as the tuning base while display and pending remain presentation-only', () => {
+    const onFreqChange = vi.fn();
+    const t = mountPanel({ ...explicit, onFreqChange });
+    expect(t.querySelector('.freq')?.textContent?.replace(/\s/g, '')).toBe('14.076.000');
+    const digits = t.querySelectorAll<HTMLElement>('.digit');
+    digits[digits.length - 1]?.click();
+    digits[digits.length - 1]?.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_074_001);
+  });
+
+  it('opens from the whole readout without tuning', () => {
+    const onFrequencyClick = vi.fn();
+    const onFreqChange = vi.fn();
+    const t = mountPanel({ ...explicit, onFrequencyClick, onFreqChange });
+    const trigger = t.querySelector<HTMLElement>('[data-vfo-freq]')!;
+    const readout = t.querySelector<HTMLElement>('[data-vfo-freq] .freq')!;
+    const digit = t.querySelectorAll<HTMLElement>('.digit').item(4);
+
+    digit.click();
+    expect(onFrequencyClick).toHaveBeenCalledExactlyOnceWith(trigger);
+    t.querySelector<HTMLElement>('.sep')?.click();
+    readout.click();
+    expect(onFrequencyClick).toHaveBeenCalledTimes(3);
+    expect(onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it.each(['Enter', ' '] as const)(
+    'exposes inactive direct entry as an enabled button and opens with %s without tuning',
+    (key) => {
+      const onFrequencyClick = vi.fn();
+      const onFreqChange = vi.fn();
+      const t = mountPanel({
+        ...explicit, receiverLabel: 'MAIN B', isActive: false,
+        frequencyDisabled: true, controlsDisabled: true,
+        onFrequencyClick, onFreqChange,
+      });
+      const trigger = t.querySelector<HTMLElement>('[data-vfo-freq]')!;
+      const readout = trigger.querySelector<HTMLElement>('.freq')!;
+
+      expect(trigger.getAttribute('role')).toBe('button');
+      expect(trigger.getAttribute('aria-label')).toBe('Set frequency — MAIN B');
+      expect(trigger.getAttribute('aria-disabled')).toBeNull();
+      expect(trigger.getAttribute('tabindex')).toBe('0');
+      expect(readout.parentElement?.getAttribute('aria-hidden')).toBe('true');
+      trigger.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+
+      expect(onFrequencyClick).toHaveBeenCalledExactlyOnceWith(trigger);
+      expect(onFreqChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it('opens inactive direct entry by pointer without digit selection or wheel and arrow tuning', () => {
+    const onFrequencyClick = vi.fn();
+    const onFreqChange = vi.fn();
+    const t = mountPanel({
+      ...explicit, receiverLabel: 'MAIN B', isActive: false,
+      frequencyDisabled: true, controlsDisabled: true,
+      onFrequencyClick, onFreqChange,
+    });
+    const trigger = t.querySelector<HTMLElement>('[data-vfo-freq]')!;
+    const readout = trigger.querySelector<HTMLElement>('.freq')!;
+    const digit = readout.querySelector<HTMLElement>('.digit')!;
+
+    digit.click();
+    expect(onFrequencyClick).toHaveBeenCalledExactlyOnceWith(trigger);
+    expect(digit.classList.contains('selected')).toBe(false);
+    digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it('does not expose unsupported inactive frequency as an entry button', () => {
+    const t = mountPanel({
+      ...explicit, isActive: false, frequencyDisabled: true, controlsDisabled: true,
+    });
+    const wrapper = t.querySelector<HTMLElement>('[data-vfo-freq]')!;
+    expect(wrapper.getAttribute('role')).toBeNull();
+    expect(wrapper.getAttribute('tabindex')).toBeNull();
+    expect(wrapper.querySelector('.freq')?.parentElement?.getAttribute('aria-hidden')).toBeNull();
+  });
+
+  // MOR-2425/R29+R40: a HELD frequency stays tunable. `frequencyState` alone
+  // no longer disables the arithmetic control; a display carrying no value
+  // ('unknown'/'unsupported') still does, as does `frequencyDisabled`.
+  it.each(['current', 'stale'] as const)('keeps the frequency control tunable while the display is %s', (frequencyState) => {
+    const onFreqChange = vi.fn();
+    const t = mountPanel({ ...explicit, frequencyState, onFreqChange });
+    const digits = t.querySelectorAll<HTMLElement>('.digit');
+    digits[digits.length - 1]?.click();
+    digits[digits.length - 1]?.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_074_001);
+  });
+
+  it.each(['unknown', 'unsupported'] as const)('locks the frequency control while the display is %s', (frequencyState) => {
+    const onFreqChange = vi.fn();
+    const t = mountPanel({ ...explicit, frequencyState, onFreqChange });
+    const digits = t.querySelectorAll<HTMLElement>('.digit');
+    digits[digits.length - 1]?.click();
+    digits[digits.length - 1]?.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it('does not mount an arithmetic frequency control when confirmed truth is unknown', () => {
+    const t = mountPanel({ ...explicit, freq: null, displayHz: null, pendingDisplayHz: null });
+    expect(t.querySelector('.digit')).toBeNull();
+    expect(t.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('—');
+  });
+
+  it('keeps the established wrapper hook and the real frequency control in tab order', () => {
+    const t = mountPanel(explicit);
+    expect(t.querySelector('[data-vfo-freq]')?.classList.contains('vfo-freq')).toBe(true);
+    expect(t.querySelector('[data-vfo-freq]')?.getAttribute('data-freq-tunable')).toBe('true');
+    expect(t.querySelector('.freq')?.getAttribute('tabindex')).toBe('0');
+  });
+
+  it('keeps known zero distinct from unknown and structural absence', () => {
+    const known = mountPanel(explicit);
+    expect(known.querySelector('svg')?.getAttribute('aria-label') ?? '').not.toContain('?');
+    const unknown = mountPanel({ ...explicit, sValue: null, meterOperational: false });
+    expect(unknown.querySelector('[data-testid="receiver-s-meter"]')?.getAttribute('aria-label')).toContain('S meter unknown');
+    const absent = mountPanel({ ...explicit, meterPresent: false });
+    expect(absent.querySelector('[data-testid="receiver-s-meter"]')).toBeNull();
+  });
+
+  it('places caller-owned frequency and meter snippets in the established seats', () => {
+    const frequency = createRawSnippet(() => ({
+      render: () => '<span data-hosted-frequency>host frequency</span>',
+    }));
+    const sMeter = createRawSnippet(() => ({
+      render: () => '<span data-hosted-s-meter>host meter</span>',
+    }));
+    const t = mountPanel({ ...explicit, frequency, frequencyDisabled: true, sMeter });
+    expect(t.querySelector('[data-hosted-frequency]')?.closest('[data-vfo-freq]')).not.toBeNull();
+    expect(t.querySelector('[data-vfo-freq]')?.getAttribute('data-freq-tunable')).toBe('false');
+    expect(t.querySelector('[data-hosted-s-meter]')?.closest('[data-testid="receiver-s-meter"]')).not.toBeNull();
+    expect(t.querySelector('.freq.interactive')).toBeNull();
+    expect(t.querySelector('[data-testid="receiver-s-meter"] svg')).toBeNull();
+  });
+
+  it('emits the exact explicit slot choice key without inventing A/B', () => {
+    const onSelectSlot = vi.fn();
+    const t = mountPanel({
+      ...explicit,
+      slotChoices: [{
+        key: 'SUB:B', receiver: 'sub', slot: 'B', label: 'SUB B',
+        frequencyText: '21.295.000', active: false, activeSlot: false,
+        txTarget: false, disabled: false,
+      }],
+      onSelectSlot,
+    });
+    t.querySelector<HTMLButtonElement>('[data-vfo-select]')?.click();
+    expect(onSelectSlot).toHaveBeenCalledExactlyOnceWith('SUB:B');
+  });
+
+  it('contains no capability, runtime, or store imports', () => {
+    const source = readFileSync('src/components-v2/vfo/VfoPanel.svelte', 'utf8');
+    expect(source).not.toMatch(/stores\/|runtime\/|capabilities/);
+  });
+
+  it('keeps local meter context on the legacy fallback and omits new owners from the adapter', () => {
+    const panel = readFileSync('src/components-v2/vfo/VfoPanel.svelte', 'utf8');
+    const meter = panel.match(/<LinearSMeter([\s\S]*?)\/>/)?.[1] ?? '';
+    expect(meter).toMatch(/source=\{meterSource\}/);
+    expect(meter).toMatch(/session=\{continuitySession\}/);
+    const legacy = readFileSync('src/components-v2/vfo/LegacyVfoPanelAdapter.svelte', 'utf8');
+    const call = legacy.match(/<VfoPanel([\s\S]*?)\/>/)?.[1] ?? '';
+    expect(call).not.toMatch(/frequency=|sMeter=|meterSource|continuitySession/);
   });
 });

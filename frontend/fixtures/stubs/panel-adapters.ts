@@ -3,7 +3,7 @@ import {
   makeAgcHandlers, makeAntennaHandlers, makeAudioRoutingHandlers, makeBandHandlers,
   makeCwPanelHandlers, makeDspHandlers, makeFilterHandlers, makeModeHandlers,
   makeRfFrontEndHandlers, makeRitXitHandlers, makeRxAudioHandlers, makeScanHandlers,
-  makeScopeControlsHandlers, makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
+  makeScopeControlsHandlers, makeSystemHandlers, makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
 } from './command-bus';
 
 export function bindSemanticSurfaceHandlers() {
@@ -16,6 +16,10 @@ export function bindSemanticSurfaceHandlers() {
   });
 }
 
+/** Fixture-safe singleton matching the production adapter facade. */
+const systemHandlers = makeSystemHandlers();
+export function getSystemHandlers() { return systemHandlers; }
+
 /** No Break-in Delay truth or command lifecycle exists in the offline fixture. */
 export function getBreakInDelayControlFeedback() {
   return Object.freeze({
@@ -25,6 +29,86 @@ export function getBreakInDelayControlFeedback() {
     scope: Object.freeze({ control: 'break-in-delay', receiver: 0 as const }),
     repeatPolicy: 'latest-target-wins' as const,
   });
+}
+
+function unavailableScalarFeedback(control: 'cw-pitch' | 'keyer-speed' | 'af-level' | 'rf-power') {
+  return Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
+    scope: Object.freeze({ control, receiver: 0 as const }),
+    repeatPolicy: 'latest-target-wins' as const,
+  });
+}
+
+/** Offline fixtures never fabricate global CW command-feedback authority. */
+export function getCwPitchControlFeedback() {
+  return unavailableScalarFeedback('cw-pitch');
+}
+export function getKeySpeedControlFeedback() {
+  return unavailableScalarFeedback('keyer-speed');
+}
+
+/** No Filter Width truth or command lifecycle exists in the offline fixture. */
+export function getFilterWidthControlFeedback() {
+  return Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
+    scope: Object.freeze({ control: 'filter-width', receiver: 0 as const }),
+    repeatPolicy: 'latest-target-wins' as const,
+  });
+}
+
+const txAuxControls = Object.freeze({
+  micGain: 'mic-gain',
+  driveGain: 'drive-gain',
+  voxGain: 'vox-gain',
+  antiVoxGain: 'anti-vox-gain',
+  voxDelay: 'vox-delay',
+  compressorLevel: 'compressor-level',
+  monitorGain: 'monitor-level',
+} as const);
+
+/** Offline fixtures never fabricate radio-global TX/VOX feedback authority. */
+export function getTxAuxControlFeedback(field: keyof typeof txAuxControls) {
+  return Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
+    scope: Object.freeze({ control: txAuxControls[field], receiver: 0 as const }),
+    repeatPolicy: 'latest-target-wins' as const,
+  });
+}
+
+const dspScalarControls = Object.freeze({
+  nbLevel: 'nb-level', nbWidth: 'nb-width', nbDepth: 'nb-depth', nrLevel: 'nr-level',
+  notchFilter: 'notch-position', manualNotchWidth: 'manual-notch-width', agcTimeConstant: 'agc-time',
+} as const);
+
+/** MOR-2425 — offline fixtures never fabricate radio-global DSP command-feedback authority. */
+export function getDspControlFeedback(field: keyof typeof dspScalarControls) {
+  return Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
+    scope: Object.freeze({ control: dspScalarControls[field], receiver: 0 as const }),
+    repeatPolicy: 'latest-target-wins' as const,
+  });
+}
+
+/** Offline DSP feedback has no readings to project into display units. */
+export function projectDspControlFeedbackToDisplay(
+  _field: 'nrLevel' | 'nbDepth',
+  feedback: ReturnType<typeof getDspControlFeedback>,
+  _caps: unknown,
+) {
+  return feedback;
+}
+
+/** The offline fixture has no qualified RF/SQL command-feedback authority. */
+export function getRfSqlControlFeedback(_controlSession: unknown): null {
+  return null;
 }
 
 /**
@@ -59,3 +143,37 @@ export function getPendingNbOn(_receiver: 0 | 1): boolean | null {
 export function getPendingNrOn(_receiver: 0 | 1): boolean | null {
   return null;
 }
+
+export function getDataModeArmed(): { armed: false; value: null } {
+  return { armed: false, value: null };
+}
+
+export function getModInputArmed(): { armed: false; value: null } {
+  return { armed: false, value: null };
+}
+
+/**
+ * MOR-2425 — `SemanticRadioSurfaces.svelte` now also imports
+ * `deriveMemoryPanelProps`/`getMemoryHandlers` unconditionally (same
+ * MOR-1271/MOR-1320 module-resolution lesson as `getPendingFrequencyHz`
+ * above: a missing export here fails the whole fixture harness, not just
+ * the memory surface). The offline fixture has no real VFO identity or
+ * command authority, so this reports the same unavailable/inert shape
+ * `getBreakInDelayControlFeedback` and friends use above: `vfoIdentityKnown:
+ * false` (the "unknown identity" sentinel `toMemoryPanelProps` itself
+ * returns during a relative-VFO bootstrap epoch) and handlers that report
+ * "refused" without dispatching anything.
+ */
+export function deriveMemoryPanelProps() {
+  return Object.freeze({ activeFreqHz: Number.NaN, activeMode: '---', vfoIdentityKnown: false });
+}
+
+const memoryHandlers = Object.freeze({
+  onRecall: (_channel: number): boolean => false,
+  onStore: (_channel: number, _frequencyHz: number, _mode: string): boolean => false,
+  onClear: (_channel: number): boolean => false,
+});
+export function getMemoryHandlers() { return memoryHandlers; }
+
+export function getAfLevelControlFeedback() { return unavailableScalarFeedback('af-level'); }
+export function getRfPowerControlFeedback() { return unavailableScalarFeedback('rf-power'); }

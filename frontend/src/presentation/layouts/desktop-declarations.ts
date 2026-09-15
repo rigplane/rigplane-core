@@ -108,6 +108,19 @@ const DESKTOP_V2_ZONES = [
   { id: 'rx-audio', surfaces: ['rxAudio'] },
   { id: 'dsp', surfaces: ['dsp'] },
   { id: 'cw-keyer', surfaces: ['cwKeyer'] },
+  // MOR-2425 (Memory lane, phase B2): memory becomes zone-OWNED here too,
+  // closing the ledger entry `zone-ownership-coverage.test.ts` opened in
+  // phase B1. Unlike its siblings above, `memory` has no MOR-1262
+  // RadioViewModel group to self-gate on — the radio itself cannot report
+  // memory-channel contents (see `MemorySurface.svelte`'s header), so the
+  // surface mounts unconditionally, matching the legacy `MemoryPanel`'s own
+  // unconditional render. Declaring this zone activates the MOR-1364
+  // suppression channel for both sidebars' legacy `MemoryPanel` mount.
+  //
+  // Not `required`: the surface has no evidence gate to decline, so there is
+  // nothing for `requiredSemanticSurfaces` to force-restore here, same as
+  // every other non-vfo/rxTx zone in this manifest.
+  { id: 'memory', surfaces: ['memory'] },
   // MOR-1370 (S6b-2): scopeControls becomes zone-OWNED here — the LAST
   // surface in the whole MOR-1262 vocabulary to graduate. Declaring it
   // activates the MOR-1369 (S6b-1) suppression channel: `RadioLayout.svelte`
@@ -134,7 +147,6 @@ export const desktopV2Layout: LayoutManifest = {
   schemaVersion: 1,
   id: 'desktop-v2',
   displayName: 'Desktop',
-  loader: () => import('../../skins/desktop-v2/DesktopSkin.svelte'),
   zones: DESKTOP_V2_ZONES,
   /**
    * All four canonical classes. `VfoHeader` branches on `hasDualReceiver()`
@@ -164,10 +176,7 @@ export const desktopV2Layout: LayoutManifest = {
   stageSizing: { mode: 'fluid', responsiveBreakpoints: [] },
   /**
    * No fallback: terminal by construction, same reasoning as `mobile` and
-   * `lcd-cockpit`. `compatibleTopologies` above covers all four canonical
-   * classes (no topology ever fails), and `fluid` sizing always fits a
-   * viewport (`fitsViewport`) — so a fallback hop would be unreachable and
-   * would only mask a real failure, never resolve one.
+   * `lcd-cockpit`.
    */
   fallbackLayoutId: null,
 };

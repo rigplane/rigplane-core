@@ -185,7 +185,8 @@ const MATRIX = [
     resizeTo: 'phone-landscape',
   },
   // P. MOR-1087 item 3 — native Space/Enter activation of a real <button>,
-  // proven via the same command-bus recording every click already uses.
+  // proven at the action seam each control owns. VFO uses the command bus;
+  // managed TX emits a facade intent whose transport is tested separately.
   {
     name: 'keyboard-activation-vfo-split--desktop', fixture: 'topology-2-main-sub',
     viewport: 'desktop',
@@ -194,7 +195,9 @@ const MATRIX = [
   {
     name: 'keyboard-activation-rx-tx-key--desktop', fixture: 'tx-phase-rx',
     viewport: 'desktop',
-    keyboardActivate: { selector: '[data-testid="rx-tx-key"]', key: 'Enter', expectCall: 'tx.start' },
+    keyboardActivate: {
+      selector: '[data-testid="rx-tx-key"]', key: 'Enter', expectCall: 'tx.transmitOn',
+    },
   },
   // Q. MOR-1087 items 5/7 — per-language contrast + unmistakable RX/TX/fault
   // indication, over both registered design languages (section A covers
@@ -222,6 +225,10 @@ const MATRIX = [
     .map((id) => ({
       name: `${id}--reference--desktop`, fixture: `${id}--reference`, viewport: 'desktop',
     })),
+  // T. MOR-2243 — the segmentline peer-split glass chassis. This fixture
+  // declares no `expect`; what its assertion cell does and does not cover is
+  // spelled out in `intentionalDifferences` below.
+  { name: 'peer-split-chassis--desktop', fixture: 'peer-split-chassis', viewport: 'desktop' },
 ];
 
 /* ── build identity ────────────────────────────────────────────────────── */
@@ -337,6 +344,22 @@ try {
     });
     const page = await context.newPage();
     const consoleErrors = [];
+    // The shared tuning-step store notifies the optional local RC-28
+    // companion on mount. The fixture has no companion, but this specific
+    // best-effort PUT must still settle before the strict console gate and
+    // context teardown below. Keep every other request on the normal route
+    // path so a genuinely broken resource remains visible to the harness.
+    const tuningStepUrl = `http://127.0.0.1:${PORT}/api/local/v1/rc28/tuning-step`;
+    const tuningStepFulfillments = [];
+    await page.route(tuningStepUrl, async (route) => {
+      if (route.request().method() !== 'PUT') {
+        await route.continue();
+        return;
+      }
+      const fulfillment = route.fulfill({ status: 200, body: '{}' });
+      tuningStepFulfillments.push(fulfillment);
+      await fulfillment;
+    });
     // MOR-1430: attached BEFORE `page.goto` below (deterministic — no race
     // with navigation) alongside the console/pageerror traps.
     //
@@ -437,11 +460,12 @@ try {
       keyboardActivation = {
         selector: spec.keyboardActivate.selector,
         key: spec.keyboardActivate.key,
-        reachedCommandBus: calls.some((c) => c.fn === spec.keyboardActivate.expectCall),
+        reachedActionSeam: calls.some((c) => c.fn === spec.keyboardActivate.expectCall),
       };
     }
 
     // ── BEHAVIOR ASSERTIONS FIRST ────────────────────────────────────────
+    await Promise.all(tuningStepFulfillments);
     const resizedVp = spec.resizeTo ? VIEWPORTS[spec.resizeTo] : vp;
     const options = {
       arrangement: resizedVp.arrangement,
@@ -476,10 +500,10 @@ try {
     }
     if (keyboardActivation) {
       assertions.push({
-        name: 'keyboard-activation-reaches-command-bus',
-        ok: keyboardActivation.reachedCommandBus,
+        name: 'keyboard-activation-reaches-action-seam',
+        ok: keyboardActivation.reachedActionSeam,
         detail: `${keyboardActivation.key} on ${keyboardActivation.selector} · `
-          + `reached command bus=${keyboardActivation.reachedCommandBus}`,
+          + `reached action seam=${keyboardActivation.reachedActionSeam}`,
       });
     }
     const passed = assertions.every((a) => a.ok) && consoleErrors.length === 0;
@@ -522,14 +546,12 @@ try {
       tokens,
       paint,
     });
-    // eslint-disable-next-line no-console
     console.log(
       `${passed ? 'PASS' : 'FAIL'}  ${spec.name}`
       + `  (${assertions.filter((a) => a.ok).length}/${assertions.length} assertions)`,
     );
     if (!passed) {
       for (const a of assertions.filter((x) => !x.ok)) {
-        // eslint-disable-next-line no-console
         console.log(`        ✗ ${a.name}: ${a.detail}`);
       }
       for (const e of consoleErrors) console.log(`        ✗ console: ${e}`);
@@ -550,17 +572,16 @@ const manifest = {
     config: 'frontend/vite.fixtures.config.ts (additive; vite.config.ts untouched)',
     stubbedSeams: [
       '$lib/runtime',
-      '$lib/runtime/tx-controller/app-host',
+      '$lib/runtime/tx-controller/managed-app-host',
       '$lib/runtime/adapters/mod-input-tx-guard.svelte',
       '$lib/runtime/adapters/panel-adapters',
-      'components-v2/wiring/command-bus',
     ],
     productionFilesChanged: 0,
   },
   intentionalDifferences: [
     'The cockpit is mounted DIRECTLY (fixtures/main.ts) — resolveSkinId() has no '
     + 'cockpit branch on this commit, so no navigation path can produce these views.',
-    'Five live seams are stubbed (see harness.stubbedSeams); every other module in the '
+    'Four managed-app-host/server-state seams are stubbed (see harness.stubbedSeams); every other module in the '
     + 'render path — adapter, capability derivation, semantic surfaces, i18n, CSS — is shipped code.',
     'Screenshots are taken with Playwright `animations: "disabled"` and `caret: "hide"` for '
     + 'determinism. The cockpit declares no animation of its own; the only transition in the '
@@ -596,6 +617,17 @@ const manifest = {
     + '`dualReceiverCockpitLayout` is ever resolved here; the `--reference` family (desktop-v2/sdr-test '
     + 'wiring) has no plan-ful twin in this slice — its manifest declares a different zone set and is '
     + 'separately scoped follow-up work.',
+    'MOR-2243: `peer-split-chassis--desktop` carries no fixture-declared behaviour assertions — '
+    + '`fixtures/main.ts` answers `peer-split-chassis`\'s absent `expect` with one hardcoded '
+    + 'passing entry (`peer-split-no-assertion-pipeline`) that cannot go red on a composition '
+    + 'defect. Its recorded assertion list holds exactly two entries: that stub, and the '
+    + 'harness-appended `meter-ballistics-honor-reduced-motion`, which does discriminate but '
+    + 'reports on the rAF ballistics loop, not on the composition. The composition itself is '
+    + 'pinned only by the pixel baselines of the same names in '
+    + '`tests/e2e/visual/visual-baselines.spec.ts`, which per `fixtures/approved-baselines/'
+    + 'README.md` catch only changes above `maxDiffPixelRatio` of the frame — ~1024 differing '
+    + 'pixels (~32x32 px) at 1280x800, ~880 (~29x29) at 1100x800 — and cannot see whole-frame '
+    + 'brightness/contrast drift at all.',
   ],
   viewports: VIEWPORTS,
   summary: {
@@ -608,6 +640,5 @@ const manifest = {
   captures,
 };
 writeFileSync(path.join(OUT, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-// eslint-disable-next-line no-console
 console.log(`\n${captures.length} captures → ${OUT}  (${failures} invalid)`);
 process.exit(failures === 0 ? 0 : 1);

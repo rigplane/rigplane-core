@@ -117,8 +117,7 @@ afterEach(() => {
   resetCommandLifecycle();
 });
 
-/* ── capabilities-adapter.ts — 4 of its 6 exports, zero prior coverage
- * (getAgcLabels/getAttValues, added under MOR-2039, aren't covered here) ── */
+/* ── capabilities-adapter.ts — all 4 of its exports, zero prior coverage ── */
 
 describe('capabilities-adapter.ts over the live ic7300 caps (MOR-1562)', () => {
   it('getMeterCalibration: exact swr knot points from the live capture', () => {
@@ -297,14 +296,14 @@ describe('panel-adapters.ts derive*Props over the live ic7300 fixture (MOR-1562)
     expect(deriveScanProps()).toEqual({ scanning: false, scanType: 0, scanResumeMode: 0 });
   });
 
-  it('deriveCwProps: mode-gated APF/TPF disable + full capability catalog for the live USB reading', () => {
+  it('deriveCwProps: mode-gated APF/TPF disable + honest capability catalog for the live USB reading', () => {
     expect(deriveCwProps()).toMatchObject({
       currentMode: 'USB',
       apfDisabled: true, // active mode is USB, not CW/CW-R
       tpfDisabled: true, // active mode is USB, not RTTY/RTTY-R
       hasCw: true,
       hasBreakIn: true,
-      hasApf: true,
+      hasApf: false, // IC-7300 manual/bench evidence does not declare APF
       hasTwinPeak: true,
     });
   });

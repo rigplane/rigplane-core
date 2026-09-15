@@ -21,7 +21,7 @@ class Icom7610SerialRadio(_IcomSerialRadioBase):
     guardrail that raises ``CommandError``.
     """
 
-    _DEFAULT_MODEL = ""
+    _DEFAULT_MODEL = "IC-7610"
 
     # ------------------------------------------------------------------
     # IC-7610 specific: stop_audio_rx_pcm delegates to stop_audio_rx_opus

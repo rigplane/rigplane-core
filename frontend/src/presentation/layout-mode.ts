@@ -12,6 +12,12 @@
  * 'lcd-cockpit' = force LCD cockpit (TS-990S-style dual-cockpit)
  * 'lcd-scope'   = force LCD scope (IC-7300-style scope-dominant)
  * 'standard'    = force standard layout
+ * 'dual-sdr-face' = force the dual-receiver SDR instrument face
+ * 'peer-split'  = force the segmentline peer-split skin (MOR-2151/MOR-2155;
+ *                 two-column FTX-1 dual-receiver symmetry, see
+ *                 `skins/segmentline/PeerSplitLayout.svelte`)
+ * 'unified-instrument' = force the segmentline dominant unified instrument
+ * 'panadapter-first' = force the segmentline hardware-scope panadapter
  * 'dual-receiver-cockpit' = QA-ONLY (MOR-1257): reachable solely via the
  *                 exact `?layout=dual-receiver-cockpit` query param (see
  *                 `lib/stores/qa-cockpit-override.ts`) — deliberately NOT a
@@ -19,11 +25,16 @@
  *                 through to 'auto'. It can therefore never be persisted via
  *                 setLayoutMode/the workspace and never appears in the
  *                 StatusBar skin selector.
+ * 'flagship-probe' = QA-ONLY (T160 PR-1), on exactly those terms and through
+ *                 the same module: `?layout=flagship-probe`, excluded from
+ *                 CanonicalLayoutMode below.
  */
 export type LayoutMode =
   | 'auto' | 'lcd' | 'lcd-cockpit' | 'lcd-scope' | 'standard' | 'sdr-test'
-  | 'dual-receiver-cockpit';
-export type CanonicalLayoutMode = Exclude<LayoutMode, 'lcd' | 'dual-receiver-cockpit'>;
+  | 'peer-split' | 'unified-instrument' | 'panadapter-first'
+  | 'dual-sdr-face' | 'dual-receiver-cockpit' | 'flagship-probe';
+export type CanonicalLayoutMode =
+  Exclude<LayoutMode, 'lcd' | 'dual-receiver-cockpit' | 'flagship-probe'>;
 
 export const CANONICAL_LAYOUT_MODES = new Set<CanonicalLayoutMode>([
   'auto',
@@ -31,6 +42,10 @@ export const CANONICAL_LAYOUT_MODES = new Set<CanonicalLayoutMode>([
   'lcd-scope',
   'standard',
   'sdr-test',
+  'peer-split',
+  'unified-instrument',
+  'panadapter-first',
+  'dual-sdr-face',
 ]);
 
 export const LEGACY_LAYOUT_ALIASES: Record<string, CanonicalLayoutMode> = {

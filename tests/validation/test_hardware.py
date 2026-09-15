@@ -20,6 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+from rigplane.core.exceptions import CommandRejectedError
 from rigplane.core.exceptions import TimeoutError as RigTimeoutError
 from rigplane.core.radio_protocol import Radio
 from rigplane.core.radio_state import RadioState
@@ -896,6 +897,11 @@ class _OffByTwoRfGainRadio:
         self.capabilities = {"rf_gain"}
         self.radio_state = RadioState()
         self._value = 100
+        # Declared rf_gain band (raw 0-255, the X6200 shape) — MOR-2476: the
+        # band must be profile-declared, never an assumed default.
+        self.profile = SimpleNamespace(
+            controls={"rf_gain": {"raw_min": 0, "raw_max": 255}}
+        )
 
     async def get_rf_gain(self, receiver: int = 0) -> int:
         # Reads back 2 below whatever was last written.
@@ -914,7 +920,7 @@ async def test_rf_gain_tolerance_passes_with_off_by_two_readback():
     check = _flatten(levels)["rf_gain.set"]
 
     assert check.status is CheckStatus.PASS
-    # original read: 100 -> 98; no profile -> default 0-255 band, step 25;
+    # original read: 100 -> 98; profile-declared 0-255 raw band, step 25;
     # range-aware nudge(98) -> 123 (MOR-695); readback 123 -> 121.
     assert check.evidence["original"] == 98
     assert check.evidence["changed"] == 123
@@ -1103,6 +1109,11 @@ def _stateful_squelch_mock(*, start: int = 0):
     radio.connected = True
     radio.model = "X6200"
     radio.capabilities = {"squelch"}
+    # Declared squelch band (raw 0-255, the X6200 shape) — MOR-2476: the
+    # band must be profile-declared, never an assumed default.
+    radio.profile = SimpleNamespace(
+        controls={"squelch": {"raw_min": 0, "raw_max": 255}}
+    )
     store = {"value": start}
 
     async def _get(receiver: int = 0) -> int:
@@ -1125,8 +1136,8 @@ async def test_generic_squelch_set_rmvr_pass():
     )
     check = _flatten(levels)["squelch.set"]
     assert check.status is CheckStatus.PASS
-    # MagicMock(spec=Radio) has no profile -> default 0-255 band, step 25;
-    # range-aware nudge(0) -> 25 (MOR-695).
+    # Profile-declared 0-255 raw band (X6200 [controls.squelch] shape),
+    # step 25; range-aware nudge(0) -> 25 (MOR-695/MOR-2476).
     assert check.evidence["original"] == 0
     assert check.evidence["changed"] == 25
     assert check.evidence["readback"] == 25
@@ -1143,6 +1154,10 @@ async def test_generic_squelch_set_fail_no_react():
     radio.connected = True
     radio.model = "X6200"
     radio.capabilities = {"squelch"}
+    # Declared squelch band (raw 0-255, the X6200 shape) — MOR-2476.
+    radio.profile = SimpleNamespace(
+        controls={"squelch": {"raw_min": 0, "raw_max": 255}}
+    )
     radio.set_squelch = AsyncMock(return_value=None)  # no-op write
     radio.get_squelch = AsyncMock(return_value=100)  # always 100
     template = _single_entry_template(check_id="squelch.set", capability="squelch")
@@ -1165,6 +1180,10 @@ class _OffByTwoSquelchRadio:
         self.capabilities = {"squelch"}
         self.radio_state = RadioState()
         self._value = 100
+        # Declared squelch band (raw 0-255, the X6200 shape) — MOR-2476.
+        self.profile = SimpleNamespace(
+            controls={"squelch": {"raw_min": 0, "raw_max": 255}}
+        )
 
     async def get_squelch(self, receiver: int = 0) -> int:
         return max(0, self._value - 2)
@@ -1658,3 +1677,128 @@ async def test_unknown_check_id_still_skips():
     check = _flatten(levels)["bogus.thing"]
     assert check.status is CheckStatus.SKIP
     assert "no hardware handler" in str(check.evidence.get("reason", ""))
+
+
+# ---------------------------------------------------------------------------
+# MOR-2103 — the generic RMVR outcome wiring in _read_modify_verify_restore.
+#
+# _check_mode_set's own tests (tests/validation/test_hardware_ftx1.py) only
+# exercise mode.set, the ONE RMVR_SAFE_WRITE check with its own hand-copied
+# handler. The other 44 route through _read_modify_verify_restore, whose
+# outcome wiring had no test at all before this section: three mutations,
+# each deleting one of the three added blocks, left 298 tests in
+# tests/validation/ plus tests/test_yaesu_cat_transport.py green.
+# ---------------------------------------------------------------------------
+
+
+def _rf_gain_radio(scenario: str, *, original: int = 100):
+    """A MagicMock(spec=Radio) driving one of five _read_modify_verify_restore
+    outcomes through rf_gain.set (a generic-path RMVR_SAFE_WRITE check)."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "X6200"
+    radio.capabilities = {"rf_gain"}
+    # Declared rf_gain band (raw 0-255, the X6200 shape) — MOR-2476: the
+    # band must be profile-declared, never an assumed default.
+    radio.profile = SimpleNamespace(
+        controls={"rf_gain": {"raw_min": 0, "raw_max": 255}}
+    )
+
+    get_calls = {"n": 0}
+    set_calls = {"n": 0}
+
+    async def _get(receiver: int = 0) -> int:
+        get_calls["n"] += 1
+        if get_calls["n"] == 2:  # the post-write verify read
+            if scenario == "timed_out_read":
+                await asyncio.sleep(30)  # cut off by _guard's per-check timeout
+            if scenario == "value_error_read":
+                raise ValueError("Parse error for 'RG{level:03d};' against 'RG;'")
+            if scenario == "rejected_read":
+                raise CommandRejectedError(
+                    "Radio rejected command 'RG100;' (returned '?;')"
+                )
+        return original
+
+    async def _set(value: int, receiver: int = 0) -> None:
+        set_calls["n"] += 1
+        if scenario == "rejected_write" and set_calls["n"] == 1:  # the changed write
+            raise CommandRejectedError(
+                "Radio rejected command 'RG100;' (returned '?;')"
+            )
+
+    radio.get_rf_gain = AsyncMock(side_effect=_get)
+    radio.set_rf_gain = AsyncMock(side_effect=_set)
+    return radio
+
+
+async def test_rf_gain_rejected_write_reports_outcome():
+    """A CommandRejectedError on the write leg is outcome=rejected at the
+    generic RMVR site, not only at _check_mode_set's hand-copy (MOR-2103)."""
+    radio = _rf_gain_radio("rejected_write")
+    template = _single_entry_template(check_id="rf_gain.set", capability="rf_gain")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["rf_gain.set"]
+    assert check.status is CheckStatus.FAIL
+    assert check.evidence["outcome"] == "rejected"
+
+
+async def test_rf_gain_ignored_reports_outcome():
+    """A write that returns cleanly but never moves the readback is
+    outcome=ignored at the generic RMVR site (MOR-2103)."""
+    radio = _rf_gain_radio("ignored")
+    template = _single_entry_template(check_id="rf_gain.set", capability="rf_gain")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["rf_gain.set"]
+    assert check.status is CheckStatus.FAIL
+    assert check.evidence["outcome"] == "ignored"
+
+
+async def test_rf_gain_value_error_on_read_is_not_rejected():
+    """A local/parse ValueError on the verify-read never reached the radio
+    -- must not be labelled outcome=rejected at the generic site either
+    (MOR-2103)."""
+    radio = _rf_gain_radio("value_error_read")
+    template = _single_entry_template(check_id="rf_gain.set", capability="rf_gain")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["rf_gain.set"]
+    assert check.status is CheckStatus.FAIL
+    assert "outcome" not in check.evidence
+
+
+async def test_rf_gain_timed_out_on_read_reports_outcome():
+    """A per-check _guard timeout on the verify-read leg is outcome=timed_out
+    -- proves the read-leg wiring itself is present at the generic site, not
+    only the write-leg one (MOR-2103)."""
+    radio = _rf_gain_radio("timed_out_read")
+    template = _single_entry_template(check_id="rf_gain.set", capability="rf_gain")
+    levels = await execute_hardware_checks(
+        radio,
+        template,
+        OperatorSafetyBlock(),
+        allow_writes=True,
+        per_check_timeout=0.05,
+    )
+    check = _flatten(levels)["rf_gain.set"]
+    assert check.status is CheckStatus.FAIL
+    assert check.evidence["outcome"] == "timed_out"
+
+
+async def test_rf_gain_rejected_read_is_not_reported_as_rejected():
+    """A read-leg CommandRejectedError can never mean the write was refused
+    -- the write already succeeded by the time this leg runs. Pins the leg
+    guard's sense at the generic site (MOR-2103)."""
+    radio = _rf_gain_radio("rejected_read")
+    template = _single_entry_template(check_id="rf_gain.set", capability="rf_gain")
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["rf_gain.set"]
+    assert check.status is CheckStatus.FAIL
+    assert "outcome" not in check.evidence

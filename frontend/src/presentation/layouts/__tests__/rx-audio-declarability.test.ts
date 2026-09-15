@@ -1,10 +1,12 @@
 /**
- * MOR-1279 — `rxAudio` is DECLARABLE, and nothing declares it yet.
+ * MOR-1279 — `rxAudio` is DECLARABLE. MOR-1368 (S9) declares it for real.
  *
- * Slice 3B adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
- * the surface later; it deliberately does not touch any manifest, and it adds
+ * Slice 3B added the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
+ * the surface later; it deliberately did not touch any manifest, and it added
  * no design-language renderer slot (that set was frozen by MOR-1072 — adding
- * one would be a language-contract change this slice must not make).
+ * one would be a language-contract change that slice must not make).
+ * MOR-1368 flips the second half, on `desktop-v2` ONLY. The inventory below
+ * is a LITERAL of who declares it, mirroring `filter-declarability.test.ts`.
  *
  * Same three pins as `tx-aux-declarability.test.ts` / `meters-declarability.test.ts`:
  *   - drop the name and a future manifest's zone stops validating;
@@ -24,7 +26,7 @@ describe('rxAudio is a declarable semantic surface', () => {
   it('is in the declarable set alongside vfo, rxTx, txAux and meters', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
       'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
-      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls',
+      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory',
     ]);
   });
 
@@ -48,7 +50,12 @@ describe('rxAudio is a declarable semantic surface', () => {
 
 describe('exactly the reviewed manifests declare an rxAudio zone (MOR-1368)', () => {
   /** The literal — extend by hand, with a layout review, never silently. */
-  const DECLARES_RX_AUDIO = ['desktop-v2'];
+  // MOR-2231 (step 1, batch 3) added `sdr-test`, by hand and with the layout
+  // review this literal exists to force: the same declaration retires that
+  // face's RX AUDIO panel in BOTH sidebars through the `declared.has(...)`
+  // channel. It retires no settings-modal section — this family has none.
+  // T160 PR-1 added `flagship-probe`, which places this surface in its left rail.
+  const DECLARES_RX_AUDIO = ['desktop-v2', 'flagship-probe', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

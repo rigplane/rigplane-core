@@ -132,32 +132,6 @@ def set_xfc_status(
     )
 
 
-@expose_command_key(lambda cmd_map: "get_tx_freq_monitor")
-@require_cmd_map
-def get_tx_freq_monitor(
-    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
-) -> bytes:
-    """Build a read TX frequency monitor status command (0x1C 0x03)."""
-    return _build_from_map(
-        cmd_map, "get_tx_freq_monitor", to_addr=to_addr, from_addr=from_addr
-    )
-
-
-@expose_command_key(lambda cmd_map: "set_tx_freq_monitor")
-@require_cmd_map
-def set_tx_freq_monitor(
-    on: bool, to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
-) -> bytes:
-    """Build a set TX frequency monitor command (0x1C 0x03)."""
-    return _build_from_map(
-        cmd_map,
-        "set_tx_freq_monitor",
-        to_addr=to_addr,
-        from_addr=from_addr,
-        data=b"\x01" if on else b"\x00",
-    )
-
-
 # --- RIT/XIT ---
 
 

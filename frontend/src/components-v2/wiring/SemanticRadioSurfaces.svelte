@@ -4,36 +4,64 @@
   This is the ONLY place the two pure surfaces meet live state: it derives the
   MOR-1062 view model from the real runtime through
   `lib/runtime/adapters/radio-view-model-adapter`, hands the RX/TX surface a
-  snapshot of the App-owned TX authority (v3 ADR invariant 11 — the controller
-  in `lib/runtime/tx-controller/app-host`, provided once by App.svelte), and
+  server-shaped TX snapshot from
+  `lib/runtime/tx-controller/managed-app-host`, and
   turns the surfaces' callback intents into commands. The surfaces themselves
-  stay presentation-only; the authoritative global TX lamp stays in
+  stay presentation-only; the global TX lamp stays in
   AppGlobalHost (MOR-1059) and is not duplicated here.
+  Both render the same server snapshot.
 -->
 <script module lang="ts">
-  /**
-   * Per-instance TX lease identity. The App TX controller keys lease ownership
-   * by `sourceId`: an id recomputed per render — or shared with another mounted
-   * source — makes `release()` a silent no-op and can strand a key DOWN. Same
-   * identity discipline as TxPanel (MOR-1011) and the MOR-1221/1226 audits.
-   */
-  let surfaceSeq = 0;
+  import type { HostedFaceComponentV1 } from '../../../component-kit-api/src/index';
+  import type { ExternalPresentationRecord } from '../../skins/registry';
+
+  export type {
+    InstrumentComposition,
+    InstrumentVfoAppearance,
+    PanelChrome,
+    StandardTxLayout,
+  } from './instrument-composition';
+
+  export interface ExternalPresentation {
+    readonly record: ExternalPresentationRecord;
+    readonly component: HostedFaceComponentV1;
+    readonly isCurrent: () => boolean;
+  }
 </script>
 
 <script lang="ts">
   import { onDestroy, untrack, type Snippet } from 'svelte';
+  import type {
+    InstrumentComposition,
+    InstrumentVfoAppearance,
+    PanelChrome,
+    StandardTxLayout,
+  } from './instrument-composition';
   import { t } from '$lib/i18n';
-  import { runtime } from '$lib/runtime';
+  import { getFieldStatus } from '$lib/state/field-status';
+  import { getCommandLifecycle } from '$lib/stores/commands.svelte';
+  import { getScopeSource, hasCapability } from '$lib/stores/capabilities.svelte';
+  import { presentationResources, runtime } from '$lib/runtime';
+  import * as componentKitActivation from '../../component-kits/activation';
+  import { ScopeFrameHost, type ScopeFramePresentation } from '$lib/runtime/scope-frame-host';
+  import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay } from '$lib/runtime/adapters/scope-passband-display';
+  import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import {
     EMPTY_PBT_PRESENTATION, projectPbtPresentation, type PbtField,
     type PbtPresentationEvidence, type PbtPresentationState,
   } from '../../semantic/pbt-presentation-continuity';
-  import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
-  import { txFaultObligation, type TxFaultObligation } from '$lib/runtime/tx-controller/model';
+  import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import {
-    bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getPendingFrequencyHz,
+    bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getDspControlFeedback,
+    getAfLevelControlFeedback, projectDspControlFeedbackToDisplay,
+    getFilterWidthControlFeedback, getRfPowerControlFeedback,
+    getCwPitchControlFeedback, getKeySpeedControlFeedback, getRfSqlControlFeedback,
+    getTxAuxControlFeedback, type TxAuxControlFeedbackField,
+    getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
+    getSystemHandlers, getDataModeArmed, getModInputArmed,
+    deriveMemoryPanelProps, getMemoryHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { toRitXitProps } from '$lib/runtime/props/panel-props';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
@@ -42,55 +70,152 @@
   } from '../../presentation/workspace/resolution';
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
   import AntennaSurface from '../../semantic/AntennaSurface.svelte';
+  import AntennaInstrumentHost from '../../semantic/AntennaInstrumentHost.svelte';
   import BandSurface from '../../semantic/BandSurface.svelte';
+  import BandInstrumentHost from '../../semantic/BandInstrumentHost.svelte';
+  import FrequencyEntryDialog from '../../semantic/FrequencyEntryDialog.svelte';
+  import type { BandControlLayout } from '../../semantic/band-instruments';
   import DspSurface, {
-    type DspLevelField, type DspToggleField,
+    type DspLevelField, type DspSurfacePart, type DspToggleField,
   } from '../../semantic/DspSurface.svelte';
+  import DspInstrumentHost from '../../semantic/DspInstrumentHost.svelte';
+  import type {
+    DspFiniteHandles, DspFiniteLayout, DspSettingsPanel,
+  } from '../../semantic/dsp-instruments';
+  import DspScalarHost from '../../semantic/DspScalarHost.svelte';
+  import type { DspScalarLayout } from '../../semantic/dsp-scalars';
   import FilterSurface from '../../semantic/FilterSurface.svelte';
+  import ModeSurface from '../../semantic/ModeSurface.svelte';
+  import FilterInstrumentHost from '../../semantic/FilterInstrumentHost.svelte';
+  import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
   import MetersSurface from '../../semantic/MetersSurface.svelte';
-  import type { RadioViewModel } from '../../semantic/radio-view-model';
+  import StationMeterInstrumentHost, {
+    type StationMeterAuthorityPublication,
+    type StationMeterInstrumentHandles,
+    type SubscribeStationMeterAuthority,
+  } from '../../semantic/StationMeterInstrumentHost.svelte';
+  import type { MeterContinuitySession } from '../../primitives/meters/meter-ballistics.svelte';
+  import type { ControlAuthorityPublication } from '$lib/runtime/frontend-runtime';
+  import {
+    createFiniteRendererContext,
+    type FiniteRendererContext,
+  } from '../../primitives/control-instruments/control-instrument-renderer.svelte';
+  import type { ReceiverId, RadioViewModel, VfoSlot } from '../../semantic/radio-view-model';
   import RfFrontEndSurface, {
-    type RfFrontEndLevelField, type RfFrontEndToggleField,
+    type RfFrontEndLevelField,
   } from '../../semantic/RfFrontEndSurface.svelte';
-  import RitXitScanSurface from '../../semantic/RitXitScanSurface.svelte';
+  import RfFrontEndInstrumentHost from '../../semantic/RfFrontEndInstrumentHost.svelte';
+  import type { RfFrontEndFiniteLayout } from '../../semantic/rf-front-end-instruments';
+  import RitXitScanSurface, {
+    type RitXitScanSurfacePart,
+  } from '../../semantic/RitXitScanSurface.svelte';
+  import RitXitScanInstrumentHost from '../../semantic/RitXitScanInstrumentHost.svelte';
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
+  import RxAudioInstrumentHost from '../../semantic/RxAudioInstrumentHost.svelte';
+  import type { RxAudioFiniteLayout } from '../../semantic/rx-audio-instruments';
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
   import ScopeDisplaySurface from '../../semantic/ScopeDisplaySurface.svelte';
+  import ReceiverInstrumentHost, {
+    type ReceiverVfoAppearance,
+  } from '../../semantic/ReceiverInstrumentHost.svelte';
+  import TxAuxScalarHost from '../../semantic/TxAuxScalarHost.svelte';
+  import HostedFaceInstrumentBridge from '../../component-kits/HostedFaceInstrumentBridge.svelte';
+  import TxAuxFiniteHost from '../../semantic/TxAuxFiniteHost.svelte';
   import TxAuxSurface, {
+    TX_AUX_FEEDBACK_LEVELS, type TxAuxFeedbackLevelField, type TxAuxLevelFeedback,
     type TxAuxLevelField, type TxAuxToggleField,
   } from '../../semantic/TxAuxSurface.svelte';
+  import type { TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
+  import type { TxAuxFiniteHandles } from '../../semantic/tx-aux-finite';
+  import VfoOperationSeatHost, {
+    type VfoOperationHandles,
+  } from '../../semantic/VfoOperationSeatHost.svelte';
+  import type {
+    VfoOperationCallbacks, VfoOperationProjectionInput,
+  } from '../../semantic/vfo-operation-projection';
   import { keyBlockedReasons } from '../../semantic/rx-tx-surface';
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
+  import SemanticControlPanel from '../layout/SemanticControlPanel.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import CwKeyerSurface, { type CwLevelField } from '../../semantic/CwKeyerSurface.svelte';
+  import CwKeyerInstrumentHost, {
+    type CwKeyerInstrumentHandles,
+  } from '../../semantic/CwKeyerInstrumentHost.svelte';
+  import MemorySurface from '../../semantic/MemorySurface.svelte';
   import ScopeControlsSurface, {
     type ScopeChoiceField, type ScopeToggleField,
   } from '../../semantic/ScopeControlsSurface.svelte';
   import {
-    forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
+    forReceiver, forSlot, receiversOf, slotsOf,
+    isActiveStrip, isActiveSlotStrip, isOperationalStrip,
+    type StripSlot,
   } from './dual-receiver-strips';
   import { guardRadioViewModel } from './radio-view-model-guard';
+  import type {
+    LcdSpectrumFrame, LcdSpectrumFrameResolution, LcdSpectrumSource,
+  } from '../../skins/segmentline/lcd-display-contract';
 
   /**
-   * `'single'` (default) is the exact pre-MOR-1067 markup — sdr-test's
-   * behavior is untouched. `'dual'` is the dual-receiver-cockpit's per-
+   * `'single'` (default) is the pre-MOR-1067 composition, wrapped per zone
+   * when `regions` says so. `'dual'` is the dual-receiver-cockpit's per-
    * receiver channel strips (MOR-1067): still ONE shared RxTxSurface and
    * ONE TX lease below — ONLY the VFO half splits, so there is still exactly
    * one authoritative key/unkey action surface regardless of `strips`.
    *
    * MOR-1068: in `'dual'` the composed blocks carry `data-zone-id` values
    * drawn from the `dual-receiver-cockpit` layout manifest's declared zones
-   * (`presentation/layouts/dual-receiver-cockpit.ts`). The manifest is the
-   * authority and is NOT imported here — importing it would close a cycle
-   * (manifest -> loader -> skin -> wiring) and let a wiring change register a
-   * layout. The two descriptions are held together by a test that reads the
-   * ids out of the real registry and requires exactly these in the rendered
-   * tree (MOR-1067 verification F6).
+   * (`presentation/layouts/dual-receiver-cockpit.ts`). A test reads the ids out
+   * of the real registry and requires exactly these in the rendered tree
+   * (MOR-1067 verification F6).
    */
   interface Props {
+    children?: Snippet<[InstrumentComposition]>;
+    externalPresentation?: ExternalPresentation | null;
     strips?: 'single' | 'dual';
+    /**
+     * What ONE strip of the `dual` composition is. `'receiver'` (default) is
+     * the shipped deck: one strip per structural receiver. `'slot'` is owner
+     * ruling R58's deck: one strip per DECK SLOT, so a single-receiver radio
+     * gets its unselected VFO in the second column. Read only under
+     * `strips === 'dual'`.
+     */
+    stripBy?: 'receiver' | 'slot';
+    regions?: boolean;
+    regionContent?: Snippet<[Snippet | undefined, ManagedScopeRegion | undefined]>;
+    scopeControlsInRegionContent?: boolean;
+    regionExtras?: Snippet<['left' | 'right']>;
+    vfoAppearance?: 'semantic' | 'sdr' | 'standard';
+    /** Whether the fallback band key PRINTS its permit sentence. The key's
+     *  accessible name and its `data-default-permit` carry that fact either
+     *  way — `semantic/BandInstrumentHost.svelte` owns the fact, the face
+     *  owns the print. */
+    bandPermitCaption?: boolean;
+    displayFrameSource?: LcdSpectrumSource;
+    readonlyDisplay?: Snippet<[RadioViewModel, LcdSpectrumFrame?]>;
   }
-  let { strips = 'single' }: Props = $props();
+  /**
+   * MOR-2231 — `regions` routes `vfo`/`rxTx` through the generic `zoned()`
+   * path in the SINGLE composition, so each gains the zone element its
+   * layout's plan names. `false` renders both exactly as before: no wrapper,
+   * no `data-zone-id`.
+   *
+   * `RadioLayout.svelte` is the only site that passes it. Five take the
+   * default, and `regions` is read on three of them — `LcdLayout`,
+   * `MobileRadioLayout` and `frontend/fixtures/ReferenceLayout.svelte` —
+   * because it is read only in the `{:else}` single branch.
+   * `DualReceiverCockpit` and `PeerSplitLayout` mount `strips="dual"`, where
+   * it is never evaluated. (Enumerated with `git grep -n
+   * "<SemanticRadioSurfaces" -- .`, unscoped: a path-scoped search cannot see
+   * `frontend/fixtures/`, which is how an earlier revision of this comment
+   * came to name four.)
+   *
+   * A PROP rather than a plan lookup because the plan cannot answer the
+   * question: `desktop-v2` and `sdr-test` declare the same two zone ids, so
+   * `zoneOwning()` returns non-null on both faces.
+   */
+  let {
+    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', bandPermitCaption = true, displayFrameSource, readonlyDisplay,
+  }: Props = $props();
 
   /**
    * MOR-1082 — the workspace's per-zone `visibleSurfaces`/`zoneOrder`, resolved
@@ -114,6 +239,21 @@
     return zoneShowsSurface(surfacePlan(), zoneId, surface);
   }
   /**
+   * MOR-2231 (step 1, batch 5) — whether the single composition's OPTIONAL
+   * surfaces may still render outside a zone. See their render sites below.
+   *
+   * `regions` means the caller lays the zone boxes out as grid items, so a
+   * surface reaching that path with no zone would be an unplaced item. The
+   * reachable way for `zoneOwning()` to answer null there is a workspace
+   * SUBTRACTION that emptied the zone (an imported or persisted document;
+   * `resolveSurfacePlan` force-restores anything in `requiredSemanticSurfaces`).
+   *
+   * A mount with NO plan at all is excluded deliberately: no zone element
+   * exists then for ANY surface, so there is no arrangement to be unplaced
+   * beside — withholding the body would cost a readout and prevent nothing.
+   */
+  let allowBareSurfaces = $derived((!regions && hostedChildren === undefined) || surfacePlan() === null);
+  /**
    * MOR-1336 (v3-rework S4) — the DECLARED zone that mounts `surface`, or
    * `null` when no zone does.
    *
@@ -127,17 +267,9 @@
    * by `manifest.zones`, so the plan's KEY SET is exactly the active layout's
    * declared-zone set. App already computes it; this only consults it.
    *
-   * `null` → the caller renders BARE, byte-identical to the pre-S4 DOM. That is
-   * MOR-1069 enforced by construction: a zone element exists only where a
-   * layout actually declared one, never as an empty promise.
-   *
-   * LIMITATION, recorded rather than hidden: the plan is POST-subtraction, so
-   * "no zone declares this" and "a zone declared it and the workspace hid it"
-   * are indistinguishable here, and both render bare. That matches today
-   * exactly (these surfaces consult no plan at all before this slice), so no
-   * force-show is introduced and nothing regresses — but the workspace still
-   * cannot hide a zoned optional surface. Fixing that needs `SurfacePlan` to
-   * carry declaration and visibility separately (own ticket).
+   * A `null` result renders bare only when the caller permits that fallback.
+   * The ordered SDR caller below rejects it for a resolved plan, so workspace
+   * subtraction removes both zone and body; a no-plan mount keeps the body.
    */
   function zoneOwning(surface: SemanticSurfaceName): string | null {
     const plan = surfacePlan();
@@ -155,9 +287,178 @@
       }))
       .filter(({ zoneId }) => zoneShows(zoneId, 'vfo'));
   }
+  interface RenderedStrip {
+    key: string;
+    receiverId: ReceiverId;
+    zoneId: string;
+    /** Omitted on the `receiver` path, so its `.channel-strip` carries no
+     *  `data-strip-slot` attribute at all. */
+    slotPosition?: 'primary' | 'secondary';
+    sliced: RadioViewModel;
+    /** Whether this column carries the deck's active mark. Per RECEIVER on the
+     *  `receiver` path; per SLOT on the `slot` path, where two columns can
+     *  share one receiver (`isActiveSlotStrip`). */
+    active: boolean;
+    /** This column's accessible group name. */
+    groupLabel: string;
+  }
+  /**
+   * A slot column's accessible name. The column carrying the receiver's
+   * instruments takes the receiver name the shipped decks use; a column
+   * carrying none is named by its own VFO position, so the two columns of a
+   * one-receiver deck are not one name twice (MOR-2425).
+   */
+  function slotGroupLabel(slot: StripSlot, sliced: RadioViewModel): string {
+    const positionLabel = sliced.vfos[0]?.label;
+    return slot.ownsReceiverInstruments || positionLabel === undefined
+      ? t('core.vfo.receiverGroupLabel', { receiver: slot.receiver })
+      : positionLabel;
+  }
+  /**
+   * MOR-2425 / R58: the same two zones, sliced by DECK SLOT instead of by
+   * receiver. On a two-receiver radio the two agree entry for entry; on a
+   * one-receiver radio the slot path gives the unselected VFO the second
+   * column, with no receiver instruments of its own (`forSlot`).
+   */
+  function renderedStrips(model: RadioViewModel): RenderedStrip[] {
+    if (stripBy === 'slot') {
+      return slotsOf(model)
+        .map((slot, index): RenderedStrip => {
+          const sliced = forSlot(model, slot);
+          return {
+            key: slot.key,
+            receiverId: slot.receiver,
+            zoneId: index === 0 ? 'primary-vfo' : 'secondary-vfo',
+            slotPosition: index === 0 ? 'primary' : 'secondary',
+            sliced,
+            active: isActiveSlotStrip(model, slot),
+            groupLabel: slotGroupLabel(slot, sliced),
+          };
+        })
+        .filter(({ zoneId }) => zoneShows(zoneId, 'vfo'));
+    }
+    return visibleStrips(model).map(({ receiverId, zoneId }): RenderedStrip => ({
+      key: receiverId,
+      receiverId,
+      zoneId,
+      sliced: forReceiver(model, receiverId),
+      active: isActiveStrip(model, receiverId),
+      groupLabel: t('core.vfo.receiverGroupLabel', { receiver: receiverId }),
+    }));
+  }
 
   const semanticHandlers = bindSemanticSurfaceHandlers();
   const vfo = semanticHandlers.vfo;
+
+  let directFrequencyEntrySupported = $derived(
+    runtime.caps?.capabilities.includes('vfo_freq_direct') === true
+      && runtime.caps.receivers === 1
+      && runtime.caps.vfoScheme === 'ab',
+  );
+  let receiverFrequencyEntrySupported = $derived(
+    runtime.caps?.vfoScheme === 'main_sub' || runtime.caps?.vfoScheme === 'single',
+  );
+  let frequencyEntrySupported = $derived(
+    directFrequencyEntrySupported || receiverFrequencyEntrySupported,
+  );
+
+  type FrequencyEntryCapture = Readonly<{
+    target: VfoSelection;
+    expectedActiveSlot?: 'A' | 'B';
+    providerGeneration: number;
+    sessionEpoch: number;
+    topologyId: string;
+    trigger: HTMLElement;
+  }>;
+  let frequencyEntryCapture = $state<FrequencyEntryCapture | null>(null);
+  let frequencyEntryLifecycle = $state<{ id: string; epoch: number } | null>(null);
+
+  function frequencyAuthorityMatches(capture: FrequencyEntryCapture): boolean {
+    const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
+    const model = toRadioViewModel(state, caps);
+    const baseMatches = session.state === 'connected' && session.epoch === capture.sessionEpoch
+      && state?.providerGeneration === capture.providerGeneration
+      && caps?.providerGeneration === capture.providerGeneration
+      && model?.topologyId === capture.topologyId
+      && model.vfos.some((candidate) => candidate.receiver === capture.target.receiver
+        && candidate.slot.kind === capture.target.slot.kind
+        && (candidate.slot.kind !== 'slotted' || (capture.target.slot.kind === 'slotted'
+          && candidate.slot.id === capture.target.slot.id)));
+    if (!baseMatches || caps == null || state == null) return false;
+    if (capture.target.slot.kind === 'unslotted') {
+      return caps.vfoScheme === 'main_sub' || caps.vfoScheme === 'single';
+    }
+    if (capture.target.slot.kind !== 'slotted' || capture.target.receiver !== 'MAIN') return false;
+    const activeSlot = state.main?.activeSlot;
+    const slotStatus = getFieldStatus(state, 'main.activeSlot');
+    return caps.capabilities.includes('vfo_freq_direct')
+      && caps.receivers === 1 && caps.vfoScheme === 'ab'
+      && slotStatus?.observed === true && slotStatus.freshness === 'fresh'
+      && slotStatus.availability === 'available'
+      && activeSlot === capture.expectedActiveSlot;
+  }
+
+  function openFrequencyEntry(target: VfoSelection, trigger: HTMLElement): void {
+    const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
+    const stateGeneration = state?.providerGeneration;
+    const model = toRadioViewModel(state, caps);
+    if (state == null || caps == null || session.state !== 'connected'
+      || !Number.isSafeInteger(stateGeneration)
+      || stateGeneration !== caps.providerGeneration
+      || model === null) return;
+    const candidateExists = model.vfos.some((candidate) => candidate.receiver === target.receiver
+      && candidate.slot.kind === target.slot.kind
+      && (candidate.slot.kind !== 'slotted' || (target.slot.kind === 'slotted'
+        && candidate.slot.id === target.slot.id)));
+    if (!candidateExists) return;
+    let expectedActiveSlot: 'A' | 'B' | undefined;
+    if (target.slot.kind === 'slotted') {
+      if (target.receiver !== 'MAIN' || !directFrequencyEntrySupported) return;
+      const activeSlot = state.main?.activeSlot;
+      const slotStatus = getFieldStatus(state, 'main.activeSlot');
+      if (slotStatus?.observed !== true || slotStatus.freshness !== 'fresh'
+        || slotStatus.availability !== 'available'
+        || (activeSlot !== 'A' && activeSlot !== 'B')) return;
+      expectedActiveSlot = activeSlot;
+    } else if (target.slot.kind !== 'unslotted'
+      || (caps.vfoScheme !== 'main_sub' && caps.vfoScheme !== 'single')) return;
+    frequencyEntryLifecycle = null;
+    const capture = Object.freeze<FrequencyEntryCapture>({
+      target: Object.freeze({ receiver: target.receiver, slot: Object.freeze({ ...target.slot }) }),
+      expectedActiveSlot,
+      providerGeneration: stateGeneration as number, sessionEpoch: session.epoch,
+      topologyId: model.topologyId, trigger,
+    });
+    frequencyEntryCapture = capture;
+  }
+
+  let frequencyEntryAuthorityValid = $derived(
+    frequencyEntryCapture !== null && frequencyAuthorityMatches(frequencyEntryCapture),
+  );
+  let frequencyEntryCommand = $derived(frequencyEntryLifecycle === null ? undefined
+    : getCommandLifecycle(frequencyEntryLifecycle.id, frequencyEntryLifecycle.epoch));
+  let frequencyEntryStatus = $derived.by(() => {
+    if (frequencyEntryCapture !== null && !frequencyEntryAuthorityValid) {
+      return 'Radio authority changed. Close this dialog and open it again.';
+    }
+    const command = frequencyEntryCommand;
+    if (command?.status === 'pending') return 'Sending frequency…';
+    if (command?.status === 'acknowledged') return 'Waiting for the selected VFO readback…';
+    if (command?.status === 'confirmed') return 'Frequency confirmed.';
+    if (command?.status === 'failed' || command?.status === 'timed-out'
+      || command?.status === 'cancelled') return command.error ?? 'Frequency change was not confirmed.';
+    return undefined;
+  });
+  let frequencyEntrySubmitEnabled = $derived(frequencyEntryAuthorityValid
+    && frequencyEntryCommand?.status !== 'pending'
+    && frequencyEntryCommand?.status !== 'acknowledged'
+    && frequencyEntryCommand?.status !== 'confirmed');
+  $effect(() => {
+    if (frequencyEntryCommand?.status !== 'confirmed') return;
+    frequencyEntryCapture = null;
+    frequencyEntryLifecycle = null;
+  });
+  const systemIntents = getSystemHandlers();
   /** MOR-1307: the shipped band vocabulary, composed rather than forked. */
   const band = semanticHandlers.band;
   /**
@@ -178,6 +479,13 @@
     driveGain: txAuxIntents.onDriveGainChange, voxGain: txAuxIntents.onVoxGainChange,
     antiVoxGain: txAuxIntents.onAntiVoxGainChange, voxDelay: txAuxIntents.onVoxDelayChange,
     compressorLevel: txAuxIntents.onCompLevelChange, monitorLevel: txAuxIntents.onMonLevelChange,
+  };
+  const TX_AUX_FEEDBACK_FIELD: Readonly<Record<
+    TxAuxFeedbackLevelField, TxAuxControlFeedbackField
+  >> = {
+    micGain: 'micGain', driveGain: 'driveGain', voxGain: 'voxGain',
+    antiVoxGain: 'antiVoxGain', voxDelay: 'voxDelay',
+    compressorLevel: 'compressorLevel', monitorLevel: 'monitorGain',
   };
   /**
    * MOR-1279. The RX-audio intent vocabulary, composed from the SHIPPED
@@ -220,6 +528,7 @@
    * test, not re-asserted here.
    */
   const dspIntents = semanticHandlers.dsp;
+  let standardDspSettings = $state<DspSettingsPanel | null>(null);
   const DSP_TOGGLE_INTENT: Record<DspToggleField, (next: boolean) => void> = {
     nrActive: (next) => dspIntents.onNrModeChange(next ? 1 : 0),
     nbActive: (next) => dspIntents.onNbToggle(next),
@@ -328,9 +637,6 @@
     rfGain: (value) => rfFrontEndIntents.onRfGainChange(Math.round(value * 255)),
     squelch: (value) => rfFrontEndIntents.onSquelchChange(Math.round(value * 255)),
   };
-  const RF_FRONT_END_TOGGLE_INTENT: Record<RfFrontEndToggleField, (next: boolean) => void> = {
-    digiSel: rfFrontEndIntents.onDigiSelToggle, ipPlus: rfFrontEndIntents.onIpPlusToggle,
-  };
   /**
    * MOR-1308 (vocabulary slice 8B). The shipped RIT/XIT and scan command
    * vocabularies, composed unmodified — the O1 "one register, two gates"
@@ -340,10 +646,28 @@
    */
   const ritXitIntents = semanticHandlers.ritXit;
   const scanIntents = semanticHandlers.scan;
+  /** MOR-2425 restore — `RitXitScanSurface`'s TYPE/SPAN/RESUME button groups
+   * hide (not merely disable) unless the connected radio declares the
+   * `scan` capability: `makeScanHandlers()` gates every scan intent on it,
+   * but the `scan` view-model group itself is per-field "ever reported"
+   * with no capability check (see that surface's own file header). Same
+   * "caps-echo display metadata" seam as `hasDualReceiver` below. */
+  let scanCapable = $derived(hasCapability('scan'));
+  let scanTypeValues = $derived(runtime.caps?.scanTypeValues);
+  let scanResumeValues = $derived(runtime.caps?.scanResumeValues);
   /** MOR-1731: consume the shared validated tri-state boundary. `undefined`
    * keeps legacy servers compatible; `null` is the adapter's fail-closed
    * result for present-but-unusable metadata. */
   let ritDomain = $derived(toRitXitProps(runtime.state, runtime.caps).ritDomain);
+  /**
+   * MOR-2425 (Memory lane, phase B2). Memory channels are not in the
+   * MOR-1262 RadioViewModel vocabulary (the radio cannot report their
+   * contents), so `memorySurface` below reads `deriveMemoryPanelProps()` /
+   * `getMemoryHandlers()` directly — the SAME panel-adapters singleton the
+   * legacy `MemoryPanel.svelte` wires to, not a second instance.
+   */
+  let memoryFacts = $derived(deriveMemoryPanelProps());
+  const memoryHandlers = getMemoryHandlers();
   /**
    * MOR-1310 (slice 9B). The CW intent vocabulary, composed from the SHIPPED
    * `makeCwPanelHandlers` rather than forked. MOR-1606 wires its existing
@@ -378,53 +702,84 @@
     centerType: scopeIntents.onCenterTypeChange, rbw: scopeIntents.onRbwChange,
     receiver: scopeIntents.onReceiverChange,
   };
-  const tx = getAppTxController();
-  const sourceId = `semantic-rx-tx-${++surfaceSeq}`;
-  let leaseSeq = 0;
+  const tx = getManagedAppTxController();
 
   let txState = $state.raw(tx.snapshot());
-  const stopWatchingTx = tx.subscribe((next) => { txState = next; });
+  let stationSubscriber: Parameters<SubscribeStationMeterAuthority>[0] | null = null;
+  let stationControl: ControlAuthorityPublication | null = null;
 
-  onDestroy(() => {
-    // Unsubscribe FIRST: the release below is fail-closed and must run to
-    // completion inside the controller, not bounce back into a component that
-    // is already being destroyed (TxPanel's documented teardown order).
-    stopWatchingTx();
-    // `requestKey` starts a LATCHED lease — it outlives this component. The
-    // App TX controller keeps the lease across a presentation swap (MOR-1060
-    // destroys this subtree on any skinId change), the model refuses a release
-    // from any other sourceId, and `start` is a no-op off-idle: without this,
-    // swapping away while keyed STRANDS the transmitter with no UI exit.
-    // Same fail-safe direction as MobileRadioLayout's recognizer teardown
-    // ("rotating away while keyed or latched drops TX rather than stranding
-    // it") and TxPanel's `ptt.destroy()`. Blind release is safe — the model's
-    // owner check makes it inert when another source holds the lease.
-    const guard = tx.snapshot().guard;
-    if (guard) tx.release(sourceId, guard);
+  const stationSession = (
+    publication: ControlAuthorityPublication,
+  ): MeterContinuitySession | null => publication.session.state === 'connected'
+    && Number.isSafeInteger(publication.session.epoch)
+    && publication.session.epoch >= 0
+    ? { controlSessionEpoch: publication.session.epoch }
+    : null;
+
+  function publishStationMeters(): void {
+    if (stationSubscriber === null || stationControl === null) return;
+    const publication: StationMeterAuthorityPublication = {
+      view: projectRadioView(stationControl.state, stationControl.caps, true),
+      session: stationSession(stationControl),
+    };
+    stationSubscriber(publication);
+  }
+
+  const subscribeStationMeterAuthority: SubscribeStationMeterAuthority = (subscriber) => {
+    if (stationSubscriber !== null) throw new Error('Station meter authority already subscribed');
+    stationSubscriber = subscriber;
+    try {
+      const stop = runtime.subscribeControlAuthority((publication) => {
+        if (stationSubscriber !== subscriber) return;
+        stationControl = publication;
+        publishStationMeters();
+      });
+      let active = true;
+      return () => {
+        if (!active) return;
+        active = false;
+        if (stationSubscriber === subscriber) {
+          stationSubscriber = null;
+          stationControl = null;
+        }
+        stop();
+      };
+    } catch (error) {
+      if (stationSubscriber === subscriber) {
+        stationSubscriber = null;
+        stationControl = null;
+      }
+      throw error;
+    }
+  };
+
+  const stopWatchingTx = tx.subscribe((next) => {
+    txState = next;
+    publishStationMeters();
   });
 
-  /**
-   * MOR-1279. The App-owned RX-audio snapshot the `rxAudio` facts are read
-   * against (MOR-1274's FOURTH adapter argument). Every member is state this
-   * layer ALREADY holds — nothing here opens, starts or probes the audio path
-   * (MOR-972 P0); audio lifetime stays App-owned (MOR-1058).
-   *
-   * `routing: null` is deliberate and load-bearing. The browser routing prefs
-   * live in `localStorage` and are applied by `AudioRoutingControl`'s
-   * `onMount` via `audioManager.setAudioConfig` — a transport-touching call
-   * this layer must not make — while `audioManager.getAudioConfig()` would
-   * report the RxPlayer's CONSTRUCTION-TIME defaults ('both' / false) as
-   * though they had been observed: the exact fabrication slice 3A degraded
-   * away from. So the routing facts read `unknown` until whoever owns the
-   * restore hands it in, and the surface says so honestly rather than
-   * guessing. Ownership of that restore is an App concern, out of scope here.
-   */
+  onDestroy(() => {
+    stopWatchingTx();
+    // Presentation replacement does not alter canonical server TX intent.
+  });
+
   let rxAudioSnapshot = $derived({
     muted: runtime.audio.muted,
     rxEnabled: runtime.audio.rxEnabled,
     volume: runtime.audio.volume,
     connected: runtime.connectionAudio,
-    routing: null,
+    routing: runtime.audioRouting == null ? null : {
+      focus: runtime.audioRouting.focus,
+      splitStereo: runtime.audioRouting.split_stereo,
+    },
+  });
+  let rxAudioRoutingGains = $derived.by(() => {
+    const routing = runtime.audioRouting;
+    return routing !== null
+      && typeof routing?.main_gain_db === 'number' && Number.isFinite(routing.main_gain_db)
+      && typeof routing?.sub_gain_db === 'number' && Number.isFinite(routing.sub_gain_db)
+      ? { main: routing.main_gain_db, sub: routing.sub_gain_db }
+      : null;
   });
 
   /**
@@ -450,6 +805,85 @@
     hardwareConnected: runtime.scope.hardwareScopeConnected,
   });
 
+  type RadioViewProjection = Readonly<{
+    stateSignature: string | null;
+    caps: ControlAuthorityPublication['caps'];
+    tx: typeof txState;
+    rxAudio: typeof rxAudioSnapshot;
+    scopeDisplay: typeof scopeDisplaySnapshot;
+    view: RadioViewModel | null;
+  }>;
+  let lastRadioViewProjection: RadioViewProjection | null = null;
+  let radioViewProjectionVersion = $state(0);
+
+  const VIEW_METADATA_KEYS = new Set([
+    'connection', 'freshnessRevision', 'healthRevision', 'observationSeq',
+    'publicStateSeq', 'radioHealth', 'revision', 'stateRevision', 'transportSeq',
+    'updatedAt', 'wsClients',
+  ]);
+  const immutableStateSignatures = new WeakMap<object, string>();
+
+  /**
+   * Revisions are transport admission evidence, not a complete view-model
+   * identity: test publishers and compatibility sources may deliver a
+   * distinct same-revision snapshot, while meter freshness updates replace
+   * the large fieldStatus map without changing any visible fact.  Hash only
+   * adapter inputs, reducing each status entry to the four properties the
+   * adapter reads.  Production snapshots are immutable, so their signatures
+   * are memoized by identity; DEV deliberately recomputes to catch accidental
+   * in-place mutation in fixtures and extensions.
+   */
+  function radioViewStateSignature(state: ControlAuthorityPublication['state']): string | null {
+    if (state === null) return null;
+    if (!import.meta.env.DEV) {
+      const memoized = immutableStateSignatures.get(state);
+      if (memoized !== undefined) return memoized;
+    }
+    const record = state as unknown as Record<string, unknown>;
+    const values = Object.keys(record).sort()
+      .filter((key) => key !== 'fieldStatus' && !VIEW_METADATA_KEYS.has(key))
+      .map((key) => [key, record[key]]);
+    const statuses = Object.entries(state.fieldStatus ?? {}).sort(([left], [right]) =>
+      left.localeCompare(right)).map(([path, status]) => [
+        path, status.observed, status.freshness, status.availability, status.quality ?? null,
+      ]);
+    const signature = JSON.stringify([values, statuses]);
+    if (!import.meta.env.DEV) immutableStateSignatures.set(state, signature);
+    return signature;
+  }
+
+  /**
+   * Every authority host receives the same immutable radio/capability pair.
+   * Keep one fully-qualified projection for that pair and the App-owned TX,
+   * audio, and scope snapshots instead of rebuilding the full semantic model
+   * independently in every host subscription.
+   */
+  function projectRadioView(
+    state: ControlAuthorityPublication['state'], caps: ControlAuthorityPublication['caps'],
+    publishCanonical = false,
+  ): RadioViewModel | null {
+    const txSnapshot = txState;
+    const audioSnapshot = rxAudioSnapshot;
+    const displaySnapshot = scopeDisplaySnapshot;
+    const cached = lastRadioViewProjection;
+    const stateSignature = radioViewStateSignature(state);
+    if (cached !== null
+      && cached.stateSignature === stateSignature
+      && cached.caps === caps
+      && cached.tx === txSnapshot
+      && cached.rxAudio === audioSnapshot
+      && cached.scopeDisplay === displaySnapshot) return cached.view;
+    const view = guardRadioViewModel(
+      toRadioViewModel(state, caps, txSnapshot, audioSnapshot, displaySnapshot),
+    );
+    lastRadioViewProjection = {
+      stateSignature, caps,
+      tx: txSnapshot, rxAudio: audioSnapshot, scopeDisplay: displaySnapshot, view,
+    };
+    if (publishCanonical) radioViewProjectionVersion += 1;
+    return view;
+  }
+
   // Belt-and-braces contract pin: two compile-time links (the adapter's own
   // return-type annotation, MOR-1065 ruling 2, and this variable's own type)
   // plus one dev-only runtime link, MOR-2040's `guardRadioViewModel` — it
@@ -457,16 +891,624 @@
   // true, so a value that type-checks but breaks a structural or cross-field
   // invariant still throws here instead of reaching the surfaces below
   // silently. Dead code in a production build; see `radio-view-model-guard.ts`.
-  // MOR-1262 slice 2A: the live authority snapshot is the THIRD argument — the
+  // MOR-1262 slice 2A: the managed server snapshot is the THIRD argument — the
   // meter facts read their TX relevance from it and never from `state.ptt`
   // (invariant R9). Without it the adapter emits no `meters` group at all.
   // MOR-1279 slice 3B: the RX-audio snapshot is the FOURTH.
   // MOR-1312 slice 12B: the scope-display snapshot is the FIFTH.
-  let canonicalView: RadioViewModel | null = $derived(
-    guardRadioViewModel(
-      toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
-    ),
+  let canonicalView: RadioViewModel | null = $derived.by(() => {
+    radioViewProjectionVersion;
+    return projectRadioView(runtime.state, runtime.caps);
+  });
+  let rxAudioInstrumentPresentation = $derived({
+    state: runtime.state,
+    caps: runtime.caps,
+    session: runtime.controlSession,
+    rxAudioTarget: { muted: runtime.audio.muted, rxEnabled: runtime.audio.rxEnabled },
+    rxAudio: canonicalView?.rxAudio,
+  });
+
+  type ScopeFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+    activeSlots: readonly string[];
+  }>;
+  type TxAuxFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+  }>;
+  type DspFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+  }>;
+  /** MOR-2425 RF-B — same shape as `DspFiniteAuthority`: preamp/attenuator/
+   *  DIGI-SEL/IP+ are per-receiver finite fields, same as DSP's. */
+  type RfFrontEndFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+  }>;
+  /** MOR-2425 RX-B/RX-C — same shape as `RfFrontEndFiniteAuthority`: monitor
+   *  mode/routing focus/routing split/MOD-input source are per-receiver
+   *  finite fields, same as RF-front-end's. */
+  type RxAudioFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+  }>;
+  type FilterFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+  }>;
+  type BandFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+  }>;
+  type RitXitFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+  }>;
+  type VfoFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+  }>;
+  const slotIdentity = (slot: VfoSlot): string => {
+    if (slot.kind === 'slotted') return `slotted:${slot.id}`;
+    if (slot.kind === 'relative') return `relative:${slot.role}`;
+    return slot.kind;
+  };
+  function scopeFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
+  ): ScopeFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    if (model?.scopeControls === undefined) return null;
+    const receivers = [...new Set(model.vfos.map(vfo => vfo.receiver))];
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+      activeSlots: Object.freeze(receivers.map((receiver) => {
+        const active = model.vfos.filter(vfo => vfo.receiver === receiver && vfo.isActiveSlot);
+        return active.length === 1
+          ? `${receiver}:${slotIdentity(active[0]!.slot)}` : `${receiver}:unknown`;
+      })),
+    });
+  }
+  function txAuxFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
+  ): TxAuxFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    return model?.txAux === undefined ? null : Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+    });
+  }
+  function dspFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
+  ): DspFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    if (model?.dsp === undefined) return null;
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+    });
+  }
+  function rfFrontEndFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
+  ): RfFrontEndFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    if (model?.rfFrontEnd === undefined) return null;
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+    });
+  }
+  /** MOR-2425 RX-B/RX-C. `deriveRxAudio`'s group-existence gate (`hasAfLevel`
+   *  / `hasLiveAudio` / `hasDualRx` / `hasModInput`) reads only `caps` — it
+   *  bails on `!audio` only when the snapshot argument itself is nullish, and
+   *  the module-level `rxAudioSnapshot` above is always a populated record,
+   *  never null — so passing it here (rather than a per-publication audio
+   *  snapshot) still gives a structurally correct existence check without
+   *  making this authority depend on live session/volume churn, the same
+   *  "existence, not session state" contract `rfFrontEndFiniteAuthority`
+   *  above already keeps for its own group. */
+  function rxAudioFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
+  ): RxAudioFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    if (model?.rxAudio === undefined) return null;
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+    });
+  }
+  function vfoFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
+  ): VfoFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    return model === null ? null : Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+    });
+  }
+  function filterFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
+  ): FilterFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    // MOR-2425 F1-C2: widened from `model?.modeFilter === undefined` alone so
+    // a passband-only radio (Filter Shape/DATA, no mode/filter group) still
+    // gets a valid Filter authority — the same lane now serves both groups.
+    if (model?.modeFilter === undefined && model?.filterPassband === undefined) return null;
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+    });
+  }
+  function bandFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
+  ): BandFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    if (model?.band === undefined) return null;
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+    });
+  }
+  function ritXitFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
+  ): RitXitFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    if (model?.ritXit === undefined) return null;
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+    });
+  }
+  const sameScopeFiniteAuthority = (
+    left: ScopeFiniteAuthority | null | undefined,
+    right: ScopeFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+        && left.activeSlots.length === right.activeSlots.length
+        && left.activeSlots.every((slot, index) => slot === right.activeSlots[index])
   );
+  const sameTxAuxFiniteAuthority = (
+    left: TxAuxFiniteAuthority | null | undefined,
+    right: TxAuxFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+  );
+  const sameDspFiniteAuthority = (
+    left: DspFiniteAuthority | null | undefined,
+    right: DspFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+  );
+  const sameRfFrontEndFiniteAuthority = (
+    left: RfFrontEndFiniteAuthority | null | undefined,
+    right: RfFrontEndFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+  );
+  const sameRxAudioFiniteAuthority = (
+    left: RxAudioFiniteAuthority | null | undefined,
+    right: RxAudioFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+  );
+  const sameVfoFiniteAuthority = (
+    left: VfoFiniteAuthority | null | undefined,
+    right: VfoFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+  );
+  const sameFilterFiniteAuthority = (
+    left: FilterFiniteAuthority | null | undefined,
+    right: FilterFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+  );
+  const sameBandFiniteAuthority = (
+    left: BandFiniteAuthority | null | undefined,
+    right: BandFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+  );
+  const sameRitXitFiniteAuthority = (
+    left: RitXitFiniteAuthority | null | undefined,
+    right: RitXitFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+  );
+  const readSelectedFiniteAppearance = 'getSelectedFiniteControlAppearance' in componentKitActivation
+    ? componentKitActivation.getSelectedFiniteControlAppearance : undefined;
+  const selectedFiniteAppearance = readSelectedFiniteAppearance?.();
+  let finiteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let txAuxFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let dspFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let rfFrontEndFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let rxAudioFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let vfoFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let filterFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let bandFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let ritXitFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let lastScopeFiniteAuthority: ScopeFiniteAuthority | null | undefined;
+  let lastTxAuxFiniteAuthority: TxAuxFiniteAuthority | null | undefined;
+  let lastDspFiniteAuthority: DspFiniteAuthority | null | undefined;
+  let lastRfFrontEndFiniteAuthority: RfFrontEndFiniteAuthority | null | undefined;
+  let lastRxAudioFiniteAuthority: RxAudioFiniteAuthority | null | undefined;
+  let lastVfoFiniteAuthority: VfoFiniteAuthority | null | undefined;
+  let lastFilterFiniteAuthority: FilterFiniteAuthority | null | undefined;
+  let lastBandFiniteAuthority: BandFiniteAuthority | null | undefined;
+  let lastRitXitFiniteAuthority: RitXitFiniteAuthority | null | undefined;
+  const unsubscribeScopeFiniteAuthority = runtime.subscribeControlAuthority((publication) => {
+      // One authority publication has one immutable state/capability pair.
+      // Project it once: every finite instrument below needs only a different
+      // group-existence slice of the same canonical view model.
+      const authorityView = projectRadioView(publication.state, publication.caps, true);
+      const next = scopeFiniteAuthority(
+        publication.state, publication.caps, publication.session, authorityView,
+      );
+      if (!sameScopeFiniteAuthority(lastScopeFiniteAuthority, next)) {
+        lastScopeFiniteAuthority = next;
+        finiteRendererContext = next === null ? null : createFiniteRendererContext();
+      }
+      const nextTxAux = txAuxFiniteAuthority(
+        publication.state, publication.caps, publication.session, authorityView,
+      );
+      if (!sameTxAuxFiniteAuthority(lastTxAuxFiniteAuthority, nextTxAux)) {
+        lastTxAuxFiniteAuthority = nextTxAux;
+        txAuxFiniteRendererContext = nextTxAux === null ? null : createFiniteRendererContext();
+      }
+      const nextDsp = dspFiniteAuthority(
+        publication.state, publication.caps, publication.session, authorityView,
+      );
+      if (!sameDspFiniteAuthority(lastDspFiniteAuthority, nextDsp)) {
+        lastDspFiniteAuthority = nextDsp;
+        dspFiniteRendererContext = nextDsp === null ? null : createFiniteRendererContext();
+      }
+      const nextRfFrontEnd = rfFrontEndFiniteAuthority(
+        publication.state, publication.caps, publication.session, authorityView,
+      );
+      if (!sameRfFrontEndFiniteAuthority(lastRfFrontEndFiniteAuthority, nextRfFrontEnd)) {
+        lastRfFrontEndFiniteAuthority = nextRfFrontEnd;
+        rfFrontEndFiniteRendererContext = nextRfFrontEnd === null ? null : createFiniteRendererContext();
+      }
+      const nextRxAudio = rxAudioFiniteAuthority(
+        publication.state, publication.caps, publication.session, authorityView,
+      );
+      if (!sameRxAudioFiniteAuthority(lastRxAudioFiniteAuthority, nextRxAudio)) {
+        lastRxAudioFiniteAuthority = nextRxAudio;
+        rxAudioFiniteRendererContext = nextRxAudio === null ? null : createFiniteRendererContext();
+      }
+      const nextVfo = vfoFiniteAuthority(
+        publication.state, publication.caps, publication.session, authorityView,
+      );
+      if (!sameVfoFiniteAuthority(lastVfoFiniteAuthority, nextVfo)) {
+        lastVfoFiniteAuthority = nextVfo;
+        vfoFiniteRendererContext = nextVfo === null ? null : createFiniteRendererContext();
+      }
+      const nextFilter = filterFiniteAuthority(
+        publication.state, publication.caps, publication.session, authorityView,
+      );
+      if (!sameFilterFiniteAuthority(lastFilterFiniteAuthority, nextFilter)) {
+        lastFilterFiniteAuthority = nextFilter;
+        filterFiniteRendererContext = nextFilter === null ? null : createFiniteRendererContext();
+      }
+      const nextBand = bandFiniteAuthority(
+        publication.state, publication.caps, publication.session, authorityView,
+      );
+      if (!sameBandFiniteAuthority(lastBandFiniteAuthority, nextBand)) {
+        lastBandFiniteAuthority = nextBand;
+        bandFiniteRendererContext = nextBand === null ? null : createFiniteRendererContext();
+      }
+      const nextRitXit = ritXitFiniteAuthority(
+        publication.state, publication.caps, publication.session, authorityView,
+      );
+      if (!sameRitXitFiniteAuthority(lastRitXitFiniteAuthority, nextRitXit)) {
+        lastRitXitFiniteAuthority = nextRitXit;
+        ritXitFiniteRendererContext = nextRitXit === null ? null : createFiniteRendererContext();
+      }
+    });
+  onDestroy(() => unsubscribeScopeFiniteAuthority?.());
+  let scopeFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : { finiteAppearance: selectedFiniteAppearance, rendererContext: finiteRendererContext });
+  let txAuxFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: txAuxFiniteRendererContext,
+    });
+  let dspFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: dspFiniteRendererContext,
+    });
+  let rfFrontEndFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: rfFrontEndFiniteRendererContext,
+    });
+  let rxAudioFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: rxAudioFiniteRendererContext,
+    });
+  let vfoFiniteRendererSelection = $derived(externalPresentation !== null
+    ? {
+      finiteAppearance: externalPresentation.record.appearances.finite,
+      rendererContext: vfoFiniteRendererContext,
+    }
+    : selectedFiniteAppearance === undefined
+      ? {}
+      : { finiteAppearance: selectedFiniteAppearance, rendererContext: vfoFiniteRendererContext });
+  let filterFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: filterFiniteRendererContext,
+    });
+  let bandFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: bandFiniteRendererContext,
+    });
+  let ritXitFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: ritXitFiniteRendererContext,
+    });
+
+  let scopeFrameSource = $derived(
+    displayFrameSource ?? (hostedChildren !== undefined && getScopeSource() === 'hardware' ? 'hardware' : undefined),
+  );
+  let managedScope = $derived(
+    scopeFrameSource === 'hardware'
+      && (hostedChildren !== undefined || (regions && regionContent !== undefined)),
+  );
+  let scopeDemanded = $state(true);
+  let scopePresentation = $state.raw<ScopeFramePresentation | null>(null);
+  let scopePassband = $state.raw(EMPTY_SCOPE_PASSBAND_DISPLAY);
+  let selectedDisplayFrame = $state.raw<LcdSpectrumFrame | undefined>(undefined);
+  let scopeFrameHost: ScopeFrameHost | null = null;
+  let stopWatchingScopeFrameHost: (() => void) | null = null;
+
+  function acceptDisplayFrameResolution(resolution: LcdSpectrumFrameResolution): void {
+    selectedDisplayFrame = resolution.state === 'live' ? resolution.frame : undefined;
+  }
+
+  function refreshScopePassband(): void {
+    if (!managedScope && untrack(() => scopePassband === EMPTY_SCOPE_PASSBAND_DISPLAY)) return;
+    const active = canonicalView?.vfos.filter(vfo => vfo.isActive) ?? [];
+    const vfo = active.length === 1 ? active[0] : null;
+    const selection = vfo && (vfo.slot.kind === 'slotted' || vfo.slot.kind === 'unslotted')
+      ? { receiver: vfo.receiver, slot: vfo.slot.kind === 'slotted' ? vfo.slot.id : 'single' as const } : null;
+    const input = { state: runtime.state, caps: runtime.caps, selection, session: controlSession,
+      frame: managedScope && scopeDemanded ? scopePresentation : null };
+    scopePassband = untrack(() => projectScopePassbandDisplay(scopePassband, input));
+  }
+  function acceptScopePresentation(presentation: ScopeFramePresentation): void {
+    scopePresentation = presentation;
+    if (scopeDemanded) acceptDisplayFrameResolution(presentation.resolution);
+    else selectedDisplayFrame = undefined;
+    untrack(refreshScopePassband);
+  }
+  let watchingManagedScope: boolean | null = null;
+  function ensureScopeFrameHost(): ScopeFrameHost {
+    scopeFrameHost ??= new ScopeFrameHost(runtime.scope);
+    if (watchingManagedScope !== managedScope) {
+      stopWatchingScopeFrameHost?.();
+      scopePresentation = null;
+      untrack(refreshScopePassband);
+      watchingManagedScope = managedScope;
+      stopWatchingScopeFrameHost = managedScope
+        ? scopeFrameHost.subscribePresentation(acceptScopePresentation)
+        : scopeFrameHost.subscribe(acceptDisplayFrameResolution);
+    }
+    return scopeFrameHost;
+  }
+  function setManagedScopeDemand(enabled: boolean): void {
+    scopeDemanded = enabled;
+    if (!enabled) selectedDisplayFrame = undefined;
+    untrack(refreshScopePassband);
+  }
+  let managedScopeRegion: ManagedScopeRegion | undefined = $derived.by(() => {
+    if (!managedScope) return undefined;
+    const resolution = scopePresentation?.resolution;
+    const frameMode = scopePresentation?.envelope?.frame.mode;
+    const acceptedSequence = scopePresentation?.envelope?.acceptedSequence;
+    const projection = scopeDemanded && resolution?.state === 'live'
+      && typeof frameMode === 'number' && Number.isSafeInteger(frameMode) && acceptedSequence !== undefined
+      ? { frame: resolution.frame, frameMode, acceptedSequence, passband: scopePassband.display } : null;
+    return { projection, demanded: scopeDemanded, setDemand: setManagedScopeDemand };
+  });
+  $effect(refreshScopePassband);
+
+  let scopeAuthority = $derived.by(() => {
+    const source = scopeFrameSource;
+    const stateGeneration = runtime.state?.providerGeneration;
+    const capsGeneration = runtime.caps?.providerGeneration;
+    const receiver = canonicalView?.activeReceiver;
+    return source !== undefined && receiver?.status === 'known'
+      && typeof stateGeneration === 'number'
+      && Number.isSafeInteger(stateGeneration)
+      && stateGeneration >= 0
+      && typeof capsGeneration === 'number'
+      && Number.isSafeInteger(capsGeneration)
+      && capsGeneration >= 0
+      && stateGeneration === capsGeneration
+      ? { source, receiver: receiver.receiver, providerGeneration: stateGeneration }
+      : null;
+  });
+  let scopeLeaseGeneration = $derived(scopeAuthority?.providerGeneration ?? null);
+  $effect(() => {
+    const source = scopeFrameSource;
+    if (source === undefined) {
+      scopeFrameHost?.updateAuthority(null);
+      selectedDisplayFrame = undefined;
+      scopePresentation = null;
+      untrack(refreshScopePassband);
+      return;
+    }
+
+    const host = ensureScopeFrameHost();
+    const authority = scopeAuthority;
+    untrack(() => {
+      host.updateAuthority(authority);
+      if (managedScope) acceptScopePresentation(host.snapshotPresentation());
+      else acceptDisplayFrameResolution(host.snapshot());
+    });
+  });
+
+  $effect(() => {
+    const source = scopeFrameSource;
+    if (source === undefined || (managedScope && (!scopeDemanded || scopeLeaseGeneration === null))) return;
+    ensureScopeFrameHost();
+    const resource = source === 'audio-fft' ? 'audio-fft' : 'hardware-scope';
+    const lease = presentationResources.acquire(resource, 'SemanticRadioSurfaces.readonlyDisplay');
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      presentationResources.release(lease);
+    };
+  });
+
+  onDestroy(() => {
+    const stop = stopWatchingScopeFrameHost;
+    const host = scopeFrameHost;
+    stopWatchingScopeFrameHost = null;
+    scopeFrameHost = null;
+    scopePresentation = null;
+    selectedDisplayFrame = undefined;
+    scopePassband = EMPTY_SCOPE_PASSBAND_DISPLAY;
+    try { stop?.(); } finally { host?.dispose(); }
+  });
+
   let pbtPresentation: PbtPresentationState = $state(EMPTY_PBT_PRESENTATION);
   // A disconnect makes every currently-held PBT observation prior-session
   // evidence. Floors are per provider/receiver/field: monotonic markers are
@@ -475,7 +1517,12 @@
   let view = $state<RadioViewModel | null>(null);
   const readControlSession = 'controlSession' in runtime ? () => runtime.controlSession : undefined;
   const subscribeControlSession = 'subscribeControlSession' in runtime ? runtime.subscribeControlSession : undefined;
-  let controlSession = $state(readControlSession?.() ?? { state: 'disconnected', epoch: -1 });
+  let controlSession = $state(readControlSession?.() ?? { state: 'disconnected' as const, epoch: -1 });
+  let meterContinuitySession: MeterContinuitySession | null = $derived(
+    controlSession.state === 'connected'
+      && Number.isSafeInteger(controlSession.epoch) && controlSession.epoch >= 0
+      ? { controlSessionEpoch: controlSession.epoch } : null,
+  );
   const pbtFloorKey = (generation: number, receiver: 'MAIN' | 'SUB', field: PbtField) =>
     `${generation}:${receiver}:${field}`;
   const unsubscribePbtSession = subscribeControlSession?.((next) => {
@@ -485,7 +1532,7 @@
       if (Number.isSafeInteger(generation)) for (const receiver of ['MAIN', 'SUB'] as const) {
         for (const field of ['pbtInner', 'pbtOuter'] as const) {
           const marker = runtime.state?.fieldStatus?.[`${receiver.toLowerCase()}.${field}`]?.lastObservedMonotonic;
-          if (typeof marker === 'number' && Number.isSafeInteger(marker)) {
+          if (typeof marker === 'number' && Number.isFinite(marker) && marker >= 0) {
             const key = pbtFloorKey(generation as number, receiver, field);
             pbtObservationFloors.set(key, Math.max(pbtObservationFloors.get(key) ?? -1, marker as number));
           }
@@ -493,6 +1540,7 @@
       }
     }
     controlSession = next;
+    untrack(refreshScopePassband);
   });
   onDestroy(() => unsubscribePbtSession?.());
   const pbtEvidence = (): PbtPresentationEvidence => {
@@ -508,12 +1556,15 @@
       const path = `${receiver?.status === 'known' && receiver.receiver === 'SUB' ? 'sub' : 'main'}.${name}`;
       const status = state?.fieldStatus?.[path];
       const observedAt = status?.lastObservedMonotonic;
-      return status?.observed && status.freshness === 'fresh' && status.availability === 'available'
-        && typeof observedAt === 'number' && Number.isSafeInteger(observedAt)
+      const display = canonicalView?.filterPassband?.[name].display;
+      const admitted = boundary !== null && status?.observed
+        && typeof observedAt === 'number' && Number.isFinite(observedAt) && observedAt >= 0
         && observedAt > (typeof generation === 'number' && receiver?.status === 'known'
-          ? pbtObservationFloors.get(pbtFloorKey(generation, receiver.receiver, name)) ?? -1 : -1)
-        ? { status: 'fresh' as const, marker: { source: 'field' as const, value: observedAt as number } }
-        : { status: status?.freshness === 'stale' ? 'stale' as const : 'unavailable' as const };
+          ? pbtObservationFloors.get(pbtFloorKey(generation, receiver.receiver, name)) ?? -1 : -1);
+      return admitted && (display?.state === 'current' || display?.state === 'stale')
+        ? { status: display.state === 'current' ? 'fresh' as const : 'stale' as const,
+          marker: { source: 'field' as const, value: observedAt } }
+        : { status: 'unavailable' as const };
     };
     return { boundary, fields: { pbtInner: field('pbtInner'), pbtOuter: field('pbtOuter') } };
   };
@@ -525,8 +1576,7 @@
       const current = canonicalView?.filterPassband?.[field];
       return retained !== null && incoming.status === 'fresh'
         && incoming.marker.source === retained.marker.source && incoming.marker.value === retained.marker.value
-        && current?.reading.status === 'known' && current.reading.value === retained.value
-        && current.availability.operational;
+        && current?.display?.state === 'current' && current.display.value === retained.value;
     };
     const previous = retainedMatchesCanonical('pbtInner') || retainedMatchesCanonical('pbtOuter') ? {
       ...untrack(() => pbtPresentation),
@@ -540,10 +1590,20 @@
       filterPassband: {
         ...canonicalView.filterPassband,
         ...(evidence.fields.pbtInner.status !== 'fresh' ? {
-          pbtInner: { reading: { status: 'unknown' as const }, availability: { ...canonicalView.filterPassband.pbtInner.availability, operational: false } },
+          pbtInner: {
+            reading: { status: 'unknown' as const },
+            availability: { ...canonicalView.filterPassband.pbtInner.availability, operational: false },
+            display: evidence.fields.pbtInner.status === 'stale' ? canonicalView.filterPassband.pbtInner.display
+              : { state: 'unknown' as const, reason: 'invalid-evidence' as const },
+          },
         } : {}),
         ...(evidence.fields.pbtOuter.status !== 'fresh' ? {
-          pbtOuter: { reading: { status: 'unknown' as const }, availability: { ...canonicalView.filterPassband.pbtOuter.availability, operational: false } },
+          pbtOuter: {
+            reading: { status: 'unknown' as const },
+            availability: { ...canonicalView.filterPassband.pbtOuter.availability, operational: false },
+            display: evidence.fields.pbtOuter.status === 'stale' ? canonicalView.filterPassband.pbtOuter.display
+              : { state: 'unknown' as const, reason: 'invalid-evidence' as const },
+          },
         } : {}),
       },
     } : canonicalView;
@@ -575,76 +1635,61 @@
   let pendingFilter = $derived(
     activeReceiverIndex === null ? null : getPendingFilterSelection(activeReceiverIndex),
   );
+  let filterWidthFeedback = $derived(getFilterWidthControlFeedback());
+  let cwPitchFeedback = $derived(getCwPitchControlFeedback(controlSession));
+  let keySpeedFeedback = $derived(getKeySpeedControlFeedback(controlSession));
+  /**
+   * Command feedback for every hosted DSP settings scalar. `nbLevel`,
+   * `nbWidth`, notch and AGC stay wire-raw; NR level and NB depth use the
+   * adapter's established display projections before reaching the renderer.
+   */
+  let dspScalarFeedback = $derived({
+    nbLevel: getDspControlFeedback('nbLevel'),
+    nbDepth: projectDspControlFeedbackToDisplay(
+      'nbDepth', getDspControlFeedback('nbDepth'), runtime.caps,
+    ),
+    nbWidth: getDspControlFeedback('nbWidth'),
+    nrLevel: projectDspControlFeedbackToDisplay(
+      'nrLevel', getDspControlFeedback('nrLevel'), runtime.caps,
+    ),
+    notchFreq: getDspControlFeedback('notchFilter'),
+    manualNotchWidth: getDspControlFeedback('manualNotchWidth'),
+    agcTimeConstant: getDspControlFeedback('agcTimeConstant'),
+  });
+  let txAuxLevelFeedback = $derived.by<TxAuxLevelFeedback>(() => Object.fromEntries(
+    TX_AUX_FEEDBACK_LEVELS.map(field => [
+      field, getTxAuxControlFeedback(TX_AUX_FEEDBACK_FIELD[field], controlSession),
+    ]),
+  ) as unknown as TxAuxLevelFeedback);
+  let dataModeArmed = $derived(getDataModeArmed());
+  let pendingDataMode = $derived(dataModeArmed.armed ? dataModeArmed.value : null);
+  let modInputArmed = $derived(getModInputArmed());
+  let pendingModInput = $derived(modInputArmed.armed ? modInputArmed.value : null);
   let pendingPreamp = $derived(
     activeReceiverIndex === null ? null : getPendingPreampLevel(activeReceiverIndex),
   );
+  let rfSqlFeedback = $derived(getRfSqlControlFeedback(controlSession));
+  let afLevelFeedback = $derived(runtime.rxEnabled
+    ? undefined : getAfLevelControlFeedback(controlSession));
+  let rfPowerFeedback = $derived(getRfPowerControlFeedback(controlSession));
+  let rfFrontEndInstrumentPresentation = $derived({
+    state: runtime.state,
+    caps: runtime.caps,
+    session: runtime.controlSession,
+    view: canonicalView,
+    controlModel: rfSqlControlModel,
+    rfSqlFeedback,
+  });
   let pendingNb = $derived(activeReceiverIndex === null ? null : getPendingNbOn(activeReceiverIndex));
   let pendingNr = $derived(activeReceiverIndex === null ? null : getPendingNrOn(activeReceiverIndex));
 
-  // Bound once per instance, never per render — see `surfaceSeq` above.
   function requestKey(): void {
-    tx.start(sourceId, `${sourceId}-${++leaseSeq}`, 'latched');
+    tx.transmitOn();
   }
-  /**
-   * NEVER gated. Reads the LIVE authority guard and releases: no phase,
-   * permit, fault or view-model condition may stand between the operator and
-   * stopping transmission.
-   *
-   * MOR-1906 — and never SWALLOWED either. `if (guard) release()` alone left
-   * the button live-looking and completely inert after a refused key press:
-   * the refusal branch of the reducer's `start` clears the lease, so there was
-   * no guard to release, and the press produced no command, no reset and no
-   * feedback while the key sat disabled behind the latched fault. To be exact
-   * about what was and was not missing: the MOR-1784 dismiss affordance was
-   * present and working the whole time (it renders unconditionally on a failed
-   * phase, and the wiring tests prove it). What was dead was THIS control —
-   * the one an operator reaches for when the transmitter will not let go — and
-   * an operator who does not connect the two reloads the page.
-   *
-   * With no lease held there is nothing to de-key — the transmitter is not
-   * this surface's to stop — so the intent falls through to the only thing
-   * left between the operator and the transmitter: the latched fault. That
-   * discharges nothing and commands nothing. `reset-fault` issues no effects
-   * and the reducer re-checks `txFaultObligation` at the moment of the event,
-   * so it can neither key a radio nor stand in for an outstanding de-key; it
-   * simply hands the key control back. The release path is untouched and stays
-   * first: while a lease is live, stopping transmission is the whole job.
-   */
+  /** Unconditional HTTP ForceOFF remains reachable in stale/faulted states. */
   function requestUnkey(): void {
-    const live = tx.snapshot();
-    if (live.guard) { tx.release(sourceId, live.guard); return; }
-    if (live.phase === 'failed') tx.resetFault();
+    tx.forceOff();
   }
-  /** App-owned fault recovery (MOR-1065 wiring decision, recorded on the
-   *  ticket). The pure RX/TX surface deliberately has no `resetFault` intent,
-   *  and a `failed` phase blocks the key action — without this affordance in
-   *  the layout chrome the operator has no UI exit from a fault. */
-  function clearFault(): void {
-    tx.resetFault();
-  }
-  /**
-   * MOR-1784 — is the latched fault dismissable right now, and if not, which
-   * obligation is in the way?
-   *
-   * `txFaultObligation` is the reducer's OWN `reset-fault` guard (exported from
-   * `model.ts` for exactly this), not a copy of it: this wiring can never offer
-   * a reset the controller would refuse, nor withhold one it would accept. The
-   * bench finding (owner session, IC-7300): a fault latched, the key read
-   * "an unresolved TX fault is blocking the key", and the only recovery found
-   * was reloading the page — the reset was permitted the whole time and simply
-   * unreachable. Dismissing clears the surface's latch and nothing else: it
-   * issues no command, so it can neither key a radio nor discharge a pending
-   * de-key obligation, and while one is outstanding the reducer refuses it and
-   * this reads out WHY instead of offering a button that silently no-ops.
-   */
-  let faultObligation = $derived(txState.phase === 'failed' ? txFaultObligation(txState) : null);
-  let faultDismissable = $derived(txState.phase === 'failed' && faultObligation === null);
-  const FAULT_OBLIGATION_KEY: Record<TxFaultObligation, string> = {
-    'dekey-pending': 'core.rxTx.fault.reset.reason.dekeyPending',
-    'key-held': 'core.rxTx.fault.reset.reason.keyHeld',
-    'mod-restore': 'core.rxTx.fault.reset.reason.modRestore',
-    cleanup: 'core.rxTx.fault.reset.reason.cleanup',
-  };
 
   /**
    * ATU TUNE emits a CARRIER — a transmit-causing action (MOR-1262 §2 slice 1
@@ -710,18 +1755,51 @@
    * which hardcodes `receiver: 0` and would tune MAIN while SUB is active.
    * The BSR path stays the shipped handler untouched.
    */
-  function selectBand(name: string, defaultHz: number, bsrCode: number | null): void {
-    const active = view?.activeReceiver;
-    if (active?.status !== 'known') return;
+  function selectBand(name: string): void {
+    const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
+    const model = toRadioViewModel(state, caps);
+    const authority = bandFiniteAuthority(state, caps, session, model);
+    const active = model?.activeReceiver;
+    const choice = model?.band?.bandChoices.find(candidate => candidate.name === name);
+    if (authority === null || active?.status !== 'known'
+      || authority.activeReceiver !== active.receiver || choice === undefined) return;
     // MOR-1425 review round 2 (B1 residual): this bandless fallback is an
     // ABSOLUTE band default, not a step from the current frequency — 'jump'
     // so a hot digit-tuning burst on this receiver never absorbs it.
-    if (bsrCode !== null) band.onBandSelect(name, defaultHz, bsrCode);
-    else tuneFrequency(active.receiver, defaultHz, 'jump');
+    if (choice.bsrCode !== null) band.onBandSelect(choice.name, choice.defaultHz, choice.bsrCode);
+    else tuneFrequency(active.receiver, choice.defaultHz, 'jump');
   }
   function enterFrequency(frequencyHz: number): void {
-    const active = view?.activeReceiver;
-    if (active?.status !== 'known') return;
+    const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
+    const model = toRadioViewModel(state, caps);
+    const authority = bandFiniteAuthority(state, caps, session, model);
+    const currentBand = model?.band;
+    if (currentBand === undefined
+      || currentBand.tuneMinHz === null || currentBand.tuneMaxHz === null
+      || !Number.isFinite(frequencyHz)
+      || frequencyHz < currentBand.tuneMinHz || frequencyHz > currentBand.tuneMaxHz) return;
+    const capture = frequencyEntryCapture;
+    if (capture !== null) {
+      if (!frequencyAuthorityMatches(capture)) return;
+      if (capture.target.slot.kind === 'slotted' && capture.expectedActiveSlot !== undefined) {
+        const lifecycle = vfo.onDirectFrequencyChange({
+          frequencyHz, receiver: capture.target.receiver, slot: capture.target.slot.id,
+          expectedActiveSlot: capture.expectedActiveSlot,
+          providerGeneration: capture.providerGeneration, sessionEpoch: capture.sessionEpoch,
+        });
+        if (lifecycle !== null) frequencyEntryLifecycle = {
+          id: lifecycle.id, epoch: lifecycle.originalEpoch,
+        };
+      } else {
+        tuneFrequency(capture.target.receiver, frequencyHz, 'jump');
+        frequencyEntryCapture = null;
+        frequencyEntryLifecycle = null;
+      }
+      return;
+    }
+    const active = model?.activeReceiver;
+    if (authority === null || active?.status !== 'known'
+      || authority.activeReceiver !== active.receiver) return;
     // MOR-1425 review round 2 (B1 residual): a typed frequency is the most
     // explicitly ABSOLUTE gesture in the UI — 'jump', same reasoning as
     // `selectBand` above.
@@ -734,25 +1812,185 @@
   function toggleDualWatch(): void {
     if (view?.dualWatch.status === 'known') vfo.onDualWatchToggle(!view.dualWatch.value);
   }
+
+  const vfoOperationCallbacks = Object.freeze({
+    onToggleSplit: vfo.onSplitToggle,
+    onToggleDualWatch: toggleDualWatch,
+    onSelectMainReceiver: vfo.onMainVfoClick,
+    onSelectSubReceiver: vfo.onSubVfoClick,
+    onEqualizeVfos: vfo.onEqual,
+    onSwapVfos: vfo.onSwap,
+    onQuickSplit: vfo.onQuickSplit,
+    onQuickDualWatch: vfo.onQuickDw,
+    onSpeak: systemIntents.onSpeak,
+  }) satisfies VfoOperationCallbacks;
+  let vfoOperationInput: VfoOperationProjectionInput | null = $derived(view === null ? null : {
+    hasVfoPair: view.vfos.length > 1,
+    hasDualReceiver,
+    relativeIdentityUnknown: view.vfos.some((candidate) => candidate.slot.kind === 'relative'),
+    activeReceiver: view.activeReceiver,
+    split: view.split,
+    dualWatch: view.dualWatch,
+    actions: view.radioWideIndicators?.actions,
+    callbacks: vfoOperationCallbacks,
+    reasons: {
+      receiverUnavailable: t('core.vfo.select.receiverUnavailableReason'),
+      identityUnknown: t('core.vfo.ops.identityUnknownReason'),
+      splitUnknown: t('core.vfo.split.unknownReason'),
+      dualWatchUnknown: t('core.vfo.dualWatch.unknownReason'),
+    },
+  });
 </script>
 
-<div class="semantic-surfaces" data-testid="semantic-radio-surfaces">
+<div class="semantic-surfaces" class:hosted={hostedChildren !== undefined || externalPresentation !== null} data-testid="semantic-radio-surfaces">
+  <StationMeterInstrumentHost {subscribeStationMeterAuthority}>
+  {#snippet children(stationMeters: StationMeterInstrumentHandles)}
+  {#snippet receiverVfoOperations(appearance: ReceiverVfoAppearance)}
+    {#if view}
+      <VfoSurface
+        viewModel={view}
+        {appearance}
+        showVfoList={false}
+        operationInput={vfoOperationInput ?? undefined}
+        groupLabel={t('core.vfo.radioWideGroupLabel')}
+        {hasDualReceiver}
+      />
+    {/if}
+  {/snippet}
+  <ReceiverInstrumentHost
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority((publication) =>
+      handler({ ...publication, view: projectRadioView(publication.state, publication.caps, true) }))}
+    {pendingFrequencyHz}
+    onTuneFrequency={tuneFrequency}
+    vfoOperations={receiverVfoOperations}
+    frequencyRenderer={externalPresentation?.record.appearances.frequency}
+    signalRenderer={externalPresentation?.record.appearances.meter.signal}
+    presentationIsCurrent={externalPresentation?.isCurrent}
+  >
+  {#snippet children(receiverInstruments)}
+  <RxAudioInstrumentHost
+    presentation={rxAudioInstrumentPresentation}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority((publication) =>
+      handler({ ...publication, view: projectRadioView(publication.state, publication.caps, true) }))}
+    onAfLevelChange={rxAudioIntents.onAfLevelChange}
+    afLevelFeedback={afLevelFeedback}
+    onMonitorModeChange={(mode) => rxAudioIntents.onMonitorModeChange(mode)}
+    onFocusChange={(focus) => routingIntents.onFocusChange(focus)}
+    onSplitStereoChange={(split) => routingIntents.onSplitStereoChange(split)}
+    routingGains={rxAudioRoutingGains}
+    onChannelGainChange={(channel, value) => routingIntents.onChannelGainChange(channel, value)}
+    onModInputChange={semanticHandlers.mode.onModInputChange}
+    onSetModInputLan={setModInputLan}
+    {...rxAudioFiniteRendererSelection}
+  >
+  {#snippet children(rxAudioInstruments)}
+  <RfFrontEndInstrumentHost
+    presentation={rfFrontEndInstrumentPresentation}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority((publication) =>
+      handler({ ...publication, view: projectRadioView(publication.state, publication.caps, true) }))}
+    onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}
+    {pendingPreamp}
+    onPreChange={(level) => rfFrontEndIntents.onPreChange(level)}
+    onAttChange={(db) => rfFrontEndIntents.onAttChange(db)}
+    onDigiSelToggle={rfFrontEndIntents.onDigiSelToggle}
+    onIpPlusToggle={rfFrontEndIntents.onIpPlusToggle}
+    {...rfFrontEndFiniteRendererSelection}
+  >
+  {#snippet children(rfFrontEndInstruments)}
+  {#snippet vfoInstrumentComposition(vfoOperations: VfoOperationHandles)}
+  <FilterInstrumentHost
+    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingDataMode} {pendingModInput}
+    onModeChange={filterIntents.onModeChange}
+    onFilterChange={filterIntents.onFilterChange}
+    onFilterShapeChange={filterIntents.onFilterShapeChange}
+    onDataModeChange={filterIntents.onDataModeChange}
+    onModInputChange={filterIntents.onModInputChange}
+  >
+  {#snippet children(filterInstruments)}
+  <BandInstrumentHost
+    {...bandFiniteRendererSelection} {view} entryRendererContext={bandFiniteRendererContext}
+    onSelectBand={selectBand} onEnterFrequency={enterFrequency}
+    frequencyEntryEnabled={frequencyEntryCapture === null || frequencyEntrySubmitEnabled}
+    frequencyEntryUnavailableReason={frequencyEntryCapture !== null && !frequencyEntryAuthorityValid
+      ? frequencyEntryStatus : undefined}
+    showPermitCaption={bandPermitCaption}
+  >
+  {#snippet children(bandInstruments)}
+  <FrequencyEntryDialog
+    open={frequencyEntryCapture !== null}
+    targetLabel={frequencyEntryCapture
+      ? `${frequencyEntryCapture.target.receiver}${frequencyEntryCapture.target.slot.kind === 'slotted'
+        ? ` VFO ${frequencyEntryCapture.target.slot.id}` : ''}` : ''}
+    returnFocus={frequencyEntryCapture?.trigger}
+    status={frequencyEntryStatus}
+    onclose={() => {
+      bandInstruments.cancelFrequencyEntry();
+      frequencyEntryCapture = null;
+      frequencyEntryLifecycle = null;
+    }}
+  >
+    {#snippet children()}{@render bandInstruments.frequencyEntry()}{/snippet}
+  </FrequencyEntryDialog>
+  <AntennaInstrumentHost
+    {view} tx={txState} readTx={() => tx.snapshot()}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority((publication) =>
+      handler({ ...publication, view: projectRadioView(publication.state, publication.caps, true) }))}
+    onSelectPort={(port) => ANTENNA_PORT_INTENT[port]?.()}
+    onToggleRxAnt={antennaIntents.onToggleRxAnt}
+    finiteAppearance={selectedFiniteAppearance}
+  >
+  {#snippet children(antennaInstruments, antennaLayout)}
+  <CwKeyerInstrumentHost
+    {view} {keySpeedFeedback} pitchFeedback={cwPitchFeedback}
+    onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
+    scalarAppearance={externalPresentation?.record.appearances.scalar}
+    presentationIsCurrent={externalPresentation?.isCurrent}
+  >
+  {#snippet children(cwKeyerInstruments)}
+  <DspInstrumentHost
+    {...dspFiniteRendererSelection} {view} {agcLabels} {pendingNb} {pendingNr}
+    onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
+    onNotchModeChange={dspIntents.onNotchModeChange}
+    onAgcModeChange={agcIntents.onAgcModeChange}
+    settingsPanel={standardDspSettings}
+    onOpenSettings={(panel) => standardDspSettings = panel}
+  >
+  {#snippet children(dspInstruments)}
+  <DspScalarHost
+    {view} feedback={dspScalarFeedback} {nbLevelMax} {nbLevelPercent}
+    onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
+    scalarAppearance={externalPresentation?.record.appearances.scalar}
+    presentationIsCurrent={externalPresentation?.isCurrent}
+  >
+  {#snippet children(dspScalars)}
+  <RitXitScanInstrumentHost
+    {...ritXitFiniteRendererSelection} {view}
+    onRitToggle={ritXitIntents.onRitToggle}
+    onXitToggle={ritXitIntents.onXitToggle}
+    onClear={ritXitIntents.onClear}
+  >
+  {#snippet children(ritXitInstruments)}
+  {#if readonlyDisplay}
+    {#if view}{@render readonlyDisplay(view, selectedDisplayFrame)}{/if}
+  {:else}
   {#if view}
     {#if strips === 'dual'}
       <div class="channel-strips" data-testid="channel-strips">
-        {#each visibleStrips(view) as { receiverId, zoneId } (receiverId)}
+        {#each renderedStrips(view) as { key, receiverId, zoneId, slotPosition, sliced, active, groupLabel } (key)}
           <!--
-            `data-zone-id`: `ReceiverId` is `'MAIN' | 'SUB'`, so the index is
-            total over the manifest's two per-receiver zones. A degraded
-            single-receiver view model renders `primary-vfo` and NO
-            `secondary-vfo` — an absent zone, never an empty promise.
+            `data-zone-id`: the first strip is `primary-vfo` and every later
+            one `secondary-vfo`.
+            `data-strip-slot` is emitted on the `slot` path only: on the
+            `receiver` path `slotPosition` is undefined and the attribute is
+            absent, which is what keeps the shipped decks unchanged.
           -->
           <div
             class="channel-strip"
-            data-testid={`channel-strip-${receiverId}`}
+            data-testid={`channel-strip-${key}`}
             data-zone-id={zoneId}
             data-strip-receiver={receiverId}
-            data-strip-active={isActiveStrip(view, receiverId)}
+            data-strip-slot={slotPosition}
+            data-strip-active={active}
             data-strip-operational={isOperationalStrip(view, receiverId)}
           >
             <!--
@@ -766,7 +2004,14 @@
               a strip owns nothing but its own receiver.
               `groupLabel`: without it all three mounted surfaces share one
               generic accessible name and assistive tech cannot tell the
-              strips apart.
+              strips apart. On the `slot` path two columns can share one
+              receiver, so the one carrying no receiver instruments is named
+              by its own VFO position instead (`slotGroupLabel`).
+              `suppressIdentitySelectors` (T207, STOPGAP): the A/B identity
+              selectors resolve which COLUMN is A and which is B — a relation
+              between the two, not a fact of either — so the slot path
+              withholds them until that relation has a surface of its own
+              (T183).
               `disabled` (MOR-1256): a structurally-dual, operationally-
               degraded receiver (`dual-rx-unavailable`) keeps its strip
               PRESENT but forces its select controls inert — the shared
@@ -774,13 +2019,18 @@
               radio-wide regardless of which strip this gates.
             -->
             <VfoSurface
-              viewModel={forReceiver(view, receiverId)}
+              viewModel={sliced}
               selectionPoolSize={view.vfos.length}
               showRadioWideFacts={false}
-              groupLabel={t('core.vfo.receiverGroupLabel', { receiver: receiverId })}
+              {groupLabel}
               onSelectVfo={selectVfo}
               onTuneFrequency={tuneFrequency}
+              onOpenFrequencyEntry={frequencyEntrySupported ? openFrequencyEntry : undefined}
               disabled={!isOperationalStrip(view, receiverId)}
+              indicatorReceiver={receiverId}
+              suppressIdentitySelectors={stripBy === 'slot'}
+              {receiverInstruments}
+              continuitySession={meterContinuitySession}
               {pendingFrequencyHz}
             />
           </div>
@@ -804,18 +2054,7 @@
             Same placement rule split/dual-watch already follow, for the same
             reason: one radio-wide action must not appear once per receiver.
           -->
-          <VfoSurface
-            viewModel={view}
-            showVfoList={false}
-            groupLabel={t('core.vfo.radioWideGroupLabel')}
-            {hasDualReceiver}
-            onToggleSplit={vfo.onSplitToggle}
-            onToggleDualWatch={toggleDualWatch}
-            onEqualizeVfos={vfo.onEqual}
-            onSwapVfos={vfo.onSwap}
-            onQuickSplit={vfo.onQuickSplit}
-            onQuickDualWatch={vfo.onQuickDw}
-          />
+          {@render receiverInstruments.vfoOperations(vfoAppearance)}
         </div>
       {/if}
     {/if}
@@ -829,19 +2068,21 @@
     site below is where the default path's VFO already was, so an unresolved
     or default plan reproduces today's element sequence exactly.
   -->
-  {#snippet vfoSurface()}
+  {#snippet vfoSurface(
+    appearance: InstrumentVfoAppearance = vfoAppearance, operationControls?: Snippet,
+  )}
     {#if view}
       <VfoSurface
         viewModel={view}
+        {appearance}
+        operationInput={vfoOperationInput ?? undefined}
+        {operationControls}
         onSelectVfo={selectVfo}
         onTuneFrequency={tuneFrequency}
+        onOpenFrequencyEntry={frequencyEntrySupported ? openFrequencyEntry : undefined}
         {hasDualReceiver}
-        onToggleSplit={vfo.onSplitToggle}
-        onToggleDualWatch={toggleDualWatch}
-        onEqualizeVfos={vfo.onEqual}
-        onSwapVfos={vfo.onSwap}
-        onQuickSplit={vfo.onQuickSplit}
-        onQuickDualWatch={vfo.onQuickDw}
+        {receiverInstruments}
+        continuitySession={meterContinuitySession}
         {pendingFrequencyHz}
       />
     {/if}
@@ -854,9 +2095,11 @@
     the dual composition, where it is a real, bound zone element the
     cockpit's responsive rules can place — an inert wrapper cannot be a
     grid/flex item, so "leave it inert" was not an option once the zone had
-    to move between arrangements. The single/default path (sdr-test / LCD /
-    mobile) renders the surface bare again, and that element shape is
-    re-pinned in `__tests__/semantic-rx-tx-wiring.component.test.ts`.
+    to move between arrangements. `__tests__/semantic-rx-tx-wiring.component.test.ts`
+    re-pins that bare shape under NO_PLAN: it supplies no surface plan, so
+    `zoneOwning()` is null and the surface renders bare there whatever
+    `regions` says. Standard and SDR now request declared region hosts;
+    other single compositions retain the existing bare VFO/TX path.
 
     The snippet is deliberate: it keeps exactly ONE `<RxTxSurface>` tag in
     this file, so single TX authority stays a property of the SOURCE rather
@@ -867,49 +2110,20 @@
     must exist even while `view` is still null — see the alerts comment
     below), so the view-model gate now lives on the snippet itself.
   -->
-  {#snippet rxTxSurface()}
+  {#snippet rxTxSurface(standard = false)}
     {#if view}
-      <RxTxSurface {view} tx={txState} onRequestKey={requestKey} onRequestUnkey={requestUnkey} />
+      <RxTxSurface {view} tx={txState} {standard}
+        onRequestKey={requestKey} onRequestUnkey={requestUnkey} />
     {/if}
   {/snippet}
 
-  <!--
-    MOR-1784. The fault-recovery block, split out of `txAdjacentAlerts` below
-    so it can render where the fault is READ — directly behind the surface
-    that prints "TX fault: <code>" and the blocked list — in both
-    compositions. It stayed an rx-tx zone member either way (MOR-1258 owner
-    ruling, gate item (b)); what changed is that in the single/default path
-    (sdr-test / LCD / mobile) it no longer sits at the far end of a scrolling
-    column, which is how the owner's IC-7300 session concluded there was no
-    way out of a fault at all.
-
-    Deliberately NOT under `{#if view}` or `zoneShows` (see the render sites):
-    a fault latched by another lease source — the mobile PTT surface, TxPanel,
-    a keyboard key — must stay dismissable even on a screen whose view model
-    or workspace plan has no RX/TX surface. Recovery availability only ever
-    widens here; it never narrows.
-
-    The refusal branch is not decoration: while the reducer would refuse the
-    reset (`txFaultObligation` above), a button would silently no-op, which is
-    the same dead end one click further in. It states the obligation instead,
-    and what discharges it. `role="status"` because the swap between the two
-    branches is a live change an operator may be reading rather than watching.
-  -->
+  <!-- Server failure stays visible beside every RX/TX presentation. -->
   {#snippet txFaultRecovery()}
     {#if txState.phase === 'failed'}
-      <div class="tx-fault-recovery" data-testid="tx-fault-recovery" data-dismissable={faultDismissable}>
-        {#if faultDismissable}
-          <button
-            type="button" class="tx-fault-reset" data-testid="tx-fault-reset" onclick={clearFault}
-          >{t('core.rxTx.fault.reset.action')}</button>
-          <span class="tx-fault-note" data-testid="tx-fault-reset-note"
-          >{t('core.rxTx.fault.reset.note')}</span>
-        {:else}
-          <p
-            class="tx-fault-note" data-testid="tx-fault-reset-blocked" role="status"
-            data-reason={faultObligation}
-          >{t('core.rxTx.fault.reset.blocked', { reason: t(FAULT_OBLIGATION_KEY[faultObligation!]) })}</p>
-        {/if}
+      <div class="tx-fault-recovery" data-testid="tx-fault-recovery" data-dismissable="false">
+        <p class="tx-fault-note" data-testid="tx-fault-reset-blocked" role="status">
+          TX recovery is pending on the server. Force Off remains available.
+        </p>
       </div>
     {/if}
   {/snippet}
@@ -942,25 +2156,25 @@
     MOR-1265. STRUCTURAL gate: the surface mounts only when the view model
     actually carries the group, so a radio the MOR-1244 evidence gate
     declined renders the pre-1265 element shape exactly (pinned in
-    `__tests__/semantic-tx-aux-wiring.component.test.ts`). Bare in BOTH
-    compositions and with no `data-zone-id`: `'txAux'` is merely declarable
-    by a manifest after this slice; no manifest declares a txAux zone yet,
-    and binding one here would put a zone id in the DOM that no layout
-    asked for (the MOR-1069 lesson). `view?.txAux` (rather than the caller
-    nesting this under `{#if view}`) keeps the same "never renders while
-    view is null" behavior now that the surrounding structure changed
-    around it (MOR-1258).
+    `__tests__/semantic-tx-aux-wiring.component.test.ts`).
+
+    The generic `zoned()` path owns placement. In the ordered SDR branch, a
+    resolved plan can subtract both the `tx-aux` host and body; a no-plan mount
+    keeps the available surface bare. `view?.txAux` keeps the surface absent
+    while the view is null.
   -->
   <!--
     MOR-1336 — the ONE zone-aware mount path, applied uniformly to every
     optional surface that used to render bare. Declared → a real zone element
-    the layout's arrangement can place; undeclared → bare, exactly as before.
+    the layout's arrangement can place; undeclared → bare by default, exactly
+    as before — unless the caller passes `allowBare={false}` (MOR-2150 below).
 
-    Deliberately NOT applied to `vfo`/`rxTx`: those carry per-receiver slicing,
-    the `showVfoList`/`showRadioWideFacts` split and the R6 TX-adjacent alerts,
-    none of which a uniform wrapper can express. Genericity is applied where it
-    is honest; the two bespoke arrangements stay bespoke and are documented as
-    such rather than forced through this path.
+    `vfo`/`rxTx` reach it only through the single composition's `regions`
+    branch (MOR-2231), and only for the WRAPPER. Their bodies stay bespoke
+    snippets — per-receiver slicing, the `showVfoList`/`showRadioWideFacts`
+    split and the R6 TX-adjacent alerts are arrangements no uniform wrapper can
+    express, which is why the DUAL composition still builds its own
+    `.rx-tx-zone` rather than calling this.
 
     `present` is the surface's OWN structural gate, hoisted to the wrap
     decision. Without it a declared zone would render as an empty `<div>` for a
@@ -968,25 +2182,40 @@
     exactly what MOR-1069 forbids. The snippet bodies keep their own `{#if}`
     as well: one decides whether the zone exists, the other whether the surface
     does, and they must agree.
+
+    MOR-2150 — `allowBare` (default `true`, unchanged for every call site that
+    existed before this ticket). The DUAL composition's MOR-1069 rule is
+    stricter than the single composition's: no focusable control may sit
+    outside a declared zone, with `rx-tx` last in tab order, so "no zone →
+    bare" is not a safe fallback there for a control-bearing surface the way
+    it is in `single`. Passing `false` turns "no zone → bare" into "no zone →
+    nothing", still through this one path and the same `zoneOwning()` lookup —
+    not a second mount mechanism, a different answer to "and if nobody owns
+    it?".
   -->
-  {#snippet zoned(surface: SemanticSurfaceName, present: boolean, body: Snippet)}
+  {#snippet presented(surface: SemanticSurfaceName, body: Snippet, chrome?: PanelChrome)}
+    {#if vfoAppearance === 'semantic' && hostedChildren === undefined}{@render body()}
+    {:else}<SemanticControlPanel {surface} {...chrome}>{@render body()}</SemanticControlPanel>{/if}
+  {/snippet}
+
+  {#snippet zoned(
+    surface: SemanticSurfaceName, present: boolean, body: Snippet, allowBare = true,
+    chrome?: PanelChrome, frame = true,
+  )}
     {#if present}
       {@const zoneId = zoneOwning(surface)}
-      {#if zoneId === null}{@render body()}
-      {:else}
-        <div class="surface-zone" data-zone-id={zoneId}>{@render body()}</div>
-      {/if}
+      {#if zoneId !== null}
+        <div class="surface-zone" data-zone-id={zoneId}>{#if frame}{@render presented(surface, body, chrome)}{:else}{@render body()}{/if}</div>
+      {:else if allowBare}{#if frame}{@render presented(surface, body, chrome)}{:else}{@render body()}{/if}{/if}
     {/if}
   {/snippet}
 
-  {#snippet txAuxSurface()}
+  {#snippet txAuxSurface(
+    finiteHandles: TxAuxFiniteHandles, scalarHandles: TxAuxScalarHandles,
+    showFinite = true, showScalars = true,
+  )}
     {#if view?.txAux}
-      <TxAuxSurface
-        {view} tx={txState}
-        onToggle={(field) => TX_AUX_TOGGLE_INTENT[field]()}
-        onLevelChange={(field, value) => TX_AUX_LEVEL_INTENT[field](value)}
-        onAtuTune={requestAtuTune}
-      />
+      <TxAuxSurface {view} tx={txState} {finiteHandles} {scalarHandles} {showFinite} {showScalars} />
     {/if}
   {/snippet}
 
@@ -996,18 +2225,23 @@
     carries the MOR-1269 `meters` group, so a radio that reports no meters —
     or one for which no App TX authority was supplied, and therefore no honest
     TX relevance could be stated — renders the pre-1273 element shape exactly.
-    Bare and unzoned in BOTH compositions: `'meters'` becomes declarable by a
-    manifest with this slice, but no manifest declares a meters zone, and the
-    zone schema stays config-free (risk R3).
+    CORRECTION: `'meters'` became DECLARABLE with this slice, and MOR-1341
+    (S5) declared it — `desktop-declarations.ts` carries `{ id: 'meters',
+    surfaces: ['meters'] }`, and `RadioLayout.svelte` retires the legacy
+    `<MetersDockPanel>` on that declaration. The "bare and unzoned in BOTH
+    compositions" shape this paragraph described held only until S5. It still
+    renders bare in the DUAL composition, whose only layout
+    (`dual-receiver-cockpit.ts`) declares no `meters` zone. The zone schema
+    stays config-free (risk R3) either way.
 
-    It takes NO authority snapshot and no intent callbacks. That is the R9
-    boundary made structural: the meters are a readout, their TX truth is
-    already decided inside `view.meters` by the App-owned authority the
-    adapter was handed, and this component has nothing else to give them.
+    It takes no intent callbacks. The persistent station host above every
+    replaceable body owns the authority subscription and motion; this slot only
+    places its passive handles. TX truth is still decided by the adapter from
+    the App-owned authority, and the surface remains a readout.
   -->
   {#snippet metersSurface()}
     {#if view?.meters}
-      <MetersSurface {view} />
+      <MetersSurface handles={stationMeters} />
     {/if}
   {/snippet}
 
@@ -1017,31 +2251,35 @@
     model actually carries the MOR-1274 `rxAudio` group, so a radio with no
     audio chain renders the pre-1279 element shape exactly.
 
-    UNLIKE those two it is rendered in the SINGLE composition ONLY. This is the
-    first semantic surface that carries interactive controls no manifest
-    declares a zone for, and the cockpit has a hard MOR-1069 rule: every
-    focusable control lives inside a declared zone, and the rx-tx zone is LAST
-    in the tab order. A control-bearing surface mounted bare would break both
-    clauses at once, and the two alternatives are worse — binding a zone id no
-    layout asked for is the MOR-1069 lesson itself, and folding the controls
-    into the rx-tx zone would put an AF slider between the operator and the
-    unkey button. `'rxAudio'` became DECLARABLE with this slice, so the cockpit
-    gains the surface the moment its manifest declares a zone for it — a layout
-    decision, separately reviewed, exactly as txAux and meters left it.
+    UNLIKE those two, it is control-bearing — the first semantic surface with
+    interactive controls the DUAL composition's only layout
+    (`dual-receiver-cockpit.ts`) declares no zone for — and the cockpit has a
+    hard MOR-1069 rule: every focusable control lives inside a declared zone,
+    and the rx-tx zone is LAST in the tab order. A control-bearing surface
+    mounted bare would break both clauses at once, and the two alternatives
+    are worse — binding a zone id no layout asked for is the MOR-1069 lesson
+    itself, and folding the controls into the rx-tx zone would put an AF
+    slider between the operator and the unkey button. MOR-2150 closes the
+    third option — `allowBare={false}` below — so it mounts through `zoned()`
+    in BOTH compositions, same as `txAux`/`meters`, and dual just never falls
+    back to bare. `'rxAudio'` became DECLARABLE with this slice, so the
+    cockpit gains the surface the moment its manifest declares a zone for it —
+    a layout decision, separately reviewed, exactly as txAux and meters left
+    it. `desktop-v2` HAS since made that decision (MOR-1368, S9), which is why
+    the single composition mounts this surface zoned UNDER THAT LAYOUT — not
+    under `sdr-test`/`mobile`/`lcd-*`, which declare no such zone. The cockpit
+    has made no such decision either, so it still renders nothing there.
 
-    It takes NO authority snapshot: nothing here is TX truth. The intents are
-    the shipped command bus, wired above.
+    The surface takes no authority snapshot and no intent callbacks (MOR-2425
+    RX-B/RX-C): `RxAudioInstrumentHost` above is now the sole owner of all
+    five finite handles AND their command wiring, the same shape
+    `RfFrontEndInstrumentHost`/`DspInstrumentHost` already established — this
+    snippet only decides WHERE the grouped surface (or, on `desktop-v2`, the
+    named Standard seats via `finiteLayout`) is placed.
   -->
-  {#snippet rxAudioSurface()}
+  {#snippet rxAudioSurface(finiteLayout?: RxAudioFiniteLayout)}
     {#if view?.rxAudio}
-      <RxAudioSurface
-        {view}
-        onMonitorMode={(mode) => rxAudioIntents.onMonitorModeChange(mode)}
-        onAfLevel={(level) => rxAudioIntents.onAfLevelChange(level)}
-        onRoutingFocus={(focus) => routingIntents.onFocusChange(focus)}
-        onRoutingSplit={(split) => routingIntents.onSplitStereoChange(split)}
-        onSetModInputLan={setModInputLan}
-      />
+      <RxAudioSurface {view} handles={rxAudioInstruments} {finiteLayout} />
     {/if}
   {/snippet}
 
@@ -1052,17 +2290,17 @@
     filterPassband` from MOR-1284) — a radio the evidence gate declined on
     both renders the pre-1304 element shape exactly.
 
-    UNLIKE `txAuxSurface`/`metersSurface` (and like `rxAudioSurface` above) it
-    is rendered in the SINGLE composition ONLY (fix round, verify-MOR-1304 F1).
-    `FilterSurface` renders up to 14 focusable controls (mode/filter/shape
-    buttons, width and passband-level sliders) and the DUAL COCKPIT manifest
-    (`dual-receiver-cockpit.ts`) declares no `filter` zone, so mounting it
-    bare there would put every one of those controls outside every declared
-    zone and after the `rx-tx` zone that MOR-1069 requires to end the tab
-    order — exactly the shape the MOR-1279/MOR-1336 zone-mount ruling forbids
-    for any control-bearing surface. `'filter'` became DECLARABLE with this
-    slice, for whichever layout's manifest chooses to declare a zone for it —
-    a layout decision, separately reviewed, exactly as rxAudio left it.
+    UNLIKE `txAuxSurface`/`metersSurface` it is control-bearing (fix round,
+    verify-MOR-1304 F1). `FilterSurface` renders focusable controls, and the
+    DUAL COCKPIT manifest (`dual-receiver-cockpit.ts`) declares no `filter`
+    zone, so a bare mount there would put every one of those controls outside
+    every declared zone and after the `rx-tx` zone that MOR-1069 requires to
+    end the tab order — exactly the shape the MOR-1279/MOR-1336 zone-mount
+    ruling forbids for any control-bearing surface. MOR-2150 (`allowBare=
+    false` below) closes that off structurally rather than by convention:
+    dual never falls back to bare, so `'filter'` mounts there the moment
+    whichever layout's manifest declares a zone for it — a layout decision,
+    separately reviewed, exactly as rxAudio left it.
 
     CORRECTION (MOR-1494 review round): the SINGLE composition (`desktop-v2`)
     already made that layout decision — `desktop-declarations.ts:71` declares
@@ -1073,38 +2311,39 @@
     if no manifest anywhere had declared the zone yet; it hadn't been updated
     after S7 landed, and that staleness led a later review round to
     misdiagnose which component renders the IF-shift control on desktop-v2.
-    The dual cockpit remains the one composition still undeclared for this
-    zone — the rest of this comment's reasoning about IT stands.
+    The dual cockpit remains the one manifest still undeclared for this zone
+    (`sdr-test`, `mobile` and the two `lcd-*` layouts declare no `filter` zone
+    either), so it still renders nothing there.
   -->
-  {#snippet filterSurface()}
+  {#snippet filterSurface(finiteLayout?: FilterFiniteLayout)}
     {#if view?.modeFilter || view?.filterPassband}
       <FilterSurface
-        {view}
-        {pendingFilter}
-        onModeChange={filterIntents.onModeChange}
-        onFilterChange={filterIntents.onFilterChange}
+        {view} handles={filterInstruments} {finiteLayout}
+        {filterWidthFeedback}
         onFilterWidthChange={filterIntents.onFilterWidthChange}
-        onFilterShapeChange={filterIntents.onFilterShapeChange}
         onIfShiftChange={filterIntents.onIfShiftChange}
         onPbtInnerChange={filterIntents.onPbtInnerChange}
         onPbtOuterChange={filterIntents.onPbtOuterChange}
+        onPbtReset={filterIntents.onPbtReset}
       />
     {/if}
   {/snippet}
 
   <!--
     MOR-1309 (vocabulary slice 8C, SAFETY-ADJACENT). Same structural gate as
-    the surfaces above, and the SAME single-composition-only rule `rxAudio`
-    carries: this surface renders focusable controls and no manifest declares
-    an `antenna` zone, so mounting it in the dual composition would put
-    controls outside every declared zone — the MOR-1069 invariant the cockpit
-    enforces, and `zoned()` does NOT grant that permission on its own
-    (`zoneOwning()` returns null for an undeclared surface and renders bare,
-    which IS the violating shape). Its absence from the dual composition is
-    pinned by name in `__tests__/semantic-antenna-wiring.component.test.ts`.
-    `'antenna'` became DECLARABLE with this slice, so a layout gains the
-    surface the moment its manifest declares a zone — a layout decision,
-    separately reviewed, exactly as txAux/meters/rxAudio left it.
+    the surfaces above, and the SAME control-bearing status `rxAudio` carries:
+    this surface renders focusable controls and the DUAL composition's only
+    layout (`dual-receiver-cockpit.ts`) declares no `antenna` zone. MOR-2150
+    passes `allowBare={false}` below for exactly this reason: a plain
+    `zoned()` call would grant nothing (`zoneOwning()` returns null for a
+    surface the ACTIVE layout has not declared, and the default renders
+    bare — the violating shape MOR-1069 forbids); `allowBare={false}` makes
+    the mount render nothing instead. Its absence from the dual composition
+    is pinned by name in `__tests__/semantic-antenna-wiring.component.test.ts`.
+    `'antenna'` became DECLARABLE with this slice, and `desktop-v2` declared
+    it in MOR-1367 (S8) — which is why the SINGLE composition mounts it zoned
+    under THAT layout (not under `sdr-test`/`mobile`/`lcd-*`). The cockpit has
+    made no such decision, so it still renders nothing there.
 
     It DOES take the App-owned TX authority snapshot: unlike `rxAudio`,
     switching a TX antenna under power is a hazard, and the surface gates on
@@ -1112,12 +2351,14 @@
     still takes no lease and keys nothing — exactly one `<RxTxSurface>`
     remains the key/unkey authority (R9).
   -->
-  {#snippet antennaSurface()}
-    {#if view?.antenna}
+  {#snippet antennaSurface(controlLayout?: Snippet)}
+    {#if controlLayout}
+      {#if view?.antenna || runtime.caps?.antennas === 1}
+        {@render controlLayout()}
+      {/if}
+    {:else if view?.antenna}
       <AntennaSurface
-        {view} tx={txState}
-        onSelectPort={(port) => ANTENNA_PORT_INTENT[port]?.()}
-        onToggleRxAnt={antennaIntents.onToggleRxAnt}
+        {view} tx={txState} handles={antennaInstruments} layout={antennaLayout}
       />
     {/if}
   {/snippet}
@@ -1129,30 +2370,39 @@
     declined renders the pre-1305 element shape exactly.
 
     Like `rxAudioSurface` and UNLIKE `txAuxSurface`/`metersSurface`, it is
-    rendered in the SINGLE composition ONLY (MOR-1304/MOR-1305 zone-mount
-    ruling). `DspSurface` renders up to 8 range inputs and 7 buttons — it is
-    control-bearing, and the cockpit's MOR-1069 rule forbids mounting any
-    control-bearing surface bare in the dual composition: every focusable
-    control must live inside a declared zone, with rx-tx last in the tab
-    order. `'dsp'` became DECLARABLE with this slice, so the cockpit gains the
-    surface the moment its manifest declares a zone for it — a layout
-    decision, separately reviewed, exactly as rxAudio left it.
+    control-bearing (MOR-1304/MOR-1305 zone-mount ruling). `DspSurface`
+    renders focusable range and choice controls, and `desktop-v2` declared a
+    `dsp` zone in MOR-1368 (S9) while the cockpit still declares none; the
+    cockpit's MOR-1069 rule forbids mounting any control-bearing surface bare
+    in the dual composition: every focusable control must live inside a
+    declared zone, with rx-tx last in the tab order — which is exactly why
+    MOR-2150 mounts it there with `allowBare={false}` below rather than the
+    default. `'dsp'` became DECLARABLE with this slice, so the cockpit gains
+    the surface the moment its manifest declares a zone for it — a layout
+    decision, separately reviewed, exactly as rxAudio left it. It still
+    renders nothing there today.
 
     `agcLabels`/`nbLevelMax`/`nbLevelPercent` are the caps-echo metadata
     carry-forward (1) requires stay OUT of the view model — read at this seam,
-    from `runtime.caps`, and handed down as plain props.
+    from `runtime.caps`, and handed to the two persistent DSP hosts as plain
+    props (`agcLabels` to the finite host, the two `nbLevel*` to the scalar
+    host), never to this surface.
   -->
-  {#snippet dspSurface()}
+  {#snippet dspSurface(
+    finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout, part: DspSurfacePart = 'all',
+    compactAgcTime = false,
+  )}
     {#if view?.dsp}
       <DspSurface
-        {view} {agcLabels} {nbLevelMax} {nbLevelPercent} {pendingNb} {pendingNr}
-        onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
+        {view} finiteHandles={dspInstruments} {finiteLayout}
+        scalarHandles={dspScalars} {scalarLayout} {part} {compactAgcTime}
+        settingsPanel={compactAgcTime ? standardDspSettings : null}
+        onSettingsPanelChange={(panel) => standardDspSettings = panel}
         onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
-        onNotchModeChange={dspIntents.onNotchModeChange}
-        onAgcModeChange={agcIntents.onAgcModeChange}
       />
     {/if}
   {/snippet}
+  {#snippet groupedDspSurface()}{@render dspSurface()}{/snippet}
 
   <!--
     MOR-1306 (vocabulary slice 6B). Same structural gate and same reasoning as
@@ -1161,91 +2411,97 @@
     no preamp/attenuator/RF-gain/squelch/DIGI-SEL/IP+ capability renders the
     pre-1306 element shape exactly.
 
-    SINGLE COMPOSITION ONLY — the MOR-1304 mounting canon (`RfFrontEndSurface.
-    svelte`'s file header): this surface carries focusable controls (preamp
-    and attenuator choice buttons, RF-gain/squelch sliders, DIGI-SEL/IP+
-    toggles) and no shipped manifest declares an `rfFrontEnd` zone yet, so a
-    bare dual mount would put controls outside every declared zone — exactly
-    the defect the MOR-1279 rxAudio precedent avoided. `'rfFrontEnd'` became
-    DECLARABLE with this slice; the cockpit gains the surface the moment a
-    rework slice declares a zone for it, same as `rxAudio` left it.
+    CONTROL-BEARING — the MOR-1304 mounting canon (`RfFrontEndSurface.svelte`'s
+    file header): this surface carries focusable controls (preamp and
+    attenuator choice buttons, RF-gain/squelch sliders, DIGI-SEL/IP+ toggles)
+    and the DUAL composition's only layout (`dual-receiver-cockpit.ts`)
+    declares no `rfFrontEnd` zone, so a bare dual mount would put controls
+    outside every declared zone — exactly the defect the MOR-1279 rxAudio
+    precedent avoided, and exactly why MOR-2150 mounts it with
+    `allowBare={false}` below. `'rfFrontEnd'` became DECLARABLE with this
+    slice, and `desktop-v2` declared it in MOR-1366 (S7); the cockpit gains
+    the surface the moment a rework slice declares a zone for it there, same
+    as `rxAudio` left it — it still renders nothing there today.
   -->
-  {#snippet rfFrontEndSurface()}
+  {#snippet rfFrontEndSurface(finiteLayout?: RfFrontEndFiniteLayout)}
     {#if view?.rfFrontEnd}
-      <RfFrontEndSurface
-        {view}
-        controlModel={rfSqlControlModel}
-        {pendingPreamp}
-        onPreampChange={(level) => rfFrontEndIntents.onPreChange(level)}
-        onAttenuatorChange={(db) => rfFrontEndIntents.onAttChange(db)}
-        onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}
-        onToggle={(field, next) => RF_FRONT_END_TOGGLE_INTENT[field](next)}
-      />
+      <RfFrontEndSurface {view} levelHandles={rfFrontEndInstruments} {finiteLayout} />
     {/if}
   {/snippet}
 
   <!--
     MOR-1307 (vocabulary slice 7B). Same structural gate as the surfaces above,
-    and the SAME single-composition-only mounting as `rxAudioSurface`, for the
-    same MOR-1069 reason: this surface is control-bearing (band buttons, a
-    frequency entry field and its Set button) and no manifest declares a `band`
-    zone, so a dual mount would put focusable controls outside every declared
-    zone and break the cockpit's "tab order ends in rx-tx" invariant. `zoned()`
-    does not grant that permission by itself — `zoneOwning()` answers `null` for
-    an undeclared surface and the mount renders BARE, which is the violating
-    shape. `'band'` becomes DECLARABLE with this slice; the cockpit gains the
-    surface the moment a rework slice declares a zone for it, and the dual
-    absence is pinned by name in
+    and the SAME control-bearing status as `rxAudioSurface`, for the same
+    MOR-1069 reason: this surface is control-bearing (band buttons, a
+    frequency entry field and its Set button) and the DUAL composition's only
+    layout (`dual-receiver-cockpit.ts`) declares no `band` zone, so a bare
+    dual mount would put focusable controls outside every declared zone and
+    break the cockpit's "tab order ends in rx-tx" invariant. A plain `zoned()`
+    call does not prevent that by itself — `zoneOwning()` answers `null` for a
+    surface the ACTIVE layout has not declared, and the default renders BARE,
+    which is the violating shape — so MOR-2150 passes `allowBare={false}`
+    below instead. `'band'` becomes DECLARABLE with this slice, and
+    `desktop-v2` declared it in MOR-1367 (S8) — retiring `BandSelector`'s HAM
+    half only, through `hamBands={!declared.has('band')}`. The cockpit gains
+    the surface the moment a rework slice declares a zone for it there, and
+    the dual absence is pinned by name in
     `__tests__/semantic-band-wiring.component.test.ts`.
 
-    It takes NO authority snapshot: the TX permit it renders is already decided
-    inside `view.band` by the one shipped derivation, and this component has no
-    second one to offer.
+    Its finite renderer context follows the shared synchronous control-authority
+    publication. The invoke path below independently re-reads that authority
+    before resolving the named choice and receiver.
   -->
-  {#snippet bandSurface()}
+  {#snippet bandSurface(controlLayout?: BandControlLayout)}
     {#if view?.band}
-      <BandSurface {view} onSelectBand={selectBand} onEnterFrequency={enterFrequency} />
+      <BandSurface {view} handles={bandInstruments} {controlLayout} />
     {/if}
   {/snippet}
 
   <!--
     MOR-1308 (vocabulary slice 8B). Same reasoning as `rxAudioSurface` above:
-    the second semantic surface carrying interactive controls no manifest
-    declares a zone for, so — per the MOR-1304 mounting canon — it mounts in
-    the SINGLE composition only, and its dual-composition absence is pinned in
+    the second semantic surface carrying interactive controls the DUAL
+    composition's only layout (`dual-receiver-cockpit.ts`) declares no zone
+    for, so — per the MOR-1304 mounting canon — MOR-2150 mounts it with
+    `allowBare={false}` below rather than the bare default, and its
+    dual-composition absence today is pinned in
     `__tests__/semantic-ritxit-scan-wiring.component.test.ts` with a view
     model that actually carries the `ritXit`/`scan` groups (a fixture that
     cannot see the surface would repeat the bug that canon exists to catch).
-    `'ritXitScan'` becomes DECLARABLE with this slice; no manifest declares a
-    zone for it yet.
+    `'ritXitScan'` becomes DECLARABLE with this slice, and `desktop-v2`
+    declared it in MOR-1367 (S8); the cockpit still declares none.
   -->
-  {#snippet ritXitScanSurface()}
-    {#if view?.ritXit || view?.scan}
+  {#snippet ritXitScanSurface(part: RitXitScanSurfacePart = 'all')}
+    {#if (part !== 'scan' && view?.ritXit) || (part !== 'rit-xit' && view?.scan)}
       <RitXitScanSurface
-        {view} {ritDomain}
-        onRitToggle={ritXitIntents.onRitToggle}
-        onXitToggle={ritXitIntents.onXitToggle}
+        {view} {ritDomain} {scanCapable} {scanTypeValues} {scanResumeValues} {part}
+        handles={ritXitInstruments}
         onRitOffsetChange={ritXitIntents.onRitOffsetChange}
         onXitOffsetChange={ritXitIntents.onXitOffsetChange}
-        onClear={ritXitIntents.onClear}
         onScanStart={(type) => scanIntents.onScanStart(type)}
         onScanStop={scanIntents.onScanStop}
+        onDfSpanChange={(span) => scanIntents.onDfSpanChange(span)}
         onResumeModeChange={(mode) => scanIntents.onResumeChange(mode)}
       />
     {/if}
   {/snippet}
+  {#snippet groupedRitXitScanSurface()}{@render ritXitScanSurface()}{/snippet}
 
   <!--
     MOR-1310 (vocabulary slice 9B) — SAFETY-CRITICAL. Same structural gate as
-    the surfaces above, and the SAME single-composition-only mounting as
-    `rxAudioSurface`: this surface is control-bearing, no manifest declares a
-    `cwKeyer` zone, and the MOR-1069 cockpit rule is that every focusable
+    the surfaces above, and the SAME control-bearing status as
+    `rxAudioSurface`: this surface is control-bearing, the DUAL composition's
+    only layout (`dual-receiver-cockpit.ts`) declares no `cwKeyer` zone, and
+    the MOR-1069 cockpit rule is that every focusable
     control lives inside a declared zone with rx-tx last in the tab order.
-    Mounted bare in the dual composition it would break both clauses; folded
+    Mounted bare in the dual composition it would break both clauses — which
+    is why MOR-2150 mounts it with `allowBare={false}` below instead; folded
     into the rx-tx zone it would put a keyer slider between the operator and
-    the unkey button. `'cwKeyer'` became DECLARABLE with this slice, so the
-    cockpit gains the surface the moment a manifest declares a zone — a layout
-    decision, separately reviewed, exactly as rxAudio left it. Its absence from
+    the unkey button. `'cwKeyer'` became DECLARABLE with this slice, and
+    `desktop-v2` declared it in MOR-1368 (S9) — which, per that manifest's own
+    SAFETY note, makes `CwKeyerSurface` the sole break-in affordance on the
+    flagship skin. The cockpit gains the surface the moment ITS manifest
+    declares a zone — a layout decision, separately reviewed, exactly as
+    rxAudio left it. Its absence from
     the dual composition is pinned by name in
     `__tests__/semantic-cw-keyer-wiring.component.test.ts`.
 
@@ -1253,10 +2509,14 @@
     gated inside the surface on the model's one `txPermit`, and the key/unkey
     authority stays the single `<RxTxSurface>` above (decomposition R9).
   -->
-  {#snippet cwKeyerSurface()}
+  {#snippet cwKeyerSurface(showKeyerSpeed = true, showPitchHz = true, standard = false)}
     {#if view?.cwKeyer}
       <CwKeyerSurface
         {view}
+        continuousHandles={cwKeyerInstruments}
+        {showKeyerSpeed}
+        {showPitchHz}
+        {standard}
         {breakInDelayFeedback}
         {autoTuneAvailable}
         onBreakInMode={(mode) => cwIntents.onBreakInModeChange(mode)}
@@ -1270,12 +2530,37 @@
   {/snippet}
 
   <!--
+    MOR-2425 (Memory lane, phase B2). Unlike every surface above, `memory`
+    carries no MOR-1262 RadioViewModel group — the radio cannot report
+    memory-channel contents at all (`MemorySurface.svelte`'s own header) —
+    so there is no `view?.memory` to structurally gate on, and the surface
+    mounts unconditionally, exactly as the legacy `MemoryPanel` always has.
+    `facts`/`onRecall`/`onStore`/`onClear` route through the SAME
+    `deriveMemoryPanelProps()` / `getMemoryHandlers()` singleton the legacy
+    panel uses (declared above); `onRename` is left unwired, same as the
+    legacy panel — nothing in `panel-commands.ts` owns a rename intent.
+  -->
+  {#snippet memorySurface()}
+    <MemorySurface
+      facts={memoryFacts}
+      onRecall={memoryHandlers.onRecall}
+      onStore={memoryHandlers.onStore}
+      onClear={memoryHandlers.onClear}
+    />
+  {/snippet}
+
+  <!--
     MOR-1312 (vocabulary slice 12B). Same structural gate and same reasoning
     as `txAuxSurface`/`metersSurface` above: the surface mounts only when the
     view model actually carries the MOR-1301 `scopeDisplay` group, so a radio
     with neither a hardware scope nor an audio-FFT source renders the
-    pre-1312 element shape exactly. Bare and unzoned in BOTH compositions,
-    the `meters`/`txAux` shape, NOT `rxAudio`'s single-only shape:
+    pre-1312 element shape exactly. Mounted in BOTH compositions with the
+    DEFAULT `allowBare` (unlike `rxAudio`'s MOR-2150 `allowBare={false}`) —
+    the `meters`/`txAux` shape — and zoned wherever `zoneOwning()` finds a
+    zone carrying `scopeDisplay`, which
+    `desktop-v2` has declared as `scope-display` since MOR-1365 (S6a); bare
+    otherwise, including the dual composition, whose only layout
+    (`dual-receiver-cockpit.ts`) declares none:
     `ScopeDisplaySurface` renders zero focusable elements (pinned in
     `__tests__/ScopeDisplaySurface.test.ts` and re-pinned below at the
     composed-tree level), so it carries none of the MOR-1069 tab-order risk a
@@ -1296,14 +2581,22 @@
   <!--
     MOR-1311 (vocabulary slice 11B, the LAST B-slice of the vocabulary
     program). Same mounting canon as `ritXitScanSurface`/`cwKeyerSurface`
-    above: control-bearing, no manifest declares a `scopeControls` zone, so
-    per the MOR-1304 ruling's option (i) it mounts in the SINGLE composition
-    only, bare, and must render NOTHING in the DUAL composition — pinned by
-    name in `__tests__/semantic-scope-controls-wiring.component.test.ts`.
+    above: control-bearing, and the DUAL composition's only layout
+    (`dual-receiver-cockpit.ts`) declares no `scopeControls` zone, so per the
+    MOR-1304 ruling's option (i) MOR-2150 mounts it with `allowBare={false}`
+    below — never bare in the dual composition — and it currently renders
+    NOTHING there, pinned by name in
+    `__tests__/semantic-scope-controls-wiring.component.test.ts` and in
+    `skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component
+    .test.ts`'s MOR-2150 describe block. No longer bare under `desktop-v2`,
+    which declared this zone in MOR-1370 (S6b-2) as the last surface in the
+    vocabulary to graduate. `sdr-test` also declares this zone; the remaining
+    single-composition layouts (`mobile`/`lcd-*`) keep their existing bare path.
   -->
   {#snippet scopeControlsSurface()}
     {#if view?.scopeControls}
       <ScopeControlsSurface
+        {...scopeFiniteRendererSelection}
         {view}
         onToggleChange={(field, next) => SCOPE_TOGGLE_INTENT[field](next)}
         onChoiceChange={(field, value) => SCOPE_CHOICE_INTENT[field](value)}
@@ -1314,12 +2607,213 @@
     {/if}
   {/snippet}
 
-  {#if strips === 'dual'}
+  {#snippet zonedScopeControls()}
+    {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, allowBareSurfaces)}
+  {/snippet}
+
+  {#snippet txAuxFiniteComposition(txAuxScalars: TxAuxScalarHandles)}
+  <TxAuxFiniteHost
+    {...txAuxFiniteRendererSelection} {view} tx={txState}
+    onToggle={(field) => TX_AUX_TOGGLE_INTENT[field]()} onAtuTune={requestAtuTune}
+  >
+  {#snippet children(txAuxInstruments)}
+  {#snippet txAuxBody()}{@render txAuxSurface(txAuxInstruments, txAuxScalars)}{/snippet}
+  {#snippet hostedVfo(
+    appearance: InstrumentVfoAppearance,
+    allowBare = allowBareSurfaces,
+    operationControls?: Snippet,
+  )}
+    {#snippet body()}{@render vfoSurface(
+      appearance,
+      selectedFiniteAppearance === undefined ? undefined : operationControls,
+    )}{/snippet}
+    {@render zoned('vfo', view !== null && singleOrder.includes('vfo'), body, allowBare)}
+  {/snippet}
+  {#snippet hostedRxTx(
+    allowBare = allowBareSurfaces, chrome?: PanelChrome, standardTxLayout?: StandardTxLayout,
+  )}
+    {#snippet body()}
+      {@render rxTxSurface(standardTxLayout !== undefined)}
+      {#if standardTxLayout && view?.txAux}
+        {@render standardTxLayout(txAuxInstruments, txAuxScalars, {
+          rfPower: view.txAux.rfPower.availability.structural,
+          micGain: view.txAux.micGain.availability.structural,
+          driveGain: view.txAux.driveGain.availability.structural,
+          voxGain: view.txAux.voxGain.availability.structural,
+          antiVoxGain: view.txAux.antiVoxGain.availability.structural,
+          voxDelay: view.txAux.voxDelay.availability.structural,
+          compressorLevel: view.txAux.compressorLevel.availability.structural,
+          monitorLevel: view.txAux.monitorLevel.availability.structural,
+        })}
+      {/if}
+    {/snippet}
+    {@render zoned('rxTx', view !== null && singleOrder.includes('rxTx'), body, allowBare, chrome)}
+  {/snippet}
+  {#snippet hostedTxAux(
+    instrumentLayout: Snippet, allowBare = allowBareSurfaces, chrome?: PanelChrome,
+  )}
+    {#snippet body()}
+      {@render instrumentLayout()}
+      {@render txAuxSurface(txAuxInstruments, txAuxScalars, false, false)}
+    {/snippet}
+    {@render zoned('txAux', view?.txAux !== undefined, body, allowBare, chrome)}
+  {/snippet}
+  {#snippet hostedMeters(allowBare = allowBareSurfaces, chrome?: PanelChrome)}
+    {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBare, chrome)}
+  {/snippet}
+  {#snippet hostedRxAudio(
+    allowBare = allowBareSurfaces, finiteLayout?: RxAudioFiniteLayout, chrome?: PanelChrome,
+  )}
+    {#snippet body()}{@render rxAudioSurface(finiteLayout)}{/snippet}
+    {@render zoned('rxAudio', view?.rxAudio !== undefined, body, allowBare, chrome)}
+  {/snippet}
+  {#snippet hostedRfFrontEnd(
+    allowBare = allowBareSurfaces, finiteLayout?: RfFrontEndFiniteLayout, chrome?: PanelChrome,
+  )}
+    {#snippet body()}{@render rfFrontEndSurface(finiteLayout)}{/snippet}
+    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, body, allowBare, chrome)}
+  {/snippet}
+  {#snippet hostedFilter(
+    allowBare = allowBareSurfaces, finiteLayout?: FilterFiniteLayout, chrome?: PanelChrome,
+    filterLayout?: FilterFiniteLayout, filterChrome?: PanelChrome,
+  )}
+    {#if filterLayout && filterChrome}
+      {#snippet splitBody()}
+        <SemanticControlPanel surface="filter" title="MODE" {...chrome}>
+          <ModeSurface handles={filterInstruments} finiteLayout={finiteLayout} />
+        </SemanticControlPanel>
+        <SemanticControlPanel surface="filter" title="FILTER" {...filterChrome}>
+          {#if view}<FilterSurface
+            {view} handles={filterInstruments} finiteLayout={filterLayout} part="filter"
+            {filterWidthFeedback}
+            onFilterWidthChange={filterIntents.onFilterWidthChange}
+            onIfShiftChange={filterIntents.onIfShiftChange}
+            onPbtInnerChange={filterIntents.onPbtInnerChange}
+            onPbtOuterChange={filterIntents.onPbtOuterChange}
+            onPbtReset={filterIntents.onPbtReset}
+          />{/if}
+        </SemanticControlPanel>
+      {/snippet}
+      {@render zoned(
+        'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined,
+        splitBody, allowBare, undefined, false,
+      )}
+    {:else}
+      {#snippet body()}{@render filterSurface(finiteLayout)}{/snippet}
+      {@render zoned(
+        'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined,
+        body, allowBare, chrome,
+      )}
+    {/if}
+  {/snippet}
+  {#snippet hostedDsp(
+    allowBare = allowBareSurfaces, finiteLayout?: DspFiniteLayout,
+    scalarLayout?: DspScalarLayout, chrome?: PanelChrome, part: DspSurfacePart = 'all',
+    compactAgcTime = false,
+  )}
+    {#snippet body()}{@render dspSurface(finiteLayout, scalarLayout, part, compactAgcTime)}{/snippet}
+    {@render zoned('dsp', view?.dsp !== undefined, body, allowBare, chrome)}
+  {/snippet}
+  {#snippet hostedBand(
+    allowBare = allowBareSurfaces, controlLayout?: BandControlLayout, chrome?: PanelChrome,
+  )}
+    {#snippet body()}{@render bandSurface(controlLayout)}{/snippet}
+    {@render zoned('band', view?.band !== undefined, body, allowBare, chrome)}
+  {/snippet}
+  {#snippet hostedAntenna(
+    allowBare = allowBareSurfaces, controlLayout?: Snippet, chrome?: PanelChrome,
+  )}
+    {#snippet body()}{@render antennaSurface(controlLayout)}{/snippet}
+    {@render zoned(
+      'antenna', view?.antenna !== undefined || (controlLayout !== undefined && runtime.caps?.antennas === 1),
+      body, allowBare, chrome,
+    )}
+  {/snippet}
+  {#snippet hostedRitXitScan(
+    allowBare = allowBareSurfaces, chrome?: PanelChrome, part: RitXitScanSurfacePart = 'all',
+  )}
+    {#snippet body()}{@render ritXitScanSurface(part)}{/snippet}
+    {@render zoned(
+      'ritXitScan', (part !== 'scan' && view?.ritXit !== undefined)
+        || (part !== 'rit-xit' && view?.scan !== undefined),
+      body, allowBare, chrome,
+    )}
+  {/snippet}
+  {#snippet hostedCwKeyer(
+    allowBare = allowBareSurfaces, showKeyerSpeed = true, chrome?: PanelChrome,
+    instrumentLayout?: Snippet, standard = false,
+  )}
+    {#snippet body()}
+      {#if instrumentLayout}{@render instrumentLayout()}{/if}
+      {@render cwKeyerSurface(showKeyerSpeed, showKeyerSpeed, standard)}
+    {/snippet}
+    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, body, allowBare, chrome)}
+  {/snippet}
+  {#snippet hostedMemory(allowBare = allowBareSurfaces, chrome?: PanelChrome)}
+    {@render zoned('memory', true, memorySurface, allowBare, chrome)}
+  {/snippet}
+  {#snippet hostedScopeDisplay(allowBare = allowBareSurfaces)}
+    {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBare)}
+  {/snippet}
+  {#snippet hostedScopeControls(allowBare = allowBareSurfaces)}
+    {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, allowBare)}
+  {/snippet}
+
+  {#if externalPresentation}
+    {#key externalPresentation}
+      <HostedFaceInstrumentBridge
+        component={externalPresentation.component}
+        {receiverInstruments}
+        {vfoOperations}
+        {txAuxScalars}
+        {stationMeters}
+        meterAppearance={externalPresentation.record.appearances.meter}
+        receiverAdmitted={surfacePlan() !== null && zoneOwning('vfo') !== null}
+        vfoOperationsAdmitted={surfacePlan() !== null && zoneOwning('vfo') !== null}
+        txAuxAdmitted={surfacePlan() !== null && zoneOwning('txAux') !== null}
+        stationMetersAdmitted={surfacePlan() !== null && zoneOwning('meters') !== null}
+      />
+    {/key}
+  {:else if hostedChildren}
+    {@render hostedChildren({
+      vfo: hostedVfo,
+      vfoOperations,
+      rxTx: hostedRxTx,
+      txAuxControls: hostedTxAux,
+      txAuxScalars,
+      txAuxInstruments,
+      receiverInstruments,
+      rxAudioInstruments,
+      rfFrontEndInstruments,
+      meters: hostedMeters,
+      rxAudio: hostedRxAudio,
+      rfFrontEnd: hostedRfFrontEnd,
+      filter: hostedFilter,
+      dsp: hostedDsp,
+      band: hostedBand,
+      bandInstruments,
+      antenna: hostedAntenna,
+      antennaInstruments,
+      antennaLayout,
+      ritXitScan: hostedRitXitScan,
+      ritXitInstruments,
+      cwKeyerInstruments,
+      cwKeyer: hostedCwKeyer,
+      memory: hostedMemory,
+      scopeDisplay: hostedScopeDisplay,
+      scopeControls: hostedScopeControls,
+      txFaultRecovery,
+      modInputTxWarning: txAdjacentAlerts,
+      managedScope: managedScopeRegion,
+    })}
+  {:else if strips === 'dual'}
     <!--
       MOR-1258: the zone now carries RxTxSurface AND the two TX-adjacent
       alerts that used to sit at the bottom of this component, unzoned.
-      TxAuxSurface stays OUTSIDE — it declares no zone (see above) — so it
-      renders after the zone rather than between RxTxSurface and the alerts,
+      TxAuxSurface stays OUTSIDE this zone — it mounts through `zoned()` in
+      its OWN `tx-aux` zone, which the cockpit manifest has declared since
+      MOR-1336 — so it renders after the rx-tx zone rather than between
+      RxTxSurface and the alerts,
       which is the one DOM-order change this ticket makes: the alerts move
       up to sit beside RxTxSurface instead of after TxAuxSurface.
     -->
@@ -1338,25 +2832,104 @@
       {@render txFaultRecovery()}
       {@render txAdjacentAlerts()}
     </div>
-    {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface)}
+    {@render zoned('txAux', view?.txAux !== undefined, txAuxBody)}
     {@render zoned('meters', view?.meters !== undefined, metersSurface)}
-    {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface)}
-  {:else}
     <!--
-      Single/default path (sdr-test / LCD / mobile): no bound zone exists
-      here (MOR-1069), so containment is not possible — the alerts keep
-      their pre-MOR-1258 position and order, unchanged.
+      MOR-2150. The nine remaining optional surfaces, mounted zone-only
+      (`allowBare=false`): a control-bearing surface must never render bare
+      here (MOR-1069 above `zoned()`), so each renders only where a layout's
+      manifest declares a zone for it. `dual-receiver-cockpit.ts` declares
+      none of the nine, so every one of these currently renders nothing —
+      pinned in `skins/dual-receiver-cockpit/__tests__/
+      DualReceiverCockpit.component.test.ts`'s MOR-2150 describe block, which
+      also proves the positive case (a zone that DOES declare one) against a
+      synthetic plan, since no shipped manifest does yet.
+    -->
+    {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, false)}
+    {@render zoned(
+      'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface,
+      false,
+    )}
+    {@render zoned('dsp', view?.dsp !== undefined, groupedDspSurface, false)}
+    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, false)}
+    {@render zoned('band', view?.band !== undefined, bandSurface, false)}
+    {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, false)}
+    {@render zoned(
+      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, groupedRitXitScanSurface, false,
+    )}
+    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, false)}
+    {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface)}
+    {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, false)}
+  {:else}
+    {#if regions}
+      {#if singleOrder.includes('vfo')}
+        {@render zoned('vfo', view !== null, vfoSurface)}
+      {/if}
+      <div class:desktop-controls-left={vfoAppearance !== 'semantic'} class:region-passthrough={vfoAppearance === 'semantic'}>
+      {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, allowBareSurfaces)}
+      {@render zoned(
+        'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface,
+        allowBareSurfaces,
+      )}
+      {@render zoned('band', view?.band !== undefined, bandSurface, allowBareSurfaces)}
+      {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBareSurfaces)}
+      {@render zoned(
+        'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, groupedRitXitScanSurface,
+        allowBareSurfaces,
+      )}
+      {#if regionExtras}{@render regionExtras('left')}{/if}
+      </div>
+      <div class:desktop-controls-center={vfoAppearance !== 'semantic'} class:region-passthrough={vfoAppearance === 'semantic'}>
+      {#if !scopeControlsInRegionContent || !regionContent}
+        {@render zonedScopeControls()}
+      {/if}
+      {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBareSurfaces)}
+      {#if regionContent}
+        {@render regionContent(scopeControlsInRegionContent ? zonedScopeControls : undefined, managedScopeRegion)}
+      {/if}
+      </div>
+      <div class:desktop-controls-right={vfoAppearance !== 'semantic'} class:region-passthrough={vfoAppearance === 'semantic'}>
+      {#if singleOrder.includes('rxTx')}
+        {@render zoned('rxTx', view !== null, rxTxSurface)}
+      {/if}
+      {@render txFaultRecovery()}
+      {@render txAdjacentAlerts()}
+      {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBareSurfaces)}
+      {@render zoned('dsp', view?.dsp !== undefined, groupedDspSurface, allowBareSurfaces)}
+      {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBareSurfaces)}
+      {@render zoned(
+        'txAux', view?.txAux !== undefined, txAuxBody, allowBareSurfaces,
+      )}
+      {#if regionExtras}{@render regionExtras('right')}{/if}
+      </div>
+      {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBareSurfaces)}
+    {:else}
+    <!--
+      Single/default path (sdr-test / LCD / mobile). No zone CONTAINS the
+      alerts here (MOR-1069 — the dual composition's `.rx-tx-zone` has no twin
+      on this path), so they keep their pre-MOR-1258 position and order,
+      unchanged.
 
-      MOR-1082: the layout's single zone mounts both `vfo` and `rxTx`
-      (sdr-test `main`, LCD `control-column`, mobile `portrait-deck`), so this
-      is where a per-zone reorder actually lands. `singleOrder` is the plan
-      flattened in zone-declaration order and falls back to the composed order
-      whenever no plan is resolved — an unresolved plan renders exactly the
-      sequence this path renders today.
+      MOR-1082: `singleOrder` is the plan flattened in zone-declaration order,
+      falling back to the composed order whenever no plan is resolved — so an
+      unresolved plan renders exactly the sequence this path renders today, and
+      a per-zone reorder lands here. On a layout whose zones hold one surface
+      each that flattening is what ORDERS the zones; on one whose single zone
+      mounts both (LCD `control-column`, mobile `portrait-deck`) it is what
+      reorders within it.
+
+      This branch keeps the pre-MOR-2231 single/default sequence with bare
+      required surfaces when `regions` is unset.
     -->
     {#each singleOrder as surface (surface)}
-      {#if surface === 'vfo'}{@render vfoSurface()}
-      {:else if surface === 'rxTx'}{@render rxTxSurface()}{/if}
+      {#if surface === 'vfo'}
+        {@render vfoSurface()}
+      {:else if surface === 'rxTx'}
+        <!-- Preserve the pre-region compiled anchor topology on this literal path. -->
+        {#if !regions}
+          {@render rxTxSurface()}
+        {/if}
+      {/if}
     {/each}
     <!-- MOR-1784: `singleOrder` ends in `rxTx` in every shipped layout
          (`SINGLE_COMPOSITION`, and a plan can only reorder or subtract), so
@@ -1364,25 +2937,86 @@
          the column — while still rendering unconditionally, so a fault raised
          by any lease source keeps a way out even if `rxTx` is absent. -->
     {@render txFaultRecovery()}
-    {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface)}
-    {@render zoned('meters', view?.meters !== undefined, metersSurface)}
-    {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface)}
-    {@render zoned('filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface)}
-    {@render zoned('dsp', view?.dsp !== undefined, dspSurface)}
-    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface)}
-    {@render zoned('band', view?.band !== undefined, bandSurface)}
-    {@render zoned('antenna', view?.antenna !== undefined, antennaSurface)}
+    <!-- MOR-2231 (step 1, batch 5): the twelve OPTIONAL surfaces take
+         `allowBareSurfaces` (see its declaration above) instead of the bare
+         default. `vfo`/`rxTx` above keep the default: they are in
+         `requiredSemanticSurfaces`, which `resolveSurfacePlan` force-restores,
+         so no plan can leave either without a zone. -->
     {@render zoned(
-      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface,
+      'txAux', view?.txAux !== undefined, txAuxBody, allowBareSurfaces,
     )}
-    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface)}
-    {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface)}
-    {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface)}
+    {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBareSurfaces)}
+    {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBareSurfaces)}
+    {@render zoned(
+      'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface,
+      allowBareSurfaces,
+    )}
+    {@render zoned('dsp', view?.dsp !== undefined, groupedDspSurface, allowBareSurfaces)}
+    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, allowBareSurfaces)}
+    {@render zoned('band', view?.band !== undefined, bandSurface, allowBareSurfaces)}
+    {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBareSurfaces)}
+    {@render zoned(
+      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, groupedRitXitScanSurface,
+      allowBareSurfaces,
+    )}
+    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBareSurfaces)}
+    {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBareSurfaces)}
+    {@render zoned(
+      'scopeControls', view?.scopeControls !== undefined, scopeControlsSurface,
+      allowBareSurfaces,
+    )}
     {@render txAdjacentAlerts()}
+    {/if}
   {/if}
+  {/snippet}
+  </TxAuxFiniteHost>
+  {/snippet}
+  <TxAuxScalarHost
+    {view} levelFeedback={txAuxLevelFeedback} rfPowerFeedback={rfPowerFeedback}
+    onLevelChange={(field, value) => TX_AUX_LEVEL_INTENT[field](value)}
+    scalarAppearance={externalPresentation?.record.appearances.scalar}
+    presentationIsCurrent={externalPresentation?.isCurrent}
+  >
+  {#snippet children(txAuxScalars)}
+    {@render txAuxFiniteComposition(txAuxScalars)}
+  {/snippet}
+  </TxAuxScalarHost>
+  {/if}
+  {/snippet}
+  </RitXitScanInstrumentHost>
+  {/snippet}
+  </DspScalarHost>
+  {/snippet}
+  </DspInstrumentHost>
+  {/snippet}
+  </CwKeyerInstrumentHost>
+  {/snippet}
+  </AntennaInstrumentHost>
+  {/snippet}
+  </BandInstrumentHost>
+  {/snippet}
+  </FilterInstrumentHost>
+  {/snippet}
+  <VfoOperationSeatHost
+    {...vfoFiniteRendererSelection} input={vfoOperationInput} scheme={view?.vfoScheme ?? null}
+    presentationIsCurrent={externalPresentation?.isCurrent}
+  >
+    {#snippet children(vfoOperations)}
+      {@render vfoInstrumentComposition(vfoOperations)}
+    {/snippet}
+  </VfoOperationSeatHost>
+  {/snippet}
+  </RfFrontEndInstrumentHost>
+  {/snippet}
+  </RxAudioInstrumentHost>
+  {/snippet}
+  </ReceiverInstrumentHost>
+  {/snippet}
+  </StationMeterInstrumentHost>
 </div>
 
 <style>
+  .region-passthrough { display: contents; }
   /* Layout only — the surfaces own their own presentation. */
   .semantic-surfaces {
     display: flex;
@@ -1393,6 +3027,7 @@
     font-family: 'Roboto Mono', monospace;
     color: var(--v2-text-primary, #e8e8e8);
   }
+  .semantic-surfaces.hosted { display: contents; }
   /* MOR-1784: structure only — the action and the sentence that explains it
      stack as one block, so neither can be read without the other. */
   .tx-fault-recovery {
@@ -1404,16 +3039,6 @@
   .tx-fault-note {
     margin: 0;
     font-size: 0.85em;
-  }
-  .tx-fault-reset {
-    align-self: flex-start;
-    padding: 3px 8px;
-    border: 1px solid var(--v2-accent-red, #ef4444);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--v2-accent-red, #ef4444);
-    font: inherit;
-    cursor: pointer;
   }
   /* MOR-1067: two borderless channel strips sharing one optical left margin —
      the RxTxSurface below stays a single shared block, outside this grid. */

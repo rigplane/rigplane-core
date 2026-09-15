@@ -139,6 +139,12 @@ _MOR1406_CONTROL_ROWS: tuple[tuple[FieldPath, str, Any], ...] = tuple(
             f"{receiver}.notchFilter",
             3,
         ),
+        # repeater_shift (MOR-2111): FTX-1 CAT OS direction code, 0-3.
+        (
+            FieldPath.receiver(receiver, "operator_controls", "repeater_shift"),
+            f"{receiver}.repeaterShift",
+            2,
+        ),
     )
 ) + (
     (

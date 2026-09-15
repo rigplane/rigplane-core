@@ -49,14 +49,18 @@ class _FakeCtrlTransport:
 
 
 def test_update_credentials_mutates_stored_values() -> None:
-    r = IcomRadio("192.168.1.100", username="old-user", password="old-pass")
+    r = IcomRadio(
+        "192.168.1.100", username="old-user", password="old-pass", model="IC-7610"
+    )
     r.update_credentials(username="new-user", password="new-pass")
     assert r._username == "new-user"
     assert r._password == "new-pass"
 
 
 def test_update_credentials_partial_update_keeps_other_field() -> None:
-    r = IcomRadio("192.168.1.100", username="old-user", password="old-pass")
+    r = IcomRadio(
+        "192.168.1.100", username="old-user", password="old-pass", model="IC-7610"
+    )
     r.update_credentials(password="new-pass")
     assert r._username == "old-user"
     assert r._password == "new-pass"
@@ -66,7 +70,9 @@ def test_update_credentials_partial_update_keeps_other_field() -> None:
 
 
 def test_update_credentials_noop_when_no_args() -> None:
-    r = IcomRadio("192.168.1.100", username="old-user", password="old-pass")
+    r = IcomRadio(
+        "192.168.1.100", username="old-user", password="old-pass", model="IC-7610"
+    )
     r.update_credentials()
     assert r._username == "old-user"
     assert r._password == "old-pass"
@@ -74,7 +80,9 @@ def test_update_credentials_noop_when_no_args() -> None:
 
 @pytest.mark.asyncio
 async def test_full_reconnect_builds_login_packet_with_new_password() -> None:
-    r = IcomRadio("192.168.1.100", username="user", password="old-pass")
+    r = IcomRadio(
+        "192.168.1.100", username="user", password="old-pass", model="IC-7610"
+    )
     r._ctrl_transport = _FakeCtrlTransport()  # type: ignore[assignment]
     r.update_credentials(password="new-pass")
 
@@ -97,7 +105,9 @@ async def test_full_reconnect_builds_login_packet_with_new_password() -> None:
 
 @pytest.mark.asyncio
 async def test_soft_reconnect_reuses_token_and_does_not_reauth() -> None:
-    r = IcomRadio("192.168.1.100", username="user", password="old-pass")
+    r = IcomRadio(
+        "192.168.1.100", username="user", password="old-pass", model="IC-7610"
+    )
     r._ctrl_transport = _FakeCtrlTransport()  # type: ignore[assignment]
     r._token = 0x1234
     # Healthy CI-V transport with fresh data => soft_reconnect noop path.

@@ -50,6 +50,7 @@ __all__ = [
     "CAP_DTCS",
     "CAP_CSQL",
     "CAP_SQL_TYPE",
+    "CAP_REPEATER_SHIFT",
     "CAP_VOICE_TX",
     "CAP_SPEECH",
     "CAP_DATA_MODE",
@@ -163,6 +164,12 @@ CAP_SPEECH = "speech"
 # off (see ``TestCapabilitiesNoFalseAdvertising``).
 CAP_SQL_TYPE = "sql_type"
 
+# Repeater shift DIRECTION (simplex/plus/minus/ARS) — MOR-2111. Distinct from
+# the tone-family tags above: gates ``RepeaterShiftCapable``, not
+# ``RepeaterControlCapable``. Shift magnitude has no capability tag yet — it
+# is a separate, not-yet-built surface.
+CAP_REPEATER_SHIFT = "repeater_shift"
+
 # Data
 CAP_DATA_MODE = "data_mode"
 
@@ -249,6 +256,8 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         CAP_DTCS,
         CAP_CSQL,
         CAP_SQL_TYPE,
+        # Repeater shift (direction only)
+        CAP_REPEATER_SHIFT,
         CAP_VOICE_TX,
         CAP_SPEECH,
         # Data

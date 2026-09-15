@@ -150,7 +150,7 @@ def _build_status(
 class TestSendTokenAck:
     @pytest.mark.asyncio
     async def test_sends_token_ack(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
         radio._token = 0x12345678
@@ -167,7 +167,7 @@ class TestSendTokenAck:
 class TestReceiveGuid:
     @pytest.mark.asyncio
     async def test_receives_guid(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
         mt.queue_response(_build_conninfo())
@@ -177,7 +177,7 @@ class TestReceiveGuid:
 
     @pytest.mark.asyncio
     async def test_no_conninfo(self) -> None:
-        radio = IcomRadio("192.168.1.100", timeout=0.5)
+        radio = IcomRadio("192.168.1.100", timeout=0.5, model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
         # No response queued → returns None
@@ -188,7 +188,9 @@ class TestReceiveGuid:
 class TestSendConninfo:
     @pytest.mark.asyncio
     async def test_sends_conninfo(self) -> None:
-        radio = IcomRadio("192.168.1.100", username="test", password="pass")
+        radio = IcomRadio(
+            "192.168.1.100", username="test", password="pass", model="IC-7610"
+        )
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
         radio._token = 0x12345678
@@ -199,7 +201,7 @@ class TestSendConninfo:
 
     @pytest.mark.asyncio
     async def test_sends_conninfo_without_guid(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
         radio._token = 0
@@ -253,6 +255,7 @@ class TestSendConninfo:
             password="p",
             audio_codec=AudioCodec.PCM_2CH_16BIT,
             audio_sample_rate=48000,
+            model="IC-7610",
         )
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
@@ -271,7 +274,7 @@ class TestSendConninfo:
 class TestReceiveCivPort:
     @pytest.mark.asyncio
     async def test_receives_civ_port(self) -> None:
-        radio = IcomRadio("192.168.1.100", timeout=1.0)
+        radio = IcomRadio("192.168.1.100", timeout=1.0, model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
         mt.queue_response(_build_status(50002, 50003))
@@ -281,7 +284,7 @@ class TestReceiveCivPort:
 
     @pytest.mark.asyncio
     async def test_timeout_returns_zero(self) -> None:
-        radio = IcomRadio("192.168.1.100", timeout=0.2)
+        radio = IcomRadio("192.168.1.100", timeout=0.2, model="IC-7610")
         mt = ConnectMockTransport()
         # Cap receive_packet timeout so the 2.0s deadline loop iterates fast
         _orig_recv = mt.receive_packet
@@ -296,7 +299,7 @@ class TestReceiveCivPort:
 
     @pytest.mark.asyncio
     async def test_skips_non_status(self) -> None:
-        radio = IcomRadio("192.168.1.100", timeout=1.0)
+        radio = IcomRadio("192.168.1.100", timeout=1.0, model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
         # Queue a non-status packet first, then status
@@ -307,7 +310,7 @@ class TestReceiveCivPort:
 
     @pytest.mark.asyncio
     async def test_two_zero_status_packets_return_quickly(self) -> None:
-        radio = IcomRadio("192.168.1.100", timeout=5.0)
+        radio = IcomRadio("192.168.1.100", timeout=5.0, model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
         mt.queue_response(_build_status(0, 50003))
@@ -323,7 +326,7 @@ class TestReceiveCivPort:
 
     @pytest.mark.asyncio
     async def test_status_rejection_error_is_recorded(self) -> None:
-        radio = IcomRadio("192.168.1.100", timeout=1.0)
+        radio = IcomRadio("192.168.1.100", timeout=1.0, model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
         mt.queue_response(_build_status(0, 50003, error=0xFFFFFFFF))
@@ -332,7 +335,7 @@ class TestReceiveCivPort:
         assert getattr(radio, "_last_status_error", 0) == 0xFFFFFFFF
 
     def test_status_retry_pause_uses_reject_cooldown(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._last_status_error = 0xFFFFFFFF
         assert (
             radio._control_phase._status_retry_pause()
@@ -348,7 +351,7 @@ class TestReceiveCivPort:
 class TestSendOpenClose:
     @pytest.mark.asyncio
     async def test_open(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         mt = ConnectMockTransport()
         radio._civ_transport = mt
         await radio._send_open_close(open_stream=True)
@@ -358,7 +361,7 @@ class TestSendOpenClose:
 
     @pytest.mark.asyncio
     async def test_close(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         mt = ConnectMockTransport()
         radio._civ_transport = mt
         await radio._send_open_close(open_stream=False)
@@ -368,7 +371,7 @@ class TestSendOpenClose:
 
     @pytest.mark.asyncio
     async def test_noop_without_transport(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._civ_transport = None
         await radio._send_open_close(open_stream=True)  # no error
 
@@ -376,7 +379,7 @@ class TestSendOpenClose:
 class TestWaitForPacket:
     @pytest.mark.asyncio
     async def test_returns_correct_size(self) -> None:
-        radio = IcomRadio("192.168.1.100", timeout=1.0)
+        radio = IcomRadio("192.168.1.100", timeout=1.0, model="IC-7610")
         mt = ConnectMockTransport()
         mt.queue_response(b"\x00" * 0x20)  # wrong size
         mt.queue_response(b"\x00" * 0x60)  # correct
@@ -387,7 +390,7 @@ class TestWaitForPacket:
 
     @pytest.mark.asyncio
     async def test_timeout(self) -> None:
-        radio = IcomRadio("192.168.1.100", timeout=0.1)
+        radio = IcomRadio("192.168.1.100", timeout=0.1, model="IC-7610")
         mt = ConnectMockTransport()
         # Cap receive_packet timeout so the 2.0s deadline is reached quickly
         _orig_recv = mt.receive_packet
@@ -401,7 +404,7 @@ class TestWaitForPacket:
 
     @pytest.mark.asyncio
     async def test_skips_wrong_sizes(self) -> None:
-        radio = IcomRadio("192.168.1.100", timeout=1.0)
+        radio = IcomRadio("192.168.1.100", timeout=1.0, model="IC-7610")
         mt = ConnectMockTransport()
         for _ in range(5):
             mt.queue_response(b"\x00" * 0x10)
@@ -431,7 +434,7 @@ class TestFlushQueue:
 class TestDisconnect:
     @pytest.mark.asyncio
     async def test_disconnect_cleans_up(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
         radio._civ_transport = mt
@@ -442,14 +445,14 @@ class TestDisconnect:
 
     @pytest.mark.asyncio
     async def test_disconnect_when_not_connected(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
         await radio.disconnect()  # should not raise
 
     @pytest.mark.asyncio
     async def test_aexit(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
         radio._civ_transport = mt
@@ -461,7 +464,9 @@ class TestDisconnect:
 class TestConnectReadiness:
     @pytest.mark.asyncio
     async def test_connect_raises_when_radio_never_becomes_ready(self) -> None:
-        radio = IcomRadio("192.168.1.100", username="u", password="p", timeout=0.2)
+        radio = IcomRadio(
+            "192.168.1.100", username="u", password="p", timeout=0.2, model="IC-7610"
+        )
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
 
@@ -506,7 +511,7 @@ class TestConnectReadiness:
 class TestConnectSessionRejection:
     @pytest.mark.asyncio
     async def test_connect_raises_on_status_rejection_after_retries(self) -> None:
-        radio = IcomRadio("192.168.1.100", username="u", password="p")
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
 
@@ -543,7 +548,7 @@ class TestConnectSessionRejection:
     async def test_data_port_discovery_timeout_retries_and_closes_pending_sockets(
         self,
     ) -> None:
-        radio = IcomRadio("192.168.1.100", username="u", password="p")
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
 
@@ -746,6 +751,7 @@ class TestConnectSessionRejection:
             password="p",
             audio_codec=AudioCodec.PCM_2CH_16BIT,
             audio_codec_explicit=True,
+            model="IC-7610",
         )
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
@@ -797,6 +803,7 @@ class TestConnectSessionRejection:
             password="p",
             # Default profile is IC-7610, whose stereo codec is profile-selected.
             audio_codec=AudioCodec.PCM_2CH_16BIT,
+            model="IC-7610",
         )
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
@@ -1006,6 +1013,7 @@ class TestConnectSessionRejection:
             username="u",
             password="p",
             audio_codec=AudioCodec.PCM_1CH_16BIT,
+            model="IC-7610",
         )
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
@@ -1068,7 +1076,7 @@ class TestWifiBindBehavior:
     async def test_connect_uses_routed_local_bind_host_for_control_and_civ(
         self,
     ) -> None:
-        radio = IcomRadio("192.168.2.1", username="u", password="p")
+        radio = IcomRadio("192.168.2.1", username="u", password="p", model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
 
@@ -1139,7 +1147,7 @@ class TestWifiBindBehavior:
         self,
     ) -> None:
         """civ_port=0 after all retries (no 0xFFFFFFFF flag) also raises ConnectionError."""
-        radio = IcomRadio("192.168.1.100", username="u", password="p")
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
 

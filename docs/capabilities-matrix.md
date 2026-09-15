@@ -5,7 +5,7 @@ robots: noindex, follow
 # Capabilities Matrix — Verified from CI-V Reference
 
 Sources:
-- IC-7300MK2 CI-V Reference Guide (PDF)
+- IC-7300 Advanced Manual (11a), §19 CONTROL COMMAND
 - IC-7610 wfview rig file (`.rig` format, verified against wfview 2.20)
 - Actual hardware testing (IC-7610 firmware 1.42, IC-7300)
 
@@ -62,10 +62,11 @@ has_ant_memory = false
 | Preamp | OFF/P1/P2 | OFF/P1/P2 | 0x16 0x02 (0/1/2) | `[preamp] values` |
 | RF Gain | 0-255 | 0-255 | 0x14 0x02 | `rf_gain` in features |
 | DIGI-SEL | ✅ | ❌ | 0x16 0x4E | `digisel` in features |
-| IP+ | ✅ | ❌ | 0x16 0x65 | `ip_plus` in features |
+| IP+ | ✅ | ✅ | 0x16 0x65 | `ip_plus` in features |
 
 **IC-7610 ATT:** CI-V reference shows 16 discrete values: 0/3/6/9/12/15/18/21/24/27/30/33/36/39/42/45 dB. Each sent as its dB value (e.g. 0x00=OFF, 0x03=3dB, 0x06=6dB, ..., 0x45=45dB). The current TOML `[0, 6, 12, 18]` is **WRONG** — must be updated to full range.
 **IC-7300 ATT:** Only 0x00=OFF, 0x20=ON (20 dB). Binary toggle.
+**IC-7300 IP+:** Advanced Manual (11a) p.19-4 documents `0x16 0x65` as IP+ on/off.
 
 ## DSP / Noise
 
@@ -80,7 +81,7 @@ has_ant_memory = false
 | Auto notch | 0x16 0x41 (0/1) | 0x16 0x41 (0/1) | Same | |
 | Manual notch | 0x16 0x48 (0/1) | 0x16 0x48 (0/1) | Same | |
 | Notch freq | 0x14 0x0D (0-255) | 0x14 0x0D (0-255) | Same | |
-| APF | 0x16 0x32 (0/1/2/3) | 0x16 0x32 (0/1) | Different! | IC-7610: OFF/WIDE/MID/NAR. IC-7300: ON/OFF |
+| APF | 0x16 0x32 (0/1/2/3) | ❌ | IC-7610 only | IC-7300 Manual 11a omits 0x16 0x32; live GET NAK'd twice with 0x16 0x22 DATA as control |
 | Twin Peak | 0x16 0x4F (0/1) | 0x16 0x4F (0/1) | Same | |
 
 **NR modes:** Both IC-7610 and IC-7300 have NR as simple ON/OFF via CI-V (0x16 0x40).
@@ -158,19 +159,18 @@ TOML: both get `rit` and `xit` in features.
 ```
 audio, scope, meters, tx, cw, attenuator, preamp, rf_gain, af_level,
 squelch, nb, nr, rit, xit, tuner, split, notch, pbt, vox, compressor,
-monitor, bsr, data_mode, power_control, break_in, apf, twin_peak,
+monitor, bsr, data_mode, power_control, break_in, twin_peak, ip_plus,
 dial_lock, scan, filter_shape, antenna
 ```
 
 ### IC-7610 only
 ```
-dual_rx, digisel, ip_plus, dual_watch, rx_antenna, drive_gain,
+dual_rx, digisel, apf, dual_watch, rx_antenna, drive_gain,
 main_sub_tracking, tx_inhibit, dpd, lcd_backlight
 ```
 
 **IC-7610-specific CI-V commands not in IC-7300:**
 - `0x16 0x4E` — DIGI-SEL on/off
-- `0x16 0x65` — IP+ on/off
 - `0x14 0x13` — DIGI-SEL shift level (0-255)
 - `0x14 0x14` — DRIVE gain (0-255)
 - `0x16 0x5E` — MAIN/SUB Tracking on/off

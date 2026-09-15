@@ -411,7 +411,16 @@ Set attenuator level in dB. IC-7610 supports 0–45 in 3 dB steps.
 async def set_attenuator(self, on: bool, receiver: int = RECEIVER_MAIN) -> None
 ```
 
-Toggle attenuator (compatibility wrapper: on=18 dB, off=0 dB).
+Toggle attenuator (compatibility wrapper). Resolves `on` against the
+connected profile's declared `[attenuator] values` (MOR-2086) rather than
+a fixed dB constant: `off` always resolves to 0; `on` resolves to the
+profile's single non-zero value.
+
+**Raises:** `CommandError` if the profile declares more than one non-zero
+attenuator value (a stepped attenuator, e.g. IC-7610) — the boolean form
+has no single defined answer there; call `set_attenuator_level()` directly
+with the desired dB value instead. Also raised if the profile declares no
+attenuator values at all.
 
 ### `get_preamp()`
 

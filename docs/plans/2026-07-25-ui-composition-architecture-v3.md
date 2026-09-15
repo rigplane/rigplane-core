@@ -74,8 +74,13 @@ Non-goals:
 - replacing Svelte or Vite;
 - changing backend capability or radio protocol ownership;
 - moving transport, audio, scope, state, or commands into skins;
-- making an arbitrary JSON UI-tree editor;
-- faithfully cloning physical radio faceplates.
+- a free-form widget tree: a face composes only the declared instrument
+  vocabulary, never arbitrary components;
+- cloning a manufacturer's trade dress one-for-one.
+
+Replaced 2026-09-02 per the owner's decision 4 on MOR-2249 («все восемь по
+рекомендации»); the previous wording was «making an arbitrary JSON UI-tree
+editor» and «faithfully cloning physical radio faceplates».
 
 ## Independent presentation dimensions
 
@@ -310,6 +315,17 @@ The architecture is proven when:
 - Core, Pro/Tauri, and Station keep using the same frontend artifact.
 
 ## Open decisions
+
+This list records the July design questions. Workspace and density policy now
+have implemented contracts: `frontend/src/presentation/workspace/contract.ts`
+defines `WorkspaceV1`, validated import/export and bounded forward reads;
+`frontend/src/presentation/workspace/resolution.ts` defines `densityActivation`
+and `resolveSurfacePlan`. Density is a workspace preference constrained by the
+active language; surface preferences stay inside the layout's declared zones
+and cannot remove required surfaces. See `docs/guide/web-ui.md` for operator
+controls and limits, and `docs/architecture/building-a-skin.md` for current skin
+ownership. These pointers resolve questions 2 and 4 below; they do not certify
+all acceptance criteria or promise a public custom-skin SDK.
 
 1. Boundary between semantic components and language-specific renderers.
 2. Whether density belongs to design language, workspace, or both.

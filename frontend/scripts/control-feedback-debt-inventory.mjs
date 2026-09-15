@@ -188,11 +188,17 @@ function sitePolicy(attributes, identity) {
 
 function isLocalGain(file, kind, attributes) {
   const normalizedFile = posix.normalize(file.replaceAll('\\', '/'));
-  if (kind !== 'input' || normalizedFile !== 'src/components-v2/panels/AudioRoutingControl.svelte') return false;
+  if (kind !== 'input') return false;
   const label = attributes.get('aria-label')?.value;
+  const labelText = attributes.get('aria-label')?.text;
   const value = attributes.get('value')?.text;
-  return (label === 'MAIN gain in decibels' && value === 'mainGainDb')
-    || (label === 'SUB gain in decibels' && value === 'subGainDb');
+  if (normalizedFile === 'src/components-v2/panels/AudioRoutingControl.svelte') {
+    return (label === 'MAIN gain in decibels' && value === 'mainGainDb')
+      || (label === 'SUB gain in decibels' && value === 'subGainDb');
+  }
+  return normalizedFile === 'src/semantic/RxAudioInstrumentHost.svelte'
+    && labelText === '`${channel.toUpperCase()} gain in decibels`'
+    && value === 'value ?? 0';
 }
 
 /** @param {string} file @param {string} source @returns {Site[]} */

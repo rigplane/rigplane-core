@@ -2,6 +2,107 @@
 
 This is the kernel of the commands package -- every other module imports
 from here, but this module imports nothing from siblings.
+
+Reader census of the private module-level constants below (Step Z, cmd-map
+epic, docs/plans/2026-08-29-profile-driven-command-bytes.md): an AST-based
+reference sweep over every .py file in src/ and tests/ (including
+tests/integration/), counting a bare Name-load only where the same file
+also carries a real import binding for that name from this module or from
+the commands/__init__.py re-export -- several test files (mock_server.py,
+test_dsp_levels_part1.py/part2.py, test_dsp_levels_integration.py,
+test_civ_command_profiling.py, test_single_rx_plain_routing.py and others)
+define their own same-named module-level literal to build synthetic CI-V
+frames independently of this module, and a bare use of that name does not
+count as reading this module's constant. Attribute .attr-loads
+(module.NAME) are trusted directly. Not text grep -- text grep cannot tell
+a same-named local literal from an import of this module's own constant.
+
+Three constants had zero readers, neither internal to this file nor
+external, and are deleted (see the comment at each deletion site):
+_SUB_RX_ANT_ANT1/_SUB_RX_ANT_ANT2 (0x12/0x13, flagged dead but left out of
+scope at cmd-map batch 2) and _SUB_AGC_TIME_CONSTANT (0x04, superseded by
+mode.py reading the byte from the profile's CommandMap by name). Every
+other constant below has at least one real reader -- "internal only" means
+a function in this same file reads it; otherwise the name is the first
+production module (commands/*.py) that imports it, or, absent one, the
+first test file, with "[re-exported]" marking a name commands/__init__.py
+also re-exports:
+
+_BuilderT: internal only (used within this file)
+_CMD_RECEIVER_PREFIX: internal only (used within this file)
+_CMD_FREQ_GET: freq.py [re-exported]
+_CMD_MODE_GET: mode.py [re-exported]
+_CMD_FREQ_SET: test_civ_command_profiling.py [re-exported]
+_CMD_MODE_SET: test_civ_command_profiling.py [re-exported]
+_CMD_LEVEL: _builders.py [re-exported]
+_CMD_METER: meters.py [re-exported]
+_CMD_PTT: test_radio.py [re-exported]
+_CMD_CTL_MEM: memory.py (+2 more)
+_CMD_BAND_EDGE: freq.py
+_CMD_TONE: tone.py
+_CMD_MEMORY_MODE: memory.py
+_CMD_TX_BAND_EDGE: test_tx_band_edge.py
+_CMD_SELECTED_FREQ: freq.py [re-exported]
+_CMD_SELECTED_MODE: freq.py [re-exported]
+_CMD_ACK: _helpers.py (+1 more test files) [re-exported]
+_CMD_NAK: internal only (used within this file)
+_SUB_RF_POWER: test_backend_contract_matrix.py (+3 more test files) [re-exported]
+_SUB_S_METER: test_radio.py [re-exported]
+_SUB_POWER_METER: test_radio.py [re-exported]
+_SUB_SWR_METER: test_radio.py [re-exported]
+_SUB_ALC_METER: test_radio.py [re-exported]
+_SUB_PTT: test_radio.py [re-exported]
+_SUB_CTL_MEM: system.py
+_SUB_DATA_MODE: mode.py
+_SUB_MEMORY_CONTENTS: memory.py
+_SUB_BAND_STACK: memory.py
+_CTL_MEM_SYSTEM_DATE: system.py
+_CTL_MEM_SYSTEM_TIME: system.py
+_CTL_MEM_UTC_OFFSET: system.py
+_SUB_ANT1: antenna.py
+_SUB_ANT2: antenna.py
+_CMD_ATT: test_single_rx_plain_routing.py
+_CMD_PREAMP: test_single_rx_plain_routing.py [re-exported]
+_SUB_PREAMP_STATUS: test_single_rx_plain_routing.py
+_SUB_AGC: dsp.py
+_SUB_AUDIO_PEAK_FILTER: dsp.py
+_SUB_AUTO_NOTCH: dsp.py
+_SUB_COMPRESSOR: dsp.py
+_SUB_MONITOR: dsp.py
+_SUB_VOX: dsp.py
+_SUB_BREAK_IN: dsp.py
+_SUB_MANUAL_NOTCH: dsp.py
+_SUB_MANUAL_NOTCH_WIDTH: dsp.py
+_SUB_TWIN_PEAK_FILTER: dsp.py
+_SUB_DIAL_LOCK: dsp.py
+_SUB_FILTER_SHAPE: mode.py
+_SUB_SSB_TX_BANDWIDTH: mode.py
+_SUB_MAIN_SUB_TRACKING: mode.py
+_SUB_REPEATER_TONE: tone.py
+_SUB_REPEATER_TSQL: tone.py
+_SUB_TONE_FREQ: tone.py
+_SUB_TSQL_FREQ: tone.py
+_CMD_POWER_CTRL: power.py
+_CMD_SCOPE: scope.py
+_SUB_SCOPE_ON: scope.py
+_SUB_SCOPE_DATA_OUTPUT: scope.py
+_SUB_SCOPE_MAIN_SUB: scope.py
+_SUB_SCOPE_SINGLE_DUAL: scope.py
+_SUB_SCOPE_MODE: scope.py
+_SUB_SCOPE_SPAN: scope.py
+_SUB_SCOPE_EDGE: scope.py
+_SUB_SCOPE_HOLD: scope.py
+_SUB_SCOPE_REF: scope.py
+_SUB_SCOPE_SPEED: scope.py
+_SUB_SCOPE_DURING_TX: scope.py
+_SUB_SCOPE_CENTER_TYPE: scope.py
+_SUB_SCOPE_VBW: scope.py
+_SUB_SCOPE_FIXED_EDGE: scope.py
+_SUB_SCOPE_RBW: scope.py
+_PREAMBLE: internal only (used within this file)
+_TERMINATOR: internal only (used within this file)
+_COMMANDS_WITH_SUB: internal only (used within this file)
+_CMD_MAP_EXPLANATION: internal only (used within this file)
 """
 
 from __future__ import annotations
@@ -37,10 +138,13 @@ _CMD_PTT = 0x1C  # Transceiver status / PTT
 _CMD_CTL_MEM = 0x1A  # Memory / configuration command
 _CMD_BAND_EDGE = 0x02  # Band edge frequency
 _CMD_TONE = 0x1B  # Tone/TSQL frequency
-_CMD_MEMORY_MODE = 0x08  # Memory mode (select channel)
-_CMD_MEMORY_WRITE = 0x09  # Memory write
-_CMD_MEMORY_TO_VFO = 0x0A  # Memory to VFO
-_CMD_MEMORY_CLEAR = 0x0B  # Memory clear
+_CMD_MEMORY_MODE = 0x08  # Memory mode (select channel). 0x09 (write) / 0x0A
+# (memory-to-VFO) / 0x0B (memory clear) have no surviving constant here as
+# of MOR-2008 batch 4: memory.py's own builders read the wire bytes off
+# the profile's CommandMap now, and no importer anywhere else in
+# src/tests ever read `_CMD_MEMORY_WRITE`/`_CMD_MEMORY_TO_VFO`/
+# `_CMD_MEMORY_CLEAR` directly (AST-verified census, not text grep) --
+# deleted rather than left with zero readers.
 _CMD_TX_BAND_EDGE = 0x1E  # TX band edge frequencies
 _CMD_SELECTED_FREQ = 0x25  # Selected/Unselected receiver frequency
 _CMD_SELECTED_MODE = 0x26  # Selected/Unselected receiver mode
@@ -66,12 +170,19 @@ _SUB_ALC_METER = 0x13
 # Sub-commands for 0x1C (PTT / Transceiver status)
 _SUB_PTT = 0x00
 
-# Sub-commands for 0x1A (CTL_MEM)
+# Sub-commands for 0x1A (CTL_MEM). _SUB_AGC_TIME_CONSTANT (0x04) has no
+# surviving constant here as of Step Z (cmd-map epic): mode.py's
+# get_agc_time_constant/set_agc_time_constant now read the byte from the
+# profile's CommandMap by name through _build_from_map, and no importer
+# anywhere else in src/tests reads a `_frame`-sourced `_SUB_AGC_TIME_CONSTANT`
+# directly (AST-verified census gated on the actual import binding, not text
+# grep -- test_dsp_levels_part2.py and test_dsp_levels_integration.py each
+# define their own same-named module-level literal instead) -- deleted
+# rather than left with zero readers.
 _SUB_CTL_MEM = 0x05
 _SUB_DATA_MODE = 0x06
 _SUB_MEMORY_CONTENTS = 0x00
 _SUB_BAND_STACK = 0x01
-_SUB_AGC_TIME_CONSTANT = 0x04
 
 # CTL_MEM prefixes (0x1A 0x05 ...). `commands/levels.py`'s own five
 # (ref_adjust, dash_ratio, nb_depth, nb_width, vox_delay) are gone as of
@@ -81,11 +192,12 @@ _CTL_MEM_SYSTEM_DATE = b"\x01\x58"
 _CTL_MEM_SYSTEM_TIME = b"\x01\x59"
 _CTL_MEM_UTC_OFFSET = b"\x01\x62"
 
-# Antenna command (0x12)
+# Antenna command (0x12). `_SUB_RX_ANT_ANT1`/`_SUB_RX_ANT_ANT2` (0x12/0x13),
+# flagged dead but left out of scope at cmd-map batch 2, have zero readers
+# anywhere in src/tests as of Step Z (AST-verified census, not text grep) --
+# deleted rather than left with zero readers.
 _SUB_ANT1 = 0x00
 _SUB_ANT2 = 0x01
-_SUB_RX_ANT_ANT1 = 0x12
-_SUB_RX_ANT_ANT2 = 0x13
 
 # ATT / Preamp / DSP function sub-commands (0x11 / 0x16)
 _CMD_ATT = 0x11
@@ -152,6 +264,18 @@ _COMMANDS_WITH_SUB: set[int] = {
     # (MOR-2008 batch 2) was its last, same as 0x27/0x16/0x19 below
     0x19,
 }
+
+
+def command_carries_sub(command: int) -> bool:
+    """Whether *command*'s wire bytes include a CI-V sub-command byte.
+
+    The one place this question is answered: :func:`decode_wire_tuple`
+    (splitting a declared ``[commands]`` tuple) and :func:`parse_civ_frame`
+    (splitting a received frame's payload) both call this, so a tuple
+    split for a request and a frame split for its reply agree on where
+    the sub-command byte is.
+    """
+    return command in _COMMANDS_WITH_SUB
 
 
 def build_civ_frame(
@@ -230,22 +354,29 @@ def build_cmd29_frame(
 def decode_wire_tuple(wire: tuple[int, ...]) -> tuple[int, int | None, bytes]:
     """Decode one ``[commands]`` wire tuple into ``(command, sub, prefix)``.
 
-    The single decoder named in
-    `docs/plans/2026-08-29-profile-driven-command-bytes.md` §2 ("Exactly one
-    decoder of a `[commands]` wire tuple into `(command, sub, prefix)`") and
-    used by Step 3 (§4) to build `commands/bound.py: BoundCommands.expect`
-    from the same map entry `_build_from_map` builds the request from.
+    The first element is the CI-V command. Whether the next element is a
+    sub-command byte is decided by :func:`command_carries_sub` -- the same
+    predicate :func:`parse_civ_frame` uses to split a received frame's
+    payload, so a reply parsed off the wire agrees with a tuple decoded
+    here on where the sub-command byte is. When the command does not carry
+    one, ``sub`` is ``None`` and that byte stays in ``prefix`` instead.
 
-    The first element is the CI-V command, the second (if present) is the
-    sub-command, and any remaining elements are the frame's further constant
-    bytes -- per the tuple contract ruled in Q7 (§8.1): a tuple holds every
-    constant byte of the frame, whether that is extended menu addressing
-    (e.g. 0x1A 0x05 0x00 0x64 for IC-7300 ACC1 mod level), a selector byte,
-    or a constant payload byte (e.g. 0x1C 0x00 0x01 for X6100 ptt_on).
+    Any remaining elements are the frame's further constant bytes -- per
+    the tuple contract ruled in Q7 (§8.1 of
+    `docs/plans/2026-08-29-profile-driven-command-bytes.md`): a tuple holds
+    every constant byte of the frame, whether that is extended menu
+    addressing (e.g. 0x1A 0x05 0x00 0x64 for IC-7300 ACC1 mod level), a
+    selector byte, or a constant payload byte (e.g. 0x1C 0x00 0x01 for
+    X6100 ptt_on).
     """
     command = wire[0]
-    sub = wire[1] if len(wire) > 1 else None
-    prefix = bytes(wire[2:])
+    rest = wire[1:]
+    if rest and command_carries_sub(command):
+        sub: int | None = rest[0]
+        prefix = bytes(rest[1:])
+    else:
+        sub = None
+        prefix = bytes(rest)
     return command, sub, prefix
 
 
@@ -257,6 +388,7 @@ def _build_from_map(
     data: bytes | None = None,
     receiver: int = RECEIVER_MAIN,
     command29: bool = False,
+    value: int | None = None,
 ) -> bytes:
     """Build a CI-V frame using wire bytes from a CommandMap.
 
@@ -264,7 +396,16 @@ def _build_from_map(
     it returns are prepended to *data*, and only what the caller passes as
     *data* is appended after them.
     """
-    wire = cmd_map.get(name)
+    if cmd_map._has_value_variants(name):
+        if data is not None:
+            raise ValueError(
+                f"Command {name!r} cannot combine a value variant with appended data"
+            )
+        if value is None:
+            raise ValueError(f"Command {name!r} requires a declared value")
+        wire = cmd_map._get_value_variant(name, value)
+    else:
+        wire = cmd_map.get(name)
     command, sub, prefix = decode_wire_tuple(wire)
     if prefix:
         data = prefix + data if data else prefix
@@ -292,10 +433,7 @@ def expose_command_key(
     with the bound map to learn which entry a builder's reply must be
     matched against, decoded by the same :func:`decode_wire_tuple` the
     request used. Attaches the callable as *fn*'s ``cmd_map_key`` attribute
-    and returns *fn* unchanged -- it does not wrap the call, so the
-    Step 1 fallback-audit wrapper (`commands/_fallback_audit.py`), which
-    copies a wrapped function's ``__dict__`` via `functools.wraps`, carries
-    the attribute through unaffected either way.
+    and returns *fn* unchanged.
     """
 
     def decorator(fn: _BuilderT) -> _BuilderT:
@@ -382,7 +520,7 @@ def parse_civ_frame(data: bytes) -> CivFrame:
         real_command = payload[1]
         inner_payload = payload[2:]
         # Check if real command uses sub-commands
-        if real_command in _COMMANDS_WITH_SUB and len(inner_payload) >= 1:
+        if command_carries_sub(real_command) and len(inner_payload) >= 1:
             return CivFrame(
                 to_addr=to_addr,
                 from_addr=from_addr,
@@ -411,7 +549,7 @@ def parse_civ_frame(data: bytes) -> CivFrame:
         )
 
     # Determine if first payload byte is a sub-command
-    if command in _COMMANDS_WITH_SUB and len(payload) >= 1:
+    if command_carries_sub(command) and len(payload) >= 1:
         return CivFrame(
             to_addr=to_addr,
             from_addr=from_addr,

@@ -25,7 +25,7 @@ describe('antenna is a declarable semantic surface', () => {
     expect([...SEMANTIC_SURFACE_NAMES])
       .toEqual([
         'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
-        'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls',
+        'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory',
       ]);
   });
 
@@ -49,7 +49,11 @@ describe('antenna is a declarable semantic surface', () => {
 
 describe('exactly the reviewed manifests declare an antenna zone (MOR-1367)', () => {
   /** The literal — extend by hand, with a layout review, never silently. */
-  const DECLARES_ANTENNA = ['desktop-v2'];
+  // MOR-2231 (step 1, batch 2) added `sdr-test`, by hand and with the layout
+  // review this literal exists to force: the same declaration retires that
+  // face's legacy twins through the `declared.has(...)` channel.
+  // T160 PR-1 added `flagship-probe`, which places this surface in its left rail.
+  const DECLARES_ANTENNA = ['desktop-v2', 'flagship-probe', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

@@ -14,6 +14,7 @@
     shouldSkipFetch,
     type RemoteSegment,
   } from './band-plan-logic';
+  import { getAuthHeaders } from '$lib/auth';
 
   interface Props {
     startFreq: number;
@@ -62,7 +63,8 @@
         const fetchStart = Math.max(0, start - margin);
         const fetchEnd = end + margin;
         const resp = await fetch(
-          `/api/v1/band-plan/segments?start=${fetchStart}&end=${fetchEnd}`
+          `/api/v1/band-plan/segments?start=${fetchStart}&end=${fetchEnd}`,
+          { headers: getAuthHeaders() },
         );
         if (resp.ok) {
           const data = await resp.json();

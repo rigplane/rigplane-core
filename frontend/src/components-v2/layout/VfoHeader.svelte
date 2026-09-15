@@ -9,7 +9,7 @@
 </script>
 
 <script lang="ts">
-  import VfoPanel from '../vfo/VfoPanel.svelte';
+  import LegacyVfoPanelAdapter from '../vfo/LegacyVfoPanelAdapter.svelte';
   import VfoOps from '../vfo/VfoOps.svelte';
   import DualVfoDisplay from '../panels/vfo/DualVfoDisplay.svelte';
   import { hasCapability, hasDualReceiver } from '$lib/stores/capabilities.svelte';
@@ -160,7 +160,7 @@
     />
   {:else}
     <div class="vfo-main-panel">
-      <VfoPanel
+      <LegacyVfoPanelAdapter
         {...mainVfo}
         {layoutProfile}
         onVfoClick={vfoHandlers.onMainVfoClick}

@@ -9,12 +9,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from rigplane.core.acquisition_scheduler import AcquisitionPriority, AcquisitionStatus
+from rigplane.core.command_dispatch import (
+    _af_level_from_param as _af_level_from_param,
+    _raw_int_level_from_param as _raw_int_level_from_param,
+    bind_command_intent,
+    command_descriptor,
+)
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
@@ -37,8 +44,8 @@ logger = logging.getLogger(__name__)
 # it. ``ensure_fresh`` can only express that as an age no prior observation
 # can satisfy, so the request is never short-circuited by a FRESH pre-write
 # value. Same value and same reasoning as the freshness pipeline's own
-# reconciliation path and as the web poller's own per-command table
-# (``_POST_WRITE_READBACK_MAX_AGE``, MOR-1484).
+# reconciliation path and as ``_POST_WRITE_READBACK_MAX_AGE`` in
+# ``web/radio_poller.py`` (MOR-1484).
 _WRITE_CONFIRMATION_MAX_AGE = 1e-9
 
 __all__ = [
@@ -48,14 +55,19 @@ __all__ = [
     "CommandService",
     "CommandServiceResult",
     "PendingOverlay",
+    "admitted_level_for_intent",
     "command_intent_from_request",
     "command_response_observation",
+    "expected_observations_for_command",
+    "observable_field_path",
 ]
 
 _UNSET = object()
 _MAX_ACTIVE_COMMANDS = 128
 _MAX_READBACK_EXPECTATIONS = 128
 _READBACK_EXPECTATION_GRACE_SECONDS = 2.0
+# ACK stays dispatchable for late queue callbacks. Its active bookkeeping uses
+# the existing overlay/readback windows, without implying terminal success.
 _DISPATCHABLE_LIFECYCLE_STATES = ("accepted", "queued", "sent", "acknowledged")
 _NORMALIZED_LEVEL_EXPECTATION_COMMANDS = {
     "set_af_level": "af_level",
@@ -165,7 +177,12 @@ class CommandService:
         self._overlays: list[PendingOverlay] = []
         self._readback_expectations: list[PendingOverlay] = []
 
-    async def execute(self, intent: CommandIntent) -> CommandServiceResult:
+    async def execute(
+        self,
+        intent: CommandIntent,
+        *,
+        executor: CommandExecutor | None = None,
+    ) -> CommandServiceResult:
         """Execute an intent through the injected backend executor."""
 
         start = len(self._events)
@@ -177,7 +194,17 @@ class CommandService:
         provider_generation = self._state_store.provider_generation
 
         try:
-            executor_result = await self._executor.execute(intent)
+            selected_executor = self._executor if executor is None else executor
+            executor_result = await selected_executor.execute(intent)
+        except asyncio.CancelledError:
+            if self._active_commands.get(key) is sent_event:
+                self.expire_command(
+                    intent.id,
+                    source=intent.source,
+                    session_id=_session_id(intent),
+                )
+                self.emit_lifecycle(intent, "failed", message="command cancelled")
+            raise
         except (TimeoutError, RigplaneTimeoutError) as exc:
             if self._active_commands.get(key) is sent_event:
                 self.expire_command(
@@ -283,9 +310,7 @@ class CommandService:
 
         Those misses are no-ops, logged rather than swallowed so that a silent
         miss cannot read as coverage. The divergence is older than this method
-        and is tracked in MOR-1897; until it is closed this does NOT subsume
-        the web poller's per-command readback table, which builds the
-        canonical paths itself.
+        and is tracked in MOR-1897.
         """
         service = self._state_model_service
         target = intent.target
@@ -436,6 +461,7 @@ class CommandService:
     ) -> CommandLifecycleEvent:
         """Record and publish a lifecycle event for an intent."""
 
+        self._purge_expired()
         payload_details = dict(details or {})
         if "session_id" in intent.params:
             payload_details["session_id"] = _session_id(intent)
@@ -453,14 +479,26 @@ class CommandService:
             while key not in self._active_commands and (
                 len(self._active_commands) >= _MAX_ACTIVE_COMMANDS
             ):
-                oldest = next(iter(self._active_commands))
-                self.fail_command(
-                    oldest[2],
-                    source=oldest[0],
-                    session_id=oldest[1],
-                    message="active command capacity exceeded",
+                acknowledged = next(
+                    (
+                        item
+                        for item, active in self._active_commands.items()
+                        if active.state == "acknowledged"
+                    ),
+                    None,
                 )
+                oldest = acknowledged or next(iter(self._active_commands))
+                self._active_commands.pop(oldest)
+                if acknowledged is None:
+                    self.fail_command(
+                        oldest[2],
+                        source=oldest[0],
+                        session_id=oldest[1],
+                        message="active command capacity exceeded",
+                    )
             self._active_commands[key] = event
+            if state == "acknowledged":
+                self._purge_expired()
         else:
             self._active_commands.pop(key, None)
         self._events.append(event)
@@ -830,6 +868,13 @@ class CommandService:
             for overlay in self._readback_expectations
             if not overlay.is_expired(now)
         ]
+        retained = {
+            (overlay.source, overlay.session_id, overlay.command_id)
+            for overlay in (*self._overlays, *self._readback_expectations)
+        }
+        for key, event in tuple(self._active_commands.items()):
+            if event.state == "acknowledged" and key not in retained:
+                self._active_commands.pop(key)
 
     def _last_event(
         self,
@@ -855,6 +900,8 @@ def _pending_value_for_intent(intent: CommandIntent) -> Any:
 
 def _expected_value_for_path(intent: CommandIntent, path: FieldPath) -> Any:
     value = _pending_value_for_path(intent.params, path)
+    if intent.name in {"set_rf_power", "set_power"} and path.name == "power_level":
+        return value
     if _should_normalize_level_expectation(intent.name, path):
         return _normalize_raw_level_value(value)
     return value
@@ -864,116 +911,53 @@ def _should_normalize_level_expectation(name: str, path: FieldPath) -> bool:
     return _NORMALIZED_LEVEL_EXPECTATION_COMMANDS.get(name) == path.name
 
 
-def _raw_int_level_from_param(value: Any) -> int:
-    """Coerce a raw-only level command param (MOR-1579).
+def admitted_level_for_intent(intent: CommandIntent) -> float | None:
+    """The intent's normalized readback target from ``_expected_value_for_path``.
 
-    ``set_rf_gain``/``set_sql``/``set_squelch``: both the web frontend
-    (``radio-intents.ts`` declares ``'integer'``) and the documented
-    HTTP/WS command catalog agree the wire value is always a raw 0-255
-    integer, never a normalized float. Dispatch on the JSON *type*, not
-    magnitude — a value in ``[0, 1]`` used to be silently reinterpreted as
-    normalized (MOR-1579's headline bug: raw level ``1`` became raw
-    ``255``). A non-int or an out-of-range int is a caller bug, not an
-    alternate encoding, so it raises instead of being coerced.
-
-    This value feeds both the StateStore readback expectation (via
-    :func:`_expected_value_for_path`) *and*, on the ``public_api`` sync
-    ingress (:mod:`rigplane.runtime.sync`), the actual value sent to the
-    radio (``_SyncCommandExecutor`` reads ``intent.params["squelch"]``
-    directly) — so this function is the actuation path there, not just
-    bookkeeping.
+    Re-exports the value the level-expectation owner already computes, so a
+    response consumer can never see a second, parallel quantization.
+    ``None`` when the intent has no normalized 0.0-1.0 level target.
     """
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(
-            f"level {value!r} must be a raw integer 0-255, not {type(value).__name__}"
-        )
-    if not (0 <= value <= 255):
-        raise ValueError(f"level {value!r} is out of the raw 0-255 domain")
-    return int(value)
+    target = intent.target
+    if target is None or not _should_normalize_level_expectation(intent.name, target):
+        return None
+    value = _expected_value_for_path(intent, target)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    level = float(value)
+    if not math.isfinite(level) or not 0.0 <= level <= 1.0:
+        return None
+    return level
 
 
-def _af_level_from_param(value: Any) -> int:
-    """Coerce ``set_af_level``'s type-dispatched level param (MOR-1579).
-
-    Two documented wire contracts coexist for this one intent: the
-    HTTP/WS command catalog (``docs/api/command-catalog.md``) declares
-    ``level: int`` on the raw 0-255 scale (see the live-hardware
-    validation recipe's ``level:35`` example, which expects raw BCD
-    ``0035``); the web frontend (``radio-intents.ts`` declares
-    ``'normalized'``) sends a JSON float in 0.0-1.0. Dispatch on JSON
-    type, never magnitude: an int is always raw, a float is always
-    normalized, matching MOR-334's original coercion for float input
-    while restoring int input to a true no-op. Out-of-domain values for
-    either type raise rather than being reinterpreted as the other.
-    """
-    if isinstance(value, bool):
+def resolve_power_level_target(
+    value: Any,
+    *,
+    power_native_unit: str | None = None,
+    power_max_watts: int | float | None = None,
+) -> tuple[int, float]:
+    """Resolve the native power integer and its exact normalized readback."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"level {value!r} must be an int or a normalized float")
-    if isinstance(value, int):
-        if not (0 <= value <= 255):
-            raise ValueError(f"level {value!r} is out of the raw 0-255 domain")
-        return value
+
+    valid_max = (
+        isinstance(power_max_watts, (int, float))
+        and not isinstance(power_max_watts, bool)
+        and power_max_watts > 0
+    )
+    watts_native = power_native_unit == "watts" or (
+        power_native_unit is None and valid_max
+    )
+    scale = float(power_max_watts) if watts_native and valid_max else 255.0
+    upper = int(power_max_watts) if watts_native and valid_max else 255
+
     if isinstance(value, float):
         if not (0.0 <= value <= 1.0):
             raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
-        return max(0, min(255, round(value * 255)))
-    raise ValueError(f"level {value!r} must be an int or a normalized float")
-
-
-def _power_level_expectation_from_param(
-    value: Any,
-    *,
-    power_max_watts: int | float | None = None,
-) -> int | float:
-    """Coerce ``set_rf_power``/``set_power``'s StateStore expectation param.
-
-    MOR-1579 round 3: this used to be a plain ``int(raw_level)``, so a
-    normalized float level (e.g. ``0.4`` from the web power slider —
-    ``control.py``'s ``_level_for_power`` treats ``set_rf_power`` as
-    type-dispatched, same as ``set_af_level``) collapsed to
-    ``int(0.4) == 0``. The StateStore overlay/expectation then sat at 0%
-    for the optimistic-update TTL before jumping to the real readback —
-    the same snap-back class MOR-1579 fixes for ``rf_gain``/``squelch``,
-    reproduced here on every single power-slider move rather than only at
-    a boundary value.
-
-    ``_normalize_raw_level_value`` (below) always divides this value by
-    255 to recover the normalized overlay value, and *both* backends'
-    readbacks normalize to that same fraction ``v`` regardless of unit —
-    Icom CI-V as ``raw / 255``, Yaesu CAT as ``watts / max_watts`` (see
-    ``backends/yaesu_cat/observations.py``'s ``_normalize_power_level``).
-    So for a float input the coherent expectation is ``round(v * 255)``,
-    independent of ``native_power_unit`` — no radio object needed here
-    (unlike ``control.py``'s ``_level_for_power``, which *does* need
-    ``profile.max_watts`` to compute the correct *actuation* value for a
-    watts radio). This is exact for ``raw_255`` radios; for a ``watts``
-    radio it is accurate to within 1/255 of full scale, since
-    ``round(v * max_watts) / max_watts`` (the real readback's
-    quantization) and ``round(v * 255) / 255`` (this expectation's
-    quantization) are different roundings of the same ``v`` and don't
-    always land on the same value — in practice most float positions on
-    a watts radio simply expire by TTL instead of confirming
-    ``reconciled``, rather than snapping to a visibly wrong overlay (the
-    residual error is bounded at <=0.2% of full scale).
-
-    A bare int is the documented raw/watts wire value. When the ingress
-    supplies a positive profile ``power_max_watts`` for a watts-native
-    radio, retain the existing 0-255 expectation representation while
-    scaling that raw watts value to the same normalized fraction as the
-    readback. Callers for raw-255 radios omit the optional profile value.
-    """
-    if isinstance(value, float) and not isinstance(value, bool):
-        if not (0.0 <= value <= 1.0):
-            raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
-        return max(0, min(255, round(value * 255)))
-    if (
-        isinstance(value, int)
-        and not isinstance(value, bool)
-        and isinstance(power_max_watts, (int, float))
-        and not isinstance(power_max_watts, bool)
-        and power_max_watts > 0
-    ):
-        return value * 255 / power_max_watts
-    return int(value)
+        native = max(0, min(upper, round(value * scale)))
+    else:
+        native = value
+    return native, native / scale
 
 
 def _normalize_raw_level_value(value: Any) -> Any:
@@ -1145,13 +1129,46 @@ def _is_yaesu_cat_readback(source: SourceMetadata) -> bool:
     )
 
 
-def _yaesu_receiver_alias(path: FieldPath) -> FieldPath:
+def observable_field_path(path: FieldPath) -> FieldPath:
+    """Return the spelling acquisition and the state model actually use.
+
+    A :class:`CommandIntent` target names its receiver by ingress index
+    (``"0"``/``"1"``) and leaves ``freq_mode`` slot-less. Profiles
+    (``rigs/*.toml``) and ``runtime/_civ_rx.py``'s observations use
+    ``"main"``/``"sub"`` and the relative ``active`` slot, so an
+    ``ensure_fresh`` for the intent's own spelling would name a path no
+    profile declares. Paths already in the second spelling pass through.
+    """
+
     if path.scope.value != "receiver" or path.receiver_id not in {"0", "1"}:
         return path
     receiver = "main" if path.receiver_id == "0" else "sub"
     if path.family.value == "freq_mode" and path.slot is None:
         return FieldPath.active(receiver, path.family.value, path.name)
     return FieldPath.receiver(receiver, path.family.value, path.name)
+
+
+def expected_observations_for_command(
+    name: str, params: Mapping[str, Any]
+) -> tuple[FieldPath, ...]:
+    """Return the field paths a write named *name* is expected to change.
+
+    A descriptor-backed name never reaches this function through
+    ``command_intent_from_request`` -- that path returns a
+    ``CommandIntent`` whose ``target`` already comes from
+    ``CommandDescriptor.target`` there. A legacy ``Command`` dataclass has
+    no such intent, so it reaches this function through
+    ``runtime/_poller_types.py: LEGACY_COMMAND_NAMES`` instead; when its
+    canonical name also has a descriptor, ``_command_target`` binds the
+    dataclass's own params through that descriptor's ``bind``/``target``
+    (MOR-2425 PR-1b) rather than duplicating the mapping here.
+    """
+
+    return _command_expected_observations(name, params, _command_target(name, params))
+
+
+def _yaesu_receiver_alias(path: FieldPath) -> FieldPath:
+    return observable_field_path(path)
 
 
 def _external_rigctld_main_alias(path: FieldPath) -> FieldPath:
@@ -1170,15 +1187,27 @@ def command_intent_from_request(
     command_id: str | None = None,
     session_id: str | None = None,
     timeout: float | None = 2.0,
+    power_native_unit: str | None = None,
     power_max_watts: int | float | None = None,
 ) -> CommandIntent:
     """Normalize a production command request into a backend-neutral intent."""
 
+    if command_descriptor(name) is not None:
+        return bind_command_intent(
+            name,
+            params,
+            source=source,
+            command_id=command_id,
+            session_id=session_id,
+            timeout=timeout,
+        )
     normalized = dict(params)
     if session_id is not None:
         normalized["session_id"] = session_id
     command_name = str(name)
-    if command_name == "set_freq":
+    if command_name == "set_vfo_freq":
+        normalized["freq_hz"] = normalized["freq"]
+    elif command_name == "set_freq":
         raw_freq = (
             normalized["freq_hz"] if "freq_hz" in normalized else normalized["freq"]
         )
@@ -1204,21 +1233,6 @@ def command_intent_from_request(
         normalized["ptt"] = True
     elif command_name == "ptt_off":
         normalized["ptt"] = False
-    elif command_name == "set_rf_gain":
-        normalized["rf_gain"] = _raw_int_level_from_param(normalized["level"])
-    elif command_name == "set_af_level":
-        normalized["af_level"] = _af_level_from_param(normalized["level"])
-    elif command_name in ("set_sql", "set_squelch"):
-        normalized["squelch"] = _raw_int_level_from_param(normalized["level"])
-    elif command_name in ("set_att", "set_attenuator", "set_attenuator_level"):
-        raw_value = (
-            normalized["db"]
-            if "db" in normalized
-            else normalized["level"]
-            if "level" in normalized
-            else normalized["value"]
-        )
-        normalized["att"] = int(raw_value)
     elif command_name == "set_preamp":
         raw_value = (
             normalized["level"] if "level" in normalized else normalized["value"]
@@ -1248,8 +1262,9 @@ def command_intent_from_request(
         raw_level = (
             normalized["level"] if "level" in normalized else normalized["value"]
         )
-        normalized["power_level"] = _power_level_expectation_from_param(
+        _, normalized["power_level"] = resolve_power_level_target(
             raw_level,
+            power_native_unit=power_native_unit,
             power_max_watts=power_max_watts,
         )
     elif command_name == "set_split":
@@ -1335,6 +1350,17 @@ def command_response_observation(
 
 def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
     receiver = str(int(params.get("receiver", 0)))
+    if name == "set_vfo_freq":
+        if params.get("slot") not in ("A", "B") or params.get(
+            "expected_active_slot"
+        ) not in ("A", "B"):
+            raise ValueError("direct VFO frequency requires explicit A/B identity")
+        factory = (
+            FieldPath.active
+            if params["slot"] == params["expected_active_slot"]
+            else FieldPath.unselected
+        )
+        return factory(receiver, "freq_mode", "freq_hz")
     if name == "set_freq":
         return FieldPath.receiver(receiver, "freq_mode", "freq_hz")
     if name == "set_mode":
@@ -1345,12 +1371,6 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "freq_mode", "filter_width")
     if name in ("set_ptt", "ptt", "ptt_on", "ptt_off"):
         return FieldPath.global_("tx_state", "ptt")
-    if name == "set_rf_gain":
-        return FieldPath.receiver(receiver, "operator_controls", "rf_gain")
-    if name == "set_af_level":
-        return FieldPath.receiver(receiver, "operator_controls", "af_level")
-    if name in ("set_sql", "set_squelch"):
-        return FieldPath.receiver(receiver, "operator_controls", "squelch")
     if name in ("set_att", "set_attenuator", "set_attenuator_level"):
         return FieldPath.receiver(receiver, "operator_controls", "att")
     if name == "set_preamp":
@@ -1367,6 +1387,116 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "operator_controls", "pbt_inner")
     if name == "set_pbt_outer":
         return FieldPath.receiver(receiver, "operator_controls", "pbt_outer")
+    if name == "set_nr_level":
+        return FieldPath.receiver(receiver, "operator_controls", "nr_level")
+    if name == "set_nb_level":
+        return FieldPath.receiver(receiver, "operator_controls", "nb_level")
+    if name == "set_notch_filter":
+        return FieldPath.receiver(receiver, "operator_controls", "notch_filter")
+    if name == "set_manual_notch_width":
+        return FieldPath.receiver(receiver, "operator_controls", "manual_notch_width")
+    if name == "set_auto_notch":
+        return FieldPath.receiver(receiver, "operator_toggles", "auto_notch")
+    if name == "set_manual_notch":
+        return FieldPath.receiver(receiver, "operator_toggles", "manual_notch")
+    if name == "set_twin_peak":
+        return FieldPath.receiver(receiver, "operator_toggles", "twin_peak_filter")
+    if name == "set_agc_time_constant":
+        return FieldPath.receiver(receiver, "operator_controls", "agc_time_constant")
+    if name == "set_filter_shape":
+        return FieldPath.receiver(receiver, "operator_controls", "filter_shape")
+    if name == "set_data_mode":
+        return FieldPath.receiver(receiver, "freq_mode", "data_mode")
+    if name == "set_tone_freq":
+        return FieldPath.receiver(receiver, "operator_controls", "tone_freq")
+    if name == "set_tsql_freq":
+        return FieldPath.receiver(receiver, "operator_controls", "tsql_freq")
+    # RX controls (MOR-2425 PR-1b): agc resolves to a declared acquisition
+    # capability on IC-7300. apf/audio_peak_filter/digisel_shift/nb_depth/
+    # nb_width have a state-model field but no acquisition capability on
+    # either profile -- left pending. if_shift is NOT resolved here (MOR-
+    # 2425 PR-1b review, B2): on a real FTX-1 the command queue is drained
+    # by ``backends/yaesu_cat/poller.py: YaesuCatPoller``, not
+    # ``RadioPoller`` (``YaesuCatRadio.create_state_poller`` returns the
+    # former) -- ``RadioPoller._execute``'s ``SetIfShift`` arm, and this
+    # target, are unreachable in production. ``IcomRadio`` has no
+    # ``set_if_shift`` method at all, so the arm cannot be reached from
+    # that side either. Left pending.
+    if name == "set_agc":
+        return FieldPath.receiver(receiver, "operator_controls", "agc")
+    # dial_lock is NOT resolved here for the same reason as if_shift above:
+    # FTX-1's real dispatcher is ``YaesuCatPoller``, which has no readback
+    # path. Icom profiles declare "dial_lock" as a write feature (they can
+    # send the CI-V command) but none declares it in
+    # ``[state_acquisition.capabilities]``, so ``ensure_fresh`` would
+    # resolve UNAVAILABLE there too. Left pending.
+    # TX audio / modulation (MOR-2425 PR-1b): all nine resolve on IC-7300;
+    # mic_gain/compressor_on/compressor_level/vox_on also resolve on
+    # FTX-1. af_mute/ssb_tx_bandwidth/drive_gain and the four mod-input
+    # names have a state-model field but no declared acquisition
+    # capability on either profile; acc1/usb/lan mod level have no field
+    # at all -- all left pending or reclassified as no-field.
+    if name == "set_mic_gain":
+        return FieldPath.global_("operator_controls", "mic_gain")
+    if name == "set_compressor":
+        return FieldPath.global_("tx_state", "compressor_on")
+    if name == "set_compressor_level":
+        return FieldPath.global_("operator_controls", "compressor_level")
+    if name == "set_monitor":
+        return FieldPath.global_("tx_state", "monitor_on")
+    if name == "set_monitor_gain":
+        return FieldPath.global_("operator_controls", "monitor_gain")
+    if name == "set_vox":
+        return FieldPath.global_("tx_state", "vox_on")
+    if name == "set_vox_gain":
+        return FieldPath.global_("operator_controls", "vox_gain")
+    if name == "set_anti_vox_gain":
+        return FieldPath.global_("operator_controls", "anti_vox_gain")
+    if name == "set_vox_delay":
+        return FieldPath.global_("operator_controls", "vox_delay")
+    # CW keyer (MOR-2425 PR-3): folded off
+    # ``web/radio_poller.py: RadioPoller._confirm_global_operator_write``,
+    # which is deleted. All three are declared
+    # ``command_response_observable`` on IC-7300.
+    if name == "set_cw_pitch":
+        return FieldPath.global_("operator_controls", "cw_pitch")
+    if name == "set_key_speed":
+        return FieldPath.global_("operator_controls", "key_speed")
+    if name == "set_break_in":
+        return FieldPath.global_("operator_controls", "break_in")
+    # Scope-display settings (MOR-2425 PR-3): ten of the twelve leaves folded
+    # off the inline ``RadioPoller._reconfirm_scope_field``. ``rbw`` and
+    # ``fixed_edge`` are NOT resolved here and keep that helper -- see the
+    # reasons recorded against them in
+    # ``tests/test_post_write_readback_one_path.py: _PENDING_LATER_PR``.
+    if name == "set_scope_during_tx":
+        return FieldPath.scope_control("display", "during_tx")
+    if name == "set_scope_center_type":
+        return FieldPath.scope_control("display", "center_type")
+    if name == "set_scope_edge":
+        return FieldPath.scope_control("display", "edge")
+    if name == "set_scope_vbw":
+        return FieldPath.scope_control("display", "vbw_narrow")
+    if name == "set_scope_dual":
+        return FieldPath.scope_control("display", "dual")
+    if name == "set_scope_mode":
+        return FieldPath.scope_control("display", "mode")
+    if name == "set_scope_span":
+        return FieldPath.scope_control("display", "span")
+    if name == "set_scope_speed":
+        return FieldPath.scope_control("display", "speed")
+    if name == "set_scope_ref":
+        return FieldPath.scope_control("display", "ref_db")
+    if name == "set_scope_hold":
+        return FieldPath.scope_control("display", "hold")
+    if name == "set_rit_frequency":
+        return FieldPath.global_("operator_controls", "rit_freq")
+    if name == "set_rit_status":
+        return FieldPath.global_("tx_state", "rit_on")
+    if name == "set_rit_tx_status":
+        return FieldPath.global_("tx_state", "rit_tx")
+    if name == "set_break_in_delay":
+        return FieldPath.global_("operator_controls", "break_in_delay")
     if name == "set_powerstat":
         return FieldPath.global_("tx_state", "power_on")
     if name in ("set_rf_power", "set_power"):
@@ -1395,6 +1525,22 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         )
     if name == "set_split_vfo":
         return FieldPath.global_("tx_state", "split")
+    # Descriptor-backed names (MOR-2425 PR-1b): a legacy dataclass whose
+    # canonical name has a ``CommandDescriptor`` has no ``CommandIntent``
+    # of its own to carry ``CommandDescriptor.target`` -- bind the
+    # dataclass's own params (passed in *params* by
+    # ``RadioPoller._request_post_write_readback``) through the
+    # descriptor's own ``bind``/``target`` instead of duplicating that
+    # mapping here. A name whose params don't satisfy the descriptor's
+    # ``bind`` (missing/invalid) resolves to no target, same as any other
+    # unrecognized name.
+    descriptor = command_descriptor(name)
+    if descriptor is not None:
+        try:
+            bound_params = descriptor.bind(params)
+        except (KeyError, ValueError, TypeError):
+            return None
+        return descriptor.target(bound_params)
     return None
 
 

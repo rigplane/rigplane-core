@@ -36,7 +36,9 @@ class _RecordingAudioTransport:
 
 async def test_bridge_tx_pipeline_sends_raw_pcm_when_tx_codec_is_pcm() -> None:
     transport = _RecordingAudioTransport()
-    radio = IcomRadio("192.0.2.10", username="u", password="p", timeout=0.05)
+    radio = IcomRadio(
+        "192.0.2.10", username="u", password="p", timeout=0.05, model="IC-7610"
+    )
     radio._connected = True
     radio._civ_transport = object()
     radio._conn_state = RadioConnectionState.CONNECTED
@@ -102,7 +104,9 @@ async def test_bridge_tx_pipeline_degrades_to_rx_only_when_tx_codec_is_opus() ->
     shipping backend negotiates a non-PCM TX codec for the bridge.
     """
     transport = _RecordingAudioTransport()
-    radio = IcomRadio("192.0.2.10", username="u", password="p", timeout=0.05)
+    radio = IcomRadio(
+        "192.0.2.10", username="u", password="p", timeout=0.05, model="IC-7610"
+    )
     radio._connected = True
     radio._civ_transport = object()
     radio._conn_state = RadioConnectionState.CONNECTED

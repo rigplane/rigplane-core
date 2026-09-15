@@ -82,17 +82,17 @@
   /* ── Large (main VFO) ── */
   .lcd-freq-large .seg-mhz,
   .lcd-freq-large .seg-khz {
-    font-size: clamp(48px, 8vw, 80px);
+    font-size: var(--lcd-frequency-major-size, clamp(48px, 8vw, 80px));
     letter-spacing: 3px;
   }
 
   .lcd-freq-large .seg-hz {
-    font-size: clamp(36px, 6vw, 60px);
+    font-size: var(--lcd-frequency-hz-size, clamp(36px, 6vw, 60px));
     letter-spacing: 2px;
   }
 
   .lcd-freq-large .seg-dot {
-    font-size: clamp(36px, 5vw, 56px);
+    font-size: var(--lcd-frequency-dot-size, clamp(36px, 5vw, 56px));
     margin: 0 2px;
   }
 

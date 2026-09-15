@@ -13,6 +13,8 @@
     accentColor?: string;
     shortcutHint?: string | null;
     title?: string | null;
+    testIdPrefix?: string;
+    ariaLabel?: string;
   }
 
   let {
@@ -23,6 +25,8 @@
     accentColor = 'var(--v2-accent-cyan)',
     shortcutHint = null,
     title = null,
+    testIdPrefix,
+    ariaLabel = 'Attenuator',
   }: Props = $props();
 
   let menuOpen = $state(false);
@@ -31,6 +35,7 @@
   let controlModel = $derived(buildAttControlModel(values, Object.keys(labels).length ? labels : undefined));
   let overflowSelected = $derived(controlModel.overflowOptions.some((option) => option.value === selected));
   let overflowLabel = $derived(getAttOverflowLabel(selected, controlModel.overflowOptions));
+  const menuId = $props.id();
 
   function handleQuickChange(value: string | number): void {
     onchange(value as number);
@@ -55,16 +60,18 @@
  </script>
 
 <div class="att-control" style="--control-accent: {accentColor};" data-shortcut-hint={shortcutHint ?? undefined} title={title ?? shortcutHint ?? undefined}>
-  <div class="button-grid">
+  <div class="button-grid" role="radiogroup" aria-label={ariaLabel}>
     {#each controlModel.quickOptions as option}
-      <HardwareButton
-        active={selected === option.value}
-        indicator="edge-left"
-        color="cyan"
+      <button
+        type="button" class="v2-control-button"
+        role="radio" aria-checked={selected === option.value}
+        data-testid={testIdPrefix === undefined ? undefined : `${testIdPrefix}-${option.value}`}
+        data-active={selected === option.value}
+        data-surface="hardware" data-indicator-style="edge-left" data-indicator-color="cyan"
         onclick={() => handleQuickChange(option.value)}
       >
         {option.label}
-      </HardwareButton>
+      </button>
     {/each}
   </div>
 
@@ -74,6 +81,9 @@
         active={overflowSelected}
         indicator="edge-left"
         color="cyan"
+        ariaLabel="More attenuator values"
+        ariaExpanded={menuOpen}
+        ariaControls={menuId}
         onclick={openMenu}
       >
         {overflowLabel}
@@ -89,18 +99,20 @@
       onclick={() => (menuOpen = false)}
     ></button>
 
-    <div class="menu" role="dialog" aria-label="More attenuator values" style={menuStyle}>
+    <div class="menu" id={menuId} role="dialog" aria-label="More attenuator values" style={menuStyle}>
       <div class="menu-title">ATT Values</div>
-      <div class="menu-grid">
+      <div class="menu-grid" role="radiogroup" aria-label={ariaLabel}>
         {#each controlModel.overflowOptions as option}
-          <HardwareButton
-            active={option.value === selected}
-            indicator="edge-left"
-            color="cyan"
+          <button
+            type="button" class="v2-control-button"
+            role="radio" aria-checked={option.value === selected}
+            data-testid={testIdPrefix === undefined ? undefined : `${testIdPrefix}-${option.value}`}
+            data-active={option.value === selected}
+            data-surface="hardware" data-indicator-style="edge-left" data-indicator-color="cyan"
             onclick={() => handleOverflowSelect(option.value)}
           >
             {option.label}
-          </HardwareButton>
+          </button>
         {/each}
       </div>
     </div>

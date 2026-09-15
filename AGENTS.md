@@ -1,5 +1,22 @@
 # AGENTS.md — rigplane-core
 
+## Mandatory operating-policy startup
+
+At the start of every coordinator task, read
+[`docs/internals/coordinator-policy.md`](docs/internals/coordinator-policy.md)
+from the exact active worktree before planning or dispatching. Workers and
+verifiers must also read it and apply its operating rules while retaining
+their assigned roles and ownership boundaries; they do not become coordinators.
+Read applicable instructions once per active version, repeating when they
+change or a concrete conflict requires it. Do not skip mandatory reads.
+
+The policy governs orchestration, routing, output, CI observation, and session
+lifecycle where older `CLAUDE.md`, role, or command wording conflicts. Platform
+requirements and current user instructions take precedence. Repository rules
+may delegate planning to Linear; preserve that delegation and current Linear
+acceptance criteria. Safety, independent exact-head review, required CI,
+guarded merge, and hardware acceptance remain binding.
+
 ## Repo identity
 
 This repository is the public open-core `rigplane` implementation.
@@ -54,8 +71,10 @@ dependencies, priority, milestones, acceptance criteria, and status. Resolve
 the Linear owner and its acceptance criteria before starting non-trivial work.
 
 This precedence is limited to control-plane ownership. All other `CLAUDE.md`
-commands, architecture, testing, hygiene, protected-main, PR, check, exact-head
-`Agent Review Gate`, and guarded merge rules remain binding.
+commands, architecture, hygiene, protected-main, exact-head `Agent Review
+Gate`, and guarded merge rules remain binding. The delivery batching and CI
+cadence below supersede older draft-first CI and per-merge `main`-wait language
+in `CLAUDE.md`; safety, required checks, and independent review remain binding.
 
 GitHub is the execution plane: branch, commit, PR, diff, checks, independent
 review, and merge evidence. Do not create a GitHub planning issue before
@@ -67,6 +86,86 @@ Planning-only GitHub issues must be retired: record the Linear issue that owns
 their scope and close them as superseded, without transferring planning status
 back to GitHub. See `docs/internals/github-project-workflow.md` for the
 execution-plane checklist and migration rule.
+
+## Delivery batching and CI cadence
+
+The coordinator dispatches a lane once with its Linear owner, current
+acceptance criteria and dependencies, exact file lease, and verification
+matrix. Within that contract the builder acts autonomously. Escalate only an
+actual contract, scope, path-ownership, dependency, or safety collision; routine
+implementation, focused checks, PR text, and handoff do not need another lease
+round trip.
+
+Batch related changes in one branch and PR when they share one semantic
+contract, file lease, and verification matrix. Link every covered child Linear
+ticket and reconcile each child explicitly. Do not use batching to combine
+unrelated contracts, cross an unleased path, hide a compatibility break, or
+weaken TX/PTT and hardware safety boundaries.
+
+A delivery batch may still use several workers. After freezing a small shared
+interface, decompose when at least two file-disjoint work packages each contain
+material work (normally 20–30 minutes or more) and their integration cost is
+lower than the wall time saved. Workers own disjoint files and return logical
+commits or artifacts to one named integrator. They do not open separate PRs,
+start natural `quick`/`full`/`visual` runs, or request separate final reviews.
+The integrator owns the batch branch, combines the work, freezes one candidate,
+opens one Ready PR, and obtains one CI/review cycle. Do not decompose a small
+tightly coupled invariant, shared-file edits, or sequential generated output.
+Good candidates include provider consumers, radios within one profile family,
+UI state versus rendering, and Icom versus Yaesu actuators; regenerate visual
+baselines only after the integrated rendering has frozen.
+
+Development RED and correction loops use focused changed-scope checks on the
+Mac mini plus changed-scope lint/type checks. Do not run the full `quick` suite
+for an intentional RED or every draft push. In the normal path, push the final
+candidate, open or mark the PR Ready once, and let that immutable head receive
+one natural `quick` run. `visual` runs only for its affected paths; `full` is
+reserved for releases or an explicitly recorded cross-cutting risk. A fresh
+independent verifier reviews the exact head and consumes the existing CI
+evidence without rerunning suites. A correction changes the head and therefore
+gets the one natural required run and fresh exact-head review for that new
+candidate.
+
+Movement on `main` alone does not invalidate an unchanged PR head. Refresh the
+branch and its checks/review only for an actual merge conflict, a proven
+base-sensitive dependency, or a concrete code interaction.
+
+Use `.github/workflows/focused.yml` for development RED/GREEN evidence. It is a
+manual, non-required workflow that checks an exact 40-character commit SHA and
+accepts only validated JSON arrays of pytest nodeids/files, Ruff paths, and
+Vitest files. Dispatch it from the trusted `main` workflow definition, for
+example:
+
+```bash
+candidate_sha=$(git rev-parse HEAD)
+gh workflow run focused.yml --ref main \
+  -f revision="$candidate_sha" \
+  -f pytest_targets='["tests/test_radio.py::test_frequency"]' \
+  -f ruff_targets='["src/rigplane/radio.py","tests/test_radio.py"]' \
+  -f vitest_targets='[]'
+```
+
+The focused workflow does not replace required PR CI. A final Ready product or
+CI-control head still receives its natural `quick` and, when selected by paths,
+`visual`.
+
+`quick.yml` keeps three independent path classes. `core` covers backend/source,
+tests, profiles, contracts, and Python project metadata; `frontend` covers
+`frontend/**` plus `src/rigplane/web/**`; `ci` covers only workflow controls
+under `.github/`. A pure frontend change does not run backend pytest, Ruff,
+import-linter, or validation goldens. A `src/rigplane/web/**` change selects
+both core and frontend because it crosses that boundary. A CI-only change runs
+only the workflow parser, injection/path contract tests, and Python control
+compilation. Pixel-diff `visual` runs only for actual `frontend/**` changes,
+never because `visual.yml` itself changed.
+
+When every changed path is documentation or documentation metadata — including
+`docs/**`, Markdown/RST anywhere in the tree, `.claude/**`, and the doc-citation
+baseline files — only the GitHub-hosted classifier runs. The required `quick`
+job reports a server-side skipped/neutral context and never allocates the Mac
+mini. Do not run citation, link, Markdown, product, visual, or full automation;
+the exact-head independent review is the substantive gate. Documentation mixed
+with code follows the normal checks selected by the code paths.
 
 ## Multi-agent Git hygiene
 
@@ -100,20 +199,31 @@ Use the global `repo-hygiene` skill for cross-repo inventory and cleanup.
 
 RigPlane's standard automation gate is `.github/workflows/agent-review-gate.yml`.
 It updates the required commit status `Agent Review Gate` on the current PR
-head SHA and passes only after a normal PR comment contains `Agent Review:
-PASS` for that head. Use this status instead of GitHub required approving
-reviews; same-user approval restrictions break automated agent flow.
+head SHA. The gate accepts a verdict only when the first non-blank line of a
+trusted, non-minimized PR comment is exactly one of these forms, with the
+placeholder replaced by the PR's current 40-character lowercase head SHA:
+
+```text
+Agent Review: PASS <40-character-lowercase-head-sha>
+Agent Review: BLOCKED <40-character-lowercase-head-sha>
+```
+
+A BLOCKED directive must put concrete findings, file/line references where
+applicable, risk, required fixes, and checks to run on subsequent lines. A
+missing, short, uppercase, or stale SHA is not a directive. Use this status
+instead of GitHub required approving reviews; same-user approval restrictions
+break automated agent flow.
 
 Every non-trivial PR requires independent agent review before merge. The
 implementation agent may not be the review agent.
 
-- `Agent Review: PASS`/`BLOCKED` is the verifier's verdict on the code
-  alone: post it as soon as review is done, reporting CI state as found
-  (queued, running, or complete with counts) without waiting for CI to
-  finish or withholding a verdict because it hasn't. Confirming that
-  required checks are actually green at the exact head is a separate step
-  the coordinator takes immediately before merging — both conditions still
-  gate the merge, just held by two roles instead of one.
+- The PASS/BLOCKED token in an exact-head directive is the verifier's verdict
+  on the code alone: post it as soon as review is done, reporting CI state as
+  found (queued, running, or complete with counts) without waiting for CI to
+  finish or withholding a verdict because it hasn't. Confirming that required
+  checks are actually green at the exact head is a separate step the
+  coordinator takes immediately before merging — both conditions still gate
+  the merge, just held by two roles instead of one.
 - That split exists because CI is a shared, limited resource: `quick.yml`,
   `full.yml`, and `visual.yml` all set `runs-on: [self-hosted, linux, build]`,
   while everything else under `.github/workflows/` runs on `ubuntu-latest`.
@@ -124,26 +234,24 @@ implementation agent may not be the review agent.
   than a shared queue: this repository's three self-hosted workflows
   serialize behind a single runner of its own, and a review session that
   waits on that queue can still lose an hour or more for nothing.
-- On that same shared runner, a test that fails once with no repeat on a
-  clean rerun (e.g. `tests/test_mor1499_coalesce_keys.py`, one such case on
-  2026-08-30) is more often runner load than a regression; the same test
-  failing twice is evidence about the code, not the machine.
-- `Agent Review: BLOCKED` must include concrete problems, file/line references
-  where applicable, risk, required fixes, and checks to run.
+- Do not rerun an entire suite merely to classify a failure. Diagnose it from
+  the existing artifact and a focused reproduction on the Mac mini. A repaired
+  final head receives its natural required workflow run; a full-suite rerun is
+  reserved for concrete evidence of runner failure.
 - The implementation agent must address BLOCKED feedback, push updates, and
   rerun or wait for checks before merge.
 - A PASS may still carry corrections, marked REQUIRED BEFORE MERGE or MANDATORY
   SQUASH-BODY CORRECTION: findings real enough to state but not fixable by a
   commit — a false claim in the PR body or a comment, or one in a pushed commit
   message that the squash body will carry onto `main`. No workflow checks them;
-  nothing reads a PR body, and the gate matches its directive pattern against
-  only the first non-blank line of a comment.
+  nothing reads a PR body, and the gate matches its exact, SHA-bound directive
+  pattern against only the first non-blank line of a comment.
   Whoever merges must apply them before merge anyway — editing the body or
   comment, or writing the corrected squash body at merge — and say in the PR
   that it did.
-- A failed `Agent Review Gate` without BLOCKED feedback usually means no fresh
-  PASS comment exists for the current head; perform or refresh the review
-  instead of skipping the PR.
+- A failed `Agent Review Gate` without valid exact-head BLOCKED feedback usually
+  means no fresh, valid exact-head PASS directive exists; perform or refresh
+  the review instead of skipping the PR.
 - A PR based on a branch other than `main` shows a partly-populated check
   list, which is more misleading than an empty one:
   `agent-review-gate.yml`'s `pull_request` trigger carries no `branches:`
@@ -191,45 +299,15 @@ implementation agent may not be the review agent.
   push, not whether a *queued* one is. All four cancelled `main` runs
   sampled on 2026-08-30 died this way — queued, not mid-run. Measured and
   tracked as MOR-2048; see that ticket rather than re-deriving the counts.
-- Before merging to `main`, check
-  `gh run list --workflow=quick.yml --branch=main --limit 3` and wait for
-  the current head's run to have **started** — that is the durable bar,
-  not a fixed wall-clock wait, since queue time is unbounded. `quick.yml`'s
-  `cancel-in-progress` key is now scoped to non-`main` refs, so a push to
-  `main` no longer cancels an already-started run from an earlier push to
-  `main` — once started, that run runs to completion on its own. What a
-  push to `main` can still cancel is a run that has not started yet (see
-  above, MOR-2048); that is exactly why "started", not "completed", is the
-  bar — waiting for full completion adds time on the single shared runner
-  without buying more certainty. Do not `gh run rerun` a run cancelled on
-  `main`'s queue this way; rerunning re-requests a run for the old,
-  superseded commit in the same concurrency group, which can cancel the
-  *current* head's queued run instead of restoring anything — verify the
-  current head's own run, which covers every intervening change together.
-- The remaining race is the queued-run half from above (MOR-2048): a run
-  can still be cancelled in the gap between checking its status and
-  executing the merge, while it waits for a runner. Fuse the check and the
-  merge into one shell invocation so that gap is seconds, not the minutes
-  between a monitor firing and an operator acting (substitute the PR
-  number):
-
-  ```bash
-  st=$(gh run list --workflow=quick.yml --branch=main --limit 1 --json status --jq '.[0].status')
-  if [ "$st" = "queued" ]; then echo "ABORT: main run still queued, not started ($st)"; exit 1; fi
-  head_sha=$(gh pr view <N> --json headRefOid --jq .headRefOid)
-  gh pr merge <N> --squash --match-head-commit "$head_sha"
-  ```
-
-  This is **not atomic** — a run can move from "nothing queued yet" to
-  "queued" in the gap between the read and the merge — but it closes the
-  window every cancelled run sampled so far actually died in (above:
-  queued, not mid-run). Delete the branch afterward only when no child PR
-  is based on it (above); passing `--delete-branch` here unconditionally
-  would break that rule the moment a child PR exists. Treat this as the
-  stopgap for the queued half of the race (MOR-2048), not for the
-  started-run half that the ref-scoped `cancel-in-progress` already fixed
-  — it is retired only when MOR-2048 is, not automatically alongside that
-  fix.
+- The merge operator may train-merge file-disjoint PRs whose immutable heads
+  each have an exact-head PASS and every required PR check green. Guard every
+  merge with `--match-head-commit`. Do not wait for or rerun intermediate
+  `main` quick runs: queued intermediate runs may be displaced by the next
+  train merge and are not acceptance evidence. After the final merge, require
+  one aggregate `main` quick on the final batch head. An actual conflict,
+  proven interaction between train members, or failure on that final aggregate
+  head stops the train for diagnosis. This keeps exact-head protection while
+  avoiding the queued-run churn tracked in MOR-2048.
 - After a merge, if a run on `main` looks cancelled or otherwise
   unverified and you want to know whether an earlier PR run already
   covered the code that landed, compare
@@ -239,8 +317,17 @@ implementation agent may not be the review agent.
   identity — a PR's own check runs against `refs/pull/N/merge` (the PR
   head merged onto the base at test time), not against the PR head commit
   by itself.
-- Draft PRs must not merge. Determine why the PR is draft, finish the missing
-  work, run `gh pr ready`, then complete checks and review.
+- Read the gate's verdict from the commit status — `gh pr checks <n>`, the
+  `Agent Review Gate` row, or `gh api repos/<owner>/<repo>/commits/<sha>/status`
+  — never from a run list. A run list shows the publisher job
+  (`Update Agent Review Gate status`) under the workflow's name, and it is
+  green when it has successfully published a refusal; and a run triggered
+  by `issue_comment` carries `headBranch=main`, so `gh run list --branch
+  <feature>` cannot show it and its silence proves nothing about whether the
+  gate re-ran.
+- Draft PRs must not merge and do not run the expensive self-hosted `quick` or
+  `visual` jobs. Finish focused development checks first, then open or mark the
+  final candidate Ready; the `ready_for_review` event starts its required CI.
 
 ## Release branches
 

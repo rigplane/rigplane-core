@@ -398,6 +398,47 @@ async def test_run_hardware_forwards_write_only_capabilities(
     assert captured["write_only_capabilities"] == frozenset({"rit", "xit", "notch"})
 
 
+async def test_run_hardware_forwards_fixed_value_checks(monkeypatch: Any) -> None:
+    """_run_hardware (native) forwards profile.fixed_value_checks to the
+    hardware runner (MOR-2105 part 2). Uses IC-7300, not X6200: X6200's
+    fixed_value_checks is {} (no [validation.fixed_value] declared), so
+    asserting {} there would pass even if the CLI never read the profile at
+    all -- a hollow pin (independent review finding). IC-7300's is
+    non-empty, so only a correctly-threaded value satisfies this assertion.
+    """
+    template = _identify_template(profile_id="icom_ic7300")
+    safety = OperatorSafetyBlock()
+    native_config = RigctldBackendConfig(host="127.0.0.1", port=4532, model="IC-7300")
+    captured: dict[str, Any] = {}
+
+    async def fake_build_backend_config(_args: Any) -> Any:
+        return native_config
+
+    def fake_create_radio(config: Any) -> Any:
+        return _FakeNativeRadio()
+
+    async def fake_execute(*args: Any, **kwargs: Any) -> Any:
+        captured["fixed_value_checks"] = kwargs.get("fixed_value_checks")
+        return []
+
+    monkeypatch.setattr("rigplane.cli._build_backend_config", fake_build_backend_config)
+    monkeypatch.setattr("rigplane.backends.factory.create_radio", fake_create_radio)
+    monkeypatch.setattr(
+        "rigplane.validation.hardware.execute_hardware_checks", fake_execute
+    )
+    monkeypatch.setattr(_validate, "_emit_artifact", lambda artifact, args: None)
+
+    await _validate._run_hardware(
+        _base_args(model="IC-7300", read_only=False), template, safety
+    )
+
+    assert (
+        captured["fixed_value_checks"]
+        == get_radio_profile("IC-7300").fixed_value_checks
+    )
+    assert captured["fixed_value_checks"]  # non-empty: a hollow-pin guard
+
+
 async def test_run_hardware_hamlib_forwards_write_only_capabilities(
     monkeypatch: Any,
 ) -> None:
@@ -435,6 +476,52 @@ async def test_run_hardware_hamlib_forwards_write_only_capabilities(
     await _validate._run_hardware_hamlib(_base_args(), template, safety)
 
     assert captured["write_only_capabilities"] == frozenset({"rit", "xit", "notch"})
+
+
+async def test_run_hardware_hamlib_forwards_fixed_value_checks(
+    monkeypatch: Any,
+) -> None:
+    """_run_hardware_hamlib forwards profile.fixed_value_checks too
+    (MOR-2105 part 2). IC-7300, not X6200, for the same hollow-pin reason as
+    test_run_hardware_forwards_fixed_value_checks above.
+    """
+    _FakeBridge.instances.clear()
+    template = _identify_template(profile_id="icom_ic7300")
+    safety = OperatorSafetyBlock()
+    native_config = RigctldBackendConfig(host="127.0.0.1", port=4532, model="IC-7300")
+    captured: dict[str, Any] = {}
+
+    async def fake_build_backend_config(_args: Any) -> Any:
+        return native_config
+
+    def fake_create_radio(config: Any) -> Any:
+        return _FakeNativeRadio()
+
+    async def fake_execute(*args: Any, **kwargs: Any) -> Any:
+        captured["fixed_value_checks"] = kwargs.get("fixed_value_checks")
+        return []
+
+    async def fake_await_tcp_ready(
+        host: str, port: int, *, timeout: float = 10.0
+    ) -> bool:
+        return True
+
+    monkeypatch.setattr("rigplane.cli._build_backend_config", fake_build_backend_config)
+    monkeypatch.setattr("rigplane.backends.factory.create_radio", fake_create_radio)
+    monkeypatch.setattr("rigplane.hamlib_bridge.HamlibBridge", _FakeBridge)
+    monkeypatch.setattr(
+        "rigplane.validation.hardware.execute_hardware_checks", fake_execute
+    )
+    monkeypatch.setattr(_validate, "_await_tcp_ready", fake_await_tcp_ready)
+    monkeypatch.setattr(_validate, "_emit_artifact", lambda artifact, args: None)
+
+    await _validate._run_hardware_hamlib(_base_args(model="IC-7300"), template, safety)
+
+    assert (
+        captured["fixed_value_checks"]
+        == get_radio_profile("IC-7300").fixed_value_checks
+    )
+    assert captured["fixed_value_checks"]  # non-empty: a hollow-pin guard
 
 
 # ---------------------------------------------------------------------------

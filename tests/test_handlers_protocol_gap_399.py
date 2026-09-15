@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from rigplane.core.command_dispatch import CommandUnsupportedError
+from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web.handlers import ControlHandler
 from rigplane.web.radio_poller import (
@@ -19,7 +22,6 @@ from rigplane.web.radio_poller import (
     SetNbWidth,
     SetRepeaterTone,
     SetRepeaterTsql,
-    SetRxAntenna,
     SetSsbTxBandwidth,
     SetToneFreq,
     SetTsqlFreq,
@@ -50,6 +52,7 @@ def _capable_radio() -> SimpleNamespace:
             "dual_rx",
         },
         profile=resolve_radio_profile(model="IC-7610"),
+        supports_command=MagicMock(return_value=True),
         # ScopeCapable attrs required for isinstance check
         enable_scope=AsyncMock(),
         disable_scope=AsyncMock(),
@@ -147,6 +150,7 @@ def _incapable_radio() -> SimpleNamespace:
     return SimpleNamespace(
         capabilities=set(),
         profile=None,
+        supports_command=MagicMock(return_value=False),
     )
 
 
@@ -154,8 +158,14 @@ class _QueueRecorder:
     def __init__(self) -> None:
         self.items: list[object] = []
 
-    def put(self, item: object) -> None:
+    def put(self, item: object, **_metadata: object) -> None:
         self.items.append(item)
+
+    def put_ordered(self, item: object, **_metadata: object) -> None:
+        self.items.append(item)
+        future = _metadata.get("future")
+        if isinstance(future, asyncio.Future) and not future.done():
+            future.set_result(None)
 
 
 def _handler(
@@ -583,9 +593,9 @@ async def test_set_rx_antenna_ant1() -> None:
     h = _handler(radio=_capable_radio(), server=srv)
     result = await h._enqueue_command("set_rx_antenna", {"antenna": 1, "on": True})
     assert result == {"antenna": 1, "on": True}
-    assert isinstance(q.items[0], SetRxAntenna)
-    assert q.items[0].antenna == 1
-    assert q.items[0].on is True
+    assert isinstance(q.items[0], CommandIntent)
+    assert q.items[0].params["antenna"] == 1
+    assert q.items[0].params["on"] is True
 
 
 @pytest.mark.asyncio
@@ -594,13 +604,14 @@ async def test_set_rx_antenna_ant2() -> None:
     h = _handler(radio=_capable_radio(), server=srv)
     result = await h._enqueue_command("set_rx_antenna", {"antenna": 2, "on": False})
     assert result == {"antenna": 2, "on": False}
-    assert q.items[0].antenna == 2
-    assert q.items[0].on is False
+    assert isinstance(q.items[0], CommandIntent)
+    assert q.items[0].params["antenna"] == 2
+    assert q.items[0].params["on"] is False
 
 
 @pytest.mark.asyncio
 async def test_set_rx_antenna_missing_capability() -> None:
     srv, _ = _server()
     h = _handler(radio=_incapable_radio(), server=srv)
-    with pytest.raises(ValueError, match="rx_antenna"):
+    with pytest.raises(CommandUnsupportedError, match="not supported"):
         await h._enqueue_command("set_rx_antenna", {"antenna": 1, "on": True})

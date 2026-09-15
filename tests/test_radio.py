@@ -1,6 +1,9 @@
 """Tests for IcomRadio high-level API."""
 
 import asyncio
+import time
+from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -27,7 +30,7 @@ from rigplane.commands import (
 from rigplane.commander import Priority
 from rigplane.exceptions import CommandError, ConnectionError, TimeoutError
 from rigplane.core import tx_safety as tx
-from rigplane.core.civ import CivEvent, CivEventType
+from rigplane.core.civ import CivEvent, CivEventType, CivRequestTracker
 from rigplane.radio import IcomRadio
 from rigplane.types import (
     AgcMode,
@@ -321,8 +324,21 @@ def mock_transport() -> MockTransport:
 def radio(mock_transport: MockTransport):
     """Shared radio fixture with explicit teardown to silence the
     ``Radio collected with active connection/tasks`` __del__ warning
-    from tests that bypass the real connect/disconnect lifecycle."""
-    r = IcomRadio("192.168.1.100", timeout=0.05)
+    from tests that bypass the real connect/disconnect lifecycle.
+
+    MOR-2121: ``timeout`` was ``0.05`` (giving ``_civ_get_timeout`` the
+    same 50ms), which raced real event-loop scheduling delay under
+    ``pytest -n auto`` on a loaded host -- a remote-testbed run caught
+    ``TestOperatorToggleParity::test_get_enum_operator_toggle[get_break_in]``
+    raising ``TimeoutError: CI-V response timed out`` from
+    ``_civ_rx.py:_execute_civ_raw``'s ``asyncio.wait_for(pending,
+    timeout=_civ_get_timeout)`` even though ``MockTransport.queue_response``
+    had already queued the answer before the call. ``2.0`` matches the
+    production default cap (``_civ_get_timeout = min(timeout, 2.0)`` in
+    ``runtime/radio.py``) and only widens the margin for a slow host --
+    every test here still resolves as soon as the queued response is
+    processed."""
+    r = IcomRadio("192.168.1.100", timeout=2.0, model="IC-7610")
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
@@ -335,7 +351,7 @@ class TestContextManager:
 
     @pytest.mark.asyncio
     async def test_disconnect(self, mock_transport: MockTransport) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -346,7 +362,7 @@ class TestContextManager:
 
     @pytest.mark.asyncio
     async def test_context_manager_exit(self, mock_transport: MockTransport) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -593,6 +609,109 @@ class TestPower:
         await radio.set_rf_power(200)
         assert len(mock_transport.sent_packets) > 0
 
+    @pytest.mark.asyncio
+    async def test_set_power_frames_are_byte_identical(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        """In-range levels keep the exact CI-V 14 0A frames (MOR-2480).
+
+        The pinned bytes are the IC-7610 ``set_rf_power`` frames the
+        unchecked setter produced at origin/main; the entry checks must
+        not alter them.
+        """
+        for level, civ in (
+            (0, bytes.fromhex("fefe98e0140a0000fd")),
+            (128, bytes.fromhex("fefe98e0140a0128fd")),
+            (255, bytes.fromhex("fefe98e0140a0255fd")),
+        ):
+            await radio.set_rf_power(level)
+            assert bytes(mock_transport.sent_packets[-1]).endswith(civ), level
+
+    @pytest.mark.asyncio
+    async def test_set_power_out_of_range_sends_no_frame(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        with pytest.raises(ValueError, match="RF power must be 0-255"):
+            await radio.set_rf_power(256)
+        with pytest.raises(ValueError, match="RF power must be 0-255"):
+            await radio.set_rf_power(-1)
+        assert mock_transport.sent_packets == []
+
+    @pytest.mark.asyncio
+    async def test_set_power_without_capability_refused_before_write(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """The pre-write capability gate refuses before any frame goes out.
+
+        Historically pinned on the stock X6200, which declared the 14 0A
+        commands but not power_control; MOR-2488/MOR-2489 declared the
+        capability on both Xiegu profiles (the 14 0A pair is documented
+        in their own manuals), so the refusal is re-pinned here against
+        the same profile with the capability stripped — the gate's
+        contract is unchanged.
+        """
+        radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6200")
+        radio._profile = replace(
+            radio._profile,
+            capabilities=radio._profile.capabilities - {"power_control"},
+        )
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(CommandError, match="power_control"):
+            await radio.set_rf_power(128)
+        assert mock_transport.sent_packets == []
+
+    @pytest.mark.asyncio
+    async def test_x6200_set_power_now_sends_documented_14_0a_frame(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """MOR-2488/MOR-2489: with power_control declared, the stock X6200
+        sends the 0x14 0x0A set frame its own V1.0.6 table documents
+        (pp.6-7) instead of refusing."""
+        radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        await radio.set_rf_power(128)
+        assert bytes(mock_transport.sent_packets[-1]).endswith(
+            bytes.fromhex("fefea4e0140a0128fd")
+        )
+
+    @pytest.mark.asyncio
+    async def test_x6100_set_power_now_sends_documented_14_0a_frame(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """MOR-2488/MOR-2489: with power_control declared, the stock X6100
+        sends the 0x14 0x0A set frame its own manual documents —
+        Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1
+        ("Set Tx power") — instead of refusing."""
+        radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6100")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        await radio.set_rf_power(128)
+        assert bytes(mock_transport.sent_packets[-1]).endswith(
+            bytes.fromhex("fefe70e0140a0128fd")
+        )
+
+    @pytest.mark.asyncio
+    async def test_x6200_set_powerstat_still_refuses_0x18_undeclared(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """MOR-2488/MOR-2489 safety pin: power_control covers the 14 0A
+        level pair only. power_on/power_off stay undeclared (0x18 is not
+        listed in any official command table), so set_powerstat must
+        refuse at the bound command map — the suspected X6200 wedge
+        trigger 0x18 never reaches the wire."""
+        radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(CommandError):
+            await radio.set_powerstat(False)
+        assert mock_transport.sent_packets == []
+
 
 class TestRfGainAfLevel:
     """Test RF Gain and AF Level get/set."""
@@ -740,16 +859,37 @@ class TestSquelch:
 class TestPtt:
     """Test PTT toggle."""
 
-    @pytest.mark.timeout(2)
+    # ``func_only``: this bound guards the body, which measured 0.00-0.16 s
+    # on a loaded machine.  Charging setup to it as well made whichever
+    # parametrisation ran first carry the process's first ``IcomRadio``
+    # construction, which costs a hundred milliseconds or more against a
+    # fraction of one for every later construction in the same process --
+    # 1.5-2.0 s
+    # of setup on a loaded run, against 0.00 s for the other two -- so the
+    # marker expired on machine speed rather than on anything this test
+    # drives.
+    @pytest.mark.timeout(2, func_only=True)
     @pytest.mark.parametrize("invalidation", ["rebind", "poison", "reconnect"])
     async def test_managed_ptt_port_token_safety(
         self, radio: IcomRadio, invalidation: str
     ) -> None:
+        # The ``rebind``/``poison`` paths hold the authoritative read open
+        # across a whole second command -- including that command's own
+        # ``_civ_min_interval`` pacing gap -- and only then feed the read its
+        # answer.  Against the fixture's 50 ms window that choreography
+        # measured 36-38 ms idle and 134 ms on a loaded machine, so the
+        # read's own window, not the behaviour under test, decided the
+        # verdict.  The shipped default (``CoreRadio.__init__``:
+        # ``min(timeout, 2.0)``) takes it out of the race without hiding a
+        # read that never answers: the ``asyncio.wait_for(pending_read,
+        # 0.5)`` below is this test's real guard for that, and it is
+        # tighter than both this window and the body bound above.
+        radio._civ_get_timeout = 2.0
         sent: list[bytes] = []
         responses: asyncio.Queue[bytes] = asyncio.Queue()
         send_release, disconnect_release = asyncio.Event(), asyncio.Event()
 
-        async def send(frame: bytes) -> None:
+        async def send(frame: bytes, *, is_current: object = True) -> None:
             await send_release.wait()
             sent.append(frame)
 
@@ -757,7 +897,7 @@ class TestPtt:
             return await responses.get()
 
         link = AsyncMock()
-        link.send.side_effect = send
+        link.send_written.side_effect = send
         link.receive.side_effect = receive
         link.disconnect.side_effect = OSError("pre-disconnect failure")
         radio._civ_transport = serial.SerialCivTransport(link)
@@ -797,7 +937,7 @@ class TestPtt:
                 if radio._civ_transport is not replacement:
                     radio._civ_transport = replacement
                 await asyncio.wait_for(radio._retire_managed_tx_port(11), 0.5)
-                assert link.send.await_count == 1
+                assert link.send_written.await_count == 1
                 assert replacement.sent_packets == []
                 assert not replacement.disconnected
                 assert radio._civ_transport is replacement
@@ -841,7 +981,7 @@ class TestPtt:
             await asyncio.sleep(0)
         send_release.clear()
         pending_write = asyncio.create_task(radio._write_managed_ptt(11, True))
-        while link.send.await_count < 2:
+        while link.send_written.await_count < 2:
             await asyncio.sleep(0)
         if invalidation == "poison":
             assert runtime._managed_tx_port_is_current(token)
@@ -1116,7 +1256,7 @@ class TestTimeout:
 
     @pytest.mark.asyncio
     async def test_timeout_on_no_response(self, mock_transport: MockTransport) -> None:
-        radio = IcomRadio("192.168.1.100", timeout=0.1)
+        radio = IcomRadio("192.168.1.100", timeout=0.1, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -1127,7 +1267,7 @@ class TestTimeout:
     async def test_deadline_timeout_does_not_always_send_three_attempts(
         self, mock_transport: MockTransport
     ) -> None:
-        radio = IcomRadio("192.168.1.100", timeout=0.2)
+        radio = IcomRadio("192.168.1.100", timeout=0.2, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -1144,19 +1284,19 @@ class TestDisconnected:
 
     @pytest.mark.asyncio
     async def test_get_frequency_disconnected(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await radio.get_freq()
 
     @pytest.mark.asyncio
     async def test_set_frequency_disconnected(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await radio.set_freq(14_074_000)
 
     @pytest.mark.asyncio
     async def test_send_civ_disconnected(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await radio.send_civ(0x03)
 
@@ -1177,7 +1317,7 @@ class TestConnectedProperty:
     """Test connected property."""
 
     def test_initially_disconnected(self) -> None:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         assert not radio.connected
 
 
@@ -1263,7 +1403,7 @@ class TestAckSinkRobustness:
                 raise OSError("send failed")
 
         t = FailingTransport()
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._ctrl_transport = t
         radio._civ_transport = t
         radio._connected = True
@@ -1308,6 +1448,445 @@ class TestAckSinkRobustness:
             assert radio._civ_request_tracker.timeout_count == 0
         finally:
             await radio._civ_runtime.stop_pump()
+
+
+class TestCapturedExecuteLifetime:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "pause,wait_response",
+        [("pacing", False), ("pacing", True), ("ack-grace", True)],
+        ids=["pacing-ff", "pacing-blocking", "ack-grace"],
+    )
+    @pytest.mark.parametrize("change", ["transport", "epoch", "transport-and-tracker"])
+    async def test_stale_execute_refuses_before_formatter_and_preserves_tracker(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        pause: str,
+        wait_response: bool,
+        change: str,
+    ) -> None:
+        runtime = radio._civ_runtime
+        tracker = radio._civ_request_tracker
+        replacement = MockTransport()
+        entered, release = asyncio.Event(), asyncio.Event()
+        now = time.monotonic()
+        last_send = now
+        radio._last_civ_send_monotonic = now
+        radio._civ_last_waiter_gc_monotonic = now
+        radio._civ_min_interval = 10.0 if pause == "pacing" else 0.0
+        radio._civ_ack_sink_grace = 10.0
+        if pause == "ack-grace":
+            tracker.register_ack(wait=False)
+        frame = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
+        )
+        tasks = []
+
+        async def hold(_delay: float) -> None:
+            entered.set()
+            await release.wait()
+
+        try:
+            with (
+                patch.object(runtime, "start_pump"),
+                patch.object(runtime, "_wrap_civ", wraps=runtime._wrap_civ) as wrap,
+                patch(
+                    "rigplane.runtime._civ_rx.time",
+                    SimpleNamespace(monotonic=lambda: now),
+                ),
+            ):
+                with patch("rigplane.runtime._civ_rx.asyncio.sleep", hold):
+                    stale = asyncio.create_task(
+                        runtime._execute_civ_raw(frame, wait_response)
+                    )
+                    tasks.append(stale)
+                    await entered.wait()
+                    if change.startswith("transport"):
+                        radio._civ_transport = replacement
+                    if change == "epoch":
+                        radio._civ_epoch += 1
+                    if change == "transport-and-tracker":
+                        radio._civ_request_tracker = CivRequestTracker()
+                        radio._civ_request_tracker.register_ack(wait=False)
+                    now += 20.0
+                    release.set()
+                    _, pending = await asyncio.wait({stale}, timeout=1)
+                    assert mock_transport.sent_packets == [], (
+                        "stale execute wrote old transport"
+                    )
+                    assert replacement.sent_packets == [], (
+                        "stale execute wrote replacement"
+                    )
+                    assert wrap.call_count == 0, "stale execute reached the formatter"
+                    assert not pending, "stale execute waited for a response"
+                    result = await asyncio.gather(stale, return_exceptions=True)
+                    assert isinstance(result[0], ConnectionError)
+                    assert tracker.timeout_count == 0
+                    assert radio._last_civ_send_monotonic == last_send
+                    assert radio._civ_send_seq == 0
+                    if pause == "pacing":
+                        assert tracker.pending_count == 0, (
+                            "stale execute leaked its waiter/sink"
+                        )
+                    if change == "transport-and-tracker":
+                        assert radio._civ_request_tracker.ack_sink_count == 1, (
+                            "stale grace dropped replacement sink"
+                        )
+                tracker.drop_ack_sinks()
+                current_tracker = radio._civ_request_tracker
+                current_tracker.drop_ack_sinks()
+                radio._civ_min_interval = 0.0
+                current = asyncio.create_task(
+                    runtime._execute_civ_raw(frame, wait_response)
+                )
+                tasks.append(current)
+                await asyncio.sleep(0)
+                active = radio._civ_transport
+                assert isinstance(active, MockTransport)
+                assert len(active.sent_packets) == 1
+                ack = CivFrame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_ACK, None, b"")
+                assert current_tracker.resolve(
+                    CivEvent(type=CivEventType.ACK, frame=ack)
+                )
+                _, pending = await asyncio.wait({current}, timeout=1)
+                assert not pending, "current command failed after stale refusal"
+                result = current.result()
+                assert result is (ack if wait_response else None)
+                assert current_tracker.pending_count == 0
+                assert not replacement.disconnected
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            tracker.fail_all(ConnectionError("test cleanup"))
+            radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pause", ["send-return", "response-timeout"])
+    async def test_retired_execute_does_not_account_against_replacement(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        pause: str,
+    ) -> None:
+        runtime, tracker = radio._civ_runtime, radio._civ_request_tracker
+        replacement, current_tracker = MockTransport(), CivRequestTracker()
+        entered, release = asyncio.Event(), asyncio.Event()
+        radio._civ_min_interval = 0.0
+        frame = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
+        )
+        tasks = []
+        original_send = mock_transport.send_tracked
+
+        async def send_then_hold(data: bytes) -> None:
+            await original_send(data)
+            if pause == "send-return":
+                entered.set()
+                await release.wait()
+
+        async def controlled_timeout(pending, *, timeout):
+            if pause == "response-timeout":
+                entered.set()
+                await release.wait()
+            pending.cancel()
+            raise asyncio.TimeoutError
+
+        runtime_asyncio = SimpleNamespace(
+            wait_for=controlled_timeout,
+            sleep=asyncio.sleep,
+            TimeoutError=asyncio.TimeoutError,
+            CancelledError=asyncio.CancelledError,
+        )
+        try:
+            with patch.object(runtime, "start_pump"):
+                with (
+                    patch.object(mock_transport, "send_tracked", send_then_hold),
+                    patch("rigplane.runtime._civ_rx.asyncio", runtime_asyncio),
+                ):
+                    stale = asyncio.create_task(runtime._execute_civ_raw(frame))
+                    tasks.append(stale)
+                    await entered.wait()
+                    assert tracker.pending_count == 1
+                    radio._civ_transport = replacement
+                    radio._civ_epoch += 1
+                    radio._civ_request_tracker = current_tracker
+                    current_tracker.register_ack(wait=False)
+                    last_send = time.monotonic() + 100.0
+                    radio._last_civ_send_monotonic = last_send
+                    release.set()
+                    _, pending = await asyncio.wait({stale}, timeout=1)
+                    assert len(mock_transport.sent_packets) == 1
+                    assert replacement.sent_packets == [], "retired execute resent"
+                    assert not pending, "retired execute did not settle"
+                    result = await asyncio.gather(stale, return_exceptions=True)
+                    assert isinstance(result[0], ConnectionError), (
+                        "retired completion was not a connection refusal"
+                    )
+                    assert radio._last_civ_send_monotonic == last_send
+                    assert tracker.timeout_count == current_tracker.timeout_count == 0
+                    assert tracker.pending_count == 0, "retired waiter leaked"
+                    assert current_tracker.ack_sink_count == 1
+                current_tracker.drop_ack_sinks()
+                radio._last_civ_send_monotonic = 0.0
+                current = asyncio.create_task(runtime._execute_civ_raw(frame))
+                tasks.append(current)
+                await asyncio.sleep(0)
+                assert len(replacement.sent_packets) == 1
+                ack = CivFrame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_ACK, None, b"")
+                assert current_tracker.resolve(
+                    CivEvent(type=CivEventType.ACK, frame=ack)
+                )
+                _, pending = await asyncio.wait({current}, timeout=1)
+                assert not pending, "current command failed after retired completion"
+                assert current.result() is ack
+                assert current_tracker.pending_count == 0
+                assert not replacement.disconnected
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            tracker.fail_all(ConnectionError("test cleanup"))
+            current_tracker.fail_all(ConnectionError("test cleanup"))
+
+    @pytest.mark.asyncio
+    async def test_retired_ack_grace_preserves_same_tracker_current_sink(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        runtime, tracker = radio._civ_runtime, radio._civ_request_tracker
+        entered, release = asyncio.Event(), asyncio.Event()
+        now = time.monotonic()
+        radio._civ_last_waiter_gc_monotonic = now
+        radio._civ_ack_sink_grace = 10.0
+        tracker.register_ack(wait=False)
+        frame = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
+        )
+        stale = None
+
+        async def hold(_delay: float) -> None:
+            entered.set()
+            await release.wait()
+
+        try:
+            with (
+                patch.object(runtime, "start_pump"),
+                patch("rigplane.runtime._civ_rx.asyncio.sleep", hold),
+                patch(
+                    "rigplane.runtime._civ_rx.time",
+                    SimpleNamespace(monotonic=lambda: now),
+                ),
+            ):
+                stale = asyncio.create_task(runtime._execute_civ_raw(frame))
+                await entered.wait()
+                runtime.advance_generation("test ACK grace retirement")
+                assert radio._civ_request_tracker is tracker
+                assert tracker.ack_sink_count == 0
+                tracker.register_ack(wait=False)
+                now += 20.0
+                release.set()
+                _, waiting = await asyncio.wait({stale}, timeout=1)
+                assert mock_transport.sent_packets == []
+                assert not waiting, "retired ACK grace did not settle"
+                result = await asyncio.gather(stale, return_exceptions=True)
+                assert isinstance(result[0], ConnectionError)
+                assert tracker.ack_sink_count == 1, (
+                    "retired ACK grace dropped current-generation sink"
+                )
+                ack = CivFrame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_ACK, None, b"")
+                assert tracker.resolve(CivEvent(type=CivEventType.ACK, frame=ack))
+                assert tracker.pending_count == 0
+                assert tracker.timeout_count == 0
+        finally:
+            release.set()
+            if stale is not None:
+                if not stale.done():
+                    stale.cancel()
+                await asyncio.gather(stale, return_exceptions=True)
+            tracker.drop_ack_sinks()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pause", ["pacing", "send"])
+    async def test_generation_retirement_retrieves_detached_blocking_exception(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        pause: str,
+    ) -> None:
+        runtime, tracker = radio._civ_runtime, radio._civ_request_tracker
+        replacement = MockTransport()
+        entered, release = asyncio.Event(), asyncio.Event()
+        radio._last_civ_send_monotonic = time.monotonic()
+        radio._civ_min_interval = 10.0 if pause == "pacing" else 0.0
+        frame = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
+        )
+        original_send = mock_transport.send_tracked
+        tasks = []
+        pending_response = None
+
+        async def hold(value: float | bytes) -> None:
+            if pause == "send":
+                assert isinstance(value, bytes)
+                await original_send(value)
+            entered.set()
+            await release.wait()
+
+        target = asyncio if pause == "pacing" else mock_transport
+        method = "sleep" if pause == "pacing" else "send_tracked"
+        try:
+            with patch.object(runtime, "start_pump"):
+                with patch.object(target, method, hold):
+                    stale = asyncio.create_task(runtime._execute_civ_raw(frame))
+                    tasks.append(stale)
+                    await entered.wait()
+                    pending_response = tracker._ack_waiters[0].future
+                    assert pending_response is not None
+                    assert not pending_response.done()
+                    runtime.advance_generation("test provider retirement")
+                    assert pending_response.done() and not pending_response.cancelled()
+                    # CPython's pending-exception diagnostic flag is non-consuming.
+                    assert pending_response._log_traceback
+                    assert tracker.pending_count == 0
+                    radio._civ_transport = replacement
+                    tracker.register_ack(wait=False)
+                    last_send = time.monotonic() + 100.0
+                    radio._last_civ_send_monotonic = last_send
+                    release.set()
+                    _, waiting = await asyncio.wait({stale}, timeout=1)
+                    assert len(mock_transport.sent_packets) == (pause == "send")
+                    assert replacement.sent_packets == []
+                    assert not waiting, "retired blocking executor did not settle"
+                    result = await asyncio.gather(stale, return_exceptions=True)
+                    assert isinstance(result[0], ConnectionError)
+                    assert radio._last_civ_send_monotonic == last_send
+                    assert tracker.timeout_count == 0
+                    assert tracker.pending_count == tracker.ack_sink_count == 1
+                    assert pending_response.done()
+                    assert not pending_response._log_traceback, (
+                        "retired blocking waiter exception was not retrieved"
+                    )
+                tracker.drop_ack_sinks()
+                radio._last_civ_send_monotonic = 0.0
+                radio._civ_min_interval = 0.0
+                current = asyncio.create_task(runtime._execute_civ_raw(frame))
+                tasks.append(current)
+                await asyncio.sleep(0)
+                assert len(replacement.sent_packets) == 1
+                ack = CivFrame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_ACK, None, b"")
+                assert tracker.resolve(CivEvent(type=CivEventType.ACK, frame=ack))
+                _, waiting = await asyncio.wait({current}, timeout=1)
+                assert not waiting, "current command failed after real retirement"
+                assert current.result() is ack
+                assert tracker.pending_count == 0
+                assert not replacement.disconnected
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            tracker.fail_all(ConnectionError("test cleanup"))
+            if pending_response is not None:
+                if not pending_response.done():
+                    pending_response.cancel()
+                elif not pending_response.cancelled():
+                    pending_response.exception()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pause", ["pacing", "send"])
+    async def test_cancelled_fire_and_forget_cleans_captured_ack_sink(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        pause: str,
+    ) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+        runtime = radio._civ_runtime
+        tracker = radio._civ_request_tracker
+        radio._last_civ_send_monotonic = time.monotonic()
+        radio._civ_min_interval = 10.0 if pause == "pacing" else 0.0
+        frame = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
+        )
+        task = None
+
+        async def hold(_value: float | bytes) -> None:
+            entered.set()
+            await release.wait()
+
+        target = asyncio if pause == "pacing" else mock_transport
+        method = "sleep" if pause == "pacing" else "send_tracked"
+        try:
+            with (
+                patch.object(runtime, "start_pump"),
+                patch.object(target, method, hold),
+            ):
+                task = asyncio.create_task(runtime._execute_civ_raw(frame, False))
+                await entered.wait()
+                assert tracker.ack_sink_count == 1
+                task.cancel()
+                _, pending = await asyncio.wait({task}, timeout=1)
+                assert not pending
+                assert task.cancelled()
+                assert tracker.pending_count == 0, (
+                    "cancelled fire-and-forget leaked ACK sink"
+                )
+                assert tracker.timeout_count == 0
+        finally:
+            release.set()
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            tracker.drop_ack_sinks()
+
+
+class TestResponseDeadlineOpensAtSend:
+    """The answer window opens when the frame is on the wire, not at entry.
+
+    ``_civ_get_timeout`` bounds how long the *radio* may take to answer.
+    The outbound gap ``_civ_min_interval`` and the ACK-sink drain both run
+    before the send and are this process's own scheduling, not radio
+    latency.  ``_civ_rx.py: CivRuntime._execute_civ_raw`` used to stamp its
+    deadline on entry and charge them to the same budget, so a command sent
+    within ``_civ_min_interval`` of the previous one lost that whole gap
+    from its answer window -- and lost the window entirely whenever the
+    pacing sleep overshot the remainder, raising ``TimeoutError`` without
+    ever waiting for a response.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pacing_gap_is_not_charged_to_the_answer_window(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        # A frame went out just now, so this one is held back a full
+        # ``_civ_min_interval``.  Making that gap outlast the whole answer
+        # budget is what makes the mis-charge decisive rather than a matter
+        # of scheduling luck: the response is already queued when the frame
+        # goes out, so the window is never spent waiting for the radio.
+        # The window sits an order of magnitude above the handover it does
+        # wait for, and the outbound gap above the window, deliberately.  At 0.05/0.08 this test still caught the
+        # mis-charge it exists for, but the 50 ms left for the RX
+        # pump to hand over an already-queued response was the same margin
+        # this change exists to stop relying on, and it reddened on correct
+        # code about once in 27 loaded runs.
+        radio._civ_get_timeout = 0.5
+        radio._civ_min_interval = 0.8
+        radio._last_civ_send_monotonic = time.monotonic()
+
+        mock_transport.queue_response_on_send(1, _freq_response(14_074_000))
+        cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
+
+        frame = await radio._execute_civ_raw(cmd)
+
+        assert frame is not None
+        assert frame.command == 0x03
 
 
 class TestScopeCallbackSafety:
@@ -1672,7 +2251,7 @@ class TestCivTimeoutIsolation:
         self, mock_transport: MockTransport
     ) -> None:
         """After a CI-V timeout, the next command must succeed independently."""
-        radio = IcomRadio("192.168.1.100", timeout=0.1)
+        radio = IcomRadio("192.168.1.100", timeout=0.1, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -1694,7 +2273,7 @@ class TestCivTimeoutIsolation:
         self, mock_transport: MockTransport
     ) -> None:
         """Multiple consecutive timeouts do not corrupt tracker state."""
-        radio = IcomRadio("192.168.1.100", timeout=0.1)
+        radio = IcomRadio("192.168.1.100", timeout=0.1, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -1716,7 +2295,7 @@ class TestCivTimeoutIsolation:
         self, mock_transport: MockTransport
     ) -> None:
         """A timeout on get_frequency does not block a subsequent set_frequency."""
-        radio = IcomRadio("192.168.1.100", timeout=0.1)
+        radio = IcomRadio("192.168.1.100", timeout=0.1, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -1823,7 +2402,7 @@ class TestSpeechTransceiverIdXfc:
 
     @pytest.fixture
     def radio(self, mock_transport: MockTransport) -> IcomRadio:
-        r = IcomRadio("192.168.1.100")
+        r = IcomRadio("192.168.1.100", model="IC-7610")
         r._connected = True
         r._radio_addr = 0x98
         r._civ_transport = mock_transport
@@ -1903,7 +2482,7 @@ class TestStateCacheFromUnsolicitedFrames:
     """_update_state_cache_from_frame populates cache from radio-pushed frames."""
 
     def _make_radio(self) -> IcomRadio:
-        radio = IcomRadio("192.168.1.100")
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._connected = True
         return radio
 
@@ -1992,7 +2571,7 @@ class TestGetFallbackToCache:
         self, mock_transport: MockTransport
     ) -> None:
         """get_frequency returns cached freq when radio is silent."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05)
+        radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2006,7 +2585,7 @@ class TestGetFallbackToCache:
         self, mock_transport: MockTransport
     ) -> None:
         """get_frequency raises TimeoutError when cache is empty and radio is silent."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05)
+        radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2019,7 +2598,7 @@ class TestGetFallbackToCache:
         self, mock_transport: MockTransport
     ) -> None:
         """get_mode_info returns cached mode/filter when radio is silent."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05)
+        radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2034,7 +2613,7 @@ class TestGetFallbackToCache:
         self, mock_transport: MockTransport
     ) -> None:
         """get_mode_info raises TimeoutError when cache is empty and radio is silent."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05)
+        radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2056,7 +2635,9 @@ class TestGetFallbackCacheTTL:
         self, mock_transport: MockTransport
     ) -> None:
         """get_frequency raises TimeoutError when cached value is older than TTL."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05, cache_ttl_s={"freq": 10.0})
+        radio = IcomRadio(
+            "192.168.1.100", timeout=0.05, cache_ttl_s={"freq": 10.0}, model="IC-7610"
+        )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2072,7 +2653,9 @@ class TestGetFallbackCacheTTL:
         self, mock_transport: MockTransport
     ) -> None:
         """get_frequency returns cached value when it is within TTL."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05, cache_ttl_s={"freq": 10.0})
+        radio = IcomRadio(
+            "192.168.1.100", timeout=0.05, cache_ttl_s={"freq": 10.0}, model="IC-7610"
+        )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2086,7 +2669,9 @@ class TestGetFallbackCacheTTL:
         self, mock_transport: MockTransport
     ) -> None:
         """get_mode_info raises TimeoutError when cached value is older than TTL."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05, cache_ttl_s={"mode": 10.0})
+        radio = IcomRadio(
+            "192.168.1.100", timeout=0.05, cache_ttl_s={"mode": 10.0}, model="IC-7610"
+        )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2101,7 +2686,9 @@ class TestGetFallbackCacheTTL:
         self, mock_transport: MockTransport
     ) -> None:
         """get_mode_info returns cached value when it is within TTL."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05, cache_ttl_s={"mode": 10.0})
+        radio = IcomRadio(
+            "192.168.1.100", timeout=0.05, cache_ttl_s={"mode": 10.0}, model="IC-7610"
+        )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2116,7 +2703,12 @@ class TestGetFallbackCacheTTL:
         self, mock_transport: MockTransport
     ) -> None:
         """get_power raises TimeoutError when cached value is older than TTL."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05, cache_ttl_s={"rf_power": 30.0})
+        radio = IcomRadio(
+            "192.168.1.100",
+            timeout=0.05,
+            cache_ttl_s={"rf_power": 30.0},
+            model="IC-7610",
+        )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2131,7 +2723,12 @@ class TestGetFallbackCacheTTL:
         self, mock_transport: MockTransport
     ) -> None:
         """get_power returns cached value when it is within TTL."""
-        radio = IcomRadio("192.168.1.100", timeout=0.05, cache_ttl_s={"rf_power": 30.0})
+        radio = IcomRadio(
+            "192.168.1.100",
+            timeout=0.05,
+            cache_ttl_s={"rf_power": 30.0},
+            model="IC-7610",
+        )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
@@ -2146,7 +2743,9 @@ class TestGetFallbackCacheTTL:
     ) -> None:
         """cache_ttl_s merges with defaults, overriding individual fields."""
         # Only override freq TTL; mode/rf_power keep defaults.
-        radio = IcomRadio("192.168.1.100", timeout=0.05, cache_ttl_s={"freq": 1.0})
+        radio = IcomRadio(
+            "192.168.1.100", timeout=0.05, cache_ttl_s={"freq": 1.0}, model="IC-7610"
+        )
         assert radio._cache_ttl_freq == 1.0
         assert radio._cache_ttl_mode == 10.0
         assert radio._cache_ttl_rf_power == 30.0
@@ -2298,6 +2897,36 @@ class TestDspLevelParity:
         await radio.set_cw_pitch(600)
         sent = mock_transport.sent_packets[-1]
         assert b"\x14\x09\x01\x28\xfd" in sent
+
+    @pytest.mark.asyncio
+    async def test_set_cw_pitch_sends_the_origin_main_frame_bytes(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        # 600 Hz encodes through the IC-7610 profile's 300-900 Hz ceil band
+        # to level 128 (ceil(127.5)); the full frame is byte for byte the
+        # FE FE 98 E0 14 09 01 28 FD that origin/main sent for this call
+        # (pinned by the substring assertion in the test above, unchanged).
+        await radio.set_cw_pitch(600)
+        assert mock_transport.sent_packets[-1].endswith(
+            b"\xfe\xfe\x98\xe0\x14\x09\x01\x28\xfd"
+        )
+
+    @pytest.mark.asyncio
+    async def test_x6200_set_cw_pitch_sends_level_255_at_1200_hz(
+        self, mock_transport: MockTransport
+    ) -> None:
+        # rigs/x6200.toml [controls.cw_pitch] declares the 400-1200 Hz band
+        # (Radioddity X6200 CI-V V1.0.6 p.6: 0=400Hz, 255=1200Hz), so
+        # 1200 Hz encodes to level 255 -> BCD 02 55 on the X6200 address.
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        await radio.set_cw_pitch(1200)
+        assert mock_transport.sent_packets[-1].endswith(
+            b"\xfe\xfe\xa4\xe0\x14\x09\x02\x55\xfd"
+        )
+        radio._connected = False
 
     @pytest.mark.asyncio
     async def test_set_key_speed_sends_scaled_level(
@@ -2455,7 +3084,7 @@ class TestNbDepthWidthPollerDispatch:
         # must reflect the radio's REAL value, not the sent value. The readback
         # response is released only after the GET send (send #2) so the
         # fire-and-forget SET (send #1) does not consume it.
-        radio = IcomRadio("192.168.1.100", timeout=0.5)
+        radio = IcomRadio("192.168.1.100", timeout=0.5, model="IC-7610")
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
@@ -2492,7 +3121,7 @@ class TestNbDepthWidthPollerDispatch:
         # Post-set write-through readback (MOR-491-B): radio reports 200 even
         # though 255 was sent. The web state reflects the radio's real value.
         # Release the readback response only after the GET send (send #2).
-        radio = IcomRadio("192.168.1.100", timeout=0.5)
+        radio = IcomRadio("192.168.1.100", timeout=0.5, model="IC-7610")
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
@@ -3199,7 +3828,9 @@ class TestToneTsqlParity:
 
     @pytest.fixture
     def radio(self, mock_transport: MockTransport):
-        r = IcomRadio("192.168.1.104", timeout=0.05, model="IC-7300")
+        r = IcomRadio(
+            "192.168.1.104", timeout=2.0, model="IC-7300"
+        )  # MOR-2121: was 0.05, see radio() fixture above
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
@@ -3254,48 +3885,118 @@ class TestToneTsqlParity:
     async def test_get_tone_freq(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        # 3-byte BCD tone frequency: hundreds=0x00, tens_units=0x88,
-        # tenths=0x05 -> 88.5 Hz (_codec.py: _decode_tone_freq).
+        # 88.5 Hz -- MOR-2091, see tests/test_tone_tsql.py's _BCD_TABLE.
         civ = build_civ_frame(
             CONTROLLER_ADDR,
             _IC_7300_ADDR,
             0x1B,
             sub=0x00,
-            data=bytes([0x00, 0x88, 0x05]),
+            data=bytes([0x00, 0x08, 0x85]),
         )
         mock_transport.queue_response(_wrap_civ_in_udp(civ))
-        assert await radio.get_tone_freq() == pytest.approx(88.5)
+        assert await radio.get_tone_freq() == 8850
 
     @pytest.mark.asyncio
     async def test_get_tsql_freq(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        # 3-byte BCD TSQL frequency: hundreds=0x01, tens_units=0x10,
-        # tenths=0x09 -> 110.9 Hz.
+        # 110.9 Hz -- MOR-2091, see tests/test_tone_tsql.py's _BCD_TABLE.
         civ = build_civ_frame(
             CONTROLLER_ADDR,
             _IC_7300_ADDR,
             0x1B,
             sub=0x01,
-            data=bytes([0x01, 0x10, 0x09]),
+            data=bytes([0x00, 0x11, 0x09]),
         )
         mock_transport.queue_response(_wrap_civ_in_udp(civ))
-        assert await radio.get_tsql_freq() == pytest.approx(110.9)
+        assert await radio.get_tsql_freq() == 11090
 
     @pytest.mark.asyncio
     async def test_set_tone_freq(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        await radio.set_tone_freq(88.5)
+        await radio.set_tone_freq(8850)
         # plain (no cmd29 -- IC-7300 has none) + 0x1B + 0x00 + BCD(88.5) + FD
-        assert mock_transport.sent_packets[-1].endswith(b"\x1b\x00\x00\x88\x05\xfd")
+        assert mock_transport.sent_packets[-1].endswith(b"\x1b\x00\x00\x08\x85\xfd")
 
     @pytest.mark.asyncio
     async def test_set_tsql_freq(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        await radio.set_tsql_freq(110.9)
-        assert mock_transport.sent_packets[-1].endswith(b"\x1b\x01\x01\x10\x09\xfd")
+        await radio.set_tsql_freq(11090)
+        assert mock_transport.sent_packets[-1].endswith(b"\x1b\x01\x00\x11\x09\xfd")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "freq_hz", "expected_tail"),
+        [
+            ("set_tone_freq", 8850, b"\x1b\x00\x00\x08\x85\xfd"),
+            ("set_tsql_freq", 11090, b"\x1b\x01\x00\x11\x09\xfd"),
+        ],
+    )
+    async def test_set_tone_frequency_accepts_protocol_keyword(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        freq_hz: int,
+        expected_tail: bytes,
+    ) -> None:
+        await getattr(radio, method_name)(freq_hz=freq_hz)
+        assert mock_transport.sent_packets[-1].endswith(expected_tail)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "freq_centihz", "expected_tail"),
+        [
+            ("set_tone_freq", 8850, b"\x1b\x00\x00\x08\x85\xfd"),
+            ("set_tsql_freq", 11090, b"\x1b\x01\x00\x11\x09\xfd"),
+        ],
+    )
+    async def test_set_tone_frequency_preserves_centihz_keyword_alias(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        freq_centihz: int,
+        expected_tail: bytes,
+    ) -> None:
+        await getattr(radio, method_name)(freq_centihz=freq_centihz)
+        assert mock_transport.sent_packets[-1].endswith(expected_tail)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method_name", ["set_tone_freq", "set_tsql_freq"])
+    async def test_set_tone_frequency_rejects_both_keyword_spellings(
+        self, radio: IcomRadio, mock_transport: MockTransport, method_name: str
+    ) -> None:
+        with pytest.raises(TypeError, match="both freq_hz and freq_centihz"):
+            await getattr(radio, method_name)(freq_hz=8850, freq_centihz=8850)
+
+        assert mock_transport.sent_packets == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "sub"),
+        [("get_tone_freq", 0x00), ("get_tsql_freq", 0x01)],
+    )
+    async def test_get_tone_frequency_rejects_profile_nonmember(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        sub: int,
+    ) -> None:
+        civ = build_civ_frame(
+            CONTROLLER_ADDR,
+            _IC_7300_ADDR,
+            0x1B,
+            sub=sub,
+            data=bytes([0x00, 0x08, 0x80]),
+        )
+        mock_transport.queue_response(_wrap_civ_in_udp(civ))
+
+        with pytest.raises(ValueError, match="not declared"):
+            await getattr(radio, method_name)()
 
 
 class TestToneTsqlDualRxCmd29Guard:
@@ -3326,7 +4027,9 @@ class TestToneTsqlDualRxCmd29Guard:
 
     @pytest.fixture
     def ic9700_radio(self, mock_transport: MockTransport):
-        r = IcomRadio("192.168.1.102", timeout=0.05, model="IC-9700")
+        r = IcomRadio(
+            "192.168.1.102", timeout=2.0, model="IC-9700"
+        )  # MOR-2121: was 0.05, see radio() fixture above
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
@@ -3353,17 +4056,17 @@ class TestToneTsqlDualRxCmd29Guard:
                 "get_tone_freq",
                 b"\x1b\x00\xfd",
                 build_civ_frame(
-                    CONTROLLER_ADDR, 0xA2, 0x1B, sub=0x00, data=b"\x00\x88\x05"
+                    CONTROLLER_ADDR, 0xA2, 0x1B, sub=0x00, data=b"\x00\x08\x85"
                 ),
-                88.5,
+                8850,
             ),
             (
                 "get_tsql_freq",
                 b"\x1b\x01\xfd",
                 build_civ_frame(
-                    CONTROLLER_ADDR, 0xA2, 0x1B, sub=0x01, data=b"\x01\x10\x09"
+                    CONTROLLER_ADDR, 0xA2, 0x1B, sub=0x01, data=b"\x00\x11\x09"
                 ),
-                110.9,
+                11090,
             ),
         ],
     )
@@ -3374,7 +4077,7 @@ class TestToneTsqlDualRxCmd29Guard:
         method_name: str,
         request_tail: bytes,
         response_civ: bytes,
-        expected: bool | float,
+        expected: bool | int,
     ) -> None:
         """MOR-1538: SUB GETs reach SUB via VFO-select instead of raising."""
         ack = _wrap_civ_in_udp(build_civ_frame(CONTROLLER_ADDR, 0xA2, _CMD_ACK))
@@ -3385,10 +4088,7 @@ class TestToneTsqlDualRxCmd29Guard:
         method = getattr(ic9700_radio, method_name)
         result = await method(receiver=1)
 
-        if isinstance(expected, float):
-            assert result == pytest.approx(expected)
-        else:
-            assert result is expected
+        assert result == expected
 
         frames = mock_transport.sent_packets
         assert frames[0].endswith(b"\x07\xd1\xfd")  # select SUB
@@ -3401,8 +4101,8 @@ class TestToneTsqlDualRxCmd29Guard:
         [
             ("set_repeater_tone", (True,), b"\x16\x42\x01\xfd"),
             ("set_repeater_tsql", (True,), b"\x16\x43\x01\xfd"),
-            ("set_tone_freq", (88.5,), b"\x1b\x00\x00\x88\x05\xfd"),
-            ("set_tsql_freq", (110.9,), b"\x1b\x01\x01\x10\x09\xfd"),
+            ("set_tone_freq", (8850,), b"\x1b\x00\x00\x08\x85\xfd"),
+            ("set_tsql_freq", (11090,), b"\x1b\x01\x00\x11\x09\xfd"),
         ],
     )
     async def test_sub_receiver_set_uses_vfo_select_fallback(
@@ -3439,8 +4139,8 @@ class TestToneTsqlDualRxCmd29Guard:
         [
             ("set_repeater_tone", (True,), b"\x16\x42\x01\xfd"),
             ("set_repeater_tsql", (True,), b"\x16\x43\x01\xfd"),
-            ("set_tone_freq", (88.5,), b"\x1b\x00\x00\x88\x05\xfd"),
-            ("set_tsql_freq", (110.9,), b"\x1b\x01\x01\x10\x09\xfd"),
+            ("set_tone_freq", (8850,), b"\x1b\x00\x00\x08\x85\xfd"),
+            ("set_tsql_freq", (11090,), b"\x1b\x01\x00\x11\x09\xfd"),
         ],
     )
     async def test_main_receiver_still_sends_direct_frame(
@@ -3463,6 +4163,60 @@ class TestToneTsqlDualRxCmd29Guard:
         mock_transport.queue_response(_wrap_civ_in_udp(civ))
         assert await ic9700_radio.get_repeater_tone(receiver=0) is True
         assert mock_transport.sent_packets[-1].endswith(b"\x16\x42\xfd")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "args"),
+        [
+            ("get_tone_freq", ()),
+            ("set_tone_freq", (8850,)),
+            ("get_tsql_freq", ()),
+            ("set_tsql_freq", (11090,)),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "domain",
+        [None, (), (8850.0,), (8851,), (10000, 8850)],
+    )
+    async def test_invalid_tone_domain_fails_before_sub_vfo_fallback(
+        self,
+        ic9700_radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        args: tuple,
+        domain: tuple | None,
+    ) -> None:
+        ic9700_radio._profile = replace(
+            ic9700_radio._profile,
+            ctcss_tones_centihz=domain,
+        )
+
+        with pytest.raises(ValueError, match="CTCSS tone domain"):
+            await getattr(ic9700_radio, method_name)(*args, receiver=1)
+
+        assert mock_transport.sent_packets == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("invalid", [True, 8850.0, "8850"])
+    async def test_non_int_tone_fails_before_sub_vfo_fallback(
+        self,
+        ic9700_radio: IcomRadio,
+        mock_transport: MockTransport,
+        invalid: object,
+    ) -> None:
+        with pytest.raises(TypeError, match="exact int in centiHz"):
+            await ic9700_radio.set_tone_freq(invalid, receiver=1)  # type: ignore[arg-type]
+
+        assert mock_transport.sent_packets == []
+
+    @pytest.mark.asyncio
+    async def test_nonmember_tone_fails_before_sub_vfo_fallback(
+        self, ic9700_radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        with pytest.raises(ValueError, match="not declared"):
+            await ic9700_radio.set_tsql_freq(8800, receiver=1)
+
+        assert mock_transport.sent_packets == []
 
 
 class TestRepeaterToneDedupeKeyReceiverScoped:
@@ -3508,7 +4262,9 @@ class TestRepeaterToneDedupeKeyReceiverScoped:
 
     @pytest.fixture
     def radio(self, mock_transport: MockTransport):
-        r = IcomRadio("192.168.1.104", timeout=0.05, model="IC-7300")
+        r = IcomRadio(
+            "192.168.1.104", timeout=2.0, model="IC-7300"
+        )  # MOR-2121: was 0.05, see radio() fixture above
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
@@ -3517,11 +4273,12 @@ class TestRepeaterToneDedupeKeyReceiverScoped:
 
     @pytest.fixture
     def ic9700_radio(self, mock_transport: MockTransport):
-        # Same shape as TestToneTsqlDualRxCmd29Guard.ic9700_radio above,
-        # including timeout=0.05. Whether a larger timeout would reduce
-        # this test's flake rate under -n auto is unmeasured and deferred
-        # -- not decided here.
-        r = IcomRadio("192.168.1.102", timeout=0.05, model="IC-9700")
+        # Same shape as TestToneTsqlDualRxCmd29Guard.ic9700_radio above.
+        # MOR-2121: was timeout=0.05 -- see radio() fixture above for the
+        # measured mechanism this was previously deferred pending.
+        r = IcomRadio(
+            "192.168.1.102", timeout=2.0, model="IC-9700"
+        )  # MOR-2121: was 0.05, see radio() fixture above
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
@@ -3617,7 +4374,9 @@ class TestRequireReceiverToneMethodsPin:
 
     @pytest.fixture
     def single_rx_radio(self, mock_transport: MockTransport):
-        r = IcomRadio("192.168.1.104", timeout=0.05, model="IC-7300")
+        r = IcomRadio(
+            "192.168.1.104", timeout=2.0, model="IC-7300"
+        )  # MOR-2121: was 0.05, see radio() fixture above
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
@@ -3633,9 +4392,9 @@ class TestRequireReceiverToneMethodsPin:
             ("get_repeater_tsql", ()),
             ("set_repeater_tsql", (True,)),
             ("get_tone_freq", ()),
-            ("set_tone_freq", (88.5,)),
+            ("set_tone_freq", (8850,)),
             ("get_tsql_freq", ()),
-            ("set_tsql_freq", (110.9,)),
+            ("set_tsql_freq", (11090,)),
         ],
     )
     async def test_single_rx_receiver_1_reports_accurate_receiver_count(
@@ -3701,3 +4460,61 @@ class TestCodecProfileOverride:
             audio_codec=AudioCodec.PCM_2CH_16BIT,
         )
         assert radio._audio_codec == AudioCodec.PCM_1CH_16BIT
+
+
+@pytest.mark.parametrize("selector", [0, 1])
+@pytest.mark.parametrize("reply", [0xFB, 0xFA])
+@pytest.mark.parametrize(
+    "opcode,data", [(0x25, bcd_encode(14_074_000)), (0x26, b"\x01\x00\x01")]
+)
+async def test_direct_vfo_set_uses_real_ack_tracker(
+    radio, mock_transport, selector, reply, opcode, data
+):
+    """Actual send_civ/runtime/transport matcher, without mocking send_civ."""
+    mock_transport.queue_response_on_send(
+        1,
+        _wrap_civ_in_udp(
+            build_civ_frame(
+                CONTROLLER_ADDR,
+                IC_7610_ADDR,
+                reply,
+            )
+        ),
+    )
+    response = await radio.send_civ(opcode, data=bytes([selector]) + data)
+    assert response.command == reply
+    assert radio._civ_request_tracker.pending_count == 0
+    assert radio._civ_request_tracker.timeout_count == 0
+    frames = [
+        packet[packet.index(b"\xfe\xfe") :] for packet in mock_transport.sent_packets
+    ]
+    assert frames == [
+        build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, opcode, data=bytes([selector]) + data
+        )
+    ]
+
+
+@pytest.mark.parametrize("selector", [0, 1])
+@pytest.mark.parametrize(
+    "opcode,data", [(0x25, bcd_encode(14_074_000)), (0x26, b"\x01\x00\x01")]
+)
+async def test_direct_vfo_get_still_uses_real_response_tracker(
+    radio, mock_transport, selector, opcode, data
+):
+    payload = bytes([selector]) + data
+    mock_transport.queue_response_on_send(
+        1,
+        _wrap_civ_in_udp(
+            build_civ_frame(
+                CONTROLLER_ADDR,
+                IC_7610_ADDR,
+                opcode,
+                data=payload,
+            )
+        ),
+    )
+    response = await radio.send_civ(opcode, data=bytes([selector]))
+    assert response.command == opcode and response.data == payload
+    assert radio._civ_request_tracker.pending_count == 0
+    assert radio._civ_request_tracker.timeout_count == 0

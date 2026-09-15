@@ -1145,6 +1145,11 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             unit="centihz",
         ),
         spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "repeater_shift"),
+            "int",
+            writable=True,
+        ),
+        spec(
             FieldPath.receiver(receiver_id, "operator_controls", "audio_peak_filter"),
             "int",
             writable=True,
@@ -1221,6 +1226,7 @@ def _global_specs() -> tuple[FieldSpec, ...]:
 
     return (
         spec(FieldPath.global_("tx_state", "tx_target"), "object"),
+        spec(FieldPath.global_("tx_state", "observed_ptt"), "str"),
         spec(FieldPath.global_("tx_state", "ptt"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "power_on"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "rit_on"), "bool", writable=True),
@@ -1231,7 +1237,6 @@ def _global_specs() -> tuple[FieldSpec, ...]:
         spec(FieldPath.global_("tx_state", "compressor_on"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "monitor_on"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "vox_on"), "bool", writable=True),
-        spec(FieldPath.global_("tx_state", "tx_freq_monitor"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "main_sub_tracking"), "bool", writable=True),
         spec(
             FieldPath.global_("operator_controls", "power_level"),

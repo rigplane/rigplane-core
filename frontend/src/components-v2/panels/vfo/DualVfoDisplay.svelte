@@ -10,7 +10,7 @@
   tests, but is no longer wired to any in-tile control.
 -->
 <script lang="ts">
-  import VfoPanel from '../../../components-v2/vfo/VfoPanel.svelte';
+  import LegacyVfoPanelAdapter from '../../../components-v2/vfo/LegacyVfoPanelAdapter.svelte';
   import type { VfoStateProps } from '../../../components-v2/layout/layout-utils';
   import type { VfoLayoutProfile } from '../../../components-v2/layout/vfo-layout-tokens';
 
@@ -47,7 +47,7 @@
   data-receiver="main"
   data-layout-profile={layoutProfile}
 >
-  <VfoPanel
+  <LegacyVfoPanelAdapter
     {...main}
     {layoutProfile}
     onModeClick={onMainModeClick}
@@ -61,7 +61,7 @@
   data-receiver="sub"
   data-layout-profile={layoutProfile}
 >
-  <VfoPanel
+  <LegacyVfoPanelAdapter
     {...sub}
     {layoutProfile}
     onModeClick={onSubModeClick}

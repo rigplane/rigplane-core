@@ -20,6 +20,12 @@ import { flushSync, mount, unmount } from 'svelte';
 import ScopeControlsSurface, {
   CHOICES, TOGGLES, UNKNOWN_TEXT, type ScopeChoiceField, type ScopeToggleField,
 } from '../ScopeControlsSurface.svelte';
+import FiniteControlRendererFixture, {
+  resetRetainedInvocations, retainedInvocations,
+} from '../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
+import {
+  createFiniteRendererContext, type FiniteControlAppearance,
+} from '../../primitives/control-instruments/control-instrument-renderer.svelte';
 import { topologyFixtures, withScopeControls } from '../fixtures/topologies';
 import type { Availability, RadioViewModel, ScopeControlsField, ScopeControlsViewModel } from '../radio-view-model';
 
@@ -38,7 +44,7 @@ const withSc = (over: Partial<ScopeControlsViewModel>): RadioViewModel => {
 
 let target: HTMLDivElement;
 beforeEach(() => { target = document.createElement('div'); document.body.appendChild(target); });
-afterEach(() => { target.remove(); });
+afterEach(() => { resetRetainedInvocations(); target.remove(); });
 
 type Handlers = {
   onToggleChange?: (field: ScopeToggleField, next: boolean) => void;
@@ -144,6 +150,12 @@ describe('unread leaves render honestly, never fabricated', () => {
     expect(r.el('scope-ref-value')!.textContent).toBe(UNKNOWN_TEXT);
     r.dispose();
   });
+
+  it('does not coerce an observed out-of-list choice into a selected option', () => {
+    const r = render(withSc({ centerType: known(99) }));
+    for (const value of [0, 1, 2]) expect(r.el(`scope-centerType-${value}`)!.getAttribute('aria-checked')).toBe('false');
+    r.dispose();
+  });
 });
 
 describe('handler guards are pinned independently of `disabled` (MOR-1304 F3)', () => {
@@ -174,14 +186,6 @@ describe('handler guards are pinned independently of `disabled` (MOR-1304 F3)', 
     r.dispose();
   });
 
-  /**
-   * The `usable()` gate is structural && operational && known — a field can
-   * be `reading.status === 'known'` (a stale, previously-observed value)
-   * while `operational: false` (unwritable right now). These three pin THAT
-   * half specifically: a guard that checks only `status === 'known'` (a
-   * plausible partial mutation) still passes the tests above but must fail
-   * these, since none of them is unread.
-   */
   const STALE: Availability = { structural: true, operational: false };
 
   it('refuses a choice click on a KNOWN but operationally-stale field', () => {
@@ -324,5 +328,68 @@ describe('carry-forward (2): receiver is the ONE MAIN/SUB control', () => {
     flushSync();
     expect(onChoiceChange).toHaveBeenCalledExactlyOnceWith('receiver', 1);
     r.dispose();
+  });
+});
+
+describe('external finite appearance', () => {
+  const fixture = FiniteControlRendererFixture as FiniteControlAppearance['action'];
+  const appearance = {
+    action: fixture,
+    toggle: FiniteControlRendererFixture as FiniteControlAppearance['toggle'],
+    choice: FiniteControlRendererFixture as FiniteControlAppearance['choice'],
+  } satisfies FiniteControlAppearance;
+
+  it('uses host labels and the existing Scope action/toggle/choice intents', () => {
+    const onSpanChange = vi.fn(), onToggleChange = vi.fn(), onChoiceChange = vi.fn();
+    const component = mount(ScopeControlsSurface, { target, props: {
+      view: withSc({ mode: known(0), span: known(3), hold: known(false), centerType: known(1) }),
+      finiteAppearance: appearance, rendererContext: createFiniteRendererContext(),
+      onSpanChange, onToggleChange, onChoiceChange,
+    } });
+    flushSync();
+    (target.querySelector('[aria-label="Increase scope span"]') as HTMLButtonElement).click();
+    (target.querySelector('[data-testid="external-HOLD"]') as HTMLButtonElement).click();
+    (target.querySelector('[data-testid="external-Scope center type-2"]') as HTMLButtonElement).click();
+    expect(onSpanChange).toHaveBeenCalledExactlyOnceWith(4);
+    expect(onToggleChange).toHaveBeenCalledExactlyOnceWith('hold', true);
+    expect(onChoiceChange).toHaveBeenCalledExactlyOnceWith('centerType', 2);
+    unmount(component);
+  });
+
+  it('refuses a retained callback after the external renderer unmounts', () => {
+    const onToggleChange = vi.fn();
+    const rendererContext = createFiniteRendererContext();
+    const component = mount(ScopeControlsSurface, { target, props: {
+      view: withSc({ hold: known(false) }), finiteAppearance: appearance, rendererContext, onToggleChange,
+    } });
+    flushSync();
+    const retained = retainedInvocations.get('HOLD')!;
+    unmount(component);
+    retained();
+    expect(onToggleChange).not.toHaveBeenCalled();
+  });
+
+  it('keeps the selected external appearance inert instead of falling back to native controls', () => {
+    const component = mount(ScopeControlsSurface, { target, props: {
+      view: withSc({ hold: known(false) }), finiteAppearance: appearance, rendererContext: null,
+    } });
+    flushSync();
+    expect(target.querySelector('[data-testid="scope-controls-surface"]')).not.toBeNull();
+    expect(target.querySelector('[data-testid="scope-hold"]')).toBeNull();
+    expect(target.querySelector('[data-testid="external-HOLD"]')).toBeNull();
+    expect(retainedInvocations.size).toBe(0);
+    unmount(component);
+  });
+
+  it('preserves an out-of-list canonical reading without selecting an option', () => {
+    const component = mount(ScopeControlsSurface, { target, props: {
+      view: withSc({ centerType: known(99) }), finiteAppearance: appearance,
+      rendererContext: createFiniteRendererContext(),
+    } });
+    flushSync();
+    const group = target.querySelector('[data-testid="external-Scope center type"]')!;
+    expect(group.getAttribute('data-reading')).toBe('99');
+    expect(group.querySelector('[aria-checked="true"]')).toBeNull();
+    unmount(component);
   });
 });

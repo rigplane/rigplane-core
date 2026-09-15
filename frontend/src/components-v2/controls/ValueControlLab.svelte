@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { ValueControl, rawToPercentDisplay } from './value-control';
+  import { ValueControl } from './value-control';
+  import { rawToPercentDisplay } from '../../primitives/scalar/value-control-core';
 
   // ── HBar demos — real radio parameters (0-255 raw) ──────────────────────
   let nrLevel  = $state(128);

@@ -1,0 +1,9 @@
+# Unresolved direct literal build_civ_frame calls outside commands/.
+# Derived by test_command_map_parity._runtime_frame_sites; not profile-only PASS.
+# path<TAB>qualified symbol<TAB>command<TAB>sub<TAB>call AST hash<TAB>occurrences
+# Shrink removed rows; additions/changed bytes require explicit debt review.
+src/rigplane/runtime/radio.py	CoreRadio._managed_tx_provider_answers_ptt	1c	00	8f9949c447eb912f	1
+src/rigplane/runtime/radio.py	CoreRadio._request_authoritative_ptt_read	1c	00	8f9949c447eb912f	1
+src/rigplane/runtime/radio.py	CoreRadio.get_filter_width	1a	03	1c73ff72b634b9ee	1
+src/rigplane/runtime/radio.py	CoreRadio.get_filter_width._action	1a	03	1c73ff72b634b9ee	1
+src/rigplane/runtime/radio.py	CoreRadio.read_transmit_state	1c	00	8f9949c447eb912f	1

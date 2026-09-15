@@ -4,7 +4,7 @@ The frontend lives in ``frontend/`` and its build output (``frontend/dist``)
 is gitignored. At runtime the SPA is served from ``src/rigplane/web/static``,
 so the package must ship the built assets at that location.
 
-This hook makes every build target (wheel *and* sdist) self-contained:
+This hook gives each build target the frontend payload needed for its role:
 
 * If ``frontend/dist/index.html`` is missing and a ``frontend/`` source tree is
   present, it builds the SPA with ``npm`` (``npm ci``/``npm install`` then
@@ -15,6 +15,11 @@ This hook makes every build target (wheel *and* sdist) self-contained:
   does not rebuild it.
 * The built ``frontend/dist`` is force-included at ``src/rigplane/web/static``
   for whichever target is building, centralizing the mapping in one place.
+
+A built wheel contains the Web UI and needs no Node.js to install. A source
+distribution contains the frontend source but not ``frontend/dist``; building
+a wheel from that sdist invokes this hook and requires Node.js/npm to compile
+the Web UI.
 
 Without this, ``pip install git+https://...`` (a direct wheel build) would not
 bundle the SPA and the desktop UI would 404.
@@ -55,9 +60,9 @@ class FrontendBuildHook(BuildHookInterface):  # type: ignore[type-arg]
             raise RuntimeError(
                 "Building rigplane from source requires Node.js/npm to build "
                 "the web UI (frontend/dist is not present and could not be "
-                "built). Install Node.js/npm, or build a wheel/sdist on a "
-                "machine that has them (the resulting artifact is "
-                "self-contained and needs no Node.js to install)."
+                "built). Install Node.js/npm, or install a prebuilt wheel "
+                "(the wheel includes the web UI and needs no Node.js to "
+                "install)."
             )
 
         lockfile = frontend_dir / "package-lock.json"

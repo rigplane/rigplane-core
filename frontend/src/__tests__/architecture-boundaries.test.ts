@@ -14,7 +14,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { ESLint } from 'eslint';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -310,9 +310,8 @@ describe('v3 package boundaries (MOR-1061)', () => {
   });
 
   // ── Review cycle 2, C1-B: ADR INV-6 was only partially encoded ─────────
-  // system-controller, scope-controller, and the TX-authority
-  // tx-controller/app-host (INV-11) were still reachable from
-  // presentation/semantic despite the F1 barrel ban.
+  // system-controller, scope-controller, and the App-root managed TX facade
+  // (INV-11) must remain unreachable from presentation/semantic.
 
   it('rejects semantic importing system-controller directly', async () => {
     const hits = await restrictedImportHits(
@@ -330,28 +329,32 @@ describe('v3 package boundaries (MOR-1061)', () => {
     expect(hits).toBeGreaterThan(0);
   });
 
-  it('rejects presentation importing tx-controller/app-host (alias) — the TX authority', async () => {
+  it('rejects semantic importing the managed App-root TX facade', async () => {
     const hits = await restrictedImportHits(
-      `import { getAppTxController } from '$lib/runtime/tx-controller/app-host';`,
-      'src/presentation/layouts/SpectrumFirst.ts',
+      `import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';`,
+      'src/semantic/VfoDisplay.ts',
     );
     expect(hits).toBeGreaterThan(0);
   });
 
-  it('rejects presentation importing tx-controller/app-host (relative)', async () => {
+  it('allows runtime tests to consume the managed TX facade read-only', async () => {
     const hits = await restrictedImportHits(
-      `import { getAppTxController } from '../../lib/runtime/tx-controller/app-host';`,
-      'src/presentation/layouts/SpectrumFirst.ts',
-    );
-    expect(hits).toBeGreaterThan(0);
-  });
-
-  it('still allows adapters to import tx-controller/app-host after C1-B', async () => {
-    const hits = await restrictedImportHits(
-      `import { getAppTxController } from '$lib/runtime/tx-controller/app-host';`,
-      'src/lib/runtime/adapters/vfo-adapter.ts',
+      `import type { ManagedAppTxController } from '../managed-app-host';`,
+      'src/lib/runtime/tx-controller/__tests__/support/managed-app-probe.ts',
     );
     expect(hits).toBe(0);
+  });
+
+  it('keeps every retired browser TX authority module absent', () => {
+    for (const retired of [
+      'src/lib/runtime/tx-controller/app-host.ts',
+      'src/lib/runtime/tx-controller/controller.ts',
+      'src/lib/runtime/tx-controller/model.ts',
+      'src/lib/runtime/tx-controller/app-authority.ts',
+      'src/components-v2/wiring/tx-ptt-gesture.ts',
+      'src/components-v2/wiring/mobile-ptt-surface.ts',
+      'src/components-v2/wiring/__tests__/tx-ptt-gesture.test.ts',
+    ]) expect(existsSync(path.join(FRONTEND_ROOT, retired)), retired).toBe(false);
   });
 
   // ── Review cycle 2, minor 3: pin the $lib/runtime/index ban ────────────
@@ -511,12 +514,24 @@ describe('v3 package boundaries (MOR-1061)', () => {
     expect(hits).toBeGreaterThan(0);
   });
 
-  it('allows the sdr-test entrypoint to import RadioLayout (its actual import)', async () => {
+  it('allows the sdr-test entrypoint to import its layout and instrument-composition type', async () => {
     const hits = await restrictedImportHits(
-      `<script lang="ts">\n  import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';\n</script>`,
+      `<script lang="ts">\n`
+        + `  import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';\n`
+        + `  import type { InstrumentComposition } from '../../components-v2/wiring/instrument-composition';\n`
+        + `</script>`,
       'src/skins/sdr-test/SdrTestSkin.svelte',
     );
     expect(hits).toBe(0);
+  });
+
+  it('keeps SemanticRadioSurfaces out of the replaceable RadioLayout shell', () => {
+    const source = readFileSync(
+      path.join(FRONTEND_ROOT, 'src/components-v2/layout/RadioLayout.svelte'),
+      'utf8',
+    );
+    expect(source).not.toMatch(/import\s+SemanticRadioSurfaces\s+from/);
+    expect(source).not.toMatch(/<SemanticRadioSurfaces\b/);
   });
 
   // ── MOR-2039: skins tightened to the panels tier ───────────────────────
@@ -526,26 +541,9 @@ describe('v3 package boundaries (MOR-1061)', () => {
   // covers `src/skins/**/*.ts` — before this, a `.ts` file under
   // skins/ (e.g. registry.ts) matched no skins-specific rule at all, because
   // the file glob this zone used was `src/skins/**/*.svelte` only.
-  // SdrVfoScreen.svelte and registry.ts migrated their store reads to
-  // `lib/runtime/adapters/` (capabilities-adapter.ts, layout-mode-adapter.ts
-  // respectively); these pin both the new ban and that the migrated call
-  // sites stay inside the boundary.
-
-  it('rejects the sdr-test diagnostic renderer importing capabilities from the store directly (was allowed pre-MOR-2039)', async () => {
-    const hits = await restrictedImportHits(
-      `<script lang="ts">\n  import { getAgcLabels, getAttValues } from '$lib/stores/capabilities.svelte';\n</script>`,
-      'src/skins/sdr-test/SdrVfoScreen.svelte',
-    );
-    expect(hits).toBeGreaterThan(0);
-  });
-
-  it('allows the sdr-test diagnostic renderer to import capabilities through the adapter (its actual migrated import)', async () => {
-    const hits = await restrictedImportHits(
-      `<script lang="ts">\n  import { getAgcLabels, getAttValues } from '$lib/runtime/adapters/capabilities-adapter';\n</script>`,
-      'src/skins/sdr-test/SdrVfoScreen.svelte',
-    );
-    expect(hits).toBe(0);
-  });
+  // registry.ts migrated its store reads to `lib/runtime/adapters/`
+  // (layout-mode-adapter.ts); this pins both the new ban and that the
+  // migrated call site stays inside the boundary.
 
   it('rejects a skins .ts file importing $lib/stores/* directly (the glob fix — .ts under skins/ had zero coverage before)', async () => {
     const hits = await restrictedImportHits(
@@ -561,6 +559,19 @@ describe('v3 package boundaries (MOR-1061)', () => {
       'src/skins/registry.ts',
     );
     expect(hits).toBe(0);
+  });
+
+  it.each([
+    ['display', 'src/components-v2/display/frequency-format.ts'],
+    ['meters', 'src/components-v2/meters/bar-gauge-utils.ts'],
+    ['vfo', 'src/components-v2/vfo/vfo-utils.ts'],
+    ['controls', 'src/components-v2/controls/band-utils.ts'],
+  ])('rejects a %s .ts file importing $lib/audio/audio-manager directly (the glob fix — .ts had zero coverage before)', async (_zone, filePath) => {
+    const hits = await restrictedImportHits(
+      `import { audioManager } from '$lib/audio/audio-manager';`,
+      filePath,
+    );
+    expect(hits).toBeGreaterThan(0);
   });
 });
 

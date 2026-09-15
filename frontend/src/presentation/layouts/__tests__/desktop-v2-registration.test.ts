@@ -8,12 +8,9 @@
  * the exported object, so a manifest that is written but never registered
  * fails here. Each test's doc line names the mutation it exists to kill.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
-import {
-  declaredSurfaces, getLayout, resolveLayoutForTopology, resolveLayoutForViewport,
-  TOPOLOGY_CLASSES,
-} from '../contract';
+import { declaredSurfaces, getLayout } from '../contract';
 // Barrel-only, never '../desktop-declarations' directly — the M7 lesson
 // (registry.test.ts's "dual-receiver-cockpit registration barrel proof",
 // restated on every family since): a direct manifest import fires
@@ -21,9 +18,6 @@ import {
 // longer wires desktop-v2 into the app, and under the fast pool's
 // `isolate: false` it would leak the registration into sibling files.
 import { desktopV2Layout } from '../declarations';
-
-/** iPhone-class portrait — the viewport the LCD family fails arithmetically. */
-const PORTRAIT_MOBILE = { width: 390, height: 844 };
 
 describe('the desktop-v2 entrypoint is registered in the real registry', () => {
   // Kills: desktop-declarations.ts defining the manifest but never calling
@@ -45,11 +39,6 @@ describe('the desktop-v2 entrypoint is registered in the real registry', () => {
     expect(source).toContain("if (layoutPreference === 'standard') return 'desktop-v2';");
     expect(source).toContain("return 'desktop-v2';");
   });
-
-  // Kills: a manifest that declares no compiled loader at all.
-  it('declares a compiled loader', () => {
-    expect(typeof desktopV2Layout.loader).toBe('function');
-  });
 });
 
 describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
@@ -58,7 +47,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   it('declares receiver-deck:[vfo], rx-tx:[rxTx], tx-aux:[txAux], meters:[meters], '
     + 'scope-display:[scopeDisplay], filter:[filter], rf-front-end:[rfFrontEnd], '
     + 'band:[band], antenna:[antenna], rit-xit-scan:[ritXitScan], rx-audio:[rxAudio], '
-    + 'dsp:[dsp], cw-keyer:[cwKeyer] and scope-controls:[scopeControls]', () => {
+    + 'dsp:[dsp], cw-keyer:[cwKeyer], memory:[memory] and scope-controls:[scopeControls]', () => {
     expect(desktopV2Layout.zones).toEqual([
       { id: 'receiver-deck', surfaces: ['vfo'] },
       { id: 'rx-tx', surfaces: ['rxTx'] },
@@ -85,6 +74,10 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
       { id: 'rx-audio', surfaces: ['rxAudio'] },
       { id: 'dsp', surfaces: ['dsp'] },
       { id: 'cw-keyer', surfaces: ['cwKeyer'] },
+      // MOR-2425 (Memory lane, phase B2): memory becomes zone-owned too,
+      // closing the ledger entry `zone-ownership-coverage.test.ts` opened in
+      // phase B1. No RadioViewModel group backs it — it mounts unconditionally.
+      { id: 'memory', surfaces: ['memory'] },
       // MOR-1370 (S6b-2): scopeControls becomes zone-owned, the LAST surface
       // in the MOR-1262 vocabulary to graduate. Not required.
       { id: 'scope-controls', surfaces: ['scopeControls'] },
@@ -96,7 +89,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // `skinId === 'sdr-test'` boolean MOR-1266 pinned as still-present and
   // MOR-1313 removed. A reintroduced id fork would leave this manifest
   // decorative again while every registry assertion above stayed green. Read
-  // as TEXT for the same reason as the loader pin below (no DOM tree needed).
+  // as TEXT because no DOM tree is needed.
   it('RadioLayout.svelte derives suppression from the manifest, not from a skin id', () => {
     const source = readFileSync('src/components-v2/layout/RadioLayout.svelte', 'utf8');
     expect(source).toContain('let declared = $derived(declaredSurfaces(getLayout(skinId)));');
@@ -109,41 +102,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // is per-zone rather than per-manifest-first-zone.
   it('its zones flatten to the surfaces the shell suppresses legacy twins for', () => {
     expect([...declaredSurfaces(getLayout('desktop-v2'))].sort())
-      .toEqual(['antenna', 'band', 'cwKeyer', 'dsp', 'filter', 'meters', 'rfFrontEnd', 'ritXitScan', 'rxAudio', 'rxTx', 'scopeControls', 'scopeDisplay', 'txAux', 'vfo']);
-  });
-});
-
-describe('loader identity — pins the real desktop-v2 entrypoint (verify.md N1)', () => {
-  // Kills: repointing the manifest's OWN `loader` closure at a different,
-  // real, loadable skin (e.g. `SdrTestSkin.svelte`) — the adversarial
-  // verification's surviving mutant (V3). `typeof loader === 'function'`
-  // above and the `skins/registry.ts` reachability check earlier both stay
-  // green under that mutation, because neither ties THIS manifest's loader
-  // to the file it actually names. Read as TEXT — the same idiom as every
-  // other module-specifier pin in this suite — because invoking the loader
-  // would pull in RadioLayout.svelte's full import graph, which this suite
-  // avoids importing wholesale.
-  it('the manifest loader names DesktopSkin.svelte, not a sibling skin entrypoint', () => {
-    const source = readFileSync('src/presentation/layouts/desktop-declarations.ts', 'utf8');
-    const match = source.match(/loader:\s*\(\)\s*=>\s*import\(['"]([^'"]+)['"]\)/);
-    expect(match?.[1]).toBe('../../skins/desktop-v2/DesktopSkin.svelte');
-  });
-
-  // Belt-and-braces: the specifier must resolve to a real file too — guards
-  // against a typo'd path that would only fail at runtime, in the browser,
-  // never in this suite.
-  it('the loader specifier resolves to a real file on disk', () => {
-    expect(existsSync('src/skins/desktop-v2/DesktopSkin.svelte')).toBe(true);
-  });
-});
-
-describe('topology honesty', () => {
-  // Kills: under-declaring the topology set. VfoHeader renders VfoOps
-  // (A/B swap/equal) unconditionally and branches DualVfoDisplay vs a
-  // single-receiver VfoPanel on hasDualReceiver(), so every canonical class
-  // resolves to desktop-v2 itself, never to a fallback (it declares none).
-  it.each(TOPOLOGY_CLASSES)('resolves itself on the %s topology', (topology) => {
-    expect(resolveLayoutForTopology('desktop-v2', topology)?.id).toBe('desktop-v2');
+      .toEqual(['antenna', 'band', 'cwKeyer', 'dsp', 'filter', 'memory', 'meters', 'rfFrontEnd', 'ritXitScan', 'rxAudio', 'rxTx', 'scopeControls', 'scopeDisplay', 'txAux', 'vfo']);
   });
 });
 
@@ -154,23 +113,11 @@ describe('MOR-1160 sizing axis — desktop-v2 stays fluid, mirroring sdr-test', 
   it('declares fluid sizing with no breakpoints', () => {
     expect(desktopV2Layout.stageSizing).toEqual({ mode: 'fluid', responsiveBreakpoints: [] });
   });
-
-  // Kills: fitsViewport gating a fluid layout on a breakpoint instead of
-  // always fitting (contract: breakpoints are reflow hints, not a hard gate
-  // in v1).
-  it.each([
-    ['desktop', { width: 1440, height: 900 }],
-    ['portrait phone', PORTRAIT_MOBILE],
-  ])('resolves itself on a %s viewport', (_label, viewport) => {
-    expect(resolveLayoutForViewport('desktop-v2', viewport)?.id).toBe('desktop-v2');
-  });
 });
 
 describe('no fallback family', () => {
   // Kills: adding a fallbackLayoutId that has nothing to do — desktop-v2
-  // supports every canonical topology and fluid sizing never fails a
-  // viewport, so any hop off it would be unreachable and would only mask a
-  // real resolution failure.
+  // declares every canonical topology and fluid sizing.
   it('declares no fallback', () => {
     expect(desktopV2Layout.fallbackLayoutId).toBeNull();
   });

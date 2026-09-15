@@ -32,6 +32,8 @@ from rigplane.commands import (
     parse_level_response,
     parse_mode_response,
     parse_rit_frequency_response,
+    parse_tone_freq_response,
+    parse_tsql_freq_response,
     parse_scope_center_type_response,
     parse_scope_during_tx_response,
     parse_scope_edge_response,
@@ -46,9 +48,11 @@ from rigplane.commands import (
     parse_scope_speed_response,
     parse_scope_vbw_response,
 )
-from rigplane.commands.levels import _cw_pitch_from_level, _key_speed_from_level
+from rigplane.commands.scope import _span_index_for_hz
 from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
+from rigplane.core.tx_target import KnownTxTarget
+from rigplane.core.tx_observation import OBSERVED_PTT_PATH, normalize_observed_ptt
 from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
     FieldChange,
@@ -58,8 +62,10 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
+from rigplane.profiles.control_domain import decode_legacy_control
 from rigplane.scope import ScopeFrame
-from rigplane.core.types import CivFrame, Mode
+from rigplane.core.types import CivFrame, Mode, bcd_decode
+from rigplane.runtime._state_queries import tx_target_max_age
 from rigplane.runtime.meter_cal import interpolate_meter
 
 if TYPE_CHECKING:
@@ -79,6 +85,9 @@ _SCOPE_BACKLOG_SHED_THRESHOLD = 256
 _SCOPE_BACKLOG_KEEP_LATEST = 64
 _RAW_RECEIVED_FRAME_BYTES_LIMIT = 256
 
+#: Fallback freshness TTLs for CI-V observations, keyed ``(scope, family,
+#: name)`` — rig-blind, and read by ``_observation_max_age`` only for a path
+#: the loaded profile declares no ``field_policies`` entry for.
 _OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
     ("receiver", "freq_mode", "freq_hz"): 5.0,
     ("receiver", "freq_mode", "mode"): 5.0,
@@ -97,6 +106,16 @@ _OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
     ("receiver", "operator_controls", "rf_gain"): 10.0,
     ("receiver", "operator_controls", "pbt_inner"): 10.0,
     ("receiver", "operator_controls", "pbt_outer"): 10.0,
+    # MOR-2234 follow-up: declaring these observable in ``rigs/ic7300.toml``
+    # left them with no entry here, so ``_observation`` gave them
+    # ``max_age=None`` and ``state_store.py: StateStore.mark_stale_due``
+    # never aged them. IC-7300 no longer reaches these two rows — it declares
+    # a field policy for both — but ``rigs/ic705.toml`` and
+    # ``rigs/ic9700.toml`` bind ``get_tone_freq``/``get_tsql_freq`` with no
+    # ``field_policies`` table at all, and still do. Pinned by
+    # ``test_tone_and_tsql_freq_observations_fall_back_to_the_table``.
+    ("receiver", "operator_controls", "tone_freq"): 25.0,
+    ("receiver", "operator_controls", "tsql_freq"): 25.0,
     ("global", "slow_state", "active"): 5.0,
     ("global", "tx_state", "ptt"): 1.0,
     ("global", "tx_state", "rit_on"): 10.0,
@@ -318,16 +337,17 @@ _OBSERVABLE_CMD14_FIELDS = {
 }
 _NORMALIZED_CMD14_OBSERVATION_SUBS = frozenset({0x01, 0x02, 0x03, 0x0A})
 
-# 0x14 cw_pitch (sub 0x09) is observation-backed too, but its raw level → Hz
-# mapping is non-linear, so it is decoded via ``_cw_pitch_from_level`` rather
-# than the plain BCD ``_decode_level`` used for the other 0x14 levels (MOR-437).
+# 0x14 cw_pitch (sub 0x09) is observation-backed too; its raw level → Hz
+# mapping is declared in the profile's ``[controls.cw_pitch]`` rational
+# domain, so it is decoded via ``decode_legacy_control`` rather than the
+# plain BCD ``_decode_level`` used for the other 0x14 levels (MOR-437).
 _OBSERVABLE_CMD14_CW_PITCH_SUB = 0x09
 _CMD14_CW_PITCH_FIELD = ("global", "operator_controls", "cw_pitch")
 
 # 0x14 key_speed (sub 0x0C) is observation-backed too; its raw level → WPM
-# mapping is linear (``round(level / 6.071 + 6)``, range 6-48), so it is decoded
-# via ``_key_speed_from_level`` rather than the plain BCD ``_decode_level`` used
-# for the other 0x14 levels (MOR-493).
+# mapping is declared in the profile's ``[controls.key_speed]`` rational
+# domain, so it is decoded via ``decode_legacy_control`` rather than the
+# plain BCD ``_decode_level`` used for the other 0x14 levels (MOR-493).
 _OBSERVABLE_CMD14_KEY_SPEED_SUB = 0x0C
 _CMD14_KEY_SPEED_FIELD = ("global", "operator_controls", "key_speed")
 
@@ -496,6 +516,33 @@ def _profile_path_for_observation(profile: Any, path: FieldPath) -> FieldPath:
         if capability.availability.value != "unknown":
             return candidate
     return path
+
+
+def _observation_max_age(profile: Any, path: FieldPath) -> float | None:
+    """Freshness TTL to stamp on one CI-V observation of ``path``.
+
+    The rig's own ``[state_acquisition.field_policies]`` entry wins where the
+    profile declares one — including ``freshness_ttl_seconds = "never"``,
+    which loads as ``None`` and leaves ``state_store.py:
+    StateStore.mark_stale_due`` unable to age the field at all. Everything
+    else falls back to :data:`_OBSERVATION_MAX_AGE_SECONDS`.
+
+    Only a *declared* policy counts, not ``policy_for``'s ``default_policy``
+    answer: a profile's default applies to every path in the rig, including
+    the ones no author considered when writing it.
+    """
+
+    acquisition = getattr(profile, "state_acquisition", None)
+    if acquisition is not None:
+        declared = acquisition.field_policies.get(
+            _profile_path_for_observation(acquisition, path)
+        )
+        if declared is not None:
+            ttl: float | None = declared.freshness_ttl_seconds
+            return ttl
+    return _OBSERVATION_MAX_AGE_SECONDS.get(
+        (path.scope.value, path.family.value, path.name)
+    )
 
 
 def _changeset_for_request_paths(
@@ -894,7 +941,14 @@ class CivRuntime:
             try:
                 await self._host._civ_rx_task
             except asyncio.CancelledError:
-                pass
+                # See MOR-2081: same discriminator IcomCommander._loop uses
+                # (#2145). item.future.cancelled()-style checks alone cannot
+                # tell "the rx task I just cancelled finished" from "this
+                # task itself was cancelled from outside" -- Task.cancelling()
+                # (3.11+) exposes this task's own pending cancel request.
+                me = asyncio.current_task()
+                if me is not None and me.cancelling():
+                    raise
         self._host._civ_rx_task = None
 
     def start_data_watchdog(self) -> None:
@@ -957,13 +1011,14 @@ class CivRuntime:
         self,
         civ_frame: bytes,
         wait_response: bool = True,
-        deadline_monotonic: "float | None" = None,
+        *,
+        is_current: Callable[[], bool] | None = None,
     ) -> "CivFrame | None":
         """Execute one CI-V command via request tracker (public API)."""
         return await self._execute_civ_raw(
             civ_frame,
             wait_response=wait_response,
-            deadline_monotonic=deadline_monotonic,
+            is_current=is_current,
         )
 
     async def execute_civ_transaction(
@@ -1007,9 +1062,14 @@ class CivRuntime:
 
         parsed_frame = parse_civ_frame(civ_frame)
         request_key = request_key_from_frame(parsed_frame)
-        deadline_monotonic = time.monotonic() + (
-            timeout if timeout is not None else self._host._civ_get_timeout
-        )
+        # Bounds the *radio's* answer, so it is spent from the send onward
+        # rather than from here: the ``_civ_min_interval`` gap inside
+        # ``_send_civ_frame_now`` and the ACK-sink drain below are this
+        # side's own scheduling.  ``tests/test_raw_civ_transaction.py:
+        # test_pacing_gap_is_not_charged_to_the_answer_window`` fails when
+        # they are charged to this budget; ``_execute_civ_raw`` carried the
+        # same mis-charge.
+        answer_timeout = timeout if timeout is not None else self._host._civ_get_timeout
 
         self._cleanup_stale_civ_waiters()
 
@@ -1025,9 +1085,6 @@ class CivRuntime:
                 "Dropped %d orphan ACK/NAK backlog frame(s) before raw transaction",
                 dropped_backlog,
             )
-        remaining_total = deadline_monotonic - time.monotonic()
-        if remaining_total <= 0:
-            raise asyncio.TimeoutError("CI-V response timed out")
 
         pending_waiters: list[asyncio.Future[CivFrame]] = []
         data_transaction: _CivDataTransaction | None = None
@@ -1049,12 +1106,9 @@ class CivRuntime:
 
             self.start_pump()
             await self._send_civ_frame_now(civ_frame, owner=owner)
-            remaining = deadline_monotonic - time.monotonic()
-            if remaining <= 0:
-                raise asyncio.TimeoutError("CI-V response timed out")
             done, _ = await asyncio.wait(
                 pending_waiters,
-                timeout=remaining,
+                timeout=answer_timeout,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if not done:
@@ -1165,6 +1219,7 @@ class CivRuntime:
         wait_response: bool = True,
         timeout: "float | None" = None,
         wait_dispatch: bool = True,
+        is_current: Callable[[], bool] | None = None,
     ) -> "CivFrame | None":
         """Enqueue a CI-V command and wait for its response (public API)."""
         return await self._send_civ_raw(
@@ -1175,6 +1230,7 @@ class CivRuntime:
             wait_response=wait_response,
             timeout=timeout,
             wait_dispatch=wait_dispatch,
+            is_current=is_current,
         )
 
     async def _send_civ_frame_now(
@@ -1593,6 +1649,12 @@ class CivRuntime:
             )
             scope_frame = self._host._scope_assembler.feed(frame.data[1:], receiver)
             if scope_frame is not None:
+                self._publish_scope_mode_observation(
+                    scope_frame, receiver=receiver, frame=frame
+                )
+                self._publish_scope_span_observation(
+                    scope_frame, receiver=receiver, frame=frame
+                )
                 self._publish_scope_frame(scope_frame)
             return
 
@@ -1750,22 +1812,6 @@ class CivRuntime:
                 # the identical sub→TX-antenna and data-byte→RX-ANT decode. This
                 # command is NOT safe to poll, so the fields are ingress-gated.
                 pass
-            elif (
-                frame.command == 0x14
-                and frame.data
-                and len(frame.data) >= 2
-                and _rx is not None
-            ):
-                # Level response (plain CI-V, no cmd29). rf_gain (0x02), squelch
-                # (0x03), nr_level (0x06) and nb_level (0x12) are now
-                # observation-backed (MOR-437); only af_level (0x01) still
-                # mirrors into legacy RadioState here.
-                sub = frame.sub or 0
-                raw = ((frame.data[0] >> 4) & 0x0F) * 100 + (frame.data[0] & 0x0F) * 10
-                if len(frame.data) > 1:
-                    raw += (frame.data[1] >> 4) & 0x0F
-                if sub == 0x01:
-                    _rx.af_level = raw
             elif frame.command == 0x16:
                 data = frame.data
                 sub = frame.sub or 0
@@ -2068,8 +2114,16 @@ class CivRuntime:
             )
             if not matched_paths:
                 continue
+            matched = _replace_dataclass(request, paths=matched_paths)
+            # Path equality alone would credit this request from a frame that
+            # was already on the wire before the request's own send.
+            if not scheduler.may_credit(
+                matched,
+                observation_timestamp=observation.timestamp_monotonic,
+            ):
+                continue
             scheduler.record_acquisition_result(
-                _replace_dataclass(request, paths=matched_paths),
+                matched,
                 _changeset_for_request_paths(
                     changeset,
                     observed_path=observation.path,
@@ -2123,7 +2177,7 @@ class CivRuntime:
     def _observations_from_frame(self, frame: CivFrame) -> tuple[Observation, ...]:
         """Decode one CI-V frame into supported observation contracts."""
 
-        receiver_id, _, slot_override = self._receiver_context(frame)
+        receiver_id, receiver_name, slot_override = self._receiver_context(frame)
         observations: list[Observation] = []
 
         if (
@@ -2178,8 +2232,6 @@ class CivRuntime:
                     )
                 )
         elif frame.command == 0x25 and len(frame.data) >= 6:
-            from rigplane.types import bcd_decode
-
             relative = (
                 getattr(self._host._profile, "vfo_readback", "none")
                 == "selected_unselected"
@@ -2243,26 +2295,34 @@ class CivRuntime:
         elif frame.command == 0x14 and len(frame.data) >= 2:
             sub14 = frame.sub or 0
             if sub14 == _OBSERVABLE_CMD14_CW_PITCH_SUB:
-                # cw_pitch raw level → Hz (non-linear) — reuse the exact decode
-                # the legacy mirror and ``set_cw_pitch`` use (MOR-437).
+                # cw_pitch raw level → Hz — decoded through the profile's
+                # declared control domain (MOR-437; MOR-2481 decode half).
                 observations.append(
                     self._observation(
                         self._field_path(
                             _CMD14_CW_PITCH_FIELD, receiver_id=receiver_id
                         ),
-                        _cw_pitch_from_level(self._decode_level(frame.data)),
+                        decode_legacy_control(
+                            self._host._profile.controls,
+                            "cw_pitch",
+                            self._decode_level(frame.data),
+                        ),
                         frame=frame,
                     )
                 )
             elif sub14 == _OBSERVABLE_CMD14_KEY_SPEED_SUB:
-                # key_speed raw level → WPM (linear) — reuse the exact decode
-                # the legacy mirror and ``set_key_speed`` use (MOR-493).
+                # key_speed raw level → WPM — decoded through the profile's
+                # declared control domain (MOR-493; MOR-2481 decode half).
                 observations.append(
                     self._observation(
                         self._field_path(
                             _CMD14_KEY_SPEED_FIELD, receiver_id=receiver_id
                         ),
-                        _key_speed_from_level(self._decode_level(frame.data)),
+                        decode_legacy_control(
+                            self._host._profile.controls,
+                            "key_speed",
+                            self._decode_level(frame.data),
+                        ),
                         frame=frame,
                     )
                 )
@@ -2440,16 +2500,24 @@ class CivRuntime:
                 )
             )
         elif frame.command == 0x1B and len(frame.data) >= 3:
-            # Tone/TSQL freq: BCD freq → centiHz, reusing the exact decode of
-            # ``_handle_1b`` (``round(_decode_tone_freq(...) * 100)``) (MOR-451).
+            # Tone/TSQL freq: publish only exact centiHz values admitted by the
+            # active profile. Parser failures abort this frame before StateStore.
             mapping = _OBSERVABLE_CMD1B_FIELDS.get(frame.sub or 0)
             if mapping is not None:
-                from rigplane.commands import _decode_tone_freq
+                parser = (
+                    parse_tone_freq_response
+                    if frame.sub == 0x00
+                    else parse_tsql_freq_response
+                )
+                _, freq_centihz = parser(
+                    frame,
+                    ctcss_tones_centihz=self._host._profile.ctcss_tones_centihz,
+                )
 
                 observations.append(
                     self._observation(
                         self._field_path(mapping, receiver_id=receiver_id),
-                        round(_decode_tone_freq(frame.data) * 100),
+                        freq_centihz,
                         frame=frame,
                     )
                 )
@@ -2461,11 +2529,25 @@ class CivRuntime:
                     frame=frame,
                 )
             )
-        elif frame.command == 0x1C and frame.sub == 0x00 and frame.data:
+        elif frame.command == 0x1C and frame.sub == 0x00:
+            if frame.data:
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("tx_state", "ptt"),
+                        bool(frame.data[0]),
+                        frame=frame,
+                    )
+                )
             observations.append(
                 self._observation(
-                    FieldPath.global_("tx_state", "ptt"),
-                    bool(frame.data[0]),
+                    OBSERVED_PTT_PATH,
+                    normalize_observed_ptt(
+                        False
+                        if frame.data == b"\x00"
+                        else True
+                        if frame.data == b"\x01"
+                        else None
+                    ),
                     frame=frame,
                 )
             )
@@ -2477,11 +2559,20 @@ class CivRuntime:
                     frame=frame,
                 )
             )
-        elif frame.command == 0x1C and frame.sub == 0x03 and frame.data:
+        elif frame.command == 0x1C and frame.sub == 0x03 and len(frame.data) == 5:
+            # Icom documents 1C/03 as the current transmit frequency, not the
+            # boolean "TX frequency monitor" control exposed by older shared
+            # command names.  Publish the decoded value through the existing
+            # backend-neutral TX-target contract; this response does not carry
+            # a VFO-slot identity, so keep that portion deliberately unknown.
             observations.append(
                 self._observation(
-                    FieldPath.global_("tx_state", "tx_freq_monitor"),
-                    bool(frame.data[0]),
+                    FieldPath.global_("tx_state", "tx_target"),
+                    KnownTxTarget(
+                        receiver="SUB" if receiver_name == "SUB" else "MAIN",
+                        slot=None,
+                        frequency_hz=bcd_decode(frame.data),
+                    ),
                     frame=frame,
                 )
             )
@@ -2578,7 +2669,9 @@ class CivRuntime:
             receiver, mode = parse_scope_mode_response(frame)
             pairs.append(("mode", mode))
         elif frame.sub == 0x15:
-            receiver, span = parse_scope_span_response(frame)
+            receiver, span = parse_scope_span_response(
+                frame, self._host._profile.scope_span_presets_hz
+            )
             pairs.append(("span", span))
         elif frame.sub == 0x16:
             receiver, edge = parse_scope_edge_response(frame)
@@ -2729,6 +2822,16 @@ class CivRuntime:
             # responses so the Web TX authority gate cannot treat an ACK, setter
             # success, or unrelated response as radio truth.
             source = "poll_response"
+        max_age_path = (
+            FieldPath.global_("tx_state", "ptt") if path == OBSERVED_PTT_PATH else path
+        )
+        max_age = _observation_max_age(self._host._profile, max_age_path)
+        if path == FieldPath.global_("tx_state", "tx_target"):
+            # MOR-2223: single source shared with
+            # ``RadioPoller._tx_target_max_age`` — see
+            # ``tx_target_max_age``'s docstring for the fail-open rationale
+            # this TTL exists to prevent.
+            max_age = tx_target_max_age(self._host._profile)
         return Observation(
             path=path,
             value=value,
@@ -2740,9 +2843,7 @@ class CivRuntime:
                 capability_id=str(path),
             ),
             timestamp_monotonic=time.monotonic(),
-            max_age=_OBSERVATION_MAX_AGE_SECONDS.get(
-                (path.scope.value, path.family.value, path.name)
-            ),
+            max_age=max_age,
             quality=quality,
         )
 
@@ -2923,8 +3024,6 @@ class CivRuntime:
                 setattr(rx, _CMD14_RECEIVER_LEVEL_FIELDS[sub], raw)
             elif sub == 0x0A:
                 rs.power_level = raw
-            elif sub == 0x0C:
-                rs.key_speed = round((raw / 6.071) + 6)
             elif sub in _CMD14_GLOBAL_LEVEL_FIELDS:
                 setattr(rs, _CMD14_GLOBAL_LEVEL_FIELDS[sub], raw)
 
@@ -3159,7 +3258,9 @@ class CivRuntime:
                 scope.receiver = receiver
             scope.mode = mode
         elif frame.sub == 0x15:
-            receiver, span = parse_scope_span_response(frame)
+            receiver, span = parse_scope_span_response(
+                frame, self._host._profile.scope_span_presets_hz
+            )
             if receiver is not None:
                 scope.receiver = receiver
             scope.span = span
@@ -3254,6 +3355,158 @@ class CivRuntime:
         recorder = getattr(self._host, "_state_diagnostics", None)
         if isinstance(recorder, StateDiagnosticsRecorder):
             recorder.record(kind, source, **details)
+
+    def _publish_scope_mode_observation(
+        self, scope_frame: ScopeFrame, *, receiver: int, frame: CivFrame
+    ) -> None:
+        """Emit a change-detected ``scope_controls.global.display.mode`` write.
+
+        MOR-2222 moved the ``scope_controls.global.display.*`` paths out of
+        the acquisition cadence (no more periodic ``0x27`` polls): the
+        scope's own reads own them now. The waveform stream (``0x27``/
+        ``0x00``) is the one unsolicited source that keeps ``mode`` current
+        while it runs, so this republishes it — once per change, not once
+        per frame, since the stream runs at up to ~15 fps. ``mode`` is
+        validated against its documented 0-3 range (``ScopeFrame.mode``'s
+        own docstring; the reply path can never produce anything else) —
+        an out-of-range value publishes nothing. ``span`` is republished
+        the same way by ``_publish_scope_span_observation`` below
+        (MOR-2256, derived through the span-preset table, not a raw
+        frequency). ``edge``/``fixed_edge`` are NOT republished: ``edge``
+        is a preset index 1-4 with no frame-carried source, and
+        ``fixed_edge`` a preset-table record (range_index/edge/start/end)
+        with no declared table of legal values to derive it from — those
+        stay display-only, carried to the web through the spectrum stream
+        itself (``ScopeFrame``), not the StateStore.
+
+        Unlike ``_publish_scope_span_observation`` below, this does NOT
+        need an ``out_of_range`` guard: ``mode`` (``ScopeFrame.mode``)
+        comes from ``raw_payload[2]``, decoded in
+        ``rigplane.scope._ReceiverState.feed`` before the OOR check, and
+        is unaffected by it -- only ``start_freq_hz``/``end_freq_hz``
+        (which this method never reads) are left as raw, unexpanded
+        values when ``out_of_range`` is set (#3063 review, second round;
+        checked, confirmed not applicable here).
+
+        The observation is bound to the store's CURRENT provider
+        generation before ``apply`` — mirroring
+        ``_apply_state_store_observations``'s own pattern below — because
+        ``Observation.provider_generation`` defaults to 0 and
+        ``StateStore.apply``/``_is_current_observation`` silently rejects
+        anything that does not match ``advance_generation``'s bump on
+        connect (#3063 review: a connected radio's stream observations
+        were dropped from the moment of connect onward). The
+        change-detect cache is updated only when ``apply`` reports the
+        observation ACCEPTED -- ``changeset.observed_paths`` non-empty,
+        the same signal ``StateStore._apply_one``/``_empty_changeset``
+        use to distinguish a written observation from a rejected one --
+        not merely after the call returns (#3063 review, second round):
+        caching on every call, accepted or not, would mean a rejected
+        value is never retried once the stream reports that same value
+        again.
+        """
+        if not 0 <= scope_frame.mode <= 3:
+            return
+        last_modes = self._host._scope_stream_last_mode
+        if last_modes.get(receiver) == scope_frame.mode:
+            return
+        store_provider_generation = self._host._state_store.provider_generation
+        observation = _replace_dataclass(
+            self._observation(
+                FieldPath.scope_control("display", "mode"),
+                scope_frame.mode,
+                frame=frame,
+            ),
+            provider_generation=store_provider_generation,
+        )
+        changeset = self._host._state_store.apply(observation)
+        if changeset.observed_paths:
+            last_modes[receiver] = scope_frame.mode
+        self._record_scheduler_result_for_observation(observation, changeset)
+        self._notify_state_store_changed(changeset)
+
+    def _publish_scope_span_observation(
+        self, scope_frame: ScopeFrame, *, receiver: int, frame: CivFrame
+    ) -> None:
+        """Emit a change-detected ``scope_controls.global.display.span`` write.
+
+        Center mode only (``scope_frame.mode == 0``) AND in-range
+        (``scope_frame.out_of_range`` is False): when a waveform frame's
+        OOR flag is set, ``rigplane.scope._ReceiverState.feed`` returns
+        BEFORE the center-mode edge expansion (``center - span``/
+        ``center + span``) — ``start_freq_hz``/``end_freq_hz`` are then
+        the raw, unexpanded [center, span] pair, not edges, so
+        ``end_freq_hz - start_freq_hz`` is ``span - center``, not
+        ``2 * span`` (#3063 review, second round: a center-450kHz/
+        span-500kHz OOR frame computed index 3 instead of 7 before this
+        guard). Publishing from an OOR frame at all would also be
+        publishing a span the operator cannot currently see confirmed on
+        screen, which the mode/span republish exists to avoid guessing.
+
+        Per the IC-7610 CI-V reference (p.14, "Scope waveform data") and
+        the IC-7300 manual, an in-range center-mode payload carries the
+        center frequency and the SPAN value itself — the same value the
+        ``0x27 0x15`` span table encodes — not half of it.
+        ``_ReceiverState.feed`` turns that pair into edges via
+        ``center - span``, ``center + span``, so ``end_freq_hz -
+        start_freq_hz == 2 * span``. The span to look up is therefore
+        ``(end_freq_hz - start_freq_hz) / 2``, computed with an
+        exact-division check (a remainder means this width did not come
+        from that doubling and is untrustworthy) — not the raw
+        difference, which is off by 2x (#3063 review, first round,
+        verified against both manuals). Matched EXACTLY against this
+        profile's declared ``scope_span_presets_hz`` (``rigs/*.toml``:
+        ``[scope].span_presets_hz``, MOR-2258) via the shared
+        ``_span_index_for_hz`` helper — the same lookup
+        ``parse_scope_span_response`` (the 0x15 reply path) uses against
+        the same profile-declared list, so the stream and a typed-getter
+        reply agree on what index a given Hz value maps to. No match ->
+        publish nothing, and do not clear whatever the field last held:
+        a non-matching span is either drift outside the declared presets
+        or an unexpected source, not something to overwrite a confirmed
+        value with a guess. A profile with no declared presets (empty
+        tuple) never matches, so this is a silent no-op for any rig that
+        hasn't declared ``[scope].span_presets_hz``.
+
+        Fixed mode (``scope_frame.mode != 0``) publishes nothing: unlike
+        span, there is no declared table of legal (start_hz, end_hz) pairs
+        to match a fixed-mode frame's edges against —
+        ``_SCOPE_FIXED_EDGE_RANGE_STARTS_HZ`` only maps a start_hz to a
+        *band*, not to a specific stored (range, edge) preset, and a
+        preset's actual edges are radio-side user-configured memory, not
+        enumerable data. Publishing here would mean guessing which preset
+        is active, which MOR-2256 rules out.
+
+        Same generation-binding and cache-after-ACCEPTED-apply ordering
+        as ``_publish_scope_mode_observation`` above — see its docstring.
+        """
+        if scope_frame.mode != 0 or scope_frame.out_of_range:
+            return
+        width_hz = scope_frame.end_freq_hz - scope_frame.start_freq_hz
+        if width_hz % 2 != 0:
+            return
+        span_hz = width_hz // 2
+        presets = self._host._profile.scope_span_presets_hz
+        span = _span_index_for_hz(span_hz, presets)
+        if span is None:
+            return
+        last_spans = self._host._scope_stream_last_span
+        if last_spans.get(receiver) == span:
+            return
+        store_provider_generation = self._host._state_store.provider_generation
+        observation = _replace_dataclass(
+            self._observation(
+                FieldPath.scope_control("display", "span"),
+                span,
+                frame=frame,
+            ),
+            provider_generation=store_provider_generation,
+        )
+        changeset = self._host._state_store.apply(observation)
+        if changeset.observed_paths:
+            last_spans[receiver] = span
+        self._record_scheduler_result_for_observation(observation, changeset)
+        self._notify_state_store_changed(changeset)
 
     def _publish_scope_frame(self, frame: ScopeFrame) -> None:
         """Publish a complete scope frame to callback and bounded queue."""
@@ -3381,6 +3634,7 @@ class CivRuntime:
         wait_response: bool = True,
         timeout: "float | None" = None,
         wait_dispatch: bool = True,
+        is_current: Callable[[], bool] | None = None,
     ) -> "CivFrame | None":
         """Enqueue a CI-V command and wait for its response."""
         if self._host._civ_transport is None or not self._host._connected:
@@ -3389,7 +3643,11 @@ class CivRuntime:
         self._ensure_civ_runtime()
 
         if self._host._commander is None:
-            coro = self._execute_civ_raw(civ_frame, wait_response=wait_response)
+            coro = self._execute_civ_raw(
+                civ_frame,
+                wait_response=wait_response,
+                is_current=is_current,
+            )
             if timeout is not None:
                 return await asyncio.wait_for(coro, timeout=timeout)
             return await coro
@@ -3402,13 +3660,18 @@ class CivRuntime:
             wait_response=wait_response,
             timeout=timeout,
             wait_dispatch=wait_dispatch,
+            is_current=is_current,
         )
 
     @staticmethod
     def _civ_expects_response(frame: CivFrame) -> bool:
         """Determine if a CI-V frame expects a data RESPONSE or just an ACK/NAK."""
-        if frame.command in (0x03, 0x04, 0x25, 0x26):
+        if frame.command in (0x03, 0x04):
             return True
+        if frame.command in (0x25, 0x26):
+            # A GET carries only the selected/unselected selector. Adding
+            # frequency or mode data is a SET whose completion is ACK/NAK.
+            return len(frame.data) <= 1
         if frame.command == 0x07 and frame.data == b"\xc2":
             return True
         if frame.command == 0x1A and frame.sub == 0x05 and len(frame.data) == 2:
@@ -3442,19 +3705,21 @@ class CivRuntime:
             return len(frame.data) == 0
         return len(frame.data) == 0
 
-    async def _drain_ack_sinks_before_blocking(self) -> None:
+    async def _drain_ack_sinks_before_blocking(
+        self, *, check_current: Callable[[], None] | None = None
+    ) -> None:
         """Give fire-and-forget ACK sinks a short chance to drain."""
-        if self._host._civ_request_tracker.ack_sink_count == 0:
+        tracker = self._host._civ_request_tracker
+        if tracker.ack_sink_count == 0:
             return
 
         deadline = time.monotonic() + self._host._civ_ack_sink_grace
-        while (
-            self._host._civ_request_tracker.ack_sink_count > 0
-            and time.monotonic() < deadline
-        ):
+        while tracker.ack_sink_count > 0 and time.monotonic() < deadline:
             await asyncio.sleep(0.005)
+            if check_current is not None:
+                check_current()
 
-        dropped = self._host._civ_request_tracker.drop_ack_sinks()
+        dropped = tracker.drop_ack_sinks()
         if dropped:
             logger.debug(
                 "Dropped %d stale ACK sink waiter(s) before blocking command", dropped
@@ -3464,17 +3729,41 @@ class CivRuntime:
         self,
         civ_frame: bytes,
         wait_response: bool = True,
-        deadline_monotonic: "float | None" = None,
+        *,
+        is_current: Callable[[], bool] | None = None,
     ) -> "CivFrame | None":
         """Execute one CI-V command via request tracker (serialized by worker)."""
         assert self._host._civ_transport is not None
         self._ensure_civ_runtime()
+        transport = self._host._civ_transport
+        tracker = self._host._civ_request_tracker
+        epoch = self._host._civ_epoch
+
+        def current_error() -> ConnectionError | None:
+            if (
+                self._host._civ_transport is not transport
+                or self._host._civ_request_tracker is not tracker
+                or self._host._civ_epoch != epoch
+            ):
+                return ConnectionError("CI-V execution belongs to a retired session")
+            try:
+                current = is_current is None or is_current()
+            except Exception:
+                current = False
+            return None if current else ConnectionError("managed TX attempt is stale")
+
+        def check_current() -> None:
+            if error := current_error():
+                raise error
+
+        def write_is_current() -> bool:
+            return current_error() is None
+
+        guard = {"is_current": write_is_current} if is_current is not None else {}
 
         parsed_frame = parse_civ_frame(civ_frame)
         request_key = request_key_from_frame(parsed_frame)
         expects_response = self._civ_expects_response(parsed_frame)
-        if deadline_monotonic is None:
-            deadline_monotonic = time.monotonic() + self._host._civ_get_timeout
 
         self._cleanup_stale_civ_waiters()
 
@@ -3482,40 +3771,38 @@ class CivRuntime:
             ack_sink_token: "int | None" = None
 
             if not expects_response:
-                token_or_future = self._host._civ_request_tracker.register_ack(
-                    wait=False
-                )
+                token_or_future = tracker.register_ack(wait=False)
                 if isinstance(token_or_future, int):
                     ack_sink_token = token_or_future
 
-            self.start_pump()
-
-            now = time.monotonic()
-            delta = now - self._host._last_civ_send_monotonic
-            if delta < self._host._civ_min_interval:
-                await asyncio.sleep(self._host._civ_min_interval - delta)
-
-            pkt = self._wrap_civ(civ_frame)
             try:
-                await self._host._civ_transport.send_tracked(pkt)
-            except Exception:
+                self.start_pump()
+                now = time.monotonic()
+                delta = now - self._host._last_civ_send_monotonic
+                if delta < self._host._civ_min_interval:
+                    await asyncio.sleep(self._host._civ_min_interval - delta)
+
+                check_current()
+                pkt = self._wrap_civ(civ_frame)
+                await transport.send_tracked(pkt, **guard)
+                check_current()
+            except (Exception, asyncio.CancelledError) as exc:
                 if ack_sink_token is not None:
-                    self._host._civ_request_tracker.unregister_ack_sink(ack_sink_token)
+                    tracker.unregister_ack_sink(ack_sink_token)
+                if not isinstance(exc, asyncio.CancelledError):
+                    check_current()
                 raise
 
             self._host._last_civ_send_monotonic = time.monotonic()
             return None
 
-        await self._drain_ack_sinks_before_blocking()
-
-        remaining_total = deadline_monotonic - time.monotonic()
-        if remaining_total <= 0:
-            raise TimeoutError("CI-V response timed out")
+        await self._drain_ack_sinks_before_blocking(check_current=check_current)
+        check_current()
 
         pending: "asyncio.Future[CivFrame] | None" = None
         try:
             if expects_response:
-                pending = self._host._civ_request_tracker.register_response(request_key)
+                pending = tracker.register_response(request_key)
             else:
                 # ``consume_backlog=False``: this waiter is registered before
                 # the frame is sent, so anything already in the orphan ACK/NAK
@@ -3523,7 +3810,7 @@ class CivRuntime:
                 # the oldest entry whatever it is, so it charges a stranger's
                 # NAK to this command -- or, worse, settles it from a stranger's
                 # ACK, reporting success for a write the radio never answered.
-                pending_or_token = self._host._civ_request_tracker.register_ack(
+                pending_or_token = tracker.register_ack(
                     wait=True,
                     consume_backlog=False,
                 )
@@ -3538,22 +3825,42 @@ class CivRuntime:
             if delta < self._host._civ_min_interval:
                 await asyncio.sleep(self._host._civ_min_interval - delta)
 
+            check_current()
             pkt = self._wrap_civ(civ_frame)
-            await self._host._civ_transport.send_tracked(pkt)
+            await transport.send_tracked(pkt, **guard)
+            check_current()
             self._host._last_civ_send_monotonic = time.monotonic()
             assert pending is not None
-            remaining = deadline_monotonic - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("CI-V response timed out")
+            # The answer window is spent from here, not from method entry:
+            # ``_civ_get_timeout`` bounds how long the *radio* may take,
+            # while the ``_civ_min_interval`` gap above and
+            # ``_drain_ack_sinks_before_blocking`` are this side's own
+            # scheduling.  Charging them to one budget cost a command sent
+            # inside the pacing gap that whole gap of answer window, and all
+            # of it whenever the pacing sleep overshot the remainder --
+            # ``tests/test_radio.py:
+            # TestResponseDeadlineOpensAtSend`` fails on that mis-charge.
             try:
-                return await asyncio.wait_for(pending, timeout=remaining)
+                response = await asyncio.wait_for(
+                    pending, timeout=self._host._civ_get_timeout
+                )
             except asyncio.TimeoutError:
-                self._host._civ_request_tracker.note_timeout()
+                check_current()
+                tracker.note_timeout()
                 logger.debug(
                     "CI-V command 0x%02X timed out",
                     request_key.command,
                 )
                 raise TimeoutError("CI-V response timed out")
+            check_current()
+            return response
+        except Exception:
+            check_current()
+            raise
         finally:
             if pending is not None:
-                self._host._civ_request_tracker.unregister(pending)
+                tracker.unregister(pending)
+                if not pending.done():
+                    pending.cancel()
+                elif not pending.cancelled():
+                    pending.exception()

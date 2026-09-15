@@ -68,6 +68,7 @@ from .radio_protocol import (  # noqa: F401, E402
     ReceiverBankCapable,
     RecoverableConnection,
     RepeaterControlCapable,
+    RepeaterShiftCapable,
     RigctldRoutable,
     RitXitCapable,
     ScopeCapable,
@@ -78,7 +79,6 @@ from .radio_protocol import (  # noqa: F401, E402
     StatePoller,
     SystemControlCapable,
     TransceiverBankCapable,
-    TransceiverStatusCapable,
     UsbAudioCapable,
     VfoSlotCapable,
     VoiceControlCapable,
@@ -92,7 +92,12 @@ from .runtime.session_lifecycle import (  # noqa: F401, E402
     RadioPresence,
     RadioSessionLifecycle,
 )
-from .types import AudioCodec, BreakInMode, Mode  # noqa: F401, E402
+from .types import (  # noqa: F401, E402
+    AudioCodec,
+    BreakInMode,
+    Mode,
+    RepeaterShiftDirection,
+)
 
 # === Tier 2 — lazy via PEP 562 ===
 #
@@ -195,7 +200,6 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "get_rf_gain": ("rigplane.commands", "get_rf_gain"),
     "set_af_level": ("rigplane.commands", "set_af_level"),
     "set_rf_gain": ("rigplane.commands", "set_rf_gain"),
-    "set_attenuator": ("rigplane.commands", "set_attenuator"),
     "set_attenuator_level": ("rigplane.commands", "set_attenuator_level"),
     "set_freq": ("rigplane.commands", "set_freq"),
     "set_mode": ("rigplane.commands", "set_mode"),
@@ -308,6 +312,7 @@ __all__ = [
     "ReceiverBankCapable",
     "RecoverableConnection",
     "RepeaterControlCapable",
+    "RepeaterShiftCapable",
     "RigctldRoutable",
     "RitXitCapable",
     "ScopeCapable",
@@ -318,7 +323,6 @@ __all__ = [
     "StatePoller",
     "SystemControlCapable",
     "TransceiverBankCapable",
-    "TransceiverStatusCapable",
     "UsbAudioCapable",
     "VfoSlotCapable",
     "VoiceControlCapable",
@@ -336,6 +340,7 @@ __all__ = [
     "Mode",
     "AudioCodec",
     "BreakInMode",
+    "RepeaterShiftDirection",
     # --- Tier 1: Public state types ---
     "RadioState",
     "RadioProfile",

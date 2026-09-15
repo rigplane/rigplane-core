@@ -7,10 +7,15 @@
  * deliberately does not touch any manifest, and it adds no design-language
  * renderer slot (that set was frozen by MOR-1072).
  *
- * MOR-1370 flips the second half, on `desktop-v2` ONLY: the cockpit manifest
- * is deliberately untouched (S5 precedent, restated by 12B/MOR-1365 for the
- * sibling `scopeDisplay` zone), so `scopeControls` stays undeclared — and
- * therefore unmounted, per the MOR-1304 canon — everywhere else. The
+ * MOR-1370 flipped the second half on `desktop-v2`; MOR-2231 (step 1, batch 4)
+ * adds `sdr-test`. The cockpit manifest stays deliberately untouched (S5
+ * precedent, restated by 12B/MOR-1365 for the sibling `scopeDisplay` zone), so
+ * `scopeControls` stays undeclared — and therefore unmounted, per the MOR-1304
+ * canon — THERE. Not "everywhere else": that reading only ever held on the dual
+ * composition, whose `zoned('scopeControls', …, false)` call withholds the body
+ * when no zone owns the surface. The single composition takes the default
+ * `allowBare`, so the surface mounts bare on every undeclaring face it serves.
+ * The
  * inventory below is a LITERAL of who declares it, mirroring
  * `scope-display-declarability.test.ts`'s post-S6a shape. This is the LAST
  * surface in the whole MOR-1262 vocabulary to graduate:
@@ -33,10 +38,10 @@ import * as layoutDeclarationsBarrel from '../declarations';
 
 describe('scopeControls is a declarable semantic surface', () => {
   // Kills: reverting the SEMANTIC_SURFACE_NAMES addition.
-  it('is in the declarable set, appended last', () => {
+  it('is in the declarable set', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
       'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
-      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls',
+      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory',
     ]);
   });
 
@@ -60,7 +65,14 @@ describe('scopeControls is a declarable semantic surface', () => {
 
 describe('exactly the reviewed manifests declare a scopeControls zone (MOR-1370)', () => {
   /** The literal — extend by hand, with a layout review, never silently. */
-  const DECLARES_SCOPE_CONTROLS = ['desktop-v2'];
+  // MOR-2231 (step 1, batch 4) added `sdr-test`, by hand and with the layout
+  // review this literal exists to force. Like `band` and unlike the rest of
+  // that step, this declaration UNMOUNTS NOTHING: its one consumer is a PROP,
+  // `hideScopeControls={declared.has('scopeControls')}`, which `RadioLayout`
+  // forwards to a `SpectrumPanel` that keeps rendering and drops the
+  // toolbar's fact-backed half.
+  // T160 PR-1 added `flagship-probe`, which places this surface in its centre column, under the panorama.
+  const DECLARES_SCOPE_CONTROLS = ['desktop-v2', 'flagship-probe', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

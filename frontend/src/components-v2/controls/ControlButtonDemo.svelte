@@ -4,7 +4,7 @@
   import { DotButton, FillButton, HardwareButton, HardwarePlainButton, StatusIndicator } from '$lib/Button';
   import { PRESET_MAPPINGS, type RoleMapping } from '$lib/Button/roleMapping';
   import { SegmentedControl } from '$lib/SegmentedControl';
-  import { ValueControl } from './value-control';
+  import { ValueControl, professionalSkin } from './value-control';
   import ValueControlLab from './ValueControlLab.svelte';
 
   const indicatorStyles = [
@@ -164,6 +164,11 @@
   let cwPitchKnob = $state(600);
   let micGainKnob = $state(50);
 
+  // ProfessionalKnob examples
+  let professionalKnobValue = $state(150);
+  let professionalSquelchValue = $state(80);
+  let professionalCwPitchValue = $state(600);
+
   // ── #350 — Modern Accent vs Hardware family comparison ───────────────────
 
   // T1: Hardware variant showcase
@@ -300,7 +305,7 @@
     </p>
   </section>
 
-  <section class="demo-card">
+  <section class="demo-card" data-testid="gallery-dotbutton">
     <h2>DotButton <span class="hint">(component)</span></h2>
     <div class="demo-grid">
       {#each indicatorColors as color}
@@ -315,7 +320,7 @@
     </div>
   </section>
 
-  <section class="demo-card">
+  <section class="demo-card" data-testid="gallery-fillbutton">
     <h2>FillButton <span class="hint">(component)</span></h2>
     <div class="demo-grid">
       {#each hardwareButtons as btn}
@@ -330,7 +335,7 @@
     </div>
   </section>
 
-  <section class="demo-card">
+  <section class="demo-card" data-testid="gallery-hardwarebutton">
     <h2>HardwareButton <span class="hint">(component)</span></h2>
     <div class="demo-grid">
       {#each hardwareButtons as btn}
@@ -346,7 +351,7 @@
     </div>
   </section>
 
-  <section class="demo-card">
+  <section class="demo-card" data-testid="gallery-hardwareplainbutton">
     <h2>HardwarePlainButton <span class="hint">(component)</span></h2>
     <div class="demo-grid">
       {#each hardwareButtons as btn}
@@ -916,7 +921,7 @@
     </div>
   </section>
 
-  <section class="demo-card">
+  <section class="demo-card" data-testid="gallery-statusindicator">
     <h2>StatusIndicator <span class="hint">(display-only component)</span></h2>
     <p class="lab-note">
       Read-only status/mode display. No <code>onclick</code>, rendered as a dedicated primitive.
@@ -959,7 +964,7 @@
 
   <!-- ── HBar renderer ─────────────────────────────────────────────────────── -->
 
-  <section class="demo-card">
+  <section class="demo-card" data-testid="gallery-valuecontrol-hbar">
     <h2>HBar / standard — accent colors <span class="hint">(real radio labels)</span></h2>
     <p class="lab-note">
       Real radio parameters with per-control accent colors matching current production convention.
@@ -1173,7 +1178,7 @@
 
   <!-- ── Bipolar renderer ──────────────────────────────────────────────────── -->
 
-  <section class="demo-card">
+  <section class="demo-card" data-testid="gallery-valuecontrol-bipolar">
     <h2>Bipolar / standard — real radio parameters <span class="hint">(center-origin bar)</span></h2>
     <p class="lab-note">
       Center-origin bar with +/- axis labels. Fill extends from center toward the active side.
@@ -1259,7 +1264,7 @@
 
   <!-- ── Knob renderer ─────────────────────────────────────────────────────── -->
 
-  <section class="demo-card">
+  <section class="demo-card" data-testid="gallery-valuecontrol-knob">
     <h2>Knob / standard — accent colors <span class="hint">(demo-only, not yet in production)</span></h2>
     <p class="lab-note">
       SVG rotary knob. Drag vertically to adjust (up = increase). Mouse wheel or keyboard arrows also work.
@@ -1331,6 +1336,49 @@
         tickCount={5}
         accentColor="var(--v2-accent-cyan)"
         onChange={(v) => { squelchKnob = v; }}
+      />
+    </div>
+  </section>
+
+  <!-- ── ProfessionalKnob skin ─────────────────────────────────────────────── -->
+
+  <section class="demo-card" data-testid="gallery-professionalknob">
+    <h2>ProfessionalKnob <span class="hint">(demo-only, not wired to any production caller)</span></h2>
+    <p class="lab-note">
+      <strong>ProfessionalKnob</strong> is a <code>KnobSkinRendererProps</code>-shaped skin
+      (<code>value-control/skins/ProfessionalKnob.svelte</code>) that renders nowhere in production
+      or on any other demo page. Per the owner's look-preservation ruling on MOR-2215 (comment
+      <code>0e7ed41d</code>), it is not deleted — this section pins its look via the visual baseline
+      gallery instead. It is not the same component as the <code>knob</code> renderer above.
+    </p>
+    <div class="vc-knob-row">
+      <ValueControl
+        label="RF Gain"
+        value={professionalKnobValue}
+        min={0} max={255} step={1}
+        renderer="knob"
+        skin={professionalSkin}
+        accentColor="var(--v2-accent-green)"
+        onChange={(v) => { professionalKnobValue = v; }}
+      />
+      <ValueControl
+        label="Squelch"
+        value={professionalSquelchValue}
+        min={0} max={255} step={1}
+        renderer="knob"
+        skin={professionalSkin}
+        accentColor="var(--v2-accent-cyan)"
+        onChange={(v) => { professionalSquelchValue = v; }}
+      />
+      <ValueControl
+        label="CW Pitch"
+        value={professionalCwPitchValue}
+        min={300} max={900} step={1}
+        renderer="knob"
+        skin={professionalSkin}
+        unit="Hz"
+        accentColor="var(--v2-accent-yellow)"
+        onChange={(v) => { professionalCwPitchValue = v; }}
       />
     </div>
   </section>

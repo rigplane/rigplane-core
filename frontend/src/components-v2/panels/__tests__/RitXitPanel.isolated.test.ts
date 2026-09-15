@@ -219,6 +219,7 @@ describe('RitXitPanel component', () => {
     const target = mountPanel();
     const labels = Array.from(target.querySelectorAll('.vc-label')).map((el) => el.textContent);
     expect(labels).toContain('Offset');
+    expect(target.querySelectorAll('.vc-bipolar')).toHaveLength(1);
   });
 
   it('uses the shared offset constraints', () => {

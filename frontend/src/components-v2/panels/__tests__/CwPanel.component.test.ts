@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ControlFeedback } from '$lib/runtime/adapters/panel-adapters';
+import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
 
 const mockProps = {
   cwPitch: 600,
@@ -17,6 +18,8 @@ const mockProps = {
   hasApf: true,
   hasTwinPeak: true,
   autoTuneAvailable: false,
+  cwPitchDomain: null as ControlDisplayDomain | null,
+  keySpeedDomain: null as ControlDisplayDomain | null,
 };
 
 const mockHandlers = {
@@ -36,11 +39,19 @@ const mockFeedback = {
   sessionEpoch: 1, scope: { control: 'break-in-delay', receiver: 0 },
   repeatPolicy: 'latest-target-wins',
 } as ControlFeedback<number>;
+const mockPitchFeedback = {
+  ...mockFeedback, confirmed: 600, scope: { control: 'cw-pitch', receiver: 0 },
+} as ControlFeedback<number>;
+const mockSpeedFeedback = {
+  ...mockFeedback, confirmed: 12, scope: { control: 'keyer-speed', receiver: 0 },
+} as ControlFeedback<number>;
 
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveCwProps: () => mockProps,
   getCwHandlers: () => mockHandlers,
   getBreakInDelayControlFeedback: () => mockFeedback,
+  getCwPitchControlFeedback: () => mockPitchFeedback,
+  getKeySpeedControlFeedback: () => mockSpeedFeedback,
 }));
 
 import CwPanel from '../CwPanel.svelte';
@@ -49,6 +60,13 @@ let components: ReturnType<typeof mount>[] = [];
 
 function mountPanel(overrides?: Partial<typeof mockProps>) {
   if (overrides) Object.assign(mockProps, overrides);
+  const syncFeedback = (feedback: ControlFeedback<number>, value: number) => Object.assign(feedback, {
+    confirmed: Number.isSafeInteger(value) ? value : null,
+    availability: Number.isSafeInteger(value) ? 'available' : 'unavailable',
+    phase: Number.isSafeInteger(value) ? 'idle' : 'unavailable',
+  });
+  syncFeedback(mockPitchFeedback, mockProps.cwPitch);
+  syncFeedback(mockSpeedFeedback, mockProps.keySpeed);
   const t = document.createElement('div');
   document.body.appendChild(t);
   const component = mount(CwPanel, { target: t });
@@ -57,19 +75,29 @@ function mountPanel(overrides?: Partial<typeof mockProps>) {
   return t;
 }
 
-beforeEach(() => {
-  components = [];
-  Object.assign(mockProps, {
-    cwPitch: 600, keySpeed: 12, breakIn: 0, breakInDelay: 0,
-    apfMode: 0, twinPeak: false, currentMode: 'CW',
-    apfDisabled: false, tpfDisabled: false,
-    hasCw: true, hasBreakIn: true, hasApf: true, hasTwinPeak: true,
-    autoTuneAvailable: false,
-  });
+  beforeEach(() => {
+    components = [];
+    Object.assign(mockProps, {
+      cwPitch: 600, keySpeed: 12, breakIn: 0, breakInDelay: 0,
+      apfMode: 0, twinPeak: false, currentMode: 'CW',
+      apfDisabled: false, tpfDisabled: false,
+      hasCw: true, hasBreakIn: true, hasApf: true, hasTwinPeak: true,
+      autoTuneAvailable: false, cwPitchDomain: null, keySpeedDomain: null,
+    });
   Object.values(mockHandlers).forEach((fn) => fn.mockClear());
   Object.assign(mockFeedback, {
     confirmed: 64, target: null, requestedTarget: null, phase: 'idle', busy: false,
     availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+  });
+  Object.assign(mockPitchFeedback, {
+    confirmed: 600, target: null, requestedTarget: null, phase: 'idle', busy: false,
+    availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+    sessionEpoch: 1, scope: { control: 'cw-pitch', receiver: 0 },
+  });
+  Object.assign(mockSpeedFeedback, {
+    confirmed: 12, target: null, requestedTarget: null, phase: 'idle', busy: false,
+    availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+    sessionEpoch: 1, scope: { control: 'keyer-speed', receiver: 0 },
   });
 });
 
@@ -99,6 +127,51 @@ describe('CwPanel component rendering', () => {
     const t = mountPanel();
     const labels = Array.from(t.querySelectorAll('.vc-label'));
     expect(labels.some((el) => el.textContent === 'Key Speed')).toBe(true);
+    expect(t.querySelector('.vc-discrete')).not.toBeNull();
+  });
+
+  it('dispatches Key Speed through its Discrete facade binding', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ keySpeed: 12 });
+    const control = t.querySelector<HTMLElement>('[aria-label="Key Speed"]')!;
+
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+
+    expect(mockHandlers.onKeySpeedChange).toHaveBeenCalledExactlyOnceWith(13);
+    vi.useRealTimers();
+  });
+
+  it('keeps rapid Key Speed keys on one debounce and uses the newest target', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ keySpeed: 12 });
+    const control = t.querySelector<HTMLElement>('[aria-label="Key Speed"]')!;
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(mockHandlers.onKeySpeedChange).toHaveBeenCalledExactlyOnceWith(14);
+    vi.useRealTimers();
+  });
+
+  it('preserves immediate wheel requests for both controls', () => {
+    const t = mountPanel({ cwPitch: 600, keySpeed: 12 });
+    t.querySelector<HTMLElement>('[aria-label="CW Pitch"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    t.querySelector<HTMLElement>('[aria-label="CW Pitch"]')!
+      .dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+    t.querySelector<HTMLElement>('[aria-label="Key Speed"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    t.querySelector<HTMLElement>('[aria-label="Key Speed"]')!
+      .dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+    expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(605);
+    expect(mockHandlers.onKeySpeedChange).toHaveBeenCalledExactlyOnceWith(13);
+  });
+
+  it('does not dispatch either CW scalar while mounting or unmounting', () => {
+    mountPanel();
+    unmount(components.pop()!);
+    expect(mockHandlers.onCwPitchChange).not.toHaveBeenCalled();
+    expect(mockHandlers.onKeySpeedChange).not.toHaveBeenCalled();
   });
 
   it('renders SEMI break-in button', () => {
@@ -142,6 +215,68 @@ describe('CwPanel component rendering', () => {
     const comp = components.pop()!;
     unmount(comp);
     expect(t.innerHTML).toBe('');
+  });
+});
+
+describe('CwPanel CW pitch domain (MOR-1682)', () => {
+  const stepPitch = (t: HTMLElement) => {
+    t.querySelector<HTMLElement>('[aria-label="CW Pitch"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+  };
+
+  it('ranges and steps the pitch control by the profile exact domain (FTX-1: 300..1050, step 10)', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ cwPitchDomain: { min: 300, max: 1050, step: 10, origin: 300 } });
+    const slider = t.querySelector<HTMLElement>('[aria-label="CW Pitch"][role="slider"]')!;
+    expect(slider.getAttribute('aria-valuemin')).toBe('300');
+    expect(slider.getAttribute('aria-valuemax')).toBe('1050');
+    stepPitch(t);
+    expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(610);
+    vi.useRealTimers();
+  });
+
+  it('keeps the 5 Hz step for a legacy-domain radio (IC-7300 shape)', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ cwPitchDomain: { min: 300, max: 900, step: 5, origin: 300 } });
+    stepPitch(t);
+    expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(605);
+    vi.useRealTimers();
+  });
+
+  it('keeps the 5 Hz step when the profile publishes no cw_pitch domain', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ cwPitchDomain: null });
+    stepPitch(t);
+    expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(605);
+    vi.useRealTimers();
+  });
+});
+
+describe('CwPanel key-speed domain (MOR-2475 F1)', () => {
+  const slider = (t: HTMLElement) =>
+    t.querySelector<HTMLElement>('[aria-label="Key Speed"][role="slider"]')!;
+
+  it('ranges and steps the key-speed control by the profile domain', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ keySpeedDomain: { min: 5, max: 50, step: 1, origin: 5 } });
+    expect(slider(t).getAttribute('aria-valuemin')).toBe('5');
+    expect(slider(t).getAttribute('aria-valuemax')).toBe('50');
+    slider(t).dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(mockHandlers.onKeySpeedChange).toHaveBeenCalledExactlyOnceWith(50);
+    vi.useRealTimers();
+  });
+
+  it('keeps the 6..48 fallback when the profile publishes no key_speed domain', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ keySpeedDomain: null });
+    expect(slider(t).getAttribute('aria-valuemin')).toBe('6');
+    expect(slider(t).getAttribute('aria-valuemax')).toBe('48');
+    slider(t).dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(mockHandlers.onKeySpeedChange).toHaveBeenCalledExactlyOnceWith(48);
+    vi.useRealTimers();
   });
 });
 
@@ -197,15 +332,9 @@ function vcValueFor(t: HTMLElement, label: string): string {
 
 /**
  * A12 (MOR-1409, Core #2317, coordinator adjudication comment 5246487510)
- * — a connected receiver that has never reported `cwPitch`/`keySpeed`
- * (optional fields) passes the `hasCw` capability gate with `NaN` values
- * (panel-props.ts no longer fabricates `?? 600`/`?? 12`; `p.cwPitch ?? 600`
- * in this component's own script does not catch `NaN` either — only
- * `null`/`undefined`). Unguarded, the default `ValueControl` display
- * renders the literal "NaN Hz"/"NaN WPM" (verifier-executed probe on the
- * unguarded candidate). The local `formatCwPitchDisplay`/
- * `formatKeySpeedDisplay` guards must render the established
- * '---'-family placeholder instead.
+ * — unavailable command feedback must preserve the established
+ * '---'-family placeholder rather than leak a non-finite value. The local
+ * formatters also preserve the exact finite-value/unit rendering.
  */
 describe('CwPanel — no "NaN" leak for unobserved pitch/speed (MOR-1409 A12)', () => {
   it('does not render a "NaN" substring for CW Pitch when cwPitch is non-finite', () => {

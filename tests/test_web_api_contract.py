@@ -14,6 +14,8 @@ from rigplane.web.api_contract import (
     STABLE_HTTP_ENDPOINTS,
     STABLE_WEBSOCKET_ROUTES,
     WEB_API_CONTRACT_VERSION,
+    HttpEndpoint,
+    WebSocketRoute,
 )
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.rig_loader import load_rig
@@ -68,6 +70,16 @@ scheme = "ab"
 [commands]
 
 [commands.overrides]
+
+[antenna]
+tx_count = 2
+has_rx_ant = true
+
+[scan_types]
+values = [0x01, 0x03, 0x13, 0x23]
+
+[scan_resume]
+values = [0xD0, 0xD3]
 
 [controls.identity]
 mapping = "identity"
@@ -141,6 +153,8 @@ async def test_control_domains_round_trip_through_both_capability_endpoints(
     """The shared JSON is derived only by loading TOML into a RadioProfile."""
     profile = _golden_profile(tmp_path)
     assert profile.controls == _golden_controls()
+    assert profile.antenna_tx_count == 2
+    assert profile.antenna_has_rx_ant is True
     radio = SimpleNamespace(
         model=profile.model,
         profile=profile,
@@ -150,7 +164,7 @@ async def test_control_domains_round_trip_through_both_capability_endpoints(
         radio_ready=False,
     )
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
-    headers = {"authorization": "Bearer token"}
+    headers = {}
     for path in ("/api/v1/info", "/api/v1/capabilities"):
         writer = _Writer()
         await server._handle_http(writer, "GET", path, headers=headers)  # noqa: SLF001
@@ -161,7 +175,14 @@ async def test_control_domains_round_trip_through_both_capability_endpoints(
             if path == "/api/v1/info"
             else payload["controls"]
         )
+        capability_payload = (
+            payload["capabilities"] if path == "/api/v1/info" else payload
+        )
         assert controls == _golden_controls()
+        assert capability_payload["antennas"] == 2
+        assert capability_payload["hasRxAntenna"] is True
+        assert capability_payload["scanTypeValues"] == [0x01, 0x03, 0x13, 0x23]
+        assert capability_payload["scanResumeValues"] == [0xD0, 0xD3]
 
 
 @pytest.mark.asyncio
@@ -200,6 +221,9 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
     assert ("GET", "/api/v1/state") in http
     assert ("GET", "/api/v1/capabilities") in http
     assert ("GET", "/api/v1/audio/analysis") in http
+    assert ("GET", "/api/v1/managed-transmit") in http
+    assert ("POST", "/api/v1/managed-transmit/command") in http
+    assert ("PUT", "/api/v1/managed-transmit/tot") in http
     assert ("GET", "/api/v1/bridge") in http
     assert ("POST", "/api/v1/bridge") in http
     assert ("DELETE", "/api/v1/bridge") in http
@@ -230,6 +254,29 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
         "ok",
         "results",
     )
+    assert RESPONSE_FIELD_CONTRACTS["/api/v1/managed-transmit"]["required"] == (
+        "schemaVersion",
+        "sampledAt",
+        "managedTransmit",
+        "txObservation",
+    )
+    assert RESPONSE_FIELD_CONTRACTS["/api/v1/managed-transmit/command"]["required"] == (
+        "ok",
+        "operation",
+        "result",
+    )
+
+
+@pytest.mark.parametrize(
+    "route",
+    STABLE_HTTP_ENDPOINTS + STABLE_WEBSOCKET_ROUTES,
+    ids=[f"{route['method']} {route['path']}" for route in STABLE_HTTP_ENDPOINTS]
+    + [f"WS {route['path']}" for route in STABLE_WEBSOCKET_ROUTES],
+)
+def test_stable_routes_require_no_application_credentials(
+    route: HttpEndpoint | WebSocketRoute,
+) -> None:
+    assert route["auth"] == "none"
 
 
 def test_command_batch_docs_use_numeric_data_mode_contract() -> None:
@@ -250,7 +297,10 @@ def test_command_batch_docs_use_numeric_data_mode_contract() -> None:
 
 @pytest.mark.asyncio
 async def test_stable_http_payloads_satisfy_required_field_contract() -> None:
-    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0, auth_token="token"))
+    srv = WebServer(
+        None,
+        WebConfig(host="127.0.0.1", port=0, radio_model="IC-7610"),
+    )
     srv._server = type(  # noqa: SLF001
         "_Server",
         (),
@@ -260,7 +310,7 @@ async def test_stable_http_payloads_satisfy_required_field_contract() -> None:
             ]
         },
     )()
-    headers = {"authorization": "Bearer token"}
+    headers = {}
 
     for path, expected_status in (
         ("/healthz", 200),

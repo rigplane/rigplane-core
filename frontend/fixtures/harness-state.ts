@@ -2,15 +2,14 @@
  * MOR-1070 — mutable holders the aliased fixture stubs read.
  *
  * VERIFICATION-ONLY TOOLING. Nothing under `src/` imports this file; it lives
- * outside `src/` on purpose so `eslint src/`, `svelte-check --tsconfig
- * tsconfig.app.json` (include: `src/**`) and `vitest` (include:
- * `src/ ** /*.test.ts`) all ignore it. The production tree is byte-unchanged.
+ * outside `src/` on purpose so `eslint src/` and `vitest` (include:
+ * `src/ ** /*.test.ts`) both ignore it. The production tree is byte-unchanged.
  *
  * The cockpit reaches live state through exactly four seams
- * (`$lib/runtime`, `$lib/runtime/tx-controller/app-host`,
+ * (`$lib/runtime`, `$lib/runtime/tx-controller/managed-app-host`,
  * `$lib/runtime/adapters/mod-input-tx-guard.svelte` and the wiring's
- * `command-bus`). `vite.fixtures.config.ts` re-points those four at
- * `fixtures/stubs/*`, which read the holders below. Everything else — the real
+ * `panel-adapters`). `vite.fixtures.config.ts` re-points those four at
+ * `fixtures/stubs/*`, which read the server-shaped holders below. Everything else — the real
  * view-model adapter, the real presentation-capability derivation, the real
  * semantic surfaces, the real i18n catalog, the real CSS — is the shipped code.
  */
@@ -18,13 +17,18 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 
 export interface TxSnapshot {
-  phase: 'idle' | 'audio-start-pending' | 'key-confirm-pending' | 'active' | 'releasing' | 'failed';
+  phase: 'idle' | 'key-confirm-pending' | 'active' | 'releasing' | 'failed';
   intent: 'momentary' | 'latched' | null;
-  guard: { leaseId: string } | null;
   radioTx: 'off' | 'on' | 'unknown';
   txRisk: 'none' | 'uncertain' | 'confirmed-on';
-  mayOwnKey: boolean;
   fault: string | null;
+  faultDetail: null;
+  fresh: boolean;
+  releaseRequired: boolean;
+  /** Server-owned software-TOT configuration; null means explicitly disabled. */
+  configuredSeconds: number | null;
+  remainingMs: number | null;
+  lastOperation: 'ptt_on' | 'transmit_on' | 'force_receive' | null;
 }
 
 export interface ModGuardProps {
@@ -47,13 +51,34 @@ export const DEFAULT_AUDIO_RUNTIME: AudioRuntimeState = {
 };
 
 export const IDLE_TX: TxSnapshot = {
-  phase: 'idle', intent: null, guard: null,
-  radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
+  faultDetail: null, fresh: true, releaseRequired: false, configuredSeconds: null,
+  remainingMs: null, lastOperation: null,
 };
 
 export interface HarnessCall {
   fn: string;
   args: unknown[];
+}
+
+/**
+ * Fixture-only projection authority accepted by the real ScopeFrameHost.
+ * It intentionally carries no envelope or transport producer: B/D captures
+ * are a truthful missing-frame/ghost reading, never synthetic RF/AF data.
+ */
+export interface FixtureFrameAuthority {
+  source: 'hardware' | 'audio_fft';
+  receiver: 0 | 1 | null;
+  providerGeneration: number | null;
+}
+
+export interface FixtureFrameEvidence {
+  envelope: null;
+  authority: FixtureFrameAuthority;
+  transportEpoch: null;
+  demanded: false;
+  transport: 'disconnected';
+  nowMonotonic: 0;
 }
 
 export const harness = {
@@ -64,6 +89,9 @@ export const harness = {
   audioRuntime: { ...DEFAULT_AUDIO_RUNTIME } as AudioRuntimeState,
   calls: [] as HarnessCall[],
   listeners: new Set<(next: TxSnapshot) => void>(),
+  frameAuthority: null as FixtureFrameAuthority | null,
+  frameEvidence: null as FixtureFrameEvidence | null,
+  presentationAcquires: [] as Array<{ resource: 'hardware-scope' | 'audio-fft'; consumer: string }>,
 };
 
 export function record(fn: string, args: unknown[]): void {

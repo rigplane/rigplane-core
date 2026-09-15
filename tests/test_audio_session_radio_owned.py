@@ -33,7 +33,7 @@ from rigplane.runtime.radio import IcomRadio
 
 def test_icom_audio_session_is_cached_singleton() -> None:
     """Repeated access returns the SAME session object (lazy + cached)."""
-    radio = IcomRadio("192.168.1.100")
+    radio = IcomRadio("192.168.1.100", model="IC-7610")
     session = radio.audio_session
     assert isinstance(session, AudioSession)
     assert radio.audio_session is session
@@ -41,7 +41,7 @@ def test_icom_audio_session_is_cached_singleton() -> None:
 
 def test_icom_audio_session_wraps_shared_audio_bus() -> None:
     """The radio-owned session wraps the radio's shared AudioBus."""
-    radio = IcomRadio("192.168.1.100")
+    radio = IcomRadio("192.168.1.100", model="IC-7610")
     assert radio.audio_session.bus is radio.audio_bus
 
 

@@ -12,6 +12,48 @@ let audioState = $state({
   txCodecFallback: false,
 });
 
+export interface RxAudioTargetSnapshot {
+  readonly muted: boolean;
+  readonly rxEnabled: boolean;
+}
+
+export type RxAudioTargetSubscriber = (next: RxAudioTargetSnapshot) => void;
+const rxAudioTargetSubscribers = new Set<RxAudioTargetSubscriber>();
+
+export function getRxAudioTargetSnapshot(): RxAudioTargetSnapshot {
+  return Object.freeze({
+    muted: audioState.muted,
+    rxEnabled: audioState.rxEnabled,
+  });
+}
+
+function notifyRxAudioTargetSubscribers(): void {
+  const snapshot = getRxAudioTargetSnapshot();
+  for (const subscriber of rxAudioTargetSubscribers) {
+    try {
+      subscriber(snapshot);
+    } catch (error) {
+      console.warn('RX audio target subscriber failed', error);
+    }
+  }
+}
+
+export function subscribeRxAudioTarget(subscriber: RxAudioTargetSubscriber): () => void {
+  rxAudioTargetSubscribers.add(subscriber);
+  try {
+    subscriber(getRxAudioTargetSnapshot());
+  } catch (error) {
+    rxAudioTargetSubscribers.delete(subscriber);
+    throw error;
+  }
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    rxAudioTargetSubscribers.delete(subscriber);
+  };
+}
+
 export function getAudioState(): typeof audioState {
   return audioState;
 }
@@ -22,14 +64,19 @@ export function setVolume(v: number): void {
 
 export function toggleMute(): void {
   audioState.muted = !audioState.muted;
+  notifyRxAudioTargetSubscribers();
 }
 
 export function setMuted(v: boolean): void {
+  if (audioState.muted === v) return;
   audioState.muted = v;
+  notifyRxAudioTargetSubscribers();
 }
 
 export function setRxEnabled(v: boolean): void {
+  if (audioState.rxEnabled === v) return;
   audioState.rxEnabled = v;
+  notifyRxAudioTargetSubscribers();
 }
 
 export function setTxEnabled(v: boolean): void {

@@ -116,8 +116,8 @@ describe('formatAmps (calibrated: input is amps)', () => {
   it('returns 15.0 A', () => {
     expect(formatAmps(15)).toBe('15.0 A');
   });
-  it('clamps beyond-scale readings to the 25 A top knot', () => {
-    expect(formatAmps(300)).toBe('25.0 A');
+  it('marks beyond-scale readings as the 25 A top knot plus (T164)', () => {
+    expect(formatAmps(300)).toBe('25.0+ A');
   });
 });
 
@@ -128,8 +128,8 @@ describe('formatVolts (calibrated: input is volts)', () => {
   it('returns 10.0 V', () => {
     expect(formatVolts(10)).toBe('10.0 V');
   });
-  it('returns 16.0 V at the top knot', () => {
-    expect(formatVolts(16)).toBe('16.0 V');
+  it('returns 16.0+ V at the top knot (T164)', () => {
+    expect(formatVolts(16)).toBe('16.0+ V');
   });
 });
 

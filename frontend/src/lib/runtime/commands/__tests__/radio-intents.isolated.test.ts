@@ -54,6 +54,80 @@ describe('typed non-PTT radio intents', () => {
     vi.useRealTimers();
   });
 
+  it.each([false, true])('returns transport acceptance %s separately from lifecycle', (transportAccepted) => {
+    harness.sendCommand.mockReturnValue(transportAccepted);
+    const result = intents.dispatchRadioIntentWithResult({
+      id: 'acceptance', name: 'set_freq', params: { freq: 14_074_000, receiver: 0 },
+    });
+    expect(result.transportAccepted).toBe(transportAccepted);
+    expect(result.lifecycle).toMatchObject({ id: 'acceptance', status: 'pending' });
+    expect(result.lifecycle).not.toHaveProperty('confirmedValue');
+    expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(
+      'set_freq', { freq: 14_074_000, receiver: 0 }, 'acceptance',
+    );
+  });
+
+  it('preserves the original dispatch lifecycle return on transport refusal', () => {
+    harness.sendCommand.mockReturnValue(false);
+    const result = intents.dispatchRadioIntent({ id: 'old-caller', name: 'vfo_swap', params: {} });
+    expect(result).toMatchObject({ id: 'old-caller', name: 'vfo_swap', status: 'pending' });
+    expect(result).not.toHaveProperty('lifecycle');
+    expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith('vfo_swap', {}, 'old-caller');
+  });
+
+  it.each(['sendCommand', 'dispatchCommand'] as const)('host %s preserves non-TX consumer calls and each transport result', async (method) => {
+    const { createDefaultLocalExtensionHostApi } = await import('$lib/local-extensions/host-api');
+    const api = createDefaultLocalExtensionHostApi();
+    const examples = [
+      ['set_freq', { freq: 14_074_000, receiver: 0 }],
+      ['set_mode', { mode: 'CW', receiver: 1 }],
+      ['set_af_level', { level: 0.5, receiver: 0 }],
+      ['vfo_swap', {}],
+    ] as const;
+    for (const [name, params] of examples) {
+      for (const accepted of [false, true, false]) {
+        harness.sendCommand.mockClear().mockReturnValue(accepted);
+        expect(api[method](name, params)).toBe(accepted);
+        const wireParams = name === 'set_af_level'
+          ? { ...params, level_unit: 'normalized' }
+          : params;
+        expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(name, wireParams, expect.any(String));
+        expect(lifecycle.getCommandLifecycles().at(-1)).toMatchObject({ name, params, status: 'pending' });
+      }
+    }
+  });
+
+  it('rejects obsolete TX and malformed extension requests before transport dispatch', async () => {
+    const { createDefaultLocalExtensionHostApi } = await import('$lib/local-extensions/host-api');
+    const api = createDefaultLocalExtensionHostApi();
+    for (const [name, params] of [
+      ['unknown', {}], ['ptt', { state: true }], ['ptt', { state: false }],
+      ['ptt_on', {}], ['ptt_off', {}], ['set_af_level', { level: 0.5 }],
+      ['set_freq', { freq: 14_074_000, extra: true }], ['set_freq', { freq: '14074000' }],
+    ] as const) {
+      expect(api.sendCommand(name, params)).toBe(false);
+      expect(api.dispatchCommand(name, params)).toBe(false);
+    }
+    expect(harness.sendCommand).not.toHaveBeenCalled();
+    expect(lifecycle.getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it.each(['1.0', undefined])('reports a migration message when loading host API %s', async (host_api) => {
+    const { loadLocalExtensionManifest } = await import('$lib/local-extensions/manifest');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({
+        version: 1, ...(host_api === undefined ? {} : { host_api }),
+        extensions: [{ id: 'meter', mount: 'floating-overlay', entry: '/local/meter.js' }],
+      }) });
+      expect(await loadLocalExtensionManifest({ fetch })).toBeNull();
+      expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/host_api.*2\.0.*migrat/i));
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/PTT.*unsupported/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('sends one exact three-argument envelope with no optimistic side channel', () => {
     const record = intents.dispatchRadioIntent({
       id: 'freq-1',
@@ -72,6 +146,26 @@ describe('typed non-PTT radio intents', () => {
     expect(lifecycle.getCommandLifecycle('freq-1', 7)?.status).toBe('pending');
   });
 
+  it('accepts only the exact fixed-slot frequency envelope', () => {
+    const params = {
+      freq: 14_074_000, receiver: 0 as const, slot: 'B' as const,
+      expected_active_slot: 'A' as const, provider_generation: 31,
+    };
+    intents.dispatchRadioIntent({ id: 'slot-freq', name: 'set_vfo_freq', params });
+    expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith('set_vfo_freq', params, 'slot-freq');
+
+    for (const malformed of [
+      { ...params, slot: 'MAIN' },
+      { ...params, expected_active_slot: 'SUB' },
+      { ...params, provider_generation: 31.5 },
+      { ...params, receiver: 2 },
+      { ...params, extra: true },
+    ]) expect(() => intents.dispatchRadioIntent({
+      name: 'set_vfo_freq', params: malformed,
+    } as unknown as RadioIntent)).toThrow(/invalid radio intent/i);
+    expect(harness.sendCommand).toHaveBeenCalledTimes(1);
+  });
+
   it('correlates delivery without turning acknowledgement into radio truth', () => {
     intents.dispatchRadioIntent({ id: 'mode-1', name: 'set_mode', params: { mode: 'CW', receiver: 1 } });
     harness.delivery?.({
@@ -80,6 +174,13 @@ describe('typed non-PTT radio intents', () => {
       originalEpoch: 7,
       eventEpoch: 7,
     });
+    expect(lifecycle.getCommandLifecycle('mode-1', 7)).toMatchObject({
+      status: 'pending',
+      dispatchedEventEpoch: 7,
+    });
+    const stale = intents.dispatchRadioIntent({ id: 'stale-sent', name: 'set_vfo', params: { vfo: 'B' } });
+    harness.delivery?.({ commandId: stale.id, kind: 'transport-sent', originalEpoch: 7, eventEpoch: 8 });
+    expect(lifecycle.getCommandLifecycle(stale.id, 7)).not.toHaveProperty('dispatchedEventEpoch');
     harness.delivery?.({ commandId: 'mode-1', kind: 'ack', originalEpoch: 7, eventEpoch: 7 });
 
     expect(lifecycle.getCommandLifecycle('mode-1', 7)).toMatchObject({
@@ -87,6 +188,48 @@ describe('typed non-PTT radio intents', () => {
       eventEpoch: 7,
     });
     expect(lifecycle.getCommandLifecycle('mode-1', 7)).not.toHaveProperty('confirmedValue');
+  });
+
+  it('stores the admitted target from a response-ok delivery', () => {
+    intents.dispatchRadioIntent({ id: 'af-admit', name: 'set_af_level', params: { level: 0.5, receiver: 0 } });
+    harness.delivery?.({
+      commandId: 'af-admit', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7,
+      admittedLevel: 128 / 255,
+    });
+    expect(lifecycle.getCommandLifecycle('af-admit', 7)).toMatchObject({
+      status: 'acknowledged',
+      admittedTarget: 128 / 255,
+    });
+  });
+
+  it('stores the admitted target even when the ack frame arrived first', () => {
+    intents.dispatchRadioIntent({ id: 'af-ack-first', name: 'set_af_level', params: { level: 0.5, receiver: 0 } });
+    harness.delivery?.({ commandId: 'af-ack-first', kind: 'ack', originalEpoch: 7, eventEpoch: 7 });
+    harness.delivery?.({
+      commandId: 'af-ack-first', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7,
+      admittedLevel: 128 / 255,
+    });
+    expect(lifecycle.getCommandLifecycle('af-ack-first', 7)).toMatchObject({
+      status: 'acknowledged', admittedTarget: 128 / 255,
+    });
+  });
+
+  it('keeps an honest awaiting record when the response carries no admitted level', () => {
+    intents.dispatchRadioIntent({ id: 'af-old', name: 'set_af_level', params: { level: 0.5, receiver: 0 } });
+    harness.delivery?.({ commandId: 'af-old', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7 });
+    const record = lifecycle.getCommandLifecycle('af-old', 7);
+    expect(record).toMatchObject({ status: 'acknowledged' });
+    expect(record?.admittedTarget).toBeUndefined();
+  });
+
+  it('never stores an admitted target from a failure delivery', () => {
+    intents.dispatchRadioIntent({ id: 'rf-fail', name: 'set_rf_power', params: { level: 0.5 } });
+    harness.delivery?.({
+      commandId: 'rf-fail', kind: 'response-error', originalEpoch: 7, eventEpoch: 7,
+      error: 'command_failed', admittedLevel: 0.5,
+    });
+    expect(lifecycle.getCommandLifecycle('rf-fail', 7)).toMatchObject({ status: 'failed' });
+    expect(lifecycle.getCommandLifecycle('rf-fail', 7)?.admittedTarget).toBeUndefined();
   });
 
   it('projects held truth without changing pending or acknowledged authority', () => {
@@ -142,6 +285,7 @@ describe('typed non-PTT radio intents', () => {
     const superseded = intents.dispatchRadioIntent({ id: 'server-superseded', name: 'set_filter', params: { filter: 2 } });
     harness.lifecycle?.({ commandId: superseded.id, kind: 'superseded', originalEpoch: 7, eventEpoch: 7 });
     expect(lifecycle.getCommandLifecycle(superseded.id, 7)?.status).toBe('cancelled');
+    expect(lifecycle.getCommandLifecycle(superseded.id, 7)?.terminalOutcome).toBe('superseded');
     expect(lifecycle.isCommandLifecycleSuperseded(superseded)).toBe(true);
     vi.advanceTimersByTime(5_000);
     expect(lifecycle.getCommandLifecycle(superseded.id, 7)).toBeUndefined();
@@ -284,7 +428,7 @@ describe('typed non-PTT radio intents', () => {
     }));
 
     levels.forEach((level, index) => expect(harness.sendCommand).toHaveBeenNthCalledWith(
-      index + 1, 'set_af_level', { level, receiver: 0 }, `af-normalized-${index}`,
+      index + 1, 'set_af_level', { level, receiver: 0, level_unit: 'normalized' }, `af-normalized-${index}`,
     ));
     expect(lifecycle.getCommandLifecycles()).toHaveLength(levels.length);
     expect(lifecycle.getCommandLifecycles()).toEqual(expect.arrayContaining(levels.map((_, index) =>
@@ -294,17 +438,41 @@ describe('typed non-PTT radio intents', () => {
     } as never)).toThrow(TypeError);
   });
 
-  it('accepts the shipped fractional RF-power scale without weakening integer TX fields', () => {
-    intents.dispatchRadioIntent({
-      id: 'rf-fraction', name: 'set_rf_power', params: { level: 0.42 },
-    });
+  it('admits tagged normalized RF while preserving untagged finite RF levels', () => {
+    for (const [id, params] of [
+      ['rf-zero', { level: 0, level_unit: 'normalized' }],
+      ['rf-half', { level: 0.5, level_unit: 'normalized' }],
+      ['rf-one', { level: 1, level_unit: 'normalized' }],
+      ['rf-native', { level: 42 }],
+    ] as const) {
+      intents.dispatchRadioIntent({ id, name: 'set_rf_power', params });
+    }
 
-    expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(
-      'set_rf_power', { level: 0.42 }, 'rf-fraction',
-    );
+    expect(harness.sendCommand.mock.calls).toEqual([
+      ['set_rf_power', { level: 0, level_unit: 'normalized' }, 'rf-zero'],
+      ['set_rf_power', { level: 0.5, level_unit: 'normalized' }, 'rf-half'],
+      ['set_rf_power', { level: 1, level_unit: 'normalized' }, 'rf-one'],
+      ['set_rf_power', { level: 42 }, 'rf-native'],
+    ]);
     expect(() => intents.dispatchRadioIntent({
       name: 'set_mic_gain', params: { level: 0.42 },
     } as never)).toThrow(TypeError);
+  });
+
+  it('rejects malformed normalized RF markers and levels before lifecycle or transport', () => {
+    for (const params of [
+      { level: -0.01, level_unit: 'normalized' },
+      { level: 1.01, level_unit: 'normalized' },
+      { level: Number.NaN, level_unit: 'normalized' },
+      { level: true, level_unit: 'normalized' },
+      { level: 0.5, level_unit: 'raw_255' },
+    ]) {
+      expect(() => intents.dispatchRadioIntent({
+        name: 'set_rf_power', params,
+      } as never)).toThrow(/invalid radio intent/i);
+    }
+    expect(harness.sendCommand).not.toHaveBeenCalled();
+    expect(lifecycle.getCommandLifecycles()).toHaveLength(0);
   });
 
   it('accepts representative exact envelopes derived from every descriptor family', () => {
@@ -359,8 +527,9 @@ describe('typed non-PTT radio intents', () => {
       const invalidRit: RadioIntent = { name: 'set_rit_frequency', params: { value: 300 } };
       expect(invalidRit).toBeDefined();
     }
-    expect(intents.RADIO_INTENT_NAMES).toHaveLength(91);
-    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(91);
+    expect(intents.RADIO_INTENT_NAMES).toHaveLength(92);
+    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(92);
+    expect(intents.RADIO_INTENT_NAMES).toContain('set_vfo_freq');
     expect(intents.RADIO_INTENT_NAMES).toContain('set_data3_mod_input');
     expect(intents.RADIO_INTENT_NAMES).not.toContain('ptt');
     expect(intents.RADIO_INTENT_NAMES).not.toContain('ptt_on');

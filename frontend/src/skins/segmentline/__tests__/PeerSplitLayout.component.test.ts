@@ -1,0 +1,403 @@
+/**
+ * MOR-2153 — the `peer-split` glass CHASSIS, mounted end to end.
+ *
+ * Scope: this is a CHASSIS test, not a full behavior-pinning suite like
+ * `DualReceiverCockpit.component.test.ts`'s. `SemanticRadioSurfaces` and its
+ * zone-mount mechanics are already covered exhaustively elsewhere (the
+ * `semantic-*-wiring.component.test.ts` family); what this file is the ONLY
+ * place that proves is PeerSplitLayout's own additions on top of that wiring:
+ * the `ScaledStage` native size, the `.peer-split-glass` chrome class, and
+ * the read-only display projection mounted inside the glass.
+ *
+ * NOT asserted here, at all: that the grid CSS actually applies (`display:
+ * grid` on `.semantic-surfaces`, row/column placement). Measured, not
+ * assumed — this Vitest/jsdom config injects no component `<style>` during a
+ * mount (`document.querySelectorAll('style').length` is 0 after `render()`),
+ * so every element's `getComputedStyle` reads the UA default regardless of
+ * what any `<style>` block declares; a computed-style assertion here would
+ * be permanently unfalsifiable. The grid actually applying is verified in a
+ * real browser via the `fixtures/` harness; see the MOR-2153 build report
+ * for the exact command and what it showed.
+ */
+import { readFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { flushSync, mount, unmount } from 'svelte';
+import type { Capabilities } from '$lib/types/capabilities';
+import type { ServerState } from '$lib/types/state';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+let txHarness: ManagedAppTxHarness;
+
+const h = vi.hoisted(() => ({
+  state: null as unknown,
+  caps: null as unknown,
+  noop: vi.fn(),
+  resourceEvents: [] as string[],
+  modInputGuard: { visible: false, sourceLabel: null } as { visible: boolean; sourceLabel: string | null },
+}));
+
+vi.mock('$lib/runtime', () => ({
+  presentationResources: {
+    acquire: (resource: string) => {
+      h.resourceEvents.push(`acquire:${resource}`);
+      return Object.freeze({ resource, id: h.resourceEvents.length });
+    },
+    release: (lease: { resource: string }) => {
+      h.resourceEvents.push(`release:${lease.resource}`);
+      return true;
+    },
+  },
+  runtime: {
+    onTxAudioDied: () => () => {},
+    get state() { return h.state; },
+    get caps() { return h.caps; },
+    subscribeControlAuthority(handler: (publication: unknown) => void) {
+      handler({
+        state: h.state, caps: h.caps, session: { state: 'disconnected', epoch: 0 },
+        rxAudioTarget: Object.freeze({ muted: true, rxEnabled: false }),
+      });
+      return () => {};
+    },
+    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get connectionAudio() { return false; },
+    get defaultScopeStatus() {
+      return {
+        source: null, available: false, resourceSelected: false, demand: 0,
+        lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+      };
+    },
+    get radioPowerOn() { return null; },
+    get scope() {
+      return {
+        hardwareScopeConnected: false,
+        subscribeFrameEvidence: () => () => {},
+        setFrameAuthority: () => {},
+        snapshotFrameEvidence: () => ({ envelope: null, authority: null }),
+      };
+    },
+  },
+}));
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => txHarness.controller,
+}));
+vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
+  deriveModInputTxGuardProps: () => h.modInputGuard,
+  getModInputTxGuardHandlers: () => ({ onSetLan: h.noop, onDismiss: h.noop }),
+}));
+vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/commands/panel-commands')>();
+  return {
+    ...actual,
+    makeVfoHandlers: () => ({ onVfoSelect: h.noop, onSplitToggle: h.noop, onDualWatchToggle: h.noop }),
+    makeVoxHandlers: () => ({
+      onVoxToggle: h.noop, onVoxGainChange: h.noop, onAntiVoxGainChange: h.noop, onVoxDelayChange: h.noop,
+    }),
+    makeTxHandlers: () => ({
+      onRfPowerChange: h.noop, onMicGainChange: h.noop, onAtuToggle: h.noop, onAtuTune: h.noop,
+      onVoxToggle: h.noop, onCompToggle: h.noop, onCompLevelChange: h.noop, onMonToggle: h.noop,
+      onMonLevelChange: h.noop, onDriveGainChange: h.noop,
+    }),
+    makeRxAudioHandlers: () => ({ onMonitorModeChange: h.noop, onAfLevelChange: h.noop }),
+    makeCwPanelHandlers: () => ({
+      onKeySpeedChange: h.noop, onCwPitchChange: h.noop, onBreakInDelayChange: h.noop,
+      onBreakInModeChange: h.noop, onApfChange: h.noop, onTwinPeakToggle: h.noop, onReversePaddleToggle: h.noop,
+    }),
+    makeAudioRoutingHandlers: () => ({ onFocusChange: h.noop, onSplitStereoChange: h.noop }),
+    makeModeHandlers: () => ({ onModInputChange: h.noop, onModeChange: h.noop, onDataModeChange: h.noop }),
+    makeFilterHandlers: () => ({
+      onFilterChange: h.noop, onFilterWidthChange: h.noop, onFilterShapeChange: h.noop,
+      onIfShiftChange: h.noop, onPbtInnerChange: h.noop, onPbtOuterChange: h.noop,
+    }),
+    makeDspHandlers: () => ({
+      onNrModeChange: h.noop, onNrLevelChange: h.noop, onNbToggle: h.noop, onNbLevelChange: h.noop,
+      onNbDepthChange: h.noop, onNbWidthChange: h.noop, onNotchModeChange: h.noop, onNotchFreqChange: h.noop,
+      onManualNotchWidthChange: h.noop, onAgcTimeChange: h.noop,
+    }),
+    makeAgcHandlers: () => ({ onAgcModeChange: h.noop }),
+    makeRfFrontEndHandlers: () => ({
+      onAttChange: h.noop, onPreChange: h.noop, onRfGainChange: h.noop,
+      onSquelchChange: h.noop, onDigiSelToggle: h.noop, onIpPlusToggle: h.noop,
+    }),
+    makeBandHandlers: () => ({ onBandSelect: h.noop }),
+    makeAntennaHandlers: () => ({ onSelectAnt1: h.noop, onSelectAnt2: h.noop, onToggleRxAnt: h.noop }),
+    makeRitXitHandlers: () => ({
+      onRitToggle: h.noop, onXitToggle: h.noop, onRitOffsetChange: h.noop, onXitOffsetChange: h.noop, onClear: h.noop,
+    }),
+    makeScanHandlers: () => ({
+      onScanStart: h.noop, onScanStop: h.noop, onDfSpanChange: h.noop, onResumeChange: h.noop,
+    }),
+    makeScopeControlsHandlers: () => ({
+      onModeChange: h.noop, onEdgeChange: h.noop, onSpanChange: h.noop, onSpeedChange: h.noop,
+      onHoldChange: h.noop, onRefChange: h.noop, onDualChange: h.noop, onReceiverChange: h.noop,
+      onDuringTxChange: h.noop, onCenterTypeChange: h.noop, onVbwChange: h.noop, onRbwChange: h.noop,
+    }),
+  };
+});
+
+const { default: PeerSplitLayout } = await import('../PeerSplitLayout.svelte');
+
+const fresh = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+  lastObservedMonotonic: 0,
+};
+
+/** 2/ab_shared — one of `peer-split`'s two declared compatible topologies
+ *  (`presentation/layouts/segmentline-declarations.ts`), also the FTX-1's
+ *  real topology per the accepted spec §2. */
+function abSharedState(): ServerState {
+  const paths = ['active', 'split', 'dualWatch', 'txTarget',
+    'main.freqHz', 'main.mode', 'main.filter', 'sub.freqHz', 'sub.mode', 'sub.filter',
+    'powerMeter', 'swrMeter', 'vdMeter', 'main.sMeter', 'sub.sMeter'];
+  return {
+    stateContractVersion: 1, providerGeneration: 1,
+    active: 'MAIN', split: false, dualWatch: false, ptt: false,
+    txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
+    main: { freqHz: 14250000, mode: 'USB', filter: 1, sMeter: -12 },
+    sub: { freqHz: 146520000, mode: 'FM', filter: 1, sMeter: -30 },
+    powerMeter: 0, swrMeter: 10, vdMeter: 200,
+    fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
+  } as unknown as ServerState;
+}
+
+/** Caps carrying enough evidence to populate every zone this chassis can
+ *  currently mount: `meters`/`scope`/the five `txAux` evidence tags. */
+const liveCaps = (): Capabilities => ({
+  model: 'fixture', scope: true, audio: true, tx: true,
+  stateContractVersion: 1, providerGeneration: 1,
+  capabilities: [
+    'audio', 'tx', 'dual_rx', 'meters', 'scope', 'split', 'dual_watch',
+    'tuner', 'vox', 'compressor', 'monitor', 'drive_gain',
+  ],
+  receivers: 2, vfoScheme: 'ab_shared',
+  freqRanges: [], modes: ['USB', 'FM'], filters: ['FIL1'],
+  audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
+  webrtc: { available: false, enabled: false },
+  txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
+  scopeSource: null, audioFftAvailable: false,
+} as unknown as Capabilities);
+
+let target: HTMLDivElement;
+let component: ReturnType<typeof mount> | null = null;
+const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
+
+// MOR-2253 slice 1: canvas size is now a required prop from the shell
+// (`components-v2/layout/LcdLayout.svelte`), not a component-local constant —
+// 1280x540 hardcoded here matches this file's own pinned assertion below
+// (`.scaled-stage`'s inline `1280px`/`540px`), same as `../../../presentation/
+// layouts/__tests__/manifest-shape.test.ts` hardcodes the same numbers for
+// its own, unrelated fixture reasons (a `__tests__` file, excluded from the
+// production "declared once" scan in `presentation/groups/__tests__/
+// contract.test.ts`).
+function render(displayVariant: 'peer' | 'dominant' | 'centerstage' | 'panadapter' = 'peer'): void {
+  target = document.createElement('div');
+  document.body.appendChild(target);
+  component = mount(PeerSplitLayout, {
+    target,
+    props: { canvasW: 1280, canvasH: 540, minScale: 0.5, displayVariant },
+  });
+  flushSync();
+}
+
+beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  h.state = abSharedState();
+  h.caps = liveCaps();
+  h.noop.mockReset();
+  h.resourceEvents.length = 0;
+  h.modInputGuard = { visible: false, sourceLabel: null };
+});
+
+afterEach(() => {
+  if (component) unmount(component);
+  component = null;
+  document.body.innerHTML = '';
+});
+
+describe('the peer-split chassis mounts', () => {
+  it('renders the glass chrome and the dual composition inside it, without throwing', () => {
+    expect(() => render()).not.toThrow();
+    const glass = q('[data-testid="peer-split-glass"]');
+    expect(glass).not.toBeNull();
+    expect(glass!.classList.contains('peer-split-glass')).toBe(true);
+  });
+
+  // MUTATION TARGET: swapping ScaledStage's nativeW/nativeH kills this — the
+  // stage renders its content box at the declared size regardless of the
+  // holder's actual measured box (jsdom reports a 0x0 holder, so `scale`
+  // stays 1 and the native size is what shows up verbatim).
+  it('declares the 1280x540 native stage the segmentline manifest also declares', () => {
+    render();
+    const stage = q<HTMLDivElement>('.scaled-stage');
+    expect(stage).not.toBeNull();
+    expect(stage!.style.width).toBe('1280px');
+    expect(stage!.style.height).toBe('540px');
+  });
+
+  it('places the two-column read-only display inside the glass, not beside it', () => {
+    render();
+    const glass = q('[data-testid="peer-split-glass"]');
+    expect(glass!.querySelector('[data-testid="peer-split-display"]')).not.toBeNull();
+    expect(glass!.querySelectorAll('[data-testid="lcd-peer-column"]')).toHaveLength(2);
+    expect(glass!.querySelector('[data-testid="peer-split-clock"]')).toBeNull();
+    expect(glass!.querySelectorAll('.receiver-column > .s-meter[data-state="known"]')).toHaveLength(2);
+    expect(glass!.querySelector('.telemetry [aria-label="VD: 200"][data-state="known"]')).not.toBeNull();
+  });
+
+  it.each([
+    ['peer', 'peer-split-display'],
+    ['dominant', 'dominant-unified-display'],
+    ['centerstage', 'centerstage-display'],
+    ['panadapter', 'panadapter-display'],
+  ] as const)('routes the %s display through the same passive glass host', (displayVariant, testId) => {
+    render(displayVariant);
+    const glass = q('[data-testid="peer-split-glass"]');
+    expect(glass!.querySelector(`[data-testid="${testId}"]`)).not.toBeNull();
+    expect(glass!.querySelectorAll(
+      '[data-testid="peer-split-display"], [data-testid="dominant-unified-display"], '
+      + '[data-testid="centerstage-display"], [data-testid="panadapter-display"]',
+    )).toHaveLength(1);
+    const expectedResource = displayVariant === 'panadapter'
+      ? 'hardware-scope'
+      : displayVariant === 'peer' ? null : 'audio-fft';
+    expect(h.resourceEvents).toEqual(expectedResource === null ? [] : [`acquire:${expectedResource}`]);
+  });
+
+  // NOT ASSERTED HERE: that `.semantic-surfaces` actually receives
+  // `display: grid`. Measured, not assumed — this Vitest/jsdom config
+  // injects NO component `<style>` at all during a component-mount test
+  // (`document.querySelectorAll('style').length` is 0 and
+  // `document.styleSheets.length` is 0 after `render()`; every element's
+  // `getComputedStyle().display` falls back to the UA default ('block')
+  // regardless of what any `<style>` block declares, scoped or `:global`).
+  // `expect(getComputedStyle(surfaces).display).toBe('grid')` would
+  // therefore be permanently RED here — 'block' never equals 'grid' — not
+  // unfalsifiably green; still worth removing, since a pin that can only
+  // ever fail is exactly as useless as one that can only ever pass, and
+  // either shape reads as coverage that is not there. The grid actually
+  // applying is verified in a real browser: `npx vite --config
+  // vite.fixtures.config.ts`, fixture `peer-split-chassis`,
+  // `getComputedStyle(document.querySelector('.semantic-surfaces')).display`.
+
+  it('contains no operator controls or event-handler affordances in the glass subtree', () => {
+    render();
+    const glass = q('[data-testid="peer-split-glass"]');
+    expect(glass!.querySelectorAll('button,input,select,a[href],[tabindex],[role="button"],[role="switch"]')).toHaveLength(0);
+    expect(glass!.innerHTML).not.toMatch(/onclick|onpointer|onwheel/i);
+  });
+});
+
+describe('the glass bezel keeps its own CSS after the chassis class it used to wear died (#2968)', () => {
+  const source = readFileSync('src/skins/segmentline/PeerSplitLayout.svelte', 'utf8');
+  const styleBlock = source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+  // Comments name the very rule this pin is about, so they are stripped
+  // first — same reason `stylesheet.test.ts` strips them from `segmentline
+  // .css` before parsing.
+  const css = styleBlock.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  /** Exact-selector match against a `{ declarations }` block, mirroring
+   *  `stylesheet.test.ts`'s `parseRules`/`findExact` at the scale this file
+   *  needs (one selector). Throws — rather than returning `undefined` for an
+   *  `it()` block to silently pass past — when the `<style>` block is
+   *  missing or the selector renamed, so this test cannot go quietly green
+   *  as coverage that stopped existing. */
+  function declarationsFor(selector: string): Record<string, string> {
+    for (const [, selectorList, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      for (const candidate of selectorList.split(',')) {
+        if (candidate.trim() !== selector) continue;
+        const declarations: Record<string, string> = {};
+        for (const declaration of body.split(';')) {
+          const colon = declaration.indexOf(':');
+          if (colon > 0) declarations[declaration.slice(0, colon).trim()] = declaration.slice(colon + 1).trim();
+        }
+        return declarations;
+      }
+    }
+    throw new Error(`no rule for selector "${selector}" in PeerSplitLayout.svelte's <style> block`);
+  }
+
+  it('declares the bezel geometry #2968 orphaned, as its own rule rather than a design-language one', () => {
+    const glass = declarationsFor('.peer-split-glass');
+    expect(glass.position).toBe('relative');
+    expect(glass.overflow).toBe('hidden');
+    expect(glass['box-sizing']).toBe('border-box');
+    expect(glass.padding).toBeUndefined();
+    expect(glass.border).toBe('2px solid var(--dl-segmentline-bezel-edge, #8a7020)');
+    expect(glass['border-radius']).toBe('10px');
+    expect(glass.background).toBe('var(--dl-segmentline-glass, #c8a030)');
+  });
+
+  it('keeps the wiring host passive and clipped to the native glass', () => {
+    const grid = declarationsFor('.peer-split-glass :global(.semantic-surfaces.semantic-surfaces)');
+    expect(grid.gap).toBe('0');
+    expect(grid.overflow).toBe('hidden');
+  });
+
+  // This file's `:global(.scaled-stage-holder)` rule gives the holder
+  // `flex: 1` so it claims the flex line instead of content-sizing to zero
+  // (see that rule's own comment). `flex` applies to a flex ITEM only, so
+  // the rule is load-bearing only while the holder is a DIRECT child of
+  // `.peer-split-holder`. The selector is a descendant combinator: it would
+  // keep matching, while silently doing nothing, if `ScaledStage` ever grew
+  // an element ABOVE its holder. MOR-2270 added a wrapper INSIDE the
+  // holder, which leaves this intact — this pin is what makes the next
+  // restructuring say so instead of collapsing the glass quietly.
+  it('keeps ScaledStage\'s holder a direct child of .peer-split-holder', () => {
+    render();
+    const outer = q<HTMLElement>('.peer-split-holder');
+    const holder = q<HTMLElement>('.scaled-stage-holder');
+    expect(outer).not.toBeNull();
+    expect(holder).not.toBeNull();
+    expect(holder!.parentElement).toBe(outer);
+    expect(declarationsFor('.peer-split-holder :global(.scaled-stage-holder)').flex).toBe('1');
+  });
+});
+
+describe('the glass forwards the shell-resolved scale floor to its stage (MOR-2259)', () => {
+  // A SOURCE pin, not a behavioural one: jsdom computes no layout, so
+  // `ScaledStage`'s `measure()` sees a 0x0 holder and returns before the
+  // floor can influence anything observable here (the same limit this
+  // file's header and `../../../primitives/stage/__tests__/
+  // ScaledStage.isolated.test.ts`'s `flex-shrink` pin both record). The
+  // floor's arithmetic is pinned in `stage-scale.test.ts`; what is pinned
+  // here is the one link those tests cannot see — that this component
+  // actually hands its `minScale` prop on rather than accepting it and
+  // dropping it.
+  const source = readFileSync('src/skins/segmentline/PeerSplitLayout.svelte', 'utf8');
+  const markup = source.replace(/<script[\s\S]*?<\/script>/, '').replace(/<style>[\s\S]*?<\/style>/, '');
+
+  it('passes minScale to ScaledStage in the markup', () => {
+    const tag = markup.match(/<ScaledStage[^>]*>/)?.[0];
+    expect(tag, 'no <ScaledStage ...> tag found in PeerSplitLayout.svelte markup').toBeDefined();
+    expect(tag).toMatch(/\{minScale\}|minScale=/);
+  });
+});
+
+describe('the selected segmentline face owns exactly one LCD source declaration (MOR-2328)', () => {
+  const source = readFileSync('src/skins/segmentline/PeerSplitLayout.svelte', 'utf8');
+  const markup = source.replace(/<script[\s\S]*?<\/script>/, '').replace(/<style>[\s\S]*?<\/style>/, '');
+
+  it('maps the four display variants to the host-owned source contract', () => {
+    expect(source).toMatch(/displayVariant === 'dominant'\s*\|\|\s*displayVariant === 'centerstage'\s*\?\s*'audio-fft'/);
+    expect(source).toMatch(/displayVariant === 'panadapter'\s*\?\s*'hardware'/);
+    expect(source).toMatch(/:\s*undefined/);
+
+    const host = markup.match(/<SemanticRadioSurfaces[^>]*\/>/)?.[0];
+    expect(host, 'no SemanticRadioSurfaces host found').toBeDefined();
+    expect(host).toMatch(/\{displayFrameSource\}/);
+    expect(host).toMatch(/\{readonlyDisplay\}/);
+  });
+
+  it('keeps frame authority at the semantic host and forwards its one selected object unchanged', () => {
+    expect(source).toContain("import type { LcdSpectrumFrame, LcdSpectrumSource } from './lcd-display-contract';");
+    expect(source).toMatch(/\{#snippet readonlyDisplay\(view: RadioViewModel, selectedFrame\?: LcdSpectrumFrame\)\}/);
+    expect(source).toMatch(/<DominantUnifiedDisplay\s+\{model\}\s+spectrumFrame=\{selectedFrame\}\s*\/>/);
+    expect(source).toMatch(/<CenterstageDisplay\s+\{model\}\s+audioFftFrame=\{selectedFrame\}\s*\/>/);
+    expect(source).toMatch(/<PanadapterDisplay\s+\{model\}\s+rfFrame=\{selectedFrame\}\s*\/>/);
+    expect(source).toMatch(/\{#snippet peer\(\)\}<PeerSplitDisplay \{model\} \/>\{\/snippet\}/);
+
+    // This selector must never grow a second producer, frame resolver, or
+    // demand lease. Those are host lifecycle concerns, not face heuristics.
+    expect(source).not.toMatch(/from ['"](?:\$lib\/runtime|.*\/runtime)['"]/);
+    expect(source).not.toMatch(/resolveLcdSpectrumFrame|audioFftDemand|requestAudioFft/);
+  });
+});

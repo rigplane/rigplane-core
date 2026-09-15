@@ -70,10 +70,9 @@ class TestPollerSkipsDigiselQuery:
     """Cascade: the per-receiver state-query builder follows the capability."""
 
     def test_no_0x16_0x4e_query_for_ic705(self, profile) -> None:
-        caps = set(profile.capabilities)
-        queries = build_state_queries(profile, caps, is_serial=False)
-        digisel_queries = [q for q in queries if q[0] == 0x16 and q[1] == 0x4E]
-        assert digisel_queries == []
+        queries = build_state_queries(profile)
+
+        assert not any(q.command == 0x16 and q.sub == 0x4E for q in queries)
 
 
 class TestD2DocumentaryCommandBytes:

@@ -7,7 +7,8 @@
  * and runtime SEAMS are spied:
  *
  *   (a) THE MOUNTING CANON. The surface is control-bearing (band buttons, a
- *       frequency field, a Set button) and no manifest declares a `band` zone,
+ *       frequency field, a Set button) and the dual composition's only layout
+ *       (`dual-receiver-cockpit.ts`) declares no `band` zone,
  *       so it must NOT appear in the dual composition — and the pin renders the
  *       dual composition with caps that DO emit the group, because a fixture
  *       that cannot see the surface is the bug, not the proof (MOR-1304 §1).
@@ -27,32 +28,53 @@ import { flushSync, mount, unmount } from 'svelte';
 import { t } from '$lib/i18n';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
+  controlSession: { state: 'connected', epoch: 1 } as
+    { state: 'connected' | 'disconnected'; epoch: number },
+  authoritySubscribers: new Set<(next: {
+    state: unknown; caps: unknown;
+    session: { state: 'connected' | 'disconnected'; epoch: number };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  txController: null as ManagedAppTxController | null,
   audio: { muted: false, rxEnabled: true, volume: 42 },
   audioConnected: true,
   rxEnabled: true,
-  listeners: new Set<(next: unknown) => void>(),
+  finiteAppearance: false,
 }));
+
+vi.mock('../../../component-kits/activation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../component-kits/activation')>();
+  const renderer = await import('../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte');
+  return {
+    ...actual,
+    getSelectedFiniteControlAppearance: () => h.finiteAppearance ? {
+      name: 'Band authority probe', action: renderer.default,
+      toggle: renderer.default, choice: renderer.default,
+    } : undefined,
+  };
+});
 
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
 vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
   return {
-    dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params),
-    currentControlSessionEpoch: () => 0,
+    dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => {
+      sendCommand(name, params);
+      return { id: `test-${name}`, name, params, originalEpoch: h.controlSession.epoch, status: 'pending' };
+    },
+    currentControlSessionEpoch: () => h.controlSession.epoch,
   };
 });
 vi.mock('$lib/stores/radio.svelte', () => ({
   getRadioState: vi.fn(() => h.state),
+  subscribeRadioState: vi.fn(() => () => {}),
   getActiveReceiver: vi.fn(() => {
     const state = h.state as ServerState | null;
     return state?.active === 'SUB' ? state.sub ?? null : state?.main ?? null;
@@ -63,6 +85,8 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   capabilitiesMatchGeneration: vi.fn(() => true),
   getCapabilities: vi.fn(() => h.caps),
   getControlRange: vi.fn(() => null),
+  getSmeterCalibration: vi.fn(() => null),
+  getSmeterRedline: vi.fn(() => null),
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
@@ -72,8 +96,18 @@ vi.mock('$lib/audio/audio-manager', () => ({
 }));
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    get controlSession() { return h.controlSession; },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({
+        state: h.state, caps: h.caps, session: h.controlSession,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
     get audio() { return h.audio; },
     get connectionAudio() { return h.audioConnected; },
     get rxEnabled() { return h.rxEnabled; },
@@ -93,15 +127,8 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 vi.mock('$lib/runtime', async () => ({
   runtime: (await import('$lib/runtime/frontend-runtime')).runtime,
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => { h.listeners.delete(listener); };
-    },
-    start: vi.fn(), setIntent: vi.fn(), release: vi.fn(), resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => h.txController,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: 'MIC' }),
@@ -110,13 +137,19 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import { makeBandHandlers, makeVfoHandlers } from '$lib/runtime/commands/panel-commands';
+import {
+  resetRetainedInvocations, retainedInvocations,
+} from '../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
+import {
+  acknowledgeCommand, beginCommand, confirmCommand, failCommand, resetCommandLifecycle,
+} from '$lib/stores/commands.svelte';
 
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
+const fresh = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+  lastObservedMonotonic: 1,
 };
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
 /** MAIN sits at 14.250 (inside the 20m TX segment), SUB at 7.100 (inside 40m). */
@@ -132,6 +165,7 @@ function liveState(over: Partial<ServerState> = {}): ServerState {
     ...slot(hz), vfoA: slot(hz), vfoB: slot(hz + 50000), activeSlot: 'A', filter: 1,
   });
   return {
+    providerGeneration: 1,
     active: 'MAIN', split: false, dualWatch: false, ptt: false, dataOffModInput: 5,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(7100000),
@@ -154,6 +188,7 @@ const BAND_PLAN = [{
 }];
 
 const liveCaps = (freqRanges: unknown[]): Capabilities => ({
+  providerGeneration: 1,
   model: 'fixture', scope: false, audio: true, tx: true,
   capabilities: ['audio', 'tx', 'dual_rx'], audioTxRequiredModInputSource: 5,
   receivers: 2, vfoScheme: 'main_sub', freqRanges, modes: [], filters: [],
@@ -168,8 +203,21 @@ const liveCaps = (freqRanges: unknown[]): Capabilities => ({
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 
-function render(props: { strips?: 'single' | 'dual' } = {}): void {
+function publishAuthority(): void {
+  for (const subscriber of h.authoritySubscribers) {
+    subscriber({
+      state: h.state, caps: h.caps, session: h.controlSession,
+      rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+    });
+  }
+}
+
+function render(props: {
+  strips?: 'single' | 'dual'; bandPermitCaption?: boolean;
+  vfoAppearance?: 'semantic' | 'sdr' | 'standard';
+} = {}): void {
   target = document.createElement('div');
   document.body.appendChild(target);
   component = mount(SemanticRadioSurfaces, { target, props });
@@ -180,6 +228,7 @@ const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T
 const el = (id: string) => q<HTMLElement>(`[data-testid="band-${id}"]`);
 const btn = (id: string) => q<HTMLButtonElement>(`[data-testid="band-${id}"]`);
 const setFreqCalls = () => vi.mocked(sendCommand).mock.calls.filter(([n]) => n === 'set_freq');
+const setDirectFreqCalls = () => vi.mocked(sendCommand).mock.calls.filter(([n]) => n === 'set_vfo_freq');
 
 function typeFrequency(value: string): void {
   const input = q<HTMLInputElement>('[data-testid="band-entry-input"]')!;
@@ -189,16 +238,242 @@ function typeFrequency(value: string): void {
 }
 
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   h.state = liveState();
   h.caps = liveCaps(BAND_PLAN);
-  h.snapshot = { ...IDLE };
-  h.listeners.clear();
+  h.controlSession = { state: 'connected', epoch: 1 };
+  h.finiteAppearance = false;
+  resetRetainedInvocations();
+  resetCommandLifecycle();
   vi.mocked(sendCommand).mockClear();
+});
+
+describe('fixed-slot frequency entry overlay', () => {
+  function directState(withDisplayContract = false): ServerState {
+    const current = liveState();
+    return { ...current, ...(withDisplayContract ? { stateContractVersion: 1 as const } : {}),
+      sub: undefined, main: {
+      ...current.main!, activeSlot: 'A',
+      vfoA: slot(14_250_000), vfoB: slot(7_074_000),
+    } } as unknown as ServerState;
+  }
+  function directCaps(withDisplayContract = false): Capabilities {
+    return { ...liveCaps(BAND_PLAN), capabilities: ['audio', 'tx', 'vfo_freq_direct'],
+      ...(withDisplayContract ? { stateContractVersion: 1 as const } : {}),
+      receivers: 1, vfoScheme: 'ab' };
+  }
+
+  function beginSubmittedDirectCommand() {
+    const [, params] = setDirectFreqCalls().at(-1)!;
+    if (params === undefined) throw new Error('direct frequency params missing');
+    return beginCommand({
+      id: 'test-set_vfo_freq', name: 'set_vfo_freq', params,
+      originalEpoch: h.controlSession.epoch,
+    });
+  }
+
+  it('opens from inactive B separator and dispatches B without selecting it', () => {
+    h.state = directState(true); h.caps = directCaps(true);
+    render({ vfoAppearance: 'standard' });
+    const separator = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq] .sep')!;
+    expect(separator).not.toBeNull();
+    separator.click();
+    flushSync();
+    expect(vi.mocked(sendCommand)).not.toHaveBeenCalled();
+    const dialog = q<HTMLElement>('[data-testid="frequency-entry-dialog-panel"]')!;
+    expect(dialog.textContent).toContain('MAIN VFO B');
+    const input = dialog.querySelector<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    input.value = '7.075'; input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    dialog.querySelector<HTMLButtonElement>('[data-testid="band-entry-set"]')!.click();
+    expect(setDirectFreqCalls()).toEqual([['set_vfo_freq', {
+      freq: 7_075_000, receiver: 0, slot: 'B', expected_active_slot: 'A', provider_generation: 1,
+    }]]);
+    expect(vi.mocked(sendCommand).mock.calls.some(([name]) => name === 'set_vfo')).toBe(false);
+  });
+
+  it.each(['Escape', 'backdrop'] as const)(
+    'restores focus to the real inactive B readout after %s close without commands',
+    async (closeWith) => {
+      h.state = directState(true); h.caps = directCaps(true);
+      render({ vfoAppearance: 'standard' });
+      const trigger = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!;
+      const readout = trigger.querySelector<HTMLElement>('.freq')!;
+      const digit = readout.querySelector<HTMLElement>('.digit')!;
+
+      expect(trigger.getAttribute('role')).toBe('button');
+      expect(trigger.getAttribute('aria-label')).toBe('Set frequency — MAIN B');
+      expect(readout).not.toBeNull();
+      expect(digit).not.toBeNull();
+      digit.click();
+      flushSync();
+      await Promise.resolve();
+      const input = q<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+      expect(document.activeElement).toBe(input);
+
+      if (closeWith === 'Escape') {
+        input.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Escape', bubbles: true, cancelable: true,
+        }));
+      } else {
+        q<HTMLElement>('[data-testid="frequency-entry-dialog-backdrop"]')!.click();
+      }
+      flushSync();
+      await Promise.resolve();
+
+      expect(q<HTMLElement>('[role="dialog"]')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+      expect(vi.mocked(sendCommand)).not.toHaveBeenCalled();
+    },
+  );
+
+  it('closes and restores focus only after exact-readback confirmation', async () => {
+    h.state = directState(true); h.caps = directCaps(true);
+    render({ vfoAppearance: 'standard' });
+    const trigger = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!;
+    trigger.querySelector<HTMLElement>('.freq')!.click();
+    flushSync();
+    typeFrequency('7.075');
+    btn('entry-set')!.click();
+    const command = beginSubmittedDirectCommand();
+    flushSync();
+
+    expect(q<HTMLElement>('[role="dialog"]')).not.toBeNull();
+    acknowledgeCommand(command.id, command.originalEpoch, command.originalEpoch);
+    flushSync();
+    expect(q<HTMLElement>('[role="dialog"]')?.textContent)
+      .toContain('Waiting for the selected VFO readback');
+
+    confirmCommand(command.id, command.originalEpoch, command.originalEpoch);
+    flushSync();
+    await Promise.resolve();
+    expect(q<HTMLElement>('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('keeps a failed submission open with its error', () => {
+    h.state = directState(true); h.caps = directCaps(true);
+    render({ vfoAppearance: 'standard' });
+    q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq] .freq')!.click();
+    flushSync();
+    typeFrequency('7.075');
+    btn('entry-set')!.click();
+    const command = beginSubmittedDirectCommand();
+    failCommand(command.id, command.originalEpoch, command.originalEpoch, 'Radio rejected frequency');
+    flushSync();
+
+    expect(q<HTMLElement>('[role="dialog"]')?.textContent).toContain('Radio rejected frequency');
+  });
+
+  it.each(['Enter', ' '] as const)(
+    'opens real inactive B entry with %s without tuning or selecting',
+    async (key) => {
+      h.state = directState(true); h.caps = directCaps(true);
+      render({ vfoAppearance: 'standard' });
+      const trigger = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!;
+      trigger.focus();
+      trigger.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+      flushSync();
+      await Promise.resolve();
+
+      expect(q<HTMLElement>('[data-testid="frequency-entry-dialog-panel"]')).not.toBeNull();
+      expect(vi.mocked(sendCommand)).not.toHaveBeenCalled();
+      expect(q<HTMLElement>('[data-vfo-slot="B"]')?.getAttribute('data-vfo-active-slot')).toBe('false');
+    },
+  );
+
+  it('leaves unsupported inactive B on its original non-entry digit path', () => {
+    h.state = directState(true);
+    h.caps = { ...directCaps(true), capabilities: ['audio', 'tx'] };
+    render({ vfoAppearance: 'standard' });
+    const wrapper = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!;
+    const digit = wrapper.querySelector<HTMLElement>('.digit')!;
+    const bubbled = vi.fn();
+    wrapper.addEventListener('click', bubbled);
+
+    expect(wrapper.getAttribute('role')).toBeNull();
+    expect(wrapper.getAttribute('tabindex')).toBeNull();
+    digit.click();
+
+    expect(bubbled).toHaveBeenCalledOnce();
+    expect(q<HTMLElement>('[role="dialog"]')).toBeNull();
+    expect(vi.mocked(sendCommand)).not.toHaveBeenCalled();
+  });
+
+  it('keeps an open draft inert after the captured session changes', () => {
+    h.state = directState(); h.caps = directCaps();
+    render({ vfoAppearance: 'standard' });
+    const digit = document.createElement('span'); digit.className = 'digit';
+    q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq] .freq')!.append(digit);
+    digit.click();
+    flushSync();
+    h.controlSession = { state: 'connected', epoch: 2 };
+    h.state = { ...(h.state as ServerState), providerGeneration: 2 };
+    h.caps = { ...(h.caps as Capabilities), providerGeneration: 2 };
+    publishAuthority(); flushSync();
+    const dialog = q<HTMLElement>('[data-testid="frequency-entry-dialog-panel"]')!;
+    const input = dialog.querySelector<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    input.value = '7.075'; input.dispatchEvent(new Event('input', { bubbles: true })); flushSync();
+    dialog.querySelector<HTMLButtonElement>('[data-testid="band-entry-set"]')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(setDirectFreqCalls()).toEqual([]);
+  });
+});
+
+describe('receiver frequency entry overlay', () => {
+  function receiverOverlayState(over: Partial<ServerState> = {}): ServerState {
+    return { ...liveState(), stateContractVersion: 1 as const, ...over } as ServerState;
+  }
+
+  function receiverOverlayCaps(): Capabilities {
+    return { ...liveCaps(BAND_PLAN), stateContractVersion: 1 as const } as Capabilities;
+  }
+
+  it.each([
+    ['MAIN', 0, '14.260'],
+    ['SUB', 1, '7.115'],
+  ] as const)('opens from %s digits and sends the explicit receiver target', (receiver, index, inputValue) => {
+    h.state = receiverOverlayState();
+    h.caps = receiverOverlayCaps();
+    render({ vfoAppearance: 'standard' });
+    const trigger = q<HTMLElement>(`[data-vfo-receiver="${receiver}"] .digit`)!;
+    trigger.click();
+    flushSync();
+    const dialog = q<HTMLElement>('[data-testid="frequency-entry-dialog-panel"]')!;
+    expect(dialog.textContent).toContain(receiver);
+    const input = dialog.querySelector<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    input.value = inputValue;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    dialog.querySelector<HTMLButtonElement>('[data-testid="band-entry-set"]')!.click();
+    flushSync();
+    expect(setFreqCalls()).toEqual([['set_freq', {
+      freq: Math.round(Number(inputValue) * 1_000_000), receiver: index,
+    }]]);
+    expect(q('[role="dialog"]')).toBeNull();
+  });
+
+  it('keeps the clicked receiver target when active-receiver truth changes before submit', () => {
+    h.state = receiverOverlayState();
+    h.caps = receiverOverlayCaps();
+    render({ vfoAppearance: 'standard' });
+    q<HTMLElement>('[data-vfo-receiver="MAIN"] .digit')!.click();
+    flushSync();
+    typeFrequency('14.260');
+    h.state = receiverOverlayState({ active: 'SUB' } as Partial<ServerState>);
+    btn('entry-set')!.click();
+    expect(setFreqCalls()).toEqual([['set_freq', { freq: 14_260_000, receiver: 0 }]]);
+  });
 });
 
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(h.authoritySubscribers.size).toBe(0);
+  expect(txHarness.listenerCount()).toBe(0);
+  expect(txHarness.trace()).toEqual([]);
+  resetCommandLifecycle();
   document.body.innerHTML = '';
 });
 
@@ -214,7 +489,8 @@ describe('the band surface obeys the zone-mount canon (MOR-1069 / MOR-1304)', ()
   /**
    * THE DUAL-ABSENCE PIN. MUTATION KILLED: mounting this surface in the dual
    * composition — bare, or through `zoned()`, which renders bare anyway while
-   * no manifest declares a `band` zone (`zoneOwning()` answers `null`). The
+   * the cockpit manifest declares no `band` zone (`zoneOwning()` answers
+   * `null`). The
    * view model here DOES carry the band group (asserted below via the single
    * composition), so this is not the vacuous green MOR-1304 §1 warned about.
    */
@@ -285,6 +561,188 @@ describe('every band intent lands on the ACTIVE receiver (MOR-1322 B1 class)', (
     btn('entry-set')!.click();
     flushSync();
     expect(setFreqCalls()).toEqual([['set_freq', { freq: 7150000, receiver: 1 }]]);
+  });
+});
+
+describe('the live Band choice host uses current synchronous authority', () => {
+  it('re-resolves current defaultHz and BSR payload at invocation before the Svelte flush', () => {
+    h.finiteAppearance = true;
+    render();
+    const invoke = retainedInvocations.get('Band')!;
+    h.caps = {
+      ...(h.caps as Capabilities),
+      freqRanges: [{
+        ...BAND_PLAN[0],
+        bands: BAND_PLAN[0]!.bands.map(choice => choice.name === '20m'
+          ? { ...choice, default: 14225000, bsrCode: 7 } : choice),
+      }],
+    };
+    publishAuthority();
+    invoke('20m');
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_band', { band: 7 });
+
+    vi.mocked(sendCommand).mockClear();
+    h.caps = {
+      ...(h.caps as Capabilities),
+      freqRanges: [{
+        ...BAND_PLAN[0],
+        bands: BAND_PLAN[0]!.bands.map(choice => choice.name === 'MW'
+          ? { ...choice, default: 1200000 } : choice),
+      }],
+    };
+    publishAuthority();
+    invoke('MW');
+    expect(setFreqCalls()).toEqual([['set_freq', { freq: 1200000, receiver: 0 }]]);
+  });
+
+  it.each([
+    ['null', () => { h.controlSession = { state: 'disconnected', epoch: 1 }; },
+      () => { h.controlSession = { state: 'connected', epoch: 1 }; }],
+    ['session', () => { h.controlSession = { state: 'connected', epoch: 2 }; },
+      () => { h.controlSession = { state: 'connected', epoch: 1 }; }],
+    ['provider', () => {
+      h.state = { ...(h.state as ServerState), providerGeneration: 2 };
+      h.caps = { ...(h.caps as Capabilities), providerGeneration: 2 };
+    }, () => {
+      h.state = { ...(h.state as ServerState), providerGeneration: 1 };
+      h.caps = { ...(h.caps as Capabilities), providerGeneration: 1 };
+    }],
+    ['topology', () => {
+      h.caps = { ...(h.caps as Capabilities), receivers: 1, vfoScheme: 'single' };
+    }, () => {
+      h.caps = { ...(h.caps as Capabilities), receivers: 2, vfoScheme: 'main_sub' };
+    }],
+  ] as const)('revokes a retained renderer through a %s A-B-A change pre-flush', (_kind, toB, toA) => {
+    h.finiteAppearance = true;
+    render();
+    const retainedA = retainedInvocations.get('Band')!;
+
+    toB();
+    publishAuthority();
+    toA();
+    publishAuthority();
+
+    retainedA('20m');
+    expect(sendCommand).not.toHaveBeenCalled();
+    flushSync();
+    retainedInvocations.get('Band')?.('20m');
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_band', { band: 5 });
+  });
+
+  it.each([
+    ['missing state provider generation', () => {
+      const { providerGeneration: omitted, ...withoutGeneration } = h.state as ServerState;
+      void omitted;
+      h.state = withoutGeneration;
+    }],
+    ['mismatched provider generations', () => {
+      h.caps = { ...(h.caps as Capabilities), providerGeneration: 2 };
+    }],
+  ] as const)('refuses retained Band invocation with %s before publication', (_kind, invalidate) => {
+    h.finiteAppearance = true;
+    render();
+    const retainedA = retainedInvocations.get('Band')!;
+
+    invalidate();
+    retainedA('20m');
+
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe('the live Band frequency entry uses current synchronous authority', () => {
+  it('routes a retained pre-flush submit to the current receiver', () => {
+    render();
+    typeFrequency('7150000');
+    h.state = liveState({ active: 'SUB' } as Partial<ServerState>);
+
+    btn('entry-set')!.click();
+
+    expect(setFreqCalls()).toEqual([['set_freq', { freq: 7150000, receiver: 1 }]]);
+  });
+
+  it.each([
+    ['current bounds', () => {
+      h.caps = liveCaps([{ ...BAND_PLAN[0], start: 30000000, end: 60000000 }]);
+    }],
+    ['disconnected session', () => {
+      h.controlSession = { state: 'disconnected', epoch: 1 };
+    }],
+    ['provider mismatch', () => {
+      h.caps = { ...(h.caps as Capabilities), providerGeneration: 2 };
+    }],
+  ] as const)('refuses a retained pre-flush submit against %s', (_kind, invalidate) => {
+    render();
+    typeFrequency('14.200');
+    invalidate();
+
+    btn('entry-set')!.click();
+
+    expect(setFreqCalls()).toEqual([]);
+  });
+
+  it.each([
+    ['null', () => { h.controlSession = { state: 'disconnected', epoch: 1 }; },
+      () => { h.controlSession = { state: 'connected', epoch: 1 }; }],
+    ['session', () => { h.controlSession = { state: 'connected', epoch: 2 }; },
+      () => { h.controlSession = { state: 'connected', epoch: 1 }; }],
+    ['provider', () => {
+      h.state = { ...(h.state as ServerState), providerGeneration: 2 };
+      h.caps = { ...(h.caps as Capabilities), providerGeneration: 2 };
+    }, () => {
+      h.state = { ...(h.state as ServerState), providerGeneration: 1 };
+      h.caps = { ...(h.caps as Capabilities), providerGeneration: 1 };
+    }],
+    ['topology', () => {
+      h.caps = { ...(h.caps as Capabilities), receivers: 1, vfoScheme: 'single' };
+    }, () => {
+      h.caps = { ...(h.caps as Capabilities), receivers: 2, vfoScheme: 'main_sub' };
+    }],
+  ] as const)('keeps draft but revokes stale commands through %s A-B-A', (_kind, toB, toA) => {
+    render();
+    typeFrequency('7.100');
+    const retainedInput = q<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    const retainedSet = btn('entry-set')!;
+
+    toB(); publishAuthority();
+    toA(); publishAuthority();
+    retainedInput.value = '14.200';
+    retainedInput.dispatchEvent(new Event('input', { bubbles: true }));
+    retainedSet.click();
+
+    expect(setFreqCalls()).toEqual([]);
+    flushSync();
+    expect(q<HTMLInputElement>('[data-testid="band-entry-input"]')!.value).toBe('7.100');
+    btn('entry-set')!.click();
+    expect(setFreqCalls()).toEqual([['set_freq', { freq: 7100000, receiver: 0 }]]);
+  });
+
+  it('keeps draft but revokes the old renderer through coalesced structural A-absent-A', () => {
+    render();
+    typeFrequency('7.100');
+    const retainedInput = q<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    const retainedSet = btn('entry-set')!;
+
+    h.caps = liveCaps([]);
+    publishAuthority();
+    h.caps = liveCaps(BAND_PLAN);
+    publishAuthority();
+    flushSync();
+
+    const currentInput = q<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    expect(currentInput).not.toBe(retainedInput);
+    expect(currentInput.value).toBe('7.100');
+    expect(setFreqCalls()).toEqual([]);
+
+    retainedInput.value = '14.200';
+    retainedInput.dispatchEvent(new Event('input', { bubbles: true }));
+    retainedSet.click();
+    expect(currentInput.value).toBe('7.100');
+    expect(setFreqCalls()).toEqual([]);
+
+    h.state = liveState({ active: 'SUB' } as Partial<ServerState>);
+    btn('entry-set')!.click();
+    expect(setFreqCalls()).toEqual([['set_freq', { freq: 7100000, receiver: 1 }]]);
   });
 });
 
@@ -413,9 +871,9 @@ describe('the band surface composes the shipped command vocabulary', () => {
   it('never changes with the App TX authority or the raw transmit bit', () => {
     render();
     const before = el('surface')!.outerHTML;
-    h.snapshot = { ...IDLE, phase: 'transmitting', radioTx: 'on', mayOwnKey: true };
-    for (const listener of h.listeners) listener(h.snapshot);
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     h.state = liveState({ ptt: true } as Partial<ServerState>);
+    publishAuthority();
     flushSync();
     expect(el('surface')!.outerHTML).toBe(before);
   });
@@ -487,5 +945,75 @@ describe('a split TX target surfaces the caveat, end to end (fix-round F1)', () 
     expect(el('tx-caveat')!.textContent).toBe(t('core.band.tx.caveat.denied', {
       reason: t('core.band.tx.reason.outOfBand'),
     }));
+  });
+});
+
+/* ── the face decides whether the key PRINTS the permit ─────────── */
+
+describe('the layout decides whether the band key prints its permit', () => {
+  /** The three bands `BAND_PLAN` declares, in its own order. */
+  const NAMES = BAND_PLAN[0]!.bands.map((choice) => choice.name);
+
+  interface Key {
+    readonly name: string;
+    readonly text: string;
+    readonly ariaLabel: string;
+    readonly permit: string | null;
+    readonly defaultPermit: string | undefined;
+  }
+
+  /** Mounts the single composition, reads every band key, and unmounts —
+   *  so one test can compare two renders without leaving a live tree behind
+   *  for the `afterEach` teardown assertions. */
+  function readKeys(props: Parameters<typeof render>[0]): {
+    keys: Key[]; permitElements: number;
+  } {
+    render(props);
+    const permitElements =
+      target.querySelectorAll('[data-testid^="band-choice-permit-"]').length;
+    const keys = NAMES.map((name): Key => {
+      const button = btn(`choice-${name}`)!;
+      expect(button).not.toBeNull();
+      return {
+        name,
+        text: button.textContent ?? '',
+        ariaLabel: button.getAttribute('aria-label') ?? '',
+        permit: el(`choice-permit-${name}`)?.textContent ?? null,
+        defaultPermit: button.dataset.defaultPermit,
+      };
+    });
+    unmount(component!);
+    component = null;
+    return { keys, permitElements };
+  }
+
+  // MUTATION KILLED: a default that suppresses the caption. Every caller in
+  // the tree omits this prop, so the default is what they all render.
+  it('prints a caption on every key when the prop is omitted', () => {
+    const { keys, permitElements } = readKeys({});
+    expect(permitElements).toBe(NAMES.length);
+    for (const key of keys) {
+      expect(key.permit).not.toBeNull();
+      expect(key.permit).not.toBe('');
+      expect(key.text).toBe(`${key.name}${key.permit}`);
+      expect(key.ariaLabel).toBe(`${key.name} — ${key.permit}`);
+    }
+  });
+
+  // MUTATION KILLED: the prop left unthreaded by the wiring, which leaves the
+  // caption printed; and a suppression that takes the FACT away with the
+  // print — the accessible name and `data-default-permit` still carry it.
+  it('prints none with bandPermitCaption={false}, keeping every name and permit attribute', () => {
+    const printed = readKeys({}).keys;
+    const { keys, permitElements } = readKeys({ bandPermitCaption: false });
+    expect(permitElements).toBe(0);
+    expect(keys).toHaveLength(printed.length);
+    for (const [index, key] of keys.entries()) {
+      const before = printed[index]!;
+      expect(key.permit).toBeNull();
+      expect(key.text).toBe(key.name);
+      expect(key.ariaLabel).toBe(before.ariaLabel);
+      expect(key.defaultPermit).toBe(before.defaultPermit);
+    }
   });
 });

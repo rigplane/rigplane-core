@@ -372,10 +372,11 @@ export class RxPlayer {
     src.connect(this.preGain);
 
     const now = this.ctx.currentTime;
-    if (this.nextPlayTime < now + this._floorSec / 2) {
-      // A rebase while a schedule exists means playback caught up with
-      // the buffered audio — a real underrun (MOR-585), distinct from
-      // the priming rebase after start()/flush() where nextPlayTime is 0.
+    if (this.nextPlayTime === 0 || this.nextPlayTime < now) {
+      // Preserve a still-future schedule even when its remaining lead is
+      // below the jitter floor: rebasing it would insert a silent gap.
+      // Only an exhausted schedule is an underrun; start()/flush() prime
+      // a new schedule with the configured floor.
       if (this.nextPlayTime > 0) this._underruns++;
       this.nextPlayTime = now + this._floorSec;
     }

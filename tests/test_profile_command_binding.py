@@ -33,6 +33,7 @@ profile's map, plain or empty.
 
 from __future__ import annotations
 
+import copy
 import functools
 import inspect
 import itertools
@@ -43,12 +44,14 @@ from typing import Any
 import pytest
 
 import rigplane.commands as commands
-from rigplane.commands import get_selected_freq, get_speech, ptt_on
+from rigplane.commands import get_speech, ptt_on
 from rigplane.commands._frame import decode_wire_tuple
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
+from rigplane.commands.vfo import set_dual_watch
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.runtime.radio import CoreRadio
+from rigplane.types import BandStackRegister, MemoryChannel
 
 # Reused rather than re-implemented, per the MOR-2006 drift-guard extension:
 # the same probe-ladder search test_command_map_parity.py uses to find a
@@ -128,6 +131,53 @@ class TestCommandMapEquality:
         b = CommandMap({"ptt_on": (0x1C, 0x00)})
         assert hash(a) == hash(b)
 
+    def test_value_variants_participate_in_equality_and_hashing(self) -> None:
+        commands = {"set_data_mode": (0x1A, 0x06)}
+        variants = {
+            "set_data_mode": {
+                0: (0x1A, 0x06, 0x00, 0x00),
+                1: (0x1A, 0x06, 0x01, 0x01),
+            }
+        }
+        same = CommandMap(commands, value_variants=variants)
+        equal = CommandMap(commands, value_variants=variants)
+        changed = CommandMap(
+            commands,
+            value_variants={
+                "set_data_mode": {
+                    0: (0x1A, 0x06, 0x00, 0x00),
+                    1: (0x1A, 0x06, 0x01, 0x02),
+                }
+            },
+        )
+
+        assert same == equal
+        assert hash(same) == hash(equal)
+        assert same != changed
+        assert hash(same) != hash(changed)
+
+    def test_value_variant_storage_is_copied_and_not_exposed_by_iteration(
+        self,
+    ) -> None:
+        values = {0: (0x1A, 0x06, 0x00, 0x00)}
+        variants = {"set_data_mode": values}
+        command_map = CommandMap(
+            {"set_data_mode": (0x1A, 0x06)}, value_variants=variants
+        )
+        values[0] = (0x1A, 0x06, 0x00)
+        variants["extra"] = {1: (0x00, 0x01)}
+
+        assert list(command_map) == ["set_data_mode"]
+        assert len(command_map) == 1
+        assert command_map.get("set_data_mode") == (0x1A, 0x06)
+        assert command_map._get_value_variant("set_data_mode", 0) == (
+            0x1A,
+            0x06,
+            0x00,
+            0x00,
+        )
+        assert copy.deepcopy(command_map) is command_map
+
 
 class TestBoundCommandsGetattr:
     def test_returns_builder_with_map_applied(self) -> None:
@@ -171,13 +221,25 @@ class TestExpect:
     def test_expect_on_unexposed_builder_names_the_migration(self) -> None:
         # get_rf_power (commands/levels.py) is exposed as of MOR-2006 Steps
         # 5..N module 2; get_s_meter (commands/meters.py) was the "not
-        # exposed yet" stand-in through batch 1, but MOR-2008 batch 2
-        # migrated meters.py -- get_selected_freq (commands/freq.py) has no
-        # cmd_map parameter at all (Group B, deferred to a later batch per
-        # the owner ruling on the ticket) and stands in instead.
-        bound = BoundCommands(CommandMap({"get_selected_freq": (0x25, 0x00)}))
+        # exposed yet" stand-in through batch 1, and get_selected_freq
+        # (commands/freq.py) stood in from batch 2 through batch 3 (Group
+        # B, deferred at the time per the owner ruling on the ticket) --
+        # MOR-2008 batch 4 migrated freq.py's Group B builders too, so
+        # every builder in the package now either exposes a key or
+        # resolves one statically (tests/test_profile_command_coverage.py:
+        # test_every_builder_resolves_by_exactly_one_route). MOR-2086
+        # deleted the other delegate-without-a-key stand-in that used to
+        # serve here (dsp.py: set_attenuator -- a boolean wrapper that
+        # could not resolve a correct value without the profile, so
+        # CoreRadio.set_attenuator resolves it now instead). vfo.py:
+        # set_dual_watch is the sole remaining stable, permanent stand-in:
+        # it deliberately never exposes its own key (it delegates to
+        # set_dual_watch_on/set_dual_watch_off by the ``on`` argument)
+        # rather than being mid-migration, so this is not a "temporary
+        # until the next batch" choice.
+        bound = BoundCommands(CommandMap({"set_dual_watch_on": (0x07,)}))
         with pytest.raises(AttributeError, match="Steps 5..N"):
-            bound.expect(get_selected_freq)
+            bound.expect(set_dual_watch)
 
 
 # ── the drift guard ──
@@ -270,9 +332,39 @@ def _exposed_builders() -> list[tuple[str, Any]]:
 # other exposed builder's probe search; adding a value shifts which combo
 # each of them finds first). vfo.py: scan_set_df_span's 0xA1-0xA7 (MOR-2007)
 # is the one case so far: _INTS's largest members (100, 255) both fall
-# outside that range.
+# outside that range. MOR-2008 batch 4 adds two more, for a different
+# reason: memory.py: build_memory_contents_set/set_bsr each take a
+# required dataclass argument (MemoryChannel/BandStackRegister), which
+# _values_for cannot synthesise at all (not an enum/bool/str/float/int,
+# and each module imports its dataclass only under TYPE_CHECKING, so
+# _values_for's own `eval(annotation, fn.__globals__)` cannot even
+# resolve the name at runtime) -- _candidate_kwargs would yield nothing,
+# so a real instance is supplied directly instead.
 _EXTRA_PROBE_KWARGS: dict[str, dict[str, Any]] = {
     "scan_set_df_span": {"df_span": 0xA1},
+    "build_memory_contents_set": {
+        "mem": MemoryChannel(
+            channel=1,
+            frequency_hz=14_074_000,
+            mode=1,
+            filter=1,
+            scan=0,
+            datamode=0,
+            tonemode=0,
+        )
+    },
+    "set_bsr": {
+        "bsr": BandStackRegister(
+            band=1, register=1, frequency_hz=14_074_000, mode=1, filter=1
+        )
+    },
+    # Tone builders deliberately require the active profile's exact domain.
+    # Supply a synthetic domain here so this guard still reaches its map-key
+    # assertion without smuggling a fallback into production behavior.
+    "get_tone_freq": {"ctcss_tones_centihz": (8850, 10000)},
+    "set_tone_freq": {"freq_centihz": 8850, "ctcss_tones_centihz": (8850, 10000)},
+    "get_tsql_freq": {"ctcss_tones_centihz": (8850, 10000)},
+    "set_tsql_freq": {"freq_centihz": 8850, "ctcss_tones_centihz": (8850, 10000)},
 }
 
 
@@ -393,12 +485,21 @@ class TestExposedKeyDriftGuard:
         # routes through it, not just this batch's five.
         builders_module = sys.modules["rigplane.commands._builders"]
         monkeypatch.setattr(builders_module, "_build_from_map", _fake_build_from_map)
-        case_kwargs = self._synthesize_case(builder, cmd_map)
-        builder(to_addr=0x94, cmd_map=cmd_map, **case_kwargs)
+        target = inspect.unwrap(builder)
+        probe_map = cmd_map
+        if "ctcss_tones_centihz" in inspect.signature(target).parameters:
+            # Tone builders validate both their profile domain and their named
+            # command before reaching the patched frame builder.  Add only the
+            # builder's own placeholder command to this synthetic probe map.
+            probe_map = CommandMap(
+                {name: cmd_map.get(name) for name in cmd_map} | {_name: (0x1B, 0x00)}
+            )
+        case_kwargs = self._synthesize_case(builder, probe_map)
+        builder(to_addr=0x94, cmd_map=probe_map, **case_kwargs)
         assert "key" in captured, (
             f"{builder.__qualname__} did not call _build_from_map with cmd_map set"
         )
-        assert captured["key"] == builder.cmd_map_key(cmd_map)
+        assert captured["key"] == builder.cmd_map_key(probe_map)
 
 
 def test_ptt_off_is_also_covered_directly() -> None:

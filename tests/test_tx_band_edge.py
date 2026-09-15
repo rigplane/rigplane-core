@@ -1,6 +1,16 @@
-"""Tests for TX band edge support (CI-V command 0x1E, issue #541)."""
+"""Tests for TX band edge support (CI-V command 0x1E, issue #541).
+
+``get_tx_band_count``/``get_tx_band_edge`` migrated onto the bound command
+map in MOR-2008 (batch 4, "Group B"): both now require ``cmd_map`` -- no
+hardcoded fallback ever existed to delete, since neither took a
+``cmd_map`` parameter at all before this batch. IC-7610's own declared
+bytes (``[0x1E, 0x00]``/``[0x1E, 0x01]``) are identical to the deleted
+hardcoded frame, so the literal frame assertions below are unchanged.
+"""
 
 from __future__ import annotations
+
+import pathlib
 
 import pytest
 
@@ -15,9 +25,18 @@ from rigplane.commands.tx_band import (
 )
 from rigplane.commands._frame import _CMD_TX_BAND_EDGE
 from rigplane.radio_state import RadioState, TxBandEdge
+from rigplane.rig_loader import load_rig
 from rigplane.types import CivFrame
 
+RIG_DIR = pathlib.Path(__file__).resolve().parents[1] / "rigs"
+
 _RADIO_ADDR = 0x98
+
+
+@pytest.fixture()
+def cmd_map():
+    rig = load_rig(RIG_DIR / "ic7610.toml")
+    return rig.to_command_map()
 
 
 # ---------------------------------------------------------------------------
@@ -36,30 +55,40 @@ class TestCmdConstant:
 
 
 class TestGetTxBandCount:
-    def test_frame_structure(self) -> None:
-        frame = get_tx_band_count(to_addr=_RADIO_ADDR)
+    def test_frame_structure(self, cmd_map) -> None:
+        frame = get_tx_band_count(to_addr=_RADIO_ADDR, cmd_map=cmd_map)
         # FE FE 98 E0 1E 00 FD
         assert frame == bytes([0xFE, 0xFE, 0x98, 0xE0, 0x1E, 0x00, 0xFD])
 
-    def test_custom_from_addr(self) -> None:
-        frame = get_tx_band_count(to_addr=_RADIO_ADDR, from_addr=0xA0)
+    def test_custom_from_addr(self, cmd_map) -> None:
+        frame = get_tx_band_count(to_addr=_RADIO_ADDR, from_addr=0xA0, cmd_map=cmd_map)
         assert frame == bytes([0xFE, 0xFE, 0x98, 0xA0, 0x1E, 0x00, 0xFD])
+
+    def test_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_tx_band_count(to_addr=_RADIO_ADDR)  # type: ignore[call-arg]
 
 
 class TestGetTxBandEdge:
-    def test_band_1(self) -> None:
-        frame = get_tx_band_edge(1, to_addr=_RADIO_ADDR)
+    def test_band_1(self, cmd_map) -> None:
+        frame = get_tx_band_edge(1, to_addr=_RADIO_ADDR, cmd_map=cmd_map)
         # FE FE 98 E0 1E 01 01 FD  (band 1 as BCD = 0x01)
         assert frame == bytes([0xFE, 0xFE, 0x98, 0xE0, 0x1E, 0x01, 0x01, 0xFD])
 
-    def test_band_12(self) -> None:
-        frame = get_tx_band_edge(12, to_addr=_RADIO_ADDR)
+    def test_band_12(self, cmd_map) -> None:
+        frame = get_tx_band_edge(12, to_addr=_RADIO_ADDR, cmd_map=cmd_map)
         # band 12 as BCD = 0x12
         assert frame == bytes([0xFE, 0xFE, 0x98, 0xE0, 0x1E, 0x01, 0x12, 0xFD])
 
-    def test_band_0(self) -> None:
-        frame = get_tx_band_edge(0, to_addr=_RADIO_ADDR)
+    def test_band_0(self, cmd_map) -> None:
+        frame = get_tx_band_edge(0, to_addr=_RADIO_ADDR, cmd_map=cmd_map)
         assert frame == bytes([0xFE, 0xFE, 0x98, 0xE0, 0x1E, 0x01, 0x00, 0xFD])
+
+    def test_requires_cmd_map(self) -> None:
+        """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
+        with pytest.raises(TypeError, match="MOR-2006"):
+            get_tx_band_edge(1, to_addr=_RADIO_ADDR)  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------------------

@@ -30,11 +30,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
 import { proxy } from 'svelte/internal/client';
-import CwKeyerSurface, {
+import {
   APF_CHOICES, BREAK_IN_CHOICES, BREAK_IN_REASON_KEY, CW_LEVELS, MUTEX_LABEL, POSTURE_LABEL,
   UNKNOWN_TEXT, breakInBlockedLabel, breakInPosture, type CwLevelField,
 } from '../CwKeyerSurface.svelte';
-import { topologyFixtures, withCwKeyer, withTxAux } from '../fixtures/topologies';
+import CwKeyerInstrumentHostFixture from './fixtures/CwKeyerInstrumentHostFixture.svelte';
+import { topologyFixtures, withCwKeyer, withModeFilter, withTxAux } from '../fixtures/topologies';
 import type {
   Availability, BreakInMode, CwKeyerField, CwKeyerViewModel, DisabledReason, RadioViewModel,
 } from '../radio-view-model';
@@ -42,6 +43,11 @@ import { t } from '$lib/i18n';
 import type {
   ControlFeedbackPresentationInput, PresentationPhase,
 } from '../../primitives/control-feedback/control-feedback-presentation';
+
+type BreakInDelayFeedback = ControlFeedbackPresentationInput<number> & {
+  readonly sessionEpoch?: number;
+  readonly scope?: Readonly<{ control: string; receiver: number; slot?: string }>;
+};
 
 const SOURCE = readFileSync('src/semantic/CwKeyerSurface.svelte', 'utf8');
 /** Comments stripped, so the file's own doctrine prose can never be what a
@@ -73,17 +79,19 @@ beforeEach(() => { target = document.createElement('div'); document.body.appendC
 afterEach(() => { target.remove(); });
 
 type Handlers = {
+  standard?: boolean;
+  autoTuneAvailable?: boolean;
   onBreakInMode?: (mode: number) => void;
   onLevelChange?: (field: CwLevelField, value: number) => void;
   onApfOn?: (on: boolean) => void;
   onTwinPeakToggle?: () => void;
   onReversePaddleToggle?: () => void;
-  breakInDelayFeedback?: Readonly<ControlFeedbackPresentationInput<number>>;
+  breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
   onAutoTune?: () => void;
 };
 
 function render(view: RadioViewModel, handlers: Handlers = {}) {
-  const component = mount(CwKeyerSurface, { target, props: { view, ...handlers } });
+  const component = mount(CwKeyerInstrumentHostFixture, { target, props: { view, ...handlers } });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   return {
@@ -97,10 +105,10 @@ function render(view: RadioViewModel, handlers: Handlers = {}) {
   };
 }
 
-function renderReactiveFeedback(initial: ControlFeedbackPresentationInput<number>) {
+function renderReactiveFeedback(initial: BreakInDelayFeedback) {
   const onLevelChange = vi.fn();
   const props = proxy({ view: base(), onLevelChange, breakInDelayFeedback: initial });
-  const component = mount(CwKeyerSurface, { target, props });
+  const component = mount(CwKeyerInstrumentHostFixture, { target, props });
   flushSync();
   const input = () => target.querySelector<HTMLInputElement>(
     '[data-testid="cw-keyer-breakInDelay"] input',
@@ -121,15 +129,59 @@ const slide = (el: HTMLInputElement, value: number) => {
 };
 const feedback = (
   phase: PresentationPhase,
-  over: Partial<ControlFeedbackPresentationInput<number>> = {},
-): Readonly<ControlFeedbackPresentationInput<number>> => ({
+  over: Partial<BreakInDelayFeedback> = {},
+): Readonly<BreakInDelayFeedback> => ({
   confirmed: 64, target: null, requestedTarget: null, phase,
   transitionId: null, outcome: null, ...over,
 });
-
 /* ── (a) the surface is not a key path ────────────────────────── */
 
 describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
+  it('renders the Standard compact composition through the existing setting intents', () => {
+    const onBreakInMode = vi.fn();
+    const onApfOn = vi.fn();
+    const onAutoTune = vi.fn();
+    const r = render(withModeFilter(withCw({ breakIn: known('semi'), apf: known(1) })), {
+      standard: true, autoTuneAvailable: true, onBreakInMode, onApfOn, onAutoTune,
+    });
+    try {
+      expect(r.el('rx-mode')?.textContent).toContain('USB');
+      expect(r.el('break-in-off')).toBeNull();
+      expect(r.text('break-in-semi')).toBe('SEMI');
+      expect(r.text('break-in-full')).toBe('FULL');
+      expect(r.el('apf')?.getAttribute('role')).toBeNull();
+      expect(r.el('apf-on')?.getAttribute('role')).toBeNull();
+      expect(r.el('apf-on')?.getAttribute('aria-pressed')).toBe('true');
+      expect(r.el('pitchHz')!.compareDocumentPosition(r.el('keyerSpeed')!)
+        & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+      press(r.el('break-in-semi')!);
+      press(r.el('break-in-full')!);
+      expect(onBreakInMode.mock.calls).toEqual([[0], [2]]);
+      press(r.el('apf-on')!);
+      expect(onApfOn).toHaveBeenCalledWith(false);
+
+      const settings = r.controls().find(control =>
+        control.getAttribute('aria-label') === 'CW additional settings')!;
+      expect(settings.getAttribute('aria-expanded')).toBe('false');
+      expect(settings.getAttribute('aria-controls')).toBe('cw-extra-settings');
+      const controlled = target.querySelector<HTMLElement>(
+        `#${settings.getAttribute('aria-controls')}`,
+      )!;
+      expect(controlled.hidden).toBe(true);
+      expect(controlled.querySelector('[data-testid="cw-keyer-breakInDelay"]')).not.toBeNull();
+      expect(controlled.querySelector('[data-testid="cw-keyer-reverse-paddle"]')).not.toBeNull();
+      press(settings);
+      flushSync();
+      expect(settings.getAttribute('aria-expanded')).toBe('true');
+      expect(controlled.hidden).toBe(false);
+
+      expect(r.text('auto-tune')).toBe('AUTO TUNE');
+      press(r.el('auto-tune')!);
+      expect(onAutoTune).toHaveBeenCalledTimes(1);
+    } finally { r.dispose(); }
+  });
+
   /** The whole static import closure of the file, allow-listed. Kills: adding
    *  ANY import that could reach the TX controller, the transport or the
    *  permit utility — including through a relative specifier.
@@ -141,7 +193,7 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
    *  This check regexes THIS file's specifiers only, so that premise is
    *  pinned one level down by `pressed-of.test.ts`'s `'has no runtime
    *  import'` case (verify-MOR-1358 F1) — the two together are the closure. */
-  it('imports nothing but the fact contract and the shared pressedOf helper', () => {
+  it('imports only the allow-listed fact, presentation and numeric dependencies', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
     // MOR-1474: `$lib/i18n` added for the operator-legible `t()` catalog
@@ -150,17 +202,36 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     // module (no transport, no controller, no permit utility) and cannot
     // widen this file's reach any more than `./pressed-of` does.
     expect([...new Set(specifiers)]).toEqual([
-      '$lib/i18n', './radio-view-model', './pressed-of',
+      '$lib/i18n', './CwKeyerInstrumentHost.svelte', './radio-view-model', './pressed-of',
+      'svelte',
       '../primitives/control-feedback/control-feedback-presentation',
+      '../primitives/scalar/committed-scalar.svelte',
+      '../primitives/scalar/value-control-core',
+      '../primitives/control-instruments/control-instrument-behavior',
     ]);
+  });
+
+  it('uses current-input bindings for APF, Twin Peak and reverse paddle', () => {
+    expect(CODE).toContain('const apfChoice = bindChoiceInstrument');
+    expect(CODE).toContain('const twinPeakToggle = bindToggleInstrument');
+    expect(CODE).toContain('const reversePaddleToggle = bindToggleInstrument');
+    expect(CODE).toContain('value: field.reading.value > 0');
+    expect(CODE).toContain('invoke: () => onTwinPeakToggle?.()');
+    expect(CODE).toContain('invoke: () => onReversePaddleToggle?.()');
+    expect(CODE).toContain('{@render continuousHandles.keyerSpeed()}');
+    expect(CODE).toContain('{@render continuousHandles.pitchHz()}');
+    expect(CODE).not.toContain('keySpeedScalar');
+    expect(CODE).not.toContain('cwPitchScalar');
   });
 
   // Kills: `onMount(() => …)` and every relative of it, plus a dynamic import
   // used to smuggle in the controller.
-  it('declares no lifecycle hook and no effect', () => {
-    for (const forbidden of ['onMount', 'onDestroy', '$effect', 'import(']) {
+  it('allows cleanup-only lifecycle ownership without a mount-time dispatch path', () => {
+    expect(CODE).toContain('onDestroy');
+    for (const forbidden of ['onMount', 'import(', 'sendCommand']) {
       expect(CODE).not.toContain(forbidden);
     }
+    expect(CODE).not.toMatch(/onDestroy\s*\([^)]*=>[\s\S]*?(?:onLevelChange|nativeInput)\s*\(/);
   });
 
   // Kills: (a) a key path, (c) a second permit derivation. Neither the key
@@ -180,14 +251,16 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
   it('takes exactly one state prop — the view model — plus SETTING intents', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
     expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1])).toEqual([
-      'view', 'onBreakInMode', 'onLevelChange', 'onApfOn', 'onTwinPeakToggle',
-      'onReversePaddleToggle', 'breakInDelayFeedback', 'autoTuneAvailable', 'onAutoTune',
+      'view', 'continuousHandles', 'showKeyerSpeed', 'showPitchHz', 'standard',
+      'onBreakInMode', 'onLevelChange',
+      'onApfOn', 'onTwinPeakToggle', 'onReversePaddleToggle', 'breakInDelayFeedback',
+      'autoTuneAvailable', 'onAutoTune',
     ]);
   });
 
   it('renders an available RX frequency-correction control and emits exactly once', () => {
     const onAutoTune = vi.fn();
-    const component = mount(CwKeyerSurface, {
+    const component = mount(CwKeyerInstrumentHostFixture, {
       target,
       props: { view: base(), autoTuneAvailable: true, onAutoTune },
     });
@@ -202,7 +275,7 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
 
   it('omits the RX frequency-correction control when unavailable or callback-free', () => {
     const unavailableCallback = vi.fn();
-    const unavailable = mount(CwKeyerSurface, {
+    const unavailable = mount(CwKeyerInstrumentHostFixture, {
       target,
       props: { view: base(), autoTuneAvailable: false, onAutoTune: unavailableCallback },
     });
@@ -211,7 +284,7 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     expect(unavailableCallback).not.toHaveBeenCalled();
     unmount(unavailable);
 
-    const callbackFree = mount(CwKeyerSurface, {
+    const callbackFree = mount(CwKeyerInstrumentHostFixture, {
       target,
       props: { view: base(), autoTuneAvailable: true },
     });
@@ -228,7 +301,7 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     delete (view as { cwKeyer?: unknown }).cwKeyer;
     const r = render(view);
     expect(r.root()).toBeNull();
-    expect(target.textContent).toBe('');
+    expect(target.textContent?.trim()).toBe('');
     r.dispose();
   });
 
@@ -256,9 +329,12 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
       else press(control);
     }
     flushSync();
+    // pitchHz is now a hosted ValueControl scalar (pointer/keyboard driven, no
+    // native <input>) — its own routing is proven in
+    // CwKeyerInstrumentHost.isolated.test.ts, not by this DOM sweep.
     expect(seen).toEqual([
       'breakIn:0', 'breakIn:1', 'breakIn:2',
-      'level:keyerSpeed:48', 'level:pitchHz:900', 'level:breakInDelay:255',
+      'level:breakInDelay:255',
       'reversePaddle', 'apf:false', 'apf:true', 'twinPeak',
     ]);
     r.dispose();
@@ -366,7 +442,22 @@ describe('Break-in Delay separates draft, submitted target and confirmed truth',
     r.dispose();
   });
 
-  it('emits nothing when unmounted after intermediate drag input', () => {
+  it('adopts one committed renderer lease and destroys its owner on unmount', () => {
+    const committedBlock = CODE.slice(
+      CODE.indexOf('const breakInDelayScalar'),
+      CODE.indexOf('function requestRxFrequencyCorrection'),
+    );
+    expect(committedBlock).toContain(
+      'const breakInDelayLease = breakInDelayScalar.attachRenderer()',
+    );
+    expect(committedBlock).not.toMatch(/breakInDelayScalar\.(?:input|commit|cancel)\(/);
+    for (const method of ['input', 'commit', 'cancel']) {
+      expect(committedBlock).toContain(`breakInDelayLease.${method}(`);
+    }
+    expect(CODE).toMatch(/onpointercancel=.*cancelBreakInDelay/);
+    expect(CODE).toMatch(/function keyBreakInDelay[\s\S]*?cancelBreakInDelay\(event\.currentTarget\)/);
+    expect(CODE).toMatch(/onDestroy\(\(\) => \{[\s\S]*?breakInDelayScalar\.destroy\(\)/);
+
     const onLevelChange = vi.fn();
     const r = render(base(), { onLevelChange });
     const input = r.input('breakInDelay')!;
@@ -417,6 +508,47 @@ describe('Break-in Delay separates draft, submitted target and confirmed truth',
     r.input().dispatchEvent(new Event('change', { bubbles: true }));
     expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('breakInDelay', 111);
     r.dispose();
+  });
+
+  it('invalidates a stale draft when an equal projection moves to a new session context', () => {
+    const context = { control: 'break-in-delay', receiver: 0 } as const;
+    const r = renderReactiveFeedback(feedback('idle', { sessionEpoch: 1, scope: context }));
+    r.input().value = '111';
+    r.input().dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(r.input().value).toBe('111');
+    r.props.breakInDelayFeedback = feedback('idle', { sessionEpoch: 2, scope: { ...context } });
+    flushSync();
+    const restored = r.input().value;
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect([restored, r.onLevelChange.mock.calls]).toEqual(['64', []]);
+    r.dispose();
+  });
+
+  it('keeps draft and announcement state independent across mounted instances', () => {
+    const secondTarget = document.createElement('div'); document.body.appendChild(secondTarget);
+    const current = feedback('failed', {
+      requestedTarget: 111, transitionId: 'shared-transition', outcome: { phase: 'failed' },
+    });
+    const first = mount(CwKeyerInstrumentHostFixture, {
+      target, props: { view: base(), breakInDelayFeedback: current },
+    });
+    const second = mount(CwKeyerInstrumentHostFixture, {
+      target: secondTarget, props: { view: base(), breakInDelayFeedback: { ...current } },
+    });
+    flushSync();
+    const firstInput = target.querySelector<HTMLInputElement>(
+      '[data-testid="cw-keyer-breakInDelay"] input',
+    )!;
+    firstInput.value = '90'; firstInput.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const secondInput = secondTarget.querySelector<HTMLInputElement>(
+      '[data-testid="cw-keyer-breakInDelay"] input',
+    )!;
+    expect([firstInput.value, secondInput.value]).toEqual(['90', '64']);
+    expect(target.querySelector('[data-control-feedback-status]')?.textContent).toContain('111');
+    expect(secondTarget.querySelector('[data-control-feedback-status]')?.textContent).toContain('111');
+    unmount(first); unmount(second); secondTarget.remove();
   });
 
   it.each([
@@ -623,6 +755,31 @@ describe('break-in POSTURE distinguishes armed from off, and unknown from both',
     expect(POSTURE_LABEL[p]).toMatch(/key/);
   });
 
+  // Kills: the posture sentence back inside the keys' row, where a sentence
+  // can only stretch the row or wrap between the keys.
+  it('gives the posture sentence its own line under the break-in keys', () => {
+    const r = render(base());
+    const keys = target.querySelector<HTMLElement>(
+      '[data-testid="cw-keyer-break-in"] [role="radiogroup"]',
+    )!;
+    const posture = target.querySelector<HTMLElement>('[data-testid="cw-keyer-posture"]')!;
+    expect(keys.querySelectorAll('button')).toHaveLength(BREAK_IN_CHOICES.length);
+    expect(keys.contains(posture)).toBe(false);
+    expect(posture.closest('[role="radiogroup"]')).toBeNull();
+    expect(keys.compareDocumentPosition(posture) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    r.dispose();
+  });
+
+  // Kills: a rule in this file that would clip the sentence or hold it on one
+  // line. Scoped to this stylesheet, which is what this file controls.
+  it('clips text in exactly one rule of its own stylesheet, the screen-reader one', () => {
+    const sheet = /<style>([\s\S]*?)<\/style>/.exec(CODE)![1];
+    const clipping = [...sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(([, , body]) => /white-space:\s*nowrap|text-overflow/.test(body))
+      .map(([, selector]) => selector.trim());
+    expect(clipping).toEqual(['.sr-only']);
+  });
+
   // The two "not permitted" states are visibly different, which is the whole
   // point of the decision above.
   it('renders armed-and-not-permitted differently from off-and-not-permitted', () => {
@@ -703,10 +860,84 @@ describe('the mutex reasons are rendered with the other mode NAMED (MOR-1296 O1)
   });
 });
 
+/* ── a sentence never sits in a keys row ──────────────────────── */
+
+describe('every sentence gets its own line, and the keys keep their gap', () => {
+  /** Each sentence this surface can render, with a selector for the keys row
+   *  it explains. `cw-keyer-apf-value` is NOT here: it is the APF ordinal
+   *  read back, a reading beside its keys, not a sentence. */
+  const SENTENCES = [
+    ['posture', '[data-testid="cw-keyer-break-in"] .cw-keyer-row'],
+    ['break-in-blocked', '[data-testid="cw-keyer-break-in"] .cw-keyer-row'],
+    ['apf-mutex', '[data-testid="cw-keyer-apf"]'],
+    ['twin-peak-mutex', '[data-testid="cw-keyer-twin-peak"]'],
+  ] as const;
+
+  /** One view carrying all four at once: `2/ab_shared` denies the permit and
+   *  records the break-in reason, and both mutex reasons are added on top. */
+  const everySentence = (): RadioViewModel => withReasons(
+    withCwKeyer(topologyFixtures['2/ab_shared']),
+    { field: 'cwKeyer.apf', code: 'mutually-exclusive-control' },
+    { field: 'cwKeyer.twinPeak', code: 'mutually-exclusive-control' },
+  );
+
+  // Kills: any sentence left inside `.cw-keyer-row`, where it can only
+  // stretch the row or wrap between the keys.
+  it('renders all four sentences, none of them inside a keys row', () => {
+    const r = render(everySentence());
+    const rows = [...target.querySelectorAll<HTMLElement>('.cw-keyer-row')];
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.querySelector('.cw-keyer-sentence')).toBeNull();
+    for (const [id] of SENTENCES) {
+      const el = r.el(id);
+      expect(el).not.toBeNull();
+      expect(el!.closest('.cw-keyer-row')).toBeNull();
+      expect(el!.closest('.cw-keyer-sentence')).not.toBeNull();
+    }
+    r.dispose();
+  });
+
+  // Kills: a sentence hoisted above its keys, or parked in a different block.
+  it.each(SENTENCES)('puts %s on its own line directly below its keys row', (id, rowSelector) => {
+    const r = render(everySentence());
+    const row = target.querySelector<HTMLElement>(rowSelector)!;
+    const sentence = r.el(id)!.closest<HTMLElement>('.cw-keyer-sentence')!;
+    expect(row.contains(sentence)).toBe(false);
+    expect(row.compareDocumentPosition(sentence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(sentence.parentElement).toBe(row.closest('.cw-keyer-block'));
+    r.dispose();
+  });
+
+  // Kills: the #3402 wrapper shipped with no class, which left the keys and
+  // the sentences flush because nothing gave that wrapper the surface's gap.
+  it('wraps every keys row that owns a sentence in a gapped block', () => {
+    const r = render(everySentence());
+    for (const [, rowSelector] of SENTENCES) {
+      const row = target.querySelector<HTMLElement>(rowSelector)!;
+      expect(row.closest('.cw-keyer-block')).not.toBeNull();
+    }
+    r.dispose();
+  });
+
+  // Kills: a second gap number for the blocks. The block reuses the ONE
+  // declaration `.cw-keyer-surface` already had, in that same rule.
+  it('takes the block gap from the surface rule itself, not a second number', () => {
+    const sheet = /<style>([\s\S]*?)<\/style>/.exec(CODE)![1];
+    const withBlock = [...sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(([, selector]) => selector.includes('.cw-keyer-block'));
+    expect(withBlock).toHaveLength(1);
+    const [, selector, body] = withBlock[0];
+    expect(selector).toContain('.cw-keyer-surface');
+    expect(body).toMatch(/gap:\s*0\.25rem/);
+  });
+});
+
 /* ── facts render honestly ─────────────────────────────────────── */
 
 describe('every unread fact renders honestly, never as a v2 default', () => {
-  it.each(CW_LEVELS)('renders the %s fact verbatim on its raw wire scale', (field, _l, min, max) => {
+  const NATIVE_LEVELS = CW_LEVELS.filter(([field]) => field !== 'keyerSpeed' && field !== 'pitchHz');
+
+  it.each(NATIVE_LEVELS)('renders the %s fact verbatim on its raw wire scale', (field, _l, min, max) => {
     const r = render(withCw({ [field]: known(max) } as Partial<CwKeyerViewModel>));
     expect(r.input(field)!.valueAsNumber).toBe(max);
     expect([r.input(field)!.min, r.input(field)!.max]).toEqual([String(min), String(max)]);
@@ -715,7 +946,7 @@ describe('every unread fact renders honestly, never as a v2 default', () => {
 
   // Kills: an unread level rendering as a number, and a thumb free to claim
   // any position (the MOR-1279 F1 / MOR-1304 F2 precedent).
-  it.each(CW_LEVELS)('renders an unread %s as unknown and parks the thumb at min', (field, _l, min) => {
+  it.each(NATIVE_LEVELS)('renders an unread %s as unknown and parks the thumb at min', (field, _l, min) => {
     const onLevelChange = vi.fn();
     const r = render(
       withCw({ [field]: unread<number>() } as Partial<CwKeyerViewModel>), { onLevelChange },
@@ -730,7 +961,7 @@ describe('every unread fact renders honestly, never as a v2 default', () => {
     r.dispose();
   });
 
-  it.each(CW_LEVELS)('emits the %s intent verbatim when observed', (field, _l, _min, max) => {
+  it.each(NATIVE_LEVELS)('emits the %s intent verbatim when observed', (field, _l, _min, max) => {
     const onLevelChange = vi.fn();
     const r = render(base(), { onLevelChange });
     slide(r.input(field)!, max);
@@ -739,7 +970,7 @@ describe('every unread fact renders honestly, never as a v2 default', () => {
     r.dispose();
   });
 
-  it.each(CW_LEVELS)('renders no %s block when it is structurally absent', (field) => {
+  it.each(NATIVE_LEVELS)('renders no %s block when it is structurally absent', (field) => {
     const r = render(withCw({ [field]: unread(OFF) } as Partial<CwKeyerViewModel>));
     expect(r.el(field)).toBeNull();
     r.dispose();

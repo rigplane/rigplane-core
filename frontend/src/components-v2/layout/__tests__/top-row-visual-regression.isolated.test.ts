@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+const txHarness = new ManagedAppTxHarness({ stale: true });
 
 vi.mock('$lib/stores/layout.svelte', () => ({
   useLcdLayout: vi.fn(() => false),
@@ -8,29 +11,18 @@ vi.mock('$lib/stores/layout.svelte', () => ({
   setLayoutMode: vi.fn(),
 }));
 
-// MOR-1011: TxPanel resolves the App TX controller from Svelte context, which
-// only App.svelte provides. RadioLayout is mounted here without that provider,
-// so stub the host lookup — the layout still renders the real panel tree.
-vi.mock('$lib/runtime/tx-controller/app-host', () => {
-  const idle = { phase: 'idle', intent: null, guard: null, radioTx: 'unknown', fault: null };
-  return {
-    getAppTxController: () => ({
-      snapshot: () => idle,
-      subscribe: () => () => {},
-      start: vi.fn(),
-      setIntent: vi.fn(),
-      release: vi.fn(),
-      resetFault: vi.fn(),
-    }),
-  };
-});
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => txHarness.controller,
+}));
 
 vi.mock('../../../skins/registry', () => ({
   resolveSkinId: vi.fn(() => 'desktop-v2'),
+  presentationHostMode: () => 'self-contained',
 }));
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     state: null,
     caps: null,
     connectionStatus: 'disconnected',
@@ -51,6 +43,7 @@ vi.mock('$lib/runtime', () => ({
 vi.mock('$lib/stores/connection.svelte', () => ({
   getConnectionStatus: vi.fn(() => ({ connected: false })),
   getWsConnected: vi.fn(() => false),
+  hasEverConnected: vi.fn(() => false),
   getRadioPowerOn: vi.fn(() => null),
   getRadioStatus: vi.fn(() => 'disconnected'),
   getRadioLinkState: vi.fn(() => 'disconnected'),

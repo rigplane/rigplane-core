@@ -12,4 +12,21 @@ describe('fixture semantic command seam (MOR-1409 A04a)', () => {
       expect(stub).toContain(`${family}:`);
     }
   });
+
+  it('exports unavailable feedback with every TX auxiliary control scope', () => {
+    expect(stub).toContain('getTxAuxControlFeedback');
+    for (const [field, control] of [
+      ['micGain', 'mic-gain'],
+      ['driveGain', 'drive-gain'],
+      ['voxGain', 'vox-gain'],
+      ['antiVoxGain', 'anti-vox-gain'],
+      ['voxDelay', 'vox-delay'],
+      ['compressorLevel', 'compressor-level'],
+      ['monitorGain', 'monitor-level'],
+    ]) {
+      expect(stub).toContain(`${field}: '${control}'`);
+    }
+    expect(stub).toContain("phase: 'unavailable' as const");
+    expect(stub).toContain('confirmed: null');
+  });
 });

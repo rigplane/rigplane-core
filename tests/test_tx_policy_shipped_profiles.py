@@ -4,12 +4,12 @@ MOR-1912 (ADR row 3a) landed the section for the two bench-measured rigs.
 MOR-1947 settles what the remaining six declare, so each shipped rig carries
 a written ruling instead of an absence.
 
-What consumes the data is deliberately not asserted here. Only the Yaesu
-backend reads ``tx_state_map`` today (``yaesu_cat/radio.py:1083-1090``, where
-an undeclared profile falls back to the vendor ``!= "0"`` default); the Icom
-read decodes its ``1C 00`` reply natively (``runtime/radio.py``), and
-``core/tx_authority.py`` is handed the read primitive, never the map. Which
-of those paths a later row changes is that row's business, not this one's.
+Current consumption is narrow. Only the Yaesu backend reads ``tx_state_map`` today
+(``yaesu_cat/radio.py: YaesuCatRadio._interpret_ptt_token``); the Icom read
+decodes its ``1C 00`` reply natively into the canonical
+``core.tx_observation.TxStateReading`` contract
+(``runtime/radio.py: CoreRadio.read_transmit_state``). ``refused_during_tx``
+currently remains profile metadata. This test pins values, not consumers.
 
 The owner ruling, per radio:
 

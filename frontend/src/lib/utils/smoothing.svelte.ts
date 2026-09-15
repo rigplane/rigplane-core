@@ -60,6 +60,10 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
     }
   }
 
+  function reset(value: number) {
+    current = target = value;
+  }
+
   function tick(now: number) {
     const dt = Math.min(0.05, (now - lastTime) / 1000);
     lastTime = now;
@@ -114,6 +118,7 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
   return {
     get value() { return current; },
     update,
+    reset,
     start,
     stop,
   };

@@ -45,6 +45,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 }));
 
 vi.mock('$lib/state/field-status', () => ({
+  getFieldStatus: vi.fn(() => undefined),
   isFieldAvailable: vi.fn(() => true),
 }));
 
@@ -56,6 +57,7 @@ vi.mock('$lib/stores/tuning.svelte', () => ({
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
     setAudioConfig: vi.fn(),
+    setOperatorNotifier: vi.fn(),
     startRx: vi.fn(),
     stopRx: vi.fn(),
     setRxVolume: vi.fn(),

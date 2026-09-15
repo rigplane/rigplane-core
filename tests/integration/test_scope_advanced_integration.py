@@ -190,6 +190,7 @@ async def scope_radio(scope_mock: ScopeMockRadio) -> AsyncGenerator[IcomRadio, N
         username="testuser",
         password="testpass",
         timeout=5.0,
+        model="IC-7610",
     )
     with fast_connect():
         await radio.connect()

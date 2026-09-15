@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from itertools import permutations
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from unittest.mock import MagicMock
@@ -16,8 +16,13 @@ from rigplane.web.runtime_helpers import (
     classify_radio_health,
     radio_ready,
     runtime_capabilities,
+    snapshot_field_status_inputs,
 )
 from rigplane.web.server import WebServer
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionScheduler,
+    StateFreshnessService,
+)
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -30,6 +35,7 @@ from rigplane.core.state_store import (
     StateSnapshot,
     StateStore,
 )
+from rigplane.profiles import get_radio_profile
 from rigplane.core.tx_target import KnownTxTarget, TxTarget, UnknownTxTarget
 from rigplane.core.types import ScopeFixedEdge
 from rigplane.radio_state import RadioState
@@ -74,7 +80,10 @@ class _FakeRadio:
         self.connected = connected
         self.radio_ready = radio_ready_flag
         self.control_connected = False
-        self.model = "IC-TEST"
+        # X6100: resolves (must not raise) but contributes zero VFO tags
+        # (swap/equal codes all None), so it doesn't perturb capability
+        # comparisons keyed off the fake's own declared .capabilities.
+        self.model = "X6100"
         self.conn_state = None
         self._last_civ_data_received = None
         self._civ_ready_idle_timeout = None
@@ -474,9 +483,16 @@ def test_runtime_capabilities_uses_explicit_caps_without_protocol_fallback() -> 
 
 
 def test_runtime_capabilities_falls_back_to_protocols_when_caps_missing() -> None:
-    from rigplane.radio_protocol import AudioCapable, DualReceiverCapable, ScopeCapable
+    from rigplane.radio_protocol import (
+        AudioCapable,
+        DualReceiverCapable,
+        RepeaterShiftCapable,
+        ScopeCapable,
+    )
 
-    class _ProtoRadio(ScopeCapable, AudioCapable, DualReceiverCapable):  # type: ignore[misc]
+    class _ProtoRadio(  # type: ignore[misc]
+        ScopeCapable, AudioCapable, DualReceiverCapable, RepeaterShiftCapable
+    ):
         def __init__(self) -> None:
             self.capabilities = None
 
@@ -509,9 +525,15 @@ def test_runtime_capabilities_falls_back_to_protocols_when_caps_missing() -> Non
         async def get_main_sub_tracking(self) -> bool:
             return False
 
+        async def get_repeater_shift(self, receiver: int = 0) -> int:
+            return 0
+
+        async def set_repeater_shift(self, direction: int, receiver: int = 0) -> None:
+            pass
+
     radio = _ProtoRadio()
     caps = runtime_capabilities(radio)
-    assert caps == {"scope", "audio", "dual_rx"}
+    assert caps == {"scope", "audio", "dual_rx", "repeater_shift"}
 
 
 def test_runtime_capabilities_fallback_recognises_usb_audio_only() -> None:
@@ -534,10 +556,53 @@ def test_runtime_capabilities_fallback_recognises_usb_audio_only() -> None:
 
 
 def test_runtime_capabilities_filters_incompatible_tags() -> None:
-    radio = _FakeRadio(caps={"scope", "audio", "dual_rx", "tx"})
+    radio = _FakeRadio(caps={"scope", "audio", "dual_rx", "repeater_shift", "tx"})
     caps = runtime_capabilities(radio)
-    # No Protocols implemented → scope/audio/dual_rx must be dropped, tx preserved
-    assert caps == {"tx"}
+    # No Protocols implemented -> scope/audio/repeater_shift dropped; tx and
+    # dual_rx preserved. ``dual_rx`` is not gated on ``DualReceiverCapable``
+    # (owner ruling, 2026-09-08): the second receiver's structural existence
+    # follows the rig profile, not the swap-and-equalize protocol.
+    assert caps == {"tx", "dual_rx"}
+
+
+def test_runtime_capabilities_drops_repeater_shift_without_both_methods() -> None:
+    """MOR-2111: a declared ``repeater_shift`` tag the backend cannot honour must
+    be dropped, not passed through silently (the ``dual_rx``/15-gates-dark
+    failure shape this guard exists to avoid).
+    """
+    from rigplane.radio_protocol import RepeaterShiftCapable
+
+    class _GetOnlyRadio:
+        def __init__(self) -> None:
+            self.capabilities = {"repeater_shift"}
+
+        async def get_repeater_shift(self, receiver: int = 0) -> int:
+            return 0
+
+        # deliberately no set_repeater_shift
+
+    radio = _GetOnlyRadio()
+    assert not isinstance(radio, RepeaterShiftCapable)
+    assert "repeater_shift" not in runtime_capabilities(radio)
+
+
+def test_runtime_capabilities_keeps_repeater_shift_with_both_methods() -> None:
+    """MOR-2111: a radio implementing both halves keeps the declared tag."""
+    from rigplane.radio_protocol import RepeaterShiftCapable
+
+    class _FullShiftRadio:
+        def __init__(self) -> None:
+            self.capabilities = {"repeater_shift"}
+
+        async def get_repeater_shift(self, receiver: int = 0) -> int:
+            return 0
+
+        async def set_repeater_shift(self, direction: int, receiver: int = 0) -> None:
+            pass
+
+    radio = _FullShiftRadio()
+    assert isinstance(radio, RepeaterShiftCapable)
+    assert "repeater_shift" in runtime_capabilities(radio)
 
 
 def test_radio_ready_prefers_radio_ready_flag() -> None:
@@ -1307,3 +1372,216 @@ def test_observed_scope_settings_popover_leaves_survive_frontend_parent_veto() -
     for suffix in _SCOPE_SETTINGS_POPOVER_SUFFIXES:
         path = f"scopeControls.{suffix}"
         assert _frontend_availability(field_status, path) == "available", suffix
+
+
+def _profile_field_status(
+    model: str,
+    snapshot: StateSnapshot,
+    *,
+    receiver_count: int = 1,
+) -> dict[str, dict[str, Any]]:
+    """Project ``snapshot`` the way ``WebServer`` projects it for ``model``.
+
+    ``WebServer._build_public_state_from_snapshot`` derives the two
+    arguments through the same ``snapshot_field_status_inputs`` call, so a
+    change to what counts as declared fails here too.
+    """
+
+    profile = get_radio_profile(model)
+    acquisition = profile.state_acquisition
+    availability = None
+    declared = None
+    if acquisition is not None:
+        availability, declared = snapshot_field_status_inputs(acquisition, snapshot)
+    payload = build_public_state_payload_from_snapshot(
+        snapshot,
+        radio=None,
+        receiver_count=receiver_count,
+        availability=availability,
+        declared=declared,
+    )
+    return cast(dict[str, dict[str, Any]], payload["fieldStatus"])
+
+
+def _ic7300_store(**observed: Any) -> tuple[StateStore, FreshnessClock]:
+    clock = FreshnessClock()
+    store = StateStore(freshness_clock=clock)
+    if "ptt" in observed:
+        store.apply(
+            _observation(
+                FieldPath.global_("tx_state", "ptt"), observed["ptt"], at=clock.now()
+            )
+        )
+    if "power" in observed:
+        store.apply(
+            _observation(
+                FieldPath.global_("meters", "power"), observed["power"], at=clock.now()
+            )
+        )
+    return store, clock
+
+
+def test_transmit_meter_is_unavailable_while_ptt_reads_false() -> None:
+    """R42/R52 absence (2): declared, and this state contradicts its clause.
+
+    ``rigs/ic7300.toml`` gates ``global.meters.power`` on
+    ``global.tx_state.ptt`` reading true.
+    """
+
+    store, _ = _ic7300_store(ptt=False)
+    field_status = _profile_field_status("IC-7300", store.snapshot())
+    assert field_status["powerMeter"]["observed"] is False
+    assert field_status["powerMeter"]["availability"] == "unavailable"
+
+
+def test_transmit_meter_is_unavailable_while_ptt_is_unobserved() -> None:
+    """``resolve_available_when`` reads an unobserved clause source as ``None``.
+
+    Nothing has established the meter is there, so it is not ``missing``
+    (which promises a reading is merely late).
+    """
+
+    field_status = _profile_field_status("IC-7300", StateSnapshot.empty())
+    assert field_status["powerMeter"]["availability"] == "unavailable"
+
+
+def test_transmit_meter_is_available_once_observed_under_ptt() -> None:
+    """An observed, fresh meter reads ``available`` with its clause holding."""
+
+    store, _ = _ic7300_store(ptt=True, power=42)
+    field_status = _profile_field_status("IC-7300", store.snapshot())
+    assert field_status["powerMeter"]["observed"] is True
+    assert field_status["powerMeter"]["availability"] == "available"
+
+
+def test_observed_meter_stays_available_while_its_clause_reads_false() -> None:
+    """The projection does not pre-empt the freshness tick's discard.
+
+    ``StateFreshnessService._discard_declared_absent`` is what removes a
+    field its clause now contradicts; until that runs the stored reading is
+    still what the radio last said.
+    """
+
+    store, clock = _ic7300_store(ptt=True, power=42)
+    store.apply(
+        _observation(FieldPath.global_("tx_state", "ptt"), False, at=clock.now())
+    )
+    field_status = _profile_field_status("IC-7300", store.snapshot())
+    assert field_status["powerMeter"]["observed"] is True
+    assert field_status["powerMeter"]["availability"] == "available"
+
+
+def test_unconditional_declared_meter_is_missing_until_observed() -> None:
+    """R42/R52 absence (3): declared, admitted here, not yet observed.
+
+    ``rigs/ic7300.toml`` declares ``global.meters.vd`` with no
+    ``available_when``.
+    """
+
+    store, _ = _ic7300_store(ptt=False)
+    field_status = _profile_field_status("IC-7300", store.snapshot())
+    assert field_status["vdMeter"]["availability"] == "missing"
+
+
+def test_ic7300_ipplus_is_missing_until_a_canonical_observation_arrives() -> None:
+    """MOR-2449: declared IP+ stays non-operational until CI-V observes it."""
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    ipplus = FieldPath.receiver("main", "operator_toggles", "ipplus")
+
+    before = _profile_field_status("IC-7300", store.snapshot())
+    assert before["main.ipplus"] == {
+        "storePath": "receiver.main.operator_toggles.ipplus",
+        "observed": False,
+        "freshness": "unknown",
+        "availability": "missing",
+    }
+
+    # 0x16/0x65 is decoded into this canonical StateStore observation by the
+    # CI-V runtime; the profile's 10-second TTL is stamped on that ingress.
+    store.apply(
+        _observation(ipplus, True, at=clock.now(), max_age=10.0, provider="icom_civ")
+    )
+
+    after = _profile_field_status("IC-7300", store.snapshot())
+    assert after["main.ipplus"]["observed"] is True
+    assert after["main.ipplus"]["freshness"] == "fresh"
+    assert after["main.ipplus"]["availability"] == "available"
+
+
+def test_meter_the_profile_never_declares_is_undeclared() -> None:
+    """R42/R52 absence (1): the radio does not carry the field at all.
+
+    ``rigs/x6200.toml`` names ``global.meters.comp`` in neither
+    ``[state_acquisition.capabilities]`` nor
+    ``[state_acquisition.field_policies]``.
+    """
+
+    field_status = _profile_field_status("X6200", StateSnapshot.empty())
+    assert field_status["compMeter"]["availability"] == "undeclared"
+    assert field_status["powerMeter"]["availability"] == "missing"
+
+
+def test_profile_without_acquisition_metadata_keeps_every_entry_missing() -> None:
+    """``rigs/tx500.toml`` has no ``[state_acquisition]``: nothing changes."""
+
+    assert get_radio_profile("TX-500").state_acquisition is None
+    field_status = _profile_field_status("TX-500", StateSnapshot.empty())
+    assert {status["availability"] for status in field_status.values()} == {"missing"}
+
+
+def test_web_server_publishes_the_profile_gated_field_status() -> None:
+    """``WebServer`` passes both arguments to the projection.
+
+    Without the wiring the projection has no profile to read and every
+    entry below would be ``missing``.
+    """
+
+    from rigplane.profiles import resolve_radio_profile
+
+    store = StateStore()
+    radio = MagicMock()
+    radio.model = "IC-7300"
+    radio.profile = resolve_radio_profile(model="IC-7300")
+    radio.state_store = store
+    radio.capabilities = set(radio.profile.capabilities)
+    radio.managed_tx = None
+    server = WebServer(radio)
+
+    payload = server._build_public_state_from_snapshot(store.snapshot())  # noqa: SLF001
+    field_status = payload["fieldStatus"]
+    assert field_status["powerMeter"]["availability"] == "unavailable"
+    assert field_status["driveGain"]["availability"] == "undeclared"
+    assert field_status["vdMeter"]["availability"] == "missing"
+
+
+def test_field_status_reports_unavailable_after_the_freshness_tick_discards() -> None:
+    """A discarded path is published as unobserved and ``unavailable``.
+
+    The tick discards it precisely because the profile now declares it
+    absent, which is what ``unavailable`` says (it read ``missing`` before
+    MOR-2425/T201, when the projection had no third answer).
+    """
+
+    acquisition = get_radio_profile("FTX-1").state_acquisition
+    assert acquisition is not None
+    notch = FieldPath.receiver("main", "operator_controls", "manual_notch_freq")
+    mode = FieldPath.active("main", "freq_mode", "mode")
+    store = StateStore()
+    service = StateFreshnessService(
+        store=store,
+        scheduler=AcquisitionScheduler(profile=acquisition),
+    )
+    store.apply(_observation(mode, "USB", at=1.0))
+    store.apply(_observation(notch, 1500, at=1.0))
+    service.tick(now=1.0)
+    before = _profile_field_status("FTX-1", store.snapshot())
+    assert before["main.manualNotchFreq"]["observed"] is True
+
+    store.apply(_observation(mode, "FM", at=2.0))
+    service.tick(now=2.0)
+
+    after = _profile_field_status("FTX-1", store.snapshot())
+    status = after["main.manualNotchFreq"]
+    assert status["observed"] is False
+    assert status["availability"] == "unavailable"

@@ -98,23 +98,22 @@ When override is used, the backend logs a warning because timeout risk increases
 
 The library sends pings every 500ms automatically. If the radio doesn't receive pings for its timeout period (usually 10–30 seconds), it drops the connection.
 
-### Web UI API returns 401 Unauthorized
+### Startup rejects retired application-auth flags
 
-**Symptom:** `GET /api/v1/info` (or WebSocket connect) fails with HTTP 401.
+**Symptom:** `Application authentication was removed; remove --auth-token and --auth-token-file.`
 
-**Cause:** Web server was started with `--auth-token`, but request does not include token.
+Remove both retired flags from the service or supervisor launch arguments.
+They fail during argument parsing, before radio startup, and no token file is
+read (`src/rigplane/cli/__init__.py: _reject_retired_auth_option`).
+`RIGPLANE_AUTH_TOKEN` is ignored (`src/rigplane/cli/__init__.py: _cmd_web`).
+Python callers must omit `WebConfig.auth_token` or leave it empty
+(`src/rigplane/web/server.py: WebConfig.__post_init__`).
 
-**Fixes:**
-
-```bash
-# HTTP API
-curl -H "Authorization: Bearer <TOKEN>" http://127.0.0.1:8080/api/v1/info
-```
-
-For WebSocket clients, send either:
-
-- `Authorization: Bearer <TOKEN>` header, or
-- `?token=<TOKEN>` query parameter.
+Reachable Core HTTP and WebSocket clients need no application credential. If
+`/api/v1/info` still returns `401`, check which process or intermediary answers
+the URL; Core no longer performs the application-token check
+(`src/rigplane/web/web_routing.py: dispatch_http_request`). Existing radio login
+failures still require the radio credentials described above.
 
 ### `radio_connect` returns `backend_recovering`
 

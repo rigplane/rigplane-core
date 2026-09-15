@@ -1,13 +1,14 @@
 /**
  * MOR-2038 — every `SkinId` registered in `skins/registry.ts` has a
- * behavioral entry-point pin: five directly in this file, the sixth
+ * behavioral entry-point pin: six directly in this file, one
  * (`dual-receiver-cockpit`) in its own dedicated suite, referenced and
  * guarded here (point 2 below) rather than duplicated. Generalized over the
  * registry instead of a hardcoded pair list (the previous version of this
  * file covered only `desktop-v2`/`sdr-test`).
  *
- * `SKIN_LOADERS` — the registry's `Record<SkinId, () => Promise<...>>` of
- * lazy dynamic imports — is not exported; only `loadSkin(id)` is. Every case
+ * `SKIN_LOADERS` — the registry's private total catalog containing each lazy
+ * dynamic import, host kind and resource plan — is not exported; only the
+ * existing App-facing functions are. Every case
  * below that mounts a component fetches it through `loadSkin`, the same
  * function `App.svelte` calls, instead of importing a skin's `.svelte` file
  * directly — a loader repointed at the wrong module is visible here exactly
@@ -16,7 +17,7 @@
  *
  * Completeness has two layers, because there is no runtime-enumerable list
  * of `SkinId` values to iterate — the union has no runtime representation,
- * and both `SKIN_LOADERS` and the sibling `SKIN_RESOURCE_PLAN` are private:
+ * and `SKIN_LOADERS` is private:
  *
  * 1. `SKIN_ENTRYPOINT_COVERAGE` below is typed `Record<SkinId, ...>`. A
  *    `SkinId` added to the registry without a matching entry here is a
@@ -38,14 +39,24 @@
  *    `?raw`-imported it as a text fixture — so it now gets a real mount pin
  *    instead (below), the same way `lcd-cockpit`/`lcd-scope` do.
  *
- * `lcd-cockpit`/`lcd-scope` get a real mount pin for the first time here.
- * Both wrappers are zero-prop and hardcode a `variant` literal into
- * `LcdLayout`; the `variant` prop's shape
- * (`variant?: 'cockpit' | 'scope'`) is already pinned on LcdLayout itself by
+ * `lcd-cockpit`/`lcd-scope`/`peer-split` get a real mount pin for the first
+ * time here. All three wrappers are zero-prop and hardcode a `variant`
+ * literal into `LcdLayout`; LcdLayout's own handling of the `cockpit`/`scope`
+ * members is already pinned by
  * `components-v2/layout/__tests__/LcdLayout.command-bus-migration.isolated.test.ts`
- * and `...autostep-lifecycle.isolated.test.ts` — nothing here duplicates
- * that. This file pins only the two wrappers' half: that each forwards its
- * own literal down, not LcdLayout's behavior for either value.
+ * and `...autostep-lifecycle.isolated.test.ts` (neither mounts `peer-split`)
+ * — nothing here duplicates that. LcdLayout's `peer-split` handling is
+ * pinned separately, by `skins/lcd-peer-split/__tests__/
+ * LcdPeerSplitSkin.component.test.ts` (cited again below). This file pins
+ * only each wrapper's half: that it forwards its own
+ * literal down, not LcdLayout's behavior for any value. `peer-split`
+ * (MOR-2153 PR-1) moved into this bucket from a standalone
+ * `SemanticRadioSurfaces`-mount pin once its entry component became
+ * `lcd-peer-split/LcdPeerSplitSkin.svelte` — a wrapper of the same shape as
+ * `LcdCockpitSkin.svelte`/`LcdScopeSkin.svelte` — rather than
+ * `skins/segmentline/PeerSplitLayout.svelte` directly; the duplicate-surface
+ * risk that move creates is pinned separately, in
+ * `skins/lcd-peer-split/__tests__/LcdPeerSplitSkin.component.test.ts`.
  *
  * `mobile` gets a real mount pin the same way: `MobileSkin.svelte` is a
  * zero-prop delegate straight to `MobileRadioLayout`, so its pin mocks
@@ -57,19 +68,26 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SkinId } from '../registry';
+import { TEST_INSTRUMENTS } from '../../components-v2/layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 
 const mountedSkinIds = vi.hoisted(() => [] as SkinId[]);
-const mountedLcdVariants = vi.hoisted(() => [] as Array<'cockpit' | 'scope'>);
+const mountedInstrumentInputs = vi.hoisted(() => [] as unknown[]);
+const mountedLcdVariants = vi.hoisted(() => [] as Array<
+  'cockpit' | 'scope' | 'peer-split' | 'unified-instrument' | 'panadapter-first'
+>);
 const mobileLayoutMounts = vi.hoisted(() => ({ count: 0 }));
 
 vi.mock('../../components-v2/layout/RadioLayout.svelte', () => ({
-  default: (_anchor: unknown, props: { skinId?: SkinId }) => {
+  default: (_anchor: unknown, props: { skinId?: SkinId; instruments: unknown }) => {
     if (props.skinId) mountedSkinIds.push(props.skinId);
+    mountedInstrumentInputs.push(props.instruments);
   },
 }));
 
 vi.mock('../../components-v2/layout/LcdLayout.svelte', () => ({
-  default: (_anchor: unknown, props: { variant?: 'cockpit' | 'scope' }) => {
+  default: (_anchor: unknown, props: {
+    variant?: 'cockpit' | 'scope' | 'peer-split' | 'unified-instrument' | 'panadapter-first';
+  }) => {
     if (props.variant) mountedLcdVariants.push(props.variant);
   },
 }));
@@ -89,13 +107,14 @@ const components: Record<string, unknown>[] = [];
 afterEach(() => {
   while (components.length) unmount(components.pop()!);
   mountedSkinIds.length = 0;
+  mountedInstrumentInputs.length = 0;
   mountedLcdVariants.length = 0;
   mobileLayoutMounts.count = 0;
 });
 
 type EntrypointCoverage =
   | { readonly kind: 'radio-layout' }
-  | { readonly kind: 'lcd-layout'; readonly variant: 'cockpit' | 'scope' }
+  | { readonly kind: 'lcd-layout'; readonly variant: 'cockpit' | 'scope' | 'peer-split' | 'unified-instrument' | 'panadapter-first' }
   | { readonly kind: 'mobile-layout' }
   | { readonly kind: 'covered-elsewhere'; readonly testFile: string; readonly entryComponentFile: string };
 
@@ -114,18 +133,40 @@ const SKIN_ENTRYPOINT_COVERAGE: Readonly<Record<SkinId, EntrypointCoverage>> = {
     entryComponentFile: 'DualReceiverCockpit.svelte',
   },
   mobile: { kind: 'mobile-layout' },
+  'peer-split': { kind: 'lcd-layout', variant: 'peer-split' },
+  'unified-instrument': { kind: 'lcd-layout', variant: 'unified-instrument' },
+  'panadapter-first': { kind: 'lcd-layout', variant: 'panadapter-first' },
+  'dual-sdr-face': {
+    kind: 'covered-elsewhere',
+    testFile: 'src/skins/dual-sdr-face/__tests__/DualSdrFaceSkin.component.test.ts',
+    entryComponentFile: 'DualSdrFaceSkin.svelte',
+  },
+  'flagship-probe': {
+    kind: 'covered-elsewhere',
+    testFile: 'src/skins/flagship-probe/__tests__/FlagshipProbe.component.test.ts',
+    entryComponentFile: 'FlagshipProbeSkin.svelte',
+  },
 };
 
 const allSkinIds = Object.keys(SKIN_ENTRYPOINT_COVERAGE) as SkinId[];
 
-const radioLayoutSkinIds = allSkinIds.filter((id) => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'radio-layout');
+const radioLayoutSkinIds = allSkinIds.filter(
+  (id): id is 'desktop-v2' | 'sdr-test' => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'radio-layout',
+);
 
-const lcdLayoutCases = allSkinIds.flatMap((id) => {
+type LcdLayoutSkinId = 'lcd-cockpit' | 'lcd-scope' | 'peer-split' | 'unified-instrument' | 'panadapter-first';
+const lcdLayoutSkinIds = allSkinIds.filter(
+  (id): id is LcdLayoutSkinId => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'lcd-layout',
+);
+const lcdLayoutCases = lcdLayoutSkinIds.map((id) => {
   const coverage = SKIN_ENTRYPOINT_COVERAGE[id];
-  return coverage.kind === 'lcd-layout' ? [[id, coverage.variant] as const] : [];
+  if (coverage.kind !== 'lcd-layout') throw new Error(`Expected LCD coverage for ${id}`);
+  return [id, coverage.variant] as const;
 });
 
-const mobileLayoutSkinIds = allSkinIds.filter((id) => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'mobile-layout');
+const mobileLayoutSkinIds = allSkinIds.filter(
+  (id): id is 'mobile' => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'mobile-layout',
+);
 
 const coveredElsewhereCases = allSkinIds.flatMap((id) => {
   const coverage = SKIN_ENTRYPOINT_COVERAGE[id];
@@ -139,15 +180,16 @@ describe('desktop skin entrypoints', () => {
   it.each(radioLayoutSkinIds)('mounts RadioLayout with its own stable skin ID (%s)', async (skinId) => {
     const Component = await loadSkin(skinId);
     const target = document.createElement('div');
-    components.push(mount(Component, { target }));
+    components.push(mount(Component, { target, props: { instruments: TEST_INSTRUMENTS } }));
     expect(mountedSkinIds).toEqual([skinId]);
+    expect(mountedInstrumentInputs).toEqual([TEST_INSTRUMENTS]);
   });
 });
 
 describe('LCD skin entrypoints', () => {
-  // Kills: LcdCockpitSkin/LcdScopeSkin forwarding the wrong `variant`
-  // literal to LcdLayout, forwarding the other skin's literal, or dropping
-  // the prop entirely (the guard in the mock above then leaves
+  // Kills: LcdCockpitSkin/LcdScopeSkin/LcdPeerSplitSkin forwarding the wrong
+  // `variant` literal to LcdLayout, forwarding a different wrapper's literal,
+  // or dropping the prop entirely (the guard in the mock above then leaves
   // mountedLcdVariants empty, which also fails the equality below).
   it.each(lcdLayoutCases)('forwards variant to LcdLayout (%s -> %s)', async (skinId, variant) => {
     const Component = await loadSkin(skinId);

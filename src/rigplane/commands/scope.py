@@ -13,12 +13,18 @@ every remaining builder (verified by grep across ``rigs/*.toml`` before
 deleting it).
 
 ``_CMD_SCOPE`` and every ``_SUB_SCOPE_*`` constant survive in
-`commands/_frame.py`: the ``parse_scope_*_response`` functions below still
-read them directly, unmigrated -- see the note above ``_scope_selector_data``
-for why that response-side machinery is out of this PR's scope. Only this
-module's own private ``_scope_query`` helper is deleted: it built the
-fallback's frame exclusively (14 call sites, all fallback branches now
-gone) and nothing outside this module ever imported it.
+`commands/_frame.py`, now as defaults only: every ``parse_scope_*_response``
+function below (MOR-2008, this module's last residual step) takes the
+map-derived ``command``/``sub`` its caller resolved via
+`commands/bound.py: BoundCommands.expect` /
+`runtime/radio.py: CoreRadio._expect_shape`, falling back to the constant
+only for a caller that never passes one -- `runtime/_civ_rx.py`'s
+unsolicited-frame decoding (population 3, no request/reply round trip, no
+command-map entry to derive a shape from) and every pre-migration direct
+test call. Only this module's own private ``_scope_query`` helper is
+deleted: it built the fallback's frame exclusively (14 call sites, all
+fallback branches now gone) and nothing outside this module ever imported
+it.
 
 **Ruling: ``scope_set_center_type`` loses its ``receiver`` keyword.** The
 latent setter-side twin of MOR-1981 (closed on the getter,
@@ -72,16 +78,6 @@ if TYPE_CHECKING:
     from ..types import CivFrame
 
 
-_SCOPE_SPAN_PRESETS_HZ: tuple[int, ...] = (
-    2_500,
-    5_000,
-    10_000,
-    25_000,
-    50_000,
-    100_000,
-    250_000,
-    500_000,
-)
 _SCOPE_FIXED_EDGE_RANGE_STARTS_HZ: tuple[int, ...] = (
     50_000_000,
     28_000_000,
@@ -107,11 +103,6 @@ _SCOPE_FIXED_EDGE_RANGE_STARTS_HZ: tuple[int, ...] = (
 # no selector byte -- except 0x1E, which carries a ``<range><edge>`` selector
 # of its own; see ``get_scope_fixed_edge`` below.
 #
-# Imported by ``runtime/_state_queries.py: build_state_queries``, whose list
-# ``runtime/radio_initial_state.py: fetch_initial_state`` then sends, and by
-# ``web/radio_poller.py: RadioPoller._send_one_state_query``.  Those are the
-# senders that consult this set.
-#
 # Two further places hold this membership and do NOT import it, so an edit
 # here does not reach them -- change all three together:
 #   ``runtime/_scope_runtime.py`` passes ``receiver=`` per getter, reaching
@@ -124,31 +115,21 @@ _SCOPE_FIXED_EDGE_RANGE_STARTS_HZ: tuple[int, ...] = (
 # Nothing asserts that the three agree.  Making the RX path import this
 # constant is the real fix and is deliberately not done here (MOR-1981).
 #
-# ``rigctld/server.py: RigctldServer._send_one_state_query`` has the same
-# shape and does NOT consult this set.  It cannot reach 0x27 today because
-# ``core/acquisition_scheduler.py: IcomCivAcquisitionExecutor.query_for_path``
-# has no ``scope_controls`` branch, so every scope field resolves to None.
-# Nothing pins that.  If that branch is ever added, this set is the third
-# place to wire up, or rigctld will send ``27 14`` bare while web does not.
-#
 # Membership (MOR-1981).  Measured on a live IC-7300, six runs with no
 # variance: each sub-command below is refused with a NAK when sent bare,
 # while 0x12, 0x13, 0x1B and 0x1C answer.  Icom's CI-V Reference Guide for
 # the IC-705 -- the same single-scope architecture -- prints a two-byte data
 # field for 0x14, 0x15, 0x16, 0x17, 0x19, 0x1A and 0x1D and a one-byte field
 # for 0x12, 0x13, 0x1B and 0x1C, matching that bench result with no
-# exception.  0x1F (RBW) has no row in that guide, but Hamlib supplies the
-# selector for it and the bare form NAKs, so it is the same class.  The
-# IC-7300's own command table (advanced manual, table 19-8) and the
-# IC-7610 and IC-9700 CI-V Reference Guides have since been read directly
-# and print the same split: the IC-7300 leg now has both the bench
-# measurement and its own manual behind it, and the IC-7610 leg is
-# confirmed from its guide.  Documentary evidence exists for the IC-9700
-# (its CI-V Reference Guide); no bench evidence exists for the IC-9700.
-# The de-risking fact is that ``web/radio_poller.py`` has been putting this
-# exact split on the wire to all four scope-capable profiles since long
-# before this constant existed: the connect sweep is catching up to
-# shipped behaviour, not trying something new.
+# exception. The IC-7300 manual and IC-705/IC-9700 guides have no 0x1F row,
+# so those profiles fail closed for RBW. The IC-7610 guide documents 0x1F
+# and its selector shape, which is why the shared selector set retains it.
+# The other documented scope reads use the same split across these profiles.
+# The IC-7300 leg has both bench and manual evidence; IC-9700 has documentary
+# evidence but no bench evidence.
+# Profile declaration remains the final gate: a selector shape in this shared
+# set is emitted only when that profile also declares the corresponding getter
+# and pollable field.
 #
 # The exclusions are not omissions -- on a sub-command that takes no
 # selector the extra byte is a WRITE, not a no-op:
@@ -217,30 +198,17 @@ def _scope_selector_data(receiver: int | None) -> bytes | None:
     are the only sub-commands whose getters still pass a real receiver
     value through this function.
 
-    The response side of this same distinction --
-    ``parse_scope_*_response``, below -- is unmigrated: each still checks
-    the reply's command/sub against the hardcoded ``_CMD_SCOPE``/
-    ``_SUB_SCOPE_*`` constants rather than a shape derived from
-    ``cmd_map``. This is a structurally different, fourth response-matching
-    population from the ones `docs/plans/2026-08-29-profile-driven-command-bytes.md`
-    §6 measures (population 1's 65 ``_get_bcd_level``/``_get_bool_value``/
-    direct ``parse_level_response``/``parse_bool_response`` sites, and
-    population 3's 105 unsolicited-frame comparisons in ``_civ_rx.py``) --
-    it was never counted, and Steps 5..N never named it. No scope.py row
-    has ever appeared in ``tests/command_map_parity_divergences.txt`` for
-    a reason unrelated to this argument (every profile's declared tuple
-    already equals these hardcoded constants), so nothing currently
-    depends on the response side reading the map -- retrofitting all
-    sixteen ``parse_scope_*_response`` functions to accept a map-derived
-    shape is a redesign of this module's response architecture, not this
-    module's fair share of Steps 5..N, and is left for a separate pass if
-    a real divergence is ever found.
+    The response side of this same distinction -- ``parse_scope_*_response``,
+    below -- now takes its ``command``/``sub`` from the same map entry too
+    (MOR-2008, this module's last residual step; see the module docstring).
     """
     return None if receiver is None else bytes([_validate_scope_receiver(receiver)])
 
 
-def _parse_scope_frame(frame: CivFrame, sub: int) -> bytes:
-    if frame.command != _CMD_SCOPE or frame.sub != sub:
+def _parse_scope_frame(
+    frame: CivFrame, sub: int, *, command: int = _CMD_SCOPE
+) -> bytes:
+    if frame.command != command or frame.sub != sub:
         got = 0 if frame.sub is None else frame.sub
         raise ValueError(
             f"Not a scope response: command 0x{frame.command:02x} sub 0x{got:02x}"
@@ -266,17 +234,22 @@ def _split_scope_receiver_prefix(
     return None, data
 
 
-def _decode_scope_bool(frame: CivFrame, sub: int) -> bool:
-    data = _parse_scope_frame(frame, sub)
+def _decode_scope_bool(frame: CivFrame, sub: int, *, command: int = _CMD_SCOPE) -> bool:
+    data = _parse_scope_frame(frame, sub, command=command)
     if len(data) != 1:
         raise ValueError(f"Scope bool response must be 1 byte, got {len(data)}")
     return data[0] != 0x00
 
 
 def _decode_scope_value(
-    frame: CivFrame, sub: int, *, minimum: int, maximum: int
+    frame: CivFrame,
+    sub: int,
+    *,
+    minimum: int,
+    maximum: int,
+    command: int = _CMD_SCOPE,
 ) -> tuple[int | None, int]:
-    data = _parse_scope_frame(frame, sub)
+    data = _parse_scope_frame(frame, sub, command=command)
     receiver, payload = _split_scope_receiver_prefix(data, expected_lengths=(1,))
     value = payload[0]
     _validate_scope_range("scope value", value, minimum, maximum)
@@ -284,9 +257,14 @@ def _decode_scope_value(
 
 
 def _decode_scope_bcd_value(
-    frame: CivFrame, sub: int, *, minimum: int, maximum: int
+    frame: CivFrame,
+    sub: int,
+    *,
+    minimum: int,
+    maximum: int,
+    command: int = _CMD_SCOPE,
 ) -> tuple[int | None, int]:
-    data = _parse_scope_frame(frame, sub)
+    data = _parse_scope_frame(frame, sub, command=command)
     receiver, payload = _split_scope_receiver_prefix(data, expected_lengths=(1,))
     value = _bcd_decode_value(payload)
     _validate_scope_range("scope value", value, minimum, maximum)
@@ -427,7 +405,21 @@ def get_scope_main_sub(
     )
 
 
-@expose_command_key(lambda cmd_map: "get_scope_main_sub")
+# scope_main_sub resolves "set_scope_main_sub", its own write key
+# (MOR-2106): the corrected shape. 12 other write builders in this file
+# (scope_single_dual, scope_set_mode, scope_set_span, scope_set_edge,
+# scope_set_hold, scope_set_ref, scope_set_speed, scope_set_during_tx,
+# scope_set_center_type, scope_set_vbw, scope_set_fixed_edge,
+# scope_set_rbw) still resolve their paired get_* key -- the known,
+# tracked defect (MOR-2113). The remaining 5 (scope_on, scope_off,
+# scope_data_output, scope_data_output_on, scope_data_output_off) are
+# NOT instances of that defect: no scope-capable profile (ic705,
+# ic7300, ic7610, ic9700) declares a get_*/set_*-prefixed variant of
+# scope_on/scope_off/scope_data_output at all, so each of the five
+# already resolves the only key its profile declares -- the same
+# "resolves its own declaration" shape MOR-2106 established as
+# correct.
+@expose_command_key(lambda cmd_map: "set_scope_main_sub")
 @require_cmd_map
 def scope_main_sub(
     receiver: int,
@@ -438,7 +430,7 @@ def scope_main_sub(
 ) -> bytes:
     return _build_from_map(
         cmd_map,
-        "get_scope_main_sub",
+        "set_scope_main_sub",
         to_addr=to_addr,
         from_addr=from_addr,
         data=bytes([_validate_scope_receiver(receiver)]),
@@ -538,10 +530,22 @@ def scope_set_span(
     from_addr: int = CONTROLLER_ADDR,
     *,
     cmd_map: CommandMap,
+    presets: tuple[int, ...],
     receiver: int | None = None,
 ) -> bytes:
-    _validate_scope_range("scope span", span, 0, 7)
-    span_hz = _SCOPE_SPAN_PRESETS_HZ[span]
+    """Build the 0x27 0x15 SET frame for span-preset index *span*.
+
+    ``presets`` is the radio's declared span table
+    (``profiles.RadioProfile.scope_span_presets_hz``, from ``rigs/*.toml``
+    ``[scope].span_presets_hz``), supplied by the caller because
+    ``commands/`` may not import ``profiles/`` (``.importlinter``). It is
+    the only source of both the legal index range and the Hz value put on
+    the wire, so a profile that declares no presets rejects every index
+    through the same ``_validate_scope_range`` error every other
+    out-of-range span raises.
+    """
+    _validate_scope_range("scope span", span, 0, len(presets) - 1)
+    span_hz = presets[span]
     span_bcd = bcd_encode(span_hz)
     return _build_from_map(
         cmd_map,
@@ -917,45 +921,123 @@ def scope_set_rbw(
 # --- Parse functions ---
 
 
-def parse_scope_enabled_response(frame: CivFrame) -> bool:
-    """Parse a ``0x27 0x10`` panel-scope state response."""
-    return _decode_scope_bool(frame, _SUB_SCOPE_ON)
+def parse_scope_enabled_response(
+    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_ON
+) -> bool:
+    """Parse a ``0x27 0x10`` panel-scope state response.
+
+    ``command``/``sub`` are the map-derived shape the caller's request used
+    (`runtime/_scope_runtime.py: ScopeRuntimeMixin.get_scope_session_state`
+    via `runtime/radio.py: CoreRadio._expect_shape`); they default to the
+    shared hardcoded constants only so a caller that never passes one --
+    `runtime/_civ_rx.py`'s unsolicited-frame decoding, and every
+    pre-migration direct test call -- keeps working unchanged. Every other
+    ``parse_scope_*_response`` function below takes the same two keywords
+    for the same reason.
+    """
+    return _decode_scope_bool(frame, sub, command=command)
 
 
-def parse_scope_data_output_enabled_response(frame: CivFrame) -> bool:
+def parse_scope_data_output_enabled_response(
+    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_DATA_OUTPUT
+) -> bool:
     """Parse a ``0x27 0x11`` waveform-output state response."""
-    return _decode_scope_bool(frame, _SUB_SCOPE_DATA_OUTPUT)
+    return _decode_scope_bool(frame, sub, command=command)
 
 
-def parse_scope_main_sub_response(frame: CivFrame) -> int:
-    data = _parse_scope_frame(frame, _SUB_SCOPE_MAIN_SUB)
+def parse_scope_main_sub_response(
+    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_MAIN_SUB
+) -> int:
+    data = _parse_scope_frame(frame, sub, command=command)
     if len(data) != 1:
         raise ValueError(f"Scope receiver response must be 1 byte, got {len(data)}")
     return _validate_scope_range("scope receiver", data[0], 0, 1)
 
 
-def parse_scope_single_dual_response(frame: CivFrame) -> bool:
-    return _decode_scope_bool(frame, _SUB_SCOPE_SINGLE_DUAL)
+def parse_scope_single_dual_response(
+    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_SINGLE_DUAL
+) -> bool:
+    return _decode_scope_bool(frame, sub, command=command)
 
 
-def parse_scope_mode_response(frame: CivFrame) -> tuple[int | None, int]:
-    return _decode_scope_value(frame, _SUB_SCOPE_MODE, minimum=0, maximum=3)
+def parse_scope_mode_response(
+    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_MODE
+) -> tuple[int | None, int]:
+    return _decode_scope_value(frame, sub, minimum=0, maximum=3, command=command)
 
 
-def parse_scope_span_response(frame: CivFrame) -> tuple[int | None, int]:
-    data = _parse_scope_frame(frame, _SUB_SCOPE_SPAN)
+def _span_index_for_hz(hz: int, presets: tuple[int, ...]) -> int | None:
+    """Return the span-preset index (0-7) of ``hz`` within ``presets``.
+
+    Single source of truth for the Hz<->span-index mapping: reused (never
+    duplicated) by both ``parse_scope_span_response`` below -- the 0x15
+    reply-path decoder -- and the waveform-stream span derivation
+    (``runtime/_civ_rx.py: CivRuntime._publish_scope_span_observation``,
+    MOR-2256). ``presets`` is caller-supplied rather than a module
+    constant: the span table is
+    ``profiles.RadioProfile.scope_span_presets_hz`` (``rigs/*.toml``:
+    ``[scope].span_presets_hz``), and ``commands/`` may not import
+    ``profiles/`` (``.importlinter``), so every caller reads it off the
+    resolved profile and passes it in.
+
+    Returns ``None`` on no exact match -- callers decide whether that is
+    an error (the reply path still raises, unchanged) or a silent no-op
+    (the stream derivation publishes nothing). No tolerance: ``hz`` comes
+    from ``bcd_decode``, which round-trips losslessly to an exact integer,
+    so an exact-match table lookup is the correct comparison, not a
+    nearest-value one.
+
+    Underscore-prefixed although it has a caller outside this module
+    (``_civ_rx.py`` imports it directly, ``from rigplane.commands.scope
+    import _span_index_for_hz``): a public, non-``parse_*`` name with no
+    ``cmd_map`` parameter is exactly what
+    ``test_command_map_parity.py: _hardcode_only_builders`` inventories as
+    a byte-emitting command builder outside its parity sweep, and this
+    function builds no CI-V frame at all -- it is a pure Hz<->index
+    lookup. #3063 hit that census mismatch when this was public
+    (``span_index_for_hz``); the leading underscore is what excludes it
+    (that helper's own function-level filter, independent of whether
+    ``commands/__init__.py`` re-exports the name).
+    """
+    try:
+        return list(presets).index(hz)
+    except ValueError:
+        return None
+
+
+def parse_scope_span_response(
+    frame: CivFrame,
+    presets: tuple[int, ...],
+    *,
+    command: int = _CMD_SCOPE,
+    sub: int = _SUB_SCOPE_SPAN,
+) -> tuple[int | None, int]:
+    """Decode a 0x27 0x15 span reply into ``(receiver, span index)``.
+
+    ``presets`` is the radio's declared span table -- see
+    ``scope_set_span`` above for why it is a parameter and not a module
+    constant. Both reply shapes are bounded by it: the one-byte form is
+    already an index and is range-checked against ``len(presets)``, and
+    the five-byte BCD form is matched exactly against the table by
+    ``_span_index_for_hz``. No match raises ``ValueError``, unchanged --
+    a profile that declares no presets therefore decodes no span at all.
+    """
+    data = _parse_scope_frame(frame, sub, command=command)
     receiver, payload = _split_scope_receiver_prefix(data, expected_lengths=(1, 5))
     if len(payload) == 1:
-        return receiver, _validate_scope_range("scope span", payload[0], 0, 7)
+        return receiver, _validate_scope_range(
+            "scope span", payload[0], 0, len(presets) - 1
+        )
     hz = bcd_decode(payload)
-    try:
-        span = _SCOPE_SPAN_PRESETS_HZ.index(hz)
-    except ValueError as exc:
-        raise ValueError(f"Unknown scope span frequency {hz}") from exc
+    span = _span_index_for_hz(hz, presets)
+    if span is None:
+        raise ValueError(f"Unknown scope span frequency {hz}")
     return receiver, span
 
 
-def parse_scope_ref_response(frame: CivFrame) -> tuple[int | None, float]:
+def parse_scope_ref_response(
+    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_REF
+) -> tuple[int | None, float]:
     """Decode scope REF level from CI-V response.
 
     Wire format (IC-7610 CI-V Reference p.15):
@@ -963,7 +1045,7 @@ def parse_scope_ref_response(frame: CivFrame) -> tuple[int | None, float]:
       byte 1: high nibble = 0.1 dB digit, low nibble = 0
       byte 2: sign (0x00 = +, 0x01 = -)
     """
-    data = _parse_scope_frame(frame, _SUB_SCOPE_REF)
+    data = _parse_scope_frame(frame, sub, command=command)
     receiver, payload = _split_scope_receiver_prefix(data, expected_lengths=(3,))
     b0, b1 = payload[0], payload[1]
     tens_db = (b0 >> 4) & 0x0F
@@ -975,36 +1057,50 @@ def parse_scope_ref_response(frame: CivFrame) -> tuple[int | None, float]:
     return receiver, ref
 
 
-def parse_scope_speed_response(frame: CivFrame) -> tuple[int | None, int]:
-    return _decode_scope_value(frame, _SUB_SCOPE_SPEED, minimum=0, maximum=2)
+def parse_scope_speed_response(
+    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_SPEED
+) -> tuple[int | None, int]:
+    return _decode_scope_value(frame, sub, minimum=0, maximum=2, command=command)
 
 
-def parse_scope_edge_response(frame: CivFrame) -> tuple[int | None, int]:
-    return _decode_scope_bcd_value(frame, _SUB_SCOPE_EDGE, minimum=1, maximum=4)
+def parse_scope_edge_response(
+    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_EDGE
+) -> tuple[int | None, int]:
+    return _decode_scope_bcd_value(frame, sub, minimum=1, maximum=4, command=command)
 
 
-def parse_scope_hold_response(frame: CivFrame) -> tuple[int | None, bool]:
-    data = _parse_scope_frame(frame, _SUB_SCOPE_HOLD)
+def parse_scope_hold_response(
+    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_HOLD
+) -> tuple[int | None, bool]:
+    data = _parse_scope_frame(frame, sub, command=command)
     receiver, payload = _split_scope_receiver_prefix(data, expected_lengths=(1,))
     return receiver, payload[0] != 0x00
 
 
-def parse_scope_during_tx_response(frame: CivFrame) -> bool:
-    return _decode_scope_bool(frame, _SUB_SCOPE_DURING_TX)
+def parse_scope_during_tx_response(
+    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_DURING_TX
+) -> bool:
+    return _decode_scope_bool(frame, sub, command=command)
 
 
-def parse_scope_center_type_response(frame: CivFrame) -> tuple[int | None, int]:
-    return _decode_scope_value(frame, _SUB_SCOPE_CENTER_TYPE, minimum=0, maximum=2)
+def parse_scope_center_type_response(
+    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_CENTER_TYPE
+) -> tuple[int | None, int]:
+    return _decode_scope_value(frame, sub, minimum=0, maximum=2, command=command)
 
 
-def parse_scope_vbw_response(frame: CivFrame) -> tuple[int | None, bool]:
-    data = _parse_scope_frame(frame, _SUB_SCOPE_VBW)
+def parse_scope_vbw_response(
+    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_VBW
+) -> tuple[int | None, bool]:
+    data = _parse_scope_frame(frame, sub, command=command)
     receiver, payload = _split_scope_receiver_prefix(data, expected_lengths=(1,))
     return receiver, payload[0] != 0x00
 
 
-def parse_scope_fixed_edge_response(frame: CivFrame) -> ScopeFixedEdge:
-    data = _parse_scope_frame(frame, _SUB_SCOPE_FIXED_EDGE)
+def parse_scope_fixed_edge_response(
+    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_FIXED_EDGE
+) -> ScopeFixedEdge:
+    data = _parse_scope_frame(frame, sub, command=command)
     _receiver, payload = _split_scope_receiver_prefix(data, expected_lengths=(12,))
     return ScopeFixedEdge(
         range_index=_bcd_decode_value(payload[:1]),
@@ -1014,5 +1110,7 @@ def parse_scope_fixed_edge_response(frame: CivFrame) -> ScopeFixedEdge:
     )
 
 
-def parse_scope_rbw_response(frame: CivFrame) -> tuple[int | None, int]:
-    return _decode_scope_value(frame, _SUB_SCOPE_RBW, minimum=0, maximum=2)
+def parse_scope_rbw_response(
+    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_RBW
+) -> tuple[int | None, int]:
+    return _decode_scope_value(frame, sub, minimum=0, maximum=2, command=command)

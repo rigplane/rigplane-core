@@ -47,11 +47,14 @@ export class TxMic {
   private seq = 0;
   private _active = false;
   private sendFn: TxSendFn;
+  // Capture-local identity also cancels getUserMedia that settles after stop().
+  private captureGeneration = 0;
+  private removeTrackEnded: (() => void) | null = null;
   // Sticky: the server told us it cannot decode Opus (MOR-1791). Kept across
   // start/stop so every later PTT opens on PCM16 from the very first frame.
   private pcm16Pinned = false;
 
-  constructor(sendFn: TxSendFn) {
+  constructor(sendFn: TxSendFn, private readonly onCaptureDied?: (reason: string) => void) {
     this.sendFn = sendFn;
   }
 
@@ -149,8 +152,10 @@ export class TxMic {
       return 'TX MIC: microphone capture not supported';
     }
 
+    const generation = ++this.captureGeneration;
+    let stream: MediaStream;
     try {
-      this.stream = await getUserMedia({
+      stream = await getUserMedia({
         audio: {
           channelCount: CHANNELS,
           sampleRate: SAMPLE_RATE,
@@ -162,7 +167,20 @@ export class TxMic {
       return 'TX MIC: permission denied';
     }
 
+    if (generation !== this.captureGeneration) {
+      stream.getTracks().forEach(track => track.stop());
+      return 'TX MIC: capture start cancelled';
+    }
+    this.stream = stream;
     this._active = true;
+    const track = stream.getAudioTracks()[0];
+    const onEnded = () => this.failCapture(generation, 'microphone track ended');
+    track.addEventListener('ended', onEnded);
+    this.removeTrackEnded = () => track.removeEventListener('ended', onEnded);
+    if (track.readyState === 'ended') {
+      onEnded();
+      return 'TX MIC: microphone track ended';
+    }
     this.seq = 0;
     this.pcmPending = [];
 
@@ -170,13 +188,13 @@ export class TxMic {
       return this.startPcmFallback();
     }
 
-    const track = this.stream.getAudioTracks()[0];
     const processor = new MediaStreamTrackProcessor({ track });
-    this.reader = processor.readable.getReader();
+    const reader = this.reader = processor.readable.getReader();
 
     let sentFrames = 0;
-    this.encoder = new AudioEncoder({
+    const encoder = this.encoder = new AudioEncoder({
       output: (chunk: EncodedAudioChunk) => {
+        if (!this._active || this.encoder !== encoder || generation !== this.captureGeneration) return;
         const payload = new Uint8Array(chunk.byteLength);
         chunk.copyTo(payload);
         const header = buildTxHeader(this.seq++);
@@ -190,7 +208,7 @@ export class TxMic {
         }
       },
       error: (err: DOMException) => {
-        console.warn('TxMic: encoder error', err);
+        if (this.encoder === encoder) this.failCapture(generation, `encoder error: ${err.message}`);
       },
     });
 
@@ -202,12 +220,15 @@ export class TxMic {
     });
 
     // Read loop
-    this.readLoop();
+    void this.readLoop(reader, encoder, generation);
     return null;
   }
 
   stop(): void {
     this._active = false;
+    ++this.captureGeneration;
+    this.removeTrackEnded?.();
+    this.removeTrackEnded = null;
     if (this.pcmProcessor) {
       this.pcmProcessor.disconnect();
       this.pcmProcessor.onaudioprocess = null;
@@ -231,14 +252,13 @@ export class TxMic {
 
   /** Tear down the WebCodecs encoder leg, leaving the MediaStream open. */
   private stopOpusCapture(): void {
-    if (this.reader) {
-      this.reader.cancel().catch(() => {});
-      this.reader = null;
-    }
-    if (this.encoder) {
-      try { this.encoder.close(); } catch { /* ok */ }
-      this.encoder = null;
-    }
+    const reader = this.reader;
+    const encoder = this.encoder;
+    // Invalidate before cancellation/close can deliver their terminal callbacks.
+    this.reader = null;
+    this.encoder = null;
+    reader?.cancel().catch(() => {});
+    try { encoder?.close(); } catch { /* ok */ }
   }
 
   /**
@@ -271,9 +291,9 @@ export class TxMic {
     }
 
     this.pcmSource = this.audioContext.createMediaStreamSource(this.stream);
-    this.pcmProcessor = this.audioContext.createScriptProcessor(1024, CHANNELS, CHANNELS);
+    const processor = this.pcmProcessor = this.audioContext.createScriptProcessor(1024, CHANNELS, CHANNELS);
     this.pcmProcessor.onaudioprocess = (event: AudioProcessingEvent) => {
-      if (!this._active) return;
+      if (!this._active || this.pcmProcessor !== processor) return;
       const input = event.inputBuffer.getChannelData(0);
       this.queuePcmSamples(input);
     };
@@ -305,30 +325,35 @@ export class TxMic {
     }
   }
 
-  private async readLoop(): Promise<void> {
-    let samplesRead = 0;
-    console.log('[TxMic] read loop started');
-    while (this._active && this.reader) {
+  private failCapture(generation: number, reason: string): void {
+    if (!this._active || generation !== this.captureGeneration) return;
+    this.stop();
+    this.onCaptureDied?.(`TX MIC: ${reason}`);
+  }
+
+  private async readLoop(
+    reader: ReadableStreamDefaultReader<AudioData>, encoder: AudioEncoder, generation: number,
+  ): Promise<void> {
+    const current = () => this._active && this.reader === reader && generation === this.captureGeneration;
+    while (current()) {
       let result: ReadableStreamReadResult<AudioData>;
       try {
-        result = await this.reader.read();
+        result = await reader.read();
       } catch (err) {
-        console.error('[TxMic] read error:', err);
+        if (current()) this.failCapture(generation, `capture reader failed: ${String(err)}`);
         break;
       }
-      if (!result || result.done) {
-        console.log('[TxMic] read loop done');
+      if (result.done) {
+        if (current()) this.failCapture(generation, 'capture reader ended');
         break;
       }
-      if (this.encoder && this._active) {
-        this.encoder.encode(result.value);
-        samplesRead++;
-        if (samplesRead <= 3 || samplesRead % 100 === 0) {
-          console.log(`[TxMic] encoded sample #${samplesRead}`);
-        }
+      try {
+        if (current()) encoder.encode(result.value);
+      } catch (err) {
+        if (current()) this.failCapture(generation, `encoder failed: ${String(err)}`);
+      } finally {
+        result.value.close();
       }
-      result.value.close();
     }
-    console.log('[TxMic] read loop exited, samples=' + samplesRead);
   }
 }

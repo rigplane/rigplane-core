@@ -1,9 +1,11 @@
 /**
- * MOR-1310 — `cwKeyer` is DECLARABLE, and nothing declares it yet.
+ * MOR-1310 — `cwKeyer` is DECLARABLE. MOR-1368 (S9) declares it for real.
  *
- * Slice 9B adds the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
- * the surface later; it deliberately does not touch any manifest, and it adds
+ * Slice 9B added the name to `SEMANTIC_SURFACE_NAMES` so a manifest CAN mount
+ * the surface later; it deliberately did not touch any manifest, and it added
  * no design-language renderer slot (that set was frozen by MOR-1072).
+ * MOR-1368 flips the second half, on `desktop-v2` ONLY; the inventory below
+ * is a LITERAL of who declares it.
  *
  * Same three pins as `rx-audio-declarability.test.ts` /
  * `tx-aux-declarability.test.ts` / `meters-declarability.test.ts`:
@@ -23,10 +25,10 @@ import * as layoutDeclarationsBarrel from '../declarations';
 
 describe('cwKeyer is a declarable semantic surface', () => {
   // Kills: reverting the SEMANTIC_SURFACE_NAMES addition.
-  it('is in the declarable set, appended last', () => {
+  it('is in the declarable set', () => {
     expect([...SEMANTIC_SURFACE_NAMES]).toEqual([
       'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band',
-      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls',
+      'antenna', 'ritXitScan', 'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory',
     ]);
   });
 
@@ -51,13 +53,20 @@ describe('cwKeyer is a declarable semantic surface', () => {
 describe('exactly the reviewed manifests declare a cwKeyer zone (MOR-1368)', () => {
   /**
    * The literal — extend by hand, with a layout review, never silently. This
-   * is the SAFETY-CRITICAL one: `desktop-v2` is the only family reviewed for
-   * it, and the dual-receiver cockpit stays OFF the list deliberately. Its
-   * MOR-1069 tab-order assertion is written against the zones it declares
-   * today, so adding `cwKeyer` there would put break-in controls in the
-   * cockpit with no updated sequence pin.
+   * is the SAFETY-CRITICAL one: declaring the zone makes `CwKeyerSurface` that
+   * face's SOLE break-in affordance, so the review has to establish that the
+   * surface really mounts there and not merely that `CwPanel` goes away.
+   * MOR-2231 (step 1, batch 3) added `sdr-test` on that basis — the surface is
+   * asserted present, count 1, in
+   * `components-v2/layout/__tests__/semantic-desktop-migration.component.test.ts`.
+   *
+   * The dual-receiver cockpit stays OFF the list deliberately. Its MOR-1069
+   * tab-order assertion is written against the zones it declares today, so
+   * adding `cwKeyer` there would put break-in controls in the cockpit with no
+   * updated sequence pin.
    */
-  const DECLARES_CW_KEYER = ['desktop-v2'];
+  // T160 PR-1 added `flagship-probe`, which places this surface in its right rail.
+  const DECLARES_CW_KEYER = ['desktop-v2', 'flagship-probe', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

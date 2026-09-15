@@ -13,6 +13,165 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-15 — control conversion and command path (head `e3d435dc`)
+
+Two read-only tracts answering one owner question: why web, rigctld and the CLI
+reach the radio through different mechanisms. Each report labels its own claims as
+observation or inference, carries a per-finding falsifier field, and closes with
+the capabilities it examined and cleared.
+
+- [2026-09-15-mechanism-audit-control-conversion.md](2026-09-15-mechanism-audit-control-conversion.md)
+  — where display ↔ raw conversion belongs. Verdict: the Python and TypeScript
+  exact implementations are a sanctioned pair whose only pin is hand-copied
+  test vectors; rigctld's level conversion is a gap, not a duplicate, because
+  the Radio surface lacked a display-value API.
+- [2026-09-15-mechanism-audit-command-path.md](2026-09-15-mechanism-audit-command-path.md)
+  — the four consumers' paths to the radio across eight concerns. Verdict:
+  standalone consumers legitimately run without the web command queue; the
+  duplicated dispatch and receiver validation are displacement with the shared
+  targets already in place, while value validation is a gap in the runtime seat
+  with its shared math only emerging.
+
+## 2026-09-15 — Standard TX indication and AGC cleanup (head `5fa07e1a`, base `f27f1132`)
+
+- [2026-09-15-mechanism-audit-standard-tx-ptt.md](2026-09-15-mechanism-audit-standard-tx-ptt.md)
+  — independent read-only PASS: the redundant visible Standard TX banner is
+  removed while semantic status and the existing PTT path remain intact; the
+  stray AGC `NB width` render is removed without deleting its persistent
+  binding or DSP/NB/SDR consumers. Mac Mini evidence is a separate gate.
+
+## 2026-09-15 — MOR-2467 IC-7610 startup-optional scope state after rebase (head `62a1c107`, base `39c88afd`)
+
+- [2026-09-15-mechanism-audit-mor-2467-ic7610-startup-rebased.md](2026-09-15-mechanism-audit-mor-2467-ic7610-startup-rebased.md)
+  — read-only independent PASS on the rebased implementation. It supersedes
+  the pre-rebase report for merge evidence and confirms that the TX-interlock
+  cleanup conflict changed no startup-optional semantics. Tests and live
+  RX-only evidence are separate.
+
+## 2026-09-15 — MOR-2467 IC-7610 startup-optional scope state before rebase (head `d53e91e5`, base `bd75f60c`)
+
+- [2026-09-15-mechanism-audit-mor-2467-ic7610-startup.md](2026-09-15-mechanism-audit-mor-2467-ic7610-startup.md)
+  — historical read-only PASS on the pre-rebase implementation. Superseded by
+  the rebased report above; retained as a frozen point-in-time result.
+
+## 2026-09-14 — MOR-2467 IC-7610 Standard v3 restoration (head `479dd587`, base `99f4bcd3`)
+
+- [2026-09-14-mechanism-audit-mor-2467-ic7610-v3.md](2026-09-14-mechanism-audit-mor-2467-ic7610-v3.md)
+  — read-only, independently adjudicated PASS with no blockers for the
+  IC-7610 Standard v3 restoration of MAIN/SUB records and one combined
+  RF/SQL control. Preserves one deletion candidate (`vfoLabel` tests-only
+  shim), three follow-ups (panel-commands `main_sub` residue, stale
+  per-receiver A/B comment, slot-view documentation), and the cleared
+  items. Tests were not run by the audit; remote test evidence is separate.
+
+## 2026-09-14 — IC-7610 state, scope, and canvas stability (head `de50644e`, base `601f27f7`)
+
+- [2026-09-14-mechanism-audit-state-scope-canvas.md](2026-09-14-mechanism-audit-state-scope-canvas.md)
+  — read-only independent PASS for the state/projection/canvas mechanism,
+  held-stale passband display authority, and drag continuity. No TX/RF safety
+  regression or competing canonical mechanism was found. The remaining full
+  `fieldStatus` signature cost is recorded as a non-blocking future producer-
+  side optimization. Tests and live RX-only evidence are separate.
+
+## 2026-09-06 — instrument mechanism decision audits (source `f2e7969708d5c93890cf1b24d833ce820b36dc15`)
+
+Three independent, bounded mechanism-audit tracts at the pinned source. They
+record point-in-time evidence for scalar pairs, meter context, and finite
+choice controls; a final whole-path audit remains outstanding.
+
+- [2026-09-06-mechanism-audit-scalar-pair.md](2026-09-06-mechanism-audit-scalar-pair.md)
+  — scalar-pair ownership, lifecycle and interaction evidence.
+- [2026-09-06-mechanism-audit-meter-context.md](2026-09-06-mechanism-audit-meter-context.md)
+  — meter source/context and ballistics-continuity evidence.
+- [2026-09-06-mechanism-audit-finite-choice.md](2026-09-06-mechanism-audit-finite-choice.md)
+  — finite-choice observation, eligibility and feedback-boundary evidence.
+
+## 2026-09-06 — RF/SQL feedback decision (tree `5a4cee2cd734ae31c76eb48397b6df6a062043ea`)
+
+- [2026-09-06-mechanism-audit-rf-sql-feedback.md](2026-09-06-mechanism-audit-rf-sql-feedback.md)
+  — bounded supplemental RF/SQL feedback decision: normalized exact matching
+  and one-binding-one-lease are cleared; admission, provider continuity and
+  native-consumer authority still need explicit contracts. No implementation
+  or final whole-path completion claim.
+
+## 2026-09-06 — native scalar normalization and RF/SQL draft handoff (unaccepted PR #3261 candidate `1f5d5e74774c8aa481937271f4ca400fcbf5ebb8`, base `e9f6800adb4ffad83b2d1b70fbb0680b707d3fe9`)
+
+- [2026-09-06-mechanism-audit-native-scalar-normalization.md](2026-09-06-mechanism-audit-native-scalar-normalization.md)
+  — historical source audit of native scalar input normalization and separate
+  RF/SQL draft retirement. Subsequent acceptance work is tracked by MOR-2409;
+  this archive neither audits a later fix nor claims that work complete.
+
+## 2026-09-06 — legacy RF HBar request retirement (accepted main `12444a3f5c977da790cd2f84123732cf53f6666c`)
+
+- [2026-09-06-mechanism-audit-legacy-rf-hbar-handoff.md](2026-09-06-mechanism-audit-legacy-rf-hbar-handoff.md)
+  — historical adjudication of the bounded shared-scalar request-retirement
+  gap before prospective legacy RF HBar adoption. MOR-2415 owns any separate
+  correction; this archive is neither an accepted fix nor a final program audit.
+
+## 2026-09-06 — CW and current Filter Width (tree `53b27aebbed6a8e27114c442a7420d589af23876`)
+
+- [2026-09-06-mechanism-audit-cw-filter-feedback.md](2026-09-06-mechanism-audit-cw-filter-feedback.md)
+  — bounded CW scalar and legacy current Filter Width decision: shared owners
+  are cleared; provider-routing, table-truth and full-feedback adoption remain
+  bounded gaps. No implementation completion, universal provider timing, or
+  all-controls claim.
+
+## 2026-09-06 — Filter Width coordinate and localized presentation (tree `e9f6800adb4ffad83b2d1b70fbb0680b707d3fe9`)
+
+- [2026-09-06-mechanism-audit-filter-coordinate-presentation.md](2026-09-06-mechanism-audit-filter-coordinate-presentation.md)
+  — historical decision record for exact-Hz coordinates, catalog geometry, and
+  localized presentation. Audit-time ownership references are evidence, not
+  current file leases; MOR-2412 owns downstream implementation. This does not
+  claim implementation completion or parent-program completion.
+
+## 2026-09-03 — Icom lower-executor lifetime (draft, source `4e4c1782`)
+
+- [2026-09-03-mechanism-audit-icom-lower-executor-lifetime.md](2026-09-03-mechanism-audit-icom-lower-executor-lifetime.md)
+  — bounded commander/captured-executor ownership and frozen-matrix evidence;
+  pending independent adjudication, without whole-app or RF claims.
+
+## 2026-09-03 — managed command queue (tree `3c997a9d`)
+
+- [2026-09-03-mechanism-audit-managed-command-queue.md](2026-09-03-mechanism-audit-managed-command-queue.md)
+  — shared definitions, missing whole-operation claim/lifetime surfaces, and
+  incomplete managed ingress migration; no implementation or runtime proof.
+
+## 2026-09-03 — command queue and Web execution (tree `fdbd7403`)
+
+- [2026-09-03-mechanism-audit-command-queue-web.md](2026-09-03-mechanism-audit-command-queue-web.md)
+  — bounded static review of pending identity, cancellation lifetime and the
+  finite Web drain; provider migration remains incomplete. No runtime, RF,
+  stop/replacement or whole-module deletion claim.
+
+## 2026-09-03 — rigctld observed PTT (tree `9b1a0084`)
+
+- [2026-09-03-mechanism-audit-rigctld-observed-ptt.md](2026-09-03-mechanism-audit-rigctld-observed-ptt.md)
+  — bounded helper-level tract: records the existing canonical normalizer,
+  provider-metadata adapter, generation/TTL handling, and one PTT poll path;
+  the capability declaration is polling-only. It makes no RF, hardware,
+  producer-completion, TX-authority, or proven-mutation claim.
+
+## 2026-09-02 — Icom STOP CW NAK handling (tree `4cbd5ba4`)
+
+- [2026-09-02-mechanism-audit-icom-stop-cw.md](2026-09-02-mechanism-audit-icom-stop-cw.md)
+  — bounded canonical-adapter tract: a delivered STOP-CW NAK reached the
+  existing response wait but was discarded by its caller. The report makes no
+  manufacturer, RF-stop, or whole-adapter claim.
+
+## 2026-09-02 — rigctld exchange boundary (tree `21814f3c0`)
+
+- [2026-09-02-mechanism-audit-rigctld-exchange.md](2026-09-02-mechanism-audit-rigctld-exchange.md)
+  — canonical external-rigctld transaction boundary. The report records a
+  missing response-isolation primitive for cancelled exchanges;
+  it does not claim adapter integration, final-OFF ordering, or RF proof.
+
+## 2026-09-02 — ForceOff cleanup ordering (tree `7387c84e`)
+
+- [2026-09-02-mechanism-audit-force-off-cleanup.md](2026-09-02-mechanism-audit-force-off-cleanup.md)
+  — records the pending ForceOff ordering contract and the exact-tree evidence:
+  old-work invalidation must precede urgent OFF submission without waiting for
+  unrelated cleanup; the archive makes no installed-runtime or RF claim.
+
 ## 2026-08-30 — v3 pre-release audit (three tracts, tree `8c8a70d4`)
 
 Commissioned to close the pre-release fix list before the v2.12.0 release

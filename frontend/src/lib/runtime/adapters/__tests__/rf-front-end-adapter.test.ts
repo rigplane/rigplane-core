@@ -166,8 +166,10 @@ describe('rfFrontEnd per-field derivation (MOR-1292)', () => {
     ['squelch', 'squelch', 0.5],
   ];
 
+  // MOR-2425/R29: a stale-but-observed field carries its last value and is
+  // `available`, not degraded to unknown.
   it.each(STALE_FIELDS)(
-    'degrades a stale %s field to unknown while keeping structural availability true',
+    'keeps a stale %s field available with its last value (MOR-2425/R29)',
     (rawField, viewField, value) => {
       const main = { ...bareState().main, [rawField]: value } as unknown as ServerState['main'];
       const view = model(bareState({
@@ -175,7 +177,7 @@ describe('rfFrontEnd per-field derivation (MOR-1292)', () => {
         fieldStatus: { ...bareState().fieldStatus, [`main.${rawField}`]: stale },
       }), fullCaps);
       expect(view.rfFrontEnd![viewField]).toEqual({
-        reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+        reading: { status: 'known', value }, availability: { structural: true, operational: true },
       });
     },
   );
@@ -308,8 +310,10 @@ describe('rfFrontEnd per-field derivation — digiSel/ipPlus (MOR-1293)', () => 
     ['ipplus', 'ipPlus'],
   ];
 
+  // MOR-2425/R29: a stale-but-observed field carries its last value and is
+  // `available`, not degraded to unknown.
   it.each(STALE_BOOL_FIELDS)(
-    'degrades a stale %s field to unknown while keeping structural availability true',
+    'keeps a stale %s field available with its last value (MOR-2425/R29)',
     (rawField, viewField) => {
       const main = { ...bareState().main, [rawField]: true } as unknown as ServerState['main'];
       const view = model(bareState({
@@ -317,7 +321,7 @@ describe('rfFrontEnd per-field derivation — digiSel/ipPlus (MOR-1293)', () => 
         fieldStatus: { ...bareState().fieldStatus, [`main.${rawField}`]: stale },
       }), boolCaps);
       expect(view.rfFrontEnd![viewField]).toEqual({
-        reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+        reading: { status: 'known', value: true }, availability: { structural: true, operational: true },
       });
     },
   );
@@ -429,14 +433,20 @@ describe('rfFrontEnd PREAMP/DIGI-SEL mutex (MOR-479, MOR-1293)', () => {
     },
   );
 
-  it('DIGI-SEL stale: FAILS CLOSED the same way as never-observed', () => {
+  // MOR-2425/R29: a stale-but-observed DIGI-SEL now resolves to its last
+  // known value (`false`) rather than `unknown`, so it no longer fails
+  // closed — same shape as the "DIGI-SEL off" pin above. Verified by running
+  // this exact scenario through `toRadioViewModel` (`/tmp/probe2.out.json`,
+  // 2026-09-07): `digiSel` reads `{status:'known', value:false}` and
+  // `disabledReasons` carries no `rfFrontEnd.preamp` entry.
+  it('DIGI-SEL stale-but-observed: resolves to its last value, same as fresh (MOR-2425/R29)', () => {
     const state = bareState({
       main: { ...bareState().main, digisel: false, preamp: 1 },
       fieldStatus: { ...bareState().fieldStatus, 'main.digisel': stale, 'main.preamp': fresh },
     });
     const view = model(state, mutexCaps);
-    expect(view.rfFrontEnd!.digiSel.reading).toEqual({ status: 'unknown' });
-    expect(preampMutexReason(view)).toEqual({ field: 'rfFrontEnd.preamp', code: 'mutually-exclusive-control' });
+    expect(view.rfFrontEnd!.digiSel.reading).toEqual({ status: 'known', value: false });
+    expect(preampMutexReason(view)).toBeUndefined();
   });
 
   it('no digisel capability at all: no mutex entry regardless of raw digisel value', () => {

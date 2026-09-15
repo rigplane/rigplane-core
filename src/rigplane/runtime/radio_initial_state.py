@@ -3,8 +3,8 @@
 Extracted from ``radio.py`` (issue #1260, Tier 3 wave 3 of #1063) to slim down
 the god-object module. The single function here drives a one-shot population
 of :class:`RadioState` immediately after connect by iterating CI-V state
-queries built from the radio profile and capabilities and dispatching them as
-fire-and-forget reads.
+queries built from the radio profile and dispatching them as fire-and-forget
+reads.
 
 Behaviour is intentionally identical to the previous
 ``IcomRadio._fetch_initial_state`` method: per-query failures are swallowed,
@@ -18,8 +18,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import TYPE_CHECKING
-
-from rigplane.core.acquisition_scheduler import split_ctl_mem_sub
 
 if TYPE_CHECKING:
     # Internal implementation module for IcomRadio — the TID251 ban targets
@@ -38,7 +36,7 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
 
     This is non-fatal: failures are logged but do not raise.
     """
-    from ._state_queries import build_state_queries
+    from ._state_queries import build_state_queries, wire_parts_for_query
 
     try:
         is_serial = not radio._profile.has_lan
@@ -47,11 +45,7 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
             if is_serial
             else radio._INITIAL_STATE_GAP_LAN
         )
-        queries = build_state_queries(
-            radio._profile,
-            radio.capabilities,
-            is_serial=is_serial,
-        )
+        queries = build_state_queries(radio._profile)
         if not queries:
             radio._initial_state_fetched = True
             return
@@ -61,56 +55,33 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
             len(queries),
             gap * 1000,
         )
-        ok = 0
-        for cmd_byte, sub_byte, receiver in queries:
-            # A query's sub element carries payload of its own where the read
-            # needs one -- the scope reads that take a Main/Sub selector are
-            # built that way (``_state_queries.py: build_state_queries``).
-            civ_sub, extra_data = split_ctl_mem_sub(sub_byte)
+        sent = 0
+        for query in queries:
             try:
-                if (
-                    receiver is None
-                    and cmd_byte in (0x25, 0x26)
-                    and civ_sub == 0x01
-                    and radio._profile.vfo_readback == "selected_unselected"
-                ):
-                    await radio.send_civ(
-                        cmd_byte,
-                        data=b"\x01",
-                        wait_response=False,
-                    )
-                elif receiver is not None:
-                    if cmd_byte in (0x25, 0x26):
-                        # Freq/mode: receiver byte as data payload
-                        await radio.send_civ(
-                            cmd_byte,
-                            data=bytes([receiver]),
-                            wait_response=False,
-                        )
-                    else:
-                        # cmd29-wrapped: 0x29 with [receiver, cmd, sub?].
-                        # ``civ_sub`` and no ``extra_data``: a sub element
-                        # that carries payload is never paired with a
-                        # receiver, so there is nothing to append here.
-                        inner = bytes([receiver, cmd_byte])
-                        if civ_sub is not None:
-                            inner += bytes([civ_sub])
-                        await radio.send_civ(0x29, data=inner, wait_response=False)
-                else:
-                    await radio.send_civ(
-                        cmd_byte,
-                        sub=civ_sub,
-                        data=extra_data,
-                        wait_response=False,
-                    )
-                ok += 1
-            except Exception:
-                pass  # non-fatal; regular polling will retry
+                command, sub, data = wire_parts_for_query(
+                    query, radio.radio_state.scope_controls.receiver
+                )
+                await radio.send_civ(
+                    command,
+                    sub=sub,
+                    data=data,
+                    wait_response=False,
+                )
+                sent += 1
+            except Exception as exc:
+                # non-fatal; regular polling will retry
+                logger.debug(
+                    "initial state query failed: command=0x%02X sub=%s data=%s (%s)",
+                    query.command,
+                    "None" if query.sub is None else f"0x{query.sub:02X}",
+                    query.data.hex(),
+                    type(exc).__name__,
+                )
             await asyncio.sleep(gap)
 
         logger.info(
-            "initial state fetch done (%d/%d ok)",
-            ok,
+            "initial state fetch sent %d/%d queries",
+            sent,
             len(queries),
         )
     except Exception:

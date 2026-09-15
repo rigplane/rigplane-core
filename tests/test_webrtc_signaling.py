@@ -133,7 +133,7 @@ class TestCapabilitiesWebrtcBlock:
 
     @pytest.mark.asyncio
     async def test_present_and_unavailable_by_default(self):
-        srv = WebServer(radio=None)
+        srv = WebServer(radio=None, config=WebConfig(radio_model="IC-7610"))
         writer = _FakeWriter()
 
         with patch("rigplane.web.server.webrtc_available", return_value=False):
@@ -147,7 +147,10 @@ class TestCapabilitiesWebrtcBlock:
 
     @pytest.mark.asyncio
     async def test_reflects_available_and_enabled_gate(self):
-        srv = WebServer(radio=None, config=WebConfig(webrtc_enabled=True))
+        srv = WebServer(
+            radio=None,
+            config=WebConfig(webrtc_enabled=True, radio_model="IC-7610"),
+        )
         writer = _FakeWriter()
 
         with patch("rigplane.web.server.webrtc_available", return_value=True):

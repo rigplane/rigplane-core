@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import gzip as _gzip
-import hmac
 import json
 import logging
 import math
@@ -33,10 +32,11 @@ import signal as _signal
 import sys
 import time
 import urllib.parse
-from collections.abc import Callable, Collection, Coroutine
+from collections.abc import Callable, Collection, Coroutine, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from inspect import getattr_static
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 from .. import __version__
 from .._bounded_queue import BoundedQueue
@@ -52,6 +52,12 @@ from ..core.command_service import (
     CommandService,
     command_intent_from_request,
 )
+from ..core.command_dispatch import (
+    CommandUnsupportedError,
+    command_descriptor,
+    prepare_command_intent,
+)
+from ..core.exceptions import CommandError, CommandRejectedError
 from ..core.state_pipeline_contracts import (
     CommandIntent,
     CommandLifecycleEvent,
@@ -61,6 +67,7 @@ from ..core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from ..core.state_store import StateSnapshot, StateStore
+from ..core.tx_observation import project_observed_ptt
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO
 from ..exceptions import TimeoutError as RigplaneTimeoutError
@@ -85,6 +92,8 @@ from .handlers import (  # noqa: TID251
     ScopeHandler,
 )
 from .handlers.audio import browser_tx_audio_facts  # noqa: TID251
+from .handlers.control import _consume_normalized_level_unit  # noqa: TID251
+from .managed_tx_view import build_managed_tx_view  # noqa: TID251
 from .transport.webrtc import webrtc_available  # noqa: TID251
 from .radio_poller import (  # noqa: TID251
     CommandQueue,
@@ -101,6 +110,7 @@ from .runtime_helpers import (  # noqa: TID251
     projected_vfo_capability_tags,
     radio_ready,
     runtime_capabilities,
+    snapshot_field_status_inputs,
 )
 from .tx_safety_view import build_tx_safety_payload  # noqa: TID251
 from .websocket import (  # noqa: TID251
@@ -116,6 +126,7 @@ if TYPE_CHECKING:
 
     from ..profiles import RadioProfile
     from ..radio_protocol import Radio
+    from ..runtime.managed_tx_composition import ManagedTxCompositionPort
     from .transport.webrtc_session import WebRtcSessionManager  # noqa: TID251
 
 __all__ = ["WebConfig", "WebServer", "run_web_server"]
@@ -144,6 +155,8 @@ class _PublicStatePayloadFromSnapshotFn(Protocol):
         *,
         radio: "Radio | None",
         receiver_count: int,
+        availability: Mapping[FieldPath, bool | None] | None = None,
+        declared: Collection[FieldPath] | None = None,
         updated_at: str | None = None,
         scope_clients: int = 0,
         control_clients: int = 0,
@@ -265,7 +278,6 @@ _LEGACY_GLOBAL_TX_FIELDS: tuple[tuple[str, str], ...] = (
     ("compressor_on", "compressor_on"),
     ("main_sub_tracking", "main_sub_tracking"),
     ("dial_lock", "dial_lock"),
-    ("tx_freq_monitor", "tx_freq_monitor"),
 )
 _LEGACY_GLOBAL_CONTROL_FIELDS: tuple[tuple[str, str], ...] = (
     ("power_level", "power_level"),
@@ -396,6 +408,16 @@ class _HttpCommandCollector:
         )
 
 
+def _command_error_code(exc: BaseException) -> str:
+    if isinstance(exc, CommandUnsupportedError):
+        return "unsupported_command"
+    if isinstance(exc, CommandRejectedError):
+        return "radio_nak"
+    if isinstance(exc, (RigplaneTimeoutError, TimeoutError)):
+        return "command_timeout"
+    return "command_failed"
+
+
 @dataclass(slots=True)
 class _HttpCommandExecutor:
     server: "WebServer"
@@ -431,16 +453,9 @@ class _SharedControlCommandExecutor:
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
         params = dict(intent.params)
         control_server = params.pop("_control_server", None)
-        result = await self.server._control_handler_for(  # noqa: SLF001
+        return await self.server._control_handler_for(  # noqa: SLF001
             server=control_server,
-        )._enqueue_legacy_command(
-            intent.name,
-            params,
-            command_id=intent.id,
-            source=intent.source,
-            command_service=self.server.command_service,
-        )
-        return CommandExecutionResult(details=result)
+        )._execute_intent(intent)
 
 
 async def _read_capped_body(
@@ -487,8 +502,7 @@ def _notification_payload(
 def _redact_token_in_path(path: str) -> str:
     """Return `path` with any `token=` query value replaced by `***`.
 
-    Prevents auth tokens from leaking into log captures when clients
-    authenticate via the `?token=` query parameter (see issue #948).
+    Retained for log redaction of legacy query values (see issue #948).
     """
     if "token=" not in path:
         return path
@@ -641,7 +655,7 @@ class WebConfig:
     dx_cluster_host: str = ""
     dx_cluster_port: int = 0
     dx_callsign: str = ""
-    auth_token: str = ""  # empty = no auth required
+    auth_token: str = ""  # deprecated: only the empty compatibility value is accepted
     tls_cert: str = ""  # path to cert PEM (empty = auto self-signed)
     tls_key: str = ""  # path to key PEM (empty = auto self-signed)
     tls: bool = False  # enable TLS (HTTPS with auto self-signed cert)
@@ -649,12 +663,22 @@ class WebConfig:
     discovery_port: int = 8470  # UDP port for discovery
     read_only: bool = False  # reject PTT and other transmit commands
     emit_startup_event: bool = False  # emit JSON runtime startup event to stdout
+    # Hold the listener closed (see web_startup._await_initial_state_acquisition).
+    # The CLI sets it; embedders and tests that drive start() without a
+    # backend filling the store leave it off.
+    await_initial_state: bool = False
     webrtc_enabled: bool = False  # enable the gated WebRTC transport entrypoint
     state_diagnostics: bool = False  # enable behavior-neutral state diagnostics
     # Adaptive per-client egress codec controller (MOR-588, ADR §3.6):
     # PCM16↔Opus switching on detected slow/lossy links. Off (default) =
     # static MOR-584 per-connection codecs, never switched mid-stream.
     audio_adaptive_egress: bool = False
+
+    def __post_init__(self) -> None:
+        if self.auth_token:
+            raise ValueError(
+                "Application authentication was removed; auth_token must be empty."
+            )
 
 
 class ConnectionManager:
@@ -723,6 +747,12 @@ def _log_late_managed_tx_rebind(task: "asyncio.Task[Any]") -> None:
         logger.warning("reconnect: managed TX rebind failed late", exc_info=error)
 
 
+def _is_managed_tx_invalidation(event: dict[str, Any]) -> bool:
+    return (
+        event.get("type") == "event" and event.get("name") == "managed_transmit_changed"
+    )
+
+
 class WebServer:
     """Asyncio HTTP + WebSocket server for the rigplane Web UI.
 
@@ -738,7 +768,6 @@ class WebServer:
     ) -> None:
         self._radio = radio
         self._config = config or WebConfig()
-        self._profile_fallback_warned = False
         self._state_diagnostics = StateDiagnosticsRecorder(
             enabled=self._config.state_diagnostics
         )
@@ -816,6 +845,7 @@ class WebServer:
         self._hardware_scope_available = _supports_scope(radio)
         # Gated WebRTC transport session manager (A2.3 / MOR-307). Lazily
         # constructed on first use so the import stays out of the no-extra path.
+        self._production_managed_tx_port: ManagedTxCompositionPort | None = None
         self._webrtc_sessions: WebRtcSessionManager | None = None
         # Audio FFT scope: available when radio has audio capability.
         # For non-hardware-scope radios, also feeds /api/v1/scope (legacy).
@@ -895,6 +925,8 @@ class WebServer:
         self._bg_tasks: set[asyncio.Task[Any]] = set()
         # Serialises the managed TX rebind; see _service_managed_tx_release.
         self._managed_tx_rebind_lock: asyncio.Lock = asyncio.Lock()
+        # Unsubscribes the managed TX authority invalidation listener on stop.
+        self._managed_tx_change_unsubscribe: Callable[[], None] | None = None
         self._scope_health_max_retries: int = 3  # give up after N failed re-enables
         # Band plan registry
         from .band_plan import BandPlanRegistry  # noqa: TID251
@@ -948,8 +980,16 @@ class WebServer:
     # Helpers for scope callback operations
     # ------------------------------------------------------------------
 
-    def _get_profile(self) -> "RadioProfile":
-        """Resolve the RadioProfile for the connected radio."""
+    def _resolve_profile_if_identified(self) -> "RadioProfile | None":
+        """Return the radio's profile, or None if nothing identifies it.
+
+        "No radio attached and no model configured" is a normal state (the
+        server hasn't connected to a radio yet) rather than a caller error,
+        so it never reaches ``resolve_radio_profile`` at all here -- unlike
+        an identification *attempt* that fails (a named ``radio.model`` or
+        configured ``radio_model`` that resolve_radio_profile can't find),
+        which still goes through the usual resolve-or-refuse path below.
+        """
         from ..profiles import RadioProfile, resolve_radio_profile
 
         raw_profile = getattr(self._radio, "profile", None) if self._radio else None
@@ -962,30 +1002,39 @@ class WebServer:
             for m in (radio_model, self._config.radio_model)
             if isinstance(m, str) and m.strip() and m != _RADIO_MODEL_UNSPECIFIED
         ]
+        if not candidates:
+            return None
         for candidate in candidates:
             try:
                 return resolve_radio_profile(model=candidate)
             except KeyError:
                 continue
-        # Unknown model: use the library-wide default resolution chain
-        # (reference LAN rig → any LAN rig → first loaded profile) and say
-        # so — never silently impersonate IC-7610 (MOR-174).
-        fallback = resolve_radio_profile()
-        if not self._profile_fallback_warned:
-            self._profile_fallback_warned = True
-            logger.warning(
-                "No rig profile matches radio model %r; falling back to %r — "
-                "capabilities, scope and CI-V behavior may not match the radio",
-                candidates[0] if candidates else self._config.radio_model,
-                fallback.model,
-            )
-        return fallback
+        # Every named candidate failed to resolve: resolve_radio_profile()
+        # itself now refuses rather than guessing a default profile (plan
+        # §8.1 Q5) — propagate that refusal instead of impersonating some
+        # other rig.
+        return resolve_radio_profile()
+
+    def _get_profile(self) -> "RadioProfile":
+        """Resolve the RadioProfile for the connected radio.
+
+        Raises if nothing identifies the radio -- callers that must
+        tolerate "no radio attached yet" (e.g. ``_serve_info``) use
+        :meth:`_resolve_profile_if_identified` instead.
+        """
+        profile = self._resolve_profile_if_identified()
+        if profile is None:
+            from ..profiles import resolve_radio_profile
+
+            return resolve_radio_profile()  # raises: nothing identifies the radio
+        return profile
 
     def _projected_runtime_capabilities(self) -> set[str]:
         """Return runtime tags with VFO primitives trusted only from a profile."""
         caps = _runtime_capabilities(self._radio) - VFO_CAPABILITY_TAGS
-        return caps | projected_vfo_capability_tags(
-            self._radio, self._config.radio_model
+        return cast(
+            set[str],
+            caps | projected_vfo_capability_tags(self._radio, self._config.radio_model),
         )
 
     def _bootstrap_state_acquisition(self) -> None:
@@ -1010,6 +1059,7 @@ class WebServer:
             store=self.command_state_store,
             scheduler=scheduler,
             on_delta=self._on_state_freshness_delta,
+            radio=radio,
         )
         coalescer = MeterObservationCoalescer()
         self._state_freshness_service = freshness_service
@@ -1018,6 +1068,7 @@ class WebServer:
             setattr(radio, "_state_freshness_service", freshness_service)
             setattr(radio, "_acquisition_scheduler", scheduler)
             setattr(radio, "_meter_observation_coalescer", coalescer)
+            setattr(radio, "_state_store", self.command_state_store)
         except Exception:
             logger.debug("state acquisition: failed to attach services", exc_info=True)
 
@@ -1301,6 +1352,42 @@ class WebServer:
         """Command queue consumed by RadioPoller."""
         return self._command_queue
 
+    async def enqueue_managed_positive_tx(
+        self,
+        *,
+        ready: asyncio.Future[None],
+        submission: asyncio.Task[Any],
+        source: CommandSource,
+        session_id: str | None,
+        expires_at_monotonic: float,
+        connection_generation: object,
+    ) -> Any:
+        """Join one pre-registered positive transition to the shared queue."""
+        loop = asyncio.get_running_loop()
+        completion: asyncio.Future[None] = loop.create_future()
+        self._command_queue.put_ordered(
+            None,
+            future=completion,
+            source=source,
+            session_id=session_id,
+            expires_at_monotonic=expires_at_monotonic,
+            provider_generation=self.command_state_store.provider_generation,
+            connection_generation=connection_generation,
+            positive_tx_ready=ready,
+            positive_tx_submission=submission,
+        )
+        try:
+            await asyncio.wait_for(
+                completion,
+                timeout=max(0.0, expires_at_monotonic - loop.time()),
+            )
+        except BaseException:
+            if not submission.done():
+                submission.cancel()
+            await asyncio.gather(submission, return_exceptions=True)
+            raise
+        return submission.result()
+
     @property
     def state_diagnostics(self) -> StateDiagnosticsRecorder:
         """Behavior-neutral state-pipeline diagnostics recorder."""
@@ -1349,6 +1436,14 @@ class WebServer:
                 q.put_nowait(event)
             except asyncio.QueueFull:
                 logger.debug("broadcast_event: queue full, dropping event=%s", name)
+
+    def _on_managed_tx_changed(self) -> None:
+        """Queue one coalesced managed-transmit invalidation per control client."""
+        if self._stopping:
+            return
+        event = {"type": "event", "name": "managed_transmit_changed", "data": {}}
+        for q in list(self._control_event_queues):
+            q.replace_matching_with_front(event, _is_managed_tx_invalidation)
 
     def _broadcast_ws_client_state_update(
         self,
@@ -1580,10 +1675,20 @@ class WebServer:
         ):
             return copy.deepcopy(self._cached_public_state_payload)
         public_state_seq = self._public_state_seq_for_key(cache_key)
+        profile = self._get_profile()
+        # A profile with no ``[state_acquisition]`` block (``rigs/tx500.toml``)
+        # passes neither, and every unobserved entry stays ``missing``.
+        acquisition = profile.state_acquisition
+        availability: Mapping[FieldPath, bool | None] | None = None
+        declared: Collection[FieldPath] | None = None
+        if acquisition is not None:
+            availability, declared = snapshot_field_status_inputs(acquisition, snapshot)
         payload = _build_public_state_payload_from_snapshot_impl(
             snapshot,
             radio=self._radio,
-            receiver_count=self._get_profile().receiver_count,
+            receiver_count=profile.receiver_count,
+            availability=availability,
+            declared=declared,
             updated_at=updated_at,
             scope_clients=len(self._scope_handlers),
             control_clients=len(self._control_event_queues),
@@ -2336,7 +2441,7 @@ class WebServer:
         # them before any new-epoch read can arrive; the topology-derived MAIN
         # fact is independently valid and is reasserted without touching TX.
         if isinstance(self._radio_poller, RadioPoller):
-            self._radio_poller.reset_vfo_session()
+            self._radio_poller.reset_vfo_session(connection_recovery=True)
         self._publish_single_receiver_topology()
         # Clear poller readiness so scope waits for refetch to complete
         if self._radio_poller is not None:
@@ -2359,6 +2464,10 @@ class WebServer:
                         self._radio, "_fetch_initial_state"
                     ):
                         await self._radio._fetch_initial_state()
+                    if isinstance(self._radio_poller, RadioPoller):
+                        await self._radio_poller.select_vfo_a_on_connect(
+                            read_only=self._config.read_only
+                        )
                 except Exception:
                     logger.warning("reconnect: refetch failed", exc_info=True)
             finally:
@@ -2366,41 +2475,16 @@ class WebServer:
                 # attached poller-like object (MOR-1187/1196 invariant —
                 # ``_refetch_and_reenable`` is the only thing in ``src/``
                 # that ever re-sets it; ``test_web_recovery_durable_off``
-                # pins this with a non-RadioPoller stub). Only the identity
-                # establish below is narrowed to real ``RadioPoller``s
-                # (MOR-1443 review R3, N2: keeps MagicMock doubles from
-                # raising a spurious warning inside the try/except).
+                # pins this with a non-RadioPoller stub).
                 if self._radio_poller is not None:
                     self._radio_poller._initial_fetch_done.set()
                 if isinstance(self._radio_poller, RadioPoller):
-                    # MOR-1443 review R2, finding 1: reset_vfo_session() above
-                    # discarded active_slot for this new connection epoch, and
-                    # unlike the process-startup call site, RadioPoller._run()
-                    # never re-fires after a soft-reconnect (it only runs its
-                    # one-time startup section once). Without this call,
-                    # identity stays unknown until the process restarts even
-                    # though the readback is unqueryable again. The gate reads
-                    # unobserved here (reset just cleared it), so this emits
-                    # the same confirmed VFO-A select the startup path does.
-                    try:
-                        await self._radio_poller.establish_vfo_identity()
-                    except Exception:
-                        logger.warning(
-                            "reconnect: auto VFO identity establish failed",
-                            exc_info=True,
-                        )
                     # MOR-1495 review R2: RadioPoller._run()'s one-time
-                    # startup section (same reasoning as
-                    # establish_vfo_identity above) never re-fires after a
-                    # soft-reconnect either, so re-seed scanning/
-                    # scan_resume_mode here too — otherwise a reconnect after
-                    # any scan command would leave the web trusting a
-                    # possibly-stale pre-reconnect value forever. Pure local
-                    # seed, unlike the VFO-identity call above — never writes
-                    # to the radio, so it needs no external-CAT-session guard
-                    # and cannot itself fail against the wire; the try/except
-                    # here only guards the StateStore call for consistency
-                    # with its sibling.
+                    # startup section never re-fires after a soft-reconnect,
+                    # so re-seed scanning/scan_resume_mode here too — otherwise
+                    # a reconnect after any scan command would leave the web
+                    # trusting a possibly-stale pre-reconnect value forever.
+                    # This is a pure local seed and never writes to the radio.
                     try:
                         self._radio_poller._seed_scan_facts_at_connect()
                     except Exception:
@@ -2787,15 +2871,32 @@ class WebServer:
         from .web_startup import stop_web_server  # noqa: TID251
 
         self._stopping = True
+        unsubscribe = self._managed_tx_change_unsubscribe
+        self._managed_tx_change_unsubscribe = None
+        if unsubscribe is not None:
+            unsubscribe()
         self._unsubscribe_provider_generation()
         self._detach_audio_session_listener()
         self._detach_reconnect_status_listener()
         await stop_web_server(self)
 
-    async def serve_forever(self) -> None:
-        """Start and block until cancelled.  Handles SIGTERM/SIGINT gracefully."""
+    async def serve_forever(
+        self,
+        *,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
+        """Start and block until cancelled.  Handles SIGTERM/SIGINT gracefully.
+
+        ``on_started`` runs once :meth:`start` has returned — i.e. after the
+        listener is bound. The CLI prints its startup banner from there so
+        the ``Web UI:`` line never advertises a URL that is not accepting
+        yet (pinned by
+        ``test_web_ui_banner_prints_only_after_the_server_reports_started``).
+        """
         await self.start()
         assert self._server is not None
+        if on_started is not None:
+            on_started()
         if self._config.emit_startup_event:
             self.emit_startup_event()
 
@@ -2983,7 +3084,12 @@ class WebServer:
         model = raw_model if isinstance(raw_model, str) else self._config.radio_model
         caps = self._projected_runtime_capabilities()
         has_dual_rx = "dual_rx" in caps
-        profile = self._get_profile()
+        # No radio attached and no model configured is a normal "not
+        # connected yet" state, not an unidentified radio to refuse (plan
+        # §8.1 Q5 covers resolve_radio_profile and radio construction, not
+        # this): this endpoint must keep serving with neutral defaults for
+        # every profile-derived field instead of calling the resolver.
+        profile = self._resolve_profile_if_identified()
         raw_connected = (
             getattr(self._radio, "connected", False) if self._radio else False
         )
@@ -2994,29 +3100,24 @@ class WebServer:
         control_connected = (
             raw_control_connected if isinstance(raw_control_connected, bool) else False
         )
-        body = json.dumps(
-            {
-                # Backward-compatible legacy fields
-                "server": "rigplane",
-                "version": __version__,
-                "proto": WEB_API_CONTRACT_VERSION,
-                "radio": model,
-                # New structured fields
-                "model": model,
-                "capabilities": {
-                    "hasSpectrum": "scope" in caps,
-                    "hasAudio": "audio" in caps,
-                    "hasTx": "tx" in caps,
-                    "hasDualReceiver": has_dual_rx,
-                    "hasTuner": "tuner" in caps,
-                    "hasCw": "cw" in caps,
-                    "hasWebrtc": webrtc_available() and "audio" in caps,
-                    "maxReceivers": (
-                        profile.receiver_count
-                        if self._radio is not None
-                        else (2 if has_dual_rx else 1)
-                    ),
-                    "tags": sorted(caps),
+        capabilities: dict[str, object] = {
+            "hasSpectrum": "scope" in caps,
+            "hasAudio": "audio" in caps,
+            "hasTx": "tx" in caps,
+            "hasDualReceiver": has_dual_rx,
+            "hasTuner": "tuner" in caps,
+            "hasCw": "cw" in caps,
+            "hasWebrtc": webrtc_available() and "audio" in caps,
+            "maxReceivers": (
+                profile.receiver_count
+                if profile is not None
+                else (2 if has_dual_rx else 1)
+            ),
+            "tags": sorted(caps),
+        }
+        if profile is not None:
+            capabilities.update(
+                {
                     "modes": list(profile.modes),
                     "filters": list(profile.filters),
                     "filterWidthMin": profile.filter_width_min,
@@ -3033,12 +3134,29 @@ class WebServer:
                         list(profile.pre_values) if profile.pre_values else None
                     ),
                     "preLabels": profile.pre_labels,
-                    "agcModes": list(profile.agc_modes) if profile.agc_modes else None,
+                    "agcModes": (
+                        list(profile.agc_modes) if profile.agc_modes else None
+                    ),
                     "agcLabels": profile.agc_labels,
+                    "scanTypeValues": (
+                        list(profile.scan_type_values)
+                        if profile.scan_type_values is not None
+                        else []
+                    ),
+                    "scanResumeValues": (
+                        list(profile.scan_resume_values)
+                        if profile.scan_resume_values is not None
+                        else []
+                    ),
                     "rfSqlControlModel": profile.rf_sql_control_model,
                     "antennas": profile.antenna_tx_count,
+                    "hasRxAntenna": profile.antenna_has_rx_ant,
                     "dataModeCount": profile.data_mode_count,
                     "dataModeLabels": profile.data_mode_labels,
+                    "dataModeInputs": [
+                        {"value": value, "label": label}
+                        for value, label in (profile.data_mode_inputs or ())
+                    ],
                     "keyboard": _serialize_keyboard_config(profile),
                     **({"controls": profile.controls} if profile.controls else {}),
                     "txBands": [
@@ -3047,7 +3165,18 @@ class WebServer:
                         for b in fr.bands
                     ]
                     or None,
-                },
+                }
+            )
+        body = json.dumps(
+            {
+                # Backward-compatible legacy fields
+                "server": "rigplane",
+                "version": __version__,
+                "proto": WEB_API_CONTRACT_VERSION,
+                "radio": model,
+                # New structured fields
+                "model": model,
+                "capabilities": capabilities,
                 "connection": {
                     "rigConnected": connected,
                     "radioReady": self._radio_ready(),
@@ -3156,7 +3285,7 @@ class WebServer:
             "radioAvailable": bool(radio_payload["radioReady"]),
             "backend": backend,
             "health": health,
-            "authRequired": bool(self._config.auth_token),
+            "authRequired": False,
             "message": message,
         }
 
@@ -3302,7 +3431,7 @@ class WebServer:
                 "version": __version__,
                 "bind": self._runtime_bind_payload(),
                 "logPath": self._runtime_log_path,
-                "authRequired": bool(self._config.auth_token),
+                "authRequired": False,
                 "backend": getattr(radio, "backend_id", None)
                 if radio is not None
                 else None,
@@ -3492,11 +3621,25 @@ class WebServer:
             "preLabels": profile.pre_labels if profile.pre_labels else {},
             "agcModes": list(profile.agc_modes) if profile.agc_modes else [],
             "agcLabels": profile.agc_labels if profile.agc_labels else {},
+            "scanTypeValues": (
+                list(profile.scan_type_values)
+                if profile.scan_type_values is not None
+                else []
+            ),
+            "scanResumeValues": (
+                list(profile.scan_resume_values)
+                if profile.scan_resume_values is not None
+                else []
+            ),
             "rfSqlControlModel": profile.rf_sql_control_model,
             "dataModeCount": profile.data_mode_count,
             "dataModeLabels": (
                 profile.data_mode_labels if profile.data_mode_labels else {}
             ),
+            "dataModeInputs": [
+                {"value": value, "label": label}
+                for value, label in (profile.data_mode_inputs or ())
+            ],
             "keyboard": _serialize_keyboard_config(profile),
             "scopeSource": (
                 "hardware"
@@ -3521,6 +3664,7 @@ class WebServer:
                 "jitterCeilingMs": get_audio_rx_jitter_ceiling_ms(),
             },
             "antennas": profile.antenna_tx_count,
+            "hasRxAntenna": profile.antenna_has_rx_ant,
             "webrtc": {
                 "available": webrtc_available(),
                 "enabled": self._config.webrtc_enabled,
@@ -3957,6 +4101,153 @@ class WebServer:
             return None
         return payload
 
+    def _managed_tx_authority(self) -> Any | None:
+        port = self._production_managed_tx_port
+        return None if port is None else getattr(port, "authority", None)
+
+    async def _managed_tx_document(self) -> dict[str, object]:
+        authority = self._managed_tx_authority()
+        projection = None if authority is None else await authority.snapshot()
+        observed_ptt = project_observed_ptt(self.command_state_store.snapshot())
+        return build_managed_tx_view(
+            projection,
+            observed_ptt,
+            sampled_at=datetime.now(UTC),
+        )
+
+    async def _managed_tx_unavailable(self, writer: asyncio.StreamWriter) -> None:
+        await self._send_json(
+            writer,
+            503,
+            "Service Unavailable",
+            {
+                "error": "managed_tx_unavailable",
+                "message": "Managed transmit authority unavailable",
+            },
+        )
+
+    async def _handle_http_managed_tx(
+        self,
+        path: str,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None = None,
+        reader: asyncio.StreamReader | None = None,
+    ) -> None:
+        if path == "/api/v1/managed-transmit":
+            await self._send_json(writer, 200, "OK", await self._managed_tx_document())
+            return
+
+        authority = self._managed_tx_authority()
+        if authority is None:
+            await self._managed_tx_unavailable(writer)
+            return
+        payload = await self._read_json_object(writer, headers, reader)
+        if payload is None:
+            return
+
+        if path == "/api/v1/managed-transmit/command":
+            operation = payload.get("operation")
+            if (
+                set(payload) != {"operation"}
+                or type(operation) is not str
+                or operation not in {"transmit_on", "force_off"}
+            ):
+                await self._send_json(
+                    writer,
+                    400,
+                    "Bad Request",
+                    {
+                        "error": "invalid_request",
+                        "message": "operation must be transmit_on or force_off",
+                    },
+                )
+                return
+            if operation == "transmit_on" and self._config.read_only:
+                await self._send_json(
+                    writer,
+                    403,
+                    "Forbidden",
+                    {
+                        "error": "read_only",
+                        "message": "Server is in read-only mode",
+                    },
+                )
+                return
+            try:
+                if operation == "transmit_on":
+                    loop = asyncio.get_running_loop()
+                    ready: asyncio.Future[None] = loop.create_future()
+                    expires_at = loop.time() + 10.0
+                    connection_generation = (
+                        self._command_queue.capture_connection_generation()
+                    )
+                    pending = authority.start_transmit_on_submission(
+                        ready=ready,
+                        expires_at_monotonic=expires_at,
+                    )
+                    submission = await self.enqueue_managed_positive_tx(
+                        ready=ready,
+                        submission=pending,
+                        source="http",
+                        session_id=None,
+                        expires_at_monotonic=expires_at,
+                        connection_generation=connection_generation,
+                    )
+                else:
+                    submission = await authority.submit_force_off()
+            except RuntimeError:
+                await self._managed_tx_unavailable(writer)
+                return
+            accepted = submission.outcome.value == "accepted"
+            await self._send_json(
+                writer,
+                202 if accepted else 409,
+                "Accepted" if accepted else "Conflict",
+                {
+                    "ok": accepted,
+                    "operation": operation,
+                    "result": "accepted" if accepted else "rejected",
+                },
+            )
+            return
+
+        if set(payload) != {"configuredSeconds"}:
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {
+                    "error": "invalid_request",
+                    "message": "configuredSeconds is required",
+                },
+            )
+            return
+        try:
+            await authority.set_tot_seconds(payload["configuredSeconds"])
+        except ValueError as exc:
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {"error": "invalid_request", "message": str(exc)},
+            )
+            return
+        except OSError:
+            await self._send_json(
+                writer,
+                500,
+                "Internal Server Error",
+                {
+                    "error": "managed_tx_config_error",
+                    "message": "Managed transmit TOT configuration could not be saved",
+                },
+            )
+            return
+        except RuntimeError:
+            await self._managed_tx_unavailable(writer)
+            return
+        await self._send_json(writer, 200, "OK", await self._managed_tx_document())
+
     def _control_handler_for(self, *, server: Any | None = None) -> ControlHandler:
         return ControlHandler(
             None,  # type: ignore[arg-type]
@@ -3965,6 +4256,7 @@ class WebServer:
             self._config.radio_model,
             server=server if server is not None else self,
             read_only=self._config.read_only,
+            managed_tx_authority=self._managed_tx_authority(),
         )
 
     async def _handle_http_commands(
@@ -4235,9 +4527,10 @@ class WebServer:
             )
             return
         try:
+            params = _consume_normalized_level_unit(raw_name, raw_params)
             result = await self._control_handler_for()._enqueue_command(  # noqa: SLF001
                 raw_name,
-                raw_params,
+                params,
                 command_id=None if payload.get("id") is None else str(payload["id"]),
                 source="http",
             )
@@ -4247,6 +4540,31 @@ class WebServer:
                 403,
                 "Forbidden",
                 {"error": "read_only", "message": str(exc)},
+            )
+            return
+        except (
+            CommandUnsupportedError,
+            CommandRejectedError,
+            RigplaneTimeoutError,
+            TimeoutError,
+            CommandError,
+        ) as exc:
+            code = _command_error_code(exc)
+            if code == "command_timeout":
+                status, reason = 504, "Gateway Timeout"
+            elif code in {"unsupported_command", "radio_nak"}:
+                status, reason = 409, "Conflict"
+            else:
+                status, reason = 500, "Internal Server Error"
+            await self._send_json(
+                writer,
+                status,
+                reason,
+                {
+                    "ok": False,
+                    "error": code,
+                    "message": str(exc) or type(exc).__name__,
+                },
             )
             return
         except (ValueError, KeyError, TypeError) as exc:
@@ -4261,14 +4579,15 @@ class WebServer:
             message = str(exc)
             status, reason, code = (
                 (409, "Conflict", "unsupported_command")
-                if "does not support" in message
+                if command_descriptor(raw_name) is None
+                and "does not support" in message
                 else (500, "Internal Server Error", "command_failed")
             )
             await self._send_json(
                 writer,
                 status,
                 reason,
-                {"error": code, "message": message},
+                {"ok": False, "error": code, "message": message},
             )
             return
 
@@ -4314,6 +4633,29 @@ class WebServer:
                 f"command {raw_name!r} bypasses the command queue",
             )
 
+        params = _consume_normalized_level_unit(raw_name, raw_params)
+        descriptor = command_descriptor(raw_name)
+        if descriptor is not None:
+            assert self._radio is not None
+            intent = prepare_command_intent(
+                self._radio,
+                raw_name,
+                params,
+                source="http",
+                command_id=(
+                    None if raw_step.get("id") is None else str(raw_step["id"])
+                ),
+            )
+            return _HttpBatchStep(
+                index=index,
+                name=raw_name,
+                command=intent,
+                result=descriptor.result(intent),
+                command_id=intent.id,
+                source=intent.source,
+                command_service=self.command_service,
+            )
+
         collector = _HttpCommandCollector()
         proxy_server = type(
             "_HttpBatchProxy",
@@ -4326,7 +4668,7 @@ class WebServer:
         )()
         result = await self._control_handler_for(server=proxy_server)._enqueue_command(  # noqa: SLF001
             raw_name,
-            raw_params,
+            params,
             source="http",
         )
         if len(collector.commands) != 1:
@@ -4695,6 +5037,18 @@ class WebServer:
                     }
                 )
                 step = None
+            except CommandUnsupportedError as exc:
+                results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "ok": False,
+                        "status": "failed_validation",
+                        "error": "unsupported_command",
+                        "message": str(exc),
+                    }
+                )
+                step = None
             except _HttpBatchValidationError as exc:
                 results.append(
                     {
@@ -4711,7 +5065,9 @@ class WebServer:
                 message = str(exc)
                 error = (
                     "unsupported_command"
-                    if "does not support" in message or "not supported" in message
+                    if isinstance(name, str)
+                    and command_descriptor(name) is None
+                    and ("does not support" in message or "not supported" in message)
                     else "invalid_request"
                 )
                 results.append(
@@ -4739,19 +5095,27 @@ class WebServer:
                 await self._send_batch_response(writer, payload, results)
                 return
 
-            loop = asyncio.get_running_loop()
-            future: asyncio.Future[None] = loop.create_future()
-            self._command_queue.put_ordered(
-                step.command,
-                future=future,
-                command_id=step.command_id,
-                source=step.source,
-                command_service=step.command_service,
-            )
             try:
-                await asyncio.wait_for(future, timeout=_COMMAND_BATCH_STEP_TIMEOUT)
-            except TimeoutError as exc:
-                if step.command_service is not None and step.command_id is not None:
+                if isinstance(step.command, CommandIntent):
+                    await self.command_service.execute(step.command)
+                else:
+                    future: asyncio.Future[None] = (
+                        asyncio.get_running_loop().create_future()
+                    )
+                    self._command_queue.put_ordered(
+                        step.command,
+                        future=future,
+                        command_id=step.command_id,
+                        source=step.source,
+                        command_service=step.command_service,
+                    )
+                    await asyncio.wait_for(future, timeout=_COMMAND_BATCH_STEP_TIMEOUT)
+            except (RigplaneTimeoutError, TimeoutError) as exc:
+                if (
+                    not isinstance(step.command, CommandIntent)
+                    and step.command_service is not None
+                    and step.command_id is not None
+                ):
                     step.command_service.fail_command(
                         step.command_id,
                         message=str(exc) or type(exc).__name__,
@@ -4774,6 +5138,26 @@ class WebServer:
                             self._skipped_batch_result_for_raw_step(
                                 skip_index,
                                 raw_steps[skip_index],
+                            )
+                        )
+                    await self._send_batch_response(writer, payload, results)
+                    return
+            except CommandError as exc:
+                results.append(
+                    {
+                        "index": step.index,
+                        "name": step.name,
+                        "ok": False,
+                        "status": "failed_execution",
+                        "error": _command_error_code(exc),
+                        "message": str(exc) or type(exc).__name__,
+                    }
+                )
+                if not continue_on_error:
+                    for skip_index in range(step.index + 1, len(raw_steps)):
+                        results.append(
+                            self._skipped_batch_result_for_raw_step(
+                                skip_index, raw_steps[skip_index]
                             )
                         )
                     await self._send_batch_response(writer, payload, results)
@@ -4854,7 +5238,18 @@ class WebServer:
                 await radio.disconnect()
                 resp = {"status": "disconnected"}
             elif path == "/api/v1/radio/connect":
+                poller = self._radio_poller
+                generation = (
+                    poller._vfo_connection_generation()
+                    if isinstance(poller, RadioPoller)
+                    else None
+                )
                 await radio.connect()
+                if (
+                    isinstance(poller, RadioPoller)
+                    and generation != poller._vfo_connection_generation()
+                ):
+                    self._on_radio_reconnect()
                 resp = {"status": "connecting"}
             elif path == "/api/v1/radio/power":
                 # Read JSON body for power state
@@ -4996,6 +5391,7 @@ class WebServer:
                     self._config.radio_model,
                     server=self,
                     read_only=self._config.read_only,
+                    managed_tx_authority=self._managed_tx_authority(),
                 )
                 resp = await handler._enqueue_command(  # noqa: SLF001
                     "send_cw_text",
@@ -5009,6 +5405,7 @@ class WebServer:
                     self._config.radio_model,
                     server=self,
                     read_only=self._config.read_only,
+                    managed_tx_authority=self._managed_tx_authority(),
                 )
                 resp = await handler._enqueue_command(  # noqa: SLF001
                     "stop_cw_text",
@@ -5645,20 +6042,6 @@ class WebServer:
         headers: dict[str, str],
         query: dict[str, list[str]] | None = None,
     ) -> None:
-        # Auth check: accept Bearer header or ?token= query param
-        if self._config.auth_token:
-            auth_header = headers.get("authorization", "")
-            token_param = (query or {}).get("token", [""])[0]
-            expected_bearer = f"Bearer {self._config.auth_token}"
-            token_bytes = self._config.auth_token.encode("utf-8")
-            header_ok = hmac.compare_digest(
-                auth_header.encode("utf-8"), expected_bearer.encode("utf-8")
-            )
-            query_ok = hmac.compare_digest(token_param.encode("utf-8"), token_bytes)
-            if not header_ok and not query_ok:
-                await _send_response(writer, 401, "Unauthorized", b"Unauthorized", {})
-                return
-
         ws_key = headers.get("sec-websocket-key", "")
         if not ws_key:
             await _send_response(writer, 400, "Bad Request", b"Missing key", {})
@@ -5696,6 +6079,7 @@ class WebServer:
                 model,
                 server=self,
                 read_only=self._config.read_only,
+                managed_tx_authority=self._managed_tx_authority(),
             )
         elif path == "/api/v1/scope":
             handler = ScopeHandler(ws, self._radio, server=self)

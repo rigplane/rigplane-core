@@ -24,6 +24,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { mount, unmount, flushSync } from 'svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+const txHarness = new ManagedAppTxHarness();
 
 // ── Child components irrelevant to the read-boundary contract ──────────────
 vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
@@ -78,7 +81,10 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   radio: radioStore,
   getActiveReceiver: vi.fn(),
   getRadioState: vi.fn(() => radioStore.current),
-  subscribeRadioState: vi.fn(() => () => {}),
+  subscribeRadioState: vi.fn((handler: (state: Record<string, unknown> | null) => void) => {
+    handler(radioStore.current);
+    return () => {};
+  }),
 }));
 vi.mock('$lib/stores/connection.svelte', () => ({
   getConnectionStatus: vi.fn(() => 'connected'),
@@ -94,13 +100,27 @@ vi.mock('$lib/stores/audio.svelte', () => ({
     volume: 50, muted: false, rxEnabled: false, txEnabled: false,
     micEnabled: false, bridgeRunning: false,
   })),
+  getRxAudioTargetSnapshot: vi.fn(() => Object.freeze({ muted: false, rxEnabled: false })),
+  subscribeRxAudioTarget: vi.fn((handler: (target: { muted: boolean; rxEnabled: boolean }) => void) => {
+    handler(Object.freeze({ muted: false, rxEnabled: false }));
+    return () => {};
+  }),
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
-  audioManager: { start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn() },
+  audioManager: {
+    onChange: () => () => {}, getAppliedAudioConfig: () => null,
+    onTxAudioDied: () => () => {},
+    setOperatorNotifier: vi.fn(),
+    start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn(),
+  },
 }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasTx: vi.fn(() => true), hasDualReceiver: vi.fn(() => false), hasAnyScope: vi.fn(() => false),
   hasSpectrum: vi.fn(() => false), getCapabilities: vi.fn(() => null),
+  subscribeCapabilities: vi.fn((handler: (caps: null) => void) => {
+    handler(null);
+    return () => {};
+  }),
   getKeyboardConfig: vi.fn(() => null), hasCapability: vi.fn(() => false),
   receiverLabel: vi.fn((id: 'MAIN' | 'SUB') => id),
   hasAudioFft: vi.fn(() => false),
@@ -108,13 +128,8 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getSmeterCalibration: vi.fn(() => null), getSmeterRedline: vi.fn(() => null),
 }));
 
-// The TX controller is not what this suite is about — a flat idle facade keeps
-// the layout mountable without pulling in the real state machine.
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => ({ guard: null, intent: 'idle', radioTx: 'off' }),
-    subscribe: () => () => {},
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => txHarness.controller,
 }));
 
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
@@ -142,6 +157,7 @@ function setViewport(width: number, height: number): void {
 }
 
 beforeEach(() => {
+  txHarness.reset();
   setViewport(390, 844);
   radioStore.current = null;
 });
@@ -306,6 +322,7 @@ describe('MobileRadioLayout pending-field boundaries (MOR-1409 A13a)', () => {
   // Kills: a gate so broad it hides the meter for a rig that IS reporting —
   // the readings must come back the moment they are observed.
   it('renders the TX dock meter once its readings are observed', () => {
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     radioStore.current = {
       active: 'MAIN', main: CONNECTED_RX, ptt: true,
       powerMeter: 120, swrMeter: 30, alcMeter: 40,

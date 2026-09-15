@@ -8,15 +8,27 @@ a neutral module avoids backend → web import cycles.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
-from rigplane.core.state_pipeline_contracts import CommandSource
+from rigplane.core.command_dispatch import DispatchRadio, prepare_command_intent
+from rigplane.core.exceptions import CommandError
+from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
+    CommandSource,
+    FieldPath,
+)
 
 __all__ = [
     "Command",
     "CommandQueue",
     "CommandQueueEntry",
+    "LEGACY_COMMAND_NAMES",
+    "execute_positive_tx_queue_entry",
+    "validate_command_queue_entry_currency",
+    "canonicalize_level_command",
+    "execute_command_queue_entry",
     # -- command dataclasses (alphabetical) --
     "DisableScope",
     "EnableScope",
@@ -70,6 +82,7 @@ __all__ = [
     "SetFilterShape",
     "SetFilterWidth",
     "SetFreq",
+    "SetVfoFreq",
     "SetIfShift",
     "SetIpPlus",
     "SetKeySpeed",
@@ -129,7 +142,6 @@ __all__ = [
     "SetTunerStatus",
     "SetTuningStep",
     "SetTwinPeak",
-    "SetTxFreqMonitor",
     "SetUsbModLevel",
     "SetUtcOffset",
     "SetVox",
@@ -152,6 +164,28 @@ __all__ = [
 class SetFreq:
     freq: int
     receiver: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SetVfoFreq:
+    """Fixed slot write, guarded by the identity captured when editing began."""
+
+    freq: int
+    receiver: int
+    slot: str
+    expected_active_slot: str
+    provider_generation: int
+
+    def __post_init__(self) -> None:
+        for name in ("freq", "receiver", "provider_generation"):
+            if type(getattr(self, name)) is not int:
+                raise ValueError(f"{name} must be an integer")
+        if not 0 <= self.freq <= 9_999_999_999 or self.provider_generation < 0:
+            raise ValueError("frequency or provider generation out of range")
+        if self.receiver != 0 or self.slot not in ("A", "B"):
+            raise ValueError("direct frequency requires receiver 0 and slot A/B")
+        if self.expected_active_slot not in ("A", "B"):
+            raise ValueError("expected_active_slot must be A/B")
 
 
 @dataclass(frozen=True, slots=True)
@@ -789,11 +823,6 @@ class SetXfcStatus:
 
 
 @dataclass(frozen=True, slots=True)
-class SetTxFreqMonitor:
-    on: bool
-
-
-@dataclass(frozen=True, slots=True)
 class SetUtcOffset:
     hours: int
     minutes: int
@@ -843,8 +872,10 @@ class Speak:
     mode: int = 0
 
 
-Command = (
-    SetFreq
+Command: TypeAlias = (
+    CommandIntent
+    | SetFreq
+    | SetVfoFreq
     | SetMode
     | SendCiv
     | SetFilter
@@ -958,7 +989,6 @@ Command = (
     | SetTunerStatus
     | SetTuningStep
     | SetXfcStatus
-    | SetTxFreqMonitor
     | SetUtcOffset
     | QuickSplit
     | QuickDualWatch
@@ -970,6 +1000,107 @@ Command = (
 )
 
 
+def canonicalize_level_command(
+    command: Command,
+    radio: DispatchRadio,
+    *,
+    command_id: str | None = None,
+    source: CommandSource = "websocket",
+    session_id: str | None = None,
+) -> Command:
+    match command:
+        case SetAfLevel(level=level, receiver=receiver):
+            name = "set_af_level"
+        case SetRfGain(level=level, receiver=receiver):
+            name = "set_rf_gain"
+        case SetSquelch(level=level, receiver=receiver):
+            name = "set_squelch"
+        case _:
+            return command
+    return prepare_command_intent(
+        radio,
+        name,
+        {"level": level, "receiver": receiver},
+        source=source,
+        command_id=command_id,
+        session_id=session_id,
+    )
+
+
+# The canonical command name each legacy dataclass is the enqueued form of.
+# It is the only thing a legacy command declares about its own read-after-
+# write: the field paths come from ``core/command_service.py:
+# expected_observations_for_command`` (descriptor-backed names such as
+# ``set_att`` carry their target from ``CommandDescriptor.target`` instead).
+# ``web/radio_poller.py: RadioPoller._request_post_write_readback`` is the
+# consumer.
+#
+# A ``Set*`` dispatch arm absent from here gets no readback;
+# ``tests/test_post_write_readback_one_path.py`` enumerates the arms and
+# fails on any that is neither listed here nor classified there.
+LEGACY_COMMAND_NAMES: dict[type, str] = {
+    SetFreq: "set_freq",
+    SetVfoFreq: "set_vfo_freq",
+    SetMode: "set_mode",
+    SetFilter: "set_filter",
+    SetFilterWidth: "set_filter_width",
+    SetFilterShape: "set_filter_shape",
+    SetDataMode: "set_data_mode",
+    SetAttenuator: "set_att",
+    SetPreamp: "set_preamp",
+    SetNB: "set_nb",
+    SetNR: "set_nr",
+    SetNBLevel: "set_nb_level",
+    SetNRLevel: "set_nr_level",
+    SetAutoNotch: "set_auto_notch",
+    SetManualNotch: "set_manual_notch",
+    SetManualNotchWidth: "set_manual_notch_width",
+    SetNotchFilter: "set_notch_filter",
+    SetTwinPeak: "set_twin_peak",
+    SetAgcTimeConstant: "set_agc_time_constant",
+    SetDigiSel: "set_digisel",
+    SetIpPlus: "set_ip_plus",
+    SetPbtInner: "set_pbt_inner",
+    SetPbtOuter: "set_pbt_outer",
+    SetToneFreq: "set_tone_freq",
+    SetTsqlFreq: "set_tsql_freq",
+    SetRitFrequency: "set_rit_frequency",
+    SetRitStatus: "set_rit_status",
+    SetRitTxStatus: "set_rit_tx_status",
+    SetBreakInDelay: "set_break_in_delay",
+    SetPower: "set_rf_power",
+    SetPowerstat: "set_powerstat",
+    SetSplit: "set_split",
+    # MOR-2425 PR-1b.
+    SetAgc: "set_agc",
+    SetTunerStatus: "set_tuner_status",
+    SetMicGain: "set_mic_gain",
+    SetCompressor: "set_compressor",
+    SetCompressorLevel: "set_compressor_level",
+    SetMonitor: "set_monitor",
+    SetMonitorGain: "set_monitor_gain",
+    SetVox: "set_vox",
+    SetVoxGain: "set_vox_gain",
+    SetAntiVoxGain: "set_anti_vox_gain",
+    SetVoxDelay: "set_vox_delay",
+    # MOR-2425 PR-3: the CW keyer trio and the ten scope-display leaves
+    # folded off the two bespoke confirms in ``web/radio_poller.py``.
+    SetCwPitch: "set_cw_pitch",
+    SetKeySpeed: "set_key_speed",
+    SetBreakIn: "set_break_in",
+    SetScopeDuringTx: "set_scope_during_tx",
+    SetScopeCenterType: "set_scope_center_type",
+    SetScopeEdge: "set_scope_edge",
+    SetScopeVbw: "set_scope_vbw",
+    SetScopeDual: "set_scope_dual",
+    SetScopeMode: "set_scope_mode",
+    SetScopeSpan: "set_scope_span",
+    SetScopeSpeed: "set_scope_speed",
+    SetScopeRef: "set_scope_ref",
+    SetScopeHold: "set_scope_hold",
+}
+
+
 # ------------------------------------------------------------------
 # CommandQueue
 # ------------------------------------------------------------------
@@ -977,19 +1108,132 @@ Command = (
 
 @dataclass(frozen=True, slots=True)
 class CommandQueueEntry:
-    command: Command
-    future: asyncio.Future[None] | None = None
+    command: Command | None
+    future: asyncio.Future[Any] | None = None
     command_id: str | None = None
     source: CommandSource | None = None
     session_id: str | None = None
     command_service: Any | None = None
+    expires_at_monotonic: float | None = None
+    provider_generation: int | None = None
+    connection_generation: object | None = None
+    positive_tx_ready: asyncio.Future[None] | None = None
+    positive_tx_submission: asyncio.Task[Any] | None = None
+
+
+def validate_command_queue_entry_currency(
+    entry: CommandQueueEntry,
+    *,
+    now: float,
+    provider_generation: int | None,
+    connection_generation: object | None,
+    session_is_live: Callable[[str], bool],
+    require_connection_generation: bool = False,
+) -> None:
+    """Reject a captured dispatch envelope after any causal input moved."""
+    if entry.expires_at_monotonic is not None and now >= entry.expires_at_monotonic:
+        raise CommandError("queued command expired before dispatch")
+    if entry.session_id is not None and not session_is_live(entry.session_id):
+        raise CommandError("queued command session is no longer active")
+    if (
+        entry.provider_generation is not None
+        and entry.provider_generation != provider_generation
+    ):
+        raise CommandError("queued command provider generation changed")
+    if require_connection_generation and entry.connection_generation is None:
+        raise CommandError("queued command connection generation is missing")
+    if (
+        entry.connection_generation is not None
+        and entry.connection_generation != connection_generation
+    ):
+        raise CommandError("queued command connection generation changed")
+
+
+async def execute_positive_tx_queue_entry(entry: CommandQueueEntry) -> None:
+    """Release one pre-registered positive transition and join its wire result."""
+    ready, submission = entry.positive_tx_ready, entry.positive_tx_submission
+    if ready is None or submission is None:
+        raise CommandError("positive TX queue entry is incomplete")
+    if ready.cancelled():
+        raise CommandError("positive TX queue entry was cancelled")
+    if not ready.done():
+        ready.set_result(None)
+    owner = asyncio.current_task()
+    cancelling = owner.cancelling() if owner is not None else 0
+    try:
+        receipt = await asyncio.shield(submission)
+    except asyncio.CancelledError as exc:
+        if owner is not None and owner.cancelling() > cancelling:
+            raise
+        raise CommandError("positive TX admission was revoked") from exc
+    outcome = getattr(receipt, "outcome", None)
+    if getattr(outcome, "value", outcome) != "accepted":
+        raise CommandError("positive TX admission was rejected")
+    await receipt.wait_settlement()
+
+
+async def execute_command_queue_entry(
+    entry: CommandQueueEntry,
+    execute: Callable[[CommandQueueEntry], Awaitable[Any]],
+) -> None:
+    """Keep the operation owned until its leaf and cancellation cleanup finish."""
+    reply = entry.future
+    if reply is not None and reply.cancelled():
+        submission = entry.positive_tx_submission
+        if submission is not None and not submission.done():
+            submission.cancel()
+            await asyncio.gather(submission, return_exceptions=True)
+        return
+
+    async def invoke() -> Any:
+        if reply is not None and reply.cancelled():
+            return None
+        return await execute(entry)
+
+    owner = asyncio.current_task()
+    cancelling = owner.cancelling() if owner is not None else 0
+    child = asyncio.create_task(invoke())
+    try:
+        result = await asyncio.shield(child)
+    except asyncio.CancelledError:
+        if owner is not None and owner.cancelling() > cancelling:
+            child.cancel()
+            while not child.done():
+                try:
+                    await asyncio.shield(child)
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if not child.cancelled():
+                child.exception()
+            if reply is not None and not reply.done():
+                reply.cancel()
+            submission = entry.positive_tx_submission
+            if submission is not None and not submission.done():
+                submission.cancel()
+                await asyncio.gather(submission, return_exceptions=True)
+            raise
+        if reply is not None and not reply.done():
+            reply.cancel()
+    except Exception as exc:
+        submission = entry.positive_tx_submission
+        if submission is not None and not submission.done():
+            submission.cancel()
+            await asyncio.gather(submission, return_exceptions=True)
+        if reply is not None and not reply.done():
+            reply.set_exception(exc)
+        raise
+    else:
+        if reply is not None and not reply.done():
+            reply.set_result(result)
 
 
 @dataclass(slots=True)
 class _CommandQueueSegment:
     kind: Literal["coalesced", "ordered"]
     ptt: list[CommandQueueEntry] = field(default_factory=list)
-    dedup: dict[type, CommandQueueEntry] = field(default_factory=dict)
+    dedup: dict[type | tuple[str, FieldPath | None], CommandQueueEntry] = field(
+        default_factory=dict,
+    )
     ordered: list[CommandQueueEntry] = field(default_factory=list)
 
     @classmethod
@@ -1027,6 +1271,33 @@ class CommandQueue:
         # never told about. Once any session registers the set is authoritative
         # even when empty — that is the every-session-gone case, not ignorance.
         self._live_sessions: set[str] | None = None
+        self._capture_connection_generation: Callable[[], object | None] | None = None
+
+    def bind_connection_generation(self, capture: Callable[[], object | None]) -> None:
+        """Bind the sole consumer-owned connection identity source."""
+        if self._capture_connection_generation is not None:
+            raise RuntimeError("command queue connection generation is already bound")
+        self._capture_connection_generation = capture
+
+    def unbind_connection_generation(
+        self, capture: Callable[[], object | None]
+    ) -> None:
+        """Release the connection identity source owned by a retired consumer."""
+        if self._capture_connection_generation is not capture:
+            raise RuntimeError(
+                "command queue connection generation is bound to another consumer"
+            )
+        self._capture_connection_generation = None
+
+    def capture_connection_generation(self) -> object:
+        """Capture one required dispatch identity for a managed enqueue."""
+        capture = self._capture_connection_generation
+        if capture is None:
+            raise RuntimeError("command queue connection generation is not bound")
+        generation = capture()
+        if generation is None:
+            raise RuntimeError("command queue connection generation is unavailable")
+        return generation
 
     def register_session(self, session_id: str) -> None:
         """Mark a control session live for as long as it stays connected."""
@@ -1059,12 +1330,15 @@ class CommandQueue:
 
     def put(
         self,
-        cmd: Command,
+        cmd: Command | None,
         *,
         command_id: str | None = None,
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: Any | None = None,
+        expires_at_monotonic: float | None = None,
+        provider_generation: int | None = None,
+        connection_generation: object | None = None,
     ) -> None:
         self._record_scope_demand(cmd)
         entry = CommandQueueEntry(
@@ -1073,38 +1347,110 @@ class CommandQueue:
             source=source,
             session_id=session_id,
             command_service=command_service,
+            expires_at_monotonic=expires_at_monotonic,
+            provider_generation=provider_generation,
+            connection_generation=connection_generation,
         )
         segment = self._coalesced_tail()
         if isinstance(cmd, (PttOn, PttOff)):
             segment.ptt.append(entry)
         else:
-            segment.dedup[type(cmd)] = entry
+            key = (
+                (cmd.name, cmd.target) if isinstance(cmd, CommandIntent) else type(cmd)
+            )
+            segment.dedup[key] = entry
         self._notify.set()
 
     def put_ordered(
         self,
-        cmd: Command,
+        cmd: Command | None,
         *,
-        future: asyncio.Future[None] | None = None,
+        future: asyncio.Future[Any] | None = None,
         command_id: str | None = None,
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: Any | None = None,
-    ) -> None:
+        expires_at_monotonic: float | None = None,
+        provider_generation: int | None = None,
+        connection_generation: object | None = None,
+        positive_tx_ready: asyncio.Future[None] | None = None,
+        positive_tx_submission: asyncio.Task[Any] | None = None,
+    ) -> CommandQueueEntry:
         self._record_scope_demand(cmd)
-        self._segments.append(
-            _CommandQueueSegment.ordered_entry(
-                CommandQueueEntry(
-                    cmd,
-                    future=future,
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                    command_service=command_service,
-                )
-            )
+        entry = CommandQueueEntry(
+            cmd,
+            future=future,
+            command_id=command_id,
+            source=source,
+            session_id=session_id,
+            command_service=command_service,
+            expires_at_monotonic=expires_at_monotonic,
+            provider_generation=provider_generation,
+            connection_generation=connection_generation,
+            positive_tx_ready=positive_tx_ready,
+            positive_tx_submission=positive_tx_submission,
         )
+        self._segments.append(_CommandQueueSegment.ordered_entry(entry))
         self._notify.set()
+        if future is not None:
+
+            def remove_cancelled(reply: asyncio.Future[Any]) -> None:
+                # Preserve the legacy final drain's pending-unkey eligibility.
+                if reply.cancelled() and not isinstance(entry.command, PttOff):
+                    self.remove_pending(entry)
+
+            future.add_done_callback(remove_cancelled)
+        return entry
+
+    @property
+    def pending_count(self) -> int:
+        return sum(
+            len(segment.ptt) + len(segment.dedup) + len(segment.ordered)
+            for segment in self._segments
+        )
+
+    def take_entry(self) -> CommandQueueEntry | None:
+        """Claim one pending entry in the existing segment and PTT order."""
+        while self._segments:
+            segment = self._segments[0]
+            if segment.ordered:
+                entry = segment.ordered.pop(0)
+            elif segment.ptt:
+                entry = segment.ptt.pop(0)
+            elif segment.dedup:
+                entry = segment.dedup.pop(next(iter(segment.dedup)))
+            else:
+                self._segments.pop(0)
+                continue
+            if not segment.has_commands:
+                self._segments.pop(0)
+            if not self.has_commands:
+                self._notify.clear()
+            return entry
+        self._notify.clear()
+        return None
+
+    def remove_pending(self, entry: CommandQueueEntry) -> bool:
+        """Remove only this still-pending identity, without completing its reply."""
+        for segment_index, segment in enumerate(self._segments):
+            for entries in (segment.ordered, segment.ptt):
+                for index, pending in enumerate(entries):
+                    if pending is entry:
+                        del entries[index]
+                        if not segment.has_commands:
+                            del self._segments[segment_index]
+                        if not self.has_commands:
+                            self._notify.clear()
+                        return True
+            for key, pending in segment.dedup.items():
+                if pending is entry:
+                    del segment.dedup[key]
+                    if not segment.has_commands:
+                        del self._segments[segment_index]
+                    if not self.has_commands:
+                        self._notify.clear()
+                    return True
+        return False
 
     def drain(self) -> list[Command]:
         return [entry.command for entry in self.drain_entries()]

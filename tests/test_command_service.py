@@ -19,6 +19,7 @@ from rigplane.core.command_service import (
     PendingOverlay,
     command_intent_from_request,
     command_response_observation,
+    resolve_power_level_target,
 )
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import (
@@ -108,6 +109,148 @@ def _intent(
 
 def _states(events: Sequence[CommandLifecycleEvent]) -> list[str]:
     return [event.state for event in events]
+
+
+@pytest.mark.parametrize("source", ["websocket", "rigctld", "public_api", "http"])
+async def test_successful_acknowledgments_release_existing_confirmation_window(
+    source: str,
+) -> None:
+    clock = FreshnessClock(start=10.0)
+    service = CommandService(
+        executor=FakeExecutor(), state_store=StateStore(), clock=clock.now
+    )
+    for index in range(260):
+        await service.execute(_intent(command_id=str(index), source=source))
+        assert len(service._active_commands) <= 1  # noqa: SLF001
+        clock.advance(10)
+        assert (
+            service.pending_overlays(
+                source=cast(CommandSource, source), session_id="ws-a"
+            )
+            == ()
+        )
+        assert service._active_commands == {}  # noqa: SLF001
+    assert not [
+        event for event in service.lifecycle_events() if event.state == "failed"
+    ]
+
+
+async def test_ack_without_readback_expectations_releases_bookkeeping_without_terminal_claim() -> (
+    None
+):
+    service = CommandService(executor=FakeExecutor(), state_store=StateStore())
+    result = await service.execute(
+        replace(_intent(), pending_policy="none", expected_observations=())
+    )
+    assert _states(result.lifecycle_events) == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+    ]
+    assert service._active_commands == {}  # noqa: SLF001
+    assert (
+        service.retain_readback_expectations_for_dispatch(
+            source="websocket", session_id="ws-a", command_id="cmd-1"
+        )
+        == ()
+    )
+    assert service.fail_command(
+        "cmd-1", source="websocket", session_id="ws-a", message="late queue NAK"
+    )
+    assert service.lifecycle_events()[-1].message == "late queue NAK"
+
+
+async def test_next_admission_purges_expired_ack_without_a_metadata_reader() -> None:
+    clock = FreshnessClock(start=10.0)
+    service = CommandService(
+        executor=FakeExecutor(), state_store=StateStore(), clock=clock.now
+    )
+    for index in range(260):
+        await service.execute(_intent(command_id=str(index)))
+        assert len(service._active_commands) == 1  # noqa: SLF001
+        clock.advance(10)
+    assert not [
+        event for event in service.lifecycle_events() if event.state == "failed"
+    ]
+
+
+async def test_capacity_sheds_ack_bookkeeping_but_preserves_late_failure_and_correlated_readback() -> (
+    None
+):
+    clock = FreshnessClock(start=10.0)
+    service = CommandService(
+        executor=FakeExecutor(), state_store=StateStore(), clock=clock.now
+    )
+    for index in range(130):
+        await service.execute(_intent(command_id=str(index)))
+    assert len(service._active_commands) <= 128  # noqa: SLF001
+    assert not [
+        event for event in service.lifecycle_events() if event.state == "failed"
+    ]
+    assert ("websocket", "ws-a", "0") not in service._active_commands  # noqa: SLF001
+    assert service.fail_command(
+        "0", source="websocket", session_id="ws-a", message="actual queue failure"
+    )
+    service.apply_observation(
+        _observation(_freq_path(), 14_074_000, at=10.1, correlation_id="1")
+    )
+    assert [
+        (event.command_id, event.state) for event in service.lifecycle_events()[-2:]
+    ] == [("0", "failed"), ("1", "reconciled")]
+
+
+@pytest.mark.parametrize("timeout", [0.0, 2.0, 10.0])
+async def test_ack_retention_uses_existing_expectation_expiry_including_dispatch_refresh(
+    timeout: float,
+) -> None:
+    clock = FreshnessClock(start=10.0)
+    service = CommandService(
+        executor=FakeExecutor(), state_store=StateStore(), clock=clock.now
+    )
+    await service.execute(replace(_intent(), timeout=timeout))
+    key = ("websocket", "ws-a", "cmd-1")
+    scope = {"source": "websocket", "session_id": "ws-a", "command_id": "cmd-1"}
+    expectations = service.readback_expectations(**scope)
+    deadline = max(item.expires_at_monotonic for item in expectations)
+    clock.advance(deadline - clock.now() - 0.01)
+    assert service.readback_expectations(**scope)
+    assert key in service._active_commands  # noqa: SLF001
+    retained = service.retain_readback_expectations_for_dispatch(**scope)
+    assert retained
+    clock.advance(max(item.expires_at_monotonic for item in retained) - clock.now())
+    assert service.readback_expectations(**scope) == ()
+    assert key not in service._active_commands  # noqa: SLF001
+    assert service.lifecycle_events()[-1].state == "acknowledged"
+
+
+async def test_ack_window_keeps_same_id_issuers_separate_and_poll_value_is_not_confirmation() -> (
+    None
+):
+    clock = FreshnessClock(start=10.0)
+    service = CommandService(
+        executor=FakeExecutor(), state_store=StateStore(), clock=clock.now
+    )
+    for source, session in [
+        ("websocket", "ws-a"),
+        ("websocket", "ws-b"),
+        ("rigctld", "ws-a"),
+    ]:
+        await service.execute(_intent(source=source, session_id=session))
+    service.apply_observation(
+        _observation(_freq_path(), 14_074_000, at=10.1, correlation_id=None)
+    )
+    assert len(service._active_commands) == 3  # noqa: SLF001
+    assert (
+        service.terminate_active_commands(
+            "session invalidated", source="websocket", session_id="ws-a"
+        )
+        == 1
+    )
+    assert len(service._active_commands) == 2  # noqa: SLF001
+    clock.advance(10)
+    service.pending_overlays(source="websocket", session_id="ws-b")
+    assert service._active_commands == {}  # noqa: SLF001
 
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
@@ -1412,7 +1555,10 @@ async def test_level_command_readback_expectations_are_normalized_but_params_sta
 
     assert executor.intents == [intent]
     assert executor.intents[0].params["level"] == params["level"]
-    assert executor.intents[0].params[path.name] == params["level"]
+    expected_param = (
+        cast(int, params["level"]) / 255 if name == "set_rf_power" else params["level"]
+    )
+    assert executor.intents[0].params[path.name] == expected_param
     assert service.readback_expectations(
         source="websocket",
         session_id="client-a",
@@ -1631,78 +1777,120 @@ def test_public_api_sync_squelch_actuation_value_is_not_reinterpreted() -> None:
     assert intent.params["squelch"] == 1
 
 
-def test_power_level_float_expectation_matches_readback_scale() -> None:
-    """MOR-1579 round 3 regression (red-first leg): the ``set_rf_power``
-    expectation branch used to do a plain ``int(raw_level)``, so a
-    normalized float level (e.g. ``0.4`` from the web power slider —
-    ``control.py``'s ``_level_for_power`` treats ``set_rf_power`` as
-    type-dispatched, same as ``set_af_level``) collapsed to
-    ``int(0.4) == 0``. The StateStore overlay/expectation then sat at 0%
-    for the optimistic-update TTL on *every single power-slider move*
-    (not just a boundary value like the rf_gain/squelch raw-1 case),
-    before jumping to the real readback — the same snap-back class this
-    PR fixes elsewhere.
-
-    Both backends' readbacks normalize to the same fraction ``v``
-    regardless of unit (Icom CI-V as ``raw / 255``, Yaesu CAT as
-    ``watts / max_watts`` — see
-    ``backends/yaesu_cat/observations.py``'s ``_normalize_power_level``),
-    so the coherent expectation for a float input is ``round(v * 255)``
-    for *both* units, independent of ``native_power_unit`` — no radio
-    object needed here.
-    """
+def test_watts_float_power_expectation_uses_native_quantization() -> None:
     intent = command_intent_from_request(
         "set_rf_power",
-        {"level": 0.4},
+        {"level": 0.5},
         source="websocket",
         command_id="ws-set_rf_power",
         session_id="client-a",
+        power_native_unit="watts",
+        power_max_watts=100,
     )
     path = FieldPath.global_("operator_controls", "power_level")
 
-    # Param is coerced to the raw scale the radio actually receives — not 0.
-    assert intent.params["power_level"] == 102  # round(0.4 * 255)
-
-    # The expectation/overlay value the readback reconciles against is the
-    # normalized form of that same raw value (~0.4), not 0.0.
+    assert intent.params["level"] == 0.5
+    assert intent.params["power_level"] == 0.5
     observation = command_response_observation(
         intent,
         timestamp_monotonic=70.0,
         provider="test",
     )
     assert str(intent.target) == str(path)
-    assert observation.value == pytest.approx(102 / 255)
-    assert observation.value == pytest.approx(0.4, abs=0.01)
+    assert observation.value == 0.5
 
 
 @pytest.mark.parametrize(
-    ("name", "level", "expected"),
+    ("name", "param_name", "level", "expected"),
     [
-        ("set_rf_power", 50, 0.5),
-        ("set_power", 50, 0.5),
-        ("set_rf_power", 0.4, 102 / 255),
-        ("set_power", 0.4, 102 / 255),
+        ("set_rf_power", "level", 0.5, 0.5),
+        ("set_power", "value", 1, 0.01),
     ],
 )
 def test_power_expectations_share_canonical_and_alias_contract(
     name: str,
+    param_name: str,
     level: int | float,
     expected: float,
 ) -> None:
-    """A watts profile input applies only to integer power commands."""
     intent = command_intent_from_request(
         name,
-        {"level": level},
+        {param_name: level},
         source="http",
+        power_native_unit="watts",
         power_max_watts=100,
     )
 
+    assert intent.params[param_name] == level
     observation = command_response_observation(
         intent,
         timestamp_monotonic=70.0,
         provider="test",
     )
-    assert observation.value == pytest.approx(expected)
+    assert observation.value == expected
+
+
+@pytest.mark.parametrize(
+    ("max_watts", "requested", "native", "expected"),
+    [
+        (10, 0.0, 0, 0.0),
+        (10, 0.25, 2, 0.2),
+        (10, 1.0, 10, 1.0),
+        (100, 0.5, 50, 0.5),
+        (200, 0.5, 100, 0.5),
+    ],
+)
+def test_power_target_resolver_uses_native_watts_quantization(
+    max_watts: int,
+    requested: float,
+    native: int,
+    expected: float,
+) -> None:
+    assert resolve_power_level_target(
+        requested,
+        power_native_unit="watts",
+        power_max_watts=max_watts,
+    ) == (native, expected)
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected_native", "expected"),
+    [
+        (0.5, 128, 128 / 255),
+        (255, 255, 1.0),
+    ],
+)
+def test_raw_power_target_ignores_incidental_watts_metadata(
+    requested: int | float,
+    expected_native: int,
+    expected: float,
+) -> None:
+    assert resolve_power_level_target(
+        requested,
+        power_native_unit="raw_255",
+        power_max_watts=100,
+    ) == (expected_native, expected)
+
+
+@pytest.mark.parametrize("power_max_watts", [None, 0, -1, True])
+def test_watts_power_target_invalid_metadata_falls_back_to_raw_scale(
+    power_max_watts: int | None,
+) -> None:
+    assert resolve_power_level_target(
+        0.5,
+        power_native_unit="watts",
+        power_max_watts=power_max_watts,
+    ) == (128, 128 / 255)
+
+
+@pytest.mark.parametrize("requested", [True, -0.01, 1.01, "0.5"])
+def test_power_target_rejects_bool_out_of_domain_and_non_numeric_values(
+    requested: object,
+) -> None:
+    with pytest.raises(ValueError):
+        resolve_power_level_target(
+            requested, power_native_unit="watts", power_max_watts=100
+        )
 
 
 @pytest.mark.parametrize("power_max_watts", [None, 0, -1])
@@ -1747,7 +1935,7 @@ async def test_raw_external_rigctld_level_readback_normalizes_before_reconcile()
 
     await service.execute(intent)
     assert intent.params["level"] == 64
-    assert intent.params["power_level"] == 64
+    assert intent.params["power_level"] == 64 / 255
 
     service.apply_observation(
         Observation(

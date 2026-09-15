@@ -13,13 +13,11 @@
        50ms window closes, the press is cancelled (user was scrolling,
        not pressing).
     4. Haptic feedback on engage (navigator.vibrate).
-    5. TX-permit two-step — when `txPermit === 'denied'` the first press
-       only arms the FAB for 2 seconds and surfaces a toast. A second
-       press within that window engages.
+    5. TX permit remains advisory presentation; server authority admits PTT.
 
   State machine is kept in the parent (`pttMode`, safety timer, etc.);
-  this component just gates the `onDown/onUp` callbacks behind the
-  guards. Parent passes `mode` so visuals reflect held / latched state
+  this component applies gesture guards to the `onDown/onUp` callbacks.
+  Parent passes `mode` so visuals reflect held / latched server state
   using the existing CSS conventions.
 
   Part of #840 / epic #818 mobile IA followup.
@@ -30,21 +28,18 @@
   interface Props {
     /** Current PTT state from the parent state machine. */
     mode: 'idle' | 'held' | 'latched';
-    /** Radio-level TX permit (capability / out-of-band). */
+    /** Advisory radio-level TX permit used only for presentation. */
     txPermit?: 'allowed' | 'denied';
     /** Called when a guarded press engages. Parent runs its pttDown(). */
     onDown: () => void;
     /** Called when the press ends. Parent runs its pttUp(). */
     onUp: () => void;
-    /** Called when an out-of-band first press is rejected (for toast). */
-    onPermitWarning?: () => void;
   }
 
-  let { mode, txPermit = 'allowed', onDown, onUp, onPermitWarning }: Props = $props();
+  let { mode, txPermit = 'allowed', onDown, onUp }: Props = $props();
 
   const HOLD_DELAY_MS = 50;
   const MOVE_CANCEL_PX = 8;
-  const PERMIT_ARM_WINDOW_MS = 2000;
 
   // Gesture state — local to this component.
   let holdTimer: ReturnType<typeof setTimeout> | null = null;
@@ -60,12 +55,6 @@
   let armedDown: (() => void) | null = null;
   let armedUp: (() => void) | null = null;
 
-  // TX-permit two-step arm state. First press arms; second press within
-  // the window engages. A timer resets armedAt back to 0 when the window
-  // lapses so the visual "armed" styling doesn't stick after timeout
-  // (codex P2 on PR #928).
-  let armedAt = $state(0);
-  let armedResetTimer: ReturnType<typeof setTimeout> | null = null;
 
   function vibrate(ms: number) {
     if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
@@ -95,27 +84,6 @@
     if (mode === 'latched') {
       onDown();
       return;
-    }
-
-    // TX-permit two-step: first press arms, second within window engages.
-    if (txPermit === 'denied') {
-      const now = Date.now();
-      if (now - armedAt > PERMIT_ARM_WINDOW_MS) {
-        armedAt = now;
-        if (armedResetTimer !== null) clearTimeout(armedResetTimer);
-        armedResetTimer = setTimeout(() => {
-          armedAt = 0;
-          armedResetTimer = null;
-        }, PERMIT_ARM_WINDOW_MS);
-        onPermitWarning?.();
-        return;
-      }
-      // Within the arm window — consume arm state and fall through to engage.
-      armedAt = 0;
-      if (armedResetTimer !== null) {
-        clearTimeout(armedResetTimer);
-        armedResetTimer = null;
-      }
     }
 
     // Capture so pointermove/pointerup still fire if the finger slides off.
@@ -159,19 +127,33 @@
     // Long-press should engage TX, not show a system context menu.
     event.preventDefault();
   }
+
+  function handleKeyDown(event: KeyboardEvent) {
+    if ((event.key !== ' ' && event.key !== 'Enter') || event.repeat) return;
+    event.preventDefault();
+    if (mode === 'latched') { onDown(); return; }
+    engaged = true; armedDown = onDown; armedUp = onUp; armedDown();
+  }
+
+  function handleKeyUp(event: KeyboardEvent) {
+    if (event.key !== ' ' && event.key !== 'Enter') return;
+    event.preventDefault(); handlePointerUp();
+  }
 </script>
 
 <button
   class="ptt-fab"
   class:ptt-fab-held={mode === 'held'}
   class:ptt-fab-latched={mode === 'latched'}
-  class:ptt-fab-armed={txPermit === 'denied' && armedAt !== 0}
   class:ptt-fab-permit-denied={txPermit === 'denied'}
   onpointerdown={handlePointerDown}
   onpointermove={handlePointerMove}
   onpointerup={handlePointerUp}
   onpointercancel={handlePointerUp}
   onlostpointercapture={() => cancelPress()}
+  onkeydown={handleKeyDown}
+  onkeyup={handleKeyUp}
+  onblur={() => cancelPress()}
   oncontextmenu={handleContextMenu}
   aria-label={mode === 'latched' ? 'Release TX lock' : 'Push to talk'}
 >
@@ -242,15 +224,9 @@
     50%      { box-shadow: 0 0 22px rgba(239, 68, 68, 0.9), 0 4px 12px rgba(0, 0, 0, 0.4); }
   }
 
-  /* Out-of-band: dim border until armed — signals "not allowed". */
+  /* Advisory permit styling never gates the server-admitted intent. */
   .ptt-fab-permit-denied {
     border-color: rgba(239, 68, 68, 0.35);
     color: rgba(239, 68, 68, 0.5);
-  }
-
-  .ptt-fab-armed {
-    /* Armed (first tap after denial): brighter border within 2s window. */
-    border-color: rgba(250, 204, 21, 0.85);
-    color: var(--v2-accent-yellow, #facc15);
   }
 </style>

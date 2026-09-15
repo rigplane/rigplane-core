@@ -18,6 +18,7 @@ import pytest
 
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_store import StateStore
+from rigplane.core.tx_observation import TxStateReading
 from rigplane.core.types import BreakInMode
 from rigplane.profiles import get_radio_profile
 from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
@@ -134,10 +135,10 @@ _CW_SPOT_CASES = (("global.slow_state.cw_spot", "cwSpot", True),)
 # (store path, public fieldStatus key, expected value) for the tone / CTCSS
 # squelch-type booleans (MOR-457). MAIN-only per-receiver operator toggles
 # (public ``main.repeaterTone``/``main.repeaterTsql``) derived from a single CAT
-# ``CT`` read on the slow-control lane. The fixture returns P2 code 2 ("TSQL"),
-# so repeater_tone=False and repeater_tsql=True.
+# ``CT`` read on the slow-control lane. The fixture returns P2 code 2 ("TSQL":
+# ENC ON / DEC ON), so both repeater_tone and repeater_tsql are True (MOR-2130).
 _CTCSS_CASES = (
-    ("receiver.main.operator_toggles.repeater_tone", "main.repeaterTone", False),
+    ("receiver.main.operator_toggles.repeater_tone", "main.repeaterTone", True),
     ("receiver.main.operator_toggles.repeater_tsql", "main.repeaterTsql", True),
 )
 
@@ -183,6 +184,7 @@ def _make_radio() -> MagicMock:
         "notch",
         "split",
         "rit",
+        "xit",
         "tuner",
         "dial_lock",
         "cw",
@@ -207,6 +209,10 @@ def _make_radio() -> MagicMock:
     radio.read_comp_meter = AsyncMock(return_value=30)
     radio.read_power_meter = AsyncMock(return_value=180)
     radio.read_swr_meter = AsyncMock(return_value=120)
+    # Drain meters (MOR-2425/T147), read in the slow lane: the raw values the
+    # 2026-09-08 read-only bench probe got from a receiving FTX-1.
+    radio.get_vd_meter = AsyncMock(return_value=212)
+    radio.get_id_meter = AsyncMock(return_value=0)
     # An unrelated RX-meter read used to prove no snap-back.
     radio.read_s_meter = AsyncMock(return_value=150)
     # Filter / IF-shift / narrow DSP controls (MOR-445). filter_width is read
@@ -214,7 +220,12 @@ def _make_radio() -> MagicMock:
     radio.read_freq = AsyncMock(side_effect=lambda receiver=0: 14_074_000)
     radio.read_mode = AsyncMock(side_effect=lambda receiver=0: ("USB", None))
     radio.get_tx_func = AsyncMock(return_value=0)
+    # Dual receive: CAT ``FR`` P1, 0 = dual receive, 1 = single receive.
+    radio.get_rx_func = AsyncMock(return_value=0)
     radio.read_ptt = AsyncMock(return_value=False)
+    radio.read_transmit_state = AsyncMock(
+        return_value=TxStateReading(False, "rx", "yaesu_poll_response", True)
+    )
     radio.read_filter_width = AsyncMock(return_value=500)
     radio.read_if_shift = AsyncMock(return_value=200)
     radio.read_narrow = AsyncMock(return_value=True)
@@ -238,7 +249,7 @@ def _make_radio() -> MagicMock:
     # Tuner + dial-lock observation reads (MOR-455). tuner_status is a global
     # operator-control int (raw device scale, 0-3); dial_lock is a global
     # tx_state bool — both ride the tx-control lane.
-    radio.read_tuner = AsyncMock(return_value=2)
+    radio.get_tuner_status = AsyncMock(return_value=2)
     radio.read_lock = AsyncMock(return_value=True)
     # CW keyer family observation reads (MOR-456). key_speed/cw_pitch/break_in/
     # break_in_delay ride the tx-control lane (global operator-control ints);
@@ -250,8 +261,9 @@ def _make_radio() -> MagicMock:
     radio.read_break_in_delay = AsyncMock(return_value=300)
     radio.read_cw_spot = AsyncMock(return_value=True)
     # Tone / CTCSS squelch-type observation read (MOR-457). ``read_sql_type``
-    # returns the CAT ``CT`` P2 code; code 2 ("TSQL": ENC+DEC) derives
-    # repeater_tone=False, repeater_tsql=True. MAIN-only, slow-control lane.
+    # returns the CAT ``CT`` P2 code; code 2 ("TSQL": ENC ON / DEC ON) derives
+    # repeater_tone=True, repeater_tsql=True (MOR-2130). MAIN-only, slow-control
+    # lane.
     radio.read_sql_type = AsyncMock(return_value=2)
     # CTCSS tone frequency observation read (MOR-458). ``read_ctcss_tone_index``
     # returns the CAT ``CN`` P3 tone-chart index; index 8 (88.5 Hz) maps to 8850
