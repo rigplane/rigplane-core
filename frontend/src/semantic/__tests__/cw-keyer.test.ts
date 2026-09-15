@@ -149,6 +149,44 @@ describe('cwKeyer (MOR-1262 slice 9A)', () => {
 });
 
 /**
+ * MOR-1682: the group optionally carries the profile-declared pitch display
+ * domain (`controls.cw_pitch`'s `{min, max, step, origin}`) — one control,
+ * one domain, sitting on the group beside the field it governs. Absent means
+ * the radio declared nothing usable; the group states the domain, never a
+ * fallback. Same `{min, max, step, origin}` shape the NR-level projection
+ * already validates.
+ */
+describe('cwKeyer.pitchDomain (MOR-1682)', () => {
+  const FTX1 = { min: 300, max: 1050, step: 10, origin: 300 } as const;
+
+  it('accepts a profile-declared pitchDomain and round-trips it unchanged', () => {
+    const withC = withCwKeyer(base);
+    const model = { ...withC, cwKeyer: { ...withC.cwKeyer, pitchDomain: FTX1 } };
+    const validated = validateRadioViewModel(model).cwKeyer as CwKeyerViewModel;
+    expect(validated.pitchDomain).toEqual({ min: 300, max: 1050, step: 10, origin: 300 });
+    expect(validated).toEqual(model.cwKeyer);
+  });
+
+  it('still validates without pitchDomain — absence is the no-usable-domain state', () => {
+    const withC = withCwKeyer(base);
+    expect(Object.keys(withC.cwKeyer as CwKeyerViewModel)).not.toContain('pitchDomain');
+    const validated = validateRadioViewModel(withC).cwKeyer as CwKeyerViewModel;
+    expect(validated.pitchDomain).toBeUndefined();
+  });
+
+  it.each([
+    ['a string in place of the group', '300..1050'],
+    ['a domain missing origin', { min: 300, max: 1050, step: 10 }],
+    ['a non-numeric bound', { min: '300', max: 1050, step: 10, origin: 300 }],
+    ['an extra key beyond the four domain keys', { min: 300, max: 1050, step: 10, origin: 300, unit: 'Hz' }],
+  ])('rejects %s', (_label, pitchDomain) => {
+    const withC = withCwKeyer(base);
+    const malformed = { ...withC, cwKeyer: { ...withC.cwKeyer, pitchDomain } };
+    expect(() => validateRadioViewModel(malformed)).toThrow(/\$\.cwKeyer\.pitchDomain/);
+  });
+});
+
+/**
  * SAFETY CONSTRAINTS 2 + 3, enforced structurally by the contract itself: a
  * producer cannot ship a usable break-in fact while dropping the record that
  * TX is not permitted. This is the CW analogue of MOR-1294's band invariant,
