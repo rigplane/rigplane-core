@@ -122,6 +122,25 @@ describe('normalized control capability domains', () => {
       controls: { gain: { ...cwPitch, decode_bogus: 1 } },
     })).toThrow(/unknown/);
   });
+  it('accepts legacy controls carrying encode_rounding', () => {
+    const cwPitch = {
+      raw_min: 0, raw_max: 255, display_min: 400, display_max: 1200,
+      display_unit: 'Hz', decode_quantum: 10, encode_rounding: 'ceil',
+    };
+    const keySpeed = {
+      raw_min: 0, raw_max: 255, display_min: 5, display_max: 50,
+      display_unit: 'WPM', decode_quantum: 1, encode_rounding: 'nearest_half_down',
+    };
+    const payload = { ...baseCapabilities, controls: { cw_pitch: cwPitch, key_speed: keySpeed } };
+    const parsed = validateCapabilities(payload);
+    // encode_rounding rides through the legacy path like decode_quantum;
+    // the payload is returned unchanged because no explicit domain key is present.
+    expect(parsed).toBe(payload);
+    expect(() => validateCapabilities({
+      ...baseCapabilities,
+      controls: { gain: { ...cwPitch, encode_bogus: 'ceil' } },
+    })).toThrow(/unknown/);
+  });
   it.each([
     ['identity', { ...linearDomain, mapping: 'identity', display_max: 10, display_step: 2 }],
     ['linear', linearDomain],
