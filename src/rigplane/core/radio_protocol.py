@@ -110,6 +110,7 @@ __all__ = [
     "RigctldFallbackCache",
     "RigctldRoutable",
     "RigctldRoutingStrategy",
+    "ControlDomainCapable",
     "SplitCapable",
     "StateNotifyCapable",
     "PhysicalWriteReadbackCapable",
@@ -1061,6 +1062,37 @@ class RigctldRoutable(Protocol):
         Returns:
             A :class:`RigctldRoutingStrategy` ready to serve get/set
             level, get/set func, ``dump_state``, and ``get_info`` calls.
+        """
+        ...
+
+
+@runtime_checkable
+class ControlDomainCapable(Protocol):
+    """Radio that converts between display values and raw control codes.
+
+    A backend whose active profile publishes normalized control domains
+    implements this surface so consumers (rigctld, web, CLI) can convert
+    between a domain's display values and its raw codes through the
+    backend, instead of each consumer re-deriving the profile math.
+    Both methods are synchronous and never touch the wire.
+    """
+
+    def snap_control_display(self, control: str, display: str) -> int | None:
+        """Return the raw code for the legal display value nearest *display*.
+
+        Ties snap to the larger display value. Returns ``None`` when the
+        radio publishes no normalized domain for *control* it can invert
+        to a raw code, or when *display* is not a canonical decimal
+        string. Raises ``ValueError`` when a normalized domain is
+        published and *display* lies outside its display range.
+        """
+        ...
+
+    def decode_control_raw(self, control: str, raw: int) -> str | None:
+        """Return the canonical display string for *raw*.
+
+        Returns ``None`` when the radio publishes no normalized domain
+        for *control*, or when *raw* is not a legal point on it.
         """
         ...
 

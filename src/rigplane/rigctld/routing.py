@@ -19,6 +19,7 @@ Architecture::
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from ..radio_protocol import Radio
     from .handler import _FallbackRigState  # noqa: TID251
 
+from ..core.radio_protocol import ControlDomainCapable
 from ..core.state_pipeline_contracts import FieldPath
 from .contract import HamlibError, RigctldResponse  # noqa: TID251
 
@@ -63,6 +65,54 @@ def _format_raw_scaled_float(value: Any, *, raw_divisor: float) -> str:
 def _format_strength(value: Any, *, raw_divisor: float) -> str:
     raw = int(value)
     return str(round((raw / raw_divisor) * 114.0 - 54.0))
+
+
+def _canonical_decimal(value: float) -> str | None:
+    """Render a finite float as a canonical decimal string.
+
+    ``1500.0`` → ``"1500"``, ``-0.0`` → ``"0"``; non-finite values
+    (NaN, infinities) return ``None``. The result feeds the backend's
+    control-domain surface, which parses canonical decimal strings only.
+    """
+    if not math.isfinite(value):
+        return None
+    rendered = format(value, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return "0" if rendered in {"0", "-0"} else rendered
+
+
+async def _set_snapped_level(
+    radio: "Radio",
+    control: str,
+    value: float,
+    apply: Callable[[int], Any],
+) -> RigctldResponse | None:
+    """Apply a hamlib level snapped onto the radio's control domain.
+
+    Routes through :class:`~rigplane.core.radio_protocol.ControlDomainCapable`:
+    the requested value is rendered as a canonical decimal, snapped to
+    the nearest legal display value (ties up) and applied as the raw
+    code. Returns the response when the domain surface decided the
+    outcome — including ``EINVAL`` for out-of-range values, with no
+    radio setter called — or ``None`` when the caller must take its
+    legacy rounded path: the radio does not implement the protocol,
+    publishes no normalized domain, or (test doubles) cannot supply a
+    usable raw code.
+    """
+    if not isinstance(radio, ControlDomainCapable):
+        return None
+    display = _canonical_decimal(value)
+    if display is None:
+        return None
+    try:
+        raw = radio.snap_control_display(control, display)
+    except ValueError:
+        return _err(HamlibError.EINVAL)
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        return None
+    await apply(raw)
+    return _ok()
 
 
 # ---------------------------------------------------------------------------
@@ -134,8 +184,6 @@ _YAESU_DUMP_STATE: list[str] = [
 class YaesuRouting:
     """Yaesu CAT routing for rigctl level/func commands."""
 
-    _CW_PITCH_BASE: int = 300
-    _CW_PITCH_STEP: int = 10
     _S_METER = FieldPath.receiver("main", "meters", "s_meter")
     _LEVEL_PATHS: dict[str, FieldPath] = {
         "STRENGTH": _S_METER,
@@ -282,6 +330,11 @@ class YaesuRouting:
             return RigctldResponse(values=[f"{raw / 15.0:.6f}"])
         if level == "NOTCHF":
             _, freq_idx = await radio.get_manual_notch()
+            if isinstance(radio, ControlDomainCapable):
+                display = radio.decode_control_raw("manual_notch_freq", freq_idx)
+                if isinstance(display, str):
+                    # FTX-1 domain: raw 1..320 ↔ 10..3200 Hz (MOR-2469).
+                    return RigctldResponse(values=[display])
             return RigctldResponse(values=[str(freq_idx)])
         if level == "IFSHIFT":
             return RigctldResponse(values=[str(await radio.get_if_shift())])
@@ -344,23 +397,30 @@ class YaesuRouting:
             await radio.set_nr_level(max(0, min(15, round(value * 15))))
             return _ok()
         if level == "NOTCHF":
+            snapped = await _set_snapped_level(
+                radio, "manual_notch_freq", value, radio.set_notch_filter
+            )
+            if snapped is not None:
+                return snapped
             await radio.set_notch_filter(round(value))
             return _ok()
         if level == "IFSHIFT":
+            snapped = await _set_snapped_level(
+                radio, "if_shift", value, radio.set_if_shift
+            )
+            if snapped is not None:
+                return snapped
             await radio.set_if_shift(round(value))
             return _ok()
         if level == "CWPITCH":
-            # radio.set_cw_pitch accepts Hz directly and clamps to FTX-1 range
-            # (300-1050) internally. Clamp here too for hamlib compatibility
-            # so an out-of-range hamlib value never bubbles a ValueError.
-            hz = max(
-                self._CW_PITCH_BASE,
-                min(
-                    self._CW_PITCH_BASE + 75 * self._CW_PITCH_STEP,
-                    round(value),
-                ),
+            snapped = await _set_snapped_level(
+                radio, "cw_pitch", value, radio.set_cw_pitch
             )
-            await radio.set_cw_pitch(hz)
+            if snapped is not None:
+                return snapped
+            # radio.set_cw_pitch accepts Hz directly; the profile's raw
+            # domain (300-1050, step 10) is enforced by the backend.
+            await radio.set_cw_pitch(round(value))
             return _ok()
         if level == "KEYSPD":
             await radio.set_key_speed(round(value))
