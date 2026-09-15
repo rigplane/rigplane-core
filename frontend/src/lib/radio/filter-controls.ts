@@ -515,11 +515,6 @@ export function nrRawToDisplay(raw: number, range?: ControlDisplayRange): number
   return controlRawToDisplay('nr_level', raw, CONTROL_DEFAULTS.nr_level, range);
 }
 
-/** Convert a 0-15 display value to the raw 0-255 NR wire value. */
-export function nrDisplayToRaw(display: number): number {
-  return controlDisplayToRaw('nr_level', display, CONTROL_DEFAULTS.nr_level);
-}
-
 /** Convert a raw 0-9 NB-depth wire value to the 1-10 display value. `range`
  *  (MOR-1290) is strictly additive — see `controlRawToDisplay`. */
 export function nbDepthRawToDisplay(raw: number, range?: ControlDisplayRange): number {
