@@ -32,6 +32,7 @@ from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...radio_state import RadioState
 from ...profiles.control_domain import (
+    control_display_band,
     decode_control_domain,
     encode_control_domain,
     snap_control_domain,
@@ -1520,17 +1521,22 @@ class YaesuCatRadio:
         per-receiver command (no ``RL1`` exists).
 
         Returns:
-            NR level (0 = OFF, 1–15 = level).
+            NR level (0 = OFF, 1–10 = level).
         """
         result = await self._query("get_nr_level")
         return int(result["level"])
 
     async def get_nr_level(self, receiver: int = 0) -> int:
-        """Get noise reduction level (0 = OFF, 1–15 = level)."""
+        """Get noise reduction level (0 = OFF, 1–10 = level)."""
         return await self.read_nr_level(receiver)
 
     async def set_nr_level(self, level: int, receiver: int = 0) -> None:
-        """Set noise reduction level (0 = OFF, 1–15 = level)."""
+        """Set noise reduction level (0 = OFF, 1–10 = level).
+
+        The value must lie on the profile's ``nr_level`` raw domain;
+        off-domain values raise ``ValueError`` before any CAT write.
+        """
+        validate_control_raw_value(self.profile.controls, "nr_level", level)
         await self._write("set_nr_level", level=level)
 
     async def read_auto_notch(self, receiver: int = 0) -> bool:
@@ -2760,6 +2766,23 @@ class YaesuCatRadio:
         if domain is None:
             return None
         return cast(str | None, decode_control_domain(domain, raw))
+
+    def control_display_bounds(self, control: str) -> tuple[str, str] | None:
+        """Return the canonical display ``(min, max)`` for *control*, or ``None``.
+
+        Implements the
+        :class:`~rigplane.core.radio_protocol.ControlDomainCapable`
+        contract: the band is read — never re-derived — through
+        :func:`rigplane.profiles.control_domain.control_display_band`
+        on the active profile's published controls, and its Decimal
+        bounds render back to the canonical decimal strings they were
+        declared with. ``None`` when the profile publishes no domain
+        for *control*.
+        """
+        band = control_display_band(self.profile.controls, control)
+        if band is None:
+            return None
+        return (str(band[0]), str(band[1]))
 
     async def get_dial_lock(self) -> bool:
         """Alias for AdvancedControlCapable compatibility."""

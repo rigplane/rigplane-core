@@ -3804,9 +3804,9 @@ def domain_yaesu_radio() -> AsyncMock:
     """Yaesu double whose control-domain surface is the real FTX-1 math.
 
     Like ``yaesu_radio`` but with ``snap_control_display`` /
-    ``decode_control_raw`` wired to a real :class:`YaesuCatRadio` built
-    from the shipping ``ftx1.toml``, so handler-level exercises hit the
-    actual backend implementation of
+    ``decode_control_raw`` / ``control_display_bounds`` wired to a real
+    :class:`YaesuCatRadio` built from the shipping ``ftx1.toml``, so
+    handler-level exercises hit the actual backend implementation of
     :class:`~rigplane.core.radio_protocol.ControlDomainCapable`.
     """
     from rigplane.rigctld.routing import YaesuRouting
@@ -3816,6 +3816,7 @@ def domain_yaesu_radio() -> AsyncMock:
     mock.backend_id = "yaesu_cat"
     mock.snap_control_display = real.snap_control_display
     mock.decode_control_raw = real.decode_control_raw
+    mock.control_display_bounds = real.control_display_bounds
     mock.rigctld_routing = lambda cache, max_power_w=100.0: YaesuRouting(
         mock, cache, max_power_w
     )
@@ -3903,6 +3904,35 @@ async def test_yaesu_get_level_notchf_undecodable_falls_back_to_raw(
     resp = await domain_yaesu_handler.execute(get_cmd("get_level", "NOTCHF"))
     assert resp.ok
     assert resp.values == ["0"]
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_nr_full_maps_onto_domain(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    """hamlib NR 1.0 writes the FTX-1 domain max 10, not 15 (MOR-2479)."""
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "NR", "1.0"))
+    assert resp.ok
+    domain_yaesu_radio.set_nr_level.assert_awaited_once_with(10)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_nr_half_maps_onto_domain(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "NR", "0.5"))
+    assert resp.ok
+    domain_yaesu_radio.set_nr_level.assert_awaited_once_with(5)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_level_nr_raw_max_answers_one(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    domain_yaesu_radio.get_nr_level.return_value = 10
+    resp = await domain_yaesu_handler.execute(get_cmd("get_level", "NR"))
+    assert resp.ok
+    assert resp.values == ["1.000000"]
 
 
 @pytest.mark.asyncio

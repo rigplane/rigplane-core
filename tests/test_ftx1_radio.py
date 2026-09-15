@@ -765,6 +765,30 @@ async def test_get_nr_level(connected_radio):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("level", [0, 5, 10])
+async def test_set_nr_level_accepts_domain_values(connected_radio, level):
+    """Values on the profile's nr_level raw domain (0-10, step 1) are
+    encoded as RL0 frames (MOR-2479)."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_nr_level(level)
+    connected_radio._transport.write.assert_called_once_with(f"RL0{level:02d};")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level", [11, 15, -1])
+async def test_set_nr_level_rejects_off_domain_without_cat_write(
+    connected_radio, level
+):
+    """Values outside the profile's nr_level raw domain raise ValueError
+    and never reach the wire (MOR-2479). 15 — the old hamlib ceiling —
+    is off-domain: the FTX-1 manual caps RL at 10."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="nr_level must be within 0-10"):
+        await connected_radio.set_nr_level(level)
+    connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_auto_notch_on(connected_radio):
     connected_radio._transport.query = AsyncMock(return_value="BC01")
     assert await connected_radio.get_auto_notch() is True
@@ -2167,6 +2191,20 @@ def test_decode_control_raw_out_of_range_returns_none(radio):
 
 def test_decode_control_raw_no_domain_returns_none(radio):
     assert radio.decode_control_raw("no_such_control", 100) is None
+
+
+def test_control_display_bounds_nr_level(radio):
+    """The FTX-1 publishes nr_level as an identity 0-10 domain (MOR-2479)."""
+    assert radio.control_display_bounds("nr_level") == ("0", "10")
+
+
+def test_control_display_bounds_other_domains(radio):
+    assert radio.control_display_bounds("cw_pitch") == ("300", "1050")
+    assert radio.control_display_bounds("manual_notch_freq") == ("10", "3200")
+
+
+def test_control_display_bounds_no_domain_returns_none(radio):
+    assert radio.control_display_bounds("no_such_control") is None
 
 
 def test_control_domain_capable_isinstance(radio):
