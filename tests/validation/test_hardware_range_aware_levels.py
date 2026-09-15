@@ -14,7 +14,7 @@ This module proves the range-aware nudge:
   Icom-style 0-255 controls;
 * NEVER writes a value outside the resolved band (asserted on every write);
 * steps DOWN when the original sits at the ceiling;
-* defaults to 0-255 when no range is declared (rf_power/mic_gain).
+* SKIPs honestly when no range is declared (MOR-2476: never an assumed 0-255).
 """
 
 from __future__ import annotations
@@ -118,6 +118,18 @@ class _StatefulLevelRadio:
     async def set_mic_gain(self, level: int) -> None:
         self._set("mic_gain", level)
 
+    async def get_rf_gain(self, receiver: int = 0) -> int:
+        return self._values["rf"]
+
+    async def set_rf_gain(self, level: int, receiver: int = 0) -> None:
+        self._set("rf", level)
+
+    async def get_af_level(self, receiver: int = 0) -> int:
+        return self._values["af"]
+
+    async def set_af_level(self, level: int, receiver: int = 0) -> None:
+        self._set("af", level)
+
     async def get_compressor_level(self) -> int:
         return self._values["comp"]
 
@@ -137,7 +149,7 @@ class _StatefulLevelRadio:
         self._set("nb", level)
 
 
-_ALL_CAPS = {"power_control", "compressor", "nr", "nb"}
+_ALL_CAPS = {"power_control", "compressor", "nr", "nb", "rf_gain", "af_level"}
 
 
 def _make_radio(
@@ -150,11 +162,22 @@ def _make_radio(
     return _StatefulLevelRadio(
         capabilities=_ALL_CAPS,
         controls=controls,
-        initial=initial or {"rf_power": 0, "mic_gain": 0, "comp": 0, "nr": 0, "nb": 0},
+        initial=initial
+        or {
+            "rf_power": 0,
+            "mic_gain": 0,
+            "rf": 100,
+            "af": 100,
+            "comp": 0,
+            "nr": 0,
+            "nb": 0,
+        },
         bands=bands
         or {
             "rf_power": (0, 255),
             "mic_gain": (0, 255),
+            "rf": (0, 255),
+            "af": (0, 255),
             "comp": (0, 255),
             "nr": (0, 255),
             "nb": (0, 255),
@@ -204,15 +227,61 @@ def test_resolve_range_reads_raw_min_max_icom_style():
     assert _resolve_level_range(radio, "comp_level.set") == (0, 255)
 
 
-def test_resolve_range_defaults_to_0_255_when_undeclared():
+def test_resolve_range_returns_none_when_undeclared():
+    """No declared band -> None, never an assumed 0-255 (MOR-2476)."""
     radio = _make_radio(controls={})  # nothing declared
-    assert _resolve_level_range(radio, "rf_power.set") == (0, 255)
-    assert _resolve_level_range(radio, "mic_gain.set") == (0, 255)
+    assert _resolve_level_range(radio, "rf_power.set") is None
+    assert _resolve_level_range(radio, "mic_gain.set") is None
+    # A check_id with no candidate keys at all declares nothing either.
+    assert _resolve_level_range(radio, "not_a_check.set") is None
 
 
-def test_resolve_range_no_profile_defaults_to_0_255():
+def test_resolve_range_no_profile_returns_none():
+    """A radio with no profile (external rigctld) declares no band."""
     radio = _make_radio(controls=None)  # radio has no profile
-    assert _resolve_level_range(radio, "nb_level.set") == (0, 255)
+    assert _resolve_level_range(radio, "nb_level.set") is None
+
+
+def test_resolve_range_prefers_raw_axis_when_display_band_also_declared():
+    """Level wire ops write the raw scale: a control declaring BOTH a legacy
+    display band and raw bounds (IC-7610 nr_level: display 0-15 over raw
+    0-255) resolves the raw pair, not its panel-display band."""
+    radio = _make_radio(
+        controls={
+            "nr_level": {
+                "raw_min": 0,
+                "raw_max": 255,
+                "display_min": 0,
+                "display_max": 15,
+            }
+        }
+    )
+    assert _resolve_level_range(radio, "nr_level.set") == (0, 255)
+
+
+def test_resolve_range_normalized_control_resolves_its_raw_bounds():
+    """A normalized domain (FTX-1 nr_level: identity raw 0-10) resolves its
+    declared raw bounds — identical to its display band there, but explicitly
+    the wire axis."""
+    radio = _make_radio(
+        controls={
+            "nr_level": {
+                "mapping": "identity",
+                "raw_min": 0,
+                "raw_max": 10,
+                "raw_step": 1,
+                "raw_origin": 0,
+                "display_min": "0",
+                "display_max": "10",
+                "display_step": "1",
+                "display_origin": "0",
+                "display_unit": "level",
+                "quantization": "reject",
+                "restoration": "exact",
+            }
+        }
+    )
+    assert _resolve_level_range(radio, "nr_level.set") == (0, 10)
 
 
 # --- integration: RMVR through execute_hardware_checks ---------------------
@@ -342,15 +411,26 @@ async def test_small_range_level_at_ceiling_steps_down_and_passes():
     assert radio.writes["nr"][-1] == 10  # restored
 
 
-async def test_undeclared_range_levels_nudge_in_0_255():
-    """rf_power/mic_gain without a declared control still nudge inside 0-255."""
+async def test_undeclared_range_levels_skip_without_writing():
+    """rf_power/mic_gain without a declared control SKIP honestly — the
+    harness refuses to assume a 0-255 band (MOR-2476)."""
     for check_id, key in (("rf_power.set", "rf_power"), ("mic_gain.set", "mic_gain")):
         radio = _make_radio(
-            controls={},  # no control declarations -> default 0-255
-            initial={"rf_power": 100, "mic_gain": 100, "comp": 50, "nr": 5, "nb": 5},
+            controls={},  # no control declarations -> honest SKIP
+            initial={
+                "rf_power": 100,
+                "mic_gain": 100,
+                "rf": 100,
+                "af": 100,
+                "comp": 50,
+                "nr": 5,
+                "nb": 5,
+            },
             bands={
                 "rf_power": (0, 255),
                 "mic_gain": (0, 255),
+                "rf": (0, 255),
+                "af": (0, 255),
                 "comp": (0, 100),
                 "nr": (0, 10),
                 "nb": (0, 10),
@@ -366,14 +446,43 @@ async def test_undeclared_range_levels_nudge_in_0_255():
             radio, template, OperatorSafetyBlock(), allow_writes=True
         )
         check = _flatten(levels)[check_id]
-        assert check.status is CheckStatus.PASS, (
-            f"{check_id}: expected PASS, got {check.status} ({check.error})"
+        assert check.status is CheckStatus.SKIP, (
+            f"{check_id}: expected SKIP, got {check.status} ({check.error})"
         )
-        writes = radio.writes[key]
-        assert writes, f"{check_id}: expected at least one write"
-        for value in writes:
-            assert 0 <= value <= 255, f"{check_id}: wrote {value} outside [0, 255]"
-        assert writes[-1] == 100  # restored
+        assert check.evidence["reason"] == (
+            f"no declared range for control '{key}' in the active profile; "
+            "refusing to assume one"
+        )
+        assert radio.writes[key] == []  # never wrote
+
+
+async def test_named_level_handlers_skip_without_declared_range():
+    """The named rf_gain/af_level handlers SKIP (not a 0-255 assumption) when
+    the profile declares no band for the control."""
+    for check_id, key, capability in (
+        ("rf_gain.set", "rf", "rf_gain"),
+        ("af_level.set", "af", "af_level"),
+    ):
+        radio = _make_radio(controls={})
+        template = _single_entry_template(
+            model="FTX-1",
+            profile_id="ftx1",
+            check_id=check_id,
+            capability=capability,
+        )
+        levels = await execute_hardware_checks(
+            radio, template, OperatorSafetyBlock(), allow_writes=True
+        )
+        check = _flatten(levels)[check_id]
+        assert check.status is CheckStatus.SKIP, (
+            f"{check_id}: expected SKIP, got {check.status} ({check.error})"
+        )
+        control = "rf_gain" if key == "rf" else "af_level"
+        assert check.evidence["reason"] == (
+            f"no declared range for control '{control}' in the active profile; "
+            "refusing to assume one"
+        )
+        assert radio.writes[key] == []
 
 
 async def test_out_of_band_original_skips_rather_than_writes():
