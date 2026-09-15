@@ -58,13 +58,12 @@
 
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const row = (field: CwContinuousField) => CW_CONTINUOUS_LEVELS.find(([f]) => f === field)!;
-  // MOR-1682: pitch limits come from the profile's published control domain
-  // on the view model when it carries one (FTX-1: 300..1050, step 10;
-  // IC-7300 legacy: 300..900 with the 5 Hz fallback step); every other field,
-  // and a radio that publishes no usable domain, keeps the row constant.
+  // MOR-1682 / MOR-2475 F1: each field's limits come from the profile's
+  // published control domain on the view model when it carries one; a
+  // field with no usable published domain keeps the row constant.
   const limits = (field: CwContinuousField): Readonly<{ min: number; max: number; step: number }> => {
     const [, , min, max, step] = row(field);
-    const domain = field === 'pitchHz' ? view?.cwKeyer?.pitchDomain : undefined;
+    const domain = field === 'pitchHz' ? view?.cwKeyer?.pitchDomain : view?.cwKeyer?.keySpeedDomain;
     return domain === undefined ? { min, max, step } : { min: domain.min, max: domain.max, step: domain.step };
   };
   const usable = (current: CwKeyerField<unknown> | undefined): boolean =>

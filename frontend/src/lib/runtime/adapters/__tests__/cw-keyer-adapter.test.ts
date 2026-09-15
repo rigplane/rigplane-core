@@ -451,3 +451,36 @@ describe('cwKeyer determinism in (state, caps) (MOR-1296)', () => {
       .not.toEqual(model(withState(18), cwCaps(['cw'])).cwKeyer!.apf.availability);
   });
 });
+
+describe('cwKeyer profile-declared control domains (MOR-1682, MOR-2475 F1)', () => {
+  const withControls = (controls: Record<string, unknown>): Capabilities => ({
+    ...cwCaps(), controls,
+  }) as Capabilities;
+
+  it('derives keySpeedDomain from controls.key_speed exactly as pitchDomain from controls.cw_pitch', () => {
+    const view = model(bareState(), withControls({
+      key_speed: {
+        raw_min: 0, raw_max: 255, display_min: 5, display_max: 50,
+        display_unit: 'WPM', decode_quantum: 1,
+      },
+      cw_pitch: {
+        raw_min: 0, raw_max: 255, display_min: 400, display_max: 1200,
+        display_unit: 'Hz', decode_quantum: 10,
+      },
+    }));
+    expect(view.cwKeyer!.keySpeedDomain).toEqual({ min: 5, max: 50, step: 1, origin: 5 });
+    expect(view.cwKeyer!.pitchDomain).toEqual({ min: 400, max: 1200, step: 10, origin: 400 });
+  });
+
+  it('keeps both domain keys absent when the profile publishes no usable control entries', () => {
+    const view = model(bareState(), cwCaps());
+    expect(Object.keys(view.cwKeyer!)).not.toContain('keySpeedDomain');
+    expect(Object.keys(view.cwKeyer!)).not.toContain('pitchDomain');
+    const legacyNoQuantum = model(bareState(), withControls({
+      key_speed: { raw_min: 0, raw_max: 255 },
+      cw_pitch: { raw_min: 0, raw_max: 255 },
+    }));
+    expect(Object.keys(legacyNoQuantum.cwKeyer!)).not.toContain('keySpeedDomain');
+    expect(Object.keys(legacyNoQuantum.cwKeyer!)).not.toContain('pitchDomain');
+  });
+});

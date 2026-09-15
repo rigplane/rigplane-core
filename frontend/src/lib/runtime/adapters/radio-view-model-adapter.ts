@@ -1343,10 +1343,13 @@ function deriveCwKeyer(state: ServerState | null, caps: Capabilities | null): Cw
   const base = onSub ? 'sub.' : 'main.';
   const dashRatio = numOrUndef(state?.dashRatio);
   // MOR-1682: the pitch domain comes from the profile's published
-  // `controls.cw_pitch` entry — exact domain (FTX-1: 300..1050, step 10) or
-  // legacy range with the 5 Hz fallback step. No usable entry keeps the key
-  // absent so surfaces fall back to their own today-behaviour constants.
+  // `controls.cw_pitch` entry — exact domain or legacy range (its step is
+  // the entry's decode_quantum when published, else the 5 Hz fallback step).
+  // MOR-2475 F1: key speed takes the same path from `controls.key_speed`
+  // with the 1 WPM fallback step. No usable entry keeps the key absent so
+  // surfaces fall back to their own today-behaviour constants.
   const pitchDomain = controlDisplayDomain(caps?.controls?.cw_pitch, 5);
+  const keySpeedDomain = controlDisplayDomain(caps?.controls?.key_speed, 1);
   return {
     breakIn: txAuxField(hasBreakInCap, topFieldAvailable(state, 'breakIn'), breakInMode(state?.breakIn)),
     breakInDelay: txAuxField(
@@ -1355,6 +1358,7 @@ function deriveCwKeyer(state: ServerState | null, caps: Capabilities | null): Cw
     keyerSpeed: txAuxField(true, topFieldAvailable(state, 'keySpeed'), numOrUndef(state?.keySpeed)),
     pitchHz: txAuxField(true, topFieldAvailable(state, 'cwPitch'), numOrUndef(state?.cwPitch)),
     ...(pitchDomain !== null ? { pitchDomain } : {}),
+    ...(keySpeedDomain !== null ? { keySpeedDomain } : {}),
     reversePaddle: txAuxField(
       true, topFieldAvailable(state, 'dashRatio'), dashRatio === undefined ? undefined : dashRatio < 0,
     ),
