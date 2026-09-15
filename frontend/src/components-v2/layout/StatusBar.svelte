@@ -134,13 +134,16 @@
 
   let radioPowerOn = $derived(getRadioPowerOn());
   let isPoweredOff = $derived(radioPowerOn === false);
-  // MOR-1673: radios without power_control (e.g. FTX-1) must not offer a
-  // power toggle at all — the button hides, and handlePowerToggle re-checks
-  // this before confirming or dispatching.
+  // MOR-1673: radios without power_control (e.g. FTX-1) cannot toggle
+  // power — the button stays rendered but disabled so the status-bar
+  // layout does not shift (owner decision 2026-09-15), and
+  // handlePowerToggle re-checks this before confirming or dispatching.
   let powerControlSupported = $derived(hasCapability('power_control'));
 
   let powerTooltip = $derived(
-    radioPowerOn === true
+    !powerControlSupported
+      ? t('core.statusbar.power.unsupported')
+      : radioPowerOn === true
       ? t('core.statusbar.power.toggleOn')
       : radioPowerOn === false
         ? t('core.statusbar.power.toggleOff')
@@ -463,20 +466,18 @@
       <Unplug size={14} strokeWidth={2} />
       <span class="btn-label">{controlState === 'connected' ? t('core.statusbar.connection.actionDisconnect') : t('core.statusbar.connection.actionConnect')}</span>
     </button>
-    {#if powerControlSupported}
-      <button
-        type="button"
-        class="control-btn power-toggle-btn"
-        class:is-on={radioPowerOn === true}
-        class:power-unknown={radioPowerOn === null}
-        disabled={radioPowerOn === null}
-        onclick={handlePowerToggle}
-        title={powerTooltip}
-      >
-        <Power size={14} strokeWidth={2} />
-        <span class="btn-label">{powerLabel}</span>
-      </button>
-    {/if}
+    <button
+      type="button"
+      class="control-btn power-toggle-btn"
+      class:is-on={radioPowerOn === true}
+      class:power-unknown={radioPowerOn === null}
+      disabled={radioPowerOn === null || !powerControlSupported}
+      onclick={handlePowerToggle}
+      title={powerTooltip}
+    >
+      <Power size={14} strokeWidth={2} />
+      <span class="btn-label">{powerLabel}</span>
+    </button>
   </div>
 </div>
 
@@ -731,6 +732,16 @@
   :global(.desktop-control-face.standard-face) .status-bar .status-controls .power-toggle-btn.power-toggle-btn.is-on:hover:not(:disabled) {
     border-color: var(--v2-accent-red, #ef4444);
     color: var(--v2-accent-red, #ef4444);
+  }
+
+  /* MOR-1673: an unsupported radio keeps the button rendered, disabled,
+     for layout stability. With a known power state it must look exactly
+     like the enabled toggle on main (production visual baselines are
+     pixel-compared), so the generic .control-btn:disabled dimming is
+     undone — same doctrine as the active VFO select in
+     semantic-controls.css. Unknown-state rendering keeps the dimming. */
+  .power-toggle-btn:disabled:not(.power-unknown) {
+    opacity: 1;
   }
 
   /* MOR-1673: unknown power state renders neutral — no green/red toggle

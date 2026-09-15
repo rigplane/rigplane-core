@@ -38,6 +38,7 @@
   "core.statusbar.power.toggleOn": "電源切り替え (トランシーバーは ON — クリックで電源オフ)",
   "core.statusbar.power.toggleOff": "電源切り替え (トランシーバーは OFF — クリックで電源オン)",
   "core.statusbar.power.toggleUnknown": "トランシーバーの電源状態は不明",
+  "core.statusbar.power.unsupported": "このトランシーバーは電源制御に対応していません",
   "core.statusbar.power.confirmTurnOff": "トランシーバーの電源を切りますか?",
   "core.statusbar.power.confirmTurnOn": "トランシーバーの電源を入れますか?",
   "core.statusbar.power.failedTurnOff": "トランシーバーの電源を切れませんでした: {detail}",
