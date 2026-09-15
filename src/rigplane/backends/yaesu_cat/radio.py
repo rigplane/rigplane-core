@@ -1445,11 +1445,6 @@ class YaesuCatRadio:
     def project_attenuator_observation_value(self, db: int) -> int:
         return int(db > 0)
 
-    def attenuator_db_steps(self) -> tuple[int, ...] | None:
-        """Legal attenuator dB steps declared by the active profile."""
-        steps: tuple[int, ...] | None = self.profile.att_values
-        return steps
-
     async def set_attenuator_level(self, db: int, receiver: int = 0) -> None:
         """Set attenuator by dB level.
 

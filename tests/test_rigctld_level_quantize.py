@@ -594,13 +594,8 @@ def test_nb_state_path_unpublished_domain_keeps_legacy_scale() -> None:
 
 
 # ---------------------------------------------------------------------------
-# FTX-1 backend surface — published nb_level domain and attenuator steps
+# FTX-1 backend surface — published nb_level domain
 # ---------------------------------------------------------------------------
-
-
-def test_ftx1_attenuator_db_steps() -> None:
-    """The FTX-1 publishes its on/off attenuator as the legal dB steps."""
-    assert YaesuCatRadio("/dev/null", profile="ftx1").attenuator_db_steps() == (0, 1)
 
 
 def test_ftx1_nb_level_display_bounds() -> None:

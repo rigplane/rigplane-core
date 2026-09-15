@@ -635,6 +635,8 @@ style = "level_is_toggle"
 range_min = 0
 range_max = 10
 
+# NL (NOISE BLANKER LEVEL) per the FTX-1 CAT Operation Reference Manual
+# rev 2508-C: P2 000 = OFF, 001-010 = NB level.
 [controls.nb_level]
 mapping = "identity"
 raw_min = 0
