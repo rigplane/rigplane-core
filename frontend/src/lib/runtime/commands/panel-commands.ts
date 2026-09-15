@@ -5,9 +5,8 @@
  * `components-v2/wiring/command-bus` is an identity-preserving compatibility
  * re-export only.
  *
- * Do NOT import from `components-v2/*` here.  Pure filter helpers are
- * inlined below (originate from `components-v2/panels/filter-controls`)
- * until a neutral `$lib/radio/filter-controls` module is introduced by #996.
+ * Do NOT import from `components-v2/*` here.  Pure filter helpers come
+ * from `$lib/radio/filter-controls`.
  *
  * See issue #999, parent #959 (M-4).
  */

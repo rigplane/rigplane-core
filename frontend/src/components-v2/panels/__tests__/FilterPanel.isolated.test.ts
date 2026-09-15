@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { formatFilterWidth } from '../filter-utils';
-import { deriveIfShift } from '../filter-controls';
 import { setLocale } from '$lib/i18n';
+import { deriveIfShift } from '$lib/radio/filter-controls';
 import type { CommandScalarFeedback } from '../../../primitives/scalar/continuous-scalar.svelte';
 import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
 

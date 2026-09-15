@@ -429,10 +429,6 @@ vi.mock('../passband-geometry', () => ({
   }),
 }));
 
-vi.mock('../../../../components-v2/panels/filter-controls', () => ({
-  deriveIfShift: vi.fn(() => 0),
-}));
-
 vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => ({
   ...await importOriginal<typeof import('$lib/runtime/props/panel-props')>(),
   resolveFilterModeConfig: vi.fn((caps: { filterConfig?: Record<string, unknown> }, mode: string) =>
