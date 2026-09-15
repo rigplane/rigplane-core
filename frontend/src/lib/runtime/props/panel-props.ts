@@ -800,6 +800,13 @@ export interface CwProps {
    * `CwPanel.svelte` keeps its own 300/900/5 constants for that case.
    */
   cwPitchDomain: ControlDisplayDomain | null;
+  /**
+   * The key-speed control's display domain from the profile's
+   * `controls.key_speed` entry (MOR-2475 F1), derived exactly like
+   * `cwPitchDomain` above it; null when the radio publishes nothing
+   * usable — `CwPanel.svelte` keeps its own 6/48/1 constants for that case.
+   */
+  keySpeedDomain: ControlDisplayDomain | null;
 }
 
 export function toCwProps(
@@ -840,6 +847,7 @@ export function toCwProps(
       && hasCap(caps, 'audio')
       && caps?.audioFftAvailable === true,
     cwPitchDomain: controlDisplayDomain(caps?.controls?.cw_pitch, 5),
+    keySpeedDomain: controlDisplayDomain(caps?.controls?.key_speed, 1),
   };
 }
 

@@ -19,6 +19,7 @@ const mockProps = {
   hasTwinPeak: true,
   autoTuneAvailable: false,
   cwPitchDomain: null as ControlDisplayDomain | null,
+  keySpeedDomain: null as ControlDisplayDomain | null,
 };
 
 const mockHandlers = {
@@ -81,7 +82,7 @@ function mountPanel(overrides?: Partial<typeof mockProps>) {
       apfMode: 0, twinPeak: false, currentMode: 'CW',
       apfDisabled: false, tpfDisabled: false,
       hasCw: true, hasBreakIn: true, hasApf: true, hasTwinPeak: true,
-      autoTuneAvailable: false, cwPitchDomain: null,
+      autoTuneAvailable: false, cwPitchDomain: null, keySpeedDomain: null,
     });
   Object.values(mockHandlers).forEach((fn) => fn.mockClear());
   Object.assign(mockFeedback, {
@@ -248,6 +249,33 @@ describe('CwPanel CW pitch domain (MOR-1682)', () => {
     const t = mountPanel({ cwPitchDomain: null });
     stepPitch(t);
     expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(605);
+    vi.useRealTimers();
+  });
+});
+
+describe('CwPanel key-speed domain (MOR-2475 F1)', () => {
+  const slider = (t: HTMLElement) =>
+    t.querySelector<HTMLElement>('[aria-label="Key Speed"][role="slider"]')!;
+
+  it('ranges and steps the key-speed control by the profile domain', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ keySpeedDomain: { min: 5, max: 50, step: 1, origin: 5 } });
+    expect(slider(t).getAttribute('aria-valuemin')).toBe('5');
+    expect(slider(t).getAttribute('aria-valuemax')).toBe('50');
+    slider(t).dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(mockHandlers.onKeySpeedChange).toHaveBeenCalledExactlyOnceWith(50);
+    vi.useRealTimers();
+  });
+
+  it('keeps the 6..48 fallback when the profile publishes no key_speed domain', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ keySpeedDomain: null });
+    expect(slider(t).getAttribute('aria-valuemin')).toBe('6');
+    expect(slider(t).getAttribute('aria-valuemax')).toBe('48');
+    slider(t).dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(mockHandlers.onKeySpeedChange).toHaveBeenCalledExactlyOnceWith(48);
     vi.useRealTimers();
   });
 });

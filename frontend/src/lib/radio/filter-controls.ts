@@ -319,12 +319,14 @@ function exactNrLevelDisplayDomain(domain: ControlDomain): NrLevelDisplayDomain 
  * display lattice, validated by the same decode/encode origin round-trip
  * `exactNrLevelDisplayDomain` applies to NR level; a legacy `ControlRange`
  * with finite `display_min < display_max` contributes those bounds with the
- * CALLER's fallback step anchored at `display_min` (the caller knows its own
- * today-behaviour step; this helper never invents one). Anything else —
- * absent entry, legacy entry without usable display bounds, an exact domain
- * that fails the round-trip — returns `null`, and the surface keeps its own
- * explicit fallback. Later MOR-1681/MOR-1680 consumers pass their own
- * fallback steps; no per-control constants live here.
+ * entry's own `decode_quantum` as the step when it is a positive integer,
+ * otherwise the CALLER's fallback step anchored at `display_min` (the caller
+ * knows its own today-behaviour step; this helper never invents one).
+ * Anything else — absent entry, legacy entry without usable display bounds,
+ * an exact domain that fails the round-trip — returns `null`, and the
+ * surface keeps its own explicit fallback. Later MOR-1681/MOR-1680
+ * consumers pass their own fallback steps; no per-control constants live
+ * here.
  */
 export function controlDisplayDomain(
   control: CapabilityControlRange | ControlDomain | null | undefined,
@@ -335,7 +337,10 @@ export function controlDisplayDomain(
   const { display_min: min, display_max: max } = control;
   if (typeof min !== 'number' || !Number.isFinite(min)
     || typeof max !== 'number' || !Number.isFinite(max) || max <= min) return null;
-  return { min, max, step: fallbackStep, origin: min };
+  const step = Number.isSafeInteger(control.decode_quantum) && (control.decode_quantum as number) > 0
+    ? control.decode_quantum as number
+    : fallbackStep;
+  return { min, max, step, origin: min };
 }
 
 function legacyNrLevelContract(
