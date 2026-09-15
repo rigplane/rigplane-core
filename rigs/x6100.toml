@@ -253,7 +253,7 @@ raw_max = 255
 display_min = 300
 display_max = 900
 display_unit = "Hz"
-decode_quantum = 10  # CW side-tone menu step 10 Hz -- Radioddity Extended manual for Xiegu X6100 v1.1.8 section 10.3.4 (MOR-2489)
+decode_quantum = 5  # reproduces the pre-existing shared CI-V CW-pitch decode; the manual's menu step is 10 Hz (Radioddity Extended manual for Xiegu X6100 v1.1.8 section 10.3.4) and the CI-V table states no Hz scale
 
 [controls.key_speed]
 raw_min = 0

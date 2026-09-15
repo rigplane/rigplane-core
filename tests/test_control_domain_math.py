@@ -1026,8 +1026,10 @@ _ICOM_KEY_SPEED_WPM = (
 )
 
 
-@pytest.mark.parametrize("rig", ["ic7300", "ic7610", "ic9700", "ic705"])
-def test_icom_cw_pitch_decode_matches_the_deleted_formula_vectors(rig: str) -> None:
+@pytest.mark.parametrize("rig", ["ic7300", "ic7610", "ic9700", "ic705", "x6100"])
+def test_ci_v_cw_pitch_decode_matches_the_deleted_formula_vectors(rig: str) -> None:
+    # The X6100 profile keeps the quantum of the shared CI-V CW-pitch decode
+    # origin/main used, so its vectors are identical.
     controls = _rig_domains(rig)
     for raw in range(256):
         assert (
