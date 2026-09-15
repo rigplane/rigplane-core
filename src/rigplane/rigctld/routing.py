@@ -281,7 +281,6 @@ class YaesuRouting:
 
         if level in ("STRENGTH", "RAWSTR"):
             raw = await radio.get_s_meter()
-            self._cache.update_s_meter(raw)
             self._observe(self.state_path_for_level(level), raw)
             if level == "STRENGTH":
                 return RigctldResponse(
@@ -292,12 +291,10 @@ class YaesuRouting:
         if level == "RFPOWER":
             raw = await radio.get_rf_power()
             n = raw / self._max_power_w
-            self._cache.update_rf_power(n)
             return RigctldResponse(values=[f"{n:.6f}"])
 
         if level == "SWR":
             swr = float(await radio.get_swr())
-            self._cache.update_swr(swr)
             return RigctldResponse(values=[f"{swr:.6f}"])
 
         # 0–255 → 0.0–1.0
