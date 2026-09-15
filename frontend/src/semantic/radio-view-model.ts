@@ -423,6 +423,16 @@ export interface FilterPassbandViewModel {
    * fact about the radio MODEL, not a live reading that can itself go stale.
    */
   ifShiftControlStructural: boolean;
+  /**
+   * The IF-shift control's numeric display domain from the profile's
+   * published `controls.if_shift` entry (MOR-1681): `{min, max, step,
+   * origin}` when the radio declares a usable one, absent when it declares
+   * nothing usable — the fact group states the DOMAIN, never a fallback;
+   * consumers keep their own today-behaviour constants for the absent
+   * case. Not a per-field reading: one control, one domain, so it sits on
+   * the group beside the field it governs.
+   */
+  ifShiftDomain?: ControlDisplayDomain;
   pbtInner: DisplayObservedField<number>;
   pbtOuter: DisplayObservedField<number>;
   dataMode: FilterPassbandField<number>;
@@ -1851,18 +1861,23 @@ function validateFilterPassband(value: unknown, path: string): FilterPassbandVie
     v,
     [
       'filterShape', 'filterShapeControlStructural', 'ifShift', 'ifShiftControlStructural',
-      'pbtInner', 'pbtOuter', 'dataMode', 'dataModeChoices', 'modInputSource', 'modInputChoices',
+      'ifShiftDomain', 'pbtInner', 'pbtOuter', 'dataMode', 'dataModeChoices', 'modInputSource',
+      'modInputChoices',
     ],
     path,
   );
   const hasModInputSource = v.modInputSource !== undefined;
   const hasModInputChoices = v.modInputChoices !== undefined;
   if (hasModInputSource !== hasModInputChoices) invalid(path, 'MOD input source and choices together');
+  const ifShiftDomain = optionalGroup(
+    v.ifShiftDomain, `${path}.ifShiftDomain`, validateNrLevelDisplayDomain,
+  );
   return {
     filterShape: validateTxAuxField(v.filterShape, `${path}.filterShape`, num),
     filterShapeControlStructural: bool(v.filterShapeControlStructural, `${path}.filterShapeControlStructural`),
     ifShift: validateTxAuxField(v.ifShift, `${path}.ifShift`, num),
     ifShiftControlStructural: bool(v.ifShiftControlStructural, `${path}.ifShiftControlStructural`),
+    ...(ifShiftDomain !== undefined ? { ifShiftDomain } : {}),
     pbtInner: validateDisplayObservedField(v.pbtInner, `${path}.pbtInner`, num),
     pbtOuter: validateDisplayObservedField(v.pbtOuter, `${path}.pbtOuter`, num),
     dataModeChoices: validateDataModeChoices(v.dataModeChoices, `${path}.dataModeChoices`),

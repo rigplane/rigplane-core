@@ -5,6 +5,7 @@ import { formatFilterWidth } from '../filter-utils';
 import { deriveIfShift } from '../filter-controls';
 import { setLocale } from '$lib/i18n';
 import type { CommandScalarFeedback } from '../../../primitives/scalar/continuous-scalar.svelte';
+import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
 
 const mockProps = {
   currentMode: 'USB',
@@ -27,6 +28,7 @@ const mockProps = {
   hasPbt: false,
   pbtInner: 0,
   pbtOuter: 0,
+  ifShiftDomain: null as ControlDisplayDomain | null,
 };
 
 const mockHandlers = {
@@ -206,6 +208,7 @@ beforeEach(() => {
     hasPbt: false,
     pbtInner: 0,
     pbtOuter: 0,
+    ifShiftDomain: null,
   });
   mockHandlers.onFilterChange = vi.fn();
   mockHandlers.onFilterWidthChange = vi.fn();
@@ -827,6 +830,77 @@ describe('IF Shift visibility (MOR-1494)', () => {
     const labels = Array.from(t.querySelectorAll('.vc-label')).map((el) => el.textContent);
     expect(labels).not.toContain('IF Shift');
     expect(t.querySelectorAll('[role="slider"]').length).toBe(0);
+  });
+});
+
+/**
+ * MOR-1681: both mounted IF-shift controls (the table-mode row and the
+ * non-table row) take range and step from the profile-published
+ * `controls.if_shift` domain (`ifShiftDomain` on the filter props); the
+ * per-branch constants are today's explicit fallbacks (table-mode 20 Hz,
+ * non-table 25 Hz) for a radio that publishes no usable domain. The
+ * bipolar scalar steps by `domain.step` from the keyboard and snaps
+ * candidates onto the min-anchored lattice (which contains the domain
+ * origin 0 for the identity domain), so the ArrowRight emission pins the
+ * keyboard step AND the lattice.
+ */
+describe('IF Shift domain range and step (MOR-1681)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const FTX1_DOMAIN = { min: -1200, max: 1200, step: 20, origin: 0 } as const;
+  const TABLE_CONFIG = {
+    defaults: [2700], fixed: false, minHz: 500, maxHz: 4000, stepHz: 50,
+    table: [500, 2700, 4000],
+  };
+
+  const stepIfShift = (t: HTMLElement, index = 0) => {
+    t.querySelectorAll<HTMLElement>('[role="slider"]')[index]
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(60);
+  };
+
+  it('non-table row: ranges and steps by the profile domain (FTX-1: -1200..1200, step 20)', () => {
+    const t = mountPanel({ ifShiftDomain: FTX1_DOMAIN });
+    const slider = t.querySelectorAll<HTMLElement>('[role="slider"]')[0];
+    expect(slider.getAttribute('aria-valuemin')).toBe('-1200');
+    expect(slider.getAttribute('aria-valuemax')).toBe('1200');
+    stepIfShift(t);
+    expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(20);
+  });
+
+  it('non-table row: snaps an off-lattice reading onto the domain lattice before emitting', () => {
+    const t = mountPanel({ ifShift: 275, ifShiftDomain: FTX1_DOMAIN });
+    stepIfShift(t);
+    expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(300);
+  });
+
+  it('non-table row: keeps today\'s step-25 fallback when no domain is published', () => {
+    const t = mountPanel({ ifShiftDomain: null });
+    const slider = t.querySelectorAll<HTMLElement>('[role="slider"]')[0];
+    expect(slider.getAttribute('aria-valuemin')).toBe('-1200');
+    expect(slider.getAttribute('aria-valuemax')).toBe('1200');
+    stepIfShift(t);
+    expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(25);
+  });
+
+  it('table-mode row: ranges and steps by the profile domain, not the branch constant', () => {
+    const t = mountPanel({
+      filterConfig: TABLE_CONFIG,
+      ifShiftDomain: { min: -1000, max: 1000, step: 40, origin: 0 },
+    });
+    // Table mode renders the WIDTH hbar slider first; IF SHIFT is second.
+    const slider = t.querySelectorAll<HTMLElement>('[role="slider"]')[1];
+    expect(slider.getAttribute('aria-valuemin')).toBe('-1000');
+    expect(slider.getAttribute('aria-valuemax')).toBe('1000');
+    stepIfShift(t, 1);
+    expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(40);
+  });
+
+  it('table-mode row: keeps today\'s step-20 fallback when no domain is published', () => {
+    const t = mountPanel({ filterConfig: TABLE_CONFIG, ifShiftDomain: null });
+    stepIfShift(t, 1);
+    expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(20);
   });
 });
 

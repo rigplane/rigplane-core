@@ -356,6 +356,13 @@ export interface FilterProps {
   filterWidthMax: number;
   filterConfig: FilterModeConfig | null;
   ifShift: number;
+  /**
+   * The IF-shift control's display domain from the profile's
+   * `controls.if_shift` entry (MOR-1681), or null when the radio publishes
+   * nothing usable — `FilterPanel.svelte` keeps its own per-branch
+   * today-behaviour constants for that case.
+   */
+  ifShiftDomain: ControlDisplayDomain | null;
   hasIfShift: boolean;
   hasPbt: boolean;
   pbtInner: number;
@@ -414,6 +421,11 @@ export function toFilterProps(
     ifShift: hasCap(caps, 'if_shift')
       ? (rx?.ifShift ?? 0)
       : deriveIfShift(pbtInner, pbtOuter),
+    // MOR-1681: the IF-shift range/step come from the profile's published
+    // `controls.if_shift` entry when usable; the legacy fallback step is
+    // the family's today UI step (25 Hz, the semantic row and non-table
+    // panel rows). Null keeps FilterPanel on its own constants.
+    ifShiftDomain: controlDisplayDomain(caps?.controls?.if_shift, 25),
     // MOR-1494: whether the radio has a REAL if_shift command of its own.
     // Icom radios (PBT only, e.g. IC-7300) declare no `if_shift` capability
     // at all — `ifShift` above still computes a PBT-derived display value

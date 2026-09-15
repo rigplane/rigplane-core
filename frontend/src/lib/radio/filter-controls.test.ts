@@ -144,6 +144,18 @@ describe('controlDisplayDomain (MOR-1682)', () => {
       .toEqual({ min: 300, max: 1050, step: 10, origin: 300 });
   });
 
+  it('projects a bipolar exact domain with a negative raw range and origin 0 (if_shift shape, MOR-1681)', () => {
+    const FTX1_IF_SHIFT: ControlDomain = {
+      mapping: 'identity',
+      raw_min: -1200, raw_max: 1200, raw_step: 20, raw_origin: 0,
+      display_min: '-1200' as never, display_max: '1200' as never,
+      display_step: '20' as never, display_origin: '0' as never,
+      display_unit: 'Hz', quantization: 'reject', restoration: 'exact',
+    };
+    expect(controlDisplayDomain(FTX1_IF_SHIFT, 25))
+      .toEqual({ min: -1200, max: 1200, step: 20, origin: 0 });
+  });
+
   it('projects a legacy range onto the caller fallback step anchored at display_min', () => {
     expect(controlDisplayDomain(IC7300_CW_PITCH, 5))
       .toEqual({ min: 300, max: 900, step: 5, origin: 300 });
