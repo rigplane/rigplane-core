@@ -1445,6 +1445,7 @@ class AudioHandler:
                     raise
                 if not facts.available:
                     await self._abort_tx_start(previous_facts, was_active)
+                    logger.warning("audio: TX start refused — TX audio unavailable")
                     await self._send_error("audio_start: TX audio unavailable")
                     return
                 if not transcoder_ready:

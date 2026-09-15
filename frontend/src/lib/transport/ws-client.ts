@@ -1129,6 +1129,14 @@ export function onMessage(handler: MessageHandler): () => void {
 /** @deprecated Use onMessage */
 export const addMessageHandler = onMessage;
 
+export function emitLocalNotification(
+  level: 'info' | 'warning' | 'error',
+  message: string,
+  code: string,
+): void {
+  _ctrl.emitLocalNotification(level, message, code);
+}
+
 export function isConnected(): boolean {
   return _ctrl.isConnected();
 }

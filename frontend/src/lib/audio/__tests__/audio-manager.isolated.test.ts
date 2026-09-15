@@ -7,6 +7,9 @@ const rxSetJitterBounds = vi.fn();
 const rxStats = vi.fn(() => ({ underruns: 3, bufferDepthMs: 140, droppedFrames: 2 }));
 const txStart = vi.fn().mockResolvedValue(null);
 const txStop = vi.fn();
+const txApplyServerCodec = vi.fn(() => ({ switched: false, error: null }));
+let txCaptureDied: ((reason: string) => void) | null = null;
+const emitLocalNotification = vi.fn();
 
 vi.mock('../rx-player', () => ({
   RxPlayer: class {
@@ -30,9 +33,20 @@ vi.mock('../tx-mic', () => ({
   TxMic: class {
     start = txStart;
     stop = txStop;
+    applyServerCodec = txApplyServerCodec;
     get active() { return true; }
     static supported() { return true; }
+    constructor(
+      _send: (data: ArrayBuffer) => void,
+      onCaptureDied?: (reason: string) => void,
+    ) {
+      txCaptureDied = onCaptureDied ?? null;
+    }
   },
+}));
+
+vi.mock('../../transport/ws-client', () => ({
+  emitLocalNotification: emitLocalNotification,
 }));
 
 vi.mock('../../stores/connection.svelte', () => ({
@@ -42,6 +56,7 @@ vi.mock('../../stores/connection.svelte', () => ({
 vi.mock('../../stores/audio.svelte', () => ({
   setRxEnabled: vi.fn(),
   setTxEnabled: vi.fn(),
+  setTxCodecFallback: vi.fn(),
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
@@ -285,6 +300,133 @@ describe('AudioManager reconnect coalescing (MOR-924)', () => {
     expect(secondStart[0].client_id).toBe(clientId);
 
     audioManager.stopRx();
+  });
+});
+
+
+describe('AudioManager TX failure notifications (MOR-1783)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.unstubAllGlobals();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('location', { protocol: 'http:', host: 'localhost:5173' });
+    vi.clearAllMocks();
+  });
+
+  function serverText(ws: FakeWebSocket, msg: Record<string, unknown>): void {
+    ws.onmessage?.({ data: JSON.stringify(msg) });
+  }
+
+  /** The toast forward loads its module lazily (dynamic import), so a
+   *  negative "no banner" assertion must first let that settle. */
+  async function notificationSettled(): Promise<void> {
+    for (let i = 0; i < 5; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  it('server TX refusal raises one txAudioServerUnavailable banner and releases TX through the died path', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { audioManager } = await import('../audio-manager');
+    const died = vi.fn();
+    audioManager.onTxAudioDied(died);
+    await audioManager.startTx();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    ws.sent = [];
+
+    serverText(ws, { type: 'error', message: 'audio_start: TX audio unavailable' });
+    await vi.waitFor(() => expect(emitLocalNotification).toHaveBeenCalled());
+
+    expect(emitLocalNotification).toHaveBeenCalledTimes(1);
+    expect(emitLocalNotification).toHaveBeenCalledWith(
+      'error', expect.any(String), 'txAudioServerUnavailable',
+    );
+    expect(died).toHaveBeenCalledTimes(1);
+    expect(audioManager.txEnabled).toBe(false);
+    expect(ws.sent).toContain(JSON.stringify({ type: 'audio_stop', direction: 'tx' }));
+  });
+
+  it('ignores audio-WS error envelopes that are not the TX refusal', async () => {
+    const { audioManager } = await import('../audio-manager');
+    await audioManager.startTx();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    serverText(ws, { type: 'error', message: 'audio_config: CI-V send failed' });
+    serverText(ws, {
+      type: 'error',
+      message: "audio_config: invalid focus 'both'; expected one of ['main', 'sub']",
+    });
+    serverText(ws, { type: 'error', message: 'something else entirely' });
+    await notificationSettled();
+
+    expect(emitLocalNotification).not.toHaveBeenCalled();
+    expect(audioManager.txEnabled).toBe(true);
+    audioManager.stopTx();
+  });
+
+  it.each([
+    ['TX MIC: permission denied', 'txAudioMicPermissionDenied'],
+    ['TX MIC: microphone capture not supported', 'txAudioCaptureUnsupported'],
+    ['TX MIC: PCM capture not supported', 'txAudioCaptureUnsupported'],
+    ['TX MIC: unsupported mic sample rate 48000 Hz', 'txAudioStopped'],
+  ])('local startTx failure %s raises the %s banner', async (reason, code) => {
+    txStart.mockResolvedValueOnce(reason);
+    const { audioManager } = await import('../audio-manager');
+
+    await expect(audioManager.startTx()).resolves.toBe(reason);
+    await vi.waitFor(() => expect(emitLocalNotification).toHaveBeenCalled());
+
+    expect(emitLocalNotification).toHaveBeenCalledTimes(1);
+    expect(emitLocalNotification).toHaveBeenCalledWith('error', expect.any(String), code);
+    expect(audioManager.txEnabled).toBe(false);
+  });
+
+  it.each([
+    'TX MIC: capture start cancelled',
+    'TX MIC: capture stopped before start completed',
+  ])('operator cancellation %s raises no banner', async (reason) => {
+    const logInfo = vi.spyOn(console, 'log').mockImplementation(() => {});
+    txStart.mockResolvedValueOnce(reason);
+    const { audioManager } = await import('../audio-manager');
+
+    await expect(audioManager.startTx()).resolves.toBe(reason);
+    await notificationSettled();
+
+    expect(emitLocalNotification).not.toHaveBeenCalled();
+    expect(logInfo).toHaveBeenCalledWith(expect.stringContaining(reason));
+    expect(audioManager.txEnabled).toBe(false);
+  });
+
+  it('mid-TX capture death raises one txAudioStopped banner and fires the died path', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { audioManager } = await import('../audio-manager');
+    const died = vi.fn();
+    audioManager.onTxAudioDied(died);
+    await audioManager.startTx();
+    FakeWebSocket.instances[0].open();
+
+    txCaptureDied?.('TX MIC: microphone track ended');
+    await vi.waitFor(() => expect(emitLocalNotification).toHaveBeenCalled());
+
+    expect(emitLocalNotification).toHaveBeenCalledTimes(1);
+    expect(emitLocalNotification).toHaveBeenCalledWith(
+      'error', expect.stringContaining('microphone track ended'), 'txAudioStopped',
+    );
+    expect(died).toHaveBeenCalledTimes(1);
+    expect(audioManager.txEnabled).toBe(false);
+  });
+
+  it('capture death while TX is not enabled raises no banner', async () => {
+    const { audioManager } = await import('../audio-manager');
+
+    txCaptureDied?.('TX MIC: microphone track ended');
+    await notificationSettled();
+
+    expect(emitLocalNotification).not.toHaveBeenCalled();
+    expect(audioManager.txEnabled).toBe(false);
   });
 });
 

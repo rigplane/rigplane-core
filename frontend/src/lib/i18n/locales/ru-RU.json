@@ -142,6 +142,10 @@
   "core.toast.audioBridgeStopped": "Аудиомост остановлен",
   "core.toast.commandRefusedLinkDegraded": "Команда не отправлена — связь с трансивером деградировала",
   "core.toast.commandExecutionFailed": "Команда не выполнена: {reason}",
+  "core.toast.txAudioServerUnavailable": "TX-аудио недоступно — сервер отказался запускать передачу",
+  "core.toast.txAudioMicPermissionDenied": "Доступ к микрофону запрещён — TX-аудио не запустить",
+  "core.toast.txAudioCaptureUnsupported": "Этот браузер не поддерживает захват микрофона",
+  "core.toast.txAudioStopped": "TX-аудио прервано — передача завершилась досрочно",
   "core.toast.unknown": "Что-то пошло не так. Попробуйте позже.",
 
   "core.mobile.nav.label": "Навигация по трансиверу",
