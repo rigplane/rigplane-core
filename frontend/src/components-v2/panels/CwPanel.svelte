@@ -167,10 +167,17 @@
   }
   let cwPitchFeedback = $derived(getCwPitchControlFeedback());
   let keySpeedFeedback = $derived(getKeySpeedControlFeedback());
+  // MOR-1682: the pitch domain comes from the profile's `controls.cw_pitch`
+  // entry when it publishes a usable one; 300/900/5 is the explicit
+  // today-behaviour fallback for a radio that publishes none.
+  let cwPitchDomain = $derived(p.cwPitchDomain ?? { min: 300, max: 900, step: 5 });
   const cwPitchBinding = createContinuousScalar(
     () => ({
       evidence: 'command-feedback', feedback: cwPitchFeedback, command: 'set_cw_pitch',
-      domain: { min: 300, max: 900, step: 5, defaultValue: null, fineStepDivisor: 10 },
+      domain: {
+        min: cwPitchDomain.min, max: cwPitchDomain.max, step: cwPitchDomain.step,
+        defaultValue: null, fineStepDivisor: 10,
+      },
       enabled: showCw, request: onCwPitchChange,
     }),
     createHBarContinuousScalarPolicy({

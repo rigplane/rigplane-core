@@ -58,6 +58,15 @@
 
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const row = (field: CwContinuousField) => CW_CONTINUOUS_LEVELS.find(([f]) => f === field)!;
+  // MOR-1682: pitch limits come from the profile's published control domain
+  // on the view model when it carries one (FTX-1: 300..1050, step 10;
+  // IC-7300 legacy: 300..900 with the 5 Hz fallback step); every other field,
+  // and a radio that publishes no usable domain, keeps the row constant.
+  const limits = (field: CwContinuousField): Readonly<{ min: number; max: number; step: number }> => {
+    const [, , min, max, step] = row(field);
+    const domain = field === 'pitchHz' ? view?.cwKeyer?.pitchDomain : undefined;
+    return domain === undefined ? { min, max, step } : { min: domain.min, max: domain.max, step: domain.step };
+  };
   const usable = (current: CwKeyerField<unknown> | undefined): boolean =>
     current?.availability.structural === true
     && current.availability.operational
@@ -78,7 +87,8 @@
   }
 
   function input(field: CwContinuousField): Readonly<ContinuousScalarInput> {
-    const [, , min, max, step, , command] = row(field);
+    const { min, max, step } = limits(field);
+    const [, , , , , , command] = row(field);
     const current = fieldOf(field);
     const common = {
       domain: { min, max, step, defaultValue: null, fineStepDivisor: 1 },
@@ -174,7 +184,8 @@
 {#snippet scalar(field: CwContinuousField, presentation?: Readonly<CwContinuousPresentation>)}
   {@const current = fieldOf(field)}
   {#if current?.availability.structural}
-    {@const [, label, min, max, step] = row(field)}
+    {@const [, label] = row(field)}
+    {@const { min, max, step } = limits(field)}
     {@const explicitPresentation = presentation !== undefined}
     {@const form = presentation?.form ?? 'hbar'}
     {@const currentStatus = status(field)}
