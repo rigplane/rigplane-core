@@ -333,7 +333,6 @@ class YaesuRouting:
             if isinstance(radio, ControlDomainCapable):
                 display = radio.decode_control_raw("manual_notch_freq", freq_idx)
                 if isinstance(display, str):
-                    # FTX-1 domain: raw 1..320 ↔ 10..3200 Hz (MOR-2469).
                     return RigctldResponse(values=[display])
             return RigctldResponse(values=[str(freq_idx)])
         if level == "IFSHIFT":
@@ -418,8 +417,6 @@ class YaesuRouting:
             )
             if snapped is not None:
                 return snapped
-            # radio.set_cw_pitch accepts Hz directly; the profile's raw
-            # domain (300-1050, step 10) is enforced by the backend.
             await radio.set_cw_pitch(round(value))
             return _ok()
         if level == "KEYSPD":

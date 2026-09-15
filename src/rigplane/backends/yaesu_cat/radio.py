@@ -32,11 +32,9 @@ from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...radio_state import RadioState
 from ...profiles.control_domain import (
-    _compare,
-    _parse_decimal,
     decode_control_domain,
     encode_control_domain,
-    quantize_control_domain,
+    snap_control_domain,
     validate_control_raw_value,
 )
 from .parser import CatCommandParser, CatParseError, format_command
@@ -2742,21 +2740,11 @@ class YaesuCatRadio:
         domain = self._published_control_domain(control)
         if domain is None:
             return None
-        snapped = quantize_control_domain(
-            {**domain, "quantization": "nearest_ties_up"}, display
-        )
+        try:
+            snapped = snap_control_domain(domain, display)
+        except ValueError as exc:
+            raise ValueError(f"{control} {exc}") from exc
         if snapped is None:
-            value = _parse_decimal(display)
-            low = _parse_decimal(domain.get("display_min"))
-            high = _parse_decimal(domain.get("display_max"))
-            if value is None or low is None or high is None:
-                return None
-            if _compare(value, low) < 0 or _compare(value, high) > 0:
-                raise ValueError(
-                    f"{control} display value {display!r} is outside the "
-                    f"profile's display range "
-                    f"{domain.get('display_min')}-{domain.get('display_max')}"
-                )
             return None
         return cast(int | None, encode_control_domain(domain, snapped))
 

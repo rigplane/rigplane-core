@@ -1071,9 +1071,9 @@ class ControlDomainCapable(Protocol):
     """Radio that converts between display values and raw control codes.
 
     A backend whose active profile publishes normalized control domains
-    implements this surface so consumers (rigctld, web, CLI) can convert
-    between a domain's display values and its raw codes through the
-    backend, instead of each consumer re-deriving the profile math.
+    implements this surface so callers can convert between a domain's
+    display values and its raw codes through the backend, instead of
+    each caller re-deriving the profile math.
     Both methods are synchronous and never touch the wire.
     """
 
