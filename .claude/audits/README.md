@@ -13,6 +13,25 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-15 — control conversion and command path (head `e3d435dc`)
+
+Two read-only tracts answering one owner question: why web, rigctld and the CLI
+reach the radio through different mechanisms. Each report labels its own claims as
+observation or inference, carries a per-finding falsifier field, and closes with
+the capabilities it examined and cleared.
+
+- [2026-09-15-mechanism-audit-control-conversion.md](2026-09-15-mechanism-audit-control-conversion.md)
+  — where display ↔ raw conversion belongs. Verdict: the Python and TypeScript
+  exact implementations are a sanctioned pair whose only pin is hand-copied
+  test vectors; rigctld's level conversion is a gap, not a duplicate, because
+  the Radio surface lacked a display-value API.
+- [2026-09-15-mechanism-audit-command-path.md](2026-09-15-mechanism-audit-command-path.md)
+  — the four consumers' paths to the radio across eight concerns. Verdict:
+  standalone consumers legitimately run without the web command queue; the
+  duplicated dispatch and receiver validation are displacement with the shared
+  targets already in place, while value validation is a gap in the runtime seat
+  with its shared math only emerging.
+
 ## 2026-09-15 — Standard TX indication and AGC cleanup (head `5fa07e1a`, base `f27f1132`)
 
 - [2026-09-15-mechanism-audit-standard-tx-ptt.md](2026-09-15-mechanism-audit-standard-tx-ptt.md)
