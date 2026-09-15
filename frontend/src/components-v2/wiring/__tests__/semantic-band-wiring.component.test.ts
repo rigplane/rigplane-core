@@ -421,6 +421,52 @@ describe('fixed-slot frequency entry overlay', () => {
   });
 });
 
+describe('receiver frequency entry overlay', () => {
+  function receiverOverlayState(over: Partial<ServerState> = {}): ServerState {
+    return { ...liveState(), stateContractVersion: 1 as const, ...over } as ServerState;
+  }
+
+  function receiverOverlayCaps(): Capabilities {
+    return { ...liveCaps(BAND_PLAN), stateContractVersion: 1 as const } as Capabilities;
+  }
+
+  it.each([
+    ['MAIN', 0, '14.260'],
+    ['SUB', 1, '7.115'],
+  ] as const)('opens from %s digits and sends the explicit receiver target', (receiver, index, inputValue) => {
+    h.state = receiverOverlayState();
+    h.caps = receiverOverlayCaps();
+    render({ vfoAppearance: 'standard' });
+    const trigger = q<HTMLElement>(`[data-vfo-receiver="${receiver}"] .digit`)!;
+    trigger.click();
+    flushSync();
+    const dialog = q<HTMLElement>('[data-testid="frequency-entry-dialog-panel"]')!;
+    expect(dialog.textContent).toContain(receiver);
+    const input = dialog.querySelector<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    input.value = inputValue;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    dialog.querySelector<HTMLButtonElement>('[data-testid="band-entry-set"]')!.click();
+    flushSync();
+    expect(setFreqCalls()).toEqual([['set_freq', {
+      freq: Math.round(Number(inputValue) * 1_000_000), receiver: index,
+    }]]);
+    expect(q('[role="dialog"]')).toBeNull();
+  });
+
+  it('keeps the clicked receiver target when active-receiver truth changes before submit', () => {
+    h.state = receiverOverlayState();
+    h.caps = receiverOverlayCaps();
+    render({ vfoAppearance: 'standard' });
+    q<HTMLElement>('[data-vfo-receiver="MAIN"] .digit')!.click();
+    flushSync();
+    typeFrequency('14.260');
+    h.state = receiverOverlayState({ active: 'SUB' } as Partial<ServerState>);
+    btn('entry-set')!.click();
+    expect(setFreqCalls()).toEqual([['set_freq', { freq: 14_260_000, receiver: 0 }]]);
+  });
+});
+
 afterEach(() => {
   if (component) unmount(component);
   component = null;

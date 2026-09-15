@@ -40,6 +40,8 @@ export interface RfFrontEndControlSession {
 export interface RfFrontEndAuthorityPublication {
   readonly state: ServerState | null;
   readonly caps: Capabilities | null;
+  /** App-owned projection shared by every authority consumer. */
+  readonly view?: RadioViewModel | null;
   readonly session: RfFrontEndControlSession;
 }
 

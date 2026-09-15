@@ -47,14 +47,12 @@
     dragOwner,
     showReset = true,
     semanticHamBands,
-    semanticFrequencyEntry,
   }: {
     hideTxPanel?: boolean;
     declared?: ReadonlySet<SemanticSurfaceName>;
     dragOwner?: PanelDragOwner;
     showReset?: boolean;
     semanticHamBands?: Snippet<[compact?: boolean]>;
-    semanticFrequencyEntry?: Snippet;
   } = $props();
 
   // Reactive state + capabilities — via runtime
@@ -122,9 +120,6 @@
       draggable={true} onDragStart={drag.handleDragStart}
       style={drag.dragStyle('band')}>
       <BandSelector hamBands={!declared.has('band')} {semanticHamBands} />
-      {#if semanticFrequencyEntry}
-        <div class="semantic-frequency-entry">{@render semanticFrequencyEntry()}</div>
-      {/if}
     </CollapsiblePanel>
   {/if}
 
@@ -184,7 +179,6 @@
 </aside>
 
 <style>
-  .semantic-frequency-entry { padding: 0 7px 7px; }
 
   .left-sidebar {
     display: flex;

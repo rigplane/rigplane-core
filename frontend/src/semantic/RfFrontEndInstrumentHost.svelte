@@ -142,7 +142,8 @@
       || !safeGeneration(stateGeneration)
       || !safeGeneration(capsGeneration)
       || stateGeneration !== capsGeneration) return null;
-    const view = toRadioViewModel(source.state, source.caps);
+    const view = source.view === undefined
+      ? toRadioViewModel(source.state, source.caps) : source.view;
     if (view === null || view.activeReceiver.status !== 'known') return null;
     return {
       epoch: source.session.epoch,
@@ -180,7 +181,7 @@
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const currentAuthority = (): RfAuthority | null => published === null ? null : authority(published);
   const presentedAuthority = (): RfAuthority | null => authority(
-    presentation, presentation.controlModel,
+    { ...presentation, view: undefined }, presentation.controlModel,
   );
   const authorityCurrent = (): boolean => {
     const current = currentAuthority();

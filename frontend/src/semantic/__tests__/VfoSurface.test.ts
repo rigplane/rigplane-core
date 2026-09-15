@@ -2816,4 +2816,36 @@ describe('MOR-2467: main_sub Standard displays receiver-level MAIN/SUB records',
       expect(panel.textContent).toContain(filter);
     }
   });
+
+  it('routes a click on each receiver frequency to that exact unslotted target', () => {
+    const onOpenFrequencyEntry = vi.fn();
+    const caps = {
+      model: 'fixture', receivers: 2, vfoScheme: 'main_sub',
+      capabilities: ['audio', 'tx', 'dual_rx'],
+      stateContractVersion: 1, providerGeneration: 1,
+      freqRanges: [], modes: [], filters: [], txBands: [],
+    } as unknown as Capabilities;
+    const freshLeaf = {
+      observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 0,
+    };
+    const state = {
+      stateContractVersion: 1, providerGeneration: 1, active: 'MAIN', split: false,
+      dualWatch: false, main: { freqHz: 14_250_000, mode: 'USB', filter: 1 },
+      sub: { freqHz: 21_295_000, mode: 'LSB', filter: 2 },
+      fieldStatus: Object.fromEntries(['active', 'split', 'dualWatch',
+        'main.freqHz', 'main.mode', 'main.filter', 'sub.freqHz', 'sub.mode', 'sub.filter']
+        .map(path => [path, freshLeaf])),
+    } as unknown as ServerState;
+    const root = mountSurface({
+      viewModel: toRadioViewModel(state, caps)!, appearance: 'standard', onOpenFrequencyEntry,
+    });
+
+    for (const receiver of ['MAIN', 'SUB'] as const) {
+      root.querySelector<HTMLElement>(`[data-receiver-instrument="${receiver}"] .digit`)!.click();
+    }
+    expect(onOpenFrequencyEntry.mock.calls.map(([target]) => target)).toEqual([
+      { receiver: 'MAIN', slot: { kind: 'unslotted' } },
+      { receiver: 'SUB', slot: { kind: 'unslotted' } },
+    ]);
+  });
 });

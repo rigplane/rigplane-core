@@ -355,10 +355,16 @@
       && runtime.caps.receivers === 1
       && runtime.caps.vfoScheme === 'ab',
   );
+  let receiverFrequencyEntrySupported = $derived(
+    runtime.caps?.vfoScheme === 'main_sub' || runtime.caps?.vfoScheme === 'single',
+  );
+  let frequencyEntrySupported = $derived(
+    directFrequencyEntrySupported || receiverFrequencyEntrySupported,
+  );
 
   type FrequencyEntryCapture = Readonly<{
-    target: { receiver: 'MAIN'; slot: 'A' | 'B' };
-    expectedActiveSlot: 'A' | 'B';
+    target: VfoSelection;
+    expectedActiveSlot?: 'A' | 'B';
     providerGeneration: number;
     sessionEpoch: number;
     topologyId: string;
@@ -367,41 +373,59 @@
   let frequencyEntryCapture = $state<FrequencyEntryCapture | null>(null);
   let frequencyEntryLifecycle = $state<{ id: string; epoch: number } | null>(null);
 
-  function directFrequencyAuthorityMatches(capture: FrequencyEntryCapture): boolean {
+  function frequencyAuthorityMatches(capture: FrequencyEntryCapture): boolean {
     const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
-    const activeSlot = state?.main?.activeSlot;
-    const slotStatus = state ? getFieldStatus(state, 'main.activeSlot') : undefined;
     const model = toRadioViewModel(state, caps);
-    return session.state === 'connected' && session.epoch === capture.sessionEpoch
+    const baseMatches = session.state === 'connected' && session.epoch === capture.sessionEpoch
       && state?.providerGeneration === capture.providerGeneration
       && caps?.providerGeneration === capture.providerGeneration
-      && caps.capabilities.includes('vfo_freq_direct')
-      && caps.receivers === 1 && caps.vfoScheme === 'ab'
       && model?.topologyId === capture.topologyId
+      && model.vfos.some((candidate) => candidate.receiver === capture.target.receiver
+        && candidate.slot.kind === capture.target.slot.kind
+        && (candidate.slot.kind !== 'slotted' || (capture.target.slot.kind === 'slotted'
+          && candidate.slot.id === capture.target.slot.id)));
+    if (!baseMatches || caps == null || state == null) return false;
+    if (capture.target.slot.kind === 'unslotted') {
+      return caps.vfoScheme === 'main_sub' || caps.vfoScheme === 'single';
+    }
+    if (capture.target.slot.kind !== 'slotted' || capture.target.receiver !== 'MAIN') return false;
+    const activeSlot = state.main?.activeSlot;
+    const slotStatus = getFieldStatus(state, 'main.activeSlot');
+    return caps.capabilities.includes('vfo_freq_direct')
+      && caps.receivers === 1 && caps.vfoScheme === 'ab'
       && slotStatus?.observed === true && slotStatus.freshness === 'fresh'
       && slotStatus.availability === 'available'
-      && activeSlot === capture.expectedActiveSlot
-      && model.vfos.some((candidate) => candidate.receiver === capture.target.receiver
-        && candidate.slot.kind === 'slotted' && candidate.slot.id === capture.target.slot);
+      && activeSlot === capture.expectedActiveSlot;
   }
 
   function openFrequencyEntry(target: VfoSelection, trigger: HTMLElement): void {
-    if (target.receiver !== 'MAIN' || target.slot.kind !== 'slotted') return;
     const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
     const stateGeneration = state?.providerGeneration;
     const model = toRadioViewModel(state, caps);
-    const activeSlot = state?.main?.activeSlot;
-    const slotStatus = state ? getFieldStatus(state, 'main.activeSlot') : undefined;
-    if (session.state !== 'connected' || !Number.isSafeInteger(stateGeneration)
-      || stateGeneration !== caps?.providerGeneration
-      || !caps?.capabilities.includes('vfo_freq_direct')
-      || caps.receivers !== 1 || caps.vfoScheme !== 'ab' || model === null
-      || slotStatus?.observed !== true || slotStatus.freshness !== 'fresh'
-      || slotStatus.availability !== 'available'
-      || (activeSlot !== 'A' && activeSlot !== 'B')) return;
+    if (state == null || caps == null || session.state !== 'connected'
+      || !Number.isSafeInteger(stateGeneration)
+      || stateGeneration !== caps.providerGeneration
+      || model === null) return;
+    const candidateExists = model.vfos.some((candidate) => candidate.receiver === target.receiver
+      && candidate.slot.kind === target.slot.kind
+      && (candidate.slot.kind !== 'slotted' || (target.slot.kind === 'slotted'
+        && candidate.slot.id === target.slot.id)));
+    if (!candidateExists) return;
+    let expectedActiveSlot: 'A' | 'B' | undefined;
+    if (target.slot.kind === 'slotted') {
+      if (target.receiver !== 'MAIN' || !directFrequencyEntrySupported) return;
+      const activeSlot = state.main?.activeSlot;
+      const slotStatus = getFieldStatus(state, 'main.activeSlot');
+      if (slotStatus?.observed !== true || slotStatus.freshness !== 'fresh'
+        || slotStatus.availability !== 'available'
+        || (activeSlot !== 'A' && activeSlot !== 'B')) return;
+      expectedActiveSlot = activeSlot;
+    } else if (target.slot.kind !== 'unslotted'
+      || (caps.vfoScheme !== 'main_sub' && caps.vfoScheme !== 'single')) return;
     frequencyEntryLifecycle = null;
     const capture = Object.freeze<FrequencyEntryCapture>({
-      target: { receiver: 'MAIN', slot: target.slot.id }, expectedActiveSlot: activeSlot,
+      target: Object.freeze({ receiver: target.receiver, slot: Object.freeze({ ...target.slot }) }),
+      expectedActiveSlot,
       providerGeneration: stateGeneration as number, sessionEpoch: session.epoch,
       topologyId: model.topologyId, trigger,
     });
@@ -409,7 +433,7 @@
   }
 
   let frequencyEntryAuthorityValid = $derived(
-    frequencyEntryCapture !== null && directFrequencyAuthorityMatches(frequencyEntryCapture),
+    frequencyEntryCapture !== null && frequencyAuthorityMatches(frequencyEntryCapture),
   );
   let frequencyEntryCommand = $derived(frequencyEntryLifecycle === null ? undefined
     : getCommandLifecycle(frequencyEntryLifecycle.id, frequencyEntryLifecycle.epoch));
@@ -695,9 +719,7 @@
   function publishStationMeters(): void {
     if (stationSubscriber === null || stationControl === null) return;
     const publication: StationMeterAuthorityPublication = {
-      view: guardRadioViewModel(
-        toRadioViewModel(stationControl.state, stationControl.caps, txState),
-      ),
+      view: projectRadioView(stationControl.state, stationControl.caps, true),
       session: stationSession(stationControl),
     };
     stationSubscriber(publication);
@@ -783,6 +805,85 @@
     hardwareConnected: runtime.scope.hardwareScopeConnected,
   });
 
+  type RadioViewProjection = Readonly<{
+    stateSignature: string | null;
+    caps: ControlAuthorityPublication['caps'];
+    tx: typeof txState;
+    rxAudio: typeof rxAudioSnapshot;
+    scopeDisplay: typeof scopeDisplaySnapshot;
+    view: RadioViewModel | null;
+  }>;
+  let lastRadioViewProjection: RadioViewProjection | null = null;
+  let radioViewProjectionVersion = $state(0);
+
+  const VIEW_METADATA_KEYS = new Set([
+    'connection', 'freshnessRevision', 'healthRevision', 'observationSeq',
+    'publicStateSeq', 'radioHealth', 'revision', 'stateRevision', 'transportSeq',
+    'updatedAt', 'wsClients',
+  ]);
+  const immutableStateSignatures = new WeakMap<object, string>();
+
+  /**
+   * Revisions are transport admission evidence, not a complete view-model
+   * identity: test publishers and compatibility sources may deliver a
+   * distinct same-revision snapshot, while meter freshness updates replace
+   * the large fieldStatus map without changing any visible fact.  Hash only
+   * adapter inputs, reducing each status entry to the four properties the
+   * adapter reads.  Production snapshots are immutable, so their signatures
+   * are memoized by identity; DEV deliberately recomputes to catch accidental
+   * in-place mutation in fixtures and extensions.
+   */
+  function radioViewStateSignature(state: ControlAuthorityPublication['state']): string | null {
+    if (state === null) return null;
+    if (!import.meta.env.DEV) {
+      const memoized = immutableStateSignatures.get(state);
+      if (memoized !== undefined) return memoized;
+    }
+    const record = state as unknown as Record<string, unknown>;
+    const values = Object.keys(record).sort()
+      .filter((key) => key !== 'fieldStatus' && !VIEW_METADATA_KEYS.has(key))
+      .map((key) => [key, record[key]]);
+    const statuses = Object.entries(state.fieldStatus ?? {}).sort(([left], [right]) =>
+      left.localeCompare(right)).map(([path, status]) => [
+        path, status.observed, status.freshness, status.availability, status.quality ?? null,
+      ]);
+    const signature = JSON.stringify([values, statuses]);
+    if (!import.meta.env.DEV) immutableStateSignatures.set(state, signature);
+    return signature;
+  }
+
+  /**
+   * Every authority host receives the same immutable radio/capability pair.
+   * Keep one fully-qualified projection for that pair and the App-owned TX,
+   * audio, and scope snapshots instead of rebuilding the full semantic model
+   * independently in every host subscription.
+   */
+  function projectRadioView(
+    state: ControlAuthorityPublication['state'], caps: ControlAuthorityPublication['caps'],
+    publishCanonical = false,
+  ): RadioViewModel | null {
+    const txSnapshot = txState;
+    const audioSnapshot = rxAudioSnapshot;
+    const displaySnapshot = scopeDisplaySnapshot;
+    const cached = lastRadioViewProjection;
+    const stateSignature = radioViewStateSignature(state);
+    if (cached !== null
+      && cached.stateSignature === stateSignature
+      && cached.caps === caps
+      && cached.tx === txSnapshot
+      && cached.rxAudio === audioSnapshot
+      && cached.scopeDisplay === displaySnapshot) return cached.view;
+    const view = guardRadioViewModel(
+      toRadioViewModel(state, caps, txSnapshot, audioSnapshot, displaySnapshot),
+    );
+    lastRadioViewProjection = {
+      stateSignature, caps,
+      tx: txSnapshot, rxAudio: audioSnapshot, scopeDisplay: displaySnapshot, view,
+    };
+    if (publishCanonical) radioViewProjectionVersion += 1;
+    return view;
+  }
+
   // Belt-and-braces contract pin: two compile-time links (the adapter's own
   // return-type annotation, MOR-1065 ruling 2, and this variable's own type)
   // plus one dev-only runtime link, MOR-2040's `guardRadioViewModel` — it
@@ -795,11 +896,10 @@
   // (invariant R9). Without it the adapter emits no `meters` group at all.
   // MOR-1279 slice 3B: the RX-audio snapshot is the FOURTH.
   // MOR-1312 slice 12B: the scope-display snapshot is the FIFTH.
-  let canonicalView: RadioViewModel | null = $derived(
-    guardRadioViewModel(
-      toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
-    ),
-  );
+  let canonicalView: RadioViewModel | null = $derived.by(() => {
+    radioViewProjectionVersion;
+    return projectRadioView(runtime.state, runtime.caps);
+  });
   let rxAudioInstrumentPresentation = $derived({
     state: runtime.state,
     caps: runtime.caps,
@@ -875,13 +975,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): ScopeFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     if (model?.scopeControls === undefined) return null;
     const receivers = [...new Set(model.vfos.map(vfo => vfo.receiver))];
     return Object.freeze({
@@ -901,13 +1001,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): TxAuxFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     return model?.txAux === undefined ? null : Object.freeze({
       sessionEpoch: session.epoch,
       providerGeneration: stateGeneration as number,
@@ -918,13 +1018,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): DspFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     if (model?.dsp === undefined) return null;
     return Object.freeze({
       sessionEpoch: session.epoch,
@@ -938,13 +1038,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): RfFrontEndFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     if (model?.rfFrontEnd === undefined) return null;
     return Object.freeze({
       sessionEpoch: session.epoch,
@@ -967,13 +1067,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): RxAudioFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps, undefined, rxAudioSnapshot);
     if (model?.rxAudio === undefined) return null;
     return Object.freeze({
       sessionEpoch: session.epoch,
@@ -987,13 +1087,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): VfoFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     return model === null ? null : Object.freeze({
       sessionEpoch: session.epoch,
       providerGeneration: stateGeneration as number,
@@ -1004,13 +1104,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): FilterFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     // MOR-2425 F1-C2: widened from `model?.modeFilter === undefined` alone so
     // a passband-only radio (Filter Shape/DATA, no mode/filter group) still
     // gets a valid Filter authority — the same lane now serves both groups.
@@ -1027,13 +1127,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): BandFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     if (model?.band === undefined) return null;
     return Object.freeze({
       sessionEpoch: session.epoch,
@@ -1047,13 +1147,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): RitXitFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     if (model?.ritXit === undefined) return null;
     return Object.freeze({
       sessionEpoch: session.epoch,
@@ -1175,62 +1275,68 @@
   let lastBandFiniteAuthority: BandFiniteAuthority | null | undefined;
   let lastRitXitFiniteAuthority: RitXitFiniteAuthority | null | undefined;
   const unsubscribeScopeFiniteAuthority = runtime.subscribeControlAuthority((publication) => {
-      const next = scopeFiniteAuthority(publication.state, publication.caps, publication.session);
+      // One authority publication has one immutable state/capability pair.
+      // Project it once: every finite instrument below needs only a different
+      // group-existence slice of the same canonical view model.
+      const authorityView = projectRadioView(publication.state, publication.caps, true);
+      const next = scopeFiniteAuthority(
+        publication.state, publication.caps, publication.session, authorityView,
+      );
       if (!sameScopeFiniteAuthority(lastScopeFiniteAuthority, next)) {
         lastScopeFiniteAuthority = next;
         finiteRendererContext = next === null ? null : createFiniteRendererContext();
       }
       const nextTxAux = txAuxFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameTxAuxFiniteAuthority(lastTxAuxFiniteAuthority, nextTxAux)) {
         lastTxAuxFiniteAuthority = nextTxAux;
         txAuxFiniteRendererContext = nextTxAux === null ? null : createFiniteRendererContext();
       }
       const nextDsp = dspFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameDspFiniteAuthority(lastDspFiniteAuthority, nextDsp)) {
         lastDspFiniteAuthority = nextDsp;
         dspFiniteRendererContext = nextDsp === null ? null : createFiniteRendererContext();
       }
       const nextRfFrontEnd = rfFrontEndFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameRfFrontEndFiniteAuthority(lastRfFrontEndFiniteAuthority, nextRfFrontEnd)) {
         lastRfFrontEndFiniteAuthority = nextRfFrontEnd;
         rfFrontEndFiniteRendererContext = nextRfFrontEnd === null ? null : createFiniteRendererContext();
       }
       const nextRxAudio = rxAudioFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameRxAudioFiniteAuthority(lastRxAudioFiniteAuthority, nextRxAudio)) {
         lastRxAudioFiniteAuthority = nextRxAudio;
         rxAudioFiniteRendererContext = nextRxAudio === null ? null : createFiniteRendererContext();
       }
       const nextVfo = vfoFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameVfoFiniteAuthority(lastVfoFiniteAuthority, nextVfo)) {
         lastVfoFiniteAuthority = nextVfo;
         vfoFiniteRendererContext = nextVfo === null ? null : createFiniteRendererContext();
       }
       const nextFilter = filterFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameFilterFiniteAuthority(lastFilterFiniteAuthority, nextFilter)) {
         lastFilterFiniteAuthority = nextFilter;
         filterFiniteRendererContext = nextFilter === null ? null : createFiniteRendererContext();
       }
       const nextBand = bandFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameBandFiniteAuthority(lastBandFiniteAuthority, nextBand)) {
         lastBandFiniteAuthority = nextBand;
         bandFiniteRendererContext = nextBand === null ? null : createFiniteRendererContext();
       }
       const nextRitXit = ritXitFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameRitXitFiniteAuthority(lastRitXitFiniteAuthority, nextRitXit)) {
         lastRitXitFiniteAuthority = nextRitXit;
@@ -1652,7 +1758,7 @@
   function selectBand(name: string): void {
     const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
     const model = toRadioViewModel(state, caps);
-    const authority = bandFiniteAuthority(state, caps, session);
+    const authority = bandFiniteAuthority(state, caps, session, model);
     const active = model?.activeReceiver;
     const choice = model?.band?.bandChoices.find(candidate => candidate.name === name);
     if (authority === null || active?.status !== 'known'
@@ -1666,7 +1772,7 @@
   function enterFrequency(frequencyHz: number): void {
     const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
     const model = toRadioViewModel(state, caps);
-    const authority = bandFiniteAuthority(state, caps, session);
+    const authority = bandFiniteAuthority(state, caps, session, model);
     const currentBand = model?.band;
     if (currentBand === undefined
       || currentBand.tuneMinHz === null || currentBand.tuneMaxHz === null
@@ -1674,15 +1780,21 @@
       || frequencyHz < currentBand.tuneMinHz || frequencyHz > currentBand.tuneMaxHz) return;
     const capture = frequencyEntryCapture;
     if (capture !== null) {
-      if (!directFrequencyAuthorityMatches(capture)) return;
-      const lifecycle = vfo.onDirectFrequencyChange({
-        frequencyHz, receiver: capture.target.receiver, slot: capture.target.slot,
-        expectedActiveSlot: capture.expectedActiveSlot,
-        providerGeneration: capture.providerGeneration, sessionEpoch: capture.sessionEpoch,
-      });
-      if (lifecycle !== null) frequencyEntryLifecycle = {
-        id: lifecycle.id, epoch: lifecycle.originalEpoch,
-      };
+      if (!frequencyAuthorityMatches(capture)) return;
+      if (capture.target.slot.kind === 'slotted' && capture.expectedActiveSlot !== undefined) {
+        const lifecycle = vfo.onDirectFrequencyChange({
+          frequencyHz, receiver: capture.target.receiver, slot: capture.target.slot.id,
+          expectedActiveSlot: capture.expectedActiveSlot,
+          providerGeneration: capture.providerGeneration, sessionEpoch: capture.sessionEpoch,
+        });
+        if (lifecycle !== null) frequencyEntryLifecycle = {
+          id: lifecycle.id, epoch: lifecycle.originalEpoch,
+        };
+      } else {
+        tuneFrequency(capture.target.receiver, frequencyHz, 'jump');
+        frequencyEntryCapture = null;
+        frequencyEntryLifecycle = null;
+      }
       return;
     }
     const active = model?.activeReceiver;
@@ -1746,7 +1858,8 @@
     {/if}
   {/snippet}
   <ReceiverInstrumentHost
-    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority((publication) =>
+      handler({ ...publication, view: projectRadioView(publication.state, publication.caps, true) }))}
     {pendingFrequencyHz}
     onTuneFrequency={tuneFrequency}
     vfoOperations={receiverVfoOperations}
@@ -1757,7 +1870,8 @@
   {#snippet children(receiverInstruments)}
   <RxAudioInstrumentHost
     presentation={rxAudioInstrumentPresentation}
-    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority((publication) =>
+      handler({ ...publication, view: projectRadioView(publication.state, publication.caps, true) }))}
     onAfLevelChange={rxAudioIntents.onAfLevelChange}
     afLevelFeedback={afLevelFeedback}
     onMonitorModeChange={(mode) => rxAudioIntents.onMonitorModeChange(mode)}
@@ -1772,7 +1886,8 @@
   {#snippet children(rxAudioInstruments)}
   <RfFrontEndInstrumentHost
     presentation={rfFrontEndInstrumentPresentation}
-    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority((publication) =>
+      handler({ ...publication, view: projectRadioView(publication.state, publication.caps, true) }))}
     onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}
     {pendingPreamp}
     onPreChange={(level) => rfFrontEndIntents.onPreChange(level)}
@@ -1804,7 +1919,8 @@
   <FrequencyEntryDialog
     open={frequencyEntryCapture !== null}
     targetLabel={frequencyEntryCapture
-      ? `${frequencyEntryCapture.target.receiver} VFO ${frequencyEntryCapture.target.slot}` : ''}
+      ? `${frequencyEntryCapture.target.receiver}${frequencyEntryCapture.target.slot.kind === 'slotted'
+        ? ` VFO ${frequencyEntryCapture.target.slot.id}` : ''}` : ''}
     returnFocus={frequencyEntryCapture?.trigger}
     status={frequencyEntryStatus}
     onclose={() => {
@@ -1817,7 +1933,8 @@
   </FrequencyEntryDialog>
   <AntennaInstrumentHost
     {view} tx={txState} readTx={() => tx.snapshot()}
-    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority((publication) =>
+      handler({ ...publication, view: projectRadioView(publication.state, publication.caps, true) }))}
     onSelectPort={(port) => ANTENNA_PORT_INTENT[port]?.()}
     onToggleRxAnt={antennaIntents.onToggleRxAnt}
     finiteAppearance={selectedFiniteAppearance}
@@ -1908,7 +2025,7 @@
               {groupLabel}
               onSelectVfo={selectVfo}
               onTuneFrequency={tuneFrequency}
-              onOpenFrequencyEntry={directFrequencyEntrySupported ? openFrequencyEntry : undefined}
+              onOpenFrequencyEntry={frequencyEntrySupported ? openFrequencyEntry : undefined}
               disabled={!isOperationalStrip(view, receiverId)}
               indicatorReceiver={receiverId}
               suppressIdentitySelectors={stripBy === 'slot'}
@@ -1962,7 +2079,7 @@
         {operationControls}
         onSelectVfo={selectVfo}
         onTuneFrequency={tuneFrequency}
-        onOpenFrequencyEntry={directFrequencyEntrySupported ? openFrequencyEntry : undefined}
+        onOpenFrequencyEntry={frequencyEntrySupported ? openFrequencyEntry : undefined}
         {hasDualReceiver}
         {receiverInstruments}
         continuitySession={meterContinuitySession}

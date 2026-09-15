@@ -376,6 +376,18 @@ describe('coherent RF passband display', () => {
   it.each(['main.filterWidth', 'main.ifShift', 'main.mode', 'main'])('cannot seed first-stale %s', (path) => {
     const input = fixture(); stale(input, path); expect(project(input).display.state).toBe('unknown');
   });
+  it('seeds from provider-confirmed held readback when poll freshness windows do not overlap', () => {
+    const input = fixture(); pbt(input);
+    for (const path of ['main.freqHz', 'main.mode', 'main.filterWidth', 'main.pbtInner', 'main.pbtOuter']) {
+      stale(input, path);
+      status(input, path, { quality: ['confirmed'] });
+    }
+    const result = project(input);
+    expect(result.display).toMatchObject({
+      state: 'current',
+      tuple: { frequencyHz: 14_074_000, mode: 'USB', widthHz: 2400, shiftHz: 0 },
+    });
+  });
   const invalid: [string, (i: ScopePassbandDisplayInput) => void][] = [
     ['zero width', (i) => { i.state!.main!.filterWidth = 0; }],
     ['zero frequency', (i) => { i.state!.main!.freqHz = 0; }],

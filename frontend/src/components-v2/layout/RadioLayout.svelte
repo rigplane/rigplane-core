@@ -324,11 +324,6 @@
   // Reactive state + capabilities — via runtime
   let radioState = $derived(runtime.state);
   let caps = $derived(runtime.caps);
-  let directFrequencyEntrySupported = $derived(
-    caps?.capabilities.includes('vfo_freq_direct') === true
-      && caps.receivers === 1
-      && caps.vfoScheme === 'ab',
-  );
   // MOR-1235. The meters dock's TX chrome takes its truth from the App-owned
   // TX controller — the SAME source as the authoritative global lamp
   // (MOR-1008/MOR-1059) — and never from `radioState.ptt`, a command/readback
@@ -733,8 +728,6 @@
     <LeftSidebar
       hideTxPanel={semanticRxTx} {declared} dragOwner={owner} {showReset}
       semanticHamBands={instruments.bandInstruments?.bandChoice}
-      semanticFrequencyEntry={directFrequencyEntrySupported
-        ? undefined : instruments.bandInstruments?.frequencyEntry}
     />
   </div>
   <div class="content-right">

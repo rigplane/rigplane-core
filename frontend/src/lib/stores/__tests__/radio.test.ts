@@ -156,6 +156,13 @@ async function useDualReceiverCapabilities(): Promise<void> {
 }
 
 describe('radio store', () => {
+  it('keeps each immutable server snapshot as the atomic reactive value', () => {
+    const state = makeState();
+
+    expect(store.setRadioState(state)).toBe(true);
+    expect(store.getRadioState()).toBe(state);
+  });
+
   let store: typeof import('../radio.svelte');
 
   beforeEach(async () => {
@@ -412,6 +419,28 @@ describe('radio store', () => {
     expect(store.getRadioState()?.fieldStatus?.['main.freqHz']).toEqual(
       nextFieldStatus['main.freqHz'],
     );
+  });
+
+  it('does not deep-compare the snapshot when observationSeq already admits it', () => {
+    store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      freshnessRevision: 1,
+      observationSeq: 1,
+      publicStateSeq: 1,
+    }));
+    const stringify = vi.spyOn(JSON, 'stringify');
+
+    expect(store.setRadioState(makeState({
+      revision: 5,
+      stateRevision: 5,
+      freshnessRevision: 1,
+      observationSeq: 2,
+      publicStateSeq: 2,
+    }))).toBe(true);
+
+    expect(stringify).not.toHaveBeenCalled();
+    stringify.mockRestore();
   });
 
   it('accepts wsClients metadata when publicStateSeq advances without semantic revisions', () => {

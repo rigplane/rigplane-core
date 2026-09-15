@@ -2368,7 +2368,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   it('the fixture actually emits all three groups (non-vacuity)', () => {
     const t = renderAll('desktop-v2');
     expect(t.querySelector('[data-testid="band-surface"]')).toBeNull();
-    expect(t.querySelector('.left-sidebar [data-panel-id="band"] [data-testid="band-entry"]'))
+    expect(t.querySelector('.left-sidebar [data-panel-id="band"] [data-testid="band-choices-compact"]'))
       .not.toBeNull();
     // MOR-2425: on Standard the antenna group emits as the two seats RadioLayout
     // arranges itself, not as the grouped surface SDR still mounts.
@@ -2413,7 +2413,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     expect(t.querySelector('[data-testid="antenna-control-grid"]')).not.toBeNull();
   });
 
-  it('keeps HAM choices and typed entry together in BANDS without a lower BAND panel', () => {
+  it('keeps HAM choices in BANDS and leaves typed entry to the VFO overlay', () => {
     const t = renderAll('desktop-v2');
     const upper = t.querySelector('.left-sidebar [data-panel-id="band"]');
     const settings = t.querySelector('[data-panel-id="desktop-vfo-ops"]');
@@ -2422,7 +2422,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     expect(upper?.querySelector('[data-testid="band-choices-compact"]')).not.toBeNull();
     expect(texts(settings, '.band-tab')).toEqual(['LW/MW', 'SWL']);
     expect(texts(settings, '.grid button')).toEqual(LW_MW_PRESETS);
-    expect(upper?.querySelector('[data-testid="band-entry"]')).not.toBeNull();
+    expect(upper?.querySelector('[data-testid="band-entry"]')).toBeNull();
     expect(t.querySelector('[data-testid="band-surface"]')).toBeNull();
     expect(t.querySelector('[data-panel-id="semantic-band"]')).toBeNull();
   });
@@ -2496,7 +2496,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     ]) {
       expect(t.querySelectorAll(selector).length, selector).toBe(0);
     }
-    expect(t.querySelectorAll('[data-testid="band-entry"]').length).toBe(1);
+    expect(t.querySelectorAll('[data-testid="band-entry"]').length).toBe(0);
     expect(t.querySelectorAll('[data-testid="band-choices-compact"]').length).toBe(1);
     expect([...t.querySelectorAll('.band-tab')].filter((b) => b.textContent?.trim() === 'HAM').length)
       .toBe(1);

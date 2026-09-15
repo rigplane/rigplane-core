@@ -222,7 +222,8 @@
       || !safeGeneration(stateGeneration)
       || !safeGeneration(capsGeneration)
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(source.state, source.caps);
+    const model = source.view === undefined
+      ? toRadioViewModel(source.state, source.caps) : source.view;
     if (model === null) return null;
     const receiver = model.activeReceiver.status === 'known'
       ? model.activeReceiver.receiver : 'unknown';

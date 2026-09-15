@@ -48,6 +48,8 @@
   export interface AntennaAuthorityPublication {
     readonly state: ServerState | null;
     readonly caps: Capabilities | null;
+    /** App-owned projection shared by every authority consumer. */
+    readonly view?: RadioViewModel | null;
     readonly session: { readonly state: 'disconnected' | 'connecting' | 'connected' | 'reconnecting'; readonly epoch: number };
   }
   export type SubscribeAntennaAuthority = (handler: (value: AntennaAuthorityPublication) => void) => () => void;
@@ -97,14 +99,17 @@
     if (source.session.state !== 'connected' || !safe(source.session.epoch)
       || !safe(generation) || !safe(source.caps?.providerGeneration)
       || generation !== source.caps?.providerGeneration) return null;
-    const current = toRadioViewModel(source.state, source.caps);
+    const current = source.view === undefined
+      ? toRadioViewModel(source.state, source.caps) : source.view;
     return current?.antenna ? JSON.stringify([source.session.epoch, generation, current.topologyId,
       current.antenna.antennaCount, current.antenna.rxAnt.availability.structural]) : null;
   }
   function currentInput() {
     void tx;
     const currentTx = readTx();
-    const current = published === null ? null : toRadioViewModel(published.state, published.caps, currentTx);
+    const current = published === null ? null
+      : published.view === undefined
+        ? toRadioViewModel(published.state, published.caps, currentTx) : published.view;
     const blockedReasons = current === null ? [] : antennaSwitchBlocks(current, currentTx);
     return { current, blocked: blockedReasons.length > 0, blockedReasons };
   }

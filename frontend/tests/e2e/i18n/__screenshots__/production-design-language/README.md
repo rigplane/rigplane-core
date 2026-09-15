@@ -6,7 +6,7 @@ the immutable built-dist i18n suite. They are not fixture-harness captures.
 `scripts/i18n-preview-server.mjs`, while the test stubs only the backend at the
 page boundary and opens `/`.
 
-## Linux re-pin provenance — 2026-09-14 MOR-2467 MAIN/SUB topology
+## Linux re-pin provenance (superseded — 2026-09-14 MOR-2467 MAIN/SUB topology)
 
 All four production-root scenes are `compared-fail` at source head
 `2776ffdcad0549308c12973265216a10635233d7` in
@@ -408,7 +408,7 @@ exact row band by pixel-intensity search rather than by eye:
 A subsequent exact-head CI run must confirm these expectations; this
 comparison run is not itself a visual PASS.
 
-## Linux re-pin provenance (current — 2026-09-09 MOR-2432 Standard meter readouts)
+## Linux re-pin provenance (superseded — 2026-09-09 MOR-2432 Standard meter readouts)
 
 | Field | Value |
 | --- | --- |

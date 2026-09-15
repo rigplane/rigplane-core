@@ -337,9 +337,7 @@
     resizeCapture !== null
       && resizeCandidate !== null
       && spectrumAuthority !== null
-      && spectrumAuthority.providerGeneration === resizeCapture.authority.providerGeneration
-      && spectrumAuthority.receiver === resizeCapture.authority.receiver
-      && spectrumAuthority.digest === resizeCapture.authority.digest
+      && sameResizeAuthority(resizeCapture.authority, spectrumAuthority)
       ? resizeCandidate
       : null,
   );
@@ -596,11 +594,33 @@
   function captureStillCurrent(capture: GestureCapture, element: HTMLElement): boolean {
     const current = readAuthority();
     const geometry = readSampleGeometry(element);
-    return current?.digest === capture.authority.digest
+    return current !== null && sameResizeAuthority(capture.authority, current)
       && geometry?.frameMode === capture.geometry.frameMode
       && geometry.startFreq === capture.geometry.startFreq
       && geometry.endFreq === capture.geometry.endFreq
       && geometry.elementWidth === capture.geometry.elementWidth;
+  }
+
+  /**
+   * Resizing depends on the active receiver/filter, its passband geometry,
+   * and the mode/DATA-specific width rule.  The full spectrum digest also
+   * carries filter shape, raw PBT leaves, and scope-toolbar state; none of
+   * those changes the right-edge-to-width mapping, so polling them must not
+   * cancel an otherwise valid gesture.
+   */
+  function sameResizeAuthority(
+    captured: SpectrumAuthority,
+    current: SpectrumAuthority,
+  ): boolean {
+    return current.providerGeneration === captured.providerGeneration
+      && current.receiver === captured.receiver
+      && current.frequencyHz === captured.frequencyHz
+      && current.mode === captured.mode
+      && current.filter === captured.filter
+      && current.filterWidthHz === captured.filterWidthHz
+      && current.ifShiftHz === captured.ifShiftHz
+      && current.dataMode === captured.dataMode
+      && JSON.stringify(current.rule) === JSON.stringify(captured.rule);
   }
 
   // MOR-1497: freq-only counterpart of captureStillCurrent for plain
@@ -874,7 +894,10 @@
         spectrumPush?.(scopePixels);
         waterfallPush?.(scopePixels, waterfallOptions);
       }
-      if (projection.passband.state !== 'current') { resizeCapture = null; resizeCandidate = null; }
+      if (projection.passband.state !== 'current') {
+        resizeCapture = null;
+        resizeCandidate = null;
+      }
     });
   });
 
@@ -951,6 +974,9 @@
   class:fullscreen
   data-waterfall
   data-scope-color-roles={JSON.stringify(resolvedColorRoles)}
+  data-passband-state={managed ? scopeProjection?.passband.state ?? 'unavailable' : 'legacy'}
+  data-passband-resizable={canResizePassband}
+  data-filter-rule={spectrumAuthority?.rule?.kind ?? 'none'}
   tabindex="-1"
   onwheel={handleWheel}
   style:--scope-tune-line={resolvedColorRoles.tuneLine}
@@ -1264,6 +1290,26 @@
     margin: 0;
     border: 0;
     background: transparent;
+  }
+
+  .passband-resize-zone::before {
+    content: '';
+    position: absolute;
+    top: 18%;
+    bottom: 18%;
+    left: 50%;
+    width: 3px;
+    transform: translateX(-50%);
+    border-radius: 2px;
+    background: var(--scope-passband-edge, rgba(59, 130, 246, 0.75));
+    box-shadow: 0 0 0 1px rgba(5, 10, 18, 0.72);
+  }
+
+  .passband-resize-zone:hover::before,
+  .passband-resize-zone:focus-visible::before,
+  .passband-resize-zone.active::before {
+    width: 5px;
+    filter: brightness(1.3);
   }
 
   .passband-resize-zone:focus-visible {

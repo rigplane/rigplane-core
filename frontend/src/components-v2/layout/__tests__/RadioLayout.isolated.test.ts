@@ -639,7 +639,7 @@ describe('Band instrument placement', () => {
       .toBeTruthy();
   });
 
-  it('places semantic HAM controls in the Standard upper BAND selector', () => {
+  it('places semantic HAM controls without the retired inline entry in the Standard upper BAND selector', () => {
     rt.state = structuredClone(stateFixture);
     rt.caps = structuredClone(capsFixture);
     const t = mountLayout('desktop-v2');
@@ -648,7 +648,7 @@ describe('Band instrument placement', () => {
     expect([...upper!.querySelectorAll('.band-tab')].map((tab) => tab.textContent?.trim()))
       .toEqual(['HAM', 'LW/MW', 'SWL']);
     expect(upper!.querySelector('[data-testid="band-choices-compact"]')).not.toBeNull();
-    expect(upper!.querySelector('[data-testid="band-entry"]')).not.toBeNull();
+    expect(upper!.querySelector('[data-testid="band-entry"]')).toBeNull();
     expect(t.querySelector('[data-testid="band-surface"]')).toBeNull();
     expect(t.querySelector('[data-testid="band-control-grid"]')).toBeNull();
   });
