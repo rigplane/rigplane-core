@@ -184,7 +184,12 @@ from ...capabilities import (
     CAP_TUNING_STEP,
     CAP_XFC,
 )
-from ...radio_protocol import CivCommandCapable, MemoryCapable, PowerControlCapable
+from ...radio_protocol import (
+    CivCommandCapable,
+    ControlDomainCapable,
+    MemoryCapable,
+    PowerControlCapable,
+)
 
 __all__ = ["ControlHandler", "RadioNotReadyError"]
 
@@ -285,6 +290,29 @@ def _level_for_power(value: Any, radio: Any) -> int:
         power_max_watts=getattr(getattr(radio, "profile", None), "max_watts", None),
     )
     return int(native)
+
+
+def _reject_off_domain_notch_position(radio: "Radio | None", level: int) -> None:
+    """Refuse a manual-notch position the radio's published domain rejects.
+
+    Radios implementing
+    :class:`~rigplane.core.radio_protocol.ControlDomainCapable` that
+    publish a ``manual_notch_freq`` domain answer ``decode_control_raw``
+    for every legal raw position; ``None`` alongside a published
+    ``control_display_bounds`` band means the position is off the domain
+    and must not be queued. Radios without the surface, or without a
+    published domain, are range-checked at the radio boundary instead
+    (the Icom command builder's BCD level encoding refuses off-range
+    positions before any wire write).
+    """
+    if not isinstance(radio, ControlDomainCapable):
+        return
+    if radio.control_display_bounds("manual_notch_freq") is None:
+        return
+    if radio.decode_control_raw("manual_notch_freq", level) is None:
+        raise ValueError(
+            "manual-notch position is outside the radio's published manual-notch domain"
+        )
 
 
 def _with_admitted_level(
@@ -2574,8 +2602,7 @@ class ControlHandler:
             case "set_notch_filter":
                 level = int(params["value"])
                 rx = int(params.get("receiver", 0))
-                if not 0 <= level <= 255:
-                    raise ValueError("manual-notch position must be between 0 and 255")
+                _reject_off_domain_notch_position(radio, level)
                 self._ensure_capability("notch", "set_notch_filter")
                 self._ensure_receiver_supported(rx)
                 q.put(SetNotchFilter(level, receiver=rx))

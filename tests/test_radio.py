@@ -3712,6 +3712,40 @@ class TestManualNotchWidthDomainValidation:
         radio._connected = False
 
 
+class TestNotchFilterWireRange:
+    """MOR-2474: the command builder refuses off-range notch positions.
+
+    ``_level_bcd_encode`` under ``commands.levels.set_notch_filter``
+    raises before any wire write, so an off-range position queued for a
+    radio without a published domain never reaches the rig.
+    """
+
+    @pytest.mark.asyncio
+    async def test_out_of_range_sends_no_frame(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        with pytest.raises(ValueError, match="Level must be 0-255"):
+            await radio.set_notch_filter(256)
+        with pytest.raises(ValueError, match="Level must be 0-255"):
+            await radio.set_notch_filter(-1)
+        assert mock_transport.sent_packets == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("level", "tail"),
+        [(0, b"\x00\x00"), (131, b"\x01\x31"), (255, b"\x02\x55")],
+    )
+    async def test_in_range_frames_unchanged(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        level: int,
+        tail: bytes,
+    ) -> None:
+        await radio.set_notch_filter(level)
+        assert mock_transport.sent_packets[-1].endswith(b"\x14\x0d" + tail + b"\xfd")
+
+
 class TestFilterShapeDomainValidation:
     """MOR-1534: filter_shape had NO TOML domain at all before this ticket;
     set_filter_shape cast every value through the hardcoded IC-7610
