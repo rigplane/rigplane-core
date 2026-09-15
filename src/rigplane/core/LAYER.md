@@ -39,8 +39,8 @@ contract police this.
 plus `→ rigplane.runtime._poller_types` (also `TYPE_CHECKING`). The
 former `→ rigplane.rigctld.routing` edge was retired (MOR-440):
 `RigctldRoutable` now types its `rigctld_routing` surface against the
-neutral in-`core` `RigctldFallbackCache` / `RigctldRoutingStrategy`
-Protocols instead of the rigctld layer's concrete types.
+neutral in-`core` `RigctldRoutingStrategy` Protocol instead of the
+rigctld layer's concrete types.
 
 ## Forbidden patterns
 

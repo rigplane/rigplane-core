@@ -92,7 +92,7 @@ class _NoDomainRadio:
 
 
 def _routing(radio: object) -> YaesuRouting:
-    return YaesuRouting(radio, cache=object(), max_power_w=100.0)
+    return YaesuRouting(radio, max_power_w=100.0)
 
 
 def test_domain_double_satisfies_protocol() -> None:

@@ -816,14 +816,12 @@ class RigctldHandler:
         self._key_down_backstop_task: asyncio.Task[None] | None = None
         self._key_down_backstop_token: int = 0
         self._key_down_backstop_session: str | None = None
-        # Legacy routing cache is retained only for vendor-specific routing
-        # strategies that still depend on it (Yaesu today). Core rigctld GET
-        # paths project from StateStore plus scoped CommandService overlays.
+        # Handler-local data-mode fallback, read only when RadioState is
+        # unavailable. Core rigctld GET paths project from StateStore plus
+        # scoped CommandService overlays.
         self._cache = _FallbackRigState()
         self._pending = _PendingRigState()
-        self._routing = create_routing(
-            radio, self._cache, getattr(config, "max_power_w", 100.0)
-        )
+        self._routing = create_routing(radio, getattr(config, "max_power_w", 100.0))
         if state_store is None and isinstance(radio, StateStoreCapable):
             state_store = radio.state_store
         self._has_canonical_state_store = isinstance(state_store, StateStore)

@@ -3148,7 +3148,6 @@ class YaesuCatRadio:
 
     def rigctld_routing(
         self,
-        cache: Any,
         max_power_w: float = 100.0,
     ) -> Any:
         """Construct a Yaesu-specific rigctld routing strategy.
@@ -3162,17 +3161,12 @@ class YaesuCatRadio:
         The lazy import keeps :class:`YaesuCatRadio` from depending on
         the rigctld layer at module-load time (``rigctld`` sits above
         ``backends`` in the import-linter layered architecture, so a
-        top-level import here would invert the layering). The argument
-        and return types are annotated as :class:`~typing.Any` for the
-        same reason; precise typing for the public surface lives on
+        top-level import here would invert the layering). The return
+        type is annotated as :class:`~typing.Any` for the same reason;
+        precise typing for the public surface lives on
         :class:`~rigplane.core.radio_protocol.RigctldRoutable`.
 
         Args:
-            cache: Shared
-                :class:`~rigplane.rigctld.handler._FallbackRigState`
-                cache used by the rigctld handler to remember
-                last-known meter/level values when the radio cannot
-                answer.
             max_power_w: Rated maximum TX power in watts; used to scale
                 normalised RFPOWER readings (defaults to 100 W).
 
@@ -3182,4 +3176,4 @@ class YaesuCatRadio:
         """
         from ...rigctld.routing import YaesuRouting  # noqa: TID251
 
-        return YaesuRouting(self, cache, max_power_w)
+        return YaesuRouting(self, max_power_w)

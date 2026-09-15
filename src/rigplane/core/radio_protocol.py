@@ -107,7 +107,6 @@ __all__ = [
     "PowerControlCapable",
     "PrivilegedTxApi",
     "PrivilegedTxSupervisor",
-    "RigctldFallbackCache",
     "RigctldRoutable",
     "RigctldRoutingStrategy",
     "ControlDomainCapable",
@@ -972,35 +971,6 @@ class StateModelCapable(StateStoreCapable, Protocol):
 
 
 @runtime_checkable
-class RigctldFallbackCache(Protocol):
-    """Neutral contract for the rigctld handler's fallback meter/level cache.
-
-    A routing strategy (see :class:`RigctldRoutingStrategy`) is handed this
-    object so it can remember the last-known meter/level values it read,
-    letting the rigctld handler answer subsequent queries from cache when
-    the radio cannot. ``core`` only passes the cache through to the strategy
-    and never inspects it; this Protocol captures the structural write
-    surface a strategy relies on so the contract stays in ``core`` without
-    naming the rigctld layer's concrete cache type.
-
-    The shipping :class:`~rigplane.rigctld.handler._FallbackRigState`
-    structurally satisfies this Protocol.
-    """
-
-    def update_s_meter(self, raw: int) -> None:
-        """Record the last-known raw S-meter reading."""
-        ...
-
-    def update_rf_power(self, value: float) -> None:
-        """Record the last-known normalised RF-power reading."""
-        ...
-
-    def update_swr(self, value: float) -> None:
-        """Record the last-known SWR reading."""
-        ...
-
-
-@runtime_checkable
 class RigctldRoutingStrategy(Protocol):
     """Neutral contract for a vendor-specific rigctld command-routing strategy.
 
@@ -1040,22 +1010,18 @@ class RigctldRoutable(Protocol):
     classes::
 
         if isinstance(radio, RigctldRoutable):
-            routing = radio.rigctld_routing(cache, max_power_w)
+            routing = radio.rigctld_routing(max_power_w)
         else:
             routing = None  # fall through to the built-in Icom path
     """
 
     def rigctld_routing(
         self,
-        cache: RigctldFallbackCache,
         max_power_w: float = 100.0,
     ) -> RigctldRoutingStrategy:
         """Construct a :class:`RigctldRoutingStrategy` bound to this radio.
 
         Args:
-            cache: Shared :class:`RigctldFallbackCache` used by the
-                rigctld handler to remember last-known meter/level
-                values when the radio cannot answer.
             max_power_w: Rated maximum TX power in watts; used to scale
                 normalised RFPOWER readings (defaults to 100 W).
 

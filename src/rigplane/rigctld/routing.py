@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from ..radio_protocol import Radio
-    from .handler import _FallbackRigState  # noqa: TID251
 
 from ..core.radio_protocol import ControlDomainCapable
 from ..core.state_pipeline_contracts import FieldPath
@@ -201,11 +200,8 @@ class YaesuRouting:
         "NR": FieldPath.receiver("main", "operator_toggles", "nr"),
     }
 
-    def __init__(
-        self, radio: "Radio", cache: "_FallbackRigState", max_power_w: float
-    ) -> None:
+    def __init__(self, radio: "Radio", max_power_w: float) -> None:
         self._radio = radio
-        self._cache = cache
         self._max_power_w = max_power_w
         self._state_observer: _StateObserver | None = None
 
@@ -516,14 +512,13 @@ class YaesuRouting:
 
 def create_routing(
     radio: "Radio",
-    cache: "_FallbackRigState",
     max_power_w: float = 100.0,
 ) -> RigctldRouting | None:
     """Create a vendor-specific :class:`RigctldRouting` for ``radio``.
 
     Dispatches via the public
     :class:`~rigplane.core.radio_protocol.RigctldRoutable` Protocol:
-    radios that implement ``rigctld_routing(cache, max_power_w)`` get
+    radios that implement ``rigctld_routing(max_power_w)`` get
     their custom strategy (Yaesu CAT today; Kenwood TS-590 or others
     in the future). Radios that do not — Icom CI-V — return ``None``
     and the handler's built-in Icom routing is used as the default
@@ -532,5 +527,5 @@ def create_routing(
     from rigplane.core.radio_protocol import RigctldRoutable
 
     if isinstance(radio, RigctldRoutable):
-        return radio.rigctld_routing(cache, max_power_w)
+        return radio.rigctld_routing(max_power_w)
     return None
