@@ -2211,8 +2211,19 @@ class ControlHandler:
         if hz is None:
             return {"detected": None, "applied": False}
 
-        # Read current CW pitch from state, compute VFO shift
-        cw_pitch = state.cw_pitch if state.cw_pitch else 600
+        # Read current CW pitch from state, compute VFO shift.
+        # MOR-2482: an unobserved pitch (never reported by the radio) must
+        # not be replaced by a fabricated default — without it no honest
+        # delta exists, so the VFO stays put and the response says so.
+        cw_pitch = state.cw_pitch
+        if cw_pitch <= 0:
+            return {
+                "detected": hz,
+                "cw_pitch": None,
+                "delta": None,
+                "applied": False,
+                "reason": "cw_pitch_unknown",
+            }
         delta = hz - cw_pitch
 
         if abs(delta) > 5:
