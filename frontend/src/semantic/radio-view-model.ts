@@ -487,9 +487,10 @@ export interface DspViewModel {
    * origin}` when the radio declares a usable one, absent when it declares
    * nothing usable — the fact group states the DOMAIN, never a fallback;
    * consumers keep their own today-behaviour constants for the absent case.
-   * When present, `notchFreq` carries that field's decoded display value
-   * rather than the raw `notchFilter` reading. Not a per-field reading: one
-   * control, one domain, so it sits on the group beside the field it governs.
+   * When present and the field's status is usable, `notchFreq` carries that
+   * field's decoded display value; otherwise it reads the raw `notchFilter`
+   * field as before. Not a per-field reading: one control, one domain, so it
+   * sits on the group beside the field it governs.
    */
   notchFreqDomain?: ControlDisplayDomain;
   manualNotchWidth: DspField<number>;
