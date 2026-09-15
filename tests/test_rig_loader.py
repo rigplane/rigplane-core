@@ -1405,6 +1405,76 @@ choices = [
         with pytest.raises(RigLoadError, match="raw_step"):
             self._load(tmp_path, malformed)
 
+    _LEGACY_PITCH = (
+        "raw_min = 0\nraw_max = 255\ndisplay_min = 300\ndisplay_max = 900\n"
+        'display_unit = "Hz"\n'
+    )
+
+    def test_decode_quantum_is_published_on_the_legacy_control(self, tmp_path):
+        rig = self._load(tmp_path, self._LEGACY_PITCH + "decode_quantum = 5\n")
+
+        assert rig.controls == {
+            "test_control": {
+                "raw_min": 0,
+                "raw_max": 255,
+                "display_min": 300,
+                "display_max": 900,
+                "display_unit": "Hz",
+                "decode_quantum": 5,
+            }
+        }
+        assert rig.to_profile().controls == rig.controls
+
+    @pytest.mark.parametrize(
+        "quantum",
+        [
+            "decode_quantum = 0",
+            "decode_quantum = -5",
+            "decode_quantum = 1.5",
+            'decode_quantum = "5"',
+            "decode_quantum = true",
+        ],
+        ids=["zero", "negative", "fractional", "string", "boolean"],
+    )
+    def test_decode_quantum_must_be_a_positive_integer(self, tmp_path, quantum):
+        with pytest.raises(RigLoadError, match="decode_quantum.*positive integer"):
+            self._load(tmp_path, self._LEGACY_PITCH + quantum + "\n")
+
+    def test_decode_quantum_requires_the_full_legacy_band(self, tmp_path):
+        partial = (
+            'raw_min = 0\nraw_max = 255\ndisplay_unit = "Hz"\ndecode_quantum = 5\n'
+        )
+        with pytest.raises(
+            RigLoadError, match="decode_quantum.*display_min.*display_max"
+        ):
+            self._load(tmp_path, partial)
+
+    def test_decode_quantum_is_rejected_on_explicit_domains(self, tmp_path):
+        with pytest.raises(RigLoadError, match="decode_quantum.*explicit"):
+            self._load(tmp_path, self._LINEAR + "decode_quantum = 5\n")
+
+    def test_decode_quantum_rejects_a_domain_with_an_exact_half_tie(self, tmp_path):
+        tie = (
+            "raw_min = 0\nraw_max = 2\ndisplay_min = 0\ndisplay_max = 1\n"
+            'display_unit = "Hz"\ndecode_quantum = 1\n'
+        )
+        with pytest.raises(RigLoadError, match="exact half-step tie"):
+            self._load(tmp_path, tie)
+
+    def test_every_civ_profile_with_cw_pitch_commands_declares_decode_quantum(self):
+        for path in sorted(
+            path for path in RIGS_DIR.glob("*.toml") if not path.name.startswith("_")
+        ):
+            rig = load_rig(path)
+            if "get_cw_pitch" not in rig.commands:
+                continue
+            controls = rig.to_profile().controls
+            assert controls is not None, path.name
+            pitch = controls.get("cw_pitch")
+            assert isinstance(pitch, dict), path.name
+            assert isinstance(pitch.get("decode_quantum"), int), path.name
+            assert pitch["decode_quantum"] > 0, path.name
+
     @pytest.mark.parametrize(
         "maximum",
         [
