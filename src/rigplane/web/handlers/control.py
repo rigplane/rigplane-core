@@ -2218,11 +2218,6 @@ class ControlHandler:
         if abs(delta) > 5:
             # Shift VFO frequency to zero-beat
             command = SetFreq(freq + delta, receiver=receiver)
-            decision = evaluate_tx_interlock(
-                command, rf_state=self._observed_rf_state()
-            )
-            if not decision.allowed:
-                raise CommandError(decision.reason)
             q = self._server.command_queue
             q.put(command)
 
