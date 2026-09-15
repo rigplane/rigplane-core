@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ControlFeedback } from '$lib/runtime/adapters/panel-adapters';
+import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
 
 const mockProps = {
   cwPitch: 600,
@@ -17,6 +18,8 @@ const mockProps = {
   hasApf: true,
   hasTwinPeak: true,
   autoTuneAvailable: false,
+  cwPitchDomain: null as ControlDisplayDomain | null,
+  keySpeedDomain: null as ControlDisplayDomain | null,
 };
 
 const mockHandlers = {
@@ -72,15 +75,15 @@ function mountPanel(overrides?: Partial<typeof mockProps>) {
   return t;
 }
 
-beforeEach(() => {
-  components = [];
-  Object.assign(mockProps, {
-    cwPitch: 600, keySpeed: 12, breakIn: 0, breakInDelay: 0,
-    apfMode: 0, twinPeak: false, currentMode: 'CW',
-    apfDisabled: false, tpfDisabled: false,
-    hasCw: true, hasBreakIn: true, hasApf: true, hasTwinPeak: true,
-    autoTuneAvailable: false,
-  });
+  beforeEach(() => {
+    components = [];
+    Object.assign(mockProps, {
+      cwPitch: 600, keySpeed: 12, breakIn: 0, breakInDelay: 0,
+      apfMode: 0, twinPeak: false, currentMode: 'CW',
+      apfDisabled: false, tpfDisabled: false,
+      hasCw: true, hasBreakIn: true, hasApf: true, hasTwinPeak: true,
+      autoTuneAvailable: false, cwPitchDomain: null, keySpeedDomain: null,
+    });
   Object.values(mockHandlers).forEach((fn) => fn.mockClear());
   Object.assign(mockFeedback, {
     confirmed: 64, target: null, requestedTarget: null, phase: 'idle', busy: false,
@@ -153,10 +156,14 @@ describe('CwPanel component rendering', () => {
   it('preserves immediate wheel requests for both controls', () => {
     const t = mountPanel({ cwPitch: 600, keySpeed: 12 });
     t.querySelector<HTMLElement>('[aria-label="CW Pitch"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    t.querySelector<HTMLElement>('[aria-label="CW Pitch"]')!
       .dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
     t.querySelector<HTMLElement>('[aria-label="Key Speed"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    t.querySelector<HTMLElement>('[aria-label="Key Speed"]')!
       .dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
-    expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(660);
+    expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(605);
     expect(mockHandlers.onKeySpeedChange).toHaveBeenCalledExactlyOnceWith(13);
   });
 
@@ -208,6 +215,68 @@ describe('CwPanel component rendering', () => {
     const comp = components.pop()!;
     unmount(comp);
     expect(t.innerHTML).toBe('');
+  });
+});
+
+describe('CwPanel CW pitch domain (MOR-1682)', () => {
+  const stepPitch = (t: HTMLElement) => {
+    t.querySelector<HTMLElement>('[aria-label="CW Pitch"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+  };
+
+  it('ranges and steps the pitch control by the profile exact domain (FTX-1: 300..1050, step 10)', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ cwPitchDomain: { min: 300, max: 1050, step: 10, origin: 300 } });
+    const slider = t.querySelector<HTMLElement>('[aria-label="CW Pitch"][role="slider"]')!;
+    expect(slider.getAttribute('aria-valuemin')).toBe('300');
+    expect(slider.getAttribute('aria-valuemax')).toBe('1050');
+    stepPitch(t);
+    expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(610);
+    vi.useRealTimers();
+  });
+
+  it('keeps the 5 Hz step for a legacy-domain radio (IC-7300 shape)', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ cwPitchDomain: { min: 300, max: 900, step: 5, origin: 300 } });
+    stepPitch(t);
+    expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(605);
+    vi.useRealTimers();
+  });
+
+  it('keeps the 5 Hz step when the profile publishes no cw_pitch domain', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ cwPitchDomain: null });
+    stepPitch(t);
+    expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(605);
+    vi.useRealTimers();
+  });
+});
+
+describe('CwPanel key-speed domain (MOR-2475 F1)', () => {
+  const slider = (t: HTMLElement) =>
+    t.querySelector<HTMLElement>('[aria-label="Key Speed"][role="slider"]')!;
+
+  it('ranges and steps the key-speed control by the profile domain', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ keySpeedDomain: { min: 5, max: 50, step: 1, origin: 5 } });
+    expect(slider(t).getAttribute('aria-valuemin')).toBe('5');
+    expect(slider(t).getAttribute('aria-valuemax')).toBe('50');
+    slider(t).dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(mockHandlers.onKeySpeedChange).toHaveBeenCalledExactlyOnceWith(50);
+    vi.useRealTimers();
+  });
+
+  it('keeps the 6..48 fallback when the profile publishes no key_speed domain', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ keySpeedDomain: null });
+    expect(slider(t).getAttribute('aria-valuemin')).toBe('6');
+    expect(slider(t).getAttribute('aria-valuemax')).toBe('48');
+    slider(t).dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(mockHandlers.onKeySpeedChange).toHaveBeenCalledExactlyOnceWith(48);
+    vi.useRealTimers();
   });
 });
 

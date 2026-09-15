@@ -128,6 +128,19 @@ describe('AST-backed control feedback debt inventory (MOR-1713)', () => {
     expect(debt(third, file)).toHaveLength(1);
   });
 
+  it('exempts only the semantic host\'s exact browser-local gain identity', () => {
+    const source = wrap(
+      `<input type="range" aria-label={\`${'${channel.toUpperCase()}'} gain in decibels\`}
+        value={value ?? 0}/>`,
+      `let channel='main', value=0;`,
+    );
+    const file = 'src/semantic/RxAudioInstrumentHost.svelte';
+    expect(debt(source, file)).toEqual([]);
+    expect(debt(source, `nested/${file}`)).toHaveLength(1);
+    expect(debt(source.replace('value ?? 0', 'value'), file)).toHaveLength(1);
+    expect(debt(source.replace('gain in decibels', 'gain'), file)).toHaveLength(1);
+  });
+
   it('allows the frozen inventory to shrink but never grow', () => {
     expect(assertShrinkOnly([{ identity: 'a' }], new Set(['a', 'b']))).toEqual(['a']);
     expect(() => assertShrinkOnly([{ identity: 'a' }, { identity: 'c' }], new Set(['a', 'b']))).toThrow(/grew.*c/);

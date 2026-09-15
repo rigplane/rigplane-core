@@ -29,8 +29,8 @@ describe('the flagship-probe registration', () => {
     const placed = new Set(
       [...skinSource.matchAll(/\[data-zone-id='([a-z-]+)'\]/g)].map(([, id]) => id),
     );
-    // The deck's two receiver strips are placed by `data-strip-receiver`, so
-    // their zone ids are the only declared ones the style block does not name.
+    // The deck's two slot strips are placed by `data-strip-slot`, so their
+    // zone ids are the only declared ones the style block does not name.
     const deck = new Set(['primary-vfo', 'secondary-vfo']);
     for (const zone of flagshipProbeLayout.zones) {
       expect(zone.surfaces).toHaveLength(1);
@@ -52,9 +52,7 @@ describe('the flagship-probe registration', () => {
     expect(declared.has('memory' as SemanticSurfaceName)).toBe(false);
   });
 
-  // Kills: admitting a single-receiver topology — the arrangement puts two
-  // receivers side by side in both of its arrangements, and there would be
-  // nothing to put in the second.
+  // Kills: admitting a single-receiver topology.
   it('is compatible with the dual-receiver topologies only', () => {
     expect([...flagshipProbeLayout.compatibleTopologies].sort())
       .toEqual(['2/ab_shared', '2/main_sub']);

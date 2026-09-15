@@ -41,8 +41,11 @@ afterEach(() => { target.remove(); });
 
 type Handlers = { onRequestKey: () => void; onRequestUnkey: () => void };
 const inertHandlers = (): Handlers => ({ onRequestKey: vi.fn(), onRequestUnkey: vi.fn() });
-function render(view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handlers = inertHandlers()) {
-  const component = mount(RxTxSurface, { target, props: { view, tx, ...handlers } });
+function render(
+  view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handlers = inertHandlers(),
+  standard = false,
+) {
+  const component = mount(RxTxSurface, { target, props: { view, tx, standard, ...handlers } });
   flushSync();
   const q = (sel: string) => target.querySelector(sel);
   return {
@@ -66,10 +69,28 @@ function withSurface(
 // ── 1. TX state display mirrors the AUTHORITY snapshot, and only it ─────────
 
 describe('RX/TX status mirrors the server TX projection', () => {
-  it.each(IDS)('%s: an idle authority with an observed OFF radio reads RX', (id) => {
+  it('keeps the Standard TX status semantic-only and puts keyed state on PTT', () => {
+    const keyed = snap({
+      phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on',
+    });
+    const s = render(topologyFixtures['2/main_sub'], keyed, inertHandlers(), true);
+    try {
+      expect(s.state().classList).toContain('sr-only');
+      expect(s.state().dataset).toMatchObject({
+        rf: 'transmitting', session: 'keyed', intent: 'latched',
+      });
+      expect(s.key().getAttribute('data-active')).toBe('true');
+      expect(s.key().getAttribute('aria-pressed')).toBe('true');
+      expect(s.key().textContent?.trim()).toBe('PTT');
+    } finally { s.dispose(); }
+  });
+
+  it.each(IDS)('%s: an observed OFF radio removes the idle READY row and its space', (id) => {
     withSurface(topologyFixtures[id], IDLE_RX, (s) => {
       expect(s.state().dataset.rf).toBe('receiving');
-      expect(s.state().textContent).toContain('RX');
+      expect(s.state().querySelector('[data-testid="rx-tx-rf-label"]')?.textContent).toBe('');
+      expect(s.state().hidden).toBe(true);
+      expect(getComputedStyle(s.state()).display).toBe('none');
     });
   });
 
@@ -101,6 +122,7 @@ describe('RX/TX status mirrors the server TX projection', () => {
     withSurface(topologyFixtures[id], snap({ radioTx: 'unknown' }), (s) => {
       expect(s.state().dataset.rf).toBe('unknown');
       expect(s.state().textContent).not.toContain('RX');
+      expect(s.state().hidden).toBe(true);
     });
   });
 
@@ -307,10 +329,10 @@ describe('key intent gating', () => {
   });
 
   it.each([
-    ['on', 'transmitting', 'TX', 'radio-transmitting'],
-    ['unknown', 'unknown', 'RF ?', 'rf-state-unknown'],
+    ['on', 'transmitting', 'TX', 'radio-transmitting', true],
+    ['unknown', 'unknown', '', 'rf-state-unknown', false],
   ] as const)('idle managed RX with observed %s emits TRANSMIT and retains RF diagnostics', async (
-    observedPtt, rf, label, reason,
+    observedPtt, rf, label, reason, showsReason,
   ) => {
     const tx = projectManagedTx({
       schemaVersion: 1, sampledAt: '2026-09-05T00:00:00Z',
@@ -334,8 +356,10 @@ describe('key intent gating', () => {
     try {
       expect(tx).toMatchObject({ fresh: true, phase: 'idle', intent: null, releaseRequired: false });
       expect(s.state().dataset.rf).toBe(rf);
+      expect(s.state().hidden).toBe(rf === 'unknown');
       expect(s.root().querySelector('[data-testid="rx-tx-rf-label"]')?.textContent).toBe(label);
-      expect(s.reasons()).toContain(reason);
+      expect(s.state().textContent).not.toContain('READY');
+      expect(s.reasons().includes(reason)).toBe(showsReason);
       expect(s.key().disabled).toBe(false);
       s.key().click();
       await vi.waitFor(() => expect(submit).toHaveBeenCalledExactlyOnceWith('transmit_on'));
@@ -481,24 +505,28 @@ describe('accessibility', () => {
     });
   });
 
-  it('encodes RX/TX structurally, not by colour or class alone (forced-colors survival, MOR-977)', () => {
-    // Kill-mutation: drop the text/shape and keep only `data-rf` + a CSS class.
-    // Under forced-colors the class-driven colour is overridden and the states
-    // become visually identical. Each state must carry distinct TEXT and a
-    // distinct SHAPE glyph.
+  it('keeps receiving and unknown quiet while confirmed or uncertain TX remains explicit', () => {
     const texts = new Map<string, string>();
     const marks = new Map<string, string>();
+    const rows = new Map<string, string>();
     for (const tx of [IDLE_RX, snap({ radioTx: 'on' }), snap({ txRisk: 'uncertain' }), snap({ radioTx: 'unknown' })]) {
       withSurface(topologyFixtures['1/single'], tx, (s) => {
         const rf = s.state().dataset.rf ?? '';
         texts.set(rf, (s.state().querySelector('[data-testid="rx-tx-rf-label"]')?.textContent ?? '').trim());
         marks.set(rf, (s.state().querySelector('[data-testid="rx-tx-rf-mark"]')?.textContent ?? '').trim());
+        rows.set(rf, (s.state().textContent ?? '').replace(/\s+/g, ' ').trim());
       });
     }
     expect(texts.size).toBe(4);
-    expect(new Set(texts.values()).size).toBe(4);
-    expect(new Set(marks.values()).size).toBe(4);
-    for (const value of [...texts.values(), ...marks.values()]) expect(value).not.toBe('');
+    expect(texts.get('receiving')).toBe('');
+    expect(texts.get('unknown')).toBe('');
+    expect(marks.get('receiving')).toBe('');
+    expect(marks.get('unknown')).toBe('');
+    expect(rows.get('unknown')).toBe(rows.get('receiving'));
+    expect(texts.get('transmitting')).toBe('TX');
+    expect(texts.get('uncertain')).toBe('TX?');
+    expect(marks.get('transmitting')).not.toBe('');
+    expect(marks.get('uncertain')).not.toBe('');
   });
 
   it('associates the blocked reasons with the key action for screen readers', () => {
@@ -506,6 +534,17 @@ describe('accessibility', () => {
       const describedBy = s.key().getAttribute('aria-describedby');
       expect(describedBy).toBeTruthy();
       expect(target.querySelector(`#${describedBy}`)).not.toBeNull();
+    });
+  });
+
+  it('keeps an unknown RF refusal accessible without showing a passive reason row', () => {
+    withSurface(topologyFixtures['1/single'], snap({ fresh: false, radioTx: 'unknown' }), (s) => {
+      const describedBy = s.key().getAttribute('aria-describedby');
+      const description = target.querySelector<HTMLElement>(`#${describedBy}`);
+      expect(s.key().disabled).toBe(true);
+      expect(s.reasons()).not.toContain('rf-state-unknown');
+      expect(description?.classList.contains('sr-only')).toBe(true);
+      expect(description?.textContent?.trim()).toContain(blockedLabel('rf-state-unknown'));
     });
   });
 });
@@ -566,6 +605,23 @@ describe('MOR-1474 — unknown TX target names the reason through the catalog', 
    and still covered by its own test. ─────────────────────────────────────── */
 
 describe('MOR-2231 — TX controls carry the shared control-button vocabulary', () => {
+  it('presents Standard RX status and large PTT without gating the separate unkey action', () => {
+    const handlers = inertHandlers();
+    const s = render(topologyFixtures['1/single'], IDLE_RX, handlers, true);
+    try {
+      expect(s.root().classList.contains('standard')).toBe(true);
+      expect(s.state().hidden).toBe(false);
+      expect(s.state().textContent).toContain('RX');
+      expect(s.key().textContent?.trim()).toBe('PTT');
+      expect(s.key().getAttribute('aria-label')).toBe('Key transmitter');
+      expect(s.unkey().textContent?.trim()).toBe('UNKEY');
+      expect(s.unkey().disabled).toBe(false);
+      s.unkey().click();
+      expect(handlers.onRequestUnkey).toHaveBeenCalledTimes(1);
+      expect(handlers.onRequestKey).not.toHaveBeenCalled();
+    } finally { s.dispose(); }
+  });
+
   it('the key action is a hardware-surface pill with a red dot indicator', () => {
     // Kill-mutation: drop any one of the class/attribute applications on
     // `.rx-tx-key`. Without `v2-control-button` the element inherits no
@@ -613,26 +669,18 @@ describe('MOR-2231 — TX controls carry the shared control-button vocabulary', 
   });
 
   it.each([
-    [IDLE_RX, 'receiving', 'green', 'true'],
-    [snap({ radioTx: 'on' }), 'transmitting', 'red', 'true'],
-    [snap({ txRisk: 'uncertain' }), 'uncertain', 'amber', 'true'],
-    [snap({ radioTx: 'unknown' }), 'unknown', 'muted', 'true'],
-  ] as const)('the RF badge paints %#: %s as a %s indicator', (tx, rf, color, active) => {
-    // Kill-mutation: a constant `color`, or dropping the badge class. The badge
-    // must move with `rfState()` — and the span carrying it must keep carrying
-    // the state as TEXT too (the forced-colors pin above), which is why this
-    // reads the label text on the same element.
-    // `active` is uniformly 'true' and so pins no per-state variation; the
-    // case it kills is `receiving` regressing to `active: false`, which drops
-    // the label onto the dim base `.v2-status-indicator` colour and fails the
-    // fixture harness's `contrast-text-rx-tx-rf-label` check.
+    [IDLE_RX, 'receiving', 'muted', 'false', ''],
+    [snap({ radioTx: 'on' }), 'transmitting', 'red', 'true', 'TX'],
+    [snap({ txRisk: 'uncertain' }), 'uncertain', 'amber', 'true', 'TX?'],
+    [snap({ radioTx: 'unknown' }), 'unknown', 'muted', 'false', ''],
+  ] as const)('the RF badge paints %#: %s as a %s indicator', (tx, rf, color, active, text) => {
     withSurface(topologyFixtures['1/single'], tx, (s) => {
       expect(s.state().dataset.rf).toBe(rf);
       const label = s.state().querySelector('[data-testid="rx-tx-rf-label"]') as HTMLElement;
       expect(label.classList.contains('v2-status-indicator')).toBe(true);
       expect(label.dataset.color).toBe(color);
       expect(label.dataset.active).toBe(active);
-      expect(label.textContent?.trim()).not.toBe('');
+      expect(label.textContent?.trim()).toBe(text);
     });
   });
 });

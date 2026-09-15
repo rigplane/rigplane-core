@@ -4,6 +4,7 @@ from __future__ import annotations
 
 
 import asyncio
+import sys
 
 import pytest
 
@@ -567,8 +568,10 @@ class TestPortAudioBackendDeps:
         assert isinstance(stream, RxStream)
 
     @pytest.mark.asyncio()
-    async def test_open_rx_opens_callback_driven_blocksize_zero(self) -> None:
-        """Capture must be callback-driven with blocksize=0 (engine-native).
+    async def test_open_rx_opens_callback_driven_blocksize_zero_non_darwin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-darwin capture must be callback-driven with blocksize=0.
 
         Regression guard against the ~50 Hz TX "comb": the old implementation
         read on a fixed-``blocksize=960`` blocking loop (``stream.read(960)`` in
@@ -579,7 +582,10 @@ class TestPortAudioBackendDeps:
         ``sd.rec``. Companion device selection forces the WASAPI face on which
         ``blocksize=0`` opens (the WDM-KS face that rejected ``blocksize=0`` with
         PortAudioError -9999 is no longer chosen).
+        On darwin the backend instead opens RX at the configured frame
+        boundary (MOR-2465); see test_open_rx_darwin_blocksize_matches_frame.
         """
+        monkeypatch.setattr(sys, "platform", "win32")
         created: list[dict[str, object]] = []
 
         class FakeSd:
@@ -603,7 +609,7 @@ class TestPortAudioBackendDeps:
                     raise AssertionError("capture must not use blocking read()")
 
         backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
-        # frame_ms is advisory only now: the capture period is engine-native.
+        # frame_ms is advisory only on non-darwin: the capture period is engine-native.
         stream = backend.open_rx(
             AudioDeviceId(0), sample_rate=48_000, channels=1, frame_ms=20
         )
@@ -624,6 +630,70 @@ class TestPortAudioBackendDeps:
 
         await stream.stop()
         assert not stream.running
+
+    @pytest.mark.asyncio()
+    async def test_open_rx_darwin_blocksize_matches_frame(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """darwin RX opens at the configured frame boundary (MOR-2465).
+
+        Non-default rate/frame_ms (44_100 Hz, 10 ms) exercise the formula:
+        44_100 * 10 // 1000 = 441, so the assertion cannot pass by
+        hardcoding the default 960. Capture stays callback-driven: the
+        stream must register ``callback=`` and never use blocking ``read()``.
+        """
+        monkeypatch.setattr(sys, "platform", "darwin")
+        created: list[dict[str, object]] = []
+
+        class FakeSd:
+            class InputStream:
+                def __init__(self, **kw: object) -> None:
+                    created.append(kw)
+                    self.started = False
+                    self.stopped = False
+                    self.closed = False
+
+                def start(self) -> None:
+                    self.started = True
+
+                def stop(self) -> None:
+                    self.stopped = True
+
+                def close(self) -> None:
+                    self.closed = True
+
+                def read(self, _frames: int) -> object:  # pragma: no cover
+                    raise AssertionError("capture must not use blocking read()")
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
+        stream = backend.open_rx(
+            AudioDeviceId(0), sample_rate=44_100, channels=1, frame_ms=10
+        )
+        assert isinstance(stream, RxStream)
+
+        await stream.start(lambda _pcm: None)
+        assert stream.running
+
+        assert len(created) == 1
+        kwargs = created[0]
+        assert kwargs["blocksize"] == 441
+        assert kwargs["samplerate"] == 44_100
+        assert kwargs["channels"] == 1
+        assert kwargs["dtype"] == "int16"
+        assert kwargs["device"] == 0
+        assert callable(kwargs["callback"])
+
+        # Default 48 kHz / 20 ms -> 960 on darwin (same formula, defaults).
+        stream_default = backend.open_rx(
+            AudioDeviceId(0), sample_rate=48_000, channels=1, frame_ms=20
+        )
+        await stream_default.start(lambda _pcm: None)
+        assert created[1]["blocksize"] == 960
+
+        await stream.stop()
+        assert not stream.running
+        await stream_default.stop()
+        assert not stream_default.running
 
     @pytest.mark.asyncio()
     async def test_open_rx_callback_emits_fixed_frame_ms_frames_lossless(self) -> None:

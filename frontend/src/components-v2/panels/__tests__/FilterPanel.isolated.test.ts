@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { formatFilterWidth } from '../filter-utils';
-import { deriveIfShift } from '../filter-controls';
 import { setLocale } from '$lib/i18n';
+import { deriveIfShift } from '$lib/radio/filter-controls';
 import type { CommandScalarFeedback } from '../../../primitives/scalar/continuous-scalar.svelte';
+import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
 
 const mockProps = {
   currentMode: 'USB',
@@ -27,6 +28,7 @@ const mockProps = {
   hasPbt: false,
   pbtInner: 0,
   pbtOuter: 0,
+  ifShiftDomain: null as ControlDisplayDomain | null,
 };
 
 const mockHandlers = {
@@ -206,6 +208,7 @@ beforeEach(() => {
     hasPbt: false,
     pbtInner: 0,
     pbtOuter: 0,
+    ifShiftDomain: null,
   });
   mockHandlers.onFilterChange = vi.fn();
   mockHandlers.onFilterWidthChange = vi.fn();
@@ -371,7 +374,7 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
     ['pointer-left', 1800], ['pointer-middle', 2100], ['pointer-right', 3000],
     ['ArrowRight', 3000], ['Home', 1800], ['End', 3000], ['Shift+ArrowRight', 3000],
     ['wheel', 3000], ['fine-wheel', 3000], ['reset', 1800],
-  ] as const)('%s requests only the actual nonuniform catalog choice %i', (gesture, expected) => {
+  ] as const)('%s preserves catalog choices and modified-wheel scrolling (choice %i)', (gesture, expected) => {
     setWidthFeedback({ confirmed: gesture === 'pointer-middle' ? 1800 : 2100 });
     const t = mountPanel({ filterConfig: {
       defaults: [2100, 2100, 2100], fixed: false,
@@ -385,6 +388,7 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
       const x = gesture === 'pointer-left' ? 0 : gesture === 'pointer-middle' ? 50 : 100;
       control.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: x, pointerId: 1 }));
     } else if (gesture.includes('wheel')) {
+      control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       control.dispatchEvent(new WheelEvent('wheel', {
         bubbles: true, cancelable: true, deltaY: -1, shiftKey: gesture === 'fine-wheel',
       }));
@@ -397,9 +401,50 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
     }
     vi.advanceTimersByTime(60);
 
+    if (gesture === 'fine-wheel') {
+      expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
+      return;
+    }
     expect(mockHandlers.onFilterWidthChange).toHaveBeenCalledWith(expected);
     expect([1800, 2100, 3000]).toContain(mockHandlers.onFilterWidthChange.mock.calls.at(-1)?.[0]);
   });
+
+  it.each([
+    [1800, -1, 1950, 2700, 3000],
+    [3000, 1, 2700, 1950, 1800],
+  ])('accelerates armed catalog wheel input from %i with one immediate final request',
+    (confirmed, direction, slow, accelerated, bound) => {
+      setWidthFeedback({ confirmed });
+      const t = mountPanel({ filterConfig: {
+        defaults: [confirmed, confirmed, confirmed], fixed: false,
+        minHz: 1800, maxHz: 3000, stepHz: 1, table: [1800, 1950, 2200, 2500, 2700, 3000],
+      } as typeof mockProps.filterConfig });
+      const control = t.querySelector<HTMLElement>('[role="slider"]')!;
+      const wheel = (time: number, deltaY: number, extra: WheelEventInit = {}) => {
+        const event = new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true, ...extra });
+        Object.defineProperty(event, 'timeStamp', { value: time });
+        control.dispatchEvent(event);
+        flushSync();
+        return event;
+      };
+      expect(wheel(500, direction * 120).defaultPrevented).toBe(false);
+      expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
+      control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      for (const extra of [{ shiftKey: true }, { ctrlKey: true }, { metaKey: true }]) {
+        expect(wheel(600, direction * 120, extra).defaultPrevented).toBe(false);
+      }
+      expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
+      wheel(1000, direction * 120);
+      expect(mockHandlers.onFilterWidthChange.mock.calls).toEqual([[slow]]);
+      wheel(1030, direction * 120);
+      expect(mockHandlers.onFilterWidthChange.mock.calls).toEqual([[slow], [accelerated]]);
+      expect(control.getAttribute('aria-valuenow')).toBe(String(confirmed));
+      expect(t.querySelector('.vc-value')?.textContent).toBe(confirmed === 1800 ? '1.8kHz' : '3kHz');
+      wheel(1040, direction * 10000);
+      wheel(1050, -direction * 10000);
+      expect(mockHandlers.onFilterWidthChange.mock.calls).toEqual([[slow], [accelerated], [bound], [confirmed]]);
+    },
+  );
 
   it('invalidates a deferred choice when same-endpoint catalog content changes', () => {
     setWidthFeedback({ confirmed: 2100 });
@@ -785,6 +830,77 @@ describe('IF Shift visibility (MOR-1494)', () => {
     const labels = Array.from(t.querySelectorAll('.vc-label')).map((el) => el.textContent);
     expect(labels).not.toContain('IF Shift');
     expect(t.querySelectorAll('[role="slider"]').length).toBe(0);
+  });
+});
+
+/**
+ * MOR-1681: both mounted IF-shift controls (the table-mode row and the
+ * non-table row) take range and step from the profile-published
+ * `controls.if_shift` domain (`ifShiftDomain` on the filter props); the
+ * per-branch constants are today's explicit fallbacks (table-mode 20 Hz,
+ * non-table 25 Hz) for a radio that publishes no usable domain. The
+ * bipolar scalar steps by `domain.step` from the keyboard and snaps
+ * candidates onto the min-anchored lattice (which contains the domain
+ * origin 0 for the identity domain), so the ArrowRight emission pins the
+ * keyboard step AND the lattice.
+ */
+describe('IF Shift domain range and step (MOR-1681)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const FTX1_DOMAIN = { min: -1200, max: 1200, step: 20, origin: 0 } as const;
+  const TABLE_CONFIG = {
+    defaults: [2700], fixed: false, minHz: 500, maxHz: 4000, stepHz: 50,
+    table: [500, 2700, 4000],
+  };
+
+  const stepIfShift = (t: HTMLElement, index = 0) => {
+    t.querySelectorAll<HTMLElement>('[role="slider"]')[index]
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(60);
+  };
+
+  it('non-table row: ranges and steps by the profile domain (FTX-1: -1200..1200, step 20)', () => {
+    const t = mountPanel({ ifShiftDomain: FTX1_DOMAIN });
+    const slider = t.querySelectorAll<HTMLElement>('[role="slider"]')[0];
+    expect(slider.getAttribute('aria-valuemin')).toBe('-1200');
+    expect(slider.getAttribute('aria-valuemax')).toBe('1200');
+    stepIfShift(t);
+    expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(20);
+  });
+
+  it('non-table row: snaps an off-lattice reading onto the domain lattice before emitting', () => {
+    const t = mountPanel({ ifShift: 275, ifShiftDomain: FTX1_DOMAIN });
+    stepIfShift(t);
+    expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(300);
+  });
+
+  it('non-table row: keeps today\'s step-25 fallback when no domain is published', () => {
+    const t = mountPanel({ ifShiftDomain: null });
+    const slider = t.querySelectorAll<HTMLElement>('[role="slider"]')[0];
+    expect(slider.getAttribute('aria-valuemin')).toBe('-1200');
+    expect(slider.getAttribute('aria-valuemax')).toBe('1200');
+    stepIfShift(t);
+    expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(25);
+  });
+
+  it('table-mode row: ranges and steps by the profile domain, not the branch constant', () => {
+    const t = mountPanel({
+      filterConfig: TABLE_CONFIG,
+      ifShiftDomain: { min: -1000, max: 1000, step: 40, origin: 0 },
+    });
+    // Table mode renders the WIDTH hbar slider first; IF SHIFT is second.
+    const slider = t.querySelectorAll<HTMLElement>('[role="slider"]')[1];
+    expect(slider.getAttribute('aria-valuemin')).toBe('-1000');
+    expect(slider.getAttribute('aria-valuemax')).toBe('1000');
+    stepIfShift(t, 1);
+    expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(40);
+  });
+
+  it('table-mode row: keeps today\'s step-20 fallback when no domain is published', () => {
+    const t = mountPanel({ filterConfig: TABLE_CONFIG, ifShiftDomain: null });
+    stepIfShift(t, 1);
+    expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(20);
   });
 });
 

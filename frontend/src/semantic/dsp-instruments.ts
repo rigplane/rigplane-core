@@ -5,12 +5,19 @@ export const DSP_NOTCH_MODES = ['off', 'auto', 'manual'] as const;
 
 export type DspToggleField = (typeof DSP_TOGGLES)[number][0];
 export type DspNotchMode = (typeof DSP_NOTCH_MODES)[number];
+export type DspSettingsPanel = 'nb' | 'nr' | 'notch' | 'agc';
 export type DspFiniteChoiceValue = DspNotchMode | number;
 
 export interface DspFiniteHandles {
   readonly nrActive: Snippet;
   readonly nbActive: Snippet;
   readonly notchMode: Snippet;
+  readonly manualNotch?: Snippet;
+  readonly autoNotch?: Snippet;
+  readonly compactNb?: Snippet;
+  readonly compactNr?: Snippet;
+  readonly compactManualNotch?: Snippet;
+  readonly compactAutoNotch?: Snippet;
   readonly agcMode: Snippet;
 }
 

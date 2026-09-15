@@ -50,7 +50,7 @@ import {
 } from '$lib/runtime/props/panel-props';
 import {
   deriveIfShift, pbtRangeFromCaps, pbtRawToHz,
-  controlRangeFromCapsOrDefault, nbDepthRawToDisplay, projectNrLevel,
+  controlRangeFromCapsOrDefault, nbDepthRawToDisplay, projectNrLevel, controlDisplayDomain,
 } from '$lib/radio/filter-controls';
 import type { NrLevelProjection } from '$lib/radio/filter-controls';
 import {
@@ -310,15 +310,17 @@ function meterValueDomain(
 }
 
 function meterField(
-  structural: boolean, observation: DisplayObservation<number>, relevant: boolean,
+  presence: NonNullable<MeterField['presence']>, observation: DisplayObservation<number>, relevant: boolean,
   state: ServerState,
   source: Omit<MeterSourceIdentity, 'providerGeneration'> | null,
   receiverOperational = true,
 ): MeterField {
+  const structural = presence !== 'absent';
   const operational = structural && receiverOperational
     && (observation.state === 'current' || observation.state === 'stale');
   const providerGeneration = state.providerGeneration;
   return {
+    presence,
     reading: operational ? { status: 'known', value: observation.value } : { status: 'unknown' },
     availability: { structural, operational },
     relevant,
@@ -332,24 +334,14 @@ function meterField(
   };
 }
 
-/**
- * Emits the group only on positive evidence, same discipline as `deriveTxAux`
- * (N3) with two additions:
- *
- *  - NO authority snapshot ⇒ NO group. Without the App TX authority there is
- *    no honest TX relevance to state, and inventing one from `state.ptt` is
- *    exactly what R9 forbids; a caller that has not wired the controller gets
- *    a structurally-absent family, not a guess.
- *  - `raw !== undefined` IS the shipped capability gate for meters. There is
- *    no per-meter capability tag anywhere in v2 — `MetersDockPanel.svelte`'s
- *    own doc comment says "capability gating by `!== undefined`" — so that
- *    gate is copied rather than replaced. TX meters additionally require the
- *    radio to be able to transmit at all (`caps.tx`, `toMeterProps`'s `hasTx`).
- *
- * Relevance fails CLOSED: TX meters read as relevant in every state that is
- * not a positively observed RX, so an 'uncertain'/'unknown' window keeps the
- * SWR and ALC fault meters live rather than greying them out mid-transmission.
- */
+function meterPresence(state: ServerState, path: MeterSourcePath): NonNullable<MeterField['presence']> {
+  const statuses = state.fieldStatus;
+  if (!statuses || !Object.prototype.hasOwnProperty.call(statuses, path)) return 'absent';
+  const status = statuses[path];
+  if (!status || status.availability === 'undeclared') return 'absent';
+  return status.availability === 'unavailable' ? 'unavailable' : 'present';
+}
+
 function deriveMeters(
   state: ServerState | null, caps: Capabilities | null, tx: MetersTxAuthority | null | undefined,
   activeId: ReceiverId | null,
@@ -361,25 +353,34 @@ function deriveMeters(
   const onTx = rfState !== 'receiving';
   const hasTx = caps?.tx ?? false;
   const { powerMeter, swrMeter, alcMeter, compMeter, vdMeter, idMeter } = state;
-  const signalRaws = structuralReceivers.map((receiver) => state[RECEIVER_KEY[receiver]]?.sMeter);
-  const raws = [...signalRaws, powerMeter, swrMeter, alcMeter, compMeter, vdMeter, idMeter];
-  if (!raws.some((v) => v !== undefined)) return undefined;
+  const presenceOf = (path: MeterSourcePath, admitted = true) =>
+    admitted ? meterPresence(state, path) : 'absent';
+  const signalPresences = (activeId === null ? structuralReceivers
+    : structuralReceivers.filter(receiver => receiver === activeId))
+    .map(receiver => presenceOf(receiver === 'MAIN' ? 'main.sMeter' : 'sub.sMeter'));
+  const signalPresence = signalPresences.includes('present') ? 'present'
+    : signalPresences.includes('unavailable') ? 'unavailable' : 'absent';
+  const compressionPresence = presenceOf('compMeter', hasTx);
+  const drainVoltagePresence = presenceOf('vdMeter');
+  const drainCurrentPresence = presenceOf('idMeter', hasTx);
+  if ([signalPresence, compressionPresence, drainVoltagePresence, drainCurrentPresence,
+    ...(['powerMeter', 'swrMeter', 'alcMeter'] as const).map(path => presenceOf(path, hasTx)),
+  ].every(presence => presence === 'absent')) return undefined;
   const displayTxMeter = (
     raw: unknown,
     path: Exclude<MeterSourcePath, 'main.sMeter' | 'sub.sMeter' | 'compMeter' | 'vdMeter' | 'idMeter'>,
   ) => {
-    const structural = hasTx && raw !== undefined;
+    const presence = presenceOf(path, hasTx);
+    const structural = presence !== 'absent';
     const display = qualifyRadioDisplayObservation({
       state, caps, path, structural, value: numOrUndef(raw),
     });
     return {
-      ...meterField(structural, display, onTx, state, { scope: 'radio', receiver: null, path }),
+      ...meterField(presence, display, onTx, state, { scope: 'radio', receiver: null, path }),
       display,
     };
   };
-  const signalStructural = activeId === null
-    ? signalRaws.some((raw) => raw !== undefined)
-    : structuralReceivers.includes(activeId) && state[RECEIVER_KEY[activeId]]?.sMeter !== undefined;
+  const signalStructural = signalPresence !== 'absent';
   const signalRaw = activeId === null ? undefined : state[RECEIVER_KEY[activeId]]?.sMeter;
   const signalObservation: DisplayObservation<number> = activeId === null
     ? { state: 'unknown', reason: 'identity-unresolved' }
@@ -387,17 +388,17 @@ function deriveMeters(
       state, caps, receiver: activeId, path: `${RECEIVER_KEY[activeId]}.sMeter`,
       structural: signalStructural, value: numOrUndef(signalRaw),
     });
-  const compressionStructural = hasTx && compMeter !== undefined;
+  const compressionStructural = compressionPresence !== 'absent';
   const compressionObservation = qualifyRadioDisplayObservation({
     state, caps, path: 'compMeter', structural: compressionStructural,
     value: numOrUndef(compMeter),
   });
-  const drainVoltageStructural = vdMeter !== undefined;
+  const drainVoltageStructural = drainVoltagePresence !== 'absent';
   const drainVoltageObservation = qualifyRadioDisplayObservation({
     state, caps, path: 'vdMeter', structural: drainVoltageStructural,
     value: numOrUndef(vdMeter),
   });
-  const drainCurrentStructural = hasTx && idMeter !== undefined;
+  const drainCurrentStructural = drainCurrentPresence !== 'absent';
   const drainCurrentObservation = qualifyRadioDisplayObservation({
     state, caps, path: 'idMeter', structural: drainCurrentStructural,
     value: numOrUndef(idMeter),
@@ -405,7 +406,7 @@ function deriveMeters(
   return {
     rfState,
     signal: meterField(
-      signalStructural, signalObservation, !onTx, state,
+      signalPresence, signalObservation, !onTx, state,
       activeId === null ? null : {
         scope: 'receiver', receiver: activeId,
         path: activeId === 'MAIN' ? 'main.sMeter' : 'sub.sMeter',
@@ -416,18 +417,18 @@ function deriveMeters(
     swr: displayTxMeter(swrMeter, 'swrMeter'),
     alc: displayTxMeter(alcMeter, 'alcMeter'),
     compression: meterField(
-      compressionStructural, compressionObservation, onTx, state,
+      compressionPresence, compressionObservation, onTx, state,
       { scope: 'radio', receiver: null, path: 'compMeter' },
     ),
     // Vd is the station's supply rail, not a TX reading: it is worth showing
     // in every RF state (the dock keeps it on instantaneous display for the
     // same reason), so it is structurally gated but never relevance-gated.
     drainVoltage: meterField(
-      drainVoltageStructural, drainVoltageObservation, true, state,
+      drainVoltagePresence, drainVoltageObservation, true, state,
       { scope: 'radio', receiver: null, path: 'vdMeter' },
     ),
     drainCurrent: meterField(
-      drainCurrentStructural, drainCurrentObservation, onTx, state,
+      drainCurrentPresence, drainCurrentObservation, onTx, state,
       { scope: 'radio', receiver: null, path: 'idMeter' },
     ),
   };
@@ -604,6 +605,18 @@ function deriveFilterPassband(
       const label = caps.dataModeLabels?.[String(value)];
       return { value, label: typeof label === 'string' && label.trim() ? label : null };
     }) : [];
+  const modInputChoices = Array.isArray(caps.dataModeInputs) ? caps.dataModeInputs : [];
+  const activeDataMode = isDataModeValue(dataValue) ? dataValue : null;
+  const modInputKey = activeDataMode === null ? null : modInputStateKey(activeDataMode);
+  const modInputStatus = modInputKey === null ? undefined : state?.fieldStatus?.[modInputKey];
+  const modInputStructural = hasDataModeCap && activeDataMode !== null
+    && typeof count === 'number' && activeDataMode <= count && modInputChoices.length > 0
+    && modInputStatus !== undefined
+    && modInputStatus.availability !== 'undeclared' && modInputStatus.availability !== 'unavailable';
+  const modInputValue = modInputKey === null ? undefined : numOrUndef(state?.[modInputKey]);
+  const modInputObserved = modInputStructural && modInputKey !== null
+    && strictFieldAvailable(state, modInputKey)
+    && modInputChoices.some(choice => choice.value === modInputValue);
   const pbtInnerObserved = topFieldAvailable(state, `${base}pbtInner`);
   const pbtOuterObserved = topFieldAvailable(state, `${base}pbtOuter`);
   const ifShiftRawObserved = topFieldAvailable(state, `${base}ifShift`);
@@ -657,6 +670,12 @@ function deriveFilterPassband(
     : (pbtInnerHz !== undefined && pbtOuterHz !== undefined
       ? deriveIfShift(pbtInnerHz, pbtOuterHz)
       : undefined);
+  // MOR-1681: the IF-shift control domain comes from the profile's
+  // published `controls.if_shift` entry — exact domain (identity-mapped Hz)
+  // or legacy range with the family fallback step. No usable entry keeps
+  // the key absent so surfaces fall back to their own today-behaviour
+  // constants.
+  const ifShiftDomain = controlDisplayDomain(caps?.controls?.if_shift, 25);
 
   return {
     filterShape: txAuxField(hasFilters, filterShapeObserved, numOrUndef(rx?.filterShape)),
@@ -692,6 +711,7 @@ function deriveFilterPassband(
     // dead). See `FilterPassbandViewModel.ifShiftControlStructural`'s doc
     // comment (`radio-view-model.ts`) for the full split.
     ifShiftControlStructural: hasIfShiftCap,
+    ...(ifShiftDomain !== null ? { ifShiftDomain } : {}),
     // MOR-1291: structural requires BOTH the `pbt` capability tag AND a
     // usable `pbt_inner` range from THIS caps argument — a radio that
     // declares the capability but omits (or malforms) its own range is
@@ -715,6 +735,10 @@ function deriveFilterPassband(
     },
     dataModeChoices,
     dataMode: txAuxField(hasDataModeCap, dataModeObserved, numOrUndef(dataRx?.dataMode)),
+    ...(modInputChoices.length > 0 ? {
+      modInputChoices,
+      modInputSource: txAuxField(modInputStructural, modInputObserved, modInputValue),
+    } : {}),
   };
 }
 
@@ -1318,6 +1342,14 @@ function deriveCwKeyer(state: ServerState | null, caps: Capabilities | null): Cw
   const rx = onSub ? state?.sub : state?.main;
   const base = onSub ? 'sub.' : 'main.';
   const dashRatio = numOrUndef(state?.dashRatio);
+  // MOR-1682: the pitch domain comes from the profile's published
+  // `controls.cw_pitch` entry — exact domain or legacy range (its step is
+  // the entry's decode_quantum when published, else the 5 Hz fallback step).
+  // MOR-2475 F1: key speed takes the same path from `controls.key_speed`
+  // with the 1 WPM fallback step. No usable entry keeps the key absent so
+  // surfaces fall back to their own today-behaviour constants.
+  const pitchDomain = controlDisplayDomain(caps?.controls?.cw_pitch, 5);
+  const keySpeedDomain = controlDisplayDomain(caps?.controls?.key_speed, 1);
   return {
     breakIn: txAuxField(hasBreakInCap, topFieldAvailable(state, 'breakIn'), breakInMode(state?.breakIn)),
     breakInDelay: txAuxField(
@@ -1325,6 +1357,8 @@ function deriveCwKeyer(state: ServerState | null, caps: Capabilities | null): Cw
     ),
     keyerSpeed: txAuxField(true, topFieldAvailable(state, 'keySpeed'), numOrUndef(state?.keySpeed)),
     pitchHz: txAuxField(true, topFieldAvailable(state, 'cwPitch'), numOrUndef(state?.cwPitch)),
+    ...(pitchDomain !== null ? { pitchDomain } : {}),
+    ...(keySpeedDomain !== null ? { keySpeedDomain } : {}),
     reversePaddle: txAuxField(
       true, topFieldAvailable(state, 'dashRatio'), dashRatio === undefined ? undefined : dashRatio < 0,
     ),
@@ -1597,7 +1631,11 @@ function deriveRxAudio(
   // `toRxAudioProps`'s own gate: the radio's AF control, or the browser stream.
   const hasAfLevel = hasCap(caps, 'af_level') || hasLiveAudio;
   const hasDualRx = hasCap(caps, 'dual_rx');
-  const hasModInput = facts.modInputRoutingAvailable;
+  const modInputChoices = Array.isArray(caps?.dataModeInputs) ? caps.dataModeInputs : [];
+  const activeDataMode = state?.active === 'SUB' ? state.sub?.dataMode : state?.main?.dataMode;
+  const hasModInput = facts.modInputRoutingAvailable && modInputChoices.length > 0
+    && Number.isSafeInteger(activeDataMode) && (activeDataMode as number) >= 0
+    && (activeDataMode as number) <= (caps?.dataModeCount ?? -1);
   if (!hasAfLevel && !hasLiveAudio && !hasDualRx && !hasModInput) return undefined;
   // Byte-identical to `toRxAudioProps`'s monitor-mode derivation; parity across
   // the whole matrix is pinned in `__tests__/rx-audio-adapter.test.ts`.
@@ -1623,6 +1661,7 @@ function deriveRxAudio(
     routingFocus: txAuxField(hasDualRx, routing?.focus !== undefined, routing?.focus),
     routingSplit: txAuxField(hasDualRx, routing?.splitStereo !== undefined, routing?.splitStereo),
     modInputSource: txAuxField(hasModInput, source !== undefined, source),
+    modInputChoices,
     modInputReadiness: facts.modInputReadiness,
   };
 }

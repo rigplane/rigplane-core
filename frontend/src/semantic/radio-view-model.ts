@@ -16,7 +16,7 @@
  * boolean or a default is the failure mode this contract exists to prevent.
  */
 import type { VfoScheme } from '$lib/types/capabilities';
-import type { NrLevelProjection } from '$lib/radio/filter-controls';
+import type { NrLevelProjection, ControlDisplayDomain } from '$lib/radio/filter-controls';
 import type { FrequencyPermit, TxPermit } from '$lib/utils/tx-permit';
 import type { MeterSourceIdentity as PrimitiveMeterSourceIdentity } from '../primitives/meters/meter-ballistics.svelte';
 import { invalid, record, exactKeys, str } from './validator-primitives';
@@ -198,7 +198,9 @@ export type MeterSourcePath =
 export type MeterSourceIdentity = Readonly<
   Omit<PrimitiveMeterSourceIdentity, 'path'> & { readonly path: MeterSourcePath }
 >;
+export type MeterPresence = 'present' | 'unavailable' | 'absent';
 export interface MeterField {
+  presence?: MeterPresence;
   reading: MeterReading;
   availability: Availability;
   relevant: boolean;
@@ -298,6 +300,7 @@ export interface RxAudioViewModel {
   routingSplit: RxAudioField<boolean>;
   /** The active DATA group's MOD-input source enum (`$lib/radio/mod-input`). */
   modInputSource: RxAudioField<number>;
+  readonly modInputChoices?: readonly { readonly value: number; readonly label: string }[];
   modInputReadiness: ModInputReadiness;
 }
 
@@ -420,10 +423,22 @@ export interface FilterPassbandViewModel {
    * fact about the radio MODEL, not a live reading that can itself go stale.
    */
   ifShiftControlStructural: boolean;
+  /**
+   * The IF-shift control's numeric display domain from the profile's
+   * published `controls.if_shift` entry (MOR-1681): `{min, max, step,
+   * origin}` when the radio declares a usable one, absent when it declares
+   * nothing usable — the fact group states the DOMAIN, never a fallback;
+   * consumers keep their own today-behaviour constants for the absent
+   * case. Not a per-field reading: one control, one domain, so it sits on
+   * the group beside the field it governs.
+   */
+  ifShiftDomain?: ControlDisplayDomain;
   pbtInner: DisplayObservedField<number>;
   pbtOuter: DisplayObservedField<number>;
   dataMode: FilterPassbandField<number>;
   readonly dataModeChoices: readonly { readonly value: number; readonly label: string | null }[];
+  modInputSource?: FilterPassbandField<number>;
+  readonly modInputChoices?: readonly { readonly value: number; readonly label: string }[];
 }
 
 /**
@@ -827,6 +842,27 @@ export interface CwKeyerViewModel {
   keyerSpeed: CwKeyerField<number>;
   /** CW pitch / sidetone pitch in Hz (`state.cwPitch`); `unknown`, never 600. */
   pitchHz: CwKeyerField<number>;
+  /**
+   * The pitch control's numeric display domain from the profile's published
+   * `controls.cw_pitch` entry (MOR-1682): `{min, max, step, origin}` when the
+   * radio declares a usable one (an exact domain's own lattice, or a legacy
+   * range whose step is its `decode_quantum` when published, else the
+   * adapter's fallback step), absent when it declares nothing usable — the
+   * fact group states the DOMAIN, never a fallback; consumers keep their own
+   * today-behaviour constants for the absent case. Not a per-field reading:
+   * one control, one domain, so it sits on the group beside the fields it
+   * governs.
+   */
+  pitchDomain?: ControlDisplayDomain;
+  /**
+   * The key-speed control's numeric display domain from the profile's
+   * published `controls.key_speed` entry (MOR-2475 F1): same shape and
+   * same absence semantics as `pitchDomain` above — one control, one
+   * domain, sitting on the group beside the field it governs; absent when
+   * the radio declares nothing usable, and consumers keep their own
+   * today-behaviour constants for the absent case.
+   */
+  keySpeedDomain?: ControlDisplayDomain;
   reversePaddle: CwKeyerField<boolean>;
   /** Audio peak filter type/level ordinal (`rx.apfTypeLevel`, 0 = off). */
   apf: CwKeyerField<number>;
@@ -1450,7 +1486,7 @@ function validateMeterField(
   value: unknown, path: string, expectedSource: MeterSourceExpectation,
 ): MeterField {
   const v = record(value, path);
-  exactKeys(v, ['reading', 'availability', 'relevant', 'domain', 'source'], path);
+  exactKeys(v, ['reading', 'availability', 'relevant', 'domain', 'source', 'presence'], path);
   const r = record(v.reading, `${path}.reading`);
   let reading: MeterReading;
   if (r.status === 'known') {
@@ -1464,6 +1500,8 @@ function validateMeterField(
   }
   return {
     reading,
+    ...(v.presence !== undefined ? { presence: oneOf(v.presence,
+      ['present', 'unavailable', 'absent'] as const, `${path}.presence`) } : {}),
     availability: validateAvailability(v.availability, `${path}.availability`),
     relevant: bool(v.relevant, `${path}.relevant`),
     ...(v.domain !== undefined
@@ -1479,9 +1517,10 @@ function validateDisplayObservedMeterField(
   value: unknown, path: string, expectedSource: MeterSourceExpectation,
 ): DisplayObservedMeterField {
   const v = record(value, path);
-  exactKeys(v, ['reading', 'availability', 'relevant', 'display', 'domain', 'source'], path);
+  exactKeys(v, ['reading', 'availability', 'relevant', 'display', 'domain', 'source', 'presence'], path);
   const strict = validateMeterField({
     reading: v.reading, availability: v.availability, relevant: v.relevant,
+    ...(v.presence !== undefined ? { presence: v.presence } : {}),
     ...(v.domain !== undefined ? { domain: v.domain } : {}),
     ...(v.source !== undefined ? { source: v.source } : {}),
   }, path, expectedSource);
@@ -1710,7 +1749,7 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
   const v = record(value, path);
   exactKeys(v, [
     'monitorMode', 'liveAudio', 'afLevel', 'routingFocus', 'routingSplit',
-    'modInputSource', 'modInputReadiness',
+    'modInputSource', 'modInputChoices', 'modInputReadiness',
   ], path);
   return {
     monitorMode: oneOf(v.monitorMode, MONITOR_MODES, `${path}.monitorMode`),
@@ -1721,6 +1760,9 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
     ),
     routingSplit: validateTxAuxField(v.routingSplit, `${path}.routingSplit`, bool),
     modInputSource: validateTxAuxField(v.modInputSource, `${path}.modInputSource`, num),
+    ...(v.modInputChoices === undefined ? {} : {
+      modInputChoices: validateModInputChoices(v.modInputChoices, `${path}.modInputChoices`),
+    }),
     modInputReadiness: validateModInputReadiness(v.modInputReadiness, `${path}.modInputReadiness`),
   };
 }
@@ -1790,6 +1832,21 @@ function validateDataModeChoices(value: unknown, path: string): FilterPassbandVi
   });
 }
 
+function validateModInputChoices(value: unknown, path: string): NonNullable<FilterPassbandViewModel['modInputChoices']> {
+  if (!Array.isArray(value) || value.length > 6) invalid(path, 'MOD input choices in 0..5');
+  const seen = new Set<number>();
+  return value.map((item, i) => {
+    const choice = record(item, path + '[' + i + ']');
+    exactKeys(choice, ['value', 'label'], path);
+    const value = num(choice.value, `${path}[${i}].value`);
+    if (!Number.isSafeInteger(value) || value < 0 || value > 5 || seen.has(value)) {
+      invalid(`${path}[${i}].value`, 'a unique integer in 0..5');
+    }
+    seen.add(value);
+    return { value, label: nonBlank(choice.label, `${path}[${i}].label`) };
+  });
+}
+
 function validateModeFilter(value: unknown, path: string): ModeFilterViewModel {
   const v = record(value, path);
   exactKeys(v, [
@@ -1814,19 +1871,31 @@ function validateFilterPassband(value: unknown, path: string): FilterPassbandVie
     v,
     [
       'filterShape', 'filterShapeControlStructural', 'ifShift', 'ifShiftControlStructural',
-      'pbtInner', 'pbtOuter', 'dataMode', 'dataModeChoices',
+      'ifShiftDomain', 'pbtInner', 'pbtOuter', 'dataMode', 'dataModeChoices', 'modInputSource',
+      'modInputChoices',
     ],
     path,
+  );
+  const hasModInputSource = v.modInputSource !== undefined;
+  const hasModInputChoices = v.modInputChoices !== undefined;
+  if (hasModInputSource !== hasModInputChoices) invalid(path, 'MOD input source and choices together');
+  const ifShiftDomain = optionalGroup(
+    v.ifShiftDomain, `${path}.ifShiftDomain`, validateNrLevelDisplayDomain,
   );
   return {
     filterShape: validateTxAuxField(v.filterShape, `${path}.filterShape`, num),
     filterShapeControlStructural: bool(v.filterShapeControlStructural, `${path}.filterShapeControlStructural`),
     ifShift: validateTxAuxField(v.ifShift, `${path}.ifShift`, num),
     ifShiftControlStructural: bool(v.ifShiftControlStructural, `${path}.ifShiftControlStructural`),
+    ...(ifShiftDomain !== undefined ? { ifShiftDomain } : {}),
     pbtInner: validateDisplayObservedField(v.pbtInner, `${path}.pbtInner`, num),
     pbtOuter: validateDisplayObservedField(v.pbtOuter, `${path}.pbtOuter`, num),
     dataModeChoices: validateDataModeChoices(v.dataModeChoices, `${path}.dataModeChoices`),
     dataMode: validateTxAuxField(v.dataMode, `${path}.dataMode`, num),
+    ...(hasModInputSource ? {
+      modInputChoices: validateModInputChoices(v.modInputChoices, `${path}.modInputChoices`),
+      modInputSource: validateTxAuxField(v.modInputSource, `${path}.modInputSource`, num),
+    } : {}),
   };
 }
 
@@ -2017,18 +2086,28 @@ function validateScan(value: unknown, path: string): ScanViewModel {
 
 const BREAK_IN_MODES: readonly BreakInMode[] = ['off', 'semi', 'full'];
 
-/** Exactly the seven facts the adapter reads. See
- *  `radio-view-model-adapter.ts::deriveCwKeyer`. */
+/** Exactly the seven facts the adapter reads, plus the optional
+ *  profile-declared pitch and key-speed domains (MOR-1682, MOR-2475 F1).
+ *  See `radio-view-model-adapter.ts::deriveCwKeyer`. */
 function validateCwKeyer(value: unknown, path: string): CwKeyerViewModel {
   const v = record(value, path);
   exactKeys(v, [
-    'breakIn', 'breakInDelay', 'keyerSpeed', 'pitchHz', 'reversePaddle', 'apf', 'twinPeak',
+    'breakIn', 'breakInDelay', 'keyerSpeed', 'pitchHz', 'pitchDomain', 'keySpeedDomain',
+    'reversePaddle', 'apf', 'twinPeak',
   ], path);
+  const pitchDomain = optionalGroup(
+    v.pitchDomain, `${path}.pitchDomain`, validateNrLevelDisplayDomain,
+  );
+  const keySpeedDomain = optionalGroup(
+    v.keySpeedDomain, `${path}.keySpeedDomain`, validateNrLevelDisplayDomain,
+  );
   return {
     breakIn: validateTxAuxField(v.breakIn, `${path}.breakIn`, (val, p) => oneOf(val, BREAK_IN_MODES, p)),
     breakInDelay: validateTxAuxField(v.breakInDelay, `${path}.breakInDelay`, num),
     keyerSpeed: validateTxAuxField(v.keyerSpeed, `${path}.keyerSpeed`, num),
     pitchHz: validateTxAuxField(v.pitchHz, `${path}.pitchHz`, num),
+    ...(pitchDomain !== undefined ? { pitchDomain } : {}),
+    ...(keySpeedDomain !== undefined ? { keySpeedDomain } : {}),
     reversePaddle: validateTxAuxField(v.reversePaddle, `${path}.reversePaddle`, bool),
     apf: validateTxAuxField(v.apf, `${path}.apf`, num),
     twinPeak: validateTxAuxField(v.twinPeak, `${path}.twinPeak`, bool),

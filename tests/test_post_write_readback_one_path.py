@@ -358,6 +358,7 @@ def test_no_observable_field_arms_name_no_state_model_field() -> None:
 # which needs only ``receiver`` (MOR-2425 PR-1b).
 _TARGET_RESOLUTION_EXTRA_PARAMS: dict[str, dict[str, Any]] = {
     "set_tuner_status": {"value": 1},
+    "set_vfo_freq": {"slot": "B", "expected_active_slot": "A"},
 }
 
 

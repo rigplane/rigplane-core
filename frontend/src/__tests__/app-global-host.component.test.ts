@@ -284,6 +284,7 @@ describe('App composition — one host above the presentation boundary', () => {
     const hostBefore = hostEl();
     const layoutBefore = document.querySelector('.layout-stub');
     expect(layoutBefore?.getAttribute('data-skin')).toBe('desktop-v2');
+    expect(txEl()).toBeNull();
 
     // MOR-1060 made the swap asynchronous (the next presentation is loaded
     // lazily), so each hop settles the loader before asserting. The
@@ -301,6 +302,7 @@ describe('App composition — one host above the presentation boundary', () => {
     const layoutMobile = document.querySelector('.layout-stub');
     expect(layoutMobile?.getAttribute('data-skin')).toBe('mobile');
     expect(layoutMobile).not.toBe(layoutBefore);
+    expect(txEl()?.getAttribute('data-tx')).toBe('on');
     await resize(1200);
     const layoutBack = document.querySelector('.layout-stub');
     expect(layoutBack?.getAttribute('data-skin')).toBe('desktop-v2');
@@ -312,7 +314,7 @@ describe('App composition — one host above the presentation boundary', () => {
     expect(document.querySelectorAll('.toast-container')).toHaveLength(1);
     expect(h.onMessage).toHaveBeenCalledTimes(1);
     expect(h.offMessage).not.toHaveBeenCalled();
-    expect(txEl()?.getAttribute('data-tx')).toBe('on');
+    expect(txEl()).toBeNull();
     expect(faultEl()?.getAttribute('data-fault')).toBe('on-timeout');
 
     unmount(instance);

@@ -179,6 +179,8 @@ export type NrLevelDisplayDomain = Readonly<{
   origin: number;
 }>;
 
+export type ControlDisplayDomain = NrLevelDisplayDomain;
+
 export type NrLevelProjection = Readonly<{
   value: number | null;
   domain: NrLevelDisplayDomain | null;
@@ -308,6 +310,37 @@ function exactNrLevelDisplayDomain(domain: ControlDomain): NrLevelDisplayDomain 
   } catch {
     return null;
   }
+}
+
+/**
+ * Project a `controls.<name>` capabilities entry onto the numeric display
+ * domain a slider/keyboard surface needs: `{min, max, step, origin}`
+ * (MOR-1682). DATA-DRIVEN: an exact `ControlDomain` contributes its own
+ * display lattice, validated by the same decode/encode origin round-trip
+ * `exactNrLevelDisplayDomain` applies to NR level; a legacy `ControlRange`
+ * with finite `display_min < display_max` contributes those bounds with the
+ * entry's own `decode_quantum` as the step when it is a positive integer,
+ * otherwise the CALLER's fallback step anchored at `display_min` (the caller
+ * knows its own today-behaviour step; this helper never invents one).
+ * Anything else — absent entry, legacy entry without usable display bounds,
+ * an exact domain that fails the round-trip — returns `null`, and the
+ * surface keeps its own explicit fallback. Later MOR-1681/MOR-1680
+ * consumers pass their own fallback steps; no per-control constants live
+ * here.
+ */
+export function controlDisplayDomain(
+  control: CapabilityControlRange | ControlDomain | null | undefined,
+  fallbackStep: number,
+): ControlDisplayDomain | null {
+  if (control === null || control === undefined) return null;
+  if (!isLegacyControlRange(control)) return exactNrLevelDisplayDomain(control);
+  const { display_min: min, display_max: max } = control;
+  if (typeof min !== 'number' || !Number.isFinite(min)
+    || typeof max !== 'number' || !Number.isFinite(max) || max <= min) return null;
+  const step = Number.isSafeInteger(control.decode_quantum) && (control.decode_quantum as number) > 0
+    ? control.decode_quantum as number
+    : fallbackStep;
+  return { min, max, step, origin: min };
 }
 
 function legacyNrLevelContract(
@@ -485,11 +518,6 @@ export function nrRawToDisplay(raw: number, range?: ControlDisplayRange): number
   const contract = range ? nrLevelContracts.get(range) : undefined;
   if (contract) return contract.rawToDisplay(raw) ?? undefined;
   return controlRawToDisplay('nr_level', raw, CONTROL_DEFAULTS.nr_level, range);
-}
-
-/** Convert a 0-15 display value to the raw 0-255 NR wire value. */
-export function nrDisplayToRaw(display: number): number {
-  return controlDisplayToRaw('nr_level', display, CONTROL_DEFAULTS.nr_level);
 }
 
 /** Convert a raw 0-9 NB-depth wire value to the 1-10 display value. `range`

@@ -633,4 +633,156 @@ describe('ws-client → real radio store gate (integration)', () => {
     expect(connection.getConnectionStatus()).toBe('disconnected');
     expect(connection.isConnected()).toBe(false);
   });
+
+  describe('capability fetch retry', () => {
+    let modules: Awaited<ReturnType<typeof loadModules>>;
+    beforeEach(async () => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      fetchCapabilities.mockReset();
+      modules = await loadModules();
+      modules.wsClient.connect('ws://test/api/v1/ws');
+      instances[0].simulateOpen();
+    });
+    afterEach(() => {
+      modules.wsClient.disconnect();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    it('publishes the latest buffered state after a failed GET retries in the same session', async () => {
+      fetchCapabilities.mockRejectedValueOnce(new Error('HTTP 503'))
+        .mockResolvedValue(makeCapabilities(1));
+      sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(modules.store.getRadioState()).toBeNull();
+      const session = modules.wsClient.getControlSession();
+      for (let revision = 2; revision <= 20; revision++) {
+        sendStateUpdate(instances[0], deltaEnvelope(makeState({ providerGeneration: 1, revision }),
+          { main: makeReceiver({ freqHz: 14_075_000 + revision }) }));
+      }
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetchCapabilities).toHaveBeenCalledTimes(2);
+      expect(modules.store.getRadioState()).toMatchObject({ providerGeneration: 1, revision: 20,
+        main: { freqHz: 14_075_020 } });
+      expect(modules.wsClient.getControlSession()).toEqual(session);
+      expect(instances).toHaveLength(1);
+    });
+
+    it('bounds repeated failures with backoff even while full frames keep arriving', async () => {
+      fetchCapabilities.mockRejectedValue(new Error('HTTP 503'));
+      sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
+      await vi.advanceTimersByTimeAsync(0);
+      let revision = 1;
+      let expectedRequests = 1;
+      for (const delay of [1000, 2000, 4000, 8000, 16000, 30000, 30000]) {
+        for (let index = 0; index < 20; index++) {
+          sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1, revision: ++revision })));
+        }
+        await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(fetchCapabilities).toHaveBeenCalledTimes(expectedRequests);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(fetchCapabilities).toHaveBeenCalledTimes(++expectedRequests);
+      }
+      expect(modules.store.getRadioState()).toBeNull();
+      expect(instances).toHaveLength(1);
+    });
+
+    it('deduplicates an in-flight fetch and stops retrying after matching success', async () => {
+      let resolve!: (caps: Capabilities) => void;
+      fetchCapabilities.mockImplementation(() => new Promise<Capabilities>(done => { resolve = done; }));
+      for (let revision = 1; revision <= 20; revision++) {
+        sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1, revision })));
+      }
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fetchCapabilities).toHaveBeenCalledTimes(1);
+      resolve(makeCapabilities(1));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(modules.store.getRadioState()?.revision).toBe(20);
+      sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1, revision: 21 })));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fetchCapabilities).toHaveBeenCalledTimes(1);
+      expect(modules.store.getRadioState()?.revision).toBe(21);
+    });
+
+    it('retries a mismatched capabilities response without publishing it', async () => {
+      fetchCapabilities.mockResolvedValueOnce(makeCapabilities(2)).mockResolvedValue(makeCapabilities(1));
+      sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(modules.capabilities.getCapabilities()).toBeNull();
+      expect(modules.store.getRadioState()).toBeNull();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(modules.store.getRadioState()?.providerGeneration).toBe(1);
+    });
+
+    it('discards a late response from a replaced provider generation', async () => {
+      let resolveOld!: (caps: Capabilities) => void;
+      fetchCapabilities.mockImplementationOnce(() => new Promise<Capabilities>(done => { resolveOld = done; }))
+        .mockResolvedValue(makeCapabilities(2));
+      sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
+      sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 2, revision: 2 })));
+      await vi.advanceTimersByTimeAsync(0);
+      resolveOld(makeCapabilities(1));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fetchCapabilities).toHaveBeenCalledTimes(2);
+      expect(modules.capabilities.getCapabilities()?.providerGeneration).toBe(2);
+      expect(modules.store.getRadioState()).toMatchObject({ providerGeneration: 2, revision: 2 });
+    });
+
+    it('cancels old generation backoff and starts the new generation immediately', async () => {
+      fetchCapabilities.mockRejectedValueOnce(new Error('HTTP 503')).mockResolvedValue(makeCapabilities(2));
+      sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
+      await vi.advanceTimersByTimeAsync(0);
+      sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 2 })));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(modules.store.getRadioState()?.providerGeneration).toBe(2);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fetchCapabilities).toHaveBeenCalledTimes(2);
+    });
+
+    it('discards an old same-generation session response after reconnect', async () => {
+      let resolveOld!: (caps: Capabilities) => void;
+      fetchCapabilities.mockImplementationOnce(() => new Promise<Capabilities>(done => { resolveOld = done; }))
+        .mockResolvedValue(makeCapabilities(1, { model: 'NEW' }));
+      sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
+      instances[0].simulateClose();
+      await vi.advanceTimersByTimeAsync(1000);
+      instances[1].simulateOpen();
+      sendStateUpdate(instances[1], fullEnvelope(makeState({ providerGeneration: 1, revision: 2 })));
+      await vi.advanceTimersByTimeAsync(0);
+      resolveOld(makeCapabilities(1, { model: 'OLD' }));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(modules.capabilities.getCapabilities()?.model).toBe('NEW');
+      expect(modules.store.getRadioState()?.revision).toBe(2);
+      expect(fetchCapabilities).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(['explicit stop', 'socket close'] as const)('cancels retry backoff on %s', async (ending) => {
+      fetchCapabilities.mockRejectedValue(new Error('HTTP 503'));
+      sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
+      await vi.advanceTimersByTimeAsync(0);
+      if (ending === 'explicit stop') modules.wsClient.disconnect();
+      else instances[0].simulateClose();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fetchCapabilities).toHaveBeenCalledTimes(1);
+      expect(modules.store.getRadioState()).toBeNull();
+      expect(modules.capabilities.getCapabilities()).toBeNull();
+    });
+
+    it.each(['resolve', 'reject'] as const)('ignores a late fetch %s after stop', async (settlement) => {
+      let resolve!: (caps: Capabilities) => void;
+      let reject!: (reason: Error) => void;
+      fetchCapabilities.mockImplementation(() => new Promise<Capabilities>((done, fail) => { resolve = done; reject = fail; }));
+      sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
+      modules.wsClient.disconnect();
+      if (settlement === 'resolve') resolve(makeCapabilities(1));
+      else reject(new Error('late HTTP 503'));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fetchCapabilities).toHaveBeenCalledTimes(1);
+      expect(modules.store.getRadioState()).toBeNull();
+      expect(modules.capabilities.getCapabilities()).toBeNull();
+    });
+  });
+
 });

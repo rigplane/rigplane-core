@@ -91,6 +91,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
     stopTx: vi.fn(),
     setRxVolume: vi.fn(),
     destroy: vi.fn(),
+    setOperatorNotifier: vi.fn(),
   },
 }));
 vi.mock('$lib/stores/radio.svelte', () => ({

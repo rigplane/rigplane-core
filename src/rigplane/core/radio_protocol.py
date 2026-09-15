@@ -95,6 +95,7 @@ __all__ = [
     "DspControlCapable",
     "AntennaControlCapable",
     "AttenuatorObservationProjectable",
+    "AttenuatorStepsCapable",
     "CwControlCapable",
     "VoiceControlCapable",
     "SystemControlCapable",
@@ -107,9 +108,9 @@ __all__ = [
     "PowerControlCapable",
     "PrivilegedTxApi",
     "PrivilegedTxSupervisor",
-    "RigctldFallbackCache",
     "RigctldRoutable",
     "RigctldRoutingStrategy",
+    "ControlDomainCapable",
     "SplitCapable",
     "StateNotifyCapable",
     "PhysicalWriteReadbackCapable",
@@ -971,35 +972,6 @@ class StateModelCapable(StateStoreCapable, Protocol):
 
 
 @runtime_checkable
-class RigctldFallbackCache(Protocol):
-    """Neutral contract for the rigctld handler's fallback meter/level cache.
-
-    A routing strategy (see :class:`RigctldRoutingStrategy`) is handed this
-    object so it can remember the last-known meter/level values it read,
-    letting the rigctld handler answer subsequent queries from cache when
-    the radio cannot. ``core`` only passes the cache through to the strategy
-    and never inspects it; this Protocol captures the structural write
-    surface a strategy relies on so the contract stays in ``core`` without
-    naming the rigctld layer's concrete cache type.
-
-    The shipping :class:`~rigplane.rigctld.handler._FallbackRigState`
-    structurally satisfies this Protocol.
-    """
-
-    def update_s_meter(self, raw: int) -> None:
-        """Record the last-known raw S-meter reading."""
-        ...
-
-    def update_rf_power(self, value: float) -> None:
-        """Record the last-known normalised RF-power reading."""
-        ...
-
-    def update_swr(self, value: float) -> None:
-        """Record the last-known SWR reading."""
-        ...
-
-
-@runtime_checkable
 class RigctldRoutingStrategy(Protocol):
     """Neutral contract for a vendor-specific rigctld command-routing strategy.
 
@@ -1039,28 +1011,66 @@ class RigctldRoutable(Protocol):
     classes::
 
         if isinstance(radio, RigctldRoutable):
-            routing = radio.rigctld_routing(cache, max_power_w)
+            routing = radio.rigctld_routing(max_power_w)
         else:
             routing = None  # fall through to the built-in Icom path
     """
 
     def rigctld_routing(
         self,
-        cache: RigctldFallbackCache,
         max_power_w: float = 100.0,
     ) -> RigctldRoutingStrategy:
         """Construct a :class:`RigctldRoutingStrategy` bound to this radio.
 
         Args:
-            cache: Shared :class:`RigctldFallbackCache` used by the
-                rigctld handler to remember last-known meter/level
-                values when the radio cannot answer.
             max_power_w: Rated maximum TX power in watts; used to scale
                 normalised RFPOWER readings (defaults to 100 W).
 
         Returns:
             A :class:`RigctldRoutingStrategy` ready to serve get/set
             level, get/set func, ``dump_state``, and ``get_info`` calls.
+        """
+        ...
+
+
+@runtime_checkable
+class ControlDomainCapable(Protocol):
+    """Radio that converts between display values and raw control codes.
+
+    A backend whose active profile publishes normalized control domains
+    implements this surface so callers can convert between a domain's
+    display values and its raw codes through the backend, instead of
+    each caller re-deriving the profile math.
+    All methods are synchronous and never touch the wire.
+    """
+
+    def snap_control_display(self, control: str, display: str) -> int | None:
+        """Return the raw code for the legal display value nearest *display*.
+
+        Ties snap to the larger display value. Returns ``None`` when the
+        radio publishes no normalized domain for *control* it can invert
+        to a raw code, or when *display* is not a canonical decimal
+        string. Raises ``ValueError`` when a normalized domain is
+        published and *display* lies outside its display range.
+        """
+        ...
+
+    def decode_control_raw(self, control: str, raw: int) -> str | None:
+        """Return the canonical display string for *raw*.
+
+        Returns ``None`` when the radio publishes no normalized domain
+        for *control*, or when *raw* is not a legal point on it.
+        """
+        ...
+
+    def control_display_bounds(self, control: str) -> tuple[str, str] | None:
+        """Return the canonical display ``(minimum, maximum)`` for *control*.
+
+        Both bounds are canonical decimal strings read from the radio's
+        published control domain — the band the radio itself scales its
+        display values over, so callers never substitute a code constant
+        for it. Returns ``None`` when the radio publishes no domain for
+        *control*. Synchronous; never touches the wire.
         """
         ...
 
@@ -1692,6 +1702,19 @@ class AttenuatorObservationProjectable(Protocol):
 
     def project_attenuator_observation_value(self, db: int) -> int:
         """Project an already-bound integer without validation or I/O."""
+        ...
+
+
+@runtime_checkable
+class AttenuatorStepsCapable(Protocol):
+    """Radio that publishes the attenuator dB steps it accepts."""
+
+    def attenuator_db_steps(self) -> tuple[int, ...] | None:
+        """Return the legal attenuator dB steps, or ``None`` when unpublished.
+
+        Steps are plain ints on the dB axis ``set_attenuator_level``
+        accepts. Synchronous; never touches the wire.
+        """
         ...
 
 

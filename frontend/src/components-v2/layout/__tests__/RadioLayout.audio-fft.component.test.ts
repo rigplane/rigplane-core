@@ -158,6 +158,9 @@ describe('MOR-2355 central default scope source', () => {
     expect(input.fixture.startHz).toBe(14176000);
     const expectedPixels = input.pixels.slice(1024).map(value => Math.round(value / 2));
     audio.fire(input.data); draw();
+    const renderCountAfterFrame = render.mock.calls.length;
+    draw();
+    expect(render).toHaveBeenCalledTimes(renderCountAfterFrame);
     expect(scope.audioScopeFrame?.startFreq).toBe(14176000);
     expect(scope.audioScopeFrame?.pixels).toHaveLength(2049);
     expect(Math.max(...scope.audioScopeFrame!.pixels)).toBe(160);
@@ -189,6 +192,45 @@ describe('MOR-2355 central default scope source', () => {
     await unmount(instance!); instance = undefined;
     await vi.waitFor(() => expect(host.snapshot('audio-fft').demand).toBe(0));
     expect(audio.handlerCount()).toBe(0);
+  });
+
+  it('does not demand or paint the sidebar audio scope while it is outside the viewport', async () => {
+    const callback = { current: null as IntersectionObserverCallback | null };
+    const observer = {
+      observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn(), takeRecords: vi.fn(() => []),
+      root: null, rootMargin: '64px', thresholds: [0],
+    } as unknown as IntersectionObserver;
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(notify: IntersectionObserverCallback) { callback.current = notify; }
+      observe = observer.observe;
+      unobserve = observer.unobserve;
+      disconnect = observer.disconnect;
+      takeRecords = observer.takeRecords;
+      root = null;
+      rootMargin = '64px';
+      thresholds = [0];
+    });
+    select(true);
+    mountPanel();
+
+    await vi.waitFor(() => expect(host.snapshot('audio-fft').demand).toBe(1));
+    expect(observer.observe).toHaveBeenCalledOnce();
+    const panel = target.querySelector<HTMLElement>('.audio-spectrum-panel')!;
+    expect(panel.dataset.streaming).toBe('false');
+
+    callback.current?.([{
+      isIntersecting: true, target: panel,
+    } as unknown as IntersectionObserverEntry], observer);
+    flushSync();
+    expect(host.snapshot('audio-fft').demand).toBe(2);
+    expect(panel.dataset.streaming).toBe('true');
+
+    callback.current?.([{
+      isIntersecting: false, target: panel,
+    } as unknown as IntersectionObserverEntry], observer);
+    flushSync();
+    expect(host.snapshot('audio-fft').demand).toBe(1);
+    expect(panel.dataset.streaming).toBe('false');
   });
 
   it('uses frame-local positive-frequency bins for cropped and recentered producer output', async () => {

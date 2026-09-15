@@ -37,6 +37,28 @@ function reading(
 }
 
 describe('FilterInstrumentHost finite ownership', () => {
+  it('renders Standard MOD IN from confirmed truth while pending stays distinct', () => {
+    const onModInputChange = vi.fn();
+    const props = proxy({ view: base(), presentation: 'standard' as const,
+      pendingModInput: 3 as number | null, onModInputChange });
+    const component = mount(FilterInstrumentHostFixture, { target, props }); flushSync();
+    const select = target.querySelector<HTMLSelectElement>('[data-testid="mod-input-select"]')!;
+    expect([...select.options].map(option => option.text)).toEqual(['MIC', 'USB']);
+    expect(select.value).toBe('0');
+    expect(select.dataset.pendingValue).toBe('3');
+    expect(select.closest('[data-mod-input-status]')?.getAttribute('data-mod-input-status')).toBe('pending');
+    select.value = '3'; select.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onModInputChange).toHaveBeenCalledExactlyOnceWith(3);
+    props.pendingModInput = null;
+    props.view = reading(base(), 'filterPassband', 'modInputSource', { status: 'unknown' }, false);
+    flushSync();
+    const unknown = target.querySelector<HTMLSelectElement>('[data-testid="mod-input-select"]')!;
+    expect(unknown.disabled).toBe(true);
+    expect(unknown.value).toBe('');
+    expect([...unknown.options].map(option => option.text)).toEqual(['—', 'MIC', 'USB']);
+    expect(unknown.closest('[data-mod-input-status]')?.getAttribute('data-mod-input-status')).toBe('unknown');
+    unmount(component);
+  });
   it('renders exact native choices in grouped and independent arrangements with pending separate from truth', () => {
     const onModeChange = vi.fn(), onFilterChange = vi.fn();
     const onFilterShapeChange = vi.fn(), onDataModeChange = vi.fn();

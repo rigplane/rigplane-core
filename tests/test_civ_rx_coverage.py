@@ -3932,6 +3932,40 @@ def test_update_radio_state_cmd14_global_dsp_levels_observation_backed(
     assert store_field.value == expected
 
 
+def test_missing_key_speed_control_fails_closed_and_later_frames_still_decode(
+    radio_with_state: IcomRadio,
+) -> None:
+    """A profile without a key_speed control must fail closed per frame.
+
+    The decode ValueError from ``_observations_from_frame`` is caught in
+    ``_apply_state_store_observations``, which logs at debug and returns:
+    that frame publishes no key-speed observation, and the next frame
+    decodes through its own control as if nothing happened.
+    """
+    controls = dict(radio_with_state._profile.controls or {})
+    del controls["key_speed"]
+    radio_with_state._profile = dataclasses.replace(  # noqa: SLF001
+        radio_with_state._profile, controls=controls
+    )
+    runtime = radio_with_state._civ_runtime
+
+    runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x14, sub=0x0C, data=_bcd2(146))
+    )
+    with pytest.raises(KeyError):
+        radio_with_state._state_store.snapshot().field(
+            "global.operator_controls.key_speed"
+        )
+
+    runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x14, sub=0x09, data=_bcd2(128))
+    )
+    field = radio_with_state._state_store.snapshot().field(
+        "global.operator_controls.cw_pitch"
+    )
+    assert field.value == 600
+
+
 def test_update_radio_state_cmd11_attenuator(radio_with_state: IcomRadio) -> None:
     """cmd 0x11 attenuator is observation-backed (MOR-437)."""
     rs = radio_with_state._radio_state

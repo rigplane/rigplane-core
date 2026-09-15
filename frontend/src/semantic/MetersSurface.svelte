@@ -5,8 +5,10 @@
   import type { LowerScaleDescriptor } from '../components-v2/meters/LinearSMeter.svelte';
   import type { StationLevelMeterFrame } from './StationMeterInstrumentHost.svelte';
 
-  /** Level 1 — does this radio HAVE the meter at all. */
-  const present = (f: MeterField): boolean => f.availability.structural;
+  const present = (f: MeterField): boolean => f.availability.structural
+    && f.presence !== 'unavailable' && f.presence !== 'absent';
+  const levelPresent = (frame: StationLevelMeterFrame): boolean =>
+    frame.projection.presence !== 'unavailable' && frame.projection.presence !== 'absent';
   /** Level 2 — is it readable now AND actually read. */
   const observed = (f: MeterField): boolean =>
     f.availability.operational && f.reading.status === 'known';
@@ -92,6 +94,8 @@
 )}
 {#if presentGroup}
   {@const display = signalProjection ? meterDisplay(signalProjection) : null}
+  {@const visibleSignal = signalFrame !== null && present(signalFrame.field)}
+  {@const visibleSwr = swrFrame !== null && levelPresent(swrFrame)}
   {@const signalDisplay = signalProjection?.crossoverFraction == null ? null : display}
   {#snippet nativeLevel(frame: StationLevelMeterFrame, resetPeakSeat?: ActionRendererSeat)}
     {@const bar = frame.projection}
@@ -99,6 +103,10 @@
       data-relevant={bar.relevant} data-observed={bar.observed} data-fault={bar.fault}
       data-meter-state={bar.state}
       role="group" aria-label={`${bar.label} meter`}>
+      <div class="meter-native-caption" aria-hidden="true">
+        <span class="meter-native-label">{bar.label}</span>
+        <span class="meter-native-value">{bar.displayText}</span>
+      </div>
       {#if bar.gauge}
         {#key resetPeakSeat}<StationMeterBarPlacement {frame} label={bar.label}
           displayValue={bar.displayText} accessibleDescription={bar.accessibleDescription}
@@ -107,14 +115,16 @@
     </div>
   {/snippet}
   {#snippet level(frame: StationLevelMeterFrame, resetPeakSeat?: ActionRendererSeat)}
-    {#key resetPeakSeat}
-      <MeterRendererSeat kind="level" {frame} {resetPeakSeat} fallback={nativeLevel} />
-    {/key}
+    {#if levelPresent(frame)}
+      {#key resetPeakSeat}
+        <MeterRendererSeat kind="level" {frame} {resetPeakSeat} fallback={nativeLevel} />
+      {/key}
+    {/if}
   {/snippet}
   {#snippet power(frame: StationLevelMeterFrame<'power'>, seat?: ActionRendererSeat)}{@render level(frame, seat)}{/snippet}
   {#snippet nativeSwr(_frame: StationLevelMeterFrame)}{/snippet}
   {#snippet swr(frame: StationLevelMeterFrame<'swr'>)}
-    <MeterRendererSeat kind="level" {frame} fallback={nativeSwr} />
+    {#if levelPresent(frame)}<MeterRendererSeat kind="level" {frame} fallback={nativeSwr} />{/if}
   {/snippet}
   {#snippet alc(frame: StationLevelMeterFrame<'alc'>, seat?: ActionRendererSeat)}{@render level(frame, seat)}{/snippet}
   {#snippet drainCurrent(frame: StationLevelMeterFrame<'drainCurrent'>, seat?: ActionRendererSeat)}{@render level(frame, seat)}{/snippet}
@@ -129,7 +139,7 @@
       <span data-testid="meters-rf-label">{RF_LABEL[rfState]}</span>
     </p>
 
-    {#if signalFrame !== null}
+    {#if signalFrame !== null && (visibleSignal || visibleSwr)}
       {@const field = signalFrame.field}
       {@const reading = observed(field) && field.reading.status === 'known'
         && Number.isFinite(field.reading.value) ? field.reading : { status: 'unknown' } as const}
@@ -140,11 +150,26 @@
           role="group" aria-label={present(field) ? "S meter" : "SWR meter"}
           {...signalDisplay?.attributes ?? {}}
         >
+          {#if present(field)}
+            <div class="meter-native-caption" aria-hidden="true" data-relevant={field.relevant}>
+              <span class="meter-native-label">S</span>
+              <span class="meter-native-value">{signalProjection?.primaryText ?? ''}</span>
+              {#if signalProjection?.secondaryText}
+                <span class="meter-native-secondary">{signalProjection.secondaryText}</span>
+              {/if}
+            </div>
+          {/if}
+          {#if swrFrame && visibleSwr}
+            <div class="meter-native-caption" aria-hidden="true" data-relevant={swrFrame.projection.relevant}>
+              <span class="meter-native-label">SWR</span>
+              <span class="meter-native-value">{swrFrame.projection.displayText}</span>
+            </div>
+          {/if}
           <LinearSMeter
             frame={signalFrame.motion} label="S" compact
             mainPresent={present(field)}
             display={signalDisplay?.display ?? undefined}
-            lowerScale={swrFrame ? swrLowerScale(swrFrame) : undefined}
+            lowerScale={swrFrame && visibleSwr ? swrLowerScale(swrFrame) : undefined}
             relevant={field.relevant}
           />
         </div>
@@ -171,6 +196,7 @@
   .meters-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .meters-rf { display: flex; align-items: baseline; gap: 0.4ch; margin: 0; font-weight: 700; }
   .meter-tile { display: block; }
+  .meter-native-caption { display: none; }
   .meter-tile[data-relevant='false']:not([data-meter='signal']):not([data-meter='swr']) {
     opacity: 0.4;
   }

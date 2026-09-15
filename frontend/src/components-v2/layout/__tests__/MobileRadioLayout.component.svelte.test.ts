@@ -98,7 +98,7 @@ vi.mock('$lib/stores/audio.svelte', () => ({
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
-    onChange: () => () => {}, getAppliedAudioConfig: () => null, start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn() },
+    onChange: () => () => {}, getAppliedAudioConfig: () => null, start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn(), setOperatorNotifier: vi.fn() },
 }));
 vi.mock('$lib/utils/tx-permit', async (importOriginal) => ({
   ...await importOriginal<typeof import('$lib/utils/tx-permit')>(),
@@ -299,6 +299,8 @@ describe('MobileRadioLayout structure', () => {
     vi.mocked(getCapabilities).mockReturnValue({
       ...oldCaps, model: 'fixture', receivers: 1, vfoScheme: 'ab',
       capabilities: ['mod_input_routing'],
+      dataModeCount: 1,
+      dataModeInputs: MOD_INPUT_SOURCES.map(({ value, label }) => ({ value, label })),
     } as Capabilities);
     const fresh = { storePath: 'fixture', observed: true, freshness: 'fresh', availability: 'available' };
     (radio as unknown as { current: ServerState | null }).current = {

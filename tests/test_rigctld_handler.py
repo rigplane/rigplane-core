@@ -21,8 +21,10 @@ from rigplane.core.state_acquisition_policy import (
     FieldCapability,
     RadioAcquisitionProfile,
 )
+from rigplane.exceptions import CommandError as IcomCommandError
 from rigplane.exceptions import ConnectionError as IcomConnectionError
 from rigplane.exceptions import TimeoutError as IcomTimeoutError
+from rigplane.radio import IcomRadio
 from rigplane.core.state_pipeline_contracts import (
     CommandSource,
     FieldPath,
@@ -887,8 +889,6 @@ async def test_set_mode_packet_refreshes_data_mode_cache(
     assert resp.ok
     mock_radio.set_mode.assert_awaited_once_with(base_mode, filter_width=None)
     mock_radio.set_data_mode.assert_awaited_once_with(True)
-    assert handler._cache.mode == base_mode  # noqa: SLF001
-    assert handler._cache.data_mode is True  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -2882,14 +2882,114 @@ async def test_set_level_att(handler: RigctldHandler, mock_radio: AsyncMock) -> 
     mock_radio.set_attenuator_level.assert_awaited_once_with(18)
 
 
+class _IcomProfileAttRadio:
+    """Icom-path double whose attenuator validates like ``CoreRadio``.
+
+    ``attenuator_db_steps`` delegates to a real :class:`IcomRadio` built
+    from the shipping rig TOML, and ``set_attenuator_level`` refuses any
+    dB the profile does not declare — the same gate
+    ``CoreRadio.set_attenuator_level`` applies before its CI-V write.
+    """
+
+    def __init__(self, model: str) -> None:
+        self._icom = IcomRadio("192.168.1.100", model=model)
+        self.att_calls: list[int] = []
+
+    def attenuator_db_steps(self) -> tuple[int, ...] | None:
+        return self._icom.attenuator_db_steps()
+
+    async def set_attenuator_level(self, db: int, receiver: int = 0) -> None:
+        steps = self._icom.attenuator_db_steps()
+        if steps is None or isinstance(db, bool) or db not in steps:
+            raise IcomCommandError(
+                f"Attenuator level must be one of {sorted(steps or ())} dB (got {db})"
+            )
+        self.att_calls.append(db)
+
+
+def _att_handler(radio: object) -> RigctldHandler:
+    return RigctldHandler(radio, RigctldConfig())
+
+
 @pytest.mark.asyncio
-async def test_set_level_att_rounds_to_nearest(
-    handler: RigctldHandler, mock_radio: AsyncMock
-) -> None:
-    # 10 dB is closest to 12 dB
-    resp = await handler.execute(set_cmd("set_level", "ATT", "10"))
+async def test_set_level_att_ic7610_on_profile_passes_through() -> None:
+    """A dB the IC-7610 profile declares reaches the radio unchanged."""
+    radio = _IcomProfileAttRadio("IC-7610")
+    resp = await _att_handler(radio).execute(set_cmd("set_level", "ATT", "15"))
     assert resp.ok
-    mock_radio.set_attenuator_level.assert_awaited_once_with(12)
+    assert radio.att_calls == [15]
+
+
+@pytest.mark.asyncio
+async def test_set_level_att_ic7300_tie_snaps_up() -> None:
+    """10 dB is equidistant between the IC-7300's two legal steps; ties snap up."""
+    radio = _IcomProfileAttRadio("IC-7300")
+    resp = await _att_handler(radio).execute(set_cmd("set_level", "ATT", "10"))
+    assert resp.ok
+    assert radio.att_calls == [20]
+
+
+@pytest.mark.asyncio
+async def test_set_level_att_ic7610_snaps_to_nearest_step() -> None:
+    radio = _IcomProfileAttRadio("IC-7610")
+    resp = await _att_handler(radio).execute(set_cmd("set_level", "ATT", "10"))
+    assert resp.ok
+    assert radio.att_calls == [9]
+
+
+@pytest.mark.asyncio
+async def test_set_level_att_ic7610_between_steps_snaps_to_nearest() -> None:
+    """16 dB sits between the IC-7610's 15 and 18 steps: 15 is nearer."""
+    radio = _IcomProfileAttRadio("IC-7610")
+    resp = await _att_handler(radio).execute(set_cmd("set_level", "ATT", "16"))
+    assert resp.ok
+    assert radio.att_calls == [15]
+
+
+@pytest.mark.asyncio
+async def test_set_level_att_ic7300_snaps_to_20() -> None:
+    radio = _IcomProfileAttRadio("IC-7300")
+    resp = await _att_handler(radio).execute(set_cmd("set_level", "ATT", "15"))
+    assert resp.ok
+    assert radio.att_calls == [20]
+
+
+@pytest.mark.asyncio
+async def test_set_level_att_ic7300_snaps_to_0() -> None:
+    radio = _IcomProfileAttRadio("IC-7300")
+    resp = await _att_handler(radio).execute(set_cmd("set_level", "ATT", "5"))
+    assert resp.ok
+    assert radio.att_calls == [0]
+
+
+@pytest.mark.asyncio
+async def test_get_level_att_profile_radio_passes_db_through() -> None:
+    radio = _IcomProfileAttRadio("IC-7610")
+
+    async def _get_att(receiver: int = 0) -> int:
+        return 15
+
+    radio.get_attenuator_level = _get_att
+    resp = await _att_handler(radio).execute(get_cmd("get_level", "ATT"))
+    assert resp.ok
+    assert resp.values[0] == "15"
+
+
+@pytest.mark.asyncio
+async def test_set_level_att_no_published_steps_forwards_unsnapped() -> None:
+    """A radio publishing no attenuator steps gets the rounded dB as-is."""
+
+    class _NoStepsRadio:
+        def __init__(self) -> None:
+            self.att_calls: list[int] = []
+
+        async def set_attenuator_level(self, db: int, receiver: int = 0) -> None:
+            self.att_calls.append(db)
+
+    radio = _NoStepsRadio()
+    resp = await _att_handler(radio).execute(set_cmd("set_level", "ATT", "15"))
+    assert resp.ok
+    assert radio.att_calls == [15]
 
 
 @pytest.mark.asyncio
@@ -2899,6 +2999,31 @@ async def test_set_level_rfpower(
     resp = await handler.execute(set_cmd("set_level", "RFPOWER", "1.0"))
     assert resp.ok
     mock_radio.set_rf_power.assert_awaited_once_with(255)
+
+
+@pytest.mark.asyncio
+async def test_set_level_rfpower_half_unchanged(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    resp = await handler.execute(set_cmd("set_level", "RFPOWER", "0.5"))
+    assert resp.ok
+    # round(0.5 * 255) == 128 — same scaled write as origin/main (MOR-2480).
+    mock_radio.set_rf_power.assert_awaited_once_with(128)
+
+
+@pytest.mark.asyncio
+async def test_set_level_rfpower_out_of_range_rejected(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    """RFPOWER lives on hamlib's normalized 0.0-1.0 domain (MOR-2480).
+
+    An out-of-range value answers EINVAL with no radio call, instead of
+    scaling to an off-band raw level (round(1.5 * 255) == 382).
+    """
+    for bad in ("1.5", "-0.1"):
+        resp = await handler.execute(set_cmd("set_level", "RFPOWER", bad))
+        assert resp.error == HamlibError.EINVAL, bad
+    mock_radio.set_rf_power.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -3373,9 +3498,7 @@ def yaesu_radio() -> AsyncMock:
 
     mock = AsyncMock(spec=_FakeYaesuRadio)
     mock.backend_id = "yaesu_cat"
-    mock.rigctld_routing = lambda cache, max_power_w=100.0: YaesuRouting(
-        mock, cache, max_power_w
-    )
+    mock.rigctld_routing = lambda max_power_w=100.0: YaesuRouting(mock, max_power_w)
     return mock
 
 
@@ -3769,6 +3892,192 @@ async def test_yaesu_set_level_ifshift(
     resp = await yaesu_handler.execute(set_cmd("set_level", "IFSHIFT", "-200"))
     assert resp.ok
     yaesu_radio.set_if_shift.assert_awaited_once_with(-200)
+
+
+# -- Yaesu control-domain level routing (MOR-2469) -----------------------------
+
+
+@pytest.fixture
+def domain_yaesu_radio() -> AsyncMock:
+    """Yaesu double whose control-domain surface is the real FTX-1 math.
+
+    Like ``yaesu_radio`` but with ``snap_control_display`` /
+    ``decode_control_raw`` / ``control_display_bounds`` wired to a real
+    :class:`YaesuCatRadio` built from the shipping ``ftx1.toml``, so
+    handler-level exercises hit the actual backend implementation of
+    :class:`~rigplane.core.radio_protocol.ControlDomainCapable`.
+    """
+    from rigplane.rigctld.routing import YaesuRouting
+
+    real = YaesuCatRadio("/dev/null", profile="ftx1")
+    mock = AsyncMock(spec=_FakeYaesuRadio)
+    mock.backend_id = "yaesu_cat"
+    mock.snap_control_display = real.snap_control_display
+    mock.decode_control_raw = real.decode_control_raw
+    mock.control_display_bounds = real.control_display_bounds
+    mock.rigctld_routing = lambda max_power_w=100.0: YaesuRouting(mock, max_power_w)
+    return mock
+
+
+@pytest.fixture
+def domain_yaesu_handler(
+    domain_yaesu_radio: AsyncMock, config: RigctldConfig
+) -> RigctldHandler:
+    return RigctldHandler(domain_yaesu_radio, config)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_notchf_snaps_hz_to_raw(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    """hamlib NOTCHF is Hz; the backend takes the raw code 150 (MOR-2469)."""
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "NOTCHF", "1500"))
+    assert resp.ok
+    domain_yaesu_radio.set_notch_filter.assert_awaited_once_with(150)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_notchf_tie_rounds_up(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "NOTCHF", "1505"))
+    assert resp.ok
+    domain_yaesu_radio.set_notch_filter.assert_awaited_once_with(151)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_notchf_out_of_range_einval_no_call(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "NOTCHF", "3300"))
+    assert resp.error == HamlibError.EINVAL
+    domain_yaesu_radio.set_notch_filter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_ifshift_snaps_off_lattice(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "IFSHIFT", "15"))
+    assert resp.ok
+    domain_yaesu_radio.set_if_shift.assert_awaited_once_with(20)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_cwpitch_snaps_off_lattice(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "CWPITCH", "301"))
+    assert resp.ok
+    domain_yaesu_radio.set_cw_pitch.assert_awaited_once_with(300)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_cwpitch_out_of_range_einval_no_call(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    """Out-of-range CWPITCH is now EINVAL instead of the old clamp."""
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "CWPITCH", "1060"))
+    assert resp.error == HamlibError.EINVAL
+    domain_yaesu_radio.set_cw_pitch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_level_notchf_decodes_to_hz(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    domain_yaesu_radio.get_manual_notch.return_value = (True, 150)
+    resp = await domain_yaesu_handler.execute(get_cmd("get_level", "NOTCHF"))
+    assert resp.ok
+    assert resp.values == ["1500"]
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_level_notchf_undecodable_falls_back_to_raw(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    domain_yaesu_radio.get_manual_notch.return_value = (True, 0)
+    resp = await domain_yaesu_handler.execute(get_cmd("get_level", "NOTCHF"))
+    assert resp.ok
+    assert resp.values == ["0"]
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_nr_full_maps_onto_domain(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    """hamlib NR 1.0 writes the FTX-1 domain max 10, not 15 (MOR-2479)."""
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "NR", "1.0"))
+    assert resp.ok
+    domain_yaesu_radio.set_nr_level.assert_awaited_once_with(10)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_nr_half_maps_onto_domain(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "NR", "0.5"))
+    assert resp.ok
+    domain_yaesu_radio.set_nr_level.assert_awaited_once_with(5)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_level_nr_raw_max_answers_one(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    domain_yaesu_radio.get_nr_level.return_value = 10
+    resp = await domain_yaesu_handler.execute(get_cmd("get_level", "NR"))
+    assert resp.ok
+    assert resp.values == ["1.000000"]
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_nb_full_maps_onto_domain(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    """hamlib NB 1.0 writes the FTX-1 domain max, not a code constant."""
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "NB", "1.0"))
+    assert resp.ok
+    domain_yaesu_radio.set_nb_level.assert_awaited_once_with(10)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_nb_half_maps_onto_domain(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "NB", "0.5"))
+    assert resp.ok
+    domain_yaesu_radio.set_nb_level.assert_awaited_once_with(5)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_level_nb_raw_max_answers_one(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    domain_yaesu_radio.get_nb_level.return_value = 10
+    resp = await domain_yaesu_handler.execute(get_cmd("get_level", "NB"))
+    assert resp.ok
+    assert resp.values == ["1.000000"]
+
+
+@pytest.mark.asyncio
+async def test_icom_path_notchf_cwpitch_unchanged(config: RigctldConfig) -> None:
+    """The built-in Icom routing is untouched by the domain dispatch.
+
+    NOTCHF has no Icom branch → EINVAL without AttributeError;
+    CWPITCH stays a plain rounded Hz passthrough. Companion pins:
+    ``test_set_level_notchf_icom_no_attribute_error`` and
+    ``test_set_level_cwpitch`` above.
+    """
+    radio = make_mock_radio()
+    handler = RigctldHandler(radio, config)
+
+    resp = await handler.execute(set_cmd("set_level", "NOTCHF", "1500"))
+    assert resp.error == HamlibError.EINVAL
+
+    resp = await handler.execute(set_cmd("set_level", "CWPITCH", "700"))
+    assert resp.ok
+    radio.set_cw_pitch.assert_awaited_once_with(700)
 
 
 @pytest.mark.asyncio
@@ -4697,9 +5006,7 @@ def _yaesu_handler(get_attenuator_value: bool) -> RigctldHandler:
     radio.backend_id = "yaesu_cat"
     radio.capabilities = set()
     radio.get_attenuator = AsyncMock(return_value=get_attenuator_value)
-    radio.rigctld_routing = lambda cache, max_power_w=100.0: YaesuRouting(
-        radio, cache, max_power_w
-    )
+    radio.rigctld_routing = lambda max_power_w=100.0: YaesuRouting(radio, max_power_w)
     return RigctldHandler(radio, RigctldConfig())
 
 

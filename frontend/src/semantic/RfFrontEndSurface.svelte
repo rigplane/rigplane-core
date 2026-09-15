@@ -49,13 +49,6 @@
 
 {#if rf}
   <section class="rf-front-end-surface" data-testid="rf-front-end-surface" aria-label="RF front end">
-    {#if finiteLayout}
-      {@render finiteLayout(levelHandles)}
-    {:else}
-      {@render levelHandles.preamp()}
-      {@render levelHandles.attenuator()}
-    {/if}
-
     {#if levelHandles.kind === 'combined'}
       {@render levelHandles.rfSql()}
     {:else}
@@ -63,7 +56,11 @@
       {#if rf.squelch.availability.structural}{@render levelHandles.squelch()}{/if}
     {/if}
 
-    {#if !finiteLayout}
+    {#if finiteLayout}
+      {@render finiteLayout(levelHandles)}
+    {:else}
+      {@render levelHandles.attenuator()}
+      {@render levelHandles.preamp()}
       {@render levelHandles.digiSel()}
       {@render levelHandles.ipPlus()}
     {/if}

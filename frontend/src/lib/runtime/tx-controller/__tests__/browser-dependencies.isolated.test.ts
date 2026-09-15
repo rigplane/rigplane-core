@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommandDeliveryEvent, ControlSessionTransition } from '$lib/transport/ws-client';
 const h = vi.hoisted(() => ({
   deliveries: new Set<(event: CommandDeliveryEvent) => void>(),
-  sessions: new Set<(event: ControlSessionTransition) => void>(), send: vi.fn((_name: string, _params: Record<string, unknown>, _id?: string) => true),
+  sessions: new Set<(event: ControlSessionTransition) => void>(),
+  messages: new Set<(message: { type?: string; name?: string; data?: unknown }) => void>(),
+  sessionState: 'disconnected' as 'disconnected' | 'connected',
+  appliedRevision: 0,
+  send: vi.fn((_name: string, _params: Record<string, unknown>, _id?: string) => true),
   start: vi.fn(async () => null), stop: vi.fn(), submit: vi.fn(async () => 'accepted' as const),
   setTot: vi.fn(async () => {}), ids: 0, stale: true, remainingMs: null as number | null,
 }));
@@ -10,7 +14,7 @@ vi.mock('$lib/stores/managed-transmit.svelte', () => ({
   managedTransmitSnapshot: () => ({ available: false }), managedTransmitIsStale: () => h.stale,
   managedTransmitRemainingMs: () => h.remainingMs, refreshManagedTransmit: vi.fn(async () => {}),
   invalidateManagedTransmit: vi.fn(), submitManagedTransmit: h.submit,
-  setManagedTransmitTot: h.setTot,
+  setManagedTransmitTot: h.setTot, managedTransmitAppliedRevision: () => h.appliedRevision,
 }));
 vi.mock('$lib/types/protocol', () => ({ makeCommandId: () => `cmd-${++h.ids}` }));
 vi.mock('$lib/runtime/adapters/tx-adapter', () => ({ getTxAudioControl: () => ({
@@ -25,11 +29,20 @@ vi.mock('$lib/transport/ws-client', () => ({
   onControlSessionTransition: (fn: (event: ControlSessionTransition) => void) => {
     h.sessions.add(fn); return () => h.sessions.delete(fn);
   },
+  onMessage: (fn: (message: { type?: string; name?: string; data?: unknown }) => void) => {
+    h.messages.add(fn); return () => h.messages.delete(fn);
+  },
+  getControlSession: () => ({ state: h.sessionState, epoch: 4 }),
 }));
 import { createManagedBrowserDependencies } from '../browser-dependencies';
 const emit = (event: CommandDeliveryEvent) => [...h.deliveries].forEach((fn) => fn(event));
+const emitMessage = (message: { type?: string; name?: string; data?: unknown }) => {
+  [...h.messages].forEach((fn) => fn(message));
+};
 beforeEach(() => {
-  vi.useFakeTimers(); h.deliveries.clear(); h.sessions.clear(); h.send.mockReset().mockReturnValue(true);
+  vi.useFakeTimers(); h.deliveries.clear(); h.sessions.clear(); h.messages.clear();
+  h.sessionState = 'disconnected'; h.appliedRevision = 0;
+  h.send.mockReset().mockReturnValue(true);
   h.start.mockClear(); h.stop.mockClear(); h.submit.mockClear(); h.ids = 0;
   h.setTot.mockClear(); h.stale = true; h.remainingMs = null;
 });
@@ -104,5 +117,39 @@ describe('managed browser TX dependencies', () => {
     browser.dispose();
     vi.advanceTimersByTime(1_000);
     expect([seen, vi.getTimerCount()]).toEqual([[900, null], 0]);
+  });
+
+  it('propagates only live-session managed_transmit_changed authority signals', () => {
+    const browser = createManagedBrowserDependencies();
+    expect(h.messages.size).toBe(0);
+    const signals: number[] = [];
+    const off = browser.dependencies.onAuthorityChanged?.(() => signals.push(signals.length));
+    expect(h.messages.size).toBe(1);
+
+    h.sessionState = 'connected';
+    emitMessage({ type: 'event', name: 'managed_transmit_changed', data: {} });
+    emitMessage({ type: 'event', name: 'freq_changed', data: {} });
+    emitMessage({ type: 'state_update', data: {} });
+    expect(signals.length).toBe(1);
+
+    h.sessionState = 'disconnected';
+    emitMessage({ type: 'event', name: 'managed_transmit_changed', data: {} });
+    expect(signals.length).toBe(1);
+
+    h.sessionState = 'connected';
+    emitMessage({ type: 'event', name: 'managed_transmit_changed', data: {} });
+    expect(signals.length).toBe(2);
+
+    off?.();
+    emitMessage({ type: 'event', name: 'managed_transmit_changed', data: {} });
+    expect(signals.length).toBe(2);
+  });
+
+  it('releases the authority signal subscription on dispose', () => {
+    const browser = createManagedBrowserDependencies();
+    browser.dependencies.onAuthorityChanged?.(() => {});
+    expect(h.messages.size).toBe(1);
+    browser.dispose();
+    expect(h.messages.size).toBe(0);
   });
 });

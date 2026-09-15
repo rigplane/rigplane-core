@@ -1,18 +1,18 @@
 /**
  * Tests for click-to-tune target filtering in SpectrumPanel.
  *
- * Click-to-tune must ONLY work on the waterfall area, NOT on the spectrum area.
- * The spectrum area must allow drag-to-pan and scroll-to-tune but ignore taps,
- * so that band plan overlay clicks (popups) are not interrupted by unwanted
- * frequency changes.
+ * Legacy waterfall-only target-filter fixture: this LOCAL helper models
+ * only which targets the waterfall tap accepts. The spectrum area's own
+ * release-driven click-to-tune (SpectrumPanel pointerup path, MOR-2464)
+ * is verified by SpectrumPanel.component.test.ts, not by this copy.
  *
  * Tap-to-tune is handled by WaterfallCanvas gesture onTap (not handleDragEnd).
- * These tests verify the target filtering contract: only waterfall taps tune,
- * spectrum area / toolbar / band plan overlay taps are ignored.
+ * These tests verify this fixture's filter only: waterfall targets tune;
+ * spectrum-area / toolbar / band-plan targets fall outside its scope.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// ── Re-implement the tap-to-tune decision from SpectrumPanel.handleDragEnd ──
+// ── Local copy of the waterfall-side tap filter (not production code) ──
 
 /**
  * Determines whether a pointer-up event should trigger click-to-tune.
@@ -104,12 +104,12 @@ describe('tap-to-tune target filtering', () => {
     expect(freq).not.toBeNull();
   });
 
-  it('tap on spectrum canvas does NOT trigger tune', () => {
+  it('waterfall-only fixture ignores a spectrum canvas target', () => {
     const freq = shouldTapTune(layout.spectrumCanvas, 500, 14_000_000, 350_000);
     expect(freq).toBeNull();
   });
 
-  it('tap on spectrum area does NOT trigger tune', () => {
+  it('waterfall-only fixture ignores a spectrum area target', () => {
     const freq = shouldTapTune(layout.spectrumArea, 500, 14_000_000, 350_000);
     expect(freq).toBeNull();
   });

@@ -6,6 +6,7 @@ import { getPassbandEdgesHz } from '../../../../components/spectrum/passband-geo
 import { resolveLcdSpectrumFrame } from '../../../../skins/segmentline/lcd-display-contract';
 import { qualifyScopeFrameEnvelope, toScopeDisplayFrame, toSpectrumAuthority } from '../scope-adapter';
 import { toRadioViewModel } from '../radio-view-model-adapter';
+import { IC7300_CAPABILITIES } from './fixtures/ic7300-profile';
 import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
   type ScopePassbandDisplayInput, type ScopePassbandDisplayState } from '../scope-passband-display';
 
@@ -88,6 +89,275 @@ function slotted(input: ScopePassbandDisplayInput): void {
   input.caps!.vfoScheme = 'ab'; input.selection = { receiver: 'MAIN', slot: 'A' };
 }
 
+function banded(): ScopePassbandDisplayInput {
+  const input = fixture(); slotted(input); pbt(input);
+  input.caps!.freqRanges = structuredClone(IC7300_CAPABILITIES.freqRanges);
+  receipt(input, 1, { startFreq: 14_024_000, endFreq: 14_124_000 });
+  return input;
+}
+function tune(input: ScopePassbandDisplayInput, frequency: number, marker: number, mirror = true): void {
+  input.state!.main!.vfoA!.freqHz = frequency;
+  status(input, 'main.vfoA.freqHz', { lastObservedMonotonic: marker });
+  if (mirror) {
+    input.state!.main!.freqHz = frequency;
+    status(input, 'main.freqHz', { lastObservedMonotonic: marker });
+  }
+}
+
+describe('confirmed VFO selection recovery (MOR-2441)', () => {
+  function select(input: ScopePassbandDisplayInput, slot: 'A' | 'B', marker: number): void {
+    input.selection!.slot = slot; input.state!.main!.activeSlot = slot;
+    status(input, 'main.activeSlot', { lastObservedMonotonic: marker });
+  }
+  it.each(['batched', 'width-first', 'tuple-first'])(
+    'captures the first complete post-selection geometry: %s', (order) => {
+      const input = banded(); let result = project(input);
+      select(input, 'B', 20);
+      const rx = input.state!.main!;
+      rx.vfoB!.freqHz = 14_090_000;
+      status(input, 'main.vfoB.freqHz', { observed: false });
+      if (order !== 'tuple-first') {
+        rx.filterWidth = 1800; status(input, 'main.filterWidth', { lastObservedMonotonic: 20.1 });
+      }
+      if (order !== 'batched') {
+        receipt(input, 2); result = project(input, result);
+        expect(result.display.state).toBe('unknown');
+      }
+      rx.freqHz = rx.vfoB!.freqHz;
+      status(input, 'main.vfoB.freqHz', { observed: true, lastObservedMonotonic: 20.2 });
+      status(input, 'main.freqHz', { lastObservedMonotonic: 20.2 });
+      if (order === 'batched') {
+        for (const leaf of ['pbtInner', 'pbtOuter']) status(input, `main.${leaf}`, { lastObservedMonotonic: 20.3 });
+      }
+      receipt(input, 3, { startFreq: 14_040_000, endFreq: 14_140_000 });
+      result = project(input, result);
+      if (order !== 'batched') {
+        expect(result.display.state).toBe('unknown');
+        status(input, 'main.activeSlot', { lastObservedMonotonic: 21 });
+        rx.filterWidth = 1800;
+        if (order === 'tuple-first') status(input, 'main.filterWidth', { lastObservedMonotonic: 20.4 });
+        for (const [index, leaf] of ['pbtInner', 'pbtOuter'].entries()) {
+          status(input, `main.${leaf}`, { lastObservedMonotonic: 20.5 + index / 10 });
+          receipt(input, 4 + index, { startFreq: 14_040_000, endFreq: 14_140_000 });
+          result = project(input, result);
+          if (index === 0) expect(result.display.state).toBe('unknown');
+        }
+      }
+      expect(result.display.state).toBe('current');
+      expect(tuple(result)).toMatchObject({ frequencyHz: 14_090_000, widthHz: 1800 });
+    });
+  it.each(['mode', 'filter', 'DATA', 'session', 'provider', 'band', 'frame', 'regression'])(
+    'retires an interrupted selection recovery on %s change', (change) => {
+      const input = banded(); let result = project(input);
+      select(input, 'B', 20); receipt(input, 2); result = project(input, result);
+      status(input, 'main.filterWidth', { lastObservedMonotonic: 20.1 });
+      receipt(input, 3); result = project(input, result);
+      const rx = input.state!.main!;
+      if (change === 'mode') { rx.mode = rx.vfoB!.mode = 'LSB'; status(input, 'main.mode', { lastObservedMonotonic: 21 }); status(input, 'main.vfoB.mode', { lastObservedMonotonic: 21 }); }
+      if (change === 'filter') { rx.filter = rx.vfoB!.filterNum = 2; status(input, 'main.filter', { lastObservedMonotonic: 21 }); status(input, 'main.vfoB.filterNum', { lastObservedMonotonic: 21 }); }
+      if (change === 'DATA') { rx.dataMode = 1; status(input, 'main.dataMode', { lastObservedMonotonic: 21 }); }
+      if (change === 'session') input.session!.epoch = 2;
+      if (change === 'provider') { input.state!.providerGeneration = 2; input.caps!.providerGeneration = 2; }
+      if (change === 'band') { rx.freqHz = rx.vfoB!.freqHz = 7_100_000; status(input, 'main.freqHz', { lastObservedMonotonic: 21 }); status(input, 'main.vfoB.freqHz', { lastObservedMonotonic: 21 }); }
+      if (change === 'regression') status(input, 'main.activeSlot', { lastObservedMonotonic: 19 });
+      receipt(input, 4, change === 'frame' ? { mode: 1 } : {});
+      result = project(input, result); expect(result.display.state).toBe('unknown');
+      expect(result.selectionRecovery).toBeNull();
+      for (const leaf of ['pbtInner', 'pbtOuter']) status(input, `main.${leaf}`, { lastObservedMonotonic: 22 });
+      receipt(input, 5, change === 'frame' ? { mode: 1 } : {});
+      expect(project(input, result).display.state).toBe('unknown');
+    });
+  it('requires the selected axis and retires invalid frames during recovery', () => {
+    const input = banded(); let result = project(input);
+    select(input, 'B', 20);
+    input.state!.main!.freqHz = input.state!.main!.vfoB!.freqHz = 14_090_000;
+    for (const path of ['main.freqHz', 'main.vfoB.freqHz', 'main.filterWidth', 'main.pbtInner', 'main.pbtOuter']) {
+      status(input, path, { lastObservedMonotonic: 20.1 });
+    }
+    receipt(input, 2); result = project(input, result);
+    expect(result.display.state).toBe('unknown');
+    input.frame = { ...input.frame!, resolution: { state: 'ghost', reason: 'stale' } };
+    result = project(input, result); expect(result.selectionRecovery).toBeNull();
+    receipt(input, 3, { startFreq: 14_040_000, endFreq: 14_140_000 });
+    result = project(input, result); expect(result.display.state).toBe('unknown');
+    for (const leaf of ['filterWidth', 'pbtInner', 'pbtOuter']) status(input, `main.${leaf}`, { lastObservedMonotonic: 21 });
+    receipt(input, 4, { startFreq: 14_040_000, endFreq: 14_140_000 });
+    expect(project(input, result).display.state).toBe('current');
+  });
+  it('does not let a contradicted slot marker replace the accepted selection boundary', () => {
+    const input = banded(); let result = project(input);
+    select(input, 'B', 10); receipt(input, 2); result = project(input, result);
+    expect(result.selection?.slot).toBe('A');
+    for (const leaf of ['filterWidth', 'pbtInner', 'pbtOuter']) status(input, `main.${leaf}`, { lastObservedMonotonic: 11 });
+    select(input, 'B', 12); receipt(input, 3, { startFreq: 14_024_000, endFreq: 14_124_000 });
+    result = project(input, result); expect(result.display.state).toBe('unknown');
+    for (const leaf of ['filterWidth', 'pbtInner', 'pbtOuter']) status(input, `main.${leaf}`, { lastObservedMonotonic: 13 });
+    receipt(input, 4, { startFreq: 14_024_000, endFreq: 14_124_000 });
+    expect(project(input, result).display.state).toBe('current');
+  });
+  it('rejects pre-selection geometry and geometry from a superseded selection', () => {
+    const input = banded(); let result = project(input);
+    select(input, 'B', 20); receipt(input, 2); result = project(input, result);
+    expect(result.display.state).toBe('unknown');
+    for (const leaf of ['filterWidth', 'pbtInner', 'pbtOuter']) status(input, `main.${leaf}`, { lastObservedMonotonic: 20.1 });
+    select(input, 'A', 21); receipt(input, 3); result = project(input, result);
+    expect(result.display.state).toBe('unknown');
+    receipt(input, 4); result = project(input, result);
+    expect(result.display.state).toBe('unknown');
+    for (const leaf of ['filterWidth', 'pbtInner', 'pbtOuter']) status(input, `main.${leaf}`, { lastObservedMonotonic: 21.1 });
+    receipt(input, 5, { startFreq: 14_024_000, endFreq: 14_124_000 }); result = project(input, result);
+    expect(result.display.state).toBe('current');
+  });
+});
+
+describe('confirmed tuning display continuity (MOR-2437)', () => {
+  it('holds the last qualified tuple through a stale frequency gap and recovers while tuning continues', () => {
+    const input = banded();
+    let result = project(input);
+    tune(input, 14_100_000, 11);
+    receipt(input, 2, { startFreq: 14_050_000, endFreq: 14_150_000 });
+    result = project(input, result);
+    renew(input, 16, 3);
+    result = project(input, result);
+    expect(result.display.state).toBe('current');
+    expect(tuple(result).frequencyHz).toBe(14_100_000);
+
+    for (const path of ['main.freqHz', 'main.vfoA.freqHz', 'main.mode', 'main.vfoA.mode']) stale(input, path);
+    let sequence = 3;
+    let holdFloors: ScopePassbandDisplayState['floors'] = null;
+    for (let step = 0; step < 10; step += 1) {
+      const frequency = step % 2 === 0 ? 14_101_000 : 14_100_000;
+      tune(input, frequency, 20 + step);
+      if (step === 3) status(input, 'main.filterWidth', { lastObservedMonotonic: 24 });
+      if (step === 7) status(input, 'main.pbtInner', { lastObservedMonotonic: 28 });
+      receipt(input, ++sequence, { startFreq: frequency - 50_000, endFreq: frequency + 50_000 });
+      result = project(input, result);
+      expect(result.display).toMatchObject({ state: 'stale', translated: true,
+        tuple: { frequencyHz: 14_100_000, startHz: frequency - 50_000, endHz: frequency + 50_000 } });
+      if (step === 0) {
+        holdFloors = result.floors;
+        const disconnected = structuredClone(input);
+        disconnected.session = { state: 'disconnected', epoch: 1 };
+        expect(project(disconnected, result).display.state).toBe('unknown');
+        const frameLost = structuredClone(input); frameLost.frame = null;
+        expect(project(frameLost, result).display.state).toBe('unknown');
+      } else expect(result.floors).toEqual(holdFloors);
+    }
+
+    for (const path of ['main.freqHz', 'main.vfoA.freqHz', 'main.mode', 'main.vfoA.mode']) {
+      status(input, path, { freshness: 'fresh', availability: 'available', lastObservedMonotonic: 40 });
+    }
+    for (let step = 0; step < 8; step += 1) {
+      const frequency = step % 2 === 0 ? 14_101_000 : 14_100_000;
+      tune(input, frequency, 41 + step);
+      if (step === 7) status(input, 'main.pbtOuter', { lastObservedMonotonic: 48 });
+      receipt(input, ++sequence, { startFreq: frequency - 50_000, endFreq: frequency + 50_000 });
+      result = project(input, result);
+      expect(result.display.state).toBe(step === 7 ? 'current' : 'stale');
+      expect(tuple(result).frequencyHz).toBe(frequency);
+      if (step < 7) expect(result.floors).toEqual(holdFloors);
+    }
+    expect(result.floors).toBeNull();
+  });
+
+  it('keeps one translated stale shape through repeated steps and staggered 5s geometry observations', () => {
+    const input = banded(); let result = project(input);
+    for (const [frequency, marker] of [[14_075_000, 11], [14_076_000, 12]]) {
+      tune(input, frequency, marker); result = project(input, result);
+      expect(result.display.state).toBe('stale');
+      expect(tuple(result)).toMatchObject({ frequencyHz: frequency, widthHz: 2400, shiftHz: 0 });
+      receipt(input, marker, { startFreq: frequency - 50_000, endFreq: frequency + 50_000 });
+      result = project(input, result); expect(result.display.state).toBe('stale');
+    }
+    for (const [path, marker] of [['main.filterWidth', 15], ['main.pbtInner', 15.1], ['main.pbtOuter', 15.2]] as const) {
+      status(input, path, { lastObservedMonotonic: marker }); result = project(input, result);
+      expect(result.display.state).toBe(path === 'main.pbtOuter' ? 'current' : 'stale');
+      expect(tuple(result)).toMatchObject({ frequencyHz: 14_076_000, widthHz: 2400, shiftHz: 0 });
+    }
+    expect(result.floors).toBeNull();
+  });
+  it.each(['slot-first', 'active-first'])('survives %s frequency acknowledgments and lagging CENTER frames', (order) => {
+    const input = banded(); let result = project(input);
+    if (order === 'slot-first') tune(input, 14_075_000, 11, false);
+    else { input.state!.main!.freqHz = 14_075_000; status(input, 'main.freqHz', { lastObservedMonotonic: 11 }); }
+    result = project(input, result);
+    expect(result.display.state).toBe('stale'); expect(tuple(result).frequencyHz).toBe(14_075_000);
+    tune(input, 14_075_000, 12); result = project(input, result);
+    expect(result.display.state).toBe('stale');
+    receipt(input, 2, { startFreq: 14_025_000, endFreq: 14_125_000 }); result = project(input, result);
+    expect(result.display.state).toBe('stale'); expect(tuple(result).frequencyHz).toBe(14_075_000);
+    renew(input, 16, 3); expect(project(input, result).display.state).toBe('current');
+  });
+  it('ignores pending targets and holds rather than follows a stale frequency observation', () => {
+    const input = banded(); const current = project(input);
+    Object.assign(input.state!, { pending: { frequencyHz: 14_090_000 } });
+    expect(tuple(project(input, current)).frequencyHz).toBe(14_074_000);
+    tune(input, 14_075_000, 11); stale(input, 'main.vfoA.freqHz');
+    const held = project(input, current);
+    expect(held.display).toMatchObject({ state: 'stale', translated: true });
+    expect(tuple(held).frequencyHz).toBe(14_074_000);
+  });
+  const hard: [string, (i: ScopePassbandDisplayInput) => void][] = [
+    ['provider', (i) => { i.state!.providerGeneration = 2; i.caps!.providerGeneration = 2; receipt(i, 3); }],
+    ['caps', (i) => { i.caps!.filterWidthMax = 9000; }],
+    ['control epoch', (i) => { i.session!.epoch = 2; }],
+    ['scope epoch', (i) => { i.frame = { ...i.frame!, authority: { ...i.frame!.authority, transportEpoch: 2 } }; }],
+    ['receiver', (i) => { i.state!.active = 'SUB'; }],
+    ['slot', (i) => { i.selection!.slot = 'B'; i.state!.main!.activeSlot = 'B'; status(i, 'main.activeSlot', { lastObservedMonotonic: 12 }); }],
+    ['mode', (i) => { i.state!.main!.mode = 'LSB'; i.state!.main!.vfoA!.mode = 'LSB'; status(i, 'main.mode', { lastObservedMonotonic: 12 }); status(i, 'main.vfoA.mode', { lastObservedMonotonic: 12 }); }],
+    ['filter', (i) => { i.state!.main!.filter = 2; i.state!.main!.vfoA!.filterNum = 2; status(i, 'main.filter', { lastObservedMonotonic: 12 }); status(i, 'main.vfoA.filterNum', { lastObservedMonotonic: 12 }); }],
+    ['DATA', (i) => { i.state!.main!.dataMode = 1; status(i, 'main.dataMode', { lastObservedMonotonic: 12 }); }],
+    ['frame mode', (i) => receipt(i, 3, { mode: 1 })],
+    ['span', (i) => receipt(i, 3, { endFreq: 14_200_000 })],
+    ['band', (i) => tune(i, 18_100_000, 12)],
+    ['outside profile bands', (i) => tune(i, 15_000_000, 12)],
+    ['band definitions', (i) => { i.caps!.freqRanges[0].bands![5].end += 100; }],
+    ['null frame', (i) => { i.frame = null; }],
+    ['500ms frame silence', (i) => { i.frame = { ...i.frame!, authority: { ...i.frame!.authority, nowMonotonic: 500 } }; }],
+    ['off', (i) => { i.frame = { ...i.frame!, authority: { ...i.frame!.authority, demanded: false } }; }],
+  ];
+  it.each(hard)('retires a translated tuple on %s without replay after return', (_name, change) => {
+    const input = banded(); let result = project(input); tune(input, 14_075_000, 11); result = project(input, result);
+    expect(result.display.state).toBe('stale');
+    const saved = structuredClone(input); change(input); result = project(input, result);
+    expect(result.display.state).toBe('unknown');
+    result = project(saved, result); expect(result.display.state).toBe('unknown');
+    result = project(saved, result); expect(result.display.state).toBe('unknown');
+    renew(saved, 20, 4);
+    if (_name === 'slot') {
+      status(saved, 'main.activeSlot', { lastObservedMonotonic: 19 });
+      receipt(saved, 4, { startFreq: 14_025_000, endFreq: 14_125_000 });
+    }
+    expect(project(saved, result).display.state).toBe('current');
+  });
+  it.each(['filterWidth', 'pbtInner', 'pbtOuter'] as const)('never mixes a partial changed %s with retained shape', (leaf) => {
+    const input = banded(); let result = project(input); tune(input, 14_075_000, 11); result = project(input, result);
+    input.state!.main![leaf]! += 10; status(input, `main.${leaf}`, { lastObservedMonotonic: 15 });
+    result = project(input, result); expect(result.display.state).toBe('unknown');
+    receipt(input, 3); result = project(input, result); expect(result.display.state).toBe('unknown');
+    renew(input, 16, 4); expect(project(input, result).display.state).toBe('current');
+  });
+  it.each([0, 1, 2, 3])('waits for matching CENTER axis but allows observed frequency within fixed mode %s', (mode) => {
+    const input = banded(); receipt(input, 1, { mode, startFreq: 14_024_000, endFreq: 14_124_000 });
+    let result = project(input); tune(input, 14_075_000, 11); result = project(input, result);
+    renew(input, 16, 2); result = project(input, result);
+    expect(result.display.state).toBe(mode === 1 || mode === 3 ? 'current' : 'stale');
+    if (mode === 0 || mode === 2) {
+      receipt(input, 3, { mode, startFreq: 14_025_000, endFreq: 14_125_000 });
+      result = project(input, result); expect(result.display.state).toBe('current');
+    }
+  });
+  it('keeps frequency source-backed when the next CENTER frame precedes both frequency acknowledgments', () => {
+    const input = banded(); let result = project(input);
+    receipt(input, 2, { startFreq: 14_025_000, endFreq: 14_125_000 }); result = project(input, result);
+    expect(result.display.state).toBe('stale'); expect(tuple(result).frequencyHz).toBe(14_074_000);
+    tune(input, 14_075_000, 11, false); result = project(input, result);
+    expect(result.display.state).toBe('stale'); expect(tuple(result).frequencyHz).toBe(14_075_000);
+    tune(input, 14_075_000, 12); result = project(input, result); expect(result.display.state).toBe('stale');
+    renew(input, 16, 3); expect(project(input, result).display.state).toBe('current');
+  });
+});
+
 describe('coherent RF passband display', () => {
   it.each(['USB', 'LSB', 'AM'])('retains complete %s edges through leaf/ancestor stale and equal current', (mode) => {
     const input = fixture(); input.state!.main!.mode = mode;
@@ -105,6 +375,18 @@ describe('coherent RF passband display', () => {
   });
   it.each(['main.filterWidth', 'main.ifShift', 'main.mode', 'main'])('cannot seed first-stale %s', (path) => {
     const input = fixture(); stale(input, path); expect(project(input).display.state).toBe('unknown');
+  });
+  it('seeds from provider-confirmed held readback when poll freshness windows do not overlap', () => {
+    const input = fixture(); pbt(input);
+    for (const path of ['main.freqHz', 'main.mode', 'main.filterWidth', 'main.pbtInner', 'main.pbtOuter']) {
+      stale(input, path);
+      status(input, path, { quality: ['confirmed'] });
+    }
+    const result = project(input);
+    expect(result.display).toMatchObject({
+      state: 'current',
+      tuple: { frequencyHz: 14_074_000, mode: 'USB', widthHz: 2400, shiftHz: 0 },
+    });
   });
   const invalid: [string, (i: ScopePassbandDisplayInput) => void][] = [
     ['zero width', (i) => { i.state!.main!.filterWidth = 0; }],
@@ -172,7 +454,12 @@ describe('coherent RF passband display', () => {
     const current = project(input); expect(current.display.state).toBe('current'); change(input);
     const retired = project(input, current); expect(retired.display.state).toBe('unknown');
     expect(project(input, retired).display.state).toBe('unknown');
-    const oldFrame = input.frame; renew(input, 11, 3); const nextFrame = input.frame; input.frame = oldFrame;
+    const oldFrame = input.frame; renew(input, 11, 3);
+    if (name === 'slot') {
+      status(input, 'main.activeSlot', { lastObservedMonotonic: 10.5 });
+      receipt(input, 3, { startFreq: 14_024_000, endFreq: 14_124_000 });
+    }
+    const nextFrame = input.frame; input.frame = oldFrame;
     expect(project(input, retired).display.state).toBe('unknown');
     input.frame = nextFrame; expect(project(input, retired).display.state).toBe('current');
   });
@@ -184,6 +471,32 @@ describe('coherent RF passband display', () => {
     const back = project(input, b); receipt(input, 3);
     expect(project(input, back).display.state).toBe('unknown');
     renew(input, 11, 4); expect(project(input, back).display.state).toBe('current');
+  });
+  it.each([
+    ['command_response', 'unknown'],
+    ['poll_response', 'current'],
+  ] as const)('treats a same-slot %s refresh as %s', (source, expected) => {
+    const input = banded(); const current = project(input); const rx = input.state!.main!;
+    rx.filterWidth = 1800;
+    for (const leaf of ['filterWidth', 'pbtInner', 'pbtOuter']) {
+      status(input, `main.${leaf}`, { lastObservedMonotonic: 20.1 });
+    }
+    status(input, 'main.activeSlot', { lastObservedMonotonic: 21, source: { source } });
+    for (const path of ['main.freqHz', 'main.mode', 'main.filter', 'main.dataMode',
+      'main.vfoA.freqHz', 'main.vfoA.mode', 'main.vfoA.filterNum']) {
+      status(input, path, { lastObservedMonotonic: 21.2 });
+    }
+    receipt(input, 2, { startFreq: 14_024_000, endFreq: 14_124_000 });
+    const boundary = project(input, current); expect(boundary.display.state).toBe(expected);
+    if (source === 'command_response') {
+      for (const leaf of ['filterWidth', 'pbtInner', 'pbtOuter']) {
+        status(input, `main.${leaf}`, { lastObservedMonotonic: 21.3 });
+      }
+      receipt(input, 3, { startFreq: 14_024_000, endFreq: 14_124_000 });
+      const recovered = project(input, boundary);
+      expect(recovered.display).toMatchObject({ state: 'current', tuple: { widthHz: 1800 } });
+      expect(project(input, recovered).display.state).toBe('current');
+    }
   });
   it('rejects partial width updates and regressing leaf/ancestor markers', () => {
     for (const path of ['main.ifShift', 'main']) {
@@ -415,6 +728,7 @@ describe('coherent RF passband display', () => {
     expect(previous.display.state).toBe('unknown');
     expect(previous.observations[path]).toEqual(current.observations[path]);
     renew(input, 13, 4); status(input, path, { lastObservedMonotonic: 11 });
+    if (field === 'slot') receipt(input, 4, { startFreq: 14_024_000, endFreq: 14_124_000 });
     expect(project(input, previous).display.state).toBe('current');
   });
 

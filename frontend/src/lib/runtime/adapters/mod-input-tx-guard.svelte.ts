@@ -13,13 +13,14 @@
  * Visibility is derived reactively from live state, so the warning clears
  * as soon as the source becomes LAN (optimistic patch or readback) and
  * reappears if the radio rejects the change and readback reverts it. The
- * same gating as the ModePanel control applies (data_mode capability +
- * fieldStatus not missing), so radios without MOD-input routing never warn.
+ * same compatibility gate as the ModePanel control applies (data_mode
+ * capability + `isFieldRead`): it rejects the three explicit absence values
+ * while preserving the legacy no-entry fallback.
  */
 
 import { getRadioState } from '$lib/stores/radio.svelte';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
-import { getFieldAvailability } from '$lib/state/field-status';
+import { isFieldRead } from '$lib/state/field-status';
 import {
   LAN_MOD_INPUT_SOURCE,
   modInputSourceLabel,
@@ -55,7 +56,7 @@ function offendingSource(
   ) return null;
   const rx = state.active === 'SUB' ? state.sub : state.main;
   const key = modInputStateKey(rx?.dataMode ?? 0);
-  if (getFieldAvailability(state, key) === 'missing') return null;
+  if (!isFieldRead(state, key)) return null;
   const source = state[key] ?? null;
   if (source === null || source === LAN_MOD_INPUT_SOURCE) return null;
   return source;

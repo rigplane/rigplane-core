@@ -1,5 +1,22 @@
 # AGENTS.md — rigplane-core
 
+## Mandatory operating-policy startup
+
+At the start of every coordinator task, read
+[`docs/internals/coordinator-policy.md`](docs/internals/coordinator-policy.md)
+from the exact active worktree before planning or dispatching. Workers and
+verifiers must also read it and apply its operating rules while retaining
+their assigned roles and ownership boundaries; they do not become coordinators.
+Read applicable instructions once per active version, repeating when they
+change or a concrete conflict requires it. Do not skip mandatory reads.
+
+The policy governs orchestration, routing, output, CI observation, and session
+lifecycle where older `CLAUDE.md`, role, or command wording conflicts. Platform
+requirements and current user instructions take precedence. Repository rules
+may delegate planning to Linear; preserve that delegation and current Linear
+acceptance criteria. Safety, independent exact-head review, required CI,
+guarded merge, and hardware acceptance remain binding.
+
 ## Repo identity
 
 This repository is the public open-core `rigplane` implementation.

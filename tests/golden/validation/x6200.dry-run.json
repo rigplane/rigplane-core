@@ -119,8 +119,8 @@
     },
     {
       "check_id": "mic_gain.set",
-      "status": "unsupported",
-      "declaration": "unsupported"
+      "status": "skip",
+      "declaration": "supported"
     },
     {
       "check_id": "mod_input.set",
@@ -164,8 +164,8 @@
     },
     {
       "check_id": "rf_power.set",
-      "status": "unsupported",
-      "declaration": "unsupported"
+      "status": "skip",
+      "declaration": "supported"
     },
     {
       "check_id": "rit.set",

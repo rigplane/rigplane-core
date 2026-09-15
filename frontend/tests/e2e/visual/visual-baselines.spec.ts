@@ -133,7 +133,7 @@ test('VFO phone tiles fit on one line and paint no freshness cue', async ({ page
     return { lines, tiles: tiles.length,
       cues: document.querySelectorAll('[data-vfo-stale-cue]').length };
   });
-  expect(result.tiles).toBe(4);
+  expect(result.tiles).toBe(2);
   expect(result.cues).toBe(0);
   expect(result.lines.every((count) => count === 1)).toBe(true);
 });

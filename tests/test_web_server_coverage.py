@@ -348,7 +348,9 @@ async def test_start_and_stop_with_radio_sets_callbacks() -> None:
     fake_server = _FakeAsyncServer()
     # MOR-1181: stop_web_server now awaits a final TX-safety drain on the
     # poller it stopped, so the stand-in has to answer that call too.
-    fake_poller = MagicMock(drain_tx_safety_commands=AsyncMock())
+    fake_poller = MagicMock(
+        drain_tx_safety_commands=AsyncMock(), select_vfo_a_on_connect=AsyncMock()
+    )
 
     srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     with (
@@ -389,7 +391,9 @@ async def test_start_attaches_shared_state_model_service_for_acquisition_profile
     radio.radio_ready = True
     radio.control_connected = True
     fake_server = _FakeAsyncServer()
-    fake_poller = MagicMock(drain_tx_safety_commands=AsyncMock())  # MOR-1181
+    fake_poller = MagicMock(
+        drain_tx_safety_commands=AsyncMock(), select_vfo_a_on_connect=AsyncMock()
+    )  # MOR-1181
 
     srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     with (
@@ -750,7 +754,9 @@ async def test_stop_handles_disconnect_failure_and_cancels_client_tasks() -> Non
     radio.disconnect = AsyncMock(side_effect=RuntimeError("disconnect failed"))
     srv = WebServer(radio)
     srv._server = _FakeAsyncServer()
-    srv._radio_poller = MagicMock(drain_tx_safety_commands=AsyncMock())
+    srv._radio_poller = MagicMock(
+        drain_tx_safety_commands=AsyncMock(), select_vfo_a_on_connect=AsyncMock()
+    )
 
     blocker = asyncio.Event()
 
@@ -2047,7 +2053,16 @@ async def test_same_value_observation_metadata_updates_http_and_initial_ws_full_
     )
 
 
-def test_empty_state_store_marks_legacy_defaults_as_missing() -> None:
+def test_empty_state_store_marks_legacy_defaults_as_unread() -> None:
+    """No observation, so no legacy default is presented as confirmed state.
+
+    ``powerOn`` reads ``undeclared`` rather than ``missing``:
+    ``rigs/ic7610.toml`` names ``global.tx_state.power_on`` in neither
+    ``[state_acquisition.field_policies]`` nor
+    ``[state_acquisition.capabilities]`` (MOR-2425/T201; the value was
+    ``missing`` before, when the projection had no other answer).
+    """
+
     srv = WebServer(None, WebConfig(radio_model="IC-7610"))
 
     public_state = srv.build_public_state()
@@ -2059,7 +2074,7 @@ def test_empty_state_store_marks_legacy_defaults_as_missing() -> None:
         "storePath": "global.tx_state.power_on",
         "observed": False,
         "freshness": "unknown",
-        "availability": "missing",
+        "availability": "undeclared",
     }
     assert public_state["fieldStatus"]["main.freqHz"] == {
         "storePath": "receiver.main.active.freq_mode.freq_hz",
@@ -2075,7 +2090,13 @@ def test_empty_state_store_marks_legacy_defaults_as_missing() -> None:
     }
 
 
-def test_partial_state_store_marks_observed_and_missing_fields_separately() -> None:
+def test_partial_state_store_marks_observed_and_unread_fields_separately() -> None:
+    """One observed path; the rest keep whichever absence the profile gives.
+
+    ``main.mode`` is declared and simply unobserved (``missing``);
+    ``powerOn`` is undeclared for the IC-7610 (see the test above).
+    """
+
     srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     srv.command_state_store.apply(
         _store_observation(
@@ -2108,7 +2129,7 @@ def test_partial_state_store_marks_observed_and_missing_fields_separately() -> N
         "storePath": "global.tx_state.power_on",
         "observed": False,
         "freshness": "unknown",
-        "availability": "missing",
+        "availability": "undeclared",
     }
 
 
@@ -2520,17 +2541,25 @@ async def test_capabilities_reports_combined_rf_sql_control_model_for_ic7300() -
     _, payload = _response_json(writer)
 
     assert payload["rfSqlControlModel"] == "combined"
+    assert payload["dataModeInputs"] == [
+        {"value": 0, "label": "MIC"},
+        {"value": 1, "label": "ACC"},
+        {"value": 2, "label": "MIC+ACC"},
+        {"value": 3, "label": "USB"},
+        {"value": 4, "label": "MIC+USB"},
+    ]
 
 
 @pytest.mark.asyncio
 async def test_capabilities_defaults_to_separate_rf_sql_control_model() -> None:
-    """A profile that doesn't declare the combined knob stays "separate"."""
+    """A profile that doesn't declare the combined knob (IC-9700) stays
+    "separate" (MOR-2467 moved IC-7610 to an explicit "combined")."""
 
-    class _Ic7610Radio:
-        model = "IC-7610"
+    class _Ic9700Radio:
+        model = "IC-9700"
         capabilities: set[str] = set()
 
-    srv = WebServer(_Ic7610Radio())
+    srv = WebServer(_Ic9700Radio())
     writer = _FakeWriter()
     await srv._serve_capabilities(writer)  # noqa: SLF001
     _, payload = _response_json(writer)
@@ -3918,6 +3947,14 @@ async def test_info_endpoint_returns_structured_capabilities() -> None:
     assert isinstance(caps["tags"], list)
     assert isinstance(caps["modes"], list)
     assert isinstance(caps["filters"], list)
+    assert caps["dataModeInputs"] == [
+        {"value": 0, "label": "MIC"},
+        {"value": 1, "label": "ACC"},
+        {"value": 3, "label": "USB"},
+        {"value": 5, "label": "LAN"},
+        {"value": 2, "label": "MIC+ACC"},
+        {"value": 4, "label": "MIC+USB"},
+    ]
 
     conn = data["connection"]
     assert conn["rigConnected"] is True

@@ -19,6 +19,8 @@ export interface CommandDeliveryEvent {
   eventEpoch: number;
   error?: string;
   cancelled?: boolean;
+  /** Sanitized finite 0..1 `result.admitted_level`, only on a response-ok frame. */
+  admittedLevel?: number;
 }
 export type CommandLifecycleDeliveryKind = 'held' | 'superseded' | 'timed-out' | 'failed';
 export interface CommandLifecycleDeliveryEvent {
@@ -107,6 +109,14 @@ function reconciliationEvidence(value: unknown): { revision: number; observation
   if (!Number.isSafeInteger(revision.value) || revision.value < 0) return null;
   if (!Number.isSafeInteger(observationSeq.value) || observationSeq.value < 0) return null;
   return { revision: revision.value as number, observationSeq: observationSeq.value as number };
+}
+
+/** Only a finite 0..1 `result.admitted_level` on an ok response frame is evidence. */
+function admittedLevelOf(raw: Record<string, unknown>): number | undefined {
+  if (raw.type !== 'response' || raw.ok === false || !isPlainRecord(raw.result)) return undefined;
+  const value = raw.result['admitted_level'];
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value : undefined;
 }
 
 // ─── Close observability (MOR-1424) ─────────────────────────────────────────
@@ -543,6 +553,7 @@ export class WsChannel {
         raw.ok === false ? 'response-error' : 'response-ok',
         generic.eventEpoch,
         raw.ok === false ? String(raw.message ?? raw.error ?? 'Command failed') : undefined,
+        raw.ok === false ? undefined : admittedLevelOf(raw),
       );
       this.trackedNonPttCommands.delete(id);
     } else if (raw.type === 'error' || raw.status === 'error') {
@@ -634,6 +645,7 @@ export class WsChannel {
     kind: CommandDeliveryKind,
     eventEpoch: number,
     error?: string,
+    admittedLevel?: number,
   ): void {
     if (tracked.seen.has(kind)) return;
     tracked.seen.add(kind);
@@ -643,6 +655,7 @@ export class WsChannel {
       originalEpoch: tracked.originalEpoch,
       eventEpoch,
       ...(error ? { error } : {}),
+      ...(admittedLevel !== undefined ? { admittedLevel } : {}),
     });
   }
 
@@ -704,7 +717,7 @@ _ctrl.onStateChange((s) => {
     _hasReceivedFullState = false;
     _acceptedProviderGeneration = null;
     _expectedProviderGeneration = null;
-    _capabilityRefreshGeneration = null;
+    cancelCapabilitiesRefresh();
     resetRadioState();
     clearCapabilities();
     // MOR-1526 (F1 verifier finding): a WS drop that never gets a terminal
@@ -735,7 +748,21 @@ let _fullState: Record<string, unknown> | null = null;
 let _hasReceivedFullState = false;
 let _acceptedProviderGeneration: number | null = null;
 let _expectedProviderGeneration: number | null = null;
-let _capabilityRefreshGeneration: number | null = null;
+let _capabilityRefresh: {
+  generation: number;
+  epoch: number;
+  attempt: number;
+  inFlight: boolean;
+  completed: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+} | null = null;
+
+function cancelCapabilitiesRefresh(): void {
+  if (_capabilityRefresh && _capabilityRefresh.timer !== null) {
+    clearTimeout(_capabilityRefresh.timer);
+  }
+  _capabilityRefresh = null;
+}
 
 function isProviderGeneration(value: unknown): value is number {
   return typeof value === 'number'
@@ -760,6 +787,7 @@ function highestSeenGeneration(): number | null {
 }
 
 function resetForProviderGeneration(generation: number): void {
+  cancelCapabilitiesRefresh();
   _ctrl.cancelNonPtt('provider session replaced');
   _fullState = null;
   _hasReceivedFullState = false;
@@ -780,20 +808,34 @@ function commitCurrentState(): boolean {
 }
 
 function refreshCapabilities(generation: number): void {
-  if (_capabilityRefreshGeneration === generation) return;
-  _capabilityRefreshGeneration = generation;
+  if (_capabilityRefresh && _capabilityRefresh.generation !== generation) cancelCapabilitiesRefresh();
+  const refresh = _capabilityRefresh ??= {
+    generation, epoch: _ctrl.sessionEpoch, attempt: 0,
+    inFlight: false, completed: false, timer: null,
+  };
+  const isCurrent = () => _capabilityRefresh === refresh
+    && _ctrl.state === 'connected' && _ctrl.sessionEpoch === refresh.epoch
+    && _acceptedProviderGeneration === generation
+    && _hasReceivedFullState && _fullState !== null;
+  if (!isCurrent() || refresh.inFlight || refresh.completed || refresh.timer !== null) return;
+  refresh.inFlight = true;
   void fetchCapabilities().then((caps) => {
-    if (
-      _acceptedProviderGeneration !== generation
-      || !_hasReceivedFullState
-      || _fullState === null
-    ) return;
+    if (!isCurrent()) return;
     const record = caps as unknown as Record<string, unknown>;
     if (record.stateContractVersion !== 1 || record.providerGeneration !== generation) return;
-    if (setCapabilities(caps)) commitCurrentState();
+    if (setCapabilities(caps)) {
+      refresh.completed = true;
+      commitCurrentState();
+    }
   }).catch(() => {
-    // Capability retrieval is metadata only. Remain fail-closed until a later
-    // provider generation or reconnect supplies a new authoritative full.
+    // Keep state fail-closed; the session-owned timer retries metadata only.
+  }).finally(() => {
+    refresh.inFlight = false;
+    if (!isCurrent() || refresh.completed) return;
+    refresh.timer = setTimeout(() => {
+      refresh.timer = null;
+      if (isCurrent()) refreshCapabilities(generation);
+    }, calcBackoff(refresh.attempt++));
   });
 }
 
@@ -1086,6 +1128,14 @@ export function onMessage(handler: MessageHandler): () => void {
 
 /** @deprecated Use onMessage */
 export const addMessageHandler = onMessage;
+
+export function emitLocalNotification(
+  level: 'info' | 'warning' | 'error',
+  message: string,
+  code: string,
+): void {
+  _ctrl.emitLocalNotification(level, message, code);
+}
 
 export function isConnected(): boolean {
   return _ctrl.isConnected();

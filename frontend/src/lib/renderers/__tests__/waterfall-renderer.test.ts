@@ -212,6 +212,159 @@ describe('history clearing on confirmed span change', () => {
   });
 });
 
+// ── panorama viewport reprojection (MOR-2464) ────────────────────────────────
+//
+// History reprojects by viewport-center deltas (centerHz) only; the sampling
+// offset (panoramaShiftHz) places new rows. Uncovered edges stay blank; hit
+// tests map through the displayed viewport center.
+describe('panorama viewport reprojection (MOR-2464)', () => {
+  function trackedCanvas(w = 100, h = 50) {
+    const rows: Array<{ width: number; height: number; data: Uint8ClampedArray }> = [];
+    const draws: unknown[][] = [];
+    const fills: number[][] = [];
+    const ctx = {
+      canvas: { width: w, height: h },
+      createImageData: (width: number) => ({ width, height: 1, data: new Uint8ClampedArray(width * 4) }),
+      putImageData: (img: { width: number; height: number; data: Uint8ClampedArray }) => rows.push(img),
+      drawImage: (...args: unknown[]) => draws.push(args),
+      fillRect: (x: number, y: number, rw: number, rh: number) => fills.push([x, y, rw, rh]),
+      set fillStyle(_: string) {},
+    } as unknown as CanvasRenderingContext2D;
+    const canvas = { width: w, height: h, getContext: () => ctx } as unknown as HTMLCanvasElement;
+    return { canvas, rows, draws, fills };
+  }
+
+  function trackedRenderer(w = 100, h = 50, opts?: Partial<WaterfallOptions>) {
+    const tracked = trackedCanvas(w, h);
+    const renderer = new WaterfallRenderer(tracked.canvas, {
+      ...defaultWaterfallOptions, centerHz: 14_050_000, spanHz: 100_000, ...opts,
+    });
+    return { renderer, ...tracked };
+  }
+
+  // drawImage overloads: per-push scroll targets dy = 1; reprojects dy = 0.
+  const reprojectDraws = (draws: unknown[][]) => draws.filter((d) => d[6] === 0);
+
+  const peakRow = (...indices: number[]): Uint8Array => {
+    const data = new Uint8Array(100).fill(0);
+    for (const index of indices.length ? indices : [50]) data[index] = 80;
+    return data;
+  };
+  const isRed = (row: { data: Uint8ClampedArray }, x: number): boolean =>
+    row.data[x * 4] === 255 && row.data[x * 4 + 1] === 0 && row.data[x * 4 + 2] === 0;
+  const isBlank = (row: { data: Uint8ClampedArray }, x: number): boolean =>
+    row.data[x * 4] === 0x00 && row.data[x * 4 + 1] === 0x10 && row.data[x * 4 + 2] === 0x20;
+
+  const VIEWPORT_A = 14_050_000;
+  const VIEWPORT_B = 14_051_000;
+
+  it('reprojects history by the viewport-center delta, never by the sampling offset', () => {
+    const { renderer, draws, fills } = trackedRenderer();
+    renderer.updateOptions({ centerHz: VIEWPORT_B, panoramaShiftHz: 1_000 });
+    expect(reprojectDraws(draws)).toEqual([
+      [expect.anything(), 1, 0, 99, 50, 0, 0, 99, 50],
+    ]);
+    expect(fills).toContainEqual([99, 0, 1, 50]);
+    // A sampling-offset change alone (same viewport) must not reproject.
+    renderer.updateOptions({ panoramaShiftHz: 2_000 });
+    expect(reprojectDraws(draws)).toHaveLength(1);
+  });
+  it('reprojects a negative viewport delta to the right and blanks the left strip', () => {
+    const { renderer, draws, fills } = trackedRenderer();
+    renderer.updateOptions({ centerHz: VIEWPORT_A - 10_000 });
+    expect(reprojectDraws(draws)).toEqual([
+      [expect.anything(), 0, 0, 90, 50, 10, 0, 90, 50],
+    ]);
+    expect(fills).toContainEqual([0, 0, 10, 50]);
+  });
+
+  it('does not move history when recentered samples arrive at an unchanged viewport', () => {
+    const { renderer, rows, draws } = trackedRenderer();
+    // Samples centered on A; the viewport glides A→B (1 px at this span).
+    renderer.pushRow(peakRow(50));
+    renderer.updateOptions({ centerHz: VIEWPORT_B, panoramaShiftHz: 1_000 });    renderer.pushRow(peakRow(50));
+    expect(reprojectDraws(draws)).toEqual([
+      [expect.anything(), 1, 0, 99, 50, 0, 0, 99, 50],
+    ]);
+    // Recentered samples (center B) at the unchanged viewport B: history stays.
+    renderer.updateOptions({ centerHz: VIEWPORT_B, panoramaShiftHz: 0 });
+    expect(reprojectDraws(draws)).toHaveLength(1);
+    renderer.pushRow(peakRow(49, 50));
+    const row = rows.at(-1)!;
+    expect(isRed(row, 49)).toBe(true);
+    expect(isRed(row, 50)).toBe(true);
+    expect(isRed(row, 48)).toBe(false);
+  });
+
+  it('rounds fractional viewport deltas without cumulative drift', () => {
+    const { renderer, draws } = trackedRenderer();
+    renderer.updateOptions({ centerHz: VIEWPORT_A + 400 });
+    expect(reprojectDraws(draws)).toHaveLength(0);
+    renderer.updateOptions({ centerHz: VIEWPORT_A + 1_000 });
+    renderer.updateOptions({ centerHz: VIEWPORT_A + 1_400 });
+    expect(reprojectDraws(draws)).toEqual([
+      [expect.anything(), 1, 0, 99, 50, 0, 0, 99, 50],
+    ]);
+  });
+  it('re-anchors after resize without a spurious shift', () => {
+    const { renderer, draws } = trackedRenderer();
+    renderer.updateOptions({ centerHz: VIEWPORT_B });
+    expect(reprojectDraws(draws)).toHaveLength(1);
+    renderer.resize(200, 100);    renderer.updateOptions({ centerHz: VIEWPORT_B });
+    expect(reprojectDraws(draws)).toHaveLength(1);
+    renderer.updateOptions({ centerHz: VIEWPORT_B + 1_000 });
+    expect(reprojectDraws(draws).at(-1)).toEqual([
+      expect.anything(), 2, 0, 198, 100, 0, 0, 198, 100,
+    ]);
+  });
+  it('keeps hit tests on the displayed viewport across the recenter transition', () => {
+    const { renderer } = trackedRenderer();
+    renderer.updateOptions({ centerHz: VIEWPORT_B, panoramaShiftHz: 1_000 });
+    expect(renderer.pixelToFreq(50)).toBe(VIEWPORT_B);
+    renderer.updateOptions({ panoramaShiftHz: 0 });
+    expect(renderer.pixelToFreq(50)).toBe(VIEWPORT_B);
+    expect(renderer.pixelToFreq(0)).toBe(VIEWPORT_B - 50_000);
+    expect(renderer.pixelToFreq(100)).toBe(VIEWPORT_B + 50_000);
+  });
+
+  it('samples new rows at the exact offset, resting mapping intact, edges blank', () => {
+    const { renderer, rows, draws } = trackedRenderer();
+    renderer.updateOptions({ panoramaShiftHz: 10_000 });
+    expect(reprojectDraws(draws)).toHaveLength(0);
+    renderer.pushRow(peakRow(50));
+    const row = rows.at(-1)!;
+    expect(isRed(row, 40)).toBe(true);
+    expect(isRed(row, 50)).toBe(false);
+    expect(isBlank(row, 95)).toBe(true);
+    const resting = trackedRenderer();
+    resting.renderer.pushRow(peakRow(50));
+    const restRow = resting.rows[0];
+    expect(isRed(restRow, 50)).toBe(true);
+    expect(isRed(restRow, 49)).toBe(false);
+    expect(isRed(restRow, 51)).toBe(false);
+  });
+
+  it('anchors the first real sample window without a huge reproject and keeps its first row', () => {
+    const { renderer, rows, draws, fills } = trackedRenderer(100, 50, { centerHz: 0, spanHz: 0 });
+    // First frame: real RF center lands while the constructor default was 0/0.
+    const clearFills = fills.length;    renderer.updateOptions({ centerHz: 14_050_000, spanHz: 100_000, panoramaShiftHz: 0 });
+    expect(reprojectDraws(draws)).toHaveLength(0);
+    expect(fills.length).toBe(clearFills);
+    renderer.pushRow(peakRow(50));
+    expect(rows.length).toBeGreaterThan(0);
+    expect(isRed(rows[0], 50)).toBe(true);
+    renderer.updateOptions({ centerHz: 14_051_000 });
+    expect(reprojectDraws(draws)).toEqual([
+      [expect.anything(), 1, 0, 99, 50, 0, 0, 99, 50],
+    ]);
+    const tiny = makeRenderer(0, 0);
+    expect(() => {
+      tiny.updateOptions({ centerHz: VIEWPORT_B });
+      tiny.pushRow(peakRow(50));
+    }).not.toThrow();
+  });
+});
+
 // ── resize ───────────────────────────────────────────────────────────────────
 
 describe('resize', () => {

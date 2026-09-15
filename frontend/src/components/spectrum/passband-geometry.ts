@@ -1,4 +1,4 @@
-import { clampFilterWidth } from '../../components-v2/panels/filter-controls';
+import { clampFilterWidth } from '$lib/radio/filter-controls';
 
 export interface PassbandGeometry {
   leftPx: number;

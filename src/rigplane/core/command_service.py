@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -54,6 +55,7 @@ __all__ = [
     "CommandService",
     "CommandServiceResult",
     "PendingOverlay",
+    "admitted_level_for_intent",
     "command_intent_from_request",
     "command_response_observation",
     "expected_observations_for_command",
@@ -64,6 +66,8 @@ _UNSET = object()
 _MAX_ACTIVE_COMMANDS = 128
 _MAX_READBACK_EXPECTATIONS = 128
 _READBACK_EXPECTATION_GRACE_SECONDS = 2.0
+# ACK stays dispatchable for late queue callbacks. Its active bookkeeping uses
+# the existing overlay/readback windows, without implying terminal success.
 _DISPATCHABLE_LIFECYCLE_STATES = ("accepted", "queued", "sent", "acknowledged")
 _NORMALIZED_LEVEL_EXPECTATION_COMMANDS = {
     "set_af_level": "af_level",
@@ -457,6 +461,7 @@ class CommandService:
     ) -> CommandLifecycleEvent:
         """Record and publish a lifecycle event for an intent."""
 
+        self._purge_expired()
         payload_details = dict(details or {})
         if "session_id" in intent.params:
             payload_details["session_id"] = _session_id(intent)
@@ -474,14 +479,26 @@ class CommandService:
             while key not in self._active_commands and (
                 len(self._active_commands) >= _MAX_ACTIVE_COMMANDS
             ):
-                oldest = next(iter(self._active_commands))
-                self.fail_command(
-                    oldest[2],
-                    source=oldest[0],
-                    session_id=oldest[1],
-                    message="active command capacity exceeded",
+                acknowledged = next(
+                    (
+                        item
+                        for item, active in self._active_commands.items()
+                        if active.state == "acknowledged"
+                    ),
+                    None,
                 )
+                oldest = acknowledged or next(iter(self._active_commands))
+                self._active_commands.pop(oldest)
+                if acknowledged is None:
+                    self.fail_command(
+                        oldest[2],
+                        source=oldest[0],
+                        session_id=oldest[1],
+                        message="active command capacity exceeded",
+                    )
             self._active_commands[key] = event
+            if state == "acknowledged":
+                self._purge_expired()
         else:
             self._active_commands.pop(key, None)
         self._events.append(event)
@@ -851,6 +868,13 @@ class CommandService:
             for overlay in self._readback_expectations
             if not overlay.is_expired(now)
         ]
+        retained = {
+            (overlay.source, overlay.session_id, overlay.command_id)
+            for overlay in (*self._overlays, *self._readback_expectations)
+        }
+        for key, event in tuple(self._active_commands.items()):
+            if event.state == "acknowledged" and key not in retained:
+                self._active_commands.pop(key)
 
     def _last_event(
         self,
@@ -885,6 +909,25 @@ def _expected_value_for_path(intent: CommandIntent, path: FieldPath) -> Any:
 
 def _should_normalize_level_expectation(name: str, path: FieldPath) -> bool:
     return _NORMALIZED_LEVEL_EXPECTATION_COMMANDS.get(name) == path.name
+
+
+def admitted_level_for_intent(intent: CommandIntent) -> float | None:
+    """The intent's normalized readback target from ``_expected_value_for_path``.
+
+    Re-exports the value the level-expectation owner already computes, so a
+    response consumer can never see a second, parallel quantization.
+    ``None`` when the intent has no normalized 0.0-1.0 level target.
+    """
+    target = intent.target
+    if target is None or not _should_normalize_level_expectation(intent.name, target):
+        return None
+    value = _expected_value_for_path(intent, target)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    level = float(value)
+    if not math.isfinite(level) or not 0.0 <= level <= 1.0:
+        return None
+    return level
 
 
 def resolve_power_level_target(
@@ -1162,7 +1205,9 @@ def command_intent_from_request(
     if session_id is not None:
         normalized["session_id"] = session_id
     command_name = str(name)
-    if command_name == "set_freq":
+    if command_name == "set_vfo_freq":
+        normalized["freq_hz"] = normalized["freq"]
+    elif command_name == "set_freq":
         raw_freq = (
             normalized["freq_hz"] if "freq_hz" in normalized else normalized["freq"]
         )
@@ -1305,6 +1350,17 @@ def command_response_observation(
 
 def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
     receiver = str(int(params.get("receiver", 0)))
+    if name == "set_vfo_freq":
+        if params.get("slot") not in ("A", "B") or params.get(
+            "expected_active_slot"
+        ) not in ("A", "B"):
+            raise ValueError("direct VFO frequency requires explicit A/B identity")
+        factory = (
+            FieldPath.active
+            if params["slot"] == params["expected_active_slot"]
+            else FieldPath.unselected
+        )
+        return factory(receiver, "freq_mode", "freq_hz")
     if name == "set_freq":
         return FieldPath.receiver(receiver, "freq_mode", "freq_hz")
     if name == "set_mode":

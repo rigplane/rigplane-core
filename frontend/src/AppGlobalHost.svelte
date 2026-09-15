@@ -17,6 +17,8 @@
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import { t } from '$lib/i18n';
 
+  let { showTxIndication = true }: { showTxIndication?: boolean } = $props();
+
   // The App-owned TX controller (MOR-1008/MOR-982) is the ONLY legitimate
   // source for this lamp. Radio-state PTT is a command/readback echo that can
   // read RX while the key is still down, so it is never consulted here.
@@ -46,7 +48,7 @@
 <div class="app-global-host" data-testid="app-global-host">
   <Toast />
 
-  {#if txIndication}
+  {#if showTxIndication && txIndication}
     <div class="global-tx" data-testid="global-tx-indication" data-tx={txIndication} aria-live="assertive">
       <span class="global-tx-lamp" aria-hidden="true"></span>
       <span>{txIndication === 'on' ? 'TX' : 'TX?'}</span>

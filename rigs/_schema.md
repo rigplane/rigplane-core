@@ -132,57 +132,6 @@ unknown, or malformed references fail profile loading. A table reference only
 defines a legal domain and index mapping: it does not add a capability or grant
 a read or write command.
 
-## `[tx_interlock]` — Profile Tightening Metadata
-
-Optional section reserved for evidence-backed, profile-driven tightening of the
-shared TX interlock policy. It is metadata only: it does not replace the
-runtime policy or grant a profile permission to loosen a command's base
-disposition.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `disposition_overrides` | inline table (string → string) | no | A mapping from one stable command-family identifier to the only permitted override value, `"defer"`. |
-
-### `disposition_overrides` grammar
-
-Each key is a command-family identifier exported by the shared TX interlock
-policy. Keys containing `-` must be TOML-quoted. Each value must be the
-lowercase string `"defer"`; no other override value is valid.
-
-The current stable family identifiers and their fixed base dispositions are:
-
-| Base disposition | Family identifiers |
-|------------------|--------------------|
-| `always-pass` | `ptt-off`, `power-off`, `scan-stop`, `tuner-off` |
-| `tx-safe` | `power-on`, `frequency`, `mode`, `band`, `vfo-select`, `vfo-contents`, `rit-xit` |
-| `block` | `ptt-on`, `raw-civ`, `scan-start`, `antenna-switch`, `tuner-engage` |
-| `defer` | `vfo-topology`, `memory` |
-
-Only a known family whose fixed base disposition is `tx-safe` may appear in
-`disposition_overrides`, and its value must be `"defer"`. For `power-on` and
-`rit-xit`, this is a one-way tightening that uses the existing deferred
-handling. Overrides for `frequency`, `mode`, `band`, `vfo-select`, and
-`vfo-contents` are accepted as input but ignored: observed RF state cannot own
-admission for those authority-approved families.
-
-Structural `always-pass` families and hard `block` families are
-non-negotiable. A profile must not list them, alter them, or make them less
-restrictive. Existing `defer` families also must not be listed because they
-are already deferred. A profile loader must reject an unknown family,
-non-string value, unsupported disposition, or mapping for an ineligible base
-disposition rather than silently accepting it.
-
-Example (generic only):
-
-```toml
-[tx_interlock]
-disposition_overrides = { "power-on" = "defer" }
-```
-
-No profile schema key represents an unknown-RF-state fail-open exception.
-Such an exception is intentionally omitted until explicit, radio-specific
-provider/profile evidence establishes a separately documented contract.
-
 ## `[state_acquisition]` — State Capability And Policy Metadata
 
 Optional section. Defines provider-specific state acquisition behavior as data

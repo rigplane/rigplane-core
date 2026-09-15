@@ -1,12 +1,12 @@
 import { getTxAudioControl } from '$lib/runtime/adapters/tx-adapter';
 import {
-  invalidateManagedTransmit, managedTransmitIsStale, managedTransmitSnapshot,
-  managedTransmitRemainingMs, refreshManagedTransmit, setManagedTransmitTot,
-  submitManagedTransmit,
+  invalidateManagedTransmit, managedTransmitAppliedRevision, managedTransmitIsStale,
+  managedTransmitRemainingMs, managedTransmitSnapshot, refreshManagedTransmit,
+  setManagedTransmitTot, submitManagedTransmit,
 } from '$lib/stores/managed-transmit.svelte';
 import { makeCommandId } from '$lib/types/protocol';
 import {
-  onCommandDelivery, onControlSessionTransition, sendCommand,
+  getControlSession, onCommandDelivery, onControlSessionTransition, onMessage, sendCommand,
   type CommandDeliveryEvent, type ControlSessionTransition,
 } from '$lib/transport/ws-client';
 import type { ManagedTxDependencies, PttOperation } from './managed-controller';
@@ -95,10 +95,20 @@ export function createManagedBrowserDependencies() {
     ),
     refresh: () => refreshManagedTransmit(),
     invalidate: invalidateManagedTransmit,
+    snapshotRevision: managedTransmitAppliedRevision,
     sendPtt,
     submit: submitManagedTransmit,
     setTot: setManagedTransmitTot,
     onPresentationTick,
+    onAuthorityChanged: (handler) => disposed
+      ? noop
+      : track(onMessage((message) => {
+        if (disposed) return;
+        if (message.type !== 'event') return;
+        if ((message as { name?: unknown }).name !== 'managed_transmit_changed') return;
+        if (getControlSession().state !== 'connected') return;
+        handler();
+      })),
     startAudio: () => disposed
       ? Promise.resolve('TX browser dependencies disposed')
       : audio.startManagedTx(),

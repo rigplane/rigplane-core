@@ -102,10 +102,12 @@ features = [
 # MOR-1447 leg 2: the IC-7300 front panel wires RF gain and squelch as one
 # physical concentric knob (hard left = RF min/SQL min, center = RF max/SQL
 # min, hard right = SQL max/RF max) — the live gate radio for this control
-# model. Other Icom-family profiles (IC-7610, IC-705, IC-9700) stay on the
-# "separate" default: no CAT audit/manual excerpt in this repo documents
-# their physical RF/SQL layout, so declaring "combined" for them would be a
-# guess rather than a data-driven fact.
+# model. MOR-2467: the IC-7610 likewise wires RF gain and squelch as one
+# physical concentric knob and now declares "combined" in rigs/ic7610.toml.
+# Other Icom-family profiles (IC-705, IC-9700) stay on the "separate" default:
+# no CAT audit/manual excerpt in this repo documents their physical RF/SQL
+# layout, so declaring "combined" for them would be a guess rather than a
+# data-driven fact.
 rf_sql_control_model = "combined"
 
 # Per-check_id validation classification (MOR-2105 part 2), a check_id-grained
@@ -153,6 +155,9 @@ polling_only = [
     "receiver.main.operator_controls.agc",
     "receiver.main.operator_toggles.nb",
     "receiver.main.operator_toggles.nr",
+    # MOR-2449: IP+ has the same plain CI-V 0x16/0x65 read path as IC-7610,
+    # but this single-RX profile had omitted it from acquisition entirely.
+    "receiver.main.operator_toggles.ipplus",
     "global.operator_controls.power_level",
     "global.tx_state.compressor_on",
     "global.operator_controls.compressor_level",
@@ -638,6 +643,14 @@ cadence_seconds = 5.0
 freshness_ttl_seconds = 10.0
 adaptive_decay = false
 
+# MOR-2449: a front-panel IP+ change must converge through canonical
+# acquisition. The 5.0s/10.0s panel tier adds 0.2 q/s and retains serial
+# headroom below the IC-7300's 20 q/s ceiling (pinned in the policy test).
+[state_acquisition.field_policies."receiver.main.operator_toggles.ipplus"]
+cadence_seconds = 5.0
+freshness_ttl_seconds = 10.0
+adaptive_decay = false
+
 [state_acquisition.field_policies."global.operator_controls.rit_freq"]
 cadence_seconds = 5.0
 freshness_ttl_seconds = 10.0
@@ -1110,6 +1123,9 @@ get_mode = [0x04]
 set_mode = [0x06]
 get_band_edge_freq = [0x02]
 get_selected_freq = [0x25, 0x00]          # source: IC-7300 Advanced Manual (11a) p.19-7 (detail p.19-13)
+# Direct SET payload: five BCD bytes; IC-7300 Full Manual (12a), p.19-13.
+set_selected_freq = [0x25, 0x00]
+set_unselected_freq = [0x25, 0x01]
 get_unselected_freq = [0x25, 0x01]        # source: IC-7300 Advanced Manual (11a) p.19-7 (detail p.19-13)
 get_selected_mode = [0x26, 0x00]          # source: IC-7300 Advanced Manual (11a) p.19-7 (detail p.19-13)
 get_unselected_mode = [0x26, 0x01]        # source: IC-7300 Advanced Manual (11a) p.19-7 (detail p.19-13)
@@ -1564,6 +1580,17 @@ raw_max = 255
 display_min = 300
 display_max = 900
 display_unit = "Hz"
+decode_quantum = 5  # reproduces the pre-existing CW-pitch decode for every raw level (pinned by tests/test_control_domain_math.py::test_ci_v_cw_pitch_decode_matches_the_deleted_formula_vectors)
+encode_rounding = "ceil"  # reproduces the pre-existing CW-pitch encode for every Hz in 300-900 (pinned by tests/test_control_domain_math.py::test_ci_v_cw_pitch_encode_matches_the_deleted_formula_vectors)
+
+[controls.key_speed]
+raw_min = 0
+raw_max = 255
+display_min = 6
+display_max = 48
+display_unit = "WPM"
+decode_quantum = 1  # reproduces the pre-existing key-speed decode for every raw level (pinned by tests/test_control_domain_math.py::test_ci_v_key_speed_decode_matches_the_deleted_formula_vectors)
+encode_rounding = "nearest_half_down"  # reproduces the pre-existing key-speed encode for every WPM in 6-48 (pinned by tests/test_control_domain_math.py::test_ci_v_key_speed_encode_matches_the_deleted_formula_vectors)
 
 [controls.rit]
 # MOR-1883: exact-form domain (MOR-1730 frontend contract). Range is the

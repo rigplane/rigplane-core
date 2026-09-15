@@ -16,6 +16,7 @@
     readonly compact?: boolean;
     readonly showLabel?: boolean;
     readonly showValue?: boolean;
+    readonly variant?: 'modern' | 'hardware' | 'hardware-illuminated';
   }
 
   export type CwContinuousHandle = Snippet<[
@@ -57,6 +58,14 @@
 
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const row = (field: CwContinuousField) => CW_CONTINUOUS_LEVELS.find(([f]) => f === field)!;
+  // MOR-1682 / MOR-2475 F1: each field's limits come from the profile's
+  // published control domain on the view model when it carries one; a
+  // field with no usable published domain keeps the row constant.
+  const limits = (field: CwContinuousField): Readonly<{ min: number; max: number; step: number }> => {
+    const [, , min, max, step] = row(field);
+    const domain = field === 'pitchHz' ? view?.cwKeyer?.pitchDomain : view?.cwKeyer?.keySpeedDomain;
+    return domain === undefined ? { min, max, step } : { min: domain.min, max: domain.max, step: domain.step };
+  };
   const usable = (current: CwKeyerField<unknown> | undefined): boolean =>
     current?.availability.structural === true
     && current.availability.operational
@@ -77,7 +86,8 @@
   }
 
   function input(field: CwContinuousField): Readonly<ContinuousScalarInput> {
-    const [, , min, max, step, , command] = row(field);
+    const { min, max, step } = limits(field);
+    const [, , , , , , command] = row(field);
     const current = fieldOf(field);
     const common = {
       domain: { min, max, step, defaultValue: null, fineStepDivisor: 1 },
@@ -173,7 +183,8 @@
 {#snippet scalar(field: CwContinuousField, presentation?: Readonly<CwContinuousPresentation>)}
   {@const current = fieldOf(field)}
   {#if current?.availability.structural}
-    {@const [, label, min, max, step] = row(field)}
+    {@const [, label] = row(field)}
+    {@const { min, max, step } = limits(field)}
     {@const explicitPresentation = presentation !== undefined}
     {@const form = presentation?.form ?? 'hbar'}
     {@const currentStatus = status(field)}
@@ -206,6 +217,7 @@
         showLabel={explicitPresentation ? presentation?.showLabel ?? true : false}
         showValue={explicitPresentation ? presentation?.showValue ?? true : false}
         compact={explicitPresentation ? presentation?.compact ?? false : true}
+        variant={presentation?.variant ?? 'modern'}
         title={disabledReason} {accessibility}
         skin={scalarAppearance}
         {presentationIsCurrent}
@@ -243,7 +255,7 @@
 
 <style>
   .cw-keyer-level { display: flex; align-items: baseline; gap: 0.5rem; }
-  .cw-keyer-level--presented { display: inline-flex; min-width: 0; max-width: 100%; }
+  .cw-keyer-level--presented { display: flex; width: 100%; min-width: 0; max-width: 100%; }
   .cw-keyer-name { min-width: 12ch; }
   .cw-keyer-level :global(.vc-hbar) { width: 100%; min-width: 0; }
   .command-pending { font-style: italic; }

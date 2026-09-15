@@ -301,7 +301,7 @@ describe('meters RF state is the server TX projection vocabulary, verbatim (R9)'
     txTarget: { status: 'unknown', reason: 'not-observed' },
     main: { freqHz: 14195000, mode: 'USB', filter: 1, sMeter: 120 },
     powerMeter: 0.6, swrMeter: 20, alcMeter: 40, compMeter: 10, vdMeter: 200, idMeter: 80,
-    fieldStatus: {},
+    fieldStatus: { powerMeter: { observed: false, availability: 'missing', freshness: 'unknown' } },
   } as unknown as ServerState);
 
   it('the contract union has exactly the members the RX/TX surface declares', () => {
@@ -327,6 +327,25 @@ describe('meters RF state is the server TX projection vocabulary, verbatim (R9)'
       const tx = snapshot(radioTx, txRisk);
       const view = toRadioViewModel(state(), caps(), tx);
       expect(view?.meters?.rfState).toBe(rfState(tx));
+    },
+  );
+});
+
+
+describe('optional meter presence contract', () => {
+  it.each(['signal', 'power', 'swr', 'alc', 'compression', 'drainVoltage', 'drainCurrent'] as const)(
+    'validates presence on %s and preserves legacy omission', (key) => {
+      const view = withMeters(base);
+      expect(validateRadioViewModel(view).meters![key]).not.toHaveProperty('presence');
+      for (const presence of ['present', 'unavailable', 'absent'] as const) {
+        view.meters![key].presence = presence;
+        expect(validateRadioViewModel(view).meters![key].presence).toBe(presence);
+      }
+      for (const presence of ['missing', null, true, 0]) {
+        const invalid = { ...view, meters: { ...view.meters,
+          [key]: { ...view.meters![key], presence } } };
+        expect(() => validateRadioViewModel(invalid)).toThrow(/presence/);
+      }
     },
   );
 });

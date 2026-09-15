@@ -145,7 +145,7 @@ export {
  * Every zone id below is one this repository already uses for that surface:
  * the twelve control zones take `sdr-test`'s and `desktop-v2`'s ids, and the
  * deck takes the cockpit's four. Two of those four are not a free choice —
- * `SemanticRadioSurfaces.svelte: visibleStrips` writes `primary-vfo` and
+ * `SemanticRadioSurfaces.svelte: renderedStrips` writes `primary-vfo` and
  * `secondary-vfo` into the DOM itself.
  *
  * WHY ALL FOURTEEN ARE DECLARED. In the dual composition nine of these
@@ -156,9 +156,7 @@ export {
  * every id the skin's style block places to be a zone declared here.
  * `memory` is the one declarable surface this layout leaves out.
  *
- * `compatibleTopologies` names the two dual-receiver pairs only: the
- * arrangement puts two receivers side by side in both of its arrangements,
- * and a single-receiver radio has no second one to place.
+ * `compatibleTopologies` names the two dual-receiver pairs only.
  */
 export const flagshipProbeLayout: LayoutManifest = {
   schemaVersion: 1,

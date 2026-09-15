@@ -138,17 +138,16 @@ describe('qualified VFO display observations', () => {
       {"receiver":"MAIN","slot":{"kind":"unslotted"},"label":"MAIN","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":false},
       {"receiver":"SUB","slot":{"kind":"unslotted"},"label":"SUB","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":true,"isTxTarget":false},
     ],
+    // MOR-2467 mixed versions: `main_sub` is two unslotted receiver-level
+    // records; `ds()`'s legacy `slot: 'A'` target normalizes to slot null, so
+    // MAIN — not "no record" — carries `isTxTarget` here.
     '2/main_sub:false': [
-      {"receiver":"MAIN","slot":{"kind":"slotted","id":"A"},"label":"MAIN A","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":true},
-      {"receiver":"MAIN","slot":{"kind":"slotted","id":"B"},"label":"MAIN B","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":false,"isTxTarget":false},
-      {"receiver":"SUB","slot":{"kind":"slotted","id":"A"},"label":"SUB A","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":true,"isTxTarget":false},
-      {"receiver":"SUB","slot":{"kind":"slotted","id":"B"},"label":"SUB B","frequencyHz":14350000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":false,"isTxTarget":false},
+      {"receiver":"MAIN","slot":{"kind":"unslotted"},"label":"MAIN","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":true},
+      {"receiver":"SUB","slot":{"kind":"unslotted"},"label":"SUB","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":true,"isTxTarget":false},
     ],
     '2/main_sub:true': [
-      {"receiver":"MAIN","slot":{"kind":"slotted","id":"A"},"label":"MAIN A","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":true},
-      {"receiver":"MAIN","slot":{"kind":"slotted","id":"B"},"label":"MAIN B","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":false,"isTxTarget":false},
-      {"receiver":"SUB","slot":{"kind":"slotted","id":"A"},"label":"SUB A","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":true,"isTxTarget":false},
-      {"receiver":"SUB","slot":{"kind":"slotted","id":"B"},"label":"SUB B","frequencyHz":14350000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":false,"isTxTarget":false},
+      {"receiver":"MAIN","slot":{"kind":"unslotted"},"label":"MAIN","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":true},
+      {"receiver":"SUB","slot":{"kind":"unslotted"},"label":"SUB","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":true,"isTxTarget":false},
     ],
   };
 
@@ -614,7 +613,8 @@ describe('topology is derived from real capabilities', () => {
     expect(shape('1/single')).toEqual(['MAIN:unslotted']);
     expect(shape('1/ab')).toEqual(['MAIN:A', 'MAIN:B']);
     expect(shape('2/ab_shared')).toEqual(['MAIN:unslotted', 'SUB:unslotted']);
-    expect(shape('2/main_sub')).toEqual(['MAIN:A', 'MAIN:B', 'SUB:A', 'SUB:B']);
+    // MOR-2467: `main_sub` is two receiver-level records, never A/B slots.
+    expect(shape('2/main_sub')).toEqual(['MAIN:unslotted', 'SUB:unslotted']);
   });
 
   it('renders nothing rather than guessing when capabilities are absent or contradictory', () => {
@@ -754,26 +754,29 @@ describe('unobserved facts survive as the explicit unknown branch', () => {
   // that field (`state_schema.py`: `activeSlot: str = "A"`), so an ungated
   // read highlights MAIN A as active on evidence the radio never provided —
   // a fabricated fact on an operator display, in a file whose header promises
-  // every radio fact is field-status gated.
+  // every radio fact is field-status gated. MOR-2467 moved this kill to
+  // `1/ab`: `main_sub` no longer reads `activeSlot` at all (its records are
+  // unslotted), so `ab` is the scheme where the gated read still decides.
   it('marks no slot active when <rx>.activeSlot was never observed', () => {
     const base = observedState();
     const fieldStatus = { ...base.fieldStatus } as Record<string, unknown>;
     delete fieldStatus['main.activeSlot'];
     delete fieldStatus['sub.activeSlot'];
     const view = model(
-      { ...base, fieldStatus } as unknown as ServerState, TOPOLOGY_CAPS['2/main_sub'],
+      { ...base, fieldStatus } as unknown as ServerState, TOPOLOGY_CAPS['1/ab'],
     );
 
     expect(view.vfos.filter((v) => v.isActive)).toEqual([]);
     // The slot IDENTITIES stay structurally known (the slot view WAS observed);
     // only "which one is active" is unknown. The two must not collapse.
-    expect(view.vfos.map((v) => v.slot.kind))
-      .toEqual(['slotted', 'slotted', 'slotted', 'slotted']);
+    expect(view.vfos.map((v) => v.slot.kind)).toEqual(['slotted', 'slotted']);
   });
 
-  it('marks the observed slot active once activeSlot IS reported', () => {
-    const view = model(observedState(), TOPOLOGY_CAPS['2/main_sub']);
-    expect(view.vfos.filter((v) => v.isActive).map((v) => v.label)).toEqual(['MAIN A']);
+  it('marks the active receiver\'s record active once active is reported', () => {
+    const view = model(observedState({
+      txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
+    }), TOPOLOGY_CAPS['2/main_sub']);
+    expect(view.vfos.filter((v) => v.isActive).map((v) => v.label)).toEqual(['MAIN']);
   });
 
   it('projects each newer coherent bound alias revision without client arbitration', () => {
@@ -810,38 +813,30 @@ describe('unobserved facts survive as the explicit unknown branch', () => {
 
   // MUTATION KILLED: deriving `isActiveSlot` from the ACTIVE RECEIVER (i.e.
   // aliasing `isActive`) — SUB would report no active slot at all and the
-  // parity gap this fact exists to close would silently persist.
-  it('names each receiver\'s own active slot, including the receiver that is NOT active', () => {
+  // parity gap this fact exists to close would silently persist. MOR-2467:
+  // on slot-less `main_sub` each receiver's one unslotted record IS its
+  // active slot, exactly the `2/ab_shared` shape.
+  it('names each receiver\'s own active record, including the receiver that is NOT active', () => {
     const view = model(observedState({
-      sub: { ...receiver(14300000), activeSlot: 'B' },
-    } as Partial<ServerState>), TOPOLOGY_CAPS['2/main_sub']);
+      txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
+    }), TOPOLOGY_CAPS['2/main_sub']);
     expect(view.activeReceiver).toEqual({ status: 'known', receiver: 'MAIN' });
     expect(view.vfos.filter((v) => v.isActiveSlot).map((v) => v.label))
-      .toEqual(['MAIN A', 'SUB B']);
+      .toEqual(['MAIN', 'SUB']);
     // ...and the radio-wide fact is unchanged by it: still exactly one.
-    expect(view.vfos.filter((v) => v.isActive).map((v) => v.label)).toEqual(['MAIN A']);
+    expect(view.vfos.filter((v) => v.isActive).map((v) => v.label)).toEqual(['MAIN']);
   });
 
-  // MUTATION KILLED: `slot.id === (rx.activeSlot ?? 'A')` — the backend
-  // DEFAULTS activeSlot to "A", so an ungated read would hand the surface a
-  // tunable MAIN A / SUB A on evidence the radio never provided.
-  it('marks NO active slot for a receiver whose activeSlot was never observed', () => {
-    const base = observedState();
-    const fieldStatus = { ...base.fieldStatus } as Record<string, unknown>;
-    delete fieldStatus['sub.activeSlot'];
-    const view = model(
-      { ...base, fieldStatus } as unknown as ServerState, TOPOLOGY_CAPS['2/main_sub'],
-    );
-    expect(view.vfos.filter((v) => v.receiver === 'SUB' && v.isActiveSlot)).toEqual([]);
-    // Non-vacuous: MAIN's observed reading still names its slot.
-    expect(view.vfos.filter((v) => v.isActiveSlot).map((v) => v.label)).toEqual(['MAIN A']);
-  });
+  // MOR-2467 retired the per-receiver `activeSlot` discrimination test that
+  // used to live here: `main_sub` no longer reads `<rx>.activeSlot` at all
+  // (unslotted records have no slot to name), so the ungated-read kill moved
+  // to `1/ab` above — the one scheme where the gated read still decides.
 
   // An unslotted position IS its receiver's active slot — there is no other
   // VFO on that receiver for `set_freq` to write. Kills a derivation keyed to
-  // a slotted id, which would leave every `single`/`ab_shared` position
-  // untunable.
-  it.each(['1/single', '2/ab_shared'] as const)('%s: every unslotted position is its receiver\'s active slot', (id) => {
+  // a slotted id, which would leave every `single`/`ab_shared`/`main_sub`
+  // position untunable.
+  it.each(['1/single', '2/ab_shared', '2/main_sub'] as const)('%s: every unslotted position is its receiver\'s active slot', (id) => {
     const view = model(observedState(), TOPOLOGY_CAPS[id]);
     expect(view.vfos.every((v) => v.isActiveSlot)).toBe(true);
   });
@@ -877,11 +872,123 @@ describe('unobserved facts survive as the explicit unknown branch', () => {
   });
 
   it('keeps observed readings when the field status backs them', () => {
-    const view = model(observedState(), TOPOLOGY_CAPS['2/main_sub']);
+    const view = model(observedState({
+      txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
+    }), TOPOLOGY_CAPS['2/main_sub']);
     expect(view.vfos[0]).toMatchObject({
       receiver: 'MAIN', frequencyHz: 14250000, mode: 'USB', filter: 'FIL1',
       isActive: true, isTxTarget: true,
     });
+  });
+});
+
+// ── MOR-2467: `main_sub` is exactly two unslotted receiver-level records ────
+//
+// The owner-confirmed IC-7610 reality: MAIN and SUB are receiver-level VFOs
+// with NO per-receiver A/B slots. The backend describes the radio as
+// MAIN/SUB-only, so a `main_sub` capabilities payload must present exactly
+// two records reading `main.freqHz`/`main.mode`/`main.filter` and the `sub`
+// equivalents — even when `vfoA`/`vfoB`/`activeSlot` are absent entirely
+// (the pre-fix adapter collapsed such a receiver to one `kind: 'unknown'`
+// position with `identity-unresolved` display, blanking Standard).
+describe('main_sub presents two unslotted receiver-level VFO records (MOR-2467)', () => {
+  /** The IC-7610 shape: receiver-level readings only — no vfoA/vfoB and no
+   * activeSlot anywhere, neither raw state nor field status. Every surviving
+   * field-status entry is marked with a valid monotonic timestamp so display
+   * qualification is decided by freshness/identity, not by evidence shape. */
+  function receiverLevelState(overrides: Partial<ServerState> = {}): ServerState {
+    const base = observedState();
+    const fieldStatus: Record<string, FieldStatus> = {};
+    for (const [path, status] of Object.entries(base.fieldStatus ?? {})) {
+      fieldStatus[path] = { ...(status as FieldStatus), lastObservedMonotonic: 0 };
+    }
+    for (const key of ['main', 'sub'] as const) {
+      delete fieldStatus[`${key}.activeSlot`];
+      for (const slotKey of ['vfoA', 'vfoB']) {
+        for (const leaf of ['freqHz', 'mode', 'filterNum', 'dataMode']) {
+          delete fieldStatus[`${key}.${slotKey}.${leaf}`];
+        }
+      }
+    }
+    return {
+      ...base,
+      main: { freqHz: 14250000, mode: 'USB', filter: 1 },
+      sub: { freqHz: 21295000, mode: 'LSB', filter: 2 },
+      fieldStatus,
+      ...overrides,
+    } as ServerState;
+  }
+
+  const SLOTLESS_TARGET = {
+    status: 'known' as const, receiver: 'MAIN' as const, slot: null, frequencyHz: 14250000,
+  };
+  /** Caps/state pair carrying the identity fields display qualification
+   * fences on (`stateContractVersion`/`providerGeneration` agreement). */
+  const IDENTITY_CAPS = {
+    ...TOPOLOGY_CAPS['2/main_sub'], stateContractVersion: 1, providerGeneration: 1,
+  } as Capabilities;
+
+  // MUTATION KILLED: re-introducing the `{ MAIN: ['A','B'], SUB: ['A','B'] }`
+  // slot table for `main_sub` in `presentation-capabilities.ts` — the exact
+  // regression this ticket fixes. Non-vacuous: the state DOES carry observed
+  // vfoA/vfoB/activeSlot leaves, so a slot-table regression would happily
+  // consume them and render four slotted records.
+  it('never synthesizes per-receiver A/B slots, even for a legacy payload that still carries them', () => {
+    const view = model(observedState({ txTarget: SLOTLESS_TARGET }), TOPOLOGY_CAPS['2/main_sub']);
+    expect(view.vfos).toHaveLength(2);
+    expect(view.vfos.map((vfo) => [vfo.receiver, vfo.slot])).toEqual([
+      ['MAIN', { kind: 'unslotted' }], ['SUB', { kind: 'unslotted' }],
+    ]);
+    expect(view.vfos.some((vfo) => vfo.slot.kind === 'slotted')).toBe(false);
+    expect(view.vfos.some((vfo) => vfo.slot.kind === 'unknown')).toBe(false);
+  });
+
+  // THE acceptance: qualified receiver-level readings reach the model (and its
+  // display observations) with vfoA/vfoB and activeSlot absent entirely.
+  it('reads receiver-level main./sub. freq/mode/filter when vfoA/vfoB and activeSlot are absent', () => {
+    const view = model(receiverLevelState({
+      stateContractVersion: 1, providerGeneration: 1, txTarget: SLOTLESS_TARGET,
+    }), IDENTITY_CAPS);
+    expect(view.vfos.map((vfo) => [vfo.receiver, vfo.frequencyHz, vfo.mode, vfo.filter]))
+      .toEqual([
+        ['MAIN', 14250000, 'USB', 'FIL1'],
+        ['SUB', 21295000, 'LSB', 'FIL2'],
+      ]);
+    for (const vfo of view.vfos) {
+      expect(vfo.display?.frequencyHz).toEqual({ state: 'current', value: vfo.frequencyHz });
+      expect(vfo.display?.mode).toEqual({ state: 'current', value: vfo.mode });
+      expect(vfo.display?.filter).toEqual({ state: 'current', value: vfo.filter });
+    }
+  });
+
+  // Freshness/provider-generation gating is preserved on the receiver-level
+  // paths — same fence discipline the slotted paths follow (MOR-2425/R40: a
+  // held stale reading is a reading; a generation mismatch is not).
+  it('preserves freshness and provider-generation gating on the receiver-level paths', () => {
+    const caps = IDENTITY_CAPS;
+    const state = receiverLevelState({
+      stateContractVersion: 1, providerGeneration: 1, txTarget: SLOTLESS_TARGET,
+    });
+    state.fieldStatus!['main.freqHz'] = { ...stale, lastObservedMonotonic: 0 };
+    state.fieldStatus!['sub.mode'] = { ...stale, lastObservedMonotonic: 0 };
+
+    const held = toRadioViewModel(state, caps)!;
+    expect(held.vfos[0].frequencyHz).toBe(14250000);
+    expect(held.vfos[0].display?.frequencyHz).toEqual({ state: 'stale', value: 14250000 });
+    expect(held.vfos[1].display?.mode).toEqual({ state: 'stale', value: 'LSB' });
+
+    const nextGeneration = { ...state, providerGeneration: 2 };
+    const fenced = toRadioViewModel(nextGeneration, caps)!;
+    expect(fenced.vfos[0].display?.frequencyHz).toEqual({ state: 'unknown', reason: 'identity-unresolved' });
+    expect(fenced.vfos[1].display?.mode).toEqual({ state: 'unknown', reason: 'identity-unresolved' });
+
+    const neverObserved = receiverLevelState({
+      stateContractVersion: 1, providerGeneration: 1, txTarget: SLOTLESS_TARGET,
+    });
+    delete neverObserved.fieldStatus!['sub.freqHz'];
+    const unobserved = toRadioViewModel(neverObserved, IDENTITY_CAPS)!;
+    expect(unobserved.vfos[1].frequencyHz).toBeNull();
+    expect(unobserved.vfos[1].display?.frequencyHz).toEqual({ state: 'unknown', reason: 'not-observed' });
   });
 });
 
@@ -968,31 +1075,49 @@ describe('single-receiver active-receiver resolves structurally, not from the ac
 
 describe('TX identity and permit fail closed', () => {
   it('marks exactly the VFO a known target names', () => {
-    const view = model(observedState(), TOPOLOGY_CAPS['2/main_sub']);
-    expect(view.vfos.filter((v) => v.isTxTarget).map((v) => v.label)).toEqual(['MAIN A']);
-    expect(view.txPermit).toEqual({ status: 'allowed', band: '20m' });
-  });
-
-  // MUTATION KILLED: keeping a target whose slot contradicts the scheme (a
-  // slot-less target under `main_sub`) instead of collapsing it to unknown.
-  it('collapses a target that contradicts the capability scheme', () => {
     const view = model(observedState({
       txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
     }), TOPOLOGY_CAPS['2/main_sub']);
-    expect(view.txTarget).toEqual({ status: 'unknown', reason: 'contradiction' });
-    expect(view.txPermit.status).toBe('unknown');
+    expect(view.vfos.filter((v) => v.isTxTarget).map((v) => v.label)).toEqual(['MAIN']);
+    expect(view.txPermit).toEqual({ status: 'allowed', band: '20m' });
+  });
+
+  // MUTATION KILLED: keeping a target whose slot contradicts the scheme —
+  // MOR-2467 mixed versions flipped the `main_sub` half: a legacy A/B target
+  // under the slot-less scheme NORMALIZES to slot null and never surfaces
+  // A/B; a slot-less target under `ab` still collapses.
+  it('normalizes a legacy main_sub A/B target to slot null; ab still collapses slot-less', () => {
+    const normalized = model(observedState({
+      txTarget: { status: 'known', receiver: 'MAIN', slot: 'B', frequencyHz: 14250000 },
+    }), TOPOLOGY_CAPS['2/main_sub']);
+    expect(normalized.txTarget).toEqual({
+      status: 'known', receiver: 'MAIN', frequencyHz: 14250000,
+      slot: { kind: 'unslotted' },
+    });
+    expect(normalized.vfos.filter((v) => v.isTxTarget).map((v) => v.label)).toEqual(['MAIN']);
+    expect(normalized.vfos.some((v) => v.slot.kind === 'slotted')).toBe(false);
+    const collapsed = model(observedState({
+      txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
+    }), TOPOLOGY_CAPS['1/ab']);
+    expect(collapsed.txTarget).toEqual({ status: 'unknown', reason: 'contradiction' });
+    expect(collapsed.txPermit.status).toBe('unknown');
   });
 
   it('denies an out-of-band target rather than leaving the permit open', () => {
     const view = model(observedState({
-      txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 1000 },
+      txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 1000 },
     }), TOPOLOGY_CAPS['2/main_sub']);
     expect(view.txPermit).toEqual({ status: 'denied', reason: 'outside-configured-ranges' });
     expect(view.disabledReasons).toContainEqual({ field: 'txPermit', code: 'out-of-band' });
   });
 
   it('reports unconfigured TX ranges as unknown, never as allowed', () => {
-    const view = model(observedState(), caps({ txBands: null }));
+    // MOR-2467: a slot-less MAIN target — the shape `main_sub` accepts. A
+    // slotted one would collapse to unknown for the CONTRADICTION, and the
+    // permit would read `tx-target-unknown` instead of `ranges-unconfigured`.
+    const view = model(observedState({
+      txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
+    }), caps({ txBands: null }));
     expect(view.txPermit).toEqual({ status: 'unknown', reason: 'ranges-unconfigured' });
   });
 });
@@ -1105,22 +1230,33 @@ describe('RF gain additive display observation', () => {
   }
   it.each([false, true])('preserves legacy strict model members for stale=%s', (stale) => {
     const view = toRadioViewModel(displayState(stale), displayCaps, RECEIVING)!;
+    expect(Object.fromEntries(Object.entries(view.meters!).filter(([key]) => key !== 'rfState')
+      .map(([key, field]) => [key, typeof field === 'object' ? field.presence : undefined])))
+      .toEqual({ signal: 'present', power: 'absent', swr: 'absent', alc: 'absent',
+        compression: 'absent', drainVoltage: 'absent', drainCurrent: 'absent' });
     const legacyView = structuredClone(view);
     for (const field of [
       'signal', 'power', 'swr', 'alc', 'compression', 'drainVoltage', 'drainCurrent',
     ] as const) {
       delete legacyView.meters?.[field].source;
       delete legacyView.meters?.[field].domain;
+      delete legacyView.meters?.[field].presence;
     }
     for (const indicator of legacyView.receiverIndicators ?? []) {
       delete indicator.sMeter.source;
       delete indicator.sMeter.domain;
     }
-    const strictJson = JSON.stringify(legacyView, (key, value) => ['display', 'activeFilterConfiguration', 'dataModeChoices'].includes(key) ? undefined : value);
+    const strictJson = JSON.stringify(legacyView, (key, value) => [
+      'display', 'activeFilterConfiguration', 'dataModeChoices', 'modInputSource', 'modInputChoices',
+    ].includes(key) ? undefined : value);
     const digest = createHash('sha256').update(strictJson).digest('hex');
     // MOR-2425/R40+R41: ONE digest for both freshness values. Read off this
     // test's own failure diff for stale=true, not computed by hand.
-    expect(digest).toBe('379a5f00e3bebae780e4215af4e014351df2a07fc067d412f97df6aeadca840f');
+    // MOR-2467: re-read after `main_sub` became two unslotted receiver-level
+    // records (the strict projection this digest hashes changed with them),
+    // including the mixed-version normalization of the legacy `slot: 'A'`
+    // default target to slot null.
+    expect(digest).toBe('c38cb10dec66009e009b9c5eafe923056062478f4e9cae581d7e1f34d920f30f');
   });
   it.each([false, true])('projects the explicit display and HOLDS RF gain, stale=%s', (stale) => {
     const view = model(displayState(stale), displayCaps, RECEIVING);
@@ -1155,6 +1291,42 @@ describe('MOR-2374 shared DATA and filter configuration', () => {
     s.fieldStatus = { ...s.fieldStatus, 'main.dataMode': fresh, 'sub.dataMode': fresh };
     return s;
   }
+  const ic7300Inputs = [
+    { value: 0, label: 'MIC' }, { value: 1, label: 'ACC' },
+    { value: 2, label: 'MIC+ACC' }, { value: 3, label: 'USB' },
+    { value: 4, label: 'MIC+USB' },
+  ];
+  const ic7610Inputs = [
+    { value: 0, label: 'MIC' }, { value: 1, label: 'ACC' },
+    { value: 3, label: 'USB' }, { value: 5, label: 'LAN' },
+    { value: 2, label: 'MIC+ACC' }, { value: 4, label: 'MIC+USB' },
+  ];
+  it.each([
+    [0, 'dataOffModInput', 3], [1, 'data1ModInput', 4],
+  ] as const)('projects IC-7300 DATA group %i from %s with its exact source domain', (dataMode, key, source) => {
+    const s = state(); s.main.dataMode = dataMode; s[key] = source; s.fieldStatus![key] = fresh;
+    const fp = toRadioViewModel(s, dataCaps({ dataModeCount: 1, dataModeInputs: ic7300Inputs }))!.filterPassband!;
+    expect(fp.modInputChoices).toEqual(ic7300Inputs);
+    expect(fp.modInputChoices!.map(choice => choice.label)).not.toContain('LAN');
+    expect(fp.modInputSource!.reading).toEqual({ status: 'known', value: source });
+  });
+  it('projects IC-7610 D3 and preserves the profile source order including LAN', () => {
+    const s = state(); s.main.dataMode = 3; s.data3ModInput = 5; s.fieldStatus!.data3ModInput = fresh;
+    const fp = toRadioViewModel(s, dataCaps({ dataModeInputs: ic7610Inputs }))!.filterPassband!;
+    expect(fp.modInputChoices).toEqual(ic7610Inputs);
+    expect(fp.modInputSource!.reading).toEqual({ status: 'known', value: 5 });
+  });
+  it('fails closed for absent domains, undeclared fields, and unobserved values', () => {
+    const s = state(); s.dataOffModInput = 0;
+    expect(toRadioViewModel(s, dataCaps())!.filterPassband!.modInputSource).toBeUndefined();
+    s.fieldStatus!.dataOffModInput = { ...fresh, availability: 'undeclared', observed: false };
+    expect(toRadioViewModel(s, dataCaps({ dataModeInputs: ic7300Inputs }))!.filterPassband!
+      .modInputSource!.availability.structural).toBe(false);
+    s.fieldStatus!.dataOffModInput = { ...fresh, availability: 'missing', observed: false };
+    const unknown = toRadioViewModel(s, dataCaps({ dataModeInputs: ic7300Inputs }))!.filterPassband!.modInputSource!;
+    expect(unknown.availability).toEqual({ structural: true, operational: false });
+    expect(unknown.reading).toEqual({ status: 'unknown' });
+  });
   it.each([0, 1, 3])('offers exactly 0..%i with canonical labels', (count) => {
     const model = toRadioViewModel(state(), dataCaps({ dataModeCount: count,
       dataModeLabels: { '0': 'OFF label', '1': 'Digital', '2': '  ', '9': 'stray' } }))!;

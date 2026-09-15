@@ -10,13 +10,21 @@ export interface ManagedTxDependencies {
   invalidate(): void;
   sendPtt(operation: PttOperation): Promise<Outcome>;
   submit(operation: ManagedOperation): Promise<Outcome>;
+  /** Persists TOT and owns canonical projection invalidation on failure. */
   setTot(configuredSeconds: number | null): Promise<void>;
   /** Browser-only presentation clock; never a TX or transport authority. */
   onPresentationTick?(handler: () => void): () => void;
+  /** Server-authority invalidation signal; browser transport seam only. */
+  onAuthorityChanged?(handler: () => void): () => void;
+  /** Monotonic revision of the last canonical snapshot the store applied. */
+  snapshotRevision?(): number;
   startAudio(): Promise<string | null>;
   stopLocalAudio(): void;
   onAudioDied(handler: () => void): () => void;
 }
+
+/** Cleanup fence for the ON cycle a superseding server RX snapshot may end. */
+type OnCycle = { pending: true } | { cycle: number } | null;
 
 /** Gesture/media orchestration around server-owned TX state. */
 export class ManagedTxController {
@@ -25,16 +33,21 @@ export class ManagedTxController {
   #generation = 0;
   #flow: 'idle' | 'ptt' | 'transmit' = 'idle';
   #pttAttempted = false;
+  #onCycle: OnCycle = null;
+  #onCycleSerial = 0;
   #audioPreparation: Promise<boolean> | null = null;
   #audioNeedsCleanup = false;
   #forceOffInFlight: Promise<void> | null = null;
   #offAudioDied: () => void;
   #offPresentationTick: () => void;
+  #offAuthorityChanged: () => void;
 
   constructor(private readonly dependencies: ManagedTxDependencies) {
     this.#state = dependencies.snapshot();
     this.#offAudioDied = dependencies.onAudioDied(() => { void this.forceOff(); });
     this.#offPresentationTick = dependencies.onPresentationTick?.(() => this.#publish()) ?? (() => {});
+    this.#offAuthorityChanged = dependencies.onAuthorityChanged?.(() => { void this.refresh(); })
+      ?? (() => {});
   }
 
   snapshot(): ManagedTxState { return this.#state; }
@@ -45,8 +58,18 @@ export class ManagedTxController {
   }
 
   async refresh(): Promise<void> {
+    const onCycle = this.#onCycle;
+    const revision = this.dependencies.snapshotRevision?.() ?? null;
     try { await this.dependencies.refresh(); } catch { this.dependencies.invalidate(); }
     this.#publish();
+    if (
+      onCycle !== null && 'cycle' in onCycle && onCycle === this.#onCycle
+      && this.#flow !== 'idle'
+      && (revision === null || (this.dependencies.snapshotRevision?.() ?? revision) > revision)
+    ) {
+      const state = this.dependencies.snapshot();
+      if (state.fresh && state.intent === null) this.#cleanupSupersededOn();
+    }
   }
 
   invalidate(): void {
@@ -58,6 +81,7 @@ export class ManagedTxController {
     const generation = ++this.#generation;
     this.#flow = 'ptt';
     this.#pttAttempted = false;
+    this.#onCycle = { pending: true };
     void this.#sendPttOn(generation);
   }
 
@@ -66,6 +90,7 @@ export class ManagedTxController {
     this.#flow = 'idle';
     const attempted = this.#pttAttempted;
     this.#pttAttempted = false;
+    this.#onCycle = null;
     this.#stopAudio();
     try {
       if (attempted) await this.dependencies.sendPtt('ptt_off');
@@ -77,6 +102,7 @@ export class ManagedTxController {
     if (!this.dependencies.snapshot().fresh) return;
     const generation = ++this.#generation;
     this.#flow = 'transmit';
+    this.#onCycle = { pending: true };
     void this.#sendTransmitOn(generation);
   }
 
@@ -95,7 +121,6 @@ export class ManagedTxController {
     try {
       await this.dependencies.setTot(configuredSeconds);
     } catch (error) {
-      this.dependencies.invalidate();
       this.#publish();
       throw error;
     }
@@ -106,6 +131,7 @@ export class ManagedTxController {
     ++this.#generation;
     this.#flow = 'idle';
     this.#pttAttempted = false;
+    this.#onCycle = null;
     try { await this.dependencies.submit('force_off'); }
     catch { this.dependencies.invalidate(); }
     finally { this.#stopAudio(); this.#publish(); }
@@ -115,24 +141,27 @@ export class ManagedTxController {
     if (this.#flow === 'ptt' || this.#pttAttempted) await Promise.race([
       this.pttOff(), new Promise<void>((resolve) => setTimeout(resolve, 500)),
     ]);
-    else { ++this.#generation; this.#flow = 'idle'; this.#stopAudio(); }
+    else { ++this.#generation; this.#flow = 'idle'; this.#onCycle = null; this.#stopAudio(); }
   }
 
   abandonSession(): void {
     ++this.#generation;
     this.#flow = 'idle';
     this.#pttAttempted = false;
+    this.#onCycle = null;
     this.#stopAudio();
     this.invalidate();
   }
 
   dispose(): void {
     ++this.#generation;
+    this.#offAuthorityChanged();
     this.#offAudioDied();
     this.#offPresentationTick();
     this.#listeners.clear();
     this.#flow = 'idle';
     this.#pttAttempted = false;
+    this.#onCycle = null;
     this.#stopAudio();
   }
 
@@ -144,7 +173,10 @@ export class ManagedTxController {
     try { outcome = await this.dependencies.sendPtt('ptt_on'); }
     catch { outcome = 'rejected'; }
     if (generation !== this.#generation || this.#flow !== 'ptt') return;
-    if (outcome === 'rejected') {
+    if (outcome === 'accepted') {
+      this.#completeOnCycle();
+    } else {
+      this.#onCycle = null;
       this.#pttAttempted = false;
       this.#flow = 'idle';
       this.#stopAudio();
@@ -161,6 +193,7 @@ export class ManagedTxController {
       catch { released = 'rejected'; this.dependencies.invalidate(); }
       if (generation !== this.#generation || this.#flow !== 'transmit') return;
       if (released === 'rejected') {
+        this.#onCycle = null;
         this.#flow = 'idle';
         this.#stopAudio();
         this.#publish();
@@ -172,10 +205,27 @@ export class ManagedTxController {
     try { outcome = await this.dependencies.submit('transmit_on'); }
     catch { outcome = 'rejected'; this.dependencies.invalidate(); }
     if (generation !== this.#generation || this.#flow !== 'transmit') return;
-    if (outcome === 'rejected') {
+    if (outcome === 'accepted') {
+      this.#completeOnCycle();
+    } else {
+      this.#onCycle = null;
       this.#flow = 'idle';
       this.#stopAudio();
     }
+    this.#publish();
+  }
+
+  #completeOnCycle(): void {
+    this.#onCycle = { cycle: ++this.#onCycleSerial };
+    void this.refresh();
+  }
+
+  #cleanupSupersededOn(): void {
+    ++this.#generation;
+    this.#flow = 'idle';
+    this.#pttAttempted = false;
+    this.#onCycle = null;
+    this.#stopAudio();
     this.#publish();
   }
 

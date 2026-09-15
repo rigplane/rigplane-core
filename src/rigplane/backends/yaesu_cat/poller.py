@@ -48,7 +48,6 @@ from rigplane.runtime.tx_interlock import (
     TxInterlockDeferredOutcome,
     TxInterlockDecision,
     TxInterlockDisposition,
-    TxInterlockDispositionOverrides,
     classify_tx_interlock,
     evaluate_tx_interlock,
 )
@@ -217,11 +216,6 @@ class YaesuCatPoller:
         if observation is None:
             return RfState.UNKNOWN
         return RfState.TX if observation.value else RfState.RX
-
-    def _tx_interlock_disposition_overrides(
-        self,
-    ) -> TxInterlockDispositionOverrides:
-        return self._radio.profile.tx_interlock_disposition_overrides
 
     def _stamp_provider_generation(
         self,
@@ -754,12 +748,7 @@ class YaesuCatPoller:
             rf_state = self._current_rf_state()
             transition = None
             try:
-                overrides = self._tx_interlock_disposition_overrides()
-                decision = evaluate_tx_interlock(
-                    cmd,
-                    rf_state=rf_state,
-                    disposition_overrides=overrides,
-                )
+                decision = evaluate_tx_interlock(cmd, rf_state=rf_state)
                 if (
                     decision.disposition is TxInterlockDisposition.DEFER
                     and not decision.allowed
@@ -769,7 +758,6 @@ class YaesuCatPoller:
                         cmd,
                         now=now,
                         rf_state=rf_state,
-                        disposition_overrides=overrides,
                     )
             except Exception as exc:
                 return exc
@@ -1075,7 +1063,6 @@ class YaesuCatPoller:
             decision = evaluate_tx_interlock(
                 cmd,
                 rf_state=self._current_rf_state(),
-                disposition_overrides=self._tx_interlock_disposition_overrides(),
             )
             if not decision.allowed and (
                 decision.disposition is TxInterlockDisposition.BLOCK

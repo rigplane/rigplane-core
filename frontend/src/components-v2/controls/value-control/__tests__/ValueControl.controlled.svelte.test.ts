@@ -7,6 +7,7 @@ import DiscreteRenderer from '../DiscreteRenderer.svelte';
 import ExternalScalarRendererFixture from './ExternalScalarRendererFixture.svelte';
 import { professionalSkin } from '../skins';
 import type { Skin } from '../skin';
+import { wheelControl } from '../wheel-control';
 import {
   createBipolarContinuousScalarPolicy,
   createContinuousScalar,
@@ -81,6 +82,152 @@ const baseProps = {
   renderer: 'hbar' as const,
   debounceMs: 0,
 };
+
+describe('deliberate wheel interaction', () => {
+  it.each(['hbar', 'bipolar', 'discrete', 'knob', 'professional'])(
+    'requires activation and preserves native slow steps for %s', (appearance) => {
+      const onChange = vi.fn();
+      const { target } = mountReactive({ ...baseProps, value: 50, step: 1,
+        renderer: appearance === 'professional' ? 'knob' : appearance,
+        skin: appearance === 'professional' ? professionalSkin : undefined, onChange });
+      const control = slider(target);
+      const wheel = (options: WheelEventInit = {}) => {
+        const event = new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true, ...options });
+        control.dispatchEvent(event);
+        flushSync();
+        return event;
+      };
+      expect(wheel().defaultPrevented).toBe(false);
+      expect(onChange).not.toHaveBeenCalled();
+      control.focus();
+      expect(wheel().defaultPrevented).toBe(false);
+      control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      expect(control.dataset.wheelArmed).toBe('true');
+      expect(wheel().defaultPrevented).toBe(true);
+      expect(onChange).toHaveBeenCalledExactlyOnceWith(51);
+      for (const options of [{ deltaY: 0 }, { deltaY: 0, deltaX: 12 }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }]) {
+        expect(wheel(options).defaultPrevented).toBe(false);
+      }
+      expect(onChange).toHaveBeenCalledTimes(1);
+      control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      expect(control.dataset.wheelArmed).toBe('false');
+      expect(wheel().defaultPrevented).toBe(false);
+      for (const exit of ['blur', 'pointerleave']) {
+        control.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+        expect(control.dataset.wheelArmed).toBe('true');
+        control.dispatchEvent(new Event(exit));
+        expect(control.dataset.wheelArmed).toBe('false');
+        expect(wheel().defaultPrevented).toBe(false);
+      }
+      control.setPointerCapture = vi.fn();
+      vi.spyOn(control.parentElement!, 'getBoundingClientRect')
+        .mockReturnValue({ left: 0, width: 100 } as DOMRect);
+      control.dispatchEvent(new PointerEvent('pointerdown', {
+        button: 0, isPrimary: true, pointerId: 1, clientX: 50, bubbles: true,
+      }));
+      flushSync();
+      expect(control.dataset.wheelArmed).toBe('true');
+      expect(wheel().defaultPrevented).toBe(true);
+    },
+  );
+
+  it('normalizes magnitude/time, caps bursts, resets on reversal and preserves scroll modifiers', () => {
+    const node = document.createElement('div');
+    node.tabIndex = 0;
+    document.body.appendChild(node);
+    roots.push(node);
+    let view = { editable: true, interactionEpoch: 0 };
+    const request = vi.fn();
+    const lease = { get view() { return view; }, wheel: request };
+    const action = wheelControl(node, { view, lease });
+    const arm = () => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    const wheel = (time: number, deltaY: number, deltaMode = 0, extra: WheelEventInit = {}) => {
+      const event = new WheelEvent('wheel', { deltaY, deltaMode, cancelable: true, ...extra });
+      Object.defineProperty(event, 'timeStamp', { value: time });
+      node.dispatchEvent(event);
+      return event;
+    };
+    arm();
+    wheel(1000, -120);
+    wheel(1010, -120);
+    wheel(1020, 120);
+    wheel(1400, -3, 1);
+    wheel(1410, -3, 1);
+    wheel(1800, -0.15, 2);
+    wheel(1810, -0.15, 2);
+    expect(request.mock.calls.map(([event]) => event.steps)).toEqual([1, 8, 1, 1, 8, 1, 8]);
+    request.mockClear();
+    wheel(2200, -24);
+    wheel(2208, -24);
+    wheel(2600, -24);
+    expect(request.mock.calls.map(([event]) => event.steps)).toEqual([1, 3, 1]);
+    for (const extra of [{ deltaX: 30 }, { shiftKey: true }, { ctrlKey: true }, { metaKey: true }]) {
+      expect(wheel(2700, -24, 0, extra).defaultPrevented).toBe(false);
+    }
+    expect(wheel(2700, 0).defaultPrevented).toBe(false);
+    expect(wheel(2700, -1, 3).defaultPrevented).toBe(false);
+    expect(request).toHaveBeenCalledTimes(3);
+    view = { editable: true, interactionEpoch: 1 };
+    expect(wheel(2800, -120).defaultPrevented).toBe(false);
+    expect(node.dataset.wheelArmed).toBe('false');
+    arm();
+    view = { editable: false, interactionEpoch: 1 };
+    action.update({ view, lease });
+    expect(node.dataset.wheelArmed).toBe('false');
+    expect(wheel(2900, -120).defaultPrevented).toBe(false);
+    view = { editable: true, interactionEpoch: 2 };
+    action.update({ view, lease });
+    node.dispatchEvent(new PointerEvent('pointerdown', { button: 0, isPrimary: true }));
+    expect(node.dataset.wheelArmed).toBe('true');
+    expect(node.style.outline).toContain('2px');
+    expect(wheel(3000, -120).defaultPrevented).toBe(true);
+    window.dispatchEvent(new Event('blur'));
+    expect(node.dataset.wheelArmed).toBe('false');
+    action.destroy();
+    expect(node.hasAttribute('data-wheel-armed')).toBe(false);
+    expect(wheel(3010, -120).defaultPrevented).toBe(false);
+    expect(request).toHaveBeenCalledTimes(4);
+  });
+
+  it.each(['hbar', 'bipolar', 'discrete', 'knob'])(
+    '%s clamps accelerated input on its native lattice without delaying callbacks or canonical ARIA', (renderer) => {
+      const onChange = vi.fn();
+      const { target, state } = mountReactive({ ...baseProps,
+        value: 3, min: -7, max: 13, step: 5, renderer, onChange });
+      const control = slider(target);
+      const arm = () => control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      const wheel = (time: number, deltaY: number) => {
+        const event = new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'timeStamp', { value: time });
+        control.dispatchEvent(event);
+        flushSync();
+        return event;
+      };
+      arm();
+      wheel(1000, -120);
+      expect(onChange).toHaveBeenLastCalledWith(8);
+      wheel(1010, -120);
+      expect(onChange).toHaveBeenLastCalledWith(13);
+      expect(control.getAttribute('aria-valuenow')).toBe('3');
+      wheel(1020, 120);
+      wheel(1030, 120);
+      expect(onChange).toHaveBeenLastCalledWith(-7);
+      expect(onChange.mock.calls.every(([value]) => (value + 7) % 5 === 0)).toBe(true);
+      state.disabled = true;
+      flushSync();
+      expect(control.dataset.wheelArmed).toBe('false');
+      expect(wheel(1100, -120).defaultPrevented).toBe(false);
+      state.disabled = false;
+      flushSync();
+      expect(wheel(1200, -120).defaultPrevented).toBe(false);
+      arm();
+      state.max = 18;
+      flushSync();
+      expect(control.dataset.wheelArmed).toBe('false');
+      expect(wheel(1300, -120).defaultPrevented).toBe(false);
+    },
+  );
+});
 
 const commandFeedback = (
   over: Partial<CommandScalarFeedback> = {},
@@ -951,6 +1098,7 @@ describe('ValueControl controlled Bipolar rendering', () => {
     });
     const control = slider(target);
 
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     control.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
     flushSync();
     expect(onChange).toHaveBeenCalledExactlyOnceWith(5);
@@ -1097,6 +1245,7 @@ describe('ValueControl controlled Discrete rendering', () => {
     expect(control.getAttribute('aria-disabled')).toBe('true');
     expect(control.getAttribute('tabindex')).toBe('-1');
     control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     control.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
     expect(onChange).not.toHaveBeenCalled();
   });
@@ -1255,6 +1404,7 @@ describe('ValueControl controlled Discrete rendering', () => {
     expect(onChange.mock.calls).toEqual([[8]]);
     expect(visibleValue(target)).toBe('4');
 
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     control.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
     flushSync();
     expect(onChange).toHaveBeenLastCalledWith(5);
@@ -1422,6 +1572,7 @@ describe('ValueControl controlled Knob skins', () => {
       onChange,
     });
 
+    slider(target).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     slider(target).dispatchEvent(new WheelEvent('wheel', {
       deltaY: -1, bubbles: true, cancelable: true,
     }));
@@ -1430,11 +1581,12 @@ describe('ValueControl controlled Knob skins', () => {
     state.tickCount = 5;
     state.accentColor = '#ff0000';
     flushSync();
+    slider(target).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     slider(target).dispatchEvent(new WheelEvent('wheel', {
       deltaY: -1, bubbles: true, cancelable: true,
     }));
 
-    expect(onChange.mock.calls).toEqual([[80], [80]]);
+    expect(onChange.mock.calls).toEqual([[60], [60]]);
   });
 
   it.each([

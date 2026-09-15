@@ -98,6 +98,9 @@ type ScanHandlers = {
   onDfSpanChange?: (span: number) => void;
   onResumeModeChange?: (mode: number) => void;
   scanCapable?: boolean;
+  scanTypeValues?: readonly number[];
+  scanResumeValues?: readonly number[];
+  part?: 'all' | 'rit-xit' | 'scan';
 };
 function renderScan(view: RadioViewModel, handlers: ScanHandlers = {}) {
   const component = mount(RitXitScanSurface, {
@@ -568,6 +571,28 @@ describe('scan TYPE selection: six buttons restore v2.11.1, MOR-2425', () => {
     r.dispose();
   });
 
+  it('renders only labelled scan types declared by the profile', () => {
+    const r = renderScan(coldStart(), {
+      scanCapable: true, scanTypeValues: [0x01, 0x03, 0x13, 0x23], part: 'scan',
+    });
+    expect([...target.querySelectorAll('[data-testid^="scan-type-0x"]')]
+      .map((button) => button.textContent?.trim())).toEqual(['PROG', 'ΔF', 'SEL']);
+    expect(r.el('scan-type-0x01')?.getAttribute('aria-pressed')).toBe('true');
+    expect(r.el('ritxit')).toBeNull();
+    r.dispose();
+  });
+
+  it('fails closed in the Standard scan part when an older server declares no domains', () => {
+    const r = renderScan(coldStart(), { scanCapable: true, part: 'scan' });
+    expect(r.el('scan-type-group')).toBeNull();
+    expect(r.el('scan-resume-group')).toBeNull();
+    expect(r.el('scan-toggle')?.hasAttribute('disabled')).toBe(true);
+    expect(r.el('scan-status')).toBeNull();
+    expect(r.el('scan-type-value')).toBeNull();
+    expect(r.el('scan-resume-value')).toBeNull();
+    r.dispose();
+  });
+
   it.each(scanTypeCases)(
     '$label ($hex) dispatches onScanStart with its own byte exactly once, from a cold start where scanType has never been reported',
     ({ value, hex }) => {
@@ -653,6 +678,18 @@ describe('scan RESUME mode: four explicit literal buttons, MOR-2425 (replacing t
   it('is hidden entirely — not merely disabled — while scanCapable is false', () => {
     const r = renderScan(coldStart(), { scanCapable: false });
     expect(r.el('scan-resume-group')).toBeNull();
+    r.dispose();
+  });
+
+  it('uses the profile domain and labels D3 by its wire meaning, ON', () => {
+    const r = renderScan(coldStart(), {
+      scanCapable: true, scanResumeValues: [0xd0, 0xd3], part: 'scan',
+    });
+    expect([...target.querySelectorAll('[data-testid^="scan-resume-0x"]')]
+      .map((button) => button.textContent?.trim())).toEqual(['OFF', 'ON']);
+    expect(r.el('scan-resume-0xd0')?.getAttribute('aria-pressed')).toBe('true');
+    expect(r.el('scan-resume-0xd1')).toBeNull();
+    expect(r.el('scan-resume-0xd2')).toBeNull();
     r.dispose();
   });
 

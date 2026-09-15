@@ -65,12 +65,16 @@ vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
 vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
   return {
-    dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params),
-    currentControlSessionEpoch: () => 0,
+    dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => {
+      sendCommand(name, params);
+      return { id: `test-${name}`, name, params, originalEpoch: h.controlSession.epoch, status: 'pending' };
+    },
+    currentControlSessionEpoch: () => h.controlSession.epoch,
   };
 });
 vi.mock('$lib/stores/radio.svelte', () => ({
   getRadioState: vi.fn(() => h.state),
+  subscribeRadioState: vi.fn(() => () => {}),
   getActiveReceiver: vi.fn(() => {
     const state = h.state as ServerState | null;
     return state?.active === 'SUB' ? state.sub ?? null : state?.main ?? null;
@@ -138,8 +142,14 @@ import { makeBandHandlers, makeVfoHandlers } from '$lib/runtime/commands/panel-c
 import {
   resetRetainedInvocations, retainedInvocations,
 } from '../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
+import {
+  acknowledgeCommand, beginCommand, confirmCommand, failCommand, resetCommandLifecycle,
+} from '$lib/stores/commands.svelte';
 
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
+const fresh = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+  lastObservedMonotonic: 1,
+};
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
 /** MAIN sits at 14.250 (inside the 20m TX segment), SUB at 7.100 (inside 40m). */
@@ -206,6 +216,7 @@ function publishAuthority(): void {
 
 function render(props: {
   strips?: 'single' | 'dual'; bandPermitCaption?: boolean;
+  vfoAppearance?: 'semantic' | 'sdr' | 'standard';
 } = {}): void {
   target = document.createElement('div');
   document.body.appendChild(target);
@@ -217,6 +228,7 @@ const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T
 const el = (id: string) => q<HTMLElement>(`[data-testid="band-${id}"]`);
 const btn = (id: string) => q<HTMLButtonElement>(`[data-testid="band-${id}"]`);
 const setFreqCalls = () => vi.mocked(sendCommand).mock.calls.filter(([n]) => n === 'set_freq');
+const setDirectFreqCalls = () => vi.mocked(sendCommand).mock.calls.filter(([n]) => n === 'set_vfo_freq');
 
 function typeFrequency(value: string): void {
   const input = q<HTMLInputElement>('[data-testid="band-entry-input"]')!;
@@ -233,7 +245,226 @@ beforeEach(() => {
   h.controlSession = { state: 'connected', epoch: 1 };
   h.finiteAppearance = false;
   resetRetainedInvocations();
+  resetCommandLifecycle();
   vi.mocked(sendCommand).mockClear();
+});
+
+describe('fixed-slot frequency entry overlay', () => {
+  function directState(withDisplayContract = false): ServerState {
+    const current = liveState();
+    return { ...current, ...(withDisplayContract ? { stateContractVersion: 1 as const } : {}),
+      sub: undefined, main: {
+      ...current.main!, activeSlot: 'A',
+      vfoA: slot(14_250_000), vfoB: slot(7_074_000),
+    } } as unknown as ServerState;
+  }
+  function directCaps(withDisplayContract = false): Capabilities {
+    return { ...liveCaps(BAND_PLAN), capabilities: ['audio', 'tx', 'vfo_freq_direct'],
+      ...(withDisplayContract ? { stateContractVersion: 1 as const } : {}),
+      receivers: 1, vfoScheme: 'ab' };
+  }
+
+  function beginSubmittedDirectCommand() {
+    const [, params] = setDirectFreqCalls().at(-1)!;
+    if (params === undefined) throw new Error('direct frequency params missing');
+    return beginCommand({
+      id: 'test-set_vfo_freq', name: 'set_vfo_freq', params,
+      originalEpoch: h.controlSession.epoch,
+    });
+  }
+
+  it('opens from inactive B separator and dispatches B without selecting it', () => {
+    h.state = directState(true); h.caps = directCaps(true);
+    render({ vfoAppearance: 'standard' });
+    const separator = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq] .sep')!;
+    expect(separator).not.toBeNull();
+    separator.click();
+    flushSync();
+    expect(vi.mocked(sendCommand)).not.toHaveBeenCalled();
+    const dialog = q<HTMLElement>('[data-testid="frequency-entry-dialog-panel"]')!;
+    expect(dialog.textContent).toContain('MAIN VFO B');
+    const input = dialog.querySelector<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    input.value = '7.075'; input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    dialog.querySelector<HTMLButtonElement>('[data-testid="band-entry-set"]')!.click();
+    expect(setDirectFreqCalls()).toEqual([['set_vfo_freq', {
+      freq: 7_075_000, receiver: 0, slot: 'B', expected_active_slot: 'A', provider_generation: 1,
+    }]]);
+    expect(vi.mocked(sendCommand).mock.calls.some(([name]) => name === 'set_vfo')).toBe(false);
+  });
+
+  it.each(['Escape', 'backdrop'] as const)(
+    'restores focus to the real inactive B readout after %s close without commands',
+    async (closeWith) => {
+      h.state = directState(true); h.caps = directCaps(true);
+      render({ vfoAppearance: 'standard' });
+      const trigger = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!;
+      const readout = trigger.querySelector<HTMLElement>('.freq')!;
+      const digit = readout.querySelector<HTMLElement>('.digit')!;
+
+      expect(trigger.getAttribute('role')).toBe('button');
+      expect(trigger.getAttribute('aria-label')).toBe('Set frequency — MAIN B');
+      expect(readout).not.toBeNull();
+      expect(digit).not.toBeNull();
+      digit.click();
+      flushSync();
+      await Promise.resolve();
+      const input = q<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+      expect(document.activeElement).toBe(input);
+
+      if (closeWith === 'Escape') {
+        input.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Escape', bubbles: true, cancelable: true,
+        }));
+      } else {
+        q<HTMLElement>('[data-testid="frequency-entry-dialog-backdrop"]')!.click();
+      }
+      flushSync();
+      await Promise.resolve();
+
+      expect(q<HTMLElement>('[role="dialog"]')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+      expect(vi.mocked(sendCommand)).not.toHaveBeenCalled();
+    },
+  );
+
+  it('closes and restores focus only after exact-readback confirmation', async () => {
+    h.state = directState(true); h.caps = directCaps(true);
+    render({ vfoAppearance: 'standard' });
+    const trigger = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!;
+    trigger.querySelector<HTMLElement>('.freq')!.click();
+    flushSync();
+    typeFrequency('7.075');
+    btn('entry-set')!.click();
+    const command = beginSubmittedDirectCommand();
+    flushSync();
+
+    expect(q<HTMLElement>('[role="dialog"]')).not.toBeNull();
+    acknowledgeCommand(command.id, command.originalEpoch, command.originalEpoch);
+    flushSync();
+    expect(q<HTMLElement>('[role="dialog"]')?.textContent)
+      .toContain('Waiting for the selected VFO readback');
+
+    confirmCommand(command.id, command.originalEpoch, command.originalEpoch);
+    flushSync();
+    await Promise.resolve();
+    expect(q<HTMLElement>('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('keeps a failed submission open with its error', () => {
+    h.state = directState(true); h.caps = directCaps(true);
+    render({ vfoAppearance: 'standard' });
+    q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq] .freq')!.click();
+    flushSync();
+    typeFrequency('7.075');
+    btn('entry-set')!.click();
+    const command = beginSubmittedDirectCommand();
+    failCommand(command.id, command.originalEpoch, command.originalEpoch, 'Radio rejected frequency');
+    flushSync();
+
+    expect(q<HTMLElement>('[role="dialog"]')?.textContent).toContain('Radio rejected frequency');
+  });
+
+  it.each(['Enter', ' '] as const)(
+    'opens real inactive B entry with %s without tuning or selecting',
+    async (key) => {
+      h.state = directState(true); h.caps = directCaps(true);
+      render({ vfoAppearance: 'standard' });
+      const trigger = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!;
+      trigger.focus();
+      trigger.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+      flushSync();
+      await Promise.resolve();
+
+      expect(q<HTMLElement>('[data-testid="frequency-entry-dialog-panel"]')).not.toBeNull();
+      expect(vi.mocked(sendCommand)).not.toHaveBeenCalled();
+      expect(q<HTMLElement>('[data-vfo-slot="B"]')?.getAttribute('data-vfo-active-slot')).toBe('false');
+    },
+  );
+
+  it('leaves unsupported inactive B on its original non-entry digit path', () => {
+    h.state = directState(true);
+    h.caps = { ...directCaps(true), capabilities: ['audio', 'tx'] };
+    render({ vfoAppearance: 'standard' });
+    const wrapper = q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq]')!;
+    const digit = wrapper.querySelector<HTMLElement>('.digit')!;
+    const bubbled = vi.fn();
+    wrapper.addEventListener('click', bubbled);
+
+    expect(wrapper.getAttribute('role')).toBeNull();
+    expect(wrapper.getAttribute('tabindex')).toBeNull();
+    digit.click();
+
+    expect(bubbled).toHaveBeenCalledOnce();
+    expect(q<HTMLElement>('[role="dialog"]')).toBeNull();
+    expect(vi.mocked(sendCommand)).not.toHaveBeenCalled();
+  });
+
+  it('keeps an open draft inert after the captured session changes', () => {
+    h.state = directState(); h.caps = directCaps();
+    render({ vfoAppearance: 'standard' });
+    const digit = document.createElement('span'); digit.className = 'digit';
+    q<HTMLElement>('[data-vfo-slot="B"] [data-vfo-freq] .freq')!.append(digit);
+    digit.click();
+    flushSync();
+    h.controlSession = { state: 'connected', epoch: 2 };
+    h.state = { ...(h.state as ServerState), providerGeneration: 2 };
+    h.caps = { ...(h.caps as Capabilities), providerGeneration: 2 };
+    publishAuthority(); flushSync();
+    const dialog = q<HTMLElement>('[data-testid="frequency-entry-dialog-panel"]')!;
+    const input = dialog.querySelector<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    input.value = '7.075'; input.dispatchEvent(new Event('input', { bubbles: true })); flushSync();
+    dialog.querySelector<HTMLButtonElement>('[data-testid="band-entry-set"]')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(setDirectFreqCalls()).toEqual([]);
+  });
+});
+
+describe('receiver frequency entry overlay', () => {
+  function receiverOverlayState(over: Partial<ServerState> = {}): ServerState {
+    return { ...liveState(), stateContractVersion: 1 as const, ...over } as ServerState;
+  }
+
+  function receiverOverlayCaps(): Capabilities {
+    return { ...liveCaps(BAND_PLAN), stateContractVersion: 1 as const } as Capabilities;
+  }
+
+  it.each([
+    ['MAIN', 0, '14.260'],
+    ['SUB', 1, '7.115'],
+  ] as const)('opens from %s digits and sends the explicit receiver target', (receiver, index, inputValue) => {
+    h.state = receiverOverlayState();
+    h.caps = receiverOverlayCaps();
+    render({ vfoAppearance: 'standard' });
+    const trigger = q<HTMLElement>(`[data-vfo-receiver="${receiver}"] .digit`)!;
+    trigger.click();
+    flushSync();
+    const dialog = q<HTMLElement>('[data-testid="frequency-entry-dialog-panel"]')!;
+    expect(dialog.textContent).toContain(receiver);
+    const input = dialog.querySelector<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    input.value = inputValue;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    dialog.querySelector<HTMLButtonElement>('[data-testid="band-entry-set"]')!.click();
+    flushSync();
+    expect(setFreqCalls()).toEqual([['set_freq', {
+      freq: Math.round(Number(inputValue) * 1_000_000), receiver: index,
+    }]]);
+    expect(q('[role="dialog"]')).toBeNull();
+  });
+
+  it('keeps the clicked receiver target when active-receiver truth changes before submit', () => {
+    h.state = receiverOverlayState();
+    h.caps = receiverOverlayCaps();
+    render({ vfoAppearance: 'standard' });
+    q<HTMLElement>('[data-vfo-receiver="MAIN"] .digit')!.click();
+    flushSync();
+    typeFrequency('14.260');
+    h.state = receiverOverlayState({ active: 'SUB' } as Partial<ServerState>);
+    btn('entry-set')!.click();
+    expect(setFreqCalls()).toEqual([['set_freq', { freq: 14_260_000, receiver: 0 }]]);
+  });
 });
 
 afterEach(() => {
@@ -242,6 +473,7 @@ afterEach(() => {
   expect(h.authoritySubscribers.size).toBe(0);
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
+  resetCommandLifecycle();
   document.body.innerHTML = '';
 });
 

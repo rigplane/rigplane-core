@@ -27,20 +27,35 @@ const capabilities = {
   audioTxRequiredModInputSource: 5,
 } satisfies Capabilities;
 
-const managedTransmit = {
-  schemaVersion: 1,
-  sampledAt: '2026-09-05T04:00:00.000Z',
-  managedTransmit: {
-    status: 'available',
-    intent: { kind: 'rx' },
-    releaseRequired: false,
-    lastError: null,
-    lastActuation: null,
-    abortErrors: [],
-    tot: { configuredSeconds: 180, active: false, remainingMs: null, expiresAt: null },
-  },
-  txObservation: { observedPtt: 'off' },
-};
+// The mocked canonical authority tracks admitted PTT/TRANSMIT and released
+// RX before each command reply, so a post-admission snapshot never reports
+// an RX that supersedes the browser's own accepted ON cycle.
+type ManagedIntent = 'rx' | 'ptt' | 'transmit';
+
+function managedTransmitDocument(intent: ManagedIntent) {
+  return {
+    schemaVersion: 1,
+    sampledAt: new Date().toISOString(),
+    managedTransmit: {
+      status: 'available',
+      intent: intent === 'ptt'
+        ? { kind: 'ptt', owner: 'mobile-e2e-session' }
+        : intent === 'transmit' ? { kind: 'transmit' } : { kind: 'rx' },
+      releaseRequired: intent !== 'rx',
+      lastError: null,
+      lastActuation: null,
+      abortErrors: [],
+      tot: { configuredSeconds: 180, active: false, remainingMs: null, expiresAt: null },
+    },
+    txObservation: { observedPtt: intent === 'rx' ? 'off' : 'on' },
+  };
+}
+
+function admittedIntent(command: string): ManagedIntent | null {
+  if (command === 'ptt_on' || command === 'transmit_on') return command === 'ptt_on' ? 'ptt' : 'transmit';
+  if (command === 'ptt_off' || command === 'force_off') return 'rx';
+  return null;
+}
 
 interface ControlCommand {
   id: string;
@@ -52,6 +67,7 @@ test.use({ hasTouch: true, isMobile: true });
 async function prepare(page: Page) {
   const controlCommands: ControlCommand[] = [];
   const managedCommands: string[] = [];
+  let authorityIntent: ManagedIntent = 'rx';
 
   await page.addInitScript((value) => {
     localStorage.setItem('rigplane:workspace', JSON.stringify(value));
@@ -103,6 +119,8 @@ async function prepare(page: Page) {
     if (request.method() === 'POST' && pathname === '/api/v1/managed-transmit/command') {
       const body = request.postDataJSON() as { operation: string };
       managedCommands.push(body.operation);
+      const admitted = admittedIntent(body.operation);
+      if (admitted !== null) authorityIntent = admitted;
       await route.fulfill({ status: 202, contentType: 'application/json', body: '{}' });
       return;
     }
@@ -113,7 +131,7 @@ async function prepare(page: Page) {
     const responses: Record<string, unknown> = {
       '/api/v1/state': state,
       '/api/v1/capabilities': capabilities,
-      '/api/v1/managed-transmit': managedTransmit,
+      '/api/v1/managed-transmit': managedTransmitDocument(authorityIntent),
       '/api/v1/info': mockInfo,
     };
     await route.fulfill({
@@ -130,6 +148,8 @@ async function prepare(page: Page) {
       const frame = JSON.parse(message) as { id?: string; name?: string; type?: string };
       if ((frame.type !== 'cmd' && frame.type !== 'command') || !frame.id || !frame.name) return;
       controlCommands.push({ id: frame.id, name: frame.name });
+      const admitted = admittedIntent(frame.name);
+      if (admitted !== null) authorityIntent = admitted;
       setTimeout(() => socket.send(JSON.stringify({ type: 'response', id: frame.id, ok: true })), 0);
     });
     if (pathname === '/api/v1/ws') {

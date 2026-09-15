@@ -136,6 +136,13 @@ describe('loadPanelOrder', () => {
     expect(r1).toEqual(afterDrag);
     expect(r2).toEqual(afterDrag);
   });
+
+  it('keeps a known-default zone empty after its final panel moves away', () => {
+    localStorage.setItem(KEY, JSON.stringify([]));
+    localStorage.setItem(KNOWN_KEY, JSON.stringify(DEFAULTS));
+
+    expect(loadPanelOrder(KEY, DEFAULTS)).toEqual([]);
+  });
 });
 
 describe('reorderPanels', () => {

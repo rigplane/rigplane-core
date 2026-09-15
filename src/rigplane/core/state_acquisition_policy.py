@@ -426,6 +426,7 @@ class FieldCapability:
     polling: bool = False
     stream_like: bool = False
     command_response_observable: bool = False
+    startup_required: bool = True
     supported_controls: Sequence[str] | None = ()
     diagnostic: str = ""
 
@@ -440,6 +441,10 @@ class FieldCapability:
         command_response_observable = _strict_bool(
             self.command_response_observable,
             label="commandResponseObservable",
+        )
+        startup_required = _strict_bool(
+            self.startup_required,
+            label="startupRequired",
         )
         controls = (
             ()
@@ -472,6 +477,7 @@ class FieldCapability:
             "command_response_observable",
             command_response_observable,
         )
+        object.__setattr__(self, "startup_required", startup_required)
         object.__setattr__(self, "supported_controls", controls)
 
     @property
@@ -493,6 +499,7 @@ class FieldCapability:
             "polling": self.polling,
             "streamLike": self.stream_like,
             "commandResponseObservable": self.command_response_observable,
+            "startupRequired": self.startup_required,
             "supportedControls": list(self.supported_controls or ()),
             "diagnostic": self.diagnostic,
         }
@@ -509,6 +516,7 @@ class FieldCapability:
                     "polling",
                     "streamLike",
                     "commandResponseObservable",
+                    "startupRequired",
                     "supportedControls",
                     "diagnostic",
                 }
@@ -527,6 +535,7 @@ class FieldCapability:
                 "commandResponseObservable",
                 False,
             ),
+            startup_required=value.get("startupRequired", True),
             supported_controls=_strict_string_sequence(
                 value.get("supportedControls", ()),
                 label="supportedControls",

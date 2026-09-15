@@ -6,6 +6,7 @@ TDD: these tests were written FIRST, then the implementation.
 from __future__ import annotations
 
 import json
+import re
 import textwrap
 import tomllib
 from decimal import Decimal
@@ -16,11 +17,7 @@ import pytest
 
 from rigplane.command_map import CommandMap
 from rigplane.core.capabilities import CAP_SPEECH, KNOWN_CAPABILITIES
-from rigplane.core.tx_interlock_contract import (
-    TX_INTERLOCK_COMMAND_FAMILY_METADATA,
-    TxInterlockCommandFamily,
-    TxInterlockDisposition,
-)
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.profiles import (
     BandInfo,
     ControlSpec,
@@ -307,182 +304,6 @@ class TestLoadRig:
         assert set(command_map) == {"get_freq", "set_freq"}
         assert len(command_map) == 2
 
-    def test_tx_interlock_tightening_defaults_empty(self, tmp_path):
-        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML))
-
-        assert rig.tx_interlock_disposition_overrides == {}
-        assert rig.to_profile().tx_interlock_disposition_overrides == {}
-
-    @pytest.mark.parametrize(
-        ("header", "family_key"),
-        [
-            ("[tx_interlock]", '"power-on"'),
-            ('["tx_interlock"] # quoted top-level key', "'power-on'"),
-        ],
-    )
-    def test_tx_interlock_parses_tx_safe_to_defer_tightening(
-        self, tmp_path, header, family_key
-    ):
-        p = _write_toml(
-            tmp_path,
-            _MINIMAL_TOML
-            + f"""
-
-{header}
-disposition_overrides = {{ {family_key} = "defer" }} # canonical inline mapping
-""",
-        )
-
-        rig = load_rig(p)
-        expected = {
-            TxInterlockCommandFamily.POWER_ON: TxInterlockDisposition.DEFER,
-        }
-
-        assert rig.tx_interlock_disposition_overrides == expected
-        assert rig.to_profile().tx_interlock_disposition_overrides == expected
-
-    @pytest.mark.parametrize(
-        "family",
-        [
-            metadata.family.value
-            for metadata in TX_INTERLOCK_COMMAND_FAMILY_METADATA
-            if metadata.base_disposition is not TxInterlockDisposition.TX_SAFE
-        ],
-    )
-    def test_tx_interlock_rejects_ineligible_base_family(self, tmp_path, family):
-        p = _write_toml(
-            tmp_path,
-            _MINIMAL_TOML
-            + f"""
-
-[tx_interlock]
-disposition_overrides = {{ "{family}" = "defer" }}
-""",
-        )
-
-        with pytest.raises(
-            RigLoadError,
-            match=rf"\[tx_interlock\]\.disposition_overrides.*{family}.*not tx-safe",
-        ):
-            load_rig(p)
-
-    @pytest.mark.parametrize(
-        ("declaration", "message"),
-        [
-            (
-                'disposition_overrides = { "unknown-family" = "defer" }',
-                "unknown-family",
-            ),
-            ('disposition_overrides = { "power-on" = "block" }', "must be 'defer'"),
-            ('disposition_overrides = { "power-on" = true }', "must be a string"),
-            ('disposition_overrides = ["power-on"]', "must be an inline table"),
-            ("unexpected = true", "unknown key"),
-        ],
-    )
-    def test_tx_interlock_rejects_invalid_schema(self, tmp_path, declaration, message):
-        p = _write_toml(
-            tmp_path,
-            _MINIMAL_TOML
-            + f"""
-
-[tx_interlock]
-{declaration}
-""",
-        )
-
-        with pytest.raises(RigLoadError, match=message):
-            load_rig(p)
-
-    @pytest.mark.parametrize(
-        "value", ['"invalid"', "[{}]", "[{disposition_overrides={}}]"]
-    )
-    def test_tx_interlock_section_must_be_table(self, tmp_path, value):
-        p = _write_toml(tmp_path, f"tx_interlock = {value}\n" + _MINIMAL_TOML)
-
-        with pytest.raises(RigLoadError, match=r"\[tx_interlock\] must be a table"):
-            load_rig(p)
-
-    @pytest.mark.parametrize(
-        ("declaration", "at_root"),
-        [
-            ('\n[tx_interlock.disposition_overrides]\n"power-on" = "defer"\n', False),
-            (
-                '\n["tx_interlock"."disposition_overrides"]\n"power-on" = "defer"\n',
-                False,
-            ),
-            ('\n[tx_interlock."disposition_overrides"]\n"power-on" = "defer"\n', False),
-            ('\n[tx_interlock]\ndisposition_overrides."power-on" = "defer"\n', False),
-            ('\n[tx_interlock]\ndisposition_overrides.power-on = "defer"\n', False),
-            ('tx_interlock.disposition_overrides."power-on" = "defer"\n', True),
-            ('tx_interlock.disposition_overrides.power-on = "defer"\n', True),
-        ],
-    )
-    def test_tx_interlock_rejects_non_inline_override_encodings(
-        self, tmp_path, declaration, at_root
-    ):
-        content = (
-            declaration + _MINIMAL_TOML if at_root else _MINIMAL_TOML + declaration
-        )
-        p = _write_toml(tmp_path, content)
-
-        with pytest.raises(
-            RigLoadError,
-            match=r"\[tx_interlock\]\.disposition_overrides must use inline table syntax",
-        ):
-            load_rig(p)
-
-    @pytest.mark.parametrize(
-        "label",
-        [
-            '"[tx_interlock.disposition_overrides]"',
-            '\'disposition_overrides."power-on" = "defer"\'',
-            '"""multiline\n[tx_interlock.disposition_overrides]\n"""',
-            "'''multiline\ntx_interlock.disposition_overrides.power-on = 'defer'\n'''",
-        ],
-    )
-    def test_tx_interlock_shape_guard_ignores_string_content(self, tmp_path, label):
-        toml = _MINIMAL_TOML.replace('label = "HF"', f"label = {label}")
-
-        rig = load_rig(_write_toml(tmp_path, toml))
-
-        assert rig.tx_interlock_disposition_overrides == {}
-
-    def test_tx_interlock_shape_guard_ignores_comments(self, tmp_path):
-        p = _write_toml(
-            tmp_path,
-            "# [tx_interlock.disposition_overrides]\n"
-            '# tx_interlock.disposition_overrides."power-on" = "defer"\n'
-            + _MINIMAL_TOML,
-        )
-
-        assert load_rig(p).tx_interlock_disposition_overrides == {}
-
-    @pytest.mark.parametrize("key", ["tx_interlock", '"tx_interlock"'])
-    def test_tx_interlock_rejects_root_outer_inline_table(self, tmp_path, key):
-        content = (
-            f'{key}={{disposition_overrides={{"power-on"="defer"}}}}\n' + _MINIMAL_TOML
-        )
-        p = _write_toml(tmp_path, content)
-
-        with pytest.raises(RigLoadError, match="must use inline table syntax"):
-            load_rig(p)
-
-    def test_tx_interlock_shape_guard_tracks_multiline_array_context(self, tmp_path):
-        p = _write_toml(
-            tmp_path,
-            _MINIMAL_TOML
-            + """
-
-[metadata]
-values = [
-    ["tx_interlock"]
-]
-disposition_overrides.label = "not policy"
-""",
-        )
-
-        assert load_rig(p).tx_interlock_disposition_overrides == {}
-
     def test_load_minimal_power_max_watts(self, tmp_path):
         p = _write_toml(
             tmp_path,
@@ -707,9 +528,89 @@ labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
         rig = load_rig(RIGS_DIR / "ic7300.toml")
         assert rig.rf_sql_control_model == "combined"
 
-    def test_ic7610_stays_separate_rf_sql_control_model(self):
+    def test_ic7610_declares_combined_rf_sql_control_model(self):
+        """MOR-2467: the IC-7610's concentric RF/SQL knob is declared combined."""
         rig = load_rig(RIGS_DIR / "ic7610.toml")
-        assert rig.rf_sql_control_model == "separate"
+        assert rig.rf_sql_control_model == "combined"
+
+    def test_ic7610_marks_scope_controls_startup_optional(self):
+        rig = load_rig(RIGS_DIR / "ic7610.toml")
+        acquisition = rig.to_profile().state_acquisition
+        assert acquisition is not None
+        expected = {
+            FieldPath.parse(f"scope_controls.global.display.{name}")
+            for name in (
+                "receiver",
+                "dual",
+                "mode",
+                "span",
+                "edge",
+                "hold",
+                "ref_db",
+                "speed",
+                "during_tx",
+                "center_type",
+                "vbw_narrow",
+                "fixed_edge",
+                "rbw",
+            )
+        }
+        actual = {
+            capability.path
+            for capability in acquisition.capabilities
+            if not capability.startup_required
+        }
+
+        assert actual == expected
+        assert all(acquisition.capability_for(path).can_poll for path in expected)
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            (
+                "ic7300.toml",
+                ((0, "MIC"), (1, "ACC"), (2, "MIC+ACC"), (3, "USB"), (4, "MIC+USB")),
+            ),
+            (
+                "ic7610.toml",
+                (
+                    (0, "MIC"),
+                    (1, "ACC"),
+                    (3, "USB"),
+                    (5, "LAN"),
+                    (2, "MIC+ACC"),
+                    (4, "MIC+USB"),
+                ),
+            ),
+        ],
+    )
+    def test_data_mode_inputs_reach_runtime_profile(self, name, expected):
+        rig = load_rig(RIGS_DIR / name)
+        assert rig.data_mode_inputs == expected
+        assert rig.to_profile().data_mode_inputs == expected
+
+    @pytest.mark.parametrize(
+        ("inputs", "message"),
+        [
+            (
+                '[{ value = 0, name = "MIC" }, { value = 0, name = "ACC" }]',
+                "inputs values must be unique",
+            ),
+            ("[]", "inputs must be a non-empty array"),
+        ],
+    )
+    def test_data_mode_inputs_reject_invalid_metadata(self, tmp_path, inputs, message):
+        text = re.sub(
+            r"inputs = \[.*?\]",
+            f"inputs = {inputs}",
+            TEMPLATE_PATH.read_text(),
+            count=1,
+            flags=re.DOTALL,
+        )
+        path = tmp_path / "invalid-input.toml"
+        path.write_text(text)
+        with pytest.raises(RigLoadError, match=message):
+            load_rig(path)
 
     @pytest.mark.parametrize(
         ("scheme", "receiver_count"),
@@ -1454,7 +1355,14 @@ choices = [
     # exact validated form (the legacy raw_center shape fail-closes the
     # RIT/XIT control in the MOR-1730 frontend contract).
     _EXACT_DOMAIN_REGISTER = {
-        "ftx1.toml": {"rit", "nr_level", "manual_notch_freq", "if_shift", "cw_pitch"},
+        "ftx1.toml": {
+            "rit",
+            "nr_level",
+            "nb_level",
+            "manual_notch_freq",
+            "if_shift",
+            "cw_pitch",
+        },
         "ic705.toml": {"rit"},
         "ic7300.toml": {"rit"},
         "ic7610.toml": {"rit"},
@@ -1503,6 +1411,146 @@ choices = [
 
         with pytest.raises(RigLoadError, match="raw_step"):
             self._load(tmp_path, malformed)
+
+    _LEGACY_PITCH = (
+        "raw_min = 0\nraw_max = 255\ndisplay_min = 300\ndisplay_max = 900\n"
+        'display_unit = "Hz"\n'
+    )
+
+    def test_decode_quantum_is_published_on_the_legacy_control(self, tmp_path):
+        rig = self._load(tmp_path, self._LEGACY_PITCH + "decode_quantum = 5\n")
+
+        assert rig.controls == {
+            "test_control": {
+                "raw_min": 0,
+                "raw_max": 255,
+                "display_min": 300,
+                "display_max": 900,
+                "display_unit": "Hz",
+                "decode_quantum": 5,
+            }
+        }
+        assert rig.to_profile().controls == rig.controls
+
+    @pytest.mark.parametrize(
+        "quantum",
+        [
+            "decode_quantum = 0",
+            "decode_quantum = -5",
+            "decode_quantum = 1.5",
+            'decode_quantum = "5"',
+            "decode_quantum = true",
+        ],
+        ids=["zero", "negative", "fractional", "string", "boolean"],
+    )
+    def test_decode_quantum_must_be_a_positive_integer(self, tmp_path, quantum):
+        with pytest.raises(RigLoadError, match="decode_quantum.*positive integer"):
+            self._load(tmp_path, self._LEGACY_PITCH + quantum + "\n")
+
+    def test_decode_quantum_requires_the_full_legacy_band(self, tmp_path):
+        partial = (
+            'raw_min = 0\nraw_max = 255\ndisplay_unit = "Hz"\ndecode_quantum = 5\n'
+        )
+        with pytest.raises(
+            RigLoadError, match="decode_quantum.*display_min.*display_max"
+        ):
+            self._load(tmp_path, partial)
+
+    def test_decode_quantum_is_rejected_on_explicit_domains(self, tmp_path):
+        with pytest.raises(RigLoadError, match="decode_quantum.*explicit"):
+            self._load(tmp_path, self._LINEAR + "decode_quantum = 5\n")
+
+    def test_decode_quantum_rejects_a_domain_with_an_exact_half_tie(self, tmp_path):
+        tie = (
+            "raw_min = 0\nraw_max = 2\ndisplay_min = 0\ndisplay_max = 1\n"
+            'display_unit = "Hz"\ndecode_quantum = 1\n'
+        )
+        with pytest.raises(RigLoadError, match="exact half-step tie"):
+            self._load(tmp_path, tie)
+
+    def test_every_civ_profile_with_cw_commands_declares_decode_quantum(self):
+        for path in sorted(
+            path for path in RIGS_DIR.glob("*.toml") if not path.name.startswith("_")
+        ):
+            rig = load_rig(path)
+            controls = rig.to_profile().controls
+            for ctl, command in (
+                ("cw_pitch", "get_cw_pitch"),
+                ("key_speed", "get_key_speed"),
+            ):
+                if command not in rig.commands:
+                    continue
+                assert controls is not None, (path.name, ctl)
+                entry = controls.get(ctl)
+                assert isinstance(entry, dict), (path.name, ctl)
+                assert isinstance(entry.get("decode_quantum"), int), (path.name, ctl)
+                assert entry["decode_quantum"] > 0, (path.name, ctl)
+
+    def test_every_civ_profile_with_cw_commands_declares_encode_rounding(self):
+        for path in sorted(
+            path for path in RIGS_DIR.glob("*.toml") if not path.name.startswith("_")
+        ):
+            rig = load_rig(path)
+            controls = rig.to_profile().controls
+            for ctl, command in (
+                ("cw_pitch", "set_cw_pitch"),
+                ("key_speed", "set_key_speed"),
+            ):
+                if command not in rig.commands:
+                    continue
+                assert controls is not None, (path.name, ctl)
+                entry = controls.get(ctl)
+                assert isinstance(entry, dict), (path.name, ctl)
+                assert entry.get("encode_rounding") in (
+                    "ceil",
+                    "nearest_half_down",
+                ), (path.name, ctl)
+
+    def test_encode_rounding_is_published_on_the_legacy_control(self, tmp_path):
+        rig = self._load(tmp_path, self._LEGACY_PITCH + 'encode_rounding = "ceil"\n')
+
+        assert rig.controls == {
+            "test_control": {
+                "raw_min": 0,
+                "raw_max": 255,
+                "display_min": 300,
+                "display_max": 900,
+                "display_unit": "Hz",
+                "encode_rounding": "ceil",
+            }
+        }
+        assert rig.to_profile().controls == rig.controls
+
+    @pytest.mark.parametrize(
+        "rounding",
+        [
+            'encode_rounding = "floor"',
+            'encode_rounding = "nearest_half_up"',
+            'encode_rounding = ""',
+            "encode_rounding = 5",
+            "encode_rounding = true",
+        ],
+        ids=["floor", "half_up", "empty", "integer", "boolean"],
+    )
+    def test_encode_rounding_must_be_a_declared_mode(self, tmp_path, rounding):
+        with pytest.raises(
+            RigLoadError, match=r"encode_rounding.*ceil.*nearest_half_down"
+        ):
+            self._load(tmp_path, self._LEGACY_PITCH + rounding + "\n")
+
+    def test_encode_rounding_requires_the_full_legacy_band(self, tmp_path):
+        partial = (
+            'raw_min = 0\nraw_max = 255\ndisplay_unit = "Hz"\n'
+            'encode_rounding = "ceil"\n'
+        )
+        with pytest.raises(
+            RigLoadError, match="encode_rounding.*display_min.*display_max"
+        ):
+            self._load(tmp_path, partial)
+
+    def test_encode_rounding_is_rejected_on_explicit_domains(self, tmp_path):
+        with pytest.raises(RigLoadError, match="encode_rounding.*explicit"):
+            self._load(tmp_path, self._LINEAR + 'encode_rounding = "ceil"\n')
 
     @pytest.mark.parametrize(
         "maximum",
@@ -3102,8 +3150,8 @@ class TestIc7300ManualOnlyCommands:
     def test_exact_retained_membership(self):
         _assert_manual_only_membership(
             "ic7300.toml",
-            320,
-            "61f58222a9bbb632db9146d17c60a2b339fe0f188bb14288139168656f7c0fea",
+            322,
+            "8ca3056d69fb2c06d68b0f8b7f45d5bfb14c0d953605cbbc6c0d9eb489856d42",
             self._REMOVED_NAMES,
         )
 
@@ -3307,7 +3355,7 @@ class TestIc7610DeclaresAbsentCommands:
 class _X6DeclaresAbsentCommands:
     """Shared body for the X6100/X6200 absent-command pin below.
 
-    MOR-2008 batch 3: both profiles formally declare
+    MOR-2008 batch 3: both profiles at the time formally declared
     ``get_/set_vox``, ``get_/set_break_in`` and ``get_/set_manual_notch``
     absent, promoted from a comment-only note (``rigs/x6200.toml``'s own
     "vox"/"notch"/"break_in" bullets, inherited into ``rigs/x6100.toml``
@@ -3333,11 +3381,18 @@ class _X6DeclaresAbsentCommands:
     class-name renaming this batch made necessary (was
     ``_X6DeclaresAbsentVoxBreakInManualNotch``, no longer describes the
     full set this shared body pins).
+
+    MOR-2488/MOR-2489 splits the vox pair: the X6100's own manual
+    (Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1)
+    lists ``0x16 0x46`` "Get VOX switch" for X6100, so ``get_vox`` is
+    PRESENT on x6100.toml and only ``set_vox`` (GET-only row, no SET
+    row in the table) stays absent there; x6200.toml keeps the full
+    sibling-table basis (its V1.0.6 table has no VOX row of any kind)
+    and stays absent in both directions.
     """
 
-    _EXPECTED_ABSENT = frozenset(
+    _SHARED_ABSENT = frozenset(
         {
-            "get_vox",
             "set_vox",
             "get_break_in",
             "set_break_in",
@@ -3356,6 +3411,9 @@ class _X6DeclaresAbsentCommands:
             "get_tx_band_edge",
         }
     )
+    # Per-profile additions on top of _SHARED_ABSENT, folded into each
+    # subclass's _EXPECTED_ABSENT class attribute (kept a plain
+    # attribute -- tests/test_command_spec.py imports these pins).
     _TOML_NAME: str
 
     def test_absent_command_names_match(self):
@@ -3401,10 +3459,22 @@ class _X6DeclaresAbsentCommands:
 
 class TestX6200DeclaresAbsentCommands(_X6DeclaresAbsentCommands):
     _TOML_NAME = "x6200.toml"
+    _EXPECTED_ABSENT = _X6DeclaresAbsentCommands._SHARED_ABSENT | frozenset({"get_vox"})
 
 
 class TestX6100DeclaresAbsentCommands(_X6DeclaresAbsentCommands):
     _TOML_NAME = "x6100.toml"
+    _EXPECTED_ABSENT = _X6DeclaresAbsentCommands._SHARED_ABSENT
+
+    def test_get_vox_present_at_manual_documented_opcode(self):
+        """MOR-2488/MOR-2489: the X6100 manual's §15 Table 1 lists
+        0x16 0x46 "Get VOX switch" (Rigs: X6100; data 0x00 OFF /
+        0x01 ON), so get_vox is present on this profile while set_vox
+        (no SET row in the table) stays absent."""
+        profile = load_rig(RIGS_DIR / self._TOML_NAME).to_profile()
+        assert "get_vox" in profile.command_names
+        assert "get_vox" not in profile.absent_command_names
+        assert profile.command_map.get("get_vox") == (0x16, 0x46)
 
 
 class _CatOnlyDeclaresAllGroupBAbsent:

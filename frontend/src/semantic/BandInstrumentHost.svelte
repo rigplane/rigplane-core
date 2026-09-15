@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, type Component, type Snippet } from 'svelte';
+  import { HardwareButton } from '$lib/Button';
   import { t } from '$lib/i18n';
   import { bindAbsoluteChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
@@ -25,6 +26,8 @@
     onEnterFrequency?: (frequencyHz: number) => void;
     entryRendererContext?: FiniteRendererContext | null;
     entryRenderer?: Component<FrequencyEntryRendererProps>;
+    frequencyEntryEnabled?: boolean;
+    frequencyEntryUnavailableReason?: string;
     /** Whether the fallback key PRINTS its permit sentence. Its accessible name
      *  carries that sentence, and `data-default-permit` the status, either way. */
     showPermitCaption?: boolean;
@@ -38,7 +41,8 @@
 
   let {
     view, onSelectBand, onEnterFrequency, finiteAppearance, rendererContext,
-    entryRendererContext, entryRenderer, showPermitCaption = true, children,
+    entryRendererContext, entryRenderer, frequencyEntryEnabled = true,
+    frequencyEntryUnavailableReason, showPermitCaption = true, children,
   }: Props = $props();
   let band = $derived(view?.band);
   let receiverKnown = $derived(view?.activeReceiver.status === 'known');
@@ -53,19 +57,19 @@
       ? interpretFrequencyEntry(entryText, band.tuneMinHz, band.tuneMaxHz) : null,
   );
   let entryReady = $derived(
-    entryAuthorityAvailable && receiverKnown && boundsKnown && interpretedHz !== null,
+    entryAuthorityAvailable && frequencyEntryEnabled && receiverKnown && boundsKnown && interpretedHz !== null,
   );
   let entryValidation = $derived(
-    !entryAuthorityAvailable || !receiverKnown || !boundsKnown ? 'unavailable' as const
+    !entryAuthorityAvailable || !frequencyEntryEnabled || !receiverKnown || !boundsKnown ? 'unavailable' as const
       : entryText.trim() === '' ? 'empty' as const
         : interpretedHz === null ? 'rejected' as const : 'accepted' as const,
   );
   let entryHint = $derived(entryReady && interpretedHz !== null ? `→ ${mhz(interpretedHz)}` : '');
   let entryRangeText = $derived(boundsKnown && band?.tuneMinHz != null && band?.tuneMaxHz != null
     ? `${mhz(band.tuneMinHz)} … ${mhz(band.tuneMaxHz)}` : UNKNOWN_TEXT);
-  let entryUnavailableReason = $derived(!boundsKnown
+  let entryUnavailableReason = $derived(frequencyEntryUnavailableReason ?? (!boundsKnown
     ? t('core.band.entry.reason.boundsUnknown')
-    : !receiverKnown ? t('core.band.entry.reason.receiverUnconfirmed') : undefined);
+    : !receiverKnown ? t('core.band.entry.reason.receiverUnconfirmed') : undefined));
 
   $effect(() => {
     const present = band !== undefined;
@@ -103,7 +107,7 @@
     view: {
       label: 'FREQ', draft: entryText, validation: entryValidation,
       boundsAvailable: boundsKnown, interpretedHz,
-      inputAvailable: entryAuthorityAvailable && receiverKnown && boundsKnown,
+      inputAvailable: entryAuthorityAvailable && frequencyEntryEnabled && receiverKnown && boundsKnown,
       submitAvailable: entryReady,
       hint: entryHint, rangeText: entryRangeText,
       ...(entryUnavailableReason === undefined ? {} : { unavailableReason: entryUnavailableReason }),
@@ -120,7 +124,7 @@
 
   function entryIsAvailable(): boolean {
     const currentBand = view?.band;
-    return entryRendererContext !== null && view?.activeReceiver.status === 'known'
+    return entryRendererContext !== null && frequencyEntryEnabled && view?.activeReceiver.status === 'known'
       && currentBand !== undefined
       && currentBand.tuneMinHz !== null && currentBand.tuneMaxHz !== null;
   }
@@ -158,9 +162,28 @@
   {/if}
 {/snippet}
 
-{#snippet bandChoice()}
+{#snippet bandChoice(compact = false)}
   {#if band?.bandChoices.length}
-    {#if finiteAppearance}{@render externalChoice()}{:else}
+    {#if compact}
+      <div role="group" aria-label="Band select" data-testid="band-choices-compact">
+        {#each band.bandChoices as choice, index (choice.name)}
+          {@const permit = defaultPermitLabel(choice)}
+          {@const descriptionId = `band-choice-compact-permit-${index}`}
+          <HardwareButton
+            active={bandChoiceBehavior.isSelected(choice.name)}
+            disabled={!bandChoiceBehavior.available}
+            indicator="edge-left"
+            color="cyan"
+            title={permit}
+            describedBy={descriptionId}
+            onclick={() => bandChoiceBehavior.invoke(choice.name)}
+          >{choice.name}</HardwareButton>
+          <span id={descriptionId} class="visually-hidden" data-default-permit={choice.defaultHzTxPermit.status}>
+            {permit}
+          </span>
+        {/each}
+      </div>
+    {:else if finiteAppearance}{@render externalChoice()}{:else}
       <div class="band-row" role="group" aria-label="Band select" data-testid="band-choices">
         {#each band.bandChoices as choice (choice.name)}
           <button
@@ -187,10 +210,21 @@
   {/if}
 {/snippet}
 
-{@render children({ bandChoice, frequencyEntry })}
+{@render children({ bandChoice, frequencyEntry, cancelFrequencyEntry: cancelEntry })}
 
 <style>
   .band-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
   .band-choice[aria-pressed='true'] { font-weight: 700; }
   button:disabled { cursor: not-allowed; }
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
 </style>

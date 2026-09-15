@@ -230,6 +230,68 @@ describe('CwKeyerInstrumentHost', () => {
     r.dispose();
   });
 
+  // MOR-1682: the pitch scalar's range and step come from the profile's
+  // published control domain on the view model, not the module constant.
+  // FTX-1 publishes an exact identity domain (300..1050 Hz, step 10).
+  const withPitchDomain = (
+    domain: Readonly<{ min: number; max: number; step: number; origin: number }>,
+  ): RadioViewModel => ({
+    ...base(), cwKeyer: { ...base().cwKeyer!, pitchDomain: domain },
+  });
+
+  it('drives pitch limits and stepping from the profile domain (FTX-1: 300..1050, step 10)', () => {
+    const r = render({ view: withPitchDomain({ min: 300, max: 1050, step: 10, origin: 300 }) });
+    expect(r.row('pitchHz').dataset).toMatchObject({ min: '300', max: '1050', step: '10' });
+    currentLease('pitchHz').key({ key: 'ArrowRight', fine: false });
+    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('pitchHz', 610);
+    currentLease('pitchHz').key({ key: 'End', fine: false });
+    expect(r.onLevelChange).toHaveBeenLastCalledWith('pitchHz', 1050);
+    r.dispose();
+  });
+
+  it('never emits an off-lattice pitch value under a profile domain', () => {
+    const r = render({ view: withPitchDomain({ min: 300, max: 1050, step: 10, origin: 300 }) });
+    currentLease('pitchHz').nativeInput(604);
+    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('pitchHz', 600);
+    expect(r.onLevelChange).not.toHaveBeenCalledWith('pitchHz', 604);
+    r.dispose();
+  });
+
+  it('keeps today\'s 300..900 step-5 behaviour for a legacy-domain radio', () => {
+    const r = render({ view: withPitchDomain({ min: 300, max: 900, step: 5, origin: 300 }) });
+    expect(r.row('pitchHz').dataset).toMatchObject({ min: '300', max: '900', step: '5' });
+    currentLease('pitchHz').key({ key: 'ArrowRight', fine: false });
+    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('pitchHz', 605);
+    r.dispose();
+  });
+
+  // MOR-2475 F1: the key-speed scalar takes the same profile-domain
+  // substitution as the pitch scalar — the view model's `keySpeedDomain`
+  // replaces the row constant's limits when the profile publishes one.
+  const withKeySpeedDomain = (
+    domain: Readonly<{ min: number; max: number; step: number; origin: number }>,
+  ): RadioViewModel => ({
+    ...base(), cwKeyer: { ...base().cwKeyer!, keySpeedDomain: domain },
+  });
+
+  it('drives keyer-speed limits from the profile domain', () => {
+    const r = render({ view: withKeySpeedDomain({ min: 5, max: 50, step: 1, origin: 5 }) });
+    expect(r.row('keyerSpeed').dataset).toMatchObject({ min: '5', max: '50', step: '1' });
+    currentLease('keyerSpeed').key({ key: 'Home', fine: false });
+    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('keyerSpeed', 5);
+    currentLease('keyerSpeed').key({ key: 'End', fine: false });
+    expect(r.onLevelChange).toHaveBeenLastCalledWith('keyerSpeed', 50);
+    r.dispose();
+  });
+
+  it('keeps the row constant\'s 6..48 step-1 limits when the view model publishes no key-speed domain', () => {
+    const r = render();
+    expect(r.row('keyerSpeed').dataset).toMatchObject({ min: '6', max: '48', step: '1' });
+    currentLease('keyerSpeed').key({ key: 'End', fine: false });
+    expect(r.onLevelChange).toHaveBeenLastCalledWith('keyerSpeed', 48);
+    r.dispose();
+  });
+
   it('reads pitch from command feedback when supplied and falls back to the raw reading otherwise', () => {
     const r = render({ pitchFeedback: feedback('pitchHz', { confirmed: 725 }) });
     expect(target.querySelector('[data-testid="cw-keyer-pitchHz-value"]')?.textContent)

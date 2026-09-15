@@ -360,3 +360,28 @@ describe('StationMeterInstrumentHost', () => {
     expect(stationMeterProbe.frames.get('compression')).not.toBe(oldFrame);
   });
 });
+
+
+it('keeps unavailable shared frames and owners while the station omits their seats', () => {
+  const initial = view();
+  const { publisher } = render({ view: initial, session: { controlSessionEpoch: 1 } });
+  const frames = new Map(stationMeterProbe.frames);
+  let current = initial;
+  for (const key of ['signal', 'power', 'swr'] as const) current = field(current, key, {
+    presence: 'unavailable', availability: { structural: true, operational: false },
+    reading: { status: 'unknown' },
+  });
+  publisher.emit({ view: current, session: { controlSessionEpoch: 1 } }); flushSync();
+  for (const key of ['signal', 'power', 'swr']) {
+    const frame = stationMeterProbe.frames.get(key) as any;
+    expect(frame).toBe(frames.get(key));
+    expect(key === 'signal' ? frame.field.presence : frame.projection.presence).toBe('unavailable');
+    expect(target.querySelector('[data-testid="meter-' + key + '"]')).toBeNull();
+  }
+  expect(publisher.handlers.size).toBe(1);
+  expect(motion.bars).toHaveLength(6);
+  for (const owner of motion.bars) expect(owner.stop).not.toHaveBeenCalled();
+  unmount(component!); component = null;
+  expect(publisher.handlers.size).toBe(0);
+  expectStopped();
+});

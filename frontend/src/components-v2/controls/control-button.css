@@ -1,6 +1,19 @@
 @import './button-tokens.css';
 
-.v2-control-button {
+.v2-control-button,
+.standard-face :where(:is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment)),
+.standard-face :where(.band-tab) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -41,16 +54,80 @@
   --glow-color: var(--indicator-color);
 }
 
-.v2-control-button:hover {
+/* Standard-face command families use the same label and corner treatment as
+ * the MODE HardwareButton even when their component owns compact geometry. */
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  .v2-control-button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment),
+.desktop-control-face.standard-face .band-tab {
+  border-radius: var(--btn-border-radius);
+  font-family: 'Roboto Mono', monospace;
+  font-size: var(--btn-font-size);
+  font-weight: 400;
+  letter-spacing: var(--btn-letter-spacing);
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.v2-control-button:hover,
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment):hover:not(:disabled),
+.desktop-control-face.standard-face .band-tab:hover:not(:disabled) {
   background-color: var(--btn-bg-hover);
   color: var(--v2-text-bright);
 }
 
-.v2-control-button:focus {
+.v2-control-button:focus,
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment):focus,
+.desktop-control-face.standard-face .band-tab:focus {
   outline: none;
 }
 
-.v2-control-button:focus-visible {
+.v2-control-button:focus-visible,
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment):focus-visible,
+.desktop-control-face.standard-face .band-tab:focus-visible {
   outline: var(--v2-focus-ring);
   outline-offset: 2px;
 }
@@ -60,14 +137,40 @@
  * muted. Disabled now gets reduced opacity + not-allowed cursor and
  * suppresses hover/active feedback. */
 .v2-control-button:disabled,
-.v2-control-button[aria-disabled='true'] {
+.v2-control-button[aria-disabled='true'],
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment):is(:disabled, [aria-disabled='true']):not(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']),
+.desktop-control-face.standard-face .band-tab:is(:disabled, [aria-disabled='true']):not(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']) {
   opacity: 0.45;
   cursor: not-allowed;
   color: var(--v2-text-dim);
 }
 
 .v2-control-button:disabled:hover,
-.v2-control-button[aria-disabled='true']:hover {
+.v2-control-button[aria-disabled='true']:hover,
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment):is(:disabled, [aria-disabled='true']):not(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']):hover,
+.desktop-control-face.standard-face .band-tab:is(:disabled, [aria-disabled='true']):not(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']):hover {
   background: var(--btn-bg-idle);
   color: var(--v2-text-dim);
 }
@@ -85,7 +188,20 @@
 }
 
 .v2-control-button.active,
-.v2-control-button[data-active='true'] {
+.v2-control-button[data-active='true'],
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment):is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']),
+.desktop-control-face.standard-face .band-tab:is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']) {
   background-color: color-mix(in srgb, var(--glow-color) var(--btn-active-bg-tint), var(--v2-bg-darker));
   border-color: color-mix(in srgb, var(--glow-color) var(--glow-border-opacity), transparent);
   color: var(--control-active-text, var(--v2-text-bright));
@@ -133,7 +249,20 @@
 .v2-control-button[data-indicator-style='dot']::before,
 .v2-control-button[data-indicator-style='edge-bottom']::before,
 .v2-control-button[data-indicator-style='edge-left']::before,
-.v2-control-button[data-indicator-style='edge-sides']::before {
+.v2-control-button[data-indicator-style='edge-sides']::before,
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment)::before,
+.desktop-control-face.standard-face .band-tab::before {
   content: '';
   position: absolute;
   pointer-events: none;
@@ -201,11 +330,26 @@
   transform: scaleX(0.72);
 }
 
-.v2-control-button[data-indicator-style='edge-left']::before {
+.v2-control-button[data-indicator-style='edge-left']::before,
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment)::before,
+.desktop-control-face.standard-face .band-tab::before {
   left: 0;
   top: 4px;
   bottom: 4px;
   width: var(--indicator-thickness);
+  height: auto;
+  border: 0;
   border-radius: 0 999px 999px 0;
   background: linear-gradient(
     180deg,
@@ -241,7 +385,20 @@
 .v2-control-button[data-indicator-style='edge-left'].active::before,
 .v2-control-button[data-indicator-style='edge-left'][data-active='true']::before,
 .v2-control-button[data-indicator-style='edge-sides'].active::before,
-.v2-control-button[data-indicator-style='edge-sides'][data-active='true']::before {
+.v2-control-button[data-indicator-style='edge-sides'][data-active='true']::before,
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment):is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true'])::before,
+.desktop-control-face.standard-face .band-tab:is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true'])::before {
   opacity: 1;
   transform: scale(1);
   box-shadow:
@@ -257,7 +414,20 @@
 .v2-control-button[data-indicator-style='edge-left'].active,
 .v2-control-button[data-indicator-style='edge-left'][data-active='true'],
 .v2-control-button[data-indicator-style='edge-sides'].active,
-.v2-control-button[data-indicator-style='edge-sides'][data-active='true'] {
+.v2-control-button[data-indicator-style='edge-sides'][data-active='true'],
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment):is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']),
+.desktop-control-face.standard-face .band-tab:is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']) {
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--glow-color) var(--edge-glow-ring-1-opacity), transparent),
     0 0 var(--edge-glow-blur-tight) color-mix(in srgb, var(--glow-color) var(--edge-glow-ring-2-opacity), transparent),
@@ -281,7 +451,20 @@
     inset 0 0 0 1px color-mix(in srgb, var(--indicator-color) var(--fill-inset-ring-opacity), transparent);
 }
 
-.v2-control-button[data-surface='hardware'] {
+.v2-control-button[data-surface='hardware'],
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment),
+.desktop-control-face.standard-face .band-tab {
   background:
     linear-gradient(
       180deg,
@@ -300,7 +483,20 @@
     0 4px 10px var(--hw-shadow-outer-bottom);
 }
 
-.v2-control-button[data-surface='hardware']:hover {
+.v2-control-button[data-surface='hardware']:hover,
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment):hover:not(:disabled),
+.desktop-control-face.standard-face .band-tab:hover:not(:disabled) {
   background:
     linear-gradient(
       180deg,
@@ -312,7 +508,20 @@
 }
 
 .v2-control-button[data-surface='hardware'].active,
-.v2-control-button[data-surface='hardware'][data-active='true'] {
+.v2-control-button[data-surface='hardware'][data-active='true'],
+.desktop-control-face.standard-face :is(
+  .semantic-control-panel button,
+  [data-vfo-appearance='standard'] .vfo-select,
+  [data-vfo-operation-appearance='standard'] .fact-toggle,
+  [data-vfo-operation-appearance='standard'] .vfo-op,
+  .reset-order-btn,
+  .status-bar .control-btn,
+  .status-bar .now-playing,
+  .status-bar .managed-tot-trigger,
+  .status-bar .theme-button,
+  .spectrum-toolbar .toolbar-btn
+):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment):is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']),
+.desktop-control-face.standard-face .band-tab:is(.active, [data-active='true'], [aria-pressed='true'], [aria-checked='true']) {
   background:
     linear-gradient(
       180deg,

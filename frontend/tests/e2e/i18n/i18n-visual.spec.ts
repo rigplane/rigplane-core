@@ -554,13 +554,19 @@ async function assertProductionLanguageAccessibility(
   await expect(vfo).toHaveAccessibleName(/VFO/i);
   await expect(txKey).toHaveAccessibleName(/key|transmit|ptt/i);
   await expect(txState).toBeVisible();
-  await expect(txMark).toBeVisible();
-  await expect(txLabel).toBeVisible();
+  await expect(txMark).toBeAttached();
+  await expect(txLabel).toBeAttached();
   await expect(txState).toHaveAttribute('data-rf', 'unknown');
   await expect(txState).toHaveAttribute('data-session', 'idle');
-  await expect(txMark).toHaveText('◇');
-  await expect(txLabel).toHaveText('RF ?');
-  await expect(txState).toContainText('ready');
+  await expect(txMark).toBeEmpty();
+  await expect(txLabel).toBeEmpty();
+  const [stateBox, markBox, labelBox] = await Promise.all([
+    txState.boundingBox(), txMark.boundingBox(), txLabel.boundingBox(),
+  ]);
+  expect(stateBox).not.toBeNull();
+  expect(markBox).not.toBeNull();
+  expect(labelBox).not.toBeNull();
+  await expect(txState).not.toContainText(/ready/i);
 
   // A real keyboard-caused focus target, rather than a programmatic focus,
   // proves the active production family has a visible focus treatment.
@@ -626,7 +632,12 @@ test.describe('MOR-1400 production design-language contract', () => {
   for (const item of PRODUCTION_LANGUAGE_CASES) {
     test(`${item.label} activates from production dist`, async ({ page }) => {
       await page.emulateMedia({ reducedMotion: 'reduce' });
-      await preparePage(page, 'en-US', VIEWPORTS[0], { workspace: item.workspace });
+      await preparePage(page, 'en-US', VIEWPORTS[0], {
+        workspace: item.workspace,
+        state: { ...mockState, fieldStatus: Object.fromEntries(['main.sMeter', 'sub.sMeter']
+          .map(path => [path, { storePath: path, observed: false,
+            freshness: 'unknown' as const, availability: 'missing' as const }])) },
+      });
       await gotoApp(page, 'en-US');
       await waitForAppShell(page);
       await assertProductionLanguageCss(page, item);

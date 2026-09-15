@@ -161,10 +161,12 @@ describe('radio-wide singleton indicators (MOR-2309)', () => {
     expect(root.querySelector('[data-indicator-fact="atu"]')?.textContent).toContain('TUNE OFF');
     expect(root.querySelector('[data-indicator-fact="rit"]')?.textContent).toContain('RIT OFF 0 Hz');
     expect(root.querySelector('[data-indicator-fact="xit"]')?.textContent).toContain('XIT ON 0 Hz');
-    expect(root.querySelector('[data-indicator-fact="rf-authority"]')?.textContent).toContain('RX');
+    const rf = root.querySelector('[data-indicator-fact="rf-authority"]');
+    expect(rf?.getAttribute('data-indicator-rf')).toBe('receiving');
+    expect(rf?.textContent).toBe('');
   });
 
-  it('keeps missing/unobserved shared leaves visibly unknown and omits unsupported facts', () => {
+  it('keeps RF unknown quiet while retaining its state and omits unsupported facts', () => {
     const root = render({
       radioWide: {
         ...shared(), rfState: 'unknown', antenna: unknown(false), atu: unknown(),
@@ -172,10 +174,19 @@ describe('radio-wide singleton indicators (MOR-2309)', () => {
       },
     });
     expect(root.querySelector('[data-indicator-fact="antenna"]')).toBeNull();
-    expect(root.querySelector('[data-indicator-fact="rf-authority"]')?.textContent).toContain('RF ?');
+    const rf = root.querySelector('[data-indicator-fact="rf-authority"]');
+    expect(rf?.getAttribute('data-indicator-rf')).toBe('unknown');
+    expect(rf?.textContent).toBe('');
     for (const fact of ['atu', 'rit', 'xit']) {
       expect(root.querySelector(`[data-indicator-fact="${fact}"]`)?.textContent).toContain('—');
     }
+  });
+
+  it.each([
+    ['transmitting', 'TX'], ['uncertain', 'TX?'],
+  ] as const)('keeps %s RF authority visible as %s', (rfState, label) => {
+    const root = render({ radioWide: { ...shared(), rfState } });
+    expect(root.querySelector('[data-indicator-fact="rf-authority"]')?.textContent).toBe(label);
   });
 
   it('marks RIT/XIT aggregate state unknown when either constituent is unknown', () => {

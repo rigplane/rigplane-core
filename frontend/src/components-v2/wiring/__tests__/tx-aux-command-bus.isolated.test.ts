@@ -49,6 +49,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
+    setOperatorNotifier: vi.fn(),
     setAudioConfig: vi.fn(), startRx: vi.fn(), stopRx: vi.fn(),
     setRxVolume: vi.fn(), rxEnabled: false,
   },

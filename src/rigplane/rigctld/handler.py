@@ -3,7 +3,7 @@
 Responsibilities:
 - Command dispatch table (long_cmd → async handler method)
 - Read-only gate (reject set commands with RPRT -22)
-- RadioState-first reads with a small handler-local fallback cache
+- RadioState-first reads
 - Error translation (rigplane exceptions → Hamlib error codes)
 
 This module receives RigctldCommand from protocol.py and returns
@@ -34,6 +34,7 @@ from ..core.command_service import (
 )
 from ..core.command_dispatch import prepare_command_intent
 from ..core.exceptions import CommandError
+from ..core.radio_protocol import AttenuatorStepsCapable
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -409,72 +410,6 @@ def _mode_to_hamlib_str(mode: object) -> str:
     if isinstance(value, int):
         return str(CIV_TO_HAMLIB_MODE.get(value, "USB"))
     return str(mode).upper()
-
-
-@dataclass(slots=True)
-class _PendingRigState:
-    """Local optimistic write-through state until RadioState catches up."""
-
-    freq: int | None = None
-    mode: str | None = None
-    filter_width: int | None = None
-    data_mode: bool | None = None
-
-
-@dataclass(slots=True)
-class _FallbackRigState:
-    """Handler-local fallback values used only until RadioState becomes valid."""
-
-    freq: int = 0
-    freq_ts: float = 0.0
-    mode: str = "USB"
-    filter_width: int | None = None
-    mode_ts: float = 0.0
-    data_mode: bool = False
-    data_mode_ts: float = 0.0
-    ptt: bool = False
-    ptt_ts: float = 0.0
-    s_meter: int | None = None
-    s_meter_ts: float = 0.0
-    rf_power: float | None = None
-    rf_power_ts: float = 0.0
-    swr: float | None = None
-    swr_ts: float = 0.0
-
-    def is_fresh(self, field: str, ttl: float | None) -> bool:
-        if ttl is None or ttl <= 0.0:
-            return False
-        ts = getattr(self, f"{field}_ts", 0.0)
-        return ts > 0.0 and (time.monotonic() - ts) < ttl
-
-    def update_freq(self, freq: int) -> None:
-        self.freq = freq
-        self.freq_ts = time.monotonic()
-
-    def update_mode(self, mode: str, filter_width: int | None) -> None:
-        self.mode = mode
-        self.filter_width = filter_width
-        self.mode_ts = time.monotonic()
-
-    def update_data_mode(self, on: bool) -> None:
-        self.data_mode = on
-        self.data_mode_ts = time.monotonic()
-
-    def update_ptt(self, on: bool) -> None:
-        self.ptt = on
-        self.ptt_ts = time.monotonic()
-
-    def update_s_meter(self, raw: int) -> None:
-        self.s_meter = raw
-        self.s_meter_ts = time.monotonic()
-
-    def update_rf_power(self, value: float) -> None:
-        self.rf_power = value
-        self.rf_power_ts = time.monotonic()
-
-    def update_swr(self, value: float) -> None:
-        self.swr = value
-        self.swr_ts = time.monotonic()
 
 
 @dataclass(frozen=True, slots=True)
@@ -860,14 +795,7 @@ class RigctldHandler:
         self._key_down_backstop_task: asyncio.Task[None] | None = None
         self._key_down_backstop_token: int = 0
         self._key_down_backstop_session: str | None = None
-        # Legacy routing cache is retained only for vendor-specific routing
-        # strategies that still depend on it (Yaesu today). Core rigctld GET
-        # paths project from StateStore plus scoped CommandService overlays.
-        self._cache = _FallbackRigState()
-        self._pending = _PendingRigState()
-        self._routing = create_routing(
-            radio, self._cache, getattr(config, "max_power_w", 100.0)
-        )
+        self._routing = create_routing(radio, getattr(config, "max_power_w", 100.0))
         if state_store is None and isinstance(radio, StateStoreCapable):
             state_store = radio.state_store
         self._has_canonical_state_store = isinstance(state_store, StateStore)
@@ -1415,50 +1343,6 @@ class RigctldHandler:
             )
         )
 
-    def _effective_pending_freq(self, main_state: ReceiverState | None) -> int | None:
-        pending_freq = self._pending.freq
-        if pending_freq is None:
-            return None
-        if main_state is not None and main_state.freq == pending_freq:
-            self._pending.freq = None
-            return None
-        return pending_freq
-
-    def _effective_pending_mode(
-        self, main_state: ReceiverState | None
-    ) -> tuple[str, int, int] | None:
-        pending_mode = self._pending.mode
-        if pending_mode is None:
-            return None
-
-        pending_filter = self._pending.filter_width
-        pending_data_mode = self._pending.data_mode
-
-        if main_state is not None:
-            state_mode = main_state.mode.upper()
-            state_filter = main_state.filter
-            state_data_mode = main_state.data_mode
-            if (
-                state_mode == pending_mode
-                and state_filter == pending_filter
-                and (pending_data_mode is None or state_data_mode == pending_data_mode)
-            ):
-                self._pending.mode = None
-                self._pending.filter_width = None
-                self._pending.data_mode = None
-                return None
-
-        data_mode = (
-            pending_data_mode
-            if pending_data_mode is not None
-            else (
-                main_state.data_mode
-                if main_state is not None
-                else self._cache.data_mode
-            )
-        )
-        return pending_mode, _filter_to_passband(pending_filter), data_mode
-
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -1860,9 +1744,6 @@ class RigctldHandler:
             if dropped is not None:
                 return dropped
         await self._execute_write(intent)
-        self._cache.update_mode(base_mode_str, filter_width)
-        if requested_mode in packet_modes:
-            self._cache.update_data_mode(True)
         # ``filter_width`` (the local var) is a filter NUMBER, so the readback
         # overlay belongs on ``filter_num`` — that is the key the get_mode
         # projection now reads for the passband. (MOR-895.)
@@ -2705,6 +2586,24 @@ class RigctldHandler:
         )
         return _ok()
 
+    def _attenuator_db_steps(self) -> tuple[int, ...] | None:
+        """Legal attenuator dB steps the radio publishes, or ``None``.
+
+        Anything a radio or test double returns that is not a non-empty
+        sequence of plain ints yields ``None`` so the caller forwards the
+        unsnapped value.
+        """
+        steps = (
+            self._radio.attenuator_db_steps()
+            if isinstance(self._radio, AttenuatorStepsCapable)
+            else None
+        )
+        if not isinstance(steps, (tuple, list)) or not steps:
+            return None
+        if any(isinstance(step, bool) or not isinstance(step, int) for step in steps):
+            return None
+        return tuple(steps)
+
     async def _execute_set_level(
         self,
         level: str,
@@ -2719,6 +2618,12 @@ class RigctldHandler:
             )
 
         if level == "RFPOWER":
+            # Hamlib publishes RFPOWER on the normalized 0.0-1.0 domain; an
+            # out-of-range client value (``L RFPOWER 1.5``) answers EINVAL
+            # here with no radio call instead of scaling to an off-band raw
+            # level (MOR-2480).
+            if not 0.0 <= value <= 1.0:
+                return HamlibError.EINVAL
             await self._radio.set_rf_power(round(value * 255))
             return HamlibError.OK
 
@@ -2751,11 +2656,15 @@ class RigctldHandler:
             return HamlibError.OK
 
         if level == "ATT":
-            # Find nearest supported dB (0, 6, 12, 18)
-            _att_steps = [0, 6, 12, 18]
+            # Nearest legal dB from the radio's published steps; an exact
+            # tie between two steps snaps to the larger one. A radio that
+            # publishes no steps gets the rounded dB unsnapped — the
+            # radio (or its downstream service) decides.
+            steps = self._attenuator_db_steps()
             db = round(value)
-            nearest = min(_att_steps, key=lambda x: abs(x - db))
-            await self._radio.set_attenuator_level(nearest)
+            if steps is not None:
+                db = min(steps, key=lambda step: (abs(step - db), -step))
+            await self._radio.set_attenuator_level(db)
             return HamlibError.OK
 
         return HamlibError.EINVAL

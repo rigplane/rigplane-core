@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, replace
@@ -37,6 +38,10 @@ from rigplane.runtime.managed_tx_state import (
     TransmitOn,
     reduce_managed_tx,
 )
+
+logger = logging.getLogger(__name__)
+
+ManagedTxChangeListener = Callable[[], None]
 
 
 class _Wakeup(Protocol):
@@ -139,6 +144,7 @@ class ManagedTxAuthority:
         self._retry_delay = retry_delay_seconds
         self._lock = asyncio.Lock()
         self._state = ManagedTxState()
+        self._change_listeners: set[ManagedTxChangeListener] = set()
         self._provider_generation = provider_generation
         self._generation_high_water = (
             provider_generation if provider_generation is not None else -1
@@ -568,11 +574,34 @@ class ManagedTxAuthority:
         async with self._lock:
             return self._config_store.config
 
+    def subscribe_changes(
+        self, listener: ManagedTxChangeListener
+    ) -> Callable[[], None]:
+        """Register a change listener; the return value unregisters it.
+
+        Listeners run synchronously on state, release, TOT-config and
+        provider mutations, and an exception from a listener is contained.
+        """
+        self._change_listeners.add(listener)
+
+        def unsubscribe() -> None:
+            self._change_listeners.discard(listener)
+
+        return unsubscribe
+
+    def _notify_changed_locked(self) -> None:
+        for listener in tuple(self._change_listeners):
+            try:
+                listener()
+            except Exception:
+                logger.warning("managed TX change listener failed", exc_info=True)
+
     async def set_tot_seconds(self, value: object) -> ManagedTxTotConfig:
         transition = None
         async with self._lock:
             self._require_ingress_open_locked()
             config = self._config_store.set_timeout_seconds(value)
+            self._notify_changed_locked()
             deadline = self._tot_deadline_locked(config.timeout_seconds)
             if deadline is not None and deadline <= self._clock():
                 transition = self._force_off_locked()
@@ -606,6 +635,8 @@ class ManagedTxAuthority:
         self._pending_abort_cleanup.append(self._abort_fence.force_off())
         if self._state.release_required:
             self._reduce_locked(ForceOff(None, self._attempt_id_locked()))
+        else:
+            self._notify_changed_locked()
         self._wakeup.wake()
         self._start_abort_cleanup()
 
@@ -639,6 +670,8 @@ class ManagedTxAuthority:
                 transition = self._reduce_locked(
                     RetryForceReceive(generation, self._attempt_id_locked())
                 )
+            else:
+                self._notify_changed_locked()
             self._wakeup.wake()
         if transition is not None:
             await self._execute(transition.effects, full_force=False)
@@ -865,6 +898,7 @@ class ManagedTxAuthority:
                 transition = ManagedTxTransition(state, ManagedTxOutcome.ACCEPTED)
                 self._state = state
                 self._release_drained.clear()
+                self._notify_changed_locked()
                 return transition, False
         if (
             action == "transmit_on"
@@ -903,11 +937,14 @@ class ManagedTxAuthority:
 
     def _reduce_locked(self, event: ManagedTxEvent) -> ManagedTxTransition:
         transition = reduce_managed_tx(self._state, event)
+        changed = transition.state != self._state
         self._state = transition.state
         if self._state_is_clean_locked():
             self._release_drained.set()
         else:
             self._release_drained.clear()
+        if changed:
+            self._notify_changed_locked()
         return transition
 
     async def _execute(

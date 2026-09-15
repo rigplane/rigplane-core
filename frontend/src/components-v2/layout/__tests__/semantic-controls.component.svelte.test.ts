@@ -35,6 +35,14 @@ const TITLES = {
   antenna: 'ANTENNA', ritXitScan: 'RIT / XIT / SCAN', cwKeyer: 'CW', memory: 'MEMORY',
 };
 
+const PANEL_IDS = {
+  rxTx: 'semantic-rx-tx', txAux: 'semantic-tx-aux', meters: 'semantic-meters',
+  rxAudio: 'semantic-rx-audio', filter: 'semantic-filter', dsp: 'semantic-dsp',
+  rfFrontEnd: 'semantic-rf-front-end', band: 'semantic-band',
+  antenna: 'semantic-antenna', ritXitScan: 'semantic-rit-xit-scan',
+  cwKeyer: 'semantic-cw', memory: 'semantic-memory',
+};
+
 describe('desktop semantic control frames', () => {
   it.each(Object.entries(TITLES))('gives %s one real panel title without hiding the child', async (surface, title) => {
     const r = render(surface as SemanticSurfaceName);
@@ -43,6 +51,26 @@ describe('desktop semantic control frames', () => {
     expect(r.target.querySelector('.collapsible-panel')?.getAttribute('data-collapsed')).toBe('false');
     expect(r.target.querySelector('.panel-header')?.getAttribute('disabled')).not.toBeNull();
     if (surface !== 'rfFrontEnd') expect(r.target.querySelectorAll('[data-testid="child"]')).toHaveLength(1);
+    await r.dispose();
+  });
+
+  it.each(Object.keys(PANEL_IDS))('enables stable collapse and drag chrome for Standard %s', async (surface) => {
+    const panelId = PANEL_IDS[surface as keyof typeof PANEL_IDS];
+    const onDragStart = vi.fn();
+    const r = render(surface as SemanticSurfaceName, base(), {
+      chrome: { panelId, draggable: true, onDragStart, style: 'order:3;' },
+    });
+    const panel = r.target.querySelector<HTMLElement>('.collapsible-panel')!;
+    expect(panel.dataset.panelId).toBe(panelId);
+    expect(panel.closest<HTMLElement>('.semantic-control-panel')!.style.order).toBe('3');
+    expect(r.target.querySelector('.drag-handle')).not.toBeNull();
+    const header = r.target.querySelector<HTMLButtonElement>('.panel-header')!;
+    expect(header.disabled).toBe(false);
+    header.click();
+    flushSync();
+    expect(panel.dataset.collapsed).toBe('true');
+    expect(JSON.parse(localStorage.getItem('rigplane:panel-collapsed')!))
+      .toMatchObject({ [panelId]: true });
     await r.dispose();
   });
 

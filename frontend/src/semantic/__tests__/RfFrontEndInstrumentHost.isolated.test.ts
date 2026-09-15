@@ -372,16 +372,19 @@ describe('RfFrontEndInstrumentHost', () => {
     const slider = () => group().querySelector<HTMLElement>('[role="slider"]')!;
     expect(group().dataset.feedbackIntegration).toBe('compatibility-reading');
     expect(group().textContent).toContain('100%');
+    expect(slider().closest('.rf-front-end-slider')).not.toBeNull();
     expect(slider().getAttribute('aria-disabled')).toBe('false');
 
     r.setFeedback(null); flushSync();
     expect(group().dataset.feedbackIntegration).toBe('authority-unresolved');
-    expect(group().textContent).toContain('? / ?');
+    expect(group().textContent).toContain('RF ?');
+    expect(group().textContent).toContain('SQL ?');
     expect(slider().getAttribute('aria-disabled')).toBe('true');
 
     r.setFeedback(commandFeedback()); flushSync();
     expect(group().dataset.feedbackIntegration).toBe('command-feedback');
-    expect(group().textContent).toContain('50% / 20%');
+    expect(group().textContent).toContain('RF 50%');
+    expect(group().textContent).toContain('SQL 20%');
     expect(slider().getAttribute('aria-disabled')).toBe('false');
 
     r.setFeedback(commandFeedback({ rf: { availability: 'unavailable' } })); flushSync();
@@ -399,8 +402,7 @@ describe('RfFrontEndInstrumentHost', () => {
     const statuses = () => target.querySelectorAll<HTMLElement>('[data-control-feedback-status]');
     expect(statuses()).toHaveLength(1);
     expect(statuses()[0].textContent).toContain('Awaiting confirmation: 0.75');
-    expect(target.querySelector('[data-testid="rf-front-end-rf-sql-rf-status"]')?.textContent)
-      .toContain('requested 75%; confirmed 50%');
+    expect(target.querySelector('[data-testid="rf-front-end-rf-sql-rf-status"]')).toBeNull();
 
     r.props.layout = 'independent'; flushSync();
     expect(statuses()).toHaveLength(1);
@@ -420,7 +422,7 @@ describe('RfFrontEndInstrumentHost', () => {
     expect(statuses()).toHaveLength(1);
     expect(statuses()[0].textContent).toContain('Failed: 0.4: denied');
     expect(target.querySelector('[data-testid="rf-front-end-rfGain-status"]')?.textContent)
-      .toContain('requested 40%; confirmed 50%; denied');
+      .toBe('denied');
 
     r.props.layout = 'independent'; flushSync();
     expect(statuses()).toHaveLength(1);
@@ -545,6 +547,15 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
       expect(onPreampChange).toHaveBeenCalledExactlyOnceWith(value);
     },
   );
+
+  it('presents capability-derived preamp and attenuator choices with operator labels', () => {
+    const r = renderFinite(finiteBase());
+    expect(r.el('preamp-0')?.textContent).toBe('OFF');
+    expect(r.el('preamp-1')?.textContent).toBe('P1');
+    expect(r.el('preamp-2')?.textContent).toBe('P2');
+    expect(r.el('attenuator-0')?.textContent).toBe('OFF');
+    expect(r.el('attenuator-6')?.textContent).toBe('6 dB');
+  });
 
   it.each([0, 6, 12, 18] as const)(
     'sends attenuator step %s dB exactly once, from a fresh mount, independent of the other buttons',
@@ -675,15 +686,15 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
   /**
    * MOR-2425 review fix (non-blocking order note) — `RfFrontEndSurface
    * .svelte`'s grouped (non-`finiteLayout`) placement must keep the
-   * pre-existing `origin/main` order: preamp and attenuator before the
-   * level controls, DIGI-SEL/IP+ after. Exercises the REAL surface
+   * Standard panel order: the continuous RF/SQL controls first, followed by
+   * ATT, PRE, then the remaining capability-derived finite controls. Exercises the REAL surface
    * component via the fixture's `renderSurface` flag, not a bare mock.
    */
   it('renders the grouped surface controls in the documented order', () => {
     renderFinite(finiteBase(), { renderSurface: true });
     const documented = [
-      'rf-front-end-preamp', 'rf-front-end-attenuator', 'rf-front-end-rfGain',
-      'rf-front-end-squelch', 'rf-front-end-digiSel', 'rf-front-end-ipPlus',
+      'rf-front-end-rfGain', 'rf-front-end-squelch', 'rf-front-end-attenuator',
+      'rf-front-end-preamp', 'rf-front-end-digiSel', 'rf-front-end-ipPlus',
     ];
     const order = [...target.querySelectorAll<HTMLElement>('[data-testid]')]
       .map((node) => node.dataset.testid)

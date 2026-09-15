@@ -79,6 +79,8 @@ export interface ControlRange {
   display_min?: number;
   display_max?: number;
   display_unit?: string;
+  decode_quantum?: number;
+  encode_rounding?: string;
   style?: string;
 }
 
@@ -149,6 +151,11 @@ export interface TxBand {
   end: number;
 }
 
+export interface DataModeInput {
+  value: number;
+  label: string;
+}
+
 export interface Capabilities {
   [extension: string]: unknown;
   model: string;
@@ -175,12 +182,15 @@ export interface Capabilities {
   preLabels?: Record<string, string>;  // Preamp labels (e.g. {"0":"OFF","1":"P1","2":"P2"})
   agcModes?: number[];    // AGC mode values (e.g. [1,2,3] = FAST/MID/SLOW)
   agcLabels?: Record<string, string>;  // AGC mode labels (e.g. {"1":"FAST","2":"MID","3":"SLOW"})
+  scanTypeValues?: number[];    // Profile-declared scan start types
+  scanResumeValues?: number[];  // Profile-declared scan resume modes
   /** RF/SQL control model (MOR-1447 leg 2): "separate" (default, two
    *  independent controls) or "combined" (Icom-style single RF/SQL knob).
    *  Absent on older servers — treat as "separate". */
   rfSqlControlModel?: 'separate' | 'combined';
   dataModeCount?: number;
   dataModeLabels?: Record<string, string>;
+  dataModeInputs?: DataModeInput[];
   keyboard?: KeyboardConfig | null;
   antennas?: number;      // Number of antenna ports
   hasRxAntenna?: boolean;
@@ -249,7 +259,7 @@ const DOMAIN_REQUIRED_KEYS = [
 ] as const;
 const DOMAIN_KEYS = new Set([
   ...DOMAIN_REQUIRED_KEYS, 'style', 'range_min', 'range_max',
-  'raw_center', 'display_center', 'lookup',
+  'raw_center', 'display_center', 'decode_quantum', 'encode_rounding', 'lookup',
 ]);
 const EXPLICIT_DOMAIN_KEYS = new Set([
   'raw_step', 'raw_origin', 'display_step', 'display_origin', 'display_center',
@@ -451,6 +461,12 @@ export function validateCapabilities(value: unknown): Capabilities {
   if (Object.prototype.hasOwnProperty.call(raw, 'hasRxAntenna')) {
     requireBoolean(raw.hasRxAntenna, '$.hasRxAntenna');
   }
+  for (const field of ['scanTypeValues', 'scanResumeValues'] as const) {
+    if (Object.prototype.hasOwnProperty.call(raw, field)) {
+      if (!Array.isArray(raw[field])) invalid(`$.${field}`, 'an array');
+      raw[field].forEach((entry, index) => requireInteger(entry, `$.${field}[${index}]`));
+    }
+  }
 
   const txAudioFields = [
     'audioTx',
@@ -547,6 +563,26 @@ export function validateCapabilities(value: unknown): Capabilities {
   });
   requireStringArray(raw.modes, '$.modes');
   requireStringArray(raw.filters, '$.filters');
+  if ('dataModeInputs' in raw) {
+    if (!Array.isArray(raw.dataModeInputs) || raw.dataModeInputs.length > 6) {
+      invalid('$.dataModeInputs', 'an array of at most 6 source options');
+    }
+    const values = new Set<number>();
+    raw.dataModeInputs.forEach((value, index) => {
+      const path = `$.dataModeInputs[${index}]`;
+      const option = requireRecord(value, path);
+      if (Object.keys(option).length !== 2 || !('value' in option) || !('label' in option)) {
+        invalid(path, 'exactly value and label');
+      }
+      requireInteger(option.value, `${path}.value`);
+      if ((option.value as number) < 0 || (option.value as number) > 5 || values.has(option.value as number)) {
+        invalid(`${path}.value`, 'a unique integer from 0 to 5');
+      }
+      values.add(option.value as number);
+      requireString(option.label, `${path}.label`);
+      if (!(option.label as string).trim()) invalid(`${path}.label`, 'a non-empty string');
+    });
+  }
 
   const audioConfig = requireRecord(raw.audioConfig, '$.audioConfig');
   requireInteger(audioConfig.sampleRate, '$.audioConfig.sampleRate', true);

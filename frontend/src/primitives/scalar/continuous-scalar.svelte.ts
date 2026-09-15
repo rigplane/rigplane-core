@@ -53,7 +53,7 @@ export interface ReadingScalarInput extends ContinuousScalarInputBase {
 export type ContinuousScalarInput = CommandFeedbackScalarInput | ReadingScalarInput;
 export type ScalarSource = 'native-input' | 'pointer' | 'wheel' | 'keyboard' | 'reset';
 export type ScalarDispatchMode = 'immediate' | Readonly<{ debounceMs: number }>;
-export interface ScalarStepInput { readonly direction: -1 | 1; readonly fine: boolean }
+export interface ScalarStepInput { readonly direction: -1 | 1; readonly fine: boolean; readonly steps?: number }
 export interface ScalarKeyInput { readonly key: string; readonly fine: boolean }
 export interface ScalarDispatchContext {
   readonly canonical: number;
@@ -79,6 +79,7 @@ export interface ContinuousScalarPolicy {
 }
 
 export interface ContinuousScalarViewBase {
+  readonly interactionEpoch?: number;
   readonly domain: Readonly<ScalarDomain>;
   readonly domainValid: boolean;
   readonly canonical: number | null;
@@ -177,6 +178,7 @@ export function createHBarContinuousScalarPolicy(
     preview: options.preview,
     normalize: (value, domain) => snap(value, domain, domain.step / domain.fineStepDivisor),
     wheel: (current, event, domain) => {
+      if (event.steps !== undefined) return nativeWheelStep(current, event, domain);
       const quantum = event.fine
         ? domain.step / domain.fineStepDivisor
         : domain.step * 4 * Math.max(1, Math.ceil((domain.max - domain.min) / 255));
@@ -216,6 +218,7 @@ export function createDiscreteContinuousScalarPolicy(
     normalize: (value, domain) => Number.isFinite(value)
       ? clamp(value, domain.min, domain.max) : null,
     wheel: (current, event, domain) => {
+      if (event.steps !== undefined) return nativeWheelStep(current, event, domain);
       const quantum = event.fine ? domain.step / domain.fineStepDivisor : domain.step;
       return snap(current + event.direction * quantum, domain, quantum);
     },
@@ -252,6 +255,7 @@ export function createKnobContinuousScalarPolicy(
     resolveKeyboardStep: () => undefined,
     normalize: (value, domain) => snap(value, domain, domain.step / domain.fineStepDivisor),
     wheel: (current, event, domain) => {
+      if (event.steps !== undefined) return nativeWheelStep(current, event, domain);
       const quantum = event.fine ? domain.step / domain.fineStepDivisor : domain.step * 4;
       return snap(current + event.direction * quantum, domain, quantum);
     },
@@ -326,6 +330,7 @@ export function createBipolarContinuousScalarPolicy(
     normalize: (value, domain) => Number.isFinite(value)
       ? clamp(value, domain.min, domain.max) : null,
     wheel: (current, event, domain) => {
+      if (event.steps !== undefined) return nativeWheelStep(current, event, domain);
       const stepsInRange = Math.max(1, (domain.max - domain.min) / domain.step);
       const multiplier = stepsInRange > 500 ? Math.round(stepsInRange / 240) : 1;
       const quantum = event.fine
@@ -357,6 +362,12 @@ export function createBipolarContinuousScalarPolicy(
     describeTarget: options.describeTarget ?? String,
   };
   return Object.freeze(policy);
+}
+
+function nativeWheelStep(current: number, event: ScalarStepInput, domain: ScalarDomain): number | null {
+  const steps = event.steps;
+  if (steps === undefined || !Number.isInteger(steps) || steps < 1 || steps > 8) return null;
+  return snap(current + event.direction * domain.step * steps, domain, domain.step);
 }
 
 function nativeLatticeCandidate(value: number, domain: ScalarDomain): boolean {
@@ -394,7 +405,7 @@ export function createRenderedNativeRangeContinuousScalarPolicy(): Readonly<Cont
     name: 'rendered-native-range',
     preview: 'optimistic',
     normalize: nativeRangePolicy.normalize,
-    wheel: (current, event, domain) => snap(
+    wheel: (current, event, domain) => event.steps !== undefined ? nativeWheelStep(current, event, domain) : snap(
       current + event.direction * domain.step, domain, domain.step,
     ),
     key: (current, event, domain) => handleKeyboardStep(
@@ -511,6 +522,7 @@ export function createContinuousScalar(
     announcedTransitionIds: [],
   };
   let localCommandRequest: LocalCommandRequest | null = null;
+  let lastDispatch: Readonly<{ value: number; canonical: number }> | null = null;
   let destroyed = false;
 
   function clearTimers(): void {
@@ -528,6 +540,7 @@ export function createContinuousScalar(
     interaction = 'idle';
     activeGesture = null;
     localCommandRequest = null;
+    lastDispatch = null;
   }
 
   function reconcile(input: Readonly<ContinuousScalarInput>): void {
@@ -538,6 +551,14 @@ export function createContinuousScalar(
       presentationState = { announcedTransitionIds: [] };
     }
     lastAuthority = authority;
+    if (lastDispatch !== null) {
+      const canonical = canonicalOf(input);
+      if (!Object.is(canonical, lastDispatch.canonical)) {
+        lastDispatch = Object.is(canonical, lastDispatch.value)
+          ? { value: lastDispatch.value, canonical: lastDispatch.value }
+          : null;
+      }
+    }
     const requestSnapshot = localCommandRequest;
     const representedLifecycleId = requestSnapshot !== null
       && requestSnapshot.dispatched
@@ -567,6 +588,7 @@ export function createContinuousScalar(
         || (feedback.lifecycleId !== null
           && feedback.lifecycleId !== representedLifecycle
           && feedback.lifecycleId !== representedRequest?.observedLifecycleId));
+    if (representedLifecycleIsGone) lastDispatch = null;
     const representationRetiresDraft = representedRequest !== null
       && representedRequest.representedLifecycleId !== null
       && (representedRequest.source === 'native-input'
@@ -647,6 +669,8 @@ export function createContinuousScalar(
           representedLifecycleId: null,
         }
         : null;
+      const canonical = canonicalOf(input);
+      if (canonical !== null) lastDispatch = { value: candidate, canonical };
       input.request(candidate);
     }
   }
@@ -673,14 +697,6 @@ export function createContinuousScalar(
     draft = normalized;
     draftCanonical = canonical;
     interaction = source;
-    localCommandRequest = input.evidence === 'command-feedback'
-      ? {
-        source,
-        observedLifecycleId: input.feedback.lifecycleId,
-        dispatched: false,
-        representedLifecycleId: null,
-      }
-      : null;
     if (!policy.dispatchesCanonical(source, {
       canonical,
       interactionBase: base,
@@ -691,6 +707,16 @@ export function createContinuousScalar(
       if (source !== 'pointer') interaction = 'idle';
       return true;
     }
+    if (source === 'pointer' && lastDispatch !== null
+      && Object.is(normalized, lastDispatch.value)) return true;
+    localCommandRequest = input.evidence === 'command-feedback'
+      ? {
+        source,
+        observedLifecycleId: input.feedback.lifecycleId,
+        dispatched: false,
+        representedLifecycleId: null,
+      }
+      : null;
     const mode = policy.dispatch(source);
     if (mode === 'immediate') {
       dispatch(normalized, source, authority, generation, renderer, isCurrent);
@@ -711,6 +737,7 @@ export function createContinuousScalar(
     const canonical = canonicalOf(input);
     const displayed = policy.preview === 'optimistic' && draft !== null ? draft : canonical;
     const common = {
+      interactionEpoch: invalidationGeneration,
       domain: snapshotDomain(input.domain),
       domainValid: validDomain(input.domain),
       canonical,
@@ -764,6 +791,7 @@ export function createContinuousScalar(
         const input = current();
         if (!rendererIsCurrent(renderer, isCurrent) || !editable(input)) return null;
         localCommandRequest = null;
+        lastDispatch = null;
         const token = ++gestureSequence;
         activeGesture = { renderer, token };
         interaction = 'pointer';

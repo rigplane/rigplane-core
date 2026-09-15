@@ -14,15 +14,16 @@
 import type { ServerState, ReceiverState } from '$lib/types/state';
 import type { Capabilities, ControlDomain, FilterModeConfig } from '$lib/types/capabilities';
 import {
+  controlDisplayDomain,
   deriveIfShift,
   nbDepthRawToDisplay,
   nrRawToDisplay,
   pbtRawToHz,
   projectNrLevel,
 } from '$lib/radio/filter-controls';
-import type { NrLevelProjection } from '$lib/radio/filter-controls';
+import type { NrLevelProjection, ControlDisplayDomain } from '$lib/radio/filter-controls';
 import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
-import { isFieldAvailable, getFieldAvailability } from '$lib/state/field-status';
+import { isFieldAvailable, isFieldRead } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 
 /* ── Private helpers ─────────────────────────────────────────── */
@@ -54,9 +55,7 @@ function activeFieldAvailable(state: ServerState | null, field: string): boolean
 
 function activeFieldShown(state: ServerState | null, field: string): boolean {
   if (!state) return false;
-  return (
-    getFieldAvailability(state, `${activeReceiverKey(state)}.${field}`) !== 'missing'
-  );
+  return isFieldRead(state, `${activeReceiverKey(state)}.${field}`);
 }
 
 function fieldObserved(state: ServerState | null, field: string): boolean {
@@ -357,6 +356,13 @@ export interface FilterProps {
   filterWidthMax: number;
   filterConfig: FilterModeConfig | null;
   ifShift: number;
+  /**
+   * The IF-shift control's display domain from the profile's
+   * `controls.if_shift` entry (MOR-1681), or null when the radio publishes
+   * nothing usable — `FilterPanel.svelte` keeps its own per-branch
+   * today-behaviour constants for that case.
+   */
+  ifShiftDomain: ControlDisplayDomain | null;
   hasIfShift: boolean;
   hasPbt: boolean;
   pbtInner: number;
@@ -415,6 +421,11 @@ export function toFilterProps(
     ifShift: hasCap(caps, 'if_shift')
       ? (rx?.ifShift ?? 0)
       : deriveIfShift(pbtInner, pbtOuter),
+    // MOR-1681: the IF-shift range/step come from the profile's published
+    // `controls.if_shift` entry when usable; the legacy fallback step is
+    // the family's today UI step (25 Hz, the semantic row and non-table
+    // panel rows). Null keeps FilterPanel on its own constants.
+    ifShiftDomain: controlDisplayDomain(caps?.controls?.if_shift, 25),
     // MOR-1494: whether the radio has a REAL if_shift command of its own.
     // Icom radios (PBT only, e.g. IC-7300) declare no `if_shift` capability
     // at all — `ifShift` above still computes a PBT-derived display value
@@ -557,6 +568,8 @@ export interface ModeProps {
   dataModeLabels: Record<string, string>;
   /** Active DATA group's MOD-input source (IC-7610 enum, MOR-616); null until read. */
   modInputSource: number | null;
+  /** Exact profile-declared MOD-input choices; empty when capability metadata is absent. */
+  modInputChoices: readonly { readonly value: number; readonly label: string }[];
   /** Show the MOD-input control: data_mode cap + the active group has been observed. */
   hasModInput: boolean;
 }
@@ -567,11 +580,16 @@ export function toModeProps(
 ): ModeProps {
   const rx = state ? activeRx(state) : null;
   // MOR-616: surface the MOD-input source of the active receiver's DATA
-  // group (data_mode 0→DATA OFF, 1→D1, 2→D2, 3→D3). The control is hidden
-  // until the backend has actually read the group (fieldStatus !== missing),
-  // so radios with a data_mode capability but no MOD-input routing (e.g.
-  // IC-7300) never render a dead dropdown.
-  const modInputKey = modInputStateKey(rx?.dataMode ?? 0);
+  // group (data_mode 0→DATA OFF, 1→D1, 2→D2, 3→D3). The control uses
+  // `isFieldRead` as its availability compatibility gate. The helper rejects
+  // the three explicit absence values while preserving the legacy no-entry
+  // fallback; it does not establish observation evidence.
+  const dataMode = rx?.dataMode;
+  const validDataGroup = Number.isSafeInteger(dataMode) && (dataMode as number) >= 0
+    && (dataMode as number) <= (caps?.dataModeCount ?? -1);
+  const modInputKey = validDataGroup ? modInputStateKey(dataMode as number) : null;
+  const modInputChoices = caps?.dataModeInputs ?? [];
+  const modInputSource = modInputKey === null ? null : state?.[modInputKey] ?? null;
   return {
     // MOR-1409 A11: no fabricated USB stand-in for an unobserved mode.
     currentMode: rx?.mode ?? '---',
@@ -585,11 +603,12 @@ export function toModeProps(
     hasDataMode: hasCap(caps, 'data_mode'),
     dataModeCount: caps?.dataModeCount ?? 0,
     dataModeLabels: caps?.dataModeLabels ?? { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' },
-    modInputSource: state?.[modInputKey] ?? null,
+    modInputSource: modInputChoices.some(option => option.value === modInputSource)
+      ? modInputSource : null,
+    modInputChoices,
     hasModInput:
-      hasCap(caps, 'data_mode') &&
-      state !== null &&
-      getFieldAvailability(state, modInputKey) !== 'missing',
+      hasCap(caps, 'data_mode') && modInputChoices.length > 0 && modInputKey !== null
+      && state !== null && isFieldRead(state, modInputKey),
   };
 }
 
@@ -775,6 +794,19 @@ export interface CwProps {
   hasApf: boolean;
   hasTwinPeak: boolean;
   autoTuneAvailable: boolean;
+  /**
+   * The pitch control's display domain from the profile's `controls.cw_pitch`
+   * entry (MOR-1682), or null when the radio publishes nothing usable —
+   * `CwPanel.svelte` keeps its own 300/900/5 constants for that case.
+   */
+  cwPitchDomain: ControlDisplayDomain | null;
+  /**
+   * The key-speed control's display domain from the profile's
+   * `controls.key_speed` entry (MOR-2475 F1), derived exactly like
+   * `cwPitchDomain` above it; null when the radio publishes nothing
+   * usable — `CwPanel.svelte` keeps its own 6/48/1 constants for that case.
+   */
+  keySpeedDomain: ControlDisplayDomain | null;
 }
 
 export function toCwProps(
@@ -814,6 +846,8 @@ export function toCwProps(
     autoTuneAvailable: hasCap(caps, 'cw')
       && hasCap(caps, 'audio')
       && caps?.audioFftAvailable === true,
+    cwPitchDomain: controlDisplayDomain(caps?.controls?.cw_pitch, 5),
+    keySpeedDomain: controlDisplayDomain(caps?.controls?.key_speed, 1),
   };
 }
 

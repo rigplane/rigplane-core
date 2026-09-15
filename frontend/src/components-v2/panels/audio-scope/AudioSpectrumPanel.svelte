@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
   import { deriveAudioSpectrumProps } from '$lib/runtime/adapters/panel-adapters';
   import AudioSpectrumCanvas from './AudioSpectrumCanvas.svelte';
@@ -12,10 +13,25 @@
   let fftPixels = $state<Uint8Array | null>(null);
   let fftBandwidth = $state(48000);
   let fftPush: ((data: Uint8Array) => void) | null = null;
+  let panel: HTMLDivElement;
+  let visible = $state(typeof IntersectionObserver === 'undefined');
+
+  onMount(() => {
+    if (typeof IntersectionObserver === 'undefined') {
+      visible = true;
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      visible = entry?.isIntersecting === true;
+    }, { rootMargin: '64px' });
+    observer.observe(panel);
+    return () => observer.disconnect();
+  });
 
   // Scope frames and resource demand have separate lifetimes (ADR INV-2, INV-5).
   $effect(() => {
     runtime.scope.registerPresentationDriver(presentationResources);
+    if (!visible) return;
     const lease = presentationResources.acquire('audio-fft', 'AudioSpectrumPanel');
     const unsubscribe = runtime.scope.subscribe((frame) => {
       fftPixels = frame.pixels;
@@ -34,7 +50,7 @@
   });
 </script>
 
-<div class="audio-spectrum-panel">
+<div class="audio-spectrum-panel" bind:this={panel} data-streaming={visible}>
   <AudioSpectrumCanvas
     data={fftPixels}
     onRegisterPush={(fn) => { fftPush = fn; }}
