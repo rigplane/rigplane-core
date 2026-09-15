@@ -24,7 +24,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getControlRange: vi.fn(() => null),
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
-  audioManager: { setAudioConfig: vi.fn() },
+  audioManager: { setAudioConfig: vi.fn(), setOperatorNotifier: vi.fn() },
 }));
 
 import { sendCommand } from '$lib/transport/ws-client';

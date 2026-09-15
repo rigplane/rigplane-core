@@ -21,6 +21,7 @@ exercised on every host.
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -172,3 +173,21 @@ async def test_no_tx_codec_ack_when_tx_audio_is_unavailable() -> None:
 
     assert ws.messages("audio_tx_format") == []
     assert handler._tx_active is False
+
+
+async def test_tx_start_refusal_is_logged_and_sent(caplog) -> None:
+    """The refusal the operator sees on the wire is also in the server log."""
+    ws = _CapturingWs()
+    handler = AudioHandler(ws, None, None)
+
+    with caplog.at_level(logging.WARNING, logger="rigplane.web.handlers.audio"):
+        await _start_tx(handler)
+
+    assert any(
+        "TX audio unavailable" in record.message
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+    )
+    assert ws.messages("error") == [
+        {"type": "error", "message": "audio_start: TX audio unavailable"}
+    ]
