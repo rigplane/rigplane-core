@@ -3,7 +3,7 @@
 Responsibilities:
 - Command dispatch table (long_cmd → async handler method)
 - Read-only gate (reject set commands with RPRT -22)
-- RadioState-first reads with a small handler-local fallback cache
+- RadioState-first reads
 - Error translation (rigplane exceptions → Hamlib error codes)
 
 This module receives RigctldCommand from protocol.py and returns
@@ -423,58 +423,14 @@ class _PendingRigState:
 
 @dataclass(slots=True)
 class _FallbackRigState:
-    """Handler-local fallback values used only until RadioState becomes valid."""
+    """Handler-local fallback values."""
 
-    freq: int = 0
-    freq_ts: float = 0.0
-    mode: str = "USB"
-    filter_width: int | None = None
-    mode_ts: float = 0.0
     data_mode: bool = False
     data_mode_ts: float = 0.0
-    ptt: bool = False
-    ptt_ts: float = 0.0
-    s_meter: int | None = None
-    s_meter_ts: float = 0.0
-    rf_power: float | None = None
-    rf_power_ts: float = 0.0
-    swr: float | None = None
-    swr_ts: float = 0.0
-
-    def is_fresh(self, field: str, ttl: float | None) -> bool:
-        if ttl is None or ttl <= 0.0:
-            return False
-        ts = getattr(self, f"{field}_ts", 0.0)
-        return ts > 0.0 and (time.monotonic() - ts) < ttl
-
-    def update_freq(self, freq: int) -> None:
-        self.freq = freq
-        self.freq_ts = time.monotonic()
-
-    def update_mode(self, mode: str, filter_width: int | None) -> None:
-        self.mode = mode
-        self.filter_width = filter_width
-        self.mode_ts = time.monotonic()
 
     def update_data_mode(self, on: bool) -> None:
         self.data_mode = on
         self.data_mode_ts = time.monotonic()
-
-    def update_ptt(self, on: bool) -> None:
-        self.ptt = on
-        self.ptt_ts = time.monotonic()
-
-    def update_s_meter(self, raw: int) -> None:
-        self.s_meter = raw
-        self.s_meter_ts = time.monotonic()
-
-    def update_rf_power(self, value: float) -> None:
-        self.rf_power = value
-        self.rf_power_ts = time.monotonic()
-
-    def update_swr(self, value: float) -> None:
-        self.swr = value
-        self.swr_ts = time.monotonic()
 
 
 @dataclass(frozen=True, slots=True)
@@ -860,14 +816,11 @@ class RigctldHandler:
         self._key_down_backstop_task: asyncio.Task[None] | None = None
         self._key_down_backstop_token: int = 0
         self._key_down_backstop_session: str | None = None
-        # Legacy routing cache is retained only for vendor-specific routing
-        # strategies that still depend on it (Yaesu today). Core rigctld GET
-        # paths project from StateStore plus scoped CommandService overlays.
+        # Handler-local data-mode fallback. Core rigctld GET paths project
+        # from StateStore plus scoped CommandService overlays.
         self._cache = _FallbackRigState()
         self._pending = _PendingRigState()
-        self._routing = create_routing(
-            radio, self._cache, getattr(config, "max_power_w", 100.0)
-        )
+        self._routing = create_routing(radio, getattr(config, "max_power_w", 100.0))
         if state_store is None and isinstance(radio, StateStoreCapable):
             state_store = radio.state_store
         self._has_canonical_state_store = isinstance(state_store, StateStore)
@@ -1860,7 +1813,6 @@ class RigctldHandler:
             if dropped is not None:
                 return dropped
         await self._execute_write(intent)
-        self._cache.update_mode(base_mode_str, filter_width)
         if requested_mode in packet_modes:
             self._cache.update_data_mode(True)
         # ``filter_width`` (the local var) is a filter NUMBER, so the readback

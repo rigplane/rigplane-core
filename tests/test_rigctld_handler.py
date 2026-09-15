@@ -887,7 +887,6 @@ async def test_set_mode_packet_refreshes_data_mode_cache(
     assert resp.ok
     mock_radio.set_mode.assert_awaited_once_with(base_mode, filter_width=None)
     mock_radio.set_data_mode.assert_awaited_once_with(True)
-    assert handler._cache.mode == base_mode  # noqa: SLF001
     assert handler._cache.data_mode is True  # noqa: SLF001
 
 
@@ -3398,9 +3397,7 @@ def yaesu_radio() -> AsyncMock:
 
     mock = AsyncMock(spec=_FakeYaesuRadio)
     mock.backend_id = "yaesu_cat"
-    mock.rigctld_routing = lambda cache, max_power_w=100.0: YaesuRouting(
-        mock, cache, max_power_w
-    )
+    mock.rigctld_routing = lambda max_power_w=100.0: YaesuRouting(mock, max_power_w)
     return mock
 
 
@@ -3817,9 +3814,7 @@ def domain_yaesu_radio() -> AsyncMock:
     mock.snap_control_display = real.snap_control_display
     mock.decode_control_raw = real.decode_control_raw
     mock.control_display_bounds = real.control_display_bounds
-    mock.rigctld_routing = lambda cache, max_power_w=100.0: YaesuRouting(
-        mock, cache, max_power_w
-    )
+    mock.rigctld_routing = lambda max_power_w=100.0: YaesuRouting(mock, max_power_w)
     return mock
 
 
@@ -4881,9 +4876,7 @@ def _yaesu_handler(get_attenuator_value: bool) -> RigctldHandler:
     radio.backend_id = "yaesu_cat"
     radio.capabilities = set()
     radio.get_attenuator = AsyncMock(return_value=get_attenuator_value)
-    radio.rigctld_routing = lambda cache, max_power_w=100.0: YaesuRouting(
-        radio, cache, max_power_w
-    )
+    radio.rigctld_routing = lambda max_power_w=100.0: YaesuRouting(radio, max_power_w)
     return RigctldHandler(radio, RigctldConfig())
 
 
