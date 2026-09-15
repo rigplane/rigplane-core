@@ -2,7 +2,7 @@ import type { Snippet } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type {
-  AudioFocus, ModInputReadiness, MonitorMode, RxAudioViewModel,
+  AudioFocus, ModInputReadiness, MonitorMode, RadioViewModel, RxAudioViewModel,
 } from './radio-view-model';
 
 export interface RxAudioTargetAuthority {
@@ -18,6 +18,8 @@ export interface RxAudioControlSession {
 export interface RxAudioAuthorityPublication {
   readonly state: ServerState | null;
   readonly caps: Capabilities | null;
+  /** App-owned projection shared by every authority consumer. */
+  readonly view?: RadioViewModel | null;
   readonly session: RxAudioControlSession;
   readonly rxAudioTarget: RxAudioTargetAuthority;
 }

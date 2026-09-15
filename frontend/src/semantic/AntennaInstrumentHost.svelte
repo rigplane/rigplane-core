@@ -48,10 +48,15 @@
   export interface AntennaAuthorityPublication {
     readonly state: ServerState | null;
     readonly caps: Capabilities | null;
+    /** App-owned projection shared by every authority consumer. */
+    readonly view?: RadioViewModel | null;
     readonly session: { readonly state: 'disconnected' | 'connecting' | 'connected' | 'reconnecting'; readonly epoch: number };
   }
   export type SubscribeAntennaAuthority = (handler: (value: AntennaAuthorityPublication) => void) => () => void;
-  export interface AntennaInstrumentHandles { readonly txPort: Snippet; readonly rxAnt: Snippet }
+  export interface AntennaInstrumentHandles {
+    readonly txPort: Snippet<[compact?: boolean]>;
+    readonly rxAnt: Snippet<[compact?: boolean]>;
+  }
   export interface AntennaInstrumentLayout {
     readonly blockedId: string;
     readonly blocked: readonly AntennaSwitchBlock[];
@@ -94,14 +99,17 @@
     if (source.session.state !== 'connected' || !safe(source.session.epoch)
       || !safe(generation) || !safe(source.caps?.providerGeneration)
       || generation !== source.caps?.providerGeneration) return null;
-    const current = toRadioViewModel(source.state, source.caps);
+    const current = source.view === undefined
+      ? toRadioViewModel(source.state, source.caps) : source.view;
     return current?.antenna ? JSON.stringify([source.session.epoch, generation, current.topologyId,
       current.antenna.antennaCount, current.antenna.rxAnt.availability.structural]) : null;
   }
   function currentInput() {
     void tx;
     const currentTx = readTx();
-    const current = published === null ? null : toRadioViewModel(published.state, published.caps, currentTx);
+    const current = published === null ? null
+      : published.view === undefined
+        ? toRadioViewModel(published.state, published.caps, currentTx) : published.view;
     const blockedReasons = current === null ? [] : antennaSwitchBlocks(current, currentTx);
     return { current, blocked: blockedReasons.length > 0, blockedReasons };
   }
@@ -138,7 +146,7 @@
   });
 </script>
 
-{#snippet txPort()}
+{#snippet txPort(compact = false)}
   {#if ant}
     {#key context}{#key finiteAppearance?.choice}
       {#if finiteAppearance}
@@ -154,13 +162,13 @@
               aria-checked={lease.view?.selected === port} aria-describedby={layout.blockedId}
               disabled={!lease.view?.available} onclick={() => lease.invoke(port)}>ANT {port}</button>
           {/each}
-          <output data-testid="antenna-port-value">{textOf(ant.txAntenna)}</output>
+          <output class:sr-only={compact} data-testid="antenna-port-value">{textOf(ant.txAntenna)}</output>
         </div>
       {/if}
     {/key}{/key}
   {/if}
 {/snippet}
-{#snippet rxAnt()}
+{#snippet rxAnt(compact = false)}
   {#if ant?.rxAnt.availability.structural}
     {#key context}{#key finiteAppearance?.toggle}
       {#if finiteAppearance}
@@ -172,7 +180,8 @@
           <button type="button" class="antenna-choice" data-testid="antenna-rx-toggle"
             aria-pressed={lease.view?.confirmed} aria-describedby={layout.blockedId}
             disabled={!lease.view?.available} onclick={() => lease.invoke()}>
-            RX-ANT: {textOf(ant.rxAnt)}</button>
+            {compact ? 'RX ANT' : `RX-ANT: ${textOf(ant.rxAnt)}`}</button>
+          {#if compact}<output class="sr-only" data-testid="antenna-rx-value">{textOf(ant.rxAnt)}</output>{/if}
         </div>
       {/if}
     {/key}{/key}
@@ -185,4 +194,5 @@
   .antenna-choice[aria-checked='true'], .antenna-choice[aria-pressed='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }
   button:disabled { cursor: not-allowed; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 </style>

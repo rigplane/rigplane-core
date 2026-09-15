@@ -1277,15 +1277,32 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledOnce();
   });
 
-  it('rejects resize completion after authority or frame-geometry drift', () => {
+  it.each([
+    ['filter shape', { filterShape: 2 }],
+    ['scope controls', { scopeControls: Object.freeze({
+      mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 3 }) }),
+    }) }],
+  ])('keeps resize completion through unrelated %s churn', (_label, overrides) => {
     const target = mountPanel();
     emitFrame();
     const { waterfall } = prepareGeometry(target);
     const zone = waterfall.querySelector<HTMLButtonElement>('.passband-resize-zone')!;
     pointer(zone, 'pointerdown', 26, 100);
     pointer(waterfall, 'pointermove', 26, 130);
-    authorityHarness.state.current = authority({ filterShape: 2 });
+    authorityHarness.state.current = authority(overrides);
     pointer(waterfall, 'pointerup', 26, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledOnce();
+  });
+
+  it('rejects resize completion after passband identity or frame-geometry drift', () => {
+    const target = mountPanel();
+    emitFrame();
+    const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector<HTMLButtonElement>('.passband-resize-zone')!;
+    pointer(zone, 'pointerdown', 27, 100);
+    pointer(waterfall, 'pointermove', 27, 130);
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_100 });
+    pointer(waterfall, 'pointerup', 27, 130);
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
 
     authorityHarness.state.current = authority();

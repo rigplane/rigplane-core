@@ -42,7 +42,6 @@
   import type { RfFrontEndFiniteHandles } from '../../semantic/rf-front-end-instruments';
   import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instruments';
   import type { FilterInstrumentHandles } from '../../semantic/filter-instruments';
-  import type { BandInstrumentHandles } from '../../semantic/band-instruments';
   import { ANTENNA_BLOCKED_LABEL } from '../../semantic/AntennaInstrumentHost.svelte';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import KeyboardHandler from './KeyboardHandler.svelte';
@@ -141,10 +140,13 @@
   const STANDARD_PANEL_ID_REPLACEMENTS: Readonly<Record<string, readonly string[]>> = {
     'semantic-rit-xit-scan': ['semantic-rit-xit', 'semantic-scan'],
     'rit-xit': ['semantic-rit-xit'], scan: ['semantic-scan'], agc: ['semantic-agc'],
+    'semantic-band': [],
   };
   function migrateStandardPanelPreferences(): void {
     if (!standardFaceAtMount || typeof localStorage === 'undefined') return;
-    const orderKeys = ['rigplane:panel-order', 'rigplane:right-panel-order'] as const;
+    const orderKeys = [
+      'rigplane:panel-order', 'rigplane:right-panel-order', 'rigplane:bottom-panel-order',
+    ] as const;
     const migratedIds = new Set<string>();
     for (const key of orderKeys) {
       try {
@@ -196,7 +198,7 @@
   const standardLeftDrag: PanelDragOwner | null = standardFaceAtMount ? createDragReorder({
     storageKey: 'rigplane:panel-order',
     defaults: [
-      'semantic-rf-front-end', 'semantic-filter', 'semantic-band', 'semantic-agc',
+      'semantic-rf-front-end', 'semantic-filter', 'semantic-agc',
       'semantic-rit-xit', 'semantic-antenna', 'semantic-scan', 'band',
     ],
     containerSelector: '.standard-panel-owner-left',
@@ -322,12 +324,6 @@
   // Reactive state + capabilities — via runtime
   let radioState = $derived(runtime.state);
   let caps = $derived(runtime.caps);
-  let directFrequencyEntrySupported = $derived(
-    caps?.capabilities.includes('vfo_freq_direct') === true
-      && caps.receivers === 1
-      && caps.vfoScheme === 'ab',
-  );
-
   // MOR-1235. The meters dock's TX chrome takes its truth from the App-owned
   // TX controller — the SAME source as the authoritative global lamp
   // (MOR-1008/MOR-1059) — and never from `radioState.ptt`, a command/readback
@@ -587,7 +583,7 @@
 
 {#snippet rfFrontEndFiniteLayout(rfFrontEndInstruments: RfFrontEndFiniteHandles)}
   <div class="rf-front-end-finite-grid">
-    <div class="rf-front-end-finite-seat" data-field="attenuator">{@render rfFrontEndInstruments.attenuator()}</div>
+    <div class="rf-front-end-finite-seat" data-field="attenuator">{@render rfFrontEndInstruments.attenuator(true)}</div>
     <div class="rf-front-end-finite-seat" data-field="preamp">{@render rfFrontEndInstruments.preamp()}</div>
     <div class="rf-front-end-finite-seat" data-field="digiSel">{@render rfFrontEndInstruments.digiSel()}</div>
     <div class="rf-front-end-finite-seat" data-field="ipPlus">{@render rfFrontEndInstruments.ipPlus()}</div>
@@ -598,7 +594,7 @@
   <div class="rx-audio-finite-grid">
     <div class="rx-audio-finite-seat" data-field="monitorMode">{@render rxAudioInstruments.monitorMode()}</div>
     {#if rxAudioInstruments.afLevelRow}<div class="rx-audio-finite-seat" data-field="afLevel">{@render rxAudioInstruments.afLevelRow()}</div>{/if}
-    {#if rxAudioInstruments.monitorStatus}<div class="rx-audio-finite-seat" data-field="monitorStatus">{@render rxAudioInstruments.monitorStatus()}</div>{/if}
+    {#if rxAudioInstruments.monitorStatus}<div class="rx-audio-finite-seat" data-field="monitorStatus"><div class="sr-only">{@render rxAudioInstruments.monitorStatus()}</div></div>{/if}
     <div class="rx-audio-finite-seat" data-field="routingFocus">{@render rxAudioInstruments.routingFocus()}</div>
     {#if rxAudioInstruments.routingSplitToggle}<div class="rx-audio-finite-seat" data-field="routingSplit">{@render rxAudioInstruments.routingSplitToggle()}</div>{/if}
     {#if rxAudioInstruments.mainGain}<div class="rx-audio-finite-seat" data-field="mainGain">{@render rxAudioInstruments.mainGain()}</div>{/if}
@@ -631,20 +627,10 @@
   </div>
 {/snippet}
 
-{#snippet bandControlLayout(bandInstruments: BandInstrumentHandles)}
-  <div class="band-control-grid" data-testid="band-control-grid">
-    <div class="band-control-seat" data-field="bandChoice">{@render bandInstruments.bandChoice()}</div>
-    <div class="band-control-seat" data-field="frequencyEntry">
-      {@render bandInstruments.frequencyEntry()}
-    </div>
-  </div>
-{/snippet}
-
 <!--
   MOR-2425. The Standard face arranges the two persistent antenna seats itself
-  instead of mounting the grouped `AntennaSurface`, so the blocked-reason list
-  the seats' `aria-describedby` points at has to be rendered here too — the
-  host hands both the id and the reason codes on `instruments.antennaLayout`.
+  instead of mounting the grouped `AntennaSurface`. Its accessible blocked
+  explanation remains here too without becoming volatile panel text.
 -->
 {#snippet antennaControlLayout()}
   {#if runtime.caps?.antennas === 1}
@@ -653,17 +639,15 @@
     </div>
   {:else}<div class="antenna-control-grid" data-testid="antenna-control-grid">
     <div class="antenna-control-seat" data-field="txPort">
-      {@render instruments.antennaInstruments.txPort()}
+      {@render instruments.antennaInstruments.txPort(true)}
     </div>
     <div class="antenna-control-seat" data-field="rxAnt">
-      {@render instruments.antennaInstruments.rxAnt()}
+      {@render instruments.antennaInstruments.rxAnt(true)}
     </div>
   </div>{/if}
-  {#if runtime.caps?.antennas !== 1}<ul class="antenna-blocked" id={instruments.antennaLayout.blockedId} data-testid="antenna-blocked">
-    {#each instruments.antennaLayout.blocked as code (code)}
-      <li data-reason={code}>{ANTENNA_BLOCKED_LABEL[code]}</li>
-    {/each}
-  </ul>{/if}
+  {#if runtime.caps?.antennas !== 1}<span class="sr-only" id={instruments.antennaLayout.blockedId} data-testid="antenna-blocked">
+    {instruments.antennaLayout.blocked.map((code) => ANTENNA_BLOCKED_LABEL[code]).join('; ')}
+  </span>{/if}
 {/snippet}
 
 {#snippet vfoOperationControls()}
@@ -692,11 +676,6 @@
         panelId: 'semantic-filter-controls', draggable: false,
         onDragStart: owner.handleDragStart, style: owner.dragStyle('semantic-filter'),
       },
-    )}
-  {/if}
-  {#if owner.order.includes('semantic-band') && !directFrequencyEntrySupported}
-    {@render instruments.band(
-      undefined, bandControlLayout, panelChrome(owner, 'semantic-band'),
     )}
   {/if}
   {#if owner.order.includes('semantic-antenna')}
@@ -1220,13 +1199,16 @@
   .standard-bottom-dock :global([data-panel-id='semantic-meters'] .collapsible-content) {
     min-height: 0; overflow: hidden;
   }
-  /* Routine authority explanations remain in the key's accessible description,
-     without growing the Standard panel during an already-active TX session. */
-  .desktop-control-face.standard-face :global(.rx-tx-blocked [data-reason='tx-busy']),
-  .desktop-control-face.standard-face :global(.rx-tx-blocked [data-reason='radio-transmitting']),
-  .desktop-control-face.standard-face :global([data-testid='tx-aux-tune-blocked'] [data-reason='tx-busy']),
-  .desktop-control-face.standard-face :global([data-testid='tx-aux-tune-blocked'] [data-reason='radio-transmitting']) {
-    display: none;
+  /* Standard keeps RX Audio's raw fallback/readiness text in the accessibility
+     tree, while the stable controls retain the visible operator contract. */
+  .desktop-control-face.standard-face :global([data-testid='rf-front-end-preamp-mutex-reason']),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-focus-value']),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-main-gain'] output),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-sub-gain'] output),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-mod-source']),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-mod-readiness']) {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
   .dsp-finite-grid {
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
@@ -1264,15 +1246,13 @@
   .filter-finite-grid .filter-finite-seat[data-field='filter'] :global(.filter-choice-group) {
     display: flex;
   }
-  .band-control-grid, .band-control-seat { display: contents; }
   .antenna-control-grid { display: flex; flex-direction: column; gap: 0.25rem; }
   .antenna-fixed-port {
     display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem;
     padding: 0.25rem 0.5rem;
   }
   .antenna-control-seat { display: contents; }
-  .antenna-blocked { margin: 0; padding-inline-start: 1.2em; }
-  .antenna-blocked:empty { display: none; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   .vfo-operation-instrument-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .tx-aux-scalar-grid {
     display: grid;

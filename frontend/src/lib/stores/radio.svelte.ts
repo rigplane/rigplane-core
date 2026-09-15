@@ -4,12 +4,13 @@ import { getFieldStatus, isFieldAvailable } from '../state/field-status';
 import { capabilitiesMatchGeneration, getCapabilities } from './capabilities.svelte';
 
 /**
- * Shared radio state — class-based $state pattern for cross-module reactivity.
- * Svelte 5 recommends class instances with $state properties for sharing
- * reactive state across modules and components.
+ * Shared radio state — class-based raw-state pattern for cross-module
+ * reactivity. Server snapshots are immutable at this boundary and are always
+ * replaced as a whole; deep proxying makes every adapter traversal pay for
+ * thousands of nested get/ownKeys traps on each meter/state delivery.
  */
 class RadioStore {
-  current = $state<ServerState | null>(null);
+  current = $state.raw<ServerState | null>(null);
 }
 
 export const radio = new RadioStore();
@@ -262,14 +263,14 @@ export function setRadioState(state: ServerState): boolean {
   const observationAdvanced = nextObservationSeq > lastObservationSeq;
   const semanticAdvanced = nextStateRevision > lastRevision;
   const semanticCurrent = nextStateRevision === lastRevision;
-  const liveMetadataAdvanced = semanticCurrent
-    && deliverySeq(nextState) > deliverySeq(radio.current)
-    && hasOnlyLiveMetadataChanges(radio.current, nextState);
   const metadataAdvanced = semanticCurrent && (
     freshnessAdvanced
     || observationAdvanced
     || healthAdvanced
-    || liveMetadataAdvanced
+    || (
+      deliverySeq(nextState) > deliverySeq(radio.current)
+      && hasOnlyLiveMetadataChanges(radio.current, nextState)
+    )
   );
   if (
     isInitial

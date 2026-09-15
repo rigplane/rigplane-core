@@ -47,8 +47,13 @@ describe('AttenuatorControl', () => {
 
     const segments = Array.from(target.querySelectorAll('.button-grid .v2-control-button')).map((button) => button.textContent?.trim());
     expect(segments).toEqual(['OFF', '6dB', '12dB', '18dB']);
+    const radios = [...target.querySelectorAll('.button-grid [role="radio"]')];
+    expect(radios.map((radio) => radio.getAttribute('aria-checked')))
+      .toEqual(['true', 'false', 'false', 'false']);
+    expect(target.querySelector('.button-grid')?.getAttribute('role')).toBe('radiogroup');
     const moreButton = target.querySelector<HTMLButtonElement>('.att-control > div:not(.button-grid) .v2-control-button');
     expect(moreButton?.textContent?.trim()).toBe('MORE');
+    expect(moreButton?.getAttribute('aria-expanded')).toBe('false');
   });
 
   it('shows the selected overflow value on the more button when ATT is on a non-quick step', () => {

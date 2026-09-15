@@ -64,7 +64,7 @@
     layoutProfile?: VfoLayoutProfile;
     onModeClick?: () => void;
     onFreqChange?: (freq: number) => void;
-    /** Opens direct entry for this card; digit arithmetic remains independent. */
+    /** Opens the frequency-entry overlay for this card. */
     onFrequencyClick?: (trigger: HTMLElement) => void;
     onSelectSlot?: (key: string) => void;
     /** Selects this VFO from its header; frequency gestures remain independent. */
@@ -88,7 +88,7 @@
   }: Props = $props();
 
   let meterVariant = $derived(layoutProfile === 'wide' ? 'vfo-wide' : 'vfo');
-  let frequencyEntryButton = $derived(onFrequencyClick !== undefined && controlsDisabled
+  let frequencyEntryButton = $derived(onFrequencyClick !== undefined
     && (frequencyState === 'current' || frequencyState === 'stale')
     && freq !== null && freq !== undefined && Number.isFinite(freq));
   const staleId = `vfo-panel-stale-${++sequence}`;
@@ -111,8 +111,7 @@
     const readout = event.target.closest('.freq');
     if (readout === null || !(event.currentTarget instanceof HTMLElement)
       || !event.currentTarget.contains(readout)) return;
-    const trigger = frequencyEntryButton
-      ? event.currentTarget : readout;
+    const trigger = frequencyEntryButton ? event.currentTarget : readout;
     if (trigger instanceof HTMLElement) {
       if (frequencyEntryButton) event.stopPropagation();
       onFrequencyClick(trigger);

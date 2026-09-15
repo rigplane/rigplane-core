@@ -96,7 +96,8 @@
   {...stateFeedback?.attributes ?? {}}
 >
   <p
-    class="rx-tx-state" role="status" data-testid="rx-tx-state" hidden={!standard && !showTxState}
+    class="rx-tx-state" class:sr-only={standard && !showTxState}
+    role="status" data-testid="rx-tx-state" hidden={!standard && !showTxState}
     data-rf={rf} data-session={session} data-intent={tx.intent ?? undefined}
   >
     <span class="rx-tx-mark" data-testid="rx-tx-rf-mark" aria-hidden="true">{RF_MARK[rf]}</span>
@@ -124,7 +125,7 @@
       TX target: {receiver} {slot} · {frequencyHz ?? '—'} Hz
     </p>
   {:else}
-    <p data-testid="rx-tx-target" data-target="unknown" data-reason={reason}>
+    <p class:sr-only={standard} data-testid="rx-tx-target" data-target="unknown" data-reason={reason}>
       {unknownTargetMessage}
     </p>
   {/if}
@@ -152,7 +153,7 @@
   </div>
 
   {#if blockedDescription}<span id={blockedId} class="sr-only">{blockedDescription}</span>{/if}
-  <ul class="rx-tx-blocked" data-testid="rx-tx-blocked">
+  <ul class="rx-tx-blocked" class:sr-only={standard} data-testid="rx-tx-blocked">
     {#each visibleBlocked as code (code)}<li data-reason={code}>{blockedLabel(code)}</li>{/each}
     {#each viewBlocked as item (item.field + item.code)}
       <li data-reason={item.code} data-field={item.field}>{item.field}: {item.code}</li>

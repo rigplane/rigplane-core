@@ -123,14 +123,30 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
   result.geometryPaths = geometryFields.map((leaf) => `${key}.${leaf}`);
   let invalid = false;
   let stale = false;
+  let heldReadbackConfirmed = true;
   const currentPaths = new Set<string>();
+  function stalePathIsConfirmed(path: string): boolean {
+    for (let candidate = path; candidate.length > 0;) {
+      const status = state!.fieldStatus?.[candidate];
+      if (status && (status.freshness === 'stale' || status.availability === 'stale')
+        && !status.quality?.includes('confirmed')) return false;
+      const separator = candidate.lastIndexOf('.');
+      if (separator < 0) break;
+      candidate = candidate.slice(0, separator);
+    }
+    return true;
+  }
   function read<T extends Scalar>(path: string, value: T | undefined, radio = false): T | undefined {
     const args = { state, caps, path, value, structural: true };
     const observation = radio ? qualifyRadioDisplayObservation(args)
       : qualifyDisplayObservation({ ...args, receiver: selection!.receiver });
     if (observation.state !== 'current' && observation.state !== 'stale') { invalid = true; return undefined; }
-    stale ||= observation.state === 'stale';
-    if (observation.state === 'current') currentPaths.add(path);
+    const confirmedHeld = observation.state === 'stale' && stalePathIsConfirmed(path);
+    if (observation.state === 'stale') {
+      stale = true;
+      heldReadbackConfirmed &&= confirmedHeld;
+    }
+    if (observation.state === 'current' || confirmedHeld) currentPaths.add(path);
     result.observations[path] = Object.freeze({ value: observation.value,
       marker: state!.fieldStatus![path].lastObservedMonotonic! });
     for (let prefix = path; prefix.includes('.');) {
@@ -210,7 +226,14 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
     || resolution.frame.startHz !== frame.startFreq || resolution.frame.endHz !== frame.endFreq) return result;
   const tuple = Object.freeze({ frequencyHz: frequency, mode, widthHz: width, shiftHz,
     frameMode: frame.mode, startHz: frame.startFreq, endHz: frame.endFreq });
-  const strict = stale ? null : toSpectrumAuthority(state, caps);
+  // A held-stale value carrying provider-confirmed readback is still an
+  // authoritative radio fact.  IC-7610 polling intervals intentionally exceed
+  // some field max-age windows, so requiring every passband leaf to be fresh in
+  // the same scope frame made the overlay appear only during brief poll
+  // coincidences and left its resize handle unusable.  Unconfirmed stale facts
+  // retain the conservative stale/first-stale behavior below.
+  const effectiveStale = stale && !heldReadbackConfirmed;
+  const strict = effectiveStale ? null : toSpectrumAuthority(state, caps);
   const band = findActiveBand(frequency, caps.freqRanges ?? []);
   const partition = flattenBands(caps.freqRanges ?? []).find((entry) =>
     entry.name === band && frequency >= entry.start && frequency <= entry.end);
@@ -218,7 +241,7 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
     selection.receiver, selection.slot, mode, filter, data, 'hardware',
     envelope.transportEpoch, frame.mode];
   result.candidate = {
-    tuple, stale, frequencyCurrent, frequencyAligned,
+      tuple, stale: effectiveStale, frequencyCurrent, frequencyAligned,
     identity: JSON.stringify([...context, frequency, frame.startFreq, frame.endFreq]),
     continuityIdentity: !partition ? null
       : JSON.stringify([...context, partition.name, partition.start, partition.end, frame.endFreq - frame.startFreq]),

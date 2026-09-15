@@ -856,8 +856,7 @@
           frequency={receiverInstruments !== undefined && dominant && frequencyHandle
             && (fixed === undefined || fixed.isActiveSlot)
             ? hostedFrequency : undefined}
-          freq={receiverInstruments === undefined || (fixed !== undefined && !fixed.isActiveSlot)
-            ? dominant?.frequencyHz ?? null : undefined}
+          freq={dominant?.frequencyHz ?? null}
           displayHz={(receiverInstruments === undefined || (fixed !== undefined && !fixed.isActiveSlot)) && dominant
             ? displayValue(dominant.display?.frequencyHz, dominant.frequencyHz) : undefined}
           pendingDisplayHz={receiverInstruments === undefined && dominant

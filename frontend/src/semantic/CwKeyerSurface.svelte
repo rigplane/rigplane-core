@@ -178,6 +178,9 @@
   let breakInReason = $derived(
     view.disabledReasons.find((r) => r.field === 'cwKeyer.breakIn')?.code,
   );
+  const breakInId = $props.id();
+  const breakInPostureId = `${breakInId}-posture`;
+  const breakInReasonId = `${breakInId}-reason`;
   const mutexed = (field: 'apf' | 'twinPeak'): boolean =>
     view.disabledReasons.some((r) => r.field === `cwKeyer.${field}`);
   const reversePaddleToggle = bindToggleInstrument(() => ({
@@ -387,6 +390,7 @@
               data-testid={`cw-keyer-break-in-${label}`}
               aria-checked={cw.breakIn.reading.status === 'known'
                 && cw.breakIn.reading.value === label}
+              aria-describedby={`${breakInPostureId}${!permitAllowed && breakInReason ? ` ${breakInReasonId}` : ''}`}
               disabled={!usable(cw.breakIn) || !permitAllowed}
               onclick={() => standard && mode !== 0 ? toggleBreakIn(label as 'semi' | 'full', mode) : setBreakIn(mode)}
             >{standard ? label.toUpperCase() : label}</button>
@@ -397,11 +401,11 @@
              permitted" — the operator's radio can still key from its own
              paddle while this UI refuses to change the setting. It is a
              SENTENCE, so it gets its own line below the keys and may wrap. -->
-        <p class="cw-keyer-sentence" class:sr-only={standard && permitAllowed}>
+        <p id={breakInPostureId} class="cw-keyer-sentence" class:sr-only={standard}>
           <output data-testid="cw-keyer-posture">{POSTURE_LABEL[breakInPosture(cw.breakIn)]}</output>
         </p>
         {#if !permitAllowed && breakInReason}
-          <p class="cw-keyer-sentence">
+          <p id={breakInReasonId} class="cw-keyer-sentence" class:sr-only={standard}>
             <output data-testid="cw-keyer-break-in-blocked" data-reason={breakInReason}
             >{breakInBlockedLabel(breakInReason)}</output>
           </p>
