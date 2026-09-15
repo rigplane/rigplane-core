@@ -165,6 +165,7 @@
   "core.toast.txAudioServerUnavailable": "TX audio unavailable — the server refused to start transmission",
   "core.toast.txAudioMicPermissionDenied": "Microphone access denied — TX audio cannot start",
   "core.toast.txAudioCaptureUnsupported": "Microphone capture is not supported by this browser",
+  "core.toast.txAudioStartFailed": "TX audio could not start",
   "core.toast.txAudioStopped": "TX audio stopped — the transmission ended early",
   "core.toast.unknown": "Something went wrong. Try again later.",
 

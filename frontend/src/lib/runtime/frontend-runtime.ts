@@ -122,6 +122,13 @@ class FrontendRuntime {
   });
 
   constructor() {
+    // TX audio failures reach the operator through the existing notification
+    // bus; lib/audio must not import transport directly
+    // (radio-authority/structural-boundary), so the sink is injected here.
+    // Optional call: test doubles may stub audioManager without this method;
+    // frontend-runtime.isolated.test.ts pins the real injection.
+    audioManager.setOperatorNotifier?.((level, message, code) => transport.emitLocalNotification(level, message, code));
+
     presentationResources.configure('hardware-scope', {
       available: false,
       selected: false,

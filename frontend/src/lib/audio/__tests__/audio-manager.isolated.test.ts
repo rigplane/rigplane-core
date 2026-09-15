@@ -9,7 +9,6 @@ const txStart = vi.fn().mockResolvedValue(null);
 const txStop = vi.fn();
 const txApplyServerCodec = vi.fn(() => ({ switched: false, error: null }));
 let txCaptureDied: ((reason: string) => void) | null = null;
-const emitLocalNotification = vi.fn();
 
 vi.mock('../rx-player', () => ({
   RxPlayer: class {
@@ -43,10 +42,6 @@ vi.mock('../tx-mic', () => ({
       txCaptureDied = onCaptureDied ?? null;
     }
   },
-}));
-
-vi.mock('../../transport/ws-client', () => ({
-  emitLocalNotification: emitLocalNotification,
 }));
 
 vi.mock('../../stores/connection.svelte', () => ({
@@ -305,6 +300,8 @@ describe('AudioManager reconnect coalescing (MOR-924)', () => {
 
 
 describe('AudioManager TX failure notifications (MOR-1783)', () => {
+  const notifyOperator = vi.fn();
+
   beforeEach(() => {
     vi.resetModules();
     vi.unstubAllGlobals();
@@ -318,17 +315,17 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
     ws.onmessage?.({ data: JSON.stringify(msg) });
   }
 
-  /** The toast forward loads its module lazily (dynamic import), so a
-   *  negative "no banner" assertion must first let that settle. */
-  async function notificationSettled(): Promise<void> {
-    for (let i = 0; i < 5; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
+  /** Import the module and inject a spy in place of the operator notifier
+   *  frontend-runtime.ts wires in production. */
+  async function withNotifier() {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.setOperatorNotifier(notifyOperator);
+    return audioManager;
   }
 
   it('server TX refusal raises one txAudioServerUnavailable banner and releases TX through the died path', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { audioManager } = await import('../audio-manager');
+    const audioManager = await withNotifier();
     const died = vi.fn();
     audioManager.onTxAudioDied(died);
     await audioManager.startTx();
@@ -337,10 +334,9 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
     ws.sent = [];
 
     serverText(ws, { type: 'error', message: 'audio_start: TX audio unavailable' });
-    await vi.waitFor(() => expect(emitLocalNotification).toHaveBeenCalled());
 
-    expect(emitLocalNotification).toHaveBeenCalledTimes(1);
-    expect(emitLocalNotification).toHaveBeenCalledWith(
+    expect(notifyOperator).toHaveBeenCalledTimes(1);
+    expect(notifyOperator).toHaveBeenCalledWith(
       'error', expect.any(String), 'txAudioServerUnavailable',
     );
     expect(died).toHaveBeenCalledTimes(1);
@@ -349,7 +345,7 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
   });
 
   it('ignores audio-WS error envelopes that are not the TX refusal', async () => {
-    const { audioManager } = await import('../audio-manager');
+    const audioManager = await withNotifier();
     await audioManager.startTx();
     const ws = FakeWebSocket.instances[0];
     ws.open();
@@ -360,9 +356,8 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
       message: "audio_config: invalid focus 'both'; expected one of ['main', 'sub']",
     });
     serverText(ws, { type: 'error', message: 'something else entirely' });
-    await notificationSettled();
 
-    expect(emitLocalNotification).not.toHaveBeenCalled();
+    expect(notifyOperator).not.toHaveBeenCalled();
     expect(audioManager.txEnabled).toBe(true);
     audioManager.stopTx();
   });
@@ -371,16 +366,15 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
     ['TX MIC: permission denied', 'txAudioMicPermissionDenied'],
     ['TX MIC: microphone capture not supported', 'txAudioCaptureUnsupported'],
     ['TX MIC: PCM capture not supported', 'txAudioCaptureUnsupported'],
-    ['TX MIC: unsupported mic sample rate 48000 Hz', 'txAudioStopped'],
+    ['TX MIC: unsupported mic sample rate 48000 Hz', 'txAudioStartFailed'],
   ])('local startTx failure %s raises the %s banner', async (reason, code) => {
     txStart.mockResolvedValueOnce(reason);
-    const { audioManager } = await import('../audio-manager');
+    const audioManager = await withNotifier();
 
     await expect(audioManager.startTx()).resolves.toBe(reason);
-    await vi.waitFor(() => expect(emitLocalNotification).toHaveBeenCalled());
 
-    expect(emitLocalNotification).toHaveBeenCalledTimes(1);
-    expect(emitLocalNotification).toHaveBeenCalledWith('error', expect.any(String), code);
+    expect(notifyOperator).toHaveBeenCalledTimes(1);
+    expect(notifyOperator).toHaveBeenCalledWith('error', expect.any(String), code);
     expect(audioManager.txEnabled).toBe(false);
   });
 
@@ -390,29 +384,27 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
   ])('operator cancellation %s raises no banner', async (reason) => {
     const logInfo = vi.spyOn(console, 'log').mockImplementation(() => {});
     txStart.mockResolvedValueOnce(reason);
-    const { audioManager } = await import('../audio-manager');
+    const audioManager = await withNotifier();
 
     await expect(audioManager.startTx()).resolves.toBe(reason);
-    await notificationSettled();
 
-    expect(emitLocalNotification).not.toHaveBeenCalled();
+    expect(notifyOperator).not.toHaveBeenCalled();
     expect(logInfo).toHaveBeenCalledWith(expect.stringContaining(reason));
     expect(audioManager.txEnabled).toBe(false);
   });
 
   it('mid-TX capture death raises one txAudioStopped banner and fires the died path', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { audioManager } = await import('../audio-manager');
+    const audioManager = await withNotifier();
     const died = vi.fn();
     audioManager.onTxAudioDied(died);
     await audioManager.startTx();
     FakeWebSocket.instances[0].open();
 
     txCaptureDied?.('TX MIC: microphone track ended');
-    await vi.waitFor(() => expect(emitLocalNotification).toHaveBeenCalled());
 
-    expect(emitLocalNotification).toHaveBeenCalledTimes(1);
-    expect(emitLocalNotification).toHaveBeenCalledWith(
+    expect(notifyOperator).toHaveBeenCalledTimes(1);
+    expect(notifyOperator).toHaveBeenCalledWith(
       'error', expect.stringContaining('microphone track ended'), 'txAudioStopped',
     );
     expect(died).toHaveBeenCalledTimes(1);
@@ -420,12 +412,20 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
   });
 
   it('capture death while TX is not enabled raises no banner', async () => {
-    const { audioManager } = await import('../audio-manager');
+    const audioManager = await withNotifier();
 
     txCaptureDied?.('TX MIC: microphone track ended');
-    await notificationSettled();
 
-    expect(emitLocalNotification).not.toHaveBeenCalled();
+    expect(notifyOperator).not.toHaveBeenCalled();
+    expect(audioManager.txEnabled).toBe(false);
+  });
+
+  it('raises no banner and does not throw when no notifier is injected', async () => {
+    const { audioManager } = await import('../audio-manager');
+    txStart.mockResolvedValueOnce('TX MIC: permission denied');
+
+    await expect(audioManager.startTx()).resolves.toBe('TX MIC: permission denied');
+
     expect(audioManager.txEnabled).toBe(false);
   });
 });

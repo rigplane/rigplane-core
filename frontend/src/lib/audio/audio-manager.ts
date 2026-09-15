@@ -31,8 +31,9 @@ const BACKOFF_MAX = 10000;
 const AUDIO_STATS_INTERVAL_MS = 1500;
 
 // Exact wire/reason strings from src/rigplane/web/handlers/audio.py
-// (_send_error) and tx-mic.ts, mapped to toast codes. Unrecognised
-// non-cancel reasons fall back to txAudioStopped.
+// (_send_error) and tx-mic.ts, mapped to toast codes. An unrecognised
+// non-cancel start-failure reason falls back to txAudioStartFailed;
+// _failTxAudio (mid-TX death) falls back to txAudioStopped.
 const SERVER_TX_REFUSAL = 'audio_start: TX audio unavailable';
 const TX_START_SILENT_REASONS = new Set([
   'TX MIC: capture start cancelled',
@@ -44,20 +45,8 @@ const TX_START_REASON_CODES: Readonly<Record<string, string>> = {
   'TX MIC: PCM capture not supported': 'txAudioCaptureUnsupported',
 };
 
-/** Forward an error banner through the existing notification bus (Toast
- *  renders it). The control-channel client is a radio-authority transport
- *  module that lib/audio must not import statically
- *  (radio-authority/structural-boundary), so the forward is loaded lazily
- *  and never blocks the TX teardown that follows it. */
-function notifyOperator(message: string, code: string): void {
-  void import('../transport/ws-client')
-    .then((wsClient) => {
-      wsClient.emitLocalNotification('error', message, code);
-    })
-    .catch((error: unknown) => {
-      console.error('[audio-ws] failed to surface TX audio notification', error);
-    });
-}
+/** Sink for an operator-facing error banner: (level, message, code). */
+type OperatorNotifier = (level: 'error', message: string, code: string) => void;
 
 /** Stable per-page-context token so the server can coalesce this audio
  *  manager's reconnects (MOR-924). A soft_reconnect / audio re-arm drops the
@@ -96,6 +85,9 @@ class AudioManager {
   private _listeners: Set<() => void> = new Set();
   // Stable identity for reconnect coalescing (MOR-924); see makeClientId.
   private readonly clientId = makeClientId();
+  // Injected by frontend-runtime.ts, which owns the transport import;
+  // lib/audio must not import it directly (radio-authority/structural-boundary).
+  private _operatorNotifier: OperatorNotifier | null = null;
 
   // Reactive state (read externally)
   get rxEnabled(): boolean { return this._rxEnabled; }
@@ -128,6 +120,11 @@ class AudioManager {
         }
       }
     }, (reason) => this._failTxAudio(reason));
+  }
+
+  /** Inject (or clear, with null) the sink for TX-audio-failure banners. */
+  setOperatorNotifier(notify: OperatorNotifier | null): void {
+    this._operatorNotifier = notify;
   }
 
   /** Register a change callback for reactive UI updates. Returns unsubscribe fn. */
@@ -422,8 +419,8 @@ class AudioManager {
       console.log(`[audio-ws] TX start cancelled: ${reason}`);
       return;
     }
-    const code = TX_START_REASON_CODES[reason] ?? 'txAudioStopped';
-    notifyOperator(`TX audio failed to start: ${reason}`, code);
+    const code = TX_START_REASON_CODES[reason] ?? 'txAudioStartFailed';
+    this._operatorNotifier?.('error', `TX audio failed to start: ${reason}`, code);
   }
 
   /** End failed capture/codec audio and notify the existing canonical de-key path. */
@@ -431,7 +428,8 @@ class AudioManager {
     // A failure during preparation is returned by startTx, before TX admission.
     if (!this._txEnabled) return;
     console.error(`[audio-ws] TX audio failed, stopping TX audio: ${reason}`);
-    notifyOperator(
+    this._operatorNotifier?.(
+      'error',
       `TX audio failed: ${reason}`,
       reason === SERVER_TX_REFUSAL ? 'txAudioServerUnavailable' : 'txAudioStopped',
     );

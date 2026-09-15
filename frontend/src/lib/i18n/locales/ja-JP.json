@@ -141,6 +141,7 @@
   "core.toast.txAudioServerUnavailable": "TX オーディオを利用できません — サーバーが送信の開始を拒否しました",
   "core.toast.txAudioMicPermissionDenied": "マイクへのアクセスが拒否されました — TX オーディオを開始できません",
   "core.toast.txAudioCaptureUnsupported": "このブラウザーはマイクのキャプチャに対応していません",
+  "core.toast.txAudioStartFailed": "TX オーディオを開始できませんでした",
   "core.toast.txAudioStopped": "TX オーディオが停止しました — 送信が途中で終了しました",
   "core.toast.unknown": "問題が発生しました。しばらくしてから再試行してください。",
 
