@@ -796,6 +796,7 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
   it('keeps AGC mode in the left panel and exposes AGC time once in right DSP', () => {
     h.state = proxy(liveState(true) as object);
     renderHosted();
+    expect(q('[data-part="agc"] [data-testid="dsp-nbWidth"]')).toBeNull();
     const agcButtons = [...target.querySelectorAll<HTMLButtonElement>('button')]
       .filter(button => button.textContent?.trim().startsWith('AGC-T'));
     expect(agcButtons).toHaveLength(1);
