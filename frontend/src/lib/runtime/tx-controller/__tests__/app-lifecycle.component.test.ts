@@ -11,7 +11,7 @@ const h = vi.hoisted(() => ({
   initMedia: vi.fn(),
   destroyMedia: vi.fn(),
   resolveSkin: vi.fn(),
-  radio: null as { stateRevision: number; freshnessRevision: number; observationSeq: number; ptt: boolean } | null,
+  radio: null as { stateRevision: number; freshnessRevision: number; observationSeq: number; ptt: boolean; providerGeneration: number } | null,
   caps: null as { tx: boolean; capabilities: string[] } | null,
   notifyRuntime: () => {},
   barrier: undefined as (() => Promise<void>) | undefined,
@@ -88,7 +88,7 @@ beforeEach(() => {
   h.barrier = undefined;
   h.host = undefined;
   h.inFlight = null;
-  h.radio = { stateRevision: 1, freshnessRevision: 1, observationSeq: 1, ptt: false };
+  h.radio = { stateRevision: 1, freshnessRevision: 1, observationSeq: 1, ptt: false, providerGeneration: 3 };
   h.caps = { tx: true, capabilities: ['tx'] };
   document.body.innerHTML = '';
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 });
@@ -137,6 +137,7 @@ describe('App TX lifecycle', () => {
     await settle();
     expect(h.provide).toHaveBeenCalledOnce();
     expect(h.host!.refreshAuthority).toHaveBeenCalledOnce();
+    expect(h.host!.refreshAuthority).toHaveBeenLastCalledWith(3);
     // MOR-2425 C1 PR-2 follow-up: the loaded presentation (SpectrumPanelStub,
     // via `loadSkin`) must actually be in the mounted tree, not merely
     // implied by the TX-host assertions above — AppGlobalHost and

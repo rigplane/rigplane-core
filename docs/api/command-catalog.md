@@ -80,6 +80,7 @@ Maximum batch size: 128 steps. Per-step timeout: 10 seconds.
 | Command | Params | Capability | Batch | Notes |
 |---------|--------|------------|-------|-------|
 | `set_freq` | `freq: int` (Hz), `receiver?: int=0` | — | Yes | |
+| `set_vfo_freq` | `freq: int` (Hz), `receiver: int`, `slot: A/B`, `expected_active_slot: A/B`, `provider_generation: int` | `vfo_freq_direct` | Yes | IC-7300 receiver 0 only; direct write without selection. Requires current identity and generation; completes after ACK and target readback. |
 | `set_band` | `band: int` (BSR code) | — | Yes | BSR code from `freqRanges[].bands[].bsrCode` in capabilities. See BSR workflow below. |
 | `set_mode` | `mode: str`, `receiver?: int=0` | — | Yes | Mode strings from profile `modes[]`, e.g. `"USB"`, `"FM"`, `"CW"`. |
 | `set_filter` | `filter?: str="FIL1"`, `receiver?: int=0` | — | Yes | Accepted: `"FIL1"`, `"FIL2"`, `"FIL3"`. |

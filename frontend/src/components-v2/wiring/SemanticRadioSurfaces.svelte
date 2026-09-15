@@ -18,6 +18,8 @@
   export type {
     InstrumentComposition,
     InstrumentVfoAppearance,
+    PanelChrome,
+    StandardTxLayout,
   } from './instrument-composition';
 
   export interface ExternalPresentation {
@@ -32,8 +34,12 @@
   import type {
     InstrumentComposition,
     InstrumentVfoAppearance,
+    PanelChrome,
+    StandardTxLayout,
   } from './instrument-composition';
   import { t } from '$lib/i18n';
+  import { getFieldStatus } from '$lib/state/field-status';
+  import { getCommandLifecycle } from '$lib/stores/commands.svelte';
   import { getScopeSource, hasCapability } from '$lib/stores/capabilities.svelte';
   import { presentationResources, runtime } from '$lib/runtime';
   import * as componentKitActivation from '../../component-kits/activation';
@@ -48,12 +54,13 @@
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import {
     bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getDspControlFeedback,
-    getFilterWidthControlFeedback,
+    getAfLevelControlFeedback, projectDspControlFeedbackToDisplay,
+    getFilterWidthControlFeedback, getRfPowerControlFeedback,
     getCwPitchControlFeedback, getKeySpeedControlFeedback, getRfSqlControlFeedback,
     getTxAuxControlFeedback, type TxAuxControlFeedbackField,
     getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
-    getSystemHandlers, getDataModeArmed,
+    getSystemHandlers, getDataModeArmed, getModInputArmed,
     deriveMemoryPanelProps, getMemoryHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { toRitXitProps } from '$lib/runtime/props/panel-props';
@@ -66,15 +73,19 @@
   import AntennaInstrumentHost from '../../semantic/AntennaInstrumentHost.svelte';
   import BandSurface from '../../semantic/BandSurface.svelte';
   import BandInstrumentHost from '../../semantic/BandInstrumentHost.svelte';
+  import FrequencyEntryDialog from '../../semantic/FrequencyEntryDialog.svelte';
   import type { BandControlLayout } from '../../semantic/band-instruments';
   import DspSurface, {
-    type DspLevelField, type DspToggleField,
+    type DspLevelField, type DspSurfacePart, type DspToggleField,
   } from '../../semantic/DspSurface.svelte';
   import DspInstrumentHost from '../../semantic/DspInstrumentHost.svelte';
-  import type { DspFiniteHandles, DspFiniteLayout } from '../../semantic/dsp-instruments';
+  import type {
+    DspFiniteHandles, DspFiniteLayout, DspSettingsPanel,
+  } from '../../semantic/dsp-instruments';
   import DspScalarHost from '../../semantic/DspScalarHost.svelte';
   import type { DspScalarLayout } from '../../semantic/dsp-scalars';
   import FilterSurface from '../../semantic/FilterSurface.svelte';
+  import ModeSurface from '../../semantic/ModeSurface.svelte';
   import FilterInstrumentHost from '../../semantic/FilterInstrumentHost.svelte';
   import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
   import MetersSurface from '../../semantic/MetersSurface.svelte';
@@ -89,13 +100,15 @@
     createFiniteRendererContext,
     type FiniteRendererContext,
   } from '../../primitives/control-instruments/control-instrument-renderer.svelte';
-  import type { RadioViewModel, VfoSlot } from '../../semantic/radio-view-model';
+  import type { ReceiverId, RadioViewModel, VfoSlot } from '../../semantic/radio-view-model';
   import RfFrontEndSurface, {
     type RfFrontEndLevelField,
   } from '../../semantic/RfFrontEndSurface.svelte';
   import RfFrontEndInstrumentHost from '../../semantic/RfFrontEndInstrumentHost.svelte';
   import type { RfFrontEndFiniteLayout } from '../../semantic/rf-front-end-instruments';
-  import RitXitScanSurface from '../../semantic/RitXitScanSurface.svelte';
+  import RitXitScanSurface, {
+    type RitXitScanSurfacePart,
+  } from '../../semantic/RitXitScanSurface.svelte';
   import RitXitScanInstrumentHost from '../../semantic/RitXitScanInstrumentHost.svelte';
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
   import RxAudioInstrumentHost from '../../semantic/RxAudioInstrumentHost.svelte';
@@ -133,7 +146,9 @@
     type ScopeChoiceField, type ScopeToggleField,
   } from '../../semantic/ScopeControlsSurface.svelte';
   import {
-    forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
+    forReceiver, forSlot, receiversOf, slotsOf,
+    isActiveStrip, isActiveSlotStrip, isOperationalStrip,
+    type StripSlot,
   } from './dual-receiver-strips';
   import { guardRadioViewModel } from './radio-view-model-guard';
   import type {
@@ -157,6 +172,14 @@
     children?: Snippet<[InstrumentComposition]>;
     externalPresentation?: ExternalPresentation | null;
     strips?: 'single' | 'dual';
+    /**
+     * What ONE strip of the `dual` composition is. `'receiver'` (default) is
+     * the shipped deck: one strip per structural receiver. `'slot'` is owner
+     * ruling R58's deck: one strip per DECK SLOT, so a single-receiver radio
+     * gets its unselected VFO in the second column. Read only under
+     * `strips === 'dual'`.
+     */
+    stripBy?: 'receiver' | 'slot';
     regions?: boolean;
     regionContent?: Snippet<[Snippet | undefined, ManagedScopeRegion | undefined]>;
     scopeControlsInRegionContent?: boolean;
@@ -191,7 +214,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    children: hostedChildren, externalPresentation = null, strips = 'single', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', bandPermitCaption = true, displayFrameSource, readonlyDisplay,
+    children: hostedChildren, externalPresentation = null, strips = 'single', stripBy = 'receiver', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', bandPermitCaption = true, displayFrameSource, readonlyDisplay,
   }: Props = $props();
 
   /**
@@ -264,9 +287,177 @@
       }))
       .filter(({ zoneId }) => zoneShows(zoneId, 'vfo'));
   }
+  interface RenderedStrip {
+    key: string;
+    receiverId: ReceiverId;
+    zoneId: string;
+    /** Omitted on the `receiver` path, so its `.channel-strip` carries no
+     *  `data-strip-slot` attribute at all. */
+    slotPosition?: 'primary' | 'secondary';
+    sliced: RadioViewModel;
+    /** Whether this column carries the deck's active mark. Per RECEIVER on the
+     *  `receiver` path; per SLOT on the `slot` path, where two columns can
+     *  share one receiver (`isActiveSlotStrip`). */
+    active: boolean;
+    /** This column's accessible group name. */
+    groupLabel: string;
+  }
+  /**
+   * A slot column's accessible name. The column carrying the receiver's
+   * instruments takes the receiver name the shipped decks use; a column
+   * carrying none is named by its own VFO position, so the two columns of a
+   * one-receiver deck are not one name twice (MOR-2425).
+   */
+  function slotGroupLabel(slot: StripSlot, sliced: RadioViewModel): string {
+    const positionLabel = sliced.vfos[0]?.label;
+    return slot.ownsReceiverInstruments || positionLabel === undefined
+      ? t('core.vfo.receiverGroupLabel', { receiver: slot.receiver })
+      : positionLabel;
+  }
+  /**
+   * MOR-2425 / R58: the same two zones, sliced by DECK SLOT instead of by
+   * receiver. On a two-receiver radio the two agree entry for entry; on a
+   * one-receiver radio the slot path gives the unselected VFO the second
+   * column, with no receiver instruments of its own (`forSlot`).
+   */
+  function renderedStrips(model: RadioViewModel): RenderedStrip[] {
+    if (stripBy === 'slot') {
+      return slotsOf(model)
+        .map((slot, index): RenderedStrip => {
+          const sliced = forSlot(model, slot);
+          return {
+            key: slot.key,
+            receiverId: slot.receiver,
+            zoneId: index === 0 ? 'primary-vfo' : 'secondary-vfo',
+            slotPosition: index === 0 ? 'primary' : 'secondary',
+            sliced,
+            active: isActiveSlotStrip(model, slot),
+            groupLabel: slotGroupLabel(slot, sliced),
+          };
+        })
+        .filter(({ zoneId }) => zoneShows(zoneId, 'vfo'));
+    }
+    return visibleStrips(model).map(({ receiverId, zoneId }): RenderedStrip => ({
+      key: receiverId,
+      receiverId,
+      zoneId,
+      sliced: forReceiver(model, receiverId),
+      active: isActiveStrip(model, receiverId),
+      groupLabel: t('core.vfo.receiverGroupLabel', { receiver: receiverId }),
+    }));
+  }
 
   const semanticHandlers = bindSemanticSurfaceHandlers();
   const vfo = semanticHandlers.vfo;
+
+  let directFrequencyEntrySupported = $derived(
+    runtime.caps?.capabilities.includes('vfo_freq_direct') === true
+      && runtime.caps.receivers === 1
+      && runtime.caps.vfoScheme === 'ab',
+  );
+  let receiverFrequencyEntrySupported = $derived(
+    runtime.caps?.vfoScheme === 'main_sub' || runtime.caps?.vfoScheme === 'single',
+  );
+  let frequencyEntrySupported = $derived(
+    directFrequencyEntrySupported || receiverFrequencyEntrySupported,
+  );
+
+  type FrequencyEntryCapture = Readonly<{
+    target: VfoSelection;
+    expectedActiveSlot?: 'A' | 'B';
+    providerGeneration: number;
+    sessionEpoch: number;
+    topologyId: string;
+    trigger: HTMLElement;
+  }>;
+  let frequencyEntryCapture = $state<FrequencyEntryCapture | null>(null);
+  let frequencyEntryLifecycle = $state<{ id: string; epoch: number } | null>(null);
+
+  function frequencyAuthorityMatches(capture: FrequencyEntryCapture): boolean {
+    const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
+    const model = toRadioViewModel(state, caps);
+    const baseMatches = session.state === 'connected' && session.epoch === capture.sessionEpoch
+      && state?.providerGeneration === capture.providerGeneration
+      && caps?.providerGeneration === capture.providerGeneration
+      && model?.topologyId === capture.topologyId
+      && model.vfos.some((candidate) => candidate.receiver === capture.target.receiver
+        && candidate.slot.kind === capture.target.slot.kind
+        && (candidate.slot.kind !== 'slotted' || (capture.target.slot.kind === 'slotted'
+          && candidate.slot.id === capture.target.slot.id)));
+    if (!baseMatches || caps == null || state == null) return false;
+    if (capture.target.slot.kind === 'unslotted') {
+      return caps.vfoScheme === 'main_sub' || caps.vfoScheme === 'single';
+    }
+    if (capture.target.slot.kind !== 'slotted' || capture.target.receiver !== 'MAIN') return false;
+    const activeSlot = state.main?.activeSlot;
+    const slotStatus = getFieldStatus(state, 'main.activeSlot');
+    return caps.capabilities.includes('vfo_freq_direct')
+      && caps.receivers === 1 && caps.vfoScheme === 'ab'
+      && slotStatus?.observed === true && slotStatus.freshness === 'fresh'
+      && slotStatus.availability === 'available'
+      && activeSlot === capture.expectedActiveSlot;
+  }
+
+  function openFrequencyEntry(target: VfoSelection, trigger: HTMLElement): void {
+    const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
+    const stateGeneration = state?.providerGeneration;
+    const model = toRadioViewModel(state, caps);
+    if (state == null || caps == null || session.state !== 'connected'
+      || !Number.isSafeInteger(stateGeneration)
+      || stateGeneration !== caps.providerGeneration
+      || model === null) return;
+    const candidateExists = model.vfos.some((candidate) => candidate.receiver === target.receiver
+      && candidate.slot.kind === target.slot.kind
+      && (candidate.slot.kind !== 'slotted' || (target.slot.kind === 'slotted'
+        && candidate.slot.id === target.slot.id)));
+    if (!candidateExists) return;
+    let expectedActiveSlot: 'A' | 'B' | undefined;
+    if (target.slot.kind === 'slotted') {
+      if (target.receiver !== 'MAIN' || !directFrequencyEntrySupported) return;
+      const activeSlot = state.main?.activeSlot;
+      const slotStatus = getFieldStatus(state, 'main.activeSlot');
+      if (slotStatus?.observed !== true || slotStatus.freshness !== 'fresh'
+        || slotStatus.availability !== 'available'
+        || (activeSlot !== 'A' && activeSlot !== 'B')) return;
+      expectedActiveSlot = activeSlot;
+    } else if (target.slot.kind !== 'unslotted'
+      || (caps.vfoScheme !== 'main_sub' && caps.vfoScheme !== 'single')) return;
+    frequencyEntryLifecycle = null;
+    const capture = Object.freeze<FrequencyEntryCapture>({
+      target: Object.freeze({ receiver: target.receiver, slot: Object.freeze({ ...target.slot }) }),
+      expectedActiveSlot,
+      providerGeneration: stateGeneration as number, sessionEpoch: session.epoch,
+      topologyId: model.topologyId, trigger,
+    });
+    frequencyEntryCapture = capture;
+  }
+
+  let frequencyEntryAuthorityValid = $derived(
+    frequencyEntryCapture !== null && frequencyAuthorityMatches(frequencyEntryCapture),
+  );
+  let frequencyEntryCommand = $derived(frequencyEntryLifecycle === null ? undefined
+    : getCommandLifecycle(frequencyEntryLifecycle.id, frequencyEntryLifecycle.epoch));
+  let frequencyEntryStatus = $derived.by(() => {
+    if (frequencyEntryCapture !== null && !frequencyEntryAuthorityValid) {
+      return 'Radio authority changed. Close this dialog and open it again.';
+    }
+    const command = frequencyEntryCommand;
+    if (command?.status === 'pending') return 'Sending frequency…';
+    if (command?.status === 'acknowledged') return 'Waiting for the selected VFO readback…';
+    if (command?.status === 'confirmed') return 'Frequency confirmed.';
+    if (command?.status === 'failed' || command?.status === 'timed-out'
+      || command?.status === 'cancelled') return command.error ?? 'Frequency change was not confirmed.';
+    return undefined;
+  });
+  let frequencyEntrySubmitEnabled = $derived(frequencyEntryAuthorityValid
+    && frequencyEntryCommand?.status !== 'pending'
+    && frequencyEntryCommand?.status !== 'acknowledged'
+    && frequencyEntryCommand?.status !== 'confirmed');
+  $effect(() => {
+    if (frequencyEntryCommand?.status !== 'confirmed') return;
+    frequencyEntryCapture = null;
+    frequencyEntryLifecycle = null;
+  });
   const systemIntents = getSystemHandlers();
   /** MOR-1307: the shipped band vocabulary, composed rather than forked. */
   const band = semanticHandlers.band;
@@ -337,6 +528,7 @@
    * test, not re-asserted here.
    */
   const dspIntents = semanticHandlers.dsp;
+  let standardDspSettings = $state<DspSettingsPanel | null>(null);
   const DSP_TOGGLE_INTENT: Record<DspToggleField, (next: boolean) => void> = {
     nrActive: (next) => dspIntents.onNrModeChange(next ? 1 : 0),
     nbActive: (next) => dspIntents.onNbToggle(next),
@@ -461,6 +653,8 @@
    * with no capability check (see that surface's own file header). Same
    * "caps-echo display metadata" seam as `hasDualReceiver` below. */
   let scanCapable = $derived(hasCapability('scan'));
+  let scanTypeValues = $derived(runtime.caps?.scanTypeValues);
+  let scanResumeValues = $derived(runtime.caps?.scanResumeValues);
   /** MOR-1731: consume the shared validated tri-state boundary. `undefined`
    * keeps legacy servers compatible; `null` is the adapter's fail-closed
    * result for present-but-unusable metadata. */
@@ -525,9 +719,7 @@
   function publishStationMeters(): void {
     if (stationSubscriber === null || stationControl === null) return;
     const publication: StationMeterAuthorityPublication = {
-      view: guardRadioViewModel(
-        toRadioViewModel(stationControl.state, stationControl.caps, txState),
-      ),
+      view: projectRadioView(stationControl.state, stationControl.caps, true),
       session: stationSession(stationControl),
     };
     stationSubscriber(publication);
@@ -581,6 +773,14 @@
       splitStereo: runtime.audioRouting.split_stereo,
     },
   });
+  let rxAudioRoutingGains = $derived.by(() => {
+    const routing = runtime.audioRouting;
+    return routing !== null
+      && typeof routing?.main_gain_db === 'number' && Number.isFinite(routing.main_gain_db)
+      && typeof routing?.sub_gain_db === 'number' && Number.isFinite(routing.sub_gain_db)
+      ? { main: routing.main_gain_db, sub: routing.sub_gain_db }
+      : null;
+  });
 
   /**
    * MOR-1312 (slice 12B) — the App-owned scope-display snapshot the
@@ -605,6 +805,85 @@
     hardwareConnected: runtime.scope.hardwareScopeConnected,
   });
 
+  type RadioViewProjection = Readonly<{
+    stateSignature: string | null;
+    caps: ControlAuthorityPublication['caps'];
+    tx: typeof txState;
+    rxAudio: typeof rxAudioSnapshot;
+    scopeDisplay: typeof scopeDisplaySnapshot;
+    view: RadioViewModel | null;
+  }>;
+  let lastRadioViewProjection: RadioViewProjection | null = null;
+  let radioViewProjectionVersion = $state(0);
+
+  const VIEW_METADATA_KEYS = new Set([
+    'connection', 'freshnessRevision', 'healthRevision', 'observationSeq',
+    'publicStateSeq', 'radioHealth', 'revision', 'stateRevision', 'transportSeq',
+    'updatedAt', 'wsClients',
+  ]);
+  const immutableStateSignatures = new WeakMap<object, string>();
+
+  /**
+   * Revisions are transport admission evidence, not a complete view-model
+   * identity: test publishers and compatibility sources may deliver a
+   * distinct same-revision snapshot, while meter freshness updates replace
+   * the large fieldStatus map without changing any visible fact.  Hash only
+   * adapter inputs, reducing each status entry to the four properties the
+   * adapter reads.  Production snapshots are immutable, so their signatures
+   * are memoized by identity; DEV deliberately recomputes to catch accidental
+   * in-place mutation in fixtures and extensions.
+   */
+  function radioViewStateSignature(state: ControlAuthorityPublication['state']): string | null {
+    if (state === null) return null;
+    if (!import.meta.env.DEV) {
+      const memoized = immutableStateSignatures.get(state);
+      if (memoized !== undefined) return memoized;
+    }
+    const record = state as unknown as Record<string, unknown>;
+    const values = Object.keys(record).sort()
+      .filter((key) => key !== 'fieldStatus' && !VIEW_METADATA_KEYS.has(key))
+      .map((key) => [key, record[key]]);
+    const statuses = Object.entries(state.fieldStatus ?? {}).sort(([left], [right]) =>
+      left.localeCompare(right)).map(([path, status]) => [
+        path, status.observed, status.freshness, status.availability, status.quality ?? null,
+      ]);
+    const signature = JSON.stringify([values, statuses]);
+    if (!import.meta.env.DEV) immutableStateSignatures.set(state, signature);
+    return signature;
+  }
+
+  /**
+   * Every authority host receives the same immutable radio/capability pair.
+   * Keep one fully-qualified projection for that pair and the App-owned TX,
+   * audio, and scope snapshots instead of rebuilding the full semantic model
+   * independently in every host subscription.
+   */
+  function projectRadioView(
+    state: ControlAuthorityPublication['state'], caps: ControlAuthorityPublication['caps'],
+    publishCanonical = false,
+  ): RadioViewModel | null {
+    const txSnapshot = txState;
+    const audioSnapshot = rxAudioSnapshot;
+    const displaySnapshot = scopeDisplaySnapshot;
+    const cached = lastRadioViewProjection;
+    const stateSignature = radioViewStateSignature(state);
+    if (cached !== null
+      && cached.stateSignature === stateSignature
+      && cached.caps === caps
+      && cached.tx === txSnapshot
+      && cached.rxAudio === audioSnapshot
+      && cached.scopeDisplay === displaySnapshot) return cached.view;
+    const view = guardRadioViewModel(
+      toRadioViewModel(state, caps, txSnapshot, audioSnapshot, displaySnapshot),
+    );
+    lastRadioViewProjection = {
+      stateSignature, caps,
+      tx: txSnapshot, rxAudio: audioSnapshot, scopeDisplay: displaySnapshot, view,
+    };
+    if (publishCanonical) radioViewProjectionVersion += 1;
+    return view;
+  }
+
   // Belt-and-braces contract pin: two compile-time links (the adapter's own
   // return-type annotation, MOR-1065 ruling 2, and this variable's own type)
   // plus one dev-only runtime link, MOR-2040's `guardRadioViewModel` — it
@@ -617,11 +896,10 @@
   // (invariant R9). Without it the adapter emits no `meters` group at all.
   // MOR-1279 slice 3B: the RX-audio snapshot is the FOURTH.
   // MOR-1312 slice 12B: the scope-display snapshot is the FIFTH.
-  let canonicalView: RadioViewModel | null = $derived(
-    guardRadioViewModel(
-      toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
-    ),
-  );
+  let canonicalView: RadioViewModel | null = $derived.by(() => {
+    radioViewProjectionVersion;
+    return projectRadioView(runtime.state, runtime.caps);
+  });
   let rxAudioInstrumentPresentation = $derived({
     state: runtime.state,
     caps: runtime.caps,
@@ -697,13 +975,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): ScopeFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     if (model?.scopeControls === undefined) return null;
     const receivers = [...new Set(model.vfos.map(vfo => vfo.receiver))];
     return Object.freeze({
@@ -723,13 +1001,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): TxAuxFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     return model?.txAux === undefined ? null : Object.freeze({
       sessionEpoch: session.epoch,
       providerGeneration: stateGeneration as number,
@@ -740,13 +1018,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): DspFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     if (model?.dsp === undefined) return null;
     return Object.freeze({
       sessionEpoch: session.epoch,
@@ -760,13 +1038,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): RfFrontEndFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     if (model?.rfFrontEnd === undefined) return null;
     return Object.freeze({
       sessionEpoch: session.epoch,
@@ -789,13 +1067,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): RxAudioFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps, undefined, rxAudioSnapshot);
     if (model?.rxAudio === undefined) return null;
     return Object.freeze({
       sessionEpoch: session.epoch,
@@ -809,13 +1087,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): VfoFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     return model === null ? null : Object.freeze({
       sessionEpoch: session.epoch,
       providerGeneration: stateGeneration as number,
@@ -826,13 +1104,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): FilterFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     // MOR-2425 F1-C2: widened from `model?.modeFilter === undefined` alone so
     // a passband-only radio (Filter Shape/DATA, no mode/filter group) still
     // gets a valid Filter authority — the same lane now serves both groups.
@@ -849,13 +1127,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): BandFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     if (model?.band === undefined) return null;
     return Object.freeze({
       sessionEpoch: session.epoch,
@@ -869,13 +1147,13 @@
     state: typeof runtime.state,
     caps: typeof runtime.caps,
     session: typeof runtime.controlSession,
+    model: RadioViewModel | null,
   ): RitXitFiniteAuthority | null {
     const stateGeneration = state?.providerGeneration;
     const capsGeneration = caps?.providerGeneration;
     if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
       || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(state, caps);
     if (model?.ritXit === undefined) return null;
     return Object.freeze({
       sessionEpoch: session.epoch,
@@ -997,62 +1275,68 @@
   let lastBandFiniteAuthority: BandFiniteAuthority | null | undefined;
   let lastRitXitFiniteAuthority: RitXitFiniteAuthority | null | undefined;
   const unsubscribeScopeFiniteAuthority = runtime.subscribeControlAuthority((publication) => {
-      const next = scopeFiniteAuthority(publication.state, publication.caps, publication.session);
+      // One authority publication has one immutable state/capability pair.
+      // Project it once: every finite instrument below needs only a different
+      // group-existence slice of the same canonical view model.
+      const authorityView = projectRadioView(publication.state, publication.caps, true);
+      const next = scopeFiniteAuthority(
+        publication.state, publication.caps, publication.session, authorityView,
+      );
       if (!sameScopeFiniteAuthority(lastScopeFiniteAuthority, next)) {
         lastScopeFiniteAuthority = next;
         finiteRendererContext = next === null ? null : createFiniteRendererContext();
       }
       const nextTxAux = txAuxFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameTxAuxFiniteAuthority(lastTxAuxFiniteAuthority, nextTxAux)) {
         lastTxAuxFiniteAuthority = nextTxAux;
         txAuxFiniteRendererContext = nextTxAux === null ? null : createFiniteRendererContext();
       }
       const nextDsp = dspFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameDspFiniteAuthority(lastDspFiniteAuthority, nextDsp)) {
         lastDspFiniteAuthority = nextDsp;
         dspFiniteRendererContext = nextDsp === null ? null : createFiniteRendererContext();
       }
       const nextRfFrontEnd = rfFrontEndFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameRfFrontEndFiniteAuthority(lastRfFrontEndFiniteAuthority, nextRfFrontEnd)) {
         lastRfFrontEndFiniteAuthority = nextRfFrontEnd;
         rfFrontEndFiniteRendererContext = nextRfFrontEnd === null ? null : createFiniteRendererContext();
       }
       const nextRxAudio = rxAudioFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameRxAudioFiniteAuthority(lastRxAudioFiniteAuthority, nextRxAudio)) {
         lastRxAudioFiniteAuthority = nextRxAudio;
         rxAudioFiniteRendererContext = nextRxAudio === null ? null : createFiniteRendererContext();
       }
       const nextVfo = vfoFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameVfoFiniteAuthority(lastVfoFiniteAuthority, nextVfo)) {
         lastVfoFiniteAuthority = nextVfo;
         vfoFiniteRendererContext = nextVfo === null ? null : createFiniteRendererContext();
       }
       const nextFilter = filterFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameFilterFiniteAuthority(lastFilterFiniteAuthority, nextFilter)) {
         lastFilterFiniteAuthority = nextFilter;
         filterFiniteRendererContext = nextFilter === null ? null : createFiniteRendererContext();
       }
       const nextBand = bandFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameBandFiniteAuthority(lastBandFiniteAuthority, nextBand)) {
         lastBandFiniteAuthority = nextBand;
         bandFiniteRendererContext = nextBand === null ? null : createFiniteRendererContext();
       }
       const nextRitXit = ritXitFiniteAuthority(
-        publication.state, publication.caps, publication.session,
+        publication.state, publication.caps, publication.session, authorityView,
       );
       if (!sameRitXitFiniteAuthority(lastRitXitFiniteAuthority, nextRitXit)) {
         lastRitXitFiniteAuthority = nextRitXit;
@@ -1355,13 +1639,22 @@
   let cwPitchFeedback = $derived(getCwPitchControlFeedback(controlSession));
   let keySpeedFeedback = $derived(getKeySpeedControlFeedback(controlSession));
   /**
-   * MOR-2425. RAW command feedback for the two NB scalars — no projector:
-   * `nbLevel`/`nbWidth` are wire-raw, unlike `nrLevel`/`nbDepth`, which
-   * `DspSurface` still renders natively from the adapter's display-scaled
-   * projection (carry-forward 3).
+   * Command feedback for every hosted DSP settings scalar. `nbLevel`,
+   * `nbWidth`, notch and AGC stay wire-raw; NR level and NB depth use the
+   * adapter's established display projections before reaching the renderer.
    */
   let dspScalarFeedback = $derived({
-    nbLevel: getDspControlFeedback('nbLevel'), nbWidth: getDspControlFeedback('nbWidth'),
+    nbLevel: getDspControlFeedback('nbLevel'),
+    nbDepth: projectDspControlFeedbackToDisplay(
+      'nbDepth', getDspControlFeedback('nbDepth'), runtime.caps,
+    ),
+    nbWidth: getDspControlFeedback('nbWidth'),
+    nrLevel: projectDspControlFeedbackToDisplay(
+      'nrLevel', getDspControlFeedback('nrLevel'), runtime.caps,
+    ),
+    notchFreq: getDspControlFeedback('notchFilter'),
+    manualNotchWidth: getDspControlFeedback('manualNotchWidth'),
+    agcTimeConstant: getDspControlFeedback('agcTimeConstant'),
   });
   let txAuxLevelFeedback = $derived.by<TxAuxLevelFeedback>(() => Object.fromEntries(
     TX_AUX_FEEDBACK_LEVELS.map(field => [
@@ -1370,10 +1663,15 @@
   ) as unknown as TxAuxLevelFeedback);
   let dataModeArmed = $derived(getDataModeArmed());
   let pendingDataMode = $derived(dataModeArmed.armed ? dataModeArmed.value : null);
+  let modInputArmed = $derived(getModInputArmed());
+  let pendingModInput = $derived(modInputArmed.armed ? modInputArmed.value : null);
   let pendingPreamp = $derived(
     activeReceiverIndex === null ? null : getPendingPreampLevel(activeReceiverIndex),
   );
   let rfSqlFeedback = $derived(getRfSqlControlFeedback(controlSession));
+  let afLevelFeedback = $derived(runtime.rxEnabled
+    ? undefined : getAfLevelControlFeedback(controlSession));
+  let rfPowerFeedback = $derived(getRfPowerControlFeedback(controlSession));
   let rfFrontEndInstrumentPresentation = $derived({
     state: runtime.state,
     caps: runtime.caps,
@@ -1460,7 +1758,7 @@
   function selectBand(name: string): void {
     const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
     const model = toRadioViewModel(state, caps);
-    const authority = bandFiniteAuthority(state, caps, session);
+    const authority = bandFiniteAuthority(state, caps, session, model);
     const active = model?.activeReceiver;
     const choice = model?.band?.bandChoices.find(candidate => candidate.name === name);
     if (authority === null || active?.status !== 'known'
@@ -1474,14 +1772,34 @@
   function enterFrequency(frequencyHz: number): void {
     const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
     const model = toRadioViewModel(state, caps);
-    const authority = bandFiniteAuthority(state, caps, session);
-    const active = model?.activeReceiver;
+    const authority = bandFiniteAuthority(state, caps, session, model);
     const currentBand = model?.band;
-    if (authority === null || active?.status !== 'known'
-      || authority.activeReceiver !== active.receiver || currentBand === undefined
+    if (currentBand === undefined
       || currentBand.tuneMinHz === null || currentBand.tuneMaxHz === null
       || !Number.isFinite(frequencyHz)
       || frequencyHz < currentBand.tuneMinHz || frequencyHz > currentBand.tuneMaxHz) return;
+    const capture = frequencyEntryCapture;
+    if (capture !== null) {
+      if (!frequencyAuthorityMatches(capture)) return;
+      if (capture.target.slot.kind === 'slotted' && capture.expectedActiveSlot !== undefined) {
+        const lifecycle = vfo.onDirectFrequencyChange({
+          frequencyHz, receiver: capture.target.receiver, slot: capture.target.slot.id,
+          expectedActiveSlot: capture.expectedActiveSlot,
+          providerGeneration: capture.providerGeneration, sessionEpoch: capture.sessionEpoch,
+        });
+        if (lifecycle !== null) frequencyEntryLifecycle = {
+          id: lifecycle.id, epoch: lifecycle.originalEpoch,
+        };
+      } else {
+        tuneFrequency(capture.target.receiver, frequencyHz, 'jump');
+        frequencyEntryCapture = null;
+        frequencyEntryLifecycle = null;
+      }
+      return;
+    }
+    const active = model?.activeReceiver;
+    if (authority === null || active?.status !== 'known'
+      || authority.activeReceiver !== active.receiver) return;
     // MOR-1425 review round 2 (B1 residual): a typed frequency is the most
     // explicitly ABSOLUTE gesture in the UI — 'jump', same reasoning as
     // `selectBand` above.
@@ -1540,7 +1858,8 @@
     {/if}
   {/snippet}
   <ReceiverInstrumentHost
-    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority((publication) =>
+      handler({ ...publication, view: projectRadioView(publication.state, publication.caps, true) }))}
     {pendingFrequencyHz}
     onTuneFrequency={tuneFrequency}
     vfoOperations={receiverVfoOperations}
@@ -1551,11 +1870,15 @@
   {#snippet children(receiverInstruments)}
   <RxAudioInstrumentHost
     presentation={rxAudioInstrumentPresentation}
-    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority((publication) =>
+      handler({ ...publication, view: projectRadioView(publication.state, publication.caps, true) }))}
     onAfLevelChange={rxAudioIntents.onAfLevelChange}
+    afLevelFeedback={afLevelFeedback}
     onMonitorModeChange={(mode) => rxAudioIntents.onMonitorModeChange(mode)}
     onFocusChange={(focus) => routingIntents.onFocusChange(focus)}
     onSplitStereoChange={(split) => routingIntents.onSplitStereoChange(split)}
+    routingGains={rxAudioRoutingGains}
+    onChannelGainChange={(channel, value) => routingIntents.onChannelGainChange(channel, value)}
     onModInputChange={semanticHandlers.mode.onModInputChange}
     onSetModInputLan={setModInputLan}
     {...rxAudioFiniteRendererSelection}
@@ -1563,7 +1886,8 @@
   {#snippet children(rxAudioInstruments)}
   <RfFrontEndInstrumentHost
     presentation={rfFrontEndInstrumentPresentation}
-    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority((publication) =>
+      handler({ ...publication, view: projectRadioView(publication.state, publication.caps, true) }))}
     onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}
     {pendingPreamp}
     onPreChange={(level) => rfFrontEndIntents.onPreChange(level)}
@@ -1575,22 +1899,42 @@
   {#snippet children(rfFrontEndInstruments)}
   {#snippet vfoInstrumentComposition(vfoOperations: VfoOperationHandles)}
   <FilterInstrumentHost
-    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingDataMode}
+    {...filterFiniteRendererSelection} {view} {pendingFilter} {pendingDataMode} {pendingModInput}
     onModeChange={filterIntents.onModeChange}
     onFilterChange={filterIntents.onFilterChange}
     onFilterShapeChange={filterIntents.onFilterShapeChange}
     onDataModeChange={filterIntents.onDataModeChange}
+    onModInputChange={filterIntents.onModInputChange}
   >
   {#snippet children(filterInstruments)}
   <BandInstrumentHost
     {...bandFiniteRendererSelection} {view} entryRendererContext={bandFiniteRendererContext}
     onSelectBand={selectBand} onEnterFrequency={enterFrequency}
+    frequencyEntryEnabled={frequencyEntryCapture === null || frequencyEntrySubmitEnabled}
+    frequencyEntryUnavailableReason={frequencyEntryCapture !== null && !frequencyEntryAuthorityValid
+      ? frequencyEntryStatus : undefined}
     showPermitCaption={bandPermitCaption}
   >
   {#snippet children(bandInstruments)}
+  <FrequencyEntryDialog
+    open={frequencyEntryCapture !== null}
+    targetLabel={frequencyEntryCapture
+      ? `${frequencyEntryCapture.target.receiver}${frequencyEntryCapture.target.slot.kind === 'slotted'
+        ? ` VFO ${frequencyEntryCapture.target.slot.id}` : ''}` : ''}
+    returnFocus={frequencyEntryCapture?.trigger}
+    status={frequencyEntryStatus}
+    onclose={() => {
+      bandInstruments.cancelFrequencyEntry();
+      frequencyEntryCapture = null;
+      frequencyEntryLifecycle = null;
+    }}
+  >
+    {#snippet children()}{@render bandInstruments.frequencyEntry()}{/snippet}
+  </FrequencyEntryDialog>
   <AntennaInstrumentHost
     {view} tx={txState} readTx={() => tx.snapshot()}
-    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority((publication) =>
+      handler({ ...publication, view: projectRadioView(publication.state, publication.caps, true) }))}
     onSelectPort={(port) => ANTENNA_PORT_INTENT[port]?.()}
     onToggleRxAnt={antennaIntents.onToggleRxAnt}
     finiteAppearance={selectedFiniteAppearance}
@@ -1608,6 +1952,8 @@
     onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
     onNotchModeChange={dspIntents.onNotchModeChange}
     onAgcModeChange={agcIntents.onAgcModeChange}
+    settingsPanel={standardDspSettings}
+    onOpenSettings={(panel) => standardDspSettings = panel}
   >
   {#snippet children(dspInstruments)}
   <DspScalarHost
@@ -1630,19 +1976,21 @@
   {#if view}
     {#if strips === 'dual'}
       <div class="channel-strips" data-testid="channel-strips">
-        {#each visibleStrips(view) as { receiverId, zoneId } (receiverId)}
+        {#each renderedStrips(view) as { key, receiverId, zoneId, slotPosition, sliced, active, groupLabel } (key)}
           <!--
-            `data-zone-id`: `ReceiverId` is `'MAIN' | 'SUB'`, so the index is
-            total over the manifest's two per-receiver zones. A degraded
-            single-receiver view model renders `primary-vfo` and NO
-            `secondary-vfo` — an absent zone, never an empty promise.
+            `data-zone-id`: the first strip is `primary-vfo` and every later
+            one `secondary-vfo`.
+            `data-strip-slot` is emitted on the `slot` path only: on the
+            `receiver` path `slotPosition` is undefined and the attribute is
+            absent, which is what keeps the shipped decks unchanged.
           -->
           <div
             class="channel-strip"
-            data-testid={`channel-strip-${receiverId}`}
+            data-testid={`channel-strip-${key}`}
             data-zone-id={zoneId}
             data-strip-receiver={receiverId}
-            data-strip-active={isActiveStrip(view, receiverId)}
+            data-strip-slot={slotPosition}
+            data-strip-active={active}
             data-strip-operational={isOperationalStrip(view, receiverId)}
           >
             <!--
@@ -1656,7 +2004,14 @@
               a strip owns nothing but its own receiver.
               `groupLabel`: without it all three mounted surfaces share one
               generic accessible name and assistive tech cannot tell the
-              strips apart.
+              strips apart. On the `slot` path two columns can share one
+              receiver, so the one carrying no receiver instruments is named
+              by its own VFO position instead (`slotGroupLabel`).
+              `suppressIdentitySelectors` (T207, STOPGAP): the A/B identity
+              selectors resolve which COLUMN is A and which is B — a relation
+              between the two, not a fact of either — so the slot path
+              withholds them until that relation has a surface of its own
+              (T183).
               `disabled` (MOR-1256): a structurally-dual, operationally-
               degraded receiver (`dual-rx-unavailable`) keeps its strip
               PRESENT but forces its select controls inert — the shared
@@ -1664,14 +2019,16 @@
               radio-wide regardless of which strip this gates.
             -->
             <VfoSurface
-              viewModel={forReceiver(view, receiverId)}
+              viewModel={sliced}
               selectionPoolSize={view.vfos.length}
               showRadioWideFacts={false}
-              groupLabel={t('core.vfo.receiverGroupLabel', { receiver: receiverId })}
+              {groupLabel}
               onSelectVfo={selectVfo}
               onTuneFrequency={tuneFrequency}
+              onOpenFrequencyEntry={frequencyEntrySupported ? openFrequencyEntry : undefined}
               disabled={!isOperationalStrip(view, receiverId)}
               indicatorReceiver={receiverId}
+              suppressIdentitySelectors={stripBy === 'slot'}
               {receiverInstruments}
               continuitySession={meterContinuitySession}
               {pendingFrequencyHz}
@@ -1722,6 +2079,7 @@
         {operationControls}
         onSelectVfo={selectVfo}
         onTuneFrequency={tuneFrequency}
+        onOpenFrequencyEntry={frequencyEntrySupported ? openFrequencyEntry : undefined}
         {hasDualReceiver}
         {receiverInstruments}
         continuitySession={meterContinuitySession}
@@ -1752,9 +2110,10 @@
     must exist even while `view` is still null — see the alerts comment
     below), so the view-model gate now lives on the snippet itself.
   -->
-  {#snippet rxTxSurface()}
+  {#snippet rxTxSurface(standard = false)}
     {#if view}
-      <RxTxSurface {view} tx={txState} onRequestKey={requestKey} onRequestUnkey={requestUnkey} />
+      <RxTxSurface {view} tx={txState} {standard}
+        onRequestKey={requestKey} onRequestUnkey={requestUnkey} />
     {/if}
   {/snippet}
 
@@ -1834,19 +2193,20 @@
     not a second mount mechanism, a different answer to "and if nobody owns
     it?".
   -->
-  {#snippet presented(surface: SemanticSurfaceName, body: Snippet)}
+  {#snippet presented(surface: SemanticSurfaceName, body: Snippet, chrome?: PanelChrome)}
     {#if vfoAppearance === 'semantic' && hostedChildren === undefined}{@render body()}
-    {:else}<SemanticControlPanel {surface}>{@render body()}</SemanticControlPanel>{/if}
+    {:else}<SemanticControlPanel {surface} {...chrome}>{@render body()}</SemanticControlPanel>{/if}
   {/snippet}
 
   {#snippet zoned(
     surface: SemanticSurfaceName, present: boolean, body: Snippet, allowBare = true,
+    chrome?: PanelChrome, frame = true,
   )}
     {#if present}
       {@const zoneId = zoneOwning(surface)}
       {#if zoneId !== null}
-        <div class="surface-zone" data-zone-id={zoneId}>{@render presented(surface, body)}</div>
-      {:else if allowBare}{@render presented(surface, body)}{/if}
+        <div class="surface-zone" data-zone-id={zoneId}>{#if frame}{@render presented(surface, body, chrome)}{:else}{@render body()}{/if}</div>
+      {:else if allowBare}{#if frame}{@render presented(surface, body, chrome)}{:else}{@render body()}{/if}{/if}
     {/if}
   {/snippet}
 
@@ -1992,14 +2352,14 @@
     remains the key/unkey authority (R9).
   -->
   {#snippet antennaSurface(controlLayout?: Snippet)}
-    {#if view?.antenna}
-      {#if controlLayout}
+    {#if controlLayout}
+      {#if view?.antenna || runtime.caps?.antennas === 1}
         {@render controlLayout()}
-      {:else}
-        <AntennaSurface
-          {view} tx={txState} handles={antennaInstruments} layout={antennaLayout}
-        />
       {/if}
+    {:else if view?.antenna}
+      <AntennaSurface
+        {view} tx={txState} handles={antennaInstruments} layout={antennaLayout}
+      />
     {/if}
   {/snippet}
 
@@ -2028,11 +2388,16 @@
     props (`agcLabels` to the finite host, the two `nbLevel*` to the scalar
     host), never to this surface.
   -->
-  {#snippet dspSurface(finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout)}
+  {#snippet dspSurface(
+    finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout, part: DspSurfacePart = 'all',
+    compactAgcTime = false,
+  )}
     {#if view?.dsp}
       <DspSurface
         {view} finiteHandles={dspInstruments} {finiteLayout}
-        scalarHandles={dspScalars} {scalarLayout}
+        scalarHandles={dspScalars} {scalarLayout} {part} {compactAgcTime}
+        settingsPanel={compactAgcTime ? standardDspSettings : null}
+        onSettingsPanelChange={(panel) => standardDspSettings = panel}
         onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
       />
     {/if}
@@ -2105,10 +2470,10 @@
     `'ritXitScan'` becomes DECLARABLE with this slice, and `desktop-v2`
     declared it in MOR-1367 (S8); the cockpit still declares none.
   -->
-  {#snippet ritXitScanSurface()}
-    {#if view?.ritXit || view?.scan}
+  {#snippet ritXitScanSurface(part: RitXitScanSurfacePart = 'all')}
+    {#if (part !== 'scan' && view?.ritXit) || (part !== 'rit-xit' && view?.scan)}
       <RitXitScanSurface
-        {view} {ritDomain} {scanCapable}
+        {view} {ritDomain} {scanCapable} {scanTypeValues} {scanResumeValues} {part}
         handles={ritXitInstruments}
         onRitOffsetChange={ritXitIntents.onRitOffsetChange}
         onXitOffsetChange={ritXitIntents.onXitOffsetChange}
@@ -2119,6 +2484,7 @@
       />
     {/if}
   {/snippet}
+  {#snippet groupedRitXitScanSurface()}{@render ritXitScanSurface()}{/snippet}
 
   <!--
     MOR-1310 (vocabulary slice 9B) — SAFETY-CRITICAL. Same structural gate as
@@ -2143,13 +2509,14 @@
     gated inside the surface on the model's one `txPermit`, and the key/unkey
     authority stays the single `<RxTxSurface>` above (decomposition R9).
   -->
-  {#snippet cwKeyerSurface(showKeyerSpeed = true, showPitchHz = true)}
+  {#snippet cwKeyerSurface(showKeyerSpeed = true, showPitchHz = true, standard = false)}
     {#if view?.cwKeyer}
       <CwKeyerSurface
         {view}
         continuousHandles={cwKeyerInstruments}
         {showKeyerSpeed}
         {showPitchHz}
+        {standard}
         {breakInDelayFeedback}
         {autoTuneAvailable}
         onBreakInMode={(mode) => cwIntents.onBreakInModeChange(mode)}
@@ -2262,69 +2629,128 @@
     )}{/snippet}
     {@render zoned('vfo', view !== null && singleOrder.includes('vfo'), body, allowBare)}
   {/snippet}
-  {#snippet hostedRxTx(allowBare = allowBareSurfaces)}
-    {@render zoned('rxTx', view !== null && singleOrder.includes('rxTx'), rxTxSurface, allowBare)}
+  {#snippet hostedRxTx(
+    allowBare = allowBareSurfaces, chrome?: PanelChrome, standardTxLayout?: StandardTxLayout,
+  )}
+    {#snippet body()}
+      {@render rxTxSurface(standardTxLayout !== undefined)}
+      {#if standardTxLayout && view?.txAux}
+        {@render standardTxLayout(txAuxInstruments, txAuxScalars, {
+          rfPower: view.txAux.rfPower.availability.structural,
+          micGain: view.txAux.micGain.availability.structural,
+          driveGain: view.txAux.driveGain.availability.structural,
+          voxGain: view.txAux.voxGain.availability.structural,
+          antiVoxGain: view.txAux.antiVoxGain.availability.structural,
+          voxDelay: view.txAux.voxDelay.availability.structural,
+          compressorLevel: view.txAux.compressorLevel.availability.structural,
+          monitorLevel: view.txAux.monitorLevel.availability.structural,
+        })}
+      {/if}
+    {/snippet}
+    {@render zoned('rxTx', view !== null && singleOrder.includes('rxTx'), body, allowBare, chrome)}
   {/snippet}
-  {#snippet hostedTxAux(instrumentLayout: Snippet, allowBare = allowBareSurfaces)}
+  {#snippet hostedTxAux(
+    instrumentLayout: Snippet, allowBare = allowBareSurfaces, chrome?: PanelChrome,
+  )}
     {#snippet body()}
       {@render instrumentLayout()}
       {@render txAuxSurface(txAuxInstruments, txAuxScalars, false, false)}
     {/snippet}
-    {@render zoned('txAux', view?.txAux !== undefined, body, allowBare)}
+    {@render zoned('txAux', view?.txAux !== undefined, body, allowBare, chrome)}
   {/snippet}
-  {#snippet hostedMeters(allowBare = allowBareSurfaces)}
-    {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBare)}
+  {#snippet hostedMeters(allowBare = allowBareSurfaces, chrome?: PanelChrome)}
+    {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBare, chrome)}
   {/snippet}
   {#snippet hostedRxAudio(
-    allowBare = allowBareSurfaces, finiteLayout?: RxAudioFiniteLayout,
+    allowBare = allowBareSurfaces, finiteLayout?: RxAudioFiniteLayout, chrome?: PanelChrome,
   )}
     {#snippet body()}{@render rxAudioSurface(finiteLayout)}{/snippet}
-    {@render zoned('rxAudio', view?.rxAudio !== undefined, body, allowBare)}
+    {@render zoned('rxAudio', view?.rxAudio !== undefined, body, allowBare, chrome)}
   {/snippet}
   {#snippet hostedRfFrontEnd(
-    allowBare = allowBareSurfaces, finiteLayout?: RfFrontEndFiniteLayout,
+    allowBare = allowBareSurfaces, finiteLayout?: RfFrontEndFiniteLayout, chrome?: PanelChrome,
   )}
     {#snippet body()}{@render rfFrontEndSurface(finiteLayout)}{/snippet}
-    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, body, allowBare)}
+    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, body, allowBare, chrome)}
   {/snippet}
   {#snippet hostedFilter(
-    allowBare = allowBareSurfaces, finiteLayout?: FilterFiniteLayout,
+    allowBare = allowBareSurfaces, finiteLayout?: FilterFiniteLayout, chrome?: PanelChrome,
+    filterLayout?: FilterFiniteLayout, filterChrome?: PanelChrome,
   )}
-    {#snippet body()}{@render filterSurface(finiteLayout)}{/snippet}
-    {@render zoned(
-      'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined,
-      body, allowBare,
-    )}
+    {#if filterLayout && filterChrome}
+      {#snippet splitBody()}
+        <SemanticControlPanel surface="filter" title="MODE" {...chrome}>
+          <ModeSurface handles={filterInstruments} finiteLayout={finiteLayout} />
+        </SemanticControlPanel>
+        <SemanticControlPanel surface="filter" title="FILTER" {...filterChrome}>
+          {#if view}<FilterSurface
+            {view} handles={filterInstruments} finiteLayout={filterLayout} part="filter"
+            {filterWidthFeedback}
+            onFilterWidthChange={filterIntents.onFilterWidthChange}
+            onIfShiftChange={filterIntents.onIfShiftChange}
+            onPbtInnerChange={filterIntents.onPbtInnerChange}
+            onPbtOuterChange={filterIntents.onPbtOuterChange}
+            onPbtReset={filterIntents.onPbtReset}
+          />{/if}
+        </SemanticControlPanel>
+      {/snippet}
+      {@render zoned(
+        'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined,
+        splitBody, allowBare, undefined, false,
+      )}
+    {:else}
+      {#snippet body()}{@render filterSurface(finiteLayout)}{/snippet}
+      {@render zoned(
+        'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined,
+        body, allowBare, chrome,
+      )}
+    {/if}
   {/snippet}
   {#snippet hostedDsp(
     allowBare = allowBareSurfaces, finiteLayout?: DspFiniteLayout,
-    scalarLayout?: DspScalarLayout,
+    scalarLayout?: DspScalarLayout, chrome?: PanelChrome, part: DspSurfacePart = 'all',
+    compactAgcTime = false,
   )}
-    {#snippet body()}{@render dspSurface(finiteLayout, scalarLayout)}{/snippet}
-    {@render zoned('dsp', view?.dsp !== undefined, body, allowBare)}
+    {#snippet body()}{@render dspSurface(finiteLayout, scalarLayout, part, compactAgcTime)}{/snippet}
+    {@render zoned('dsp', view?.dsp !== undefined, body, allowBare, chrome)}
   {/snippet}
-  {#snippet hostedBand(allowBare = allowBareSurfaces, controlLayout?: BandControlLayout)}
+  {#snippet hostedBand(
+    allowBare = allowBareSurfaces, controlLayout?: BandControlLayout, chrome?: PanelChrome,
+  )}
     {#snippet body()}{@render bandSurface(controlLayout)}{/snippet}
-    {@render zoned('band', view?.band !== undefined, body, allowBare)}
+    {@render zoned('band', view?.band !== undefined, body, allowBare, chrome)}
   {/snippet}
-  {#snippet hostedAntenna(allowBare = allowBareSurfaces, controlLayout?: Snippet)}
+  {#snippet hostedAntenna(
+    allowBare = allowBareSurfaces, controlLayout?: Snippet, chrome?: PanelChrome,
+  )}
     {#snippet body()}{@render antennaSurface(controlLayout)}{/snippet}
-    {@render zoned('antenna', view?.antenna !== undefined, body, allowBare)}
-  {/snippet}
-  {#snippet hostedRitXitScan(allowBare = allowBareSurfaces)}
     {@render zoned(
-      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined,
-      ritXitScanSurface, allowBare,
+      'antenna', view?.antenna !== undefined || (controlLayout !== undefined && runtime.caps?.antennas === 1),
+      body, allowBare, chrome,
+    )}
+  {/snippet}
+  {#snippet hostedRitXitScan(
+    allowBare = allowBareSurfaces, chrome?: PanelChrome, part: RitXitScanSurfacePart = 'all',
+  )}
+    {#snippet body()}{@render ritXitScanSurface(part)}{/snippet}
+    {@render zoned(
+      'ritXitScan', (part !== 'scan' && view?.ritXit !== undefined)
+        || (part !== 'rit-xit' && view?.scan !== undefined),
+      body, allowBare, chrome,
     )}
   {/snippet}
   {#snippet hostedCwKeyer(
-    allowBare = allowBareSurfaces, showKeyerSpeed = true,
+    allowBare = allowBareSurfaces, showKeyerSpeed = true, chrome?: PanelChrome,
+    instrumentLayout?: Snippet, standard = false,
   )}
-    {#snippet body()}{@render cwKeyerSurface(showKeyerSpeed, showKeyerSpeed)}{/snippet}
-    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, body, allowBare)}
+    {#snippet body()}
+      {#if instrumentLayout}{@render instrumentLayout()}{/if}
+      {@render cwKeyerSurface(showKeyerSpeed, showKeyerSpeed, standard)}
+    {/snippet}
+    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, body, allowBare, chrome)}
   {/snippet}
-  {#snippet hostedMemory(allowBare = allowBareSurfaces)}
-    {@render zoned('memory', true, memorySurface, allowBare)}
+  {#snippet hostedMemory(allowBare = allowBareSurfaces, chrome?: PanelChrome)}
+    {@render zoned('memory', true, memorySurface, allowBare, chrome)}
   {/snippet}
   {#snippet hostedScopeDisplay(allowBare = allowBareSurfaces)}
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBare)}
@@ -2365,6 +2791,7 @@
       filter: hostedFilter,
       dsp: hostedDsp,
       band: hostedBand,
+      bandInstruments,
       antenna: hostedAntenna,
       antennaInstruments,
       antennaLayout,
@@ -2428,7 +2855,7 @@
     {@render zoned('band', view?.band !== undefined, bandSurface, false)}
     {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, false)}
     {@render zoned(
-      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface, false,
+      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, groupedRitXitScanSurface, false,
     )}
     {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, false)}
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface)}
@@ -2447,7 +2874,7 @@
       {@render zoned('band', view?.band !== undefined, bandSurface, allowBareSurfaces)}
       {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBareSurfaces)}
       {@render zoned(
-        'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface,
+        'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, groupedRitXitScanSurface,
         allowBareSurfaces,
       )}
       {#if regionExtras}{@render regionExtras('left')}{/if}
@@ -2529,7 +2956,7 @@
     {@render zoned('band', view?.band !== undefined, bandSurface, allowBareSurfaces)}
     {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBareSurfaces)}
     {@render zoned(
-      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface,
+      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, groupedRitXitScanSurface,
       allowBareSurfaces,
     )}
     {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBareSurfaces)}
@@ -2545,7 +2972,7 @@
   </TxAuxFiniteHost>
   {/snippet}
   <TxAuxScalarHost
-    {view} levelFeedback={txAuxLevelFeedback}
+    {view} levelFeedback={txAuxLevelFeedback} rfPowerFeedback={rfPowerFeedback}
     onLevelChange={(field, value) => TX_AUX_LEVEL_INTENT[field](value)}
     scalarAppearance={externalPresentation?.record.appearances.scalar}
     presentationIsCurrent={externalPresentation?.isCurrent}

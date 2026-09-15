@@ -46,11 +46,18 @@
   let cssHeight = $state(1);
   let rafId = 0;
   let visible = true;
+  let mounted = false;
   let latestPixels: Uint8Array | null = null;
   const rendererState = new AudioSpectrumRendererState();
 
+  function scheduleDraw(): void {
+    if (!mounted || !visible || rafId !== 0) return;
+    rafId = requestAnimationFrame(draw);
+  }
+
   function draw(): void {
-    if (!visible) { rafId = 0; return; }
+    rafId = 0;
+    if (!visible) return;
     const pixels = latestPixels ?? data;
 
     if (canvas && pixels && cssWidth > 1 && cssHeight > 1) {
@@ -72,28 +79,29 @@
       }
     }
 
-    // Only reschedule if there is data to render; the push callback will restart the loop
-    if (latestPixels ?? data) {
-      rafId = requestAnimationFrame(draw);
-    } else {
-      rafId = 0;
-    }
   }
 
   function onVisibilityChange() {
     visible = !document.hidden;
-    if (visible && rafId === 0) rafId = requestAnimationFrame(draw);
+    scheduleDraw();
   }
+
+  // A control/readout change must repaint even between FFT frames.
+  $effect(() => {
+    data; bandwidth; filterWidth; filterWidthMax; pbtInner; pbtOuter;
+    manualNotch; notchFreq; contour; contourFreq;
+    scheduleDraw();
+  });
 
   onMount(() => {
     onRegisterPush?.((pixels: Uint8Array) => {
       latestPixels = pixels;
-      // Restart rAF loop if it stopped because there was no data
-      if (rafId === 0 && visible) rafId = requestAnimationFrame(draw);
+      scheduleDraw();
     });
 
     document.addEventListener('visibilitychange', onVisibilityChange);
-    rafId = requestAnimationFrame(draw);
+    mounted = true;
+    scheduleDraw();
 
     const ro = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
@@ -105,6 +113,7 @@
       canvas.height = Math.round(cssHeight * dpr);
       canvas.getContext('2d')?.setTransform(dpr, 0, 0, dpr, 0, 0);
       rendererState.reset();
+      scheduleDraw();
     });
     ro.observe(canvas);
 
@@ -113,6 +122,7 @@
       ro.disconnect();
       cancelAnimationFrame(rafId);
       rafId = 0;
+      mounted = false;
     };
   });
 </script>

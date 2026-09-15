@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack, type Snippet } from 'svelte';
   import { runtime } from '$lib/runtime';
   import { hasCapability } from '$lib/stores/capabilities.svelte';
   import RfFrontEnd from '../panels/RfFrontEnd.svelte';
@@ -17,6 +18,7 @@
   import CollapsiblePanel from '../controls/CollapsiblePanel.svelte';
   import { createDragReorder } from '$lib/drag-reorder.svelte';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
+  import type { PanelDragOwner } from '../wiring/instrument-composition';
 
   /** MOR-1065: mirrors RightSidebar. The TX panel is not in this sidebar's
    *  defaults, but a cross-sidebar drag can move it here, so the semantic
@@ -42,20 +44,32 @@
   let {
     hideTxPanel = false,
     declared = new Set<SemanticSurfaceName>(),
-  }: { hideTxPanel?: boolean; declared?: ReadonlySet<SemanticSurfaceName> } = $props();
+    dragOwner,
+    showReset = true,
+    semanticHamBands,
+  }: {
+    hideTxPanel?: boolean;
+    declared?: ReadonlySet<SemanticSurfaceName>;
+    dragOwner?: PanelDragOwner;
+    showReset?: boolean;
+    semanticHamBands?: Snippet<[compact?: boolean]>;
+  } = $props();
 
   // Reactive state + capabilities — via runtime
   let caps = $derived(runtime.caps);
 
   // --- Panel reorder (shared logic) ---
-  const drag = createDragReorder({
+  const drag = untrack(() => dragOwner ?? createDragReorder({
     storageKey: 'rigplane:panel-order',
     defaults: ['rf-front-end', 'mode', 'filter', 'agc', 'rit-xit', 'band', 'antenna', 'scan'],
     containerSelector: '.left-sidebar',
-  });
+  }));
 </script>
 
-<aside class="left-sidebar" class:cross-drop-target={drag.isDropTarget}>
+<aside
+  class="left-sidebar" class:shared-drag-owner={dragOwner !== undefined}
+  class:cross-drop-target={drag.isDropTarget}
+>
   {#if drag.order.includes('rf-front-end') && !declared.has('rfFrontEnd')}
     <CollapsiblePanel title="RF FRONT END" panelId="rf-front-end" dataPanel="rf-frontend"
       draggable={true} onDragStart={drag.handleDragStart}
@@ -96,19 +110,16 @@
     </CollapsiblePanel>
   {/if}
 
-  <!-- MOR-1367 (S8): the BAND twin joins the channel by PROP, not by mount.
-       `BandSelector` hosts three tabs (HAM / LW-MW / SWL) and 16 broadcast
-       presets; only the HAM half is duplicated by `BandSurface`, and the
-       broadcast presets are deliberately NOT facts
-       (`semantic/radio-view-model.ts:494-496`) and have no other production
-       host. So the panel keeps mounting unconditionally and the component
-       drops only its HAM half (S10 §4a) — a `{#if !declared.has('band')}` here
-       would orphan the presets. -->
+  <!-- MOR-2445: Standard supplies `semanticHamBands`, placing the retained
+       semantic choice authority beside the 16 broadcast presets. Other
+       declared layouts keep the MOR-1367 suppression behavior; undeclared
+       layouts keep the legacy HAM fallback. The panel remains unconditional
+       because no semantic vocabulary owns the broadcast presets. -->
   {#if drag.order.includes('band')}
-    <CollapsiblePanel title="BAND" panelId="band"
+    <CollapsiblePanel title="BANDS" panelId="band"
       draggable={true} onDragStart={drag.handleDragStart}
       style={drag.dragStyle('band')}>
-      <BandSelector hamBands={!declared.has('band')} />
+      <BandSelector hamBands={!declared.has('band')} {semanticHamBands} />
     </CollapsiblePanel>
   {/if}
 
@@ -158,14 +169,17 @@
     </CollapsiblePanel>
   {/if}
 
-  <div class="sidebar-footer" style="order:99">
-    <button type="button" class="reset-order-btn" onclick={drag.resetAll}>
-      Reset panel order
-    </button>
-  </div>
+  {#if showReset}
+    <div class="sidebar-footer" style="order:99">
+      <button type="button" class="reset-order-btn" onclick={drag.resetAll}>
+        Reset panel order
+      </button>
+    </div>
+  {/if}
 </aside>
 
 <style>
+
   .left-sidebar {
     display: flex;
     flex-direction: column;
@@ -180,6 +194,8 @@
     outline: 2px solid var(--v2-accent, #4af);
     outline-offset: -2px;
   }
+
+  .left-sidebar.shared-drag-owner { display: contents; }
 
   .sidebar-footer {
     display: flex;

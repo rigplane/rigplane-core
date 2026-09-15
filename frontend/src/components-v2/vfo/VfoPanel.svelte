@@ -45,6 +45,7 @@
     frequencyState?: 'current' | 'stale' | 'unknown' | 'unsupported';
     contextKey?: string;
     frequencyDisabled?: boolean;
+    controlsDisabled?: boolean;
     mode: string | null;
     filter: string | null;
     sMeter?: Snippet;
@@ -58,25 +59,38 @@
     bandText?: string | null;
     rit?: { active: boolean; offset: number };
     slotChoices?: readonly VfoPanelSlotChoice[];
+    /** Keep peer cards aligned while only the active VFO owns the real meter. */
+    reserveMeterSpace?: boolean;
     layoutProfile?: VfoLayoutProfile;
     onModeClick?: () => void;
     onFreqChange?: (freq: number) => void;
+    /** Opens the frequency-entry overlay for this card. */
+    onFrequencyClick?: (trigger: HTMLElement) => void;
     onSelectSlot?: (key: string) => void;
+    /** Selects this VFO from its header; frequency gestures remain independent. */
+    onSelectHeader?: () => void;
+    headerReason?: string;
   }
 
   let {
     receiver, receiverLabel, slotTag, frequency, freq, displayHz, pendingDisplayHz = null,
-    frequencyState = 'current', contextKey, frequencyDisabled = false,
+    frequencyState = 'current', contextKey, frequencyDisabled = false, controlsDisabled = false,
     mode, filter, sMeter, sValue, meterPresent = true, meterOperational, meterSource, continuitySession,
     isActive,
-    badgeItems, bandText, rit, slotChoices = [],
+    badgeItems, bandText, rit, slotChoices = [], reserveMeterSpace = false,
     layoutProfile = 'baseline',
     onModeClick,
     onFreqChange,
+    onFrequencyClick,
     onSelectSlot,
+    onSelectHeader,
+    headerReason,
   }: Props = $props();
 
   let meterVariant = $derived(layoutProfile === 'wide' ? 'vfo-wide' : 'vfo');
+  let frequencyEntryButton = $derived(onFrequencyClick !== undefined
+    && (frequencyState === 'current' || frequencyState === 'stale')
+    && freq !== null && freq !== undefined && Number.isFinite(freq));
   const staleId = `vfo-panel-stale-${++sequence}`;
   let receiverChromeVars = $derived({
     '--receiver-accent': `var(--v2-receiver-${receiver}-accent)`,
@@ -91,6 +105,27 @@
     return [groups.mhz, groups.khz, groups.hz]
       .map((group) => group.map((digit) => digit.char).join('')).join('.');
   }
+
+  function handleFrequencyClick(event: MouseEvent): void {
+    if (onFrequencyClick === undefined || !(event.target instanceof Element)) return;
+    const readout = event.target.closest('.freq');
+    if (readout === null || !(event.currentTarget instanceof HTMLElement)
+      || !event.currentTarget.contains(readout)) return;
+    const trigger = frequencyEntryButton ? event.currentTarget : readout;
+    if (trigger instanceof HTMLElement) {
+      if (frequencyEntryButton) event.stopPropagation();
+      onFrequencyClick(trigger);
+    }
+  }
+
+  function handleFrequencyKeydown(event: KeyboardEvent): void {
+    if (!frequencyEntryButton || onFrequencyClick === undefined
+      || (event.key !== 'Enter' && event.key !== ' ')
+      || !(event.currentTarget instanceof HTMLElement)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onFrequencyClick(event.currentTarget);
+  }
 </script>
 
 <div
@@ -99,18 +134,24 @@
   data-layout-profile={layoutProfile}
   style={Object.entries(receiverChromeVars).map(([key, value]) => `${key}:${value}`).join(';')}
 >
-  <div class="panel-header">
+  <button
+    type="button" class="panel-header" disabled={onSelectHeader === undefined}
+    aria-label={onSelectHeader ? `Select ${receiverLabel}` : undefined}
+    title={headerReason}
+    onclick={onSelectHeader}
+  >
     <div class="header-title-group">
       <span class="vfo-label">{receiverLabel}</span>
     </div>
 
     <div class="header-badges">
-      <span class="header-tag meter-tag">BAR</span>
+      {#if sMeter || meterPresent}<span class="header-tag meter-tag">BAR</span>{/if}
       <span class="header-tag slot-tag">{slotTag}</span>
     </div>
-  </div>
+  </button>
 
-  <div class="smeter-row panel-meter">
+  <div class="smeter-row panel-meter"
+    data-meter-space={!sMeter && !meterPresent && reserveMeterSpace ? 'reserved' : undefined}>
     {#if sMeter}
       <div data-testid="receiver-s-meter" data-receiver={receiver}>
         {@render sMeter()}
@@ -127,21 +168,29 @@
   <div class="panel-body">
     <div class="display-row">
       <div class="freq-row">
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
         <span class="vfo-freq" data-vfo-freq data-freq-tunable={!frequencyDisabled}
           data-display-state={frequencyState} class:display-unknown={displayHz === null}
+          role={frequencyEntryButton ? 'button' : undefined}
+          aria-label={frequencyEntryButton ? `Set frequency — ${receiverLabel}` : undefined}
+          tabindex={frequencyEntryButton ? 0 : undefined}
+          onclickcapture={handleFrequencyClick}
+          onkeydowncapture={handleFrequencyKeydown}
           >
-          {#if frequency}
-            {@render frequency()}
-          {:else if freq !== null && freq !== undefined && Number.isFinite(freq)}
-            <FrequencyDisplayInteractive
-              {freq} {displayHz} {pendingDisplayHz} {contextKey}
-              disabled={frequencyDisabled
-                || (frequencyState !== 'current' && frequencyState !== 'stale')}
-              active={isActive} {receiver} {onFreqChange} vfoFreqHook={false}
-            />
-          {:else}
-            <span class="freq unknown-frequency">{formatFrequency(pendingDisplayHz ?? displayHz)}</span>
-          {/if}
+          <span class="frequency-readout-content" aria-hidden={frequencyEntryButton ? 'true' : undefined}>
+            {#if frequency}
+              {@render frequency()}
+            {:else if freq !== null && freq !== undefined && Number.isFinite(freq)}
+              <FrequencyDisplayInteractive
+                {freq} {displayHz} {pendingDisplayHz} {contextKey}
+                disabled={frequencyDisabled
+                  || (frequencyState !== 'current' && frequencyState !== 'stale')}
+                active={isActive} {receiver} {onFreqChange} vfoFreqHook={false}
+              />
+            {:else}
+              <span class="freq unknown-frequency">{formatFrequency(pendingDisplayHz ?? displayHz)}</span>
+            {/if}
+          </span>
         </span>
       </div>
 
@@ -158,8 +207,14 @@
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <div
         class="mode-badge-wrapper"
-        onclick={(e) => { e.stopPropagation(); onModeClick?.(); }}
-        title={`Change mode (current: ${mode})`}
+        class:mode-disabled={controlsDisabled || onModeClick === undefined}
+        data-vfo-controls-disabled={controlsDisabled}
+        aria-disabled={controlsDisabled || onModeClick === undefined}
+        onclick={(e) => {
+          e.stopPropagation();
+          if (!controlsDisabled) onModeClick?.();
+        }}
+        title={!controlsDisabled && onModeClick ? `Change mode (current: ${mode})` : undefined}
       >
         <StatusIndicator
           label={mode ?? '—'}
@@ -252,7 +307,17 @@
       var(--vfo-panel-pad-x, 10px)
       0;
     border-bottom: none;
+    width: 100%;
+    border-top: 0;
+    border-inline: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: inherit;
+    cursor: pointer;
   }
+
+  .panel-header:disabled { cursor: default; }
 
   .header-title-group {
     display: flex;
@@ -336,6 +401,8 @@
     display: inline-flex;
   }
 
+  .mode-badge-wrapper.mode-disabled { cursor: default; }
+
   .mode-badge-wrapper:hover :global(.v2-status-indicator) {
     filter: brightness(1.15);
   }
@@ -374,6 +441,15 @@
     max-inline-size: 100%;
     font-size: var(--vfo-frequency-size, 24px);
     letter-spacing: var(--vfo-frequency-letter-spacing, 0.03em);
+  }
+
+  .frequency-readout-content { display: contents; }
+
+  .vfo-freq[role='button'], .vfo-freq[role='button'] :global(.digit) { cursor: pointer; }
+  .vfo-freq[role='button']:focus-visible {
+    outline: 2px solid var(--v2-accent-cyan-bright);
+    outline-offset: 3px;
+    border-radius: 4px;
   }
 
   .vfo-freq :global(.freq.interactive) {

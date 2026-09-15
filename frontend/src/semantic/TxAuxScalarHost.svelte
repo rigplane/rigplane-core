@@ -9,6 +9,7 @@
   import {
     createContinuousScalar,
     createHBarContinuousScalarPolicy,
+    type CommandScalarFeedback,
     type ContinuousScalarInput,
     type ContinuousScalarPolicy,
     type ScalarDomain,
@@ -29,6 +30,7 @@
   interface Props {
     view: RadioViewModel | null;
     levelFeedback?: TxAuxLevelFeedback;
+    rfPowerFeedback?: Readonly<CommandScalarFeedback>;
     onLevelChange?: (field: TxAuxLevelField, value: number) => void;
     scalarAppearance?: ScalarAppearance;
     presentationIsCurrent?: () => boolean;
@@ -36,7 +38,8 @@
   }
 
   let {
-    view, levelFeedback, onLevelChange, scalarAppearance, presentationIsCurrent, children,
+    view, levelFeedback, rfPowerFeedback, onLevelChange, scalarAppearance, presentationIsCurrent,
+    children,
   }: Props = $props();
   let txAux = $derived(view?.txAux);
 
@@ -72,6 +75,12 @@
       enabled: current !== undefined && usable(current),
       request: (value: number) => request(field, value),
     } as const;
+    if (field === 'rfPower' && rfPowerFeedback !== undefined) return {
+      ...common,
+      evidence: 'command-feedback',
+      feedback: rfPowerFeedback,
+      command: 'set_rf_power',
+    };
     if (field !== 'rfPower' && levelFeedback !== undefined) return {
       ...common,
       evidence: 'command-feedback',
@@ -144,16 +153,20 @@
   }
 
   function canonical(field: TxAuxLevelField): number | null {
-    if (field !== 'rfPower' && levelFeedback !== undefined) {
-      const feedback = levelFeedback[field];
+    const feedback = feedbackOf(field);
+    if (feedback !== undefined) {
       return feedback.availability === 'available' ? feedback.confirmed : null;
     }
     const reading = txAux?.[field].reading;
     return reading?.status === 'known' ? reading.value : null;
   }
-  function status(field: TxAuxFeedbackLevelField): string {
-    if (levelFeedback === undefined) return '';
-    const feedback = levelFeedback[field];
+  function feedbackOf(field: TxAuxLevelField): Readonly<CommandScalarFeedback> | undefined {
+    if (field === 'rfPower') return rfPowerFeedback;
+    return levelFeedback?.[field];
+  }
+  function status(field: TxAuxLevelField): string {
+    const feedback = feedbackOf(field);
+    if (feedback === undefined) return '';
     if (feedback.phase === 'idle') return '';
     const [, label] = row(field);
     const target = feedback.target ?? feedback.requestedTarget;
@@ -165,7 +178,7 @@
   function reason(field: TxAuxLevelField): string | undefined {
     const current = txAux?.[field];
     if (current === undefined) return 'Not yet observed';
-    if (field !== 'rfPower' && levelFeedback?.[field].availability === 'unavailable') {
+    if (feedbackOf(field)?.availability === 'unavailable') {
       return reasonText(current) ?? 'Not yet observed';
     }
     return reasonText(current);
@@ -185,8 +198,8 @@
     {@const explicitPresentation = presentation !== undefined}
     {@const form = presentation?.form ?? 'hbar'}
     {@const [, label, min, max, step] = row(field)}
-    {@const currentStatus = field === 'rfPower' ? '' : status(field)}
-    {@const currentFeedback = field === 'rfPower' ? undefined : levelFeedback?.[field]}
+    {@const currentStatus = status(field)}
+    {@const currentFeedback = feedbackOf(field)}
     {@const disabledReason = reason(field)}
     {@const accessibility = {
       description: disabledReason ?? null,
@@ -211,11 +224,13 @@
         aria-hidden={explicitPresentation ? 'true' : undefined}>{label}</span>
       {#if field === 'rfPower'}
         <ValueControl
+          {...feedbackIntegratedControl}
           binding={bindings[field]} label="RF Power" renderer={form}
           displayFn={(value) => formatValue(field, value)}
           showLabel={explicitPresentation ? presentation?.showLabel ?? true : false}
           showValue={explicitPresentation ? presentation?.showValue ?? true : false}
           compact={explicitPresentation ? presentation?.compact ?? false : true}
+          variant={presentation?.variant ?? 'modern'}
           title={disabledReason}
           {accessibility}
           skin={scalarAppearance}
@@ -229,6 +244,7 @@
           showLabel={explicitPresentation ? presentation?.showLabel ?? true : false}
           showValue={explicitPresentation ? presentation?.showValue ?? true : false}
           compact={explicitPresentation ? presentation?.compact ?? false : true}
+          variant={presentation?.variant ?? 'modern'}
           title={disabledReason}
           {accessibility}
           skin={scalarAppearance}
@@ -292,7 +308,7 @@
 
 <style>
   .tx-aux-level { display: grid; grid-template-columns: 10ch 8rem auto; align-items: center; gap: 0.5rem; }
-  .tx-aux-level--presented { display: inline-flex; min-width: 0; max-width: 100%; }
+  .tx-aux-level--presented { display: flex; width: 100%; min-width: 0; max-width: 100%; }
   .tx-aux-name { white-space: nowrap; }
   .tx-aux-level :global(.vc-hbar) { width: 100%; min-width: 0; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }

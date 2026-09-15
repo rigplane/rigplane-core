@@ -24,6 +24,9 @@ vi.mock('$lib/stores/managed-transmit.svelte', () => ({
   managedTransmitIsStale: () => false, managedTransmitRemainingMs: () => null,
   refreshManagedTransmit: vi.fn(async () => {}), invalidateManagedTransmit: vi.fn(), submitManagedTransmit: h.submit,
   setManagedTransmitTot: vi.fn(async () => {}),
+  // The refresh mock applies nothing; the snapshot changes only through
+  // `h.latched`, so the applied revision stays constant.
+  managedTransmitAppliedRevision: () => 0,
 }));
 vi.mock('$lib/stores/radio.svelte', () => ({
   getRadioState: () => h.radio,

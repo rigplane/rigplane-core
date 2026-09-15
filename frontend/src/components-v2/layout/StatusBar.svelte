@@ -71,7 +71,7 @@
   } from '$lib/stores/connection.svelte';
   import { getActiveFrequencyHz } from '$lib/runtime/adapters/panel-adapters';
   import { getAudioState } from '$lib/stores/audio.svelte';
-  import { hasAnyScope, hasAudio, hasSpectrum } from '$lib/stores/capabilities.svelte';
+  import { hasAnyScope, hasAudio, hasSpectrum, hasCapability } from '$lib/stores/capabilities.svelte';
   import { getLayoutMode, setLayoutMode, type CanonicalLayoutMode, type LayoutMode } from '$lib/stores/layout.svelte';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
 
@@ -134,13 +134,28 @@
 
   let radioPowerOn = $derived(getRadioPowerOn());
   let isPoweredOff = $derived(radioPowerOn === false);
+  // MOR-1673: radios without power_control (e.g. FTX-1) cannot toggle
+  // power — the button stays rendered but disabled so the status-bar
+  // layout does not shift (owner decision 2026-09-15), and
+  // handlePowerToggle re-checks this before confirming or dispatching.
+  let powerControlSupported = $derived(hasCapability('power_control'));
 
   let powerTooltip = $derived(
-    radioPowerOn === true
+    !powerControlSupported
+      ? t('core.statusbar.power.unsupported')
+      : radioPowerOn === true
       ? t('core.statusbar.power.toggleOn')
       : radioPowerOn === false
         ? t('core.statusbar.power.toggleOff')
         : t('core.statusbar.power.toggleUnknown')
+  );
+
+  let powerLabel = $derived(
+    radioPowerOn === true
+      ? t('core.statusbar.power.labelOff')
+      : radioPowerOn === false
+        ? t('core.statusbar.power.labelOn')
+        : t('core.statusbar.power.labelUnknown')
   );
 
   // When radio is powered off, override statuses that depend on the radio.
@@ -254,6 +269,9 @@
   }
 
   async function handlePowerToggle() {
+    // Defence in depth: never confirm or dispatch when the capability is
+    // absent or the power state is unknown.
+    if (!powerControlSupported || radioPowerOn === null) return;
     if (radioPowerOn === true) {
       if (!confirm(t('core.statusbar.power.confirmTurnOff'))) return;
       try {
@@ -452,11 +470,13 @@
       type="button"
       class="control-btn power-toggle-btn"
       class:is-on={radioPowerOn === true}
+      class:power-unknown={radioPowerOn === null}
+      disabled={radioPowerOn === null || !powerControlSupported}
       onclick={handlePowerToggle}
       title={powerTooltip}
     >
       <Power size={14} strokeWidth={2} />
-      <span class="btn-label">{radioPowerOn === true ? t('core.statusbar.power.labelOff') : t('core.statusbar.power.labelOn')}</span>
+      <span class="btn-label">{powerLabel}</span>
     </button>
   </div>
 </div>
@@ -675,6 +695,13 @@
     color: var(--v2-accent-green, #4ade80);
   }
 
+  :global(.desktop-control-face.standard-face) .status-bar .status-controls .power-toggle-btn {
+    --indicator-color: var(--v2-accent-green, #4ade80);
+    --glow-color: var(--v2-accent-green, #4ade80);
+    border-color: var(--v2-accent-green, #4ade80);
+    color: var(--v2-accent-green, #4ade80);
+  }
+
   .power-toggle-btn:hover {
     border-color: var(--v2-accent-green, #4ade80);
     background: rgba(74, 222, 128, 0.1);
@@ -685,9 +712,40 @@
     color: var(--v2-accent-red, #ef4444);
   }
 
+  :global(.desktop-control-face.standard-face) .status-bar .status-controls .power-toggle-btn.is-on {
+    --indicator-color: var(--v2-accent-red, #ef4444);
+    --glow-color: var(--v2-accent-red, #ef4444);
+    border-color: var(--v2-accent-red, #ef4444);
+    color: var(--v2-accent-red, #ef4444);
+  }
+
   .power-toggle-btn.is-on:hover {
     border-color: var(--v2-accent-red, #ef4444);
     background: rgba(239, 68, 68, 0.1);
+  }
+
+  :global(.desktop-control-face.standard-face) .status-bar .status-controls .power-toggle-btn.power-toggle-btn:hover:not(:disabled) {
+    border-color: var(--v2-accent-green, #4ade80);
+    color: var(--v2-accent-green, #4ade80);
+  }
+
+  :global(.desktop-control-face.standard-face) .status-bar .status-controls .power-toggle-btn.power-toggle-btn.is-on:hover:not(:disabled) {
+    border-color: var(--v2-accent-red, #ef4444);
+    color: var(--v2-accent-red, #ef4444);
+  }
+
+  /* MOR-1673: unknown power state renders neutral — no green/red toggle
+     styling, just the plain control-button border and dimmed text. */
+  .power-toggle-btn.power-unknown {
+    border-color: var(--v2-border, #2a2a3e);
+    color: var(--v2-text-dim, #666);
+  }
+
+  :global(.desktop-control-face.standard-face) .status-bar .status-controls .power-toggle-btn.power-unknown {
+    --indicator-color: var(--v2-text-dim, #666);
+    --glow-color: var(--v2-text-dim, #666);
+    border-color: var(--v2-border, #2a2a3e);
+    color: var(--v2-text-dim, #666);
   }
 
   /* Now Playing badge */

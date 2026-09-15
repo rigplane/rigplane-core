@@ -40,6 +40,8 @@ export interface RfFrontEndControlSession {
 export interface RfFrontEndAuthorityPublication {
   readonly state: ServerState | null;
   readonly caps: Capabilities | null;
+  /** App-owned projection shared by every authority consumer. */
+  readonly view?: RadioViewModel | null;
   readonly session: RfFrontEndControlSession;
 }
 
@@ -60,7 +62,7 @@ export type RfFrontEndInstrumentPresentation = Readonly<
  *  level shape is active. */
 export interface RfFrontEndFiniteHandles {
   readonly preamp: Snippet;
-  readonly attenuator: Snippet;
+  readonly attenuator: Snippet<[compact?: boolean]>;
   readonly digiSel: Snippet;
   readonly ipPlus: Snippet;
 }

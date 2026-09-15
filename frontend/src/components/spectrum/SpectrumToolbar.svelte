@@ -673,6 +673,16 @@
     background: rgba(251, 191, 36, 0.12);
   }
 
+  :global(.desktop-control-face.standard-face) .auto-step-toggle.active {
+    color: var(--v2-text-bright, #fff);
+    border-color: var(--v2-accent-cyan, #00d4ff);
+    background: linear-gradient(180deg,
+      var(--hw-gradient-top-1) 0%,
+      var(--hw-gradient-top-2) 14%,
+      var(--hw-gradient-mid) 52%,
+      var(--hw-gradient-bottom) 100%);
+  }
+
   .step-group {
     gap: 0 !important;
   }
@@ -689,6 +699,14 @@
   .step-arrow:hover {
     opacity: 1;
     color: #00d4ff !important;
+  }
+
+  :global(.desktop-control-face.standard-face) .step-arrow {
+    color: var(--v2-text-subdued, var(--text-muted)) !important;
+  }
+
+  :global(.desktop-control-face.standard-face) .step-arrow:hover:not(:disabled) {
+    color: var(--v2-text-bright, var(--text)) !important;
   }
 
   .toolbar-select {

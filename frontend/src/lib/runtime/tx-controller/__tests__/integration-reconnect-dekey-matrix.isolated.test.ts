@@ -23,6 +23,7 @@ vi.mock('$lib/stores/managed-transmit.svelte', () => ({
   managedTransmitRemainingMs: () => null, refreshManagedTransmit: vi.fn(async () => {}),
   invalidateManagedTransmit: vi.fn(), submitManagedTransmit: vi.fn(async () => 'accepted'),
   setManagedTransmitTot: vi.fn(async () => {}),
+  managedTransmitAppliedRevision: () => 0,
 }));
 vi.mock('$lib/stores/radio.svelte', () => ({
   getRadioState: () => h.radio,

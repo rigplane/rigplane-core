@@ -12,6 +12,8 @@ export interface FilterInstrumentHandles {
   readonly filter: Snippet;
   readonly shape: Snippet;
   readonly dataMode: Snippet;
+  readonly standardMode?: Snippet;
+  readonly standardDataMode?: Snippet;
 }
 
 export type FilterFiniteLayout = Snippet<[FilterInstrumentHandles]>;

@@ -16,6 +16,7 @@
   interface Props {
     view: RadioViewModel;
     presentation?: 'grouped' | 'independent';
+    standard?: boolean;
     scalarPresentation?: Readonly<CwContinuousPresentation>;
     breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
     pitchFeedback?: Readonly<CommandScalarFeedback>;
@@ -30,7 +31,7 @@
   }
 
   let {
-    view, presentation = 'grouped', scalarPresentation,
+    view, presentation = 'grouped', standard = false, scalarPresentation,
     breakInDelayFeedback, pitchFeedback, keySpeedFeedback, autoTuneAvailable = false,
     onBreakInMode, onLevelChange, onApfOn, onTwinPeakToggle, onReversePaddleToggle, onAutoTune,
   }: Props = $props();
@@ -41,7 +42,7 @@
     {#key presentation}
       {#if presentation === 'grouped'}
         <CwKeyerSurface
-          {view} continuousHandles={handles} {breakInDelayFeedback} {autoTuneAvailable}
+          {view} continuousHandles={handles} {standard} {breakInDelayFeedback} {autoTuneAvailable}
           {onBreakInMode} {onLevelChange} {onApfOn} {onTwinPeakToggle}
           {onReversePaddleToggle} {onAutoTune}
         />

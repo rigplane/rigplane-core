@@ -29,7 +29,6 @@ records for the first half of this migration.
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING
 
 from ._codec import _level_bcd_encode, bcd_encode_value
@@ -43,26 +42,6 @@ from ._frame import (
 
 if TYPE_CHECKING:
     from ..command_map import CommandMap
-
-
-def _cw_pitch_from_level(level: int) -> int:
-    return int(round((((600.0 / 255.0) * level) + 300) / 5.0) * 5.0)
-
-
-def _cw_pitch_to_level(pitch_hz: int) -> int:
-    if not 300 <= pitch_hz <= 900:
-        raise ValueError(f"CW pitch must be 300-900 Hz, got {pitch_hz}")
-    return math.ceil((pitch_hz - 300) * (255.0 / 600.0))
-
-
-def _key_speed_from_level(level: int) -> int:
-    return round((level / 6.071) + 6)
-
-
-def _key_speed_to_level(wpm: int) -> int:
-    if not 6 <= wpm <= 48:
-        raise ValueError(f"Key speed must be 6-48 WPM, got {wpm}")
-    return round((wpm - 6) * 6.071)
 
 
 @expose_command_key(lambda cmd_map: "get_rf_power")
@@ -421,19 +400,25 @@ def get_cw_pitch(
 @expose_command_key(lambda cmd_map: "set_cw_pitch")
 @require_cmd_map
 def set_cw_pitch(
-    pitch_hz: int,
+    level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     *,
     cmd_map: CommandMap,
 ) -> bytes:
-    """Build a set CW Pitch command."""
+    """Build a set CW Pitch command.
+
+    Args:
+        level: Raw sidetone level 0-255. Hz-to-level conversion is the
+            caller's profile domain (profiles/control_domain.py:
+            encode_legacy_control).
+    """
     return _build_from_map(
         cmd_map,
         "set_cw_pitch",
         to_addr=to_addr,
         from_addr=from_addr,
-        data=_level_bcd_encode(_cw_pitch_to_level(pitch_hz)),
+        data=_level_bcd_encode(level),
     )
 
 
@@ -481,19 +466,25 @@ def get_key_speed(
 @expose_command_key(lambda cmd_map: "set_key_speed")
 @require_cmd_map
 def set_key_speed(
-    wpm: int,
+    level: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
     *,
     cmd_map: CommandMap,
 ) -> bytes:
-    """Build a set Key Speed command."""
+    """Build a set Key Speed command.
+
+    Args:
+        level: Raw key-speed level 0-255. WPM-to-level conversion is the
+            caller's profile domain (profiles/control_domain.py:
+            encode_legacy_control).
+    """
     return _build_from_map(
         cmd_map,
         "set_key_speed",
         to_addr=to_addr,
         from_addr=from_addr,
-        data=_level_bcd_encode(_key_speed_to_level(wpm)),
+        data=_level_bcd_encode(level),
     )
 
 

@@ -231,20 +231,15 @@ describe('RxPlayer jitter bounds (#1363)', () => {
     p.stop();
   });
 
-  it('reset trigger uses floor/2 (derived, not hardcoded)', () => {
+  it('increasing the jitter floor preserves already queued audio', () => {
     const p = new RxPlayer();
     p.start();
-    // First feed with defaults (50/300): nextPlayTime → ~0.06 after start+duration.
     ctx.currentTime = 0;
     p.feed(pcm16(480));
-    expect(ctx._lastSrc.start.mock.calls[0][0]).toBeCloseTo(0.05, 5);
-    // Switch to bounds where floor=200: floor/2 = 0.10. Current nextPlayTime
-    // (~0.06) is below floor/2, so a new feed must reset to 0 + 0.20 = 0.20.
     p.setJitterBounds(200, 1000);
-    ctx.currentTime = 0;
     p.feed(pcm16(480));
-    expect(ctx._lastSrc.start).toHaveBeenCalledTimes(1);
-    expect(ctx._lastSrc.start.mock.calls[0][0]).toBeCloseTo(0.20, 5);
+    expect(ctx._lastSrc.start.mock.calls[0][0]).toBeCloseTo(0.06, 5);
+    expect(p.stats().underruns).toBe(0);
     p.stop();
   });
 });
@@ -320,6 +315,19 @@ describe('RxPlayer link-quality stats (MOR-585)', () => {
     p.start();
     ctx.currentTime = 0;
     p.feed(pcm16(480));           // first frame: nextPlayTime 0 → floor rebase
+    expect(p.stats().underruns).toBe(0);
+    p.stop();
+  });
+
+  it('keeps queued 20 ms audio contiguous after a delayed feed', () => {
+    const p = new RxPlayer();
+    p.start();
+    ctx.currentTime = 0;
+    p.feed(pcm16(960)); // scheduled from 50 to 70 ms
+    const previousEnd = ctx._lastSrc.start.mock.calls[0][0] + 0.020;
+    ctx.currentTime = 0.050; // 20 ms remain; playback has not drained
+    p.feed(pcm16(960));
+    expect(ctx._lastSrc.start.mock.calls[0][0]).toBeCloseTo(previousEnd, 8);
     expect(p.stats().underruns).toBe(0);
     p.stop();
   });

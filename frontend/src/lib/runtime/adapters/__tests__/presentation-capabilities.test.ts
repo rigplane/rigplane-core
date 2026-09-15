@@ -18,7 +18,9 @@ describe('derivePresentationCapabilities', () => {
     ['single', 1, ['MAIN'], { MAIN: null }],
     ['ab', 1, ['MAIN'], { MAIN: ['A', 'B'] }],
     ['ab_shared', 2, ['MAIN', 'SUB'], { MAIN: null, SUB: null }],
-    ['main_sub', 2, ['MAIN', 'SUB'], { MAIN: ['A', 'B'], SUB: ['A', 'B'] }],
+    // MOR-2467: `main_sub` is two UNLOTTED receiver-level records (MAIN/SUB),
+    // never per-receiver A/B slots — the IC-7610 has no A/B to report.
+    ['main_sub', 2, ['MAIN', 'SUB'], { MAIN: null, SUB: null }],
   ] as const)('maps %s topology exactly', (scheme, receivers, structuralReceivers, slots) => {
     const capabilities = scheme === 'single' || scheme === 'ab'
       ? ['scope', 'audio', 'tx']

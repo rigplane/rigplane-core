@@ -41,6 +41,8 @@
 
   type ReceiverAuthorityPublication = Readonly<{
     state: ServerState | null; caps: Capabilities | null;
+    /** App-owned projection shared by every authority consumer. */
+    view?: RadioViewModel | null;
     session: Readonly<{
       state: 'disconnected' | 'connecting' | 'connected' | 'reconnecting'; epoch: number;
     }>;
@@ -276,12 +278,14 @@
 
   function applyPublication(publication: ReceiverAuthorityPublication): void {
     if (destroyed) return;
-    const model = toRadioViewModel(publication.state, publication.caps);
+    const model = publication.view === undefined
+      ? toRadioViewModel(publication.state, publication.caps) : publication.view;
     const stateGeneration = publication.state?.providerGeneration;
     const capsGeneration = publication.caps?.providerGeneration;
     const qualifiedModel = safeGeneration(stateGeneration) && safeGeneration(capsGeneration)
       && stateGeneration === capsGeneration ? model : null;
-    const ownerModel = qualifiedModel ?? toRadioViewModel(null, publication.caps);
+    const ownerModel = qualifiedModel ?? (publication.state === null
+      ? model : toRadioViewModel(null, publication.caps));
 
     if (model !== null && ownerModel !== null) {
       for (const receiver of ['MAIN', 'SUB'] as const) {

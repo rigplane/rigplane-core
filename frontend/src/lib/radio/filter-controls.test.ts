@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import type { FilterModeConfig } from '$lib/types/capabilities';
+import type { ControlDomain, FilterModeConfig } from '$lib/types/capabilities';
 import {
+  controlDisplayDomain,
   nbDepthDisplayToRaw,
   nbDepthRawToDisplay,
-  nrDisplayToRaw,
   nrRawToDisplay,
   quantizeFilterWidthToRule,
 } from './filter-controls';
@@ -12,26 +12,6 @@ import {
 // MOR-490: NR-level slider is 0-15 (front-panel scale), wire is 0-255 BCD.
 // With no capabilities loaded these helpers use the IC-7610 fallback range
 // (raw 0..255 <-> display 0..15), which is the path exercised in tests.
-
-describe('nrDisplayToRaw (fallback range)', () => {
-  it('maps the full-scale slider value to the full-scale wire value', () => {
-    expect(nrDisplayToRaw(15)).toBe(255);
-  });
-
-  it('maps zero to zero', () => {
-    expect(nrDisplayToRaw(0)).toBe(0);
-  });
-
-  it('maps the midpoint slider value to the midpoint wire value', () => {
-    // round(8 * 255 / 15) = round(136) = 136
-    expect(nrDisplayToRaw(8)).toBe(136);
-  });
-
-  it('clamps out-of-range display values to the wire range', () => {
-    expect(nrDisplayToRaw(-5)).toBe(0);
-    expect(nrDisplayToRaw(99)).toBe(255);
-  });
-});
 
 describe('nrRawToDisplay (fallback range)', () => {
   it('maps the full-scale wire value to the full-scale slider value', () => {
@@ -50,13 +30,6 @@ describe('nrRawToDisplay (fallback range)', () => {
   it('clamps out-of-range wire values to the slider range', () => {
     expect(nrRawToDisplay(-1)).toBe(0);
     expect(nrRawToDisplay(999)).toBe(15);
-  });
-});
-
-describe('NR display <-> raw round-trip', () => {
-  it('round-trips the slider endpoints exactly', () => {
-    expect(nrRawToDisplay(nrDisplayToRaw(0))).toBe(0);
-    expect(nrRawToDisplay(nrDisplayToRaw(15))).toBe(15);
   });
 });
 
@@ -119,6 +92,80 @@ describe('NB-depth display <-> raw round-trip', () => {
 // them with "Filter width N is not aligned to N Hz steps", the reported
 // sticky-toast spray. `quantizeFilterWidthToRule` must snap to a value the
 // radio's OWN declared rule actually accepts, not a client-invented one.
+// MOR-1682: a control's slider domain comes from the profile's published
+// control entry, never a per-radio constant in adapter/surface code. The two
+// real shapes: FTX-1's exact identity domain (`rigs/ftx1.toml
+// [controls.cw_pitch]`, 300..1050 Hz in 10 Hz steps) and IC-7300's legacy
+// range (`rigs/ic7300.toml [controls.cw_pitch]`, raw 0-255 <-> display
+// 300-900 Hz, no step) — the step for the legacy shape is the caller's own
+// fallback, preserving today's 5 Hz UI behaviour.
+describe('controlDisplayDomain (MOR-1682)', () => {
+  const FTX1_CW_PITCH: ControlDomain = {
+    mapping: 'identity',
+    raw_min: 300, raw_max: 1050, raw_step: 10, raw_origin: 300,
+    display_min: '300' as never, display_max: '1050' as never,
+    display_step: '10' as never, display_origin: '300' as never,
+    display_unit: 'Hz', quantization: 'reject', restoration: 'exact',
+  };
+  const IC7300_CW_PITCH = {
+    raw_min: 0, raw_max: 255, display_min: 300, display_max: 900, display_unit: 'Hz',
+  };
+
+  it('projects an exact profile domain with its own step and origin', () => {
+    expect(controlDisplayDomain(FTX1_CW_PITCH, 5))
+      .toEqual({ min: 300, max: 1050, step: 10, origin: 300 });
+  });
+
+  it('projects a bipolar exact domain with a negative raw range and origin 0 (if_shift shape, MOR-1681)', () => {
+    const FTX1_IF_SHIFT: ControlDomain = {
+      mapping: 'identity',
+      raw_min: -1200, raw_max: 1200, raw_step: 20, raw_origin: 0,
+      display_min: '-1200' as never, display_max: '1200' as never,
+      display_step: '20' as never, display_origin: '0' as never,
+      display_unit: 'Hz', quantization: 'reject', restoration: 'exact',
+    };
+    expect(controlDisplayDomain(FTX1_IF_SHIFT, 25))
+      .toEqual({ min: -1200, max: 1200, step: 20, origin: 0 });
+  });
+
+  it('projects a legacy range onto the caller fallback step anchored at display_min', () => {
+    expect(controlDisplayDomain(IC7300_CW_PITCH, 5))
+      .toEqual({ min: 300, max: 900, step: 5, origin: 300 });
+  });
+
+  it('takes the step from a legacy entry\'s positive integer decode_quantum (MOR-2475 F1)', () => {
+    const X6100_CW_PITCH = {
+      raw_min: 0, raw_max: 255, display_min: 400, display_max: 1200,
+      display_unit: 'Hz', decode_quantum: 10,
+    };
+    expect(controlDisplayDomain(X6100_CW_PITCH, 5))
+      .toEqual({ min: 400, max: 1200, step: 10, origin: 400 });
+  });
+
+  it('keeps the caller fallback step when decode_quantum is not a positive integer', () => {
+    for (const decode_quantum of [0, -3, 2.5, Number.NaN]) {
+      expect(controlDisplayDomain({ ...IC7300_CW_PITCH, decode_quantum }, 5))
+        .toEqual({ min: 300, max: 900, step: 5, origin: 300 });
+    }
+  });
+
+  it('returns null for an absent control entry', () => {
+    expect(controlDisplayDomain(undefined, 5)).toBeNull();
+    expect(controlDisplayDomain(null, 5)).toBeNull();
+  });
+
+  it('returns null for a legacy entry without usable display bounds (no fabricated domain)', () => {
+    expect(controlDisplayDomain({ raw_min: 0, raw_max: 255 }, 5)).toBeNull();
+    expect(controlDisplayDomain({ ...IC7300_CW_PITCH, display_min: 900, display_max: 300 }, 5)).toBeNull();
+    expect(controlDisplayDomain({ ...IC7300_CW_PITCH, display_min: Number.NaN }, 5)).toBeNull();
+  });
+
+  it('returns null for an exact domain that fails the decode/encode round-trip', () => {
+    expect(controlDisplayDomain({ ...FTX1_CW_PITCH, restoration: 'unavailable' }, 5)).toBeNull();
+    expect(controlDisplayDomain({ ...FTX1_CW_PITCH, display_max: '1055' as never }, 5)).toBeNull();
+  });
+});
+
 describe('quantizeFilterWidthToRule (MOR-1518)', () => {
   // Same shape as `panel-commands.intent.isolated.test.ts`'s `A06_SEGMENTS`
   // fixture (and `rigs/ic7300.toml`'s `[filters.width.USB]`): a 50 Hz step

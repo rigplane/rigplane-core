@@ -1,48 +1,49 @@
-# CLAUDE.md — Control Plane
+# CLAUDE.md — Engineering and workflow
 
 **rigplane** — Python 3.11+ asyncio library + Web UI for Icom transceivers over LAN/USB. Version: see `pyproject.toml`.
 Live bench: **IC-7300, FTX-1**. *(IC-7610 retired 2026-08-04; X6200 destroyed by lightning 2026-08-11.)* Context: `docs/PROJECT.md`.
 
 ---
 
+Operating policy: read `docs/internals/coordinator-policy.md` under the
+mandatory startup rule in `AGENTS.md`. Its scoped precedence reconciles legacy
+orchestration defaults; all engineering and safety rules below still apply.
+
 ## Commands (always `uv run`)
 
 ```bash
-uv run pytest tests/ -n auto -q --tb=short --timeout=300 --timeout-method=thread  # the suite quick.yml runs (it omits -q); locally, for single files
-uv run pytest tests/ -q --tb=short                    # serial, incl. integration hooks (profiling/hardware only)
-uv run mypy --strict src/rigplane/web                  # type check (CI gate; see note below)
-uv run ruff check src/ tests/ && uv run ruff format src/ tests/  # lint+format
+uv run pytest tests/test_radio.py -q --tb=short  # choose the affected test paths
+uv run mypy --strict src/rigplane/web            # when this scope requires it
+uv run ruff check <changed-python-paths>         # scope to the candidate
+uv run ruff format --check <changed-python-paths>
 ```
 
-Never bare `python` or `pytest`. Worktrees: `uv sync --all-extras` first.
+For Python project commands, use `uv run`, never bare `python` or `pytest`.
+Before Python development checks in a new worktree, use `uv sync --all-extras`.
+Documentation-only work needs no dependency installation or check automation.
 
-`uv run mypy --strict src/rigplane/web` is the only mypy invocation in
-`.github/`. Per-PR (`quick.yml`) it runs **only** when that workflow's
-`frontend` path filter matches — `frontend/**`, `src/rigplane/web/**`, or
-`quick.yml` itself; it runs unconditionally in `full.yml` and `publish.yml`
-(the CI workflows table below gives what triggers those). So a PR touching
-only `src/rigplane/runtime/` gets no mypy in CI until `full.yml` next runs.
-Whole-tree `uv run mypy src/` was clean (0 errors) at commit `e2dcbe0f`
-(MOR-1967). It remains advisory and ungated — nothing runs it in `.github/` —
-and whether to add it as a CI gate is a separate, still-open decision.
+Choose commands from the task's verification matrix and the path contract in
+`AGENTS.md`; command examples are not instructions to run every check. Full
+suite, matrix, and frontend selection belong to the current workflow files.
+Do not treat a skipped check as verification of an unaffected scope.
 
 ---
 
-## CI workflows (Actions billing-aware)
+## CI workflows
 
-The three workflows below dominate Actions billing and are tiered by cost
-(eleven workflow files exist under `.github/workflows/` in total; the rest
-are narrower path- or event-scoped gates):
+`AGENTS.md` Delivery batching and CI cadence is the authoritative run-selection
+contract. Use focused changed-scope development checks, then one natural
+required run for the final Ready candidate. Run `visual` for affected paths;
+reserve `full` for releases or an explicitly recorded cross-cutting risk.
+Documentation-only work uses readback/diff proof and independent review, without
+citation, link, Markdown, product, visual, or full automation. The server-side
+classifier and required skipped/neutral context are described in `AGENTS.md`.
 
-| Workflow | Trigger | Scope |
-|---|---|---|
-| `quick.yml` | push/PR to `main`, unconditionally — the workflow always runs, then skips its own steps unless the changed paths match its internal `core`/`frontend` filters (see `quick.yml`) | Python 3.11 only · ruff · import-linter · pytest (incl. `tests/integration`, hardware-gated tests skip automatically) · frontend block runs **only** if `frontend/**` or `src/rigplane/web/**` changed · badges |
-| `full.yml` | cron Mon/Wed/Fri 03:00 UTC + `workflow_dispatch` + push with `[full-ci]` in commit message | Full matrix 3.11/3.12/3.13, everything |
-| `publish.yml` | `release: published` | New `validate` job (full matrix) → `build` → `publish`. No publish if validate fails. |
-
-Trigger Full manually: append `[full-ci]` to a commit message, or `gh workflow run "Tests (full matrix)"`.
-
-Don't add per-push matrix builds back without explicit reason — the goal is minimum Actions minutes.
+Review and CI proceed in parallel against the frozen head. One observer owns
+each run and reports meaningful changes; builder, verifier, and coordinator
+consume that evidence rather than duplicate checks. The coordinator verifies
+all required statuses at the exact head immediately before a guarded merge.
+A changed head needs its own required run and fresh review verdict.
 
 ---
 
@@ -100,8 +101,8 @@ When making changes:
 ## Testing
 
 - TDD — test first, implement second
-- Batch all fixes, run tests once (not per fix)
-- One full-suite run per tree state, and it is CI's: the record for a head is that head's `quick` run (§Agent working rules), so every phase that needs suite numbers reads that run rather than starting a local one
+- Use focused checks for development and corrections; broaden only for a new failure, changed scope, or concrete risk
+- Required suites belong to CI under the path selection in `AGENTS.md`; reuse exact-head results rather than rerunning them in each role or phase
 - Audio tests: `FakeAudioBackend` only — no one-off mocks
 - Prose is a claim, and claims get checked. For every comment, docstring and document sentence a change adds or touches, ask: could this be false without any test failing? If so, delete it — or, only where the sentence must exist, narrow it until it is true and tie it to something that fails when it stops being true (a named constant, a named test, a parsed structure) — a guarantee stated wider than the code is worse than none, because the next reader stops checking. A claim about what a future change will do belongs in the ticket (MOR-1958). `builder.md` points here.
   - **Delete before you narrow; never weaken.** Deletion is the default for a claim that is false, stale or ambiguous, because correcting prose is expensive: a missing sentence sends the next reader to the code, where a wrong one stops them looking. Narrow instead only where the sentence must exist — a document written for a reader who does not have the code in front of them, as `docs/architecture/building-a-skin.md` is — and then only with the narrower version established, with a command actually run or a file actually read. Never weaken a claim you cannot establish: a deleted sentence cannot be wrong, and a softened one still can be. Owner ruling, 2026-08-31, reversing the priority this bullet set when it was added.
@@ -117,25 +118,12 @@ Commits: `feat(#N):` / `fix(#N):` / `refactor:` / `test:` / `docs:` / `chore:`
 One change per commit.
 
 Documentation under `docs/` cites code as file plus **symbol name**
-(`radio.py: IcomRadio.set_frequency`), never a line number — line numbers
-rot silently and a stale one is worse than no citation at all. Existing
-`file:line` citations are grandfathered, by exact (file, citation) pair, in
-`.github/scripts/doc-citation-baseline.txt`; the doc-citation-gate CI job
-fails on any citation not in that baseline, and separately fails if the
-baseline itself grew relative to the merge base — that second check reads
-git history directly, so it holds even if the baseline file was hand-edited
-to match a new citation. To shrink the baseline after converting a citation,
-run `.github/scripts/check-doc-citations.sh --regenerate`.
-
-The same CI job also runs a sibling gate (`--check-links`) over every
-tracked `*.md` file repo-wide, not just `docs/`: a relative link from one
-document to another (`[text](target.md)`) must resolve to a real, tracked
-file. `#anchor` fragments are not verified, only file existence — the
-gate's own output says so on every run. Known-broken links are
-grandfathered the same way, in `.github/scripts/doc-link-baseline.txt`;
-unlike the citation baseline, a link entry that stops being broken does not
-need a same-PR `--regenerate` to keep CI green. See the DOC-LINK EXTENSION
-comment in `check-doc-citations.sh` for the full rationale.
+(`radio.py: IcomRadio.set_frequency`), never a new line-number citation. Relative
+Markdown links must point to the intended tracked document. For existing
+citation/link baselines and their parser, read
+`.github/scripts/check-doc-citations.sh` when that implementation is relevant.
+The documentation-only exception in `AGENTS.md` governs automation: use manual
+readback and independent review rather than running citation or link checks.
 
 ### Multi-machine Git hygiene
 
@@ -185,112 +173,70 @@ cancelled checks — and release branches (named `release/<major.minor>`) are in
 
 ## Completion criteria
 
-Work is complete ONLY when ALL pass:
-1. The `quick` run on the PR at the head under review — zero failures (§Agent working rules)
-2. `uv run ruff check src/ tests/` — zero violations
-3. `git diff` — no unintended changes
+Work is complete when its acceptance criteria and applicable gates pass:
 
-Incomplete → continue or FAILED. Never skip.
+1. Required checks for the exact candidate satisfy the `AGENTS.md` path contract;
+   a skipped/non-applicable check is reported as such, never as executed proof.
+2. Independent exact-head review is accepted, with required prose corrections
+   applied before merge and all required statuses checked immediately before it.
+3. Diff/readback shows only intended changes; installation, visual, and hardware
+   acceptance remain separate when required by the task.
+
+Do not rerun repository-wide Ruff or suites merely to complete this list.
+Documentation-only work follows its explicit `AGENTS.md` exception.
 
 ---
 
 ## Agent working rules
 
-**GitHub Project control plane:** non-trivial work should be tracked in
-`RigPlane Core Roadmap` (https://github.com/orgs/rigplane/projects/2). Work
-from GitHub issues with acceptance criteria, add missing issues to the Project,
-and keep fields current while working. See
-`docs/internals/github-project-workflow.md`.
+Resolve the authoritative planning owner before non-trivial work. For the v3
+project, `AGENTS.md` delegates scope, acceptance, dependencies, and status to
+Linear; GitHub holds execution evidence. Do not duplicate that planning in a
+GitHub issue. Use `docs/internals/github-project-workflow.md` for delivery.
 
-**Session handoff:** the previous session's state lives in the Linear document
-*Session handoff — rigplane-core*
-(https://linear.app/morozsm/document/session-handoff-rigplane-core-9775d5570683).
-Read it first; rewrite it last. Never keep session-handoff state in this
-repository — it is public.
+Coordinators resume from the existing private Linear checkpoint when relevant;
+workers use their assigned contract. Check known artifact paths, not recursive
+handoff inventories. Checkpoint versions, operational notes, detailed reports,
+and handoff artifacts stay outside every repository worktree, including
+ignored directories. See `docs/internals/coordinator-policy.md` for authority,
+output limits, model selection, and ACK → RELEASE → ACCEPT ownership transfer.
 
-Use subagents — keep the main session lean. The session that takes the work is
-a coordinator: it plans and dispatches, and does not implement. The
-implementation agent never reviews its own work (Language & Git above).
+Roles in `.claude/agents/` describe responsibilities and tool boundaries, not
+mandatory staffing or universal model tiers. Select the smallest capable
+available model and explicit effort through a supported per-dispatch setting;
+never silently inherit a costly root model for a worker. A narrow command or
+lookup belongs to an ordinary tool call. Delegate material implementation and
+independent reasoning when it saves work; independent review must always use a
+reviewer who did not author the change. Reading coordinator policy never
+changes a builder or verifier into a new coordinator.
 
-Subagent roles with pinned models live in `.claude/agents/`: `scout` (haiku,
-read-only status/fact collection), `builder` (opus, implementation from a
-spec), `verifier` (opus, independent review and gate verdicts), `researcher`
-(sonnet, read-only exploration with synthesis), `auditor` (opus, read-only
-adjudication of audits — mechanism duplication, displacement across layer
-boundaries, dead code — deciding between competing explanations of one observed
-fact rather than collecting facts, which is why it is pinned above `researcher`;
-it reads its method from `.claude/skills/mechanism-audit/SKILL.md` and refuses
-to run when it can neither read that file nor be handed a method inline).
-Dispatch through these roles by default; a dispatch outside them must pass an
-explicit model — never let a subagent silently inherit the root session's model.
+Slash commands in `.claude/commands/` and relevant skills give scoped methods.
+Their legacy ordering, retries, routing, cleanup, and observation wording is
+subject to the operating policy, not an exception to it. Method-specific
+correctness, scope, and safety requirements remain binding.
 
-Slash commands for scoped workflows live in `.claude/commands/` (`audit-ui`,
-`decompose-issue`, `generate-tests`, `next`, `refactor`, `regression-check`,
-`scan-issues`, `solve-issue`) plus the `release` and `mechanism-audit` skills
-in `.claude/skills/`; each file is self-documenting.
+### Delivery sequence
 
-### The pipeline
+Explore enough to ground the plan, resolve acceptance and file ownership,
+implement with focused checks, freeze one candidate, then obtain independent
+review and required CI in parallel. Integrate and verify before guarded merge.
+Usually one builder and one independent verifier are enough. Multiple builders
+need material disjoint scopes under the batch contract in `AGENTS.md`.
 
-Every non-trivial change runs seven phases, in this order:
+For behavioral regression claims, capture relevant existing baseline evidence
+before implementation in private working notes. Confirm that its compared
+paths have not changed before reusing it; a skipped path filter gives no test
+counts. Compare behavior and failures, not counts alone. If evidence is absent,
+record the gap and choose a focused check; do not launch a full suite to fill a
+ceremonial phase. Documentation-only edits need no test baseline.
 
-**EXPLORE → PLAN → EXECUTE → REGCHECK → REVIEW → TEST → PR**
-
-`.claude/commands/solve-issue.md` and `.claude/commands/refactor.md` are this
-rule's documented expansions, not its scope: the pipeline applies to work
-that arrives as a sentence in chat exactly as it does to `/solve-issue <n>`.
-A documented workflow may vary the phase order and naming — `/refactor`
-splits REGCHECK across its Phase 2 baseline and its Phase 5 comparison, and
-runs TEST before REVIEW because the claim under review *is* the test result.
-Three things do not vary in any workflow: EXECUTE is dispatched to `builder`,
-REVIEW is an independent `verifier`, and a baseline is recorded before
-EXECUTE. Work arriving conversationally is where phases get dropped, because
-nothing prompts for them; each drop has a cost paid later:
-
-- **EXPLORE runs before PLAN, and the plan cites its findings.** A plan
-  written before the research is a guess about a codebase nobody has read
-  yet, and its acceptance criteria can name work that turns out to be
-  impossible.
-- **EXECUTE is dispatched to `builder`, not self-served.** The coordinator
-  writing the code makes it author and first reviewer at once, which is the
-  arrangement the "never reviews its own work" rule exists to prevent — the
-  independent review at phase 5 is then the *first* time anyone reads the
-  change adversarially, rather than the second.
-- **REGCHECK needs a recorded baseline**, or "no regressions" is an
-  impression rather than a comparison. The coordinator records it during
-  PLAN, before EXECUTE, in the run's own working notes — not a tracked file:
-  `.gitignore` excludes everything under `.claude/` except `agents/`,
-  `audits/`, `commands/`, and `skills/` — and `audits/` is a published
-  archive (see its README), never a place for working notes. The baseline
-  is the most recent `quick.yml` run on `main` whose commit changed the tree
-  being compared, and that tree is whatever the block's own path filter in
-  `.github/workflows/quick.yml` lists — the `core` filter for the pytest
-  step, the `frontend` filter for the block that runs vitest. A run whose
-  path filter skipped that block is green without numbers. The baseline
-  holds only while `git diff --name-only <that sha>..<your base> -- <those
-  paths>` is empty; a PR's `quick` run tests the merge with the `main` of
-  that moment, so compare against the `main` run of that moment, not the
-  branch point. One tree state, one instrument: the full suite is not run
-  on the laptop or the remote testbed for a head that CI has run.
-- **TEST is the four gates `solve-issue.md` Phase 6 enumerates**: the
-  standard pytest suite, `ruff check`, `ruff format`, and `mypy`. The
-  coordinator takes all four from the head's `quick.yml` run, which runs
-  pytest and ruff under its `core` path filter and `mypy --strict
-  src/rigplane/web` under its `frontend` one. `quick.yml` triggers only on
-  push/PR to `main`, and its `quick` job's `if:` skips a draft PR
-  (`github.event.pull_request.draft == false`,
-  `.github/workflows/quick.yml`), so a draft head's `Tests (quick)` run
-  has no `quick` job to read: push, open the PR ready — or `gh pr ready`
-  an existing draft; `ready_for_review` is in the workflow's
-  `pull_request` `types:` — let that head's `quick` run go green, then
-  dispatch the review — the verifier reviews a ready PR, never a draft
-  (AGENTS.md, "Draft PRs must not merge"). A docs-only head gets no
-  `quick.yml` run at all (its `paths-ignore`); its required `quick`
-  context is published green, without numbers, by
-  `.github/workflows/docs-only-quick.yml`. Single test files may run
-  locally; the full suite may not.
-
-Dropping a phase is the owner's call, not the coordinator's. Announce the drop
-and why, before the work, rather than reporting it afterwards.
+Finish focused development checks, push the final candidate, and open or mark
+one PR Ready against `main`. Dispatch review immediately on that frozen head;
+the verifier returns a code verdict without waiting for CI. A correction gets
+delta review plus its required new-head CI; broaden review only for affected
+dependencies or concrete interaction risk. Main movement alone is not a reason
+to repeat review or checks. The coordinator consumes the single observer's
+CI evidence and verifies exact-head required statuses immediately before merge.
 
 ### Guardrails
 
@@ -307,22 +253,25 @@ number crosses that guardrail.
 
 ### Failure handling
 
-- 2 consecutive failures or no progress → **STOP**, mark FAILED
-- Max cycles: 2 execution, 2 review, 2 test-fix. Exceeded → FAILED.
-- On FAILED, classify (`invalid_plan` / `impl_error` / `test_failure` /
-  `env_issue` / `workflow_violation`) and record the reason in the PR/ticket.
+After two unsuccessful attempts without new evidence, stop repeating that
+approach: classify the failure (`invalid_plan`, `impl_error`, `test_failure`,
+`env_issue`, or `workflow_violation`), then change the hypothesis, escalate the
+bounded problem, or report an external blocker. A failed build alone does not
+justify model escalation. Continue useful in-scope work; arbitrary retry counts
+do not force abandonment. Real scope, permission, or safety collisions stop
+dependent action until resolved.
 
-### Workspace lifecycle
+### Workspace lifecycle and context
 
-Worktrees are ephemeral. Cleanup is mandatory and automatic.
-- After PR created or issue marked FAILED/SKIPPED → `git worktree remove <path> --force`
-- Never `rm -rf` — always use git worktree commands
-- Persist only if explicitly marked for manual review
-- On startup: `git worktree prune` to clear orphans
+Preserve active or uncertain worktrees and processes. PR creation, failure, or
+session rotation is not permission for forced cleanup. Verify released
+ownership, retained work/evidence, clean state, and existing cleanup authority
+before removing a worktree; do not automatically prune on startup.
 
----
-
-## Context hygiene
-
-- Repeated mistakes or inconsistent decisions → `/clear`
-- 2+ corrections on same step → session reset
+At semantic milestones, assess repeated loads and context degradation against
+rehydration cost. Compactions, context size, or two corrections alone do not
+require `/clear` or a reset. Keep cumulative input, cached input, context
+occupancy, and remaining allowance distinct. Supported succession requires the
+versioned private checkpoint and ordered ownership protocol in
+`docs/internals/coordinator-policy.md`; policy adoption does not activate a
+lifecycle handler.

@@ -1,117 +1,83 @@
 # Autonomous Issue Resolution
 
-You are the orchestrator for the autonomous issue resolution pipeline.
-Process the issue specified in `$ARGUMENTS` (a GitHub issue number).
+Resolve `$ARGUMENTS` under `AGENTS.md` and
+`docs/internals/coordinator-policy.md`. The coordinator owns planning and
+integration; assigned workers retain their roles. Resolve the Linear planning
+owner and current acceptance criteria where the repository delegates planning
+there. A GitHub execution issue must link that owner, not duplicate its scope.
 
-Roles are dispatched by name. The four that exist are `builder`, `researcher`,
-`scout` and `verifier` (`.claude/agents/`). If a phase below names a role you
-cannot dispatch, **stop and report** — do not substitute another role and do
-not do the phase yourself. Substituting at the REVIEW phase is what the rule
-"the implementation agent never reviews its own work" exists to prevent.
+## Pre-flight and plan
 
-## Pre-flight
+1. Read applicable instructions from the exact active worktree. Fetch refs and
+   inspect status under the Git hygiene rules; preserve uncertain work.
+2. Resolve scope, dependencies, reproduction/evidence, and acceptance. Use an
+   ordinary tool for narrow lookup; use a researcher only for a bounded problem
+   that benefits from independent exploration. Filter responses before output.
+3. Create or use the assigned isolated `codex/<topic>` worktree; never edit
+   `main` or an uncertain shared checkout. Do not disturb active services.
+4. Plan the minimal change from those findings. Respect `CLAUDE.md` guardrails;
+   missing authority, a real safety collision, or a blocking ambiguity stops
+   dependent work. No invented numeric confidence threshold decides scope.
+5. For behavioral regression claims, record relevant existing baseline evidence
+   in private working notes outside all worktrees. Check its path freshness;
+   skipped gates provide no test counts. Documentation-only work needs no suite
+   baseline. Do not add a full run solely to populate a workflow phase.
 
-1. Fetch issue: `gh issue view $ARGUMENTS --json number,title,body,labels,state`
-2. Create an ephemeral worktree on a `codex/<topic>` branch off `origin/main`
-   and do all work there — never on `main`, never in the shared checkout
+## Implement and freeze
 
-## Pipeline: EXPLORE → PLAN → EXECUTE → REGCHECK → REVIEW → TEST → PR
+Dispatch one builder for material implementation with the plan, exact file
+lease, explicit supported model/effort, checks, exclusions, allowed actions,
+and private report destination. A small deterministic edit may use ordinary
+tools; required independent review still uses a different author.
 
-### Phase 1: EXPLORE
-Dispatch the `researcher` role (`.claude/agents/researcher.md`).
-- Read the issue, find affected files
-- Have the researcher report findings back as text
-- **STOP if confidence < 0.6** — mark the issue SKIPPED
+Prefer tests before behavior changes. Use focused changed-scope development
+checks, preserve meaningful failure evidence, and finish related corrections
+before freezing the candidate. Follow `AGENTS.md` for batching; workers do not
+launch separate natural suites, PRs, or final reviews for one delivery batch.
 
-### Phase 2: PLAN
-Plan yourself, as orchestrator. There is no planner role: design decisions
-belong to the coordinator, not to a subagent.
-- Enter Plan Mode first — do NOT start coding
-- Design the minimal fix from the research findings
-- **STOP if the plan crosses the hard ceiling** in CLAUDE.md §Guardrails, or needs an architecture change
-- Record the pre-change baseline: the `quick.yml` run on `main` that CLAUDE.md §Agent working rules names as the baseline. Keep its pass/fail counts in the run's working notes, so Phase 4 REGCHECK has something to compare against
+Commit with an English conventional message linked to the owning issue. Push
+the final candidate and open or mark one PR Ready against `main`. Link every
+covered Linear child explicitly; use `Closes #N` only for an actual GitHub
+execution issue whose scope is completed. No draft PR may merge.
 
-### Phase 3: EXECUTE
-Dispatch the `builder` role (`.claude/agents/builder.md`) with the plan as its spec.
-- Implement the plan exactly as specified; write tests first
-- Max 2 attempts per change
+## Independent review and CI in parallel
 
-### Phase 4: REGCHECK (mandatory)
-The post-change result is CI's, so the PR opens here — before REVIEW, not after it.
-- Commit with a conventional message: `fix(#$ARGUMENTS): ...` or `feat(#$ARGUMENTS): ...`
-- Push, then `gh pr create` — ready, not `--draft` — with `Closes #$ARGUMENTS`
-  in the body: `quick.yml` triggers on push/PR to `main` and its `quick`
-  job's `if:` skips a draft PR, so the branch has no `quick` job to read
-  until a ready PR exists (CLAUDE.md §Agent working rules)
-- Run `/regression-check` (see `.claude/commands/regression-check.md`), which
-  takes its numbers from that PR's `quick` run at this head
-- Compare test results against baseline
-- If regression detected → back to EXECUTE (counts toward retry limit); push
-  the fix and read the `quick` run on the new head
-- Do NOT proceed to REVIEW with regressions
-- Proceed to REVIEW only with `quick` green at this head; the PR opened
-  ready, so the verifier reviews a ready PR, never a draft (AGENTS.md,
-  "Draft PRs must not merge")
+Dispatch a fresh verifier immediately against the frozen exact head. Review
+scope, safety, correctness, layering, and claims; the builder cannot review its
+own work. Relay the verifier's SHA-bound PASS/BLOCKED verdict as soon as it is
+ready, with CI state as found. CI completion does not gate the code verdict.
 
-### Phase 5: REVIEW
-Dispatch the `verifier` role (`.claude/agents/verifier.md`) — on the PR Phase 4
-opened.
-- The verifier did not write the change and must not be the builder
-- Review all changes against the plan; check safety, correctness, layering
-- Have the verifier report its verdict back as text; you relay it
-- If it reports needed changes → back to EXECUTE (max 2 review loops)
+Assign one CI observer to the candidate's required run. Reuse its evidence for
+regression comparison and merge readiness; do not re-read the same unchanged
+run at each phase or duplicate full suites across roles. Diagnose failures from
+existing artifacts and a focused reproduction. Test counts alone do not prove
+behavioral equivalence. Documentation-only changes follow `AGENTS.md`: no
+citation, link, Markdown, product, visual, or full automation.
 
-### Phase 6: TEST
-Read the four gates off the `quick` run for the head under review: the standard
-pytest suite, `ruff check`, `ruff format`, and `mypy`.
-- `quick.yml` runs pytest and ruff under its `core` path filter and
-  `mypy --strict src/rigplane/web` under its `frontend` one; a gate whose
-  filter did not match has no result in that run, and CLAUDE.md §Commands
-  gives where the missing mypy is picked up
-- If the head is unchanged since REGCHECK, this is the same run — read it again
-  rather than asking for another; a new head gets its own `quick` run
-- If a gate fails → back to EXECUTE (max 2 fix cycles), then read the `quick`
-  run on the new head
+A corrected head needs its required new-head run and fresh delta review. Expand
+review only for affected dependencies or concrete interaction risk. Main
+movement alone does not invalidate an unchanged candidate.
 
-### Phase 7: PR (merge readiness)
-The PR has been open and ready since Phase 4; this phase is what makes it
-mergeable.
-- PR body references the issue: `Closes #$ARGUMENTS`, and says why the change
-  is one unit of work if it crosses the soft threshold in CLAUDE.md §Guardrails
-- Re-derive the size at the head you pushed — `git diff --stat
-  origin/main...HEAD` — since CLAUDE.md §Guardrails measures per PR at that head
-- The verdict is bound to that head: the `Agent Review: PASS <sha>` comment must
-  name the PR's current head, so a push after Phase 5 needs a fresh verdict
-  (CLAUDE.md §Language & Git)
+## Merge readiness and completion
 
-## Post-pipeline
+- Recheck the current diff and guardrail counts at the candidate head; justify
+  one unit of work when it crosses the soft threshold.
+- Apply all REQUIRED BEFORE MERGE and MANDATORY SQUASH-BODY CORRECTION findings.
+- Immediately before merge, verify the current head, exact-head Agent Review
+  Gate, and all required statuses; guard the merge with `--match-head-commit`.
+- Follow `AGENTS.md` for final aggregate main evidence and separate installation,
+  visual, and hardware acceptance where required. Do not equate merge with those
+  acceptance gates.
+- Deliver status, commit/tree, files, evidence, risks, and next action to the
+  coordinator. Update the authoritative private checkpoint, not repository
+  operational state files.
 
-1. If failure: classify the outcome and record the reason in the PR or ticket,
-   per CLAUDE.md §Failure handling (mandatory)
-2. **Cleanup workspace** (mandatory — runs on success, failure, and skip):
-   - `git worktree remove <path> --force`
-   - `git worktree prune` to clear any orphans
-   - Never `rm -rf` worktree directories — always use git commands
-   - Workspace may persist ONLY if explicitly marked for manual review
+After two unsuccessful attempts without new evidence, change the hypothesis,
+escalate the bounded diagnosis, or report the external blocker. Classify
+failure under `CLAUDE.md`; continue other useful authorized work. Scope and
+safety limits remain binding. Hardware work requiring owner presence waits
+for that acceptance gate rather than claiming mocked evidence is sufficient.
 
-## Retry policy
-
-- Max 2 execution attempts per step
-- Max 2 review loops
-- Max 2 test fix cycles
-- If any limit exceeded → mark FAILED and log the reason
-
-## Guardrails
-
-- Size limits: CLAUDE.md §Guardrails. The hard ceiling is not author-waivable;
-  crossing the soft threshold is allowed, but justify the size in the PR body
-- No architecture changes (no new modules, no protocol changes)
-- No speculative improvements beyond the issue scope
-- Stop immediately if confidence < 0.6 at any phase
-
-## Stop conditions (skip the issue)
-
-- Ambiguous issue with no clear reproduction
-- Missing reproduction steps for a bug
-- Hardware dependency that cannot be mocked
-- Issue cannot be done within the hard ceiling in CLAUDE.md §Guardrails
+Preserve the worktree after PR creation, failure, or skip until ownership is
+released, required work/evidence retained, its state verified safe, and cleanup
+is authorized. No automatic forced removal, startup pruning, or session reset.

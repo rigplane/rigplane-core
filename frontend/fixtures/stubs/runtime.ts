@@ -128,6 +128,7 @@ export const runtime = {
     }));
     return () => { fixtureAuthoritySubscribers.delete(handler); };
   },
+  get rxEnabled() { return harness.audioRuntime.rxEnabled; },
   get audio() {
     const { rxEnabled, volume, muted } = harness.audioRuntime;
     return { rxEnabled, volume, muted };

@@ -16,10 +16,6 @@ from rigplane.commands._codec import bcd_encode_value, filter_hz_to_index
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
-from rigplane.core.tx_interlock_contract import (
-    TxInterlockCommandFamily,
-    TxInterlockDisposition,
-)
 
 __all__ = [
     "ControlLookupPoint",
@@ -79,6 +75,8 @@ class ControlSpec(TypedDict, total=False):
     display_min: int
     display_max: int
     display_unit: str
+    decode_quantum: int
+    encode_rounding: str
 
 
 class _ControlDomainBase(TypedDict):
@@ -393,6 +391,7 @@ class RadioProfile:
     rf_sql_control_model: str = "separate"
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
+    data_mode_inputs: tuple[tuple[int, str], ...] | None = None
     # When True, MAIN set_mode routes through CI-V 0x26 0x00 (set selected
     # receiver mode) instead of the bare 0x06. Data-driven: derived from the
     # profile declaring a ``set_selected_mode`` command (e.g. Xiegu X6200,
@@ -460,9 +459,6 @@ class RadioProfile:
     # data only; future schedulers/adapters consume it instead of Web or
     # rigctld delivery code branching on radio model.
     state_acquisition: RadioAcquisitionProfile | None = None
-    tx_interlock_disposition_overrides: dict[
-        TxInterlockCommandFamily, TxInterlockDisposition
-    ] = field(default_factory=dict)
     # Measured per-radio transmit policy (MOR-1912).
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
     # Ordered legal CTCSS domain resolved from the profile's named table.

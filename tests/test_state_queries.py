@@ -217,7 +217,10 @@ def test_acquisition_profile_resolver_six_profile_census_and_exact_declared_byte
                 census["missing"] += 1
                 assert resolver(path) is None
 
-    assert census == Counter(agree=302, diverge=4, absent=17, missing=73)
+    # MOR-2488/MOR-2489: the X6100 manual's §15 Table 1 lists 0x16 0x46
+    # "Get VOX switch", so x6100.toml declares get_vox present -- the
+    # census moved one case from absent to agree (17/302 -> 16/303).
+    assert census == Counter(agree=303, diverge=4, absent=16, missing=73)
 
 
 def test_acquisition_profile_resolver_relative_vfo_and_refusal_rules() -> None:

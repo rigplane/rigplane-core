@@ -7,12 +7,27 @@ These tests establish performance guarantees for key operations:
 - Radio connection handshake
 
 All tests use mocked UDP transport to isolate command processing from network latency.
+
+Marked ``benchmark`` and so deselected from the default suite, module name
+notwithstanding. These assertions compare wall-clock measurements against
+fixed thresholds, and the margins are too wide for any regression worth
+catching to trip one first: the narrowest,
+``TestPerformanceSloValidation.test_frame_overhead_acceptable``, measured
+about seven times its floor across ten runs, and the rest clear theirs by
+far more. A host busy enough to slow the process sevenfold does trip it,
+which is what ``pytest -n auto`` on a loaded machine produces. Run them
+deliberately with ``uv run pytest -m benchmark tests/``; this module prints
+nothing, so a pass is the whole result. Tightening a threshold here means revisiting the marker, because a threshold
+tight enough to catch a regression is also tight enough to catch a busy
+neighbour.
 """
 
 from __future__ import annotations
 
 import gc
 import time
+
+import pytest
 
 
 from rigplane import IC_7610_ADDR
@@ -26,6 +41,8 @@ from rigplane.types import Mode, bcd_encode
 from _helpers import freq_response as _freq_response
 from _helpers import mode_response as _mode_response
 from _helpers import wrap_civ_in_udp as _wrap_civ_in_udp
+
+pytestmark = pytest.mark.benchmark
 
 
 # =============================================================================

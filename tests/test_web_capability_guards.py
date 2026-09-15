@@ -94,7 +94,7 @@ async def _endpoint_vfo_tags(
     info = _parse_json_body(info_writer)
     capabilities = _parse_json_body(capabilities_writer)
     hello = json.loads(ws_payloads.pop())
-    reserved = {"vfo_swap", "vfo_equalize"}
+    reserved = {"vfo_swap", "vfo_equalize", "vfo_freq_direct"}
     return (
         set(info["capabilities"]["tags"]) & reserved,
         set(capabilities["capabilities"]) & reserved,
@@ -817,3 +817,64 @@ class TestProfileDeclaredSecondReceiver:
                 name, {}, SimpleNamespace(put=queue.append), radio
             )
         assert queue == []
+
+
+# ── Profile-declared dual watch (MOR-2425) ─────────────────────
+
+
+class TestProfileDeclaredDualWatch:
+    """The bundled FTX-1 profile's ``dual_watch`` tag reaches the served surface.
+
+    The radio here is a real :class:`YaesuCatRadio` on the bundled ``ftx1``
+    profile, so the tag is read from the shipped TOML rather than from a
+    hand-built capability set.
+    """
+
+    def test_runtime_capabilities_serve_dual_watch(self) -> None:
+        from rigplane.web.runtime_helpers import runtime_capabilities
+
+        radio = _yaesu()
+        assert "dual_watch" in radio.capabilities
+        assert "dual_watch" in runtime_capabilities(radio)
+
+    @pytest.mark.asyncio
+    async def test_capabilities_endpoint_serves_dual_watch(self) -> None:
+        radio = _yaesu()
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+        data = _parse_json_body(writer)
+        assert "dual_watch" in data["capabilities"]
+
+    @pytest.mark.asyncio
+    async def test_info_endpoint_serves_dual_watch(self) -> None:
+        radio = _yaesu()
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+        await srv._serve_info(writer)  # noqa: SLF001
+        data = _parse_json_body(writer)
+        assert "dual_watch" in data["capabilities"]["tags"]
+
+
+async def test_direct_vfo_frequency_capability_requires_real_supported_route():
+    from unittest.mock import AsyncMock
+
+    radio = _make_radio("IC-7300")
+    radio.send_civ = AsyncMock()
+    for tags in await _endpoint_vfo_tags(radio):
+        assert "vfo_freq_direct" in tags
+    del radio.send_civ
+    radio.capabilities.add("vfo_freq_direct")
+    for tags in await _endpoint_vfo_tags(radio):
+        assert "vfo_freq_direct" not in tags
+
+
+async def test_direct_vfo_frequency_profile_keys_are_both_required():
+    import dataclasses
+    from unittest.mock import AsyncMock
+
+    radio = _make_radio("IC-7300")
+    radio.send_civ = AsyncMock()
+    radio.profile = dataclasses.replace(radio.profile, command_map=None)
+    for tags in await _endpoint_vfo_tags(radio):
+        assert "vfo_freq_direct" not in tags

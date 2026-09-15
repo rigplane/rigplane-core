@@ -24,7 +24,7 @@
  * stays pending until the radio's OWN observed state confirms the target,
  * or the 2s grace backstop elapses.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type FakeCommand = {
   name: string;
@@ -51,7 +51,11 @@ vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({
   toRadioViewModel: () => null,
 }));
 
-import { getPendingFrequencyHz } from '../panel-adapters';
+import { getPendingFrequencyHz, getTuningBurstFrequencyHz } from '../panel-adapters';
+import {
+  createTuningAccumulator,
+  resetSharedTuningAccumulatorForTests,
+} from '../../commands/tuning-accumulator';
 
 const cmd = (over: Partial<FakeCommand> = {}): FakeCommand => ({
   name: 'set_freq',
@@ -189,5 +193,69 @@ describe('panel-adapters pending-frequency accessor (MOR-1441, MOR-1478)', () =>
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// MOR-2464 follow-up — the adapter-side read of the tuning accumulator's
+// display-only burst publication. Where `getPendingFrequencyHz` reads the
+// command-bus lifecycle list (and therefore drops to null the moment the
+// radio observes `main.freqHz` past an ack boundary — an INTERMEDIATE
+// value mid-burst), the burst accessor reads the accumulator's own
+// per-gesture target, paced-unsent steps included, held only for a short
+// visual idle past the last local input.
+describe('panel-adapters tuning-burst accessor (MOR-2464)', () => {
+  let emit: ReturnType<typeof vi.fn<(receiver: number, freq: number) => { status: string }>>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetSharedTuningAccumulatorForTests();
+    emit = vi.fn((_receiver: number, _freq: number) => ({ status: 'pending' }));
+  });
+  afterEach(() => {
+    resetSharedTuningAccumulatorForTests();
+    runtimeState.state = null;
+    state.commands = [];
+    vi.useRealTimers();
+  });
+
+  it('carries the accumulator target while pending has already dropped on an intermediate observation', () => {
+    const acc = createTuningAccumulator({ emit, paceMs: 60, quietWindowMs: 4_000 });
+    const confirmed = 14_100_000;
+    acc.step(0, confirmed, confirmed + 1_000, 1);
+    acc.step(0, confirmed, confirmed + 1_000, 1);
+    // The command-bus side has already dropped its pending latch: the only
+    // lifecycle is the (acknowledged, intermediate-observed) first emit.
+    state.commands = [cmd({
+      status: 'acknowledged', params: { freq: confirmed + 1_000, receiver: 0 },
+    })];
+    runtimeState.state = { main: { freqHz: confirmed + 1_000 }, sub: {} };
+    expect(getPendingFrequencyHz(0)).toBeNull();
+    expect(getTuningBurstFrequencyHz(0)).toBe(confirmed + 2_000);
+  });
+
+  it('releases after the visual idle so confirmed truth reconciles', () => {
+    const acc = createTuningAccumulator({
+      emit, paceMs: 60, quietWindowMs: 4_000, visualHoldMs: 200,
+    });
+    acc.step(0, 14_100_000, 14_101_000, 1);
+    expect(getTuningBurstFrequencyHz(0)).toBe(14_101_000);
+    vi.advanceTimersByTime(201);
+    expect(getTuningBurstFrequencyHz(0)).toBeNull();
+  });
+
+  it('releases immediately when the gesture command resolves terminally', () => {
+    const lifecycle = { status: 'pending' };
+    emit.mockReturnValueOnce(lifecycle);
+    const acc = createTuningAccumulator({ emit, paceMs: 60, quietWindowMs: 4_000 });
+    acc.step(0, 14_100_000, 14_101_000, 1);
+    lifecycle.status = 'cancelled';
+    expect(getTuningBurstFrequencyHz(0)).toBeNull();
+  });
+
+  it('scopes to the wire receiver the panel asks about', () => {
+    const acc = createTuningAccumulator({ emit, paceMs: 60, quietWindowMs: 4_000 });
+    acc.step(1, 7_100_000, 7_101_000, 1);
+    expect(getTuningBurstFrequencyHz(0)).toBeNull();
+    expect(getTuningBurstFrequencyHz(1)).toBe(7_101_000);
   });
 });

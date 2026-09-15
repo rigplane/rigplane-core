@@ -42,11 +42,13 @@ export function derivePresentationCapabilities(caps: Capabilities): Presentation
   } else {
     const dual = tags.has('dual_rx');
     const structuralReceivers: ReceiverId[] = expectedCount === 2 ? ['MAIN', 'SUB'] : ['MAIN'];
+    // MOR-2467: `main_sub` is two UNLOTTED receiver-level records (MAIN/SUB),
+    // never per-receiver A/B slots — the IC-7610 has no A/B to report, so a
+    // slot table here would collapse every receiver to a `kind: 'unknown'`
+    // position whenever `vfoA`/`vfoB` are absent. Only `ab` is slotted.
     const slots = caps.vfoScheme === 'ab'
       ? { MAIN: ['A', 'B'] as const }
-      : caps.vfoScheme === 'main_sub'
-        ? { MAIN: ['A', 'B'] as const, SUB: ['A', 'B'] as const }
-        : expectedCount === 2 ? { MAIN: null, SUB: null } : { MAIN: null };
+      : expectedCount === 2 ? { MAIN: null, SUB: null } : { MAIN: null };
     let operationalReceivers = structuralReceivers;
     if (expectedCount === 1 && dual) diagnostics.push('dual-rx-contradiction');
     if (expectedCount === 2 && !dual) {

@@ -30,7 +30,10 @@ const h = vi.hoisted(() => ({
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
 vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
-  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
+  return {
+    dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params),
+    currentControlSessionEpoch: () => 0,
+  };
 });
 vi.mock('$lib/stores/radio.svelte', () => ({
   getActiveReceiver: vi.fn(() => null),
@@ -56,6 +59,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
+    setOperatorNotifier: vi.fn(),
     setAudioConfig: vi.fn(), startRx: vi.fn(), stopRx: vi.fn(),
     setRxVolume: vi.fn(), rxEnabled: false,
   },

@@ -4,22 +4,27 @@
 # collision with IC-705/X6200, so the 0x1D 0x19 Xiegu-vs-Icom disambiguator
 # in backends/discovery.py, which is hardcoded to 0xA4, does not apply here).
 #
-# Sources of truth (D2, MOR-2018):
-#   1. No X6100 CI-V manual has ever been in this repo, and no X6100 unit
-#      has ever been available to probe (unlike the X6200, destroyed
-#      2026-08-11 -- an X6100 was simply never acquired; live bench today
-#      is IC-7300 + FTX-1 only).
-#   2. Owner ruling (docs/plans/2026-08-29-profile-driven-command-bytes.md
-#      §8.1 D2): "X6100 may be treated as X6200 -- one act of 'write the
-#      profile that was never written'... nobody has an X6100." Every new
-#      [commands] entry below is therefore sourced from rigs/x6200.toml
-#      (itself filled at D2, MOR-2019), recording that X6200 entry's own
-#      source class per key -- an entry inherited from a sibling model
-#      reads differently from one confirmed on an X6100.
-#   3. Hamlib master ``rigs/icom/xiegu.c`` builds BOTH ``x6100_caps`` and
+# Sources of truth (MOR-2488/MOR-2489 re-sourcing of the D2 MOR-2018
+# sibling-copy basis):
+#   1. "Radioddity Extended manual for Xiegu X6100" v1.1.8 (2024-09-09),
+#      archived as Xiegu_X6100_Extended_Manual_V1.1.8.pdf, §15 Table 1
+#      (parts 1-5, pp. 117-121): an X6100-specific CI-V command table.
+#      The D2 premise that no X6100 CI-V documentation exists was false;
+#      commands the table covers are cited to it below (its rows carry a
+#      Rigs column -- X6100 and G90 -- so coverage is X6100-specific, not
+#      inherited). A second official source, "XIEGU RADIO CI-V REFERENCE
+#      v1.0" (xiegu.eu, X6100 + G90), carries the same table.
+#   2. No X6100 unit has ever been available to probe (unlike the X6200,
+#      destroyed 2026-08-11 -- an X6100 was simply never acquired; live
+#      bench today is IC-7300 + FTX-1 only): nothing here is live-confirmed.
+#   3. Where the X6100 table does NOT cover a command, the entry stays
+#      sourced from rigs/x6200.toml (D2 MOR-2018 sibling copy, itself
+#      filled at D2 MOR-2019) and says so -- an entry inherited from a
+#      sibling model reads differently from one the X6100 manual lists.
+#   4. Hamlib master ``rigs/icom/xiegu.c`` builds BOTH ``x6100_caps`` and
 #      ``x6200_caps`` from the same ``x6100_priv_caps`` struct, which is
-#      the shared-firmware premise this sourcing choice (and MOR-634's
-#      capability drops below) relies on.
+#      the shared-firmware premise the remaining X6200 inferences (and
+#      MOR-634's capability drops below) rely on.
 #
 # Reachability: unlike X6200 (routed through Ic705SerialRadio),
 # ``backends/factory.py`` has NO branch for X6100 at all -- it is not in
@@ -51,6 +56,18 @@ address = 0x70
 # rigs/x6200.toml (Hamlib ``x6100_priv_caps``, see header above) because no
 # X6100 unit has ever existed in this repo to probe directly -- see
 # PROVENANCE OPEN in [commands] for the parallel note on undeclared opcodes.
+#   - ``power_control`` IS declared (MOR-2488/MOR-2489): the X6100 manual's
+#     own §15 Table 1 lists ``0x14 0x0A`` "Get Tx power" / "Set Tx power"
+#     with Rigs: X6100, G90 -- the [commands] entries below already
+#     carried the opcode while the capability was withheld, so
+#     ``IcomRadio.set_rf_power`` refused on a command the radio's own
+#     manual documents. The declaration covers the 0x14 0x0A level pair
+#     only: CI-V ``0x18`` (power on/off) appears nowhere in §15 Table 1
+#     -- not listed in any official command table, which is an absence of
+#     a row, not a vendor statement that it is unsupported -- so
+#     ``power_on``/``power_off`` stay undeclared and ``set_powerstat``
+#     still refuses at the bound command map (0x18 never reaches the
+#     wire).
 #   - no ``filter_width``: the unified CI-V 0x1A 0x03 handler in
 #     ``radio.py`` requires per-mode segment tables (``[filters.width.<MODE>]
 #     segments``) decoded with wfview's ``funcFilterWidth`` formula
@@ -137,6 +154,7 @@ features = [
     "data_mode",
     "scan",
     "dial_lock",
+    "power_control",
 ]
 
 # MOR-1983: mirror the conservative X6200 acquisition envelope. This inherits
@@ -216,20 +234,33 @@ raw_max = 255
 raw_min = 0
 raw_max = 255
 
-# PRE-EXISTING DIVERGENCE, flagged not fixed (D2, MOR-2018): this range is
-# 300-900 Hz, while rigs/x6200.toml's identically-shaped [controls.cw_pitch]
-# is 400-1200 Hz for the same raw_min/raw_max 0-255 domain and the same
-# [commands] get_cw_pitch/set_cw_pitch opcode ([0x14, 0x09], copied below).
-# Neither range has an in-file source citation on either profile, and no
-# X6100 manual exists to arbitrate. Changing this display range is a
-# behavior change outside [commands] scope for this ticket -- left as-is,
-# recorded here so it is not mistaken for an oversight.
+# The band and step come from the Radioddity Extended manual for Xiegu
+# X6100 v1.1.8 section 10.3.4: side-tone 400-1200 Hz in 10 Hz steps. §15
+# Table 1 of the same manual lists the [0x14, 0x09] get/set sidetone opcode
+# for X6100 but gives NO Hz scale, so the raw 0-255 mapping onto this band
+# is inferred by symmetry with the X6200 CI-V V1.0.6 table, which does
+# state its scale (p.6: 0=400Hz, 255=1200Hz) over the same opcode.
 [controls.cw_pitch]
 raw_min = 0
 raw_max = 255
-display_min = 300
-display_max = 900
+display_min = 400
+display_max = 1200
 display_unit = "Hz"
+decode_quantum = 10  # Radioddity Extended manual for Xiegu X6100 v1.1.8 section 10.3.4: side-tone 400-1200 Hz in 10 Hz steps
+encode_rounding = "ceil"  # band endpoints 400->0 and 1200->255 are pinned by tests/test_control_domain_math.py::test_x6100_cw_pitch_encode_uses_the_declared_400_1200_domain
+
+# Radioddity Extended manual for Xiegu X6100 v1.1.8 section 10.3.2: key
+# speed 5-50 WPM. The CI-V table states no WPM scale, so the raw 0-255
+# mapping onto this band is inferred by symmetry with the X6200 CI-V
+# V1.0.6 table, as for [controls.cw_pitch] above.
+[controls.key_speed]
+raw_min = 0
+raw_max = 255
+display_min = 5
+display_max = 50
+display_unit = "WPM"
+decode_quantum = 1
+encode_rounding = "nearest_half_down"  # band endpoints 5->0 and 50->255 are pinned by tests/test_control_domain_math.py::test_x6100_key_speed_encode_uses_the_declared_5_50_domain
 
 [controls.rit]
 # MOR-1883: exact-form translation of the previously declared range;
@@ -324,45 +355,57 @@ end_hz = 136000000
 
 [commands]
 
-# PROVENANCE OPEN (D2, MOR-2018): every entry below not confirmed on an
-# actual X6100 -- which is all of them, since no X6100 unit has ever been
-# probed. House pattern: rigs/ic9700.toml "PROVENANCE OPEN (D2, MOR-2015)";
-# rigs/x6200.toml "PROVENANCE OPEN (D2, MOR-2019)" is this file's direct
-# copy source and stays open on the same items for the same reasons.
+# PROVENANCE OPEN (D2, MOR-2018; narrowed MOR-2488/MOR-2489): every entry
+# below not confirmed on an actual X6100 unit -- which is all of them,
+# since no X6100 unit has ever been probed. What the X6100 manual's §15
+# Table 1 lists closes the DOCUMENTARY question (the row exists); only a
+# live capture could close the behavioral one. House pattern:
+# rigs/ic9700.toml "PROVENANCE OPEN (D2, MOR-2015)"; rigs/x6200.toml
+# "PROVENANCE OPEN (D2, MOR-2019)" is this file's former copy source and
+# stays open on its own items for its own reasons.
 #
-# - get_freq [0x03]: PROVENANCE OPEN on rigs/x6200.toml itself, inherited
-#   unchanged. X6200's Radioddity CI-V V1.0.6 p.4 documents it only
-#   inside a worked CAT-control narrative example (GET direction only),
-#   not in the opcode table.
-# - set_freq [0x05]: PROVENANCE OPEN on rigs/x6200.toml itself, inherited
-#   unchanged -- but there it is absent from the V1.0.6 document
-#   entirely, unlike get_freq above: not in the opcode table, and not in
-#   the p.4 narrative either, which shows the GET direction only.
-# - get_mode / set_mode [0x04] / [0x06]: PROVENANCE OPEN on
-#   rigs/x6200.toml itself, inherited unchanged -- absent from that table
-#   entirely, with no narrative mention either.
-# None of the three can ever be closed for X6100 -- there is no manual to
-# re-check and no unit to probe.
+# - get_freq [0x03] / set_freq [0x05] / get_mode [0x04] / set_mode [0x06]
+#   / get_band_edge_freq [0x02]: CLOSED DOCUMENTarily by the X6100
+#   manual -- §15 Table 1 carries real rows for set/get active VFO
+#   frequency and mode and for the 0x02 frequency-edge read (the entries
+#   below cite it). On rigs/x6200.toml itself these stay PROVENANCE OPEN
+#   (its V1.0.6 PDF documents get_freq only in a p.4 narrative, and
+#   0x04/0x05/0x06 not at all); that no longer matters for THIS profile,
+#   which now has its own rows. The former note "none of the three can
+#   ever be closed for X6100 -- there is no manual to re-check" was
+#   wrong: the manual exists (see file header).
 # - get_xiegu_model_id [0x1D, 0x19] is DELIBERATELY OMITTED, not copied.
 #   X6200 declares it as a positive Xiegu-vs-Icom disambiguator at the
-#   shared CI-V address 0xA4 (MOR-170/MOR-226) -- but
+#   shared CI-V address 0xA4 (MOR-170/MOR-226). The X6100 manual's §15
+#   Table 1 does list ``0x1d 0x19`` ("Get XIEGU radio ID, See Table
+#   2-7"), so the opcode is documented for this radio -- but
 #   ``backends/discovery.py: probe_xiegu_model_id`` hardcodes that probe to
 #   address 0xA4 and never reads civ_addr from a profile at all. X6100
 #   lives at 0x70, where no Icom model in ``CIV_PROFILE_MAP`` collides, so
-#   there is no disambiguation problem for this opcode to solve, and no
-#   X6100-specific evidence (manual or live) that the opcode even answers
-#   at 0x70. Declaring it here would be an orphan: unreachable by the one
-#   piece of code that consumes this command name today, and unconfirmed
-#   besides.
+#   there is no disambiguation problem for this opcode to solve here.
+#   Declaring it would be an orphan: unreachable by the one piece of code
+#   that consumes this command name today.
 # - set_split [0x0F]: the opcode is copied from X6200 (same register), but
 #   NOT the X6200 wording. Hamlib master ``rigs/icom/xiegu.c`` contains a
 #   comment stating the X6100 ITSELF -- not by inference -- rejects
 #   ``0x0f 0x01`` (split ON); this is direct X6100-specific evidence, the
 #   strongest class in this file, stronger than every other entry's
 #   sibling-copy. See the entry's own comment below.
-# - vox -> hardcoded [0x16, 0x46] in CoreRadio's vox path, no [commands]
-#   key here or on X6200: neither the (nonexistent) X6100 manual nor the
-#   X6200 V1.0.6 table documents a CI-V VOX row of any kind.
+# - vox (MOR-2488/MOR-2489 re-sourcing): the X6100 manual's §15 Table 1
+#   DOES document CI-V VOX rows for this radio -- ``0x16 0x46`` "Get VOX
+#   switch" (Rigs: X6100; data rows 0x00 VOX OFF / 0x01 VOX ON), plus
+#   ``0x14 0x16`` VOX gain and ``0x14 0x17`` ANTI-VOX gain. The former
+#   claim that "neither the (nonexistent) X6100 manual nor the X6200
+#   V1.0.6 table documents a CI-V VOX row of any kind" was false for
+#   X6100. Consequences below: ``get_vox`` is declared PRESENT at
+#   [0x16, 0x46] off the manual's GET row; ``set_vox`` stays formally
+#   absent (the table lists the GET half only -- no SET row -- an
+#   exhaustiveness inference, not a vendor statement); the VOX/ANTI-VOX
+#   gain levels (get_/set_vox_gain, get_/set_anti_vox_gain keys) remain
+#   undeclared here -- their manual rows are on record but declaring new
+#   present commands is beyond this ticket's scope. X6200's own
+#   get_/set_vox absent rows are untouched: its V1.0.6 table is its own
+#   source and the X6100 manual's Rigs column does not cover X6200.
 # - notch -> hardcoded [0x16, 0x48] (Icom manual-notch) in CoreRadio's
 #   notch path, no [commands] key here or on X6200: X6200's real notch
 #   mechanism is the digital notch filter (DNF) toggle at [0x16, 0x41], a
@@ -387,15 +430,22 @@ end_hz = 136000000
 #   declares neither a pollable path nor a getter.
 # - rit / xit -> hardcoded [0x21] in the RIT/XIT command builders
 #   (commands/_frame.py: _CMD_RIT, consumed by commands/system.py), no
-#   [commands] key here or on X6200. X6200's write-only *behavior* (SET
-#   accepted, GET times out) is LIVE-confirmed on the X6200 unit itself
-#   (MOR-208/179, MOR-207) and recorded in its own [validation]
-#   write_only_controls. That classification is NOT inherited here: no
-#   X6100 probe exists, so this profile declares no [validation] section
-#   at all. A future ``validate`` run against a real X6100 would
-#   false-FAIL rit/xit/notch SET-then-GET round-trips exactly as X6200 did
-#   before MOR-207/208 confirmed the write-only behavior there -- this is
-#   the correct conservative default, not an oversight.
+#   [commands] key here or on X6200. MOR-2488/MOR-2489 note: the X6100
+#   manual's §15 Table 1 lists the 0x21 family with SUBcommands --
+#   0x21 0x00 "Set/Get RIT frequency", 0x21 0x01 "Set/Get RIT setting",
+#   0x21 0x02 "Set/Get XIT setting" (Rigs: X6100, G90) -- a different
+#   wire shape from the builder's bare [0x21] frame. Flagged, not fixed:
+#   changing the builder is a src/ change outside this ticket, and the
+#   bare-[0x21] SET is live-confirmed write-only on the X6200 sibling.
+#   X6200's write-only *behavior* (SET accepted, GET times out) is
+#   LIVE-confirmed on the X6200 unit itself (MOR-208/179, MOR-207) and
+#   recorded in its own [validation] write_only_controls. That
+#   classification is NOT inherited here: no X6100 probe exists, so this
+#   profile declares no [validation] section at all. A future
+#   ``validate`` run against a real X6100 would false-FAIL rit/xit/notch
+#   SET-then-GET round-trips exactly as X6200 did before MOR-207/208
+#   confirmed the write-only behavior there -- this is the correct
+#   conservative default, not an oversight.
 # - agc: X6200 declares "agc" in [capabilities] features and a full
 #   [agc] modes/labels domain; this profile declares neither, even though
 #   ``get_agc``/``set_agc`` [0x16, 0x12] are copied into [commands] below.
@@ -405,15 +455,23 @@ end_hz = 136000000
 #   domain would be a behavior change, not a documentary one, and is
 #   outside D2 scope. Left as an open question for a future ticket: the
 #   opcode is now on record, the capability decision is not.
+#   MOR-2488/MOR-2489 addendum for that future ticket: the X6100 manual's
+#   own §15 Table 1 0x16 0x12 data labels are 0x00 OFF, 0x01 Fast,
+#   0x02 middle, 0x03 slow -- NO AUTO. X6200's V1.0.6-derived
+#   labels = { 3 = "AUTO" } are that document's row and must not be
+#   copied onto an X6100 [agc] domain when that ticket lands.
 
-# Frequency / mode (compatible Icom CI-V subset — see PROVENANCE OPEN above)
-get_freq   = [0x03]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- PROVENANCE OPEN even on X6200 (narrative-only PDF p.4 example, not in the opcode table)
-set_freq   = [0x05]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- absent from V1.0.6 entirely, unlike get_freq's narrative mention there
-get_mode   = [0x04]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- PROVENANCE OPEN even on X6200 (0x04 absent from the V1.0.6 table entirely)
-set_mode   = [0x06]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- same PROVENANCE OPEN status as get_mode there
+# Frequency / mode -- re-sourced MOR-2488/MOR-2489: §15 Table 1 of the
+# X6100 manual lists these as real rows (set/get active VFO frequency
+# and mode), closing the former X6200-inherited PROVENANCE OPEN on the
+# documentary question (see PROVENANCE OPEN above).
+get_freq   = [0x03]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- set/get active VFO frequency/mode rows
+set_freq   = [0x05]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- same row family as get_freq
+get_mode   = [0x04]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- same row family as get_freq
+set_mode   = [0x06]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- same row family as get_freq
 
 # Get receiver frequency range
-get_band_edge_freq = [0x02]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.5
+get_band_edge_freq = [0x02]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- 0x02 get frequency edge row
 
 # VFO selection / swap (0x07 family)
 get_vfo    = [0x07]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.5 (0x07 family)
@@ -440,10 +498,10 @@ get_squelch  = [0x14, 0x03]  # source: rigs/x6200.toml (sibling model, D2 MOR-20
 set_squelch  = [0x14, 0x03]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.7; byte-identical to this profile's pre-existing entry
 get_nr_level = [0x14, 0x06]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.6
 set_nr_level = [0x14, 0x06]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.7
-get_cw_pitch = [0x14, 0x09]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.6; see [controls.cw_pitch] above for a flagged, unfixed display-range divergence
-set_cw_pitch = [0x14, 0x09]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.7
-get_rf_power = [0x14, 0x0A]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.6
-set_rf_power = [0x14, 0x0A]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.7
+get_cw_pitch = [0x14, 0x09]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- "Get/Set CW sidetone frequency", Rigs: X6100, G90; the table gives NO Hz scale, so the BCD-0-255 -> Hz mapping in [controls.cw_pitch] above remains an inference from rigs/x6200.toml (sibling model), whose V1.0.6 table does state its scale -- see that control's divergence note
+set_cw_pitch = [0x14, 0x09]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- same row as get_cw_pitch; scale inference as above
+get_rf_power = [0x14, 0x0A]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- "Get Tx power", Rigs: X6100, G90 (MOR-2488/MOR-2489: grounds the power_control capability declared above)
+set_rf_power = [0x14, 0x0A]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- "Set Tx power", Rigs: X6100, G90
 get_mic_gain = [0x14, 0x0B]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.6
 set_mic_gain = [0x14, 0x0B]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.7
 get_key_speed = [0x14, 0x0C]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.6
@@ -460,26 +518,33 @@ get_swr         = [0x15, 0x12]  # source: rigs/x6200.toml (sibling model, D2 MOR
 get_vd_meter    = [0x15, 0x15]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- same as get_s_meter there
 
 # Functions (0x16 family)
-get_agc  = [0x16, 0x12]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.7; X6200's AGC OFF(0) value+label is pinned by tests/test_rig_loader.py::test_x6200_keeps_its_declared_off, a pin this profile does NOT inherit -- see PROVENANCE OPEN above for the open agc-capability question
-set_agc  = [0x16, 0x12]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.8
+get_agc  = [0x16, 0x12]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- 0x16 0x12 row, data labels 0x00 OFF / 0x01 Fast / 0x02 middle / 0x03 slow, NO AUTO (X6200's "3 = AUTO" label is its own V1.0.6 row, not carried here -- see PROVENANCE OPEN above for the still-open agc-capability question)
+set_agc  = [0x16, 0x12]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- same row as get_agc; the open agc-capability question above is unchanged by this re-sourcing
 get_nb   = [0x16, 0x22]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.7
 set_nb   = [0x16, 0x22]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.8
-get_nr   = [0x16, 0x40]  # source: rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: Radioddity X6200 CI-V V1.0.6 p.7, cat-audit-confirmed correct; dsp.py: get_nr/set_nr already built this opcode via their hardcoded fallback for this profile too, only the [commands] declaration was missing
-set_nr   = [0x16, 0x40]  # source: rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: Radioddity X6200 CI-V V1.0.6 p.8; same fix as get_nr
-get_compressor = [0x16, 0x44]  # source: rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: docs/validation/cat-audits/x6200.md § "A. UNDER-DECLARED", opcode confirmed correct; same fix as get_nr
-set_compressor = [0x16, 0x44]  # source: same as get_compressor
-get_auto_notch = [0x16, 0x41]  # source: rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: docs/validation/cat-audits/x6200.md § "C. MISSING BACKEND", DNF row (the real notch mechanism, distinct from get_manual_notch below); same fix as get_nr
-set_auto_notch = [0x16, 0x41]  # source: same as get_auto_notch
+get_nr   = [0x16, 0x40]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- NR switch GET row exists explicitly for X6100 (MOR-2488/MOR-2489 re-sourcing)
+set_nr   = [0x16, 0x40]  # source: rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: Radioddity X6200 CI-V V1.0.6 p.8; same fix as get_nr -- the X6100 manual re-sourcing above covered the GET half only
+get_compressor = [0x16, 0x44]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- COMP switch GET row exists explicitly for X6100 (MOR-2488/MOR-2489 re-sourcing)
+set_compressor = [0x16, 0x44]  # source: rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: docs/validation/cat-audits/x6200.md § "A. UNDER-DECLARED"; the X6100 manual re-sourcing above covered the GET half only
+get_auto_notch = [0x16, 0x41]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- DNF switch GET row exists explicitly for X6100 (MOR-2488/MOR-2489 re-sourcing; the DNF is this radio family's real notch mechanism)
+set_auto_notch = [0x16, 0x41]  # source: rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: docs/validation/cat-audits/x6200.md § "C. MISSING BACKEND", DNF row; the X6100 manual re-sourcing above covered the GET half only
+# VOX switch GET -- PRESENT per the X6100's own manual (MOR-2488/MOR-2489;
+# formerly inherited-absent from X6200's table, which was the wrong basis
+# once the X6100 table turned out to exist -- see PROVENANCE OPEN above).
+get_vox         = [0x16, 0x46]  # source: Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 -- "Get VOX switch", Rigs: X6100; data rows 0x00 VOX OFF / 0x01 VOX ON
 get_dial_lock = [0x16, 0x50]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.7
 set_dial_lock = [0x16, 0x50]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V V1.0.6 p.8
 
-# Confirmed-absent DSP controls (MOR-2008 batch 3), inherited from
-# rigs/x6200.toml (sibling model) per this profile's own D2 MOR-2018
-# sourcing rule -- documented-absent per the V1.0.6 table, not
-# live-confirmed on X6100 hardware (no X6100 unit has ever existed to
-# capture from; see the file header above).
-get_vox          = { absent = "rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: Radioddity X6200 CI-V V1.0.6 has no CI-V VOX row of any kind (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', VOX row) -- documented-absent, not live-confirmed on either model" }
-set_vox          = { absent = "rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: Radioddity X6200 CI-V V1.0.6 has no CI-V VOX row of any kind (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', VOX row) -- documented-absent, not live-confirmed on either model" }
+# Confirmed-absent DSP controls. manual_notch / break_in: inherited from
+# rigs/x6200.toml (sibling model, MOR-2008 batch 3) per this profile's
+# D2 MOR-2018 sourcing rule -- documented-absent per the V1.0.6 table,
+# not live-confirmed on X6100 hardware (no X6100 unit has ever existed
+# to capture from; see the file header above). set_vox: re-sourced
+# MOR-2488/MOR-2489 -- the X6100 manual documents the GET half only
+# (see get_vox above), so the SET key stays absent; the VOX-gain level
+# rows the table does carry (0x14 0x16 / 0x14 0x17) map to different,
+# still-undeclared keys (get_/set_vox_gain, get_/set_anti_vox_gain).
+set_vox          = { absent = "Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 lists 0x16 0x46 as a GET row only ('Get VOX switch') -- no SET row anywhere in the table (exhaustiveness inference, not an explicit vendor statement); not live-confirmed" }
 get_manual_notch = { absent = "rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: the Icom manual-notch opcode [0x16, 0x48] is not in the V1.0.6 table; the real notch mechanism is the DNF toggle at [0x16, 0x41] (see get_auto_notch above) (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', manual notch row) -- documented-absent, not live-confirmed on either model" }
 set_manual_notch = { absent = "rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: the Icom manual-notch opcode [0x16, 0x48] is not in the V1.0.6 table; the real notch mechanism is the DNF toggle at [0x16, 0x41] (see set_auto_notch above) (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', manual notch row) -- documented-absent, not live-confirmed on either model" }
 get_break_in     = { absent = "rigs/x6200.toml (sibling model, MOR-2008 batch 3) -- there: the Icom CW BK-IN opcode [0x16, 0x47] is not in the V1.0.6 table, which documents only QSK hang time at [0x14, 0x0F] (docs/validation/cat-audits/x6200.md § 'D. MISMATCH / WRONG', break-in row) -- documented-absent, not live-confirmed on either model" }
@@ -518,22 +583,28 @@ set_unselected_mode  = [0x26, 0x01]  # source: rigs/x6200.toml (sibling model, D
 get_command_error_fa = [0xFA]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Icom CI-V protocol convention, copied from the IC-705 profile at MOR-170, no X6200-specific (or X6100-specific) row
 get_command_ok_fb    = [0xFB]  # source: rigs/x6200.toml (sibling model, D2 MOR-2018) -- same as get_command_error_fa there
 
-# Memory / TX band edge (D2, MOR-2008 batch 4): sibling copy of
-# rigs/x6200.toml's own absent declarations -- none of these 11 opcodes
-# appear anywhere in the X6200 V1.0.6 Table 1 (pp.5-9, the complete
-# documented opcode list), and no X6100 CI-V manual exists to check
-# independently (D2 MOR-2018's own sibling-copy ruling).
-get_memory_mode      = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V implementation V1.0.6, Table 1 parts 1-5, pp.5-9 -- no 0x08/0x09/0x0A/0x0B row anywhere" }
-set_memory_mode      = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x08 row anywhere" }
-memory_write         = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x09 row anywhere" }
-memory_to_vfo        = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x0A row anywhere" }
-memory_clear         = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x0B row anywhere" }
-get_memory_contents  = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x1A 0x00 row anywhere" }
-set_memory_contents  = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x1A 0x00 row anywhere" }
+# Memory / TX band edge (D2, MOR-2008 batch 4; re-sourced
+# MOR-2488/MOR-2489): the memory-write family and TX-band-edge CMD
+# values (0x08/0x09/0x0A/0x0B, 0x1E) appear nowhere in the X6100
+# manual's own §15 Table 1 -- an exhaustive read of all five parts
+# lists only 0x00-0x07, 0x0F, 0x11, 0x14, 0x15, 0x16, 0x19,
+# 0x1A, 0x1C, 0x1d, 0x21, 0x25, 0x26 -- so these absences are now
+# grounded in this radio's manual, not only in the X6200 sibling copy.
+# get_/set_memory_contents (0x1A 0x00) stay X6200-table inferences: the
+# X6100 table does carry a 0x1A family, and no 0x1A 0x00 sub-row was
+# among the transcribed rows to confirm or refute that specific
+# sub-opcode.
+get_memory_mode      = { absent = "Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 (parts 1-5, pp. 117-121) -- no 0x08 row anywhere in the table's CMD values (formerly also inferred from rigs/x6200.toml: V1.0.6 Table 1 parts 1-5, pp.5-9, no 0x08 row)" }
+set_memory_mode      = { absent = "Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 (parts 1-5, pp. 117-121) -- no 0x08 row anywhere (formerly also inferred from rigs/x6200.toml: V1.0.6 Table 1 parts 1-5, pp.5-9)" }
+memory_write         = { absent = "Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 (parts 1-5, pp. 117-121) -- no 0x09 row anywhere (formerly also inferred from rigs/x6200.toml: V1.0.6 Table 1 parts 1-5, pp.5-9)" }
+memory_to_vfo        = { absent = "Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 (parts 1-5, pp. 117-121) -- no 0x0A row anywhere (formerly also inferred from rigs/x6200.toml: V1.0.6 Table 1 parts 1-5, pp.5-9)" }
+memory_clear         = { absent = "Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 (parts 1-5, pp. 117-121) -- no 0x0B row anywhere (formerly also inferred from rigs/x6200.toml: V1.0.6 Table 1 parts 1-5, pp.5-9)" }
+get_memory_contents  = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: Radioddity X6200 CI-V implementation V1.0.6, Table 1 parts 1-5, pp.5-9 -- no 0x1A 0x00 row anywhere; NOT re-sourced to the X6100 manual because its table does carry a 0x1A family and no 0x1A 0x00 sub-row was among the transcribed rows" }
+set_memory_contents  = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x1A 0x00 row anywhere; same X6200-inference status as get_memory_contents" }
 get_bsr              = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 p.8 -- [0x1A, 0x01] documented, but as a 2-byte get_band_spectrum_display command, not Icom's 9-byte get_bsr record" }
 set_bsr              = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 p.8 -- [0x1A, 0x01] SET row documented, but as a 2-byte band-select command, not Icom's 9-byte set_bsr record" }
-get_tx_band_count    = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x1E row anywhere (table-exhaustiveness inference, not an explicit vendor statement)" }
-get_tx_band_edge     = { absent = "rigs/x6200.toml (sibling model, D2 MOR-2018) -- there: V1.0.6 Table 1 parts 1-5, pp.5-9 -- no 0x1E row anywhere (table-exhaustiveness inference, not an explicit vendor statement)" }
+get_tx_band_count    = { absent = "Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 (parts 1-5, pp. 117-121) -- no 0x1E row anywhere in the table's CMD values (table-exhaustiveness inference, not an explicit vendor statement; formerly also inferred from rigs/x6200.toml)" }
+get_tx_band_edge     = { absent = "Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1 (parts 1-5, pp. 117-121) -- no 0x1E row anywhere in the table's CMD values (table-exhaustiveness inference, not an explicit vendor statement; formerly also inferred from rigs/x6200.toml)" }
 
 [commands.overrides]
 

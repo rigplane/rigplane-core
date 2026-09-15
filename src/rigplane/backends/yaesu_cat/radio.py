@@ -8,8 +8,9 @@ using :class:`YaesuCatTransport` for serial I/O and
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
 
 from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
@@ -30,6 +31,13 @@ from ...types import AudioCodec, BreakInMode, RepeaterShiftDirection
 from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...radio_state import RadioState
+from ...profiles.control_domain import (
+    control_display_band,
+    decode_control_domain,
+    encode_control_domain,
+    snap_control_domain,
+    validate_control_raw_value,
+)
 from .parser import CatCommandParser, CatParseError, format_command
 from .transport import (
     CatCommandRejected,
@@ -662,11 +670,15 @@ class YaesuCatRadio:
     async def set_dual_watch(self, on: bool) -> None:
         """Enable or disable dual watch.
 
-        No-op with warning if the rig profile does not define a
-        ``set_dual_watch`` command.
+        Uses the profile's ``set_dual_watch`` write when it declares one.
+        Otherwise falls back to ``set_rx_func``, whose mode is inverted
+        relative to ``on``: 0 = dual receive, 1 = single receive. No-op
+        with warning if the profile declares neither.
         """
         if self._has_write_command("set_dual_watch"):
             await self._write("set_dual_watch", state="1" if on else "0")
+        elif self._has_write_command("set_rx_func"):
+            await self.set_rx_func(0 if on else 1)
         else:
             logger.warning("set_dual_watch: no CAT command defined for %s", self.model)
 
@@ -1498,7 +1510,12 @@ class YaesuCatRadio:
         return await self.read_nb_level(receiver)
 
     async def set_nb_level(self, level: int, receiver: int = 0) -> None:
-        """Set noise blanker level (0 = OFF, 1–10 = level)."""
+        """Set noise blanker level (0 = OFF, 1–10 = level).
+
+        The value must lie on the profile's ``nb_level`` raw domain;
+        off-domain values raise ``ValueError`` before any CAT write.
+        """
+        validate_control_raw_value(self.profile.controls, "nb_level", level)
         await self._write("set_nb_level", level=level)
 
     async def read_nr_level(self, receiver: int = 0) -> int:
@@ -1509,17 +1526,22 @@ class YaesuCatRadio:
         per-receiver command (no ``RL1`` exists).
 
         Returns:
-            NR level (0 = OFF, 1–15 = level).
+            NR level (0 = OFF, 1–10 = level).
         """
         result = await self._query("get_nr_level")
         return int(result["level"])
 
     async def get_nr_level(self, receiver: int = 0) -> int:
-        """Get noise reduction level (0 = OFF, 1–15 = level)."""
+        """Get noise reduction level (0 = OFF, 1–10 = level)."""
         return await self.read_nr_level(receiver)
 
     async def set_nr_level(self, level: int, receiver: int = 0) -> None:
-        """Set noise reduction level (0 = OFF, 1–15 = level)."""
+        """Set noise reduction level (0 = OFF, 1–10 = level).
+
+        The value must lie on the profile's ``nr_level`` raw domain;
+        off-domain values raise ``ValueError`` before any CAT write.
+        """
+        validate_control_raw_value(self.profile.controls, "nr_level", level)
         await self._write("set_nr_level", level=level)
 
     async def read_auto_notch(self, receiver: int = 0) -> bool:
@@ -1561,7 +1583,7 @@ class YaesuCatRadio:
         """Get manual notch state and frequency index.
 
         Returns:
-            Tuple of (enabled: bool, freq_index: int 0–255).
+            Tuple of (enabled: bool, freq_index: int).
         """
         state_result = await self._query("get_manual_notch")
         freq_result = await self._query("get_manual_notch_freq")
@@ -1579,13 +1601,13 @@ class YaesuCatRadio:
         does not select a per-receiver command (no ``BP11`` exists).
 
         Returns:
-            Manual notch frequency index (0–255).
+            Manual notch frequency raw index.
         """
         result = await self._query("get_manual_notch_freq")
         return int(result["freq"])
 
     async def get_manual_notch_freq(self, receiver: int = 0) -> int:
-        """Get manual notch frequency index (0–255, BP01).
+        """Get manual notch frequency raw index (BP01).
 
         Standalone freq-only getter for symmetry with :meth:`set_manual_notch_freq`.
         Use :meth:`get_manual_notch` to fetch state+freq together in one call.
@@ -1593,11 +1615,16 @@ class YaesuCatRadio:
         return await self.read_manual_notch_freq(receiver)
 
     async def set_manual_notch_freq(self, freq: int, receiver: int = 0) -> None:
-        """Set manual notch frequency index (0–255, BP01)."""
+        """Set manual notch frequency raw index (BP01).
+
+        The value must lie on the profile's ``manual_notch_freq`` raw
+        domain; off-domain values raise ``ValueError`` before any CAT write.
+        """
+        validate_control_raw_value(self.profile.controls, "manual_notch_freq", freq)
         await self._write("set_manual_notch_freq", freq=freq)
 
     async def set_notch_filter(self, level: int, receiver: int = 0) -> None:
-        """Set notch filter position (0–255).
+        """Set notch filter position (manual notch frequency raw index).
 
         Cross-vendor alias delegating to Yaesu BP01
         (:meth:`set_manual_notch_freq`) — matches the Icom semantic of
@@ -1606,7 +1633,7 @@ class YaesuCatRadio:
         await self.set_manual_notch_freq(level, receiver=receiver)
 
     async def get_notch_filter(self, receiver: int = 0) -> int:
-        """Get notch filter position (0–255).
+        """Get notch filter position (manual notch frequency raw index).
 
         Returns only the frequency index from the Yaesu manual-notch state
         tuple, mirroring the Icom ``0x14 0x0D`` read.
@@ -1727,7 +1754,12 @@ class YaesuCatRadio:
         return await self.read_if_shift(receiver)
 
     async def set_if_shift(self, offset: int, receiver: int = 0) -> None:
-        """Set IF shift offset in Hz (signed, IS0)."""
+        """Set IF shift offset in Hz (signed, IS0).
+
+        The value must lie on the profile's ``if_shift`` raw domain;
+        off-domain values raise ``ValueError`` before any CAT write.
+        """
+        validate_control_raw_value(self.profile.controls, "if_shift", offset)
         sign = "+" if offset >= 0 else "-"
         await self._write("set_if_shift", sign=sign, offset=abs(offset))
 
@@ -2157,26 +2189,61 @@ class YaesuCatRadio:
         await self._write("set_keyer_speed", wpm=wpm)
 
     async def read_key_pitch(self) -> int:
-        """Read CW pitch index (0–75) without mutating legacy state."""
+        """Read the raw CW key-pitch index without mutating legacy state."""
         result = await self._query("get_key_pitch")
         return int(result["idx"])
 
     async def get_key_pitch(self) -> int:
-        """Get CW pitch index (0–75, maps to 300–1050 Hz)."""
+        """Get the radio's raw CW key-pitch index."""
         return await self.read_key_pitch()
 
     async def set_key_pitch(self, idx: int) -> None:
-        """Set CW pitch index (0–75)."""
+        """Set CW pitch by raw key-pitch index on the CAT wire."""
         await self._write("set_key_pitch", idx=idx)
 
-    async def read_cw_pitch(self) -> int:
-        """Read CW pitch in Hz (300-1050) without mutating legacy state.
+    def _cw_pitch_hz_from_index(self, idx: int) -> int:
+        """Decode a CAT key-pitch index into Hz via the profile domain.
 
-        Maps the FTX-1 idx (0-75) to Hz (``idx → 300 + idx * 10``), matching
-        :meth:`get_cw_pitch`. Pure CAT read used by the observation pipeline.
+        The index addresses the ``cw_pitch`` raw lattice from its first
+        point, so the decoded display value is the pitch in Hz. Raises
+        ``ValueError`` when the profile publishes no usable domain or the
+        index falls outside it.
+        """
+        controls = self.profile.controls
+        domain = controls.get("cw_pitch") if controls is not None else None
+        raw_min = domain.get("raw_min") if isinstance(domain, Mapping) else None
+        raw_step = domain.get("raw_step") if isinstance(domain, Mapping) else None
+        usable = (
+            isinstance(domain, Mapping)
+            and not isinstance(raw_min, bool)
+            and isinstance(raw_min, int)
+            and not isinstance(raw_step, bool)
+            and isinstance(raw_step, int)
+        )
+        if not usable:
+            raise ValueError(
+                "no normalized control domain for 'cw_pitch' in the active profile"
+            )
+        display = decode_control_domain(
+            cast(Mapping[str, object], domain),
+            cast(int, raw_min) + idx * cast(int, raw_step),
+        )
+        if display is None:
+            raise ValueError(
+                f"cw_pitch index {idx!r} is outside the profile's control domain"
+            )
+        return int(display)
+
+    async def read_cw_pitch(self) -> int:
+        """Read CW pitch in Hz without mutating legacy state.
+
+        The Hz value is decoded from the profile's ``cw_pitch`` control
+        domain: the CAT key-pitch index addresses the domain's raw lattice,
+        and the decoded display value is the pitch in Hz. Pure CAT read
+        used by the observation pipeline.
         """
         idx = await self.read_key_pitch()
-        return 300 + idx * 10
+        return self._cw_pitch_hz_from_index(idx)
 
     async def read_break_in(self) -> BreakInMode:
         """Read CW break-in mode without mutating legacy state.
@@ -2638,25 +2705,89 @@ class YaesuCatRadio:
     # -- AdvancedControlCapable aliases ----------------------------------------
 
     async def get_cw_pitch(self) -> int:
-        """CW pitch in Hz (300-1050).
+        """CW pitch in Hz.
 
-        ``read_key_pitch`` is the Yaesu-internal helper and returns the FTX-1
-        idx (0-75). The Icom-spelled ``CwControlCapable`` contract is Hz, so
-        we map ``idx → 300 + idx * 10`` (FTX-1 documented mapping: 0=300 Hz,
-        75=1050 Hz, 10 Hz step).
+        ``read_key_pitch`` is the Yaesu-internal helper and returns the raw
+        CAT index. The Icom-spelled ``CwControlCapable`` contract is Hz, so
+        the value is decoded from the profile's ``cw_pitch`` control domain.
         """
         return await self.read_cw_pitch()
 
     async def set_cw_pitch(self, freq: int) -> None:
-        """Set CW pitch in Hz (300-1050).
+        """Set CW pitch in Hz.
 
-        Maps Hz to FTX-1's 0-75 idx (10 Hz step). Raises ``ValueError`` on
-        out-of-range input.
+        The value must lie on the profile's ``cw_pitch`` raw domain;
+        off-domain values raise ``ValueError`` before any CAT write. The
+        Hz→index encoding is derived from the same domain
+        (``(freq - raw_origin) // raw_step``).
         """
-        if not 300 <= freq <= 1050:
-            raise ValueError(f"CW pitch must be 300-1050 Hz, got {freq}")
-        idx = (freq - 300) // 10
-        await self.set_key_pitch(idx)
+        _, _, raw_step, raw_origin = validate_control_raw_value(
+            self.profile.controls, "cw_pitch", freq
+        )
+        await self.set_key_pitch((freq - raw_origin) // raw_step)
+
+    # -- ControlDomainCapable --------------------------------------------------
+
+    def _published_control_domain(self, control: str) -> Mapping[str, object] | None:
+        """Return the published normalized domain for *control*, if any."""
+        controls = self.profile.controls
+        domain = controls.get(control) if controls is not None else None
+        return domain if isinstance(domain, Mapping) else None
+
+    def snap_control_display(self, control: str, display: str) -> int | None:
+        """Return the raw code for the display value nearest *display*.
+
+        Implements the
+        :class:`~rigplane.core.radio_protocol.ControlDomainCapable`
+        contract on the active profile's published normalized domain:
+        the display value is snapped to the nearest legal display point
+        (exact ties up) and encoded back to its raw code — all arithmetic
+        delegated to :mod:`rigplane.profiles.control_domain`. Returns
+        ``None`` when the profile publishes no normalized domain for
+        *control* or *display* is not a canonical decimal string; raises
+        ``ValueError`` when the domain is published and *display* is
+        outside its display range.
+        """
+        domain = self._published_control_domain(control)
+        if domain is None:
+            return None
+        try:
+            snapped = snap_control_domain(domain, display)
+        except ValueError as exc:
+            raise ValueError(f"{control} {exc}") from exc
+        if snapped is None:
+            return None
+        return cast(int | None, encode_control_domain(domain, snapped))
+
+    def decode_control_raw(self, control: str, raw: int) -> str | None:
+        """Return the canonical display string for *raw*, or ``None``.
+
+        Implements the
+        :class:`~rigplane.core.radio_protocol.ControlDomainCapable`
+        contract: ``None`` when the profile publishes no normalized
+        domain for *control* or *raw* is not a legal point on it.
+        """
+        domain = self._published_control_domain(control)
+        if domain is None:
+            return None
+        return cast(str | None, decode_control_domain(domain, raw))
+
+    def control_display_bounds(self, control: str) -> tuple[str, str] | None:
+        """Return the canonical display ``(min, max)`` for *control*, or ``None``.
+
+        Implements the
+        :class:`~rigplane.core.radio_protocol.ControlDomainCapable`
+        contract: the band is read — never re-derived — through
+        :func:`rigplane.profiles.control_domain.control_display_band`
+        on the active profile's published controls, and its Decimal
+        bounds render back to the canonical decimal strings they were
+        declared with. ``None`` when the profile publishes no domain
+        for *control*.
+        """
+        band = control_display_band(self.profile.controls, control)
+        if band is None:
+            return None
+        return (str(band[0]), str(band[1]))
 
     async def get_dial_lock(self) -> bool:
         """Alias for AdvancedControlCapable compatibility."""
@@ -3045,7 +3176,6 @@ class YaesuCatRadio:
 
     def rigctld_routing(
         self,
-        cache: Any,
         max_power_w: float = 100.0,
     ) -> Any:
         """Construct a Yaesu-specific rigctld routing strategy.
@@ -3059,17 +3189,12 @@ class YaesuCatRadio:
         The lazy import keeps :class:`YaesuCatRadio` from depending on
         the rigctld layer at module-load time (``rigctld`` sits above
         ``backends`` in the import-linter layered architecture, so a
-        top-level import here would invert the layering). The argument
-        and return types are annotated as :class:`~typing.Any` for the
-        same reason; precise typing for the public surface lives on
+        top-level import here would invert the layering). The return
+        type is annotated as :class:`~typing.Any` for the same reason;
+        precise typing for the public surface lives on
         :class:`~rigplane.core.radio_protocol.RigctldRoutable`.
 
         Args:
-            cache: Shared
-                :class:`~rigplane.rigctld.handler._FallbackRigState`
-                cache used by the rigctld handler to remember
-                last-known meter/level values when the radio cannot
-                answer.
             max_power_w: Rated maximum TX power in watts; used to scale
                 normalised RFPOWER readings (defaults to 100 W).
 
@@ -3079,4 +3204,4 @@ class YaesuCatRadio:
         """
         from ...rigctld.routing import YaesuRouting  # noqa: TID251
 
-        return YaesuRouting(self, cache, max_power_w)
+        return YaesuRouting(self, max_power_w)

@@ -38,6 +38,8 @@ function caps(overrides: Partial<Capabilities> = {}): Capabilities {
     webrtc: { available: false, enabled: false },
     txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
     scopeSource: 'hardware', audioFftAvailable: false,
+    dataModeCount: 3,
+    dataModeInputs: [0, 1, 2, 3, 4, 5].map(value => ({ value, label: String(value) })),
     audioTxRequiredModInputSource: 5, ...overrides,
   } as Capabilities;
 }
@@ -94,6 +96,12 @@ describe('rxAudio group gate (MOR-1262 slice 3A, kill-test 4)', () => {
     const rxAudio = model(audioState(), routingOnly, SNAP).rxAudio!;
     expect(rxAudio.modInputSource.reading).toEqual({ status: 'known', value: 5 });
     expect(rxAudio.liveAudio).toEqual({ structural: false, operational: false });
+  });
+
+  it('hides MOD input when profile source metadata is absent', () => {
+    const rxAudio = model(audioState(), caps({ dataModeInputs: undefined }), SNAP).rxAudio!;
+    expect(rxAudio.modInputChoices).toEqual([]);
+    expect(rxAudio.modInputSource.availability).toEqual({ structural: false, operational: false });
   });
 
   it('emits no model at all when capabilities are absent', () => {

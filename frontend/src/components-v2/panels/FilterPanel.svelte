@@ -55,6 +55,12 @@
   // PBT-derived stand-in value is a dead control, not a usable one; PBT
   // Inner/Outer below are the genuine controls for those radios.
   let hasIfShift = $derived(p.hasIfShift ?? false);
+  // MOR-1681: IF-shift range/step come from the profile's
+  // `controls.if_shift` entry when it publishes a usable domain; the
+  // per-branch constants are the explicit today-behaviour fallbacks for a
+  // radio that publishes none (table-mode row 20 Hz, non-table row 25 Hz).
+  let tableIfShiftDomain = $derived(p.ifShiftDomain ?? { min: -1200, max: 1200, step: 20 });
+  let defaultIfShiftDomain = $derived(p.ifShiftDomain ?? { min: -1200, max: 1200, step: 25 });
   let pbtInner = $derived(p.pbtInner ?? 0);
   let pbtOuter = $derived(p.pbtOuter ?? 0);
   let hasPbt = $derived(p.hasPbt ?? false);
@@ -198,7 +204,15 @@
     name: 'filter-width-catalog',
     preview: 'confirmed',
     normalize: (value) => nearestWidthChoice(value),
-    wheel: (current, event) => adjacentWidthChoice(current, event.direction),
+    wheel: (current, event) => {
+      const steps = event.steps ?? 1;
+      if (!Number.isInteger(steps) || steps < 1 || steps > 8) return null;
+      let candidate: number | null = current;
+      for (let index = 0; index < steps && candidate !== null; index += 1) {
+        candidate = adjacentWidthChoice(candidate, event.direction);
+      }
+      return candidate;
+    },
     key: (current, event) => {
       if (event.key === 'Home') return validWidthCatalog() ? currentWidthTable[0] : null;
       if (event.key === 'End') return validWidthCatalog()
@@ -349,9 +363,9 @@
       <ValueControl
         label="IF SHIFT"
         value={ifShift}
-        min={-1200}
-        max={1200}
-        step={20}
+        min={tableIfShiftDomain.min}
+        max={tableIfShiftDomain.max}
+        step={tableIfShiftDomain.step}
         unit="Hz"
         renderer="bipolar"
         accentColor="var(--v2-accent-cyan)"
@@ -434,9 +448,9 @@
       <ValueControl
         label={hasPbt ? "IF Shift (derived)" : "IF Shift"}
         value={ifShift}
-        min={-1200}
-        max={1200}
-        step={25}
+        min={defaultIfShiftDomain.min}
+        max={defaultIfShiftDomain.max}
+        step={defaultIfShiftDomain.step}
         unit="Hz"
         renderer="bipolar"
         accentColor="var(--v2-accent-cyan)"

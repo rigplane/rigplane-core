@@ -897,6 +897,11 @@ class _OffByTwoRfGainRadio:
         self.capabilities = {"rf_gain"}
         self.radio_state = RadioState()
         self._value = 100
+        # Declared rf_gain band (raw 0-255, the X6200 shape) — MOR-2476: the
+        # band must be profile-declared, never an assumed default.
+        self.profile = SimpleNamespace(
+            controls={"rf_gain": {"raw_min": 0, "raw_max": 255}}
+        )
 
     async def get_rf_gain(self, receiver: int = 0) -> int:
         # Reads back 2 below whatever was last written.
@@ -915,7 +920,7 @@ async def test_rf_gain_tolerance_passes_with_off_by_two_readback():
     check = _flatten(levels)["rf_gain.set"]
 
     assert check.status is CheckStatus.PASS
-    # original read: 100 -> 98; no profile -> default 0-255 band, step 25;
+    # original read: 100 -> 98; profile-declared 0-255 raw band, step 25;
     # range-aware nudge(98) -> 123 (MOR-695); readback 123 -> 121.
     assert check.evidence["original"] == 98
     assert check.evidence["changed"] == 123
@@ -1104,6 +1109,11 @@ def _stateful_squelch_mock(*, start: int = 0):
     radio.connected = True
     radio.model = "X6200"
     radio.capabilities = {"squelch"}
+    # Declared squelch band (raw 0-255, the X6200 shape) — MOR-2476: the
+    # band must be profile-declared, never an assumed default.
+    radio.profile = SimpleNamespace(
+        controls={"squelch": {"raw_min": 0, "raw_max": 255}}
+    )
     store = {"value": start}
 
     async def _get(receiver: int = 0) -> int:
@@ -1126,8 +1136,8 @@ async def test_generic_squelch_set_rmvr_pass():
     )
     check = _flatten(levels)["squelch.set"]
     assert check.status is CheckStatus.PASS
-    # MagicMock(spec=Radio) has no profile -> default 0-255 band, step 25;
-    # range-aware nudge(0) -> 25 (MOR-695).
+    # Profile-declared 0-255 raw band (X6200 [controls.squelch] shape),
+    # step 25; range-aware nudge(0) -> 25 (MOR-695/MOR-2476).
     assert check.evidence["original"] == 0
     assert check.evidence["changed"] == 25
     assert check.evidence["readback"] == 25
@@ -1144,6 +1154,10 @@ async def test_generic_squelch_set_fail_no_react():
     radio.connected = True
     radio.model = "X6200"
     radio.capabilities = {"squelch"}
+    # Declared squelch band (raw 0-255, the X6200 shape) — MOR-2476.
+    radio.profile = SimpleNamespace(
+        controls={"squelch": {"raw_min": 0, "raw_max": 255}}
+    )
     radio.set_squelch = AsyncMock(return_value=None)  # no-op write
     radio.get_squelch = AsyncMock(return_value=100)  # always 100
     template = _single_entry_template(check_id="squelch.set", capability="squelch")
@@ -1166,6 +1180,10 @@ class _OffByTwoSquelchRadio:
         self.capabilities = {"squelch"}
         self.radio_state = RadioState()
         self._value = 100
+        # Declared squelch band (raw 0-255, the X6200 shape) — MOR-2476.
+        self.profile = SimpleNamespace(
+            controls={"squelch": {"raw_min": 0, "raw_max": 255}}
+        )
 
     async def get_squelch(self, receiver: int = 0) -> int:
         return max(0, self._value - 2)
@@ -1680,6 +1698,11 @@ def _rf_gain_radio(scenario: str, *, original: int = 100):
     radio.connected = True
     radio.model = "X6200"
     radio.capabilities = {"rf_gain"}
+    # Declared rf_gain band (raw 0-255, the X6200 shape) — MOR-2476: the
+    # band must be profile-declared, never an assumed default.
+    radio.profile = SimpleNamespace(
+        controls={"rf_gain": {"raw_min": 0, "raw_max": 255}}
+    )
 
     get_calls = {"n": 0}
     set_calls = {"n": 0}

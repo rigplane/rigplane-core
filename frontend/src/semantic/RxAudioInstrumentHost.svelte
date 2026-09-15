@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
-  import { MOD_INPUT_SOURCES, modInputSourceLabel } from '$lib/radio/mod-input';
+  import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { ValueControl } from '../components-v2/controls/value-control';
   import {
@@ -10,12 +10,14 @@
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
   import {
     createAbsoluteChoiceRendererSeat, createActionRendererSeat, createChoiceRendererSeat,
+    createToggleRendererSeat,
     type AvailabilityActionRendererInput,
     type FiniteControlAppearance, type FiniteRendererContext,
   } from '../primitives/control-instruments/control-instrument-renderer.svelte';
   import {
     createContinuousScalar,
     createHBarContinuousScalarPolicy,
+    type CommandScalarFeedback,
     type ContinuousScalarInput,
     type ContinuousScalarPolicy,
     type ScalarDomain,
@@ -48,9 +50,12 @@
     presentation: RxAudioInstrumentPresentation;
     subscribeControlAuthority: SubscribeRxAudioAuthority;
     onAfLevelChange?: (value: number) => void;
+    afLevelFeedback?: Readonly<CommandScalarFeedback>;
     onMonitorModeChange?: (mode: MonitorMode) => void;
     onFocusChange?: (focus: AudioFocus) => void;
     onSplitStereoChange?: (split: boolean) => void;
+    routingGains?: Readonly<{ main: number; sub: number }> | null;
+    onChannelGainChange?: (channel: 'main' | 'sub', value: number) => void;
     onModInputChange?: (source: number) => void;
     onSetModInputLan?: () => void;
     children: Snippet<[RxAudioInstrumentHandles]>;
@@ -75,14 +80,19 @@
   }
 
   let {
-    presentation, subscribeControlAuthority, onAfLevelChange,
-    onMonitorModeChange, onFocusChange, onSplitStereoChange, onModInputChange, onSetModInputLan,
+    presentation, subscribeControlAuthority, onAfLevelChange, afLevelFeedback,
+    onMonitorModeChange, onFocusChange, onSplitStereoChange, routingGains = null,
+    onChannelGainChange, onModInputChange, onSetModInputLan,
     finiteAppearance, rendererContext, children,
   }: Props = $props();
   let published = $state.raw<RxAudioAuthorityPublication | null>(null);
   let lastAuthority: AfAuthority | null | undefined;
   let stop: (() => void) | null = null;
   let rx = $derived(presentation.rxAudio);
+  let modInputChoices = $derived(rx?.modInputChoices ?? []);
+  let modInputReadingValue = $derived(
+    rx?.modInputSource.reading.status === 'known' ? rx.modInputSource.reading.value : undefined,
+  );
   /** MOR-1279: the FACT, never a capability re-derivation. */
   let liveOffered = $derived(rx?.liveAudio.structural === true);
   /** MOR-1384 — the v2 `RxAudioPanel` link-lost readout, restored from the SAME
@@ -94,9 +104,15 @@
   let linkLost = $derived(
     liveOffered && rx?.monitorMode === 'live' && rx.liveAudio.operational === false,
   );
+  const monitorLabel: Record<MonitorMode, string> = {
+    local: 'RADIO', live: 'LIVE', mute: 'MUTE',
+  };
+  const monitorStatusText: Record<MonitorMode, string> = {
+    local: 'Radio speaker output', live: 'Browser audio stream', mute: 'Audio muted',
+  };
   let modInputRecognized = $derived(
-    rx?.modInputSource.reading.status === 'known'
-      && modInputSourceLabel(rx.modInputSource.reading.value) !== null,
+    modInputReadingValue !== undefined
+      && modInputChoices.some(option => option.value === modInputReadingValue),
   );
 
   const monitorBehavior = bindAbsoluteChoiceInstrument<MonitorMode>(() => ({
@@ -121,7 +137,7 @@
   }));
   const modInputBehavior = bindChoiceInstrument<number>(() => ({
     field: rx?.modInputSource,
-    choices: MOD_INPUT_SOURCES.map((option) => option.value),
+    choices: modInputChoices.map((option) => option.value),
     blocked: !modInputRecognized,
     invoke: (source) => onModInputChange?.(source),
   }));
@@ -130,7 +146,7 @@
   );
   function changeModInput(select: HTMLSelectElement): void {
     const value = select.value;
-    const source = MOD_INPUT_SOURCES.find((option) => String(option.value) === value);
+    const source = modInputChoices.find((option) => String(option.value) === value);
     select.value = modInputValue;
     if (source) modInputBehavior.invoke(source.value);
   }
@@ -149,14 +165,16 @@
     reading: rx === undefined ? { status: 'unknown' } : { status: 'known', value: rx.monitorMode },
     available: rx !== undefined,
     options: MONITOR_MODES.filter((mode) => mode !== 'live' || liveOffered)
-      .map((mode) => ({ value: mode, label: mode })),
+      .map((mode) => ({ value: mode, label: monitorLabel[mode] })),
     invoke: (mode) => onMonitorModeChange?.(mode as MonitorMode),
   }));
   const focusSeat = createAbsoluteChoiceRendererSeat<RxAudioFiniteChoiceValue>(() => ({
     context: rendererContext ?? null, label: 'Audio focus',
     reading: rx?.routingFocus.reading ?? { status: 'unknown' },
     available: rx?.routingFocus.availability.structural === true,
-    options: FOCUS_CHOICES.map((focus) => ({ value: focus, label: focus })),
+    options: FOCUS_CHOICES.map((focus) => ({
+      value: focus, label: focus === 'both' ? 'Both' : focus.toUpperCase(),
+    })),
     invoke: (focus) => onFocusChange?.(focus as AudioFocus),
   }));
   const splitSeat = createAbsoluteChoiceRendererSeat<RxAudioFiniteChoiceValue>(() => {
@@ -171,17 +189,23 @@
       invoke: (label) => onSplitStereoChange?.(splitValueOf(label as RxAudioSplitLabel)),
     };
   });
+  const splitToggleSeat = createToggleRendererSeat(() => ({
+    context: rendererContext ?? null, field: rx?.routingSplit, label: 'Stereo split',
+    invoke: (next) => onSplitStereoChange?.(next),
+  }));
   const modInputSeat = createChoiceRendererSeat<RxAudioFiniteChoiceValue>(() => ({
     context: rendererContext ?? null, label: 'MOD input',
     field: rx?.modInputSource, blocked: !modInputRecognized,
-    options: MOD_INPUT_SOURCES.map((option) => ({ value: option.value, label: option.label })),
+    options: modInputChoices.map((option) => ({ value: option.value, label: option.label })),
     invoke: (source) => onModInputChange?.(source as number),
   }));
   function setLanInput(): AvailabilityActionRendererInput {
     return {
       context: rendererContext ?? null, label: 'Set LAN',
-      availability: rx === undefined ? undefined : { structural: true, operational: true },
-      blocked: rx?.modInputReadiness.status !== 'mismatch',
+      availability: rx === undefined || !modInputChoices.some(option => option.value === LAN_MOD_INPUT_SOURCE)
+        ? undefined : { structural: true, operational: true },
+      blocked: rx?.modInputReadiness.status !== 'mismatch'
+        || !modInputChoices.some(option => option.value === LAN_MOD_INPUT_SOURCE),
       invoke: () => onSetModInputLan?.(),
     };
   }
@@ -198,7 +222,8 @@
       || !safeGeneration(stateGeneration)
       || !safeGeneration(capsGeneration)
       || stateGeneration !== capsGeneration) return null;
-    const model = toRadioViewModel(source.state, source.caps);
+    const model = source.view === undefined
+      ? toRadioViewModel(source.state, source.caps) : source.view;
     if (model === null) return null;
     const receiver = model.activeReceiver.status === 'known'
       ? model.activeReceiver.receiver : 'unknown';
@@ -240,18 +265,29 @@
     const readingMatchesTarget = currentAuthority?.target === 'browser-volume'
       ? presentation.rxAudio?.monitorMode === 'live'
       : presentation.rxAudio?.monitorMode !== 'live';
-    return {
-      evidence: 'reading',
+    const enabled = same(currentAuthority, presentedAuthority)
+      && targetKnown
+      && currentAuthority?.muted === false
+      && readingMatchesTarget
+      && field?.availability.structural === true
+      && field.availability.operational
+      && reading.status === 'known'
+      && Number.isFinite(reading.value)
+      && onAfLevelChange !== undefined;
+    const base = {
       domain: { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 1 },
-      enabled: same(currentAuthority, presentedAuthority)
-        && targetKnown
-        && readingMatchesTarget
-        && field?.availability.structural === true
-        && field.availability.operational
-        && reading.status === 'known'
-        && Number.isFinite(reading.value)
-        && onAfLevelChange !== undefined,
-      request: (value) => onAfLevelChange?.(value),
+      enabled,
+      request: (value: number) => onAfLevelChange?.(value),
+    } as const;
+    if (afLevelFeedback !== undefined) return {
+      ...base,
+      evidence: 'command-feedback',
+      feedback: afLevelFeedback,
+      command: 'set_af_level',
+    };
+    return {
+      ...base,
+      evidence: 'reading',
       reading,
       ownerKey: key(currentAuthority),
     };
@@ -275,7 +311,9 @@
       published = next;
     });
   });
-  const finiteSeats = [monitorSeat, focusSeat, splitSeat, modInputSeat, setLanSeat] as const;
+  const finiteSeats = [
+    monitorSeat, focusSeat, splitSeat, splitToggleSeat, modInputSeat, setLanSeat,
+  ] as const;
   onDestroy(() => {
     try { stop?.(); } finally {
       afLevelBinding.destroy();
@@ -284,12 +322,46 @@
   });
 </script>
 
-{#snippet afLevel()}
+{#snippet afLevelControl(hardware: boolean)}
   <ValueControl
     {...feedbackIntegratedControl}
     binding={afLevelBinding} label="AF" renderer="hbar"
     showLabel={false} showValue={false} compact={true}
+    variant={hardware ? 'hardware-illuminated' : 'modern'}
+    accentColor={hardware ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
   />
+{/snippet}
+{#snippet afLevel()}{@render afLevelControl(false)}{/snippet}
+
+{#snippet routingSplitToggle()}
+  {#if rx?.routingSplit.availability.structural}
+    <div class="rx-audio-row" data-testid="rx-audio-split"
+      data-observed={usable(rx.routingSplit)}>
+      {#if finiteAppearance}
+        {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
+          seat={splitToggleSeat} renderer={finiteAppearance.toggle}
+        />{/key}{/key}
+      {:else}
+        <button type="button" class="rx-audio-choice" data-testid="rx-audio-split-toggle"
+          aria-pressed={splitBehavior.selected}
+          disabled={!splitBehavior.available || splitBehavior.selected === undefined}
+          onclick={() => splitBehavior.selected !== undefined
+            && splitBehavior.invoke(!splitBehavior.selected)}>Stereo split</button>
+      {/if}
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet afLevelRow()}
+  {#if rx?.afLevel.availability.structural}
+    <label class="rx-audio-level" data-testid="rx-audio-af"
+      data-observed={usable(rx.afLevel)}>
+      <span class="rx-audio-name">AF LEVEL</span>
+      {@render afLevelControl(true)}
+      <output data-testid="rx-audio-af-value">{rx.afLevel.reading.status === 'known'
+        ? `${Math.round(rx.afLevel.reading.value * 100)}%` : UNKNOWN_TEXT}</output>
+    </label>
+  {/if}
 {/snippet}
 
 {#snippet monitorMode()}
@@ -312,7 +384,7 @@
               aria-checked={monitorBehavior.isSelected(mode)}
               disabled={!monitorBehavior.available}
               onclick={() => monitorBehavior.invoke(mode)}
-            >{mode}</button>
+            >{monitorLabel[mode]}</button>
           {/if}
         {/each}
       {/if}
@@ -325,6 +397,14 @@
     {#if linkLost}
       <p class="rx-audio-row" data-testid="rx-audio-link">{LINK_LOST_TEXT}</p>
     {/if}
+  {/if}
+{/snippet}
+
+{#snippet monitorStatus()}
+  {#if rx}
+    <p class="rx-audio-status" data-testid="rx-audio-monitor-status">
+      {linkLost ? LINK_LOST_TEXT : monitorStatusText[rx.monitorMode]}
+    </p>
   {/if}
 {/snippet}
 
@@ -353,6 +433,23 @@
     </div>
   {/if}
 {/snippet}
+
+{#snippet channelGain(channel: 'main' | 'sub')}
+  {#if rx?.routingFocus.availability.structural}
+    {@const value = channel === 'main' ? routingGains?.main : routingGains?.sub}
+    <label class="rx-audio-gain" data-testid={`rx-audio-${channel}-gain`}>
+      <span>{channel.toUpperCase()}</span>
+      <input type="range" min="-60" max="12" step="1" value={value ?? 0}
+        aria-label={`${channel.toUpperCase()} gain in decibels`}
+        disabled={value === undefined || !rx.routingFocus.availability.operational
+          || onChannelGainChange === undefined}
+        oninput={(event) => onChannelGainChange?.(channel, event.currentTarget.valueAsNumber)} />
+      <output>{value === undefined ? UNKNOWN_TEXT : `${value} dB`}</output>
+    </label>
+  {/if}
+{/snippet}
+{#snippet mainGain()}{@render channelGain('main')}{/snippet}
+{#snippet subGain()}{@render channelGain('sub')}{/snippet}
 
 {#snippet routingSplit()}
   {#if rx?.routingSplit.availability.structural}
@@ -404,13 +501,13 @@
             {#if modInputValue === ''}
               <option value="" disabled>{UNKNOWN_TEXT}</option>
             {/if}
-            {#each MOD_INPUT_SOURCES as option (option.value)}
+            {#each modInputChoices as option (option.value)}
               <option value={String(option.value)}>{option.label}</option>
             {/each}
           </select>
         </label>
         <span data-testid="rx-audio-mod-source">MOD: {rx.modInputSource.reading.status === 'known'
-          ? modInputSourceLabel(rx.modInputSource.reading.value) ?? UNKNOWN_TEXT
+          ? modInputChoices.find(option => option.value === modInputReadingValue)?.label ?? UNKNOWN_TEXT
           : UNKNOWN_TEXT}</span>
         <span data-testid="rx-audio-mod-readiness"
         >{READINESS_LABEL[rx.modInputReadiness.status]}</span>
@@ -420,7 +517,8 @@
 {/snippet}
 
 {#snippet setModInputLan()}
-  {#if rx?.modInputReadiness.status === 'mismatch'}
+  {#if rx?.modInputReadiness.status === 'mismatch'
+    && modInputChoices.some(option => option.value === LAN_MOD_INPUT_SOURCE)}
     {#if finiteAppearance}
       {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
         seat={setLanSeat} renderer={finiteAppearance.action}
@@ -437,11 +535,16 @@
 {/snippet}
 
 {@render children({
-  afLevel, monitorMode, routingFocus, routingSplit, modInputSource, setModInputLan,
+  afLevel, afLevelRow, monitorMode, monitorStatus, routingFocus, routingSplit,
+  routingSplitToggle, mainGain, subGain, modInputSource, setModInputLan,
 })}
 
 <style>
   .rx-audio-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
+  .rx-audio-level, .rx-audio-gain { display: flex; align-items: baseline; gap: 0.5rem; }
+  .rx-audio-level :global(.vc-hbar), .rx-audio-gain input { flex: 1 1 auto; min-width: 0; }
+  .rx-audio-name { min-width: 7ch; }
+  .rx-audio-status { margin: 0; color: var(--v2-text-dim, #8ca0b8); font-size: 10px; }
   .rx-audio-mod-selector { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; max-width: 100%; }
   .rx-audio-mod-selector select { min-width: 0; max-width: 100%; }
   .rx-audio-choice[aria-checked='true'] { font-weight: 700; }

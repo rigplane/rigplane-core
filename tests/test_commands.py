@@ -987,9 +987,9 @@ class TestDspLevelParityCommands:
     @pytest.mark.parametrize(
         ("getter_name", "setter_name", "sub", "value"),
         [
-            ("get_cw_pitch", "set_cw_pitch", 0x09, 600),
+            ("get_cw_pitch", "set_cw_pitch", 0x09, 128),
             ("get_mic_gain", "set_mic_gain", 0x0B, 128),
-            ("get_key_speed", "set_key_speed", 0x0C, 30),
+            ("get_key_speed", "set_key_speed", 0x0C, 128),
             ("get_compressor_level", "set_compressor_level", 0x0E, 128),
             ("get_break_in_delay", "set_break_in_delay", 0x0F, 128),
             ("get_drive_gain", "set_drive_gain", 0x14, 128),
@@ -1018,6 +1018,24 @@ class TestDspLevelParityCommands:
             bytes([0xFE, 0xFE, 0x98, 0xE0, 0x14, sub])
         )
         assert setter(value, cmd_map=cmd_map).endswith(b"\xfd")
+
+    def test_cw_pitch_and_key_speed_builders_encode_raw_levels(self, cmd_map) -> None:
+        import rigplane.commands as commands
+
+        # The builders take the raw 0-255 level; the Hz/WPM -> level
+        # conversion lives in the profile control domain
+        # (profiles/control_domain.py: encode_legacy_control). to_addr is
+        # the module-level bound default (IC-7610, 0x98).
+        assert commands.set_cw_pitch(128, cmd_map=cmd_map) == bytes(
+            [0xFE, 0xFE, 0x98, 0xE0, 0x14, 0x09, 0x01, 0x28, 0xFD]
+        )
+        assert commands.set_key_speed(146, cmd_map=cmd_map) == bytes(
+            [0xFE, 0xFE, 0x98, 0xE0, 0x14, 0x0C, 0x01, 0x46, 0xFD]
+        )
+        with pytest.raises(ValueError, match="0-255"):
+            commands.set_cw_pitch(256, cmd_map=cmd_map)
+        with pytest.raises(ValueError, match="0-255"):
+            commands.set_key_speed(-1, cmd_map=cmd_map)
 
     @pytest.mark.parametrize(
         ("getter_name", "setter_name", "prefix", "value", "expected_payload"),

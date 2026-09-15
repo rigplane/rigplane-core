@@ -167,18 +167,16 @@ import {
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 
-/** 2/main_sub: MAIN and SUB each carry A/B slots (4 vfo tiles total). */
+/** 2/main_sub: MAIN and SUB each carry ONE unslotted receiver-level VFO (2 vfo tiles total). */
 function mainSubState(active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
   const paths = ['active', 'split', 'dualWatch', 'txTarget'];
   for (const rx of ['main', 'sub']) {
-    paths.push(`${rx}.activeSlot`);
-    for (const v of ['vfoA', 'vfoB']) paths.push(`${rx}.${v}.freqHz`, `${rx}.${v}.mode`, `${rx}.${v}.filterNum`);
+    paths.push(`${rx}.freqHz`, `${rx}.mode`, `${rx}.filter`);
   }
-  const slot = (hz: number) => ({ freqHz: hz, mode: 'USB', filterNum: 1 });
-  const receiver = (hz: number) => ({ vfoA: slot(hz), vfoB: slot(hz + 30000), activeSlot: 'A' });
+  const receiver = (hz: number) => ({ freqHz: hz, mode: 'USB', filter: 1 });
   return {
     active, split: true, dualWatch: true, ptt: false,
-    txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
+    txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(21295000),
     fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
   } as unknown as ServerState;
@@ -381,8 +379,8 @@ describe('per-receiver VFO strips, driven by the dual-receiver topologies', () =
     expect(qa('[data-testid^="channel-strip-"]')).toHaveLength(2);
     const mainStrip = q('[data-testid="channel-strip-MAIN"]')!;
     const subStrip = q('[data-testid="channel-strip-SUB"]')!;
-    expect(mainStrip.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
-    expect(subStrip.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
+    expect(mainStrip.querySelectorAll('[data-vfo-tile]')).toHaveLength(1);
+    expect(subStrip.querySelectorAll('[data-vfo-tile]')).toHaveLength(1);
     // Kills: strips sharing one unfiltered vfo list instead of splitting.
     expect([...mainStrip.querySelectorAll('[data-vfo-tile]')].every(
       (el) => (el as HTMLElement).dataset.vfoReceiver === 'MAIN',
@@ -460,16 +458,18 @@ describe('dual-rx-unavailable: SUB strip present but operationally disabled (MOR
     const subStrip = q('[data-testid="channel-strip-SUB"]')!;
     expect(subStrip).not.toBeNull();
     expect(subStrip.dataset.stripOperational).toBe('false');
+    // With one unslotted tile per receiver and MAIN active, the only select
+    // control lives on SUB's inactive tile — and it is really disabled.
     const subSelects = subStrip.querySelectorAll<HTMLButtonElement>('[data-vfo-select]');
-    expect(subSelects.length).toBeGreaterThan(0);
+    expect(subSelects).toHaveLength(1);
     subSelects.forEach((b) => expect(b.disabled).toBe(true));
 
     // Kill-test (2): the disabled-SUB fixture must not affect MAIN liveness.
+    // MAIN's own tile is the active one, so it renders no select control at
+    // all — liveness is its strip staying operational.
     const mainStrip = q('[data-testid="channel-strip-MAIN"]')!;
     expect(mainStrip.dataset.stripOperational).toBe('true');
-    const mainSelects = mainStrip.querySelectorAll<HTMLButtonElement>('[data-vfo-select]');
-    expect(mainSelects.length).toBeGreaterThan(0);
-    mainSelects.forEach((b) => expect(b.disabled).toBe(false));
+    expect(mainStrip.querySelectorAll<HTMLButtonElement>('[data-vfo-select]')).toHaveLength(0);
   });
 
   // Kill-test (2), the TX half: single TX authority is untouched by this
@@ -520,8 +520,10 @@ describe('dual-rx-unavailable: SUB strip present but operationally disabled (MOR
 
     const subStrip = q('[data-testid="channel-strip-SUB"]')!;
     expect(subStrip.dataset.stripOperational).toBe('true');
+    // Exactly one select control: SUB's single unslotted tile, inactive under
+    // the MAIN-active fixture.
     const subSelects = subStrip.querySelectorAll<HTMLButtonElement>('[data-vfo-select]');
-    expect(subSelects.length).toBeGreaterThan(0);
+    expect(subSelects).toHaveLength(1);
     subSelects.forEach((b) => expect(b.disabled).toBe(false));
   });
 });

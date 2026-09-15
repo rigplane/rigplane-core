@@ -19,13 +19,14 @@ Architecture::
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from ..radio_protocol import Radio
-    from .handler import _FallbackRigState  # noqa: TID251
 
+from ..core.radio_protocol import ControlDomainCapable
 from ..core.state_pipeline_contracts import FieldPath
 from .contract import HamlibError, RigctldResponse  # noqa: TID251
 
@@ -63,6 +64,98 @@ def _format_raw_scaled_float(value: Any, *, raw_divisor: float) -> str:
 def _format_strength(value: Any, *, raw_divisor: float) -> str:
     raw = int(value)
     return str(round((raw / raw_divisor) * 114.0 - 54.0))
+
+
+def _canonical_decimal(value: float) -> str | None:
+    """Render a finite float as a canonical decimal string.
+
+    ``1500.0`` → ``"1500"``, ``-0.0`` → ``"0"``; non-finite values
+    (NaN, infinities) return ``None``. The result feeds the backend's
+    control-domain surface, which parses canonical decimal strings only.
+    """
+    if not math.isfinite(value):
+        return None
+    rendered = format(value, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return "0" if rendered in {"0", "-0"} else rendered
+
+
+async def _set_snapped_level(
+    radio: "Radio",
+    control: str,
+    value: float,
+    apply: Callable[[int], Any],
+) -> RigctldResponse | None:
+    """Apply a hamlib level snapped onto the radio's control domain.
+
+    Routes through :class:`~rigplane.core.radio_protocol.ControlDomainCapable`:
+    the requested value is rendered as a canonical decimal, snapped to
+    the nearest legal display value (ties up) and applied as the raw
+    code. Returns the response when the domain surface decided the
+    outcome — including ``EINVAL`` for out-of-range values, with no
+    radio setter called — or ``None`` when the caller must take its
+    legacy rounded path: the radio does not implement the protocol,
+    publishes no normalized domain, or (test doubles) cannot supply a
+    usable raw code.
+    """
+    if not isinstance(radio, ControlDomainCapable):
+        return None
+    display = _canonical_decimal(value)
+    if display is None:
+        return None
+    try:
+        raw = radio.snap_control_display(control, display)
+    except ValueError:
+        return _err(HamlibError.EINVAL)
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        return None
+    await apply(raw)
+    return _ok()
+
+
+def _display_band_bounds(bounds: object) -> tuple[float, float] | None:
+    """Usable ``(min, max)`` display band from protocol bounds.
+
+    Accepts the ``tuple[str, str] | None`` contract of
+    :meth:`~rigplane.core.radio_protocol.ControlDomainCapable.control_display_bounds`;
+    anything a radio or test double returns that is not a two-entry
+    tuple of parseable numbers — ``None`` included — yields ``None`` so
+    callers take their legacy path. Degenerate bands (``max <= min``,
+    NaN) also yield ``None``.
+    """
+    if not isinstance(bounds, tuple) or len(bounds) != 2:
+        return None
+    try:
+        lo, hi = float(bounds[0]), float(bounds[1])
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(lo) and math.isfinite(hi)) or hi <= lo:
+        return None
+    return (lo, hi)
+
+
+def _domain_level_fraction(radio: "Radio", control: str, raw: int) -> float | None:
+    """Normalized hamlib fraction for a level's raw code, from its domain.
+
+    Decodes *raw* through ``decode_control_raw`` and divides the display
+    value by the published display maximum, so the radio's own top of
+    scale answers ``1.0``. ``None`` — caller falls back to its legacy
+    scale divisor — when the radio does not implement the protocol,
+    publishes no domain for *control*, or (test doubles) returns
+    unusable values.
+    """
+    if not isinstance(radio, ControlDomainCapable):
+        return None
+    display = radio.decode_control_raw(control, raw)
+    band = _display_band_bounds(radio.control_display_bounds(control))
+    if not isinstance(display, str) or band is None:
+        return None
+    try:
+        fraction = float(display) / band[1]
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    return fraction if math.isfinite(fraction) else None
 
 
 # ---------------------------------------------------------------------------
@@ -134,8 +227,6 @@ _YAESU_DUMP_STATE: list[str] = [
 class YaesuRouting:
     """Yaesu CAT routing for rigctl level/func commands."""
 
-    _CW_PITCH_BASE: int = 300
-    _CW_PITCH_STEP: int = 10
     _S_METER = FieldPath.receiver("main", "meters", "s_meter")
     _LEVEL_PATHS: dict[str, FieldPath] = {
         "STRENGTH": _S_METER,
@@ -153,11 +244,8 @@ class YaesuRouting:
         "NR": FieldPath.receiver("main", "operator_toggles", "nr"),
     }
 
-    def __init__(
-        self, radio: "Radio", cache: "_FallbackRigState", max_power_w: float
-    ) -> None:
+    def __init__(self, radio: "Radio", max_power_w: float) -> None:
         self._radio = radio
-        self._cache = cache
         self._max_power_w = max_power_w
         self._state_observer: _StateObserver | None = None
 
@@ -194,13 +282,27 @@ class YaesuRouting:
                 return RigctldResponse(
                     values=[_format_normalized_or_raw_float(value, raw_divisor=255.0)]
                 )
-            if level == "NB":
-                return RigctldResponse(
-                    values=[_format_raw_scaled_float(value, raw_divisor=10.0)]
-                )
             if level == "NR":
+                # Same domain the live read in get_level consults, so a
+                # level answered from StateStore projection agrees with a
+                # live one; /15 remains only for radios publishing no
+                # nr_level domain (MOR-2479).
+                fraction = _domain_level_fraction(self._radio, "nr_level", int(value))
+                if fraction is not None:
+                    return RigctldResponse(values=[f"{fraction:.6f}"])
                 return RigctldResponse(
                     values=[_format_raw_scaled_float(value, raw_divisor=15.0)]
+                )
+            if level == "NB":
+                # Same domain the live read in get_level consults, so a
+                # level answered from StateStore projection agrees with a
+                # live one; /10 remains only for radios publishing no
+                # nb_level domain (MOR-2469).
+                fraction = _domain_level_fraction(self._radio, "nb_level", int(value))
+                if fraction is not None:
+                    return RigctldResponse(values=[f"{fraction:.6f}"])
+                return RigctldResponse(
+                    values=[_format_raw_scaled_float(value, raw_divisor=10.0)]
                 )
             if level == "PREAMP":
                 return RigctldResponse(values=[str(int(value))])
@@ -233,7 +335,6 @@ class YaesuRouting:
 
         if level in ("STRENGTH", "RAWSTR"):
             raw = await radio.get_s_meter()
-            self._cache.update_s_meter(raw)
             self._observe(self.state_path_for_level(level), raw)
             if level == "STRENGTH":
                 return RigctldResponse(
@@ -244,12 +345,10 @@ class YaesuRouting:
         if level == "RFPOWER":
             raw = await radio.get_rf_power()
             n = raw / self._max_power_w
-            self._cache.update_rf_power(n)
             return RigctldResponse(values=[f"{n:.6f}"])
 
         if level == "SWR":
             swr = float(await radio.get_swr())
-            self._cache.update_swr(swr)
             return RigctldResponse(values=[f"{swr:.6f}"])
 
         # 0–255 → 0.0–1.0
@@ -275,13 +374,23 @@ class YaesuRouting:
         if level == "NB":
             raw = await radio.get_nb_level()
             self._observe(self.state_path_for_level(level), raw)
+            fraction = _domain_level_fraction(radio, "nb_level", raw)
+            if fraction is not None:
+                return RigctldResponse(values=[f"{fraction:.6f}"])
             return RigctldResponse(values=[f"{raw / 10.0:.6f}"])
         if level == "NR":
             raw = await radio.get_nr_level()
             self._observe(self.state_path_for_level(level), raw)
+            fraction = _domain_level_fraction(radio, "nr_level", raw)
+            if fraction is not None:
+                return RigctldResponse(values=[f"{fraction:.6f}"])
             return RigctldResponse(values=[f"{raw / 15.0:.6f}"])
         if level == "NOTCHF":
             _, freq_idx = await radio.get_manual_notch()
+            if isinstance(radio, ControlDomainCapable):
+                display = radio.decode_control_raw("manual_notch_freq", freq_idx)
+                if isinstance(display, str):
+                    return RigctldResponse(values=[display])
             return RigctldResponse(values=[str(freq_idx)])
         if level == "IFSHIFT":
             return RigctldResponse(values=[str(await radio.get_if_shift())])
@@ -338,29 +447,61 @@ class YaesuRouting:
             return _ok()
 
         if level == "NB":
+            # hamlib carries NB as a 0.0–1.0 fraction; the radio's own
+            # domain decides the band it maps onto (MOR-2469).
+            if isinstance(radio, ControlDomainCapable):
+                band = _display_band_bounds(radio.control_display_bounds("nb_level"))
+                if band is not None:
+                    snapped = await _set_snapped_level(
+                        radio,
+                        "nb_level",
+                        band[0] + value * (band[1] - band[0]),
+                        radio.set_nb_level,
+                    )
+                    if snapped is not None:
+                        return snapped
             await radio.set_nb_level(max(0, min(10, round(value * 10))))
             return _ok()
         if level == "NR":
+            # hamlib carries NR as a 0.0–1.0 fraction; the radio's own
+            # domain decides the band it maps onto (FTX-1: 0–10, per the
+            # CAT manual — not a code constant).
+            if isinstance(radio, ControlDomainCapable):
+                band = _display_band_bounds(radio.control_display_bounds("nr_level"))
+                if band is not None:
+                    snapped = await _set_snapped_level(
+                        radio,
+                        "nr_level",
+                        band[0] + value * (band[1] - band[0]),
+                        radio.set_nr_level,
+                    )
+                    if snapped is not None:
+                        return snapped
             await radio.set_nr_level(max(0, min(15, round(value * 15))))
             return _ok()
         if level == "NOTCHF":
+            snapped = await _set_snapped_level(
+                radio, "manual_notch_freq", value, radio.set_notch_filter
+            )
+            if snapped is not None:
+                return snapped
             await radio.set_notch_filter(round(value))
             return _ok()
         if level == "IFSHIFT":
+            snapped = await _set_snapped_level(
+                radio, "if_shift", value, radio.set_if_shift
+            )
+            if snapped is not None:
+                return snapped
             await radio.set_if_shift(round(value))
             return _ok()
         if level == "CWPITCH":
-            # radio.set_cw_pitch accepts Hz directly and clamps to FTX-1 range
-            # (300-1050) internally. Clamp here too for hamlib compatibility
-            # so an out-of-range hamlib value never bubbles a ValueError.
-            hz = max(
-                self._CW_PITCH_BASE,
-                min(
-                    self._CW_PITCH_BASE + 75 * self._CW_PITCH_STEP,
-                    round(value),
-                ),
+            snapped = await _set_snapped_level(
+                radio, "cw_pitch", value, radio.set_cw_pitch
             )
-            await radio.set_cw_pitch(hz)
+            if snapped is not None:
+                return snapped
+            await radio.set_cw_pitch(round(value))
             return _ok()
         if level == "KEYSPD":
             await radio.set_key_speed(round(value))
@@ -462,14 +603,13 @@ class YaesuRouting:
 
 def create_routing(
     radio: "Radio",
-    cache: "_FallbackRigState",
     max_power_w: float = 100.0,
 ) -> RigctldRouting | None:
     """Create a vendor-specific :class:`RigctldRouting` for ``radio``.
 
     Dispatches via the public
     :class:`~rigplane.core.radio_protocol.RigctldRoutable` Protocol:
-    radios that implement ``rigctld_routing(cache, max_power_w)`` get
+    radios that implement ``rigctld_routing(max_power_w)`` get
     their custom strategy (Yaesu CAT today; Kenwood TS-590 or others
     in the future). Radios that do not — Icom CI-V — return ``None``
     and the handler's built-in Icom routing is used as the default
@@ -478,5 +618,5 @@ def create_routing(
     from rigplane.core.radio_protocol import RigctldRoutable
 
     if isinstance(radio, RigctldRoutable):
-        return radio.rigctld_routing(cache, max_power_w)
+        return radio.rigctld_routing(max_power_w)
     return None

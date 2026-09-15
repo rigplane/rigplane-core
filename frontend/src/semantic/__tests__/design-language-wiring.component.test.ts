@@ -54,8 +54,8 @@ import { DEFAULT_ZONES, dimColor } from '../../components-v2/meters/bar-gauge-ut
 import { renderSlot } from '../design-language-renderers';
 
 const VIEW: RadioViewModel = topologyFixtures['2/main_sub'];
-/** M-A's frequency, the one every frequency assertion below reads. */
-const MAIN_A_HZ = 14250000;
+/** MAIN's frequency, the one every frequency assertion below reads. */
+const MAIN_HZ = 14250000;
 // MOR-1482: the v2 fallback now matches `FrequencyDisplayInteractive`'s own
 // dot-grouped digit convention (previously a decimal-MHz string that matched
 // neither that convention nor either design language's grammar).
@@ -151,10 +151,10 @@ describe('MOR-1482 — the frequency slot opts out of the language\'s TEXT, keep
     '%s: the tile text is the v2 dot-grouped fallback, not the language\'s own grammar', (id) => {
       // Kill-mutation: restoring `freq?.text ??` would flip this back to
       // studioline's thin-space run / fieldline's ungrouped run.
-      const [mainA] = frequencies(id);
-      expect(mainA).toBe(V2_READOUT);
-      expect(mainA).not.toBe(`14${THIN_SPACE}250${THIN_SPACE}000`); // studioline's own grammar
-      expect(mainA).not.toBe('14250000'); // fieldline's own grammar
+      const [main] = frequencies(id);
+      expect(main).toBe(V2_READOUT);
+      expect(main).not.toBe(`14${THIN_SPACE}250${THIN_SPACE}000`); // studioline's own grammar
+      expect(main).not.toBe('14250000'); // fieldline's own grammar
     });
 
   it.each(['studioline', 'fieldline'])(
@@ -162,20 +162,20 @@ describe('MOR-1482 — the frequency slot opts out of the language\'s TEXT, keep
       // Kill-mutation: dropping `freq?.attributes` from the spread — the
       // language's claim on the REGION must survive even though it no
       // longer supplies the region's text.
-      const [mainARegion] = frequencyRegionAttributes(id);
-      expect(mainARegion.length).toBeGreaterThan(0);
+      const [mainRegion] = frequencyRegionAttributes(id);
+      expect(mainRegion.length).toBeGreaterThan(0);
     });
 
   it('the no-language fallback carries no data-dl-* attributes at all', () => {
-    const [mainARegion] = frequencyRegionAttributes(null);
-    expect(mainARegion).toEqual([]);
+    const [mainRegion] = frequencyRegionAttributes(null);
+    expect(mainRegion).toEqual([]);
   });
 
   it('every VFO is dot-grouped, matching the v2/no-language fallback, under EITHER language', () => {
     const bare = frequencies(null);
     expect(frequencies('studioline')).toEqual(bare);
     expect(frequencies('fieldline')).toEqual(bare);
-    expect(bare).toEqual([V2_READOUT, '14.280.000', '21.295.000', '21.330.000']);
+    expect(bare).toEqual([V2_READOUT, '21.295.000']);
   });
 
   // The verifier's own probe (BLOCKED finding on MOR-1482, session 19): the
@@ -199,7 +199,7 @@ describe('MOR-1275 — the wiring falls back to the component\'s own rendering',
   it('renders the v2 readout when no language is active', () => {
     expect(frequencies(null)[0]).toBe(V2_READOUT);
     expect(frequencies(null)).toEqual([
-      V2_READOUT, '14.280.000', '21.295.000', '21.330.000',
+      V2_READOUT, '21.295.000',
     ]);
   });
 
@@ -623,7 +623,7 @@ describe('F1 — [data-design-language] is the ONLY activation source the wiring
     activate(null);
     set();
     try {
-      expect(renderSlot('frequencyDisplay', { frequencyHz: MAIN_A_HZ })).toBeNull();
+      expect(renderSlot('frequencyDisplay', { frequencyHz: MAIN_HZ })).toBeNull();
     } finally { unset(); }
   });
 });
@@ -674,7 +674,7 @@ describe('F3 — annotations carry top-level primitives only; private geometry s
       },
     });
     activate('nestedline');
-    const display = renderSlot('frequencyDisplay', { frequencyHz: MAIN_A_HZ })!;
+    const display = renderSlot('frequencyDisplay', { frequencyHz: MAIN_HZ })!;
 
     expect(display.text).toBe('READOUT');
     expect(Object.keys(display.attributes).sort())

@@ -33,6 +33,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasAnyScope: vi.fn(() => false),
   hasAudio: vi.fn(() => false),
   hasSpectrum: vi.fn(() => false),
+  hasCapability: vi.fn(() => false),
 }));
 
 vi.mock('$lib/stores/layout.svelte', () => ({

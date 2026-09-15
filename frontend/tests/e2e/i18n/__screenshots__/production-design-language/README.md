@@ -6,6 +6,20 @@ the immutable built-dist i18n suite. They are not fixture-harness captures.
 `scripts/i18n-preview-server.mjs`, while the test stubs only the backend at the
 page boundary and opens `/`.
 
+## Linux re-pin provenance (superseded — 2026-09-14 MOR-2467 MAIN/SUB topology)
+
+All four production-root scenes are `compared-fail` at source head
+`2776ffdcad0549308c12973265216a10635233d7` in
+[Tests (quick) run 34908938900](https://github.com/rigplane/rigplane-core/actions/runs/34908938900).
+Their Linux ARM64 `actual.png` attachments were inspected and copied
+byte-for-byte from the run's `mor-1400-production-visual-diagnostics` artifact.
+The expected change is confined to the upper receiver deck: the obsolete
+MAIN-A/B/SUB-A/B arrangement becomes exactly two receiver-level records, MAIN
+and SUB. Playwright reported 1,522 changed pixels for StudioLine dark, 1,704
+for StudioLine light, 1,120 for FieldLine dark, and 1,807 for FieldLine light.
+The rest of each production composition remains unchanged. A subsequent
+exact-head quick run must confirm these four comparisons pass.
+
 ## Re-pin procedure: per-scene disposition
 
 When recording the outcome of a re-pin run, report each scene with one of
@@ -304,7 +318,7 @@ behavior. A subsequent exact-head CI run must confirm the new expectations.
 | FieldLine dark | compared-fail; inspected and accepted replacement | `84cc82fc887824ea3c67e0bb9a5f7302e3c091b8e11fb6eb92b2be52644c7c0d` |
 | FieldLine light | compared-fail; inspected and accepted replacement | `88e857698e07fffb52c9e92c975546b8b39274695658e666a1ab90a9212a2238` |
 
-## Linux re-pin provenance (current — 2026-09-08 MOR-2425 no per-field freshness)
+## Linux re-pin provenance (superseded — 2026-09-08 MOR-2425 no per-field freshness)
 
 | Field | Value |
 | --- | --- |
@@ -394,14 +408,85 @@ exact row band by pixel-intensity search rather than by eye:
 A subsequent exact-head CI run must confirm these expectations; this
 comparison run is not itself a visual PASS.
 
+## Linux re-pin provenance (superseded — 2026-09-09 MOR-2432 Standard meter readouts)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `06aea378b01b8ca720ecfa40e36bcff247e28d39` |
+| CI run / job | [Tests (quick) #34397437366](https://github.com/rigplane/rigplane-core/actions/runs/34397437366) / job `102620546676` |
+| Runner | `mm-build-core-3`; self-hosted Linux (labels `self-hosted`, `linux`, `build`) |
+| Command | `npm run test:e2e:i18n` (`playwright test -c ./playwright.i18n.config.ts`) |
+| Context / comparator | Chromium; 1280×800; DPR 1; `en-US`; UTC; unchanged `threshold: 0.2`, `maxDiffPixelRatio: 0.001`. |
+| Source | Exact final-run `actual.png` attachments from `mor-1400-production-visual-diagnostics`, copied byte-for-byte; no image transformation or fixture/macOS replacement. |
+| Reason | Native Standard station meters expose readable projected captions, including independently relevant S and SWR readouts. SVGs fit below captions; the original shared 160px grid and non-Standard appearance remain intact. |
+
+The source run completed all 89 i18n cases: 85 passed, including the production
+geometry cases; only these four screenshot comparisons failed. Their final
+actual/diff pairs were inspected and accepted by the coordinator. Counts and
+command above were read from `gh run view 34397437366 --log-failed`; source
+SHA and runner were checked through the Actions run/job API. Each committed
+PNG was compared byte-for-byte with its named actual attachment and hashed
+with SHA-256. No test, comparator, mask or threshold changed.
+
+FieldLine dark also incorporates inherited VFO-meter baseline drift already
+documented in the MOR-2425 provenance above: `S ?` becomes `?` plus
+`unit unknown`, with no calibrated scale marks. Independent adjudication of
+the earlier PR actuals at `49215e64` and `e13ac579` used Pillow/NumPy to
+compare the entire 1280×245 top band: zero changed decoded pixels between
+those actuals. The earlier expected/actual diff marked 160 comparator-red
+pixels in that band, below the unchanged 1,024-pixel whole-image budget;
+3,776 raw changed pixels were a different measure. This explains why the
+older FieldLine-dark expectation could remain compared-pass. Those band
+counts describe the earlier adjudication, not this final run's whole-image
+counts below. The VFO domain/projection source is unchanged by MOR-2432;
+this re-pin does not claim a new VFO behavior change.
+
+| Scene | Disposition | SHA-256 |
+| --- | --- | --- |
+| StudioLine dark | compared-fail (1,411 px); inspected and accepted | `54bbe78a2eac8ed90193fa332159e17084ed3448ac50de7d72108d376877dd48` |
+| StudioLine light | compared-fail (20,634 px); inspected and accepted | `8bdb9204889cf8392673d7a248be96c64e0a793b0bc96794b760aeca34acbc3f` |
+| FieldLine dark | compared-fail (2,049 px); inspected and accepted | `41024a2504b70a94fa51adc2135cd9c20905307e4530ee035e3a90dbe7aba459` |
+| FieldLine light | compared-fail (21,063 px); inspected and accepted | `dbad846332a8e3a3abe0ff299df1e1d056708eeccd704f7067b1bbe7e41375f2` |
+
+This source capture is **compared-fail**, not a visual PASS. A subsequent
+exact-head CI run must compare successfully against the replacements.
+Physical radio/profile acceptance remains separate.
+
+## Linux re-pin provenance (current — 2026-09-14 MOR-2467 Standard panel cleanup)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `bc49462ceb5b4e85322b373e7b7a4182aad18751` |
+| CI run / job | [Tests (quick) #34917273359](https://github.com/rigplane/rigplane-core/actions/runs/34917273359) / job `104217554871` |
+| Runner | `mm-build-core-2`; self-hosted Linux (labels `self-hosted`, `linux`, `build`) |
+| Command | `npm run test:e2e:i18n` (`playwright test -c ./playwright.i18n.config.ts`) |
+| Context / comparator | Chromium; 1280×800; DPR 1; `en-US`; UTC; unchanged `threshold: 0.2`, `maxDiffPixelRatio: 0.001`. |
+| Source | Exact `actual.png` attachments from `mor-1400-production-visual-diagnostics`, copied byte-for-byte; no image transformation or macOS baseline. |
+| Reason | Standard removes the duplicate BAND surface and volatile TX/RX Audio diagnostic prose while retaining BANDS frequency entry and stable operator controls. |
+
+The source run completed 95 i18n cases: 90 passed; one geometry assertion
+needed to recognize clipped `sr-only` reasons as visually hidden, and the four
+production-root comparisons failed against the superseded UI. The coordinator
+inspected all four actual/diff pairs: changes are confined to the intended
+BANDS, TX, RX Audio, and directly displaced panel regions. No comparator,
+mask, threshold, or screenshot-generation code changed. A subsequent exact-head
+CI run must compare successfully against these replacements.
+
+| Scene | Disposition | SHA-256 |
+| --- | --- | --- |
+| StudioLine dark | compared-fail (7,544 px); inspected and accepted | `357a53837101374b37891edebe5e26da50e8036c01a92d185eaa1d033b008567` |
+| StudioLine light | compared-fail (10,890 px); inspected and accepted | `75cbe648157d04ffd49a2b2f93f41426fa9d0686c672fa67bb6dbf0c732e546c` |
+| FieldLine dark | compared-fail (6,867 px); inspected and accepted | `960cb61d8b5e9b5a00a3f8611043603df7723aa70aa4e387ce52036d02b1a7c7` |
+| FieldLine light | compared-fail (13,366 px); inspected and accepted | `2d972c5647ea99eef22ac4bffa99f3e32683427af2ebbb98aab0111142b296d5` |
+
 ## Named expectations
 
 | File | Workspace/theme case | SHA-256 |
 | --- | --- | --- |
-| `studioline--dark--production-root.png` | clean StudioLine × dark | `382397c3276e161b047d10cc4727f711b928a88fa08a5d70a9eec1f0b736744d` |
-| `studioline--light--production-root.png` | persisted StudioLine × light | `422305cef245bc71348c6be01aba3863b73acdca0290f622abccd7e5ef63d352` |
-| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `e95e6f6a00c0231fea3b17941008df9eac4f8be74ece6ea2094d6267209e51f0` |
-| `fieldline--light--production-root.png` | persisted FieldLine × light | `1369eca0c91fa57ceaa2f2d5055ea6635cc86c00ab23bb1b047f3694a05de121` |
+| `studioline--dark--production-root.png` | clean StudioLine × dark | `357a53837101374b37891edebe5e26da50e8036c01a92d185eaa1d033b008567` |
+| `studioline--light--production-root.png` | persisted StudioLine × light | `75cbe648157d04ffd49a2b2f93f41426fa9d0686c672fa67bb6dbf0c732e546c` |
+| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `960cb61d8b5e9b5a00a3f8611043603df7723aa70aa4e387ce52036d02b1a7c7` |
+| `fieldline--light--production-root.png` | persisted FieldLine × light | `2d972c5647ea99eef22ac4bffa99f3e32683427af2ebbb98aab0111142b296d5` |
 
 All images are RGB PNGs at 1280×800. Changes to any expected image require a
 new reviewed Linux re-pin with the same provenance record; macOS/local output

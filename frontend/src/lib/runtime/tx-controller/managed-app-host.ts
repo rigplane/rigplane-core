@@ -14,7 +14,7 @@ export type ManagedAppTxController = Readonly<{
   setTot(configuredSeconds: number | null): Promise<void>;
 }>;
 export type ManagedAppTxHost = Readonly<{
-  refreshAuthority(): void;
+  refreshAuthority(providerGeneration: number | null): void;
   release(): Promise<void>;
   dispose(): void;
 }>;
@@ -39,7 +39,39 @@ export function provideManagedAppTxHost(bindings: ManagedAppTxHostBindings): Man
   const browser = createManagedBrowserDependencies();
   const controller = new ManagedTxController(browser.dependencies);
   let disposed = false;
-  const refreshAuthority = () => { if (!disposed) void controller.refresh(); };
+  let controlSessionEpoch: number | null = null;
+  let providerGeneration: number | null = null;
+  let contextRevision = 0;
+  let refreshInFlight: { revision: number; promise: Promise<void>; queued: boolean } | null = null;
+  let sessionBoundaryRevision = 0;
+  const startRefresh = () => {
+    if (disposed) return;
+    if (controlSessionEpoch === null || providerGeneration === null) return;
+    if (refreshInFlight?.revision === contextRevision) {
+      refreshInFlight.queued = true;
+      return;
+    }
+    const revision = contextRevision;
+    const promise = controller.refresh().finally(() => {
+      if (refreshInFlight?.promise !== promise) return;
+      const rerun = refreshInFlight.queued && contextRevision === revision;
+      refreshInFlight = null;
+      if (rerun) startRefresh();
+    });
+    refreshInFlight = { revision, promise, queued: false };
+  };
+  const refreshAuthority = (nextProviderGeneration: number | null) => {
+    if (disposed) return;
+    const next = Number.isSafeInteger(nextProviderGeneration) && nextProviderGeneration! >= 0
+      ? nextProviderGeneration
+      : null;
+    if (providerGeneration !== next) {
+      providerGeneration = next;
+      contextRevision++;
+      controller.invalidate();
+    }
+    startRefresh();
+  };
   const release = async () => { if (!disposed) await controller.releaseSession(); };
   const facade = Object.freeze<ManagedAppTxController>({
     snapshot: () => controller.snapshot(),
@@ -66,8 +98,24 @@ export function provideManagedAppTxHost(bindings: ManagedAppTxHostBindings): Man
   };
   try {
     offSession = browser.subscribeSession((session) => {
-      if (session.state === 'connected') refreshAuthority();
-      else void controller.releaseSession().finally(() => controller.abandonSession());
+      const boundary = ++sessionBoundaryRevision;
+      if (session.state === 'connected') {
+        if (controlSessionEpoch !== session.epoch) {
+          controlSessionEpoch = session.epoch;
+          contextRevision++;
+          controller.invalidate();
+        }
+        startRefresh();
+      } else {
+        controlSessionEpoch = null;
+        contextRevision++;
+        controller.invalidate();
+        void controller.releaseSession().finally(() => {
+          if (sessionBoundaryRevision === boundary && controlSessionEpoch === null) {
+            controller.abandonSession();
+          }
+        });
+      }
     });
     offBarrier = bindings.registerPreDisconnectBarrier(release);
     offLifecycle = bindings.lifecycleReleaseSource(() => { void release(); });

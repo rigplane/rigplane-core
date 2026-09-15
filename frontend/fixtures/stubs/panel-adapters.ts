@@ -31,7 +31,7 @@ export function getBreakInDelayControlFeedback() {
   });
 }
 
-function unavailableGlobalCwFeedback(control: 'cw-pitch' | 'keyer-speed') {
+function unavailableScalarFeedback(control: 'cw-pitch' | 'keyer-speed' | 'af-level' | 'rf-power') {
   return Object.freeze({
     confirmed: null, target: null, requestedTarget: null,
     phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
@@ -43,10 +43,10 @@ function unavailableGlobalCwFeedback(control: 'cw-pitch' | 'keyer-speed') {
 
 /** Offline fixtures never fabricate global CW command-feedback authority. */
 export function getCwPitchControlFeedback() {
-  return unavailableGlobalCwFeedback('cw-pitch');
+  return unavailableScalarFeedback('cw-pitch');
 }
 export function getKeySpeedControlFeedback() {
-  return unavailableGlobalCwFeedback('keyer-speed');
+  return unavailableScalarFeedback('keyer-speed');
 }
 
 /** No Filter Width truth or command lifecycle exists in the offline fixture. */
@@ -81,7 +81,10 @@ export function getTxAuxControlFeedback(field: keyof typeof txAuxControls) {
   });
 }
 
-const dspScalarControls = Object.freeze({ nbLevel: 'nb-level', nbWidth: 'nb-width' } as const);
+const dspScalarControls = Object.freeze({
+  nbLevel: 'nb-level', nbWidth: 'nb-width', nbDepth: 'nb-depth', nrLevel: 'nr-level',
+  notchFilter: 'notch-position', manualNotchWidth: 'manual-notch-width', agcTimeConstant: 'agc-time',
+} as const);
 
 /** MOR-2425 — offline fixtures never fabricate radio-global DSP command-feedback authority. */
 export function getDspControlFeedback(field: keyof typeof dspScalarControls) {
@@ -92,6 +95,15 @@ export function getDspControlFeedback(field: keyof typeof dspScalarControls) {
     scope: Object.freeze({ control: dspScalarControls[field], receiver: 0 as const }),
     repeatPolicy: 'latest-target-wins' as const,
   });
+}
+
+/** Offline DSP feedback has no readings to project into display units. */
+export function projectDspControlFeedbackToDisplay(
+  _field: 'nrLevel' | 'nbDepth',
+  feedback: ReturnType<typeof getDspControlFeedback>,
+  _caps: unknown,
+) {
+  return feedback;
 }
 
 /** The offline fixture has no qualified RF/SQL command-feedback authority. */
@@ -136,6 +148,10 @@ export function getDataModeArmed(): { armed: false; value: null } {
   return { armed: false, value: null };
 }
 
+export function getModInputArmed(): { armed: false; value: null } {
+  return { armed: false, value: null };
+}
+
 /**
  * MOR-2425 — `SemanticRadioSurfaces.svelte` now also imports
  * `deriveMemoryPanelProps`/`getMemoryHandlers` unconditionally (same
@@ -158,3 +174,6 @@ const memoryHandlers = Object.freeze({
   onClear: (_channel: number): boolean => false,
 });
 export function getMemoryHandlers() { return memoryHandlers; }
+
+export function getAfLevelControlFeedback() { return unavailableScalarFeedback('af-level'); }
+export function getRfPowerControlFeedback() { return unavailableScalarFeedback('rf-power'); }

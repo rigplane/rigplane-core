@@ -310,6 +310,10 @@ async def _start_web_server(
     assert_radio_startup_ready(server._radio, component="web startup")
 
     managed_tx_authority = None if managed_tx is None else managed_tx.authority
+    if managed_tx_authority is not None:
+        server._managed_tx_change_unsubscribe = managed_tx_authority.subscribe_changes(
+            server._on_managed_tx_changed
+        )
     startup_sweep = False
     if server._radio is not None:
         from ..radio_protocol import StateNotifyCapable
@@ -429,6 +433,10 @@ async def _start_web_server(
         server._state_freshness_service.run(), name="web-state-freshness"
     )
     await _await_initial_state_acquisition(server, sweep=startup_sweep)
+    if startup_sweep and server._radio_poller is not None:
+        await server._radio_poller.select_vfo_a_on_connect(
+            read_only=server._config.read_only
+        )
 
     server._server = await asyncio.start_server(
         server._accept_client,

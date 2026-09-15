@@ -32,7 +32,7 @@ import signal as _signal
 import sys
 import time
 import urllib.parse
-from collections.abc import Callable, Collection, Coroutine
+from collections.abc import Callable, Collection, Coroutine, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from inspect import getattr_static
@@ -110,6 +110,7 @@ from .runtime_helpers import (  # noqa: TID251
     projected_vfo_capability_tags,
     radio_ready,
     runtime_capabilities,
+    snapshot_field_status_inputs,
 )
 from .tx_safety_view import build_tx_safety_payload  # noqa: TID251
 from .websocket import (  # noqa: TID251
@@ -154,6 +155,8 @@ class _PublicStatePayloadFromSnapshotFn(Protocol):
         *,
         radio: "Radio | None",
         receiver_count: int,
+        availability: Mapping[FieldPath, bool | None] | None = None,
+        declared: Collection[FieldPath] | None = None,
         updated_at: str | None = None,
         scope_clients: int = 0,
         control_clients: int = 0,
@@ -744,6 +747,12 @@ def _log_late_managed_tx_rebind(task: "asyncio.Task[Any]") -> None:
         logger.warning("reconnect: managed TX rebind failed late", exc_info=error)
 
 
+def _is_managed_tx_invalidation(event: dict[str, Any]) -> bool:
+    return (
+        event.get("type") == "event" and event.get("name") == "managed_transmit_changed"
+    )
+
+
 class WebServer:
     """Asyncio HTTP + WebSocket server for the rigplane Web UI.
 
@@ -916,6 +925,8 @@ class WebServer:
         self._bg_tasks: set[asyncio.Task[Any]] = set()
         # Serialises the managed TX rebind; see _service_managed_tx_release.
         self._managed_tx_rebind_lock: asyncio.Lock = asyncio.Lock()
+        # Unsubscribes the managed TX authority invalidation listener on stop.
+        self._managed_tx_change_unsubscribe: Callable[[], None] | None = None
         self._scope_health_max_retries: int = 3  # give up after N failed re-enables
         # Band plan registry
         from .band_plan import BandPlanRegistry  # noqa: TID251
@@ -1426,6 +1437,14 @@ class WebServer:
             except asyncio.QueueFull:
                 logger.debug("broadcast_event: queue full, dropping event=%s", name)
 
+    def _on_managed_tx_changed(self) -> None:
+        """Queue one coalesced managed-transmit invalidation per control client."""
+        if self._stopping:
+            return
+        event = {"type": "event", "name": "managed_transmit_changed", "data": {}}
+        for q in list(self._control_event_queues):
+            q.replace_matching_with_front(event, _is_managed_tx_invalidation)
+
     def _broadcast_ws_client_state_update(
         self,
         *,
@@ -1656,10 +1675,20 @@ class WebServer:
         ):
             return copy.deepcopy(self._cached_public_state_payload)
         public_state_seq = self._public_state_seq_for_key(cache_key)
+        profile = self._get_profile()
+        # A profile with no ``[state_acquisition]`` block (``rigs/tx500.toml``)
+        # passes neither, and every unobserved entry stays ``missing``.
+        acquisition = profile.state_acquisition
+        availability: Mapping[FieldPath, bool | None] | None = None
+        declared: Collection[FieldPath] | None = None
+        if acquisition is not None:
+            availability, declared = snapshot_field_status_inputs(acquisition, snapshot)
         payload = _build_public_state_payload_from_snapshot_impl(
             snapshot,
             radio=self._radio,
-            receiver_count=self._get_profile().receiver_count,
+            receiver_count=profile.receiver_count,
+            availability=availability,
+            declared=declared,
             updated_at=updated_at,
             scope_clients=len(self._scope_handlers),
             control_clients=len(self._control_event_queues),
@@ -2412,7 +2441,7 @@ class WebServer:
         # them before any new-epoch read can arrive; the topology-derived MAIN
         # fact is independently valid and is reasserted without touching TX.
         if isinstance(self._radio_poller, RadioPoller):
-            self._radio_poller.reset_vfo_session()
+            self._radio_poller.reset_vfo_session(connection_recovery=True)
         self._publish_single_receiver_topology()
         # Clear poller readiness so scope waits for refetch to complete
         if self._radio_poller is not None:
@@ -2435,6 +2464,10 @@ class WebServer:
                         self._radio, "_fetch_initial_state"
                     ):
                         await self._radio._fetch_initial_state()
+                    if isinstance(self._radio_poller, RadioPoller):
+                        await self._radio_poller.select_vfo_a_on_connect(
+                            read_only=self._config.read_only
+                        )
                 except Exception:
                     logger.warning("reconnect: refetch failed", exc_info=True)
             finally:
@@ -2838,6 +2871,10 @@ class WebServer:
         from .web_startup import stop_web_server  # noqa: TID251
 
         self._stopping = True
+        unsubscribe = self._managed_tx_change_unsubscribe
+        self._managed_tx_change_unsubscribe = None
+        if unsubscribe is not None:
+            unsubscribe()
         self._unsubscribe_provider_generation()
         self._detach_audio_session_listener()
         self._detach_reconnect_status_listener()
@@ -3101,11 +3138,25 @@ class WebServer:
                         list(profile.agc_modes) if profile.agc_modes else None
                     ),
                     "agcLabels": profile.agc_labels,
+                    "scanTypeValues": (
+                        list(profile.scan_type_values)
+                        if profile.scan_type_values is not None
+                        else []
+                    ),
+                    "scanResumeValues": (
+                        list(profile.scan_resume_values)
+                        if profile.scan_resume_values is not None
+                        else []
+                    ),
                     "rfSqlControlModel": profile.rf_sql_control_model,
                     "antennas": profile.antenna_tx_count,
                     "hasRxAntenna": profile.antenna_has_rx_ant,
                     "dataModeCount": profile.data_mode_count,
                     "dataModeLabels": profile.data_mode_labels,
+                    "dataModeInputs": [
+                        {"value": value, "label": label}
+                        for value, label in (profile.data_mode_inputs or ())
+                    ],
                     "keyboard": _serialize_keyboard_config(profile),
                     **({"controls": profile.controls} if profile.controls else {}),
                     "txBands": [
@@ -3570,11 +3621,25 @@ class WebServer:
             "preLabels": profile.pre_labels if profile.pre_labels else {},
             "agcModes": list(profile.agc_modes) if profile.agc_modes else [],
             "agcLabels": profile.agc_labels if profile.agc_labels else {},
+            "scanTypeValues": (
+                list(profile.scan_type_values)
+                if profile.scan_type_values is not None
+                else []
+            ),
+            "scanResumeValues": (
+                list(profile.scan_resume_values)
+                if profile.scan_resume_values is not None
+                else []
+            ),
             "rfSqlControlModel": profile.rf_sql_control_model,
             "dataModeCount": profile.data_mode_count,
             "dataModeLabels": (
                 profile.data_mode_labels if profile.data_mode_labels else {}
             ),
+            "dataModeInputs": [
+                {"value": value, "label": label}
+                for value, label in (profile.data_mode_inputs or ())
+            ],
             "keyboard": _serialize_keyboard_config(profile),
             "scopeSource": (
                 "hardware"
@@ -5173,7 +5238,18 @@ class WebServer:
                 await radio.disconnect()
                 resp = {"status": "disconnected"}
             elif path == "/api/v1/radio/connect":
+                poller = self._radio_poller
+                generation = (
+                    poller._vfo_connection_generation()
+                    if isinstance(poller, RadioPoller)
+                    else None
+                )
                 await radio.connect()
+                if (
+                    isinstance(poller, RadioPoller)
+                    and generation != poller._vfo_connection_generation()
+                ):
+                    self._on_radio_reconnect()
                 resp = {"status": "connecting"}
             elif path == "/api/v1/radio/power":
                 # Read JSON body for power state

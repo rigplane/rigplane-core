@@ -2249,6 +2249,129 @@ async def test_single_receiver_vfo_b_selects_slot_without_sub_receiver() -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("native_shift", [False, True])
+async def test_confirmed_vfo_selection_requests_supported_geometry(
+    native_shift: bool,
+) -> None:
+    radio = _make_radio(model="IC-7300")
+    radio._radio_state = RadioState()
+    width = FieldPath.active("main", "freq_mode", "filter_width")
+    inner = FieldPath.receiver("main", "operator_controls", "pbt_inner")
+    outer = FieldPath.receiver("main", "operator_controls", "pbt_outer")
+    shift = FieldPath.receiver("main", "operator_controls", "if_shift")
+    paths = (width, shift) if native_shift else (width, inner, outer)
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(*paths))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue())
+    with patch.object(
+        AcquisitionScheduler, "ensure_fresh", wraps=scheduler.ensure_fresh
+    ) as request:
+        await poller._execute(SelectVfo("B"))  # noqa: SLF001
+    request.assert_called_once()
+    assert set(request.call_args.args[0]) == set(paths)
+    assert request.call_args.kwargs["require_fresh_dispatch"] is True
+    assert request.call_args.kwargs["priority"] == AcquisitionPriority.USER
+    radio._set_vfo_slot_confirmed.assert_awaited_once_with("B", receiver=0)
+    assert radio.read_relative_vfo.await_count == 2
+
+    pending = scheduler.pending_requests()
+    radio.read_relative_vfo.side_effect = (
+        RelativeVfoState(7_100_000, "LSB", 2, 0),
+        RelativeVfoState(14_200_000, "USB", 1, 0),
+    )
+    await poller._execute(SelectVfo("A"))  # noqa: SLF001
+    assert len(scheduler.pending_requests()) == len(pending)
+    assert {
+        path for item in scheduler.pending_requests() for path in item.paths
+    } == set(paths)
+
+
+@pytest.mark.asyncio
+async def test_confirmed_vfo_selection_dispatches_real_ic7300_geometry() -> None:
+    """A/B selection jumps the shipped geometry reads ahead of 5 s cadence."""
+
+    radio = _make_radio(model="IC-7300")
+    radio._radio_state = RadioState()
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.state_acquisition is not None
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue())
+    expected = {
+        FieldPath.active("main", "freq_mode", "filter_width"),
+        FieldPath.receiver("main", "operator_controls", "pbt_inner"),
+        FieldPath.receiver("main", "operator_controls", "pbt_outer"),
+    }
+    scheduler.ensure_fresh(
+        expected,
+        max_age=5.0,
+        priority=AcquisitionPriority.BACKGROUND,
+        reason="policy-cadence",
+    )
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    cadence_frames = tuple(
+        (call_.args[0], call_.kwargs["sub"]) for call_ in radio.send_civ.await_args_list
+    )
+    assert set(cadence_frames) == {(0x14, 0x07), (0x14, 0x08), (0x1A, 0x03)}
+
+    await poller._execute(SelectVfo("B"))  # noqa: SLF001
+
+    assert {
+        path for request in scheduler.pending_requests() for path in request.paths
+    } == expected
+    assert all(
+        request.priority is AcquisitionPriority.USER
+        for request in scheduler.pending_requests()
+    )
+
+    await poller._send_scheduler_requests()  # noqa: SLF001
+
+    readback_frames = tuple(
+        (call_.args[0], call_.kwargs["sub"])
+        for call_ in radio.send_civ.await_args_list[len(cadence_frames) :]
+    )
+    assert readback_frames == cadence_frames
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "interruption", ["select", "readback", "provider", "selection"]
+)
+async def test_interrupted_vfo_selection_does_not_request_geometry(
+    interruption: str,
+) -> None:
+    radio = _make_radio(model="IC-7300")
+    scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(FieldPath.active("0", "freq_mode", "filter_width"))
+    )
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue())
+    if interruption == "select":
+        radio._set_vfo_slot_confirmed.side_effect = CommandError("selection rejected")
+    else:
+
+        async def interrupted_read(*, selected: bool) -> RelativeVfoState:
+            if interruption == "readback":
+                raise CommandError("readback failed")
+            if interruption == "provider":
+                poller._state_store.begin_provider_generation()  # noqa: SLF001
+            else:
+                poller._vfo_binding_generation += 1  # noqa: SLF001
+            return RelativeVfoState(14_200_000, "USB", 1, 0)
+
+        radio.read_relative_vfo.side_effect = interrupted_read
+    with patch.object(
+        AcquisitionScheduler, "ensure_fresh", wraps=scheduler.ensure_fresh
+    ) as request:
+        if interruption in ("select", "readback"):
+            with pytest.raises(CommandError):
+                await poller._execute(SelectVfo("B"))  # noqa: SLF001
+        else:
+            await poller._execute(SelectVfo("B"))  # noqa: SLF001
+    request.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_relative_vfo_ack_maps_selected_and_complement_then_rebinds() -> None:
     state = RadioState()
     state.active = "MAIN"
@@ -6415,7 +6538,8 @@ def test_scan_facts_seed_labelled_command_response_not_poll_response() -> None:
 #: ``(command, sub, data)`` of every frame one IC-7300 drain cycle emits.
 #: MOR-2425: re-recorded after the ten panel knobs moved from
 #: command_response-only membership onto a 5.0s cadence (owner ruling,
-#: 2026-09-07). 42 -> 52 frames, one cadence read per newly-polled field:
+#: 2026-09-07). MOR-2449 adds IP+ (0x16 65) at the same 5.0s tier: 52 -> 53
+#: frames. One cadence read is emitted per newly-polled field:
 #: 0x1A 03 filter_width, 0x14 07/08 PBT inner/outer, 0x14 06 NR level,
 #: 0x14 12 NB level, 0x14 0D notch position, 0x16 57 notch width,
 #: 0x16 41/48 auto/manual notch, 0x21 00 RIT offset. The prime burst is
@@ -6450,6 +6574,7 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x14, 0x07, b""),
     (0x14, 0x08, b""),
     (0x16, 0x41, b""),
+    (0x16, 0x65, b""),
     (0x16, 0x48, b""),
     (0x21, 0x00, b""),
     (0x14, 0x17, b""),

@@ -302,7 +302,7 @@
       state?.active, state?.main?.dataMode, state?.sub?.dataMode, state?.txTarget, state?.fieldStatus,
       caps?.tx, caps?.audioTx, caps?.audioTxRequiredModInputSource, caps?.capabilities, caps?.vfoScheme, caps?.txBands,
     ]);
-    if (txAuthorityReady) txHost.refreshAuthority();
+    if (txAuthorityReady) txHost.refreshAuthority(state?.providerGeneration ?? null);
   });
 
   onMount(() => {
@@ -414,7 +414,7 @@
   <!-- Global feedback / power-health / authoritative TX indication live here,
        as siblings of the presentation, so switching layout or skin never
        recreates or duplicates them (MOR-1059). -->
-  <AppGlobalHost />
+  <AppGlobalHost showTxIndication={committedLayoutId !== 'desktop-v2'} />
   <LocalExtensionsHost />
 {/if}
 

@@ -120,6 +120,10 @@ export function createRenderedNativeRangeContinuousPairPolicy(): Readonly<Contin
     normalize: normalizeRenderedNativeAxis,
     wheel: (current, event, domain) => {
       const step = normalizedAxisStep(domain);
+      if (event.steps !== undefined) {
+        if (step === null || !Number.isInteger(event.steps) || event.steps < 1 || event.steps > 8) return null;
+        return normalizeRenderedNativeAxis(current + event.direction * step * event.steps, domain);
+      }
       return step === null || !Number.isFinite(current) ? null : handleKeyboardStep(
         current, event.direction > 0 ? 'ArrowRight' : 'ArrowLeft', step, 1, 0, 1, false,
       );
@@ -155,6 +159,15 @@ export function createLegacyContinuousPairPolicy(
     name: 'legacy-rf-sql-pair',
     preview: 'optimistic' as const,
     wheel: (current, event, domain) => {
+      if (event.steps !== undefined) {
+        if (!Number.isInteger(event.steps) || event.steps < 1 || event.steps > 8) return null;
+        let values = current;
+        for (let index = 0; index < event.steps; index++) {
+          values = dualParamStepAlongAxis(values.rf, values.sql, event.direction,
+            domain.step, domain.fineStepDivisor, domain.min, domain.max, false);
+        }
+        return values;
+      }
       const adaptive = Math.max(1, Math.ceil((domain.max - domain.min) / 255));
       const step = event.fine
         ? domain.step / domain.fineStepDivisor
@@ -207,6 +220,7 @@ interface PairCommandLaneView {
 export type ContinuousPairLaneView = Readonly<PairReadingLaneView | PairCommandLaneView>;
 
 export interface ContinuousPairView {
+  readonly interactionEpoch?: number;
   readonly evidence: ContinuousPairInput['evidence'];
   readonly domain: Readonly<ScalarDomain>;
   readonly domainValid: boolean;
@@ -558,6 +572,7 @@ export function createContinuousPair(
     return Object.freeze({
       evidence: input.evidence,
       domain: snapshotDomain(input.domain), domainValid: axis.domainValid,
+      interactionEpoch: axis.interactionEpoch,
       canonical: Object.freeze({ rf, sql }), position, axisDraft: axis.draft,
       draft, displayedPosition: axis.domainValid ? axis.displayed : null,
       editable: axis.editable, busy: input.evidence === 'command-feedback'

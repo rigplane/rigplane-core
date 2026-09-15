@@ -146,6 +146,26 @@ describe('typed non-PTT radio intents', () => {
     expect(lifecycle.getCommandLifecycle('freq-1', 7)?.status).toBe('pending');
   });
 
+  it('accepts only the exact fixed-slot frequency envelope', () => {
+    const params = {
+      freq: 14_074_000, receiver: 0 as const, slot: 'B' as const,
+      expected_active_slot: 'A' as const, provider_generation: 31,
+    };
+    intents.dispatchRadioIntent({ id: 'slot-freq', name: 'set_vfo_freq', params });
+    expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith('set_vfo_freq', params, 'slot-freq');
+
+    for (const malformed of [
+      { ...params, slot: 'MAIN' },
+      { ...params, expected_active_slot: 'SUB' },
+      { ...params, provider_generation: 31.5 },
+      { ...params, receiver: 2 },
+      { ...params, extra: true },
+    ]) expect(() => intents.dispatchRadioIntent({
+      name: 'set_vfo_freq', params: malformed,
+    } as unknown as RadioIntent)).toThrow(/invalid radio intent/i);
+    expect(harness.sendCommand).toHaveBeenCalledTimes(1);
+  });
+
   it('correlates delivery without turning acknowledgement into radio truth', () => {
     intents.dispatchRadioIntent({ id: 'mode-1', name: 'set_mode', params: { mode: 'CW', receiver: 1 } });
     harness.delivery?.({
@@ -168,6 +188,48 @@ describe('typed non-PTT radio intents', () => {
       eventEpoch: 7,
     });
     expect(lifecycle.getCommandLifecycle('mode-1', 7)).not.toHaveProperty('confirmedValue');
+  });
+
+  it('stores the admitted target from a response-ok delivery', () => {
+    intents.dispatchRadioIntent({ id: 'af-admit', name: 'set_af_level', params: { level: 0.5, receiver: 0 } });
+    harness.delivery?.({
+      commandId: 'af-admit', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7,
+      admittedLevel: 128 / 255,
+    });
+    expect(lifecycle.getCommandLifecycle('af-admit', 7)).toMatchObject({
+      status: 'acknowledged',
+      admittedTarget: 128 / 255,
+    });
+  });
+
+  it('stores the admitted target even when the ack frame arrived first', () => {
+    intents.dispatchRadioIntent({ id: 'af-ack-first', name: 'set_af_level', params: { level: 0.5, receiver: 0 } });
+    harness.delivery?.({ commandId: 'af-ack-first', kind: 'ack', originalEpoch: 7, eventEpoch: 7 });
+    harness.delivery?.({
+      commandId: 'af-ack-first', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7,
+      admittedLevel: 128 / 255,
+    });
+    expect(lifecycle.getCommandLifecycle('af-ack-first', 7)).toMatchObject({
+      status: 'acknowledged', admittedTarget: 128 / 255,
+    });
+  });
+
+  it('keeps an honest awaiting record when the response carries no admitted level', () => {
+    intents.dispatchRadioIntent({ id: 'af-old', name: 'set_af_level', params: { level: 0.5, receiver: 0 } });
+    harness.delivery?.({ commandId: 'af-old', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7 });
+    const record = lifecycle.getCommandLifecycle('af-old', 7);
+    expect(record).toMatchObject({ status: 'acknowledged' });
+    expect(record?.admittedTarget).toBeUndefined();
+  });
+
+  it('never stores an admitted target from a failure delivery', () => {
+    intents.dispatchRadioIntent({ id: 'rf-fail', name: 'set_rf_power', params: { level: 0.5 } });
+    harness.delivery?.({
+      commandId: 'rf-fail', kind: 'response-error', originalEpoch: 7, eventEpoch: 7,
+      error: 'command_failed', admittedLevel: 0.5,
+    });
+    expect(lifecycle.getCommandLifecycle('rf-fail', 7)).toMatchObject({ status: 'failed' });
+    expect(lifecycle.getCommandLifecycle('rf-fail', 7)?.admittedTarget).toBeUndefined();
   });
 
   it('projects held truth without changing pending or acknowledged authority', () => {
@@ -465,8 +527,9 @@ describe('typed non-PTT radio intents', () => {
       const invalidRit: RadioIntent = { name: 'set_rit_frequency', params: { value: 300 } };
       expect(invalidRit).toBeDefined();
     }
-    expect(intents.RADIO_INTENT_NAMES).toHaveLength(91);
-    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(91);
+    expect(intents.RADIO_INTENT_NAMES).toHaveLength(92);
+    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(92);
+    expect(intents.RADIO_INTENT_NAMES).toContain('set_vfo_freq');
     expect(intents.RADIO_INTENT_NAMES).toContain('set_data3_mod_input');
     expect(intents.RADIO_INTENT_NAMES).not.toContain('ptt');
     expect(intents.RADIO_INTENT_NAMES).not.toContain('ptt_on');

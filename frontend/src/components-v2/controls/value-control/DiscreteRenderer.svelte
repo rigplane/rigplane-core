@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { wheelControl } from './wheel-control';
   import { onDestroy, untrack } from 'svelte';
   import type {
     ContinuousScalarRendererSeat,
@@ -77,7 +78,7 @@
   let activePointer: { id: number; token: number; target: HTMLElement } | null = null;
   const initialBinding = untrack(() => binding);
   let attachedBinding = initialBinding;
-  let lease: ContinuousScalarRendererLease = $state(initialBinding.attachRenderer());
+  let lease: ContinuousScalarRendererLease = $state.raw(initialBinding.attachRenderer());
 
   $effect(() => {
     if (binding === attachedBinding) return;
@@ -221,11 +222,6 @@
     activePointer = null;
   }
 
-  function handleWheel(e: WheelEvent) {
-    if (!view.editable) return;
-    e.preventDefault();
-    lease.wheel({ direction: e.deltaY > 0 ? -1 : 1, fine: e.shiftKey });
-  }
 
   function handleKeyDown(e: KeyboardEvent) {
     if (lease.key({ key: e.key, fine: e.shiftKey })) e.preventDefault();
@@ -277,7 +273,7 @@
     onpointermove={handlePointerMove}
     onpointerup={handlePointerUp}
     onpointercancel={handlePointerCancel}
-    onwheel={handleWheel}
+    use:wheelControl={{ view, lease }}
     onkeydown={handleKeyDown}
     ondblclick={handleDoubleClick}
   >

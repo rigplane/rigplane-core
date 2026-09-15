@@ -3,8 +3,9 @@ import { t } from '$lib/i18n';
 import type { BandChoice } from './radio-view-model';
 
 export interface BandInstrumentHandles {
-  readonly bandChoice: Snippet;
+  readonly bandChoice: Snippet<[compact?: boolean]>;
   readonly frequencyEntry: Snippet;
+  readonly cancelFrequencyEntry: () => void;
 }
 
 export type BandControlLayout = Snippet<[BandInstrumentHandles]>;

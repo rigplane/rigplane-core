@@ -28,6 +28,9 @@ export interface CommandLifecycle {
   ackFieldObservationTimes?: Readonly<Record<string, number>>;
   /** Exact transport handoff evidence; absence preserves legacy records. */
   dispatchedEventEpoch?: number;
+  /** The server-admitted normalized target from the command response;
+   *  absent for an old server, which must leave any admitted-target lane idle. */
+  admittedTarget?: number;
   /** Real backend retention evidence, stored on this reactive lifecycle record. */
   hold?: Readonly<CommandLifecycleHold>;
   /** Permanent latest-target eligibility marker until this record retires. */
@@ -55,12 +58,15 @@ export interface ControlFeedbackScope {
   readonly slot?: string;
 }
 export type StateBackedRepeatPolicy = 'latest-target-wins';
+export type CommandDescriptorView = Pick<CommandLifecycle, 'params' | 'admittedTarget'>;
 export interface StateBackedCommandDescriptor<T> {
   readonly intentName: RadioIntentName;
   readonly repeatPolicy: StateBackedRepeatPolicy;
-  scope(command: Pick<CommandLifecycle, 'params'>): ControlFeedbackScope | null;
+  /** Keep awaiting radio truth when a post-ack observation reports another value. */
+  readonly requireTargetMatch?: boolean;
+  scope(command: CommandDescriptorView): ControlFeedbackScope | null;
   fieldPath(scope: ControlFeedbackScope): string;
-  target(command: Pick<CommandLifecycle, 'params'>): T | null;
+  target(command: CommandDescriptorView): T | null;
   confirmed(state: ServerState, scope: ControlFeedbackScope): T | null;
   matches(confirmed: T, target: T): boolean;
 }
@@ -143,6 +149,43 @@ export const FILTER_WIDTH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<numbe
   matches: (confirmed: number, target: number) => confirmed === target,
 });
 
+type DirectVfoFrequencyCommand = Readonly<{
+  receiver: 0 | 1;
+  slot: 'A' | 'B';
+  target: number;
+}>;
+function directVfoFrequencyCommand(
+  command: Pick<CommandLifecycle, 'params'>,
+): DirectVfoFrequencyCommand | null {
+  const params = command.params;
+  if (Reflect.ownKeys(params).length !== 5) return null;
+  const target = safeInteger(params.freq);
+  const receiver = params.receiver;
+  const slot = params.slot;
+  const expected = params.expected_active_slot;
+  const generation = providerGeneration(params.provider_generation);
+  return target !== null && target > 0 && (receiver === 0 || receiver === 1)
+    && (slot === 'A' || slot === 'B') && (expected === 'A' || expected === 'B')
+    && generation !== null
+    ? Object.freeze({ receiver, slot, target }) : null;
+}
+
+export const DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_vfo_freq', repeatPolicy: 'latest-target-wins', requireTargetMatch: true,
+  scope: (command) => {
+    const parsed = directVfoFrequencyCommand(command);
+    return parsed === null ? null : Object.freeze({
+      control: 'vfo-frequency', receiver: parsed.receiver, slot: parsed.slot,
+    });
+  },
+  fieldPath: (scope) => `${scope.receiver === 1 ? 'sub' : 'main'}.vfo${scope.slot}.freqHz`,
+  target: (command) => directVfoFrequencyCommand(command)?.target ?? null,
+  confirmed: (state, scope) => safeInteger(
+    (scope.receiver === 1 ? state.sub : state.main)?.[scope.slot === 'B' ? 'vfoB' : 'vfoA']?.freqHz,
+  ),
+  matches: (confirmed, target) => confirmed === target,
+} satisfies StateBackedCommandDescriptor<number>);
+
 const breakInDelayTarget = (command: Pick<CommandLifecycle, 'params'>): number | null =>
   Reflect.ownKeys(command.params).length === 1
     && Object.prototype.hasOwnProperty.call(command.params, 'level')
@@ -185,6 +228,43 @@ export const SQUELCH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = 
     const value = finiteNumber((scope.receiver === 1 ? state.sub : state.main)?.squelch);
     return value !== null && value >= 0 && value <= 1 ? value : null;
   },
+  matches: (confirmed: number, target: number) => confirmed === target,
+});
+
+/** The value when it is a finite normalized 0..1 number, else null. */
+const normalizedLevel = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value : null;
+
+/** The server-admitted normalized target, or null — never the requested param. */
+const admittedTargetOf = (command: Pick<CommandLifecycle, 'admittedTarget'>): number | null =>
+  normalizedLevel(command.admittedTarget);
+
+/** AF level confirms only on a fresh post-ack same-field readback exactly
+ *  equal to the server-admitted target. */
+export const AF_LEVEL_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_af_level', repeatPolicy: 'latest-target-wins', requireTargetMatch: true,
+  scope: (command: Pick<CommandLifecycle, 'params'>) => {
+    const receiver = command.params.receiver;
+    return receiver === undefined || receiver === 0 || receiver === 1
+      ? Object.freeze({ control: 'af-level', receiver: receiver === 1 ? 1 : 0 }) : null;
+  },
+  fieldPath: (scope: ControlFeedbackScope) =>
+    scope.receiver === 1 ? 'sub.afLevel' : 'main.afLevel',
+  target: admittedTargetOf,
+  confirmed: (state: ServerState, scope: ControlFeedbackScope) => normalizedLevel(
+    finiteNumber((scope.receiver === 1 ? state.sub : state.main)?.afLevel)),
+  matches: (confirmed: number, target: number) => confirmed === target,
+});
+
+/** RF power confirms only against the server-admitted target. */
+export const RF_POWER_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_rf_power', repeatPolicy: 'latest-target-wins', requireTargetMatch: true,
+  scope: (command: CommandDescriptorView) => admittedTargetOf(command) === null
+    ? null : Object.freeze({ control: 'rf-power', receiver: 0 }),
+  fieldPath: () => 'powerLevel',
+  target: admittedTargetOf,
+  confirmed: (state: ServerState) => normalizedLevel(finiteNumber(state.powerLevel)),
   matches: (confirmed: number, target: number) => confirmed === target,
 });
 
@@ -376,9 +456,12 @@ export const IF_SHIFT_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> =
 export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, StateBackedCommandDescriptor<unknown>> =
   new Map([
     [FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName, FILTER_WIDTH_COMMAND_DESCRIPTOR],
+    [DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR.intentName, DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR],
     [BREAK_IN_DELAY_COMMAND_DESCRIPTOR.intentName, BREAK_IN_DELAY_COMMAND_DESCRIPTOR],
     [RF_GAIN_COMMAND_DESCRIPTOR.intentName, RF_GAIN_COMMAND_DESCRIPTOR],
     [SQUELCH_COMMAND_DESCRIPTOR.intentName, SQUELCH_COMMAND_DESCRIPTOR],
+    [AF_LEVEL_COMMAND_DESCRIPTOR.intentName, AF_LEVEL_COMMAND_DESCRIPTOR],
+    [RF_POWER_COMMAND_DESCRIPTOR.intentName, RF_POWER_COMMAND_DESCRIPTOR],
     [CW_PITCH_COMMAND_DESCRIPTOR.intentName, CW_PITCH_COMMAND_DESCRIPTOR],
     [KEY_SPEED_COMMAND_DESCRIPTOR.intentName, KEY_SPEED_COMMAND_DESCRIPTOR],
     ...Object.values(TX_AUX_COMMAND_DESCRIPTORS).map(
@@ -550,7 +633,7 @@ function reconcileStateBackedCommands(state: ServerState | null): void {
       command.ackFieldObservationTimes = { ...boundaries, [path]: marker };
       continue;
     }
-    if (marker > boundary) {
+    if (marker > boundary && (!descriptor.requireTargetMatch || descriptor.matches(confirmed, target))) {
       transition(command.id, command.originalEpoch, 'confirmed', command.eventEpoch ?? command.originalEpoch);
     }
   }
@@ -593,8 +676,21 @@ export function markCommandDispatched(id: string, originalEpoch: number, eventEp
   command.dispatchedEventEpoch = eventEpoch;
   command.updatedAt = Date.now();
 }
-export const acknowledgeCommand = (id: string, epoch: number, eventEpoch: number): void =>
+export const acknowledgeCommand = (
+  id: string, epoch: number, eventEpoch: number, admittedLevel?: number,
+): void => {
+  // Stored before the transition so the ack-time boundary capture sees it;
+  // an already-acknowledged record (ack frame first) may still receive it.
+  const admitted = normalizedLevel(admittedLevel);
+  if (admitted !== null) {
+    const command = getCommandLifecycle(id, epoch);
+    if (command && (command.status === 'pending' || command.status === 'acknowledged')) {
+      command.admittedTarget = admitted;
+      command.updatedAt = Date.now();
+    }
+  }
   transition(id, epoch, 'acknowledged', eventEpoch);
+};
 export const failCommand = (id: string, epoch: number, eventEpoch: number, error = 'Command failed'): void =>
   transition(id, epoch, 'failed', eventEpoch, error);
 /** Downstream observation adapters may call this only after qualifying radio truth. */

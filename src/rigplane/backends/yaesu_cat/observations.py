@@ -145,8 +145,9 @@ _TUNER = FieldPath.global_("operator_controls", "tuner_status")
 _DIAL_LOCK = FieldPath.global_("tx_state", "dial_lock")
 # CW keyer family (MOR-456). GLOBAL slow-changing operator/slow controls, all
 # gated on the legacy poller's single ``"cw" in caps`` gate: ``key_speed`` is
-# the keyer WPM (CAT ``KS``), ``cw_pitch`` is the sidetone pitch in Hz (CAT
-# ``KP`` idx → ``300 + idx * 10``), ``break_in`` is the break-in mode emitted as
+# the keyer WPM (CAT ``KS``), ``cw_pitch`` is the sidetone pitch in Hz (decoded
+# from the profile's ``cw_pitch`` control domain), ``break_in`` is the break-in
+# mode emitted as
 # the device int (CAT ``BI``: 0=OFF, 1=SEMI — FTX-1 is binary only, matching the
 # legacy poller's ``1 if get_break_in() else 0`` int store), ``break_in_delay``
 # is the QSK delay in ms (CAT ``SD``). All four are operator_controls and ride
@@ -1305,8 +1306,9 @@ class YaesuObservationAdapter:
         # CW keyer family (MOR-456) — GLOBAL operator-control setpoints, all
         # gated on the legacy poller's single ``"cw" in caps`` gate, mirroring
         # its ``key_speed``/``cw_pitch``/``break_in``/``break_in_delay`` reads in
-        # the same pass. ``key_speed`` is the keyer WPM (CAT ``KS``); ``cw_pitch``
-        # is the sidetone in Hz (CAT ``KP`` idx → ``300 + idx * 10``);
+        # the same pass. ``key_speed`` is the keyer WPM (CAT ``KS``);
+        # ``cw_pitch`` is the sidetone in Hz, decoded from the profile's
+        # ``cw_pitch`` control domain (CAT ``KP``);
         # ``break_in`` is emitted as the device int (CAT ``BI``: 0=OFF, 1=SEMI),
         # exactly the poller's ``1 if get_break_in() else 0`` int store;
         # ``break_in_delay`` is the QSK delay in ms (CAT ``SD``). Raw device scale

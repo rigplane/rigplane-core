@@ -111,6 +111,148 @@ def _states(events: Sequence[CommandLifecycleEvent]) -> list[str]:
     return [event.state for event in events]
 
 
+@pytest.mark.parametrize("source", ["websocket", "rigctld", "public_api", "http"])
+async def test_successful_acknowledgments_release_existing_confirmation_window(
+    source: str,
+) -> None:
+    clock = FreshnessClock(start=10.0)
+    service = CommandService(
+        executor=FakeExecutor(), state_store=StateStore(), clock=clock.now
+    )
+    for index in range(260):
+        await service.execute(_intent(command_id=str(index), source=source))
+        assert len(service._active_commands) <= 1  # noqa: SLF001
+        clock.advance(10)
+        assert (
+            service.pending_overlays(
+                source=cast(CommandSource, source), session_id="ws-a"
+            )
+            == ()
+        )
+        assert service._active_commands == {}  # noqa: SLF001
+    assert not [
+        event for event in service.lifecycle_events() if event.state == "failed"
+    ]
+
+
+async def test_ack_without_readback_expectations_releases_bookkeeping_without_terminal_claim() -> (
+    None
+):
+    service = CommandService(executor=FakeExecutor(), state_store=StateStore())
+    result = await service.execute(
+        replace(_intent(), pending_policy="none", expected_observations=())
+    )
+    assert _states(result.lifecycle_events) == [
+        "accepted",
+        "queued",
+        "sent",
+        "acknowledged",
+    ]
+    assert service._active_commands == {}  # noqa: SLF001
+    assert (
+        service.retain_readback_expectations_for_dispatch(
+            source="websocket", session_id="ws-a", command_id="cmd-1"
+        )
+        == ()
+    )
+    assert service.fail_command(
+        "cmd-1", source="websocket", session_id="ws-a", message="late queue NAK"
+    )
+    assert service.lifecycle_events()[-1].message == "late queue NAK"
+
+
+async def test_next_admission_purges_expired_ack_without_a_metadata_reader() -> None:
+    clock = FreshnessClock(start=10.0)
+    service = CommandService(
+        executor=FakeExecutor(), state_store=StateStore(), clock=clock.now
+    )
+    for index in range(260):
+        await service.execute(_intent(command_id=str(index)))
+        assert len(service._active_commands) == 1  # noqa: SLF001
+        clock.advance(10)
+    assert not [
+        event for event in service.lifecycle_events() if event.state == "failed"
+    ]
+
+
+async def test_capacity_sheds_ack_bookkeeping_but_preserves_late_failure_and_correlated_readback() -> (
+    None
+):
+    clock = FreshnessClock(start=10.0)
+    service = CommandService(
+        executor=FakeExecutor(), state_store=StateStore(), clock=clock.now
+    )
+    for index in range(130):
+        await service.execute(_intent(command_id=str(index)))
+    assert len(service._active_commands) <= 128  # noqa: SLF001
+    assert not [
+        event for event in service.lifecycle_events() if event.state == "failed"
+    ]
+    assert ("websocket", "ws-a", "0") not in service._active_commands  # noqa: SLF001
+    assert service.fail_command(
+        "0", source="websocket", session_id="ws-a", message="actual queue failure"
+    )
+    service.apply_observation(
+        _observation(_freq_path(), 14_074_000, at=10.1, correlation_id="1")
+    )
+    assert [
+        (event.command_id, event.state) for event in service.lifecycle_events()[-2:]
+    ] == [("0", "failed"), ("1", "reconciled")]
+
+
+@pytest.mark.parametrize("timeout", [0.0, 2.0, 10.0])
+async def test_ack_retention_uses_existing_expectation_expiry_including_dispatch_refresh(
+    timeout: float,
+) -> None:
+    clock = FreshnessClock(start=10.0)
+    service = CommandService(
+        executor=FakeExecutor(), state_store=StateStore(), clock=clock.now
+    )
+    await service.execute(replace(_intent(), timeout=timeout))
+    key = ("websocket", "ws-a", "cmd-1")
+    scope = {"source": "websocket", "session_id": "ws-a", "command_id": "cmd-1"}
+    expectations = service.readback_expectations(**scope)
+    deadline = max(item.expires_at_monotonic for item in expectations)
+    clock.advance(deadline - clock.now() - 0.01)
+    assert service.readback_expectations(**scope)
+    assert key in service._active_commands  # noqa: SLF001
+    retained = service.retain_readback_expectations_for_dispatch(**scope)
+    assert retained
+    clock.advance(max(item.expires_at_monotonic for item in retained) - clock.now())
+    assert service.readback_expectations(**scope) == ()
+    assert key not in service._active_commands  # noqa: SLF001
+    assert service.lifecycle_events()[-1].state == "acknowledged"
+
+
+async def test_ack_window_keeps_same_id_issuers_separate_and_poll_value_is_not_confirmation() -> (
+    None
+):
+    clock = FreshnessClock(start=10.0)
+    service = CommandService(
+        executor=FakeExecutor(), state_store=StateStore(), clock=clock.now
+    )
+    for source, session in [
+        ("websocket", "ws-a"),
+        ("websocket", "ws-b"),
+        ("rigctld", "ws-a"),
+    ]:
+        await service.execute(_intent(source=source, session_id=session))
+    service.apply_observation(
+        _observation(_freq_path(), 14_074_000, at=10.1, correlation_id=None)
+    )
+    assert len(service._active_commands) == 3  # noqa: SLF001
+    assert (
+        service.terminate_active_commands(
+            "session invalidated", source="websocket", session_id="ws-a"
+        )
+        == 1
+    )
+    assert len(service._active_commands) == 2  # noqa: SLF001
+    clock.advance(10)
+    service.pending_overlays(source="websocket", session_id="ws-b")
+    assert service._active_commands == {}  # noqa: SLF001
+
+
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
 async def test_execute_emits_lifecycle_events_and_applies_response_observations() -> (
     None

@@ -30,6 +30,7 @@
   }: Props = $props();
   let txAux = $derived(view.txAux);
   let tuneBlocked = $derived(keyBlockedReasons(view, tx));
+  let visibleTuneBlocked = $derived(tuneBlocked.filter((code) => code !== 'rf-state-unknown'));
 </script>
 
 {#if txAux}
@@ -51,7 +52,7 @@
 
     {#if txAux.atu.availability.structural}
       <ul class="tx-aux-blocked" data-testid="tx-aux-tune-blocked">
-        {#each tuneBlocked as code (code)}<li data-reason={code}>{blockedLabel(code)}</li>{/each}
+        {#each visibleTuneBlocked as code (code)}<li data-reason={code}>{blockedLabel(code)}</li>{/each}
       </ul>
     {/if}
   </section>
