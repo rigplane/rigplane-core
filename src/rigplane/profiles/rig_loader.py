@@ -6,7 +6,6 @@ import logging
 import tempfile
 import tomllib
 import warnings
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from importlib import resources
@@ -28,6 +27,11 @@ from rigplane.core.state_acquisition_policy import (
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
+from rigplane.profiles.control_domain import (
+    _on_control_lattice,
+    _public_decimal,
+    validate_control_raw_value,
+)
 
 __all__ = [
     "RigConfig",
@@ -35,6 +39,9 @@ __all__ = [
     "load_rig",
     "discover_rigs",
     "discover_available_rigs",
+    # Re-exported from control_domain (MOR-2472) so pre-existing import
+    # paths keep working; the mechanism itself lives in one module only.
+    "validate_control_raw_value",
 ]
 from rigplane.commands.command_spec import (
     AbsentCommandSpec,
@@ -144,14 +151,6 @@ _ScalarControlDomain = dict[
 ]
 
 
-def _public_decimal(value: Decimal) -> str:
-    """Render an exact Decimal as the frontend's canonical fixed-point string."""
-    rendered = format(value, "f")
-    if "." in rendered:
-        rendered = rendered.rstrip("0").rstrip(".")
-    return "0" if rendered in {"0", "-0"} else rendered
-
-
 def _control_number(value: object, path: str, *, integer: bool = False) -> int | float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         expected = "an integer" if integer else "a finite number"
@@ -170,50 +169,6 @@ def _control_decimal(value: object, path: str) -> Decimal:
     if not decimal.is_finite():
         raise RigLoadError(f"{path} must be a finite number")
     return decimal
-
-
-def _on_control_lattice(
-    value: int | Decimal, origin: int | Decimal, step: int | Decimal
-) -> bool:
-    (value_num, value_den), (origin_num, origin_den), (step_num, step_den) = (
-        Decimal(item).as_integer_ratio() for item in (value, origin, step)
-    )
-    numerator = (value_num * origin_den - origin_num * value_den) * step_den
-    return numerator % (value_den * origin_den * step_num) == 0
-
-
-def validate_control_raw_value(
-    controls: Mapping[str, object] | None, control: str, value: int
-) -> tuple[int, int, int, int]:
-    """Validate a raw control value against its published normalized domain.
-
-    Returns the domain's ``(raw_min, raw_max, raw_step, raw_origin)`` when
-    *value* is an integer inside ``[raw_min, raw_max]`` and on the
-    ``raw_origin + k * raw_step`` lattice. Raises ``ValueError`` naming the
-    control, its allowed range and its step otherwise, and when *controls*
-    publishes no normalized scalar domain for *control*.
-    """
-    entry = controls.get(control) if controls is not None else None
-    required = ("raw_min", "raw_max", "raw_step", "raw_origin")
-    if not isinstance(entry, Mapping) or any(
-        isinstance(entry.get(key), bool) or not isinstance(entry.get(key), int)
-        for key in required
-    ):
-        raise ValueError(
-            f"no normalized control domain for {control!r} in the active profile"
-        )
-    raw_min, raw_max, raw_step, raw_origin = (cast(int, entry[key]) for key in required)
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or not raw_min <= value <= raw_max
-        or not _on_control_lattice(value, raw_origin, raw_step)
-    ):
-        raise ValueError(
-            f"{control} must be within {raw_min}-{raw_max} on the "
-            f"{raw_origin} + k*{raw_step} lattice; got {value!r}"
-        )
-    return raw_min, raw_max, raw_step, raw_origin
 
 
 def _parse_control_lookup(
