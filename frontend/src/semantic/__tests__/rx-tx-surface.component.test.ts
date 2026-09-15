@@ -69,6 +69,22 @@ function withSurface(
 // ── 1. TX state display mirrors the AUTHORITY snapshot, and only it ─────────
 
 describe('RX/TX status mirrors the server TX projection', () => {
+  it('keeps the Standard TX status semantic-only and puts keyed state on PTT', () => {
+    const keyed = snap({
+      phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on',
+    });
+    const s = render(topologyFixtures['2/main_sub'], keyed, inertHandlers(), true);
+    try {
+      expect(s.state().classList).toContain('sr-only');
+      expect(s.state().dataset).toMatchObject({
+        rf: 'transmitting', session: 'keyed', intent: 'latched',
+      });
+      expect(s.key().getAttribute('data-active')).toBe('true');
+      expect(s.key().getAttribute('aria-pressed')).toBe('true');
+      expect(s.key().textContent?.trim()).toBe('PTT');
+    } finally { s.dispose(); }
+  });
+
   it.each(IDS)('%s: an observed OFF radio removes the idle READY row and its space', (id) => {
     withSurface(topologyFixtures[id], IDLE_RX, (s) => {
       expect(s.state().dataset.rf).toBe('receiving');

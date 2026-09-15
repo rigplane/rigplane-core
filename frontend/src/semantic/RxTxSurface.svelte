@@ -96,7 +96,7 @@
   {...stateFeedback?.attributes ?? {}}
 >
   <p
-    class="rx-tx-state" class:sr-only={standard && !showTxState}
+    class="rx-tx-state" class:sr-only={standard}
     role="status" data-testid="rx-tx-state" hidden={!standard && !showTxState}
     data-rf={rf} data-session={session} data-intent={tx.intent ?? undefined}
   >
@@ -176,14 +176,28 @@
     border-radius: 3px;
   }
   .rx-tx-surface.standard .rx-tx-actions { display: grid; grid-template-columns: 1fr; gap: 6px; }
+  /* Standard keeps the authority status available to assistive technology,
+     while the PTT control below is the panel's only visible keyed indicator. */
+  :global(.desktop-control-face.standard-face) .rx-tx-surface.standard .rx-tx-state.sr-only {
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: none !important;
+  }
   :global(.desktop-control-face.standard-face) .rx-tx-surface.standard .rx-tx-actions .rx-tx-key.v2-control-button {
     width: 100%; min-height: 78px; border: 2px solid var(--v2-accent-red, #ef4444);
     color: var(--v2-accent-red, #ef4444); font-size: 1.5rem; font-weight: 700;
     letter-spacing: 0.1em;
   }
   :global(.desktop-control-face.standard-face) .rx-tx-surface.standard .rx-tx-actions .rx-tx-key.v2-control-button[data-active='true'] {
-    color: #fff; background: color-mix(in srgb, var(--v2-accent-red, #ef4444) 28%, transparent);
-    box-shadow: 0 0 12px color-mix(in srgb, var(--v2-accent-red, #ef4444) 45%, transparent);
+    opacity: 1;
+    color: #fff;
+    border-color: #ff5a68;
+    background: color-mix(in srgb, var(--v2-accent-red, #ef4444) 76%, #24070c);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, #fff 24%, transparent),
+      0 0 18px color-mix(in srgb, var(--v2-accent-red, #ef4444) 78%, transparent);
+    text-shadow: 0 1px 2px #520710;
   }
   :global(.desktop-control-face.standard-face) .rx-tx-surface.standard .rx-tx-state .rx-tx-label.v2-status-indicator {
     padding: 0; border: 0; background: none; box-shadow: none;
