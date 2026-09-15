@@ -612,9 +612,8 @@ class TestPin6PttPollFallsBackToTheMirror:
     and never publishes that answer as canonical truth (MOR-1900).
 
     **Divergence from the ADR, pinned as found.** §5 attributes this rendering
-    to ``_FallbackRigState`` (``handler.py:397-436``). That object does define
-    ``update_ptt``, but nothing in ``src/`` calls it — its ``ptt`` is dead.
-    The mirror ``t`` actually reads is ``RadioState.ptt`` on the radio itself,
+    to ``_FallbackRigState`` (``handler.py:397-436``). The mirror ``t``
+    actually reads is ``RadioState.ptt`` on the radio itself,
     via ``RigctldHandler._radio_state()`` (``handler.py:924-926``), consumed at
     ``handler.py:1746-1768``. Pinned against the object that is really read.
     """

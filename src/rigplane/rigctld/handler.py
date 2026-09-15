@@ -3,7 +3,7 @@
 Responsibilities:
 - Command dispatch table (long_cmd → async handler method)
 - Read-only gate (reject set commands with RPRT -22)
-- RadioState-first reads with a small handler-local fallback cache
+- RadioState-first reads
 - Error translation (rigplane exceptions → Hamlib error codes)
 
 This module receives RigctldCommand from protocol.py and returns
@@ -423,7 +423,7 @@ class _PendingRigState:
 
 @dataclass(slots=True)
 class _FallbackRigState:
-    """Handler-local fallback values used only until RadioState becomes valid."""
+    """Handler-local fallback values."""
 
     data_mode: bool = False
     data_mode_ts: float = 0.0
@@ -816,9 +816,8 @@ class RigctldHandler:
         self._key_down_backstop_task: asyncio.Task[None] | None = None
         self._key_down_backstop_token: int = 0
         self._key_down_backstop_session: str | None = None
-        # Handler-local data-mode fallback, read only when RadioState is
-        # unavailable. Core rigctld GET paths project from StateStore plus
-        # scoped CommandService overlays.
+        # Handler-local data-mode fallback. Core rigctld GET paths project
+        # from StateStore plus scoped CommandService overlays.
         self._cache = _FallbackRigState()
         self._pending = _PendingRigState()
         self._routing = create_routing(radio, getattr(config, "max_power_w", 100.0))
