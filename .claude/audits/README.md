@@ -13,6 +13,15 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-15 — MOR-2467 IC-7610 startup-optional scope state (head `d53e91e5`, base `bd75f60c`)
+
+- [2026-09-15-mechanism-audit-mor-2467-ic7610-startup.md](2026-09-15-mechanism-audit-mor-2467-ic7610-startup.md)
+  — read-only independent PASS for the profile-owned startup-admission
+  exception that lets the listener serve before IC-7610 scope controls answer.
+  The report preserves the distinction between startup admission, ordinary
+  polling, and post-`EnableScope` hydration. Tests and live RX-only evidence
+  are separate.
+
 ## 2026-09-14 — MOR-2467 IC-7610 Standard v3 restoration (head `479dd587`, base `99f4bcd3`)
 
 - [2026-09-14-mechanism-audit-mor-2467-ic7610-v3.md](2026-09-14-mechanism-audit-mor-2467-ic7610-v3.md)
