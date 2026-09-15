@@ -377,6 +377,11 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     const capture = async (txState: 'rx' | 'tx', txTargetSlot: 'B' | 'unknown') => {
       const context = await browser.newContext();
       const page = await context.newPage();
+      const browserErrors: string[] = [];
+      page.on('console', message => {
+        if (message.type() === 'error') browserErrors.push(`console: ${message.text()}`);
+      });
+      page.on('pageerror', error => browserErrors.push(`page: ${error.message}`));
       await boot(page, 'standard', 1440, true, 'studioline', false, undefined, {
         height: 900, absoluteVfoPair: true, txState, txTargetSlot,
       });
@@ -430,6 +435,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
             keyShadow: keyStyle.boxShadow,
           };
         }),
+        browserErrors,
         commands: await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
           .geometryCommands.filter(command => command.type === 'cmd')),
         overlay: null as null | {
@@ -520,6 +526,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       expect(result.centerFacts).toBe(0);
       expect(result.ordinaryReasons).toBe(0);
       expect(result.meterClips).toEqual({ panel: false, children: [] });
+      expect(result.browserErrors).toEqual([]);
       expect(result.commands).toEqual([]);
     }
   });
