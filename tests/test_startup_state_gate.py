@@ -59,6 +59,7 @@ FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
 MODE = FieldPath.active("main", "freq_mode", "mode")
 S_METER = FieldPath.receiver("main", "meters", "s_meter")
 POWER = FieldPath.global_("meters", "power")
+STARTUP_OPTIONAL = FieldPath.global_("slow_state", "startup_optional")
 
 _REAL_SLEEP = asyncio.sleep
 
@@ -152,6 +153,32 @@ def test_unobserved_tx_only_path_does_not_keep_the_predicate_incomplete() -> Non
 
     assert POWER in scheduler._profile.pollable_paths()
     assert scheduler.initial_acquisition_complete((FREQ, MODE, S_METER)) is True
+
+
+def test_startup_optional_path_does_not_keep_the_predicate_incomplete() -> None:
+    """An optional field stays pollable without blocking the listener."""
+
+    profile = RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(
+            FieldCapability(
+                path=STARTUP_OPTIONAL,
+                polling=True,
+                startup_required=False,
+            ),
+        ),
+        field_policies={
+            STARTUP_OPTIONAL: AcquisitionPolicy(
+                cadence_seconds=30.0,
+                freshness_ttl_seconds=60.0,
+            ),
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile)
+
+    assert STARTUP_OPTIONAL in profile.pollable_paths()
+    assert scheduler.unobserved_startup_paths(()) == ()
+    assert scheduler.initial_acquisition_complete(()) is True
 
 
 def test_outstanding_paths_are_exactly_the_unobserved_non_tx_only_paths() -> None:

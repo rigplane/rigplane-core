@@ -13,6 +13,20 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-15 — MOR-2467 IC-7610 startup-optional scope state after rebase (head `62a1c107`, base `39c88afd`)
+
+- [2026-09-15-mechanism-audit-mor-2467-ic7610-startup-rebased.md](2026-09-15-mechanism-audit-mor-2467-ic7610-startup-rebased.md)
+  — read-only independent PASS on the rebased implementation. It supersedes
+  the pre-rebase report for merge evidence and confirms that the TX-interlock
+  cleanup conflict changed no startup-optional semantics. Tests and live
+  RX-only evidence are separate.
+
+## 2026-09-15 — MOR-2467 IC-7610 startup-optional scope state before rebase (head `d53e91e5`, base `bd75f60c`)
+
+- [2026-09-15-mechanism-audit-mor-2467-ic7610-startup.md](2026-09-15-mechanism-audit-mor-2467-ic7610-startup.md)
+  — historical read-only PASS on the pre-rebase implementation. Superseded by
+  the rebased report above; retained as a frozen point-in-time result.
+
 ## 2026-09-14 — MOR-2467 IC-7610 Standard v3 restoration (head `479dd587`, base `99f4bcd3`)
 
 - [2026-09-14-mechanism-audit-mor-2467-ic7610-v3.md](2026-09-14-mechanism-audit-mor-2467-ic7610-v3.md)
