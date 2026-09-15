@@ -15,9 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The `RigctldFallbackCache` protocol is deleted (MOR-2483).** Removed
   the exported `rigplane.core.radio_protocol.RigctldFallbackCache`
-  protocol — nothing under `src/` implemented it, and its only other
-  mention was the routing signature annotation removed with the `cache`
-  parameter. `RigctldRoutable.rigctld_routing`, `create_routing`,
+  protocol. `RigctldRoutable.rigctld_routing`, `create_routing`,
   `YaesuRouting.__init__` and `YaesuCatRadio.rigctld_routing` no longer
   take `cache`; a third-party backend implementing `rigctld_routing`
   must drop that parameter.
