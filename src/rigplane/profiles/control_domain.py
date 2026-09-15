@@ -26,6 +26,7 @@ __all__ = [
     "decode_control_domain",
     "encode_control_domain",
     "quantize_control_domain",
+    "snap_control_domain",
     "validate_control_raw_value",
 ]
 
@@ -408,6 +409,32 @@ def quantize_control_domain(domain: Mapping[str, object], display: str) -> str |
         return None
     result = _add(values[3], index, values[2])
     return _text(result) if _in_axis(result, values) else None
+
+
+def snap_control_domain(domain: Mapping[str, object], display: str) -> str | None:
+    """Return the nearest legal display value to *display* (ties up).
+
+    Snaps *display* onto the domain's display lattice with
+    ``nearest_ties_up`` regardless of its published quantization,
+    reusing :func:`quantize_control_domain`. Returns ``None`` when the
+    domain is invalid or *display* is not a canonical decimal string;
+    raises ``ValueError`` naming the display range when *display* is
+    canonical but outside ``[display_min, display_max]``.
+    """
+    if not isinstance(domain, Mapping):
+        return None
+    values = _axis(domain)
+    value = _parse_decimal(display)
+    if values is None or value is None:
+        return None
+    if not _in_range(value, values):
+        raise ValueError(
+            f"display value {display!r} is outside the display range "
+            f"{domain.get('display_min')}-{domain.get('display_max')}"
+        )
+    return quantize_control_domain(
+        {**domain, "quantization": "nearest_ties_up"}, display
+    )
 
 
 def encode_control_domain(domain: Mapping[str, object], display: str) -> int | None:

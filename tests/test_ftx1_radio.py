@@ -2082,6 +2082,99 @@ async def test_get_key_pitch_still_returns_idx(connected_radio):
     assert await connected_radio.get_key_pitch() == 40
 
 
+# ---------------------------------------------------------------------------
+# ControlDomainCapable surface (MOR-2469)
+# ---------------------------------------------------------------------------
+
+
+def test_snap_control_display_notch_hz_to_raw(radio):
+    """1500 Hz snaps to the raw code 150 on the FTX-1 notch domain."""
+    assert radio.snap_control_display("manual_notch_freq", "1500") == 150
+
+
+def test_snap_control_display_notch_tie_rounds_up(radio):
+    """1505 Hz is exactly between 1500 and 1510 — nearest_ties_up → 1510."""
+    assert radio.snap_control_display("manual_notch_freq", "1505") == 151
+
+
+@pytest.mark.parametrize("display", ["5", "3300", "-10"])
+def test_snap_control_display_notch_out_of_range_raises(radio, display):
+    with pytest.raises(ValueError, match="manual_notch_freq"):
+        radio.snap_control_display("manual_notch_freq", display)
+
+
+@pytest.mark.parametrize(
+    ("display", "raw"),
+    [("15", 20), ("-10", 0), ("-15", -20), ("1195", 1200)],
+)
+def test_snap_control_display_if_shift(radio, display, raw):
+    """Signed IF-shift snapping; ties (±10, ±15 when step is 20) round up."""
+    assert radio.snap_control_display("if_shift", display) == raw
+
+
+def test_snap_control_display_if_shift_out_of_range_raises(radio):
+    with pytest.raises(ValueError, match="if_shift"):
+        radio.snap_control_display("if_shift", "1210")
+    with pytest.raises(ValueError, match="if_shift"):
+        radio.snap_control_display("if_shift", "-1210")
+
+
+@pytest.mark.parametrize(
+    ("display", "raw"),
+    [("301", 300), ("305", 310), ("700", 700), ("1050", 1050), ("300", 300)],
+)
+def test_snap_control_display_cw_pitch(radio, display, raw):
+    assert radio.snap_control_display("cw_pitch", display) == raw
+
+
+def test_snap_control_display_cw_pitch_out_of_range_raises(radio):
+    with pytest.raises(ValueError, match="cw_pitch"):
+        radio.snap_control_display("cw_pitch", "1060")
+    with pytest.raises(ValueError, match="cw_pitch"):
+        radio.snap_control_display("cw_pitch", "299")
+
+
+def test_snap_control_display_no_domain_returns_none(radio):
+    assert radio.snap_control_display("no_such_control", "100") is None
+
+
+def test_snap_control_display_non_canonical_display_returns_none(radio):
+    """A domain exists but the display string is not a canonical decimal."""
+    assert radio.snap_control_display("cw_pitch", "07") is None
+    assert radio.snap_control_display("cw_pitch", "300.0") is None
+
+
+def test_decode_control_raw_notch_linear(radio):
+    assert radio.decode_control_raw("manual_notch_freq", 1) == "10"
+    assert radio.decode_control_raw("manual_notch_freq", 150) == "1500"
+    assert radio.decode_control_raw("manual_notch_freq", 320) == "3200"
+
+
+def test_decode_control_raw_if_shift_identity(radio):
+    assert radio.decode_control_raw("if_shift", -1200) == "-1200"
+    assert radio.decode_control_raw("if_shift", 0) == "0"
+
+
+def test_decode_control_raw_off_lattice_returns_none(radio):
+    assert radio.decode_control_raw("if_shift", 10) is None
+    assert radio.decode_control_raw("cw_pitch", 301) is None
+
+
+def test_decode_control_raw_out_of_range_returns_none(radio):
+    assert radio.decode_control_raw("manual_notch_freq", 0) is None
+    assert radio.decode_control_raw("manual_notch_freq", 321) is None
+
+
+def test_decode_control_raw_no_domain_returns_none(radio):
+    assert radio.decode_control_raw("no_such_control", 100) is None
+
+
+def test_control_domain_capable_isinstance(radio):
+    from rigplane.core.radio_protocol import ControlDomainCapable
+
+    assert isinstance(radio, ControlDomainCapable)
+
+
 @pytest.mark.asyncio
 async def test_set_key_pitch_still_takes_idx(connected_radio):
     """Yaesu-named set_key_pitch keeps idx contract (no break). (#1162)"""

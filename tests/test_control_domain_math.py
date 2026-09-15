@@ -18,6 +18,7 @@ from rigplane.profiles.control_domain import (
     decode_control_domain,
     encode_control_domain,
     quantize_control_domain,
+    snap_control_domain,
 )
 from rigplane.rig_loader import load_rig
 
@@ -99,6 +100,61 @@ def test_keeps_supported_quantization_valid(quantization: str) -> None:
     assert decode_control_domain(domain, 0) == "0"
     assert quantize_control_domain(domain, "0") == "0"
     assert encode_control_domain(domain, "0") == 0
+
+
+def test_snaps_identity_domains_to_the_nearest_legal_point() -> None:
+    domain = variant(
+        raw_min=-1,
+        raw_max=1,
+        raw_step=1,
+        raw_origin=0,
+        display_min="-1",
+        display_max="1",
+        display_step="1",
+        display_origin="0",
+        mapping="identity",
+    )
+    assert snap_control_domain(domain, "0") == "0"
+    assert snap_control_domain(domain, "0.4") == "0"
+    assert snap_control_domain(domain, "0.5") == "1"
+
+
+def test_snaps_linear_domains_with_nonzero_origins_and_ties_up() -> None:
+    domain = variant(
+        raw_min=-4,
+        raw_origin=-4,
+        display_min="-1",
+        display_origin="-1",
+    )
+    assert snap_control_domain(domain, "-1") == "-1"
+    assert snap_control_domain(domain, "-0.75") == "-0.5"
+    assert snap_control_domain(domain, "0.8") == "1"
+
+
+@pytest.mark.parametrize("display", ["-1.1", "1.1"])
+def test_snapping_out_of_range_raises_naming_the_display_range(
+    display: str,
+) -> None:
+    with pytest.raises(ValueError, match=r"-1-1\b"):
+        snap_control_domain(LINEAR, display)
+
+
+@pytest.mark.parametrize("display", ["01", "0.50", " 0", "0 ", "0\n", "-0"])
+def test_snapping_fails_closed_for_non_canonical_display(display: str) -> None:
+    assert snap_control_domain(LINEAR, display) is None
+
+
+@pytest.mark.parametrize(
+    "domain",
+    [
+        variant(mapping="future"),
+        variant(mapping="lookup", lookup=[{"raw": 0, "display": "0", "extra": 1}]),
+        "not-a-domain",
+    ],
+    ids=["unknown-mapping", "malformed-lookup", "not-a-mapping"],
+)
+def test_snapping_fails_closed_for_invalid_domains(domain: object) -> None:
+    assert snap_control_domain(domain, "0") is None
 
 
 def test_keeps_tiny_steps_and_huge_coefficients_exact() -> None:
@@ -304,6 +360,27 @@ def test_ftx1_identity_domains_decode_and_encode() -> None:
 def test_ftx1_notch_half_step_ties(quantization: str, expected: str | None) -> None:
     notch = _ftx1_domains()["manual_notch_freq"] | {"quantization": quantization}
     assert quantize_control_domain(notch, "15") == expected
+
+
+def test_ftx1_notch_snaps_to_the_nearest_legal_hz() -> None:
+    notch = _ftx1_domains()["manual_notch_freq"]
+    assert snap_control_domain(notch, "1500") == "1500"
+    assert snap_control_domain(notch, "1505") == "1510"
+
+
+def test_ftx1_identity_domains_snap_ties_up() -> None:
+    cw_pitch = _ftx1_domains()["cw_pitch"]
+    assert snap_control_domain(cw_pitch, "304") == "300"
+    assert snap_control_domain(cw_pitch, "305") == "310"
+
+
+@pytest.mark.parametrize("display", ["5", "3300", "-10"])
+def test_ftx1_notch_snap_out_of_range_raises_naming_the_range(
+    display: str,
+) -> None:
+    notch = _ftx1_domains()["manual_notch_freq"]
+    with pytest.raises(ValueError, match="10-3200"):
+        snap_control_domain(notch, display)
 
 
 def test_ftx1_rejects_off_lattice_and_out_of_axis() -> None:

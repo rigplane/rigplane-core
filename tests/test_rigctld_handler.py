@@ -3771,6 +3771,135 @@ async def test_yaesu_set_level_ifshift(
     yaesu_radio.set_if_shift.assert_awaited_once_with(-200)
 
 
+# -- Yaesu control-domain level routing (MOR-2469) -----------------------------
+
+
+@pytest.fixture
+def domain_yaesu_radio() -> AsyncMock:
+    """Yaesu double whose control-domain surface is the real FTX-1 math.
+
+    Like ``yaesu_radio`` but with ``snap_control_display`` /
+    ``decode_control_raw`` wired to a real :class:`YaesuCatRadio` built
+    from the shipping ``ftx1.toml``, so handler-level exercises hit the
+    actual backend implementation of
+    :class:`~rigplane.core.radio_protocol.ControlDomainCapable`.
+    """
+    from rigplane.rigctld.routing import YaesuRouting
+
+    real = YaesuCatRadio("/dev/null", profile="ftx1")
+    mock = AsyncMock(spec=_FakeYaesuRadio)
+    mock.backend_id = "yaesu_cat"
+    mock.snap_control_display = real.snap_control_display
+    mock.decode_control_raw = real.decode_control_raw
+    mock.rigctld_routing = lambda cache, max_power_w=100.0: YaesuRouting(
+        mock, cache, max_power_w
+    )
+    return mock
+
+
+@pytest.fixture
+def domain_yaesu_handler(
+    domain_yaesu_radio: AsyncMock, config: RigctldConfig
+) -> RigctldHandler:
+    return RigctldHandler(domain_yaesu_radio, config)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_notchf_snaps_hz_to_raw(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    """hamlib NOTCHF is Hz; the backend takes the raw code 150 (MOR-2469)."""
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "NOTCHF", "1500"))
+    assert resp.ok
+    domain_yaesu_radio.set_notch_filter.assert_awaited_once_with(150)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_notchf_tie_rounds_up(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "NOTCHF", "1505"))
+    assert resp.ok
+    domain_yaesu_radio.set_notch_filter.assert_awaited_once_with(151)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_notchf_out_of_range_einval_no_call(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "NOTCHF", "3300"))
+    assert resp.error == HamlibError.EINVAL
+    domain_yaesu_radio.set_notch_filter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_ifshift_snaps_off_lattice(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "IFSHIFT", "15"))
+    assert resp.ok
+    domain_yaesu_radio.set_if_shift.assert_awaited_once_with(20)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_cwpitch_snaps_off_lattice(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "CWPITCH", "301"))
+    assert resp.ok
+    domain_yaesu_radio.set_cw_pitch.assert_awaited_once_with(300)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_level_cwpitch_out_of_range_einval_no_call(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    """Out-of-range CWPITCH is now EINVAL instead of the old clamp."""
+    resp = await domain_yaesu_handler.execute(set_cmd("set_level", "CWPITCH", "1060"))
+    assert resp.error == HamlibError.EINVAL
+    domain_yaesu_radio.set_cw_pitch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_level_notchf_decodes_to_hz(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    domain_yaesu_radio.get_manual_notch.return_value = (True, 150)
+    resp = await domain_yaesu_handler.execute(get_cmd("get_level", "NOTCHF"))
+    assert resp.ok
+    assert resp.values == ["1500"]
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_level_notchf_undecodable_falls_back_to_raw(
+    domain_yaesu_handler: RigctldHandler, domain_yaesu_radio: AsyncMock
+) -> None:
+    domain_yaesu_radio.get_manual_notch.return_value = (True, 0)
+    resp = await domain_yaesu_handler.execute(get_cmd("get_level", "NOTCHF"))
+    assert resp.ok
+    assert resp.values == ["0"]
+
+
+@pytest.mark.asyncio
+async def test_icom_path_notchf_cwpitch_unchanged(config: RigctldConfig) -> None:
+    """The built-in Icom routing is untouched by the domain dispatch.
+
+    NOTCHF has no Icom branch → EINVAL without AttributeError;
+    CWPITCH stays a plain rounded Hz passthrough. Companion pins:
+    ``test_set_level_notchf_icom_no_attribute_error`` and
+    ``test_set_level_cwpitch`` above.
+    """
+    radio = make_mock_radio()
+    handler = RigctldHandler(radio, config)
+
+    resp = await handler.execute(set_cmd("set_level", "NOTCHF", "1500"))
+    assert resp.error == HamlibError.EINVAL
+
+    resp = await handler.execute(set_cmd("set_level", "CWPITCH", "700"))
+    assert resp.ok
+    radio.set_cw_pitch.assert_awaited_once_with(700)
+
+
 @pytest.mark.asyncio
 async def test_yaesu_set_level_unknown_returns_einval(
     yaesu_handler: RigctldHandler,
