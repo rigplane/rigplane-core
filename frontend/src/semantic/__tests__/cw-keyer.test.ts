@@ -187,6 +187,42 @@ describe('cwKeyer.pitchDomain (MOR-1682)', () => {
 });
 
 /**
+ * MOR-2475 F1: the key-speed domain gets exactly the `pitchDomain`
+ * treatment — an optional `{min, max, step, origin}` group fact stating the
+ * profile-declared `controls.key_speed` display domain, absent when the
+ * radio declares nothing usable.
+ */
+describe('cwKeyer.keySpeedDomain (MOR-2475 F1)', () => {
+  const X6100 = { min: 5, max: 50, step: 1, origin: 5 } as const;
+
+  it('accepts a profile-declared keySpeedDomain and round-trips it unchanged', () => {
+    const withC = withCwKeyer(base);
+    const model = { ...withC, cwKeyer: { ...withC.cwKeyer, keySpeedDomain: X6100 } };
+    const validated = validateRadioViewModel(model).cwKeyer as CwKeyerViewModel;
+    expect(validated.keySpeedDomain).toEqual({ min: 5, max: 50, step: 1, origin: 5 });
+    expect(validated).toEqual(model.cwKeyer);
+  });
+
+  it('still validates without keySpeedDomain — absence is the no-usable-domain state', () => {
+    const withC = withCwKeyer(base);
+    expect(Object.keys(withC.cwKeyer as CwKeyerViewModel)).not.toContain('keySpeedDomain');
+    const validated = validateRadioViewModel(withC).cwKeyer as CwKeyerViewModel;
+    expect(validated.keySpeedDomain).toBeUndefined();
+  });
+
+  it.each([
+    ['a string in place of the group', '5..50'],
+    ['a domain missing origin', { min: 5, max: 50, step: 1 }],
+    ['a non-numeric bound', { min: '5', max: 50, step: 1, origin: 5 }],
+    ['an extra key beyond the four domain keys', { min: 5, max: 50, step: 1, origin: 5, unit: 'WPM' }],
+  ])('rejects %s', (_label, keySpeedDomain) => {
+    const withC = withCwKeyer(base);
+    const malformed = { ...withC, cwKeyer: { ...withC.cwKeyer, keySpeedDomain } };
+    expect(() => validateRadioViewModel(malformed)).toThrow(/\$\.cwKeyer\.keySpeedDomain/);
+  });
+});
+
+/**
  * SAFETY CONSTRAINTS 2 + 3, enforced structurally by the contract itself: a
  * producer cannot ship a usable break-in fact while dropping the record that
  * TX is not permitted. This is the CW analogue of MOR-1294's band invariant,

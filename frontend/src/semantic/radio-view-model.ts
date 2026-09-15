@@ -845,14 +845,24 @@ export interface CwKeyerViewModel {
   /**
    * The pitch control's numeric display domain from the profile's published
    * `controls.cw_pitch` entry (MOR-1682): `{min, max, step, origin}` when the
-   * radio declares a usable one (FTX-1's exact 300..1050 Hz / 10 Hz lattice,
-   * a legacy 300..900 range with the 5 Hz fallback step), absent when it
-   * declares nothing usable — the fact group states the DOMAIN, never a
-   * fallback; consumers keep their own today-behaviour constants for the
-   * absent case. Not a per-field reading: one control, one domain, so it
-   * sits on the group beside the fields it governs.
+   * radio declares a usable one (an exact domain's own lattice, or a legacy
+   * range whose step is its `decode_quantum` when published, else the
+   * adapter's fallback step), absent when it declares nothing usable — the
+   * fact group states the DOMAIN, never a fallback; consumers keep their own
+   * today-behaviour constants for the absent case. Not a per-field reading:
+   * one control, one domain, so it sits on the group beside the fields it
+   * governs.
    */
   pitchDomain?: ControlDisplayDomain;
+  /**
+   * The key-speed control's numeric display domain from the profile's
+   * published `controls.key_speed` entry (MOR-2475 F1): same shape and
+   * same absence semantics as `pitchDomain` above — one control, one
+   * domain, sitting on the group beside the field it governs; absent when
+   * the radio declares nothing usable, and consumers keep their own
+   * today-behaviour constants for the absent case.
+   */
+  keySpeedDomain?: ControlDisplayDomain;
   reversePaddle: CwKeyerField<boolean>;
   /** Audio peak filter type/level ordinal (`rx.apfTypeLevel`, 0 = off). */
   apf: CwKeyerField<number>;
@@ -2077,16 +2087,19 @@ function validateScan(value: unknown, path: string): ScanViewModel {
 const BREAK_IN_MODES: readonly BreakInMode[] = ['off', 'semi', 'full'];
 
 /** Exactly the seven facts the adapter reads, plus the optional
- *  profile-declared pitch domain (MOR-1682). See
- *  `radio-view-model-adapter.ts::deriveCwKeyer`. */
+ *  profile-declared pitch and key-speed domains (MOR-1682, MOR-2475 F1).
+ *  See `radio-view-model-adapter.ts::deriveCwKeyer`. */
 function validateCwKeyer(value: unknown, path: string): CwKeyerViewModel {
   const v = record(value, path);
   exactKeys(v, [
-    'breakIn', 'breakInDelay', 'keyerSpeed', 'pitchHz', 'pitchDomain', 'reversePaddle', 'apf',
-    'twinPeak',
+    'breakIn', 'breakInDelay', 'keyerSpeed', 'pitchHz', 'pitchDomain', 'keySpeedDomain',
+    'reversePaddle', 'apf', 'twinPeak',
   ], path);
   const pitchDomain = optionalGroup(
     v.pitchDomain, `${path}.pitchDomain`, validateNrLevelDisplayDomain,
+  );
+  const keySpeedDomain = optionalGroup(
+    v.keySpeedDomain, `${path}.keySpeedDomain`, validateNrLevelDisplayDomain,
   );
   return {
     breakIn: validateTxAuxField(v.breakIn, `${path}.breakIn`, (val, p) => oneOf(val, BREAK_IN_MODES, p)),
@@ -2094,6 +2107,7 @@ function validateCwKeyer(value: unknown, path: string): CwKeyerViewModel {
     keyerSpeed: validateTxAuxField(v.keyerSpeed, `${path}.keyerSpeed`, num),
     pitchHz: validateTxAuxField(v.pitchHz, `${path}.pitchHz`, num),
     ...(pitchDomain !== undefined ? { pitchDomain } : {}),
+    ...(keySpeedDomain !== undefined ? { keySpeedDomain } : {}),
     reversePaddle: validateTxAuxField(v.reversePaddle, `${path}.reversePaddle`, bool),
     apf: validateTxAuxField(v.apf, `${path}.apf`, num),
     twinPeak: validateTxAuxField(v.twinPeak, `${path}.twinPeak`, bool),
