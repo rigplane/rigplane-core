@@ -20,6 +20,7 @@ from ...core.command_service import (
 )
 from ...core.command_dispatch import (
     CommandUnsupportedError,
+    _raw_int_level_from_param,
     command_descriptor,
     command_descriptors,
     enqueue_command_intent,
@@ -184,7 +185,12 @@ from ...capabilities import (
     CAP_TUNING_STEP,
     CAP_XFC,
 )
-from ...radio_protocol import CivCommandCapable, MemoryCapable, PowerControlCapable
+from ...radio_protocol import (
+    CivCommandCapable,
+    ControlDomainCapable,
+    MemoryCapable,
+    PowerControlCapable,
+)
 
 __all__ = ["ControlHandler", "RadioNotReadyError"]
 
@@ -285,6 +291,32 @@ def _level_for_power(value: Any, radio: Any) -> int:
         power_max_watts=getattr(getattr(radio, "profile", None), "max_watts", None),
     )
     return int(native)
+
+
+def _notch_position_from_param(radio: "Radio | None", params: dict[str, Any]) -> int:
+    """Resolve the manual-notch position for ``set_notch_filter``.
+
+    Radios implementing
+    :class:`~rigplane.core.radio_protocol.ControlDomainCapable` that
+    publish a ``manual_notch_freq`` domain take any raw position
+    ``decode_control_raw`` answers for. Every other radio follows the
+    documented raw 0-255 integer wire contract shared with
+    ``set_rf_gain``/``set_sql``/``set_squelch``, enforced by the same
+    coercion (``command_dispatch._raw_int_level_from_param``), which
+    raises before the command is queued.
+    """
+    value = params["value"]
+    if isinstance(radio, ControlDomainCapable):
+        if radio.control_display_bounds("manual_notch_freq") is not None:
+            level = int(value)
+            if radio.decode_control_raw("manual_notch_freq", level) is None:
+                raise ValueError(
+                    "manual-notch position is outside the radio's published "
+                    "manual-notch domain"
+                )
+            return level
+    wire_level: int = _raw_int_level_from_param(value)
+    return wire_level
 
 
 def _with_admitted_level(
@@ -2572,10 +2604,8 @@ class ControlHandler:
                 q.put(SetManualNotch(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_notch_filter":
-                level = int(params["value"])
                 rx = int(params.get("receiver", 0))
-                if not 0 <= level <= 255:
-                    raise ValueError("manual-notch position must be between 0 and 255")
+                level = _notch_position_from_param(radio, params)
                 self._ensure_capability("notch", "set_notch_filter")
                 self._ensure_receiver_supported(rx)
                 q.put(SetNotchFilter(level, receiver=rx))
