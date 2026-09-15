@@ -85,14 +85,29 @@ class TestCreateRadioFactory:
         assert radio._radio_addr == 0x94
 
     def test_create_radio_builds_serial_backend(self) -> None:
-        radio = create_radio(SerialBackendConfig(device="/dev/ttyUSB0"))
+        radio = create_radio(
+            SerialBackendConfig(device="/dev/ttyUSB0", model="IC-7610")
+        )
         assert isinstance(radio, Icom7610SerialRadio)
         assert radio.model == "IC-7610"
+
+    def test_create_radio_serial_without_model_refuses(self) -> None:
+        """R59/MOR-2425: no --model must refuse, not assume the IC-7610.
+
+        The old default drove an IC-7300 as an IC-7610: the server then
+        waited on sub-receiver fields the rig does not have.
+        """
+        with pytest.raises(ValueError) as excinfo:
+            create_radio(SerialBackendConfig(device="/dev/ttyUSB0"))
+        message = str(excinfo.value)
+        assert "--model" in message
+        assert "IC-7610" not in message
 
     def test_create_radio_passes_serial_audio_overrides(self) -> None:
         radio = create_radio(
             SerialBackendConfig(
                 device="/dev/tty.usbmodem-IC7610",
+                model="IC-7610",
                 rx_device="IC-7610 USB Audio",
                 tx_device="BlackHole 2ch",
             )
@@ -105,6 +120,7 @@ class TestCreateRadioFactory:
         radio = create_radio(
             SerialBackendConfig(
                 device="/dev/tty.usbmodem-IC7610",
+                model="IC-7610",
                 allow_low_baud_scope=True,
             )
         )
@@ -115,6 +131,7 @@ class TestCreateRadioFactory:
         radio = create_radio(
             SerialBackendConfig(
                 device="/dev/tty.usbmodem-IC7610",
+                model="IC-7610",
                 ptt_mode="civ",
             )
         )
@@ -126,7 +143,9 @@ class TestCreateRadioFactory:
         assert radio.backend_id == "rigplane"
 
     def test_serial_icom_backend_has_icom_serial_backend_id(self) -> None:
-        radio = create_radio(SerialBackendConfig(device="/dev/ttyUSB0"))
+        radio = create_radio(
+            SerialBackendConfig(device="/dev/ttyUSB0", model="IC-7610")
+        )
         assert radio.backend_id == "icom_serial"
 
     def test_yaesu_cat_backend_config_has_yaesu_cat_backend_id(self) -> None:

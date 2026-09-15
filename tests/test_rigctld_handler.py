@@ -1836,10 +1836,18 @@ async def test_dump_caps_same_as_dump_state(
 
 
 @pytest.mark.asyncio
-async def test_get_info(handler: RigctldHandler, mock_radio: AsyncMock) -> None:
+async def test_get_info_names_no_rig_when_the_radio_names_none(
+    handler: RigctldHandler, mock_radio: AsyncMock
+) -> None:
+    """R59/MOR-2425: an unnamed radio is reported unspecified, not IC-7610.
+
+    ``mock_radio.model`` is an auto-generated ``AsyncMock`` attribute rather
+    than a ``str``, so this is the branch that used to hand a hamlib client
+    the name of a rig nobody attached.
+    """
     resp = await handler.execute(get_cmd("get_info"))
     assert resp.ok
-    assert "IC-7610" in resp.values[0]
+    assert resp.values[0] == "Icom unspecified (rigplane)"
 
 
 @pytest.mark.asyncio
