@@ -14,10 +14,16 @@ This module proves the range-aware nudge:
   Icom-style 0-255 controls;
 * NEVER writes a value outside the resolved band (asserted on every write);
 * steps DOWN when the original sits at the ceiling;
-* SKIPs honestly when no range is declared (MOR-2476: never an assumed 0-255).
+* SKIPs honestly when a profiled radio declares no band for the control
+  (MOR-2476: never an assumed 0-255 for a profiled radio);
+* keeps the historical 0-255 band for a radio with no profile at all
+  (owner decision of 2026-09-15 for MOR-2476, interim pending a
+  radio-published band).
 """
 
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 from rigplane.core.radio_state import RadioState
 from rigplane.validation.hardware import (
@@ -236,10 +242,42 @@ def test_resolve_range_returns_none_when_undeclared():
     assert _resolve_level_range(radio, "not_a_check.set") is None
 
 
-def test_resolve_range_no_profile_returns_none():
-    """A radio with no profile (external rigctld) declares no band."""
-    radio = _make_radio(controls=None)  # radio has no profile
-    assert _resolve_level_range(radio, "nb_level.set") is None
+def test_resolve_range_no_profile_attribute_keeps_historical_band():
+    """A radio object with no ``profile`` attribute at all resolves the
+    historical 0-255 band (owner decision of 2026-09-15 for MOR-2476)."""
+    assert _resolve_level_range(SimpleNamespace(), "af_level.set") == (0, 255)
+
+
+def test_resolve_range_profile_none_keeps_historical_band():
+    """A radio whose ``profile`` is None resolves the historical 0-255 band
+    (owner decision of 2026-09-15 for MOR-2476)."""
+    radio = _make_radio(controls=None)  # radio has profile = None
+    assert _resolve_level_range(radio, "nb_level.set") == (0, 255)
+
+
+async def test_profiled_radio_without_band_for_control_skips_with_reason():
+    """A profile that declares OTHER controls but no band for this control
+    still resolves None, and the check SKIPs with the exact honest reason."""
+    radio = _make_radio(controls={"squelch": {"range_min": 0, "range_max": 10}})
+    assert _resolve_level_range(radio, "af_level.set") is None
+    template = _single_entry_template(
+        model="FTX-1",
+        profile_id="ftx1",
+        check_id="af_level.set",
+        capability="af_level",
+    )
+    levels = await execute_hardware_checks(
+        radio, template, OperatorSafetyBlock(), allow_writes=True
+    )
+    check = _flatten(levels)["af_level.set"]
+    assert check.status is CheckStatus.SKIP, (
+        f"expected SKIP, got {check.status} ({check.error})"
+    )
+    assert check.evidence["reason"] == (
+        "no declared range for control 'af_level' in the active profile; "
+        "refusing to assume one"
+    )
+    assert radio.writes["af"] == []  # never wrote
 
 
 def test_resolve_range_prefers_raw_axis_when_display_band_also_declared():

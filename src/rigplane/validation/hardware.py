@@ -1245,7 +1245,7 @@ def _cw_pitch_nudge(
     the profile declares a display step (so the written value stays on the
     radio's lattice), by the raw magnitude for a stepless legacy band. If
     stepping up would exceed ``hi`` it steps DOWN instead. The result always
-    differs from the original and always stays within ``[lo, hi]``.
+    differs from the original.
     """
     if step is not None and step > 0:
         magnitude = step * max(1, int(_CW_PITCH_NUDGE_HZ // step))
@@ -1271,12 +1271,12 @@ def _cw_pitch_band_midpoint(band: tuple[Decimal, Decimal, Decimal | None]) -> De
 
 # MOR-695 / MOR-2476 — level RMVR value rules must respect the control's
 # settable range, resolved from ``radio.profile.controls`` — never a
-# hardcoded default. The historical ``200 if v < 128 else 50`` nudge assumes a
-# 0-255 ICOM scale; on the Yaesu FTX-1 comp/nr/nb levels have SMALL ranges
-# (nr/nb 0-10, comp 0-100), so the fixed nudge lands out of range, the radio
-# ignores the write, and the readback equals the original -> false FAIL. A
-# profile that declares no band for the control yields no band at all: the
-# check SKIPs honestly instead of assuming one.
+# hardcoded default for a profiled radio. The historical ``200 if v < 128
+# else 50`` nudge assumes a 0-255 ICOM scale; on the Yaesu FTX-1 comp/nr/nb
+# levels have SMALL ranges (nr/nb 0-10, comp 0-100), so the fixed nudge lands
+# out of range, the radio ignores the write, and the readback equals the
+# original -> false FAIL. A profile that declares no band for the control
+# yields no band at all: the check SKIPs honestly instead of assuming one.
 #
 # Per level check, the ORDERED candidate control keys to look up in
 # ``radio.profile.controls``. The IC-7610 uses ``nr_level``/``nb_level``/
@@ -1318,8 +1318,15 @@ def _declared_raw_band(control: object) -> tuple[int, int] | None:
     return (lo, hi)
 
 
+# Applies only to radios with NO profile. Owner decision of 2026-09-15:
+# interim for MOR-2476, pending a radio-published band.
+_PROFILELESS_LEVEL_RANGE: tuple[int, int] = (0, 255)
+
+
 def _no_declared_range_reason(check_id: str, *, control: str | None = None) -> str:
-    """The evidence reason for a check whose control declares no band."""
+    """The evidence reason for a check on a profiled radio whose control
+    declares no band (a profile-less radio resolves
+    ``_PROFILELESS_LEVEL_RANGE`` and never reaches this reason)."""
     key = control or (_LEVEL_RANGE_CANDIDATE_KEYS.get(check_id) or (check_id,))[0]
     return (
         f"no declared range for control '{key}' in the active profile; "
@@ -1328,17 +1335,21 @@ def _no_declared_range_reason(check_id: str, *, control: str | None = None) -> s
 
 
 def _resolve_level_range(radio: Radio, check_id: str) -> tuple[int, int] | None:
-    """Resolve a level check's settable band from the radio's profile.
+    """Resolve a level check's settable band.
 
-    Walks the ordered candidate keys for ``check_id`` against
+    A radio with no profile at all — no ``profile`` attribute, or ``profile``
+    being ``None`` — resolves ``_PROFILELESS_LEVEL_RANGE``. A profiled radio
+    walks the ordered candidate keys for ``check_id`` against
     ``radio.profile.controls`` and returns the first declared ``(min, max)``
     band on the RAW wire axis those ops write (see ``_declared_raw_band``),
     falling back to ``control_display_band`` for band-only declarations
     (``range_min``/``range_max``). Returns ``None`` — and the caller SKIPs —
-    when the radio has no profile, the control is not declared, or no band is
-    present (MOR-2476: no assumed 0-255).
+    when the profile is present but declares no band for the control
+    (MOR-2476: no assumed band for a profiled radio).
     """
     profile = getattr(radio, "profile", None)
+    if profile is None:
+        return _PROFILELESS_LEVEL_RANGE
     controls = getattr(profile, "controls", None)
     if not isinstance(controls, dict):
         return None
@@ -1347,8 +1358,8 @@ def _resolve_level_range(radio: Radio, check_id: str) -> tuple[int, int] | None:
         if raw is not None:
             return raw
         band = control_display_band(controls, key)
-        # Only the band-only shape reaches here with integral bounds (every
-        # other shape resolved through its raw pair above), so int() is exact.
+        # ``control_display_band`` returns integral bounds for the
+        # non-normalized shapes.
         if band is not None:
             return (int(band[0]), int(band[1]))
     return None

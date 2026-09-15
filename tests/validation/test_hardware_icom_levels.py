@@ -295,8 +295,14 @@ def test_cw_pitch_band_resolves_from_the_profile_display_pair():
 
 
 async def test_level_set_skips_when_profile_declares_no_range():
-    """No profile at all -> honest SKIP, no assumed 0-255 band, no writes."""
-    radio = _StatefulIcomLevelRadio(_ALL_CAPS)  # no profile
+    """A profile declaring no rf_power range -> honest SKIP, no assumed
+    band, no writes. (A profile-less radio instead keeps the historical
+    0-255 band — owner decision of 2026-09-15 for MOR-2476.)"""
+    # Declares mic_gain but NOT rf_power: the profile was consulted and
+    # declares nothing for this control.
+    radio = _StatefulIcomLevelRadio(
+        _ALL_CAPS, controls={"mic_gain": {"raw_min": 0, "raw_max": 255}}
+    )
     template = _single_entry_template(
         check_id="rf_power.set", capability="power_control"
     )
