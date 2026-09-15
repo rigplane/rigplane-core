@@ -222,6 +222,44 @@ def test_fails_closed_for_off_lattice_raw_malformed_decimals_bad_mapping_and_ove
     assert encode_control_domain(variant(raw_max=2**53), "0") is None
 
 
+# -- Canonical-decimal strictness (TypeScript parity) --------------------------
+
+
+def _strict_linear_domain() -> dict[str, Any]:
+    """Wide-axis linear domain that accepts ``0`` and ``-1.5`` as canonical."""
+    return variant(
+        raw_step=1,
+        display_min="-2",
+        display_max="2",
+    )
+
+
+@pytest.mark.parametrize(
+    "display",
+    ["0\n", "-0\n", "10\n", "1.5\n", " 0", "0 "],
+)
+def test_rejects_uncanonical_surrounding_whitespace_in_display_decimals(
+    display: str,
+) -> None:
+    domain = _strict_linear_domain()
+    assert quantize_control_domain(domain, display) is None
+    assert encode_control_domain(domain, display) is None
+    stepped = variant(display_step="1\n")
+    assert decode_control_domain(stepped, 0) is None
+    assert quantize_control_domain(stepped, "0") is None
+    assert encode_control_domain(stepped, "0") is None
+
+
+@pytest.mark.parametrize(
+    ("display", "raw"),
+    [("0", 0), ("-1.5", -3)],
+)
+def test_keeps_canonical_decimals_accepted(display: str, raw: int) -> None:
+    domain = _strict_linear_domain()
+    assert quantize_control_domain(domain, display) == display
+    assert encode_control_domain(domain, display) == raw
+
+
 # -- Real FTX-1 profile domains -----------------------------------------------
 
 _PROFILE_PATH = Path(__file__).resolve().parents[1] / "rigs" / "ftx1.toml"

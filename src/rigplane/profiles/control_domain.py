@@ -32,7 +32,10 @@ __all__ = [
 _QUANTIZATIONS = frozenset(
     {"nearest_ties_down", "nearest_ties_up", "floor", "ceil", "reject"}
 )
-_CANONICAL_DECIMAL = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$")
+# ``\Z`` (not ``$``) so a trailing newline can never sneak past the end
+# anchor; ``$`` would accept ``'0\n'`` and break parity with the
+# TypeScript mirror, whose ``$`` is a true end-of-input anchor.
+_CANONICAL_DECIMAL = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?\Z")
 # Parity with the TypeScript ``Number.isSafeInteger`` guards: values the
 # frontend cannot represent exactly are rejected rather than mis-mapped.
 _SAFE_INTEGER_MAX = 2**53 - 1
