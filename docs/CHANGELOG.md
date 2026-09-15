@@ -13,6 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- **The `commands` CW-pitch and key-speed builders take the raw level
+  (MOR-2473, MOR-2481).** `rigplane.commands.set_cw_pitch` and
+  `rigplane.commands.set_key_speed` now take the raw 0-255 level instead
+  of Hz/WPM; a caller still passing Hz gets `ValueError` (Hz 300-900 is
+  outside the 0-255 level band), but a caller still passing WPM does not:
+  6-48 are valid levels and are sent as raw levels. The Hz/WPM conversion
+  moved into `CoreRadio.set_cw_pitch` /
+  `CoreRadio.set_key_speed`, which encode through the active profile's
+  `[controls.cw_pitch]` / `[controls.key_speed]` band and its new
+  `encode_rounding` key (`"ceil"` / `"nearest_half_down"`) via
+  `rigplane.profiles.control_domain.encode_legacy_control`. A CI-V
+  profile control without `encode_rounding` makes the `CoreRadio` setter
+  raise. The X6100's CW pitch and key speed move to its documented
+  400-1200 Hz (10 Hz step) and 5-50 WPM bands, and the X6200 now writes
+  its documented 400-1200 Hz CW-pitch band instead of raising above
+  900 Hz. Callers of the `Radio` protocol methods are unaffected.
 - **The `RigctldFallbackCache` protocol is deleted (MOR-2483).** Removed
   the exported `rigplane.core.radio_protocol.RigctldFallbackCache`
   protocol. `RigctldRoutable.rigctld_routing`, `create_routing`,

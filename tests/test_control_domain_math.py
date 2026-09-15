@@ -20,6 +20,7 @@ from rigplane.profiles.control_domain import (
     decode_control_domain,
     decode_legacy_control,
     encode_control_domain,
+    encode_legacy_control,
     quantize_control_domain,
     snap_control_domain,
 )
@@ -1026,10 +1027,8 @@ _ICOM_KEY_SPEED_WPM = (
 )
 
 
-@pytest.mark.parametrize("rig", ["ic7300", "ic7610", "ic9700", "ic705", "x6100"])
+@pytest.mark.parametrize("rig", ["ic7300", "ic7610", "ic9700", "ic705"])
 def test_ci_v_cw_pitch_decode_matches_the_deleted_formula_vectors(rig: str) -> None:
-    # The X6100 profile keeps the quantum of the shared CI-V CW-pitch decode
-    # origin/main used, so its vectors are identical.
     controls = _rig_domains(rig)
     for raw in range(256):
         assert (
@@ -1037,12 +1036,10 @@ def test_ci_v_cw_pitch_decode_matches_the_deleted_formula_vectors(rig: str) -> N
         ), f"{rig} cw_pitch raw {raw}"
 
 
-@pytest.mark.parametrize(
-    "rig", ["ic7300", "ic7610", "ic9700", "ic705", "x6100", "x6200"]
-)
+@pytest.mark.parametrize("rig", ["ic7300", "ic7610", "ic9700", "ic705", "x6200"])
 def test_ci_v_key_speed_decode_matches_the_deleted_formula_vectors(rig: str) -> None:
-    # The Xiegu profiles declare the same 6-48 WPM band the shared CI-V
-    # key-speed decode used on origin/main, so their vectors are identical.
+    # The X6200 profile declares the same 6-48 WPM band the shared CI-V
+    # key-speed decode used on origin/main, so its vectors are identical.
     controls = _rig_domains(rig)
     for raw in range(256):
         assert (
@@ -1057,6 +1054,68 @@ def test_x6200_cw_pitch_decode_uses_the_declared_400_1200_domain() -> None:
     controls = _rig_domains("x6200")
     assert decode_legacy_control(controls, "cw_pitch", 0) == 400
     assert decode_legacy_control(controls, "cw_pitch", 255) == 1200
+
+
+# Golden vectors regenerated from the X6100 profile's documented domain, not
+# captured from any shared CI-V formula: entry i is decode_legacy_control at
+# raw level i over the declared 400-1200 Hz band with its 10 Hz
+# decode_quantum (Radioddity Extended manual for Xiegu X6100 v1.1.8 section
+# 10.3.4) and the declared 5-50 WPM band (section 10.3.2). They pin the
+# declared bands: any change to either moves these rows.
+_X6100_CW_PITCH_HZ = tuple(
+    int(value)
+    for value in (
+        "400 400 410 410 410 420 420 420 430 430 430 430 440 440 440 450 450 450 460 "
+        "460 460 470 470 470 480 480 480 480 490 490 490 500 500 500 510 510 510 520 "
+        "520 520 530 530 530 530 540 540 540 550 550 550 560 560 560 570 570 570 580 "
+        "580 580 590 590 590 590 600 600 600 610 610 610 620 620 620 630 630 630 640 "
+        "640 640 640 650 650 650 660 660 660 670 670 670 680 680 680 690 690 690 690 "
+        "700 700 700 710 710 710 720 720 720 730 730 730 740 740 740 750 750 750 750 "
+        "760 760 760 770 770 770 780 780 780 790 790 790 800 800 800 800 810 810 810 "
+        "820 820 820 830 830 830 840 840 840 850 850 850 850 860 860 860 870 870 870 "
+        "880 880 880 890 890 890 900 900 900 910 910 910 910 920 920 920 930 930 930 "
+        "940 940 940 950 950 950 960 960 960 960 970 970 970 980 980 980 990 990 990 "
+        "1000 1000 1000 1010 1010 1010 1010 1020 1020 1020 1030 1030 1030 1040 1040 "
+        "1040 1050 1050 1050 1060 1060 1060 1070 1070 1070 1070 1080 1080 1080 1090 "
+        "1090 1090 1100 1100 1100 1110 1110 1110 1120 1120 1120 1120 1130 1130 1130 "
+        "1140 1140 1140 1150 1150 1150 1160 1160 1160 1170 1170 1170 1170 1180 1180 "
+        "1180 1190 1190 1190 1200 1200 "
+    ).split()
+)
+
+# Key-speed rows for the same declared domain as above.
+_X6100_KEY_SPEED_WPM = tuple(
+    int(value)
+    for value in (
+        "5 5 5 6 6 6 6 6 6 7 7 7 7 7 7 8 8 8 8 8 9 9 9 9 9 9 10 10 10 10 10 10 11 11 "
+        "11 11 11 12 12 12 12 12 12 13 13 13 13 13 13 14 14 14 14 14 15 15 15 15 15 "
+        "15 16 16 16 16 16 16 17 17 17 17 17 18 18 18 18 18 18 19 19 19 19 19 19 20 "
+        "20 20 20 20 21 21 21 21 21 21 22 22 22 22 22 22 23 23 23 23 23 24 24 24 24 "
+        "24 24 25 25 25 25 25 25 26 26 26 26 26 27 27 27 27 27 27 28 28 28 28 28 28 "
+        "29 29 29 29 29 30 30 30 30 30 30 31 31 31 31 31 31 32 32 32 32 32 33 33 33 "
+        "33 33 33 34 34 34 34 34 34 35 35 35 35 35 36 36 36 36 36 36 37 37 37 37 37 "
+        "37 38 38 38 38 38 39 39 39 39 39 39 40 40 40 40 40 40 41 41 41 41 41 42 42 "
+        "42 42 42 42 43 43 43 43 43 43 44 44 44 44 44 45 45 45 45 45 45 46 46 46 46 "
+        "46 46 47 47 47 47 47 48 48 48 48 48 48 49 49 49 49 49 49 50 50 50 "
+    ).split()
+)
+
+
+def test_x6100_cw_pitch_decode_matches_the_declared_400_1200_domain() -> None:
+    controls = _rig_domains("x6100")
+    for raw in range(256):
+        assert (
+            decode_legacy_control(controls, "cw_pitch", raw) == _X6100_CW_PITCH_HZ[raw]
+        ), f"x6100 cw_pitch raw {raw}"
+
+
+def test_x6100_key_speed_decode_matches_the_declared_5_50_domain() -> None:
+    controls = _rig_domains("x6100")
+    for raw in range(256):
+        assert (
+            decode_legacy_control(controls, "key_speed", raw)
+            == _X6100_KEY_SPEED_WPM[raw]
+        ), f"x6100 key_speed raw {raw}"
 
 
 def test_legacy_decode_fails_closed_when_the_control_is_missing() -> None:
@@ -1097,3 +1156,228 @@ def test_loader_rejects_a_legacy_domain_with_an_exact_half_tie() -> None:
     }
     with pytest.raises(RigLoadError, match="tie"):
         _parse_control_spec("rigs/synthetic.toml", "cw_pitch", tie)
+
+
+# -- Legacy rational encode (MOR-2473 write path, MOR-2481 encode half) --------
+
+
+def test_legacy_encode_applies_the_declared_rounding_rule() -> None:
+    ceil_controls = {
+        "cw_pitch": {
+            "raw_min": 0,
+            "raw_max": 255,
+            "display_min": 300,
+            "display_max": 900,
+            "encode_rounding": "ceil",
+        }
+    }
+    # ceil((display - 300) * 255 / 600): 300 -> 0, 301 -> 1 (255/600 rounds
+    # up from 0.425), 305 -> 3 (2.125), 600 -> 128 (an exact half, up under
+    # ceil), 900 -> 255.
+    assert encode_legacy_control(ceil_controls, "cw_pitch", 300) == 0
+    assert encode_legacy_control(ceil_controls, "cw_pitch", 301) == 1
+    assert encode_legacy_control(ceil_controls, "cw_pitch", 305) == 3
+    assert encode_legacy_control(ceil_controls, "cw_pitch", 600) == 128
+    assert encode_legacy_control(ceil_controls, "cw_pitch", 900) == 255
+
+    controls = {
+        "key_speed": {
+            "raw_min": 0,
+            "raw_max": 255,
+            "display_min": 6,
+            "display_max": 48,
+            "encode_rounding": "nearest_half_down",
+        }
+    }
+    # nearest((wpm - 6) * 255 / 42) with exact halves down: 6 -> 0, 7 -> 6
+    # (6.071...), 48 -> 255, and the three exact ties in range -- 13 WPM
+    # (85/2), 27 WPM (255/2), 41 WPM (425/2) -- all round down.
+    assert encode_legacy_control(controls, "key_speed", 6) == 0
+    assert encode_legacy_control(controls, "key_speed", 7) == 6
+    assert encode_legacy_control(controls, "key_speed", 48) == 255
+    assert encode_legacy_control(controls, "key_speed", 13) == 42
+    assert encode_legacy_control(controls, "key_speed", 27) == 127
+    assert encode_legacy_control(controls, "key_speed", 41) == 212
+
+
+def test_legacy_encode_fails_closed_when_the_control_is_missing_or_rounding_is_absent() -> (
+    None
+):
+    no_rounding = {
+        "raw_min": 0,
+        "raw_max": 255,
+        "display_min": 300,
+        "display_max": 900,
+        "decode_quantum": 5,
+    }
+    with pytest.raises(ValueError, match="cw_pitch"):
+        encode_legacy_control({"cw_pitch": no_rounding}, "cw_pitch", 600)
+    with pytest.raises(ValueError, match="key_speed"):
+        encode_legacy_control(None, "key_speed", 30)
+    with pytest.raises(ValueError, match="cw_pitch"):
+        encode_legacy_control({}, "cw_pitch", 600)
+    with pytest.raises(ValueError, match="cw_pitch"):
+        encode_legacy_control({"cw_pitch": 7}, "cw_pitch", 600)
+    undeclared_mode = dict(no_rounding, encode_rounding="floor")
+    with pytest.raises(ValueError, match="cw_pitch"):
+        encode_legacy_control({"cw_pitch": undeclared_mode}, "cw_pitch", 600)
+
+
+# Encode golden vectors captured from commands/levels.py before its
+# per-control encode helpers were deleted: entry i is the literal output
+# of the old Hz/WPM -> raw-level conversion for display value 300 + i Hz
+# (key speed: 6 + i WPM).
+_CW_PITCH_LEVELS = tuple(
+    int(value)
+    for value in (
+        "0 1 1 2 2 3 3 3 4 4 5 5 6 6 6 7 7 8 8 9 9 9 10 10 11 11 12 12 12 13 13 14 14 "
+        "15 15 15 16 16 17 17 17 18 18 19 19 20 20 20 21 21 22 22 23 23 23 24 24 25 "
+        "25 26 26 26 27 27 28 28 29 29 29 30 30 31 31 32 32 32 33 33 34 34 34 35 35 "
+        "36 36 37 37 37 38 38 39 39 40 40 40 41 41 42 42 43 43 43 44 44 45 45 46 46 "
+        "46 47 47 48 48 49 49 49 50 50 51 51 51 52 52 53 53 54 54 54 55 55 56 56 57 "
+        "57 57 58 58 59 59 60 60 60 61 61 62 62 63 63 63 64 64 65 65 66 66 66 67 67 "
+        "68 68 68 69 69 70 70 71 71 71 72 72 73 73 74 74 74 75 75 76 76 77 77 77 78 "
+        "78 79 79 80 80 80 81 81 82 82 83 83 83 84 84 85 85 85 86 86 87 87 88 88 88 "
+        "89 89 90 90 91 91 91 92 92 93 93 94 94 94 95 95 96 96 97 97 97 98 98 99 99 "
+        "100 100 100 101 101 102 102 102 103 103 104 104 105 105 105 106 106 107 107 "
+        "108 108 108 109 109 110 110 111 111 111 112 112 113 113 114 114 114 115 115 "
+        "116 116 117 117 117 118 118 119 119 119 120 120 121 121 122 122 122 123 123 "
+        "124 124 125 125 125 126 126 127 127 128 128 128 129 129 130 130 131 131 131 "
+        "132 132 133 133 134 134 134 135 135 136 136 136 137 137 138 138 139 139 139 "
+        "140 140 141 141 142 142 142 143 143 144 144 145 145 145 146 146 147 147 148 "
+        "148 148 149 149 150 150 151 151 151 152 152 153 153 153 154 154 155 155 156 "
+        "156 156 157 157 158 158 159 159 159 160 160 161 161 162 162 162 163 163 164 "
+        "164 165 165 165 166 166 167 167 168 168 168 169 169 170 170 170 171 171 172 "
+        "172 173 173 173 174 174 175 175 176 176 176 177 177 178 178 179 179 179 180 "
+        "180 181 181 182 182 182 183 183 184 184 185 185 185 186 186 187 187 187 188 "
+        "188 189 189 190 190 190 191 191 192 192 193 193 193 194 194 195 195 196 196 "
+        "196 197 197 198 198 199 199 199 200 200 201 201 202 202 202 203 203 204 204 "
+        "204 205 205 206 206 207 207 207 208 208 209 209 210 210 210 211 211 212 212 "
+        "213 213 213 214 214 215 215 216 216 216 217 217 218 218 219 219 219 220 220 "
+        "221 221 221 222 222 223 223 224 224 224 225 225 226 226 227 227 227 228 228 "
+        "229 229 230 230 230 231 231 232 232 233 233 233 234 234 235 235 236 236 236 "
+        "237 237 238 238 238 239 239 240 240 241 241 241 242 242 243 243 244 244 244 "
+        "245 245 246 246 247 247 247 248 248 249 249 250 250 250 251 251 252 252 253 "
+        "253 253 254 254 255 255 255 "
+    ).split()
+)
+
+# Key-speed levels for 6 + i WPM, same capture as above.
+_KEY_SPEED_LEVELS = tuple(
+    int(value)
+    for value in (
+        "0 6 12 18 24 30 36 42 49 55 61 67 73 79 85 91 97 103 109 115 121 127 134 140 "
+        "146 152 158 164 170 176 182 188 194 200 206 212 219 225 231 237 243 249 255 "
+    ).split()
+)
+
+
+@pytest.mark.parametrize("rig", ["ic7300", "ic7610", "ic9700", "ic705"])
+def test_ci_v_cw_pitch_encode_matches_the_deleted_formula_vectors(rig: str) -> None:
+    controls = _rig_domains(rig)
+    for hz in range(300, 901):
+        assert (
+            encode_legacy_control(controls, "cw_pitch", hz)
+            == (_CW_PITCH_LEVELS[hz - 300])
+        ), f"{rig} cw_pitch {hz} Hz"
+
+
+@pytest.mark.parametrize("rig", ["ic7300", "ic7610", "ic9700", "ic705"])
+def test_ci_v_key_speed_encode_matches_the_deleted_formula_vectors(rig: str) -> None:
+    controls = _rig_domains(rig)
+    for wpm in range(6, 49):
+        assert (
+            encode_legacy_control(controls, "key_speed", wpm)
+            == (_KEY_SPEED_LEVELS[wpm - 6])
+        ), f"{rig} key_speed {wpm} WPM"
+
+
+def test_x6200_key_speed_encode_matches_the_icom_vectors() -> None:
+    # rigs/x6200.toml [controls.key_speed] declares the same 6-48 WPM band
+    # and the same nearest_half_down rule as the Icom profiles, so the
+    # captured Icom encode vectors apply unchanged.
+    controls = _rig_domains("x6200")
+    for wpm in range(6, 49):
+        assert (
+            encode_legacy_control(controls, "key_speed", wpm)
+            == (_KEY_SPEED_LEVELS[wpm - 6])
+        ), f"x6200 key_speed {wpm} WPM"
+
+
+def test_x6200_cw_pitch_encode_uses_the_declared_400_1200_domain() -> None:
+    # rigs/x6200.toml [controls.cw_pitch] cites the Radioddity X6200 CI-V
+    # V1.0.6 PDF page 6: "0=400Hz, 255=1200Hz" for CW sidetone.
+    controls = _rig_domains("x6200")
+    assert encode_legacy_control(controls, "cw_pitch", 400) == 0
+    assert encode_legacy_control(controls, "cw_pitch", 1200) == 255
+    # 900 Hz sits at (900 - 400) * 255 / 800 = 159.375, which ceil sends to
+    # level 160.
+    assert encode_legacy_control(controls, "cw_pitch", 900) == 160
+    # The profile declares decode_quantum 1 (no Hz step documented), so the
+    # documented-10-Hz-step round-trip claim does not apply: exactly 131 of
+    # the 801 integers in 400-1200 round-trip exactly (400 and 1200 among
+    # them) and every other integer lands within 3 Hz.
+    round_trips = [
+        h
+        for h in range(400, 1201)
+        if decode_legacy_control(
+            controls, "cw_pitch", encode_legacy_control(controls, "cw_pitch", h)
+        )
+        == h
+    ]
+    assert len(round_trips) == 131
+    assert round_trips[0] == 400 and round_trips[-1] == 1200
+    for h in range(400, 1201):
+        decoded = decode_legacy_control(
+            controls, "cw_pitch", encode_legacy_control(controls, "cw_pitch", h)
+        )
+        assert abs(decoded - h) <= 3, f"x6200 cw_pitch {h} Hz round-trips to {decoded}"
+
+
+def test_x6100_cw_pitch_encode_uses_the_declared_400_1200_domain() -> None:
+    controls = _rig_domains("x6100")
+    assert encode_legacy_control(controls, "cw_pitch", 400) == 0
+    assert encode_legacy_control(controls, "cw_pitch", 1200) == 255
+    # Radioddity Extended manual for Xiegu X6100 v1.1.8 section 10.3.4
+    # documents a 10 Hz step, and the profile declares decode_quantum 10,
+    # so every documented 10 Hz value round-trips exactly.
+    for h in range(400, 1201, 10):
+        assert (
+            decode_legacy_control(
+                controls, "cw_pitch", encode_legacy_control(controls, "cw_pitch", h)
+            )
+            == h
+        ), f"x6100 cw_pitch {h} Hz"
+
+
+def test_x6100_key_speed_encode_uses_the_declared_5_50_domain() -> None:
+    controls = _rig_domains("x6100")
+    assert encode_legacy_control(controls, "key_speed", 5) == 0
+    assert encode_legacy_control(controls, "key_speed", 50) == 255
+    for w in range(5, 51):
+        assert (
+            decode_legacy_control(
+                controls, "key_speed", encode_legacy_control(controls, "key_speed", w)
+            )
+            == w
+        ), f"x6100 key_speed {w} WPM"
+
+
+def test_legacy_encode_rejects_out_of_band_and_non_integer_display() -> None:
+    controls = {
+        "cw_pitch": {
+            "raw_min": 0,
+            "raw_max": 255,
+            "display_min": 300,
+            "display_max": 900,
+            "encode_rounding": "ceil",
+        }
+    }
+    with pytest.raises(ValueError, match="300-900"):
+        encode_legacy_control(controls, "cw_pitch", 299)
+    with pytest.raises(ValueError, match="300-900"):
+        encode_legacy_control(controls, "cw_pitch", 901)
+    with pytest.raises(ValueError, match="cw_pitch"):
+        encode_legacy_control(controls, "cw_pitch", 600.5)
+    with pytest.raises(ValueError, match="cw_pitch"):
+        encode_legacy_control(controls, "cw_pitch", True)

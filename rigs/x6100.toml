@@ -234,34 +234,33 @@ raw_max = 255
 raw_min = 0
 raw_max = 255
 
-# PRE-EXISTING DIVERGENCE, flagged not fixed (D2, MOR-2018; re-arbitrated
-# MOR-2488/MOR-2489, still not changed): the X6100 manual's front-panel
-# menu chapter documents a 400-1200 Hz side-tone range, while this
-# [controls.cw_pitch] display range is 300-900 Hz over the same
-# raw_min/raw_max 0-255 domain and the same [commands] get/set opcode
-# ([0x14, 0x09], which §15 Table 1 lists for X6100 -- "Get/Set CW sidetone
-# frequency", Rigs: X6100, G90 -- but with NO Hz scale in the CI-V table).
-# Widening the display range here is deliberately NOT done: the shared
-# CI-V encoder and the validation registry's cw_pitch check both still
-# enforce 300-900, so a wider profile range would let the UI offer values
-# the radio never receives. The range pair and the encoder limit move
-# together under a separate ticket; recorded here so it is not mistaken
-# for an oversight.
+# The band and step come from the Radioddity Extended manual for Xiegu
+# X6100 v1.1.8 section 10.3.4: side-tone 400-1200 Hz in 10 Hz steps. §15
+# Table 1 of the same manual lists the [0x14, 0x09] get/set sidetone opcode
+# for X6100 but gives NO Hz scale, so the raw 0-255 mapping onto this band
+# is inferred by symmetry with the X6200 CI-V V1.0.6 table, which does
+# state its scale (p.6: 0=400Hz, 255=1200Hz) over the same opcode.
 [controls.cw_pitch]
 raw_min = 0
 raw_max = 255
-display_min = 300
-display_max = 900
+display_min = 400
+display_max = 1200
 display_unit = "Hz"
-decode_quantum = 5  # reproduces the pre-existing shared CI-V CW-pitch decode; the manual's menu step is 10 Hz (Radioddity Extended manual for Xiegu X6100 v1.1.8 section 10.3.4) and the CI-V table states no Hz scale
+decode_quantum = 10  # Radioddity Extended manual for Xiegu X6100 v1.1.8 section 10.3.4: side-tone 400-1200 Hz in 10 Hz steps
+encode_rounding = "ceil"  # band endpoints 400->0 and 1200->255 are pinned by tests/test_control_domain_math.py::test_x6100_cw_pitch_encode_uses_the_declared_400_1200_domain
 
+# Radioddity Extended manual for Xiegu X6100 v1.1.8 section 10.3.2: key
+# speed 5-50 WPM. The CI-V table states no WPM scale, so the raw 0-255
+# mapping onto this band is inferred by symmetry with the X6200 CI-V
+# V1.0.6 table, as for [controls.cw_pitch] above.
 [controls.key_speed]
 raw_min = 0
 raw_max = 255
-display_min = 6
-display_max = 48
+display_min = 5
+display_max = 50
 display_unit = "WPM"
-decode_quantum = 1  # band not documented for this radio: it reproduces the pre-existing shared CI-V key-speed decode; the manual's menu range is 5-50 WPM (Radioddity Extended manual for Xiegu X6100 v1.1.8 section 10.3.2) and states no CI-V scale
+decode_quantum = 1
+encode_rounding = "nearest_half_down"  # band endpoints 5->0 and 50->255 are pinned by tests/test_control_domain_math.py::test_x6100_key_speed_encode_uses_the_declared_5_50_domain
 
 [controls.rit]
 # MOR-1883: exact-form translation of the previously declared range;

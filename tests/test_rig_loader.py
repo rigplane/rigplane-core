@@ -1479,6 +1479,72 @@ choices = [
                 assert isinstance(entry.get("decode_quantum"), int), (path.name, ctl)
                 assert entry["decode_quantum"] > 0, (path.name, ctl)
 
+    def test_every_civ_profile_with_cw_commands_declares_encode_rounding(self):
+        for path in sorted(
+            path for path in RIGS_DIR.glob("*.toml") if not path.name.startswith("_")
+        ):
+            rig = load_rig(path)
+            controls = rig.to_profile().controls
+            for ctl, command in (
+                ("cw_pitch", "set_cw_pitch"),
+                ("key_speed", "set_key_speed"),
+            ):
+                if command not in rig.commands:
+                    continue
+                assert controls is not None, (path.name, ctl)
+                entry = controls.get(ctl)
+                assert isinstance(entry, dict), (path.name, ctl)
+                assert entry.get("encode_rounding") in (
+                    "ceil",
+                    "nearest_half_down",
+                ), (path.name, ctl)
+
+    def test_encode_rounding_is_published_on_the_legacy_control(self, tmp_path):
+        rig = self._load(tmp_path, self._LEGACY_PITCH + 'encode_rounding = "ceil"\n')
+
+        assert rig.controls == {
+            "test_control": {
+                "raw_min": 0,
+                "raw_max": 255,
+                "display_min": 300,
+                "display_max": 900,
+                "display_unit": "Hz",
+                "encode_rounding": "ceil",
+            }
+        }
+        assert rig.to_profile().controls == rig.controls
+
+    @pytest.mark.parametrize(
+        "rounding",
+        [
+            'encode_rounding = "floor"',
+            'encode_rounding = "nearest_half_up"',
+            'encode_rounding = ""',
+            "encode_rounding = 5",
+            "encode_rounding = true",
+        ],
+        ids=["floor", "half_up", "empty", "integer", "boolean"],
+    )
+    def test_encode_rounding_must_be_a_declared_mode(self, tmp_path, rounding):
+        with pytest.raises(
+            RigLoadError, match=r"encode_rounding.*ceil.*nearest_half_down"
+        ):
+            self._load(tmp_path, self._LEGACY_PITCH + rounding + "\n")
+
+    def test_encode_rounding_requires_the_full_legacy_band(self, tmp_path):
+        partial = (
+            'raw_min = 0\nraw_max = 255\ndisplay_unit = "Hz"\n'
+            'encode_rounding = "ceil"\n'
+        )
+        with pytest.raises(
+            RigLoadError, match="encode_rounding.*display_min.*display_max"
+        ):
+            self._load(tmp_path, partial)
+
+    def test_encode_rounding_is_rejected_on_explicit_domains(self, tmp_path):
+        with pytest.raises(RigLoadError, match="encode_rounding.*explicit"):
+            self._load(tmp_path, self._LINEAR + 'encode_rounding = "ceil"\n')
+
     @pytest.mark.parametrize(
         "maximum",
         [

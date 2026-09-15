@@ -17,6 +17,7 @@ Malformed domains and inputs fail closed to ``None``.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping
 from decimal import Decimal
@@ -28,6 +29,7 @@ __all__ = [
     "decode_control_domain",
     "decode_legacy_control",
     "encode_control_domain",
+    "encode_legacy_control",
     "quantize_control_domain",
     "snap_control_domain",
     "validate_control_raw_value",
@@ -36,6 +38,7 @@ __all__ = [
 _QUANTIZATIONS = frozenset(
     {"nearest_ties_down", "nearest_ties_up", "floor", "ceil", "reject"}
 )
+_LEGACY_ENCODE_ROUNDINGS = frozenset({"ceil", "nearest_half_down"})
 # Mappings that publish a scalar raw<->display domain (``encoded`` publishes
 # discrete choices instead of a band, so it is not a band source).
 _SCALAR_MAPPINGS = frozenset({"identity", "linear", "centered", "lookup"})
@@ -506,6 +509,62 @@ def decode_legacy_control(
         )
     )
     return display_min + quantum * steps
+
+
+def encode_legacy_control(
+    controls: Mapping[str, object] | None, control: str, display: int
+) -> int:
+    """Encode a legacy rational control's display value to its raw level.
+
+    The inverse of :func:`decode_legacy_control` over the same legacy band:
+    the level is
+
+    ``raw_min + R((display - display_min) * (raw_max - raw_min) / (display_max - display_min))``
+
+    computed with :class:`~fractions.Fraction`, where ``R`` is the profile's
+    declared ``encode_rounding`` — ``ceil``, or round-to-nearest with exact
+    halves rounding down (``nearest_half_down``). Integers in, integer out.
+    Raises ``ValueError`` when *controls* publishes no legacy band with an
+    ``encode_rounding`` for *control*, or when *display* is not an integer
+    inside ``[display_min, display_max]`` — never falls back to a code
+    constant.
+    """
+    entry = controls.get(control) if controls is not None else None
+    band_keys = ("raw_min", "raw_max", "display_min", "display_max")
+    if not isinstance(entry, Mapping) or any(
+        isinstance(entry.get(key), bool) or not isinstance(entry.get(key), int)
+        for key in band_keys
+    ):
+        raise ValueError(
+            f"no legacy rational control domain with encode_rounding "
+            f"for {control!r} in the active profile"
+        )
+    raw_min, raw_max, display_min, display_max = (
+        cast(int, entry[key]) for key in band_keys
+    )
+    rounding = entry.get("encode_rounding")
+    if not isinstance(rounding, str) or rounding not in _LEGACY_ENCODE_ROUNDINGS:
+        raise ValueError(
+            f"no legacy rational control domain with encode_rounding "
+            f"for {control!r} in the active profile"
+        )
+    if (
+        isinstance(display, bool)
+        or not isinstance(display, int)
+        or not display_min <= display <= display_max
+    ):
+        raise ValueError(
+            f"{control} must be within {display_min}-{display_max}; got {display!r}"
+        )
+    scaled = Fraction(
+        (display - display_min) * (raw_max - raw_min), display_max - display_min
+    )
+    if rounding == "ceil":
+        offset = math.ceil(scaled)
+    else:
+        quotient, remainder = divmod(scaled.numerator, scaled.denominator)
+        offset = quotient + 1 if 2 * remainder > scaled.denominator else quotient
+    return raw_min + offset
 
 
 def quantize_control_domain(domain: Mapping[str, object], display: str) -> str | None:
