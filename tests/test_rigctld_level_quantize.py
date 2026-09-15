@@ -1,4 +1,4 @@
-"""MOR-2469 — rigctld routes level sets through the control-domain surface.
+"""MOR-2469 / MOR-2479 — rigctld routes levels through the control-domain surface.
 
 ``YaesuRouting.set_level`` used to forward ``round(value)`` (IFSHIFT),
 a hardcoded 300-1050 clamp (CWPITCH) or raw hamlib Hz codes (NOTCHF),
@@ -10,6 +10,15 @@ value onto the domain's display lattice (nearest, ties up) and hands
 the backend the raw code; out-of-range values return ``EINVAL``
 without calling the setter. Radios that do not implement the protocol
 keep the legacy rounded passthrough, with the old CWPITCH clamp gone.
+
+MOR-2479 extends the same dispatch to NR: hamlib carries NR as a
+0.0-1.0 fraction and the routing used to scale it by a hardcoded 15,
+while the FTX-1 profile publishes an identity 0-10 ``nr_level`` domain
+(CAT manual rev 2508-C, ``RL``: P2 = 00 OFF, 01-10). With a published
+domain the fraction is mapped onto the display band and written as its
+raw code; reading decodes the raw code and divides by the band maximum
+so raw 10 answers ``1.000000``. No domain — or a double that cannot
+supply usable bounds — keeps today's /15 numbers exactly.
 """
 
 from __future__ import annotations
@@ -36,13 +45,18 @@ class _DomainRadio:
         self.notch_calls: list[int] = []
         self.if_shift_calls: list[int] = []
         self.cw_pitch_calls: list[int] = []
+        self.nr_calls: list[int] = []
         self.notch_state: tuple[bool, int] = (True, 1)
+        self.nr_level: int = 0
 
     def snap_control_display(self, control: str, display: str) -> int | None:
         return self._ftx1.snap_control_display(control, display)
 
     def decode_control_raw(self, control: str, raw: int) -> str | None:
         return self._ftx1.decode_control_raw(control, raw)
+
+    def control_display_bounds(self, control: str) -> tuple[str, str] | None:
+        return self._ftx1.control_display_bounds(control)
 
     async def get_manual_notch(self, receiver: int = 0) -> tuple[bool, int]:
         return self.notch_state
@@ -61,6 +75,26 @@ class _DomainRadio:
 
     async def set_cw_pitch(self, freq: int) -> None:
         self.cw_pitch_calls.append(freq)
+
+    async def get_nr_level(self, receiver: int = 0) -> int:
+        return self.nr_level
+
+    async def set_nr_level(self, level: int, receiver: int = 0) -> None:
+        self.nr_calls.append(level)
+
+
+class _NoNrDomainRadio(_DomainRadio):
+    """Domain double whose profile publishes no ``nr_level`` domain.
+
+    ``control_display_bounds`` answers ``None`` for NR — the contract
+    for "no normalized domain published" — so both NR arms must take
+    the legacy /15 path while the other controls keep domain routing.
+    """
+
+    def control_display_bounds(self, control: str) -> tuple[str, str] | None:
+        if control == "nr_level":
+            return None
+        return self._ftx1.control_display_bounds(control)
 
 
 class _NoDomainRadio:
@@ -70,7 +104,9 @@ class _NoDomainRadio:
         self.notch_calls: list[int] = []
         self.if_shift_calls: list[int] = []
         self.cw_pitch_calls: list[int] = []
+        self.nr_calls: list[int] = []
         self.notch_state: tuple[bool, int] = (True, 1)
+        self.nr_level: int = 0
 
     async def get_manual_notch(self, receiver: int = 0) -> tuple[bool, int]:
         return self.notch_state
@@ -89,6 +125,12 @@ class _NoDomainRadio:
 
     async def set_cw_pitch(self, freq: int) -> None:
         self.cw_pitch_calls.append(freq)
+
+    async def get_nr_level(self, receiver: int = 0) -> int:
+        return self.nr_level
+
+    async def set_nr_level(self, level: int, receiver: int = 0) -> None:
+        self.nr_calls.append(level)
 
 
 def _routing(radio: object) -> YaesuRouting:
@@ -246,3 +288,140 @@ async def test_no_domain_notchf_get_keeps_raw_index() -> None:
     resp = await _routing(radio).get_level("NOTCHF")
     assert resp.ok
     assert resp.values == ["150"]
+
+
+# ---------------------------------------------------------------------------
+# NR — hamlib 0.0-1.0 fraction mapped onto the identity 0-10 domain
+# (MOR-2479: FTX-1 CAT manual rev 2508-C, RL P2 = 00 OFF, 01-10)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("value", "applied"), [(1.0, 10), (0.5, 5), (0.0, 0), (0.3, 3), (0.35, 4)]
+)
+async def test_nr_set_maps_fraction_onto_domain(value: float, applied: int) -> None:
+    radio = _DomainRadio()
+    resp = await _routing(radio).set_level("NR", value)
+    assert resp.ok
+    assert radio.nr_calls == [applied]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [1.5, -0.1, 12.0])
+async def test_nr_set_out_of_range_einval_no_call(value: float) -> None:
+    radio = _DomainRadio()
+    resp = await _routing(radio).set_level("NR", value)
+    assert resp.error == int(HamlibError.EINVAL)
+    assert not resp.ok
+    assert radio.nr_calls == []
+
+
+@pytest.mark.asyncio
+async def test_nr_get_decodes_raw_max_to_one() -> None:
+    radio = _DomainRadio()
+    radio.nr_level = 10
+    resp = await _routing(radio).get_level("NR")
+    assert resp.ok
+    assert resp.values == ["1.000000"]
+
+
+@pytest.mark.asyncio
+async def test_nr_get_decodes_mid_raw_to_half() -> None:
+    radio = _DomainRadio()
+    radio.nr_level = 5
+    resp = await _routing(radio).get_level("NR")
+    assert resp.ok
+    assert resp.values == ["0.500000"]
+
+
+# ---------------------------------------------------------------------------
+# NR with no usable domain — today's /15 numbers, pinned exactly
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("value", "applied"), [(1.0, 15), (0.5, 8), (0.0, 0)])
+async def test_nr_set_no_domain_keeps_legacy_scale(value: float, applied: int) -> None:
+    """No protocol implementation → max(0, min(15, round(value * 15)))."""
+    radio = _NoDomainRadio()
+    resp = await _routing(radio).set_level("NR", value)
+    assert resp.ok
+    assert radio.nr_calls == [applied]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("value", "applied"), [(1.0, 15), (0.5, 8), (0.0, 0)])
+async def test_nr_set_unpublished_domain_keeps_legacy_scale(
+    value: float, applied: int
+) -> None:
+    """Protocol implemented but no nr_level domain published → legacy /15."""
+    radio = _NoNrDomainRadio()
+    resp = await _routing(radio).set_level("NR", value)
+    assert resp.ok
+    assert radio.nr_calls == [applied]
+
+
+@pytest.mark.asyncio
+async def test_nr_get_no_domain_keeps_legacy_scale() -> None:
+    radio = _NoDomainRadio()
+    radio.nr_level = 8
+    resp = await _routing(radio).get_level("NR")
+    assert resp.ok
+    assert resp.values == [f"{8 / 15.0:.6f}"]
+
+
+@pytest.mark.asyncio
+async def test_nr_get_unpublished_domain_keeps_legacy_scale() -> None:
+    radio = _NoNrDomainRadio()
+    radio.nr_level = 8
+    resp = await _routing(radio).get_level("NR")
+    assert resp.ok
+    assert resp.values == [f"{8 / 15.0:.6f}"]
+
+
+# ---------------------------------------------------------------------------
+# NR state path — format_state_level must agree with the live read (MOR-2479)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_nr_state_path_agrees_with_live_read() -> None:
+    """Same raw value, both answering paths, same fraction.
+
+    ``get_level`` reads the wire; ``format_state_level`` formats the
+    StateStore projection. Both must consult the published domain, so
+    raw 10 answers ``1.000000`` either way — not ``1.000000`` live and
+    ``0.666667`` from state.
+    """
+    radio = _DomainRadio()
+    radio.nr_level = 10
+    routing = _routing(radio)
+    live = await routing.get_level("NR")
+    state = routing.format_state_level("NR", 10)
+    assert live.ok and state is not None
+    assert state.values == live.values == ["1.000000"]
+
+
+def test_nr_state_path_agrees_with_live_read_off_max() -> None:
+    radio = _DomainRadio()
+    routing = _routing(radio)
+    state = routing.format_state_level("NR", 5)
+    assert state is not None
+    assert state.values == ["0.500000"]
+
+
+def test_nr_state_path_no_domain_keeps_legacy_scale() -> None:
+    radio = _NoDomainRadio()
+    routing = _routing(radio)
+    state = routing.format_state_level("NR", 8)
+    assert state is not None
+    assert state.values == [f"{8 / 15.0:.6f}"]
+
+
+def test_nr_state_path_unpublished_domain_keeps_legacy_scale() -> None:
+    radio = _NoNrDomainRadio()
+    routing = _routing(radio)
+    state = routing.format_state_level("NR", 8)
+    assert state is not None
+    assert state.values == [f"{8 / 15.0:.6f}"]

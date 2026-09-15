@@ -1040,7 +1040,7 @@ class ControlDomainCapable(Protocol):
     implements this surface so callers can convert between a domain's
     display values and its raw codes through the backend, instead of
     each caller re-deriving the profile math.
-    Both methods are synchronous and never touch the wire.
+    All methods are synchronous and never touch the wire.
     """
 
     def snap_control_display(self, control: str, display: str) -> int | None:
@@ -1059,6 +1059,17 @@ class ControlDomainCapable(Protocol):
 
         Returns ``None`` when the radio publishes no normalized domain
         for *control*, or when *raw* is not a legal point on it.
+        """
+        ...
+
+    def control_display_bounds(self, control: str) -> tuple[str, str] | None:
+        """Return the canonical display ``(minimum, maximum)`` for *control*.
+
+        Both bounds are canonical decimal strings read from the radio's
+        published control domain — the band the radio itself scales its
+        display values over, so callers never substitute a code constant
+        for it. Returns ``None`` when the radio publishes no domain for
+        *control*. Synchronous; never touches the wire.
         """
         ...
 
