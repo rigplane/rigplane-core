@@ -50,7 +50,7 @@ import {
 } from '$lib/runtime/props/panel-props';
 import {
   deriveIfShift, pbtRangeFromCaps, pbtRawToHz,
-  controlRangeFromCapsOrDefault, nbDepthRawToDisplay, projectNrLevel,
+  controlRangeFromCapsOrDefault, nbDepthRawToDisplay, projectNrLevel, controlDisplayDomain,
 } from '$lib/radio/filter-controls';
 import type { NrLevelProjection } from '$lib/radio/filter-controls';
 import {
@@ -1335,6 +1335,11 @@ function deriveCwKeyer(state: ServerState | null, caps: Capabilities | null): Cw
   const rx = onSub ? state?.sub : state?.main;
   const base = onSub ? 'sub.' : 'main.';
   const dashRatio = numOrUndef(state?.dashRatio);
+  // MOR-1682: the pitch domain comes from the profile's published
+  // `controls.cw_pitch` entry — exact domain (FTX-1: 300..1050, step 10) or
+  // legacy range with the 5 Hz fallback step. No usable entry keeps the key
+  // absent so surfaces fall back to their own today-behaviour constants.
+  const pitchDomain = controlDisplayDomain(caps?.controls?.cw_pitch, 5);
   return {
     breakIn: txAuxField(hasBreakInCap, topFieldAvailable(state, 'breakIn'), breakInMode(state?.breakIn)),
     breakInDelay: txAuxField(
@@ -1342,6 +1347,7 @@ function deriveCwKeyer(state: ServerState | null, caps: Capabilities | null): Cw
     ),
     keyerSpeed: txAuxField(true, topFieldAvailable(state, 'keySpeed'), numOrUndef(state?.keySpeed)),
     pitchHz: txAuxField(true, topFieldAvailable(state, 'cwPitch'), numOrUndef(state?.cwPitch)),
+    ...(pitchDomain !== null ? { pitchDomain } : {}),
     reversePaddle: txAuxField(
       true, topFieldAvailable(state, 'dashRatio'), dashRatio === undefined ? undefined : dashRatio < 0,
     ),

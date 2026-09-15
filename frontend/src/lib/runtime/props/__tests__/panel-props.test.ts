@@ -1031,6 +1031,24 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
       expect(props.sidetonePitch).toBe(700);
       expect(props.twinPeak).toBe(true);
     });
+
+    it('derives cwPitchDomain from the profile control entry with a 5 Hz legacy fallback step (MOR-1682)', () => {
+      const withControls = (controls: Record<string, unknown>) => ({
+        capabilities: ['cw'], controls,
+      }) as any;
+      expect(toCwProps(null, withControls({
+        cw_pitch: {
+          mapping: 'identity', raw_min: 300, raw_max: 1050, raw_step: 10, raw_origin: 300,
+          display_min: '300', display_max: '1050', display_step: '10', display_origin: '300',
+          display_unit: 'Hz', quantization: 'reject', restoration: 'exact',
+        },
+      })).cwPitchDomain).toEqual({ min: 300, max: 1050, step: 10, origin: 300 });
+      expect(toCwProps(null, withControls({
+        cw_pitch: { raw_min: 0, raw_max: 255, display_min: 300, display_max: 900, display_unit: 'Hz' },
+      })).cwPitchDomain).toEqual({ min: 300, max: 900, step: 5, origin: 300 });
+      expect(toCwProps(null, withControls({})).cwPitchDomain).toBeNull();
+      expect(toCwProps(null, null).cwPitchDomain).toBeNull();
+    });
   });
 
   describe('toMeterProps', () => {

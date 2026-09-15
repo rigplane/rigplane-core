@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import type { FilterModeConfig } from '$lib/types/capabilities';
+import type { ControlDomain, FilterModeConfig } from '$lib/types/capabilities';
 import {
+  controlDisplayDomain,
   nbDepthDisplayToRaw,
   nbDepthRawToDisplay,
   nrDisplayToRaw,
@@ -119,6 +120,52 @@ describe('NB-depth display <-> raw round-trip', () => {
 // them with "Filter width N is not aligned to N Hz steps", the reported
 // sticky-toast spray. `quantizeFilterWidthToRule` must snap to a value the
 // radio's OWN declared rule actually accepts, not a client-invented one.
+// MOR-1682: a control's slider domain comes from the profile's published
+// control entry, never a per-radio constant in adapter/surface code. The two
+// real shapes: FTX-1's exact identity domain (`rigs/ftx1.toml
+// [controls.cw_pitch]`, 300..1050 Hz in 10 Hz steps) and IC-7300's legacy
+// range (`rigs/ic7300.toml [controls.cw_pitch]`, raw 0-255 <-> display
+// 300-900 Hz, no step) — the step for the legacy shape is the caller's own
+// fallback, preserving today's 5 Hz UI behaviour.
+describe('controlDisplayDomain (MOR-1682)', () => {
+  const FTX1_CW_PITCH: ControlDomain = {
+    mapping: 'identity',
+    raw_min: 300, raw_max: 1050, raw_step: 10, raw_origin: 300,
+    display_min: '300' as never, display_max: '1050' as never,
+    display_step: '10' as never, display_origin: '300' as never,
+    display_unit: 'Hz', quantization: 'reject', restoration: 'exact',
+  };
+  const IC7300_CW_PITCH = {
+    raw_min: 0, raw_max: 255, display_min: 300, display_max: 900, display_unit: 'Hz',
+  };
+
+  it('projects an exact profile domain with its own step and origin', () => {
+    expect(controlDisplayDomain(FTX1_CW_PITCH, 5))
+      .toEqual({ min: 300, max: 1050, step: 10, origin: 300 });
+  });
+
+  it('projects a legacy range onto the caller fallback step anchored at display_min', () => {
+    expect(controlDisplayDomain(IC7300_CW_PITCH, 5))
+      .toEqual({ min: 300, max: 900, step: 5, origin: 300 });
+  });
+
+  it('returns null for an absent control entry', () => {
+    expect(controlDisplayDomain(undefined, 5)).toBeNull();
+    expect(controlDisplayDomain(null, 5)).toBeNull();
+  });
+
+  it('returns null for a legacy entry without usable display bounds (no fabricated domain)', () => {
+    expect(controlDisplayDomain({ raw_min: 0, raw_max: 255 }, 5)).toBeNull();
+    expect(controlDisplayDomain({ ...IC7300_CW_PITCH, display_min: 900, display_max: 300 }, 5)).toBeNull();
+    expect(controlDisplayDomain({ ...IC7300_CW_PITCH, display_min: Number.NaN }, 5)).toBeNull();
+  });
+
+  it('returns null for an exact domain that fails the decode/encode round-trip', () => {
+    expect(controlDisplayDomain({ ...FTX1_CW_PITCH, restoration: 'unavailable' }, 5)).toBeNull();
+    expect(controlDisplayDomain({ ...FTX1_CW_PITCH, display_max: '1055' as never }, 5)).toBeNull();
+  });
+});
+
 describe('quantizeFilterWidthToRule (MOR-1518)', () => {
   // Same shape as `panel-commands.intent.isolated.test.ts`'s `A06_SEGMENTS`
   // fixture (and `rigs/ic7300.toml`'s `[filters.width.USB]`): a 50 Hz step

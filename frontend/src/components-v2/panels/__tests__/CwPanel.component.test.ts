@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ControlFeedback } from '$lib/runtime/adapters/panel-adapters';
+import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
 
 const mockProps = {
   cwPitch: 600,
@@ -17,6 +18,7 @@ const mockProps = {
   hasApf: true,
   hasTwinPeak: true,
   autoTuneAvailable: false,
+  cwPitchDomain: null as ControlDisplayDomain | null,
 };
 
 const mockHandlers = {
@@ -72,15 +74,15 @@ function mountPanel(overrides?: Partial<typeof mockProps>) {
   return t;
 }
 
-beforeEach(() => {
-  components = [];
-  Object.assign(mockProps, {
-    cwPitch: 600, keySpeed: 12, breakIn: 0, breakInDelay: 0,
-    apfMode: 0, twinPeak: false, currentMode: 'CW',
-    apfDisabled: false, tpfDisabled: false,
-    hasCw: true, hasBreakIn: true, hasApf: true, hasTwinPeak: true,
-    autoTuneAvailable: false,
-  });
+  beforeEach(() => {
+    components = [];
+    Object.assign(mockProps, {
+      cwPitch: 600, keySpeed: 12, breakIn: 0, breakInDelay: 0,
+      apfMode: 0, twinPeak: false, currentMode: 'CW',
+      apfDisabled: false, tpfDisabled: false,
+      hasCw: true, hasBreakIn: true, hasApf: true, hasTwinPeak: true,
+      autoTuneAvailable: false, cwPitchDomain: null,
+    });
   Object.values(mockHandlers).forEach((fn) => fn.mockClear());
   Object.assign(mockFeedback, {
     confirmed: 64, target: null, requestedTarget: null, phase: 'idle', busy: false,
@@ -212,6 +214,41 @@ describe('CwPanel component rendering', () => {
     const comp = components.pop()!;
     unmount(comp);
     expect(t.innerHTML).toBe('');
+  });
+});
+
+describe('CwPanel CW pitch domain (MOR-1682)', () => {
+  const stepPitch = (t: HTMLElement) => {
+    t.querySelector<HTMLElement>('[aria-label="CW Pitch"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+  };
+
+  it('ranges and steps the pitch control by the profile exact domain (FTX-1: 300..1050, step 10)', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ cwPitchDomain: { min: 300, max: 1050, step: 10, origin: 300 } });
+    const slider = t.querySelector<HTMLElement>('[aria-label="CW Pitch"][role="slider"]')!;
+    expect(slider.getAttribute('aria-valuemin')).toBe('300');
+    expect(slider.getAttribute('aria-valuemax')).toBe('1050');
+    stepPitch(t);
+    expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(610);
+    vi.useRealTimers();
+  });
+
+  it('keeps the 5 Hz step for a legacy-domain radio (IC-7300 shape)', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ cwPitchDomain: { min: 300, max: 900, step: 5, origin: 300 } });
+    stepPitch(t);
+    expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(605);
+    vi.useRealTimers();
+  });
+
+  it('keeps the 5 Hz step when the profile publishes no cw_pitch domain', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ cwPitchDomain: null });
+    stepPitch(t);
+    expect(mockHandlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(605);
+    vi.useRealTimers();
   });
 });
 

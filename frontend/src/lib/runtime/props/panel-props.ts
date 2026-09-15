@@ -14,13 +14,14 @@
 import type { ServerState, ReceiverState } from '$lib/types/state';
 import type { Capabilities, ControlDomain, FilterModeConfig } from '$lib/types/capabilities';
 import {
+  controlDisplayDomain,
   deriveIfShift,
   nbDepthRawToDisplay,
   nrRawToDisplay,
   pbtRawToHz,
   projectNrLevel,
 } from '$lib/radio/filter-controls';
-import type { NrLevelProjection } from '$lib/radio/filter-controls';
+import type { NrLevelProjection, ControlDisplayDomain } from '$lib/radio/filter-controls';
 import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
 import { isFieldAvailable, isFieldRead } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
@@ -781,6 +782,12 @@ export interface CwProps {
   hasApf: boolean;
   hasTwinPeak: boolean;
   autoTuneAvailable: boolean;
+  /**
+   * The pitch control's display domain from the profile's `controls.cw_pitch`
+   * entry (MOR-1682), or null when the radio publishes nothing usable —
+   * `CwPanel.svelte` keeps its own 300/900/5 constants for that case.
+   */
+  cwPitchDomain: ControlDisplayDomain | null;
 }
 
 export function toCwProps(
@@ -820,6 +827,7 @@ export function toCwProps(
     autoTuneAvailable: hasCap(caps, 'cw')
       && hasCap(caps, 'audio')
       && caps?.audioFftAvailable === true,
+    cwPitchDomain: controlDisplayDomain(caps?.controls?.cw_pitch, 5),
   };
 }
 

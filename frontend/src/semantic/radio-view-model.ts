@@ -16,7 +16,7 @@
  * boolean or a default is the failure mode this contract exists to prevent.
  */
 import type { VfoScheme } from '$lib/types/capabilities';
-import type { NrLevelProjection } from '$lib/radio/filter-controls';
+import type { NrLevelProjection, ControlDisplayDomain } from '$lib/radio/filter-controls';
 import type { FrequencyPermit, TxPermit } from '$lib/utils/tx-permit';
 import type { MeterSourceIdentity as PrimitiveMeterSourceIdentity } from '../primitives/meters/meter-ballistics.svelte';
 import { invalid, record, exactKeys, str } from './validator-primitives';
@@ -832,6 +832,17 @@ export interface CwKeyerViewModel {
   keyerSpeed: CwKeyerField<number>;
   /** CW pitch / sidetone pitch in Hz (`state.cwPitch`); `unknown`, never 600. */
   pitchHz: CwKeyerField<number>;
+  /**
+   * The pitch control's numeric display domain from the profile's published
+   * `controls.cw_pitch` entry (MOR-1682): `{min, max, step, origin}` when the
+   * radio declares a usable one (FTX-1's exact 300..1050 Hz / 10 Hz lattice,
+   * a legacy 300..900 range with the 5 Hz fallback step), absent when it
+   * declares nothing usable — the fact group states the DOMAIN, never a
+   * fallback; consumers keep their own today-behaviour constants for the
+   * absent case. Not a per-field reading: one control, one domain, so it
+   * sits on the group beside the fields it governs.
+   */
+  pitchDomain?: ControlDisplayDomain;
   reversePaddle: CwKeyerField<boolean>;
   /** Audio peak filter type/level ordinal (`rx.apfTypeLevel`, 0 = off). */
   apf: CwKeyerField<number>;
@@ -2050,18 +2061,24 @@ function validateScan(value: unknown, path: string): ScanViewModel {
 
 const BREAK_IN_MODES: readonly BreakInMode[] = ['off', 'semi', 'full'];
 
-/** Exactly the seven facts the adapter reads. See
+/** Exactly the seven facts the adapter reads, plus the optional
+ *  profile-declared pitch domain (MOR-1682). See
  *  `radio-view-model-adapter.ts::deriveCwKeyer`. */
 function validateCwKeyer(value: unknown, path: string): CwKeyerViewModel {
   const v = record(value, path);
   exactKeys(v, [
-    'breakIn', 'breakInDelay', 'keyerSpeed', 'pitchHz', 'reversePaddle', 'apf', 'twinPeak',
+    'breakIn', 'breakInDelay', 'keyerSpeed', 'pitchHz', 'pitchDomain', 'reversePaddle', 'apf',
+    'twinPeak',
   ], path);
+  const pitchDomain = optionalGroup(
+    v.pitchDomain, `${path}.pitchDomain`, validateNrLevelDisplayDomain,
+  );
   return {
     breakIn: validateTxAuxField(v.breakIn, `${path}.breakIn`, (val, p) => oneOf(val, BREAK_IN_MODES, p)),
     breakInDelay: validateTxAuxField(v.breakInDelay, `${path}.breakInDelay`, num),
     keyerSpeed: validateTxAuxField(v.keyerSpeed, `${path}.keyerSpeed`, num),
     pitchHz: validateTxAuxField(v.pitchHz, `${path}.pitchHz`, num),
+    ...(pitchDomain !== undefined ? { pitchDomain } : {}),
     reversePaddle: validateTxAuxField(v.reversePaddle, `${path}.reversePaddle`, bool),
     apf: validateTxAuxField(v.apf, `${path}.apf`, num),
     twinPeak: validateTxAuxField(v.twinPeak, `${path}.twinPeak`, bool),
