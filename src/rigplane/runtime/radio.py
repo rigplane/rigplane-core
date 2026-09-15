@@ -189,6 +189,7 @@ from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
 from rigplane.profiles import RadioProfile, resolve_radio_profile
 from rigplane.profiles.control_domain import decode_legacy_control
+from rigplane.profiles.control_domain import encode_legacy_control
 from rigplane.core.radio_state import RadioState
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.core._state_cache import StateCache
@@ -2590,9 +2591,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return decode_legacy_control(self._profile.controls, "cw_pitch", level)
 
     async def set_cw_pitch(self, pitch_hz: int) -> None:
-        """Set CW pitch in Hz."""
+        """Set CW pitch in Hz.
+
+        The Hz-to-level conversion comes from the active profile's
+        ``[controls.cw_pitch]`` band and its ``encode_rounding`` rule.
+        """
+        level = encode_legacy_control(self._profile.controls, "cw_pitch", pitch_hz)
         await self._send_fire_and_forget(
-            self._commands.set_cw_pitch(pitch_hz, to_addr=self._radio_addr)
+            self._commands.set_cw_pitch(level, to_addr=self._radio_addr)
         )
 
     async def get_mic_gain(self) -> int:
@@ -2625,9 +2631,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return decode_legacy_control(self._profile.controls, "key_speed", level)
 
     async def set_key_speed(self, wpm: int) -> None:
-        """Set key speed in WPM."""
+        """Set key speed in WPM.
+
+        The WPM-to-level conversion comes from the active profile's
+        ``[controls.key_speed]`` band and its ``encode_rounding`` rule.
+        """
+        level = encode_legacy_control(self._profile.controls, "key_speed", wpm)
         await self._send_fire_and_forget(
-            self._commands.set_key_speed(wpm, to_addr=self._radio_addr)
+            self._commands.set_key_speed(level, to_addr=self._radio_addr)
         )
 
     async def get_notch_filter(self, receiver: int = RECEIVER_MAIN) -> int:

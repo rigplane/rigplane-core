@@ -2899,6 +2899,36 @@ class TestDspLevelParity:
         assert b"\x14\x09\x01\x28\xfd" in sent
 
     @pytest.mark.asyncio
+    async def test_set_cw_pitch_sends_the_origin_main_frame_bytes(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        # 600 Hz encodes through the IC-7610 profile's 300-900 Hz ceil band
+        # to level 128 (ceil(127.5)); the full frame is byte for byte the
+        # FE FE 98 E0 14 09 01 28 FD that origin/main sent for this call
+        # (pinned by the substring assertion in the test above, unchanged).
+        await radio.set_cw_pitch(600)
+        assert mock_transport.sent_packets[-1].endswith(
+            b"\xfe\xfe\x98\xe0\x14\x09\x01\x28\xfd"
+        )
+
+    @pytest.mark.asyncio
+    async def test_x6200_set_cw_pitch_sends_level_255_at_1200_hz(
+        self, mock_transport: MockTransport
+    ) -> None:
+        # rigs/x6200.toml [controls.cw_pitch] declares the 400-1200 Hz band
+        # (Radioddity X6200 CI-V V1.0.6 p.6: 0=400Hz, 255=1200Hz), so
+        # 1200 Hz encodes to level 255 -> BCD 02 55 on the X6200 address.
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        await radio.set_cw_pitch(1200)
+        assert mock_transport.sent_packets[-1].endswith(
+            b"\xfe\xfe\xa4\xe0\x14\x09\x02\x55\xfd"
+        )
+        radio._connected = False
+
+    @pytest.mark.asyncio
     async def test_set_key_speed_sends_scaled_level(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
