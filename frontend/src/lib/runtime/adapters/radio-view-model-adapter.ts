@@ -670,6 +670,12 @@ function deriveFilterPassband(
     : (pbtInnerHz !== undefined && pbtOuterHz !== undefined
       ? deriveIfShift(pbtInnerHz, pbtOuterHz)
       : undefined);
+  // MOR-1681: the IF-shift control domain comes from the profile's
+  // published `controls.if_shift` entry — exact domain (identity-mapped Hz)
+  // or legacy range with the family fallback step. No usable entry keeps
+  // the key absent so surfaces fall back to their own today-behaviour
+  // constants.
+  const ifShiftDomain = controlDisplayDomain(caps?.controls?.if_shift, 25);
 
   return {
     filterShape: txAuxField(hasFilters, filterShapeObserved, numOrUndef(rx?.filterShape)),
@@ -705,6 +711,7 @@ function deriveFilterPassband(
     // dead). See `FilterPassbandViewModel.ifShiftControlStructural`'s doc
     // comment (`radio-view-model.ts`) for the full split.
     ifShiftControlStructural: hasIfShiftCap,
+    ...(ifShiftDomain !== null ? { ifShiftDomain } : {}),
     // MOR-1291: structural requires BOTH the `pbt` capability tag AND a
     // usable `pbt_inner` range from THIS caps argument — a radio that
     // declares the capability but omits (or malforms) its own range is

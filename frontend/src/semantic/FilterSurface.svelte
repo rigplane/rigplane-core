@@ -201,6 +201,17 @@
     else if (field === 'pbtInner') onPbtInnerChange?.(value);
     else onPbtOuterChange?.(value);
   }
+
+  /** MOR-1681: the ifShift ROW reads its range/step from the profile-
+   *  published control domain when the group carries one; every other
+   *  row (and a radio that publishes no usable domain) keeps the
+   *  `FILTER_PASSBAND_LEVELS` row constant. */
+  function passbandLimits(
+    field: FilterPassbandLevelField, min: number, max: number, step: number,
+  ): Readonly<{ min: number; max: number; step: number }> {
+    const domain = field === 'ifShift' ? filterPassband?.ifShiftDomain : undefined;
+    return domain === undefined ? { min, max, step } : domain;
+  }
 </script>
 
 {#if modeFilter || filterPassband}
@@ -260,6 +271,7 @@
       {/if}
       {#each FILTER_PASSBAND_LEVELS as [field, label, min, max, step] (field)}
         {#if field === 'ifShift' ? filterPassband.ifShiftControlStructural : filterPassband[field].availability.structural}
+          {@const limits = passbandLimits(field, min, max, step)}
           {#if field === 'pbtInner' || field === 'pbtOuter'}
             {@const display = pbtDisplay(filterPassband[field])}
             {@const measured = display.state === 'current' || display.state === 'stale'}
@@ -271,7 +283,7 @@
               <label class="filter-level-name" for={`${pendingFilterId}-${field}-input`}>{label}</label>
               <span class="pbt-slot" data-pbt-slot>
                 {#if display.state === 'current' || display.state === 'stale'}
-                  {@render passbandRange(field, min, max, step)}
+                  {@render passbandRange(field, limits.min, limits.max, limits.step)}
                 {:else}
                   <span class="pbt-unknown">{t('core.vfo.state.unknown')}</span>
                 {/if}
@@ -285,7 +297,7 @@
               data-presentation={presentationOf(filterPassband[field])}
             >
               <span class="filter-level-name">{label}</span>
-              {@render passbandRange(field, min, max, step)}
+              {@render passbandRange(field, limits.min, limits.max, limits.step)}
               <output>{textOf(filterPassband[field])}</output>
             </label>
           {/if}

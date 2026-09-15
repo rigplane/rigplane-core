@@ -745,6 +745,24 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
       expect(props.currentMode).toBe('USB');
       expect(props.filterLabels).toEqual(['FIL1', 'FIL2']);
     });
+
+    it('derives ifShiftDomain from the profile control entry with a 25 Hz legacy fallback step (MOR-1681)', () => {
+      const withControls = (controls: Record<string, unknown>) => ({
+        capabilities: ['if_shift'], controls,
+      }) as any;
+      expect(toFilterProps(null, withControls({
+        if_shift: {
+          mapping: 'identity', raw_min: -1200, raw_max: 1200, raw_step: 20, raw_origin: 0,
+          display_min: '-1200', display_max: '1200', display_step: '20', display_origin: '0',
+          display_unit: 'Hz', quantization: 'reject', restoration: 'exact',
+        },
+      })).ifShiftDomain).toEqual({ min: -1200, max: 1200, step: 20, origin: 0 });
+      expect(toFilterProps(null, withControls({
+        if_shift: { raw_min: -255, raw_max: 255, display_min: -1000, display_max: 1000, display_unit: 'Hz' },
+      })).ifShiftDomain).toEqual({ min: -1000, max: 1000, step: 25, origin: -1000 });
+      expect(toFilterProps(null, withControls({})).ifShiftDomain).toBeNull();
+      expect(toFilterProps(null, null).ifShiftDomain).toBeNull();
+    });
   });
 
   describe('toModeProps', () => {
