@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import tempfile
 import tomllib
 import warnings
@@ -182,6 +183,33 @@ def _on_control_lattice(
     return numerator % (value_den * origin_den * step_num) == 0
 
 
+_RAW_DOMAIN_FIELDS = ("raw_min", "raw_max", "raw_step", "raw_origin")
+
+
+def _normalized_raw_domain(
+    controls: Mapping[str, object] | None, control: str
+) -> tuple[int, int, int, int] | None:
+    """Return ``(raw_min, raw_max, raw_step, raw_origin)`` for *control*.
+
+    ``None`` when *controls* publishes no normalized scalar domain — no
+    entry, a non-mapping entry, or any of the four fields missing or
+    non-int (the legacy ``[controls.*]`` shape carries only raw_min and
+    raw_max).
+    """
+    entry = controls.get(control) if controls is not None else None
+    if not isinstance(entry, Mapping) or any(
+        isinstance(entry.get(key), bool) or not isinstance(entry.get(key), int)
+        for key in _RAW_DOMAIN_FIELDS
+    ):
+        return None
+    return (
+        cast(int, entry["raw_min"]),
+        cast(int, entry["raw_max"]),
+        cast(int, entry["raw_step"]),
+        cast(int, entry["raw_origin"]),
+    )
+
+
 def validate_control_raw_value(
     controls: Mapping[str, object] | None, control: str, value: int
 ) -> tuple[int, int, int, int]:
@@ -193,16 +221,12 @@ def validate_control_raw_value(
     control, its allowed range and its step otherwise, and when *controls*
     publishes no normalized scalar domain for *control*.
     """
-    entry = controls.get(control) if controls is not None else None
-    required = ("raw_min", "raw_max", "raw_step", "raw_origin")
-    if not isinstance(entry, Mapping) or any(
-        isinstance(entry.get(key), bool) or not isinstance(entry.get(key), int)
-        for key in required
-    ):
+    domain = _normalized_raw_domain(controls, control)
+    if domain is None:
         raise ValueError(
             f"no normalized control domain for {control!r} in the active profile"
         )
-    raw_min, raw_max, raw_step, raw_origin = (cast(int, entry[key]) for key in required)
+    raw_min, raw_max, raw_step, raw_origin = domain
     if (
         isinstance(value, bool)
         or not isinstance(value, int)
@@ -213,7 +237,40 @@ def validate_control_raw_value(
             f"{control} must be within {raw_min}-{raw_max} on the "
             f"{raw_origin} + k*{raw_step} lattice; got {value!r}"
         )
-    return raw_min, raw_max, raw_step, raw_origin
+    return domain
+
+
+def quantize_control_raw_value(
+    controls: Mapping[str, object] | None, control: str, value: int | float
+) -> int | None:
+    """Quantize *value* to the nearest lattice point of *control*'s domain.
+
+    Returns ``None`` when *controls* publishes no normalized scalar domain
+    for *control* (see :func:`validate_control_raw_value`). Raises
+    ``ValueError`` when *value* is not a real number inside
+    ``[raw_min, raw_max]``. Otherwise returns the lattice point
+    ``raw_origin + k * raw_step`` nearest to *value*, clamped to
+    ``[raw_min, raw_max]``.
+
+    Tie rule: a value exactly halfway between two lattice points rounds
+    AWAY from ``raw_origin`` (ties go to the point with the larger
+    ``abs(value - raw_origin)``).
+    """
+    domain = _normalized_raw_domain(controls, control)
+    if domain is None:
+        return None
+    raw_min, raw_max, raw_step, raw_origin = domain
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        # NaN fails every comparison, ±inf falls outside the range, so
+        # the range check alone rejects all non-finite floats.
+        or not raw_min <= value <= raw_max
+    ):
+        raise ValueError(f"{control} must be within {raw_min}-{raw_max}; got {value!r}")
+    offset = (value - raw_origin) / raw_step
+    k = math.floor(offset + 0.5) if offset >= 0 else math.ceil(offset - 0.5)
+    return max(raw_min, min(raw_max, raw_origin + k * raw_step))
 
 
 def _parse_control_lookup(

@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from .handler import _FallbackRigState  # noqa: TID251
 
 from ..core.state_pipeline_contracts import FieldPath
+from ..profiles.rig_loader import quantize_control_raw_value
 from .contract import HamlibError, RigctldResponse  # noqa: TID251
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,22 @@ def _format_raw_scaled_float(value: Any, *, raw_divisor: float) -> str:
 def _format_strength(value: Any, *, raw_divisor: float) -> str:
     raw = int(value)
     return str(round((raw / raw_divisor) * 114.0 - 54.0))
+
+
+def _profile_controls(radio: Any) -> Any:
+    """The radio's profile control domains, or None when unavailable."""
+    profile = getattr(radio, "profile", None)
+    return getattr(profile, "controls", None)
+
+
+def _quantize_profile_level(radio: Any, control: str, value: float) -> int | None:
+    """Quantize *value* onto *control*'s profile lattice.
+
+    Returns the quantized int, ``None`` when the profile publishes no
+    normalized domain (caller falls back to the legacy path). Propagates
+    ``ValueError`` when the value is out of the domain's range.
+    """
+    return quantize_control_raw_value(_profile_controls(radio), control, value)
 
 
 # ---------------------------------------------------------------------------
@@ -347,19 +364,25 @@ class YaesuRouting:
             await radio.set_notch_filter(round(value))
             return _ok()
         if level == "IFSHIFT":
-            await radio.set_if_shift(round(value))
+            try:
+                shift = _quantize_profile_level(radio, "if_shift", value)
+            except ValueError:
+                return _err(HamlibError.EINVAL)
+            await radio.set_if_shift(shift if shift is not None else round(value))
             return _ok()
         if level == "CWPITCH":
-            # radio.set_cw_pitch accepts Hz directly and clamps to FTX-1 range
-            # (300-1050) internally. Clamp here too for hamlib compatibility
-            # so an out-of-range hamlib value never bubbles a ValueError.
-            hz = max(
-                self._CW_PITCH_BASE,
-                min(
-                    self._CW_PITCH_BASE + 75 * self._CW_PITCH_STEP,
-                    round(value),
-                ),
-            )
+            try:
+                hz = _quantize_profile_level(radio, "cw_pitch", value)
+            except ValueError:
+                return _err(HamlibError.EINVAL)
+            if hz is None:
+                hz = max(
+                    self._CW_PITCH_BASE,
+                    min(
+                        self._CW_PITCH_BASE + 75 * self._CW_PITCH_STEP,
+                        round(value),
+                    ),
+                )
             await radio.set_cw_pitch(hz)
             return _ok()
         if level == "KEYSPD":
