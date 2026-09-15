@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ControlDomain, FilterModeConfig } from '$lib/types/capabilities';
+import type { Capabilities, ControlDomain, FilterModeConfig } from '$lib/types/capabilities';
 import {
   controlDisplayDomain,
   nbDepthDisplayToRaw,
   nbDepthRawToDisplay,
   nrRawToDisplay,
   quantizeFilterWidthToRule,
+  resolveControlContract,
 } from './filter-controls';
 
 // MOR-490: NR-level slider is 0-15 (front-panel scale), wire is 0-255 BCD.
@@ -276,5 +277,93 @@ describe('quantizeFilterWidthToRule (MOR-1518)', () => {
 
   it('passes non-finite input through unchanged rather than fabricating a value', () => {
     expect(quantizeFilterWidthToRule(Number.NaN, IC7300_USB_SEGMENTS)).toBeNaN();
+  });
+});
+
+// MOR-2475: one conversion path for every control a profile can publish as an
+// exact domain or a legacy band. The FTX-1 `manual_notch_freq` domain (from
+// `rigs/ftx1.toml [controls.manual_notch_freq]`) is the exact case; the
+// IC-7610 `nb_depth` band (from `rigs/ic7610.toml [controls.nb_depth]`) is the
+// legacy case that must keep its shipped proportional conversion.
+describe('resolveControlContract (MOR-2475)', () => {
+  const FTX1_MANUAL_NOTCH_FREQ: ControlDomain = {
+    mapping: 'linear',
+    raw_min: 1, raw_max: 320, raw_step: 1, raw_origin: 1,
+    display_min: '10' as never, display_max: '3200' as never,
+    display_step: '10' as never, display_origin: '10' as never,
+    display_unit: 'Hz', quantization: 'reject', restoration: 'exact',
+  };
+  const IC7610_NB_DEPTH = {
+    raw_min: 0, raw_max: 9, raw_center: 0, display_min: 1, display_max: 10,
+  };
+
+  function domainCaps(capabilities: string[], controls: Record<string, unknown>): Capabilities {
+    return { capabilities, receivers: 1, controls } as unknown as Capabilities;
+  }
+
+  it('decodes a published manual_notch_freq exact domain through control-domain.ts', () => {
+    const contract = resolveControlContract(
+      domainCaps(['notch'], { manual_notch_freq: FTX1_MANUAL_NOTCH_FREQ }), 'manual_notch_freq',
+    );
+    expect(contract.hasControl).toBe(true);
+    expect(contract.displayDomain).toEqual({ min: 10, max: 3200, step: 10, origin: 10 });
+    expect(contract.rawToDisplay(160)).toBe(1600);
+    expect(contract.rawToDisplay(1)).toBe(10);
+    expect(contract.rawToDisplay(320)).toBe(3200);
+  });
+
+  it('treats 10 and 3200 as legal display values and 0 and 3201 as illegal', () => {
+    const contract = resolveControlContract(
+      domainCaps(['notch'], { manual_notch_freq: FTX1_MANUAL_NOTCH_FREQ }), 'manual_notch_freq',
+    );
+    expect(contract.displayToRaw(10)).toBe(1);
+    expect(contract.displayToRaw(3200)).toBe(320);
+    expect(contract.displayToRaw(0)).toBeNull();
+    expect(contract.displayToRaw(3201)).toBeNull();
+  });
+
+  it('accepts only the published manual_notch_freq raw positions', () => {
+    const contract = resolveControlContract(
+      domainCaps(['notch'], { manual_notch_freq: FTX1_MANUAL_NOTCH_FREQ }), 'manual_notch_freq',
+    );
+    expect(contract.acceptsRaw(1)).toBe(true);
+    expect(contract.acceptsRaw(320)).toBe(true);
+    expect(contract.acceptsRaw(0)).toBe(false);
+    expect(contract.acceptsRaw(321)).toBe(false);
+  });
+
+  it('resolves no manual_notch_freq domain when the radio does not publish one', () => {
+    const contract = resolveControlContract(domainCaps(['notch'], {}), 'manual_notch_freq');
+    expect(contract.hasControl).toBe(false);
+    expect(contract.displayDomain).toBeNull();
+    expect(contract.rawToDisplay(160)).toBeNull();
+  });
+
+  it('decodes the IC-7610 nb_depth legacy band (raw 0 -> 1, raw 9 -> 10)', () => {
+    const contract = resolveControlContract(
+      domainCaps(['nb'], { nb_depth: IC7610_NB_DEPTH }), 'nb_depth',
+    );
+    expect(contract.displayDomain).toEqual({ min: 1, max: 10, step: 1, origin: 1 });
+    expect(contract.rawToDisplay(0)).toBe(1);
+    expect(contract.rawToDisplay(9)).toBe(10);
+    expect(contract.displayToRaw(1)).toBe(0);
+    expect(contract.displayToRaw(10)).toBe(9);
+  });
+
+  it('falls back to the NB depth default band when the radio publishes no entry at all', () => {
+    const contract = resolveControlContract(domainCaps(['nb'], {}), 'nb_depth');
+    expect(contract.displayDomain).toEqual({ min: 1, max: 10, step: 1, origin: 1 });
+    expect(contract.hasControl).toBe(false);
+  });
+
+  it('keeps nr_level on the same shared path (legacy band preserved)', () => {
+    const contract = resolveControlContract(
+      domainCaps(['nr'], { nr_level: { raw_min: 0, raw_max: 255, display_min: 0, display_max: 15 } }),
+      'nr_level',
+    );
+    expect(contract.hasControl).toBe(true);
+    expect(contract.displayDomain).toEqual({ min: 0, max: 15, step: 1, origin: 0 });
+    expect(contract.rawToDisplay(128)).toBe(8);
+    expect(contract.displayToRaw(8)).toBe(136);
   });
 });
