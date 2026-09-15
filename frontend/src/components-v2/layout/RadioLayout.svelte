@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, type Snippet } from 'svelte';
+  import { onDestroy, onMount, tick, untrack, type Snippet } from 'svelte';
   import '../theme/index';
   import { setTheme, getTheme, setVfoTheme, getVfoTheme } from '../theme/theme-switcher';
   
@@ -31,13 +31,17 @@
   import LeftSidebar from './LeftSidebar.svelte';
   import RightSidebar from './RightSidebar.svelte';
   import VfoHeader from './VfoHeader.svelte';
-  import type { InstrumentComposition } from '../wiring/instrument-composition';
+  import type {
+    InstrumentComposition, PanelChrome, PanelDragOwner, StandardTxLevelAvailability,
+  } from '../wiring/instrument-composition';
+  import { createDragReorder } from '$lib/drag-reorder.svelte';
   import type { DspFiniteHandles } from '../../semantic/dsp-instruments';
   import type { DspScalarHandles } from '../../semantic/dsp-scalars';
+  import type { TxAuxFiniteHandles } from '../../semantic/tx-aux-finite';
+  import type { TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
   import type { RfFrontEndFiniteHandles } from '../../semantic/rf-front-end-instruments';
   import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instruments';
   import type { FilterInstrumentHandles } from '../../semantic/filter-instruments';
-  import type { BandInstrumentHandles } from '../../semantic/band-instruments';
   import { ANTENNA_BLOCKED_LABEL } from '../../semantic/AntennaInstrumentHost.svelte';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import KeyboardHandler from './KeyboardHandler.svelte';
@@ -69,6 +73,159 @@
   import { HardwareButton } from '$lib/Button';
 
   let { skinId = 'desktop-v2', instruments }: { skinId?: SkinId; instruments: InstrumentComposition } = $props();
+  type StandardTxSettings = 'vox' | 'compressor' | 'monitor' | 'rfPower' | 'micGain';
+  let txSettingsOpen = $state<StandardTxSettings | null>(null);
+  let txSettingsTrigger = $state<HTMLButtonElement | null>(null);
+  let txSettingsPopover = $state<HTMLDivElement | null>(null);
+  let txSettingsPosition = $state('');
+
+  function closeTxSettings(returnFocus = false): void {
+    const trigger = txSettingsTrigger;
+    txSettingsOpen = null;
+    txSettingsTrigger = null;
+    txSettingsPosition = '';
+    if (returnFocus) void tick().then(() => trigger?.focus());
+  }
+
+  function positionTxSettings(): void {
+    if (!txSettingsTrigger || !txSettingsPopover || typeof window === 'undefined') return;
+    const margin = 8;
+    const gap = 5;
+    const anchor = txSettingsTrigger.getBoundingClientRect();
+    const popover = txSettingsPopover.getBoundingClientRect();
+    const left = Math.min(window.innerWidth - margin - popover.width,
+      Math.max(margin, anchor.right - popover.width));
+    const below = anchor.bottom + gap;
+    const top = below + popover.height <= window.innerHeight - margin
+      ? below
+      : Math.max(margin, anchor.top - gap - popover.height);
+    txSettingsPosition = `left:${left}px;top:${top}px;max-height:${Math.max(80, window.innerHeight - margin * 2)}px`;
+  }
+
+  async function toggleTxSettings(id: StandardTxSettings, event: MouseEvent): Promise<void> {
+    const trigger = event.currentTarget as HTMLButtonElement;
+    if (txSettingsOpen === id) {
+      closeTxSettings(true);
+      return;
+    }
+    txSettingsOpen = id;
+    txSettingsTrigger = trigger;
+    await tick();
+    positionTxSettings();
+    txSettingsPopover?.querySelector<HTMLElement>('[role="slider"], input, button')?.focus();
+  }
+
+  function handleTxSettingsPointerDown(event: PointerEvent): void {
+    if (txSettingsOpen === null) return;
+    const target = event.target as Node | null;
+    if (target && (txSettingsPopover?.contains(target) || txSettingsTrigger?.contains(target))) return;
+    closeTxSettings(true);
+  }
+
+  function handleTxSettingsKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || txSettingsOpen === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeTxSettings(true);
+  }
+
+  onMount(() => {
+    // Element scroll events do not bubble. Capture them at the window so a
+    // disclosure remains attached while either Standard sidebar rail scrolls.
+    window.addEventListener('scroll', positionTxSettings, true);
+    return () => window.removeEventListener('scroll', positionTxSettings, true);
+  });
+
+  const standardFaceAtMount = untrack(() => skinId === 'desktop-v2');
+  const STANDARD_PANEL_ID_REPLACEMENTS: Readonly<Record<string, readonly string[]>> = {
+    'semantic-rit-xit-scan': ['semantic-rit-xit', 'semantic-scan'],
+    'rit-xit': ['semantic-rit-xit'], scan: ['semantic-scan'], agc: ['semantic-agc'],
+    'semantic-band': [],
+  };
+  function migrateStandardPanelPreferences(): void {
+    if (!standardFaceAtMount || typeof localStorage === 'undefined') return;
+    const orderKeys = [
+      'rigplane:panel-order', 'rigplane:right-panel-order', 'rigplane:bottom-panel-order',
+    ] as const;
+    const migratedIds = new Set<string>();
+    for (const key of orderKeys) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw === null) continue;
+        const parsed: unknown = JSON.parse(raw);
+        if (!Array.isArray(parsed)) continue;
+        const seen = new Set<string>();
+        const migrated: string[] = [];
+        for (const entry of parsed) {
+          if (typeof entry !== 'string') continue;
+          const replacements = STANDARD_PANEL_ID_REPLACEMENTS[entry] ?? [entry];
+          for (const id of replacements) if (!seen.has(id)) {
+            seen.add(id); migrated.push(id); migratedIds.add(id);
+          }
+        }
+        localStorage.setItem(key, JSON.stringify(migrated));
+      } catch { /* retain unreadable preferences */ }
+    }
+    for (const key of orderKeys) {
+      try {
+        const knownKey = `${key}:known-defaults`;
+        const raw = localStorage.getItem(knownKey);
+        const parsed: unknown = raw === null ? [] : JSON.parse(raw);
+        const known = new Set(Array.isArray(parsed)
+          ? parsed.filter((entry): entry is string => typeof entry === 'string') : []);
+        for (const [legacy, replacements] of Object.entries(STANDARD_PANEL_ID_REPLACEMENTS)) {
+          if (known.delete(legacy)) replacements.forEach(id => known.add(id));
+        }
+        migratedIds.forEach(id => known.add(id));
+        localStorage.setItem(knownKey, JSON.stringify([...known]));
+      } catch { /* retain unreadable preferences */ }
+    }
+    try {
+      const raw = localStorage.getItem('rigplane:panel-collapsed');
+      if (raw === null) return;
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+      const collapsed = parsed as Record<string, unknown>;
+      for (const [legacy, replacements] of Object.entries(STANDARD_PANEL_ID_REPLACEMENTS)) {
+        if (typeof collapsed[legacy] !== 'boolean') continue;
+        for (const id of replacements) if (!(id in collapsed)) collapsed[id] = collapsed[legacy];
+        delete collapsed[legacy];
+      }
+      localStorage.setItem('rigplane:panel-collapsed', JSON.stringify(collapsed));
+    } catch { /* retain unreadable preferences */ }
+  }
+  migrateStandardPanelPreferences();
+  const standardLeftDrag: PanelDragOwner | null = standardFaceAtMount ? createDragReorder({
+    storageKey: 'rigplane:panel-order',
+    defaults: [
+      'semantic-rf-front-end', 'semantic-filter', 'semantic-agc',
+      'semantic-rit-xit', 'semantic-antenna', 'semantic-scan', 'band',
+    ],
+    containerSelector: '.standard-panel-owner-left',
+  }) : null;
+  const standardRightDrag: PanelDragOwner | null = standardFaceAtMount ? createDragReorder({
+    storageKey: 'rigplane:right-panel-order',
+    defaults: [
+      'semantic-rx-tx', 'semantic-rx-audio', 'semantic-dsp', 'semantic-cw',
+      'semantic-memory', 'semantic-tx-aux', 'audio-scope',
+    ],
+    containerSelector: '.standard-panel-owner-right',
+  }) : null;
+  const standardBottomDrag: PanelDragOwner | null = standardFaceAtMount ? createDragReorder({
+    storageKey: 'rigplane:bottom-panel-order',
+    defaults: ['semantic-meters'],
+    containerSelector: '.standard-bottom-dock',
+  }) : null;
+
+  function panelChrome(owner: PanelDragOwner, panelId: string, title?: string): PanelChrome {
+    return {
+      panelId,
+      draggable: true,
+      onDragStart: owner.handleDragStart,
+      style: owner.dragStyle(panelId),
+      ...(title === undefined ? {} : { title }),
+    };
+  }
 
   // MOR-2425 C-R3 — the link-fault veil. It carries no words of its own: the
   // status bar already states both arms, and the veil's own selectors exempt
@@ -167,7 +324,6 @@
   // Reactive state + capabilities — via runtime
   let radioState = $derived(runtime.state);
   let caps = $derived(runtime.caps);
-
   // MOR-1235. The meters dock's TX chrome takes its truth from the App-owned
   // TX controller — the SAME source as the authoritative global lamp
   // (MOR-1008/MOR-1059) — and never from `radioState.ptt`, a command/readback
@@ -295,6 +451,12 @@
   });
 </script>
 
+<svelte:window
+  onpointerdown={handleTxSettingsPointerDown}
+  onkeydown={handleTxSettingsKeydown}
+  onresize={positionTxSettings}
+/>
+
 {#snippet scopeRegion(scopeControls: Snippet | undefined, managedScope: ManagedScopeRegion | undefined)}
   <section class="content-row">
     <main class="content-center center-column">
@@ -336,19 +498,93 @@
   {@render txAuxScalars()}
 {/snippet}
 
+{#snippet standardTxLayout(
+  finite: TxAuxFiniteHandles,
+  scalars: TxAuxScalarHandles,
+  available: StandardTxLevelAvailability,
+)}
+  <div class="standard-tx-controls" data-testid="standard-tx-controls">
+    <div class="standard-tx-button-grid">
+      <div class="standard-tx-seat" data-field="atu">{@render finite.atu()}</div>
+      <div class="standard-tx-seat" data-field="atuTune">{@render finite.atuTune()}</div>
+      <div class="standard-tx-compound" data-field="vox">
+        <div class="standard-tx-seat">{@render finite.vox()}</div>
+        {#if available.voxGain || available.antiVoxGain || available.voxDelay}
+          <button type="button" class="standard-tx-settings-trigger" aria-label="VOX settings"
+            aria-haspopup="dialog" aria-expanded={txSettingsOpen === 'vox'}
+            aria-controls="standard-tx-settings" onclick={(event) => toggleTxSettings('vox', event)}>▾</button>
+        {/if}
+      </div>
+      <div class="standard-tx-compound" data-field="compressor">
+        <div class="standard-tx-seat">{@render finite.compressor()}</div>
+        {#if available.compressorLevel}
+          <button type="button" class="standard-tx-settings-trigger" aria-label="COMP settings"
+            aria-haspopup="dialog" aria-expanded={txSettingsOpen === 'compressor'}
+            aria-controls="standard-tx-settings" onclick={(event) => toggleTxSettings('compressor', event)}>▾</button>
+        {/if}
+      </div>
+      <div class="standard-tx-compound" data-field="monitor">
+        <div class="standard-tx-seat">{@render finite.monitor()}</div>
+        {#if available.monitorLevel}
+          <button type="button" class="standard-tx-settings-trigger" aria-label="MON settings"
+            aria-haspopup="dialog" aria-expanded={txSettingsOpen === 'monitor'}
+            aria-controls="standard-tx-settings" onclick={(event) => toggleTxSettings('monitor', event)}>▾</button>
+        {/if}
+      </div>
+      {#if available.rfPower || available.driveGain}
+        <button type="button" class="standard-tx-disclosure" aria-label="RF POWER settings"
+          aria-haspopup="dialog" aria-expanded={txSettingsOpen === 'rfPower'}
+          aria-controls="standard-tx-settings" onclick={(event) => toggleTxSettings('rfPower', event)}>RF POWER ▾</button>
+      {/if}
+      {#if available.micGain}
+        <button type="button" class="standard-tx-disclosure" aria-label="MIC GAIN settings"
+          aria-haspopup="dialog" aria-expanded={txSettingsOpen === 'micGain'}
+          aria-controls="standard-tx-settings" onclick={(event) => toggleTxSettings('micGain', event)}>MIC GAIN ▾</button>
+      {/if}
+    </div>
+    {#if txSettingsOpen}
+      <div class="standard-tx-settings-popover" id="standard-tx-settings"
+        data-testid="standard-tx-settings-popover" data-settings={txSettingsOpen}
+        role="dialog" aria-label={`${txSettingsOpen} settings`} tabindex="-1"
+        bind:this={txSettingsPopover} style={txSettingsPosition}>
+        {#if txSettingsOpen === 'vox'}
+          {#if available.voxGain}<div class="standard-tx-scalar-seat" data-field="voxGain">{@render scalars.voxGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>{/if}
+          {#if available.antiVoxGain}<div class="standard-tx-scalar-seat" data-field="antiVoxGain">{@render scalars.antiVoxGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>{/if}
+          {#if available.voxDelay}<div class="standard-tx-scalar-seat" data-field="voxDelay">{@render scalars.voxDelay({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>{/if}
+        {:else if txSettingsOpen === 'compressor' && available.compressorLevel}
+          <div class="standard-tx-scalar-seat" data-field="compressorLevel">{@render scalars.compressorLevel({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        {:else if txSettingsOpen === 'monitor' && available.monitorLevel}
+          <div class="standard-tx-scalar-seat" data-field="monitorLevel">{@render scalars.monitorLevel({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        {:else if txSettingsOpen === 'rfPower'}
+          {#if available.rfPower}<div class="standard-tx-scalar-seat" data-field="rfPower">{@render scalars.rfPower({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>{/if}
+          {#if available.driveGain}<div class="standard-tx-scalar-seat" data-field="driveGain">{@render scalars.driveGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>{/if}
+        {:else if txSettingsOpen === 'micGain' && available.micGain}
+          <div class="standard-tx-scalar-seat" data-field="micGain">{@render scalars.micGain({ form: 'hbar', compact: false, showLabel: true, showValue: true, variant: 'hardware-illuminated' })}</div>
+        {/if}
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
 {#snippet dspFiniteLayout(dspInstruments: DspFiniteHandles)}
   <div class="dsp-finite-grid">
-    <div class="dsp-finite-seat" data-field="nrActive">{@render dspInstruments.nrActive()}</div>
-    <div class="dsp-finite-seat" data-field="nbActive">{@render dspInstruments.nbActive()}</div>
-    <div class="dsp-finite-seat" data-field="notchMode">{@render dspInstruments.notchMode()}</div>
+    {#if dspInstruments.compactNb}<div class="dsp-finite-seat" data-field="nbActive">{@render dspInstruments.compactNb()}</div>{/if}
+    {#if dspInstruments.compactNr}<div class="dsp-finite-seat" data-field="nrActive">{@render dspInstruments.compactNr()}</div>{/if}
+    {#if dspInstruments.compactManualNotch}<div class="dsp-finite-seat" data-field="manualNotch">{@render dspInstruments.compactManualNotch()}</div>{/if}
+    {#if dspInstruments.compactAutoNotch}<div class="dsp-finite-seat" data-field="autoNotch">{@render dspInstruments.compactAutoNotch()}</div>{/if}
+  </div>
+{/snippet}
+
+{#snippet agcFiniteLayout(dspInstruments: DspFiniteHandles)}
+  <div class="dsp-finite-grid agc-finite-grid">
     <div class="dsp-finite-seat" data-field="agcMode">{@render dspInstruments.agcMode()}</div>
   </div>
 {/snippet}
 
 {#snippet rfFrontEndFiniteLayout(rfFrontEndInstruments: RfFrontEndFiniteHandles)}
   <div class="rf-front-end-finite-grid">
+    <div class="rf-front-end-finite-seat" data-field="attenuator">{@render rfFrontEndInstruments.attenuator(true)}</div>
     <div class="rf-front-end-finite-seat" data-field="preamp">{@render rfFrontEndInstruments.preamp()}</div>
-    <div class="rf-front-end-finite-seat" data-field="attenuator">{@render rfFrontEndInstruments.attenuator()}</div>
     <div class="rf-front-end-finite-seat" data-field="digiSel">{@render rfFrontEndInstruments.digiSel()}</div>
     <div class="rf-front-end-finite-seat" data-field="ipPlus">{@render rfFrontEndInstruments.ipPlus()}</div>
   </div>
@@ -357,8 +593,12 @@
 {#snippet rxAudioFiniteLayout(rxAudioInstruments: RxAudioInstrumentHandles)}
   <div class="rx-audio-finite-grid">
     <div class="rx-audio-finite-seat" data-field="monitorMode">{@render rxAudioInstruments.monitorMode()}</div>
+    {#if rxAudioInstruments.afLevelRow}<div class="rx-audio-finite-seat" data-field="afLevel">{@render rxAudioInstruments.afLevelRow()}</div>{/if}
+    {#if rxAudioInstruments.monitorStatus}<div class="rx-audio-finite-seat" data-field="monitorStatus"><div class="sr-only">{@render rxAudioInstruments.monitorStatus()}</div></div>{/if}
     <div class="rx-audio-finite-seat" data-field="routingFocus">{@render rxAudioInstruments.routingFocus()}</div>
-    <div class="rx-audio-finite-seat" data-field="routingSplit">{@render rxAudioInstruments.routingSplit()}</div>
+    {#if rxAudioInstruments.routingSplitToggle}<div class="rx-audio-finite-seat" data-field="routingSplit">{@render rxAudioInstruments.routingSplitToggle()}</div>{/if}
+    {#if rxAudioInstruments.mainGain}<div class="rx-audio-finite-seat" data-field="mainGain">{@render rxAudioInstruments.mainGain()}</div>{/if}
+    {#if rxAudioInstruments.subGain}<div class="rx-audio-finite-seat" data-field="subGain">{@render rxAudioInstruments.subGain()}</div>{/if}
     <div class="rx-audio-finite-seat" data-field="modInputSource">{@render rxAudioInstruments.modInputSource()}</div>
     <div class="rx-audio-finite-seat" data-field="setModInputLan">{@render rxAudioInstruments.setModInputLan()}</div>
   </div>
@@ -371,44 +611,43 @@
   </div>
 {/snippet}
 
-{#snippet filterFiniteLayout(filterInstruments: FilterInstrumentHandles)}
-  <div class="filter-finite-grid" data-testid="filter-finite-grid">
-    <div class="filter-finite-seat" data-field="mode">{@render filterInstruments.mode()}</div>
-    <div class="filter-finite-seat" data-field="filter">{@render filterInstruments.filter()}</div>
-    <div class="filter-finite-seat" data-field="shape">{@render filterInstruments.shape()}</div>
-    <div class="filter-finite-seat" data-field="dataMode">{@render filterInstruments.dataMode()}</div>
-  </div>
+{#snippet standardModeLayout(filterInstruments: FilterInstrumentHandles)}
+  {#if filterInstruments.standardMode && filterInstruments.standardDataMode}
+    <div class="standard-mode-layout" data-testid="standard-mode-layout">
+      {@render filterInstruments.standardMode()}
+      {@render filterInstruments.standardDataMode()}
+    </div>
+  {/if}
 {/snippet}
 
-{#snippet bandControlLayout(bandInstruments: BandInstrumentHandles)}
-  <div class="band-control-grid" data-testid="band-control-grid">
-    <div class="band-control-seat" data-field="bandChoice">{@render bandInstruments.bandChoice()}</div>
-    <div class="band-control-seat" data-field="frequencyEntry">
-      {@render bandInstruments.frequencyEntry()}
-    </div>
+{#snippet standardFilterLayout(filterInstruments: FilterInstrumentHandles)}
+  <div class="filter-finite-grid" data-testid="filter-finite-grid">
+    <div class="filter-finite-seat" data-field="filter">{@render filterInstruments.filter()}</div>
+    <div class="filter-finite-seat" data-field="shape">{@render filterInstruments.shape()}</div>
   </div>
 {/snippet}
 
 <!--
   MOR-2425. The Standard face arranges the two persistent antenna seats itself
-  instead of mounting the grouped `AntennaSurface`, so the blocked-reason list
-  the seats' `aria-describedby` points at has to be rendered here too — the
-  host hands both the id and the reason codes on `instruments.antennaLayout`.
+  instead of mounting the grouped `AntennaSurface`. Its accessible blocked
+  explanation remains here too without becoming volatile panel text.
 -->
 {#snippet antennaControlLayout()}
-  <div class="antenna-control-grid" data-testid="antenna-control-grid">
+  {#if runtime.caps?.antennas === 1}
+    <div class="antenna-fixed-port" data-testid="antenna-fixed-port">
+      <span>TX</span><output>ANT 1</output>
+    </div>
+  {:else}<div class="antenna-control-grid" data-testid="antenna-control-grid">
     <div class="antenna-control-seat" data-field="txPort">
-      {@render instruments.antennaInstruments.txPort()}
+      {@render instruments.antennaInstruments.txPort(true)}
     </div>
     <div class="antenna-control-seat" data-field="rxAnt">
-      {@render instruments.antennaInstruments.rxAnt()}
+      {@render instruments.antennaInstruments.rxAnt(true)}
     </div>
-  </div>
-  <ul class="antenna-blocked" id={instruments.antennaLayout.blockedId} data-testid="antenna-blocked">
-    {#each instruments.antennaLayout.blocked as code (code)}
-      <li data-reason={code}>{ANTENNA_BLOCKED_LABEL[code]}</li>
-    {/each}
-  </ul>
+  </div>{/if}
+  {#if runtime.caps?.antennas !== 1}<span class="sr-only" id={instruments.antennaLayout.blockedId} data-testid="antenna-blocked">
+    {instruments.antennaLayout.blocked.map((code) => ANTENNA_BLOCKED_LABEL[code]).join('; ')}
+  </span>{/if}
 {/snippet}
 
 {#snippet vfoOperationControls()}
@@ -421,6 +660,78 @@
     {#if instruments.vfoOperations.quickSplit}<div class="vfo-operation-instrument-seat" data-field="quickSplit">{@render instruments.vfoOperations.quickSplit()}</div>{/if}
     {#if instruments.vfoOperations.quickDualWatch}<div class="vfo-operation-instrument-seat" data-field="quickDualWatch">{@render instruments.vfoOperations.quickDualWatch()}</div>{/if}
     {#if instruments.vfoOperations.speak}<div class="vfo-operation-instrument-seat" data-field="speak">{@render instruments.vfoOperations.speak()}</div>{/if}
+  </div>
+{/snippet}
+
+{#snippet standardServicePanels(owner: PanelDragOwner, showReset = false)}
+  {#if owner.order.includes('semantic-rf-front-end')}
+    {@render instruments.rfFrontEnd(
+      undefined, rfFrontEndFiniteLayout, panelChrome(owner, 'semantic-rf-front-end'),
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-filter')}
+    {@render instruments.filter(
+      undefined, standardModeLayout, panelChrome(owner, 'semantic-filter'),
+      standardFilterLayout, {
+        panelId: 'semantic-filter-controls', draggable: false,
+        onDragStart: owner.handleDragStart, style: owner.dragStyle('semantic-filter'),
+      },
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-antenna')}
+    {@render instruments.antenna(
+      undefined, antennaControlLayout, panelChrome(owner, 'semantic-antenna'),
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-agc')}
+    {@render instruments.dsp(
+      undefined, agcFiniteLayout, undefined, panelChrome(owner, 'semantic-agc', 'AGC'), 'agc',
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-rit-xit')}
+    {@render instruments.ritXitScan(
+      undefined, panelChrome(owner, 'semantic-rit-xit', 'RIT / XIT'), 'rit-xit',
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-scan')}
+    {@render instruments.ritXitScan(
+      undefined, panelChrome(owner, 'semantic-scan', 'SCAN'), 'scan',
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-rx-tx')}
+    {@render instruments.rxTx(
+      undefined, panelChrome(owner, 'semantic-rx-tx', 'TX'), standardTxLayout,
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-rx-audio')}
+    {@render instruments.rxAudio(
+      undefined, rxAudioFiniteLayout, panelChrome(owner, 'semantic-rx-audio'),
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-dsp')}
+    {@render instruments.dsp(
+      undefined, dspFiniteLayout, dspScalarLayout, panelChrome(owner, 'semantic-dsp'), 'dsp', true,
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-cw')}
+    {@render instruments.cwKeyer(
+      undefined, true, panelChrome(owner, 'semantic-cw', 'CW'), undefined, true,
+    )}
+  {/if}
+  {#if owner.order.includes('semantic-memory')}
+    {@render instruments.memory(undefined, panelChrome(owner, 'semantic-memory'))}
+  {/if}
+  {#if owner.order.includes('semantic-meters')}
+    {@render instruments.meters(undefined, panelChrome(owner, 'semantic-meters'))}
+  {/if}
+  <div class="content-left">
+    <LeftSidebar
+      hideTxPanel={semanticRxTx} {declared} dragOwner={owner} {showReset}
+      semanticHamBands={instruments.bandInstruments?.bandChoice}
+    />
+  </div>
+  <div class="content-right">
+    <RightSidebar hideTxPanel={semanticRxTx} {declared} dragOwner={owner} />
   </div>
 {/snippet}
 
@@ -461,29 +772,22 @@
         skinId === 'sdr-test' ? 'sdr' : 'standard', undefined, vfoOperationControls,
       )}
 
-      <div class="desktop-controls-left">
-        {#if skinId === 'desktop-v2'}
-          {@render instruments.rfFrontEnd(undefined, rfFrontEndFiniteLayout)}
+      <div
+        class="desktop-controls-left"
+        class:standard-panel-owner={skinId === 'desktop-v2'}
+        class:standard-panel-owner-left={skinId === 'desktop-v2'}
+        class:cross-drop-target={standardLeftDrag?.isDropTarget}
+      >
+        {#if skinId === 'desktop-v2' && standardLeftDrag}
+          {@render standardServicePanels(standardLeftDrag, true)}
         {:else}
           {@render instruments.rfFrontEnd()}
-        {/if}
-        {#if skinId === 'desktop-v2'}
-          {@render instruments.filter(undefined, filterFiniteLayout)}
-        {:else}
           {@render instruments.filter()}
-        {/if}
-        {#if skinId === 'desktop-v2'}
-          {@render instruments.band(undefined, bandControlLayout)}
-        {:else}
           {@render instruments.band()}
-        {/if}
-        {#if skinId === 'desktop-v2'}
-          {@render instruments.antenna(undefined, antennaControlLayout)}
-        {:else}
           {@render instruments.antenna()}
+          {@render instruments.ritXitScan()}
+          <div class="content-left"><LeftSidebar hideTxPanel={semanticRxTx} {declared} /></div>
         {/if}
-        {@render instruments.ritXitScan()}
-        <div class="content-left"><LeftSidebar hideTxPanel={semanticRxTx} {declared} /></div>
       </div>
 
       <div class="desktop-controls-center">
@@ -492,41 +796,38 @@
         {@render scopeRegion(scopeControlsInRegionContent ? instruments.scopeControls : undefined, instruments.managedScope)}
       </div>
 
-      <div class="desktop-controls-right">
-        {@render instruments.rxTx()}
-        {@render instruments.txFaultRecovery()}
-        {@render instruments.modInputTxWarning()}
-        {#if skinId === 'desktop-v2'}
-          {@render instruments.rxAudio(undefined, rxAudioFiniteLayout)}
+      <div
+        class="desktop-controls-right"
+        class:standard-panel-owner={skinId === 'desktop-v2'}
+        class:standard-panel-owner-right={skinId === 'desktop-v2'}
+        class:cross-drop-target={standardRightDrag?.isDropTarget}
+      >
+        {#if skinId === 'desktop-v2' && standardRightDrag}
+          {@render instruments.txFaultRecovery()}
+          {@render instruments.modInputTxWarning()}
+          {@render standardServicePanels(standardRightDrag)}
         {:else}
+          {@render instruments.rxTx()}
+          {@render instruments.txFaultRecovery()}
+          {@render instruments.modInputTxWarning()}
           {@render instruments.rxAudio()}
-        {/if}
-        {#if skinId === 'desktop-v2'}
-          {@render instruments.dsp(undefined, dspFiniteLayout, dspScalarLayout)}
-        {:else}
           {@render instruments.dsp()}
-        {/if}
-        {#if skinId === 'desktop-v2'}
-          <div class="cw-keyer-instrument-seat" data-cw-keyer-seat="keyerSpeed">
-            {@render instruments.cwKeyerInstruments.keyerSpeed({
-              form: 'hbar', compact: false, showLabel: true, showValue: true,
-            })}
-          </div>
-          <div class="cw-keyer-instrument-seat" data-cw-keyer-seat="pitchHz" data-field="pitchHz">
-            {@render instruments.cwKeyerInstruments.pitchHz({
-              form: 'hbar', compact: false, showLabel: true, showValue: true,
-            })}
-          </div>
-          {@render instruments.cwKeyer(undefined, false)}
-          {@render instruments.memory()}
-        {:else}
           {@render instruments.cwKeyer()}
+          {@render instruments.txAuxControls(txAuxInstrumentLayout)}
+          <div class="content-right"><RightSidebar hideTxPanel={semanticRxTx} {declared} /></div>
         {/if}
-        {@render instruments.txAuxControls(txAuxInstrumentLayout)}
-        <div class="content-right"><RightSidebar hideTxPanel={semanticRxTx} {declared} /></div>
       </div>
 
-      {@render instruments.meters()}
+      {#if skinId === 'desktop-v2' && standardBottomDrag}
+        <div
+          class="standard-bottom-dock"
+          class:cross-drop-target={standardBottomDrag.isDropTarget}
+        >
+          {@render standardServicePanels(standardBottomDrag)}
+        </div>
+      {:else}
+        {@render instruments.meters()}
+      {/if}
     </section>
   </div>
 {:else}
@@ -824,10 +1125,102 @@
   .desktop-control-face .content-row { display: flex; flex: 1; min-height: 280px; contain: size; }
   .desktop-control-face .content-center { width: 100%; }
   .desktop-control-face :global(.spectrum-toolbar) { height: auto; min-height: 32px; flex-wrap: wrap; }
-  .desktop-control-face :global([data-zone-id='meters']) { grid-area: 5 / 1 / 6 / -1; }
+  .desktop-control-face :global([data-zone-id='meters']),
+  .desktop-control-face .standard-bottom-dock { grid-area: 5 / 1 / 6 / -1; }
+  .standard-panel-owner,
+  .standard-bottom-dock {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  }
+  .standard-bottom-dock { min-height: 48px; }
+  .standard-panel-owner.cross-drop-target,
+  .standard-bottom-dock.cross-drop-target {
+    outline: 2px solid var(--v2-accent, #4af);
+    outline-offset: -2px;
+  }
+  .standard-panel-owner :global(.semantic-control-panel),
+  .standard-panel-owner :global(.left-sidebar > .collapsible-panel),
+  .standard-panel-owner :global(.right-sidebar > .collapsible-panel) {
+    flex-shrink: 0;
+  }
+  .standard-panel-owner > :global(.surface-zone),
+  .standard-bottom-dock > :global(.surface-zone),
+  .standard-panel-owner > .content-left,
+  .standard-panel-owner > .content-right,
+  .standard-bottom-dock > .content-left,
+  .standard-bottom-dock > .content-right { display: contents; }
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-  .dsp-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-  .rf-front-end-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .standard-tx-controls {
+    display: flex; flex-direction: column; gap: 6px; padding: 0 8px 8px;
+  }
+  .standard-tx-button-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
+  }
+  .standard-tx-seat { display: contents; }
+  .standard-tx-compound {
+    display: grid; grid-template-columns: minmax(0, 1fr) 28px; min-width: 0;
+  }
+  .standard-tx-settings-trigger,
+  .standard-tx-disclosure {
+    min-width: 0; min-height: 30px;
+    border: 1px solid var(--v2-border-subtle, rgba(255,255,255,.18));
+    border-radius: 3px; color: var(--v2-text-primary, #e7eef7);
+    background: var(--v2-bg-raised, #202932); font: inherit; font-weight: 700;
+    cursor: pointer;
+  }
+  .standard-tx-settings-trigger {
+    border-inline-start: 0; border-start-start-radius: 0; border-end-start-radius: 0;
+  }
+  .standard-tx-disclosure { padding: 0 8px; }
+  .standard-tx-settings-trigger:hover,
+  .standard-tx-disclosure:hover,
+  .standard-tx-settings-trigger[aria-expanded='true'],
+  .standard-tx-disclosure[aria-expanded='true'] {
+    border-color: var(--v2-accent, #4af); color: var(--v2-accent, #4af);
+  }
+  .standard-tx-settings-trigger:focus-visible,
+  .standard-tx-disclosure:focus-visible {
+    outline: 2px solid var(--v2-accent, #4af); outline-offset: 1px;
+  }
+  .standard-tx-settings-popover {
+    position: fixed; z-index: 1200; box-sizing: border-box;
+    display: flex; flex-direction: column; gap: 8px;
+    width: min(360px, calc(100vw - 16px)); padding: 10px; overflow: auto;
+    border: 1px solid var(--v2-accent, #4af); border-radius: 4px;
+    background: var(--v2-bg-panel, #111820); box-shadow: 0 10px 28px rgba(0,0,0,.55);
+  }
+  .standard-tx-scalar-seat { min-width: 0; }
+  .standard-tx-scalar-seat :global(.vc-hbar) { width: 100%; min-width: 0; }
+  /* Stable Standard RX/TX composition: reserve the larger TX meter footprint.
+     Individual readings remain absent while irrelevant; only the shell is sized. */
+  .standard-bottom-dock :global([data-panel-id='semantic-meters']) { height: 160px; }
+  .standard-bottom-dock :global([data-panel-id='semantic-meters'] .collapsible-content) {
+    min-height: 0; overflow: hidden;
+  }
+  /* Standard keeps RX Audio's raw fallback/readiness text in the accessibility
+     tree, while the stable controls retain the visible operator contract. */
+  .desktop-control-face.standard-face :global([data-testid='rf-front-end-preamp-mutex-reason']),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-focus-value']),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-main-gain'] output),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-sub-gain'] output),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-mod-source']),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-mod-readiness']) {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+  .dsp-finite-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
+  }
+  .dsp-finite-seat { display: contents; }
+  .agc-finite-grid { display: block; width: 100%; }
+  .agc-finite-grid .dsp-finite-seat { display: contents; }
+  .agc-finite-grid :global([role='radiogroup']) {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); width: 100%;
+  }
+  .rf-front-end-finite-grid { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+  .rf-front-end-finite-seat { display: contents; }
   /* The `.filter-finite-*` shape, not the siblings' wrap row: a wrap row let
      each seat shrink to its content, and the desktop-v2 skin stretches
      `.rx-audio-row` buttons with `flex: 1 1 0`, which needs the row to span
@@ -837,6 +1230,10 @@
      when it groups them itself. */
   .rx-audio-finite-grid { display: flex; flex-direction: column; gap: 0.25rem; }
   .rx-audio-finite-seat { display: contents; }
+  .rx-audio-finite-grid :global([data-testid='rx-audio-monitor']),
+  .rx-audio-finite-grid :global([data-testid='rx-audio-focus']) {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 4px;
+  }
   .dsp-scalar-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -845,18 +1242,17 @@
   .dsp-scalar-seat { min-width: 0; }
   .filter-finite-grid { display: flex; flex-direction: column; gap: 0.5rem; }
   .filter-finite-seat { display: contents; }
-  .filter-finite-grid .filter-finite-seat[data-field='mode'] :global(.filter-choice-group) {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+  .standard-mode-layout { display: flex; flex-direction: column; gap: 0.75rem; }
   .filter-finite-grid .filter-finite-seat[data-field='filter'] :global(.filter-choice-group) {
     display: flex;
   }
-  .band-control-grid, .band-control-seat { display: contents; }
   .antenna-control-grid { display: flex; flex-direction: column; gap: 0.25rem; }
+  .antenna-fixed-port {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem;
+    padding: 0.25rem 0.5rem;
+  }
   .antenna-control-seat { display: contents; }
-  .antenna-blocked { margin: 0; padding-inline-start: 1.2em; }
-  .antenna-blocked:empty { display: none; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   .vfo-operation-instrument-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .tx-aux-scalar-grid {
     display: grid;
@@ -864,8 +1260,6 @@
     gap: 4px 8px;
   }
   .tx-aux-scalar-seat { min-width: 0; }
-  .cw-keyer-instrument-seat { min-width: 0; }
-
   .radio-layout, .radio-layout.semantic-deck {
     height: 100vh;
     background:
@@ -909,7 +1303,9 @@
   }
 
   .content-left,
-  .content-right {
+  .content-right,
+  .desktop-control-face.standard-face :global(.desktop-controls-left),
+  .desktop-control-face.standard-face :global(.desktop-controls-right) {
     min-height: 0;
     max-height: 100%;
     overflow-y: auto;
@@ -920,8 +1316,15 @@
     -ms-overflow-style: none; /* IE/Edge */
   }
 
+  .radio-layout.desktop-control-face.standard-face {
+    scrollbar-width: none;
+  }
+
+  .radio-layout.desktop-control-face.standard-face::-webkit-scrollbar,
   .content-left::-webkit-scrollbar,
-  .content-right::-webkit-scrollbar {
+  .content-right::-webkit-scrollbar,
+  .desktop-control-face.standard-face :global(.desktop-controls-left)::-webkit-scrollbar,
+  .desktop-control-face.standard-face :global(.desktop-controls-right)::-webkit-scrollbar {
     display: none; /* Chrome/Safari/Opera */
   }
 
@@ -981,6 +1384,7 @@
   }
 
   @media (max-width: 1024px) {
+    .standard-bottom-dock :global([data-panel-id='semantic-meters']) { height: 260px; }
     .radio-layout {
       grid-template-rows: 28px auto minmax(0, auto) auto auto;
     }
@@ -1002,7 +1406,8 @@
     .desktop-control-face.standard-face :global(.desktop-controls-right) {
       grid-area: 6 / 1 / 7 / 2;
     }
-    .desktop-control-face.standard-face :global([data-zone-id='meters']) {
+    .desktop-control-face.standard-face :global([data-zone-id='meters']),
+    .desktop-control-face.standard-face .standard-bottom-dock {
       grid-area: 7 / 1 / 8 / 2;
     }
     .desktop-control-face.standard-face :global(.desktop-controls-left),

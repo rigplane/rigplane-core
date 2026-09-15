@@ -7,7 +7,6 @@ being corrected, and a missing union member cannot create a privileged path.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -36,6 +35,7 @@ from rigplane.runtime._poller_types import (
     SetCivOutputAnt,
     SetDualWatch,
     SetFreq,
+    SetVfoFreq,
     SetMainSubTracking,
     SetMemoryMode,
     SetMode,
@@ -61,7 +61,6 @@ __all__ = [
     "TxInterlockDeferredResult",
     "TxInterlockDecision",
     "TxInterlockDisposition",
-    "TxInterlockDispositionOverrides",
     "classify_tx_interlock",
     "evaluate_tx_interlock",
     "get_tx_interlock_command_family_metadata",
@@ -71,10 +70,6 @@ __all__ = [
 _METADATA_BY_FAMILY = {
     metadata.family: metadata for metadata in TX_INTERLOCK_COMMAND_FAMILY_METADATA
 }
-
-TxInterlockDispositionOverrides = Mapping[
-    TxInterlockCommandFamily, TxInterlockDisposition
-]
 
 
 class TxInterlockRefusal(CommandError):
@@ -168,7 +163,6 @@ class DeferredTxCommandLane:
         *,
         now: float,
         rf_state: RfState = RfState.TX,
-        disposition_overrides: TxInterlockDispositionOverrides | None = None,
     ) -> TxInterlockDeferredResult:
         """Hold a ``DEFER`` command, explicitly replacing a prior held command.
 
@@ -178,11 +172,7 @@ class DeferredTxCommandLane:
         starts a separate fresh hold.
         """
 
-        effective = evaluate_tx_interlock(
-            command,
-            rf_state=rf_state,
-            disposition_overrides=disposition_overrides,
-        )
+        effective = evaluate_tx_interlock(command, rf_state=rf_state)
         if (
             effective.disposition is not TxInterlockDisposition.DEFER
             or effective.allowed
@@ -266,16 +256,6 @@ _DEFER_TYPES = (
     MemoryToVfo,
 )
 
-_OBSERVED_RF_ADMISSION_FREE_FAMILIES = frozenset(
-    {
-        TxInterlockCommandFamily.FREQUENCY,
-        TxInterlockCommandFamily.MODE,
-        TxInterlockCommandFamily.BAND,
-        TxInterlockCommandFamily.VFO_SELECT,
-        TxInterlockCommandFamily.VFO_CONTENTS,
-    }
-)
-
 _HARD_BLOCK_TYPES = (
     PttOn,
     SendCiv,
@@ -295,8 +275,7 @@ def get_tx_interlock_command_family_metadata(
     """Return stable metadata for an explicitly classified typed command.
 
     Commands covered only by the generic TX-SAFE default intentionally have no
-    family metadata.  This prevents consumers from mistaking a missing policy
-    classification for a profile-addressable family.
+    family metadata.
     """
 
     if isinstance(command, PttOff):
@@ -321,7 +300,7 @@ def get_tx_interlock_command_family_metadata(
         family = TxInterlockCommandFamily.ANTENNA_SWITCH
     elif isinstance(command, SetTunerStatus) and command.value in (1, 2):
         family = TxInterlockCommandFamily.TUNER_ENGAGE
-    elif isinstance(command, SetFreq):
+    elif isinstance(command, (SetFreq, SetVfoFreq)):
         family = TxInterlockCommandFamily.FREQUENCY
     elif isinstance(command, SetMode):
         family = TxInterlockCommandFamily.MODE
@@ -356,9 +335,7 @@ def get_tx_interlock_command_family_metadata(
 def classify_tx_interlock(command: object) -> TxInterlockDisposition:
     """Return the non-negotiable disposition for one typed command.
 
-    Commands not explicitly disruptive are TX-SAFE by default.  A later
-    profile/provider layer may tighten that default, but this generic policy
-    never loosens structural or hard-block classifications.
+    Commands not explicitly disruptive are TX-SAFE by default.
     """
 
     if isinstance(command, _ALWAYS_PASS_TYPES):
@@ -377,35 +354,10 @@ def classify_tx_interlock(command: object) -> TxInterlockDisposition:
     return TxInterlockDisposition.TX_SAFE
 
 
-def _effective_tx_interlock_disposition(
-    command: object,
-    disposition_overrides: TxInterlockDispositionOverrides | None,
-) -> TxInterlockDisposition:
-    base = classify_tx_interlock(command)
-    if base is TxInterlockDisposition.ALWAYS_PASS or disposition_overrides is None:
-        return base
-    for family, override in disposition_overrides.items():
-        metadata = _METADATA_BY_FAMILY.get(family)
-        if (
-            not isinstance(family, TxInterlockCommandFamily)
-            or metadata is None
-            or metadata.base_disposition is not TxInterlockDisposition.TX_SAFE
-            or override is not TxInterlockDisposition.DEFER
-        ):
-            raise ValueError("invalid or loosening TX interlock override")
-    metadata = get_tx_interlock_command_family_metadata(command)
-    if metadata is None:
-        return base
-    if metadata.family in _OBSERVED_RF_ADMISSION_FREE_FAMILIES:
-        return base
-    return disposition_overrides.get(metadata.family, base)
-
-
 def evaluate_tx_interlock(
     command: object,
     *,
     rf_state: RfState,
-    disposition_overrides: TxInterlockDispositionOverrides | None = None,
 ) -> TxInterlockDecision:
     """Evaluate whether a command may be attempted now at an enforcement seat.
 
@@ -414,7 +366,7 @@ def evaluate_tx_interlock(
     this pure policy only preserves the fail-closed result and truthful reason.
     """
 
-    disposition = _effective_tx_interlock_disposition(command, disposition_overrides)
+    disposition = classify_tx_interlock(command)
     if disposition in (
         TxInterlockDisposition.ALWAYS_PASS,
         TxInterlockDisposition.TX_SAFE,

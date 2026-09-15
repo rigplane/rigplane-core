@@ -609,6 +609,109 @@ class TestPower:
         await radio.set_rf_power(200)
         assert len(mock_transport.sent_packets) > 0
 
+    @pytest.mark.asyncio
+    async def test_set_power_frames_are_byte_identical(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        """In-range levels keep the exact CI-V 14 0A frames (MOR-2480).
+
+        The pinned bytes are the IC-7610 ``set_rf_power`` frames the
+        unchecked setter produced at origin/main; the entry checks must
+        not alter them.
+        """
+        for level, civ in (
+            (0, bytes.fromhex("fefe98e0140a0000fd")),
+            (128, bytes.fromhex("fefe98e0140a0128fd")),
+            (255, bytes.fromhex("fefe98e0140a0255fd")),
+        ):
+            await radio.set_rf_power(level)
+            assert bytes(mock_transport.sent_packets[-1]).endswith(civ), level
+
+    @pytest.mark.asyncio
+    async def test_set_power_out_of_range_sends_no_frame(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        with pytest.raises(ValueError, match="RF power must be 0-255"):
+            await radio.set_rf_power(256)
+        with pytest.raises(ValueError, match="RF power must be 0-255"):
+            await radio.set_rf_power(-1)
+        assert mock_transport.sent_packets == []
+
+    @pytest.mark.asyncio
+    async def test_set_power_without_capability_refused_before_write(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """The pre-write capability gate refuses before any frame goes out.
+
+        Historically pinned on the stock X6200, which declared the 14 0A
+        commands but not power_control; MOR-2488/MOR-2489 declared the
+        capability on both Xiegu profiles (the 14 0A pair is documented
+        in their own manuals), so the refusal is re-pinned here against
+        the same profile with the capability stripped — the gate's
+        contract is unchanged.
+        """
+        radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6200")
+        radio._profile = replace(
+            radio._profile,
+            capabilities=radio._profile.capabilities - {"power_control"},
+        )
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(CommandError, match="power_control"):
+            await radio.set_rf_power(128)
+        assert mock_transport.sent_packets == []
+
+    @pytest.mark.asyncio
+    async def test_x6200_set_power_now_sends_documented_14_0a_frame(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """MOR-2488/MOR-2489: with power_control declared, the stock X6200
+        sends the 0x14 0x0A set frame its own V1.0.6 table documents
+        (pp.6-7) instead of refusing."""
+        radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        await radio.set_rf_power(128)
+        assert bytes(mock_transport.sent_packets[-1]).endswith(
+            bytes.fromhex("fefea4e0140a0128fd")
+        )
+
+    @pytest.mark.asyncio
+    async def test_x6100_set_power_now_sends_documented_14_0a_frame(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """MOR-2488/MOR-2489: with power_control declared, the stock X6100
+        sends the 0x14 0x0A set frame its own manual documents —
+        Radioddity Extended manual for Xiegu X6100 v1.1.8 §15 Table 1
+        ("Set Tx power") — instead of refusing."""
+        radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6100")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        await radio.set_rf_power(128)
+        assert bytes(mock_transport.sent_packets[-1]).endswith(
+            bytes.fromhex("fefe70e0140a0128fd")
+        )
+
+    @pytest.mark.asyncio
+    async def test_x6200_set_powerstat_still_refuses_0x18_undeclared(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """MOR-2488/MOR-2489 safety pin: power_control covers the 14 0A
+        level pair only. power_on/power_off stay undeclared (0x18 is not
+        listed in any official command table), so set_powerstat must
+        refuse at the bound command map — the suspected X6200 wedge
+        trigger 0x18 never reaches the wire."""
+        radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        with pytest.raises(CommandError):
+            await radio.set_powerstat(False)
+        assert mock_transport.sent_packets == []
+
 
 class TestRfGainAfLevel:
     """Test RF Gain and AF Level get/set."""
@@ -2796,6 +2899,36 @@ class TestDspLevelParity:
         assert b"\x14\x09\x01\x28\xfd" in sent
 
     @pytest.mark.asyncio
+    async def test_set_cw_pitch_sends_the_origin_main_frame_bytes(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        # 600 Hz encodes through the IC-7610 profile's 300-900 Hz ceil band
+        # to level 128 (ceil(127.5)); the full frame is byte for byte the
+        # FE FE 98 E0 14 09 01 28 FD that origin/main sent for this call
+        # (pinned by the substring assertion in the test above, unchanged).
+        await radio.set_cw_pitch(600)
+        assert mock_transport.sent_packets[-1].endswith(
+            b"\xfe\xfe\x98\xe0\x14\x09\x01\x28\xfd"
+        )
+
+    @pytest.mark.asyncio
+    async def test_x6200_set_cw_pitch_sends_level_255_at_1200_hz(
+        self, mock_transport: MockTransport
+    ) -> None:
+        # rigs/x6200.toml [controls.cw_pitch] declares the 400-1200 Hz band
+        # (Radioddity X6200 CI-V V1.0.6 p.6: 0=400Hz, 255=1200Hz), so
+        # 1200 Hz encodes to level 255 -> BCD 02 55 on the X6200 address.
+        radio = IcomRadio("192.168.1.100", model="X6200")
+        radio._civ_transport = mock_transport
+        radio._ctrl_transport = mock_transport
+        radio._connected = True
+        await radio.set_cw_pitch(1200)
+        assert mock_transport.sent_packets[-1].endswith(
+            b"\xfe\xfe\xa4\xe0\x14\x09\x02\x55\xfd"
+        )
+        radio._connected = False
+
+    @pytest.mark.asyncio
     async def test_set_key_speed_sends_scaled_level(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
@@ -4327,3 +4460,61 @@ class TestCodecProfileOverride:
             audio_codec=AudioCodec.PCM_2CH_16BIT,
         )
         assert radio._audio_codec == AudioCodec.PCM_1CH_16BIT
+
+
+@pytest.mark.parametrize("selector", [0, 1])
+@pytest.mark.parametrize("reply", [0xFB, 0xFA])
+@pytest.mark.parametrize(
+    "opcode,data", [(0x25, bcd_encode(14_074_000)), (0x26, b"\x01\x00\x01")]
+)
+async def test_direct_vfo_set_uses_real_ack_tracker(
+    radio, mock_transport, selector, reply, opcode, data
+):
+    """Actual send_civ/runtime/transport matcher, without mocking send_civ."""
+    mock_transport.queue_response_on_send(
+        1,
+        _wrap_civ_in_udp(
+            build_civ_frame(
+                CONTROLLER_ADDR,
+                IC_7610_ADDR,
+                reply,
+            )
+        ),
+    )
+    response = await radio.send_civ(opcode, data=bytes([selector]) + data)
+    assert response.command == reply
+    assert radio._civ_request_tracker.pending_count == 0
+    assert radio._civ_request_tracker.timeout_count == 0
+    frames = [
+        packet[packet.index(b"\xfe\xfe") :] for packet in mock_transport.sent_packets
+    ]
+    assert frames == [
+        build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, opcode, data=bytes([selector]) + data
+        )
+    ]
+
+
+@pytest.mark.parametrize("selector", [0, 1])
+@pytest.mark.parametrize(
+    "opcode,data", [(0x25, bcd_encode(14_074_000)), (0x26, b"\x01\x00\x01")]
+)
+async def test_direct_vfo_get_still_uses_real_response_tracker(
+    radio, mock_transport, selector, opcode, data
+):
+    payload = bytes([selector]) + data
+    mock_transport.queue_response_on_send(
+        1,
+        _wrap_civ_in_udp(
+            build_civ_frame(
+                CONTROLLER_ADDR,
+                IC_7610_ADDR,
+                opcode,
+                data=payload,
+            )
+        ),
+    )
+    response = await radio.send_civ(opcode, data=bytes([selector]))
+    assert response.command == opcode and response.data == payload
+    assert radio._civ_request_tracker.pending_count == 0
+    assert radio._civ_request_tracker.timeout_count == 0

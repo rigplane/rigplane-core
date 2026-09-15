@@ -251,6 +251,51 @@ describe('panel structure', () => {
 });
 
 describe('active/inactive state', () => {
+  it('lets an inactive panel header select its VFO without making the frequency area a selector', () => {
+    const onSelectHeader = vi.fn();
+    const t = mountPanel({
+      receiver: 'main', receiverLabel: 'VFO B', slotTag: 'B', freq: 7150000,
+      mode: 'LSB', filter: 'NARROW', sValue: null, meterPresent: false,
+      isActive: false, badgeItems: [], onSelectHeader,
+    });
+
+    t.querySelector<HTMLButtonElement>('.panel-header')?.click();
+    expect(onSelectHeader).toHaveBeenCalledOnce();
+    t.querySelector<HTMLElement>('[data-vfo-freq]')?.click();
+    t.querySelector<HTMLElement>('[data-vfo-freq]')?.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    t.querySelector<HTMLElement>('[data-vfo-freq]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(onSelectHeader).toHaveBeenCalledOnce();
+  });
+
+  it('keeps inactive mode and frequency controls inert while the header remains selectable', () => {
+    const onModeClick = vi.fn();
+    const t = mountPanel({
+      receiver: 'main', receiverLabel: 'VFO B', slotTag: 'B', freq: 7150000,
+      mode: 'LSB', filter: 'NARROW', sValue: null, meterPresent: false,
+      isActive: false, badgeItems: [], frequencyDisabled: true, controlsDisabled: true,
+      onModeClick, onSelectHeader: vi.fn(),
+    });
+    const mode = t.querySelector<HTMLElement>('.mode-badge-wrapper')!;
+    mode.click();
+    mode.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(onModeClick).not.toHaveBeenCalled();
+    expect(mode.getAttribute('aria-disabled')).toBe('true');
+    expect(mode.getAttribute('title')).toBeNull();
+    expect(t.querySelector('[data-vfo-freq]')?.getAttribute('data-freq-tunable')).toBe('false');
+  });
+
+  it('reserves the meter row for an inactive peer without painting a second meter', () => {
+    const t = mountPanel({
+      receiver: 'main', receiverLabel: 'VFO B', slotTag: 'B', freq: 7150000,
+      mode: 'LSB', filter: 'NARROW', sValue: null, meterPresent: false,
+      isActive: false, badgeItems: [], reserveMeterSpace: true,
+    });
+
+    expect(t.querySelector('[data-meter-space="reserved"]')).not.toBeNull();
+    expect(t.querySelector('[data-testid="receiver-s-meter"]')).toBeNull();
+    expect(Array.from(t.querySelectorAll('.header-tag')).some((tag) => tag.textContent === 'BAR')).toBe(false);
+  });
+
   it('panel has active class when isActive=true', () => {
     const t = mountPanel(baseProps);
     expect(t.querySelector('.panel')?.classList.contains('active')).toBe(true);
@@ -424,6 +469,77 @@ describe('explicit presentation contract', () => {
     digits[digits.length - 1]?.click();
     digits[digits.length - 1]?.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
     expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_074_001);
+  });
+
+  it('opens from the whole readout without tuning', () => {
+    const onFrequencyClick = vi.fn();
+    const onFreqChange = vi.fn();
+    const t = mountPanel({ ...explicit, onFrequencyClick, onFreqChange });
+    const trigger = t.querySelector<HTMLElement>('[data-vfo-freq]')!;
+    const readout = t.querySelector<HTMLElement>('[data-vfo-freq] .freq')!;
+    const digit = t.querySelectorAll<HTMLElement>('.digit').item(4);
+
+    digit.click();
+    expect(onFrequencyClick).toHaveBeenCalledExactlyOnceWith(trigger);
+    t.querySelector<HTMLElement>('.sep')?.click();
+    readout.click();
+    expect(onFrequencyClick).toHaveBeenCalledTimes(3);
+    expect(onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it.each(['Enter', ' '] as const)(
+    'exposes inactive direct entry as an enabled button and opens with %s without tuning',
+    (key) => {
+      const onFrequencyClick = vi.fn();
+      const onFreqChange = vi.fn();
+      const t = mountPanel({
+        ...explicit, receiverLabel: 'MAIN B', isActive: false,
+        frequencyDisabled: true, controlsDisabled: true,
+        onFrequencyClick, onFreqChange,
+      });
+      const trigger = t.querySelector<HTMLElement>('[data-vfo-freq]')!;
+      const readout = trigger.querySelector<HTMLElement>('.freq')!;
+
+      expect(trigger.getAttribute('role')).toBe('button');
+      expect(trigger.getAttribute('aria-label')).toBe('Set frequency — MAIN B');
+      expect(trigger.getAttribute('aria-disabled')).toBeNull();
+      expect(trigger.getAttribute('tabindex')).toBe('0');
+      expect(readout.parentElement?.getAttribute('aria-hidden')).toBe('true');
+      trigger.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+
+      expect(onFrequencyClick).toHaveBeenCalledExactlyOnceWith(trigger);
+      expect(onFreqChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it('opens inactive direct entry by pointer without digit selection or wheel and arrow tuning', () => {
+    const onFrequencyClick = vi.fn();
+    const onFreqChange = vi.fn();
+    const t = mountPanel({
+      ...explicit, receiverLabel: 'MAIN B', isActive: false,
+      frequencyDisabled: true, controlsDisabled: true,
+      onFrequencyClick, onFreqChange,
+    });
+    const trigger = t.querySelector<HTMLElement>('[data-vfo-freq]')!;
+    const readout = trigger.querySelector<HTMLElement>('.freq')!;
+    const digit = readout.querySelector<HTMLElement>('.digit')!;
+
+    digit.click();
+    expect(onFrequencyClick).toHaveBeenCalledExactlyOnceWith(trigger);
+    expect(digit.classList.contains('selected')).toBe(false);
+    digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(onFreqChange).not.toHaveBeenCalled();
+  });
+
+  it('does not expose unsupported inactive frequency as an entry button', () => {
+    const t = mountPanel({
+      ...explicit, isActive: false, frequencyDisabled: true, controlsDisabled: true,
+    });
+    const wrapper = t.querySelector<HTMLElement>('[data-vfo-freq]')!;
+    expect(wrapper.getAttribute('role')).toBeNull();
+    expect(wrapper.getAttribute('tabindex')).toBeNull();
+    expect(wrapper.querySelector('.freq')?.parentElement?.getAttribute('aria-hidden')).toBeNull();
   });
 
   // MOR-2425/R29+R40: a HELD frequency stays tunable. `frequencyState` alone

@@ -15,7 +15,7 @@
   import type { MeterField, MeterRfState, RadioViewModel } from './radio-view-model';
 
   export type StationSignalFacts = Readonly<
-    Pick<MeterField, 'reading' | 'availability' | 'relevant' | 'domain'>
+    Pick<MeterField, 'reading' | 'availability' | 'relevant' | 'domain' | 'presence'>
   >;
   export interface StationSignalMeterFrame {
     readonly field: StationSignalFacts;
@@ -104,6 +104,7 @@
   let destroyed = false;
   const factsOf = (field: MeterField): StationSignalFacts => ({
     reading: field.reading,
+    presence: field.presence,
     availability: field.availability,
     relevant: field.relevant,
     domain: field.domain,

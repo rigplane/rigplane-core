@@ -65,6 +65,17 @@ function parse(control: Record<string, unknown>): ControlDomain {
   return result.controls?.test as ControlDomain;
 }
 describe('normalized control capability domains', () => {
+  it('validates optional per-profile MOD input choices and rejects malformed domains', () => {
+    const choices = [{ value: 0, label: 'MIC' }, { value: 3, label: 'USB' }];
+    expect(validateCapabilities({ ...baseCapabilities, dataModeInputs: choices }).dataModeInputs)
+      .toBe(choices);
+    expect(validateCapabilities(baseCapabilities)).toBe(baseCapabilities);
+    expect(() => validateCapabilities({ ...baseCapabilities,
+      dataModeInputs: [{ value: 0, label: 'MIC' }, { value: 0, label: 'USB' }] }))
+      .toThrow(/unique integer/);
+    expect(() => validateCapabilities({ ...baseCapabilities,
+      dataModeInputs: [{ value: 5, label: '' }] })).toThrow(/non-empty string/);
+  });
   it('consumes the loader-generated golden controls fixture without numeric coercion', () => {
     const payload = { ...baseCapabilities, controls: goldenControls };
     const parsed = validateCapabilities(payload);
@@ -91,6 +102,44 @@ describe('normalized control capability domains', () => {
     const payload = { ...baseCapabilities, controls: { gain: legacy } };
     expect(validateCapabilities(payload)).toBe(payload);
     expect(() => parse({ raw_min: 0, raw_max: 1, surprise: true })).toThrow(/unknown/);
+  });
+  it('accepts legacy controls carrying decode_quantum, including key_speed', () => {
+    const cwPitch = {
+      raw_min: 0, raw_max: 255, display_min: 300, display_max: 900,
+      display_unit: 'Hz', decode_quantum: 5,
+    };
+    const keySpeed = {
+      raw_min: 0, raw_max: 255, display_min: 6, display_max: 48,
+      display_unit: 'WPM', decode_quantum: 1,
+    };
+    const payload = { ...baseCapabilities, controls: { cw_pitch: cwPitch, key_speed: keySpeed } };
+    const parsed = validateCapabilities(payload);
+    // No explicit domain keys: the controls record passes through unchanged
+    // once decode_quantum is an allowed legacy key.
+    expect(parsed).toBe(payload);
+    expect(() => validateCapabilities({
+      ...baseCapabilities,
+      controls: { gain: { ...cwPitch, decode_bogus: 1 } },
+    })).toThrow(/unknown/);
+  });
+  it('accepts legacy controls carrying encode_rounding', () => {
+    const cwPitch = {
+      raw_min: 0, raw_max: 255, display_min: 400, display_max: 1200,
+      display_unit: 'Hz', decode_quantum: 10, encode_rounding: 'ceil',
+    };
+    const keySpeed = {
+      raw_min: 0, raw_max: 255, display_min: 5, display_max: 50,
+      display_unit: 'WPM', decode_quantum: 1, encode_rounding: 'nearest_half_down',
+    };
+    const payload = { ...baseCapabilities, controls: { cw_pitch: cwPitch, key_speed: keySpeed } };
+    const parsed = validateCapabilities(payload);
+    // encode_rounding rides through the legacy path like decode_quantum;
+    // the payload is returned unchanged because no explicit domain key is present.
+    expect(parsed).toBe(payload);
+    expect(() => validateCapabilities({
+      ...baseCapabilities,
+      controls: { gain: { ...cwPitch, encode_bogus: 'ceil' } },
+    })).toThrow(/unknown/);
   });
   it.each([
     ['identity', { ...linearDomain, mapping: 'identity', display_max: 10, display_step: 2 }],

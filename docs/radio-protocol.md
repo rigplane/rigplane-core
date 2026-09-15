@@ -307,11 +307,13 @@ lan_config = LanBackendConfig(
     host="192.168.1.100",
     username="user",
     password="pass",
+    model="IC-7610",
 )
 radio = create_radio(lan_config)
 
 # Serial backend via factory
 serial_config = SerialBackendConfig(
+    model="IC-7610",
     device="/dev/cu.usbserial-111120",
     baudrate=115200,
 )
@@ -335,7 +337,7 @@ rigplane freq 14.074m
 rigplane --backend lan status
 
 # New: Serial backend
-rigplane --backend serial --serial-port /dev/cu.usbserial-111120 status
+rigplane --backend serial --model IC-7610 --serial-port /dev/cu.usbserial-111120 status
 ```
 
 ### Web UI and rigctld
@@ -347,13 +349,13 @@ Web UI and rigctld now support backend selection via CLI flags. Default is LAN f
 rigplane web
 
 # Web UI: Serial backend
-rigplane --backend serial --serial-port /dev/cu.usbserial-111120 web
+rigplane --backend serial --model IC-7610 --serial-port /dev/cu.usbserial-111120 web
 
 # rigctld: LAN backend (default)
 rigplane serve
 
 # rigctld: Serial backend
-rigplane --backend serial --serial-port /dev/cu.usbserial-111120 serve
+rigplane --backend serial --model IC-7610 --serial-port /dev/cu.usbserial-111120 serve
 ```
 
 ### Consumer Code (Web/rigctld/CLI)

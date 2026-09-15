@@ -10,6 +10,8 @@ from rigplane.core.command_service import (
 )
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
+    CommandLifecycleEvent,
+    CommandLifecycleState,
     CommandSource,
     FieldPath,
     Observation,
@@ -79,7 +81,16 @@ def _intent(
 
 def test_terminate_active_commands_is_exact_scoped_and_idempotent() -> None:
     service, _ = _service()
-    emit = service.emit_lifecycle
+
+    def emit(
+        intent: CommandIntent,
+        state: CommandLifecycleState,
+        *,
+        details: dict[str, str] | None = None,
+    ) -> CommandLifecycleEvent:
+        service._record_intent_overlay(intent)  # noqa: SLF001
+        return service.emit_lifecycle(intent, state, details=details)
+
     terminate = service.terminate_active_commands
     states = ("accepted", "queued", "sent", "acknowledged")
     for command_id, state in zip("aqsk", states, strict=True):
@@ -201,7 +212,7 @@ def test_active_command_registry_is_bounded_and_terminal_entries_do_not_leak() -
     service, _ = _service()
     for index in range(128):
         service.emit_lifecycle(_intent(str(index), "websocket", "ws-a"), "accepted")
-    service.emit_lifecycle(_intent("0", "websocket", "ws-a"), "acknowledged")
+    service.emit_lifecycle(_intent("0", "websocket", "ws-a"), "sent")
 
     def refill(event: object) -> None:
         if getattr(event, "message", None) == "active command capacity exceeded":
@@ -214,3 +225,25 @@ def test_active_command_registry_is_bounded_and_terminal_entries_do_not_leak() -
     assert [event.command_id for event in evicted] == ["0", "1"]
     service.terminate_active_commands("shutdown")
     assert service._active_commands == {}  # noqa: SLF001
+
+
+def test_capacity_removes_stale_registry_entry_even_when_failure_cannot_be_emitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _ = _service()
+    for index in range(128):
+        service.emit_lifecycle(_intent(str(index), "websocket", "ws-a"), "sent")
+    calls = 0
+
+    def already_terminal(*args: object, **kwargs: object) -> bool:
+        nonlocal calls
+        calls += 1
+        assert calls <= 1, (
+            "capacity loop retried an entry whose history is already terminal"
+        )
+        return False
+
+    monkeypatch.setattr(CommandService, "fail_command", already_terminal)
+    service.emit_lifecycle(_intent("next", "websocket", "ws-a"), "accepted")
+    assert calls == 1
+    assert len(service._active_commands) == 128  # noqa: SLF001

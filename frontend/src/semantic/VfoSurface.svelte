@@ -44,6 +44,8 @@
   import VfoPanel from '../components-v2/vfo/VfoPanel.svelte';
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import VfoOperationGroup from './VfoOperationGroup.svelte';
+  import { formatKnownLevel } from './format-level';
+  import { RF_FRONT_END_LEVELS } from './rf-front-end-instruments';
   import {
     invokeVfoOperation,
     projectVfoOperations,
@@ -60,6 +62,8 @@
     viewModel: RadioViewModel;
     appearance?: 'semantic' | 'sdr' | 'standard';
     onSelectVfo?: (target: VfoSelection) => void;
+    /** Standard-face digit activation with exact VFO identity and focus return node. */
+    onOpenFrequencyEntry?: (target: VfoSelection, trigger: HTMLElement) => void;
     onToggleSplit?: () => void;
     onToggleDualWatch?: () => void;
     /**
@@ -151,6 +155,16 @@
      * once; the radio-wide `showVfoList={false}` mount renders no rows.
      */
     indicatorReceiver?: ReceiverId;
+    /**
+     * MOR-2425 / T207 — a STOPGAP. `true` withholds the "Select VFO A /
+     * Select VFO B" pair. It resolves which of a one-receiver radio's two VFO
+     * POSITIONS is A and which is B: on a deck that gives each position its
+     * own column that is a relation BETWEEN the columns, and drawn inside one
+     * column it reads as that column's own control. The slot-stripped deck
+     * sets this until the relation has a surface of its own (T183). Defaults
+     * to `false`: every other caller renders exactly as before.
+     */
+    suppressIdentitySelectors?: boolean;
     continuitySession?: MeterContinuitySession | null;
     frequencyLifetimeKey?: string;
     receiverInstruments?: ReceiverInstrumentHandles;
@@ -182,6 +196,7 @@
   let {
     viewModel, appearance = 'semantic',
     onSelectVfo,
+    onOpenFrequencyEntry,
     onToggleSplit,
     onToggleDualWatch,
     selectionPoolSize,
@@ -193,6 +208,7 @@
     onTuneFrequency,
     pendingFrequencyHz,
     indicatorReceiver,
+    suppressIdentitySelectors = false,
     continuitySession,
     frequencyLifetimeKey,
     receiverInstruments,
@@ -435,15 +451,69 @@
     return slot?.kind === 'slotted' ? slot.id : '—';
   }
   let instrumentReceivers = $derived([...new Set(viewModel.vfos.map((vfo) => vfo.receiver))]);
+  let standardPair = $derived.by(() => {
+    if (appearance !== 'standard' || instrumentReceivers.length !== 1) return null;
+    const receiver = instrumentReceivers[0];
+    const records = viewModel.vfos.filter((vfo) => vfo.receiver === receiver);
+    const a = records.find((vfo) => vfo.slot.kind === 'slotted' && vfo.slot.id === 'A');
+    const b = records.find((vfo) => vfo.slot.kind === 'slotted' && vfo.slot.id === 'B');
+    if (records.length !== 2) return null;
+    return a && b
+      ? { receiver, left: a, right: b, absolute: true }
+      : { receiver, left: records[0], right: records[1], absolute: false };
+  });
   let receiverIndicators = $derived(
     (viewModel.receiverIndicators ?? []).filter(
       (indicator) => indicatorReceiver === undefined || indicator.receiver === indicatorReceiver,
     ),
   );
 
-  function standardBadges(indicator: ReceiverIndicatorViewModel | undefined) {
-    if (!indicator) return [];
-    const badges: { label: string; active: boolean; color: 'cyan' | 'orange' | 'muted'; state: string }[] = [];
+  function standardBadges(indicator: ReceiverIndicatorViewModel | undefined, vfo?: VfoViewModel) {
+    const badges: { label: string; active: boolean; color: 'cyan' | 'orange' | 'muted' | 'red' | 'amber'; state: string }[] = [];
+    const wide = viewModel.radioWideIndicators;
+    const rfState = viewModel.radioWideIndicators?.rfState;
+    if (vfo?.isActiveSlot) {
+      const rxHz = displayValue(vfo.display?.frequencyHz, vfo.frequencyHz);
+      badges.push({ label: `RX ${formatFrequency(rxHz)}`, active: rxHz !== null,
+        color: rxHz === null ? 'muted' : 'cyan', state: vfo.display?.frequencyHz.state ?? (rxHz === null ? 'unknown' : 'current') });
+      if (wide?.antenna.availability.structural) {
+        const value = wide.antenna.reading.status === 'known' ? wide.antenna.reading.value : null;
+        badges.push({ label: `ANT ${value ?? '—'}`, active: value !== null,
+          color: value === null ? 'muted' : 'cyan', state: wide.antenna.reading.status });
+      }
+      if (wide?.atu.availability.structural) {
+        const value = wide.atu.reading.status === 'known' ? wide.atu.reading.value.toUpperCase() : null;
+        badges.push({ label: `TUNE ${value ?? '—'}`, active: value === 'ON' || value === 'TUNING',
+          color: value === null ? 'muted' : value === 'OFF' ? 'cyan' : 'orange', state: wide.atu.reading.status });
+      }
+      if (wide && (wide.ritActive.availability.structural || wide.ritOffset.availability.structural)) {
+        const active = wide.ritActive.reading.status === 'known' ? wide.ritActive.reading.value : null;
+        const offset = wide.ritOffset.reading.status === 'known' ? wide.ritOffset.reading.value : null;
+        badges.push({ label: `RIT ${active === null ? '—' : active ? 'ON' : 'OFF'} ${offset ?? '—'} Hz`,
+          active: active === true, color: active === null || offset === null ? 'muted' : active ? 'orange' : 'cyan',
+          state: active === null || offset === null ? 'unknown' : 'known' });
+      }
+      if (wide && (wide.xitActive.availability.structural || wide.xitOffset.availability.structural)) {
+        const active = wide.xitActive.reading.status === 'known' ? wide.xitActive.reading.value : null;
+        const offset = wide.xitOffset.reading.status === 'known' ? wide.xitOffset.reading.value : null;
+        badges.push({ label: `XIT ${active === null ? '—' : active ? 'ON' : 'OFF'} ${offset ?? '—'} Hz`,
+          active: active === true, color: active === null || offset === null ? 'muted' : active ? 'orange' : 'cyan',
+          state: active === null || offset === null ? 'unknown' : 'known' });
+      }
+    }
+    if (vfo?.isTxTarget && viewModel.txTarget.status === 'known') {
+      const transmitting = rfState === 'transmitting';
+      const uncertain = rfState === 'uncertain';
+      badges.push({
+        label: `${uncertain ? 'TX?' : 'TX'} ${formatFrequency(viewModel.txTarget.frequencyHz)}`,
+        active: true,
+        color: transmitting ? 'red' : uncertain ? 'amber' : 'orange',
+        state: rfState ?? 'unknown',
+      });
+    }
+    // A split TX target may be the inactive slot. It receives only RF truth;
+    // receiver-local badges still belong exclusively to the active VFO.
+    if (!indicator || (vfo !== undefined && !vfo.isActiveSlot)) return badges;
     const numeric = (name: string, field: ReceiverIndicatorViewModel['bandwidthHz'], unit = '') => {
       if (!field.availability.structural) return;
       const reading = field.reading;
@@ -471,7 +541,10 @@
     toggle('IP+', indicator.ipPlus); toggle('DIGI-SEL', indicator.digiSel);
     if (indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported') {
       const shown = displayValue(indicator.rfGain.display, indicator.rfGain.reading.status === 'known' ? indicator.rfGain.reading.value : null);
-      badges.push({ label: `RFG ${shown ?? '—'}`, active: shown !== null, color: shown === null ? 'muted' : 'cyan', state: indicator.rfGain.display?.state ?? indicator.rfGain.reading.status });
+      const text = shown === null
+        ? '—'
+        : formatKnownLevel(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3]);
+      badges.push({ label: `RFG ${text}`, active: shown !== null, color: shown === null ? 'muted' : 'cyan', state: indicator.rfGain.display?.state ?? indicator.rfGain.reading.status });
     }
     return badges;
   }
@@ -482,12 +555,6 @@
       && band.reading.status === 'known' ? band.reading.value : null;
   }
 
-  function standardRit(vfo: VfoViewModel): { active: boolean; offset: number } | undefined {
-    const wide = viewModel.radioWideIndicators;
-    if (!vfo.isActive || !wide || wide.ritActive.reading.status !== 'known'
-      || wide.ritOffset.reading.status !== 'known') return undefined;
-    return { active: wide.ritActive.reading.value, offset: wide.ritOffset.reading.value };
-  }
 </script>
 
 <div class="vfo-surface" role="group" aria-label={groupLabel ?? t('core.vfo.groupLabel')} data-testid="vfo-surface" data-vfo-appearance={appearance}>
@@ -638,7 +705,7 @@
       </div>
   {/snippet}
   {#snippet identitySelectors()}
-  {#if relativeIdentityUnknown && relativeReceiver !== null}
+  {#if !suppressIdentitySelectors && relativeIdentityUnknown && relativeReceiver !== null}
     {@const absoluteReason = disabled
       ? t('core.vfo.select.receiverUnavailableReason')
       : relativeSelectionPending
@@ -691,6 +758,31 @@
   {/if}
   {/snippet}
 
+  {#snippet standardOperationContent()}
+    <VfoOperationGroup
+      {appearance}
+      scheme={viewModel.vfoScheme}
+      projection={vfoOperations}
+      controls={operationControls}
+      onIntent={handleOperationIntent}
+    />
+  {/snippet}
+
+  {#snippet standardPairSelectors(pair: { receiver: ReceiverId; left: VfoViewModel; right: VfoViewModel; absolute: boolean })}
+    {#if pair.absolute}
+    <div class="standard-vfo-selectors" aria-label="Select VFO">
+      {#each [pair.left, pair.right] as vfo (slotKey(vfo.slot))}
+        {@const slot = vfo.slot.kind === 'slotted' ? vfo.slot.id : '—'}
+        <button type="button" class="vfo-select" data-standard-select-vfo={slot}
+          data-active={vfo.isActiveSlot} disabled={disabled || vfo.isActiveSlot}
+          onclick={() => selectVfo(vfo)}>SELECT {slot}</button>
+      {/each}
+    </div>
+    {:else}
+      {@render identitySelectors()}
+    {/if}
+  {/snippet}
+
   {#snippet receiverInstrument(receiver: ReceiverId)}
     {@const meterHandle = receiver === 'MAIN'
       ? receiverInstruments?.mainSMeter : receiverInstruments?.subSMeter}
@@ -716,10 +808,10 @@
     </section>
   {/snippet}
 
-  {#snippet standardInstrument(receiver: ReceiverId)}
+  {#snippet standardInstrument(receiver: ReceiverId, fixed: VfoViewModel | undefined)}
     {@const records = viewModel.vfos.filter((item) => item.receiver === receiver)}
     {@const activeSlot = records.find((item) => item.isActiveSlot)}
-    {@const dominant = activeSlot ?? (records.length === 1 ? records[0] : undefined)}
+    {@const dominant = fixed ?? activeSlot ?? (records.length === 1 ? records[0] : undefined)}
     {@const indicator = receiverIndicators.find((item) => item.receiver === receiver)}
     {@const frequencyHandle = receiver === 'MAIN'
       ? receiverInstruments?.mainFrequency : receiverInstruments?.subFrequency}
@@ -736,7 +828,7 @@
     {#snippet hostedMeter()}
       {#if meterHandle}{@render meterHandle(hostedMeterFrame)}{/if}
     {/snippet}
-    {@const choices = viewModel.vfos.flatMap((choice, index) =>
+    {@const choices = fixed ? [] : viewModel.vfos.flatMap((choice, index) =>
         choice.receiver === receiver && choice !== dominant
           ? [{
               key: String(index), receiver: choice.receiver === 'SUB' ? 'sub' as const : 'main' as const,
@@ -748,6 +840,7 @@
             }]
           : [])}
     <section class="receiver-instrument standard-receiver" data-receiver-instrument={receiver}
+      data-standard-vfo-slot={fixed?.slot.kind === 'slotted' ? fixed.slot.id : undefined}
       data-testid="vfo-indicator-row" data-indicator-receiver={receiver}
       data-indicator-operational={indicator?.availability.operational}
       aria-label={`${receiver} receiver indicators`}>
@@ -758,12 +851,13 @@
         data-vfo-active={dominant?.isActive} data-vfo-active-slot={dominant?.isActiveSlot}
         data-vfo-tx-target={dominant?.isTxTarget}>
         <VfoPanel
-          receiver={receiver === 'SUB' ? 'sub' : 'main'} receiverLabel={receiver}
+          receiver={receiver === 'SUB' ? 'sub' : 'main'} receiverLabel={fixed ? roleLabel(fixed) : receiver}
           slotTag={dominant ? (dominant.slot.kind === 'slotted' ? dominant.slot.id : roleLabel(dominant)) : '—'}
           frequency={receiverInstruments !== undefined && dominant && frequencyHandle
+            && (fixed === undefined || fixed.isActiveSlot)
             ? hostedFrequency : undefined}
-          freq={receiverInstruments === undefined ? dominant?.frequencyHz ?? null : undefined}
-          displayHz={receiverInstruments === undefined && dominant
+          freq={dominant?.frequencyHz ?? null}
+          displayHz={(receiverInstruments === undefined || (fixed !== undefined && !fixed.isActiveSlot)) && dominant
             ? displayValue(dominant.display?.frequencyHz, dominant.frequencyHz) : undefined}
           pendingDisplayHz={receiverInstruments === undefined && dominant
             ? pendingFrequencyHz?.[receiver] ?? null : undefined}
@@ -771,25 +865,36 @@
           contextKey={receiverInstruments === undefined
             ? `${frequencyLifetimeKey ?? 'unscoped'}:${viewModel.topologyId}:${receiver}:${dominant ? slotKey(dominant.slot) : 'unknown'}`
             : undefined}
-          frequencyDisabled={!dominant || readoutDisabled(dominant)}
+          frequencyDisabled={!dominant || (fixed !== undefined && !fixed.isActiveSlot) || readoutDisabled(dominant)}
+          controlsDisabled={fixed !== undefined && !fixed.isActiveSlot}
           mode={dominant ? displayValue(dominant.display?.mode, dominant.mode) : null}
           filter={dominant ? displayValue(dominant.display?.filter, dominant.filter) : null}
           sValue={indicator?.sMeter.availability.operational && indicator.sMeter.reading.status === 'known'
             && Number.isFinite(indicator.sMeter.reading.value) ? indicator.sMeter.reading.value : null}
-          sMeter={receiverInstruments === undefined ? undefined : hostedMeter}
-          meterPresent={indicator?.sMeter.availability.structural ?? false}
+          sMeter={receiverInstruments === undefined || (fixed && !fixed.isActiveSlot) ? undefined : hostedMeter}
+          meterPresent={(fixed === undefined || fixed.isActiveSlot) && (indicator?.sMeter.availability.structural ?? false)}
           meterOperational={indicator?.sMeter.availability.operational ?? false}
           meterSource={indicator?.sMeter.source}
           {continuitySession}
-          isActive={dominant?.isActive ?? false} badgeItems={standardBadges(indicator)}
+          isActive={dominant?.isActive ?? false}
+          badgeItems={standardBadges(indicator, dominant)}
           bandText={dominant ? standardBand(dominant) : null}
-          rit={dominant ? standardRit(dominant) : undefined} slotChoices={choices}
+          slotChoices={choices}
+          reserveMeterSpace={fixed !== undefined && !fixed.isActiveSlot}
           onFreqChange={receiverInstruments === undefined && dominant
             ? (hz) => tuneFrequency(dominant, hz) : undefined}
+          onFrequencyClick={dominant && onOpenFrequencyEntry
+            ? (trigger) => onOpenFrequencyEntry({ receiver: dominant.receiver, slot: dominant.slot }, trigger)
+            : undefined}
           onSelectSlot={(key) => {
             const choice = viewModel.vfos[Number(key)];
             if (choice) selectVfo(choice);
           }}
+          onSelectHeader={fixed?.slot.kind === 'slotted' && isSelectable(fixed) && !disabled
+            ? () => selectVfo(fixed) : undefined}
+          headerReason={fixed?.slot.kind === 'unknown'
+            ? selectReasonText(fixed)
+            : fixed?.slot.kind === 'relative' ? identityOnlyReasonText() : undefined}
         />
       </div>
     </section>
@@ -797,21 +902,31 @@
 
   {#if appearance !== 'semantic' && showVfoList}
     <div class="instrument-panel" data-testid="vfo-instrument-panel">
+      {#if standardPair}
+        {@render standardInstrument(standardPair.receiver, standardPair.left)}
+        <div class="bridge standard-pair-bridge" data-instrument-bridge>
+          {@render standardPairSelectors(standardPair)}
+          {@render standardOperationContent()}
+        </div>
+        {@render standardInstrument(standardPair.receiver, standardPair.right)}
+      {:else}
       {#if instrumentReceivers[0]}
-        {#if appearance === 'standard'}{@render standardInstrument(instrumentReceivers[0])}
+        {#if appearance === 'standard'}{@render standardInstrument(instrumentReceivers[0], undefined)}
         {:else}{@render receiverInstrument(instrumentReceivers[0])}{/if}
       {/if}
       {#if showRadioWideFacts}
         <div class="bridge" data-instrument-bridge>
           {@render activeReceiverStatus()}
           {@render identitySelectors()}
-          {@render radioWideContent()}
+          {#if appearance === 'standard'}{@render standardOperationContent()}
+          {:else}{@render radioWideContent()}{/if}
         </div>
       {/if}
       {#each instrumentReceivers.slice(1) as receiver (receiver)}
-        {#if appearance === 'standard'}{@render standardInstrument(receiver)}
+        {#if appearance === 'standard'}{@render standardInstrument(receiver, undefined)}
         {:else}{@render receiverInstrument(receiver)}{/if}
       {/each}
+      {/if}
     </div>
   {:else}
     {#if appearance !== 'semantic' && !showVfoList}{@render activeReceiverStatus()}{/if}
@@ -908,6 +1023,77 @@
     box-shadow: 0 0 6px rgba(0,212,255,.3), inset 0 0 16px rgba(0,212,255,.06);
   }
   [data-vfo-appearance='standard'] .bridge { flex-basis: 136px; }
+  [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
+    flex: 1 1 0;
+    padding: 6px;
+    --btn-compact-min-height: 18px;
+    --btn-compact-padding-block: 1px;
+    --btn-compact-padding-inline: 4px;
+    --btn-compact-font-size: 9px;
+    --vfo-control-strip-gap: 2px;
+    --vfo-panel-body-height: 100px;
+    --vfo-control-strip-height: 54px;
+  }
+  [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] :global(.control-strip) {
+    align-content: center;
+    flex-wrap: wrap;
+    overflow: visible;
+    white-space: normal;
+  }
+  @media (min-width: 951px) and (max-width: 1280px) {
+    [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
+      --btn-compact-min-height: 14px;
+      --btn-compact-padding-block: 0;
+      --btn-compact-padding-inline: 3px;
+    }
+    [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] :global(.control-strip) {
+      line-height: 14px;
+    }
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge {
+    flex: 0 0 clamp(190px, 14vw, 220px);
+    padding: 4px;
+    gap: 3px;
+    --vfo-ops-gap: 3px;
+    --vfo-ops-badge-padding-x: 3px;
+    --vfo-ops-badge-font-size: 9px;
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .facts) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3px;
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .fact) {
+    min-width: 0;
+    text-align: center;
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .rf-lamp:empty) {
+    display: none;
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.vfo-ops) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.split-digest) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3px;
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.split-digest > span) {
+    min-width: 0;
+    text-align: center;
+  }
+  .standard-vfo-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+  .standard-vfo-selectors .vfo-select {
+    min-width: 0; padding: 4px 3px; font-size: 9px; font-weight: 700;
+  }
+  .standard-vfo-selectors .vfo-select[data-active='true'] {
+    border-color: var(--v2-accent-cyan, #00d4ff); color: var(--v2-accent-cyan, #00d4ff);
+  }
+  .standard-tx-target {
+    display: block; padding: 3px 5px; border: 1px solid var(--v2-accent-red, #ff2020);
+    border-radius: 3px; color: var(--v2-accent-red, #ff2020); font-size: 9px;
+    font-weight: 700; text-align: center;
+  }
   [data-vfo-appearance='standard'] .receiver-instrument :where(.vfo-tile) {
     grid-template-columns: auto minmax(0, 1fr) auto;
     grid-template-rows: auto auto;
@@ -948,6 +1134,19 @@
     .receiver-instrument { flex-basis: calc(50% - 90px); }
     .bridge { flex-basis: 150px; }
     .receiver-instrument .vfo-freq { font-size: 26px; }
+  }
+  @media (max-width: 950px) {
+    [data-vfo-appearance='standard'] .standard-pair-bridge {
+      padding: 2px;
+      gap: 1px;
+    }
+    [data-vfo-appearance='standard'] .standard-receiver {
+      --vfo-panel-body-height: 64px;
+      --vfo-control-strip-height: 22px;
+    }
+    [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
+      flex-basis: calc(100% - 192px);
+    }
   }
   @media (max-width: 760px) {
     .instrument-panel { flex-direction: column; }

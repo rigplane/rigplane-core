@@ -188,6 +188,8 @@ from rigplane.runtime.meter_cal import interpolate_swr
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
 from rigplane.profiles import RadioProfile, resolve_radio_profile
+from rigplane.profiles.control_domain import decode_legacy_control
+from rigplane.profiles.control_domain import encode_legacy_control
 from rigplane.core.radio_state import RadioState
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.core._state_cache import StateCache
@@ -2329,7 +2331,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         Args:
             level: Power level 0-255.
         """
+        if not 0 <= level <= 255:
+            raise ValueError(f"RF power must be 0-255, got {level}")
         self._check_connected()
+        self._require_capability("power_control", operation="set_rf_power")
         civ = self._commands.set_rf_power(level, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
         self._last_power = level
@@ -2583,12 +2588,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             sub=sub,
             prefix=prefix,
         )
-        return round((((600.0 / 255.0) * level) + 300) / 5.0) * 5
+        return decode_legacy_control(self._profile.controls, "cw_pitch", level)
 
     async def set_cw_pitch(self, pitch_hz: int) -> None:
-        """Set CW pitch in Hz."""
+        """Set CW pitch in Hz.
+
+        The Hz-to-level conversion comes from the active profile's
+        ``[controls.cw_pitch]`` band and its ``encode_rounding`` rule.
+        """
+        level = encode_legacy_control(self._profile.controls, "cw_pitch", pitch_hz)
         await self._send_fire_and_forget(
-            self._commands.set_cw_pitch(pitch_hz, to_addr=self._radio_addr)
+            self._commands.set_cw_pitch(level, to_addr=self._radio_addr)
         )
 
     async def get_mic_gain(self) -> int:
@@ -2618,12 +2628,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             sub=sub,
             prefix=prefix,
         )
-        return round((level / 6.071) + 6)
+        return decode_legacy_control(self._profile.controls, "key_speed", level)
 
     async def set_key_speed(self, wpm: int) -> None:
-        """Set key speed in WPM."""
+        """Set key speed in WPM.
+
+        The WPM-to-level conversion comes from the active profile's
+        ``[controls.key_speed]`` band and its ``encode_rounding`` rule.
+        """
+        level = encode_legacy_control(self._profile.controls, "key_speed", wpm)
         await self._send_fire_and_forget(
-            self._commands.set_key_speed(wpm, to_addr=self._radio_addr)
+            self._commands.set_key_speed(level, to_addr=self._radio_addr)
         )
 
     async def get_notch_filter(self, receiver: int = RECEIVER_MAIN) -> int:
@@ -4086,6 +4101,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     def project_attenuator_observation_value(self, db: int) -> int:
         return db
+
+    def attenuator_db_steps(self) -> tuple[int, ...] | None:
+        """Legal attenuator dB steps declared by the active profile."""
+        return self._profile.att_values
 
     async def set_attenuator_level(
         self, db: int, receiver: int = RECEIVER_MAIN

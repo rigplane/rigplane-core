@@ -17,6 +17,7 @@
  * next to the code it mutates.)
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { validateRadioViewModel, type TxAuxField, type TxAuxViewModel } from '../radio-view-model';
 import { topologyFixtures, withTxAux } from '../fixtures/topologies';
 
@@ -173,5 +174,28 @@ describe('txAux (MOR-1244)', () => {
     expect(knownValue(validated.rfPower)).toBe(0.8);
     expect(knownValue(validated.micGain)).toBe(128);
     expect(knownValue(validated.driveGain)).toBe(128);
+  });
+});
+
+/**
+ * MOR-1687 F2 — fast-pool pin for the host's admitted-target RF-power
+ * feedback seam; mounted behavior is covered by the wiring pool. Comments
+ * are stripped so doctrine prose can never satisfy this pin.
+ */
+describe('TxAuxScalarHost admitted-target RF-power feedback seam (MOR-1687 F2)', () => {
+  const CODE = readFileSync('src/semantic/TxAuxScalarHost.svelte', 'utf8')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+
+  it('declares the optional feedback prop and binds the rfPower lane through it', () => {
+    expect(CODE).toMatch(/rfPowerFeedback\?: Readonly<CommandScalarFeedback>/);
+    expect(CODE).toMatch(/field === 'rfPower' && rfPowerFeedback !== undefined/);
+    expect(CODE).toMatch(/command: 'set_rf_power'/);
+    expect(CODE).toMatch(/feedback: rfPowerFeedback/);
+    expect(CODE).toMatch(/ownerKey: `tx-aux-\$\{field\}-reading`/);
+    expect(CODE).toMatch(/function feedbackOf\(field: TxAuxLevelField\)/);
+    expect(CODE).toMatch(/if \(field === 'rfPower'\) return rfPowerFeedback;/);
+    expect(CODE).toMatch(/\{@const currentFeedback = feedbackOf\(field\)\}/);
   });
 });

@@ -97,17 +97,17 @@ rigplane --backend lan status
 
 ```bash
 # Auto-discover serial port
-rigplane --backend serial status
+rigplane --backend serial --model IC-7610 status
 
 # Explicit port (--backend serial is inferred)
-rigplane --serial-port /dev/tty.usbmodem-IC7610 status
+rigplane --serial-port /dev/tty.usbmodem-IC7610 --model IC-7610 status
 ```
 
 Set via environment variable to avoid repeating:
 
 ```bash
 export ICOM_SERIAL_DEVICE=/dev/tty.usbmodem-IC7610
-rigplane status    # auto-infers --backend serial
+rigplane --model IC-7610 status    # auto-infers --backend serial
 ```
 
 ### Yaesu CAT backend
@@ -152,13 +152,13 @@ rigplane --list-audio-devices
 rigplane --list-audio-devices --json
 
 # Specify explicit devices
-rigplane --backend serial --serial-port /dev/tty.usbmodem-IC7610 \
+rigplane --backend serial --model IC-7610 --serial-port /dev/tty.usbmodem-IC7610 \
     --rx-device "IC-7610 USB Audio" \
     --tx-device "IC-7610 USB Audio" \
     audio rx --out rx.wav --seconds 10
 
 # Specify an ALSA hardware id from --list-audio-devices --json
-rigplane --backend serial --serial-port /dev/ttyACM0 \
+rigplane --backend serial --model IC-7610 --serial-port /dev/ttyACM0 \
     --rx-device "hw:3,0" \
     --tx-device "hw:3,0" \
     audio rx --out rx.wav --seconds 10

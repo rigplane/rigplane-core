@@ -81,9 +81,9 @@ describe('IC-7300 fixture — DSP family conformance (MOR-1560)', () => {
   describe('set_nr_level — boundary walk over the declared nr_level range', () => {
     // RED-FIRST: see file header. The declared wire range comes straight
     // from the fixture (`raw_min`/`raw_max`); no `display_min`/`display_max`
-    // is declared, so the display domain is the SAME generic fallback
-    // `nrDisplayToRaw` itself would fall back to at runtime
-    // (`controlRangeFromCapsOrDefault`) — not a test-invented number.
+    // is declared, so the display domain is the SAME generic fallback the
+    // runtime helpers use (`controlRangeFromCapsOrDefault`) — not a
+    // test-invented number.
     const { displayMin, displayMax } = controlRangeFromCapsOrDefault('nr_level', IC7300_CAPABILITIES);
     const mid = Math.round((displayMin + displayMax) / 2);
 

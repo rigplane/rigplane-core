@@ -32,6 +32,7 @@ interface MotionHarness {
 
 function installMotionHarness(initialReduced = false): MotionHarness {
   let reduced = initialReduced;
+  const wallClock = vi.spyOn(Date, 'now').mockReturnValue(1_000);
   let nextFrameId = 1;
   let nextIntervalId = 1;
   const frames = new Map<number, FrameRequestCallback>();
@@ -78,6 +79,7 @@ function installMotionHarness(initialReduced = false): MotionHarness {
       listeners.forEach((callback) => callback());
     },
     restore() {
+      wallClock.mockRestore();
       window.matchMedia = originalMatchMedia;
       window.setInterval = originalSetInterval;
       window.clearInterval = originalClearInterval;

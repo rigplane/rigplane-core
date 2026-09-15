@@ -146,3 +146,41 @@ describe('filterPassband (MOR-1262 slice 4A′)', () => {
     expect(knownValue(validated.dataMode)).toBe(0);
   });
 });
+
+/**
+ * MOR-1681: the group optionally carries the profile-declared IF-shift
+ * display domain (`controls.if_shift`'s `{min, max, step, origin}`) — one
+ * control, one domain, sitting on the group beside the field it governs.
+ * Absent means the radio declared nothing usable; the group states the
+ * domain, never a fallback. Same `{min, max, step, origin}` shape the
+ * NR-level projection already validates.
+ */
+describe('filterPassband.ifShiftDomain (MOR-1681)', () => {
+  const FTX1 = { min: -1200, max: 1200, step: 20, origin: 0 } as const;
+
+  it('accepts a profile-declared ifShiftDomain and round-trips it unchanged', () => {
+    const withFp = withFilterPassband(base);
+    const model = { ...withFp, filterPassband: { ...withFp.filterPassband, ifShiftDomain: FTX1 } };
+    const validated = validateRadioViewModel(model).filterPassband as FilterPassbandViewModel;
+    expect(validated.ifShiftDomain).toEqual({ min: -1200, max: 1200, step: 20, origin: 0 });
+    expect(validated).toEqual(model.filterPassband);
+  });
+
+  it('still validates without ifShiftDomain — absence is the no-usable-domain state', () => {
+    const withFp = withFilterPassband(base);
+    expect(Object.keys(withFp.filterPassband as FilterPassbandViewModel)).not.toContain('ifShiftDomain');
+    const validated = validateRadioViewModel(withFp).filterPassband as FilterPassbandViewModel;
+    expect(validated.ifShiftDomain).toBeUndefined();
+  });
+
+  it.each([
+    ['a string in place of the group', '-1200..1200'],
+    ['a domain missing origin', { min: -1200, max: 1200, step: 20 }],
+    ['a non-numeric bound', { min: '-1200', max: 1200, step: 20, origin: 0 }],
+    ['an extra key beyond the four domain keys', { min: -1200, max: 1200, step: 20, origin: 0, unit: 'Hz' }],
+  ])('rejects %s', (_label, ifShiftDomain) => {
+    const withFp = withFilterPassband(base);
+    const malformed = { ...withFp, filterPassband: { ...withFp.filterPassband, ifShiftDomain } };
+    expect(() => validateRadioViewModel(malformed)).toThrow(/\$\.filterPassband\.ifShiftDomain/);
+  });
+});

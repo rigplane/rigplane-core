@@ -354,9 +354,34 @@ describe('selected finite Scope authority lifetime (MOR-2425)', () => {
     [receiver]: { ...state[receiver], activeSlot },
   } as ServerState);
 
+  /** MOR-2425 slot-lifetime fixtures: the ONE-receiver `vfoScheme: 'ab'`
+   *  topology is the scheme whose per-receiver A/B slot authority the scope
+   *  lease still tracks — a `main_sub` radio no longer carries A/B slot
+   *  lifetime on its receivers, so the A-B-A rotations below need the `ab`
+   *  shape (`main` with observed `activeSlot` + `vfoA`/`vfoB`, no `sub`). */
+  const abCaps = (): Capabilities => ({
+    ...liveCaps(['tx', 'scope']), receivers: 1, vfoScheme: 'ab',
+  } as Capabilities);
+  const abState = (over: Partial<ServerState> = {}): ServerState => {
+    const source = liveState(over) as unknown as Record<string, unknown>;
+    const fieldStatus = { ...(source.fieldStatus as Record<string, unknown>) };
+    for (const key of Object.keys(fieldStatus)) {
+      if (key.startsWith('sub.')) delete fieldStatus[key];
+    }
+    const rest = { ...source };
+    delete rest.sub;
+    return { ...rest, fieldStatus } as unknown as ServerState;
+  };
+  const useAbTopology = (): void => {
+    useCaps(abCaps());
+    useState(abState());
+  };
+
   it('revokes retained A1 synchronously on unobserved A→B→A before flush, then admits only fresh A3', () => {
     h.selectedFiniteAppearance = finiteAppearance;
-    const a1 = liveState();
+    useAbTopology();
+    const a1 = abState();
+    useState(a1);
     render();
     const retainedA1 = {
       action: retainedInvocations.get('+')!,
@@ -400,26 +425,34 @@ describe('selected finite Scope authority lifetime (MOR-2425)', () => {
     expect(sendCommand).toHaveBeenCalledTimes(3);
   });
 
+  type LeaseRotationCase = readonly [
+    axis: string,
+    setup: (() => void) | undefined,
+    replacement: (state: ServerState, caps: Capabilities) => {
+      state: ServerState; caps: Capabilities; session: { state: string; epoch: number };
+    },
+  ];
   it.each([
-    ['session', (state: ServerState, caps: Capabilities) => ({ state, caps, session: { state: 'connected', epoch: 2 } })],
-    ['provider', (state: ServerState, caps: Capabilities) => ({
+    ['session', undefined, (state: ServerState, caps: Capabilities) => ({ state, caps, session: { state: 'connected', epoch: 2 } })],
+    ['provider', undefined, (state: ServerState, caps: Capabilities) => ({
       state: { ...state, providerGeneration: 32 } as ServerState,
       caps: { ...caps, providerGeneration: 32 } as Capabilities,
       session: h.controlSession,
     })],
-    ['topology', (state: ServerState, caps: Capabilities) => ({
+    ['topology', undefined, (state: ServerState, caps: Capabilities) => ({
       state,
       caps: { ...caps, vfoScheme: 'ab_shared', receivers: 2 } as Capabilities,
       session: h.controlSession,
     })],
-    ['active receiver', (state: ServerState, caps: Capabilities) => ({
+    ['active receiver', undefined, (state: ServerState, caps: Capabilities) => ({
       state: { ...state, active: 'SUB' } as ServerState, caps, session: h.controlSession,
     })],
-    ['active slot', (state: ServerState, caps: Capabilities) => ({
+    ['active slot', useAbTopology, (state: ServerState, caps: Capabilities) => ({
       state: withSlot(state, 'main', 'B'), caps, session: h.controlSession,
     })],
-  ] as const)('rotates the lease when %s authority changes', (_axis, replacement) => {
+  ] satisfies readonly LeaseRotationCase[])('rotates the lease when %s authority changes', (_axis, setup, replacement) => {
     h.selectedFiniteAppearance = finiteAppearance;
+    setup?.();
     render();
     const first = retainedInvocations.get('HOLD')!;
     const next = replacement(h.state as ServerState, h.caps as Capabilities);

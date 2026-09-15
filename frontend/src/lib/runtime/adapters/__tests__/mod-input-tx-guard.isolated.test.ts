@@ -6,7 +6,8 @@
  * with a one-click "Set LAN" fix. It must:
  *   - fire on TX-start when the active group's source is known and != LAN;
  *   - NOT fire when the source is LAN, unknown (null), gated off by a
- *     missing fieldStatus, or the radio lacks the data_mode capability;
+ *     fieldStatus the backend has not read, or the radio lacks the
+ *     data_mode capability;
  *   - send the active group's SET command with source=5 on one-click;
  *   - clear reactively when the source becomes LAN (readback);
  *   - never block or alter the TX path (tx-adapter still delegates).
@@ -45,7 +46,7 @@ import { sendCommand } from '$lib/transport/ws-client';
 import { dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
 import { runtime } from '$lib/runtime/frontend-runtime';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
-import { setCapabilities } from '$lib/stores/capabilities.svelte';
+import { getCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import {
   armModInputTxGuard,
   deriveModInputTxGuardProps,
@@ -112,6 +113,8 @@ function setState(overrides: Record<string, unknown> = {}): void {
 function useDualReceiverCapabilities(): void {
   setCapabilities({
     capabilities: ['data_mode'],
+    dataModeCount: 3,
+    dataModeInputs: [0, 1, 2, 3, 4, 5].map(value => ({ value, label: String(value) })),
     receivers: 2,
     vfoScheme: 'main_sub',
     audioTx: true,
@@ -122,12 +125,13 @@ function useDualReceiverCapabilities(): void {
   } as never);
 }
 
-function missingStatus() {
+/** An unobserved entry carrying one of the three absence values. */
+function unreadStatus(availability = 'missing') {
   return {
     storePath: 'test.path',
     observed: false,
     freshness: 'unknown',
-    availability: 'missing',
+    availability,
   };
 }
 
@@ -143,6 +147,8 @@ beforeEach(() => {
   resetRadioState();
   setCapabilities({
     capabilities: ['data_mode'],
+    dataModeCount: 3,
+    dataModeInputs: [0, 1, 2, 3, 4, 5].map(value => ({ value, label: String(value) })),
     audioTx: true,
     audioTxRoute: 'lan',
     audioTxRequiredModInputSource: 5,
@@ -231,13 +237,38 @@ describe('armModInputTxGuard (MOR-617)', () => {
     setState({
       main: receiver(1),
       data1ModInput: 0,
-      fieldStatus: { data1ModInput: missingStatus() },
+      fieldStatus: { data1ModInput: unreadStatus() },
     });
 
     armModInputTxGuard();
 
     expect(deriveModInputTxGuardProps().visible).toBe(false);
   });
+
+  // MOR-2425/T201: `unavailable` and `undeclared` are absences too. The
+  // gate compared `=== 'missing'`, so under either the guard read the
+  // group's stored value and warned about a source nobody had observed.
+  it.each(['unavailable', 'undeclared'] as const)(
+    'does not fire when fieldStatus marks the group %s',
+    (availability) => {
+      setState({ main: receiver(1), data1ModInput: 0 });
+      armModInputTxGuard();
+      expect(deriveModInputTxGuardProps().visible).toBe(true);
+
+      // `makeState` pins `revision` at 1 unless overridden, and
+      // `setRadioState` drops a non-newer revision.
+      setState({
+        revision: 2,
+        main: receiver(1),
+        data1ModInput: 0,
+        fieldStatus: { data1ModInput: unreadStatus(availability) },
+      });
+
+      armModInputTxGuard();
+
+      expect(deriveModInputTxGuardProps().visible).toBe(false);
+    },
+  );
 
   it('does not fire without the data_mode capability', () => {
     setCapabilities({ capabilities: [], stateContractVersion: 1, providerGeneration: 0 } as never);
@@ -318,6 +349,8 @@ describe('one-click Set LAN (MOR-617)', () => {
   it('dispatches the active group SET intent with source=5', () => {
     setState({ main: receiver(1), data1ModInput: 0 });
     armModInputTxGuard();
+
+    expect(getCapabilities()?.dataModeInputs?.some(option => option.value === 5)).toBe(true);
 
     getModInputTxGuardHandlers().onSetLan();
 

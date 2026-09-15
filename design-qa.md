@@ -1,94 +1,61 @@
-# Design QA — A / Peer Split LCD glass
+# Design QA — Standard TX indication and AGC cleanup
 
-- Source visual truth: `/Users/moroz/.codex/visualizations/2026/09/03/01a06845-1e4a-7593-9295-a1b9dced9114/lcd-handoff-render/A-clean-idle.png`
-- Rendered implementation: `/Users/moroz/.codex/visualizations/2026/09/03/01a06845-1e4a-7593-9295-a1b9dced9114/lcd-implementation-capture/peer-split-current-1280x540.png`
-- Combined comparison: `/Users/moroz/.codex/visualizations/2026/09/03/01a06845-1e4a-7593-9295-a1b9dced9114/peer-split-reference-current-final.png` (SHA-256 `928d36e107a6cccc8fd496702cfc5d322f3602fdc8be6d1741679592070a5200`)
-- Viewport: 1280×800 browser viewport; the fixed-native glass is the top 1280×540 CSS-pixel region.
-- Pixel normalization: source 1280×540; implementation cropped losslessly from the 1280×800 capture to 1280×540; `deviceScaleFactor: 1`.
-- State: source is authored `A-clean-idle` with VFO A active and demonstration values. Implementation is the real `peer-split-chassis` fixture with VFO B active and only facts available from its semantic model. Geometry and presentation are compared directly; content/state differences are not treated as visual defects when the source values are demonstrative or unbacked.
-- Browser evidence: the existing fixture build/capture harness completed `1/1` assertions with `0 invalid`; its manifest records no console errors.
+- Source visual truth: `/var/folders/gt/c_czgx6x5bxc1sb3ntph9mgr0000gn/T/codex-clipboard-7b90d4d1-43b9-4041-9b1c-42c5e4bd22e1.png`, plus the operator direction that the top `TX / KEY DOWN / latched` banner is removed and keyed state is carried by a strongly red PTT button. The follow-up source `/var/folders/gt/c_czgx6x5bxc1sb3ntph9mgr0000gn/T/codex-clipboard-43136a98-ff70-43b4-a14a-5b4427ae53cb.png` identifies `NB width` as foreign to the AGC panel.
+- Rendered implementation: `/Users/moroz/.codex/visualizations/2026/09/14/01a0a12d-1c41-7c63-adc5-cb5ba44cb581/tx-banner-fix/standard-tx-after.png` (SHA-256 `ea2d954df2741ea24387fc8f155b5050936be1ca9fa13578a01d399d6fb7bc02`).
+- Focused before/after comparison: `/Users/moroz/.codex/visualizations/2026/09/14/01a0a12d-1c41-7c63-adc5-cb5ba44cb581/tx-banner-fix/tx-panel-before-after.png` (SHA-256 `415ead1cf075b28e967ff328ee411a38905032a751d3d51f7c1111f2bfa1a826`).
+- Viewport: 1440×900 CSS px, Chromium, `deviceScaleFactor: 1`.
+- Pixel normalization: source crop 466×786 px; implementation full view 1440×900 px; the TX panel was cropped to 235×310 CSS px and scaled 2× to 470×620 px for the focused comparison. Both panels are top-aligned; the unused lower area is padding, not page content.
+- State: Standard desktop, dark theme, simulated authoritative managed-TX state (`intent=transmit`, observed PTT on). The browser harness intercepts API/WS state and forwards no radio command.
+- Audited implementation revision: `5fa07e1a1955cc63b5b7a16d5fb13dc735655ff3`.
 
 ## Findings
 
-No actionable P0/P1/P2 visual mismatch remains in the bounded, truth-backed
-first slice.
+No actionable P0/P1/P2 visual mismatch remains in the requested TX-panel slice.
 
-- [Expected constraint] The source contains FFT peaks, filter widths, clock,
-  named memory channels, and temperature that are not backed by current live
-  facts. The implementation keeps their geometry but renders a flat ghosted
-  AF-FFT, omits an unknown filter envelope, and reserves structural footer
-  slots. Adding source demo values would be a truth regression, not a fidelity
-  fix.
-- [Truth contract] A known-off SPLIT keeps its fixed cell but renders a ghosted
-  dash, because switch state alone does not prove a numeric zero delta. NOTCH
-  and ANF are mutually exclusive renderings of the existing `manual | auto |
-  off` mode: manual lights NOTCH, auto lights ANF, off ghosts both, and unknown
-  leaves both unknown. They use their distinct handoff glyphs and never become
-  two independent booleans.
-- [Expected state difference] The source activates VFO A while the fixture
-  activates VFO B. The active accent, strong/ghosted column treatment, and
-  fixed 50/50 geometry correctly mirror across the divider.
-- [P3] The source's populated footer has more visible weight than the current
-  structural-empty footer. Revisit only when a real memory/telemetry semantic
-  model provides those fields; do not fill the gap decoratively.
+- The duplicate local `TX / KEY DOWN / latched` banner is absent.
+- The existing PTT control is the dominant local TX indication: opaque, saturated red fill, bright red border/glow, white label, and no disabled-opacity washout.
+- UNKEY remains immediately below PTT and visually distinct.
+- The panel keeps its original width, control order, spacing, and surrounding layout.
+- The AGC panel contains only the AGC mode choices; `NB width` is absent there and remains available in the NB/DSP settings path.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: the implementation uses the self-hosted DSEG7 Classic
-  hero and Share Tech Mono labels. Hero size is 78px; the trailing three digits
-  are exactly 62%; tabular fixed cells prevent digit reflow. Optical weight and
-  hierarchy match the source at 1:1 capture.
-- Spacing and layout rhythm: fixed 1280×540 stage, strict 50/50 VFO deck,
-  symmetric 22px column padding, stable tag/chip, frequency, offset, meter,
-  scope, fact-rail, and footer rows. Unsupported flags reserve invisible slots
-  instead of shifting their neighbors.
-- Colors and visual tokens: amber `#C8A030` ground, ink derived solely from
-  `rgba(26,16,0,alpha)`, handoff bezel edge/shadow, scanline overlay, and only
-  the specified TX/tune accent family.
-- Image and asset fidelity: no raster screenshot is embedded. The FFT/filter
-  layers remain vector primitives, and status icons are direct Svelte ports of
-  the selected handoff `lcd-icons.jsx` paths rather than approximations.
-- Copy and content: radio labels come from semantic facts or structural labels.
-  No handoff memory, temperature, clock, named band-edge, IPO inference,
-  simultaneously active NOTCH/ANF pair, or synthetic spectrum value is
-  presented as real. When audio FFT is unsupported the heading says only
-  `BANDPASS`, while the truthful filter/PBT overlay remains visible.
+- Fonts and typography: the existing Roboto Mono/hardware-control typography, PTT weight, uppercase copy, and letter spacing are unchanged. The PTT label remains centered and legible over the stronger fill.
+- Spacing and layout rhythm: removing the banner closes its entire vertical slot; PTT moves directly under the panel header without altering button geometry or the two-column auxiliary-control grid.
+- Colors and visual tokens: keyed PTT uses the existing red semantic family with a 76% red fill, explicit full opacity, bright border, and red glow. It is substantially louder than idle without animation or flashing.
+- Image and asset fidelity: no image asset, icon, SVG, or placeholder is introduced; this is native control styling only.
+- Copy and content: the redundant visible `TX / KEY DOWN / latched` text is gone. `PTT` and `UNKEY` remain unchanged. The TX status row remains in the accessibility tree with its authority-derived text and `role=status`.
+- Control placement: `NB width` is suppressed only when the shared DSP surface is presenting its `agc` part. Its persistent scalar binding and non-AGC render paths are unchanged.
 
 ## Full-view and focused-region evidence
 
-The combined before/reference/current sheet is the full-view comparison.
-Focused regions were also inspected at native resolution in the standalone
-1280×540 implementation crop: top status/icons, both frequency/offset/meter
-stacks, AF scope grids, lower fact rail, and footer. Separate crop artifacts
-were unnecessary because all display text and one-pixel rules remain legible
-in the native image.
+The full 1440×900 browser capture confirms the Standard outer grid, panel placement, and absence of reflow outside TX. The focused side-by-side comparison is required because the source is a cropped high-density panel image; it makes the removed banner, reclaimed space, and strengthened PTT treatment directly legible.
+
+## Browser and interaction evidence
+
+- Mac Mini Playwright production-path check: `MOR-2458 keeps RX/TX geometry fixed and attributes TX only to the known split target` passed at the exact revision.
+- The test asserts the status row is `sr-only` with a ≤1×1 px visual box, PTT has `data-active=true` and `aria-pressed=true`, computed opacity is `1`, and its computed background and shadow are non-empty.
+- The same run asserts zero outgoing radio commands and zero browser console/page errors. No live radio or PTT action was performed.
+- Mac Mini component tests: 133/133 passed across the TX surface and semantic DSP wiring suites; Svelte/TypeScript check reported 0 errors and 0 warnings; production build passed.
+- The exact-head Standard browser scenario additionally asserts that the AGC panel contains zero `dsp-nbWidth` controls.
 
 ## Comparison history
 
-1. First comparison found P2 drift: missing scanline/shadow texture,
-   topology labels displayed as MAIN/SUB instead of VFO A/B for `ab_shared`,
-   and status density lacked stable LOCK/ANF positions. It also found that the
-   neutral FFT needed an explicit component-owned safe-empty contract.
-2. Fixes: ported the handoff scanline/shadow treatment; mapped `ab_shared`
-   labels from known topology; reserved unsupported status slots; added
-   `LcdAfFft` with optional normalized bins and its own private zero buffer;
-   ported the handoff status icon paths.
-3. Post-fix evidence: the final 1280×540 crop and the combined comparison path
-   above. The capture harness passed and reported no console errors.
+1. The source showed a P1 hierarchy problem: two simultaneous local TX indicators, while the actionable PTT remained visually muted.
+2. The implementation keeps the authority status as screen-reader-only in Standard, resets competing panel chrome on that hidden row, restores full opacity for active PTT, and strengthens its fill/border/glow.
+3. Exact-state browser capture and the focused combined image show the banner removed and PTT carrying the local keyed state. No post-fix P0/P1/P2 issue was found.
 
 ## Implementation checklist
 
-- [x] Preserve fixed-native geometry and uniform external scaling.
-- [x] Keep glass markup read-only and non-focusable.
-- [x] Render active/inactive/unknown/unsupported without reflow or fabricated values; split-off uses `—`, never a synthetic `+0.000`.
-- [x] Keep FFT safe-empty allocation inside the passive FFT primitive.
-- [x] Use real handoff SVG paths, self-hosted fonts, and amber ink tokens.
-- [x] Capture 1:1 browser evidence without writing canonical baselines.
+- [x] Remove the visible Standard keyed banner without deleting status semantics.
+- [x] Make active PTT strongly red and immune to generic disabled opacity.
+- [x] Preserve `aria-pressed`, `role=status`, and ungated UNKEY.
+- [x] Verify the production Standard path with mocked TX state and no radio commands.
+- [x] Check the same viewport for layout drift and browser errors.
+- [x] Remove `NB width` from AGC without removing its NB/DSP control path.
 
 ## Follow-up polish
 
-- Populate the currently empty AF/footer positions only from the v3
-  receiver-scoped FFT, receiver-scoped passband, memory, and telemetry
-  mechanisms documented in the primitive-field map.
+None for this bounded request.
 
 final result: passed

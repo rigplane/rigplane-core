@@ -8,6 +8,7 @@ import tomllib
 import warnings
 from dataclasses import dataclass, field
 from decimal import Decimal
+from fractions import Fraction
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
@@ -26,12 +27,12 @@ from rigplane.core.state_acquisition_policy import (
     ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.tx_interlock_contract import (
-    TX_INTERLOCK_COMMAND_FAMILY_METADATA,
-    TxInterlockCommandFamily,
-    TxInterlockDisposition,
-)
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
+from rigplane.profiles.control_domain import (
+    _on_control_lattice,
+    _public_decimal,
+    validate_control_raw_value,
+)
 
 __all__ = [
     "RigConfig",
@@ -39,6 +40,9 @@ __all__ = [
     "load_rig",
     "discover_rigs",
     "discover_available_rigs",
+    # Re-exported from control_domain (MOR-2472) so pre-existing import
+    # paths keep working; the mechanism itself lives in one module only.
+    "validate_control_raw_value",
 ]
 from rigplane.commands.command_spec import (
     AbsentCommandSpec,
@@ -83,6 +87,7 @@ VALID_CONTROL_QUANTIZATION = {
     "reject",
 }
 VALID_CONTROL_RESTORATION = {"exact", "unavailable"}
+VALID_CONTROL_ENCODE_ROUNDINGS = {"ceil", "nearest_half_down"}
 _CONTROL_KEYS = {
     "style",
     "range_min",
@@ -98,6 +103,8 @@ _CONTROL_KEYS = {
     "display_origin",
     "display_center",
     "display_unit",
+    "decode_quantum",
+    "encode_rounding",
     "mapping",
     "quantization",
     "restoration",
@@ -148,14 +155,6 @@ _ScalarControlDomain = dict[
 ]
 
 
-def _public_decimal(value: Decimal) -> str:
-    """Render an exact Decimal as the frontend's canonical fixed-point string."""
-    rendered = format(value, "f")
-    if "." in rendered:
-        rendered = rendered.rstrip("0").rstrip(".")
-    return "0" if rendered in {"0", "-0"} else rendered
-
-
 def _control_number(value: object, path: str, *, integer: bool = False) -> int | float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         expected = "an integer" if integer else "a finite number"
@@ -174,16 +173,6 @@ def _control_decimal(value: object, path: str) -> Decimal:
     if not decimal.is_finite():
         raise RigLoadError(f"{path} must be a finite number")
     return decimal
-
-
-def _on_control_lattice(
-    value: int | Decimal, origin: int | Decimal, step: int | Decimal
-) -> bool:
-    (value_num, value_den), (origin_num, origin_den), (step_num, step_den) = (
-        Decimal(item).as_integer_ratio() for item in (value, origin, step)
-    )
-    numerator = (value_num * origin_den - origin_num * value_den) * step_den
-    return numerator % (value_den * origin_den * step_num) == 0
 
 
 def _parse_control_lookup(
@@ -331,6 +320,73 @@ def _parse_control_spec(
         _control_number(raw["display_center"], f"{prefix}.display_center")
     if "display_unit" in raw and not isinstance(raw["display_unit"], str):
         raise RigLoadError(f"{prefix}.display_unit must be a string")
+    if "decode_quantum" in raw:
+        decode_quantum = raw["decode_quantum"]
+        if (
+            isinstance(decode_quantum, bool)
+            or not isinstance(decode_quantum, int)
+            or decode_quantum <= 0
+        ):
+            raise RigLoadError(f"{prefix}.decode_quantum must be a positive integer")
+        if set(raw) & _EXPLICIT_CONTROL_DOMAIN_KEYS:
+            raise RigLoadError(
+                f"{prefix}.decode_quantum is a legacy-band key and cannot be "
+                "combined with an explicit domain"
+            )
+        missing_band = [
+            key
+            for key in ("raw_min", "raw_max", "display_min", "display_max")
+            if key not in raw
+        ]
+        if missing_band:
+            raise RigLoadError(
+                f"{prefix}.decode_quantum requires the legacy band "
+                f"(raw_min/raw_max and display_min/display_max); missing {missing_band!r}"
+            )
+        # Exhaustive half-step tie guard over every raw in range: decode
+        # rounds to the nearest quantum step, so an exact .5 remainder would
+        # make the value depend on the tie-break rule, not the domain.
+        band_lo_raw = int(raw["raw_min"])
+        band_hi_raw = int(raw["raw_max"])
+        band_lo_display = int(raw["display_min"])
+        band_hi_display = int(raw["display_max"])
+        for candidate in range(band_lo_raw, band_hi_raw + 1):
+            if (
+                Fraction(
+                    (candidate - band_lo_raw) * (band_hi_display - band_lo_display),
+                    (band_hi_raw - band_lo_raw) * decode_quantum,
+                ).denominator
+                == 2
+            ):
+                raise RigLoadError(
+                    f"{prefix} decode domain has an exact half-step tie at raw "
+                    f"{candidate}; declare a decode_quantum that avoids ties"
+                )
+    if "encode_rounding" in raw:
+        encode_rounding = raw["encode_rounding"]
+        if (
+            not isinstance(encode_rounding, str)
+            or encode_rounding not in VALID_CONTROL_ENCODE_ROUNDINGS
+        ):
+            raise RigLoadError(
+                f"{prefix}.encode_rounding must be one of "
+                f"{sorted(VALID_CONTROL_ENCODE_ROUNDINGS)!r}"
+            )
+        if set(raw) & _EXPLICIT_CONTROL_DOMAIN_KEYS:
+            raise RigLoadError(
+                f"{prefix}.encode_rounding is a legacy-band key and cannot be "
+                "combined with an explicit domain"
+            )
+        missing_band = [
+            key
+            for key in ("raw_min", "raw_max", "display_min", "display_max")
+            if key not in raw
+        ]
+        if missing_band:
+            raise RigLoadError(
+                f"{prefix}.encode_rounding requires the legacy band "
+                f"(raw_min/raw_max and display_min/display_max); missing {missing_band!r}"
+            )
 
     explicit = bool(set(raw) & _EXPLICIT_CONTROL_DOMAIN_KEYS)
     if not explicit:
@@ -552,6 +608,7 @@ class RigConfig:
     max_watts: int | None = None
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
+    data_mode_inputs: tuple[tuple[int, str], ...] | None = None
     protocol_type: str = "civ"
     protocol_address: int | None = None
     protocol_baud: int | None = None
@@ -593,9 +650,6 @@ class RigConfig:
     # for the full rationale.
     fixed_value_checks: dict[str, str] = field(default_factory=dict)
     state_acquisition: RadioAcquisitionProfile | None = None
-    tx_interlock_disposition_overrides: dict[
-        TxInterlockCommandFamily, TxInterlockDisposition
-    ] = field(default_factory=dict)
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
     ctcss_tones_centihz: tuple[int, ...] | None = None
 
@@ -767,6 +821,7 @@ class RigConfig:
             rf_sql_control_model=self.rf_sql_control_model,
             data_mode_count=self.data_mode_count,
             data_mode_labels=self.data_mode_labels,
+            data_mode_inputs=self.data_mode_inputs,
             # isinstance, not membership: a declared-absent entry
             # (AbsentCommandSpec, MOR-2005 step 4a) is a dict key too, but
             # it means the opposite of "the radio has this command" — see
@@ -802,7 +857,6 @@ class RigConfig:
             write_only_controls=frozenset(self.write_only_controls),
             fixed_value_checks=dict(self.fixed_value_checks),
             state_acquisition=self.state_acquisition,
-            tx_interlock_disposition_overrides=self.tx_interlock_disposition_overrides,
             tx_policy=self.tx_policy,
         )
 
@@ -1528,6 +1582,7 @@ _STATE_ACQUISITION_CAPABILITY_KEYS = frozenset(
         "polling_only",
         "stream_like_meters",
         "command_response_observable",
+        "startup_optional",
         "supported_controls",
         "unsupported",
         "unknown",
@@ -1725,6 +1780,24 @@ def _parse_state_acquisition(
             caps_raw.get("command_response_observable"),
         )
     )
+    startup_optional = set(
+        _state_path_list(
+            filename,
+            f"{section}.startup_optional",
+            caps_raw.get("startup_optional"),
+        )
+    )
+    optional_without_acquisition = startup_optional - (
+        unsolicited | polling | stream | command_response
+    )
+    if optional_without_acquisition:
+        formatted = ", ".join(
+            str(path) for path in sorted(optional_without_acquisition, key=str)
+        )
+        raise RigLoadError(
+            f"{filename}: {section}.startup_optional paths must also be "
+            f"declared acquisitive: {formatted}"
+        )
     supported_controls = set(
         _state_path_list(
             filename,
@@ -1746,6 +1819,7 @@ def _parse_state_acquisition(
         | polling
         | stream
         | command_response
+        | startup_optional
         | supported_controls
         | unsupported
         | unknown
@@ -1769,6 +1843,7 @@ def _parse_state_acquisition(
                     polling=path in polling or path in stream,
                     stream_like=path in stream,
                     command_response_observable=path in command_response,
+                    startup_required=path not in startup_optional,
                     supported_controls=(
                         ("profile_control",) if path in supported_controls else ()
                     ),
@@ -1855,195 +1930,6 @@ def _parse_state_acquisition(
         raise RigLoadError(f"{filename}: [state_acquisition] invalid: {exc}") from exc
 
 
-_TX_INTERLOCK_METADATA_BY_FAMILY = {
-    metadata.family: metadata for metadata in TX_INTERLOCK_COMMAND_FAMILY_METADATA
-}
-
-
-def _toml_shape_statements(source: str) -> list[list[tuple[str, str]]]:
-    """Expose only table/key punctuation while shielding strings and comments."""
-
-    statements: list[list[tuple[str, str]]] = []
-    statement: list[tuple[str, str]] = []
-    punctuation = "[]{}.="
-    index = 0
-    while index < len(source):
-        char = source[index]
-        if char == "\n":
-            if statement:
-                statements.append(statement)
-                statement = []
-            index += 1
-            continue
-        if char in " \t\r":
-            index += 1
-            continue
-        if char == "#":
-            newline = source.find("\n", index)
-            index = len(source) if newline < 0 else newline
-            continue
-        if source.startswith(('"""', "'''"), index):
-            delimiter = source[index : index + 3]
-            index += 3
-            while index < len(source) and not source.startswith(delimiter, index):
-                if delimiter == '"""' and source[index] == "\\":
-                    index += 2
-                else:
-                    index += 1
-            index += 3
-            for _ in range(2):
-                if index < len(source) and source[index] == delimiter[0]:
-                    index += 1
-            statement.append(("string", ""))
-            continue
-        if char in "\"'":
-            delimiter = char
-            start = index
-            index += 1
-            while index < len(source) and source[index] != delimiter:
-                if delimiter == '"' and source[index] == "\\":
-                    index += 2
-                else:
-                    index += 1
-            index += 1
-            literal = source[start:index]
-            value = tomllib.loads(f"key = {literal}")["key"]
-            statement.append(("key", value))
-            continue
-        if char in punctuation:
-            statement.append((char, char))
-            index += 1
-            continue
-        start = index
-        while index < len(source) and source[index] not in f" \t\r\n#{punctuation}\"'":
-            index += 1
-        statement.append(("key", source[start:index]))
-    if statement:
-        statements.append(statement)
-    return statements
-
-
-def _toml_key_path(tokens: list[tuple[str, str]]) -> tuple[str, ...] | None:
-    """Return a dotted key path, or ``None`` for tokens outside that shape."""
-
-    path: list[str] = []
-    expect_key = True
-    for kind, value in tokens:
-        if expect_key and kind == "key":
-            path.append(value)
-            expect_key = False
-        elif not expect_key and kind == ".":
-            expect_key = True
-        else:
-            return None
-    return tuple(path) if path and not expect_key else None
-
-
-def _validate_tx_interlock_override_syntax(filename: str, source: str) -> None:
-    """Require the documented table plus one non-dotted inline mapping key."""
-
-    current_table: tuple[str, ...] = ()
-    forbidden_prefix = ("tx_interlock", "disposition_overrides")
-    container_depth = 0
-    for tokens in _toml_shape_statements(source):
-        if container_depth == 0 and tokens[0][0] == "[" and tokens[-1][0] == "]":
-            inner = tokens[1:-1]
-            if inner and inner[0][0] == "[" and inner[-1][0] == "]":
-                inner = inner[1:-1]
-            path = _toml_key_path(inner)
-            current_table = path or ()
-            if current_table[:2] == forbidden_prefix:
-                raise RigLoadError(
-                    f"{filename}: [tx_interlock].disposition_overrides "
-                    "must use inline table syntax"
-                )
-            continue
-
-        if container_depth == 0:
-            equals = next(
-                (position for position, token in enumerate(tokens) if token[0] == "="),
-                None,
-            )
-            key_path = _toml_key_path(tokens[:equals]) if equals is not None else None
-            if key_path is not None:
-                assert equals is not None
-                dotted_in_table = (
-                    current_table == ("tx_interlock",)
-                    and key_path[:1] == ("disposition_overrides",)
-                    and len(key_path) > 1
-                )
-                dotted_at_root = (
-                    current_table == () and key_path[:2] == forbidden_prefix
-                )
-                outer_inline = (
-                    current_table == ()
-                    and key_path == ("tx_interlock",)
-                    and tokens[equals + 1][0] == "{"
-                )
-                if dotted_in_table or dotted_at_root or outer_inline:
-                    raise RigLoadError(
-                        f"{filename}: [tx_interlock].disposition_overrides "
-                        "must use inline table syntax"
-                    )
-        container_depth += sum(token[0] in "[{" for token in tokens)
-        container_depth -= sum(token[0] in "]}" for token in tokens)
-
-
-def _parse_tx_interlock_disposition_overrides(
-    filename: str, raw: object
-) -> dict[TxInterlockCommandFamily, TxInterlockDisposition]:
-    """Validate the profile-only, one-way TX interlock tightening mapping."""
-
-    if raw is None:
-        return {}
-    if not isinstance(raw, dict):
-        raise RigLoadError(f"{filename}: [tx_interlock] must be a table")
-
-    unknown_keys = set(raw) - {"disposition_overrides"}
-    if unknown_keys:
-        raise RigLoadError(
-            f"{filename}: [tx_interlock] unknown key(s): {sorted(unknown_keys)}"
-        )
-
-    overrides_raw = raw.get("disposition_overrides", {})
-    if not isinstance(overrides_raw, dict):
-        raise RigLoadError(
-            f"{filename}: [tx_interlock].disposition_overrides must be an inline table"
-        )
-
-    overrides: dict[TxInterlockCommandFamily, TxInterlockDisposition] = {}
-    for family_value, disposition_value in overrides_raw.items():
-        try:
-            family = TxInterlockCommandFamily(family_value)
-        except ValueError as exc:
-            raise RigLoadError(
-                f"{filename}: [tx_interlock].disposition_overrides has unknown "
-                f"command family {family_value!r}"
-            ) from exc
-
-        if not isinstance(disposition_value, str):
-            raise RigLoadError(
-                f"{filename}: [tx_interlock].disposition_overrides[{family_value!r}] "
-                "must be a string"
-            )
-        if disposition_value != TxInterlockDisposition.DEFER.value:
-            raise RigLoadError(
-                f"{filename}: [tx_interlock].disposition_overrides[{family_value!r}] "
-                "must be 'defer'"
-            )
-
-        metadata = _TX_INTERLOCK_METADATA_BY_FAMILY[family]
-        if metadata.base_disposition is not TxInterlockDisposition.TX_SAFE:
-            raise RigLoadError(
-                f"{filename}: [tx_interlock].disposition_overrides family "
-                f"{family_value!r} has base disposition "
-                f"{metadata.base_disposition.value!r}, not tx-safe"
-            )
-        overrides[family] = TxInterlockDisposition.DEFER
-
-    return overrides
-
-
 _TX_POLICY_KEYS = frozenset({"refused_during_tx", "tx_state_map"})
 
 
@@ -2114,8 +2000,6 @@ def load_rig(path: Path) -> RigConfig:
         data = tomllib.loads(source)
     except Exception as exc:
         raise RigLoadError(f"{filename}: failed to parse TOML: {exc}") from exc
-
-    _validate_tx_interlock_override_syntax(filename, source)
 
     # Validate required sections
     for section in _REQUIRED_SECTIONS:
@@ -2431,12 +2315,47 @@ def load_rig(path: Path) -> RigConfig:
         data_mode_labels = (
             dict(data_mode_section["labels"]) if "labels" in data_mode_section else None
         )
+        raw_inputs = data_mode_section.get("inputs")
+        if raw_inputs is not None:
+            if not isinstance(raw_inputs, list) or not raw_inputs:
+                raise RigLoadError(
+                    f"{filename}: [data_mode].inputs must be a non-empty array"
+                )
+            parsed_inputs: list[tuple[int, str]] = []
+            for index, item in enumerate(raw_inputs):
+                if not isinstance(item, dict) or set(item) != {"value", "name"}:
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].inputs[{index}] must contain value and name"
+                    )
+                value, name = item["value"], item["name"]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or not 0 <= value <= 5
+                ):
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].inputs[{index}].value must be an integer from 0 to 5"
+                    )
+                if not isinstance(name, str) or not name.strip():
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].inputs[{index}].name must be non-empty"
+                    )
+                parsed_inputs.append((value, name))
+            if len({value for value, _ in parsed_inputs}) != len(parsed_inputs):
+                raise RigLoadError(
+                    f"{filename}: [data_mode].inputs values must be unique"
+                )
+            data_mode_inputs = tuple(parsed_inputs)
+        else:
+            data_mode_inputs = None
     elif has_data_mode_feature:
         data_mode_count = 1
         data_mode_labels = {"0": "OFF", "1": "DATA"}
+        data_mode_inputs = None
     else:
         data_mode_count = 0
         data_mode_labels = None
+        data_mode_inputs = None
 
     # Parse [controls] (optional)
     controls_raw = data.get("controls")
@@ -2626,10 +2545,6 @@ def load_rig(path: Path) -> RigConfig:
         filename,
         data.get("state_acquisition"),
     )
-    tx_interlock_disposition_overrides = _parse_tx_interlock_disposition_overrides(
-        filename,
-        data.get("tx_interlock"),
-    )
     tx_policy = _parse_tx_policy(filename, data.get("tx_policy"))
 
     return RigConfig(
@@ -2684,6 +2599,7 @@ def load_rig(path: Path) -> RigConfig:
         rf_sql_control_model=rf_sql_control_model,
         data_mode_count=data_mode_count,
         data_mode_labels=data_mode_labels,
+        data_mode_inputs=data_mode_inputs,
         protocol_type=protocol_type,
         protocol_address=protocol_address,
         protocol_baud=protocol_baud,
@@ -2710,7 +2626,6 @@ def load_rig(path: Path) -> RigConfig:
         write_only_controls=write_only_controls,
         fixed_value_checks=fixed_value_checks,
         state_acquisition=state_acquisition,
-        tx_interlock_disposition_overrides=tx_interlock_disposition_overrides,
         tx_policy=tx_policy,
     )
 

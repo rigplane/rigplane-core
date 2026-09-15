@@ -624,29 +624,33 @@ describe('RadioLayout structure', () => {
 });
 
 describe('Band instrument placement', () => {
-  it.each([
-    ['desktop-v2', true],
-    ['sdr-test', false],
-  ] as const)('%s renders choice then entry exactly once', (skinId, independent) => {
+  it('sdr-test renders grouped choice then entry exactly once', () => {
     rt.state = structuredClone(stateFixture);
     rt.caps = structuredClone(capsFixture);
-    const t = mountLayout(skinId);
+    const t = mountLayout('sdr-test');
     const choices = t.querySelectorAll('[data-testid="band-choices"]');
     const entries = t.querySelectorAll('[data-testid="band-entry"]');
     const grid = t.querySelector('[data-testid="band-control-grid"]');
     expect(choices).toHaveLength(1);
     expect(entries).toHaveLength(1);
-    expect(grid !== null).toBe(independent);
-    if (independent) {
-      expect(grid?.querySelector('[data-field="bandChoice"] [data-testid="band-choices"]'))
-        .not.toBeNull();
-      expect(grid?.querySelector('[data-field="frequencyEntry"] [data-testid="band-entry"]'))
-        .not.toBeNull();
-    } else {
-      expect(t.querySelector('[data-field="frequencyEntry"]')).toBeNull();
-    }
+    expect(grid).toBeNull();
+    expect(t.querySelector('[data-field="frequencyEntry"]')).toBeNull();
     expect(choices[0]!.compareDocumentPosition(entries[0]!) & Node.DOCUMENT_POSITION_FOLLOWING)
       .toBeTruthy();
+  });
+
+  it('places semantic HAM controls without the retired inline entry in the Standard upper BAND selector', () => {
+    rt.state = structuredClone(stateFixture);
+    rt.caps = structuredClone(capsFixture);
+    const t = mountLayout('desktop-v2');
+    const upper = t.querySelector('.left-sidebar [data-panel-id="band"]');
+    expect(upper).not.toBeNull();
+    expect([...upper!.querySelectorAll('.band-tab')].map((tab) => tab.textContent?.trim()))
+      .toEqual(['HAM', 'LW/MW', 'SWL']);
+    expect(upper!.querySelector('[data-testid="band-choices-compact"]')).not.toBeNull();
+    expect(upper!.querySelector('[data-testid="band-entry"]')).toBeNull();
+    expect(t.querySelector('[data-testid="band-surface"]')).toBeNull();
+    expect(t.querySelector('[data-testid="band-control-grid"]')).toBeNull();
   });
 });
 
@@ -739,11 +743,42 @@ describe('App presentation selection', () => {
     });
     const semanticHost = t.querySelector('[data-testid="semantic-radio-surfaces"]');
     const globalHost = t.querySelector('[data-testid="app-global-host"]');
+    const standardTx = t.querySelector('[data-testid="standard-tx-controls"]');
+    expect(t.querySelector('[data-testid="rx-tx-key"]')
+      ?.closest('[data-panel-id="semantic-rx-tx"]')).not.toBeNull();
+    expect(standardTx?.closest('[data-panel-id="semantic-rx-tx"]')).not.toBeNull();
+    expect(t.querySelector('[data-testid="cw-keyer-rx-mode"]')?.textContent).toContain('USB');
+    expect(t.querySelector('[data-testid="cw-keyer-break-in-off"]')).toBeNull();
+    expect(t.querySelector('[data-testid="cw-keyer-break-in-semi"]')?.textContent).toContain('SEMI');
+    expect(t.querySelector('[data-testid="cw-keyer-break-in-full"]')?.textContent).toContain('FULL');
+    const pitch = t.querySelector('[data-testid="cw-keyer-pitchHz"]')!;
+    const speed = t.querySelector('[data-testid="cw-keyer-keyerSpeed"]')!;
+    const rxMode = t.querySelector('[data-testid="cw-keyer-rx-mode"]')!;
+    const breakIn = t.querySelector('[data-testid="cw-keyer-break-in"]')!;
+    expect(rxMode.compareDocumentPosition(pitch) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(pitch.compareDocumentPosition(speed) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(speed.compareDocumentPosition(breakIn) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    const pitchRenderer = pitch.querySelector<HTMLElement>('[data-external-scalar-renderer]');
+    const speedRenderer = speed.querySelector<HTMLElement>('[data-external-scalar-renderer]');
+    expect(pitchRenderer?.dataset.compact).toBe('false');
+    expect(speedRenderer?.dataset.compact).toBe('false');
+    expect(pitchRenderer?.dataset.variant).toBe('hardware-illuminated');
+    expect(speedRenderer?.dataset.variant).toBe('hardware-illuminated');
+    expect(t.querySelector('[aria-label="TX level settings"]')).toBeNull();
+    const micSettings = t.querySelector<HTMLButtonElement>('[aria-label="MIC GAIN settings"]');
+    expect(micSettings?.getAttribute('aria-expanded')).toBe('false');
+    micSettings?.click();
+    flushSync();
+    expect(micSettings?.getAttribute('aria-expanded')).toBe('true');
+    expect(t.querySelector('[data-testid="standard-tx-settings-popover"]')).not.toBeNull();
+    expect(t.querySelector('[data-testid="standard-tx-controls"]')
+      ?.closest('[data-panel-id="semantic-rx-tx"]')).not.toBeNull();
+    expect(t.querySelector('[data-panel-id="semantic-tx-aux"]')).toBeNull();
     const oldMic = t.querySelector<RendererNode>(
       '[data-testid="tx-aux-micGain"] [data-external-scalar-renderer]',
     );
     const oldKeyerSpeed = t.querySelector<RendererNode>(
-      '[data-cw-keyer-seat="keyerSpeed"] [data-external-scalar-renderer]',
+      '[data-testid="cw-keyer-keyerSpeed"] [data-external-scalar-renderer]',
     );
     if (oldMic === null) throw new Error('Standard did not render the external MIC probe');
     if (oldKeyerSpeed === null) throw new Error('Standard did not render the Keyer Speed seat');
@@ -819,7 +854,6 @@ describe('App presentation selection', () => {
     expect(newKeyerSpeed.rendererLease).not.toBe(oldKeyerSpeedLease);
     expect(oldLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
     expect(oldKeyerSpeedLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
-    expect(t.querySelector('[data-cw-keyer-seat="keyerSpeed"]')).toBeNull();
     expect(t.querySelectorAll('[data-testid="cw-keyer-keyerSpeed"]')).toHaveLength(1);
     expect({
       requested: newKeyerSpeed.dataset.requested,

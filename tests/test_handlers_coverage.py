@@ -15,6 +15,7 @@ from _caps import FULL_ICOM_CAPS
 from rigplane.audio.bus import AudioBus
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.profiles import resolve_radio_profile
+from rigplane.profiles.control_domain import validate_control_raw_value
 from rigplane.audio.route import AudioConfigSource, AudioStreamContract
 from rigplane.core.command_dispatch import CommandUnsupportedError
 from rigplane.core.exceptions import CommandError
@@ -380,6 +381,41 @@ class _AttenuatorIngressRadio:
         return self._projection(db)
 
 
+class _Ftx1NotchDomainRadio:
+    """Radio double with the FTX-1 manual-notch domain, validating like the backend.
+
+    The ``ControlDomainCapable`` surface delegates to a real
+    ``YaesuCatRadio`` built from the shipping ``ftx1`` profile, and
+    ``set_notch_filter`` validates the raw position against that same
+    published domain before recording the call — the check
+    ``YaesuCatRadio.set_manual_notch_freq`` performs at its entry.
+    """
+
+    def __init__(self) -> None:
+        self._ftx1 = YaesuCatRadio("/dev/null", profile="ftx1")
+        self.profile = self._ftx1.profile
+        self.capabilities = set(self.profile.capabilities)
+        self.notch_calls: list[int] = []
+
+    def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
+        return receiver in (None, 0)
+
+    def snap_control_display(self, control: str, display: str) -> int | None:
+        return self._ftx1.snap_control_display(control, display)
+
+    def decode_control_raw(self, control: str, raw: int) -> str | None:
+        return self._ftx1.decode_control_raw(control, raw)
+
+    def control_display_bounds(self, control: str) -> tuple[str, str] | None:
+        return self._ftx1.control_display_bounds(control)
+
+    async def set_notch_filter(self, level: int, receiver: int = 0) -> None:
+        validate_control_raw_value(
+            self._ftx1.profile.controls, "manual_notch_freq", level
+        )
+        self.notch_calls.append(level)
+
+
 def _assert_canonical_level_intent(
     command: object,
     *,
@@ -556,7 +592,7 @@ def _scope_frame() -> ScopeFrame:
             {"level": 0.4},
             SetPower,
             {"level": 102, "unit": "raw_255"},
-            {"level": 102},
+            {"level": 102, "admitted_level": 0.4},
         ),
         (
             # MOR-1579: set_rf_gain's wire contract is already the raw
@@ -577,7 +613,7 @@ def _scope_frame() -> ScopeFrame:
             {"level": 0.6, "receiver": 1},
             CommandIntent,
             {"af_level": 153, "receiver": 1},
-            {"level": 153, "receiver": 1},
+            {"level": 153, "receiver": 1, "admitted_level": 0.6},
         ),
         (
             "set_sql",
@@ -1001,10 +1037,15 @@ async def test_att_web_sub_refusal_happens_before_queue_effects() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("value", [0, 128, 255])
-async def test_enqueue_manual_notch_position_accepts_raw_bounds_unchanged(
+async def test_enqueue_manual_notch_position_without_domain_follows_raw_wire_contract(
     value: int,
 ) -> None:
-    """Manual-notch position is a raw CI-V 0-255 value, not a frequency."""
+    """A radio publishing no manual-notch domain takes raw 0-255 integers.
+
+    The documented wire contract shared with ``set_rf_gain`` and
+    ``set_sql`` (``command_dispatch._raw_int_level_from_param``)
+    admits these positions unchanged.
+    """
     queue = _QueueRecorder()
     handler = _control_handler(
         radio=_capable_radio(), server=SimpleNamespace(command_queue=queue)
@@ -1019,11 +1060,15 @@ async def test_enqueue_manual_notch_position_accepts_raw_bounds_unchanged(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("value", [-1, 256, 3000])
-async def test_websocket_manual_notch_position_rejects_out_of_range_before_enqueue(
+@pytest.mark.parametrize("value", [-1, 256])
+async def test_websocket_manual_notch_position_off_wire_contract_rejected_before_enqueue(
     value: int,
 ) -> None:
-    """Invalid raw manual-notch positions fail on the WebSocket ingress path."""
+    """Domain-less out-of-range positions fail on the WebSocket ingress path.
+
+    The raw 0-255 integer wire contract refuses them before anything is
+    queued, matching the behaviour on origin/main.
+    """
     queue = _QueueRecorder()
     ws = SimpleNamespace(send_text=AsyncMock())
     handler = _control_handler(
@@ -1042,9 +1087,59 @@ async def test_websocket_manual_notch_position_rejects_out_of_range_before_enque
         "id": "notch-position",
         "ok": False,
         "error": "command_failed",
-        "message": "manual-notch position must be between 0 and 255",
+        "message": f"level {value!r} is out of the raw 0-255 domain",
     }
     assert queue.items == []
+
+
+@pytest.mark.asyncio
+async def test_enqueue_manual_notch_position_ftx1_domain_top_accepted() -> None:
+    """The FTX-1 domain's top raw position queues (MOR-2474)."""
+    queue = _QueueRecorder()
+    radio = _Ftx1NotchDomainRadio()
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
+
+    result = await handler._enqueue_command(
+        "set_notch_filter", {"value": 320, "receiver": 0}
+    )
+
+    assert result == {"value": 320, "receiver": 0}
+    assert queue.items == [SetNotchFilter(320, receiver=0)]
+    await radio.set_notch_filter(320)
+    assert radio.notch_calls == [320]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [0, 321])
+async def test_websocket_manual_notch_position_off_ftx1_domain_rejected_before_enqueue(
+    value: int,
+) -> None:
+    """Off-domain FTX-1 positions fail on the WebSocket ingress path."""
+    queue = _QueueRecorder()
+    ws = SimpleNamespace(send_text=AsyncMock())
+    radio = _Ftx1NotchDomainRadio()
+    handler = _control_handler(
+        ws=ws,
+        radio=radio,
+        server=SimpleNamespace(command_queue=queue),
+    )
+
+    await handler._dispatch_command(
+        "notch-position", "set_notch_filter", {"value": value}
+    )
+
+    response = decode_json(ws.send_text.await_args.args[0])
+    assert response == {
+        "type": "response",
+        "id": "notch-position",
+        "ok": False,
+        "error": "command_failed",
+        "message": (
+            "manual-notch position is outside the radio's published manual-notch domain"
+        ),
+    }
+    assert queue.items == []
+    assert radio.notch_calls == []
 
 
 async def test_enqueue_set_rf_power_yaesu_tags_watts_unit() -> None:

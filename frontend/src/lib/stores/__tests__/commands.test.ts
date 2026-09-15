@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CommandDescriptorView } from '../commands.svelte';
 import type { ServerState } from '../../types/state';
 
 let acceptedState: ServerState | null = null;
@@ -304,6 +305,47 @@ describe('command lifecycle store', () => {
     expect(store.getCommandLifecycle('overflow', 9)).toBeUndefined();
   });
 
+  describe('direct VFO frequency state-backed descriptor', () => {
+    const params = (slot: 'A' | 'B', freq: number) => ({
+      freq, receiver: 0, slot, expected_active_slot: 'A', provider_generation: 31,
+    });
+    const radio = (a: number, b: number, aObserved: number, bObserved: number) => ({
+      providerGeneration: 31,
+      main: { vfoA: { freqHz: a }, vfoB: { freqHz: b } },
+      fieldStatus: {
+        'main.vfoA.freqHz': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: aObserved },
+        'main.vfoB.freqHz': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: bObserved },
+      },
+    } as unknown as ServerState);
+
+    it('keys supersession and confirmation by exact receiver slot', () => {
+      acceptedState = radio(14_074_000, 7_074_000, 1, 1);
+      const a = store.beginCommand({ id: 'a', name: 'set_vfo_freq', params: params('A', 14_075_000), originalEpoch: 7 });
+      const b = store.beginCommand({ id: 'b', name: 'set_vfo_freq', params: params('B', 7_075_000), originalEpoch: 7 });
+      expect(a.locallyObsolete).toBeUndefined();
+      expect(b.locallyObsolete).toBeUndefined();
+      store.acknowledgeCommand(a.id, 7, 7);
+      store.acknowledgeCommand(b.id, 7, 7);
+
+      emitState(radio(14_075_000, 7_075_000, 2, 2));
+      expect(store.getCommandLifecycle(a.id, 7)?.status).toBe('confirmed');
+      expect(store.getCommandLifecycle(b.id, 7)?.status).toBe('confirmed');
+    });
+
+    it('does not confirm from acknowledgement or the other slot readback', () => {
+      acceptedState = radio(14_074_000, 7_074_000, 1, 1);
+      const command = store.beginCommand({
+        id: 'target-b', name: 'set_vfo_freq', params: params('B', 7_075_000), originalEpoch: 7,
+      });
+      store.acknowledgeCommand(command.id, 7, 7);
+      expect(store.getCommandLifecycle(command.id, 7)?.status).toBe('acknowledged');
+      emitState(radio(14_075_000, 7_074_000, 2, 1));
+      expect(store.getCommandLifecycle(command.id, 7)?.status).toBe('acknowledged');
+      emitState(radio(14_075_000, 7_073_000, 2, 2));
+      expect(store.getCommandLifecycle(command.id, 7)?.status).toBe('acknowledged');
+    });
+  });
+
   describe('RF/SQL state-backed descriptors', () => {
     it('uses exact receiver scopes and normalized 0..1 targets', () => {
       const rfMain = store.RF_GAIN_COMMAND_DESCRIPTOR.scope({ params: { level: 128, receiver: 0 } })!;
@@ -312,7 +354,8 @@ describe('command lifecycle store', () => {
       const sqlSub = store.SQUELCH_COMMAND_DESCRIPTOR.scope({ params: { level: 64, receiver: 1 } })!;
 
       expect([...store.STATE_BACKED_COMMAND_DESCRIPTORS.keys()]).toEqual([
-        'set_filter_width', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
+        'set_filter_width', 'set_vfo_freq', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
+        'set_af_level', 'set_rf_power',
         'set_cw_pitch', 'set_key_speed', 'set_mic_gain', 'set_drive_gain',
         'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
         'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
@@ -450,7 +493,8 @@ describe('command lifecycle store', () => {
   describe('global CW state-backed descriptors', () => {
     it('registers exact global scopes, fields, targets, and canonical values', () => {
       expect([...store.STATE_BACKED_COMMAND_DESCRIPTORS.keys()]).toEqual([
-        'set_filter_width', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
+        'set_filter_width', 'set_vfo_freq', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
+        'set_af_level', 'set_rf_power',
         'set_cw_pitch', 'set_key_speed', 'set_mic_gain', 'set_drive_gain',
         'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
         'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
@@ -870,6 +914,146 @@ describe('command lifecycle store', () => {
       expect(store.PBT_INNER_COMMAND_DESCRIPTOR.scope({ params: { value: 1 } })).toEqual({
         control: 'pbt-inner', receiver: 0,
       });
+    });
+  });
+
+  describe('admitted-target AF/RF state-backed descriptors (MOR-1687 F2)', () => {
+    const marker = (m: number) => ({
+      observed: true, freshness: 'fresh' as const, availability: 'available' as const,
+      lastObservedMonotonic: m,
+    });
+    const afSnapshot = (value: number, m: number, receiver: 0 | 1 = 0): ServerState => ({
+      stateContractVersion: 1, providerGeneration: 3, active: receiver === 1 ? 'SUB' : 'MAIN',
+      main: receiver === 0 ? { afLevel: value } : {},
+      sub: receiver === 1 ? { afLevel: value } : {},
+      fieldStatus: { [receiver === 1 ? 'sub.afLevel' : 'main.afLevel']: marker(m) },
+    } as unknown as ServerState);
+    const powerSnapshot = (value: number, m: number): ServerState => ({
+      stateContractVersion: 1, providerGeneration: 3, powerLevel: value,
+      fieldStatus: { powerLevel: marker(m) },
+    } as unknown as ServerState);
+    const begin = (id: string, name: string, params: Record<string, unknown>, timeoutMs?: number) =>
+      store.beginCommand({ id, name, params, originalEpoch: 7, timeoutMs });
+    const statusOf = (id: string) => store.getCommandLifecycle(id, 7)?.status;
+    const afLevel = { level: 0.5, receiver: 0 };
+
+    it('registers exact scopes and field paths; targets stay admitted-only', () => {
+      const afMain = store.AF_LEVEL_COMMAND_DESCRIPTOR.scope({ params: afLevel })!;
+      const afSub = store.AF_LEVEL_COMMAND_DESCRIPTOR.scope({
+        params: { level: 0.5, receiver: 1 },
+      })!;
+      const rfScope = store.RF_POWER_COMMAND_DESCRIPTOR.scope({
+        params: { level: 0.5 }, admittedTarget: 0.5,
+      })!;
+      expect(afMain).toEqual({ control: 'af-level', receiver: 0 });
+      expect(afSub).toEqual({ control: 'af-level', receiver: 1 });
+      expect(rfScope).toEqual({ control: 'rf-power', receiver: 0 });
+      expect(store.AF_LEVEL_COMMAND_DESCRIPTOR.fieldPath(afMain)).toBe('main.afLevel');
+      expect(store.AF_LEVEL_COMMAND_DESCRIPTOR.fieldPath(afSub)).toBe('sub.afLevel');
+      expect(store.RF_POWER_COMMAND_DESCRIPTOR.fieldPath(rfScope)).toBe('powerLevel');
+      expect(store.AF_LEVEL_COMMAND_DESCRIPTOR.target({ params: {}, admittedTarget: 128 / 255 }))
+        .toBe(128 / 255);
+      expect(store.RF_POWER_COMMAND_DESCRIPTOR.target({ params: {}, admittedTarget: 0.5 }))
+        .toBe(0.5);
+    });
+
+    // Invalid admitted targets must reach the runtime checks, so they pass
+    // through a permissive view builder on purpose.
+    const invalidView = (admitted: object): CommandDescriptorView => ({ params: {}, ...admitted });
+    it.each([
+      ['no admitted target', {}],
+      ['string admitted target', { admittedTarget: '0.5' }],
+      ['out-of-domain admitted target', { admittedTarget: 1.5 }],
+      ['non-finite admitted target', { admittedTarget: Number.NaN }],
+    ])('rejects a command with %s', (_name, admitted) => {
+      const view = invalidView(admitted);
+      for (const descriptor of [
+        store.AF_LEVEL_COMMAND_DESCRIPTOR, store.RF_POWER_COMMAND_DESCRIPTOR,
+      ]) {
+        expect(descriptor.target(view)).toBeNull();
+      }
+      expect(store.RF_POWER_COMMAND_DESCRIPTOR.scope({ ...view, params: { level: 0.5 } }))
+        .toBeNull();
+    });
+
+    it('never confirms without an admitted target — an old response stays awaiting', () => {
+      emitState(afSnapshot(128 / 255, 4));
+      store.acknowledgeCommand(begin('af-old', 'set_af_level', afLevel).id, 7, 7);
+      emitState(afSnapshot(128 / 255, 5));
+      emitState(afSnapshot(128 / 255, 6));
+      expect(statusOf('af-old')).toBe('acknowledged');
+
+      emitState(powerSnapshot(0.5, 4));
+      store.acknowledgeCommand(begin('rf-old', 'set_rf_power', { level: 0.5 }).id, 7, 7);
+      emitState(powerSnapshot(0.5, 5));
+      expect(statusOf('rf-old')).toBe('acknowledged');
+    });
+
+    it('confirms AF only on a fresh same-field readback that exactly matches the admitted target', () => {
+      emitState(afSnapshot(0.2, 4));
+      const command = begin('af-match', 'set_af_level', afLevel);
+      store.acknowledgeCommand(command.id, 7, 7, 128 / 255);
+      expect(statusOf(command.id)).toBe('acknowledged');
+      emitState(afSnapshot(0.9, 5));
+      expect(statusOf(command.id)).toBe('acknowledged');
+      emitState(afSnapshot(127 / 255, 6));
+      expect(statusOf(command.id)).toBe('acknowledged');
+      emitState(afSnapshot(128 / 255, 7));
+      expect(statusOf(command.id)).toBe('confirmed');
+    });
+
+    it('a readback not newer than the ack boundary never confirms, either ordering', () => {
+      emitState(afSnapshot(128 / 255, 4));
+      store.acknowledgeCommand(begin('af-stale', 'set_af_level', afLevel).id, 7, 7, 128 / 255);
+      emitState(afSnapshot(128 / 255, 4));
+      expect(statusOf('af-stale')).toBe('acknowledged');
+
+      store.acknowledgeCommand(begin('af-ack-first', 'set_af_level', afLevel).id, 7, 7);
+      store.acknowledgeCommand('af-ack-first', 7, 7, 128 / 255);
+      emitState(afSnapshot(128 / 255, 4));
+      expect(statusOf('af-ack-first')).toBe('acknowledged');
+      emitState(afSnapshot(128 / 255, 5));
+      expect(statusOf('af-ack-first')).toBe('confirmed');
+    });
+
+    it('confirms RF power on the exact watts-normalized readback only', () => {
+      emitState(powerSnapshot(0.5, 4));
+      const command = begin('rf-match', 'set_rf_power', { level: 0.5 });
+      store.acknowledgeCommand(command.id, 7, 7, 0.5);
+      emitState(powerSnapshot(0.75, 5));
+      expect(statusOf(command.id)).toBe('acknowledged');
+      emitState(powerSnapshot(0.5, 6));
+      expect(statusOf(command.id)).toBe('confirmed');
+    });
+
+    it('ignores the other receiver\'s fresh readback for the AF lane', () => {
+      emitState(afSnapshot(128 / 255, 4));
+      const command = begin('af-main', 'set_af_level', afLevel);
+      store.acknowledgeCommand(command.id, 7, 7, 128 / 255);
+      const subOnly = afSnapshot(0.9, 9, 1);
+      (subOnly.fieldStatus as Record<string, unknown>)['main.afLevel'] = marker(4);
+      (subOnly as { main?: { afLevel?: number } }).main = { afLevel: 128 / 255 };
+      emitState(subOnly);
+      expect(statusOf(command.id)).toBe('acknowledged');
+    });
+
+    it('keeps provider-generation and terminal fences intact', () => {
+      emitState(afSnapshot(128 / 255, 4));
+      store.acknowledgeCommand(begin('af-generation', 'set_af_level', afLevel).id, 7, 7, 128 / 255);
+      emitState({ ...afSnapshot(128 / 255, 9), providerGeneration: 4 } as ServerState);
+      expect(statusOf('af-generation')).toBe('acknowledged');
+
+      store.acknowledgeCommand(begin('af-timeout', 'set_af_level', afLevel, 25).id, 7, 7, 128 / 255);
+      vi.advanceTimersByTime(25);
+      expect(statusOf('af-timeout')).toBe('timed-out');
+      emitState(afSnapshot(128 / 255, 20));
+      expect(statusOf('af-timeout')).toBe('timed-out');
+
+      store.acknowledgeCommand(begin('af-cancel', 'set_af_level', afLevel).id, 7, 7, 128 / 255);
+      store.cancelPendingCommands(7, 'session-disconnected');
+      expect(statusOf('af-cancel')).toBe('cancelled');
+      emitState(afSnapshot(128 / 255, 30));
+      expect(statusOf('af-cancel')).toBe('cancelled');
     });
   });
 });

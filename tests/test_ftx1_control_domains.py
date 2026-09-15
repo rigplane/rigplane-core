@@ -9,6 +9,10 @@ from pathlib import Path
 import pytest
 
 from rigplane.profiles import RadioProfile
+from rigplane.profiles.control_domain import (
+    decode_control_domain,
+    encode_control_domain,
+)
 from rigplane.rig_loader import load_rig
 
 
@@ -29,6 +33,20 @@ _DOMAINS = {
         "restoration": "exact",
     },
     "nr_level": {
+        "mapping": "identity",
+        "raw_min": 0,
+        "raw_max": 10,
+        "raw_step": 1,
+        "raw_origin": 0,
+        "display_min": "0",
+        "display_max": "10",
+        "display_step": "1",
+        "display_origin": "0",
+        "display_unit": "level",
+        "quantization": "reject",
+        "restoration": "exact",
+    },
+    "nb_level": {
         "mapping": "identity",
         "raw_min": 0,
         "raw_max": 10,
@@ -92,25 +110,6 @@ def _profile() -> RadioProfile:
     return load_rig(_PROFILE_PATH).to_profile()
 
 
-def _decode(domain: dict[str, object], raw: int) -> str:
-    """Exact scalar equivalent of MOR-1722's decode/encode lattice contract."""
-    if domain["mapping"] == "identity":
-        return str(raw)
-    return str(
-        int(domain["display_origin"])
-        + ((raw - int(domain["raw_origin"])) // int(domain["raw_step"]))
-        * int(domain["display_step"])
-    )
-
-
-def _encode(domain: dict[str, object], display: str) -> int:
-    if domain["mapping"] == "identity":
-        return int(display)
-    return int(domain["raw_origin"]) + (
-        (int(display) - int(domain["display_origin"])) // int(domain["display_step"])
-    ) * int(domain["raw_step"])
-
-
 def test_ftx1_scalar_domains_are_exact_loader_published_capabilities() -> None:
     first = _profile()
     second = _profile()
@@ -149,17 +148,18 @@ def test_ftx1_scalar_domains_are_exact_loader_published_capabilities() -> None:
             int(domain["raw_max"]) + 1,
             int(domain["raw_step"]),
         ):
-            display = _decode(domain, raw)
-            assert _encode(domain, display) == raw
+            display = decode_control_domain(domain, raw)
+            assert display is not None
+            assert encode_control_domain(domain, display) == raw
 
-    assert _decode(_DOMAINS["rit"], -9999) == "-9999"
-    assert _decode(_DOMAINS["rit"], 0) == "0"
-    assert _decode(_DOMAINS["rit"], 9999) == "9999"
-    assert _decode(_DOMAINS["manual_notch_freq"], 1) == "10"
-    assert _decode(_DOMAINS["manual_notch_freq"], 160) == "1600"
-    assert _decode(_DOMAINS["manual_notch_freq"], 320) == "3200"
-    assert _encode(_DOMAINS["manual_notch_freq"], "10") == 1
-    assert _encode(_DOMAINS["manual_notch_freq"], "3200") == 320
+    assert decode_control_domain(_DOMAINS["rit"], -9999) == "-9999"
+    assert decode_control_domain(_DOMAINS["rit"], 0) == "0"
+    assert decode_control_domain(_DOMAINS["rit"], 9999) == "9999"
+    assert decode_control_domain(_DOMAINS["manual_notch_freq"], 1) == "10"
+    assert decode_control_domain(_DOMAINS["manual_notch_freq"], 160) == "1600"
+    assert decode_control_domain(_DOMAINS["manual_notch_freq"], 320) == "3200"
+    assert encode_control_domain(_DOMAINS["manual_notch_freq"], "10") == 1
+    assert encode_control_domain(_DOMAINS["manual_notch_freq"], "3200") == 320
     assert 0 not in range(
         int(_DOMAINS["manual_notch_freq"]["raw_min"]),
         int(_DOMAINS["manual_notch_freq"]["raw_max"]) + 1,

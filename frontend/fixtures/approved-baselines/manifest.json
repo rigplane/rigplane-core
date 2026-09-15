@@ -1,9 +1,9 @@
 {
   "ticket": "MOR-1090",
-  "generatedAt": "2026-09-05T19:32:25.860Z",
-  "commit": "7c86142d419df3302590b8bfc176d03cb64f4de5",
-  "commitShort": "7c86142d",
-  "branch": "codex/mor2369-persistent-tx-meters",
+  "generatedAt": "2026-09-14T23:41:12.144Z",
+  "commit": "2776ffdcad0549308c12973265216a10635233d7",
+  "commitShort": "2776ffdc",
+  "branch": "codex/MOR-2467-ic7610-main-sub-ui",
   "platform": "linux-arm64",
   "node": "v20.20.2",
   "playwright": "1.58.2",

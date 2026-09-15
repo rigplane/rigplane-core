@@ -33,6 +33,7 @@ vi.mock('$lib/transport/ws-client', () => ({
   getChannel: vi.fn(),
   getControlSession: vi.fn(() => ({ state: 'disconnected', epoch: 0 })),
   onControlSessionTransition: vi.fn(() => () => {}),
+  emitLocalNotification: vi.fn(),
 }));
 vi.mock('$lib/runtime/commands/radio-intents', () => ({
   dispatchRadioIntent: vi.fn(() => ({ id: 'test-lifecycle', status: 'pending' })),
@@ -93,6 +94,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
     startTx: vi.fn(),
     stopTx: vi.fn(),
     setRxVolume: vi.fn(),
+    setOperatorNotifier: vi.fn(),
     destroy: vi.fn(),
   },
 }));
@@ -117,7 +119,7 @@ vi.mock('./system-controller', async () => {
 // ── Import modules under test after mocks are hoisted ──
 
 import { fetchCapabilities } from '$lib/transport/http-client';
-import { connect, getChannel, getControlSession, onControlSessionTransition, onMessage, sendRaw } from '$lib/transport/ws-client';
+import { connect, getChannel, getControlSession, onControlSessionTransition, onMessage, sendRaw, emitLocalNotification } from '$lib/transport/ws-client';
 import { getCapabilities, setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 import { radio, subscribeRadioState } from '$lib/stores/radio.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
@@ -127,6 +129,12 @@ import { PresentationResourceHost } from '../resource-host';
 import { presentationResources } from '../frontend-runtime';
 import { scopeController } from '../scope-controller.svelte';
 import { makeRxAudioHandlers } from '../commands/panel-commands';
+
+// The runtime singleton injects its operator notifier during construction,
+// which happens at the import above. Capture the injected sink here so the
+// wiring test below survives later vi.clearAllMocks() calls.
+const injectedOperatorNotifier = (audioManager.setOperatorNotifier as ReturnType<typeof vi.fn>)
+  .mock.calls[0]?.[0] as ((level: 'error', message: string, code: string) => void) | undefined;
 
 // FrontendRuntime is a singleton — re-import fresh each time via a factory helper
 // so we can reset _bootstrapCleanup and _bootstrapInFlight between tests.
@@ -667,6 +675,14 @@ describe('FrontendRuntime command dispatch and state-hatch removal (MOR-1409 A08
 
     expect(surface.patchActiveReceiver).toBeUndefined();
     expect(surface.patchState).toBeUndefined();
+  });
+});
+
+describe('FrontendRuntime operator-notifier wiring (MOR-1783)', () => {
+  it('injects a sink that forwards TX-audio error banners to the transport bus', () => {
+    expect(injectedOperatorNotifier).toEqual(expect.any(Function));
+    injectedOperatorNotifier?.('error', 'TX audio failed', 'txAudioStopped');
+    expect(emitLocalNotification).toHaveBeenCalledWith('error', 'TX audio failed', 'txAudioStopped');
   });
 });
 

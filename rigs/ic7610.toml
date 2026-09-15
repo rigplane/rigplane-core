@@ -127,6 +127,10 @@ features = [
     # Built-in CI-V 0x13 announcement readback (get_speech below).
     "speech",
 ]
+# MOR-2467: the IC-7610 front panel wires RF gain and squelch as one physical
+# concentric knob, so it declares the combined control model introduced by
+# MOR-1447 leg 2 (same as rigs/ic7300.toml).
+rf_sql_control_model = "combined"
 
 [state_acquisition]
 provider = "icom_civ"
@@ -248,6 +252,21 @@ polling_only = [
     # needed for those.
     "global.operator_controls.break_in",
     "global.operator_controls.break_in_delay",
+    "scope_controls.global.display.receiver",
+    "scope_controls.global.display.dual",
+    "scope_controls.global.display.mode",
+    "scope_controls.global.display.span",
+    "scope_controls.global.display.edge",
+    "scope_controls.global.display.hold",
+    "scope_controls.global.display.ref_db",
+    "scope_controls.global.display.speed",
+    "scope_controls.global.display.during_tx",
+    "scope_controls.global.display.center_type",
+    "scope_controls.global.display.vbw_narrow",
+    "scope_controls.global.display.fixed_edge",
+    "scope_controls.global.display.rbw",
+]
+startup_optional = [
     "scope_controls.global.display.receiver",
     "scope_controls.global.display.dual",
     "scope_controls.global.display.mode",
@@ -1537,6 +1556,17 @@ raw_max = 255
 display_min = 300
 display_max = 900
 display_unit = "Hz"
+decode_quantum = 5  # reproduces the pre-existing CW-pitch decode for every raw level (pinned by tests/test_control_domain_math.py::test_ci_v_cw_pitch_decode_matches_the_deleted_formula_vectors)
+encode_rounding = "ceil"  # reproduces the pre-existing CW-pitch encode for every Hz in 300-900 (pinned by tests/test_control_domain_math.py::test_ci_v_cw_pitch_encode_matches_the_deleted_formula_vectors)
+
+[controls.key_speed]
+raw_min = 0
+raw_max = 255
+display_min = 6
+display_max = 48
+display_unit = "WPM"
+decode_quantum = 1  # reproduces the pre-existing key-speed decode for every raw level (pinned by tests/test_control_domain_math.py::test_ci_v_key_speed_decode_matches_the_deleted_formula_vectors)
+encode_rounding = "nearest_half_down"  # reproduces the pre-existing key-speed encode for every WPM in 6-48 (pinned by tests/test_control_domain_math.py::test_ci_v_key_speed_encode_matches_the_deleted_formula_vectors)
 
 [controls.rit]
 # MOR-1883: exact-form translation of the previously declared range;

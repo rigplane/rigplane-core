@@ -297,7 +297,7 @@ describe('preamp and attenuator render as choice groups from the capability-deri
     for (const value of [0, 1, 2]) {
       expect(r.el(`preamp-${value}`)!.getAttribute('aria-checked')).toBe(String(value === 2));
     }
-    expect(r.text('preamp-value')).toBe('2');
+    expect(r.text('preamp-value')).toBe('P2');
     r.dispose();
   });
 
@@ -314,7 +314,9 @@ describe('preamp and attenuator render as choice groups from the capability-deri
     const onPreampChange = vi.fn();
     const r = render(withRf({ preamp: known(3) }), { onPreampChange });
     for (const value of [0, 1, 2]) expect(r.el(`preamp-${value}`)!.getAttribute('aria-checked')).toBe('false');
-    expect(r.text('preamp-value')).toBe('3');
+    const unmatched = r.el('preamp-value')!;
+    expect(unmatched.textContent).toBe('P3');
+    expect(unmatched.classList.contains('sr-only')).toBe(false);
     r.el('preamp-1')!.click();
     flushSync();
     expect(onPreampChange).toHaveBeenCalledExactlyOnceWith(1);
@@ -329,6 +331,17 @@ describe('preamp and attenuator render as choice groups from the capability-deri
     r.el('attenuator-18')!.click();
     flushSync();
     expect(onAttenuatorChange).toHaveBeenCalledExactlyOnceWith(18);
+    r.dispose();
+  });
+
+  it('keeps a known out-of-offered attenuator reading visible without selecting an offered step', () => {
+    const r = render(withRf({ attenuator: known(30) }));
+    for (const value of [0, 6, 12, 18]) {
+      expect(r.el(`attenuator-${value}`)!.getAttribute('aria-checked')).toBe('false');
+    }
+    const unmatched = r.el('attenuator-value')!;
+    expect(unmatched.textContent).toBe('30 dB');
+    expect(unmatched.classList.contains('sr-only')).toBe(false);
     r.dispose();
   });
 });
@@ -421,6 +434,7 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     expect(rfInput.value()).toBe(0.5);
     expect(rfInput.range()).toEqual(['0', '1']);
     expect(rfGroup.querySelector('output')?.textContent).toBe('75%');
+    expect(r.el('rfGain-status')).toBeNull();
     expect(rfInput.disabled()).toBe(false);
     expect(sqlGroup.dataset.commandPhase).toBe('unavailable');
     expect(sqlGroup.dataset.observed).toBe('false');
@@ -614,7 +628,7 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     r.dispose();
   });
 
-  it('renders independent lane phases, errors, busy state, and announcements', () => {
+  it('keeps routine lane phases out of view while showing concise failures and announcements', () => {
     const values = new SvelteMap<string, PairFeedback>([['feedback', pairFeedback()]]);
     const publication = rfTestAuthorityPublication('combined');
     target = document.createElement('div'); document.body.appendChild(target);
@@ -639,12 +653,12 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     expect(group.dataset.rfCommandPhase).toBe('confirmed');
     expect(group.dataset.sqlCommandPhase).toBe('failed');
     expect(group.getAttribute('aria-busy')).toBe('false');
-    expect(group.querySelector('[data-testid="rf-front-end-rf-sql-rf-status"]')?.textContent)
-      .toContain('confirmed; requested 50%; confirmed 50%');
+    expect(group.querySelector('[data-testid="rf-front-end-rf-sql-rf-status"]')).toBeNull();
     expect(group.querySelector('[data-testid="rf-front-end-rf-sql-sql-status"]')?.textContent)
-      .toContain('failed; requested 40%; confirmed 20%');
+      .toBe('denied');
     expect(target.querySelectorAll('[data-control-feedback-status]')).toHaveLength(2);
-    expect(group.textContent).toContain('denied');
+    expect(group.textContent).not.toContain('requested');
+    expect(group.textContent).not.toContain('confirmed;');
     unmount(component); target.remove();
   });
 
@@ -655,8 +669,7 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     } });
     const r = render(base(), { controlModel: 'combined', rfSqlFeedback: feedback });
     expect(r.text('rf-sql-rf-value')).toBe('75%');
-    expect(r.text('rf-sql-rf-status'))
-      .toContain('awaiting confirmation; requested 75%; confirmed 50%');
+    expect(r.el('rf-sql-rf-status')).toBeNull();
     expect(r.el('rf-sql')!.getAttribute('aria-busy')).toBe('true');
     r.dispose();
   });
@@ -879,10 +892,12 @@ describe('pending-target affordance (MOR-1441 leg 2)', () => {
 
   it('renders a screen-reader announcement only while pending', () => {
     const pending = render(base(), { pendingPreamp: 1 });
-    expect(pending.el('preamp')!.querySelector('.sr-only')).not.toBeNull();
+    const describedBy = pending.el('preamp')!.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(pending.el('preamp')!.querySelector(`#${describedBy}`)).not.toBeNull();
     pending.dispose();
     const confirmed = render(base());
-    expect(confirmed.el('preamp')!.querySelector('.sr-only')).toBeNull();
+    expect(confirmed.el('preamp')!.getAttribute('aria-describedby')).toBeNull();
     confirmed.dispose();
   });
 

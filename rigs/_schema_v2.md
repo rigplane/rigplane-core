@@ -339,7 +339,7 @@ declares how per-receiver and per-slot operations are routed on the wire.
 
 | Scheme | Receivers | VFOs | Radios |
 |--------|-----------|------|--------|
-| `main_sub` | 2 | 2 (A/B each) | IC-7610 (cmd29), IC-9700 (no cmd29; receiver-select via `0x07 0xD0/0xD1`) |
+| `main_sub` | 2 | 2 (MAIN/SUB receiver-level; no per-receiver A/B — the IC-7610 has none, MOR-2467) | IC-7610 (cmd29), IC-9700 (no cmd29; receiver-select via `0x07 0xD0/0xD1`) |
 | `ab` | 1 | 2 | IC-7300, IC-705, TX-500 (A/B, select+send) |
 | `ab_shared` | 2 | 1 | FTX-1 (2 rx share VFO set) |
 | `single` | 1 | 1 | RSPdx (SDR, tuner only) |
@@ -370,9 +370,10 @@ main_select   = [0xD0]
 sub_select    = [0xD1]
 swap_main_sub = [0xB0]   # MAIN ↔ SUB
 equal_main_sub = [0xB1]  # MAIN = SUB
-# A/B within the currently-selected receiver (optional, add when wiring VfoSlotCapable):
-# swap_ab  = [0x07, 0xB0]
-# equal_ab = [0x07, 0xA0]
+# Per-receiver A/B slot routing is NOT part of `main_sub` (MOR-2467): the
+# IC-7610 presents exactly two receiver-level VFOs, MAIN and SUB, with no
+# A/B slots. `swap_ab`/`equal_ab` here would only apply to a hypothetical
+# future rig that declares slot wiring in addition to receiver selection.
 ```
 
 ### Example — single-RX (IC-7300 / IC-705 pattern)

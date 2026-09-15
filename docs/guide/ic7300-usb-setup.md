@@ -171,7 +171,7 @@ Use macOS BlackHole (or Loopback) to bridge rigplane audio to WSJT-X:
    - Add "IC-7300" input + "BlackHole 2ch" output
 3. **Start audio bridge**:
    ```bash
-   rigplane audio bridge --serial-port ic-7300-usb-in --loopback "BlackHole 2ch"
+   rigplane --model IC-7300 audio bridge --serial-port ic-7300-usb-in --loopback "BlackHole 2ch"
    ```
 4. **WSJT-X settings**:
    - Input Device: "IC-7300 Bridge"

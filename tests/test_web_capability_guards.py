@@ -94,7 +94,7 @@ async def _endpoint_vfo_tags(
     info = _parse_json_body(info_writer)
     capabilities = _parse_json_body(capabilities_writer)
     hello = json.loads(ws_payloads.pop())
-    reserved = {"vfo_swap", "vfo_equalize"}
+    reserved = {"vfo_swap", "vfo_equalize", "vfo_freq_direct"}
     return (
         set(info["capabilities"]["tags"]) & reserved,
         set(capabilities["capabilities"]) & reserved,
@@ -854,3 +854,27 @@ class TestProfileDeclaredDualWatch:
         await srv._serve_info(writer)  # noqa: SLF001
         data = _parse_json_body(writer)
         assert "dual_watch" in data["capabilities"]["tags"]
+
+
+async def test_direct_vfo_frequency_capability_requires_real_supported_route():
+    from unittest.mock import AsyncMock
+
+    radio = _make_radio("IC-7300")
+    radio.send_civ = AsyncMock()
+    for tags in await _endpoint_vfo_tags(radio):
+        assert "vfo_freq_direct" in tags
+    del radio.send_civ
+    radio.capabilities.add("vfo_freq_direct")
+    for tags in await _endpoint_vfo_tags(radio):
+        assert "vfo_freq_direct" not in tags
+
+
+async def test_direct_vfo_frequency_profile_keys_are_both_required():
+    import dataclasses
+    from unittest.mock import AsyncMock
+
+    radio = _make_radio("IC-7300")
+    radio.send_civ = AsyncMock()
+    radio.profile = dataclasses.replace(radio.profile, command_map=None)
+    for tags in await _endpoint_vfo_tags(radio):
+        assert "vfo_freq_direct" not in tags

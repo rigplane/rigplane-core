@@ -40,6 +40,7 @@ import type {
 import type { RxAudioAuthorityPublication } from '../rx-audio-instruments';
 
 const SOURCE = readFileSync('src/semantic/RxAudioSurface.svelte', 'utf8');
+const FORMAT_LEVEL_SOURCE = readFileSync('src/semantic/format-level.ts', 'utf8');
 /** Comments stripped, so the file's own doctrine prose can never be what a
  *  source-scanning test matches. */
 const CODE = SOURCE
@@ -113,10 +114,13 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
   /** The whole static import closure of the file, allow-listed. Kills: adding
    *  ANY import that could reach transport or the audio manager — including
    *  through a relative specifier, which a `$lib/...` regex would miss. */
-  it('imports only facts and the RxAudioInstrumentHost handle contract', () => {
+  it('imports only facts, the level formatter and the RxAudioInstrumentHost handle contract', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
-    expect([...new Set(specifiers)].sort()).toEqual(['./radio-view-model', './rx-audio-instruments']);
+    expect([...new Set(specifiers)].sort()).toEqual([
+      './format-level', './radio-view-model', './rx-audio-instruments',
+    ]);
+    expect(FORMAT_LEVEL_SOURCE).not.toMatch(/\b(?:import|require)\b/);
   });
 
   // Kills: `onMount(() => audioManager.startRx())` and every relative of it.
@@ -389,16 +393,16 @@ describe('every unread fact renders honestly, never as the v2 default', () => {
 describe('AF level is 0..1 end to end — converted exactly once, in the adapter', () => {
   // Kills: `value / 100` or `value * 100` on the way IN. 0.42 is the fixture's
   // level, i.e. an RxAudioSnapshot volume of 42 already divided by the adapter.
-  it('renders the fact verbatim, with no second scaling', () => {
-    const r = render(base());
-    expect(Number(r.slider()!.getAttribute('aria-valuenow'))).toBeCloseTo(0.42, 10);
-    expect(r.text('af-value')).toBe('0.42');
-    r.dispose();
-  });
-
-  it.each([0, 0.01, 0.5, 1])('renders the level %s verbatim', (value) => {
+  it.each([
+    [0, '0%'],
+    [0.42, '42%'],
+    [1, '100%'],
+    [0.24705882352941178, '25%'],
+  ] as const)('renders the level %s as %s while preserving its control value', (value, text) => {
     const r = render(withRx({ afLevel: known(value) }));
     expect(Number(r.slider()!.getAttribute('aria-valuenow'))).toBe(value);
+    expect(r.text('af-value')).toBe(text);
+    expect(r.text('af-value')).not.toBe(String(value));
     r.dispose();
   });
 

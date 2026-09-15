@@ -239,7 +239,9 @@ class TestGetSetRoundtrip:
         await w.drain()
 
         data = await _read(r)
-        assert data == b"Icom IC-7610 (rigplane)\n"
+        # The wire fixture's ``_MockRadio`` declares no ``model``; R59/MOR-2425
+        # says that reaches the client as unspecified, not as an IC-7610.
+        assert data == b"Icom unspecified (rigplane)\n"
         await _close(w)
 
     async def test_chk_vfo_wire(self, wire_server: RigctldServer) -> None:

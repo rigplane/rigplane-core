@@ -16,9 +16,13 @@
 # misidentified as by default — both default to CI-V address 0xA4) drove
 # the radio's display into a flicker → wedge state on real hardware.
 # The X6200 documented CI-V envelope is narrower than IC-705's, and
-# crucially does NOT include the CI-V power command 0x18; this profile
-# therefore omits ``power_on`` / ``power_off`` entirely so the runtime
-# cannot send 0x18 on behalf of an X6200.
+# crucially the CI-V power command 0x18 is not listed in any official
+# command table (no 0x18 row anywhere in the V1.0.6 Table 1 opcode list
+# — an absent row, not a vendor statement that power on/off is
+# unsupported); this profile therefore omits ``power_on`` /
+# ``power_off`` entirely so the runtime cannot send 0x18 on behalf of
+# an X6200. ``power_control`` below is declared for the documented
+# 0x14 0x0A RF-power level pair, not for 0x18 (MOR-2488/MOR-2489).
 
 [radio]
 id = "xiegu_x6200"
@@ -54,7 +58,16 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 # (xiegu.c lines 52, 54) intersected with what the Radioddity X6200 PDF
 # explicitly documents as supported by firmware V1.0.6. Intentionally
 # narrower than the IC-705 envelope:
-#   - no ``power_control`` (no documented CI-V 0x18)
+#   - ``power_control`` IS declared (MOR-2488/MOR-2489), covering the
+#     documented 0x14 0x0A "Get/Set TX Power" pair (V1.0.6 pp.6-7): the
+#     [commands] entries below already carried both opcodes while the
+#     capability was withheld, so ``IcomRadio.set_rf_power`` refused on
+#     a command this radio's own table documents. The declaration does
+#     NOT extend to 0x18: power on/off is not listed in any official
+#     command table (no 0x18 row in V1.0.6 Table 1), so
+#     ``power_on``/``power_off`` stay undeclared and ``set_powerstat``
+#     still refuses at the bound command map — 0x18 never reaches the
+#     wire (see the NOTE above [commands] for the wedge history).
 #   - no ``scope`` (no documented 0x27 family)
 #   - no tone family (``repeater_tone`` / ``tsql``): the backend would send
 #     ``0x16 0x42/0x43`` + ``0x1B 0x00``, none of which the X6200 firmware
@@ -143,6 +156,7 @@ features = [
     "scan",
     "dial_lock",
     "agc",
+    "power_control",
 ]
 
 [state_acquisition]
@@ -325,6 +339,17 @@ raw_max = 255
 display_min = 400
 display_max = 1200
 display_unit = "Hz"
+decode_quantum = 1  # no Hz step documented: Radioddity X6200 CI-V V1.0.6 p.6 gives only 0=400Hz/255=1200Hz
+encode_rounding = "ceil"  # band endpoints 400->0 and 1200->255 are pinned by tests/test_control_domain_math.py::test_x6200_cw_pitch_encode_uses_the_declared_400_1200_domain
+
+[controls.key_speed]
+raw_min = 0
+raw_max = 255
+display_min = 6
+display_max = 48
+display_unit = "WPM"
+decode_quantum = 1  # band not documented for this radio: it reproduces the pre-existing shared CI-V key-speed decode; Radioddity X6200 CI-V V1.0.6 p.6 gives no WPM scale
+encode_rounding = "nearest_half_down"  # same 6-48 band and rule as the Icom CI-V encode (pinned by tests/test_control_domain_math.py::test_x6200_key_speed_encode_matches_the_icom_vectors)
 
 [controls.rit]
 # MOR-1883: exact-form translation of the previously declared range;
@@ -421,9 +446,14 @@ end_hz = 136000000
 # ── CI-V Commands ────────────────────────────────────────────────
 # Only opcodes documented in Radioddity X6200 CI-V V1.0.6.
 # NOTE: ``power_on`` / ``power_off`` are INTENTIONALLY OMITTED — CI-V
-# 0x18 is not in the X6200 documented command set, and sending it from
-# the IC-705 profile is the suspected wedge trigger that motivated this
-# file. Do NOT add a 0x18 mapping here without re-validating on hardware.
+# 0x18 is not listed in any official command table (no 0x18 row in the
+# V1.0.6 Table 1 opcode list — an absent row, not a vendor declaration
+# that power on/off is unsupported), and sending it from the IC-705
+# profile is the suspected wedge trigger that motivated this file. The
+# ``power_control`` capability declared above unlocks only the
+# documented 0x14 0x0A level pair; an undeclared ``power_on`` key makes
+# ``set_powerstat`` refuse at the bound command map. Do NOT add a 0x18
+# mapping here without re-validating on hardware.
 [commands]
 
 # PROVENANCE OPEN (D2, MOR-2019): the following have no live X6200 capture

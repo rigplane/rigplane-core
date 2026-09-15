@@ -13,7 +13,7 @@
  * The controller here is a spy; the surfaces are the real ones.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, unmount } from 'svelte';
+import { flushSync, mount, tick, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
 import { proxy } from 'svelte/internal/client';
 import type { Capabilities } from '$lib/types/capabilities';
@@ -459,50 +459,50 @@ afterEach(() => {
 });
 
 describe('L1 hosted desktop TX auxiliary composition', () => {
-  it('places all five finite and eight scalar handles independently', () => {
+  it('places finite controls separately and groups scalar handles under their disclosures', async () => {
     txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     renderHostedDesktop();
+    const zone = q('[data-zone-id="rx-tx"]');
+    const finiteGrid = q('.standard-tx-button-grid');
 
-    const fields = [
-      'rfPower', 'micGain', 'driveGain', 'voxGain', 'antiVoxGain', 'voxDelay',
-      'compressorLevel', 'monitorLevel',
-    ] as const;
-    const zone = q('[data-zone-id="tx-aux"]');
-    const remainder = q('[data-testid="tx-aux-surface"]');
-    const finiteGrid = q('.tx-aux-finite-grid');
-    const grid = q('.tx-aux-scalar-grid');
-    const reasons = q('[data-testid="tx-aux-tune-blocked"]');
-
-    expect(target.querySelectorAll('[data-zone-id="tx-aux"]')).toHaveLength(1);
-    expect(target.querySelectorAll('[data-testid="tx-aux-surface"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-zone-id="tx-aux"]')).toHaveLength(0);
+    expect(target.querySelectorAll('[data-zone-id="rx-tx"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="tx-aux-surface"]')).toHaveLength(0);
     expect(zone).not.toBeNull();
-    expect(remainder?.closest('[data-zone-id="tx-aux"]')).toBe(zone);
-    expect(finiteGrid?.closest('[data-zone-id="tx-aux"]')).toBe(zone);
-    expect(grid?.closest('[data-zone-id="tx-aux"]')).toBe(zone);
-    expect(finiteGrid?.querySelectorAll(':scope > .tx-aux-finite-seat')).toHaveLength(5);
-    expect(grid?.querySelectorAll(':scope > .tx-aux-scalar-seat')).toHaveLength(8);
-    expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(1);
-    expect(reasons?.querySelectorAll('[data-reason]')).toHaveLength(2);
-    expect(grid!.compareDocumentPosition(reasons!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-
+    expect(finiteGrid?.closest('[data-zone-id="rx-tx"]')).toBe(zone);
+    expect(finiteGrid?.querySelectorAll(':scope > [data-field]')).toHaveLength(5);
+    expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(0);
     for (const [field, testid] of [
       ['atu', 'tx-aux-atu'], ['vox', 'tx-aux-vox'], ['compressor', 'tx-aux-compressor'],
       ['monitor', 'tx-aux-monitor'], ['atuTune', 'tx-aux-atu-tune'],
     ] as const) {
-      const seat = finiteGrid?.querySelector(`:scope > .tx-aux-finite-seat[data-field="${field}"]`);
+      const seat = finiteGrid?.querySelector(`[data-field="${field}"]`);
       expect(seat, `${field} seat`).not.toBeNull();
       expect(seat?.querySelector(`[data-testid="${testid}"]`)).not.toBeNull();
       expect(target.querySelectorAll(`[data-testid="${testid}"]`)).toHaveLength(1);
     }
 
-    for (const field of fields) {
-      const seat = grid?.querySelector(`:scope > .tx-aux-scalar-seat[data-field="${field}"]`);
-      expect(seat, `${field} seat`).not.toBeNull();
-      expect(seat?.querySelector(`[data-testid="tx-aux-${field}"]`)).not.toBeNull();
-      expect(target.querySelectorAll(`[data-testid="tx-aux-${field}"]`)).toHaveLength(1);
+    expect(q('.standard-tx-levels')).toBeNull();
+    for (const [label, fields] of [
+      ['VOX settings', ['voxGain', 'antiVoxGain', 'voxDelay']],
+      ['COMP settings', ['compressorLevel']],
+      ['MON settings', ['monitorLevel']],
+      ['RF POWER settings', ['rfPower', 'driveGain']],
+      ['MIC GAIN settings', ['micGain']],
+    ] as const) {
+      q<HTMLButtonElement>(`[aria-label="${label}"]`)!.click();
+      await tick();
+      const popover = q('[data-testid="standard-tx-settings-popover"]')!;
+      expect(popover.closest('[data-zone-id="rx-tx"]')).toBe(zone);
+      expect(popover.querySelectorAll('.standard-tx-scalar-seat')).toHaveLength(fields.length);
+      for (const field of fields) {
+        const seat = popover.querySelector(`[data-field="${field}"]`);
+        expect(seat?.querySelector(`[data-testid="tx-aux-${field}"]`), `${field} handle`).not.toBeNull();
+        expect(seat?.querySelector('.vc-hbar.hw-illum')).not.toBeNull();
+      }
     }
 
-    expect(remainder?.querySelector('.tx-aux-scalar-grid')).toBeNull();
+    expect(target.querySelectorAll('[data-testid="standard-tx-settings-popover"]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-testid="tx-aux-atu-tune"]')).toHaveLength(1);
     expect(target.querySelectorAll('.tx-aux-toggle')).toHaveLength(4);
   });
@@ -525,7 +525,7 @@ describe('hosted Standard VFO operation instruments', () => {
     expect(h.subReceiver).toHaveBeenCalledOnce();
   });
 
-  it('places every admitted named seat once, invokes current callbacks, and keeps one digest', () => {
+  it('places every admitted named seat once and invokes current callbacks without a center digest', () => {
     h.caps = vfoCaps();
     h.selectedFiniteAppearance = finiteAppearance;
     renderHostedDesktop();
@@ -535,7 +535,7 @@ describe('hosted Standard VFO operation instruments', () => {
       'split', 'dualWatch', 'activeReceiver', 'equalize', 'swap', 'speak',
     ]);
     expect(q('[data-vfo-split]')).toBeNull();
-    expect(target.querySelectorAll('[data-testid="vfo-split-digest"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="vfo-split-digest"]')).toHaveLength(0);
     expect(q('[data-testid="external-Quick split"]')).toBeNull();
     expect(q('[data-testid="external-Quick dual watch"]')).toBeNull();
 
@@ -635,7 +635,7 @@ describe('hosted Standard VFO operation instruments', () => {
     expect(h.split).toHaveBeenCalledOnce();
   });
 
-  it('fails selected appearance closed at null authority without losing the digest', () => {
+  it('fails selected appearance closed at null authority without adding a center digest', () => {
     h.caps = vfoCaps();
     h.selectedFiniteAppearance = finiteAppearance;
     h.session = { state: 'disconnected', epoch: 7 };
@@ -644,7 +644,7 @@ describe('hosted Standard VFO operation instruments', () => {
     expect(q('[data-vfo-split]')).toBeNull();
     expect(q('[data-testid="external-Split"]')).toBeNull();
     expect(q('[data-testid="external-Receiver"]')).toBeNull();
-    expect(target.querySelectorAll('[data-testid="vfo-split-digest"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="vfo-split-digest"]')).toHaveLength(0);
   });
 
   it('revokes every retained VFO renderer when the persistent host is destroyed', () => {
@@ -696,15 +696,15 @@ describe('hosted Standard VFO operation instruments', () => {
 });
 
 describe('selected finite TX auxiliary authority lifetime', () => {
-  it('keeps one external Standard reason list after every scalar', () => {
+  it('does not add a duplicate Standard reason surface beside the scalar overlay', async () => {
     h.selectedFiniteAppearance = finiteAppearance;
     txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     renderHostedDesktop();
-    const reasons = q('[data-testid="tx-aux-tune-blocked"]')!;
+    q<HTMLButtonElement>('[aria-label="MIC GAIN settings"]')!.click();
+    await tick();
     expect(q('[data-testid="external-TUNE"]')).not.toBeNull();
-    expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(1);
-    expect(q('.tx-aux-scalar-grid')!.compareDocumentPosition(reasons)
-      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(0);
+    expect(q('[data-testid="standard-tx-settings-popover"]')).not.toBeNull();
   });
 
   it('keeps the selected external appearance inert when authority is absent', () => {
@@ -761,7 +761,9 @@ describe('hosted Filter Mode/Filter/Shape/DATA ownership', () => {
     const subscribers = [...h.authoritySubscribers];
     const grid = q('[data-testid="filter-finite-grid"]')!;
     expect([...grid.children].map(node => node.getAttribute('data-field')))
-      .toEqual(['mode', 'filter', 'shape', 'dataMode']);
+      .toEqual(['filter', 'shape']);
+    expect(q('[data-panel-id="semantic-filter"] .panel-header .title')?.textContent).toBe('MODE');
+    expect(q('[data-panel-id="semantic-filter-controls"] .panel-header .title')?.textContent).toBe('FILTER');
     for (const label of externalLabels) {
       expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
     }
@@ -782,7 +784,7 @@ describe('hosted Filter Mode/Filter/Shape/DATA ownership', () => {
 
     expect(q('[data-testid="filter-finite-grid"]')).toBeNull();
     for (const label of externalLabels) {
-      expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
+      expect(target.querySelectorAll(`[data-testid="external-${label}"]`), label).toHaveLength(1);
     }
     for (const id of residual) expect(target.querySelectorAll(`[data-testid="${id}"]`)).toHaveLength(1);
     expect([...h.authoritySubscribers]).toEqual(subscribers);
@@ -980,12 +982,27 @@ describe('the txAux surface mounts only when the view model carries the group', 
    * (MAIN A and SUB A) where it carried one, because the gate is qualified per
    * RECEIVER instead of per radio. MAIN B and SUB B keep their text nodes — the
    * intra-receiver hazard B1 found stays closed.
+   *
+   * MOR-2467 — DELIBERATE CHANGE: `main_sub` is no longer `ab_shared`-shaped.
+   * The adapter derives exactly TWO unslotted receiver-level records (MAIN and
+   * SUB, one VFO position each) instead of four A/B-slotted ones, so the tile
+   * region contracts: the MAIN B and SUB B text-node tiles are GONE, and SUB's
+   * one unslotted position IS its receiver's active slot — a tunable digit
+   * control where the old SUB B text tile stood, plus the surface's only select
+   * button (MAIN is the active receiver and carries the TX target). The
+   * fixture is already receiver-level `main/sub` state, so only this literal
+   * moves; the tail (per-receiver indicator rows, radio-wide row, rx/tx and
+   * rxAudio surfaces) is untouched.
    */
+  // MOR-2467: tile region contracted to TWO unslotted receiver-level tiles —
+  // MAIN (active, TX target: digit control, no select button) then SUB
+  // (unslotted active-slot: its own digit control plus the one select button).
   const DEFAULT_PATH_OUTLINE = 'div p div div span span div span span span span span span span span span span span span span div '
-    + 'span span span button div span span div span span span span span span span span span span span '
-    + 'button div span span span button div section header strong div div div section header strong div '
+    + 'span span div span span span span span span span span span span span button div section header strong div div div section header strong div '
     + 'div div section div span div button button div div button button p span span section p span span '
-    + 'span p div button button ul section div button button button label span div div div div div div '
+    // MOR-2438: the idle READY session span is absent; the hidden status row
+    // retains only its RF mark/label contract and occupies no layout space.
+    + 'p div button button ul section div button button button label span div div div div div div '
     + 'output div button button button output div button button output';
 
   it.each(['single', 'dual'] as const)('renders no txAux surface at all without the group (%s)', (strips) => {
@@ -1320,6 +1337,45 @@ describe('the composed TX/VOX controls consume the real feedback lifecycle', () 
   });
 });
 
+describe('the rfPower scalar consumes the admitted-target lane (MOR-1687 F2)', () => {
+  const slider = () => q<HTMLElement>('[data-testid="tx-aux-rfPower"] [role="slider"]')!;
+  const pushPower = (marker: number, powerLevel: number) => {
+    pushRadioState(({
+      ...liveState(true), powerLevel,
+      fieldStatus: { ...liveState(true).fieldStatus,
+        powerLevel: { ...fresh, lastObservedMonotonic: marker } },
+    }) as ServerState);
+    pushSession({ state: 'connected', epoch: 7 });
+  };
+  const beginRf = (id: string) => beginCommand({ id, name: 'set_rf_power', params: { level: 0.5 }, originalEpoch: 7 });
+
+  it('awaits only once the response admitted a target; a mismatch never confirms', () => {
+    const command = beginRf('rf-admitted');
+    render();
+    expect(slider().dataset.commandPhase).toBe('idle');
+    acknowledgeCommand(command.id, 7, 7, 0.5);
+    flushSync();
+    expect(slider().dataset.commandPhase).toBe('awaiting-confirmation');
+    pushPower(1, 0.75);
+    expect(slider().dataset.commandPhase).toBe('awaiting-confirmation');
+    pushPower(2, 0.5);
+    expect(getCommandLifecycles()[0]?.status).toBe('confirmed');
+    expect(slider().dataset.commandPhase).toBe('confirmed');
+    expect(slider().getAttribute('aria-valuenow')).toBe('0.5');
+  });
+
+  it('keeps an honest idle lane and reading value without an admitted target', () => {
+    const command = beginRf('rf-old-server');
+    render();
+    acknowledgeCommand(command.id, 7, 7);
+    flushSync();
+    pushPower(1, 0.5);
+    expect(slider().dataset.commandPhase).toBe('idle');
+    expect(getCommandLifecycles()[0]?.status).toBe('acknowledged');
+    expect(slider().getAttribute('aria-valuenow')).toBe('0.5');
+  });
+});
+
 // ── MOR-1082: the workspace's per-zone visibility/order, consulted HERE ─────
 //
 // The plans below are built by the real `resolveSurfacePlan` from a real,
@@ -1583,8 +1639,9 @@ describe('MOR-1304 fix round — filter never mounts bare in the dual compositio
 // .ts`) and the one `RadioLayout.svelte` reads to retire the legacy dock.
 describe('MOR-1341 — desktop-v2 mounts a real meters zone when the group is present', () => {
   it('binds [data-zone-id="meters"] around the meters surface, alone in its zone', () => {
-    const base = liveState(false) as unknown as { main: Record<string, unknown> };
-    h.state = { ...base, main: { ...base.main, sMeter: 120 } };
+    const base = liveState(false);
+    h.state = { ...base, main: { ...base.main, sMeter: 120 },
+      fieldStatus: { ...base.fieldStatus, 'main.sMeter': fresh } };
     h.caps = liveCaps(false);
     const plan = resolveSurfacePlan(desktopV2Layout, readWorkspace({ version: 1 }).workspace);
     render({ strips: 'single' }, plan);
@@ -1593,6 +1650,7 @@ describe('MOR-1341 — desktop-v2 mounts a real meters zone when the group is pr
     expect(zone).not.toBeNull();
     expect(zone!.classList.contains('surface-zone')).toBe(true);
     expect(q('[data-testid="meters-surface"]')!.parentElement).toBe(zone);
+    expect(q('[data-testid="meter-signal"]')!.getAttribute('data-observed')).toBe('true');
     // R9 sanity: a readout-only zone adds no key/unkey affordance.
     expect(zone!.querySelector('[data-testid="rx-tx-key"]')).toBeNull();
     expect(zone!.querySelector('[data-testid="rx-tx-unkey"]')).toBeNull();

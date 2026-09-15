@@ -32,7 +32,7 @@ max_watts = 100
 # NOTE: ``notch`` KEEPS the capability tag but intentionally declares NO
 # ``[notch] width_values`` domain (MOR-1551). The FTX-1's manual notch is a
 # Yaesu CAT ``BP`` pair: ``BP00`` toggles it on/off and ``BP01`` selects a
-# frequency index (0-255, see ``get/set_manual_notch_freq`` below) — neither
+# frequency index (see ``get/set_manual_notch_freq`` below) — neither
 # the wfview FTX-1.rig source nor the Yaesu FT-X1 CAT manual this profile is
 # sourced from documents a separate WIDTH register for it. Independently,
 # ``YaesuCatRadio.set_manual_notch_width``/``get_manual_notch_width``
@@ -634,6 +634,22 @@ style = "selector"
 style = "level_is_toggle"
 range_min = 0
 range_max = 10
+
+# NL (NOISE BLANKER LEVEL) per the FTX-1 CAT Operation Reference Manual
+# rev 2508-C: P2 000 = OFF, 001-010 = NB level.
+[controls.nb_level]
+mapping = "identity"
+raw_min = 0
+raw_max = 10
+raw_step = 1
+raw_origin = 0
+display_min = 0
+display_max = 10
+display_step = 1
+display_origin = 0
+display_unit = "level"
+quantization = "reject"
+restoration = "exact"
 
 [controls.nr]
 style = "level_is_toggle"

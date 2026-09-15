@@ -30,6 +30,24 @@ const BACKOFF_MAX = 10000;
 // message per 1.5 s while RX is active.
 const AUDIO_STATS_INTERVAL_MS = 1500;
 
+// Exact wire/reason strings from src/rigplane/web/handlers/audio.py
+// (_send_error) and tx-mic.ts, mapped to toast codes. An unrecognised
+// non-cancel start-failure reason falls back to txAudioStartFailed;
+// _failTxAudio (mid-TX death) falls back to txAudioStopped.
+const SERVER_TX_REFUSAL = 'audio_start: TX audio unavailable';
+const TX_START_SILENT_REASONS = new Set([
+  'TX MIC: capture start cancelled',
+  'TX MIC: capture stopped before start completed',
+]);
+const TX_START_REASON_CODES: Readonly<Record<string, string>> = {
+  'TX MIC: permission denied': 'txAudioMicPermissionDenied',
+  'TX MIC: microphone capture not supported': 'txAudioCaptureUnsupported',
+  'TX MIC: PCM capture not supported': 'txAudioCaptureUnsupported',
+};
+
+/** Sink for an operator-facing error banner: (level, message, code). */
+type OperatorNotifier = (level: 'error', message: string, code: string) => void;
+
 /** Stable per-page-context token so the server can coalesce this audio
  *  manager's reconnects (MOR-924). A soft_reconnect / audio re-arm drops the
  *  audio WS; the browser reopens it and re-sends ``audio_start`` carrying the
@@ -67,6 +85,9 @@ class AudioManager {
   private _listeners: Set<() => void> = new Set();
   // Stable identity for reconnect coalescing (MOR-924); see makeClientId.
   private readonly clientId = makeClientId();
+  // Injected by frontend-runtime.ts, which owns the transport import;
+  // lib/audio must not import it directly (radio-authority/structural-boundary).
+  private _operatorNotifier: OperatorNotifier | null = null;
 
   // Reactive state (read externally)
   get rxEnabled(): boolean { return this._rxEnabled; }
@@ -99,6 +120,11 @@ class AudioManager {
         }
       }
     }, (reason) => this._failTxAudio(reason));
+  }
+
+  /** Inject (or clear, with null) the sink for TX-audio-failure banners. */
+  setOperatorNotifier(notify: OperatorNotifier | null): void {
+    this._operatorNotifier = notify;
   }
 
   /** Register a change callback for reactive UI updates. Returns unsubscribe fn. */
@@ -221,7 +247,10 @@ class AudioManager {
   async startTx(): Promise<string | null> {
     if (this._txEnabled) return null;
     const err = await this.txMic.start();
-    if (err) return err;
+    if (err) {
+      this._notifyTxStartFailure(err);
+      return err;
+    }
     if (!this.txMic.active) return 'TX MIC: capture stopped before start completed';
     this._txEnabled = true;
     setTxEnabled(true);
@@ -351,10 +380,18 @@ class AudioManager {
   }
 
   private _handleServerMessage(raw: string): void {
-    let msg: { type?: unknown; codec?: unknown; opus_decode?: unknown };
+    let msg: { type?: unknown; codec?: unknown; opus_decode?: unknown; message?: unknown };
     try {
       msg = JSON.parse(raw) as typeof msg;
     } catch {
+      return;
+    }
+    if (msg?.type === 'error') {
+      // Only the TX start refusal is operator-facing here; the other error
+      // envelopes on this socket (audio_config ...) belong to other flows.
+      if (msg.message === SERVER_TX_REFUSAL) {
+        this._failTxAudio(SERVER_TX_REFUSAL);
+      }
       return;
     }
     if (msg?.type !== 'audio_tx_format') return;
@@ -375,11 +412,27 @@ class AudioManager {
     this._setTxCodecFallback(msg.opus_decode === false);
   }
 
+  /** Surface a startTx failure reason to the operator. Operator-initiated
+   *  cancellations are silent (a console line at most). */
+  private _notifyTxStartFailure(reason: string): void {
+    if (TX_START_SILENT_REASONS.has(reason)) {
+      console.log(`[audio-ws] TX start cancelled: ${reason}`);
+      return;
+    }
+    const code = TX_START_REASON_CODES[reason] ?? 'txAudioStartFailed';
+    this._operatorNotifier?.('error', `TX audio failed to start: ${reason}`, code);
+  }
+
   /** End failed capture/codec audio and notify the existing canonical de-key path. */
   private _failTxAudio(reason: string): void {
     // A failure during preparation is returned by startTx, before TX admission.
     if (!this._txEnabled) return;
     console.error(`[audio-ws] TX audio failed, stopping TX audio: ${reason}`);
+    this._operatorNotifier?.(
+      'error',
+      `TX audio failed: ${reason}`,
+      reason === SERVER_TX_REFUSAL ? 'txAudioServerUnavailable' : 'txAudioStopped',
+    );
     this._setTxCodecFallback(false);
     this.stopTx();
     // Snapshot + isolate: one throwing subscriber must not starve the rest.

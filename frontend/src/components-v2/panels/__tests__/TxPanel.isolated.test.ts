@@ -204,14 +204,16 @@ describe('panel structure', () => {
     tx.emitStale();
     const t = mountPanel();
     const strip = t.querySelector('.tx-strip');
-    expect(strip?.textContent?.trim()).toBe('○ ---');
+    expect(strip?.getAttribute('data-rf')).toBe('unknown');
+    expect(strip?.textContent?.trim()).toBe('');
   });
 
   it('does not source TX ACTIVE from legacy txActive', () => {
     tx.emitStale();
     const t = mountPanel({ txActive: true });
     const strip = t.querySelector('.tx-strip');
-    expect(strip?.textContent?.trim()).toBe('○ ---');
+    expect(strip?.getAttribute('data-rf')).toBe('unknown');
+    expect(strip?.textContent?.trim()).toBe('');
   });
 
   it('renders Mic Gain slider', () => {
@@ -482,10 +484,14 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
 
     tx.emitServerSnapshot({ intent: 'rx', observedPtt: 'off' });
     t = mountPanel({ txActive: true, txActiveAvailable: true });
-    expect(t.querySelector('.tx-strip')!.getAttribute('data-rf')).toBe('off');
+    let strip = t.querySelector('.tx-strip')!;
+    expect(strip.getAttribute('data-rf')).toBe('off');
+    expect(strip.textContent?.trim()).toBe('');
     tx.emitServerSnapshot({ intent: 'ptt', observedPtt: 'on', releaseRequired: true });
     flushSync();
-    expect(t.querySelector('.tx-strip')!.getAttribute('data-rf')).toBe('on');
+    strip = t.querySelector('.tx-strip')!;
+    expect(strip.getAttribute('data-rf')).toBe('on');
+    expect(strip.textContent?.trim()).toBe('● TX');
   });
 
   describe('two mounted panels', () => {

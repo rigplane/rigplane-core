@@ -432,10 +432,11 @@ def _print_common_cli_hint(argv: list[str]) -> None:
     if "discover" in argv and "web" in argv:
         print(
             "\nHint: do not combine 'discover' and 'web'. "
-            "'web' can auto-discover the radio, or you can pass the radio explicitly:\n"
-            "  rigplane web\n"
-            "  rigplane web --radio-host 192.168.55.40 --radio-user USER "
-            "--radio-pass-file /path/to/password\n",
+            "'web' can discover the radio's IP, but the model must be named; "
+            "you can also pass the radio explicitly:\n"
+            "  rigplane --model IC-7610 web\n"
+            "  rigplane --model IC-7610 web --radio-host 192.168.55.40 "
+            "--radio-user USER --radio-pass-file /path/to/password\n",
             file=sys.stderr,
         )
         return
@@ -443,11 +444,11 @@ def _print_common_cli_hint(argv: list[str]) -> None:
     if _has_global_connection_options_after_command(argv):
         print(
             "\nHint: radio connection options normally go before the command:\n"
-            "  rigplane --backend lan --host 192.168.55.40 --user USER "
-            "--pass-file /path/to/password web\n\n"
+            "  rigplane --model IC-7610 --backend lan --host 192.168.55.40 "
+            "--user USER --pass-file /path/to/password web\n\n"
             "For the web UI, the more readable form is also supported:\n"
-            "  rigplane web --radio-host 192.168.55.40 --radio-user USER "
-            "--radio-pass-file /path/to/password\n",
+            "  rigplane --model IC-7610 web --radio-host 192.168.55.40 "
+            "--radio-user USER --radio-pass-file /path/to/password\n",
             file=sys.stderr,
         )
 
@@ -581,12 +582,12 @@ def _build_parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
         epilog=(
             "examples:\n"
-            "  rigplane web                          # auto-discover radio, start web UI\n"
-            "  rigplane web --radio-host 192.168.55.40  # explicit radio IP\n"
-            "  rigplane web --preset digimode        # bridge + rigctld + WSJT-X compat\n"
-            "  rigplane web --bridge                 # web UI + audio bridge\n"
-            "  rigplane serve                        # rigctld server only\n"
-            "  rigplane discover                     # find radios on the network\n"
+            "  rigplane --model IC-7610 web                    # discover radio IP, start web UI\n"
+            "  rigplane --model IC-7610 web --radio-host 192.168.55.40  # explicit radio IP\n"
+            "  rigplane --model IC-7610 web --preset digimode  # bridge + rigctld + WSJT-X compat\n"
+            "  rigplane --model IC-7610 web --bridge           # web UI + audio bridge\n"
+            "  rigplane --model IC-7610 serve                  # rigctld server only\n"
+            "  rigplane discover                               # find radios on the network\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -3806,7 +3807,13 @@ async def _cmd_web(
 
     config_kwargs["discovery"] = getattr(args, "web_discovery", True)
     config_kwargs["webrtc_enabled"] = getattr(args, "webrtc_enabled", False)
-    config_kwargs["radio_model"] = getattr(radio, "model", "IC-7610")
+    # R59/MOR-2425: a radio that cannot name itself is left unnamed. Omitting
+    # the key keeps WebConfig's ``_RADIO_MODEL_UNSPECIFIED`` sentinel, which
+    # the server already treats as "nothing identifies the radio"
+    # (server.py: WebServer._resolve_profile_if_identified).
+    _radio_model = getattr(radio, "model", None)
+    if isinstance(_radio_model, str) and _radio_model:
+        config_kwargs["radio_model"] = _radio_model
     config_kwargs["await_initial_state"] = True
     config = WebConfig(**config_kwargs)
     server = WebServer(radio, config)

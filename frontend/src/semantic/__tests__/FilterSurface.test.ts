@@ -467,6 +467,53 @@ describe('filter-shape control gate is separate from the derived fact (MOR-1502)
   });
 });
 
+// ── 2d. IF-shift range and step come from the profile domain (MOR-1681) ────
+
+/**
+ * MOR-1681: the ifShift ROW's range/step come from the profile-published
+ * control domain (`filterPassband.ifShiftDomain`) when the radio declares
+ * one; the `FILTER_PASSBAND_LEVELS` row constant stays the explicit
+ * today-behaviour fallback for a radio that declares none. A native range
+ * input steps by its `step` attribute from the keyboard, so the step pin
+ * IS the keyboard-step pin.
+ */
+describe('IF-shift range and step come from the profile domain (MOR-1681)', () => {
+  const withIfShiftDomain = (
+    domain: Readonly<{ min: number; max: number; step: number; origin: number }>,
+  ): RadioViewModel => ({
+    ...base(), filterPassband: { ...base().filterPassband!, ifShiftDomain: domain },
+  });
+
+  it('drives the ifShift row from the profile domain (FTX-1: -1200..1200, step 20)', () => {
+    withSurface(withIfShiftDomain({ min: -1200, max: 1200, step: 20, origin: 0 }), (s) => {
+      const input = s.input('filter-ifShift')!;
+      expect(input.min).toBe('-1200');
+      expect(input.max).toBe('1200');
+      expect(input.step).toBe('20');
+    });
+  });
+
+  it('emits an on-lattice step from the domain-driven row', () => {
+    const onIfShiftChange = vi.fn();
+    withSurface(withIfShiftDomain({ min: -1200, max: 1200, step: 20, origin: 0 }), (s) => {
+      const input = s.input('filter-ifShift')!;
+      input.value = '20';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(onIfShiftChange).toHaveBeenCalledExactlyOnceWith(20);
+    }, { onIfShiftChange });
+  });
+
+  it('keeps today\'s -1200..1200 step-25 row when the profile publishes no if_shift domain', () => {
+    withSurface(base(), (s) => {
+      const input = s.input('filter-ifShift')!;
+      expect(input.min).toBe('-1200');
+      expect(input.max).toBe('1200');
+      expect(input.step).toBe('25');
+    });
+  });
+});
+
 // ── 3. Operational gating: present, disabled, with a reason ─────────────────
 
 describe('operational availability decides whether a control is USABLE', () => {

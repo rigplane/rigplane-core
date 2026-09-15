@@ -1,9 +1,11 @@
-"""Pure public projection for one managed-transmit authority snapshot."""
+"""Managed-transmit public projection and web invalidation delivery tests."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
+from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core.tx_observation import ObservedPtt
 from rigplane.runtime.managed_tx_authority import ManagedTxProjection
 from rigplane.runtime.managed_tx_state import (
@@ -17,7 +19,9 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxState,
     ReleasePlan,
 )
+from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.managed_tx_view import build_managed_tx_view
+from rigplane.web.server import WebConfig, WebServer
 
 
 _SAMPLED_AT = datetime(2026, 9, 4, 12, 34, 56, 789_000, tzinfo=UTC)
@@ -241,3 +245,76 @@ def test_non_utc_sample_time_converts_sample_and_expiry_to_utc() -> None:
 
     assert view["sampledAt"] == "2026-09-04T12:34:56.789Z"
     assert view["managedTransmit"]["tot"]["expiresAt"] == "2026-09-04T12:34:57.789Z"  # type: ignore[index]
+
+
+_INVALIDATION = {"type": "event", "name": "managed_transmit_changed", "data": {}}
+
+
+def _drain(queue: BoundedQueue[dict]) -> list[dict]:
+    items: list[dict] = []
+    while not queue.empty():
+        items.append(queue.get_nowait())
+    return items
+
+
+def _web_server() -> WebServer:
+    return WebServer(None, WebConfig(host="127.0.0.1", port=0))
+
+
+async def test_managed_tx_invalidation_fans_out_coalesced_to_control_queues() -> None:
+    server = _web_server()
+    first: BoundedQueue[dict] = BoundedQueue(maxsize=100)
+    second: BoundedQueue[dict] = BoundedQueue(maxsize=100)
+    server._control_event_queues.update({first, second})
+
+    server._on_managed_tx_changed()
+    server._on_managed_tx_changed()
+
+    assert _drain(first) == [_INVALIDATION]
+    assert _drain(second) == [_INVALIDATION]
+
+
+async def test_managed_tx_invalidation_survives_a_full_queue() -> None:
+    server = _web_server()
+    queue: BoundedQueue[dict] = BoundedQueue(maxsize=2)
+    filler = {"type": "notification", "message": "filler"}
+    queue.put_nowait(dict(filler))
+    queue.put_nowait(dict(filler))
+    server._control_event_queues.add(queue)
+
+    server._on_managed_tx_changed()
+
+    delivered = _drain(queue)
+    assert _INVALIDATION in delivered
+    assert len(delivered) == 2
+
+    server._stopping = True
+    server._on_managed_tx_changed()
+    assert _drain(queue) == []
+
+
+async def test_control_handler_forwards_managed_transmit_changed() -> None:
+    handler = ControlHandler.__new__(ControlHandler)
+    handler._event_queue = BoundedQueue(maxsize=10)
+    handler._subscribed_streams = set()
+    sent: list[dict] = []
+
+    async def capture(event: dict) -> None:
+        sent.append(event)
+
+    handler._send_json = capture  # type: ignore[method-assign]
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(handler._event_sender_loop())
+    try:
+        handler._event_queue.put_nowait(dict(_INVALIDATION))
+        handler._event_queue.put_nowait(
+            {"type": "event", "name": "freq_changed", "data": {"freq": 1}}
+        )
+        handler._event_queue.put_nowait({"type": "notification", "message": "hello"})
+        for _ in range(4):
+            await asyncio.sleep(0)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert sent == [_INVALIDATION, {"type": "notification", "message": "hello"}]

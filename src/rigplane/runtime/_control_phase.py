@@ -915,7 +915,10 @@ class ControlPhaseRuntime:
             username=h._username,
             token=h._token,
             tok_request=h._tok_request,
-            radio_name=getattr(h, "model", "IC-7610"),
+            # R59/MOR-2425: a host that cannot name a radio puts no rig name
+            # on the wire. ``ControlPhaseHost`` does not declare ``model``;
+            # ``CoreRadio``, the only host built in ``src/``, always has it.
+            radio_name=getattr(h, "model", "unspecified"),
             mac_address=b"\x00" * 6,
             auth_seq=h._auth_seq,
             guid=guid,

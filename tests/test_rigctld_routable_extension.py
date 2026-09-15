@@ -4,7 +4,7 @@ The load-bearing assertion of epic #1322: the architecture admits new
 radio backends purely by **structural conformance** to the public
 Capability Protocols — no upper-layer (web/rigctld) code change needed.
 
-If a new backend implements ``rigctld_routing(cache, max_power_w)``
+If a new backend implements ``rigctld_routing(max_power_w)``
 returning an object that satisfies
 :class:`~rigplane.rigctld.routing.RigctldRouting`, the rigctld handler's
 ``isinstance(radio, RigctldRoutable)`` check picks it up without any
@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from rigplane import RigctldRoutable
 from rigplane.rigctld.contract import RigctldResponse
-from rigplane.rigctld.handler import _FallbackRigState
 from rigplane.rigctld.routing import RigctldRouting
 
 
@@ -55,7 +54,6 @@ class _StubRoutableRadio:
 
     def rigctld_routing(
         self,
-        cache: _FallbackRigState,
         max_power_w: float = 100.0,
     ) -> _StubRouting:
         return _StubRouting()
@@ -67,7 +65,7 @@ def test_stub_routable_satisfies_protocol() -> None:
     stub = _StubRoutableRadio()
     assert isinstance(stub, RigctldRoutable)
 
-    routing = stub.rigctld_routing(_FallbackRigState())
+    routing = stub.rigctld_routing()
     assert isinstance(routing, RigctldRouting)
 
 

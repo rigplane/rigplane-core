@@ -13,6 +13,66 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-15 — control conversion and command path (head `e3d435dc`)
+
+Two read-only tracts answering one owner question: why web, rigctld and the CLI
+reach the radio through different mechanisms. Each report labels its own claims as
+observation or inference, carries a per-finding falsifier field, and closes with
+the capabilities it examined and cleared.
+
+- [2026-09-15-mechanism-audit-control-conversion.md](2026-09-15-mechanism-audit-control-conversion.md)
+  — where display ↔ raw conversion belongs. Verdict: the Python and TypeScript
+  exact implementations are a sanctioned pair whose only pin is hand-copied
+  test vectors; rigctld's level conversion is a gap, not a duplicate, because
+  the Radio surface lacked a display-value API.
+- [2026-09-15-mechanism-audit-command-path.md](2026-09-15-mechanism-audit-command-path.md)
+  — the four consumers' paths to the radio across eight concerns. Verdict:
+  standalone consumers legitimately run without the web command queue; the
+  duplicated dispatch and receiver validation are displacement with the shared
+  targets already in place, while value validation is a gap in the runtime seat
+  with its shared math only emerging.
+
+## 2026-09-15 — Standard TX indication and AGC cleanup (head `5fa07e1a`, base `f27f1132`)
+
+- [2026-09-15-mechanism-audit-standard-tx-ptt.md](2026-09-15-mechanism-audit-standard-tx-ptt.md)
+  — independent read-only PASS: the redundant visible Standard TX banner is
+  removed while semantic status and the existing PTT path remain intact; the
+  stray AGC `NB width` render is removed without deleting its persistent
+  binding or DSP/NB/SDR consumers. Mac Mini evidence is a separate gate.
+
+## 2026-09-15 — MOR-2467 IC-7610 startup-optional scope state after rebase (head `62a1c107`, base `39c88afd`)
+
+- [2026-09-15-mechanism-audit-mor-2467-ic7610-startup-rebased.md](2026-09-15-mechanism-audit-mor-2467-ic7610-startup-rebased.md)
+  — read-only independent PASS on the rebased implementation. It supersedes
+  the pre-rebase report for merge evidence and confirms that the TX-interlock
+  cleanup conflict changed no startup-optional semantics. Tests and live
+  RX-only evidence are separate.
+
+## 2026-09-15 — MOR-2467 IC-7610 startup-optional scope state before rebase (head `d53e91e5`, base `bd75f60c`)
+
+- [2026-09-15-mechanism-audit-mor-2467-ic7610-startup.md](2026-09-15-mechanism-audit-mor-2467-ic7610-startup.md)
+  — historical read-only PASS on the pre-rebase implementation. Superseded by
+  the rebased report above; retained as a frozen point-in-time result.
+
+## 2026-09-14 — MOR-2467 IC-7610 Standard v3 restoration (head `479dd587`, base `99f4bcd3`)
+
+- [2026-09-14-mechanism-audit-mor-2467-ic7610-v3.md](2026-09-14-mechanism-audit-mor-2467-ic7610-v3.md)
+  — read-only, independently adjudicated PASS with no blockers for the
+  IC-7610 Standard v3 restoration of MAIN/SUB records and one combined
+  RF/SQL control. Preserves one deletion candidate (`vfoLabel` tests-only
+  shim), three follow-ups (panel-commands `main_sub` residue, stale
+  per-receiver A/B comment, slot-view documentation), and the cleared
+  items. Tests were not run by the audit; remote test evidence is separate.
+
+## 2026-09-14 — IC-7610 state, scope, and canvas stability (head `de50644e`, base `601f27f7`)
+
+- [2026-09-14-mechanism-audit-state-scope-canvas.md](2026-09-14-mechanism-audit-state-scope-canvas.md)
+  — read-only independent PASS for the state/projection/canvas mechanism,
+  held-stale passband display authority, and drag continuity. No TX/RF safety
+  regression or competing canonical mechanism was found. The remaining full
+  `fieldStatus` signature cost is recorded as a non-blocking future producer-
+  side optimization. Tests and live RX-only evidence are separate.
+
 ## 2026-09-06 — instrument mechanism decision audits (source `f2e7969708d5c93890cf1b24d833ce820b36dc15`)
 
 Three independent, bounded mechanism-audit tracts at the pinned source. They

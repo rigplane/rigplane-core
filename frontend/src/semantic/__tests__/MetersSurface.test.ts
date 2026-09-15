@@ -28,8 +28,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
 import { proxy } from 'svelte/internal/client';
-import MetersSurface from './fixtures/StationMeterInstrumentHostFixture.svelte';
-import { projectBarMeters, type BarMeterKey } from '../bar-meter-projector';
+import MetersSurface, { fixtureMeterAppearance } from './fixtures/StationMeterInstrumentHostFixture.svelte';
+import type { MeterAppearance } from '../../../component-kit-api/src/index';
+const selectedMeter = vi.hoisted(() => ({ current: undefined as MeterAppearance | undefined }));
+vi.mock('../../component-kits/activation', () => ({
+  getSelectedMeterAppearance: () => selectedMeter.current,
+}));
+import { projectBarMeters, projectSwrMeter, type BarMeterKey } from '../bar-meter-projector';
 import { topologyFixtures, withMeters, withTxAux } from '../fixtures/topologies';
 import type {
   Availability, MeterField, MeterRfState, MetersViewModel, MeterValueDomain, RadioViewModel,
@@ -93,6 +98,89 @@ type MeterKey = Exclude<keyof MetersViewModel, 'rfState'>;
 const BAR_KEYS = [
   'power', 'alc', 'drainCurrent', 'drainVoltage', 'compression',
 ] as const satisfies readonly BarMeterKey[];
+
+it('keeps native station readouts synchronized with projected values and availability', () => {
+  const initial = base('transmitting');
+  initial.meters!.drainVoltage = {
+    ...initial.meters!.drainVoltage,
+    reading: { status: 'known', value: 13.8 },
+    domain: { kind: 'engineering', unit: 'v' },
+  };
+  const props: { view: RadioViewModel } = proxy({ view: initial });
+  const component = mount(MetersSurface, { target, props });
+  const readout = () => target.querySelector('[data-meter="drainVoltage"] .meter-native-value');
+  try {
+    flushSync();
+    const projected = () => projectBarMeters(props.view).find(({ key }) => key === 'drainVoltage')!;
+    expect(readout()?.textContent).toBe(projected().displayText);
+    expect(readout()?.textContent).toBe('13.8 V');
+    expect(target.querySelector('[data-meter="drainVoltage"] .meter-native-label')?.textContent).toBe('Vd');
+    props.view = withRaw(props.view, 'drainVoltage', 14.2);
+    flushSync();
+    expect(readout()?.textContent).toBe(projected().displayText);
+    props.view = withField(props.view, 'drainVoltage', { unknown: true });
+    flushSync();
+    expect(readout()?.textContent).toBe(projected().displayText);
+    props.view = withField(props.view, 'drainVoltage', { availability: { structural: false, operational: false } });
+    flushSync();
+    expect(target.querySelector('[data-meter="drainVoltage"]')).toBeNull();
+  } finally { unmount(component); }
+});
+it('keeps the SWR-only caption on its independent relevance and projected value', () => {
+  let view = withField(base(), 'signal', { availability: { structural: false, operational: false }, relevant: false });
+  view = withMeterDomain(withRaw(view, 'swr', 1.5), 'swr', { kind: 'engineering', unit: 'ratio' });
+  view = { ...view, meters: { ...view.meters!, swr: { ...view.meters!.swr, relevant: true } } };
+  withSurface(view, (surface) => {
+    const caption = surface.tile('swr')!.querySelector('.meter-native-caption')!;
+    expect(caption.getAttribute('data-relevant')).toBe('true');
+    expect(caption.querySelector('.meter-native-label')!.textContent).toBe('SWR');
+    expect(caption.querySelector('.meter-native-value')!.textContent)
+      .toBe(projectSwrMeter(view)!.displayText);
+    expect(surface.tile('swr')!.querySelectorAll('[data-lower-relevant] text').length).toBeGreaterThan(0);
+  });
+});
+
+it('keeps paired S and SWR captions independently relevant through SWR updates', () => {
+  let view = withField(base('transmitting'), 'signal', { relevant: false });
+  view = withMeterDomain(withRaw(view, 'swr', 1.5), 'swr', { kind: 'engineering', unit: 'ratio' });
+  view = { ...view, meters: { ...view.meters!, swr: { ...view.meters!.swr, relevant: true } } };
+  const props: { view: RadioViewModel } = proxy({ view });
+  const component = mount(MetersSurface, { target, props });
+  const caption = (label: string) => [...target.querySelectorAll('.meter-native-caption')]
+    .find((node) => node.querySelector('.meter-native-label')?.textContent === label);
+  try {
+    flushSync();
+    expect(caption('S')?.getAttribute('data-relevant')).toBe('false');
+    expect(caption('SWR')?.getAttribute('data-relevant')).toBe('true');
+    expect(caption('SWR')?.querySelector('.meter-native-value')?.textContent).toBe('1.5');
+    props.view = withRaw(props.view, 'swr', 2.5);
+    flushSync();
+    expect(caption('SWR')?.querySelector('.meter-native-value')?.textContent)
+      .toBe(projectSwrMeter(props.view)!.displayText);
+    props.view = withField(props.view, 'swr', { relevant: false, unknown: true });
+    flushSync();
+    expect(caption('SWR')?.getAttribute('data-relevant')).toBe('false');
+    expect(caption('SWR')?.querySelector('.meter-native-value')?.textContent)
+      .toBe(projectSwrMeter(props.view)!.displayText);
+    expect(caption('S')?.getAttribute('data-relevant')).toBe('false');
+    props.view = withField(props.view, 'swr', { availability: { structural: false, operational: false } });
+    flushSync();
+    expect(caption('SWR')).toBeUndefined();
+    expect(caption('S')).toBeDefined();
+  } finally { unmount(component); }
+});
+
+it('leaves selected external meter renderers free of native captions', () => {
+  selectedMeter.current = fixtureMeterAppearance;
+  try {
+    withSurface(base(), () => {
+      expect(target.querySelector('[data-fixture-signal]')).not.toBeNull();
+      expect(target.querySelector('[data-fixture-level]')).not.toBeNull();
+      expect(target.querySelector('.meter-native-caption')).toBeNull();
+    });
+  } finally { selectedMeter.current = undefined; }
+});
+
 const ALL_KEYS: readonly MeterKey[] = ['signal', ...BAR_KEYS] as readonly MeterKey[];
 
 /** `1/single` + a fully-observed meters group + a fully-observed txAux group,
@@ -468,11 +556,11 @@ describe('the cold-start unknown window renders fail-closed', () => {
    *  adapter's own fail-closed choice: unknown is treated as "may be on"),
    *  and the S meter NOT relevant. What matters here is that the surface
    *  renders the unknown state as unknown — never as RX. */
-  it('never presents an unknown RF state as receiving', () => {
+  it('keeps unknown optically quiet without changing its state to receiving', () => {
     withSurface(base('unknown'), (s) => {
       expect(s.root()!.dataset.rfState).toBe('unknown');
-      expect(s.rfLabel()).not.toBe(RF_LABEL.receiving);
-      expect(s.rfMark()).not.toBe(RF_MARK.receiving);
+      expect(s.rfLabel()).toBe(RF_LABEL.receiving);
+      expect(s.rfMark()).toBe(RF_MARK.receiving);
       expect(target.innerHTML).not.toContain('data-rf-state="receiving"');
     });
   });
@@ -1586,4 +1674,35 @@ it('a current calibrated zero remains a measurement, distinct from RX idle', () 
       expect(s.tile('power')?.querySelector('svg')?.getAttribute('aria-label')).toContain('Observed. 0W');
     });
   } finally { clearCapabilities(); }
+});
+
+
+describe('station-local presence selection', () => {
+  it.each([
+    ['present', 'unavailable'], ['unavailable', 'present'], ['unavailable', 'unavailable'],
+    ['present', 'present'], ['absent', 'present'],
+  ] as const)('keeps signal=%s and SWR=%s independently', (signal, swr) => {
+    const view = base();
+    for (const [key, presence] of [['signal', signal], ['swr', swr]] as const) {
+      view.meters![key] = { ...view.meters![key], presence,
+        availability: { structural: presence !== 'absent', operational: false },
+        reading: { status: 'unknown' } };
+    }
+    render(view);
+    expect(target.querySelector('[data-testid="meter-signal"]') !== null).toBe(signal === 'present');
+    expect(target.querySelector('[data-testid="meter-swr"]') !== null)
+      .toBe(signal !== 'present' && swr === 'present');
+    const captions = [...target.querySelectorAll('.meter-native-label')].map(n => n.textContent);
+    expect(captions.includes('S')).toBe(signal === 'present');
+    expect(captions.includes('SWR')).toBe(swr === 'present');
+    expect(target.querySelector('[data-lower-relevant]') !== null).toBe(swr === 'present');
+  });
+  it('omits unavailable level seats while preserving declared missing empty seats', () => {
+    const view = base();
+    for (const key of BAR_KEYS) view.meters![key] = { ...view.meters![key],
+      presence: 'unavailable', availability: { structural: true, operational: false },
+      reading: { status: 'unknown' } };
+    render(view);
+    for (const key of BAR_KEYS) expect(target.querySelector('[data-testid="meter-' + key + '"]')).toBeNull();
+  });
 });
