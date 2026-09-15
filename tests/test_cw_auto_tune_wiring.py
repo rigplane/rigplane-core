@@ -314,6 +314,72 @@ class TestCwAutoTuneWiring:
         assert result["applied"] is False
         handler._server.command_queue.put.assert_not_called()
 
+    @pytest.mark.parametrize("cw_pitch", [0, -1], ids=("unset", "unusable"))
+    async def test_unobserved_pitch_returns_unknown_without_retune(
+        self, cw_pitch: int
+    ) -> None:
+        """MOR-2482: an unobserved CW pitch must not fabricate a 600 Hz default.
+
+        Response contract for the unknown case, pinned here: the existing
+        keys stay present, ``cw_pitch`` and ``delta`` are ``None``,
+        ``applied`` is ``False``, and ``reason`` states the pitch is
+        unknown. No ``SetFreq`` is queued and the profile is not consulted.
+        """
+        handler = _make_handler(
+            radio_state=RadioState(
+                main=ReceiverState(freq=14_074_000),
+                cw_pitch=cw_pitch,
+            ),
+        )
+
+        with patch("rigplane.cw_auto_tuner.CwAutoTuner") as MockTuner:
+            instance = MockTuner.return_value
+            instance.feed_audio = MagicMock()
+            instance.cancel = MagicMock()
+            # 650 Hz against the fabricated 600 Hz default used to shift the
+            # VFO by +50 Hz; with the pitch unobserved nothing may move.
+            instance.start_collection = MagicMock(side_effect=lambda cb: cb(650))
+
+            result = await handler._cw_auto_tune()
+
+        assert result == {
+            "detected": 650,
+            "cw_pitch": None,
+            "delta": None,
+            "applied": False,
+            "reason": "cw_pitch_unknown",
+        }
+        handler._server.command_queue.put.assert_not_called()
+
+    async def test_observed_pitch_retunes_exactly_as_before(self) -> None:
+        """MOR-2482: with an observed pitch the correction is unchanged."""
+        handler = _make_handler(
+            radio_state=RadioState(
+                main=ReceiverState(freq=14_074_000),
+                cw_pitch=750,
+            ),
+        )
+
+        with patch("rigplane.cw_auto_tuner.CwAutoTuner") as MockTuner:
+            instance = MockTuner.return_value
+            instance.feed_audio = MagicMock()
+            instance.cancel = MagicMock()
+            instance.start_collection = MagicMock(side_effect=lambda cb: cb(650))
+
+            result = await handler._cw_auto_tune()
+
+        assert result == {
+            "detected": 650,
+            "cw_pitch": 750,
+            "delta": -100,
+            "applied": True,
+        }
+        q = handler._server.command_queue
+        q.put.assert_called_once()
+        cmd = q.put.call_args[0][0]
+        assert cmd.freq == 14_073_900
+        assert cmd.receiver == 0
+
     async def test_no_server_raises(self) -> None:
         """Raises RuntimeError when server is None."""
         ws = MagicMock()
