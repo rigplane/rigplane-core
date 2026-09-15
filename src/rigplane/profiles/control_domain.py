@@ -20,11 +20,13 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from decimal import Decimal
+from fractions import Fraction
 from typing import cast
 
 __all__ = [
     "control_display_band",
     "decode_control_domain",
+    "decode_legacy_control",
     "encode_control_domain",
     "quantize_control_domain",
     "snap_control_domain",
@@ -451,6 +453,59 @@ def decode_control_domain(domain: Mapping[str, object], raw: int) -> str | None:
         result = _add(display_center, index - center, values[2])
         return _text(result) if _in_axis(result, values) else None
     return None
+
+
+def decode_legacy_control(
+    controls: Mapping[str, object] | None, control: str, raw: int
+) -> int:
+    """Decode a legacy rational control's raw level to its display value.
+
+    The legacy ``[controls.*]`` shape fixes the exact fraction
+    ``(display_max - display_min) / (raw_max - raw_min)``; with the declared
+    ``decode_quantum`` the display value is
+
+    ``display_min + decode_quantum * nearest((raw - raw_min) * fraction / quantum)``
+
+    computed with :class:`~fractions.Fraction` — integers in, integer out.
+    ``nearest`` rounds half to even; the loader rejects declared domains
+    that can reach an exact half-step tie for any raw in range, so the tie
+    branch is unreachable for shipped profiles. Raises ``ValueError`` when
+    *controls* publishes no legacy rational domain for *control* or *raw*
+    is not an integer inside ``[raw_min, raw_max]`` — never falls back to
+    a code constant.
+    """
+    entry = controls.get(control) if controls is not None else None
+    required = ("raw_min", "raw_max", "display_min", "display_max", "decode_quantum")
+    if not isinstance(entry, Mapping) or any(
+        isinstance(entry.get(key), bool) or not isinstance(entry.get(key), int)
+        for key in required
+    ):
+        raise ValueError(
+            f"no legacy rational control domain for {control!r} in the active profile"
+        )
+    raw_min, raw_max, display_min, display_max, quantum = (
+        cast(int, entry[key]) for key in required
+    )
+    if quantum <= 0:
+        raise ValueError(
+            f"{control} decode_quantum must be a positive integer, got {quantum}"
+        )
+    if (
+        isinstance(raw, bool)
+        or not isinstance(raw, int)
+        or not raw_min <= raw <= raw_max
+    ):
+        raise ValueError(
+            f"{control} raw level must be an integer within {raw_min}-{raw_max}; "
+            f"got {raw!r}"
+        )
+    steps = round(
+        Fraction(
+            (raw - raw_min) * (display_max - display_min),
+            (raw_max - raw_min) * quantum,
+        )
+    )
+    return display_min + quantum * steps
 
 
 def quantize_control_domain(domain: Mapping[str, object], display: str) -> str | None:

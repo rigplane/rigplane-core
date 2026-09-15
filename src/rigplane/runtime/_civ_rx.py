@@ -48,7 +48,6 @@ from rigplane.commands import (
     parse_scope_speed_response,
     parse_scope_vbw_response,
 )
-from rigplane.commands.levels import _cw_pitch_from_level, _key_speed_from_level
 from rigplane.commands.scope import _span_index_for_hz
 from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
@@ -63,6 +62,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
+from rigplane.profiles.control_domain import decode_legacy_control
 from rigplane.scope import ScopeFrame
 from rigplane.core.types import CivFrame, Mode, bcd_decode
 from rigplane.runtime._state_queries import tx_target_max_age
@@ -337,16 +337,18 @@ _OBSERVABLE_CMD14_FIELDS = {
 }
 _NORMALIZED_CMD14_OBSERVATION_SUBS = frozenset({0x01, 0x02, 0x03, 0x0A})
 
-# 0x14 cw_pitch (sub 0x09) is observation-backed too, but its raw level → Hz
-# mapping is non-linear, so it is decoded via ``_cw_pitch_from_level`` rather
-# than the plain BCD ``_decode_level`` used for the other 0x14 levels (MOR-437).
+# 0x14 cw_pitch (sub 0x09) is observation-backed too; its raw level → Hz
+# mapping is declared in the profile's ``[controls.cw_pitch]`` rational
+# domain, so it is decoded via ``decode_legacy_control`` rather than the
+# plain BCD ``_decode_level`` used for the other 0x14 levels (MOR-437).
 _OBSERVABLE_CMD14_CW_PITCH_SUB = 0x09
 _CMD14_CW_PITCH_FIELD = ("global", "operator_controls", "cw_pitch")
 
 # 0x14 key_speed (sub 0x0C) is observation-backed too; its raw level → WPM
-# mapping is linear (``round(level / 6.071 + 6)``, range 6-48), so it is decoded
-# via ``_key_speed_from_level`` rather than the plain BCD ``_decode_level`` used
-# for the other 0x14 levels (MOR-493).
+# mapping is declared in the profile's ``[controls.key_speed]`` rational
+# domain (range 6-48), so it is decoded via ``decode_legacy_control`` rather
+# than the plain BCD ``_decode_level`` used for the other 0x14 levels
+# (MOR-493).
 _OBSERVABLE_CMD14_KEY_SPEED_SUB = 0x0C
 _CMD14_KEY_SPEED_FIELD = ("global", "operator_controls", "key_speed")
 
@@ -2294,26 +2296,34 @@ class CivRuntime:
         elif frame.command == 0x14 and len(frame.data) >= 2:
             sub14 = frame.sub or 0
             if sub14 == _OBSERVABLE_CMD14_CW_PITCH_SUB:
-                # cw_pitch raw level → Hz (non-linear) — reuse the exact decode
-                # the legacy mirror and ``set_cw_pitch`` use (MOR-437).
+                # cw_pitch raw level → Hz — decoded through the profile's
+                # declared control domain (MOR-437; MOR-2481 decode half).
                 observations.append(
                     self._observation(
                         self._field_path(
                             _CMD14_CW_PITCH_FIELD, receiver_id=receiver_id
                         ),
-                        _cw_pitch_from_level(self._decode_level(frame.data)),
+                        decode_legacy_control(
+                            self._host._profile.controls,
+                            "cw_pitch",
+                            self._decode_level(frame.data),
+                        ),
                         frame=frame,
                     )
                 )
             elif sub14 == _OBSERVABLE_CMD14_KEY_SPEED_SUB:
-                # key_speed raw level → WPM (linear) — reuse the exact decode
-                # the legacy mirror and ``set_key_speed`` use (MOR-493).
+                # key_speed raw level → WPM — decoded through the profile's
+                # declared control domain (MOR-493; MOR-2481 decode half).
                 observations.append(
                     self._observation(
                         self._field_path(
                             _CMD14_KEY_SPEED_FIELD, receiver_id=receiver_id
                         ),
-                        _key_speed_from_level(self._decode_level(frame.data)),
+                        decode_legacy_control(
+                            self._host._profile.controls,
+                            "key_speed",
+                            self._decode_level(frame.data),
+                        ),
                         frame=frame,
                     )
                 )
@@ -3015,8 +3025,6 @@ class CivRuntime:
                 setattr(rx, _CMD14_RECEIVER_LEVEL_FIELDS[sub], raw)
             elif sub == 0x0A:
                 rs.power_level = raw
-            elif sub == 0x0C:
-                rs.key_speed = round((raw / 6.071) + 6)
             elif sub in _CMD14_GLOBAL_LEVEL_FIELDS:
                 setattr(rs, _CMD14_GLOBAL_LEVEL_FIELDS[sub], raw)
 

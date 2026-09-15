@@ -188,6 +188,7 @@ from rigplane.runtime.meter_cal import interpolate_swr
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
 from rigplane.profiles import RadioProfile, resolve_radio_profile
+from rigplane.profiles.control_domain import decode_legacy_control
 from rigplane.core.radio_state import RadioState
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.core._state_cache import StateCache
@@ -2586,7 +2587,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             sub=sub,
             prefix=prefix,
         )
-        return round((((600.0 / 255.0) * level) + 300) / 5.0) * 5
+        return decode_legacy_control(self._profile.controls, "cw_pitch", level)
 
     async def set_cw_pitch(self, pitch_hz: int) -> None:
         """Set CW pitch in Hz."""
@@ -2621,7 +2622,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             sub=sub,
             prefix=prefix,
         )
-        return round((level / 6.071) + 6)
+        return decode_legacy_control(self._profile.controls, "key_speed", level)
 
     async def set_key_speed(self, wpm: int) -> None:
         """Set key speed in WPM."""
