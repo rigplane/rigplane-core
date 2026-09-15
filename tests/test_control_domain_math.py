@@ -1035,8 +1035,12 @@ def test_icom_cw_pitch_decode_matches_the_deleted_formula_vectors(rig: str) -> N
         ), f"{rig} cw_pitch raw {raw}"
 
 
-@pytest.mark.parametrize("rig", ["ic7300", "ic7610", "ic9700", "ic705"])
-def test_icom_key_speed_decode_matches_the_deleted_formula_vectors(rig: str) -> None:
+@pytest.mark.parametrize(
+    "rig", ["ic7300", "ic7610", "ic9700", "ic705", "x6100", "x6200"]
+)
+def test_ci_v_key_speed_decode_matches_the_deleted_formula_vectors(rig: str) -> None:
+    # The Xiegu profiles declare the same 6-48 WPM band the shared CI-V
+    # key-speed decode used on origin/main, so their vectors are identical.
     controls = _rig_domains(rig)
     for raw in range(256):
         assert (

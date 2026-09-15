@@ -341,6 +341,14 @@ display_max = 1200
 display_unit = "Hz"
 decode_quantum = 1  # no Hz step documented: Radioddity X6200 CI-V V1.0.6 p.6 gives only 0=400Hz/255=1200Hz
 
+[controls.key_speed]
+raw_min = 0
+raw_max = 255
+display_min = 6
+display_max = 48
+display_unit = "WPM"
+decode_quantum = 1  # band not documented for this radio: it reproduces the pre-existing shared CI-V key-speed decode; Radioddity X6200 CI-V V1.0.6 p.6 gives no WPM scale
+
 [controls.rit]
 # MOR-1883: exact-form translation of the previously declared range;
 # step 1 from the shared CI-V builder (+/-9999 Hz, 1 Hz BCD).

@@ -346,9 +346,8 @@ _CMD14_CW_PITCH_FIELD = ("global", "operator_controls", "cw_pitch")
 
 # 0x14 key_speed (sub 0x0C) is observation-backed too; its raw level → WPM
 # mapping is declared in the profile's ``[controls.key_speed]`` rational
-# domain (range 6-48), so it is decoded via ``decode_legacy_control`` rather
-# than the plain BCD ``_decode_level`` used for the other 0x14 levels
-# (MOR-493).
+# domain, so it is decoded via ``decode_legacy_control`` rather than the
+# plain BCD ``_decode_level`` used for the other 0x14 levels (MOR-493).
 _OBSERVABLE_CMD14_KEY_SPEED_SUB = 0x0C
 _CMD14_KEY_SPEED_FIELD = ("global", "operator_controls", "key_speed")
 

@@ -1461,19 +1461,23 @@ choices = [
         with pytest.raises(RigLoadError, match="exact half-step tie"):
             self._load(tmp_path, tie)
 
-    def test_every_civ_profile_with_cw_pitch_commands_declares_decode_quantum(self):
+    def test_every_civ_profile_with_cw_commands_declares_decode_quantum(self):
         for path in sorted(
             path for path in RIGS_DIR.glob("*.toml") if not path.name.startswith("_")
         ):
             rig = load_rig(path)
-            if "get_cw_pitch" not in rig.commands:
-                continue
             controls = rig.to_profile().controls
-            assert controls is not None, path.name
-            pitch = controls.get("cw_pitch")
-            assert isinstance(pitch, dict), path.name
-            assert isinstance(pitch.get("decode_quantum"), int), path.name
-            assert pitch["decode_quantum"] > 0, path.name
+            for ctl, command in (
+                ("cw_pitch", "get_cw_pitch"),
+                ("key_speed", "get_key_speed"),
+            ):
+                if command not in rig.commands:
+                    continue
+                assert controls is not None, (path.name, ctl)
+                entry = controls.get(ctl)
+                assert isinstance(entry, dict), (path.name, ctl)
+                assert isinstance(entry.get("decode_quantum"), int), (path.name, ctl)
+                assert entry["decode_quantum"] > 0, (path.name, ctl)
 
     @pytest.mark.parametrize(
         "maximum",
