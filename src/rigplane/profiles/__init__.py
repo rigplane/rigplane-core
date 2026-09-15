@@ -76,6 +76,7 @@ class ControlSpec(TypedDict, total=False):
     display_max: int
     display_unit: str
     decode_quantum: int
+    encode_rounding: str
 
 
 class _ControlDomainBase(TypedDict):

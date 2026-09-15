@@ -87,6 +87,7 @@ VALID_CONTROL_QUANTIZATION = {
     "reject",
 }
 VALID_CONTROL_RESTORATION = {"exact", "unavailable"}
+VALID_CONTROL_ENCODE_ROUNDINGS = {"ceil", "nearest_half_down"}
 _CONTROL_KEYS = {
     "style",
     "range_min",
@@ -103,6 +104,7 @@ _CONTROL_KEYS = {
     "display_center",
     "display_unit",
     "decode_quantum",
+    "encode_rounding",
     "mapping",
     "quantization",
     "restoration",
@@ -360,6 +362,31 @@ def _parse_control_spec(
                     f"{prefix} decode domain has an exact half-step tie at raw "
                     f"{candidate}; declare a decode_quantum that avoids ties"
                 )
+    if "encode_rounding" in raw:
+        encode_rounding = raw["encode_rounding"]
+        if (
+            not isinstance(encode_rounding, str)
+            or encode_rounding not in VALID_CONTROL_ENCODE_ROUNDINGS
+        ):
+            raise RigLoadError(
+                f"{prefix}.encode_rounding must be one of "
+                f"{sorted(VALID_CONTROL_ENCODE_ROUNDINGS)!r}"
+            )
+        if set(raw) & _EXPLICIT_CONTROL_DOMAIN_KEYS:
+            raise RigLoadError(
+                f"{prefix}.encode_rounding is a legacy-band key and cannot be "
+                "combined with an explicit domain"
+            )
+        missing_band = [
+            key
+            for key in ("raw_min", "raw_max", "display_min", "display_max")
+            if key not in raw
+        ]
+        if missing_band:
+            raise RigLoadError(
+                f"{prefix}.encode_rounding requires the legacy band "
+                f"(raw_min/raw_max and display_min/display_max); missing {missing_band!r}"
+            )
 
     explicit = bool(set(raw) & _EXPLICIT_CONTROL_DOMAIN_KEYS)
     if not explicit:
