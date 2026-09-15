@@ -35,7 +35,7 @@ are separate implementation evidence; they were not produced by the audit.
 | `optional_without_acquisition` | local definition / rejection guard and diagnostic | loader validation | live |
 | `_STATE_ACQUISITION_CAPABILITY_KEYS` | definition 1 / parser validation 1 | state-acquisition loader | live |
 | IC-7610 13-path list | profile declaration / loader and scheduler projection | startup predicate; paths remain pollable | live |
-| `initial_acquisition_complete` | definition 1 / production calls 0 / test calls 6 | tests only | pre-existing deletion candidate |
+| `initial_acquisition_complete` | definition 1 / production calls 0 / test calls 6 | tests plus unknown external direct imports | pre-existing, undetermined |
 
 Definition sites are frozen at
 `rigs/ic7610.toml:269`,
@@ -50,12 +50,14 @@ remain unknowable.
 
 ## Deletions
 
-### D1 — pre-existing `initial_acquisition_complete` convenience method
+### D1 — pre-existing `initial_acquisition_complete`: undetermined
 
-Verdict:          dead, non-blocking and pre-existing
-Rank:             tests-only
+Verdict:          undetermined
 Elements:         `AcquisitionScheduler.initial_acquisition_complete`
 Consumers:        zero production calls; six direct test assertions
+Written / read:   one definition / six calls, established by literal `rg -n "initial_acquisition_complete" src tests`; the test-module description is not a call
+Guards checked:   literal and dynamic access searched; tests are the only in-repo consumers; `rigplane.core` is internal but out-of-repo direct imports cannot be disproved
+Collateral:       six test assertions and the `tests/test_startup_state_gate.py` module description would need removal with the helper
 Definition site:  `src/rigplane/core/acquisition_scheduler.py:1087-1098`
 Divergence:       delegates directly to `unobserved_startup_paths`
 Prior ruling:     none found
@@ -64,8 +66,8 @@ Required surface: tests can call the canonical predicate directly
 Depends on:       possible external direct import, which is not provable in-repo
 Confidence:       medium
 Falsifier:        a runtime or supported external consumer
-Fix class:        separate cleanup
-Actionable:       no for this PR; it was not introduced or worsened here
+Fix class:        none while the external-consumer guard is unresolved
+Actionable:       no; the failed guard requires an owner decision before deletion
 
 No delta-added dead runtime code or stale session-deferral documentation
 remains.
@@ -97,12 +99,12 @@ claiming that all pre-session queries are suppressed.
 ### F1 — startup admission belongs to `FieldCapability`
 
 Verdict:          C
-Rank:             primary
+Rank:             parallel
 Elements:         `startup_optional`; `FieldCapability.startup_required`; `AcquisitionScheduler.unobserved_startup_paths`
 Consumers:        loader writes the field; serializer preserves it; scheduler reads it; startup gate calls the scheduler
 Definition site:  `rigs/ic7610.toml:269`; `state_acquisition_policy.py:420-538`; `rig_loader.py:1679-1794`; `acquisition_scheduler.py:1047-1098`
 Divergence:       none; all 13 optional paths are exactly the 13 IC-7610 `scope_controls.global.display.*` polling paths
-Prior ruling:     compatible with R36b's single startup gate
+Prior ruling:     "the web server serves only after the initial poll has completed" — 2026-09-08, owner ruling R36b at `139fc933`; the new profile exception keeps that single gate
 In-flight:        initial sweep, cadence polling, and post-`EnableScope` hydration remain distinct lifecycle mechanisms
 Required surface: capability metadata; an `AcquisitionPolicy` placement would duplicate declarations for pollable paths without explicit policy entries
 Depends on:       neither `available_when` nor a WebServer model-specific exception
@@ -114,7 +116,7 @@ Actionable:       no — one owner and one startup-admission consumer exist
 ### F2 — serialization is backward-compatible in-repository
 
 Verdict:          already-shared
-Rank:             secondary
+Rank:             parallel
 Elements:         additive `startupRequired` model key; strict bool validation; missing-key default
 Consumers:        `FieldCapability.to_dict`; `FieldCapability.from_dict`; loader-created profiles; scheduler runtime
 Definition site:  `src/rigplane/core/state_acquisition_policy.py:420-538`
