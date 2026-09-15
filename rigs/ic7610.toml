@@ -266,6 +266,21 @@ polling_only = [
     "scope_controls.global.display.fixed_edge",
     "scope_controls.global.display.rbw",
 ]
+startup_optional = [
+    "scope_controls.global.display.receiver",
+    "scope_controls.global.display.dual",
+    "scope_controls.global.display.mode",
+    "scope_controls.global.display.span",
+    "scope_controls.global.display.edge",
+    "scope_controls.global.display.hold",
+    "scope_controls.global.display.ref_db",
+    "scope_controls.global.display.speed",
+    "scope_controls.global.display.during_tx",
+    "scope_controls.global.display.center_type",
+    "scope_controls.global.display.vbw_narrow",
+    "scope_controls.global.display.fixed_edge",
+    "scope_controls.global.display.rbw",
+]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
     "global.meters.power",

@@ -1521,6 +1521,7 @@ _STATE_ACQUISITION_CAPABILITY_KEYS = frozenset(
         "polling_only",
         "stream_like_meters",
         "command_response_observable",
+        "startup_optional",
         "supported_controls",
         "unsupported",
         "unknown",
@@ -1718,6 +1719,24 @@ def _parse_state_acquisition(
             caps_raw.get("command_response_observable"),
         )
     )
+    startup_optional = set(
+        _state_path_list(
+            filename,
+            f"{section}.startup_optional",
+            caps_raw.get("startup_optional"),
+        )
+    )
+    optional_without_acquisition = startup_optional - (
+        unsolicited | polling | stream | command_response
+    )
+    if optional_without_acquisition:
+        formatted = ", ".join(
+            str(path) for path in sorted(optional_without_acquisition, key=str)
+        )
+        raise RigLoadError(
+            f"{filename}: {section}.startup_optional paths must also be "
+            f"declared acquisitive: {formatted}"
+        )
     supported_controls = set(
         _state_path_list(
             filename,
@@ -1739,6 +1758,7 @@ def _parse_state_acquisition(
         | polling
         | stream
         | command_response
+        | startup_optional
         | supported_controls
         | unsupported
         | unknown
@@ -1762,6 +1782,7 @@ def _parse_state_acquisition(
                     polling=path in polling or path in stream,
                     stream_like=path in stream,
                     command_response_observable=path in command_response,
+                    startup_required=path not in startup_optional,
                     supported_controls=(
                         ("profile_control",) if path in supported_controls else ()
                     ),

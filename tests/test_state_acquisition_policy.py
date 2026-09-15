@@ -302,6 +302,9 @@ def test_schema_from_dict_rejects_unknown_and_coerced_values() -> None:
     with pytest.raises(ValueError, match="polling must be a bool"):
         FieldCapability.from_dict({"path": freq, "polling": "false"})
 
+    with pytest.raises(ValueError, match="startupRequired must be a bool"):
+        FieldCapability.from_dict({"path": freq, "startupRequired": "false"})
+
     with pytest.raises(
         ValueError, match="supportedControls must be a sequence of strings"
     ):
@@ -348,6 +351,24 @@ def test_acquisition_policy_tx_only_defaults_false_and_round_trips() -> None:
     restored = AcquisitionPolicy.from_dict(payload)
     assert restored == tx_only_policy
     assert restored.tx_only is True
+
+
+def test_field_capability_startup_required_defaults_true_and_round_trips() -> None:
+    path = FieldPath.global_("slow_state", "scope_mode")
+
+    default_capability = FieldCapability(path=path)
+    assert default_capability.startup_required is True
+
+    startup_optional = FieldCapability(
+        path=path,
+        polling=True,
+        startup_required=False,
+    )
+    payload = json.loads(json.dumps(startup_optional.to_dict()))
+    assert payload["startupRequired"] is False
+    restored = FieldCapability.from_dict(payload)
+    assert restored == startup_optional
+    assert restored.startup_required is False
 
 
 def test_field_capability_direct_construction_rejects_coerced_controls() -> None:
@@ -494,6 +515,47 @@ def test_loader_parses_tx_only_field_policy_flag(tmp_path: Path) -> None:
     # A path with no field_policies override must not silently inherit
     # tx_only=True from some other field's override.
     assert policy.default_policy.tx_only is False
+
+
+def test_loader_parses_startup_optional_capability(tmp_path: Path) -> None:
+    path_text = "scope_controls.global.display.mode"
+    toml = _minimal_state_acquisition_toml(
+        f"""
+        [state_acquisition]
+        provider = "icom_civ"
+
+        [state_acquisition.capabilities]
+        polling_only = ["{path_text}"]
+        startup_optional = ["{path_text}"]
+        """
+    )
+
+    profile = load_rig(_write_toml(tmp_path, toml)).to_profile()
+    acquisition = profile.state_acquisition
+    path = FieldPath.parse(path_text)
+
+    assert acquisition is not None
+    capability = acquisition.capability_for(path)
+    assert capability.polling is True
+    assert capability.startup_required is False
+
+
+def test_loader_rejects_startup_optional_path_without_acquisition_route(
+    tmp_path: Path,
+) -> None:
+    path_text = "scope_controls.global.display.mode"
+    toml = _minimal_state_acquisition_toml(
+        f"""
+        [state_acquisition]
+        provider = "icom_civ"
+
+        [state_acquisition.capabilities]
+        startup_optional = ["{path_text}"]
+        """
+    )
+
+    with pytest.raises(RigLoadError, match="must also be declared acquisitive"):
+        load_rig(_write_toml(tmp_path, toml))
 
 
 def test_loader_rejects_polling_unsupported_fields(tmp_path: Path) -> None:

@@ -17,6 +17,7 @@ import pytest
 
 from rigplane.command_map import CommandMap
 from rigplane.core.capabilities import CAP_SPEECH, KNOWN_CAPABILITIES
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.profiles import (
     BandInfo,
     ControlSpec,
@@ -531,6 +532,37 @@ labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
         """MOR-2467: the IC-7610's concentric RF/SQL knob is declared combined."""
         rig = load_rig(RIGS_DIR / "ic7610.toml")
         assert rig.rf_sql_control_model == "combined"
+
+    def test_ic7610_marks_scope_controls_startup_optional(self):
+        rig = load_rig(RIGS_DIR / "ic7610.toml")
+        acquisition = rig.to_profile().state_acquisition
+        assert acquisition is not None
+        expected = {
+            FieldPath.parse(f"scope_controls.global.display.{name}")
+            for name in (
+                "receiver",
+                "dual",
+                "mode",
+                "span",
+                "edge",
+                "hold",
+                "ref_db",
+                "speed",
+                "during_tx",
+                "center_type",
+                "vbw_narrow",
+                "fixed_edge",
+                "rbw",
+            )
+        }
+        actual = {
+            capability.path
+            for capability in acquisition.capabilities
+            if not capability.startup_required
+        }
+
+        assert actual == expected
+        assert all(acquisition.capability_for(path).can_poll for path in expected)
 
     @pytest.mark.parametrize(
         ("name", "expected"),

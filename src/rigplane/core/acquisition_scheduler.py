@@ -1053,12 +1053,9 @@ class AcquisitionScheduler:
         """Return the declared paths the store has never seen, sorted by path.
 
         The domain is every pollable capability plus every explicit
-        ``field_policies`` key, minus two exclusions: the paths whose
-        resolved policy carries ``tx_only``, and the paths ``availability``
-        maps to ``False`` or ``None``. ``tx_only`` is read from the profile
-        (:attr:`AcquisitionPolicy.tx_only`), never from a list kept here;
-        :meth:`due_requests` gates those cadence groups on ``tx_active``, so
-        a caller that waited on them would be waiting for a transmission.
+        ``field_policies`` key, minus paths not required at startup, paths
+        whose resolved policy carries ``tx_only``, and paths
+        ``availability`` maps to ``False`` or ``None``.
 
         ``availability`` carries what :func:`resolve_available_when` made of
         each conditional field's declared clauses. A path it omits is
@@ -1079,6 +1076,7 @@ class AcquisitionScheduler:
                     path
                     for path in domain
                     if path not in observed
+                    and profile.capability_for(path).startup_required
                     and not profile.policy_for(path).tx_only
                     and availability.get(path, True) is True
                 ),
