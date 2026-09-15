@@ -415,6 +415,21 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
               || element.scrollWidth > element.clientWidth + 1)
             .map(element => element.className),
         })),
+        txPanelFeedback: await page.locator('[data-panel-id="semantic-rx-tx"]').evaluate(panel => {
+          const state = panel.querySelector<HTMLElement>('[data-testid="rx-tx-state"]')!;
+          const key = panel.querySelector<HTMLElement>('[data-testid="rx-tx-key"]')!;
+          const stateBox = state.getBoundingClientRect();
+          const keyStyle = getComputedStyle(key);
+          return {
+            stateSrOnly: state.classList.contains('sr-only'),
+            stateBox: { width: stateBox.width, height: stateBox.height },
+            keyActive: key.getAttribute('data-active'),
+            keyPressed: key.getAttribute('aria-pressed'),
+            keyOpacity: keyStyle.opacity,
+            keyBackground: keyStyle.backgroundColor,
+            keyShadow: keyStyle.boxShadow,
+          };
+        }),
         commands: await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
           .geometryCommands.filter(command => command.type === 'cmd')),
         overlay: null as null | {
@@ -489,6 +504,16 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       ]));
     }
     expect(unknown.vfoFacts.some(({ fact }) => fact === 'tx')).toBe(false);
+    expect(tx.txPanelFeedback).toMatchObject({
+      stateSrOnly: true,
+      keyActive: 'true',
+      keyPressed: 'true',
+      keyOpacity: '1',
+    });
+    expect(tx.txPanelFeedback.stateBox.width).toBeLessThanOrEqual(1);
+    expect(tx.txPanelFeedback.stateBox.height).toBeLessThanOrEqual(1);
+    expect(tx.txPanelFeedback.keyBackground).not.toBe('rgba(0, 0, 0, 0)');
+    expect(tx.txPanelFeedback.keyShadow).not.toBe('none');
     for (const result of [rx, tx, unknown]) {
       expect(result.topTx).toBe(0);
       expect(result.centerTx).toBe(0);
