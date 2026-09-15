@@ -624,27 +624,17 @@ describe('RadioLayout structure', () => {
 });
 
 describe('Band instrument placement', () => {
-  it.each([
-    ['desktop-v2', true],
-    ['sdr-test', false],
-  ] as const)('%s renders choice then entry exactly once', (skinId, independent) => {
+  it('sdr-test renders grouped choice then entry exactly once', () => {
     rt.state = structuredClone(stateFixture);
     rt.caps = structuredClone(capsFixture);
-    const t = mountLayout(skinId);
+    const t = mountLayout('sdr-test');
     const choices = t.querySelectorAll('[data-testid="band-choices"]');
     const entries = t.querySelectorAll('[data-testid="band-entry"]');
     const grid = t.querySelector('[data-testid="band-control-grid"]');
     expect(choices).toHaveLength(1);
     expect(entries).toHaveLength(1);
-    expect(grid !== null).toBe(independent);
-    if (independent) {
-      expect(grid?.querySelector('[data-field="bandChoice"] [data-testid="band-choices"]'))
-        .not.toBeNull();
-      expect(grid?.querySelector('[data-field="frequencyEntry"] [data-testid="band-entry"]'))
-        .not.toBeNull();
-    } else {
-      expect(t.querySelector('[data-field="frequencyEntry"]')).toBeNull();
-    }
+    expect(grid).toBeNull();
+    expect(t.querySelector('[data-field="frequencyEntry"]')).toBeNull();
     expect(choices[0]!.compareDocumentPosition(entries[0]!) & Node.DOCUMENT_POSITION_FOLLOWING)
       .toBeTruthy();
   });
@@ -658,7 +648,9 @@ describe('Band instrument placement', () => {
     expect([...upper!.querySelectorAll('.band-tab')].map((tab) => tab.textContent?.trim()))
       .toEqual(['HAM', 'LW/MW', 'SWL']);
     expect(upper!.querySelector('[data-testid="band-choices-compact"]')).not.toBeNull();
-    expect(t.querySelector('[data-testid="band-surface"]')).not.toBeNull();
+    expect(upper!.querySelector('[data-testid="band-entry"]')).not.toBeNull();
+    expect(t.querySelector('[data-testid="band-surface"]')).toBeNull();
+    expect(t.querySelector('[data-testid="band-control-grid"]')).toBeNull();
   });
 });
 

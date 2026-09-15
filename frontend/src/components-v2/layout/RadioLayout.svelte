@@ -144,7 +144,9 @@
   };
   function migrateStandardPanelPreferences(): void {
     if (!standardFaceAtMount || typeof localStorage === 'undefined') return;
-    const orderKeys = ['rigplane:panel-order', 'rigplane:right-panel-order'] as const;
+    const orderKeys = [
+      'rigplane:panel-order', 'rigplane:right-panel-order', 'rigplane:bottom-panel-order',
+    ] as const;
     const migratedIds = new Set<string>();
     for (const key of orderKeys) {
       try {
@@ -322,6 +324,11 @@
   // Reactive state + capabilities — via runtime
   let radioState = $derived(runtime.state);
   let caps = $derived(runtime.caps);
+  let directFrequencyEntrySupported = $derived(
+    caps?.capabilities.includes('vfo_freq_direct') === true
+      && caps.receivers === 1
+      && caps.vfoScheme === 'ab',
+  );
   // MOR-1235. The meters dock's TX chrome takes its truth from the App-owned
   // TX controller — the SAME source as the authoritative global lamp
   // (MOR-1008/MOR-1059) — and never from `radioState.ptt`, a command/readback
@@ -581,7 +588,7 @@
 
 {#snippet rfFrontEndFiniteLayout(rfFrontEndInstruments: RfFrontEndFiniteHandles)}
   <div class="rf-front-end-finite-grid">
-    <div class="rf-front-end-finite-seat" data-field="attenuator">{@render rfFrontEndInstruments.attenuator()}</div>
+    <div class="rf-front-end-finite-seat" data-field="attenuator">{@render rfFrontEndInstruments.attenuator(true)}</div>
     <div class="rf-front-end-finite-seat" data-field="preamp">{@render rfFrontEndInstruments.preamp()}</div>
     <div class="rf-front-end-finite-seat" data-field="digiSel">{@render rfFrontEndInstruments.digiSel()}</div>
     <div class="rf-front-end-finite-seat" data-field="ipPlus">{@render rfFrontEndInstruments.ipPlus()}</div>
@@ -592,7 +599,7 @@
   <div class="rx-audio-finite-grid">
     <div class="rx-audio-finite-seat" data-field="monitorMode">{@render rxAudioInstruments.monitorMode()}</div>
     {#if rxAudioInstruments.afLevelRow}<div class="rx-audio-finite-seat" data-field="afLevel">{@render rxAudioInstruments.afLevelRow()}</div>{/if}
-    {#if rxAudioInstruments.monitorStatus}<div class="rx-audio-finite-seat" data-field="monitorStatus">{@render rxAudioInstruments.monitorStatus()}</div>{/if}
+    {#if rxAudioInstruments.monitorStatus}<div class="rx-audio-finite-seat" data-field="monitorStatus"><div class="sr-only">{@render rxAudioInstruments.monitorStatus()}</div></div>{/if}
     <div class="rx-audio-finite-seat" data-field="routingFocus">{@render rxAudioInstruments.routingFocus()}</div>
     {#if rxAudioInstruments.routingSplitToggle}<div class="rx-audio-finite-seat" data-field="routingSplit">{@render rxAudioInstruments.routingSplitToggle()}</div>{/if}
     {#if rxAudioInstruments.mainGain}<div class="rx-audio-finite-seat" data-field="mainGain">{@render rxAudioInstruments.mainGain()}</div>{/if}
@@ -637,10 +644,10 @@
     </div>
   {:else}<div class="antenna-control-grid" data-testid="antenna-control-grid">
     <div class="antenna-control-seat" data-field="txPort">
-      {@render instruments.antennaInstruments.txPort()}
+      {@render instruments.antennaInstruments.txPort(true)}
     </div>
     <div class="antenna-control-seat" data-field="rxAnt">
-      {@render instruments.antennaInstruments.rxAnt()}
+      {@render instruments.antennaInstruments.rxAnt(true)}
     </div>
   </div>{/if}
   {#if runtime.caps?.antennas !== 1}<span class="sr-only" id={instruments.antennaLayout.blockedId} data-testid="antenna-blocked">
@@ -726,7 +733,8 @@
     <LeftSidebar
       hideTxPanel={semanticRxTx} {declared} dragOwner={owner} {showReset}
       semanticHamBands={instruments.bandInstruments?.bandChoice}
-      semanticFrequencyEntry={instruments.bandInstruments?.frequencyEntry}
+      semanticFrequencyEntry={directFrequencyEntrySupported
+        ? undefined : instruments.bandInstruments?.frequencyEntry}
     />
   </div>
   <div class="content-right">
@@ -1198,17 +1206,16 @@
   .standard-bottom-dock :global([data-panel-id='semantic-meters'] .collapsible-content) {
     min-height: 0; overflow: hidden;
   }
-  /* Standard keeps volatile authority diagnostics in the accessibility tree,
-     but out of the fixed operator surface so readback churn cannot reflow it. */
-  .desktop-control-face.standard-face :global([data-testid='rx-tx-target']),
-  .desktop-control-face.standard-face :global(.rx-tx-blocked),
-  .desktop-control-face.standard-face :global(.cw-keyer-sentence),
-  .desktop-control-face.standard-face :global([data-testid='rx-audio-monitor-status']) {
+  /* Standard keeps RX Audio's raw fallback/readiness text in the accessibility
+     tree, while the stable controls retain the visible operator contract. */
+  .desktop-control-face.standard-face :global([data-testid='rf-front-end-preamp-mutex-reason']),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-focus-value']),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-main-gain'] output),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-sub-gain'] output),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-mod-source']),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-mod-readiness']) {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
-  }
-  .desktop-control-face.standard-face :global(.rx-tx-state[data-rf='receiving']) {
-    display: none;
   }
   .dsp-finite-grid {
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;

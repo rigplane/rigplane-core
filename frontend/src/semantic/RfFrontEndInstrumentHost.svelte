@@ -528,7 +528,7 @@
           <output class="rf-front-end-unknown" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{rf.preamp.reading.status === 'known' ? preampChoiceText(rf.preamp.reading.value) : '?'}</output>
         {/if}
         {#if preMutex}
-          <p id={preampMutexId} class="sr-only" data-testid="rf-front-end-preamp-mutex-reason">{DISABLED_REASON_LABEL[preMutex.code]}</p>
+          <p id={preampMutexId} data-testid="rf-front-end-preamp-mutex-reason">{DISABLED_REASON_LABEL[preMutex.code]}</p>
         {/if}
         {#if pendingPreamp !== null}
           <span id={pendingPreampId} class="sr-only">{t('core.rfFrontEnd.preamp.pendingAnnouncement')}</span>
@@ -538,7 +538,7 @@
   {/if}
 {/snippet}
 
-{#snippet attenuator()}
+{#snippet attenuator(compact = false)}
   {#if rf?.attenuator.availability.structural}
     {#if finiteAppearance}
       {#key rendererContext}{#key finiteAppearance.choice}<ControlInstrumentRendererHost
@@ -546,17 +546,33 @@
       />{/key}{/key}
     {:else}
       <div
-        class="rf-front-end-row" aria-label="Attenuator"
+        class="rf-front-end-row" role={compact ? undefined : 'radiogroup'} aria-label="Attenuator"
         data-testid="rf-front-end-attenuator" data-observed={usable(rf.attenuator)}
       >
         <span class="rf-front-end-row-label">ATT</span>
-        <fieldset class="rf-front-end-att-control" disabled={!attenuatorBehavior.available}>
-          <AttenuatorControl
-            values={[...rf.attValues]}
-            selected={rf.attenuator.reading.status === 'known' ? rf.attenuator.reading.value : Number.NaN}
-            onchange={(value) => attenuatorBehavior.invoke(value)}
-          />
-        </fieldset>
+        {#if compact}
+          <fieldset class="rf-front-end-att-control" disabled={!attenuatorBehavior.available}>
+            <AttenuatorControl
+              values={[...rf.attValues]}
+              selected={rf.attenuator.reading.status === 'known' ? rf.attenuator.reading.value : Number.NaN}
+              onchange={(value) => attenuatorBehavior.invoke(value)}
+              testIdPrefix="rf-front-end-attenuator"
+              ariaLabel="Attenuator"
+            />
+          </fieldset>
+        {:else}
+          <div class="rf-front-end-choices">
+            {#each rf.attValues as value (value)}
+              <button
+                type="button" role="radio" class="rf-front-end-choice"
+                data-testid={`rf-front-end-attenuator-${value}`}
+                aria-checked={attenuatorBehavior.isSelected(value)}
+                disabled={!attenuatorBehavior.available}
+                onclick={() => attenuatorBehavior.invoke(value)}
+              >{attenuatorChoiceText(value)}</button>
+            {/each}
+          </div>
+        {/if}
         {#if rf.attenuator.reading.status === 'known' && rf.attValues.includes(rf.attenuator.reading.value)}
           <output class="sr-only" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{attenuatorChoiceText(rf.attenuator.reading.value)}</output>
         {:else}

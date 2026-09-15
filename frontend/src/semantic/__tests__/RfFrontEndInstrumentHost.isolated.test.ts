@@ -299,8 +299,6 @@ function renderFinite(view: RadioViewModel, overrides: FiniteOverrides = {}) {
   return {
     props,
     el: (id: string) => target.querySelector<HTMLElement>(`[data-testid="rf-front-end-${id}"]`),
-    att: (value: number) => [...target.querySelectorAll<HTMLButtonElement>('.att-control button')]
-      .find((button) => button.textContent?.trim() === (value === 0 ? 'OFF' : `${value}dB`)) ?? null,
     slot: (name: string) => target.querySelector<HTMLElement>(`[data-finite-slot="${name}"]`)!,
   };
 }
@@ -555,8 +553,8 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
     expect(r.el('preamp-0')?.textContent).toBe('OFF');
     expect(r.el('preamp-1')?.textContent).toBe('P1');
     expect(r.el('preamp-2')?.textContent).toBe('P2');
-    expect(r.att(0)?.textContent?.trim()).toBe('OFF');
-    expect(r.att(6)?.textContent?.trim()).toBe('6dB');
+    expect(r.el('attenuator-0')?.textContent).toBe('OFF');
+    expect(r.el('attenuator-6')?.textContent).toBe('6 dB');
   });
 
   it.each([0, 6, 12, 18] as const)(
@@ -564,7 +562,7 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
     (value) => {
       const onAttenuatorChange = vi.fn();
       const r = renderFinite(finiteBase(), { onAttenuatorChange });
-      r.att(value)!.click();
+      r.el(`attenuator-${value}`)!.click();
       flushSync();
       expect(onAttenuatorChange).toHaveBeenCalledExactlyOnceWith(value);
     },

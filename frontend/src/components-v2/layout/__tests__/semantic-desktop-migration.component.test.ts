@@ -2439,6 +2439,8 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     const upper = t.querySelector('.left-sidebar [data-panel-id="band"]');
     expect(texts(upper, '.band-tab')).toEqual(['HAM', 'LW/MW', 'SWL']);
     expect(upper?.querySelector('[data-testid="band-choices-compact"]')).not.toBeNull();
+    expect(upper?.querySelector('[data-testid="band-entry"]')).toBeNull();
+    expect(t.querySelectorAll('[data-testid="band-entry"]')).toHaveLength(0);
     expect(t.querySelector('[data-testid="band-surface"]')).toBeNull();
     expect(t.querySelector('[data-panel-id="semantic-band"]')).toBeNull();
 
@@ -2533,12 +2535,9 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     expect(t.querySelectorAll('[data-panel-id="semantic-tx-aux"]')).toHaveLength(0);
     const txPanel = t.querySelector('[data-panel-id="semantic-rx-tx"]')!;
     expect(txPanel.querySelector('[data-testid="tx-aux-surface"]')).toBeNull();
-    expect(txPanel.querySelector('[data-testid="rx-tx-state"]')).not.toBeNull();
-    expect(txPanel.querySelector('[data-testid="rx-tx-target"]')).not.toBeNull();
-    expect(txPanel.querySelector('[data-testid="rx-tx-blocked"]')).not.toBeNull();
-    expect(radioLayoutSource).toContain(":global(.rx-tx-state[data-rf='receiving'])");
-    expect(radioLayoutSource).toContain(":global([data-testid='rx-tx-target'])");
-    expect(radioLayoutSource).toContain(':global(.rx-tx-blocked)');
+    expect(txPanel.querySelector('[data-testid="rx-tx-state"]')?.classList.contains('sr-only')).toBe(true);
+    expect(txPanel.querySelector('[data-testid="rx-tx-target"]')?.classList.contains('sr-only')).toBe(true);
+    expect(txPanel.querySelector('[data-testid="rx-tx-blocked"]')?.classList.contains('sr-only')).toBe(true);
     expect(txPanel.querySelector('[aria-label="TX level settings"]')).toBeNull();
     expect(txPanel.querySelector('.standard-tx-levels')).toBeNull();
     const vox = txPanel.querySelector<HTMLButtonElement>('[aria-label="VOX settings"]')!;
@@ -2569,8 +2568,12 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     const rf = t.querySelector('[data-panel-id="semantic-rf-front-end"]')!;
     expect(texts(rf, '.att-control > .button-grid button')).toEqual(['OFF', '6dB', '12dB', '18dB']);
     expect(texts(rf, '.att-control > div:not(.button-grid) > button')).toEqual(['MORE']);
-    expect(rf.querySelector('[data-testid="rf-front-end-preamp-mutex-reason"]')
-      ?.classList.contains('sr-only')).toBe(true);
+    expect(rf.querySelector('[data-testid="rf-front-end-attenuator-0"]')?.getAttribute('aria-checked'))
+      .toBe('false');
+    expect(rf.querySelector('[data-testid="rf-front-end-attenuator-18"]')?.getAttribute('aria-checked'))
+      .toBe('true');
+    expect(radioLayoutSource)
+      .toContain(":global([data-testid='rf-front-end-preamp-mutex-reason'])");
 
     const antenna = t.querySelector('[data-panel-id="semantic-antenna"]')!;
     expect(antenna.querySelector('[data-testid="antenna-blocked"]')?.classList.contains('sr-only'))
@@ -2581,15 +2584,17 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
       .toBe('RX ANT');
 
     const rxAudio = t.querySelector('[data-panel-id="semantic-rx-audio"]')!;
-    expect(rxAudio.querySelector('[data-testid="rx-audio-monitor-status"]')).not.toBeNull();
-    expect(radioLayoutSource)
-      .toContain(":global([data-testid='rx-audio-monitor-status'])");
-    expect(rxAudio.querySelector('[data-testid="rx-audio-main-gain"]')).toBeNull();
-    expect(rxAudio.querySelector('[data-testid="rx-audio-sub-gain"]')).toBeNull();
+    expect(rxAudio.querySelector('[data-testid="rx-audio-monitor-status"]')?.closest('.sr-only'))
+      .not.toBeNull();
+    expect(rxAudio.querySelector('[data-testid="rx-audio-main-gain"]')).not.toBeNull();
+    expect(rxAudio.querySelector('[data-testid="rx-audio-sub-gain"]')).not.toBeNull();
+    expect(radioLayoutSource).toContain(":global([data-testid='rx-audio-main-gain'] output)");
 
     const cw = t.querySelector('[data-panel-id="semantic-cw"]')!;
-    expect(cw.querySelector('[data-testid="cw-keyer-posture"]')).not.toBeNull();
-    expect(radioLayoutSource).toContain(':global(.cw-keyer-sentence)');
+    expect(cw.querySelector('[data-testid="cw-keyer-posture"]')?.closest('p')
+      ?.classList.contains('sr-only')).toBe(true);
+    expect(cw.querySelector('[data-testid="cw-keyer-break-in-semi"]')?.getAttribute('aria-describedby'))
+      .toContain('-posture');
   });
 
   it('migrates combined and legacy panel preferences without appending duplicates', () => {
@@ -2599,6 +2604,12 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     localStorage.setItem('rigplane:panel-collapsed', JSON.stringify({
       'semantic-rit-xit-scan': true, 'semantic-band': true, agc: true,
     }));
+    localStorage.setItem('rigplane:bottom-panel-order', JSON.stringify([
+      'semantic-meters', 'semantic-band',
+    ]));
+    localStorage.setItem('rigplane:bottom-panel-order:known-defaults', JSON.stringify([
+      'semantic-meters', 'semantic-band',
+    ]));
     renderAll('desktop-v2');
     expect(JSON.parse(localStorage.getItem('rigplane:panel-order')!)).toEqual([
       'semantic-rf-front-end', 'semantic-rit-xit', 'semantic-scan', 'semantic-agc', 'band',
@@ -2609,6 +2620,13 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     });
     expect(JSON.parse(localStorage.getItem('rigplane:panel-collapsed')!))
       .not.toHaveProperty('semantic-band');
+    expect(JSON.parse(localStorage.getItem('rigplane:bottom-panel-order')!))
+      .toEqual(['semantic-meters']);
+    const bottomKnownDefaults = JSON.parse(
+      localStorage.getItem('rigplane:bottom-panel-order:known-defaults')!,
+    );
+    expect(bottomKnownDefaults).toContain('semantic-meters');
+    expect(bottomKnownDefaults).not.toContain('semantic-band');
   });
 
   it('keeps a one-port antenna panel descriptive and non-interactive', () => {

@@ -463,19 +463,15 @@ describe('L1 hosted desktop TX auxiliary composition', () => {
     txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     renderHostedDesktop();
     const zone = q('[data-zone-id="rx-tx"]');
-    const remainder = q('[data-testid="tx-aux-surface"]');
     const finiteGrid = q('.standard-tx-button-grid');
-    const reasons = q('[data-testid="tx-aux-tune-blocked"]');
 
     expect(target.querySelectorAll('[data-zone-id="tx-aux"]')).toHaveLength(0);
     expect(target.querySelectorAll('[data-zone-id="rx-tx"]')).toHaveLength(1);
-    expect(target.querySelectorAll('[data-testid="tx-aux-surface"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="tx-aux-surface"]')).toHaveLength(0);
     expect(zone).not.toBeNull();
-    expect(remainder?.closest('[data-zone-id="rx-tx"]')).toBe(zone);
     expect(finiteGrid?.closest('[data-zone-id="rx-tx"]')).toBe(zone);
     expect(finiteGrid?.querySelectorAll(':scope > [data-field]')).toHaveLength(5);
-    expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(1);
-    expect(reasons?.querySelectorAll('[data-reason]')).toHaveLength(2);
+    expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(0);
     for (const [field, testid] of [
       ['atu', 'tx-aux-atu'], ['vox', 'tx-aux-vox'], ['compressor', 'tx-aux-compressor'],
       ['monitor', 'tx-aux-monitor'], ['atuTune', 'tx-aux-atu-tune'],
@@ -506,7 +502,7 @@ describe('L1 hosted desktop TX auxiliary composition', () => {
       }
     }
 
-    expect(remainder?.querySelector('[data-testid="standard-tx-settings-popover"]')).toBeNull();
+    expect(target.querySelectorAll('[data-testid="standard-tx-settings-popover"]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-testid="tx-aux-atu-tune"]')).toHaveLength(1);
     expect(target.querySelectorAll('.tx-aux-toggle')).toHaveLength(4);
   });
@@ -700,17 +696,15 @@ describe('hosted Standard VFO operation instruments', () => {
 });
 
 describe('selected finite TX auxiliary authority lifetime', () => {
-  it('keeps one external Standard reason list outside the scalar overlay', async () => {
+  it('does not add a duplicate Standard reason surface beside the scalar overlay', async () => {
     h.selectedFiniteAppearance = finiteAppearance;
     txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     renderHostedDesktop();
     q<HTMLButtonElement>('[aria-label="MIC GAIN settings"]')!.click();
     await tick();
-    const reasons = q('[data-testid="tx-aux-tune-blocked"]')!;
     expect(q('[data-testid="external-TUNE"]')).not.toBeNull();
-    expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(1);
-    expect(q('[data-testid="standard-tx-settings-popover"]')!.compareDocumentPosition(reasons)
-      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(0);
+    expect(q('[data-testid="standard-tx-settings-popover"]')).not.toBeNull();
   });
 
   it('keeps the selected external appearance inert when authority is absent', () => {

@@ -51,7 +51,10 @@
     readonly session: { readonly state: 'disconnected' | 'connecting' | 'connected' | 'reconnecting'; readonly epoch: number };
   }
   export type SubscribeAntennaAuthority = (handler: (value: AntennaAuthorityPublication) => void) => () => void;
-  export interface AntennaInstrumentHandles { readonly txPort: Snippet; readonly rxAnt: Snippet }
+  export interface AntennaInstrumentHandles {
+    readonly txPort: Snippet<[compact?: boolean]>;
+    readonly rxAnt: Snippet<[compact?: boolean]>;
+  }
   export interface AntennaInstrumentLayout {
     readonly blockedId: string;
     readonly blocked: readonly AntennaSwitchBlock[];
@@ -138,7 +141,7 @@
   });
 </script>
 
-{#snippet txPort()}
+{#snippet txPort(compact = false)}
   {#if ant}
     {#key context}{#key finiteAppearance?.choice}
       {#if finiteAppearance}
@@ -154,13 +157,13 @@
               aria-checked={lease.view?.selected === port} aria-describedby={layout.blockedId}
               disabled={!lease.view?.available} onclick={() => lease.invoke(port)}>ANT {port}</button>
           {/each}
-          <output class="sr-only" data-testid="antenna-port-value">{textOf(ant.txAntenna)}</output>
+          <output class:sr-only={compact} data-testid="antenna-port-value">{textOf(ant.txAntenna)}</output>
         </div>
       {/if}
     {/key}{/key}
   {/if}
 {/snippet}
-{#snippet rxAnt()}
+{#snippet rxAnt(compact = false)}
   {#if ant?.rxAnt.availability.structural}
     {#key context}{#key finiteAppearance?.toggle}
       {#if finiteAppearance}
@@ -172,8 +175,8 @@
           <button type="button" class="antenna-choice" data-testid="antenna-rx-toggle"
             aria-pressed={lease.view?.confirmed} aria-describedby={layout.blockedId}
             disabled={!lease.view?.available} onclick={() => lease.invoke()}>
-            RX ANT</button>
-          <output class="sr-only" data-testid="antenna-rx-value">{textOf(ant.rxAnt)}</output>
+            {compact ? 'RX ANT' : `RX-ANT: ${textOf(ant.rxAnt)}`}</button>
+          {#if compact}<output class="sr-only" data-testid="antenna-rx-value">{textOf(ant.rxAnt)}</output>{/if}
         </div>
       {/if}
     {/key}{/key}

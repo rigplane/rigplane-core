@@ -60,7 +60,7 @@ export type RfFrontEndInstrumentPresentation = Readonly<
  *  level shape is active. */
 export interface RfFrontEndFiniteHandles {
   readonly preamp: Snippet;
-  readonly attenuator: Snippet;
+  readonly attenuator: Snippet<[compact?: boolean]>;
   readonly digiSel: Snippet;
   readonly ipPlus: Snippet;
 }
