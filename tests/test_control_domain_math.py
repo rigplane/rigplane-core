@@ -20,6 +20,7 @@ from rigplane.profiles.control_domain import (
     decode_control_domain,
     decode_legacy_control,
     encode_control_domain,
+    encode_legacy_control,
     quantize_control_domain,
     snap_control_domain,
 )
@@ -1097,3 +1098,88 @@ def test_loader_rejects_a_legacy_domain_with_an_exact_half_tie() -> None:
     }
     with pytest.raises(RigLoadError, match="tie"):
         _parse_control_spec("rigs/synthetic.toml", "cw_pitch", tie)
+
+
+# -- Legacy rational encode (MOR-2473 write path, MOR-2481 encode half) --------
+
+
+def test_legacy_encode_applies_the_declared_rounding_rule() -> None:
+    ceil_controls = {
+        "cw_pitch": {
+            "raw_min": 0,
+            "raw_max": 255,
+            "display_min": 300,
+            "display_max": 900,
+            "encode_rounding": "ceil",
+        }
+    }
+    # ceil((display - 300) * 255 / 600): 300 -> 0, 301 -> 1 (255/600 rounds
+    # up from 0.425), 305 -> 3 (2.125), 600 -> 128 (an exact half, up under
+    # ceil), 900 -> 255.
+    assert encode_legacy_control(ceil_controls, "cw_pitch", 300) == 0
+    assert encode_legacy_control(ceil_controls, "cw_pitch", 301) == 1
+    assert encode_legacy_control(ceil_controls, "cw_pitch", 305) == 3
+    assert encode_legacy_control(ceil_controls, "cw_pitch", 600) == 128
+    assert encode_legacy_control(ceil_controls, "cw_pitch", 900) == 255
+
+    controls = {
+        "key_speed": {
+            "raw_min": 0,
+            "raw_max": 255,
+            "display_min": 6,
+            "display_max": 48,
+            "encode_rounding": "nearest_half_down",
+        }
+    }
+    # nearest((wpm - 6) * 255 / 42) with exact halves down: 6 -> 0, 7 -> 6
+    # (6.071...), 48 -> 255, and the three exact ties in range -- 13 WPM
+    # (85/2), 27 WPM (255/2), 41 WPM (425/2) -- all round down.
+    assert encode_legacy_control(controls, "key_speed", 6) == 0
+    assert encode_legacy_control(controls, "key_speed", 7) == 6
+    assert encode_legacy_control(controls, "key_speed", 48) == 255
+    assert encode_legacy_control(controls, "key_speed", 13) == 42
+    assert encode_legacy_control(controls, "key_speed", 27) == 127
+    assert encode_legacy_control(controls, "key_speed", 41) == 212
+
+
+def test_legacy_encode_fails_closed_when_the_control_is_missing_or_rounding_is_absent() -> (
+    None
+):
+    no_rounding = {
+        "raw_min": 0,
+        "raw_max": 255,
+        "display_min": 300,
+        "display_max": 900,
+        "decode_quantum": 5,
+    }
+    with pytest.raises(ValueError, match="cw_pitch"):
+        encode_legacy_control({"cw_pitch": no_rounding}, "cw_pitch", 600)
+    with pytest.raises(ValueError, match="key_speed"):
+        encode_legacy_control(None, "key_speed", 30)
+    with pytest.raises(ValueError, match="cw_pitch"):
+        encode_legacy_control({}, "cw_pitch", 600)
+    with pytest.raises(ValueError, match="cw_pitch"):
+        encode_legacy_control({"cw_pitch": 7}, "cw_pitch", 600)
+    undeclared_mode = dict(no_rounding, encode_rounding="floor")
+    with pytest.raises(ValueError, match="cw_pitch"):
+        encode_legacy_control({"cw_pitch": undeclared_mode}, "cw_pitch", 600)
+
+
+def test_legacy_encode_rejects_out_of_band_and_non_integer_display() -> None:
+    controls = {
+        "cw_pitch": {
+            "raw_min": 0,
+            "raw_max": 255,
+            "display_min": 300,
+            "display_max": 900,
+            "encode_rounding": "ceil",
+        }
+    }
+    with pytest.raises(ValueError, match="300-900"):
+        encode_legacy_control(controls, "cw_pitch", 299)
+    with pytest.raises(ValueError, match="300-900"):
+        encode_legacy_control(controls, "cw_pitch", 901)
+    with pytest.raises(ValueError, match="cw_pitch"):
+        encode_legacy_control(controls, "cw_pitch", 600.5)
+    with pytest.raises(ValueError, match="cw_pitch"):
+        encode_legacy_control(controls, "cw_pitch", True)
