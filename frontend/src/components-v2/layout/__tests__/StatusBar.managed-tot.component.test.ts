@@ -19,6 +19,7 @@ vi.mock('$lib/stores/connection.svelte', () => ({
 }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasAnyScope: vi.fn(() => false), hasAudio: vi.fn(() => false), hasSpectrum: vi.fn(() => false),
+  hasCapability: vi.fn(() => false),
 }));
 vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: vi.fn(() => 'standard'), setLayoutMode: vi.fn() }));
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({ getActiveFrequencyHz: vi.fn(() => null) }));
