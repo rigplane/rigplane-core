@@ -2719,6 +2719,12 @@ class RigctldHandler:
             )
 
         if level == "RFPOWER":
+            # Hamlib publishes RFPOWER on the normalized 0.0-1.0 domain; an
+            # out-of-range client value (``L RFPOWER 1.5``) answers EINVAL
+            # here with no radio call instead of scaling to an off-band raw
+            # level (MOR-2480).
+            if not 0.0 <= value <= 1.0:
+                return HamlibError.EINVAL
             await self._radio.set_rf_power(round(value * 255))
             return HamlibError.OK
 

@@ -2329,7 +2329,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         Args:
             level: Power level 0-255.
         """
+        if not 0 <= level <= 255:
+            raise ValueError(f"RF power must be 0-255, got {level}")
         self._check_connected()
+        self._require_capability("power_control", operation="set_rf_power")
         civ = self._commands.set_rf_power(level, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
         self._last_power = level
