@@ -200,7 +200,7 @@ For LAN-only scripts you can still use `IcomRadio(host, radio_addr=get_civ_addr(
 If you've changed your radio's CI-V address in the menu, specify it explicitly in the backend config:
 
 ```python
-config = LanBackendConfig(host="192.168.1.100", username="u", password="p", radio_addr=0x42)
+config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610", radio_addr=0x42)
 async with create_radio(config) as radio:
     ...
 ```

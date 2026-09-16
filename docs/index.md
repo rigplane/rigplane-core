@@ -121,7 +121,7 @@ import asyncio
 from rigplane import create_radio, LanBackendConfig
 
 async def main():
-    config = LanBackendConfig(host="192.168.1.100", username="user", password="pass")
+    config = LanBackendConfig(host="192.168.1.100", username="user", password="pass", model="IC-7610")
     async with create_radio(config) as radio:
         freq = await radio.get_frequency()
         print(f"{freq / 1e6:.3f} MHz")
