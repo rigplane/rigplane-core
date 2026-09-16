@@ -16,7 +16,6 @@ import type { Capabilities, ControlDomain, FilterModeConfig } from '$lib/types/c
 import {
   controlDisplayDomain,
   deriveIfShift,
-  nbDepthRawToDisplay,
   nrRawToDisplay,
   pbtRangeFromCaps,
   pbtRawToHz,
@@ -703,6 +702,12 @@ export function toDspProps(
   const nbLevelPercent = nbLevelRange !== null;
   const nbLevelMax = nbLevelRange?.raw_max ?? 10;
   const { notchFreq, notchFreqDomain } = manualNotchReading(state, caps);
+  // MOR-498: the store holds the wire value (IC-7610 raw 0-9, display 1-10);
+  // the conversion comes from the published `controls.nb_depth` domain
+  // through the shared contract. A radio publishing none (the `hasNbDepth`
+  // gate below already hides the control) resolves to the empty contract and
+  // gets no fabricated 1-10 reading.
+  const nbDepthContract = resolveControlContract(caps, 'nb_depth');
   return {
     nrMode: rx?.nr ? 1 : 0,
     // MOR-490: store holds the raw 0-255 wire value; the slider is 0-15.
@@ -710,8 +715,7 @@ export function toDspProps(
     nrLevelProjection: projectNrLevel(caps, rx?.nrLevel, nrLevelAvailable),
     nbActive: rx?.nb ?? false,
     nbLevel: rx?.nbLevel ?? 0,
-    // MOR-498: store holds the 0-9 wire value; the slider is 1-10.
-    nbDepth: nbDepthRawToDisplay(state?.nbDepth ?? 0),
+    nbDepth: nbDepthContract.rawToDisplay(state?.nbDepth ?? 0) ?? 0,
     nbWidth: state?.nbWidth ?? 0,
     notchMode,
     // notchFilter (MOR-1548): reclassified receiver-scoped.

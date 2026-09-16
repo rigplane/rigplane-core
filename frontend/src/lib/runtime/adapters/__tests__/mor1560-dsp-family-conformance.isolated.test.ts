@@ -27,10 +27,9 @@
  * inputs from that domain — proving the refusal holds across the whole
  * range, not just one lucky value. The remaining 7 have NO declared range
  * on this profile (verified via `expect(...controls.X).toBeUndefined()`
- * below) — those get one representative case, using either the profile's
- * own generic fallback range (`controlRangeFromCapsOrDefault`, the same
- * fallback production code would apply, not a test-invented number) or the
- * fixture's own captured value for that leaf.
+ * below) — those get one representative case each, using either the one
+ * published `nb_depth` domain any profile ships (`rigs/ic7610.toml`,
+ * display 1-10) or the fixture's own captured value for that leaf.
  *
  * RED-FIRST EVIDENCE (MOR-1560 build process, not part of this diff): the
  * first case below (`set_nr_level`) was authored as
@@ -120,21 +119,22 @@ describe('IC-7300 fixture — DSP family conformance (MOR-1560)', () => {
     }
   });
 
-  describe('set_nb_depth — no declared range on this profile; boundary walk over the generic fallback', () => {
+  describe('set_nb_depth — no declared range on this profile; refused before any value is examined', () => {
     // This profile's `capabilities.controls` has NO `nb_depth` entry at
     // all — verified below — so `onNbDepthChange`'s OWN capability gate
     // (`getCapabilities()?.controls?.nb_depth`) already refuses before any
-    // value is examined. The walked domain is the same generic
-    // `CONTROL_DEFAULTS.nb_depth` fallback `nbDepthDisplayToRaw` would use
-    // if the gate ever passed — not a number invented for this test.
-    const { displayMin, displayMax } = controlRangeFromCapsOrDefault('nb_depth', IC7300_CAPABILITIES);
-    const mid = Math.round((displayMin + displayMax) / 2);
+    // value is examined, and there is no generic fallback domain left to
+    // walk (MOR-2475 deleted `CONTROL_DEFAULTS.nb_depth`). The walked
+    // levels are the endpoints and midpoint of the one published nb_depth
+    // domain any profile ships (`rigs/ic7610.toml`, display 1-10) — any
+    // value would do, since the refusal precedes the conversion.
+    const levels = [1, 6, 10];
 
     it('nb_depth is not a declared control on this profile', () => {
       expect(IC7300_CAPABILITIES.controls?.nb_depth).toBeUndefined();
     });
 
-    for (const level of [displayMin, mid, displayMax]) {
+    for (const level of levels) {
       it(`level=${level}: REFUSES — nb_depth is not a declared control on this profile`, () => {
         expectRefusal(() => makeDspHandlers().onNbDepthChange(level));
       });

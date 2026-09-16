@@ -116,8 +116,10 @@ export function pbtHzToRaw(hz: number, range?: PbtRange): number {
 // Some IC-7610 controls expose a CI-V wire value on a different scale than the
 // front-panel / slider display (e.g. NR level wire 0-255 vs display 0-15; NB
 // depth wire 0-9 vs display 1-10).  Read the range from capabilities if
-// available, falling back to a per-control default so the helper stays correct
-// in tests and before a server restart (stale capabilities).
+// available.  A per-control default remains only where a legacy scale predates
+// published control domains (`nr_level`); every other control resolves through
+// `resolveControlContract` and has no value at all when the radio publishes
+// none.
 //
 // NOTE: when the wire scale is wider than the display scale the mapping
 // quantises wire steps onto fewer physical steps, so individual steps may need
@@ -131,7 +133,6 @@ type ControlRange = {
 
 const CONTROL_DEFAULTS: Record<string, ControlRange> = {
   nr_level: { rawMin: 0, rawMax: 255, displayMin: 0, displayMax: 15 },
-  nb_depth: { rawMin: 0, rawMax: 9, displayMin: 1, displayMax: 10 },
 };
 
 function controlRange(key: string, fallback: ControlRange): ControlRange {
@@ -212,7 +213,7 @@ type ControlSpec = Readonly<{
 const CONTROL_SPECS: Readonly<Record<ControlDomainKey, ControlSpec>> = {
   nr_level: { capability: 'nr', defaults: CONTROL_DEFAULTS.nr_level },
   manual_notch_freq: { capability: null, defaults: null },
-  nb_depth: { capability: null, defaults: CONTROL_DEFAULTS.nb_depth },
+  nb_depth: { capability: null, defaults: null },
 };
 
 const nrLevelContracts = new WeakMap<ControlDisplayRange, NrLevelContract>();
@@ -401,7 +402,7 @@ function legacyControlContract(
  * decoded and encoded through `control-domain.ts`; a legacy band keeps this
  * module's proportional conversion; an entry the radio does not publish
  * resolves to the empty contract, or to that control's own legacy default
- * where one exists (NR level, NB depth).
+ * where one exists (NR level).
  */
 export function resolveControlContract(
   caps: Capabilities | null | undefined,
@@ -517,7 +518,7 @@ export function controlRangeFromCaps(
  * way, so passing its result as `range` never reaches the store — the
  * conversion becomes a pure function of `(raw, caps)` with no residual
  * dependency. Only defined for keys with a `CONTROL_DEFAULTS` entry
- * (`nr_level`, `nb_depth` today); throws for any other key so a typo fails
+ * (`nr_level` today); throws for any other key so a typo fails
  * loudly rather than silently degrading to `undefined` mid-computation.
  */
 export function controlRangeFromCapsOrDefault(
@@ -578,17 +579,6 @@ export function nrRawToDisplay(raw: number, range?: ControlDisplayRange): number
   const contract = range ? nrLevelContracts.get(range) : undefined;
   if (contract) return contract.rawToDisplay(raw) ?? undefined;
   return controlRawToDisplay('nr_level', raw, CONTROL_DEFAULTS.nr_level, range);
-}
-
-/** Convert a raw 0-9 NB-depth wire value to the 1-10 display value. `range`
- *  (MOR-1290) is strictly additive — see `controlRawToDisplay`. */
-export function nbDepthRawToDisplay(raw: number, range?: ControlDisplayRange): number {
-  return controlRawToDisplay('nb_depth', raw, CONTROL_DEFAULTS.nb_depth, range);
-}
-
-/** Convert a 1-10 display value to the raw 0-9 NB-depth wire value. */
-export function nbDepthDisplayToRaw(display: number): number {
-  return controlDisplayToRaw('nb_depth', display, CONTROL_DEFAULTS.nb_depth);
 }
 
 function clampToBipolarRange(value: number): number {

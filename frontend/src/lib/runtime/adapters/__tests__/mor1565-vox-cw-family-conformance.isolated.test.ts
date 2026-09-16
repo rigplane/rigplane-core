@@ -74,8 +74,8 @@
  * `set_vox_gain`/`set_anti_vox_gain`/`set_key_speed`/`set_break_in_delay`
  * have NO declared range in this profile's `caps.controls` (verified via
  * `toBeUndefined()` below) and no `CONTROL_DEFAULTS` entry either (that
- * table only covers `nr_level`/`nb_depth` — `filter-controls.ts:122-125` —
- * so `controlRangeFromCapsOrDefault` would throw for these keys) — each is
+ * table only covers `nr_level` — so `controlRangeFromCapsOrDefault` would
+ * throw for these keys) — each is
  * walked at its own PRODUCTION fallback domain instead, read directly off
  * the real slider markup:
  * `VoxPanel.svelte` (`onVoxGainChange`/`onAntiVoxGainChange`: min=0 max=255;

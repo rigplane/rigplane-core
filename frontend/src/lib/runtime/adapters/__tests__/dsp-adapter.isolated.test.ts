@@ -8,10 +8,12 @@
  *
  * Pool: `isolated` (MOR-1272). The parity-pin block below calls the REAL
  * `setCapabilities` (`$lib/stores/capabilities.svelte`, module-scope global
- * state, no `vi.mock`) to install non-default NR/NB control ranges, because
- * `deriveDsp`'s `nrLevel`/`nbDepth` facts consume `$lib/radio/filter-
- * controls`'s `nrRawToDisplay`/`nbDepthRawToDisplay`, which read their scale
- * from that STORE rather than from this file's own `caps` parameter. Under
+ * state, no `vi.mock`) to install non-default NR control ranges, because
+ * `deriveDsp`'s `nrLevel` fact consumes `$lib/radio/filter-controls`'s
+ * `nrRawToDisplay`, which reads its scale from that STORE rather than from
+ * this file's own `caps` parameter. (`nbDepth` has no store-reading helper
+ * left: it decodes through `resolveControlContract(caps, 'nb_depth')`,
+ * MOR-2475.) Under
  * the fast pool's `isolate: false` this mutation would leak into whichever
  * sibling file's tests share the worker afterward — the same shape
  * `filter-passband-adapter.test.ts` is isolated for. See `vite.config.ts`.
@@ -21,7 +23,7 @@ import type { Capabilities, ControlRange } from '$lib/types/capabilities';
 import type { FieldStatus, ServerState } from '$lib/types/state';
 import { validateRadioViewModel, type RadioViewModel } from '../../../../semantic/radio-view-model';
 import { toRadioViewModel } from '../radio-view-model-adapter';
-import { nrRawToDisplay, nbDepthRawToDisplay, controlRangeFromCapsOrDefault } from '$lib/radio/filter-controls';
+import { nrRawToDisplay, controlRangeFromCapsOrDefault, resolveControlContract } from '$lib/radio/filter-controls';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 
 function caps(overrides: Partial<Capabilities> = {}): Capabilities {
@@ -35,8 +37,8 @@ function caps(overrides: Partial<Capabilities> = {}): Capabilities {
   } as Capabilities;
 }
 
-/** No `controls` entry ⇒ `nrRawToDisplay`/`nbDepthRawToDisplay`'s own store
- *  lookup falls back to their built-in defaults — the neutral baseline every
+/** No `controls` entry ⇒ `nrRawToDisplay`'s own store
+ *  lookup falls back to its built-in default — the neutral baseline every
  *  test starts from, and what every test restores in `afterEach` so no
  *  custom range leaks across this file's own tests (never mind siblings —
  *  isolation handles that half; this handles order-within-file). */
@@ -184,16 +186,16 @@ describe('agcModes choice set (MOR-1290)', () => {
  * must consume the REAL `$lib/radio/filter-controls` helpers, not a
  * re-derived formula. The discriminating axis a naive re-implementation
  * would miss is the SAME one the X6200 CAT audit flagged for filter-width
- * tables and `filterPassband`'s PBT scale: `nrRawToDisplay`/
- * `nbDepthRawToDisplay` read their raw<->display scale from the capabilities
- * STORE's `controls.nr_level`/`controls.nb_depth` (rawMin/rawMax/displayMin/
+ * tables and `filterPassband`'s PBT scale: the scale comes from the declared
+ * `controls.nr_level`/`controls.nb_depth` entry (rawMin/rawMax/displayMin/
  * displayMax), not from a constant. A hand-rolled linear-interpolation
- * inside the adapter would match every row that leaves the store at its
+ * inside the adapter would match every row that leaves the scale at its
  * built-in default and silently diverge the instant a radio profile
  * declares a non-default control range.
  *
  * Each row's "expected" value is computed by calling the SAME shipped
- * `nrRawToDisplay`/`nbDepthRawToDisplay` this test imports directly — this
+ * conversion the adapter consumes — `nrRawToDisplay` for `nrLevel`,
+ * `resolveControlContract(caps, 'nb_depth')` for `nbDepth` (MOR-2475) — this
  * is a regression/mutation-kill pin on the ADAPTER's wiring to those
  * functions, not a re-proof of their own arithmetic.
  */
@@ -232,9 +234,9 @@ describe('nrLevel/nbDepth parity with the real filter-controls helpers (MOR-1290
   // `nbDepth`'s STRUCTURAL gate itself requires a declared `nb_depth` control
   // entry to exist (see `deriveDsp`'s `hasNbDepth`), so every row below
   // declares one explicitly — including the "IC-7610-shaped" row, which
-  // declares the same bounds `CONTROL_DEFAULTS.nb_depth` uses rather than
-  // omitting `controls.nb_depth` (that would fail the structural gate, not
-  // exercise the store-lookup fallback branch).
+  // declares the same bounds `rigs/ic7610.toml`'s `[controls.nb_depth]`
+  // publishes rather than omitting `controls.nb_depth` (that would fail the
+  // structural gate, not exercise the conversion).
   const ic7610ShapedRange: ControlRange = { raw_min: 0, raw_max: 9, raw_center: 0, display_min: 1, display_max: 10 };
 
   const NB_MATRIX: ReadonlyArray<{ name: string; range: ControlRange; raw: number }> = [
@@ -248,8 +250,7 @@ describe('nrLevel/nbDepth parity with the real filter-controls helpers (MOR-1290
 
   it.each(NB_MATRIX)('nbDepth: $name', ({ range, raw }) => {
     const parityCaps = caps({ controls: { nb_depth: range } });
-    setCapabilities(parityCaps);
-    const expectedDisplay = nbDepthRawToDisplay(raw);
+    const expectedDisplay = resolveControlContract(parityCaps, 'nb_depth').rawToDisplay(raw);
 
     const view = model(bareState({
       nbDepth: raw,

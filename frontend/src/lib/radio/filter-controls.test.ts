@@ -3,8 +3,6 @@ import { describe, expect, it } from 'vitest';
 import type { Capabilities, ControlDomain, FilterModeConfig } from '$lib/types/capabilities';
 import {
   controlDisplayDomain,
-  nbDepthDisplayToRaw,
-  nbDepthRawToDisplay,
   nrRawToDisplay,
   quantizeFilterWidthToRule,
   resolveControlContract,
@@ -34,52 +32,65 @@ describe('nrRawToDisplay (fallback range)', () => {
   });
 });
 
-// MOR-498: NB-depth slider is 1-10 (front-panel scale), wire is 0-9.
-// With no capabilities loaded these helpers use the IC-7610 fallback range
-// (raw 0..9 <-> display 1..10): a simple +1/-1 offset.
+// MOR-498: NB-depth slider is 1-10 (front-panel scale), wire is 0-9. The
+// conversion now lives on the shared contract (`resolveControlContract`,
+// MOR-2475): an IC-7610-shaped `controls.nb_depth` entry decodes raw 0-9 to
+// display 1-10 and encodes display 1-10 back to raw 0-9, and a caps payload
+// publishing no `nb_depth` entry resolves to the empty contract — no value,
+// never a fabricated 1-10 scale.
 
-describe('nbDepthDisplayToRaw (fallback range)', () => {
-  it('maps display 1 to wire 0', () => {
-    expect(nbDepthDisplayToRaw(1)).toBe(0);
-  });
+const IC7610_NB_DEPTH_CAPS = {
+  capabilities: [], receivers: 1,
+  controls: { nb_depth: { raw_min: 0, raw_max: 9, display_min: 1, display_max: 10 } },
+} as unknown as Capabilities;
 
-  it('maps display 6 to wire 5', () => {
-    expect(nbDepthDisplayToRaw(6)).toBe(5);
-  });
+describe('nb_depth contract (published IC-7610 domain)', () => {
+  const contract = resolveControlContract(IC7610_NB_DEPTH_CAPS, 'nb_depth');
 
-  it('maps display 10 to wire 9', () => {
-    expect(nbDepthDisplayToRaw(10)).toBe(9);
-  });
-
-  it('clamps out-of-range display values to the wire range', () => {
-    expect(nbDepthDisplayToRaw(-5)).toBe(0);
-    expect(nbDepthDisplayToRaw(99)).toBe(9);
-  });
-});
-
-describe('nbDepthRawToDisplay (fallback range)', () => {
   it('maps wire 0 to display 1', () => {
-    expect(nbDepthRawToDisplay(0)).toBe(1);
+    expect(contract.rawToDisplay(0)).toBe(1);
   });
 
   it('maps wire 5 to display 6', () => {
-    expect(nbDepthRawToDisplay(5)).toBe(6);
+    expect(contract.rawToDisplay(5)).toBe(6);
   });
 
   it('maps wire 9 to display 10', () => {
-    expect(nbDepthRawToDisplay(9)).toBe(10);
+    expect(contract.rawToDisplay(9)).toBe(10);
   });
 
-  it('clamps out-of-range wire values to the slider range', () => {
-    expect(nbDepthRawToDisplay(-1)).toBe(1);
-    expect(nbDepthRawToDisplay(999)).toBe(10);
+  it('maps display 1 to wire 0', () => {
+    expect(contract.displayToRaw(1)).toBe(0);
+  });
+
+  it('maps display 6 to wire 5', () => {
+    expect(contract.displayToRaw(6)).toBe(5);
+  });
+
+  it('maps display 10 to wire 9', () => {
+    expect(contract.displayToRaw(10)).toBe(9);
+  });
+
+  it('round-trips the slider endpoints exactly', () => {
+    expect(contract.rawToDisplay(contract.displayToRaw(1) as number)).toBe(1);
+    expect(contract.rawToDisplay(contract.displayToRaw(10) as number)).toBe(10);
   });
 });
 
-describe('NB-depth display <-> raw round-trip', () => {
-  it('round-trips the slider endpoints exactly', () => {
-    expect(nbDepthRawToDisplay(nbDepthDisplayToRaw(1))).toBe(1);
-    expect(nbDepthRawToDisplay(nbDepthDisplayToRaw(10))).toBe(10);
+describe('nb_depth contract (no published domain)', () => {
+  it.each([
+    ['caps with no controls at all', { capabilities: [], receivers: 1 } as unknown as Capabilities],
+    ['caps whose controls omit nb_depth', {
+      capabilities: [], receivers: 1, controls: {},
+    } as unknown as Capabilities],
+    ['null caps', null],
+  ])('has no control and no conversion for %s', (_label, caps) => {
+    const contract = resolveControlContract(caps, 'nb_depth');
+    expect(contract.hasControl).toBe(false);
+    expect(contract.displayDomain).toBeNull();
+    expect(contract.acceptsRaw(0)).toBe(false);
+    expect(contract.rawToDisplay(0)).toBeNull();
+    expect(contract.displayToRaw(1)).toBeNull();
   });
 });
 
@@ -350,10 +361,16 @@ describe('resolveControlContract (MOR-2475)', () => {
     expect(contract.displayToRaw(10)).toBe(9);
   });
 
-  it('falls back to the NB depth default band when the radio publishes no entry at all', () => {
+  it('resolves the empty contract when the radio publishes no nb_depth entry at all', () => {
+    // MOR-2475 PR-6: the hardcoded 0-9 -> 1-10 default band is deleted; a
+    // radio that publishes nothing has no NB-depth control and no
+    // conversion — never a fabricated 1..10 scale.
     const contract = resolveControlContract(domainCaps(['nb'], {}), 'nb_depth');
-    expect(contract.displayDomain).toEqual({ min: 1, max: 10, step: 1, origin: 1 });
     expect(contract.hasControl).toBe(false);
+    expect(contract.displayDomain).toBeNull();
+    expect(contract.acceptsRaw(0)).toBe(false);
+    expect(contract.rawToDisplay(0)).toBeNull();
+    expect(contract.displayToRaw(1)).toBeNull();
   });
 
   it('keeps nr_level on the same shared path (legacy band preserved)', () => {
