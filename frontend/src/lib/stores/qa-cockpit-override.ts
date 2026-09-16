@@ -31,6 +31,12 @@
  * as "the param is broken" rather than "this viewport is mobile" — most
  * often on an ordinary narrow/short desktop window, not an actual phone.
  * `console.warn` makes that non-obvious no-op self-explaining.
+ *
+ * The param no-ops a second way: when the layout manifest registered under
+ * the id it names excludes the live receiver topology, `resolveSkinId`
+ * mounts that manifest's declared fallback instead and reports it on this
+ * same `console.warn` channel (T198 — `skins/__tests__/registry.test.ts`,
+ * "layout-manifest topology gate").
  */
 const QA_COCKPIT_QUERY_PARAM = 'layout';
 export type QaLayoutOverride = 'dual-receiver-cockpit' | 'flagship-probe';

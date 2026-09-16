@@ -1,20 +1,26 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppResource } from '$lib/runtime/resource-demand';
 import type { HostedFaceComponentV1 } from '../../../component-kit-api/src/index';
 import type { SkinId } from '../registry';
 
 // MOR-2074: which SkinId is QA-gated, read off `resolveSkinId`'s actual
-// early-return branch in `../registry.ts` (`if (ctx.layoutPreference ===
-// 'X') return 'X';`, checked on the RAW `ctx.layoutPreference` before
-// `normalizeLayoutMode` runs — the regex requires the `ctx.` prefix
-// specifically so it does not also match the normal forced-preference
-// branches further down, which check the normalized local instead) rather
-// than hand-copied, so this list cannot silently drift from the production
-// branch that actually makes an id reachable only through the QA-only param.
+// early-return branch in `../registry.ts`, checked on the RAW
+// `ctx.layoutPreference` before `normalizeLayoutMode` runs — the regex
+// requires the `ctx.` prefix specifically so it does not also match the
+// normal forced-preference branches further down, which check the normalized
+// local instead — rather than hand-copied, so this list cannot silently
+// drift from the production branch that actually makes an id reachable only
+// through the QA-only param.
+//
+// T198 replaced the matched branch's bare `return 'X'` with the topology
+// gate's own call (`return resolveWithFallback('X', ctx.capabilities)`). Both
+// QA-only ids stay derivable here only while both branches still carry that
+// call: drop the gate from one and this list loses that id, which the "pins a
+// lazy-load case for every skin" completeness test below then fails on.
 const registrySource = readFileSync('src/skins/registry.ts', 'utf8');
 const QA_GATED_LAZY_LOAD_IDS = [...registrySource.matchAll(
-  /if \(ctx\.layoutPreference === '([a-z0-9-]+)'\) return '\1';/g,
+  /if \(ctx\.layoutPreference === '([a-z0-9-]+)'\) return resolveWithFallback\('\1', ctx\.capabilities\);/g,
 )].map((m) => m[1]) as SkinId[];
 
 // MOR-2074: keyed by the literal `SkinId` itself (not an arbitrary local
@@ -76,6 +82,22 @@ import {
   type ExternalPresentationRecord,
   type PresentationHostMode,
 } from '../registry';
+// T198: the real manifest registry. `../registry` pulls
+// `presentation/layouts/declarations` in for its side effect, so these
+// resolve the shipped declarations rather than a fixture.
+import { getLayout, TOPOLOGY_CLASSES } from '../../presentation/layouts/contract';
+import type { LayoutManifest } from '../../presentation/layouts/contract';
+import type { LayoutMode } from '$lib/runtime/adapters/layout-mode-adapter';
+import type { Capabilities, VfoScheme } from '$lib/types/capabilities';
+
+/** Only `vfoScheme`/`receivers`/`capabilities` reach the topology half of
+ *  `derivePresentationCapabilities`; the rest of `Capabilities` only feeds
+ *  its scope/audio diagnostics, which this gate never reads. */
+const capsFor = (vfoScheme: VfoScheme, receivers: 1 | 2): Capabilities =>
+  ({ vfoScheme, receivers, capabilities: ['dual_rx'] }) as unknown as Capabilities;
+const SINGLE_AB = capsFor('ab', 1);
+const AB_SHARED = capsFor('ab_shared', 2);
+const MAIN_SUB = capsFor('main_sub', 2);
 
 const resolve = (overrides: Partial<Parameters<typeof resolveSkinId>[0]> = {}) =>
   resolveSkinId({
@@ -126,7 +148,22 @@ describe('skin registry', () => {
     ['panadapter-first', 'panadapter-first'],
     ['dual-sdr-face', 'dual-sdr-face'],
   ] as const)('resolves forced %s preference to %s', (layoutPreference, skinId) => {
-    expect(resolve({ layoutPreference, hasAnyScope: false })).toBe(skinId);
+    expect(resolve({ layoutPreference, hasAnyScope: false, capabilities: MAIN_SUB })).toBe(skinId);
+  });
+
+  // T198: the same table minus the three `segmentline` preferences, whose
+  // manifests exclude a single-receiver radio. Every preference here resolves
+  // with no live capabilities at all, because the manifest registered under
+  // its id (or, for `dual-sdr-face`, the absence of one) excludes nothing.
+  it.each([
+    ['standard', 'desktop-v2'],
+    ['lcd', 'lcd-cockpit'],
+    ['lcd-cockpit', 'lcd-cockpit'],
+    ['lcd-scope', 'lcd-scope'],
+    ['sdr-test', 'sdr-test'],
+    ['dual-sdr-face', 'dual-sdr-face'],
+  ] as const)('resolves forced %s preference to %s before capabilities arrive', (layoutPreference, skinId) => {
+    expect(resolve({ layoutPreference, capabilities: null })).toBe(skinId);
   });
 
   it.each([
@@ -194,15 +231,19 @@ describe('QA-only layout reachability', () => {
   // which resolves to 'desktop-v2' unconditionally (MOR-1097 cutover) —
   // never the cockpit.
   it('resolves the QA-only preference to the cockpit skin', () => {
-    expect(resolve({ layoutPreference: 'dual-receiver-cockpit' })).toBe('dual-receiver-cockpit');
-    expect(resolve({ layoutPreference: 'dual-receiver-cockpit', hasAnyScope: true })).toBe('dual-receiver-cockpit');
+    expect(resolve({ layoutPreference: 'dual-receiver-cockpit', capabilities: MAIN_SUB })).toBe('dual-receiver-cockpit');
+    expect(resolve({
+      layoutPreference: 'dual-receiver-cockpit', hasAnyScope: true, capabilities: MAIN_SUB,
+    })).toBe('dual-receiver-cockpit');
   });
 
   // Kill-test: removing the T160 branch leaves 'flagship-probe' falling
   // through `normalizeLayoutMode` to 'auto', hence to 'desktop-v2'.
   it('resolves the QA-only preference to the flagship geometry probe', () => {
-    expect(resolve({ layoutPreference: 'flagship-probe' })).toBe('flagship-probe');
-    expect(resolve({ layoutPreference: 'flagship-probe', hasAnyScope: true })).toBe('flagship-probe');
+    expect(resolve({ layoutPreference: 'flagship-probe', capabilities: MAIN_SUB })).toBe('flagship-probe');
+    expect(resolve({
+      layoutPreference: 'flagship-probe', hasAnyScope: true, capabilities: MAIN_SUB,
+    })).toBe('flagship-probe');
   });
 
   // Default-path pin (ticket acceptance): every OTHER forced preference is
@@ -430,5 +471,180 @@ describe('external presentation records share the built-in catalog', () => {
     expect(registrySource.match(/export async function loadSkin/g)).toHaveLength(1);
     expect(registrySource).not.toContain('EXTERNAL_SKIN_LOADERS');
     expect(registrySource).not.toContain('EXTERNAL_PRESENTATION_CATALOG');
+  });
+});
+
+// T198 — a layout manifest's `compatibleTopologies` is a restriction on which
+// radios its skin may mount, and its `fallbackLayoutId` names where a refused
+// preference goes instead. Until this block both were validated, documented
+// and read by nothing. `resolveSkinId` now refuses a layout preference whose
+// registered manifest excludes the live receiver topology class, and mounts
+// the first hop down that manifest's fallback chain which admits it.
+describe('layout-manifest topology gate', () => {
+  /** Read off the shipped manifests, not hand-listed: a skin id is gated iff
+   *  a manifest is registered under it AND that manifest leaves at least one
+   *  class out of `TOPOLOGY_CLASSES`. */
+  const GATED = (Object.keys(entrypoints) as SkinId[]).filter((id) => {
+    const manifest = getLayout(id);
+    return manifest !== undefined
+      && !TOPOLOGY_CLASSES.every((c) => manifest.compatibleTopologies.includes(c));
+  });
+
+  /** What each gated preference mounts on a radio its own manifest excludes.
+   *  Hand-written: this is the outcome the walk owes, not a second copy of
+   *  the walk. The completeness case below pins the key set against `GATED`
+   *  and pins that every value here declares all four topology classes —
+   *  which is why the same expectation holds for `1/ab`, for no capabilities
+   *  at all, and for an invalid topology. */
+  const MOUNTED_WHEN_REFUSED: Record<string, SkinId> = {
+    'dual-receiver-cockpit': 'sdr-test',
+    'flagship-probe': 'sdr-test',
+    'peer-split': 'lcd-cockpit',
+    // `peer-split` is the declared fallback of both, and is itself refused on
+    // the same radio, so the walk continues to ITS fallback.
+    'unified-instrument': 'lcd-cockpit',
+    'panadapter-first': 'lcd-cockpit',
+  };
+
+  // Runs first in this block: the refusal report is throttled per (layout,
+  // live class), and the cases below consume the pairs it counts.
+  it('reports a refusal once per layout and live topology class', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(resolve({ layoutPreference: 'flagship-probe', capabilities: SINGLE_AB })).toBe('sdr-test');
+      expect(resolve({ layoutPreference: 'flagship-probe', capabilities: SINGLE_AB })).toBe('sdr-test');
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [message] = warn.mock.calls[0] as [string];
+      expect(message).toContain('flagship-probe');
+      expect(message).toContain('1/ab');
+      expect(message).toContain('2/ab_shared, 2/main_sub');
+      // Same layout, a class not yet reported.
+      expect(resolve({ layoutPreference: 'flagship-probe', capabilities: capsFor('single', 1) })).toBe('sdr-test');
+      expect(warn).toHaveBeenCalledTimes(2);
+      // Same class, a layout not yet reported.
+      expect(resolve({ layoutPreference: 'peer-split', capabilities: SINGLE_AB })).toBe('lcd-cockpit');
+      expect(warn).toHaveBeenCalledTimes(3);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The refusal has to say what the user is looking at instead, or the report
+  // explains a blank change of face with the name of a skin that is NOT on
+  // screen. `unified-instrument` on `1/single` is a (layout, class) pair no
+  // other case in this file consumes, so the throttle above cannot swallow it.
+  it('names the layout the walk actually mounted', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(resolve({ layoutPreference: 'unified-instrument', capabilities: capsFor('single', 1) }))
+        .toBe('lcd-cockpit');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect((warn.mock.calls[0] as [string])[0]).toContain('mounting "lcd-cockpit" instead');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('gates exactly the loadable skins whose manifest excludes a topology class', () => {
+    expect([...GATED].sort()).toEqual([
+      'dual-receiver-cockpit', 'flagship-probe', 'panadapter-first', 'peer-split',
+      'unified-instrument',
+    ]);
+    expect(Object.keys(MOUNTED_WHEN_REFUSED).sort()).toEqual([...GATED].sort());
+    for (const mounted of new Set(Object.values(MOUNTED_WHEN_REFUSED))) {
+      const manifest = getLayout(mounted);
+      expect(manifest, `${mounted} is a registered layout`).toBeDefined();
+      expect(TOPOLOGY_CLASSES.every((c) => manifest!.compatibleTopologies.includes(c)),
+        `${mounted} declares every topology class`).toBe(true);
+    }
+  });
+
+  // The defect this block exists for: the probe mounted on an IC-7300 (1/ab),
+  // a radio its own manifest excludes.
+  it.each(GATED)('routes the refused %s preference to its declared fallback', (skinId) => {
+    expect(resolve({ layoutPreference: skinId as LayoutMode, capabilities: SINGLE_AB }))
+      .toBe(MOUNTED_WHEN_REFUSED[skinId]);
+  });
+
+  it.each(GATED)('admits the %s preference on both topology classes it declares', (skinId) => {
+    expect(resolve({ layoutPreference: skinId as LayoutMode, capabilities: AB_SHARED })).toBe(skinId);
+    expect(resolve({ layoutPreference: skinId as LayoutMode, capabilities: MAIN_SUB })).toBe(skinId);
+  });
+
+  it.each(GATED)('never mounts %s while the live topology is underivable', (skinId) => {
+    const fallback = MOUNTED_WHEN_REFUSED[skinId];
+    expect(resolve({ layoutPreference: skinId as LayoutMode, capabilities: null })).toBe(fallback);
+    expect(resolve({
+      layoutPreference: skinId as LayoutMode, capabilities: undefined as unknown as null,
+    })).toBe(fallback);
+    // `receivers` disagreeing with `vfoScheme` is what
+    // `derivePresentationCapabilities` reports as `invalid-topology`, and it
+    // yields no class either.
+    expect(resolve({
+      layoutPreference: skinId as LayoutMode, capabilities: capsFor('main_sub', 1),
+    })).toBe(fallback);
+  });
+
+  it('leaves a preference with no registered manifest unaffected', () => {
+    expect(getLayout('dual-sdr-face')).toBeUndefined();
+    expect(resolve({ layoutPreference: 'dual-sdr-face', capabilities: SINGLE_AB })).toBe('dual-sdr-face');
+    expect(resolve({ layoutPreference: 'dual-sdr-face', capabilities: null })).toBe('dual-sdr-face');
+  });
+});
+
+// T198 — the ends of the fallback walk, which no shipped chain reaches: every
+// shipped chain terminates on a layout declaring all four topology classes.
+describe('layout fallback chain terminates', () => {
+  // Each case refuses a preference, so each reports one refusal.
+  beforeEach(() => { vi.spyOn(console, 'warn').mockImplementation(() => {}); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  /** A fresh module graph. `../registry` pulls `presentation/layouts/
+   *  declarations` in for its side effect, so each call gets its own layout
+   *  registry — one a test-only manifest can register into under
+   *  `dual-sdr-face`, the one loadable skin id the shipped declarations leave
+   *  free (pinned by the case above). Static bindings elsewhere in this file
+   *  keep pointing at the first instance, so earlier suites are untouched. */
+  async function freshRegistry() {
+    vi.resetModules();
+    const contract = await import('../../presentation/layouts/contract');
+    const registry = await import('../registry');
+    /** A test-only manifest: a shipped one cloned wholesale, with only the id,
+     *  the topology restriction and the fallback replaced. `2/main_sub` alone
+     *  is what makes `SINGLE_AB` a refusal, so the walk runs. Cloned rather
+     *  than written out as a literal because a literal here would have to name
+     *  the manifest's stage sizing-policy field, which
+     *  `presentation/layouts/__tests__/stage-sizing-boundary.test.ts` forbids
+     *  any file outside `presentation/layouts/` from naming. */
+    const base = contract.getLayout('lcd-cockpit');
+    expect(base, 'lcd-cockpit is registered in the fresh graph').toBeDefined();
+    const register = (id: string, fallbackLayoutId: string | null) =>
+      contract.registerLayout({
+        ...(base as LayoutManifest),
+        id,
+        displayName: id,
+        compatibleTopologies: ['2/main_sub'],
+        fallbackLayoutId,
+      });
+    return {
+      register,
+      resolve: (layoutPreference: LayoutMode) => registry.resolveSkinId({
+        capabilities: SINGLE_AB, layoutPreference, isMobile: false, hasAnyScope: false,
+      }),
+    };
+  }
+
+  it('stops at the default when the chain names an id already visited', async () => {
+    const { register, resolve: resolveFresh } = await freshRegistry();
+    register('dual-sdr-face', 'fallback-hop-one');
+    register('fallback-hop-one', 'fallback-hop-two');
+    register('fallback-hop-two', 'fallback-hop-one');
+    expect(resolveFresh('dual-sdr-face')).toBe('desktop-v2');
+  });
+
+  it('stops at the default when the chain names no registered layout', async () => {
+    const { register, resolve: resolveFresh } = await freshRegistry();
+    register('dual-sdr-face', 'fallback-absent');
+    expect(resolveFresh('dual-sdr-face')).toBe('desktop-v2');
   });
 });
