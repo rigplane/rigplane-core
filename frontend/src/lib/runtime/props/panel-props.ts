@@ -615,6 +615,35 @@ export function toModeProps(
 
 /* ── DSP Panel ───────────────────────────────────────────────── */
 
+/**
+ * Manual-notch readback (MOR-2475): the same source selection the
+ * view-model adapter applies, shared by `toDspProps` and
+ * `toAudioSpectrumProps`. Where the radio publishes a `manual_notch_freq`
+ * domain and the field's status is usable, the reading is display units
+ * decoded from `manualNotchFreq`; otherwise the raw `notchFilter` code,
+ * unchanged. A raw position the domain rejects reads as 0 — these props
+ * shapes have no unknown state (`?? 0` throughout). The domain is
+ * reported whenever the radio publishes a usable one, independent of
+ * which source produced `notchFreq`; callers emit it as an absent key
+ * when null.
+ */
+function manualNotchReading(
+  state: ServerState | null,
+  caps: Capabilities | null,
+): { notchFreq: number; notchFreqDomain: ControlDisplayDomain | null } {
+  const rx = state ? activeRx(state) : null;
+  const contract = resolveControlContract(caps, 'manual_notch_freq');
+  const domain = contract.displayDomain;
+  const raw = rx?.manualNotchFreq;
+  const prefer = domain !== null
+    && activeFieldAvailable(state, 'manualNotchFreq')
+    && typeof raw === 'number';
+  return {
+    notchFreq: prefer ? contract.rawToDisplay(raw as number) ?? 0 : rx?.notchFilter ?? 0,
+    notchFreqDomain: domain,
+  };
+}
+
 export interface DspProps {
   nrMode: number;
   nrLevel: number;
@@ -672,21 +701,7 @@ export function toDspProps(
   const nbLevelRange = caps?.controls?.nb_level ?? null;
   const nbLevelPercent = nbLevelRange !== null;
   const nbLevelMax = nbLevelRange?.raw_max ?? 10;
-  // Manual-notch readback (MOR-2475): the same source selection the
-  // view-model adapter applies. Where the radio publishes a
-  // `manual_notch_freq` domain and the field's status is usable, the slider
-  // carries display units decoded from `manualNotchFreq`; otherwise the raw
-  // `notchFilter` code, unchanged. A raw position the domain rejects reads
-  // as 0 — this props shape has no unknown state (`?? 0` throughout).
-  const notchContract = resolveControlContract(caps, 'manual_notch_freq');
-  const notchFreqDomain = notchContract.displayDomain;
-  const manualNotchFreqRaw = rx?.manualNotchFreq;
-  const preferManualNotchFreq = notchFreqDomain !== null
-    && activeFieldAvailable(state, 'manualNotchFreq')
-    && typeof manualNotchFreqRaw === 'number';
-  const notchFreq = preferManualNotchFreq
-    ? notchContract.rawToDisplay(manualNotchFreqRaw) ?? 0
-    : rx?.notchFilter ?? 0;
+  const { notchFreq, notchFreqDomain } = manualNotchReading(state, caps);
   return {
     nrMode: rx?.nr ? 1 : 0,
     // MOR-490: store holds the raw 0-255 wire value; the slider is 0-15.
@@ -1053,6 +1068,11 @@ export interface AudioSpectrumProps {
   pbtOuter: number;
   manualNotch: boolean;
   notchFreq: number;
+  /** The manual-notch control's published display domain, present only
+   *  when the radio declares a usable one — same source selection as
+   *  `DspProps.notchFreqDomain` (one shared helper). Absent, not null,
+   *  when the radio publishes nothing usable. */
+  notchFreqDomain?: ControlDisplayDomain;
   contour: number;
   contourFreq: number;
 }
@@ -1066,6 +1086,7 @@ export function toAudioSpectrumProps(
   const filterWidthMax = filterConfig?.table?.length
     ? filterConfig.table[filterConfig.table.length - 1]
     : (filterConfig?.maxHz ?? caps?.filterWidthMax ?? 4000);
+  const { notchFreq, notchFreqDomain } = manualNotchReading(state, caps);
 
   return {
     // MOR-1409 A12: twin of `toFilterProps.filterWidth` above — same fix,
@@ -1079,7 +1100,8 @@ export function toAudioSpectrumProps(
     pbtOuter: rx?.pbtOuter ?? 128,
     manualNotch: rx?.manualNotch ?? false,
     // notchFilter (MOR-1548): reclassified receiver-scoped.
-    notchFreq: rx?.notchFilter ?? 0,
+    notchFreq,
+    ...(notchFreqDomain !== null ? { notchFreqDomain } : {}),
     contour: rx?.contour ?? 0,
     // contourFreq is not yet exposed in ServerState; default to centre.
     contourFreq: 128,
