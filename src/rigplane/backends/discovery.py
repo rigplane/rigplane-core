@@ -152,8 +152,8 @@ async def probe_serial_civ(
         baud_rates: Baud rates to try, in order. Defaults to
             ``[19200, 9600, 115200, 4800]``.
         timeout: Per-baud timeout in seconds.
-        _open_serial: Override for ``serial_asyncio.open_serial_connection``
-            (used in tests).
+        _open_serial: Overrides the open step of :func:`rigplane.core.serial_open.open_serial_port`;
+            post-open control-line deassert still applies (used in tests).
 
     Returns:
         :class:`CivProbeResult` on success, or ``None`` if no radio responded.
@@ -181,7 +181,8 @@ async def _try_baud(
         port: Serial device path.
         baud: Baud rate to attempt.
         timeout: Read timeout in seconds.
-        _open_serial: Override for ``serial_asyncio.open_serial_connection``.
+        _open_serial: Overrides the open step of :func:`rigplane.core.serial_open.open_serial_port`;
+            post-open control-line deassert still applies.
 
     Returns:
         :class:`CivProbeResult` on success, or ``None`` on timeout / bad data.
@@ -327,8 +328,8 @@ async def probe_xiegu_model_id(
         port: Serial device path.
         baud: Baud rate to use (the rate the CI-V probe already succeeded at).
         timeout: Read timeout in seconds.
-        _open_serial: Override for ``serial_asyncio.open_serial_connection``
-            (used in tests).
+        _open_serial: Overrides the open step of :func:`rigplane.core.serial_open.open_serial_port`;
+            post-open control-line deassert still applies (used in tests).
 
     Returns:
         ``True`` on a valid ``0x1D 0x19`` reply, ``False`` on NAK, timeout,
@@ -740,7 +741,7 @@ async def discover_serial_radios(
     Stops after the first successful match for each port.
 
     Args:
-        _open_serial: Override for ``serial_asyncio.open_serial_connection``
+        _open_serial: Overrides the open step of :func:`rigplane.core.serial_open.open_serial_port`,
             passed through to :func:`probe_serial_civ` (used in tests).
         _yaesu_transport_factory: Override for ``YaesuCatTransport`` constructor
             passed through to :func:`probe_serial_yaesu_cat` (used in tests).
