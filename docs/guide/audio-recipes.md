@@ -205,6 +205,7 @@ async def main() -> None:
         host="192.168.1.100",
         username="YOUR_USER",
         password="YOUR_PASS",
+        model="IC-7610",
         audio_codec=AudioCodec.PCM_1CH_16BIT,
         audio_sample_rate=SAMPLE_RATE,
     )
@@ -252,6 +253,7 @@ async def main() -> None:
         host="192.168.1.100",
         username="YOUR_USER",
         password="YOUR_PASS",
+        model="IC-7610",
         audio_codec=AudioCodec.PCM_1CH_16BIT,
         audio_sample_rate=SAMPLE_RATE,
     )
@@ -324,6 +326,7 @@ async def main() -> None:
         host="192.168.1.100",
         username="YOUR_USER",
         password="YOUR_PASS",
+        model="IC-7610",
         audio_codec=AudioCodec.PCM_1CH_16BIT,
         audio_sample_rate=SAMPLE_RATE,
     )
@@ -371,6 +374,7 @@ async def main() -> None:
         host="192.168.1.100",
         username="YOUR_USER",
         password="YOUR_PASS",
+        model="IC-7610",
     )
 
     async with create_radio(config) as radio:

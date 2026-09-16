@@ -17,7 +17,7 @@ from rigplane import create_radio, LanBackendConfig
 from rigplane.scope import ScopeFrame
 
 async def main():
-    config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
+    config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610")
     async with create_radio(config) as radio:
         frames = []
 

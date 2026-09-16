@@ -193,7 +193,7 @@ The AudioBus provides pub/sub distribution for radio RX audio. Multiple consumer
 ```python
 from rigplane import create_radio, LanBackendConfig
 
-config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
+config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610")
 async with create_radio(config) as radio:
     # Subscribe to audio bus
     async with radio.audio_bus.subscribe(name="my-app") as sub:
@@ -296,7 +296,7 @@ configured sample rate, channel count, and frame duration.
 ```python
 from rigplane import create_radio, LanBackendConfig
 
-config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
+config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610")
 async with create_radio(config) as radio:
     received = []
 
@@ -312,7 +312,7 @@ async with create_radio(config) as radio:
 ### RX Audio (high-level PCM)
 
 ```python
-config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
+config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610")
 async with create_radio(config) as radio:
     def on_pcm(frame: bytes | None) -> None:
         if frame is None:
@@ -334,7 +334,7 @@ async with create_radio(config) as radio:
 ### TX Audio (push-based)
 
 ```python
-config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
+config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610")
 async with create_radio(config) as radio:
     await radio.start_audio_tx_opus()
     await radio.push_audio_tx_opus(audio_payload)
@@ -349,7 +349,7 @@ negotiate an Opus TX codec, such as wfview-compatible server paths.
 ### TX Audio (high-level PCM)
 
 ```python
-config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
+config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610")
 async with create_radio(config) as radio:
     await radio.start_audio_tx_pcm(sample_rate=48000, channels=1, frame_ms=20)
     await radio.push_audio_tx_pcm(pcm_frame)  # one 20ms PCM frame (1920 bytes)
@@ -359,7 +359,7 @@ async with create_radio(config) as radio:
 ### Full-Duplex
 
 ```python
-config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
+config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610")
 async with create_radio(config) as radio:
     await radio.start_audio_opus(rx_callback=on_audio, tx_enabled=True)
     # ... push TX frames, receive RX via callback ...
@@ -375,6 +375,7 @@ config = LanBackendConfig(
     host="192.168.1.100",
     username="u",
     password="p",
+    model="IC-7610",
     audio_codec=AudioCodec.PCM_1CH_16BIT,  # default
     audio_sample_rate=48000,
 )
@@ -389,7 +390,7 @@ Use the capability API to inspect negotiated client-side audio options and defau
 ```python
 from rigplane import create_radio, get_audio_capabilities, LanBackendConfig
 
-config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
+config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610")
 # Static defaults (no connection required):
 caps = get_audio_capabilities()
 print(caps.supported_codecs)

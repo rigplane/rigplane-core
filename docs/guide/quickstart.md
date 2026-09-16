@@ -56,6 +56,7 @@ async def main():
         host="192.168.1.100",
         username="myuser",
         password="mypass",
+        model="IC-7610",
     )
     async with create_radio(config) as radio:
         # Read current state

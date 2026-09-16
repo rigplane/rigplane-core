@@ -65,17 +65,17 @@ Each Icom radio model has a default CI-V address. You can also configure a custo
 from rigplane import create_radio, LanBackendConfig
 
 # IC-7610 (default radio_addr 0x98)
-config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
+config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610")
 async with create_radio(config) as radio:
     ...
 
 # IC-705
-config = LanBackendConfig(host="192.168.1.101", username="u", password="p", radio_addr=0xA4)
+config = LanBackendConfig(host="192.168.1.101", username="u", password="p", model="IC-705", radio_addr=0xA4)
 async with create_radio(config) as radio:
     ...
 
 # Custom CI-V address
-config = LanBackendConfig(host="192.168.1.100", username="u", password="p", radio_addr=0x42)
+config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610", radio_addr=0x42)
 async with create_radio(config) as radio:
     ...
 ```
@@ -143,12 +143,12 @@ The default 5-second timeout works well for local networks. Adjust if needed:
 from rigplane import create_radio, LanBackendConfig
 
 # Fast local network
-config = LanBackendConfig(host="192.168.1.100", username="u", password="p", timeout=2.0)
+config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610", timeout=2.0)
 async with create_radio(config) as radio:
     ...
 
 # Over VPN or high-latency link
-config = LanBackendConfig(host="10.0.0.100", username="u", password="p", timeout=15.0)
+config = LanBackendConfig(host="10.0.0.100", username="u", password="p", model="IC-7610", timeout=15.0)
 async with create_radio(config) as radio:
     ...
 ```
