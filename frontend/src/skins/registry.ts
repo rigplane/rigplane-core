@@ -160,11 +160,11 @@ function reportRefusal(id: SkinId, capabilities: Capabilities | null, mounted: S
  * `DEFAULT_SKIN_ID` when the chain runs out. `LayoutManifest.fallbackLayoutId`
  * was declared and validated but read by no runtime path before this.
  *
- * A hop is taken only when it is both a built-in skin and admitted; any other
- * candidate — an id no manifest is registered under, one registered but not
- * loadable, one whose own manifest also excludes the radio — continues down
- * that candidate's own chain. `visited` bounds the walk: a chain that names an
- * id already seen stops there instead of looping.
+ * A hop is taken only when it is both a built-in skin and admitted; every
+ * other candidate's own `fallbackLayoutId` is followed instead, and a
+ * candidate that names none ends the walk at `DEFAULT_SKIN_ID`. `visited`
+ * bounds the walk: a chain that names an id already seen stops there instead
+ * of looping.
  *
  * One report per refused (preference, live class) pair, naming the skin the
  * walk actually mounted — `console.warn`, the channel
@@ -208,8 +208,7 @@ function resolveWithFallback(id: SkinId, capabilities: Capabilities | null): Ski
  *   returns the preferred skin only while its manifest admits the live
  *   receiver topology and otherwise walks that manifest's `fallbackLayoutId`
  *   chain, ending at `DEFAULT_SKIN_ID`. The 'standard' branch returns
- *   'desktop-v2' directly — the walk's own endpoint, so routing it through
- *   the walker could only report a refusal and return the same id
+ *   'desktop-v2' directly — the walk's own endpoint.
  */
 export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
   if (ctx.isMobile) return 'mobile';
