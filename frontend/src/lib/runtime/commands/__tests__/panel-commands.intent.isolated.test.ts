@@ -665,6 +665,40 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     });
   });
 
+  // MOR-2475 PR-6: `onNbDepthChange` encodes display -> wire through
+  // `resolveControlContract(caps, 'nb_depth')`, the same contract the
+  // readback decodes with. The harness caps publish the IC-7610's own
+  // `controls.nb_depth` shape (raw 0-9, display 1-10), so the encoding pins
+  // the shipped 1..10 -> 0..9 offset; a declared-but-unusable entry carries
+  // no scale and must refuse rather than fall back to a hardcoded one.
+  describe('NB-depth command encoding (MOR-2475)', () => {
+    it.each([[1, 0], [6, 5], [10, 9]] as const)(
+      'encodes display %i to wire %i through the published domain',
+      (display, wire) => {
+        makeDspHandlers().onNbDepthChange(display);
+        expect(exactCalls()).toEqual([['set_nb_depth', { level: wire }]]);
+        expectIntentTransport();
+      },
+    );
+
+    it('refuses when the declared nb_depth entry carries no usable scale', () => {
+      h.caps = {
+        ...h.caps,
+        controls: { nb_depth: {} },
+      };
+      h.state = state();
+      makeDspHandlers().onNbDepthChange(6);
+      expect(exactCalls()).toEqual([]);
+    });
+
+    it('refuses when no nb_depth control is published at all', () => {
+      h.caps = { ...h.caps, controls: {} };
+      h.state = state();
+      makeDspHandlers().onNbDepthChange(6);
+      expect(exactCalls()).toEqual([]);
+    });
+  });
+
   it('marks only bounded normalized RF-power UI values', () => {
     const tx = makeTxHandlers();
     tx.onRfPowerChange(0);

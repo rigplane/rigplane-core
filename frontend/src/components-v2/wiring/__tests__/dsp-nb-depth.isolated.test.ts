@@ -22,8 +22,13 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
+  // The published domain the handler encodes through (MOR-2475): the same
+  // raw 0-9 / display 1-10 shape `rigs/ic7610.toml`'s `[controls.nb_depth]`
+  // declares. An empty `nb_depth: {}` entry carries no scale and the
+  // contract refuses to encode against it.
   getCapabilities: vi.fn(() => ({
-    capabilities: ['nb'], receivers: 2, vfoScheme: 'main_sub', controls: { nb_depth: {} },
+    capabilities: ['nb'], receivers: 2, vfoScheme: 'main_sub',
+    controls: { nb_depth: { raw_min: 0, raw_max: 9, display_min: 1, display_max: 10 } },
   })),
   getControlRange: vi.fn(() => null),
 }));

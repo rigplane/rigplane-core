@@ -319,6 +319,10 @@ describe('pure transformed DSP feedback projection', () => {
     ['nb below explicit range', 'nbDepth', -1, LEGACY_NR_CAPS],
     ['nb above explicit range', 'nbDepth', 10, LEGACY_NR_CAPS],
     ['nb fractional raw', 'nbDepth', 4.5, LEGACY_NR_CAPS],
+    // MOR-2475: nb_depth has no hardcoded fallback left — a caps payload
+    // publishing no `nb_depth` entry resolves to the empty contract and the
+    // projection fails closed instead of fabricating a 1..10 display value.
+    ['nb no published control', 'nbDepth', 5, caps({ controls: {} })],
     ['nb malformed selected range', 'nbDepth', 5, caps({
       controls: { nb_depth: { raw_min: 0, raw_max: 9, display_min: 1, display_max: Infinity } },
     })],

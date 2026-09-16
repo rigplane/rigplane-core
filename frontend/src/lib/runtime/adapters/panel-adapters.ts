@@ -64,8 +64,8 @@ import type { DisplayObservation } from '../../../semantic/radio-view-model';
 import { modInputCommand, modInputStateKey, type ModInputStateKey } from '$lib/radio/mod-input';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import {
-  controlRangeFromCapsOrDefault, deriveIfShift, nbDepthRawToDisplay,
-  pbtRangeFromCaps, pbtRawToHz, projectNrLevel,
+  deriveIfShift, pbtRangeFromCaps, pbtRawToHz, projectNrLevel,
+  resolveControlContract,
 } from '$lib/radio/filter-controls';
 
 // Re-export types for panel imports
@@ -626,18 +626,14 @@ function projectDspRawValueToDisplay(
     const value = projectNrLevel(caps, raw, true).value;
     return value !== null && Number.isFinite(value) ? value : null;
   }
-  try {
-    const range = controlRangeFromCapsOrDefault('nb_depth', caps);
-    const values = [range.rawMin, range.rawMax, range.displayMin, range.displayMax];
-    if (!values.every(value => typeof value === 'number' && Number.isFinite(value))
-      || !Number.isSafeInteger(range.rawMin) || !Number.isSafeInteger(range.rawMax)
-      || range.rawMax <= range.rawMin || range.displayMax <= range.displayMin
-      || !Number.isSafeInteger(raw) || raw < range.rawMin || raw > range.rawMax) return null;
-    const display = nbDepthRawToDisplay(raw, range);
-    return Number.isFinite(display) ? display : null;
-  } catch {
-    return null;
-  }
+  // nb_depth has no legacy default: a radio publishing no usable
+  // `controls.nb_depth` domain resolves to the empty contract, whose
+  // `acceptsRaw`/`rawToDisplay` fail closed instead of fabricating a
+  // 1..10 display value.
+  const contract = resolveControlContract(caps, 'nb_depth');
+  if (!contract.acceptsRaw(raw)) return null;
+  const display = contract.rawToDisplay(raw);
+  return display !== null && Number.isFinite(display) ? display : null;
 }
 
 /** Pure raw-to-display projection; descriptor-unit confirmation remains untouched. */

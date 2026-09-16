@@ -27,7 +27,7 @@ import { relativeVfoIdentityUnknown, resolveFilterModeConfig } from '../props/pa
 import type { Capabilities, FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilities';
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import {
-  mapIfShiftToPbt, nbDepthDisplayToRaw, pbtHzToRaw, pbtRangeFromCaps,
+  mapIfShiftToPbt, pbtHzToRaw, pbtRangeFromCaps,
   quantizeFilterWidthToRule,
   resolveControlContract,
   resolveNrLevelContract,
@@ -670,11 +670,18 @@ export function makeDspHandlers() {
       dispatchRadioIntent({ name: 'set_notch_filter', params: { value: raw, receiver } });
     },
     onNbDepthChange: (level: number) => {
-      // MOR-498: slider is 1-10 (front-panel scale); wire is 0-9.  Store the
-      // wire value the backend expects (the adapter offsets wire -> display).
-      if (!getCapabilities()?.controls?.nb_depth || knownActiveReceiver() === null
+      // MOR-498: slider carries display units (IC-7610: 1-10 front-panel
+      // scale over the 0-9 wire value).  Encode display -> wire through the
+      // published `controls.nb_depth` domain (MOR-2475) — the same shared
+      // contract the readback decodes with.  The gate above already requires
+      // a declared nb_depth control; a declared-but-unusable domain resolves
+      // to the empty contract and refuses rather than dispatching a value
+      // encoded against a fabricated scale.
+      const caps = getCapabilities();
+      if (!caps?.controls?.nb_depth || knownActiveReceiver() === null
         || !knownTopLevelField('nbDepth') || !Number.isFinite(level)) return;
-      const wire = nbDepthDisplayToRaw(level);
+      const wire = resolveControlContract(caps, 'nb_depth').displayToRaw(level);
+      if (wire === null) return;
       dispatchRadioIntent({ name: 'set_nb_depth', params: { level: wire } });
     },
     onNbWidthChange: (level: number) => {

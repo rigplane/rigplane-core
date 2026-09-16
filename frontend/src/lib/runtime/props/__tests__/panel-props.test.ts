@@ -377,10 +377,29 @@ describe('panel prop field availability', () => {
   });
 
   it('offsets the 0-9 NB-depth wire value up to the 1-10 slider value (MOR-498)', () => {
-    // Store holds the wire value (0-9); the slider is 1-10.
-    expect(toDspProps(makeState({ nbDepth: 0 }), null).nbDepth).toBe(1);
-    expect(toDspProps(makeState({ nbDepth: 5 }), null).nbDepth).toBe(6);
-    expect(toDspProps(makeState({ nbDepth: 9 }), null).nbDepth).toBe(10);
+    // The conversion comes from the published `controls.nb_depth` domain
+    // (MOR-2475) — this caps shape is what `rigs/ic7610.toml` publishes.
+    const ic7610Caps = {
+      capabilities: ['nb'], receivers: 1,
+      controls: { nb_depth: { raw_min: 0, raw_max: 9, display_min: 1, display_max: 10 } },
+    } as any;
+    expect(toDspProps(makeState({ nbDepth: 0 }), ic7610Caps).nbDepth).toBe(1);
+    expect(toDspProps(makeState({ nbDepth: 5 }), ic7610Caps).nbDepth).toBe(6);
+    expect(toDspProps(makeState({ nbDepth: 9 }), ic7610Caps).nbDepth).toBe(10);
+  });
+
+  it('fabricates no 1-10 NB-depth reading when no nb_depth domain is published (MOR-2475)', () => {
+    // Without a published domain there is no conversion: the empty contract
+    // decodes nothing, and `hasNbDepth` hides the control. A version that
+    // kept the hardcoded fallback would report 1/6/10 here.
+    const noDepthCaps = {
+      capabilities: ['nb'], receivers: 1,
+      controls: { nb_level: { raw_min: 0, raw_max: 10 } },
+    } as any;
+    expect(toDspProps(makeState({ nbDepth: 0 }), noDepthCaps).nbDepth).toBe(0);
+    expect(toDspProps(makeState({ nbDepth: 9 }), noDepthCaps).nbDepth).toBe(0);
+    expect(toDspProps(makeState({ nbDepth: 9 }), noDepthCaps).hasNbDepth).toBe(false);
+    expect(toDspProps(makeState({ nbDepth: 9 }), null).nbDepth).toBe(0);
   });
 
   it('gates NB depth/width on the nb_depth control range (MOR-502)', () => {
