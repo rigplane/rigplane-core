@@ -48,6 +48,17 @@ def test_handle_naks_opcode_the_model_does_not_implement() -> None:
     assert radio.handle(_XIEGU_MODEL_ID_CMD) == _IC705_NAK_REPLY
 
 
+def test_broadcast_unknown_opcode_gets_silence_direct_gets_nak() -> None:
+    # 0x1D 0x19 is not implemented by an IC-705: addressed directly to the
+    # radio it draws the 0xFA NAK, but on the broadcast address a radio
+    # stays silent — a real bus never NAKs a broadcast.
+    unknown_cmd_broadcast = bytes([0xFE, 0xFE, 0x00, 0xE0, 0x1D, 0x19, 0xFD])
+    unknown_cmd_direct = bytes([0xFE, 0xFE, 0xA4, 0xE0, 0x1D, 0x19, 0xFD])
+    radio = CivRadioFake("IC-705")
+    assert radio.handle(unknown_cmd_direct) == _IC705_NAK_REPLY
+    assert radio.handle(unknown_cmd_broadcast) is None
+
+
 def test_commands_records_parsed_frames_in_order() -> None:
     radio = CivRadioFake("X6200")
     radio.handle(_PROBE_CMD)

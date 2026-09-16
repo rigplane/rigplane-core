@@ -1,9 +1,9 @@
 """A stateful CI-V radio fake for wire-level tests (MOR-2492, PR 1).
 
 ``CivRadioFake`` is a transport-free radio: it holds wire-level identity
-(model name, CI-V address, model-id bytes, and the opcode set that model
-implements) and answers one frame at a time via :meth:`CivRadioFake.handle`,
-which is synchronous and pure. ``CivSerialPort`` adapts a radio to the
+(model name, CI-V address, model-id bytes) and answers one frame at a
+time via :meth:`CivRadioFake.handle`, which is deterministic, performs no
+I/O, and needs no event loop. ``CivSerialPort`` adapts a radio to the
 ``(reader, writer)`` pair that ``open_serial_port`` returns, behind an
 ``opener`` callable suitable for the discovery probes' ``_open_serial=``
 seam.
@@ -104,11 +104,6 @@ class CivRadioFake:
         return self._model_id
 
     @property
-    def opcodes(self) -> tuple[bytes, ...]:
-        """The wire opcodes this model implements."""
-        return tuple(self._opcodes)
-
-    @property
     def commands(self) -> tuple[CivFrame, ...]:
         """Every inbound frame, parsed, in order of arrival."""
         return tuple(self._commands)
@@ -116,9 +111,11 @@ class CivRadioFake:
     def handle(self, frame: bytes) -> bytes | None:
         """Parse *frame*, record it, and return the radio's reply or None.
 
-        Frames addressed to another radio are recorded but not answered. An
-        opcode this model does not implement gets the ``0xFA`` NAK (identity,
-        not a fault); an unknown broadcast gets silence, as on a real bus.
+        Deterministic, no I/O, no event loop needed; it does record each
+        parsed frame on ``self._commands``. Frames addressed to another
+        radio are recorded but not answered. An opcode this model does not
+        implement gets the ``0xFA`` NAK (identity, not a fault); an unknown
+        broadcast gets silence, as on a real bus.
         """
         parsed = parse_civ_frame(frame)
         self._commands.append(parsed)
