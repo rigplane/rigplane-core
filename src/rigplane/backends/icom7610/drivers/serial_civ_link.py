@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import importlib
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -12,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ....core.exceptions import CommandError
+from ....core.serial_open import open_serial_port
 
 logger = logging.getLogger(__name__)
 
@@ -543,14 +543,9 @@ class SerialCivLink:
             return self._open_serial_connection
 
         self._ensure_serial_dependencies()
-        serial_asyncio = importlib.import_module("serial_asyncio")
 
         async def _open() -> tuple[Any, Any]:
-            reader, writer = await serial_asyncio.open_serial_connection(
-                url=self._device,
-                baudrate=self._baudrate,
-            )
-            return (reader, writer)
+            return await open_serial_port(url=self._device, baudrate=self._baudrate)
 
         return _open
 

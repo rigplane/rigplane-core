@@ -23,6 +23,10 @@ canonical entries:
 - `core.exceptions` — every public exception subclass.
 - `core.transport`, `core.auth`, `core.civ`, `core.protocol` — UDP
   transport, authenticator, frame parser, packet-level types.
+- `core.serial_open` — shared serial-port opener that holds DTR/RTS
+  inactive across open (MOR-2228); the normal way backends open a port.
+  Sole exception: `SerialCivLink`'s injected test opener (retiring it:
+  MOR-2495).
 - `core.capabilities` — Tier-1 `CAP_*` capability constants.
 - `core._optional_deps` — `_require_numpy`/`_require_sounddevice`/etc.
   (see #1274).

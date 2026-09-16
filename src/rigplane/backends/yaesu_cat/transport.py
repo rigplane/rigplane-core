@@ -37,7 +37,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from ...core._optional_deps import _require_pyserial_asyncio
 from ...core.priority_exchange import ExchangeTier, PriorityExchangeGate
+from ...core.serial_open import open_serial_port
 
 __all__ = [
     "YaesuCatTransport",
@@ -184,7 +186,7 @@ class YaesuCatTransport:
             return
 
         try:
-            import serial_asyncio  # type: ignore[import-untyped]
+            _require_pyserial_asyncio()
         except ImportError as exc:
             raise CatTransportError(_DEPENDENCY_HINT) from exc
 
@@ -193,8 +195,8 @@ class YaesuCatTransport:
         )
 
         try:
-            self._reader, self._writer = await serial_asyncio.open_serial_connection(
-                url=self._device,
+            self._reader, self._writer = await open_serial_port(
+                self._device,
                 baudrate=self._baudrate,
                 bytesize=8,
                 parity="N",
