@@ -61,6 +61,7 @@
     pbtOuter={p.pbtOuter}
     manualNotch={p.manualNotch}
     notchFreq={p.notchFreq}
+    notchFreqDomain={p.notchFreqDomain}
     contour={p.contour}
     contourFreq={p.contourFreq}
   />
