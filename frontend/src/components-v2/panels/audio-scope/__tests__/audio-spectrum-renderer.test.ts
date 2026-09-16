@@ -1,38 +1,46 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  pbtRawToHz,
   resetSmoothing,
   renderAudioSpectrum,
   AudioSpectrumRendererState,
   type SpectrumState,
 } from '../audio-spectrum-renderer';
+import { pbtRawToHz, type PbtRange } from '$lib/radio/filter-controls';
 
-// ── pbtRawToHz ───────────────────────────────────────────────────────────────
+// ── pbtRawToHz (the renderer's conversion path: the one shipped helper from
+//    `$lib/radio/filter-controls`, called with the range the props layer
+//    derived from the radio's published `controls.pbt_inner`) ───────────────
+
+/** The range every PBT-publishing profile declares (ic705/ic7300/ic7610/
+ *  ic9700: raw_center 128, display ±1200). Values below are pinned from a
+ *  measured run of this exact call shape, not carried over by hand. */
+const IC7610_PBT_RANGE: PbtRange = { rawCenter: 128, displayMin: -1200, displayMax: 1200 };
 
 describe('pbtRawToHz', () => {
   it('returns 0 for center value (128)', () => {
-    expect(pbtRawToHz(128)).toBe(0);
+    expect(pbtRawToHz(128, IC7610_PBT_RANGE)).toBe(0);
   });
 
   it('returns positive Hz for values > 128', () => {
-    expect(pbtRawToHz(200)).toBe(675);
+    expect(pbtRawToHz(200, IC7610_PBT_RANGE)).toBe(675);
   });
 
   it('returns negative Hz for values < 128', () => {
-    expect(pbtRawToHz(56)).toBe(-675);
+    expect(pbtRawToHz(56, IC7610_PBT_RANGE)).toBe(-675);
   });
 
   it('returns max Hz at raw=255', () => {
-    expect(pbtRawToHz(255)).toBe(1191);
+    expect(pbtRawToHz(255, IC7610_PBT_RANGE)).toBe(1191);
   });
 
   it('returns -max Hz at raw=0', () => {
-    expect(pbtRawToHz(0)).toBe(-1200);
+    expect(pbtRawToHz(0, IC7610_PBT_RANGE)).toBe(-1200);
   });
 
-  it('supports custom center and max', () => {
-    expect(pbtRawToHz(64, 64, 600)).toBe(0);
-    expect(pbtRawToHz(128, 64, 600)).toBe(600);
+  it('supports a custom published range', () => {
+    const custom: PbtRange = { rawCenter: 64, displayMin: -600, displayMax: 600 };
+    expect(pbtRawToHz(64, custom)).toBe(0);
+    expect(pbtRawToHz(128, custom)).toBe(600);
   });
 });
 
@@ -109,7 +117,7 @@ describe('renderAudioSpectrum', () => {
 
   it('renders with PBT active', () => {
     resetSmoothing();
-    const state = { ...baseState, pbtInner: 200, pbtOuter: 56 };
+    const state = { ...baseState, pbtInner: 200, pbtOuter: 56, pbtRange: IC7610_PBT_RANGE };
     expect(() => renderAudioSpectrum(mockCtx(), 400, 160, state)).not.toThrow();
   });
 
@@ -230,8 +238,7 @@ describe('renderAudioSpectrum', () => {
       expect(zeroLabelCall).not.toBeUndefined();
     });
 
-    it('finite-value regression pin: the overlay is still drawn (Filter label present) for a finite filterWidth', () => {
-      const rs = new AudioSpectrumRendererState();
+    it('finite-value regression pin: the overlay is still drawn (Filter label present) for a finite filterWidth', () => {      const rs = new AudioSpectrumRendererState();
       const { ctx, fillText } = mockCtxWithFillTextSpy();
       const state = { ...baseState, filterWidth: 2400 };
       renderAudioSpectrum(ctx, 400, 160, state, rs);
@@ -319,6 +326,74 @@ describe('renderAudioSpectrum', () => {
         notchFreq: 3200, notchFreqDomain: FTX1_NOTCH_DISPLAY_DOMAIN,
       });
       expect(x).toBeCloseTo(TR, 9);
+    });
+  });
+
+  /**
+   * MOR-2475 PR-4 — the PBT overlay converts raw→Hz through the range handed
+   * in `SpectrumState.pbtRange`, and only then. Geometry mirrors the
+   * renderer's own expressions for width=400, filterWidth=2400,
+   * filterWidthMax=3600 (shiftRef = 2400, totalHalfW = 180): a passed-range
+   * inner displacement of +675 Hz centers the inner trapezoid at
+   * 200 + (675/2400)·180·0.6 = 230.375, the outer (−675 Hz) at 169.625.
+   */
+  describe('PBT overlay placement from the passed range (MOR-2475 PR-4)', () => {
+    const TRAP_TOP = 18;
+    const INNER_PBT_STROKE = 'rgba(80, 180, 255, 0.7)';
+    const OUTER_PBT_STROKE = 'rgba(255, 160, 60, 0.7)';
+    const PLAIN_STROKE = 'rgba(240, 240, 240, 0.8)';
+
+    type Stroke = { style: string; points: [number, number][] };
+
+    function mockCtxWithStrokes() {
+      const ctx = mockCtx();
+      const strokes: Stroke[] = [];
+      let current: [number, number][] = [];
+      let style = '';
+      Object.defineProperty(ctx, 'beginPath', {
+        value: () => { current = []; },
+      });
+      Object.defineProperty(ctx, 'moveTo', {
+        value: (x: number, y: number) => { current.push([x, y]); },
+      });
+      Object.defineProperty(ctx, 'lineTo', {
+        value: (x: number, y: number) => { current.push([x, y]); },
+      });
+      Object.defineProperty(ctx, 'stroke', {
+        value: () => { strokes.push({ style, points: current }); },
+      });
+      Object.defineProperty(ctx, 'strokeStyle', {
+        set: (v: string) => { style = v; },
+      });
+      return { ctx, strokes };
+    }
+
+    /** Center x of a trapezoid stroke: the midpoint of its top edge. */
+    function centerXOf(strokes: Stroke[], color: string): number | undefined {
+      const stroke = strokes.find((s) => s.style === color);
+      if (!stroke) return undefined;
+      const top = stroke.points.filter(([, y]) => y === TRAP_TOP);
+      return (top[0][0] + top[top.length - 1][0]) / 2;
+    }
+
+    it('places the twin trapezoids by the passed range', () => {
+      const { ctx, strokes } = mockCtxWithStrokes();
+      renderAudioSpectrum(ctx, 400, 160, {
+        ...baseState, pixels: null, pbtInner: 200, pbtOuter: 56,
+        pbtRange: IC7610_PBT_RANGE,
+      }, new AudioSpectrumRendererState());
+      expect(centerXOf(strokes, INNER_PBT_STROKE)).toBeCloseTo(230.375, 9);
+      expect(centerXOf(strokes, OUTER_PBT_STROKE)).toBeCloseTo(169.625, 9);
+    });
+
+    it('draws no PBT overlay and no passband shift when no range is published', () => {
+      const { ctx, strokes } = mockCtxWithStrokes();
+      renderAudioSpectrum(ctx, 400, 160, {
+        ...baseState, pixels: null, pbtInner: 200, pbtOuter: 56,
+      }, new AudioSpectrumRendererState());
+      expect(strokes.some((s) => s.style === INNER_PBT_STROKE)).toBe(false);
+      expect(strokes.some((s) => s.style === OUTER_PBT_STROKE)).toBe(false);
+      expect(centerXOf(strokes, PLAIN_STROKE)).toBeCloseTo(200, 9);
     });
   });
 });
