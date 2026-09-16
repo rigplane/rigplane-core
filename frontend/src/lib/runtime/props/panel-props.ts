@@ -20,6 +20,7 @@ import {
   nrRawToDisplay,
   pbtRawToHz,
   projectNrLevel,
+  resolveControlContract,
 } from '$lib/radio/filter-controls';
 import type { NrLevelProjection, ControlDisplayDomain } from '$lib/radio/filter-controls';
 import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
@@ -624,6 +625,12 @@ export interface DspProps {
   nbWidth: number;
   notchMode: 'off' | 'auto' | 'manual';
   notchFreq: number;
+  /** The manual-notch control's published display domain
+   *  (`controls.manual_notch_freq` through `resolveControlContract`), present
+   *  only when the radio declares a usable one — consumers keep their own
+   *  constants when the key is absent, mirroring the view-model adapter's
+   *  `dsp.notchFreqDomain`. */
+  notchFreqDomain?: ControlDisplayDomain;
   manualNotchWidth: number;
   agcTimeConstant: number;
   hasNr: boolean;
@@ -665,6 +672,21 @@ export function toDspProps(
   const nbLevelRange = caps?.controls?.nb_level ?? null;
   const nbLevelPercent = nbLevelRange !== null;
   const nbLevelMax = nbLevelRange?.raw_max ?? 10;
+  // Manual-notch readback (MOR-2475): the same source selection the
+  // view-model adapter applies. Where the radio publishes a
+  // `manual_notch_freq` domain and the field's status is usable, the slider
+  // carries display units decoded from `manualNotchFreq`; otherwise the raw
+  // `notchFilter` code, unchanged. A raw position the domain rejects reads
+  // as 0 — this props shape has no unknown state (`?? 0` throughout).
+  const notchContract = resolveControlContract(caps, 'manual_notch_freq');
+  const notchFreqDomain = notchContract.displayDomain;
+  const manualNotchFreqRaw = rx?.manualNotchFreq;
+  const preferManualNotchFreq = notchFreqDomain !== null
+    && activeFieldAvailable(state, 'manualNotchFreq')
+    && typeof manualNotchFreqRaw === 'number';
+  const notchFreq = preferManualNotchFreq
+    ? notchContract.rawToDisplay(manualNotchFreqRaw) ?? 0
+    : rx?.notchFilter ?? 0;
   return {
     nrMode: rx?.nr ? 1 : 0,
     // MOR-490: store holds the raw 0-255 wire value; the slider is 0-15.
@@ -677,7 +699,8 @@ export function toDspProps(
     nbWidth: state?.nbWidth ?? 0,
     notchMode,
     // notchFilter (MOR-1548): reclassified receiver-scoped.
-    notchFreq: rx?.notchFilter ?? 0,
+    notchFreq,
+    ...(notchFreqDomain !== null ? { notchFreqDomain } : {}),
     manualNotchWidth: rx?.manualNotchWidth ?? 0,
     agcTimeConstant: rx?.agcTimeConstant ?? 0,
     hasNr: hasCap(caps, 'nr') && nrAvailable,

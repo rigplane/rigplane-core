@@ -439,6 +439,47 @@ describe('manual-notch position stays in the documented raw domain', () => {
   });
 });
 
+// ── 4c. A published manual-notch display domain overrides the row bounds ────
+
+describe('manual-notch position follows a published display domain (MOR-2475)', () => {
+  // The FTX-1's `controls.manual_notch_freq` (`rigs/ftx1.toml`) projected by
+  // the view-model adapter: raw 1..320 -> display 10..3200 Hz step 10.
+  const FTX1_NOTCH_DOMAIN = { min: 10, max: 3200, step: 10, origin: 10 } as const;
+  const ftx1View = (hz: number): RadioViewModel => ({
+    ...base(),
+    dsp: {
+      ...base().dsp!,
+      notchFreq: {
+        ...base().dsp!.notchFreq,
+        reading: { status: 'known' as const, value: hz },
+      },
+      notchFreqDomain: FTX1_NOTCH_DOMAIN,
+    },
+  });
+
+  it.each([10, 1600, 3200])('renders the decoded %i Hz value in the published domain', (hz) => {
+    withSurface(ftx1View(hz), (s) => {
+      const input = s.input('notchFreq')!;
+      expect(s.control('notchFreq')!.textContent).toContain('Notch position');
+      expect(input.min).toBe('10');
+      expect(input.max).toBe('3200');
+      expect(input.step).toBe('10');
+      expect(input.valueAsNumber).toBe(hz);
+    });
+  });
+
+  it('emits the display-unit value verbatim for the command layer to encode', () => {
+    const onLevelChange = vi.fn();
+    withSurface(ftx1View(1600), (s) => {
+      const input = s.input('notchFreq')!;
+      input.value = '1610';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('notchFreq', 1610);
+    }, { onLevelChange });
+  });
+});
+
 // ── 5. Range-parameterisation: nbLevel takes its ceiling from caps-echo props ─
 
 describe('nbLevel is range-parameterised by the caps-echoed nbLevelMax/nbLevelPercent props', () => {

@@ -24,8 +24,9 @@
       unobserved present field, honestly disabled.
   (3) Every reading here is rendered exactly as the fact group states it. No
       range-fallback plumbing, no re-derivation of `controlRangeFromCaps` —
-      `nrLevelProjection` carries NR value/domain/usability and `nbDepth`
-      already arrives display-scaled from the adapter.
+      `nrLevelProjection` carries NR value/domain/usability, `notchFreqDomain`
+      carries the manual-notch display domain, and `nbDepth` already arrives
+      display-scaled from the adapter.
   (4) `unknown` renders as `?`, never as a v2 fabricated default (0 dB, OFF,
       WIDE) — same fail-closed-presentation doctrine as `TxAuxSurface`.
 
@@ -45,6 +46,8 @@
   /** `[field, label, min, max, step, format?]` — `nrLevel`/`nbDepth` are
    *  ALREADY the adapter's display-scaled values (carry-forward 3); the rest
    *  are raw wire ranges, verbatim `DspPanel.svelte`'s own slider bounds.
+   *  `notchFreq`'s row constants are the no-domain fallback: a published
+   *  `notchFreqDomain` on the fact group overrides them (MOR-2475).
    *  `nbLevel` is excluded from this array. */
   export const DSP_LEVELS = [
     ['nrLevel', 'NR level', 0, 15, 1],
@@ -76,6 +79,20 @@
     min: number; max: number; step: number; origin: number;
     value: number; text: string; usable: boolean;
   }>;
+
+  /** Slider bounds from the fact group's published `notchFreqDomain`
+   *  (MOR-2475), validated before use; `null` keeps the `DSP_LEVELS` row's
+   *  own constants for a radio that declares no usable domain. */
+  type NotchPresentation = Readonly<{ min: number; max: number; step: number }>;
+  const notchPresentation = (dsp: DspViewModel): NotchPresentation | null => {
+    const domain = dsp.notchFreqDomain;
+    if (domain === undefined || domain === null
+      || !Number.isSafeInteger(domain.min) || !Number.isSafeInteger(domain.max)
+      || !Number.isSafeInteger(domain.step) || domain.step <= 0 || domain.max <= domain.min) {
+      return null;
+    }
+    return { min: domain.min, max: domain.max, step: domain.step };
+  };
 
   const safeNrInteger = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value);
@@ -172,13 +189,15 @@
   step: number,
   format: ((value: number) => string) | undefined,
   nr: NrPresentation | null,
+  notch: NotchPresentation | null,
 )}
   {#if dsp}
     <label class="dsp-level" data-testid={`dsp-${field}`} data-field={field}
       data-disabled-reason={nr ? (nr.usable ? undefined : 'field-not-observed') : reasonOf(dsp[field])}>
       <span class="dsp-name">{label}</span>
-      <input type="range" min={nr?.min ?? min} max={nr?.max ?? max} step={nr?.step ?? step}
-        value={nr?.value ?? numberOf(dsp[field], min)}
+      <input type="range" min={nr?.min ?? notch?.min ?? min} max={nr?.max ?? notch?.max ?? max}
+        step={nr?.step ?? notch?.step ?? step}
+        value={nr?.value ?? numberOf(dsp[field], notch?.min ?? min)}
         disabled={nr ? !nr.usable : !usable(dsp[field])}
         oninput={(event) => level(field, event.currentTarget.valueAsNumber)} />
       <output>{nr?.text ?? fmt(dsp[field], format)}</output>
@@ -196,7 +215,8 @@
       {#if part !== 'agc' && scalarHandles && !scalarLayout}{@render scalarHandles.nbWidth()}{/if}
     {:else if showsLevel(field) && dsp?.[field].availability.structural}
       {@const nr = field === 'nrLevel' ? nrPresentation(dsp) : null}
-      {@render nativeLevel(field, label, min, max, step, format, nr)}
+      {@const notch = field === 'notchFreq' ? notchPresentation(dsp) : null}
+      {@render nativeLevel(field, label, min, max, step, format, nr, notch)}
     {/if}
   {/each}
 

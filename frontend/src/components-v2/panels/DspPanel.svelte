@@ -93,6 +93,10 @@
   );
   let notchMode = $derived(p.notchMode);
   let notchFreq = $derived(p.notchFreq);
+  // MOR-2475: the published `manual_notch_freq` display domain when the
+  // radio declares one (props state the domain, never a fallback); `null`
+  // keeps this panel's raw 0-255 constants.
+  let notchFreqDomain = $derived(p.notchFreqDomain ?? null);
   let manualNotchWidth = $derived(p.manualNotchWidth ?? 0);
   let agcTimeConstant = $derived(p.agcTimeConstant ?? 0);
   const onNrModeChange = handlers.onNrModeChange;
@@ -140,7 +144,12 @@
   const notchPositionBinding = createContinuousScalar(
     () => ({
       evidence: 'command-feedback', feedback: notchPositionFeedback, command: 'set_notch_filter',
-      domain: { min: 0, max: 255, step: 1, defaultValue: null, fineStepDivisor: 10 },
+      domain: notchFreqDomain === null
+        ? { min: 0, max: 255, step: 1, defaultValue: null, fineStepDivisor: 10 }
+        : {
+          min: notchFreqDomain.min, max: notchFreqDomain.max, step: notchFreqDomain.step,
+          defaultValue: null, fineStepDivisor: 10,
+        },
       enabled: showNotch && notchMode === 'manual'
         && notchPositionFeedback.availability === 'available',
       request: onNotchFreqChange,

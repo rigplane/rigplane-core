@@ -616,6 +616,55 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.patchRadioState).not.toHaveBeenCalled();
   });
 
+  // MOR-2475 PR-2: once a surface's notch slider carries the published
+  // display unit, `onNotchFreqChange` must encode display -> raw through the
+  // same `resolveControlContract(caps, 'manual_notch_freq')` the view-model
+  // adapter decodes with; the backend (`web/handlers/control.py`'s
+  // `_notch_position_from_param`) admits only raw positions the radio's
+  // domain decodes, or the documented raw 0-255 wire code otherwise.
+  describe('manual-notch frequency command encoding (MOR-2475)', () => {
+    const FTX1_MANUAL_NOTCH_FREQ = {
+      mapping: 'linear',
+      raw_min: 1, raw_max: 320, raw_step: 1, raw_origin: 1,
+      display_min: '10', display_max: '3200', display_step: '10', display_origin: '10',
+      display_unit: 'Hz', quantization: 'reject', restoration: 'exact',
+    };
+
+    it('dispatches the slider value verbatim when no domain is published (Icom pin)', () => {
+      const dsp = makeDspHandlers();
+      dsp.onNotchFreqChange(96);
+      expect(exactCalls()).toEqual([['set_notch_filter', { value: 96, receiver: 0 }]]);
+      expectIntentTransport();
+    });
+
+    it('encodes display Hz to the raw code through the published domain (FTX-1)', () => {
+      h.caps = {
+        ...h.caps,
+        receivers: 1,
+        controls: { manual_notch_freq: FTX1_MANUAL_NOTCH_FREQ },
+      };
+      h.state = state();
+      h.state.main!.manualNotchFreq = 160;
+      const dsp = makeDspHandlers();
+      dsp.onNotchFreqChange(1600);
+      expect(exactCalls()).toEqual([['set_notch_filter', { value: 160, receiver: 0 }]]);
+      expectIntentTransport();
+    });
+
+    it.each([1601, 9, 3201])('refuses to dispatch off-domain display value %i', (value) => {
+      h.caps = {
+        ...h.caps,
+        receivers: 1,
+        controls: { manual_notch_freq: FTX1_MANUAL_NOTCH_FREQ },
+      };
+      h.state = state();
+      h.state.main!.manualNotchFreq = 160;
+      const dsp = makeDspHandlers();
+      dsp.onNotchFreqChange(value);
+      expect(exactCalls()).toEqual([]);
+    });
+  });
+
   it('marks only bounded normalized RF-power UI values', () => {
     const tx = makeTxHandlers();
     tx.onRfPowerChange(0);
