@@ -81,7 +81,7 @@ from rigplane.rigctld import RigctldServer
 from rigplane.rigctld.contract import RigctldConfig
 
 async def main() -> None:
-    radio_config = LanBackendConfig(host="192.168.1.10", username="admin", password="secret")
+    radio_config = LanBackendConfig(host="192.168.1.10", username="admin", password="secret", model="IC-7610")
     async with create_radio(radio_config) as radio:
         config = RigctldConfig(host="0.0.0.0", port=4532)
         async with RigctldServer(radio, config) as server:

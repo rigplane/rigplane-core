@@ -478,6 +478,7 @@
             contour={contourLevel}
             manualNotch={dsp.notchMode === 'manual'}
             notchFreq={dsp.notchFreq}
+            notchFreqDomain={dsp.notchFreqDomain}
             autoNotch={notchActive}
             bandwidth={fftBandwidth}
             compact

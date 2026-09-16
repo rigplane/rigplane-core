@@ -163,7 +163,7 @@ from rigplane.exceptions import (
     TimeoutError,
 )
 
-config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
+config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610")
 try:
     async with create_radio(config) as radio:
         freq = await radio.get_frequency()

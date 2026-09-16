@@ -61,7 +61,7 @@ from rigplane import create_radio, LanBackendConfig
 logging.basicConfig(level=logging.DEBUG)
 
 # This will show the full handshake sequence
-config = LanBackendConfig(host="192.168.1.100", username="u", password="p")
+config = LanBackendConfig(host="192.168.1.100", username="u", password="p", model="IC-7610")
 async with create_radio(config) as radio:
     freq = await radio.get_freq()
 ```
