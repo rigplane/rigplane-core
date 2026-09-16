@@ -144,3 +144,57 @@ describe.each<Mode>(['compact', 'fill', 'dominant'])('Amber AF %s input honesty'
     expectActivity(mode);
   });
 });
+
+/**
+ * MOR-2475 PR-3 — with a published `notchFreqDomain` the notch V is placed
+ * by the decoded frequency over the drawn passband (0..filterHz across the
+ * trapezoid top tl..tr), clamped to the edge outside the span; with no
+ * domain the raw 0-255 placement is byte-for-byte today's. Geometry
+ * constants mirror the component's own expressions for width=320,
+ * height=160, filterWidth=2400, filterWidthMax=3600, ifShift=0.
+ */
+describe('Amber AF scope manual-notch marker placement (MOR-2475 PR-3)', () => {
+  const FTX1_NOTCH_DISPLAY_DOMAIN = { min: 10, max: 3200, step: 10, origin: 10 };
+
+  const TRAP_TOP = 40;
+  const TRAP_H = height - TRAP_TOP;
+  const FILTER_RATIO = Math.min(1, 2400 / 3600);
+  const TOP_HALF_W = (width * 0.42 - TRAP_H * 0.35) * FILTER_RATIO;
+  const TL = width / 2 - TOP_HALF_W;
+  const TR = width / 2 + TOP_HALF_W;
+  const APEX_Y = TRAP_TOP + TRAP_H * 0.55;
+
+  function notchApexX(notchFreq: number, notchFreqDomain?: typeof FTX1_NOTCH_DISPLAY_DOMAIN): number {
+    component = mount(AmberAfScope, {
+      target,
+      props: {
+        data: null,
+        mode: 'fill',
+        filterWidth: 2400,
+        filterWidthMax: 3600,
+        manualNotch: true,
+        notchFreq,
+        notchFreqDomain,
+      },
+    });
+    flushSync();
+    renderFrame();
+    // The notch V is the only stroke with a point at the apex depth.
+    const notch = strokes.find((p) => p.some(([, y]) => Math.abs(y - APEX_Y) < 1e-9));
+    expect(notch).toBeDefined();
+    return notch![1][0];
+  }
+
+  it('places a domain-published notch by decoded frequency over the drawn passband', () => {
+    expect(notchApexX(1600, FTX1_NOTCH_DISPLAY_DOMAIN))
+      .toBeCloseTo(TL + (1600 / 2400) * (TR - TL), 9);
+  });
+
+  it('keeps the raw 0-255 placement when no domain is published', () => {
+    expect(notchApexX(100)).toBeCloseTo(TL + (100 / 255) * (TR - TL), 9);
+  });
+
+  it('clamps a notch frequency beyond the drawn passband to the trapezoid edge', () => {
+    expect(notchApexX(3200, FTX1_NOTCH_DISPLAY_DOMAIN)).toBeCloseTo(TR, 9);
+  });
+});

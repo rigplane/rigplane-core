@@ -13,7 +13,7 @@ import type { Capabilities, ControlDomain } from '$lib/types/capabilities';
 import type {
   FieldAvailability, FieldStatus, ReceiverState, ServerState,
 } from '$lib/types/state';
-import { toDspProps } from '../panel-props';
+import { toAudioSpectrumProps, toDspProps } from '../panel-props';
 
 const FTX1_MANUAL_NOTCH_FREQ: ControlDomain = {
   mapping: 'linear',
@@ -154,6 +154,64 @@ describe('toDspProps manual-notch domain from the published control (MOR-2475)',
 describe('toDspProps manual notch without a published domain (Icom regression pin)', () => {
   it('keeps the raw notchFilter value and emits no notchFreqDomain key', () => {
     const props = toDspProps(
+      state({ notchFilter: 77, manualNotch: true }, {
+        ...NOTCH_FIELDS, 'main.notchFilter': 'available',
+      }),
+      caps(),
+    );
+    expect(props.notchFreq).toBe(77);
+    expect(props).not.toHaveProperty('notchFreqDomain');
+  });
+});
+
+// PR-3: `toAudioSpectrumProps` feeds the same reading to the scope notch
+// markers through the one shared `manualNotchReading` helper, so its source
+// selection must match `toDspProps` case for case.
+describe('toAudioSpectrumProps manual-notch domain from the published control (MOR-2475 PR-3)', () => {
+  const ftx1Caps = () => caps({ manual_notch_freq: FTX1_MANUAL_NOTCH_FREQ });
+
+  it.each([[1, 10], [160, 1600], [320, 3200]] as const)(
+    'decodes FTX-1 manualNotchFreq raw %i to %i Hz and carries the domain',
+    (raw, hz) => {
+      const props = toAudioSpectrumProps(
+        state({ manualNotchFreq: raw, manualNotch: true }, {
+          ...NOTCH_FIELDS, 'main.manualNotchFreq': 'available',
+        }),
+        ftx1Caps(),
+      );
+      expect(props.notchFreq).toBe(hz);
+      expect(props.notchFreqDomain).toEqual(FTX1_NOTCH_DISPLAY_DOMAIN);
+    },
+  );
+
+  it('keeps the domain but reads notchFilter when the manualNotchFreq field is unusable', () => {
+    const props = toAudioSpectrumProps(
+      state({ manualNotchFreq: 160, notchFilter: 77, manualNotch: true }, {
+        ...NOTCH_FIELDS,
+        'main.manualNotchFreq': 'unavailable',
+        'main.notchFilter': 'available',
+      }),
+      ftx1Caps(),
+    );
+    expect(props.notchFreq).toBe(77);
+    expect(props.notchFreqDomain).toEqual(FTX1_NOTCH_DISPLAY_DOMAIN);
+  });
+
+  it('reads an out-of-domain raw position as 0, never a rescaled stand-in', () => {
+    const props = toAudioSpectrumProps(
+      state({ manualNotchFreq: 321, manualNotch: true }, {
+        ...NOTCH_FIELDS, 'main.manualNotchFreq': 'available',
+      }),
+      ftx1Caps(),
+    );
+    expect(props.notchFreq).toBe(0);
+    expect(props.notchFreqDomain).toEqual(FTX1_NOTCH_DISPLAY_DOMAIN);
+  });
+});
+
+describe('toAudioSpectrumProps manual notch without a published domain (Icom regression pin)', () => {
+  it('keeps the raw notchFilter value and emits no notchFreqDomain key', () => {
+    const props = toAudioSpectrumProps(
       state({ notchFilter: 77, manualNotch: true }, {
         ...NOTCH_FIELDS, 'main.notchFilter': 'available',
       }),

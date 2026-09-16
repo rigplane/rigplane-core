@@ -252,4 +252,73 @@ describe('renderAudioSpectrum', () => {
       expect(filterLabelCall?.[0]).toBe('Filter: 2400 Hz');
     });
   });
+
+  /**
+   * MOR-2475 PR-3 — with a published `notchFreqDomain` the marker is placed
+   * by the decoded frequency over the drawn passband (0..filterHz across
+   * the trapezoid top tl..tr), clamped to the edge outside the span; with
+   * no domain the raw 0-255 placement is byte-for-byte today's. Geometry
+   * constants below mirror the renderer's own expressions for width=400,
+   * height=160, filterWidth=2400, filterWidthMax=3600, centered PBT.
+   */
+  describe('manual-notch marker placement (MOR-2475 PR-3)', () => {
+    const FTX1_NOTCH_DISPLAY_DOMAIN = { min: 10, max: 3200, step: 10, origin: 10 };
+
+    const TRAP_TOP = 18;
+    const TRAP_H = 160 - 18 - 16;
+    const FILTER_RATIO = Math.min(1, 2400 / 3600) * 0.75;
+    const TOP_HALF_W = (400 * 0.45 - TRAP_H * 0.35) * FILTER_RATIO;
+    const TL = 200 - TOP_HALF_W;
+    const TR = 200 + TOP_HALF_W;
+    const APEX_Y = TRAP_TOP + TRAP_H * 0.55;
+
+    function mockCtxWithPaths() {
+      const ctx = mockCtx();
+      const paths: [number, number][][] = [];
+      let current: [number, number][] = [];
+      Object.defineProperty(ctx, 'beginPath', {
+        value: () => { current = []; paths.push(current); },
+      });
+      Object.defineProperty(ctx, 'moveTo', {
+        value: (x: number, y: number) => { current.push([x, y]); },
+      });
+      Object.defineProperty(ctx, 'lineTo', {
+        value: (x: number, y: number) => { current.push([x, y]); },
+      });
+      return { ctx, paths };
+    }
+
+    function notchApexX(state: SpectrumState): number {
+      const rs = new AudioSpectrumRendererState();
+      const { ctx, paths } = mockCtxWithPaths();
+      renderAudioSpectrum(ctx, 400, 160, state, rs);
+      // The notch triangle is the only path with a point at the apex depth.
+      const notch = paths.find((p) => p.some(([, y]) => Math.abs(y - APEX_Y) < 1e-9));
+      expect(notch).toBeDefined();
+      return notch![1][0];
+    }
+
+    it('places a domain-published notch by decoded frequency over the drawn passband', () => {
+      const x = notchApexX({
+        ...baseState, pixels: null, manualNotch: true,
+        notchFreq: 1600, notchFreqDomain: FTX1_NOTCH_DISPLAY_DOMAIN,
+      });
+      expect(x).toBeCloseTo(TL + (1600 / 2400) * (TR - TL), 9);
+    });
+
+    it('keeps the raw 0-255 placement when no domain is published', () => {
+      const x = notchApexX({
+        ...baseState, pixels: null, manualNotch: true, notchFreq: 100,
+      });
+      expect(x).toBeCloseTo(TL + (100 / 255) * (TR - TL), 9);
+    });
+
+    it('clamps a notch frequency beyond the drawn passband to the trapezoid edge', () => {
+      const x = notchApexX({
+        ...baseState, pixels: null, manualNotch: true,
+        notchFreq: 3200, notchFreqDomain: FTX1_NOTCH_DISPLAY_DOMAIN,
+      });
+      expect(x).toBeCloseTo(TR, 9);
+    });
+  });
 });

@@ -7,6 +7,8 @@
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
+
 export interface SpectrumState {
   /** FFT bin amplitudes (0-160 range) */
   pixels: Uint8Array | null;
@@ -22,8 +24,11 @@ export interface SpectrumState {
   pbtOuter: number;
   /** Manual notch active */
   manualNotch: boolean;
-  /** Manual notch frequency (0-255 raw) */
+  /** Manual notch frequency (0-255 raw, or display units when `notchFreqDomain` is present) */
   notchFreq: number;
+  /** Published manual-notch display domain; its presence means `notchFreq`
+   *  is in display units placed over the drawn passband, not a 0-255 raw code */
+  notchFreqDomain?: ControlDisplayDomain;
   /** Contour level (0=off, >0=active) */
   contour: number;
   /** Contour center frequency offset (0-255 raw) */
@@ -108,7 +113,7 @@ export function renderAudioSpectrum(
     rs = _defaultState;
   }
   const { pixels, bandwidth, filterWidth, filterWidthMax, pbtInner, pbtOuter,
-          manualNotch, notchFreq, contour, contourFreq } = state;
+          manualNotch, notchFreq, notchFreqDomain, contour, contourFreq } = state;
 
   // Clear
   ctx.clearRect(0, 0, width, height);
@@ -390,7 +395,14 @@ export function renderAudioSpectrum(
   // Skipped entirely when non-finite (positioned relative to the
   // trapezoid's tl/tr, both NaN-tainted) — see `showFilterOverlay` above.
   if (showFilterOverlay && manualNotch) {
-    const notchX = tl + (notchFreq / 255) * (tr - tl);
+    // With a published domain `notchFreq` is a display-units frequency
+    // placed over the drawn passband (0..filterHz across tl..tr), clamped
+    // to the trapezoid edge when it falls outside; without one it stays
+    // the raw 0-255 code, placed exactly as before.
+    const notchFrac = notchFreqDomain
+      ? Math.max(0, Math.min(1, filterHz > 0 ? notchFreq / filterHz : 0))
+      : notchFreq / 255;
+    const notchX = tl + notchFrac * (tr - tl);
     const depth = trapH * 0.55;
     const nHalfW = (tr - tl) * 0.06;
 

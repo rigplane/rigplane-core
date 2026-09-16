@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { renderAudioSpectrum, AudioSpectrumRendererState, type SpectrumState } from './audio-spectrum-renderer';
+  import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
 
   interface Props {
     /** FFT pixel data from AudioFftScope (0-160 range) */
@@ -19,8 +20,10 @@
     pbtOuter?: number;
     /** Manual notch active */
     manualNotch?: boolean;
-    /** Manual notch frequency (0-255 raw) */
+    /** Manual notch frequency (0-255 raw, or display units when `notchFreqDomain` is present) */
     notchFreq?: number;
+    /** Published manual-notch display domain (see `SpectrumState.notchFreqDomain`) */
+    notchFreqDomain?: ControlDisplayDomain;
     /** Contour level (0=off, >0=active) */
     contour?: number;
     /** Contour center frequency offset (0-255 raw) */
@@ -37,6 +40,7 @@
     pbtOuter = 128,
     manualNotch = false,
     notchFreq = 128,
+    notchFreqDomain,
     contour = 0,
     contourFreq = 128,
   }: Props = $props();
@@ -72,6 +76,7 @@
           pbtOuter,
           manualNotch,
           notchFreq,
+          notchFreqDomain,
           contour,
           contourFreq,
         };
@@ -89,7 +94,7 @@
   // A control/readout change must repaint even between FFT frames.
   $effect(() => {
     data; bandwidth; filterWidth; filterWidthMax; pbtInner; pbtOuter;
-    manualNotch; notchFreq; contour; contourFreq;
+    manualNotch; notchFreq; notchFreqDomain; contour; contourFreq;
     scheduleDraw();
   });
 
