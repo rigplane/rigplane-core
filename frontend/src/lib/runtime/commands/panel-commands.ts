@@ -29,6 +29,7 @@ import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import {
   mapIfShiftToPbt, nbDepthDisplayToRaw, pbtHzToRaw, pbtRangeFromCaps,
   quantizeFilterWidthToRule,
+  resolveControlContract,
   resolveNrLevelContract,
 } from '$lib/radio/filter-controls';
 import { audioManager } from '$lib/audio/audio-manager';
@@ -653,9 +654,20 @@ export function makeDspHandlers() {
       // notchFilter (MOR-1548): reclassified receiver-scoped, matching the
       // ic7610.toml cmd29 route's own per-receiver rationale — same gate
       // pattern as onManualNotchWidthChange below.
-      const receiver = knownReceiverField('notchFilter');
+      // MOR-2475: when the radio publishes a `manual_notch_freq` display
+      // domain, the slider carries display units and the value must encode
+      // display -> raw through the same `resolveControlContract` the
+      // view-model adapter decodes with; the gate then follows the field
+      // that carries the reading (`manualNotchFreq`). Without a published
+      // domain the slider value already IS the raw wire code and dispatches
+      // verbatim, gated on `notchFilter` exactly as before.
+      const contract = resolveControlContract(getCapabilities(), 'manual_notch_freq');
+      const field = contract.displayDomain === null ? 'notchFilter' : 'manualNotchFreq';
+      const receiver = knownReceiverField(field, contract.receivers ?? undefined);
       if (!hasCapability('notch') || receiver === null || !Number.isSafeInteger(value)) return;
-      dispatchRadioIntent({ name: 'set_notch_filter', params: { value, receiver } });
+      const raw = contract.displayDomain === null ? value : contract.displayToRaw(value);
+      if (raw === null) return;
+      dispatchRadioIntent({ name: 'set_notch_filter', params: { value: raw, receiver } });
     },
     onNbDepthChange: (level: number) => {
       // MOR-498: slider is 1-10 (front-panel scale); wire is 0-9.  Store the
