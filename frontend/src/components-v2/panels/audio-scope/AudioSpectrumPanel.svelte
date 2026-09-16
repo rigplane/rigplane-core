@@ -59,6 +59,7 @@
     filterWidthMax={p.filterWidthMax}
     pbtInner={p.pbtInner}
     pbtOuter={p.pbtOuter}
+    pbtRange={p.pbtRange}
     manualNotch={p.manualNotch}
     notchFreq={p.notchFreq}
     notchFreqDomain={p.notchFreqDomain}
