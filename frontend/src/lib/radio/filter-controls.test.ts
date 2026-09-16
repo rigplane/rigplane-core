@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import type { Capabilities, ControlDomain, FilterModeConfig } from '$lib/types/capabilities';
 import {
   controlDisplayDomain,
+  measuredPbtHzToRaw,
+  measuredPbtRawToHz,
   nrRawToDisplay,
+  PBT_MEASURED_STEP_HZ,
   quantizeFilterWidthToRule,
   resolveControlContract,
 } from './filter-controls';
@@ -382,5 +385,113 @@ describe('resolveControlContract (MOR-2475)', () => {
     expect(contract.displayDomain).toEqual({ min: 0, max: 15, step: 1, origin: 0 });
     expect(contract.rawToDisplay(128)).toBe(8);
     expect(contract.displayToRaw(8)).toBe(136);
+  });
+});
+
+// MOR-2497 step 1: the measured IC PBT lattice. The fixture below is DATA,
+// not the formula restated: all 73 reachable raw positions at filter width
+// 3600 Hz, swept on the bench on 2026-09-16 by writing every raw 0..255 and
+// reading back what the radio snapped to, identically on an IC-7610 over LAN
+// and an IC-7300 over serial. The 50 Hz step is pinned against the radio's
+// own display (raw 254 at filter 3600 read `SFT +900`/`BW 1.8` on the front
+// panel — both give an 1800 Hz edge movement, i.e. 36 steps of 50 Hz; a
+// 25 Hz step would have read `SFT +450`).
+
+const PBT_LATTICE_3600: readonly number[] = [
+  1, 5, 8, 12, 15, 19, 22, 26, 29, 33, 36, 40, 43, 47, 50, 54, 57, 61,
+  64, 68, 71, 75, 78, 82, 85, 89, 92, 96, 99, 103, 106, 110, 113, 117,
+  120, 124, 128, 131, 135, 138, 142, 145, 149, 152, 156, 159, 163, 166,
+  170, 173, 177, 180, 184, 187, 191, 194, 198, 201, 205, 208, 212, 215,
+  219, 222, 226, 229, 233, 236, 240, 243, 247, 250, 254,
+];
+
+describe('measuredPbt conversion (bench fixture, filter 3600)', () => {
+  it('reproduces all 73 measured raw positions in both directions', () => {
+    expect(PBT_LATTICE_3600).toHaveLength(73);
+    PBT_LATTICE_3600.forEach((raw, i) => {
+      const hz = (i - 36) * 50;
+      expect(measuredPbtHzToRaw(hz, 3600, PBT_MEASURED_STEP_HZ)).toBe(raw);
+      expect(measuredPbtRawToHz(raw, 3600, PBT_MEASURED_STEP_HZ)).toBe(hz);
+    });
+  });
+
+  it('pins the Hz mapping at the measured points: 254 -> +1800, 128 -> 0, 1 -> -1800', () => {
+    expect(measuredPbtRawToHz(254, 3600, PBT_MEASURED_STEP_HZ)).toBe(1800);
+    expect(measuredPbtRawToHz(128, 3600, PBT_MEASURED_STEP_HZ)).toBe(0);
+    expect(measuredPbtRawToHz(1, 3600, PBT_MEASURED_STEP_HZ)).toBe(-1800);
+  });
+});
+
+describe('measuredPbt conversion (swept endpoints at filters 1800 and 500)', () => {
+  // The same bench sweep recorded position counts and endpoints at the other
+  // two widths; interior cells were not separately logged, so only counts,
+  // endpoints and the centre are asserted here.
+  it('filter 1800: 37 positions, raw 3..252, centre at raw 128, +/-900 Hz', () => {
+    const raws = new Set<number>();
+    for (let hz = -900; hz <= 900; hz += PBT_MEASURED_STEP_HZ) {
+      raws.add(measuredPbtHzToRaw(hz, 1800, PBT_MEASURED_STEP_HZ) as number);
+    }
+    expect(raws.size).toBe(37);
+    expect(measuredPbtHzToRaw(-900, 1800, PBT_MEASURED_STEP_HZ)).toBe(3);
+    expect(measuredPbtHzToRaw(900, 1800, PBT_MEASURED_STEP_HZ)).toBe(252);
+    expect(measuredPbtHzToRaw(0, 1800, PBT_MEASURED_STEP_HZ)).toBe(128);
+    expect(measuredPbtRawToHz(3, 1800, PBT_MEASURED_STEP_HZ)).toBe(-900);
+    expect(measuredPbtRawToHz(252, 1800, PBT_MEASURED_STEP_HZ)).toBe(900);
+  });
+
+  it('filter 500: 11 positions, raw 11..244, centre at raw 128, +/-250 Hz', () => {
+    const raws = new Set<number>();
+    for (let hz = -250; hz <= 250; hz += PBT_MEASURED_STEP_HZ) {
+      raws.add(measuredPbtHzToRaw(hz, 500, PBT_MEASURED_STEP_HZ) as number);
+    }
+    expect(raws.size).toBe(11);
+    expect(measuredPbtHzToRaw(-250, 500, PBT_MEASURED_STEP_HZ)).toBe(11);
+    expect(measuredPbtHzToRaw(250, 500, PBT_MEASURED_STEP_HZ)).toBe(244);
+    expect(measuredPbtHzToRaw(0, 500, PBT_MEASURED_STEP_HZ)).toBe(128);
+    expect(measuredPbtRawToHz(11, 500, PBT_MEASURED_STEP_HZ)).toBe(-250);
+    expect(measuredPbtRawToHz(244, 500, PBT_MEASURED_STEP_HZ)).toBe(250);
+  });
+});
+
+describe('measuredPbt conversion (honest handling of degenerate input)', () => {
+  it.each([0, -100, Number.NaN, Number.POSITIVE_INFINITY, 125])(
+    'reports no conversion at filter width %s (zero/negative/non-finite/not a multiple of the step)',
+    (width) => {
+      expect(measuredPbtRawToHz(128, width, PBT_MEASURED_STEP_HZ)).toBeNull();
+      expect(measuredPbtHzToRaw(0, width, PBT_MEASURED_STEP_HZ)).toBeNull();
+    },
+  );
+
+  it('reports no conversion for a non-positive or non-finite step', () => {
+    expect(measuredPbtRawToHz(128, 3600, 0)).toBeNull();
+    expect(measuredPbtRawToHz(128, 3600, -50)).toBeNull();
+    expect(measuredPbtHzToRaw(0, 3600, Number.NaN)).toBeNull();
+  });
+
+  it('reports no conversion for a lattice finer than one raw unit per position', () => {
+    // 13000/50 + 1 = 261 positions over 256 raw values — adjacent positions
+    // would collide on the same raw, so no honest lattice exists.
+    expect(measuredPbtRawToHz(128, 13000, PBT_MEASURED_STEP_HZ)).toBeNull();
+    expect(measuredPbtHzToRaw(0, 13000, PBT_MEASURED_STEP_HZ)).toBeNull();
+  });
+
+  it('reports no Hz for a raw the wire cannot carry', () => {
+    expect(measuredPbtRawToHz(-1, 3600, PBT_MEASURED_STEP_HZ)).toBeNull();
+    expect(measuredPbtRawToHz(256, 3600, PBT_MEASURED_STEP_HZ)).toBeNull();
+    expect(measuredPbtRawToHz(Number.NaN, 3600, PBT_MEASURED_STEP_HZ)).toBeNull();
+  });
+
+  it('snaps a raw between lattice points to the nearest, ties toward the centre', () => {
+    // Measured neighbours at filter 3600: raw 1 (-1800) and raw 5 (-1750).
+    expect(measuredPbtRawToHz(2, 3600, PBT_MEASURED_STEP_HZ)).toBe(-1800);
+    expect(measuredPbtRawToHz(4, 3600, PBT_MEASURED_STEP_HZ)).toBe(-1750);
+    // raw 3 sits exactly halfway; the centre-side point wins.
+    expect(measuredPbtRawToHz(3, 3600, PBT_MEASURED_STEP_HZ)).toBe(-1750);
+  });
+
+  it('snaps Hz between lattice points to the nearest position and clamps beyond the lattice', () => {
+    expect(measuredPbtHzToRaw(1760, 3600, PBT_MEASURED_STEP_HZ)).toBe(250); // position of +1750
+    expect(measuredPbtHzToRaw(5000, 3600, PBT_MEASURED_STEP_HZ)).toBe(254);
+    expect(measuredPbtHzToRaw(-5000, 3600, PBT_MEASURED_STEP_HZ)).toBe(1);
   });
 });
