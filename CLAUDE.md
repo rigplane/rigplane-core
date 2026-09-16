@@ -268,6 +268,29 @@ session rotation is not permission for forced cleanup. Verify released
 ownership, retained work/evidence, clean state, and existing cleanup authority
 before removing a worktree; do not automatically prune on startup.
 
+A completed merge is the exception, and it is standing authority: after a PR
+merges, remove its worktree and delete its branch immediately rather than
+letting them accumulate (owner, 2026-09-16). A merge normally satisfies the
+preceding conditions, which is what distinguishes it from the cases above — but
+check, because three cases leave one of them unmet:
+
+- **An open PR is based on the merged branch.** Ownership is not released:
+  deleting the base auto-closes the child, after which GitHub refuses both
+  reopen (base gone) and retarget (already closed). `AGENTS.md` already forbids
+  this, and its retarget-every-child-first procedure is the precondition. Clean
+  up only once no open PR is based on the branch.
+- **Uncommitted changes in the worktree.** Inspect before touching; leave it
+  alone if the content is not superseded.
+- **Another live session is working in it.** Not ours to remove, merged or not.
+
+Unpushed local commits on the branch are work not retained, and are not
+"uncommitted changes" in the worktree: `git branch -d` refuses them and `-D`
+discards them silently, so do not reach for `-D` to make a refusal go away.
+
+`gh pr merge --delete-branch` run from inside a worktree can exit non-zero
+*after* the merge already succeeded, so confirm the result with
+`gh pr view --json state` rather than the exit code.
+
 At semantic milestones, assess repeated loads and context degradation against
 rehydration cost. Compactions, context size, or two corrections alone do not
 require `/clear` or a reset. Keep cumulative input, cached input, context
