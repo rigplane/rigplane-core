@@ -24,14 +24,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SerialOpener = Callable[..., Awaitable[tuple[Any, Any]]]
-
 
 async def open_serial_port(
     url: str,
     *,
     baudrate: int,
-    opener: SerialOpener | None = None,
+    opener: Callable[..., Awaitable[tuple[Any, Any]]] | None = None,
     **kwargs: Any,
 ) -> tuple[Any, Any]:
     """Open serial port *url* with DTR and RTS deasserted.
@@ -106,7 +104,9 @@ def _deassert_control_lines(writer: Any, port: str) -> None:
     """Drive DTR and RTS low on the pyserial object behind *writer*.
 
     A writer without ``.transport.serial`` (every fake opener in tests) is
-    a normal case, not an error. A port that refuses a control-line write
+    a normal case, not an error; it also tolerates a future
+    ``pyserial-asyncio`` that no longer exposes ``.serial``, given the
+    ``>=0.6`` version floor. A port that refuses a control-line write
     (some virtual and Bluetooth ports do) is still usable, so the failure
     is swallowed — but it is logged at warning with the port name, because
     this is a TX-safety path and must be visible at default logging.
@@ -126,4 +126,4 @@ def _deassert_control_lines(writer: Any, port: str) -> None:
             )
 
 
-__all__ = ["SerialOpener", "open_serial_port"]
+__all__ = ["open_serial_port"]

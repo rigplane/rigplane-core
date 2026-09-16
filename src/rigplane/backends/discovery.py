@@ -132,7 +132,6 @@ class CivProbeResult:
     model_id: bytes
 
 
-# Default open function; replaced in tests via _open_serial parameter.
 _OpenSerial = Callable[..., Awaitable[tuple[Any, Any]]]
 
 
