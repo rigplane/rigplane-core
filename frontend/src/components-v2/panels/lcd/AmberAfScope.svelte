@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
+  import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
 
   interface Props {
     /** FFT pixel data from AudioFftScope (0-160 range) */
@@ -18,8 +19,11 @@
     contourFreq?: number;
     /** Manual notch active */
     manualNotch?: boolean;
-    /** Manual notch frequency (0-255 raw) */
+    /** Manual notch frequency (0-255 raw, or display units when `notchFreqDomain` is present) */
     notchFreq?: number;
+    /** Published manual-notch display domain; its presence means `notchFreq`
+     *  is in display units placed over the drawn passband, not a 0-255 raw code */
+    notchFreqDomain?: ControlDisplayDomain;
     /** Auto notch active */
     autoNotch?: boolean;
     /** Layout sizing mode: 'compact' = fixed strip height; 'fill' = stretch to container;
@@ -43,6 +47,7 @@
     contourFreq = 128,
     manualNotch = false,
     notchFreq = 128,
+    notchFreqDomain,
     sampleRate = 48000,
     bandwidth,
     mode = 'compact',
@@ -248,7 +253,14 @@
 
     // ── Manual notch (sharp V from top of trapezoid) ──
     if (manualNotch) {
-      const notchX = tl + (notchFreq / 255) * (tr - tl);
+      // With a published domain `notchFreq` is a display-units frequency
+      // placed over the drawn passband (0..filterHz across tl..tr), clamped
+      // to the trapezoid edge when it falls outside; without one it stays
+      // the raw 0-255 code, placed exactly as before.
+      const notchFrac = notchFreqDomain
+        ? Math.max(0, Math.min(1, filterHz > 0 ? notchFreq / filterHz : 0))
+        : notchFreq / 255;
+      const notchX = tl + notchFrac * (tr - tl);
       const depth = trapH * 0.55;
       const nHalfW = (tr - tl) * 0.06;
 
