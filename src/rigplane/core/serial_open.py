@@ -3,7 +3,11 @@
 pyserial asserts DTR and RTS by default when a port is opened. On a radio
 whose USB SEND/KEY input is wired to DTR or RTS (e.g. Icom SET ->
 Connectors -> USB SEND), an asserted line keys the transmitter, so every
-serial open in rigplane routes through :func:`open_serial_port`.
+serial open on a production path routes through :func:`open_serial_port`.
+One test seam does not: ``SerialCivLink(open_serial_connection=...)``
+returns the injected callable as-is, replacing the open *and* the deassert
+below, unlike this helper's own ``opener`` parameter, which replaces only
+the open. Retiring that seam is MOR-2495.
 
 The helper builds the pyserial instance with ``do_not_open=True``, drives
 both lines low while the port is still closed (pyserial stores them as
@@ -37,7 +41,7 @@ async def open_serial_port(
     The default opener constructs the pyserial instance closed, drives
     both modem control lines low before the port is opened, opens it, and
     wraps it the way ``serial_asyncio.open_serial_connection`` does.
-    *opener* replaces that whole step in tests. After the open returns,
+    *opener* replaces that open step in tests. After the open returns,
     both lines are deasserted once more on the live serial object as a
     second line of defence.
 
