@@ -1198,6 +1198,26 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
     });
   });
 
+  describe('toAudioSpectrumProps pbtRange (MOR-2475 PR-4)', () => {
+    it('carries the published pbt_inner range for the renderer', () => {
+      const props = toAudioSpectrumProps(
+        null,
+        {
+          capabilities: ['pbt'],
+          controls: {
+            pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 },
+          },
+        } as any,
+      );
+      expect(props.pbtRange).toEqual({ rawCenter: 128, displayMin: -1200, displayMax: 1200 });
+    });
+
+    it('emits no pbtRange key when the radio publishes no usable pbt_inner range', () => {
+      const props = toAudioSpectrumProps(null, null);
+      expect(props).not.toHaveProperty('pbtRange');
+    });
+  });
+
   describe('toMemoryPanelProps', () => {
     it('does not invent activeFreqHz=0/activeMode="" when state is absent', () => {
       const props = toMemoryPanelProps(null, null);

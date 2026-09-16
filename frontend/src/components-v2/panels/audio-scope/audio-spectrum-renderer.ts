@@ -7,7 +7,7 @@
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
+import { pbtRawToHz, type ControlDisplayDomain, type PbtRange } from '$lib/radio/filter-controls';
 
 export interface SpectrumState {
   /** FFT bin amplitudes (0-160 range) */
@@ -22,6 +22,11 @@ export interface SpectrumState {
   pbtInner: number;
   /** PBT outer raw value (0-255, center=128) */
   pbtOuter: number;
+  /** Published PBT raw↔Hz range (`controls.pbt_inner`); the PBT shift and
+   *  twin trapezoids are drawn only when present — absent, not null, when
+   *  the radio publishes no usable range, and the renderer never falls back
+   *  to the capabilities store behind `pbtRawToHz`. */
+  pbtRange?: PbtRange;
   /** Manual notch active */
   manualNotch: boolean;
   /** Manual notch frequency (0-255 raw, or display units when `notchFreqDomain` is present) */
@@ -53,11 +58,6 @@ const FILTER_LABEL_COLOR = 'rgba(180, 220, 255, 0.7)';
 // Smoothing — fast attack shows transients, moderate decay avoids flicker
 const ATTACK = 0.55;
 const DECAY = 0.25;
-
-/** Convert PBT raw (0-255, center=128) to Hz offset. */
-export function pbtRawToHz(raw: number, center = 128, maxHz = 1200): number {
-  return Math.round((raw - center) * (maxHz / center));
-}
 
 /** Per-instance renderer state (avoids module-level singleton sharing). */
 export class AudioSpectrumRendererState {
@@ -113,7 +113,7 @@ export function renderAudioSpectrum(
     rs = _defaultState;
   }
   const { pixels, bandwidth, filterWidth, filterWidthMax, pbtInner, pbtOuter,
-          manualNotch, notchFreq, notchFreqDomain, contour, contourFreq } = state;
+          pbtRange, manualNotch, notchFreq, notchFreqDomain, contour, contourFreq } = state;
 
   // Clear
   ctx.clearRect(0, 0, width, height);
@@ -156,7 +156,11 @@ export function renderAudioSpectrum(
   const whiskerLeft = width / 2 - totalHalfW;
   const whiskerRight = width / 2 + totalHalfW;
 
-  const avgPbtHz = pbtRawToHz(Math.round((pbtInner + pbtOuter) / 2));
+  // No published range ⇒ no honest Hz conversion: the shift stays 0 rather
+  // than reaching the capabilities store through `pbtRawToHz`'s fallback.
+  const avgPbtHz = pbtRange
+    ? pbtRawToHz(Math.round((pbtInner + pbtOuter) / 2), pbtRange)
+    : 0;
   const shiftRef = Math.max(rs.animFilterWidth, filterWidthMax * 0.5);
   const cx = width / 2 + (avgPbtHz / shiftRef) * totalHalfW * 0.6;
 
@@ -217,10 +221,10 @@ export function renderAudioSpectrum(
   const pbtActive = pbtInner !== 128 || pbtOuter !== 128;
 
   if (showFilterOverlay) {
-    if (pbtActive) {
+    if (pbtActive && pbtRange) {
       // Twin PBT: draw two separate trapezoids with distinct colors
-      const innerHz = pbtRawToHz(pbtInner);
-      const outerHz = pbtRawToHz(pbtOuter);
+      const innerHz = pbtRawToHz(pbtInner, pbtRange);
+      const outerHz = pbtRawToHz(pbtOuter, pbtRange);
 
       // Inner PBT trapezoid (cyan/blue)
       const innerCx = width / 2 + (innerHz / shiftRef) * totalHalfW * 0.6;

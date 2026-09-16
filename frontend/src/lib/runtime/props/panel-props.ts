@@ -18,11 +18,12 @@ import {
   deriveIfShift,
   nbDepthRawToDisplay,
   nrRawToDisplay,
+  pbtRangeFromCaps,
   pbtRawToHz,
   projectNrLevel,
   resolveControlContract,
 } from '$lib/radio/filter-controls';
-import type { NrLevelProjection, ControlDisplayDomain } from '$lib/radio/filter-controls';
+import type { NrLevelProjection, ControlDisplayDomain, PbtRange } from '$lib/radio/filter-controls';
 import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
 import { isFieldAvailable, isFieldRead } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
@@ -1066,6 +1067,12 @@ export interface AudioSpectrumProps {
   filterWidthMax: number;
   pbtInner: number;
   pbtOuter: number;
+  /** The radio's published PBT raw↔Hz range (`controls.pbt_inner` through
+   *  `pbtRangeFromCaps`, MOR-1284 F1), present only when the radio declares
+   *  a usable one — absent, not null, otherwise. The renderer converts
+   *  `pbtInner`/`pbtOuter` through this range only; without one it draws no
+   *  PBT overlay rather than fall back to the capabilities store. */
+  pbtRange?: PbtRange;
   manualNotch: boolean;
   notchFreq: number;
   /** The manual-notch control's published display domain, present only
@@ -1087,6 +1094,7 @@ export function toAudioSpectrumProps(
     ? filterConfig.table[filterConfig.table.length - 1]
     : (filterConfig?.maxHz ?? caps?.filterWidthMax ?? 4000);
   const { notchFreq, notchFreqDomain } = manualNotchReading(state, caps);
+  const pbtRange = pbtRangeFromCaps(caps);
 
   return {
     // MOR-1409 A12: twin of `toFilterProps.filterWidth` above — same fix,
@@ -1098,6 +1106,7 @@ export function toAudioSpectrumProps(
     filterWidthMax,
     pbtInner: rx?.pbtInner ?? 128,
     pbtOuter: rx?.pbtOuter ?? 128,
+    ...(pbtRange !== undefined ? { pbtRange } : {}),
     manualNotch: rx?.manualNotch ?? false,
     // notchFilter (MOR-1548): reclassified receiver-scoped.
     notchFreq,
