@@ -151,6 +151,23 @@ choice controls; a final whole-path audit remains outstanding.
   the capability declaration is polling-only. It makes no RF, hardware,
   producer-completion, TX-authority, or proven-mutation claim.
 
+## 2026-09-03 — Icom observed PTT producer (PR #3062, tree `150c3865`)
+
+- [2026-09-03-mechanism-audit-icom-observed-ptt-producer.md](2026-09-03-mechanism-audit-icom-observed-ptt-producer.md)
+  — bounded helper-level audit of the Icom CI-V producer slice. Verdict: the
+  protocol-local adapter and the shared tri-state reuse are cleared, while the
+  live direct managed-observer stream and the profile-TTL source are recorded
+  as existing staged migrations. It makes no hardware, full-chain or deletion
+  claim.
+
+## 2026-09-03 — serial write completion (tree `84c96d44`)
+
+- [2026-09-03-mechanism-audit-serial-write-completion.md](2026-09-03-mechanism-audit-serial-write-completion.md)
+  — bounded helper-level archive of `SerialCivLink` write completion, currency
+  and retirement. Verdict: at the frozen `f203d649` snapshot those local
+  mechanisms are canonical, with application-level currency and production
+  runtime integration retained as separate work.
+
 ## 2026-09-02 — Icom STOP CW NAK handling (tree `4cbd5ba4`)
 
 - [2026-09-02-mechanism-audit-icom-stop-cw.md](2026-09-02-mechanism-audit-icom-stop-cw.md)
