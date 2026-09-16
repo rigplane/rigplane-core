@@ -425,8 +425,8 @@ describe('measuredPbt conversion (bench fixture, filter 3600)', () => {
 describe('measuredPbt conversion (swept endpoints at filters 1800 and 500)', () => {
   // The same bench sweep recorded position counts and endpoints at the other
   // two widths; interior cells were not separately logged, so only counts,
-  // endpoints and the pinned centre are asserted here.
-  it('filter 1800: 37 positions, raw 3..252, centre pinned at 128, +/-900 Hz', () => {
+  // endpoints and the centre are asserted here.
+  it('filter 1800: 37 positions, raw 3..252, centre at raw 128, +/-900 Hz', () => {
     const raws = new Set<number>();
     for (let hz = -900; hz <= 900; hz += PBT_MEASURED_STEP_HZ) {
       raws.add(measuredPbtHzToRaw(hz, 1800, PBT_MEASURED_STEP_HZ) as number);
@@ -439,7 +439,7 @@ describe('measuredPbt conversion (swept endpoints at filters 1800 and 500)', () 
     expect(measuredPbtRawToHz(252, 1800, PBT_MEASURED_STEP_HZ)).toBe(900);
   });
 
-  it('filter 500: 11 positions, raw 11..244, centre pinned at 128, +/-250 Hz', () => {
+  it('filter 500: 11 positions, raw 11..244, centre at raw 128, +/-250 Hz', () => {
     const raws = new Set<number>();
     for (let hz = -250; hz <= 250; hz += PBT_MEASURED_STEP_HZ) {
       raws.add(measuredPbtHzToRaw(hz, 500, PBT_MEASURED_STEP_HZ) as number);

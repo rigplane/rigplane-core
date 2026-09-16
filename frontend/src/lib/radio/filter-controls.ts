@@ -121,15 +121,14 @@ export function pbtHzToRaw(hz: number, range?: PbtRange): number {
 //   positions = filterWidthHz / stepHz + 1 reachable lattice points,
 //   margin    = floor(255 / (2 * positions)) raw units in from each end,
 //   raw(i)    = margin + round(i * (255 - 2*margin) / (positions - 1)),
-//   Hz(i)     = (i - (positions - 1)/2) * stepHz,
-// with the centre position pinned at raw 128 — the "0128=center" the IC-7610
-// CI-V Reference Guide documents. The swept lattice is checked in as a
-// fixture in `filter-controls.test.ts`; `round` below is half-to-even, under
-// which the unpinned formula puts the centre at 127, one cell off the
-// measured 128 — the pin is load-bearing, not decoration. The 50 Hz step
-// itself is pinned against the radio's own display (front panel read
-// `SFT +900`/`BW 1.8` at raw 254, filter 3600 — a 25 Hz step would have read
-// `SFT +450`).
+//   Hz(i)     = (i - (positions - 1)/2) * stepHz.
+// `round` is half-up (`Math.round`): the centre then lands on raw 128 on its
+// own (at filter 3600 the centre cell computes exactly 126.5), matching the
+// "0128=center" the IC-7610 CI-V Reference Guide documents; rounding
+// half-to-even instead puts it at 127 and fails the swept-lattice fixture in
+// `filter-controls.test.ts`. The 50 Hz step is pinned against the radio's own
+// display (front panel read `SFT +900`/`BW 1.8` at raw 254, filter 3600 — a
+// 25 Hz step would have read `SFT +450`).
 
 /** PBT lattice step measured on the IC-7610 (LAN) and IC-7300 (serial) on
  *  2026-09-16. The IC-705 and IC-9700 were not on the bench, so this value is
@@ -156,21 +155,10 @@ function pbtLattice(filterWidthHz: number, stepHz: number): PbtLattice | null {
   return { positions, margin: Math.floor(255 / (2 * positions)) };
 }
 
-function roundHalfToEven(x: number): number {
-  const floor = Math.floor(x);
-  const fraction = x - floor;
-  if (fraction < 0.5) return floor;
-  if (fraction > 0.5) return floor + 1;
-  return floor % 2 === 0 ? floor : floor + 1;
-}
-
-/** Raw wire value of lattice position `i`; the centre position is pinned at
- *  128 (see the block comment above). */
+/** Raw wire value of lattice position `i`. */
 function latticeRaw(lattice: PbtLattice, i: number): number {
-  const centre = (lattice.positions - 1) / 2;
-  if (i === centre) return 128;
   return lattice.margin
-    + roundHalfToEven((i * (255 - 2 * lattice.margin)) / (lattice.positions - 1));
+    + Math.round((i * (255 - 2 * lattice.margin)) / (lattice.positions - 1));
 }
 
 /** Nearest lattice position to `raw`; an exact tie (a raw sitting halfway
