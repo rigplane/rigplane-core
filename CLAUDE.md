@@ -268,6 +268,16 @@ session rotation is not permission for forced cleanup. Verify released
 ownership, retained work/evidence, clean state, and existing cleanup authority
 before removing a worktree; do not automatically prune on startup.
 
+A completed merge is the exception, and it is standing authority: after a PR
+merges, remove its worktree and delete its branch immediately rather than
+letting them accumulate (owner, 2026-09-16). The preceding conditions are all
+satisfied at that moment, which is what distinguishes a merge from the cases
+above. Two limits still bind: a worktree holding uncommitted changes, or one
+that another live session is working in, is inspected before it is touched and
+left alone if either is true. `gh pr merge --delete-branch` run from inside a
+worktree can exit non-zero *after* the merge already succeeded, so confirm the
+result with `gh pr view --json state` rather than the exit code.
+
 At semantic milestones, assess repeated loads and context degradation against
 rehydration cost. Compactions, context size, or two corrections alone do not
 require `/clear` or a reset. Keep cumulative input, cached input, context
