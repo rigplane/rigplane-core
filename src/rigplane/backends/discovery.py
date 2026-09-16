@@ -187,11 +187,26 @@ async def _try_baud(
     Returns:
         :class:`CivProbeResult` on success, or ``None`` on timeout / bad data.
     """
-    open_fn = _open_serial or _default_open_serial()
     try:
-        reader, writer = await open_serial_port(url=port, baudrate=baud, opener=open_fn)
-    except Exception:
+        reader, writer = await open_serial_port(
+            url=port, baudrate=baud, opener=_open_serial
+        )
+    except OSError:
+        # Expected during a scan: port busy, absent, or refusing the baud
+        # rate. pyserial's SerialException subclasses OSError.
         logger.debug("probe_serial_civ: cannot open %s @ %d", port, baud)
+        return None
+    except Exception as exc:
+        # Unexpected: programming error or broken environment. Not a
+        # "cannot open" — make it visible at default logging.
+        logger.warning(
+            "probe_serial_civ: unexpected %s opening %s @ %d: %s",
+            type(exc).__name__,
+            port,
+            baud,
+            exc,
+            exc_info=True,
+        )
         return None
 
     try:
@@ -228,16 +243,6 @@ async def _try_baud(
     finally:
         writer.close()
         await writer.wait_closed()
-
-
-def _default_open_serial() -> _OpenSerial:
-    """Return the real serial_asyncio opener, or raise ImportError with hint."""
-    from rigplane._optional_deps import _require_pyserial_asyncio
-
-    _require_pyserial_asyncio()
-    import serial_asyncio  # type: ignore[import-untyped]
-
-    return serial_asyncio.open_serial_connection  # type: ignore[no-any-return]
 
 
 def _parse_probe_response(port: str, baud: int, data: bytes) -> CivProbeResult | None:
@@ -330,11 +335,26 @@ async def probe_xiegu_model_id(
         ``True`` on a valid ``0x1D 0x19`` reply, ``False`` on NAK, timeout,
         unexpected data, or open failure.
     """
-    open_fn = _open_serial or _default_open_serial()
     try:
-        reader, writer = await open_serial_port(url=port, baudrate=baud, opener=open_fn)
-    except Exception:
+        reader, writer = await open_serial_port(
+            url=port, baudrate=baud, opener=_open_serial
+        )
+    except OSError:
+        # Expected during a scan: port busy, absent, or refusing the baud
+        # rate. pyserial's SerialException subclasses OSError.
         logger.debug("probe_xiegu_model_id: cannot open %s @ %d", port, baud)
+        return False
+    except Exception as exc:
+        # Unexpected: programming error or broken environment. Not a
+        # "cannot open" — make it visible at default logging.
+        logger.warning(
+            "probe_xiegu_model_id: unexpected %s opening %s @ %d: %s",
+            type(exc).__name__,
+            port,
+            baud,
+            exc,
+            exc_info=True,
+        )
         return False
 
     try:

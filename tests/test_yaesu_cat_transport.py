@@ -81,12 +81,19 @@ class BlockingFirstDrainWriter(FakeStreamWriter):
 
 
 @pytest.fixture
-def mock_serial_connection() -> Any:
-    """Mock serial_asyncio module."""
-    mock_module = MagicMock()
-    sys.modules["serial_asyncio"] = mock_module
-    yield mock_module
-    sys.modules.pop("serial_asyncio", None)
+def mock_serial_connection(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Mock the serial open step.
+
+    The real open lives in rigplane.core.serial_open (pyserial instance
+    configured while closed, then opened and wrapped); tests replace that
+    step and keep assigning ``mock.open_serial_connection`` per test.
+    """
+    mock = MagicMock()
+    monkeypatch.setattr(
+        "rigplane.core.serial_open._open_with_idle_lines",
+        lambda **kwargs: mock.open_serial_connection(**kwargs),
+    )
+    yield mock
 
 
 class TestYaesuCatTransport:
@@ -110,8 +117,6 @@ class TestYaesuCatTransport:
             bytesize=8,
             parity="N",
             stopbits=1,
-            dtr=False,
-            rts=False,
         )
 
     async def test_connect_twice_is_noop(self, mock_serial_connection: Any) -> None:
