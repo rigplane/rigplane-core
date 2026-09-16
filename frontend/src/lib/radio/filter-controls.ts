@@ -163,14 +163,24 @@ function controlRange(key: string, fallback: ControlRange): ControlRange {
  *  exported rather than the conversion functions staying un-parameterisable. */
 export type ControlDisplayRange = ControlRange;
 
-export type NrLevelContract = Readonly<{
+/** One resolved raw<->display conversion for a single `controls.<key>` entry
+ *  (MOR-2475). `resolveControlContract` yields it from either an exact
+ *  `ControlDomain` (decoded/encoded through `control-domain.ts`) or a legacy
+ *  band (this module's proportional conversion), so NR level, manual-notch
+ *  frequency and NB depth all share one conversion path. */
+export type ControlContract = Readonly<{
   rawToDisplay: (raw: number) => number | null;
   displayToRaw: (display: number) => number | null;
-  displayDomain: NrLevelDisplayDomain | null;
+  displayDomain: ControlDisplayDomain | null;
   acceptsRaw: (raw: number) => boolean;
-  hasNr: boolean;
+  hasControl: boolean;
   receivers: number | null;
 }>;
+
+/** The NR-level contract (MOR-1733) is the shared `ControlContract` whose
+ *  `hasControl` flag is exposed as `hasNr` — the name `projectNrLevel` and
+ *  `panel-commands.ts` gate `adjustable` and command dispatch on. */
+export type NrLevelContract = Readonly<Omit<ControlContract, 'hasControl'> & { hasNr: boolean }>;
 
 export type NrLevelDisplayDomain = Readonly<{
   min: number;
@@ -187,26 +197,47 @@ export type NrLevelProjection = Readonly<{
   adjustable: boolean;
 }>;
 
+/** The `controls` entries served by the shared contract path (MOR-2475). */
+export type ControlDomainKey = 'nr_level' | 'manual_notch_freq' | 'nb_depth';
+
+type ControlSpec = Readonly<{
+  /** Capability tag whose declaration makes the control adjustable; `null`
+   *  for a control gated only on its published `controls` entry. */
+  capability: string | null;
+  /** Legacy fallback band used when the radio publishes no exact domain;
+   *  `null` for a control with no legacy scale to fall back to. */
+  defaults: ControlRange | null;
+}>;
+
+const CONTROL_SPECS: Readonly<Record<ControlDomainKey, ControlSpec>> = {
+  nr_level: { capability: 'nr', defaults: CONTROL_DEFAULTS.nr_level },
+  manual_notch_freq: { capability: null, defaults: null },
+  nb_depth: { capability: null, defaults: CONTROL_DEFAULTS.nb_depth },
+};
+
 const nrLevelContracts = new WeakMap<ControlDisplayRange, NrLevelContract>();
-const INVALID_NR_LEVEL_CONTRACT: NrLevelContract = {
+const EMPTY_CONTROL_CONTRACT: ControlContract = {
   rawToDisplay: () => null,
   displayToRaw: () => null,
   displayDomain: null,
   acceptsRaw: () => false,
-  hasNr: false,
+  hasControl: false,
   receivers: null,
 };
-const NR_CAPS_KEYS = ['capabilities', 'receivers', 'controls'] as const;
-const EXACT_NR_LEVEL_KEYS = [
+function emptyControlContract(receivers: number | null = null): ControlContract {
+  return receivers === null ? EMPTY_CONTROL_CONTRACT : { ...EMPTY_CONTROL_CONTRACT, receivers };
+}
+const CAPS_KEYS = ['capabilities', 'receivers', 'controls'] as const;
+const EXACT_CONTROL_KEYS = [
   'mapping', 'raw_step', 'raw_origin', 'display_step', 'display_origin',
   'quantization', 'restoration', 'display_center', 'lookup',
 ] as const;
-const NR_LEVEL_METADATA_KEYS = [
+const CONTROL_METADATA_KEYS = [
   'raw_min', 'raw_max', 'raw_center', 'display_min', 'display_max',
-  'display_unit', 'style', ...EXACT_NR_LEVEL_KEYS,
+  'display_unit', 'style', ...EXACT_CONTROL_KEYS,
 ] as const;
 
-function snapshotNrRecord(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
+function snapshotControlRecord(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return null;
@@ -228,19 +259,21 @@ function snapshotNrRecord(value: unknown, keys: readonly string[]): Record<strin
   return snapshot;
 }
 
-function exactNrLevelDomain(control: Record<string, unknown>): ControlDomain | null {
-  return EXACT_NR_LEVEL_KEYS.some((key) => Object.hasOwn(control, key))
+function exactControlDomain(control: Record<string, unknown>): ControlDomain | null {
+  return EXACT_CONTROL_KEYS.some((key) => Object.hasOwn(control, key))
     ? control as unknown as ControlDomain : null;
 }
 
-function legacyNrLevelRange(control: unknown): ControlDisplayRange | null {
+function legacyControlRange(
+  control: unknown, defaults: ControlRange | null,
+): ControlDisplayRange | null {
   if (!isLegacyControlRange(control)
     || !Number.isSafeInteger(control.raw_min) || !Number.isSafeInteger(control.raw_max)
     || control.raw_min >= control.raw_max) return null;
   const hasDisplayMin = control.display_min !== undefined;
   const hasDisplayMax = control.display_max !== undefined;
   if (hasDisplayMin !== hasDisplayMax) return null;
-  if (!hasDisplayMin) return CONTROL_DEFAULTS.nr_level;
+  if (!hasDisplayMin) return defaults;
   if (!Number.isFinite(control.display_min) || !Number.isFinite(control.display_max)
     || (control.display_max as number) <= (control.display_min as number)) return null;
   return {
@@ -251,12 +284,12 @@ function legacyNrLevelRange(control: unknown): ControlDisplayRange | null {
   };
 }
 
-function exactNrLevelContract(
-  domain: ControlDomain, hasNr: boolean, receivers: number,
-): NrLevelContract {
-  const displayDomain = exactNrLevelDisplayDomain(domain);
+function exactControlContract(
+  domain: ControlDomain, hasControl: boolean, receivers: number,
+): ControlContract {
+  const displayDomain = exactControlDisplayDomain(domain);
   return {
-    hasNr, receivers,
+    hasControl, receivers,
     displayDomain,
     acceptsRaw: (raw) => {
       try {
@@ -291,7 +324,7 @@ function exactNrLevelContract(
   };
 }
 
-function exactNrLevelDisplayDomain(domain: ControlDomain): NrLevelDisplayDomain | null {
+function exactControlDisplayDomain(domain: ControlDomain): NrLevelDisplayDomain | null {
   try {
     const values = [
       domain.display_min,
@@ -317,7 +350,7 @@ function exactNrLevelDisplayDomain(domain: ControlDomain): NrLevelDisplayDomain 
  * domain a slider/keyboard surface needs: `{min, max, step, origin}`
  * (MOR-1682). DATA-DRIVEN: an exact `ControlDomain` contributes its own
  * display lattice, validated by the same decode/encode origin round-trip
- * `exactNrLevelDisplayDomain` applies to NR level; a legacy `ControlRange`
+ * `exactControlDisplayDomain` applies to NR level; a legacy `ControlRange`
  * with finite `display_min < display_max` contributes those bounds with the
  * entry's own `decode_quantum` as the step when it is a positive integer,
  * otherwise the CALLER's fallback step anchored at `display_min` (the caller
@@ -333,7 +366,7 @@ export function controlDisplayDomain(
   fallbackStep: number,
 ): ControlDisplayDomain | null {
   if (control === null || control === undefined) return null;
-  if (!isLegacyControlRange(control)) return exactNrLevelDisplayDomain(control);
+  if (!isLegacyControlRange(control)) return exactControlDisplayDomain(control);
   const { display_min: min, display_max: max } = control;
   if (typeof min !== 'number' || !Number.isFinite(min)
     || typeof max !== 'number' || !Number.isFinite(max) || max <= min) return null;
@@ -343,11 +376,12 @@ export function controlDisplayDomain(
   return { min, max, step, origin: min };
 }
 
-function legacyNrLevelContract(
-  range: ControlDisplayRange, hasNr = false, receivers: number | null = null,
-): NrLevelContract {
+function legacyControlContract(
+  key: ControlDomainKey, range: ControlDisplayRange,
+  hasControl: boolean, receivers: number | null,
+): ControlContract {
   return {
-    hasNr, receivers,
+    hasControl, receivers,
     displayDomain: {
       min: range.displayMin,
       max: range.displayMax,
@@ -356,46 +390,72 @@ function legacyNrLevelContract(
     },
     acceptsRaw: (raw) =>
       Number.isSafeInteger(raw) && raw >= range.rawMin && raw <= range.rawMax,
-    rawToDisplay: (raw) => controlRawToDisplay('nr_level', raw, CONTROL_DEFAULTS.nr_level, range),
-    displayToRaw: (display) => controlDisplayToRaw('nr_level', display, CONTROL_DEFAULTS.nr_level, range),
+    rawToDisplay: (raw) => controlRawToDisplay(key, raw, CONTROL_DEFAULTS[key], range),
+    displayToRaw: (display) => controlDisplayToRaw(key, display, CONTROL_DEFAULTS[key], range),
   };
 }
 
-/** Resolve NR display/readback and command encoding from one model-neutral contract. */
-export function resolveNrLevelContract(
+/**
+ * Resolve the raw<->display conversion for one `controls.<key>` entry from the
+ * radio's published capabilities (MOR-2475). An exact `ControlDomain` is
+ * decoded and encoded through `control-domain.ts`; a legacy band keeps this
+ * module's proportional conversion; an entry the radio does not publish
+ * resolves to the empty contract, or to that control's own legacy default
+ * where one exists (NR level, NB depth).
+ */
+export function resolveControlContract(
   caps: Capabilities | null | undefined,
-): NrLevelContract {
+  key: ControlDomainKey,
+): ControlContract {
+  const spec = CONTROL_SPECS[key];
   try {
     if (caps === null || caps === undefined) {
-      return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level);
+      return spec.defaults
+        ? legacyControlContract(key, spec.defaults, false, null)
+        : emptyControlContract();
     }
-    const snapshot = snapshotNrRecord(caps, NR_CAPS_KEYS);
+    const snapshot = snapshotControlRecord(caps, CAPS_KEYS);
     if (!snapshot || !Array.isArray(snapshot.capabilities)
       || Object.getPrototypeOf(snapshot.capabilities) !== Array.prototype
       || !Number.isSafeInteger(snapshot.receivers) || (snapshot.receivers as number) < 1) {
-      return INVALID_NR_LEVEL_CONTRACT;
+      return emptyControlContract();
     }
     const capabilities = Array.from(snapshot.capabilities);
-    if (!capabilities.every((name) => typeof name === 'string')) return INVALID_NR_LEVEL_CONTRACT;
-    const hasNr = capabilities.includes('nr');
+    if (!capabilities.every((name) => typeof name === 'string')) return emptyControlContract();
+    const declared = spec.capability === null ? false : capabilities.includes(spec.capability);
     const receivers = snapshot.receivers as number;
     if (snapshot.controls === undefined) {
-      return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level, hasNr, receivers);
+      return spec.defaults
+        ? legacyControlContract(key, spec.defaults, declared, receivers)
+        : emptyControlContract(receivers);
     }
-    const controls = snapshotNrRecord(snapshot.controls, ['nr_level']);
-    if (!controls) return INVALID_NR_LEVEL_CONTRACT;
-    if (!Object.hasOwn(controls, 'nr_level')) {
-      return legacyNrLevelContract(CONTROL_DEFAULTS.nr_level, hasNr, receivers);
+    const controls = snapshotControlRecord(snapshot.controls, [key]);
+    if (!controls) return emptyControlContract();
+    if (!Object.hasOwn(controls, key)) {
+      return spec.defaults
+        ? legacyControlContract(key, spec.defaults, declared, receivers)
+        : emptyControlContract(receivers);
     }
-    const control = snapshotNrRecord(controls.nr_level, NR_LEVEL_METADATA_KEYS);
-    if (!control) return INVALID_NR_LEVEL_CONTRACT;
-    const exact = exactNrLevelDomain(control);
-    if (exact) return exactNrLevelContract(exact, hasNr, receivers);
-    const legacy = legacyNrLevelRange(control);
-    return legacy ? legacyNrLevelContract(legacy, hasNr, receivers) : INVALID_NR_LEVEL_CONTRACT;
+    const control = snapshotControlRecord(controls[key], CONTROL_METADATA_KEYS);
+    if (!control) return emptyControlContract(receivers);
+    const hasControl = spec.capability === null ? true : declared;
+    const exact = exactControlDomain(control);
+    if (exact) return exactControlContract(exact, hasControl, receivers);
+    const legacy = legacyControlRange(control, spec.defaults);
+    return legacy
+      ? legacyControlContract(key, legacy, hasControl, receivers)
+      : emptyControlContract(receivers);
   } catch {
-    return INVALID_NR_LEVEL_CONTRACT;
+    return emptyControlContract();
   }
+}
+
+/** Resolve NR display/readback and command encoding from the shared contract. */
+export function resolveNrLevelContract(
+  caps: Capabilities | null | undefined,
+): NrLevelContract {
+  const { hasControl, ...conversion } = resolveControlContract(caps, 'nr_level');
+  return { ...conversion, hasNr: hasControl };
 }
 
 /** Project NR-level readback without changing the legacy renderer-facing value. */

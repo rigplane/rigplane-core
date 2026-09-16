@@ -50,7 +50,7 @@ import {
 } from '$lib/runtime/props/panel-props';
 import {
   deriveIfShift, pbtRangeFromCaps, pbtRawToHz,
-  controlRangeFromCapsOrDefault, nbDepthRawToDisplay, projectNrLevel, controlDisplayDomain,
+  resolveControlContract, projectNrLevel, controlDisplayDomain,
 } from '$lib/radio/filter-controls';
 import type { NrLevelProjection } from '$lib/radio/filter-controls';
 import {
@@ -636,8 +636,8 @@ function deriveFilterPassband(
   // pbtInner/pbtOuter never silently seeds a derived ifShift.
   //
   // MOR-1291: `pbtScale` is used ONLY when it resolves to a CONCRETE range.
-  // Unlike `controlRangeFromCapsOrDefault`'s `nr_level`/`nb_depth` story
-  // below, PBT has no per-radio-model default worth falling back to — the
+  // Unlike `resolveControlContract`'s `nr_level`/`nb_depth` story below,
+  // PBT has no per-radio-model default worth falling back to — the
   // IC-7610-shaped `{rawCenter:128, displayMin:-1200, displayMax:1200}`
   // `pbtRawToHz`/`pbtHzToRaw` fall back to (via their own store lookup, when
   // called with NO `range` argument) is exactly the fabrication this ticket
@@ -780,9 +780,11 @@ function deriveDsp(
     caps, nrLevelRaw, nrLevelReadable,
   );
 
-  const nbDepthRange = controlRangeFromCapsOrDefault('nb_depth', caps);
+  const nbDepthContract = resolveControlContract(caps, 'nb_depth');
   const nbDepthRaw = numOrUndef(state?.nbDepth);
-  const nbDepthValue = nbDepthRaw !== undefined ? nbDepthRawToDisplay(nbDepthRaw, nbDepthRange) : undefined;
+  const nbDepthValue = nbDepthRaw !== undefined
+    ? nbDepthContract.rawToDisplay(nbDepthRaw) ?? undefined
+    : undefined;
 
   // `notchMode` is derived from TWO raw booleans (`autoNotch`/`manualNotch`);
   // same "never derive from a half-observed input" discipline `filterPassband`'s
@@ -796,6 +798,25 @@ function deriveDsp(
     ? (autoNotchRaw ? 'auto' as const : manualNotchRaw ? 'manual' as const : 'off' as const)
     : undefined;
 
+  // Manual-notch readback (MOR-2475). The Yaesu CAT poller writes
+  // `main.manualNotchFreq` while Icom profiles publish no `manual_notch_freq`
+  // control at all, so source selection is capability-driven: when the radio
+  // publishes a `manual_notch_freq` domain AND the field's status is usable,
+  // read that field and decode it to its display unit; otherwise read
+  // `notchFilter` exactly as before.
+  const manualNotchFreqContract = resolveControlContract(caps, 'manual_notch_freq');
+  const manualNotchFreqRaw = numOrUndef(rx?.manualNotchFreq);
+  const manualNotchFreqReadable = topFieldAvailable(state, `${base}manualNotchFreq`);
+  const preferManualNotchFreq = manualNotchFreqContract.displayDomain !== null
+    && manualNotchFreqReadable && manualNotchFreqRaw !== undefined;
+  const notchFreqObserved = preferManualNotchFreq
+    ? manualNotchFreqReadable
+    : topFieldAvailable(state, `${base}notchFilter`);
+  const notchFreqValue = preferManualNotchFreq && manualNotchFreqRaw !== undefined
+    ? manualNotchFreqContract.rawToDisplay(manualNotchFreqRaw) ?? undefined
+    : numOrUndef(rx?.notchFilter);
+  const notchFreqDomain = manualNotchFreqContract.displayDomain;
+
   return {
     nrActive: txAuxField(hasNrCap, topFieldAvailable(state, `${base}nr`), boolOrUndef(rx?.nr)),
     nrLevel: txAuxField(hasNrCap, nrLevelReadable, nrLevelProjection.value ?? undefined),
@@ -805,12 +826,11 @@ function deriveDsp(
     nbDepth: txAuxField(hasNbDepth, topFieldAvailable(state, 'nbDepth'), nbDepthValue),
     nbWidth: txAuxField(hasNbDepth, topFieldAvailable(state, 'nbWidth'), numOrUndef(state?.nbWidth)),
     notchMode: txAuxField(hasNotchCap, autoNotchObserved && manualNotchObserved, notchModeValue),
-    // notchFilter (MOR-1548): reclassified receiver-scoped, matching the
-    // ic7610.toml cmd29 route's own per-receiver rationale — same pattern as
-    // manualNotchWidth below.
-    notchFreq: txAuxField(
-      hasNotchCap, topFieldAvailable(state, `${base}notchFilter`), numOrUndef(rx?.notchFilter),
-    ),
+    // notchFilter / manualNotchFreq are both receiver-scoped (MOR-1548
+    // reclassified notchFilter), matching the ic7610.toml cmd29 route's own
+    // per-receiver rationale — same pattern as manualNotchWidth below.
+    notchFreq: txAuxField(hasNotchCap, notchFreqObserved, notchFreqValue),
+    ...(notchFreqDomain !== null ? { notchFreqDomain } : {}),
     manualNotchWidth: txAuxField(
       hasNotchCap, topFieldAvailable(state, `${base}manualNotchWidth`), numOrUndef(rx?.manualNotchWidth),
     ),
@@ -1107,7 +1127,7 @@ function deriveRfFrontEndMutex(rfFrontEnd: RfFrontEndViewModel | undefined): Rea
  * called with `caps.freqRanges` from THIS request's own `caps` argument, not
  * the capabilities STORE singleton the v2 callers read (`getCapabilities()?.
  * freqRanges ?? []`). Same discipline as `filterPassband`'s `pbtRangeFromCaps`
- * (MOR-1284 F1) and `dsp`'s `controlRangeFromCapsOrDefault` (MOR-1290 F1): a
+ * (MOR-1284 F1) and `dsp`'s `resolveControlContract` (MOR-2475): a
  * fact-layer value is a pure function of `(state, caps)`, never of
  * module-global state that can differ from the `caps` already in hand.
  *

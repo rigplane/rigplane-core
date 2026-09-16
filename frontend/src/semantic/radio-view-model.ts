@@ -457,11 +457,12 @@ export type DspField<T> = TxAuxField<T>;
  * IF-shift, and PBT are family 4 (`filterPassband`, MOR-1284) — this group
  * never duplicates them.
  *
- * `nrLevel` carries the shared `projectNrLevel` result; `nbDepth` uses
- * `nbDepthRawToDisplay`. Both consume `$lib/radio/filter-controls` rather
- * than re-deriving a scale (X6200 lesson: scaling is per-radio-model data).
- * The projection is optional only so semantic payloads and fixtures produced
- * before MOR-1736 remain valid; the live adapter always emits it.
+ * `nrLevel` carries the shared `projectNrLevel` result; `nbDepth` is decoded
+ * by `resolveControlContract(caps, 'nb_depth')`. Both consume
+ * `$lib/radio/filter-controls` rather than re-deriving a scale (X6200 lesson:
+ * scaling is per-radio-model data). The projection is optional only so
+ * semantic payloads and fixtures produced before MOR-1736 remain valid; the
+ * live adapter always emits it.
  *
  * `agcModes` is the capability-derived AGC choice set (`Capabilities.
  * agcModes`, verbatim) — a plain list, not `DspField`-wrapped, for the same
@@ -480,6 +481,18 @@ export interface DspViewModel {
   nbWidth: DspField<number>;
   notchMode: DspField<'off' | 'auto' | 'manual'>;
   notchFreq: DspField<number>;
+  /**
+   * The manual-notch control's numeric display domain from the profile's
+   * published `controls.manual_notch_freq` entry (MOR-2475): `{min, max, step,
+   * origin}` when the radio declares a usable one, absent when it declares
+   * nothing usable — the fact group states the DOMAIN, never a fallback;
+   * consumers keep their own today-behaviour constants for the absent case.
+   * When present and the field's status is usable, `notchFreq` carries that
+   * field's decoded display value; otherwise it reads the raw `notchFilter`
+   * field as before. Not a per-field reading: one control, one domain, so it
+   * sits on the group beside the field it governs.
+   */
+  notchFreqDomain?: ControlDisplayDomain;
   manualNotchWidth: DspField<number>;
   agcMode: DspField<number>;
   agcModes: readonly number[];
@@ -1962,10 +1975,14 @@ function validateDsp(value: unknown, path: string): DspViewModel {
   const v = record(value, path);
   exactKeys(v, [
     'nrActive', 'nrLevel', 'nrLevelProjection', 'nbActive', 'nbLevel', 'nbDepth', 'nbWidth',
-    'notchMode', 'notchFreq', 'manualNotchWidth', 'agcMode', 'agcModes', 'agcTimeConstant',
+    'notchMode', 'notchFreq', 'notchFreqDomain', 'manualNotchWidth', 'agcMode', 'agcModes',
+    'agcTimeConstant',
   ], path);
   const nrLevelProjection = optionalGroup(
     v.nrLevelProjection, `${path}.nrLevelProjection`, validateNrLevelProjection,
+  );
+  const notchFreqDomain = optionalGroup(
+    v.notchFreqDomain, `${path}.notchFreqDomain`, validateNrLevelDisplayDomain,
   );
   return {
     nrActive: validateTxAuxField(v.nrActive, `${path}.nrActive`, bool),
@@ -1977,6 +1994,7 @@ function validateDsp(value: unknown, path: string): DspViewModel {
     nbWidth: validateTxAuxField(v.nbWidth, `${path}.nbWidth`, num),
     notchMode: validateTxAuxField(v.notchMode, `${path}.notchMode`, (val, p) => oneOf(val, NOTCH_MODES, p)),
     notchFreq: validateTxAuxField(v.notchFreq, `${path}.notchFreq`, num),
+    ...(notchFreqDomain !== undefined ? { notchFreqDomain } : {}),
     manualNotchWidth: validateTxAuxField(v.manualNotchWidth, `${path}.manualNotchWidth`, num),
     agcMode: validateTxAuxField(v.agcMode, `${path}.agcMode`, num),
     agcModes: numArray(v.agcModes, `${path}.agcModes`),
