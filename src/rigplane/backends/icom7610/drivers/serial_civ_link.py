@@ -147,7 +147,21 @@ class _WriteRequest:
 
 
 class SerialCivLink:
-    """Async serial CI-V link with framing, writer serialization, and health flags."""
+    """Async serial CI-V link with framing, writer serialization, and health flags.
+
+    ``open_serial_connection`` is a test-only seam that replaces the whole
+    open step: :meth:`_resolve_opener` returns the injected callable as-is,
+    so the DTR/RTS deassert that
+    :func:`rigplane.core.serial_open.open_serial_port` performs after its
+    own open does not run on that branch. That helper's ``opener``
+    parameter is the narrower seam — it replaces only the open itself and
+    the deassert still runs on its result — and the two have different
+    signatures: this one takes no arguments, ``opener`` is called with
+    ``url`` and ``baudrate``. Nothing under ``src/`` passes
+    ``open_serial_connection``; the non-injected branch is covered by
+    ``tests/test_serial_open.py::test_serial_civ_link_default_opener``.
+    Retiring the seam is MOR-2495.
+    """
 
     def __init__(
         self,
