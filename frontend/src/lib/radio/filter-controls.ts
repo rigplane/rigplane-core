@@ -112,6 +112,118 @@ export function pbtHzToRaw(hz: number, range?: PbtRange): number {
   return Math.max(0, Math.min(255, raw));
 }
 
+// Measured IC PBT passband-edge lattice (MOR-2497 step 1).
+//
+// Every number in this block was measured on the bench on 2026-09-16 by
+// sweeping `set_pbt_inner(raw)` over every raw 0..255 and reading the value
+// the radio snapped each write back to, identically on an IC-7610 over LAN
+// and an IC-7300 over serial:
+//   positions = filterWidthHz / stepHz + 1 reachable lattice points,
+//   margin    = floor(255 / (2 * positions)) raw units in from each end,
+//   raw(i)    = margin + round(i * (255 - 2*margin) / (positions - 1)),
+//   Hz(i)     = (i - (positions - 1)/2) * stepHz,
+// with the centre position pinned at raw 128 — the "0128=center" the IC-7610
+// CI-V Reference Guide documents. The swept lattice is checked in as a
+// fixture in `filter-controls.test.ts`; `round` below is half-to-even, under
+// which the unpinned formula puts the centre at 127, one cell off the
+// measured 128 — the pin is load-bearing, not decoration. The 50 Hz step
+// itself is pinned against the radio's own display (front panel read
+// `SFT +900`/`BW 1.8` at raw 254, filter 3600 — a 25 Hz step would have read
+// `SFT +450`).
+
+/** PBT lattice step measured on the IC-7610 (LAN) and IC-7300 (serial) on
+ *  2026-09-16. The IC-705 and IC-9700 were not on the bench, so this value is
+ *  a parameter of the conversion below, not a literal inside it — a caller
+ *  applying it to an unmeasured rig is making an inference, and the call site
+ *  is where that inference must be visible. */
+export const PBT_MEASURED_STEP_HZ = 50;
+
+type PbtLattice = Readonly<{
+  positions: number;
+  margin: number;
+}>;
+
+/** The lattice the radio snaps PBT writes onto, or `null` when the declared
+ *  filter width cannot form one: zero, negative, `NaN`/infinite, not an
+ *  integer multiple of `stepHz`, or finer than one raw unit per position
+ *  (adjacent positions would collide on the same raw). */
+function pbtLattice(filterWidthHz: number, stepHz: number): PbtLattice | null {
+  if (!Number.isFinite(filterWidthHz) || !Number.isFinite(stepHz) || stepHz <= 0) return null;
+  const steps = filterWidthHz / stepHz;
+  if (!Number.isSafeInteger(steps) || steps < 1) return null;
+  const positions = steps + 1;
+  if (positions - 1 > 255) return null;
+  return { positions, margin: Math.floor(255 / (2 * positions)) };
+}
+
+function roundHalfToEven(x: number): number {
+  const floor = Math.floor(x);
+  const fraction = x - floor;
+  if (fraction < 0.5) return floor;
+  if (fraction > 0.5) return floor + 1;
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+
+/** Raw wire value of lattice position `i`; the centre position is pinned at
+ *  128 (see the block comment above). */
+function latticeRaw(lattice: PbtLattice, i: number): number {
+  const centre = (lattice.positions - 1) / 2;
+  if (i === centre) return 128;
+  return lattice.margin
+    + roundHalfToEven((i * (255 - 2 * lattice.margin)) / (lattice.positions - 1));
+}
+
+/** Nearest lattice position to `raw`; an exact tie (a raw sitting halfway
+ *  between two reachable points) resolves toward the centre — the radio's own
+ *  snap rule at a half-lattice distance was not part of the bench sweep, and
+ *  the centre-side reading never invents a larger edge displacement than the
+ *  raw must represent. */
+function nearestLatticePosition(lattice: PbtLattice, raw: number): number {
+  const last = lattice.positions - 1;
+  const ideal = ((raw - lattice.margin) * last) / (255 - 2 * lattice.margin);
+  const lo = Math.max(0, Math.min(last, Math.floor(ideal)));
+  const hi = Math.max(0, Math.min(last, Math.ceil(ideal)));
+  const dLo = Math.abs(raw - latticeRaw(lattice, lo));
+  const dHi = Math.abs(raw - latticeRaw(lattice, hi));
+  if (dLo !== dHi) return dLo < dHi ? lo : hi;
+  const centre = last / 2;
+  return Math.abs(lo - centre) <= Math.abs(hi - centre) ? lo : hi;
+}
+
+/** Hz of a PBT raw value on the measured lattice, or `null` for a degenerate
+ *  filter width (`pbtLattice`) or a raw the wire cannot carry (non-finite or
+ *  outside 0..255). A raw between lattice points — unreachable in a readback,
+ *  since the radio snaps — is snapped per `nearestLatticePosition`. */
+export function measuredPbtRawToHz(raw: number, filterWidthHz: number, stepHz: number): number | null {
+  const lattice = pbtLattice(filterWidthHz, stepHz);
+  if (lattice === null || !Number.isFinite(raw) || raw < 0 || raw > 255) return null;
+  const i = nearestLatticePosition(lattice, raw);
+  return (i - (lattice.positions - 1) / 2) * stepHz;
+}
+
+/** Raw wire value for a PBT offset in Hz on the measured lattice, or `null`
+ *  for a degenerate filter width (`pbtLattice`) or a non-finite `hz`. An `hz`
+ *  between lattice points snaps to the nearest position — positions are
+ *  exactly `stepHz` apart in Hz, so only an exact half-step ties, and the tie
+ *  resolves toward the centre for the same reason as in
+ *  `nearestLatticePosition`. An `hz` beyond the lattice clamps to the extreme
+ *  reachable raw, the same clamp `pbtHzToRaw` above applies. */
+export function measuredPbtHzToRaw(hz: number, filterWidthHz: number, stepHz: number): number | null {
+  const lattice = pbtLattice(filterWidthHz, stepHz);
+  if (lattice === null || !Number.isFinite(hz)) return null;
+  const last = lattice.positions - 1;
+  const centre = last / 2;
+  const exact = hz / stepHz + centre;
+  const lo = Math.floor(exact);
+  const hi = Math.ceil(exact);
+  const dLo = exact - lo;
+  const dHi = hi - exact;
+  const i = dLo !== dHi
+    ? (dLo < dHi ? lo : hi)
+    : (Math.abs(lo - centre) <= Math.abs(hi - centre) ? lo : hi);
+  return latticeRaw(lattice, Math.max(0, Math.min(last, i)));
+}
+
 // Generic control display <-> CI-V wire conversion (MOR-490 / MOR-498)
 // Some IC-7610 controls expose a CI-V wire value on a different scale than the
 // front-panel / slider display (e.g. NR level wire 0-255 vs display 0-15; NB
