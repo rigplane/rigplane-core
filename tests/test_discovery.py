@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from civ_fake import CivRadioFake, CivSerialPort
 from rigplane.discovery import (
     CivProbeResult,
     RadioDiscoveryResult,
@@ -137,14 +138,16 @@ class TestProbeSerialCiv:
 
     @pytest.mark.asyncio
     async def test_timeout_tries_next_baud(self) -> None:
-        call_count = 0
+        # At 19200 the port opens but the device on it is not a radio
+        # (silent); at 9600 the IC-7610 answers.
+        silent = CivSerialPort(CivRadioFake("IC-7610"), silent=True)
+        live = CivSerialPort(CivRadioFake("IC-7610"))
+        seen_bauds: list[int] = []
 
-        async def _open(*, url: str, baudrate: int, **_kw: object):
-            nonlocal call_count
-            call_count += 1
-            if baudrate == 19200:
-                return _FakeReader([]), _FakeWriter()
-            return _FakeReader([_IC7610_RESPONSE]), _FakeWriter()
+        async def _open(*, url: str, baudrate: int, **kw: object):
+            seen_bauds.append(baudrate)
+            port = silent if baudrate == 19200 else live
+            return await port.opener(url=url, baudrate=baudrate, **kw)
 
         result = await probe_serial_civ(
             "/dev/ttyUSB0",
@@ -154,7 +157,7 @@ class TestProbeSerialCiv:
         )
         assert result is not None
         assert result.baud == 9600
-        assert call_count == 2
+        assert seen_bauds == [19200, 9600]
 
     @pytest.mark.asyncio
     async def test_invalid_response_returns_none(self) -> None:
@@ -303,29 +306,35 @@ class TestIsXieguModelIdReply:
 class TestProbeXieguModelId:
     @pytest.mark.asyncio
     async def test_valid_reply_returns_true(self) -> None:
-        reader = _FakeReader([_XIEGU_MODEL_ID_REPLY])
-        writer = _FakeWriter()
+        radio = CivRadioFake("X6200")
         result = await probe_xiegu_model_id(
-            "/dev/x", 19200, timeout=0.1, _open_serial=_make_open(reader, writer)
+            "/dev/x", 19200, timeout=0.1, _open_serial=CivSerialPort(radio).opener
         )
         assert result is True
-        assert writer.written[0] == _XIEGU_MODEL_ID_CMD
+        (sent,) = radio.commands
+        assert (sent.to_addr, sent.command, sent.sub, sent.data) == (
+            0xA4,
+            0x1D,
+            None,
+            b"\x19",
+        )
 
     @pytest.mark.asyncio
     async def test_nak_returns_false(self) -> None:
-        reader = _FakeReader([_XIEGU_NAK_REPLY])
-        writer = _FakeWriter()
+        # An IC-705 NAKs 0x1D 0x19 because that is what an IC-705 is —
+        # identity, not an injected fault.
+        radio = CivRadioFake("IC-705")
         result = await probe_xiegu_model_id(
-            "/dev/x", 19200, timeout=0.1, _open_serial=_make_open(reader, writer)
+            "/dev/x", 19200, timeout=0.1, _open_serial=CivSerialPort(radio).opener
         )
         assert result is False
 
     @pytest.mark.asyncio
     async def test_timeout_returns_false(self) -> None:
-        reader = _FakeReader([])  # nothing to read
-        writer = _FakeWriter()
+        # The port opens, but the device on it is not a radio.
+        port = CivSerialPort(CivRadioFake("X6200"), silent=True)
         result = await probe_xiegu_model_id(
-            "/dev/x", 19200, timeout=0.05, _open_serial=_make_open(reader, writer)
+            "/dev/x", 19200, timeout=0.05, _open_serial=port.opener
         )
         assert result is False
 
@@ -341,12 +350,16 @@ class TestProbeXieguModelId:
 
     @pytest.mark.asyncio
     async def test_closes_writer(self) -> None:
-        reader = _FakeReader([_XIEGU_MODEL_ID_REPLY])
-        writer = _FakeWriter()
-        await probe_xiegu_model_id(
-            "/dev/x", 19200, timeout=0.1, _open_serial=_make_open(reader, writer)
-        )
-        assert writer.closed is True
+        port = CivSerialPort(CivRadioFake("X6200"))
+        writers = []
+
+        async def _open(*, url: str, baudrate: int, **kw: object):
+            pair = await port.opener(url=url, baudrate=baudrate, **kw)
+            writers.append(pair[1])
+            return pair
+
+        await probe_xiegu_model_id("/dev/x", 19200, timeout=0.1, _open_serial=_open)
+        assert writers[0].closed is True
 
 
 def _make_port(
