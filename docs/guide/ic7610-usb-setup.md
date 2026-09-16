@@ -450,7 +450,7 @@ If you're currently using the LAN backend and want to switch to serial:
    ```python
    # Before (LAN)
    from rigplane.backends.config import LanBackendConfig
-   config = LanBackendConfig(..., host="192.168.1.100")
+   config = LanBackendConfig(..., model="IC-7610", host="192.168.1.100")
    
    # After (Serial)
    from rigplane.backends.config import SerialBackendConfig

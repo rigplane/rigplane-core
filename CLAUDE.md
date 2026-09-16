@@ -1,7 +1,7 @@
 # CLAUDE.md — Engineering and workflow
 
 **rigplane** — Python 3.11+ asyncio library + Web UI for Icom transceivers over LAN/USB. Version: see `pyproject.toml`.
-Live bench: **IC-7300, FTX-1**. *(IC-7610 retired 2026-08-04; X6200 destroyed by lightning 2026-08-11.)* Context: `docs/PROJECT.md`.
+Live bench: **IC-7300, FTX-1, IC-7610**. *(X6200 destroyed by lightning 2026-08-11.)* Context: `docs/PROJECT.md`.
 
 ---
 
