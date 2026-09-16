@@ -15,11 +15,11 @@ import type {
   FilterModeConfig, FilterSegmentConfig,
 } from '$lib/types/capabilities';
 
-export const FILTER_BIPOLAR_MIN = -1200;
-export const FILTER_BIPOLAR_MAX = 1200;
-export const FILTER_WIDTH_MIN = 50;
-export const FILTER_WIDTH_MAX = 3600;
-export const FILTER_WIDTH_STEP = 50;
+const FILTER_BIPOLAR_MIN = -1200;
+const FILTER_BIPOLAR_MAX = 1200;
+const FILTER_WIDTH_MIN = 50;
+const FILTER_WIDTH_MAX = 3600;
+const FILTER_WIDTH_STEP = 50;
 
 // Default PBT range (IC-7610 / standard CI-V)
 const PBT_DEFAULTS = { rawCenter: 128, displayMin: -1200, displayMax: 1200 } as const;
@@ -549,7 +549,7 @@ export function controlRangeFromCapsOrDefault(
  * rather than a hidden dependency on module-global store state. Every
  * EXISTING call site omits `range` and keeps today's store-lookup behavior
  * unchanged — this parameter is strictly additive. */
-export function controlRawToDisplay(
+function controlRawToDisplay(
   key: string, raw: number, fallback: ControlRange, range?: ControlDisplayRange,
 ): number {
   const { rawMin, rawMax, displayMin, displayMax } = range ?? controlRange(key, fallback);
@@ -560,7 +560,7 @@ export function controlRawToDisplay(
 }
 
 /** Convert a slider display value to the raw CI-V wire value for `key`. */
-export function controlDisplayToRaw(
+function controlDisplayToRaw(
   key: string, display: number, fallback: ControlRange, range?: ControlDisplayRange,
 ): number {
   const { rawMin, rawMax, displayMin, displayMax } = range ?? controlRange(key, fallback);
