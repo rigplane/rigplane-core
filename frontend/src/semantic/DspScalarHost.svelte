@@ -66,6 +66,21 @@
         },
       };
     }
+    // MOR-2475: the fact group's published `notchFreqDomain` when usable;
+    // a radio declaring none falls through to the shared 0-255 row below.
+    if (field === 'notchFreq') {
+      const notch = dsp?.notchFreqDomain;
+      if (notch !== undefined && notch !== null && safeInteger(notch.min) && safeInteger(notch.max)
+        && safeInteger(notch.step) && notch.step > 0 && notch.max > notch.min) {
+        return {
+          valid: true,
+          domain: {
+            min: notch.min, max: notch.max, step: notch.step,
+            defaultValue: null, fineStepDivisor: 1,
+          },
+        };
+      }
+    }
     const [min, max] = field === 'nbLevel' ? [0, nbLevelMax]
       : field === 'nbDepth' ? [1, 10]
         : field === 'manualNotchWidth' ? [0, 2]

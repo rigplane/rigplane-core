@@ -30,7 +30,7 @@ export const CONTROL_FEEDBACK_DEBT_BASELINE = Object.freeze([
   'src/components-v2/panels/VoxPanel.svelte::ValueControl::VOX Delay::voxDelay',
   'src/components-v2/panels/VoxPanel.svelte::ValueControl::VOX Gain::voxGain',
   "src/semantic/CwKeyerSurface.svelte::input::unlabelled::f.reading.status === 'known' ? f.reading.value : min",
-  'src/semantic/DspSurface.svelte::input::unlabelled::nr?.value ?? numberOf(dsp[field], min)',
+  'src/semantic/DspSurface.svelte::input::unlabelled::nr?.value ?? numberOf(dsp[field], notch?.min ?? min)',
   'src/semantic/DspSurface.svelte::input::unlabelled::numberOf(dsp.nbLevel, 0)',
   'src/semantic/FilterSurface.svelte::input::unlabelled::numberOf(filterPassband[field], min)',
   'src/semantic/FilterSurface.svelte::input::unlabelled::numberOf(modeFilter.filterWidth, 0)',

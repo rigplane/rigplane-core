@@ -11,7 +11,7 @@ describe('control feedback debt baseline (MOR-1714)', () => {
     expect(new Set(CONTROL_FEEDBACK_DEBT_BASELINE).size).toBe(39);
     expect(CONTROL_FEEDBACK_DEBT_BASELINE).toEqual([...CONTROL_FEEDBACK_DEBT_BASELINE].sort());
     const digest = createHash('sha256').update(CONTROL_FEEDBACK_DEBT_BASELINE.join('\n')).digest('hex');
-    expect(digest).toBe('6fbe767714fff23cd7f355d96762a92e884e913aa7685527bf5086135bc841fd');
+    expect(digest).toBe('04ba30ba57aa763fadd842e29b8d576ad7f1b078ca246275373f469681ebf38b');
   });
 
   it('exposes no mutable membership collection', () => {
