@@ -110,6 +110,8 @@ class TestYaesuCatTransport:
             bytesize=8,
             parity="N",
             stopbits=1,
+            dtr=False,
+            rts=False,
         )
 
     async def test_connect_twice_is_noop(self, mock_serial_connection: Any) -> None:

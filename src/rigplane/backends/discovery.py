@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from rigplane.core.serial_open import open_serial_port
 from rigplane.usb_audio_resolve import AudioDeviceMapping, resolve_audio_for_serial_port
 
 from .hamlib_probe import (
@@ -188,7 +189,7 @@ async def _try_baud(
     """
     open_fn = _open_serial or _default_open_serial()
     try:
-        reader, writer = await open_fn(url=port, baudrate=baud)
+        reader, writer = await open_serial_port(url=port, baudrate=baud, opener=open_fn)
     except Exception:
         logger.debug("probe_serial_civ: cannot open %s @ %d", port, baud)
         return None
@@ -331,7 +332,7 @@ async def probe_xiegu_model_id(
     """
     open_fn = _open_serial or _default_open_serial()
     try:
-        reader, writer = await open_fn(url=port, baudrate=baud)
+        reader, writer = await open_serial_port(url=port, baudrate=baud, opener=open_fn)
     except Exception:
         logger.debug("probe_xiegu_model_id: cannot open %s @ %d", port, baud)
         return False
