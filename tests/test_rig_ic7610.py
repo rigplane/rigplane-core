@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from rigplane.commands._codec import filter_index_to_hz
 from rigplane.rig_loader import load_rig
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
@@ -247,6 +248,46 @@ class TestProfileParity:
         assert any(
             binding.action == "toggle_help" for binding in profile.keyboard.bindings
         )
+
+
+# ── Reversed-mode filter rules (MOR-2505) ──────────────────────
+
+
+class TestReversedModeFilterRules:
+    """Runtime callers pass Mode.name with an underscore ("CW_R", "PSK_R"),
+    while the profile filter keys are hyphenated ("CW-R", "PSK-R")."""
+
+    def test_cw_r_underscore_resolves_cw_r_rule(self, profile):
+        assert profile.resolve_filter_rule("CW_R") == profile.resolve_filter_rule("CW-R")
+
+    def test_rtty_r_underscore_resolves_rtty_r_rule(self, profile):
+        assert (
+            profile.resolve_filter_rule("RTTY_R")
+            == profile.resolve_filter_rule("RTTY-R")
+        )
+
+    def test_psk_r_underscore_resolves_psk_r_rule(self, profile):
+        assert (
+            profile.resolve_filter_rule("PSK_R") == profile.resolve_filter_rule("PSK-R")
+        )
+
+    def test_hyphen_forms_still_resolve(self, profile):
+        for mode in ("CW-R", "RTTY-R", "PSK-R"):
+            assert profile.resolve_filter_rule(mode) is not None
+
+    def test_psk_r_width_index_9_decodes_to_500hz(self, profile):
+        # Index 9 leaked raw out of get_filter_width() on the live rig (MOR-2505).
+        rule = profile.resolve_filter_rule("PSK_R")
+        assert rule is not None
+        assert filter_index_to_hz(9, segments=rule.segments) == 500
+
+    def test_cw_r_width_index_9_decodes_to_500hz(self, profile):
+        rule = profile.resolve_filter_rule("CW_R")
+        assert rule is not None
+        assert filter_index_to_hz(9, segments=rule.segments) == 500
+
+    def test_psk_r_width_500hz_encodes_to_index_9(self, profile):
+        assert profile.encode_filter_width(500, "PSK_R") == b"\x09"
 
 
 # ── CommandMap parity ───────────────────────────────────────────
