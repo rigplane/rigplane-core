@@ -10,7 +10,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
+import { createRawSnippet, flushSync, mount, unmount, type ComponentProps } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { getLocale, setLocale } from '$lib/i18n';
 import FilterSurface, {
@@ -1051,7 +1051,7 @@ describe('passband scalar feedback (MOR-1687 part 1)', () => {
       renderSurface: true,
       get [feedbackKey]() { return passbandFeedback(control, PENDING); },
       get [handler]() { return spy; },
-    } as Record<string, unknown> });
+    } as ComponentProps<typeof FilterInstrumentHostFixture> });
     try {
       flushSync();
       const input = target.querySelector<HTMLInputElement>(`[data-testid="filter-${field}"] input`)!;
