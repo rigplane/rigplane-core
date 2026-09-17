@@ -39,6 +39,12 @@ const state = (inner: number | null, outer: number | null, marker = 1, generatio
   // there is no Hz and the projection reports nothing. 2400 Hz is a width the
   // radio can be at; this fixture omitted the field, which the retired
   // conversion did not need.
+  // The pair is deliberately UNEQUAL and on opposite sides of centre 128: this
+  // describe block is about inner and outer being retained independently, and a
+  // fixture where they carry the same number cannot tell a crossed wire from a
+  // correct one. An earlier revision of this file remapped both to 100 while
+  // remapping out-of-range raws, and review caught that the block then stayed
+  // green with the two fields swapped in the adapter.
   // MOR-2497 step 2: a PBT raw is one wire byte, 0..255. This fixture used
   // values outside that range (300, 500, 700, -400 ...) purely as distinct
   // numbers; the retired conversion converted them anyway, the measured one
@@ -56,7 +62,7 @@ const value = (field: 'pbtInner' | 'pbtOuter') => target.querySelector<HTMLInput
 const transition = (state: string, epoch: number, flush = true) => { h.session = { state, epoch }; for (const listener of h.listeners) listener(h.session); if (flush) flushSync(); };
 const accept = (next: ServerState) => expect(setRadioState(next)).toBe(true);
 
-beforeEach(() => { txHarness = new ManagedAppTxHarness(); h.txController = txHarness.controller; h.session = { state: 'connected', epoch: 1 }; h.listeners.clear(); h.commands.mockClear(); resetRadioState(); clearCapabilities(); expect(setCapabilities(caps())).toBe(true); accept(state(100, 100)); });
+beforeEach(() => { txHarness = new ManagedAppTxHarness(); h.txController = txHarness.controller; h.session = { state: 'connected', epoch: 1 }; h.listeners.clear(); h.commands.mockClear(); resetRadioState(); clearCapabilities(); expect(setCapabilities(caps())).toBe(true); accept(state(100, 40)); });
 afterEach(() => { component && unmount(component); component = null; expect(h.listeners.size).toBe(0); document.body.innerHTML = ''; resetRadioState(); clearCapabilities(); });
 
 describe('mounted PBT continuity is fenced by the live control session (MOR-1706)', () => {
@@ -81,7 +87,7 @@ describe('mounted PBT continuity is fenced by the live control session (MOR-1706
 
   it('keeps operational truth for an exact equal refresh, while the pure reducer stays conservative on conflict', () => {
     render(); const initial = value('pbtInner');
-    accept(state(100, 100, 2, 7, 'MAIN', 'fresh', 1)); flushSync();
+    accept(state(100, 40, 2, 7, 'MAIN', 'fresh', 1)); flushSync();
     const input = target.querySelector<HTMLInputElement>('[data-testid="filter-pbtInner"] input');
     expect(value('pbtInner')).toBe(initial); expect(input?.disabled).toBe(false);
     const baseline = withFilterPassband(topologyFixtures['1/single']);
@@ -93,7 +99,7 @@ describe('mounted PBT continuity is fenced by the live control session (MOR-1706
   });
 
   it('does not carry a generation-seven floor into generation-eight marker one', () => {
-    accept(state(100, 100, 100)); render(); transition('disconnected', 1); expect(value('pbtInner')).toBeNull();
+    accept(state(100, 40, 100)); render(); transition('disconnected', 1); expect(value('pbtInner')).toBeNull();
     transition('connected', 1);
     expect(setCapabilities(caps(8))).toBe(true); accept(state(240, 16, 1, 8)); flushSync();
     expect(value('pbtInner')).not.toBeNull(); expect(h.commands).not.toHaveBeenCalled(); expect(txHarness.trace()).toEqual([]);

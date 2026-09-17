@@ -329,14 +329,27 @@ describe('pbtInner/pbtOuter/ifShift parity with the real filter-controls helpers
   // regression to a range-driven scale fails the first half and a conversion
   // that ignores the width fails the second.
   it('the declared range no longer sets the scale, and the filter width does', () => {
-    const atDefaultWidth = measuredPbtRawToHz(50, 2400, PBT_MEASURED_STEP_HZ);
-    expect(atDefaultWidth).not.toBeNull();
-    // Same raw, same width, two unrelated declared ranges: the range is not an
-    // input to the conversion at all, so this is the same number by
-    // construction -- stated as a pin because the retired code made it differ.
-    expect(measuredPbtRawToHz(50, 2400, PBT_MEASURED_STEP_HZ)).toBe(atDefaultWidth);
-    // Same raw, a different legal width: must differ.
-    expect(measuredPbtRawToHz(50, 1800, PBT_MEASURED_STEP_HZ)).not.toBe(atDefaultWidth);
+    // Asserted through the ADAPTER, not through the conversion function. The
+    // range is no longer an argument to that function, so calling it twice
+    // could only compare a value with itself -- which an earlier revision of
+    // this test did, and review caught. The claim worth pinning is about the
+    // adapter: given one state, two unrelated declared ranges must produce the
+    // same reading, and two filter widths must not.
+    setCapabilities(NEUTRAL_STORE_CAPS);
+    const stateAt = (widthHz: number) => bareState({
+      main: { ...bareState().main, filterWidth: widthHz, pbtInner: 50, pbtOuter: 128 },
+      fieldStatus: { ...bareState().fieldStatus, 'main.pbtInner': fresh, 'main.pbtOuter': fresh },
+    });
+    const readingWith = (controls: Record<string, ControlRange>, widthHz: number) =>
+      model(stateAt(widthHz), caps({ capabilities: ['pbt'], controls })).filterPassband!.pbtInner.reading;
+
+    const underDefault = readingWith({ pbt_inner: DEFAULT_PBT_RANGE }, 2400);
+    expect(underDefault).toEqual({ status: 'known', value: hz(50) });
+    // Same state and width, a range with a different centre and span: the
+    // reading must not move. Under the retired conversion it would have.
+    expect(readingWith({ pbt_inner: customPbtRange }, 2400)).toEqual(underDefault);
+    // Same state and range, a different legal width: the reading must move.
+    expect(readingWith({ pbt_inner: DEFAULT_PBT_RANGE }, 1800)).not.toEqual(underDefault);
   });
 
   // MOR-2497 step 2 replaces what this test used to assert. It pinned a
