@@ -2393,7 +2393,7 @@ async def test_medium_poll_emits_observations_without_legacy_state_callback() ->
 
     assert legacy_calls == []
     # filter_width shares the freq/mode lane (MOR-445); ``make_radio`` declares
-    # the ``filter_width`` cap, so it emits after PTT, MAIN-only.
+    # the ``filter_width`` cap, so both receivers emit after PTT (MOR-2511).
     assert [(str(item.path), item.value) for item in observations] == [
         ("global.tx_state.observed_ptt", ObservedPtt.ON),
         ("receiver.main.active.freq_mode.freq_hz", 14_074_000),
@@ -2403,6 +2403,7 @@ async def test_medium_poll_emits_observations_without_legacy_state_callback() ->
         *_declared_tx_target(14_074_000),
         ("global.tx_state.ptt", True),
         ("receiver.main.active.freq_mode.filter_width", 2400),
+        ("receiver.sub.active.freq_mode.filter_width", 2400),
     ]
     assert {item.source.source for item in observations} == {"yaesu_poll_response"}
 

@@ -61,7 +61,9 @@ def _bench_radio() -> YaesuCatRadio:
     """A YaesuCatRadio on the existing mock-transport fake, answers above."""
     radio = YaesuCatRadio("/dev/null", profile=load_rig(_RIGS_DIR / "ftx1.toml"))
     radio._transport._connected = True
-    radio._transport.query = AsyncMock(side_effect=lambda command: _CAT_ANSWERS[command])
+    radio._transport.query = AsyncMock(
+        side_effect=lambda command: _CAT_ANSWERS[command]
+    )
     return radio
 
 
