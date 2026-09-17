@@ -28,6 +28,7 @@ const mockProps = {
   hasPbt: false,
   pbtInner: 0,
   pbtOuter: 0,
+  pbtDomain: null as ControlDisplayDomain | null,
   ifShiftDomain: null as ControlDisplayDomain | null,
 };
 
@@ -208,6 +209,7 @@ beforeEach(() => {
     hasPbt: false,
     pbtInner: 0,
     pbtOuter: 0,
+    pbtDomain: null,
     ifShiftDomain: null,
   });
   mockHandlers.onFilterChange = vi.fn();
@@ -764,6 +766,43 @@ describe('PBT sliders visibility', () => {
     const t = mountPanel({ hasPbt: true, pbtInner: 100, pbtOuter: -50 });
     const buttons = Array.from(t.querySelectorAll('button')).map(el => el.textContent?.trim());
     expect(buttons).toContain('Reset');
+  });
+
+  it('does not render the Reset PBT button when hasPbt is false (MOR-2497)', () => {
+    // The Reset button used to sit after the {#if hasPbt} block closed, so it
+    // stayed live in FM where the radio has no twin PBT to reset.
+    const t = mountPanel();
+    const buttons = Array.from(t.querySelectorAll('.filter-actions button'))
+      .map(el => el.textContent?.trim());
+    expect(buttons).not.toContain('Reset');
+  });
+
+  it('PBT sliders take their bounds from the lattice domain, not +/-1200 (MOR-2497)', () => {
+    // USB 3600: the measured span is +/-1800 on the 50 Hz lattice — wider
+    // than the fabricated +/-1200 the sliders hardcoded.
+    const t = mountPanel({
+      hasPbt: true,
+      pbtInner: 1800,
+      pbtOuter: 0,
+      pbtDomain: { min: -1800, max: 1800, step: 50, origin: 0 },
+    });
+    const sliders = t.querySelectorAll<HTMLElement>('[role="slider"]');
+    const labels = Array.from(t.querySelectorAll('.vc-label')).map(el => el.textContent);
+    const innerIndex = labels.indexOf('PBT Inner');
+    const outerIndex = labels.indexOf('PBT Outer');
+    expect(sliders[innerIndex].getAttribute('aria-valuemin')).toBe('-1800');
+    expect(sliders[innerIndex].getAttribute('aria-valuemax')).toBe('1800');
+    expect(sliders[outerIndex].getAttribute('aria-valuemin')).toBe('-1800');
+    expect(sliders[outerIndex].getAttribute('aria-valuemax')).toBe('1800');
+  });
+
+  it('keeps the explicit +/-1200/25 constants only as the no-domain (legacy payload) fallback', () => {
+    const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: null });
+    const sliders = t.querySelectorAll<HTMLElement>('[role="slider"]');
+    const labels = Array.from(t.querySelectorAll('.vc-label')).map(el => el.textContent);
+    const innerIndex = labels.indexOf('PBT Inner');
+    expect(sliders[innerIndex].getAttribute('aria-valuemin')).toBe('-1200');
+    expect(sliders[innerIndex].getAttribute('aria-valuemax')).toBe('1200');
   });
 
   it('renders 3 sliders total when hasPbt=true', () => {
