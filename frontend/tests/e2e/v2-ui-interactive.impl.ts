@@ -231,10 +231,6 @@ function verifyAllCommands(
   };
 }
 
-function pbtHzToRaw(hz: number): number {
-  return Math.max(0, Math.min(255, Math.round(hz * (128 / 1200) + 128)));
-}
-
 async function installWebSocketInterceptor(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const win = window as Window & {
@@ -688,6 +684,10 @@ function bandCode(capabilities: Capabilities, bandName: string): number | undefi
 
 async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]> {
   const expected20mCode = bandCode(capabilities, '20m');
+  // The PBT round-trip target, captured in `act` from the slider the drag
+  // landed on — the domain snaps the click to the mode's own lattice, so
+  // the requested Hz is read back from the control instead of assumed.
+  let pbtTargetHz = 300;
   return [
     {
       panel: 'RF FRONT END',
@@ -770,28 +770,47 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
     },
     {
       panel: 'FILTER',
-      control: 'IF Shift',
+      control: 'PBT Inner + PBT Outer',
       action: 'set 300',
-      expected: 'set_pbt_inner + set_pbt_outer',
+      expected: 'set_pbt_inner + set_pbt_outer, panel reads the requested Hz back (MOR-2497)',
       locate: (page) => panelByHeader(page, 'FILTER').getByRole('slider', { name: 'PBT Inner' }),
       act: async (page) => {
-        await setRangeValue(page, panelByHeader(page, 'FILTER').getByRole('slider', { name: 'PBT Inner' }), 300);
-        await setRangeValue(page, panelByHeader(page, 'FILTER').getByRole('slider', { name: 'PBT Outer' }), 300);
+        const inner = panelByHeader(page, 'FILTER').getByRole('slider', { name: 'PBT Inner' });
+        const outer = panelByHeader(page, 'FILTER').getByRole('slider', { name: 'PBT Outer' });
+        await setRangeValue(page, inner, 300);
+        pbtTargetHz = Number(await inner.getAttribute('aria-valuenow'));
+        await setRangeValue(page, outer, 300);
       },
-      verify: (_ctx, commands) => {
-        const expectedRaw = pbtHzToRaw(300);
-        return verifyAllCommands(commands, [
-          {
-            name: 'set_pbt_inner',
-            params: { receiver: 0 },
-            approx: { value: { expected: expectedRaw, tolerance: 1 } },
-          },
-          {
-            name: 'set_pbt_outer',
-            params: { receiver: 0 },
-            approx: { value: { expected: expectedRaw, tolerance: 1 } },
-          },
+      verify: async (ctx, commands) => {
+        const sent = verifyAllCommands(commands, [
+          { name: 'set_pbt_inner', params: { receiver: 0 } },
+          { name: 'set_pbt_outer', params: { receiver: 0 } },
         ]);
+        if (sent.status !== 'PASS') {
+          return sent;
+        }
+        // The raw the write path picks is only observable through the SAME
+        // measured-lattice read path (MOR-2497): once the state settles, the
+        // panel's own slider must read the requested Hz back. The retired
+        // +/-1200 write path sent raw 160 for 300 Hz, which the lattice
+        // reads as +450 Hz at a 3600 Hz filter — a mismatch this round trip
+        // catches without re-implementing the conversion here.
+        await waitForState(ctx.request, (state) =>
+          state.main.pbtInner !== ctx.originalState.main.pbtInner
+          || state.main.pbtOuter !== ctx.originalState.main.pbtOuter);
+        const readBack = Number(
+          await panelByHeader(ctx.page, 'FILTER')
+            .getByRole('slider', { name: 'PBT Inner' })
+            .getAttribute('aria-valuenow'),
+        );
+        if (readBack !== pbtTargetHz) {
+          return {
+            status: 'FAIL',
+            actual: `round trip reads ${readBack} Hz`,
+            details: `expected the measured-lattice read path to return the requested ${pbtTargetHz} Hz`,
+          };
+        }
+        return { status: 'PASS', actual: `round trip reads ${readBack} Hz` };
       },
       cleanup: async (ctx) => {
         await sendRestoreCommands(ctx.page, ctx.request, [

@@ -688,6 +688,58 @@ describe('level fields emit the raw value, unrescaled', () => {
     }, { [passbandHandlers[field]]: spy });
   });
 
+  // MOR-2497 W2b: the PBT rows take min/max/step from the group's measured
+  // `pbtDomain` — the same `measuredPbtDisplayDomain` derivation the v2
+  // FilterPanel reads through `toFilterProps` (#3527). The component computes
+  // nothing; without the key the row constants above stay, mirroring
+  // FilterPanel's own W2a fallback.
+  describe('PBT slider bounds from the measured domain (MOR-2497)', () => {
+    const withPbtDomain = (view: RadioViewModel, domain: { min: number; max: number; step: number; origin: number }): RadioViewModel =>
+      ({ ...view, filterPassband: { ...view.filterPassband!, pbtDomain: domain } });
+    const usb3600 = { min: -1800, max: 1800, step: 50, origin: 0 };
+
+    it('renders the domain min/max/step on both PBT sliders; ifShift keeps its own row', () => {
+      withSurface(withPbtDomain(base(), usb3600), (s) => {
+        for (const field of ['pbtInner', 'pbtOuter'] as const) {
+          const input = s.input(`filter-${field}`)!;
+          expect(input.min).toBe('-1800');
+          expect(input.max).toBe('1800');
+          expect(input.step).toBe('50');
+        }
+        expect(s.input('filter-ifShift')!.min).toBe('-1200');
+        expect(s.input('filter-ifShift')!.step).toBe('25');
+      });
+    });
+
+    it.each([
+      ['pbtInner', 'onPbtInnerChange'],
+      ['pbtOuter', 'onPbtOuterChange'],
+    ] as const)('one ArrowRight-sized step of %s moves exactly one domain step', (field, handler) => {
+      const spy = vi.fn();
+      withSurface(withPbtDomain(base(), usb3600), (s) => {
+        const input = s.input(`filter-${field}`)!;
+        expect(input.value).toBe('0');
+        const step = Number(input.step);
+        expect(step).toBe(50);
+        // jsdom applies no native arrow-key stepping; this is the same
+        // current + step change the browser makes for ArrowRight.
+        input.value = String(Number(input.value) + step);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        flushSync();
+        expect(spy).toHaveBeenCalledExactlyOnceWith(50);
+      }, { [handler]: spy });
+    });
+
+    it('no domain on the group: keeps the row constants, the FilterPanel W2a fallback shape', () => {
+      withSurface(base(), (s) => {
+        const input = s.input('filter-pbtInner')!;
+        expect(input.min).toBe('-1200');
+        expect(input.max).toBe('1200');
+        expect(input.step).toBe('25');
+      });
+    });
+  });
+
   // MUTATION KILLED: emitting a level intent from an unobserved reading.
   it('emits nothing from an unobserved passband level', () => {
     const onIfShiftChange = vi.fn();

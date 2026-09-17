@@ -50,7 +50,7 @@ import {
   modeHasTwinPbt,
 } from '$lib/runtime/props/panel-props';
 import {
-  deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps,
+  deriveIfShift, measuredPbtDisplayDomain, measuredPbtRawToHz, pbtRangeFromCaps,
   resolveControlContract, projectNrLevel, controlDisplayDomain,
 } from '$lib/radio/filter-controls';
 import type { NrLevelProjection } from '$lib/radio/filter-controls';
@@ -625,30 +625,24 @@ function deriveFilterPassband(
   const pbtOuterObserved = topFieldAvailable(state, `${base}pbtOuter`);
   const ifShiftRawObserved = topFieldAvailable(state, `${base}ifShift`);
 
-  // The ONE shipped PBT raw->Hz conversion (`pbtRawToHz`, `$lib/radio/filter-
-  // controls`) — called with the range explicitly derived from THIS
-  // function's own `caps` argument (`pbtRangeFromCaps`, MOR-1284 F1), not the
-  // capabilities STORE singleton `pbtRawToHz` otherwise falls back to. A
-  // store-sourced scale would make these facts a function of module-global
-  // state rather than of `(state, caps)` — identical arguments could yield
-  // different facts across store writes, and worse, a radio whose OWN caps
-  // already declare a non-default scale would read a confidently-wrong
-  // `{known}` value from an unrelated (e.g. still-unpopulated) store. See the
-  // doc comment above and the parity pin in
-  // `__tests__/filter-passband-adapter.isolated.test.ts`. Computed only from the
-  // field's OWN raw value — never from a `?? 128` stand-in — so an unobserved
-  // pbtInner/pbtOuter never silently seeds a derived ifShift.
+  // The PBT raw->Hz conversion is `measuredPbtRawToHz` (`$lib/radio/
+  // filter-controls`, MOR-2497) — the measured-lattice conversion
+  // `toFilterProps` also calls — gated on a usable `pbt_inner` range derived
+  // from THIS function's own `caps` argument (`pbtRangeFromCaps`, MOR-1284
+  // F1), never the capabilities STORE singleton. A store-sourced scale would
+  // make these facts a function of module-global state rather than of
+  // `(state, caps)` — identical arguments could yield different facts across
+  // store writes. See the doc comment above and the parity pin in
+  // `__tests__/filter-passband-adapter.isolated.test.ts`. Computed only from
+  // the field's OWN raw value — never from a `?? 128` stand-in — so an
+  // unobserved pbtInner/pbtOuter never silently seeds a derived ifShift.
   //
   // MOR-1291: `pbtScale` is used ONLY when it resolves to a CONCRETE range.
-  // Unlike `resolveControlContract`'s `nr_level`/`nb_depth` story below,
-  // PBT has no per-radio-model default worth falling back to — the
-  // IC-7610-shaped `{rawCenter:128, displayMin:-1200, displayMax:1200}`
-  // `pbtRawToHz`/`pbtHzToRaw` fall back to (via their own store lookup, when
-  // called with NO `range` argument) is exactly the fabrication this ticket
-  // closes: a caps object that declares the `pbt` capability but omits its
-  // OWN `controls.pbt_inner` range is treated as an honest "this radio's PBT
-  // scale is unknown", never silently coerced to a plausible-looking IC-7610
-  // reading sourced from module-global store state.
+  // PBT has no per-radio-model default worth falling back to — a caps object
+  // that declares the `pbt` capability but omits its OWN `controls.pbt_inner`
+  // range is treated as an honest "this radio's PBT scale is unknown", never
+  // silently coerced to a plausible-looking IC-7610 reading sourced from
+  // module-global store state.
   const pbtScale = pbtRangeFromCaps(caps);
   const hasPbtRange = pbtScale !== undefined;
   const pbtInnerRaw = numOrUndef(rx?.pbtInner);
@@ -656,10 +650,11 @@ function deriveFilterPassband(
   // MOR-2497 step 2: raw -> Hz on the lattice the radio snaps PBT writes onto.
   // Its spacing is the CURRENT mode's declared step (`pbtStepHz`, #3519 — 50 Hz
   // in SSB/CW/RTTY, 200 Hz in AM, absent where the mode has no twin PBT at
-  // all) and its span is the CURRENT filter width, so the width and the step
-  // are both as necessary to a PBT reading as the scale is: without either
-  // there is no Hz reading, and `undefined` here says exactly that. No step
-  // ever falls back to 50. In a mode without twin PBT this absent reading is
+  // all) and one edge's span is floor(width/(2*step))*step — +/-100 Hz at a
+  // 250 Hz width, never the full half-width — so the width and the step are
+  // both as necessary to a PBT reading as the scale is: without either there
+  // is no Hz reading, and `undefined` here says exactly that. No step ever
+  // falls back to 50. In a mode without twin PBT this absent reading is
   // not a passband-display refusal: `scope-passband-display.ts` takes the
   // shift there as the KNOWN zero of a passband that cannot be displaced and
   // pins this side's `strict.ifShiftHz` to null, one fact stated two ways.
@@ -706,6 +701,15 @@ function deriveFilterPassband(
   // the key absent so surfaces fall back to their own today-behaviour
   // constants.
   const ifShiftDomain = controlDisplayDomain(caps?.controls?.if_shift, 25);
+  // MOR-2497 W2b: the PBT slider domain, from the SAME
+  // `measuredPbtDisplayDomain` derivation `toFilterProps` uses (#3527) at
+  // the observed width and the mode's step. No lattice (no step for this
+  // mode, an unobserved width, a degenerate width) keeps the key absent —
+  // the surface then keeps its own row constants, never a fabricated
+  // +/-1200 domain.
+  const pbtDomain = pbtStepHz !== undefined && pbtWidthHz !== undefined
+    ? measuredPbtDisplayDomain(pbtWidthHz, pbtStepHz)
+    : null;
 
   return {
     filterShape: txAuxField(hasFilters, filterShapeObserved, numOrUndef(rx?.filterShape)),
@@ -742,6 +746,7 @@ function deriveFilterPassband(
     // comment (`radio-view-model.ts`) for the full split.
     ifShiftControlStructural: hasIfShiftCap,
     ...(ifShiftDomain !== null ? { ifShiftDomain } : {}),
+    ...(pbtDomain !== null ? { pbtDomain } : {}),
     // MOR-1291: structural requires BOTH the `pbt` capability tag AND a
     // usable `pbt_inner` range from THIS caps argument — a radio that
     // declares the capability but omits (or malforms) its own range is

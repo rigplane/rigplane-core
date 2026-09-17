@@ -369,13 +369,12 @@ export type FilterPassbandField<T> = TxAuxField<T>;
  * passband-only consumer to import the selection keys too. One group per
  * family, same precedent as `txAux`/`meters`/`rxAudio`/`modeFilter`.
  *
- * `ifShift`/`pbtInner`/`pbtOuter` are the ONE remaining consumer of
- * `$lib/radio/filter-controls`'s `pbtRawToHz`/`deriveIfShift` — the exact
- * functions `toFilterProps` calls — never a re-derived formula (X6200
- * lesson: PBT/filter scaling is per-radio-model data). Unlike `toFilterProps`,
- * the adapter passes `pbtRawToHz` an explicit `PbtRange` derived from THIS
- * request's own `caps` argument (`pbtRangeFromCaps`, MOR-1284 F1) rather than
- * letting it fall back to the capabilities STORE singleton — a fact-layer
+ * `ifShift`/`pbtInner`/`pbtOuter` consume `$lib/radio/filter-controls`'s
+ * `measuredPbtRawToHz`/`deriveIfShift` — the exact functions `toFilterProps`
+ * calls — never a re-derived formula (X6200 lesson: PBT/filter scaling is
+ * per-radio-model data). The adapter gates PBT structure on a `PbtRange`
+ * derived from THIS request's own `caps` argument (`pbtRangeFromCaps`,
+ * MOR-1284 F1) rather than the capabilities STORE singleton — a fact-layer
  * value must be a pure function of `(state, caps)`, never of module-global
  * state that can differ from the `caps` already in hand.
  */
@@ -433,6 +432,20 @@ export interface FilterPassbandViewModel {
    * the group beside the field it governs.
    */
   ifShiftDomain?: ControlDisplayDomain;
+  /**
+   * The twin-PBT slider domain on the measured lattice (MOR-2497):
+   * `{min, max, step, origin}` from `measuredPbtDisplayDomain(width, step)`
+   * at the observed filter width and the current mode's declared
+   * `pbtStepHz` — the ONE derivation, shared with `toFilterProps`'s own
+   * `pbtDomain` (#3527); this group never re-states the formula. Absent
+   * when no lattice forms (a mode with no step such as FM, a legacy
+   * payload, an unobserved or degenerate width) — the fact group states
+   * the DOMAIN, never a fallback; `FilterSurface.svelte` then keeps its
+   * own row constants, the same absent-case contract `ifShiftDomain`
+   * above established. Not a per-field reading: one lattice serves both
+   * PBT edges, so it sits on the group beside the fields it governs.
+   */
+  pbtDomain?: ControlDisplayDomain;
   pbtInner: DisplayObservedField<number>;
   pbtOuter: DisplayObservedField<number>;
   dataMode: FilterPassbandField<number>;
@@ -1884,8 +1897,8 @@ function validateFilterPassband(value: unknown, path: string): FilterPassbandVie
     v,
     [
       'filterShape', 'filterShapeControlStructural', 'ifShift', 'ifShiftControlStructural',
-      'ifShiftDomain', 'pbtInner', 'pbtOuter', 'dataMode', 'dataModeChoices', 'modInputSource',
-      'modInputChoices',
+      'ifShiftDomain', 'pbtDomain', 'pbtInner', 'pbtOuter', 'dataMode', 'dataModeChoices',
+      'modInputSource', 'modInputChoices',
     ],
     path,
   );
@@ -1895,12 +1908,16 @@ function validateFilterPassband(value: unknown, path: string): FilterPassbandVie
   const ifShiftDomain = optionalGroup(
     v.ifShiftDomain, `${path}.ifShiftDomain`, validateNrLevelDisplayDomain,
   );
+  const pbtDomain = optionalGroup(
+    v.pbtDomain, `${path}.pbtDomain`, validateNrLevelDisplayDomain,
+  );
   return {
     filterShape: validateTxAuxField(v.filterShape, `${path}.filterShape`, num),
     filterShapeControlStructural: bool(v.filterShapeControlStructural, `${path}.filterShapeControlStructural`),
     ifShift: validateTxAuxField(v.ifShift, `${path}.ifShift`, num),
     ifShiftControlStructural: bool(v.ifShiftControlStructural, `${path}.ifShiftControlStructural`),
     ...(ifShiftDomain !== undefined ? { ifShiftDomain } : {}),
+    ...(pbtDomain !== undefined ? { pbtDomain } : {}),
     pbtInner: validateDisplayObservedField(v.pbtInner, `${path}.pbtInner`, num),
     pbtOuter: validateDisplayObservedField(v.pbtOuter, `${path}.pbtOuter`, num),
     dataModeChoices: validateDataModeChoices(v.dataModeChoices, `${path}.dataModeChoices`),

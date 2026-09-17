@@ -627,6 +627,11 @@ describe('measuredPbtDisplayDomain (the ONE slider-bounds derivation, MOR-2497)'
     expect(measuredPbtDisplayDomain(6000, 200)!.step).toBe(200);
   });
 
+  it('returns min 0, not -0, when the width is a single step (P = 1, centre only)', () => {
+    expect(measuredPbtDisplayDomain(50, PBT_MEASURED_STEP_HZ)!.min).toBe(0);
+    expect(measuredPbtDisplayDomain(200, 200)!.min).toBe(0);
+  });
+
   it('bounds equal what the extreme raws read on the lattice (USB 3600)', () => {
     const domain = measuredPbtDisplayDomain(3600, PBT_MEASURED_STEP_HZ)!;
     expect(domain.max).toBe(measuredPbtRawToHz(254, 3600, PBT_MEASURED_STEP_HZ));
