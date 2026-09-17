@@ -3,11 +3,10 @@
 Bench 2026-09-17 (MOR-2511, acceptance build 65c1fe05): with SUB selected, the
 server's ``sub`` object carried no observed state -- ``freqHz: 0``,
 ``filterWidth: null``, meter 0, field status ``unavailable`` / ``undeclared``.
-The same session, on raw CAT with the radio in single receive (``FR01``,
-``VS1``), established that the SUB-side frequency, mode and filter-width
-reads (``FB;``/``MD1;``/``SH1;``) answer with SUB's own values. ``SM1;``
-answers there too, but whether it reports SUB's own meter in single receive
-is not established.
+In single receive (``FR01``, ``VS1``) the radio answers all four SUB-side
+reads (``FB;``/``MD1;``/``SH1;``/``SM1;``); the frequency is established as
+SUB's own, while the mode, width and meter payloads are not (same mode and
+width codes as MAIN in that capture).
 
 The test below drives the production observation adapter against the real
 FTX-1 profile and a mock CAT transport with dual receive observed OFF -- the

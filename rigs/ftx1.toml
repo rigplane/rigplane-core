@@ -304,13 +304,15 @@ freshness_ttl_seconds = 2.0
 
 # Dual receive (CAT `FR`; FTX-1_CAT_OM_ENG_2508-C printed page 16: P1 `00` = dual
 # receive, `01` = single receive), published on the canonical
-# `global.tx_state.dual_watch` path rigs/ic7610.toml already declares. The
-# SUB-side frequency/mode/width reads answer with SUB's own values in single
-# receive (bench 2026-09-17, MOR-2511); `SM1;` answers there too, but whether
-# it reports SUB's own meter is not established. Per the owner's 2026-09-17
-# ruling "show SUB always" none of the four reads is gated on this field any
-# more; only the SUB operator controls below still declare themselves absent
-# until it is observed true. Read in backends/yaesu_cat/observations.py:
+# `global.tx_state.dual_watch` path rigs/ic7610.toml already declares. In
+# single receive the radio answers all four SUB-side reads
+# (`FB;`/`MD1;`/`SH1;`/`SM1;`, bench 2026-09-17, MOR-2511): the frequency is
+# SUB's own; whether the mode, width and meter payloads are SUB's own is not
+# established (same mode/width codes as MAIN in that capture). Per the
+# owner's 2026-09-17 ruling "show SUB always" none of the four reads is
+# gated on this field any more; only the SUB operator controls below still
+# declare themselves absent until it is observed true. Read in
+# backends/yaesu_cat/observations.py:
 # YaesuObservationAdapter.poll_slow_controls ahead of the SUB reads it gates,
 # so it rides the same YaesuCatPoller._SLOW_INTERVAL as the rest of this tier
 # and carries that tier's cadence rather than the IC-7610's 1.5s.
