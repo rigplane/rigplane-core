@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Capabilities } from '$lib/types/capabilities';
+import type { Capabilities, ControlDomain } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { CommandLifecycle } from '$lib/stores/commands.svelte';
 
@@ -252,6 +252,65 @@ describe('qualified raw DSP command feedback', () => {
     expect(getDspControlFeedback('nbWidth', connected)).toMatchObject({
       providerGeneration: 4, sessionEpoch: 7, confirmed: 70,
       phase: 'idle', target: null, requestedTarget: null, outcome: null,
+    });
+  });
+});
+
+const FTX1_MANUAL_NOTCH_FREQ: ControlDomain = {
+  mapping: 'linear',
+  raw_min: 1, raw_max: 320, raw_step: 1, raw_origin: 1,
+  display_min: '10' as never, display_max: '3200' as never,
+  display_step: '10' as never, display_origin: '10' as never,
+  display_unit: 'Hz', quantization: 'reject', restoration: 'exact',
+};
+
+describe('notch-position confirmed echo follows the value-side source (MOR-1680)', () => {
+  afterEach(() => {
+    h.state = null; h.caps = null; h.commands = [];
+    h.session = { state: 'connected', epoch: 7 }; h.active = 'MAIN'; h.operational = true;
+    h.indicatorCount = 1;
+    h.stateReads = 0; h.capsReads = 0; h.commandReads = 0; h.sessionReads = 0;
+  });
+
+  const ftx1Caps = caps({ controls: {
+    nb_depth: { raw_min: 0, raw_max: 9, display_min: 1, display_max: 10 },
+    manual_notch_freq: FTX1_MANUAL_NOTCH_FREQ,
+  } });
+
+  it('FTX-1: confirmed decodes manualNotchFreq while notchFilter disagrees', () => {
+    h.state = state({
+      main: { ...state().main, manualNotchFreq: 160 },
+      fieldStatus: { ...state().fieldStatus, 'main.manualNotchFreq': fresh() },
+    });
+    h.caps = ftx1Caps;
+    expect(getDspControlFeedback('notchFilter', connected)).toMatchObject({
+      availability: 'available', phase: 'idle', confirmed: 1600,
+    });
+  });
+
+  it('FTX-1: stays available from manualNotchFreq when notchFilter was never observed', () => {
+    h.state = state({
+      main: { ...state().main, manualNotchFreq: 320 },
+      fieldStatus: {
+        ...state().fieldStatus,
+        'main.manualNotchFreq': fresh(),
+        'main.notchFilter': undefined,
+      },
+    });
+    h.caps = ftx1Caps;
+    expect(getDspControlFeedback('notchFilter', connected)).toMatchObject({
+      availability: 'available', phase: 'idle', confirmed: 3200,
+    });
+  });
+
+  it('Icom: no published domain keeps confirmed on the raw notchFilter', () => {
+    h.state = state({
+      main: { ...state().main, manualNotchFreq: 160 },
+      fieldStatus: { ...state().fieldStatus, 'main.manualNotchFreq': fresh() },
+    });
+    h.caps = caps();
+    expect(getDspControlFeedback('notchFilter', connected)).toMatchObject({
+      availability: 'available', phase: 'idle', confirmed: VALUES.notchFilter,
     });
   });
 });
