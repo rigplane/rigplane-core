@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_KEYBOARD_CONFIG,
+  focusedElementOwnsArrowKey,
   isDigitKey,
   isFrequencyDisplayFocused,
   resolveAction,
@@ -124,6 +125,112 @@ describe('shouldIgnoreEvent', () => {
     expect(shouldIgnoreEvent(null)).toBe(true);
 
     resetLocalExtensionKeyboardScope();
+  });
+});
+
+// MOR-2507 — a widget that consumes arrow keys declares data-owns-arrows
+// on its focusable element; the global shortcut layer yields exactly the
+// declared keys.
+describe('focusedElementOwnsArrowKey', () => {
+  function buildOwner(declared: string): HTMLElement {
+    const el = document.createElement('div');
+    el.setAttribute('data-owns-arrows', declared);
+    document.body.appendChild(el);
+    return el;
+  }
+
+  const evt = (key: string, flags: {
+    ctrlKey?: boolean; altKey?: boolean; metaKey?: boolean; shiftKey?: boolean;
+  } = {}) => ({ key, ...flags });
+
+  it('owns all four arrows for data-owns-arrows="both"', () => {
+    const owner = buildOwner('both');
+
+    for (const key of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) {
+      expect(focusedElementOwnsArrowKey(owner, evt(key))).toBe(true);
+    }
+
+    owner.remove();
+  });
+
+  it('horizontal owns Left/Right only', () => {
+    const owner = buildOwner('horizontal');
+
+    expect(focusedElementOwnsArrowKey(owner, evt('ArrowLeft'))).toBe(true);
+    expect(focusedElementOwnsArrowKey(owner, evt('ArrowRight'))).toBe(true);
+    expect(focusedElementOwnsArrowKey(owner, evt('ArrowUp'))).toBe(false);
+    expect(focusedElementOwnsArrowKey(owner, evt('ArrowDown'))).toBe(false);
+
+    owner.remove();
+  });
+
+  it('vertical owns Up/Down only', () => {
+    const owner = buildOwner('vertical');
+
+    expect(focusedElementOwnsArrowKey(owner, evt('ArrowUp'))).toBe(true);
+    expect(focusedElementOwnsArrowKey(owner, evt('ArrowDown'))).toBe(true);
+    expect(focusedElementOwnsArrowKey(owner, evt('ArrowLeft'))).toBe(false);
+    expect(focusedElementOwnsArrowKey(owner, evt('ArrowRight'))).toBe(false);
+
+    owner.remove();
+  });
+
+  it('owns Shift+arrow only when shift is declared (value controls\' fine step)', () => {
+    const withShift = buildOwner('both shift');
+    const withoutShift = buildOwner('both');
+
+    expect(focusedElementOwnsArrowKey(withShift, evt('ArrowUp', { shiftKey: true }))).toBe(true);
+    expect(focusedElementOwnsArrowKey(withoutShift, evt('ArrowUp', { shiftKey: true }))).toBe(false);
+
+    withShift.remove();
+    withoutShift.remove();
+  });
+
+  it('never owns ctrl/alt/meta-modified arrows, even when shift is declared', () => {
+    const owner = buildOwner('both shift');
+
+    expect(focusedElementOwnsArrowKey(owner, evt('ArrowUp', { ctrlKey: true }))).toBe(false);
+    expect(focusedElementOwnsArrowKey(owner, evt('ArrowUp', { altKey: true }))).toBe(false);
+    expect(focusedElementOwnsArrowKey(owner, evt('ArrowUp', { metaKey: true }))).toBe(false);
+    expect(focusedElementOwnsArrowKey(owner, evt('ArrowUp', { ctrlKey: true, shiftKey: true }))).toBe(false);
+
+    owner.remove();
+  });
+
+  it('bare roles are not owners without the declaration', () => {
+    for (const role of ['slider', 'radiogroup', 'radio', 'separator']) {
+      const el = document.createElement('div');
+      el.setAttribute('role', role);
+      document.body.appendChild(el);
+
+      expect(focusedElementOwnsArrowKey(el, evt('ArrowUp'))).toBe(false);
+
+      el.remove();
+    }
+  });
+
+  it('owns arrows for a focused child inside an owner', () => {
+    const owner = buildOwner('both');
+    const child = document.createElement('div');
+    owner.appendChild(child);
+
+    expect(focusedElementOwnsArrowKey(child, evt('ArrowRight'))).toBe(true);
+
+    owner.remove();
+  });
+
+  it('does not own non-arrow keys, plain elements, or null', () => {
+    const owner = buildOwner('both');
+    const div = document.createElement('div');
+    const button = document.createElement('button');
+
+    expect(focusedElementOwnsArrowKey(owner, evt('7'))).toBe(false);
+    expect(focusedElementOwnsArrowKey(owner, evt('m'))).toBe(false);
+    expect(focusedElementOwnsArrowKey(div, evt('ArrowUp'))).toBe(false);
+    expect(focusedElementOwnsArrowKey(button, evt('ArrowRight'))).toBe(false);
+    expect(focusedElementOwnsArrowKey(null, evt('ArrowUp'))).toBe(false);
+
+    owner.remove();
   });
 });
 

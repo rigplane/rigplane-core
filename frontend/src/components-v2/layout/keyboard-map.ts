@@ -324,6 +324,39 @@ export function shouldIgnoreEvent(activeElement: Element | null): boolean {
   return IGNORED_TAGS.has(activeElement.tagName);
 }
 
+/** MOR-2507: axis each arrow key belongs to, matched against the owning
+ * widget's data-owns-arrows declaration. */
+const ARROW_AXIS: Readonly<Record<string, 'horizontal' | 'vertical'>> = {
+  ArrowLeft: 'horizontal',
+  ArrowRight: 'horizontal',
+  ArrowUp: 'vertical',
+  ArrowDown: 'vertical',
+};
+
+/**
+ * MOR-2507: true when the focused widget declared, via `data-owns-arrows`
+ * on its focusable element (an axis token `horizontal`/`vertical`/`both`,
+ * plus `shift` when Shift+arrow is a deliberate gesture such as a value
+ * control's fine step), that it consumes the pressed arrow. Modified
+ * arrows (ctrl/alt/meta — the Ctrl+Arrow volume and gain bindings) stay
+ * global; a bare ARIA role is not evidence of consumption, and native
+ * inputs/selects/text fields are already covered by `shouldIgnoreEvent`'s
+ * IGNORED_TAGS.
+ */
+export function focusedElementOwnsArrowKey(
+  activeElement: Element | null,
+  event: { key: string; ctrlKey?: boolean; altKey?: boolean; metaKey?: boolean; shiftKey?: boolean },
+): boolean {
+  if (event.ctrlKey || event.altKey || event.metaKey) return false;
+  const axis = ARROW_AXIS[event.key];
+  if (axis === undefined) return false;
+  const declared = activeElement?.closest('[data-owns-arrows]')?.getAttribute('data-owns-arrows');
+  if (declared === null || declared === undefined) return false;
+  const tokens = declared.split(/\s+/);
+  if (!tokens.includes(axis) && !tokens.includes('both')) return false;
+  return !event.shiftKey || tokens.includes('shift');
+}
+
 /** MOR-1444: true for a single digit character ("0".."9"), the key class a
  *  rig profile's keyboard config binds to `band_select`. */
 export function isDigitKey(key: string): boolean {

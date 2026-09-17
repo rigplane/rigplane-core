@@ -170,7 +170,7 @@
   {/each}
 {/snippet}
 
-<div class="active-receiver-toggle" class:embedded role="radiogroup" aria-label={label}>
+<div class="active-receiver-toggle" class:embedded role="radiogroup" data-owns-arrows="both" aria-label={label}>
   {@render segments()}
 </div>
 

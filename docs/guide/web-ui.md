@@ -592,8 +592,15 @@ Representative bindings from the shared default profile:
 | `1`-`9` | Select band (160m .. 6m) |
 | `F1`-`F10` | Select mode (LSB, USB, CW, CW-R, AM, FM, RTTY, RTTY-R, PSK, PSK-R) |
 | `m` / `Shift+M` / `Shift+S` | Toggle active receiver / activate MAIN / activate SUB |
-| `Tab` | Swap VFO |
 | `Escape` | Clear RIT/XIT offset |
+
+Editable value controls, the active-receiver toggle, and the spectrum
+splitter (Up/Down only) own their unmodified arrow keys: while one is
+focused, those arrows act on that control instead of tuning (Shift steps a
+value control finely; a control that is not editable owns nothing).
+Modified arrows — the `Ctrl+ArrowUp`/`ArrowDown` AF level and
+`Ctrl+Shift+ArrowUp`/`ArrowDown` RF gain bindings — and focus anywhere
+else, including plain buttons, keep the global bindings.
 
 There is no global keyboard shortcut bound to PTT. Focused PTT controls
 support Space/Enter through their own press/release handlers; this is
