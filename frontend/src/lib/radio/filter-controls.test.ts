@@ -455,6 +455,69 @@ describe('measuredPbt conversion (swept endpoints at filters 1800 and 500)', () 
   });
 });
 
+// MOR-2497 lattice-model correction. Bench re-sweep on an IC-7610 over LAN
+// on 2026-09-17 (`set_pbt_inner` raw 0..255 at each width, every write read
+// back): the radio ALWAYS centres on raw 128, the position count is
+// 2*floor(width/(2*step)) + 1 -- one edge spans +/-floor(width/(2*step))*step
+// Hz (+/-100 at width 250, NOT +/-125) -- and position i sits at raw
+// floor((i + 0.5) * 256 / P). Each `raws` row is the set the radio snapped
+// to: DATA, not the formula restated.
+describe('measuredPbt conversion (2026-09-17 re-sweep: widths 500/250/350 at step 50, AM 6000 at step 200)', () => {
+  const SWEEPS: ReadonlyArray<{ width: number; step: number; raws: readonly number[] }> = [
+    { width: 500, step: 50, raws: [11, 34, 58, 81, 104, 128, 151, 174, 197, 221, 244] },
+    { width: 250, step: 50, raws: [25, 76, 128, 179, 230] },
+    { width: 350, step: 50, raws: [18, 54, 91, 128, 164, 201, 237] },
+    {
+      width: 6000, step: 200,
+      raws: [
+        4, 12, 20, 28, 37, 45, 53, 61, 70, 78, 86, 94, 103, 111, 119, 128,
+        136, 144, 152, 161, 169, 177, 185, 194, 202, 210, 218, 227, 235, 243, 251,
+      ],
+    },
+  ];
+
+  it.each(SWEEPS)('width $width step $step: every measured raw maps to its Hz and back', ({ width, step, raws }) => {
+    const centre = (raws.length - 1) / 2;
+    raws.forEach((raw, i) => {
+      const hz = (i - centre) * step;
+      expect(measuredPbtHzToRaw(hz, width, step)).toBe(raw);
+      expect(measuredPbtRawToHz(raw, width, step)).toBe(hz);
+    });
+  });
+
+  it.each(SWEEPS)('width $width step $step: the radio centre position is raw 128 and reads 0 Hz', ({ width, step }) => {
+    expect(measuredPbtRawToHz(128, width, step)).toBe(0);
+    expect(measuredPbtHzToRaw(0, width, step)).toBe(128);
+  });
+
+  it('snaps a raw between positions to the nearest, ties toward the centre (width 250)', () => {
+    // Measured positions at width 250: raws 25/76/128/179/230. Raw 100 is
+    // nearer 76 (-50 Hz) than 128 (0 Hz).
+    expect(measuredPbtRawToHz(100, 250, 50)).toBe(-50);
+    // Raw 102 sits exactly halfway between 76 and 128; the centre-side point
+    // wins, the same snap rule the 3600 fixture pins.
+    expect(measuredPbtRawToHz(102, 250, 50)).toBe(0);
+  });
+});
+
+describe('measuredPbt conversion (single-position lattice, width == step)', () => {
+  // floor(50/(2*50)) = 0, so P = 1: the only reachable position is the
+  // centre. Callers read `null` as "no PBT reading available"; 50 Hz is a
+  // legal filter width the radio CAN be in, so it must not read as
+  // unavailable, and no raw may read as a displaced edge.
+  it('pins the only position at raw 128 / 0 Hz', () => {
+    expect(measuredPbtRawToHz(128, 50, PBT_MEASURED_STEP_HZ)).toBe(0);
+    expect(measuredPbtHzToRaw(0, 50, PBT_MEASURED_STEP_HZ)).toBe(128);
+  });
+
+  it('reads every raw as the only position and clamps every Hz to it', () => {
+    expect(measuredPbtRawToHz(0, 50, PBT_MEASURED_STEP_HZ)).toBe(0);
+    expect(measuredPbtRawToHz(255, 50, PBT_MEASURED_STEP_HZ)).toBe(0);
+    expect(measuredPbtHzToRaw(500, 50, PBT_MEASURED_STEP_HZ)).toBe(128);
+    expect(measuredPbtHzToRaw(-500, 50, PBT_MEASURED_STEP_HZ)).toBe(128);
+  });
+});
+
 describe('measuredPbt conversion (honest handling of degenerate input)', () => {
   it.each([0, -100, Number.NaN, Number.POSITIVE_INFINITY, 125])(
     'reports no conversion at filter width %s (zero/negative/non-finite/not a multiple of the step)',
@@ -565,5 +628,18 @@ describe('mapIfShiftToPbt keeps the passband width on the write path (MOR-2500)'
       .toEqual({ pbtInner: 1800, pbtOuter: 900 });
     expect(mapIfShiftToPbt(-1500, 450, -450, 3600, PBT_MEASURED_STEP_HZ))
       .toEqual({ pbtInner: -900, pbtOuter: -1800 });
+  });
+
+  it('clamps at the MEASURED span at width 250 (+/-100 Hz), never +/-filterWidthHz/2 = +/-125', () => {
+    // The 2026-09-17 sweep reaches only +/-floor(250/(2*50))*50 = +/-100 Hz
+    // at width 250 (raws 25..230). A +/-125 bound would let an edge leave
+    // the lattice: +50/-50 edges under a requested +1000 shift would land at
+    // +125/+25, off-lattice values whose write-side re-snap then moves one
+    // edge differently from the other and narrows the passband this helper
+    // exists to preserve.
+    expect(mapIfShiftToPbt(1000, 50, -50, 250, PBT_MEASURED_STEP_HZ))
+      .toEqual({ pbtInner: 100, pbtOuter: 0 });
+    expect(mapIfShiftToPbt(-1000, 50, -50, 250, PBT_MEASURED_STEP_HZ))
+      .toEqual({ pbtInner: 0, pbtOuter: -100 });
   });
 });
