@@ -87,6 +87,8 @@ class Mode(IntEnum):
     WFM = 0x06
     CW_R = 0x07
     RTTY_R = 0x08
+    PSK = 0x12
+    PSK_R = 0x13
     DV = 0x17
 
 
