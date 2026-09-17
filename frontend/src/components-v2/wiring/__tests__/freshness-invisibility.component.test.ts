@@ -200,6 +200,7 @@ const liveCaps = (): Capabilities => ({
   dataModeCount: 1, dataModeLabels: { '0': 'OFF', '1': 'DATA' },
   controls: { pbt_inner: { raw_center: 128, display_min: -1200, display_max: 1200 },
     pbt_outer: { raw_center: 128, display_min: -1200, display_max: 1200 } },
+  filterConfig: { USB: { defaults: [2400], fixed: false, pbtStepHz: 50 } },
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
