@@ -174,6 +174,37 @@ describe('focusedElementOwnsArrowKey', () => {
     expect(focusedElementOwnsArrowKey(button, 'ArrowRight')).toBe(false);
     expect(focusedElementOwnsArrowKey(null, 'ArrowUp')).toBe(false);
   });
+
+  it('owns arrows for the other arrow-consuming widget roles', () => {
+    for (const role of ['radiogroup', 'radio', 'separator']) {
+      const el = document.createElement('div');
+      el.setAttribute('role', role);
+      document.body.appendChild(el);
+
+      expect(focusedElementOwnsArrowKey(el, 'ArrowRight')).toBe(true);
+
+      el.remove();
+    }
+  });
+
+  it('owns arrows for an element inside a role="radiogroup"', () => {
+    const group = document.createElement('div');
+    group.setAttribute('role', 'radiogroup');
+    const segment = document.createElement('button');
+    group.appendChild(segment);
+    document.body.appendChild(group);
+
+    expect(focusedElementOwnsArrowKey(segment, 'ArrowRight')).toBe(true);
+
+    group.remove();
+  });
+
+  it('does not own arrows for a plain button, the non-consuming control', () => {
+    const button = document.createElement('button');
+
+    expect(focusedElementOwnsArrowKey(button, 'ArrowUp')).toBe(false);
+    expect(focusedElementOwnsArrowKey(button, 'ArrowRight')).toBe(false);
+  });
 });
 
 // MOR-1444 — digit keys must reach BandSurface's frequency-entry input

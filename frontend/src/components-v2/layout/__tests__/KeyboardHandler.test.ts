@@ -299,6 +299,72 @@ describe('KeyboardHandler', () => {
         expect.objectContaining({ action: 'focus_target' }),
       );
     });
+
+    function appendFocusedElement(attrs: Record<string, string>): HTMLElement {
+      const el = document.createElement('div');
+      for (const [name, value] of Object.entries(attrs)) el.setAttribute(name, value);
+      el.tabIndex = 0;
+      document.body.appendChild(el);
+      el.focus();
+      expect(document.activeElement).toBe(el);
+      return el;
+    }
+
+    it.each(['ArrowRight', 'ArrowUp'])(
+      'does not dispatch the shortcut when a role="radiogroup" segmented control is focused (%s)',
+      (key) => {
+        const onAction = vi.fn();
+        mountHandler({ config: arrowConfig, onAction });
+        appendFocusedElement({ role: 'radiogroup', 'aria-label': 'Mode' });
+
+        document.activeElement!.dispatchEvent(
+          new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }),
+        );
+
+        expect(onAction).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not dispatch the shortcut when a role="radio" segment is focused', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+      appendFocusedElement({ role: 'radio', 'aria-checked': 'false' });
+
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }),
+      );
+
+      expect(onAction).not.toHaveBeenCalled();
+    });
+
+    it('does not dispatch the shortcut when a role="separator" splitter is focused', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+      appendFocusedElement({ role: 'separator', 'aria-orientation': 'horizontal' });
+
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }),
+      );
+
+      expect(onAction).not.toHaveBeenCalled();
+    });
+
+    it('still tunes when a plain button without a role is focused', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = 'PTT';
+      document.body.appendChild(button);
+      button.focus();
+      expect(document.activeElement).toBe(button);
+
+      button.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+
+      expect(onAction).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ action: 'tune', params: { direction: 'up', fine: false } }),
+      );
+    });
   });
 
   it('supports leader sequences for focus actions', () => {
