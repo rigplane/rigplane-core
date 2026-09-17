@@ -51,17 +51,23 @@ import {
 import {
   getIfShiftControlFeedback, getPbtInnerControlFeedback, getPbtOuterControlFeedback,
 } from '../panel-adapters';
-import { pbtRawToHz, deriveIfShift } from '$lib/radio/filter-controls';
+import { measuredPbtRawToHz, deriveIfShift } from '$lib/radio/filter-controls';
 
-const PBT_SCALE = { rawCenter: 128, displayMin: -1200, displayMax: 1200 };
+// MOR-2497: the derived IF-shift feedback converts each PBT raw on the
+// measured lattice at the OBSERVED width and the mode's declared step. The
+// fixture radio is USB at filter 3600 (50 Hz step): raw 131 reads +50 Hz,
+// raw 140 reads +150 Hz.
+const PBT_WIDTH_HZ = 3600;
+const PBT_STEP_HZ = 50;
+const pbtHz = (raw: number) => measuredPbtRawToHz(raw, PBT_WIDTH_HZ, PBT_STEP_HZ);
 const fresh = (marker = 5) => ({
   storePath: 'fixture', observed: true, freshness: 'fresh' as const,
   availability: 'available' as const, lastObservedMonotonic: marker,
 });
 const state = (over: Record<string, unknown> = {}): ServerState => ({
   stateContractVersion: 1, providerGeneration: 3, active: 'MAIN',
-  main: { pbtInner: 131, pbtOuter: 140, ifShift: 60 },
-  sub: { pbtInner: 132, pbtOuter: 141, ifShift: 61 },
+  main: { mode: 'USB', dataMode: 0, filterWidth: PBT_WIDTH_HZ, pbtInner: 131, pbtOuter: 140, ifShift: 60 },
+  sub: { mode: 'USB', dataMode: 0, filterWidth: PBT_WIDTH_HZ, pbtInner: 132, pbtOuter: 141, ifShift: 61 },
   fieldStatus: {
     'main.pbtInner': fresh(), 'main.pbtOuter': fresh(), 'main.ifShift': fresh(),
     'sub.pbtInner': fresh(), 'sub.pbtOuter': fresh(), 'sub.ifShift': fresh(),
@@ -72,6 +78,7 @@ const pbtCaps = (overCapabilities: readonly string[] = ['pbt']): Capabilities =>
   stateContractVersion: 1, providerGeneration: 3, receivers: 1, vfoScheme: 'single',
   capabilities: overCapabilities,
   controls: { pbt_inner: { raw_center: 128, display_min: -1200, display_max: 1200 } },
+  filterConfig: { USB: { pbtStepHz: PBT_STEP_HZ } },
 } as unknown as Capabilities);
 const ftx1Caps = (): Capabilities => ({
   stateContractVersion: 1, providerGeneration: 3, receivers: 1, vfoScheme: 'single',
@@ -164,7 +171,7 @@ describe('IF-shift command feedback (real on Yaesu, derived on Icom PBT-only)', 
 
   it('derives confirmed Hz from the two PBT feedbacks on a PBT-only radio', () => {
     h.state = state(); h.caps = pbtCaps();
-    const expected = deriveIfShift(pbtRawToHz(131, PBT_SCALE), pbtRawToHz(140, PBT_SCALE));
+    const expected = deriveIfShift(pbtHz(131)!, pbtHz(140)!);
     expect(getIfShiftControlFeedback(connected)).toMatchObject({
       confirmed: expected, domain: 'hz', phase: 'idle', availability: 'available', busy: false,
     });
@@ -173,7 +180,7 @@ describe('IF-shift command feedback (real on Yaesu, derived on Icom PBT-only)', 
   it('derives a pending target from whichever PBT side is busy, confirmed for the other', () => {
     h.state = state(); h.caps = pbtCaps();
     h.commands = [command(PBT_INNER_COMMAND_DESCRIPTOR, 'value', 150)];
-    const expectedTarget = deriveIfShift(pbtRawToHz(150, PBT_SCALE), pbtRawToHz(140, PBT_SCALE));
+    const expectedTarget = deriveIfShift(pbtHz(150)!, pbtHz(140)!);
     const feedback = getIfShiftControlFeedback(connected);
     expect(feedback).toMatchObject({ target: expectedTarget, domain: 'hz', busy: true });
     expect(feedback.phase).not.toBe('idle');
@@ -190,6 +197,27 @@ describe('IF-shift command feedback (real on Yaesu, derived on Icom PBT-only)', 
   it('is unavailable when the radio has neither a real if_shift command nor pbt at all', () => {
     h.state = state();
     h.caps = { ...ftx1Caps(), capabilities: [] } as unknown as Capabilities;
+    expect(getIfShiftControlFeedback(connected).availability).toBe('unavailable');
+  });
+
+  it('is unavailable when no mode declares a step (legacy payload): no honest raw->Hz conversion (MOR-2497)', () => {
+    // The retired +/-1200 proportional scale used to fabricate a reading
+    // here. On the lattice path a payload without `pbtStepHz` converts
+    // nothing — the derived feedback fails closed, the same refusal the
+    // reading path already applies.
+    h.state = state();
+    h.caps = { ...pbtCaps(), filterConfig: {} } as unknown as Capabilities;
+    expect(getIfShiftControlFeedback(connected)).toMatchObject({
+      confirmed: null, target: null, requestedTarget: null,
+      domain: 'hz', phase: 'unavailable', availability: 'unavailable',
+    });
+  });
+
+  it('is unavailable when the observed filter width forms no lattice (width unobserved)', () => {
+    const stateNoWidth = state({
+      main: { mode: 'USB', dataMode: 0, pbtInner: 131, pbtOuter: 140, ifShift: 60 },
+    });
+    h.state = stateNoWidth; h.caps = pbtCaps();
     expect(getIfShiftControlFeedback(connected).availability).toBe('unavailable');
   });
 
@@ -223,7 +251,7 @@ describe('IF-shift command feedback (real on Yaesu, derived on Icom PBT-only)', 
       command(PBT_INNER_COMMAND_DESCRIPTOR, 'value', 150, { status: 'confirmed' }),
       command(PBT_OUTER_COMMAND_DESCRIPTOR, 'value', 160, { status: 'confirmed' }),
     ];
-    const expected = deriveIfShift(pbtRawToHz(131, PBT_SCALE), pbtRawToHz(140, PBT_SCALE));
+    const expected = deriveIfShift(pbtHz(131)!, pbtHz(140)!);
     const feedback = getIfShiftControlFeedback(connected);
     expect(feedback.busy).toBe(false);
     expect(feedback.phase).toBe('confirmed');
