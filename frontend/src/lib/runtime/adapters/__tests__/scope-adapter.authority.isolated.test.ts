@@ -29,7 +29,9 @@ import type {
   QualifiedScopeFrameEnvelope, ScopeFrameProjectionAuthority,
 } from '../scope-adapter';
 import { toRadioViewModel } from '../radio-view-model-adapter';
-import { deriveIfShift, pbtRawToHz } from '$lib/radio/filter-controls';
+import {
+  deriveIfShift, measuredPbtRawToHz, PBT_MEASURED_STEP_HZ,
+} from '$lib/radio/filter-controls';
 import { IC7300_CAPABILITIES, IC7300_STATE } from './fixtures/ic7300-profile';
 
 const fresh: FieldStatus = {
@@ -165,7 +167,11 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
     expect(first).toMatchObject({
       providerGeneration: 7, receiver: 0, frequencyHz: 14_074_000,
       mode: 'USB', filter: 'FIL2', filterWidthHz: 2400,
-      filterShape: 1, ifShiftHz: 0, pbtInnerHz: 113, pbtOuterHz: -112, dataMode: 1,
+      // MOR-2497 step 2: +/-100 Hz are lattice positions at this fixture's
+      // 2400 Hz filter (raws 140 and 116, two steps either side of centre).
+      // The retired conversion read them as 113 and -112 Hz, offsets that lie
+      // between reachable positions.
+      filterShape: 1, ifShiftHz: 0, pbtInnerHz: 100, pbtOuterHz: -100, dataMode: 1,
       rule: { kind: 'segments', minHz: 50, maxHz: 3600 },
     });
     expect(first?.digest).toBe(second?.digest);
@@ -365,7 +371,14 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
       capabilities: ['scope', 'dual_rx', 'filter_width', 'data_mode', 'pbt'],
     });
     const result = toSpectrumAuthority(state(), icomCaps);
-    const expectedIfShiftHz = deriveIfShift(pbtRawToHz(140), pbtRawToHz(116));
+    // MOR-2497 step 2: off the measured lattice at this fixture's 2400 Hz
+    // filter, not off the profile's declared +/-1200 Hz span.
+    const edge = (raw: number): number => {
+      const value = measuredPbtRawToHz(raw, 2400, PBT_MEASURED_STEP_HZ);
+      if (value === null) throw new Error('no lattice at 2400 Hz');
+      return value;
+    };
+    const expectedIfShiftHz = deriveIfShift(edge(140), edge(116));
     expect(result?.ifShiftHz).toBe(expectedIfShiftHz);
     expect(result?.ifShiftHz).not.toBeNull();
   });

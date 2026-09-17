@@ -1,6 +1,8 @@
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
-import { deriveIfShift, pbtRangeFromCaps, pbtRawToHz } from '$lib/radio/filter-controls';
+import {
+  deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps, PBT_MEASURED_STEP_HZ,
+} from '$lib/radio/filter-controls';
 import { findActiveBand, flattenBands } from '$lib/radio/band-plan';
 import type { ScopeFramePresentation } from '../scope-frame-host';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
@@ -198,8 +200,20 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
     }
   }
   const data = has('data_mode') ? read(`${key}.dataMode`, rx.dataMode) : 'structurally-unsupported';
-  const shiftHz = native ? shift : validScale && inner !== undefined && outer !== undefined
-    ? deriveIfShift(pbtRawToHz(inner, scale), pbtRawToHz(outer, scale)) : undefined;
+  // MOR-2497 step 2: PBT raw -> Hz on the lattice the radio actually snaps to,
+  // whose spacing is the measured 50 Hz step and whose span is the CURRENT
+  // filter width -- not the fixed +/-1200 Hz the profile declares. `width` is
+  // the observed filter width read above; a width that forms no lattice
+  // (absent, zero, not a multiple of the step) yields `null` here and the
+  // existing `typeof shiftHz !== 'number'` guard below turns that into
+  // `invalid-observation`, the same refusal an unreadable PBT already got.
+  const toHz = (raw: number): number | null => (
+    width === undefined ? null : measuredPbtRawToHz(raw, width, PBT_MEASURED_STEP_HZ)
+  );
+  const innerHz = !native && validScale && inner !== undefined ? toHz(inner) : null;
+  const outerHz = !native && validScale && outer !== undefined ? toHz(outer) : null;
+  const shiftHz = native ? shift
+    : innerHz !== null && outerHz !== null ? deriveIfShift(innerHz, outerHz) : undefined;
   if (invalid || !positive(frequency) || !positive(width) || !mode || !caps.modes?.some((m) => modeName(m) === mode)
     || !integer(filter) || filter === 0 || !caps.filters.includes(`FIL${filter}`)
     || (has('data_mode') && !integer(data)) || typeof shiftHz !== 'number' || !Number.isFinite(shiftHz)) {

@@ -34,7 +34,18 @@ import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/suppor
 const fresh = (marker: number) => ({ storePath: 'x', observed: true, freshness: 'fresh' as const, availability: 'available' as const, lastObservedMonotonic: marker });
 const caps = (generation = 7): Capabilities => ({ model: 'fixture', scope: false, audio: false, tx: false, capabilities: ['pbt', 'dual_rx'], receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: ['USB'], filters: ['FIL1'], controls: { pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 } }, audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] }, webrtc: { available: false, enabled: false }, txBands: [], scopeSource: null, audioFftAvailable: false, stateContractVersion: 1, providerGeneration: generation } as unknown as Capabilities);
 const state = (inner: number | null, outer: number | null, marker = 1, generation = 7, active: 'MAIN' | 'SUB' = 'MAIN', freshness: 'fresh' | 'stale' = 'fresh', observedMarker = marker): ServerState => {
-  const receiver = (pbtInner: number | null, pbtOuter: number | null) => ({ freqHz: 14250000, mode: 'USB', filter: 1, dataMode: 0, sMeter: 0, att: 0, preamp: 0, nb: false, nr: false, afLevel: 0, rfGain: 0, squelch: 0, activeSlot: 'A', vfoA: { freqHz: 14250000, mode: 'USB', filterNum: 1 }, vfoB: { freqHz: 14300000, mode: 'USB', filterNum: 1 }, pbtInner, pbtOuter });
+  // MOR-2497 step 2: `filterWidth` is load-bearing for a PBT reading in Hz --
+  // the measured lattice has `filterWidth / 50 + 1` positions, so without it
+  // there is no Hz and the projection reports nothing. 2400 Hz is a width the
+  // radio can be at; this fixture omitted the field, which the retired
+  // conversion did not need.
+  // MOR-2497 step 2: a PBT raw is one wire byte, 0..255. This fixture used
+  // values outside that range (300, 500, 700, -400 ...) purely as distinct
+  // numbers; the retired conversion converted them anyway, the measured one
+  // reports no lattice position for a raw the wire cannot carry. Remapped to
+  // distinct reachable raws, keeping each value on the side of centre it was
+  // on, which is what the assertions below are about.
+  const receiver = (pbtInner: number | null, pbtOuter: number | null) => ({ freqHz: 14250000, mode: 'USB', filter: 1, dataMode: 0, filterWidth: 2400, sMeter: 0, att: 0, preamp: 0, nb: false, nr: false, afLevel: 0, rfGain: 0, squelch: 0, activeSlot: 'A', vfoA: { freqHz: 14250000, mode: 'USB', filterNum: 1 }, vfoB: { freqHz: 14300000, mode: 'USB', filterNum: 1 }, pbtInner, pbtOuter });
   const field = (name: string) => inner === null && name.endsWith('pbtInner') ? { ...fresh(observedMarker), freshness } : outer === null && name.endsWith('pbtOuter') ? { ...fresh(observedMarker), freshness } : { ...fresh(observedMarker), freshness };
   return { revision: marker, stateRevision: marker, freshnessRevision: marker, observationSeq: marker, updatedAt: '2026-08-15T00:00:00Z', stateContractVersion: 1, providerGeneration: generation, active, split: false, dualWatch: false, ptt: false, tunerStatus: 0, connection: { rigConnected: true, radioReady: true, controlConnected: true }, txTarget: { status: 'unknown', reason: 'fixture' }, main: receiver(inner, outer), sub: receiver(inner, outer), fieldStatus: Object.fromEntries(['active', 'main.freqHz', 'main.mode', 'main.filter', 'main.activeSlot', 'sub.freqHz', 'sub.mode', 'sub.filter', 'sub.activeSlot', 'main.pbtInner', 'main.pbtOuter', 'sub.pbtInner', 'sub.pbtOuter'].map((name) => [name, field(name)])) } as unknown as ServerState;
 };
@@ -45,32 +56,32 @@ const value = (field: 'pbtInner' | 'pbtOuter') => target.querySelector<HTMLInput
 const transition = (state: string, epoch: number, flush = true) => { h.session = { state, epoch }; for (const listener of h.listeners) listener(h.session); if (flush) flushSync(); };
 const accept = (next: ServerState) => expect(setRadioState(next)).toBe(true);
 
-beforeEach(() => { txHarness = new ManagedAppTxHarness(); h.txController = txHarness.controller; h.session = { state: 'connected', epoch: 1 }; h.listeners.clear(); h.commands.mockClear(); resetRadioState(); clearCapabilities(); expect(setCapabilities(caps())).toBe(true); accept(state(100, -200)); });
+beforeEach(() => { txHarness = new ManagedAppTxHarness(); h.txController = txHarness.controller; h.session = { state: 'connected', epoch: 1 }; h.listeners.clear(); h.commands.mockClear(); resetRadioState(); clearCapabilities(); expect(setCapabilities(caps())).toBe(true); accept(state(100, 100)); });
 afterEach(() => { component && unmount(component); component = null; expect(h.listeners.size).toBe(0); document.body.innerHTML = ''; resetRadioState(); clearCapabilities(); });
 
 describe('mounted PBT continuity is fenced by the live control session (MOR-1706)', () => {
   it('retains independent fresh values through transient loss, then synchronously clears coalesced same-epoch reconnects', () => {
     render(); const initialInner = value('pbtInner'), initialOuter = value('pbtOuter'); expect(initialInner).not.toBeNull(); expect(initialOuter).not.toBeNull(); expect(h.commands).not.toHaveBeenCalled();
     const staleInput = target.querySelector<HTMLInputElement>('[data-testid="filter-pbtInner"] input'); expect(staleInput).not.toBeNull();
-    accept(state(null, -200, 2)); flushSync(); expect(value('pbtInner')).toBe(initialInner); expect(value('pbtOuter')).toBe(initialOuter);
+    accept(state(null, 100, 2)); flushSync(); expect(value('pbtInner')).toBe(initialInner); expect(value('pbtOuter')).toBe(initialOuter);
     expect(h.listeners.size).toBe(7); transition('disconnected', 1, false); transition('connected', 1, false); flushSync(); expect(value('pbtInner')).toBeNull(); expect(value('pbtOuter')).toBeNull();
     staleInput!.value = '500'; staleInput!.dispatchEvent(new Event('input', { bubbles: true })); flushSync(); expect(h.commands).not.toHaveBeenCalled(); expect(txHarness.trace()).toEqual([]);
-    transition('connected', 1); expect(value('pbtInner')).toBeNull(); accept(state(300, -400, 3)); flushSync(); expect(value('pbtInner')).not.toBeNull();
-    transition('connected', 2); expect(value('pbtInner')).toBeNull(); accept(state(500, -600, 4)); flushSync(); expect(value('pbtOuter')).not.toBeNull();
+    transition('connected', 1); expect(value('pbtInner')).toBeNull(); accept(state(160, 96, 3)); flushSync(); expect(value('pbtInner')).not.toBeNull();
+    transition('connected', 2); expect(value('pbtInner')).toBeNull(); accept(state(192, 64, 4)); flushSync(); expect(value('pbtOuter')).not.toBeNull();
     accept(state(null, null, 5, 7, 'SUB', 'stale')); flushSync(); expect(value('pbtInner')).toBeNull();
-    accept(state(700, -800, 6, 7, 'SUB')); flushSync(); expect(value('pbtInner')).not.toBeNull(); expect(h.commands).not.toHaveBeenCalled(); expect(txHarness.trace()).toEqual([]);
+    accept(state(224, 32, 6, 7, 'SUB')); flushSync(); expect(value('pbtInner')).not.toBeNull(); expect(h.commands).not.toHaveBeenCalled(); expect(txHarness.trace()).toEqual([]);
   });
 
   it('clears explicitly unsupported fields and cannot revive delayed old generation evidence', () => {
     render(); const initial = value('pbtInner'); expect(initial).not.toBeNull(); accept(state(null, null, 2)); flushSync(); expect(value('pbtInner')).toBe(initial);
     expect(setCapabilities({ ...caps(), capabilities: ['dual_rx'] } as Capabilities)).toBe(true); accept(state(null, null, 3)); flushSync(); expect(value('pbtInner')).toBeNull();
-    expect(setCapabilities(caps(8))).toBe(true); accept(state(900, -900, 1, 8)); flushSync(); const current = value('pbtInner'); expect(current).not.toBeNull();
+    expect(setCapabilities(caps(8))).toBe(true); accept(state(240, 16, 1, 8)); flushSync(); const current = value('pbtInner'); expect(current).not.toBeNull();
     accept(state(null, null, 2, 8)); flushSync(); expect(value('pbtInner')).toBe(current);
   });
 
   it('keeps operational truth for an exact equal refresh, while the pure reducer stays conservative on conflict', () => {
     render(); const initial = value('pbtInner');
-    accept(state(100, -200, 2, 7, 'MAIN', 'fresh', 1)); flushSync();
+    accept(state(100, 100, 2, 7, 'MAIN', 'fresh', 1)); flushSync();
     const input = target.querySelector<HTMLInputElement>('[data-testid="filter-pbtInner"] input');
     expect(value('pbtInner')).toBe(initial); expect(input?.disabled).toBe(false);
     const baseline = withFilterPassband(topologyFixtures['1/single']);
@@ -82,9 +93,9 @@ describe('mounted PBT continuity is fenced by the live control session (MOR-1706
   });
 
   it('does not carry a generation-seven floor into generation-eight marker one', () => {
-    accept(state(100, -200, 100)); render(); transition('disconnected', 1); expect(value('pbtInner')).toBeNull();
+    accept(state(100, 100, 100)); render(); transition('disconnected', 1); expect(value('pbtInner')).toBeNull();
     transition('connected', 1);
-    expect(setCapabilities(caps(8))).toBe(true); accept(state(900, -900, 1, 8)); flushSync();
+    expect(setCapabilities(caps(8))).toBe(true); accept(state(240, 16, 1, 8)); flushSync();
     expect(value('pbtInner')).not.toBeNull(); expect(h.commands).not.toHaveBeenCalled(); expect(txHarness.trace()).toEqual([]);
   });
 });

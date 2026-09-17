@@ -382,8 +382,14 @@ describe('renderAudioSpectrum', () => {
         ...baseState, pixels: null, pbtInner: 200, pbtOuter: 56,
         pbtRange: IC7610_PBT_RANGE,
       }, new AudioSpectrumRendererState());
-      expect(centerXOf(strokes, INNER_PBT_STROKE)).toBeCloseTo(230.375, 9);
-      expect(centerXOf(strokes, OUTER_PBT_STROKE)).toBeCloseTo(169.625, 9);
+      // MOR-2497 step 2: placed off the MEASURED lattice at the 2400 Hz filter
+      // this fixture declares, which has 2400/50 + 1 = 49 positions. Raw 200 is
+      // nearest position 38 (+700 Hz) and raw 56 nearest position 10 (-700 Hz);
+      // the centres are then 200 +/- (700/2400)*180*0.6 = 200 +/- 31.5. The
+      // retired conversion read these raws as +/-675 Hz -- off the lattice, so
+      // not offsets the radio can actually be at.
+      expect(centerXOf(strokes, INNER_PBT_STROKE)).toBeCloseTo(231.5, 9);
+      expect(centerXOf(strokes, OUTER_PBT_STROKE)).toBeCloseTo(168.5, 9);
     });
 
     it('draws no PBT overlay and no passband shift when no range is published', () => {
