@@ -29,6 +29,7 @@ export interface ScopePassbandDisplayState {
   readonly display: ScopePassbandDisplay;
   readonly identity: string | null;
   readonly continuityIdentity: string | null;
+  readonly bandlessIdentity: string | null;
   readonly domain: string | null;
   readonly observations: Observations;
   readonly geometryPaths: readonly string[];
@@ -50,7 +51,7 @@ const EMPTY_OBSERVATIONS: Observations = Object.freeze({});
 const EMPTY_PATHS: readonly string[] = Object.freeze([]);
 export const EMPTY_SCOPE_PASSBAND_DISPLAY: ScopePassbandDisplayState = Object.freeze({
   display: Object.freeze({ state: 'unknown', reason: 'not-observed' }),
-  identity: null, continuityIdentity: null, domain: null, observations: EMPTY_OBSERVATIONS,
+  identity: null, continuityIdentity: null, bandlessIdentity: null, domain: null, observations: EMPTY_OBSERVATIONS,
   geometryPaths: EMPTY_PATHS, receipt: 0, floors: null, frequencyHoldRecovery: false,
   selection: null, selectionRecovery: null,
 });
@@ -76,7 +77,7 @@ function capabilityIdentity(caps: Capabilities): string {
   }));
 }
 interface Candidate {
-  identity: string; continuityIdentity: string | null; tuple: ScopePassbandTuple;
+  identity: string; continuityIdentity: string | null; bandlessIdentity: string; tuple: ScopePassbandTuple;
   stale: boolean; strict: boolean; frequencyCurrent: boolean; frequencyAligned: boolean;
 }
 interface Inspection {
@@ -245,6 +246,7 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
     identity: JSON.stringify([...context, frequency, frame.startFreq, frame.endFreq]),
     continuityIdentity: !partition ? null
       : JSON.stringify([...context, partition.name, partition.start, partition.end, frame.endFreq - frame.startFreq]),
+    bandlessIdentity: JSON.stringify([...context, frame.endFreq - frame.startFreq]),
     strict: frequencyAligned && !!strict && strict.receiver === receiver && strict.frequencyHz === frequency
       && modeName(strict.mode ?? undefined) === mode && strict.filter === `FIL${filter}`
       && strict.filterWidthHz === width && strict.ifShiftHz === shiftHz
@@ -288,7 +290,7 @@ export function projectScopePassbandDisplay(
     && next.selection.context === previous.selection.context && next.selection.slot === previous.selection.slot
     && next.selection.marker > previous.selection.marker && !regression && !receiptRegression;
   const selectionBoundary = selectionChanged || selectionRebound;
-  const recoveryContext = candidate?.continuityIdentity ?? candidate?.identity ?? null;
+  const recoveryContext = candidate?.bandlessIdentity ?? null;
   let selectionRecovery = selectionBoundary ? { context: recoveryContext } : previous.selectionRecovery;
   if (selectionRecovery && (regression || receiptRegression || !next.selection
     || (!selectionBoundary && next.selection.context !== previous.selection?.context)
@@ -301,15 +303,19 @@ export function projectScopePassbandDisplay(
   const recoveryCancelled = previous.selectionRecovery !== null && selectionRecovery === null;
   const hasTuple = active(previous.display);
   const wasTranslated = hasTuple && previous.display.translated === true;
-  const holdingFrequency = hasTuple && candidate !== null && candidate.continuityIdentity !== null
-    && candidate.continuityIdentity === previous.continuityIdentity
+  const continuityMatch = candidate !== null && candidate.continuityIdentity !== null
+    && candidate.continuityIdentity === previous.continuityIdentity;
+  const bandEdgeMatch = candidate !== null && !continuityMatch
+    && (candidate.continuityIdentity !== null || previous.continuityIdentity !== null)
+    && candidate.bandlessIdentity === previous.bandlessIdentity;
+  const continuous = continuityMatch || bandEdgeMatch;
+  const holdingFrequency = hasTuple && continuous && candidate !== null
     && !candidate.frequencyCurrent && candidate.frequencyAligned
     && !regression && !receiptRegression && !changedGeometry;
   const invalid = !candidate || regression || receiptRegression || (!candidate.stale && !candidate.strict)
     || ((candidate.stale || wasTranslated) && changedGeometry)
     || (wasTranslated && !candidate.frequencyCurrent && !holdingFrequency);
-  const canTranslate = hasTuple && candidate !== null && candidate.continuityIdentity !== null
-    && candidate.continuityIdentity === previous.continuityIdentity
+  const canTranslate = hasTuple && continuous && candidate !== null
     && candidate.frequencyCurrent && !regression && !receiptRegression && !changedGeometry
     && (candidate.stale || candidate.strict || !candidate.frequencyAligned);
   const translating = canTranslate && (changedIdentity || wasTranslated);
@@ -364,6 +370,7 @@ export function projectScopePassbandDisplay(
   return Object.freeze({
     display: Object.freeze(display), identity: candidate?.identity ?? previous.identity,
     continuityIdentity: candidate?.continuityIdentity ?? null,
+    bandlessIdentity: candidate?.bandlessIdentity ?? null,
     domain: next.domain ?? previous.domain,
     observations: Object.freeze(observations),
     geometryPaths: Object.freeze([...next.geometryPaths]), receipt: Math.max(previous.receipt, next.receipt),
