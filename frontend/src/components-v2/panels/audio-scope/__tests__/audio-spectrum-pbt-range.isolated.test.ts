@@ -114,7 +114,8 @@ function baseState(overrides: Partial<SpectrumState> = {}): SpectrumState {
 
 describe('renderer PBT conversion never reads the capabilities store (MOR-2475 PR-4)', () => {
   // MOR-2497 step 2 strengthens what this test guards rather than retiring it.
-  // The Hz now comes off the measured lattice at the passed `filterWidth`, so
+  // The Hz now comes off the measured lattice at the passed `filterWidth` and
+  // the passed per-mode `pbtStepHz`, so
   // the store's `pbt_inner` range cannot steer the geometry even in principle --
   // it is not consulted for the number at all, and `pbtRange` survives only as
   // the gate saying the radio publishes PBT. The store range installed here is
@@ -124,7 +125,7 @@ describe('renderer PBT conversion never reads the capabilities store (MOR-2475 P
     setCapabilities(STORE_CAPS);
     const { ctx, strokes } = mockCtxWithStrokes();
     renderAudioSpectrum(ctx, 400, 160, baseState({
-      pbtInner: 200, pbtOuter: 56, pbtRange: PASSED_RANGE,
+      pbtInner: 200, pbtOuter: 56, pbtRange: PASSED_RANGE, pbtStepHz: 50,
     }), new AudioSpectrumRendererState());
     // Raw 200 -> lattice position 38 (+700 Hz), raw 56 -> position 10 (-700 Hz)
     // at this fixture's 2400 Hz filter; centres 200 +/- (700/2400)*180*0.6.

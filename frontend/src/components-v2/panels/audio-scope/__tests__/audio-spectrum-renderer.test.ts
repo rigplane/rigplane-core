@@ -331,7 +331,9 @@ describe('renderAudioSpectrum', () => {
 
   /**
    * MOR-2475 PR-4 — the PBT overlay converts raw→Hz through the range handed
-   * in `SpectrumState.pbtRange`, and only then. Geometry mirrors the
+   * in `SpectrumState.pbtRange`, and only then. MOR-2497 (post-#3519): the
+   * lattice step is likewise handed in as `SpectrumState.pbtStepHz` for the
+   * current mode. Geometry mirrors the
    * renderer's own expressions for width=400, filterWidth=2400,
    * filterWidthMax=3600 (shiftRef = 2400, totalHalfW = 180): a passed-range
    * inner displacement of +675 Hz centers the inner trapezoid at
@@ -380,7 +382,7 @@ describe('renderAudioSpectrum', () => {
       const { ctx, strokes } = mockCtxWithStrokes();
       renderAudioSpectrum(ctx, 400, 160, {
         ...baseState, pixels: null, pbtInner: 200, pbtOuter: 56,
-        pbtRange: IC7610_PBT_RANGE,
+        pbtRange: IC7610_PBT_RANGE, pbtStepHz: 50,
       }, new AudioSpectrumRendererState());
       // MOR-2497 step 2: placed off the MEASURED lattice at the 2400 Hz filter
       // this fixture declares, which has 2400/50 + 1 = 49 positions. Raw 200 is
@@ -400,6 +402,32 @@ describe('renderAudioSpectrum', () => {
       expect(strokes.some((s) => s.style === INNER_PBT_STROKE)).toBe(false);
       expect(strokes.some((s) => s.style === OUTER_PBT_STROKE)).toBe(false);
       expect(centerXOf(strokes, PLAIN_STROKE)).toBeCloseTo(200, 9);
+    });
+
+    // MOR-2497 (post-#3519): the lattice step is per MODE and handed in as
+    // `pbtStepHz` — 200 Hz in AM, 50 Hz in SSB/CW/RTTY. Width 2400, raw 200:
+    // +800 Hz at the AM step (+700 at 50 Hz), centres 200 ± Hz·0.045.
+    it('places the trapezoids by the passed per-mode step (AM 200 Hz differs from the 50 Hz SSB step)', () => {
+      const { ctx, strokes } = mockCtxWithStrokes();
+      renderAudioSpectrum(ctx, 400, 160, {
+        ...baseState, pixels: null, pbtInner: 200, pbtOuter: 56,
+        pbtRange: IC7610_PBT_RANGE, pbtStepHz: 200,
+      }, new AudioSpectrumRendererState());
+      expect(centerXOf(strokes, INNER_PBT_STROKE)).toBeCloseTo(236, 9);
+      expect(centerXOf(strokes, OUTER_PBT_STROKE)).toBeCloseTo(164, 9);
+    });
+
+    // A mode without twin PBT (FM) declares no step: the props layer passes
+    // none and the renderer has no honest raw→Hz conversion — the trapezoids
+    // sit unshifted, exactly as a width that forms no lattice already behaves.
+    it('draws the twin trapezoids unshifted when the range is passed without a step', () => {
+      const { ctx, strokes } = mockCtxWithStrokes();
+      renderAudioSpectrum(ctx, 400, 160, {
+        ...baseState, pixels: null, pbtInner: 200, pbtOuter: 56,
+        pbtRange: IC7610_PBT_RANGE,
+      }, new AudioSpectrumRendererState());
+      expect(centerXOf(strokes, INNER_PBT_STROKE)).toBeCloseTo(200, 9);
+      expect(centerXOf(strokes, OUTER_PBT_STROKE)).toBeCloseTo(200, 9);
     });
   });
 });

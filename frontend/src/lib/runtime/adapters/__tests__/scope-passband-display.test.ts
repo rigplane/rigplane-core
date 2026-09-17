@@ -41,7 +41,15 @@ function fixture(): ScopePassbandDisplayInput {
     stateContractVersion: 1, providerGeneration: 1,
     capabilities: ['scope', 'filter_width', 'if_shift', 'data_mode'],
     receivers: 1, vfoScheme: 'single', freqRanges: [], modes: ['USB', 'LSB', 'AM'], filters: ['FIL1', 'FIL2'],
-    filterConfig: { USB: { defaults: [2400], fixed: true } },
+    // MOR-2497 (post-#3519): the PBT derived path also needs the per-mode
+    // lattice step — declared here at the SSB value the pinned literals below
+    // (raw 140 → +100 Hz) are written against. Ignored by the pre-change
+    // conversion, load-bearing after it. LSB because the mode-change tests
+    // retune there.
+    filterConfig: {
+      USB: { defaults: [2400], fixed: true, pbtStepHz: 50 },
+      LSB: { defaults: [2400], fixed: true, pbtStepHz: 50 },
+    },
     controls: { pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 } },
     txBands: [], audioConfig: { sampleRate: 48000, channels: 1, codecs: [] },
     webrtc: { available: false, enabled: false },
@@ -451,6 +459,37 @@ describe('coherent RF passband display', () => {
     expect(project(legal).display.state).toBe('current');
     const input = fixture(); pbt(input); input.state!.main!.filterWidth = 2410;
     expect(project(input).display.state).not.toBe('current');
+  });
+  // MOR-2497 (post-#3519): the lattice step is per MODE, read from
+  // `filterConfig[mode].pbtStepHz` by BOTH this reducer and the view-model
+  // adapter the strict authority derives from — `reaching current` below
+  // requires `strict.ifShiftHz === shiftHz`, so each pin also proves the two
+  // sites resolved the same step.
+  it('reads AM off its declared 200 Hz step, not the 50 Hz SSB step, in lockstep with the view-model authority', () => {
+    const input = fixture(); pbt(input);
+    input.caps!.filterConfig = { ...input.caps!.filterConfig, AM: { defaults: [2400], fixed: true, pbtStepHz: 200 } };
+    input.state!.main!.mode = 'AM';
+    input.state!.main!.pbtInner = 200; input.state!.main!.pbtOuter = 200;
+    const current = project(input);
+    // Width 2400, raw 200: +800 Hz at the 200 Hz AM step (+700 at 50 Hz).
+    expect(current.display.state).toBe('current');
+    expect(tuple(current).shiftHz).toBe(800);
+  });
+  it('refuses a PBT reading in FM: the mode has no twin PBT, so it declares no step', () => {
+    const input = fixture(); pbt(input);
+    input.caps!.modes = [...input.caps!.modes!, 'FM'];
+    input.caps!.filterConfig = { ...input.caps!.filterConfig, FM: { defaults: [15000], fixed: true } };
+    input.state!.main!.mode = 'FM';
+    input.state!.main!.pbtInner = 200; input.state!.main!.pbtOuter = 200;
+    // filterWidth stays 2400 — a width that WOULD form a lattice at 50 Hz, so
+    // the refusal is attributable only to the absent step, not to the width.
+    expect(project(input).display).toEqual({ state: 'unknown', reason: 'invalid-observation' });
+  });
+  it('refuses a PBT reading when no mode declares a step (legacy pre-pbtStepHz payload)', () => {
+    const input = fixture(); pbt(input);
+    for (const config of Object.values(input.caps!.filterConfig!)) delete config.pbtStepHz;
+    input.state!.main!.pbtInner = 200; input.state!.main!.pbtOuter = 200;
+    expect(project(input).display).toEqual({ state: 'unknown', reason: 'invalid-observation' });
   });
   it.each([undefined, { raw_min: 0, raw_max: 255, raw_center: 0, display_min: -1200, display_max: 1200 }])('rejects missing/invalid PBT scale', (scale) => {
     const input = fixture(); pbt(input); input.caps!.controls = scale ? { pbt_inner: scale } : {};

@@ -32,7 +32,10 @@ import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 const fresh = (marker: number) => ({ storePath: 'x', observed: true, freshness: 'fresh' as const, availability: 'available' as const, lastObservedMonotonic: marker });
-const caps = (generation = 7): Capabilities => ({ model: 'fixture', scope: false, audio: false, tx: false, capabilities: ['pbt', 'dual_rx'], receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: ['USB'], filters: ['FIL1'], controls: { pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 } }, audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] }, webrtc: { available: false, enabled: false }, txBands: [], scopeSource: null, audioFftAvailable: false, stateContractVersion: 1, providerGeneration: generation } as unknown as Capabilities);
+// MOR-2497 (post-#3519): the per-mode PBT lattice step — the USB fixture mode
+// must declare it for the mounted PBT inputs to have an Hz reading at all.
+// Ignored by the pre-change conversion, load-bearing after it.
+const caps = (generation = 7): Capabilities => ({ model: 'fixture', scope: false, audio: false, tx: false, capabilities: ['pbt', 'dual_rx'], receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: ['USB'], filters: ['FIL1'], controls: { pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 } }, filterConfig: { USB: { defaults: [2400], fixed: false, pbtStepHz: 50 } }, audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] }, webrtc: { available: false, enabled: false }, txBands: [], scopeSource: null, audioFftAvailable: false, stateContractVersion: 1, providerGeneration: generation } as unknown as Capabilities);
 const state = (inner: number | null, outer: number | null, marker = 1, generation = 7, active: 'MAIN' | 'SUB' = 'MAIN', freshness: 'fresh' | 'stale' = 'fresh', observedMarker = marker): ServerState => {
   // MOR-2497 step 2: `filterWidth` is load-bearing for a PBT reading in Hz --
   // the measured lattice has `filterWidth / 50 + 1` positions, so without it
