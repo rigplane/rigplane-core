@@ -916,20 +916,27 @@ async def test_field_declared_absent_in_the_current_mode_does_not_hold_the_gate(
 
 
 # ---------------------------------------------------------------------------
-# The FTX-1's second receiver: in the gate only while dual receive is on
+# The FTX-1's second receiver: freq/mode/width/meter are unconditional
+# (MOR-2511); only the operator controls gate on dual receive
 # ---------------------------------------------------------------------------
 
 
 DUAL_WATCH = FieldPath.global_("tx_state", "dual_watch")
-FTX1_SUB_PATHS = (
+# Ungated since MOR-2511, so these hold the gate open until first
+# observation like any unconditional declared field.
+FTX1_SUB_UNGATED_PATHS = (
     FieldPath.active("sub", "freq_mode", "freq_hz"),
     FieldPath.active("sub", "freq_mode", "mode"),
+    FieldPath.active("sub", "freq_mode", "filter_width"),
     FieldPath.receiver("sub", "meters", "s_meter"),
+)
+FTX1_SUB_GATED_PATHS = (
     FieldPath.receiver("sub", "operator_controls", "af_level"),
     FieldPath.receiver("sub", "operator_controls", "rf_gain"),
     FieldPath.receiver("sub", "operator_controls", "squelch"),
     FieldPath.receiver("sub", "operator_controls", "repeater_shift"),
 )
+FTX1_SUB_PATHS = FTX1_SUB_UNGATED_PATHS + FTX1_SUB_GATED_PATHS
 
 
 def _ftx1_scheduler() -> AcquisitionScheduler:
@@ -954,21 +961,29 @@ def _dual_receive_store(on: bool) -> StateStore:
     return store
 
 
-def test_ftx1_sub_paths_stay_out_of_the_gate_until_dual_receive_is_observed() -> None:
-    """No SUB field holds the gate open before ``FR`` has answered."""
+def test_ftx1_sub_operator_controls_stay_out_of_the_gate_until_dual_receive_is_observed() -> (
+    None
+):
+    """No gated SUB field holds the gate open before ``FR`` has answered."""
 
     outstanding = _ftx1_outstanding(StateStore())
 
-    assert set(FTX1_SUB_PATHS).isdisjoint(outstanding)
+    assert set(FTX1_SUB_GATED_PATHS).isdisjoint(outstanding)
+    # The ungated SUB fields are in the gate from the start, like any
+    # unconditional declared field.
+    assert set(FTX1_SUB_UNGATED_PATHS).issubset(outstanding)
     # Not vacuous: the condition source is itself in the gate, so the gate
     # still waits for the read that resolves the clause.
     assert DUAL_WATCH in outstanding
 
 
-def test_ftx1_sub_paths_stay_out_of_the_gate_while_dual_receive_is_off() -> None:
+def test_ftx1_sub_operator_controls_stay_out_of_the_gate_while_dual_receive_is_off() -> (
+    None
+):
     outstanding = _ftx1_outstanding(_dual_receive_store(False), (DUAL_WATCH,))
 
-    assert set(FTX1_SUB_PATHS).isdisjoint(outstanding)
+    assert set(FTX1_SUB_GATED_PATHS).isdisjoint(outstanding)
+    assert set(FTX1_SUB_UNGATED_PATHS).issubset(outstanding)
     assert DUAL_WATCH not in outstanding
 
 

@@ -83,12 +83,14 @@ _MIC_GAIN = FieldPath.global_("operator_controls", "mic_gain")
 _COMPRESSOR_ON = FieldPath.global_("tx_state", "compressor_on")
 _COMPRESSOR_LEVEL = FieldPath.global_("operator_controls", "compressor_level")
 _VOX_ON = FieldPath.global_("tx_state", "vox_on")
-# Filter / IF-shift / narrow DSP controls (MOR-445). MAIN-only: the FTX-1 has
-# no per-receiver CAT command for IF-shift/narrow (no IS1/NA1), and the legacy
-# poller only writes ``main.{filter_width,if_shift,narrow}``. ``filter_width``
-# is a ``freq_mode`` ACTIVE-slot field emitted in the freq/mode lane; IF-shift
-# and narrow are per-receiver operator controls emitted in the slow lane.
+# Filter / IF-shift / narrow DSP controls (MOR-445). IF-shift and narrow are
+# MAIN-only: the FTX-1 has no per-receiver CAT command for them (no IS1/NA1).
+# ``filter_width`` has the SUB form SH1 and is read for both receivers
+# (MOR-2511). ``filter_width`` is a ``freq_mode`` ACTIVE-slot field emitted in
+# the freq/mode lane; IF-shift and narrow are per-receiver operator controls
+# emitted in the slow lane.
 _MAIN_FILTER_WIDTH = FieldPath.active("main", "freq_mode", "filter_width")
+_SUB_FILTER_WIDTH = FieldPath.active("sub", "freq_mode", "filter_width")
 _MAIN_IF_SHIFT = FieldPath.receiver("main", "operator_controls", "if_shift")
 _MAIN_NARROW = FieldPath.receiver("main", "operator_toggles", "narrow")
 # NB/NR levels + derived toggles, auto/manual notch DSP controls (MOR-444).
@@ -376,6 +378,7 @@ class YaesuObservationAdapter:
                 observations.append(
                     adapter.observation(_SUB_FREQ, value, native_id="read_freq")
                 )
+        sub_mode: str | None = None
         if (
             self._has_runtime_capability("dual_rx")
             and self._can_poll(_SUB_MODE)
@@ -385,6 +388,7 @@ class YaesuObservationAdapter:
                 "sub.mode", self.radio.read_mode(1), paths=(_SUB_MODE,)
             )
             if ok and result is not None:
+                sub_mode = result[0]
                 observations.append(
                     adapter.observation(_SUB_MODE, result[0], native_id="read_mode")
                 )
@@ -469,6 +473,22 @@ class YaesuObservationAdapter:
                 observations.append(
                     adapter.observation(
                         _MAIN_FILTER_WIDTH, value, native_id="read_filter_width"
+                    )
+                )
+        if (
+            self._has_runtime_capability("dual_rx")
+            and self._has_runtime_capability("filter_width")
+            and self._can_poll(_SUB_FILTER_WIDTH)
+        ):
+            ok, value = await self._safe_read(
+                "sub.filter_width",
+                self.radio.read_filter_width(1, mode=sub_mode),
+                paths=(_SUB_FILTER_WIDTH,),
+            )
+            if ok:
+                observations.append(
+                    adapter.observation(
+                        _SUB_FILTER_WIDTH, value, native_id="read_filter_width"
                     )
                 )
         return tuple(observations)

@@ -625,8 +625,9 @@ async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
     observations = await adapter.poll_medium()
 
     # filter_width is a ``freq_mode`` field emitted in the freq/mode lane
-    # (MOR-445), MAIN-only and gated on the ``filter_width`` capability, after
-    # PTT — mirroring the legacy poller which reads it in ``_poll_medium``.
+    # (MOR-445), gated on the ``filter_width`` capability, after PTT — mirroring
+    # the legacy poller which reads it in ``_poll_medium``. Both receivers
+    # since MOR-2511 (the FTX-1 has the SUB-side SH1 read).
     assert [(str(item.path), item.value) for item in observations] == [
         ("receiver.main.active.freq_mode.freq_hz", 14_074_000),
         ("receiver.main.active.freq_mode.mode", "USB"),
@@ -639,8 +640,12 @@ async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
         ("global.tx_state.ptt", False),
         ("global.tx_state.observed_ptt", ObservedPtt.OFF),
         ("receiver.main.active.freq_mode.filter_width", 500),
+        ("receiver.sub.active.freq_mode.filter_width", 500),
     ]
-    radio.read_filter_width.assert_awaited_once()
+    assert radio.read_filter_width.await_args_list == [
+        call(0, mode="USB"),
+        call(1, mode="LSB"),
+    ]
     radio.get_filter_width.assert_not_awaited()
     assert {item.source.source for item in observations} == {"yaesu_poll_response"}
     assert {item.source.provider for item in observations} == {"yaesu_cat"}
@@ -654,6 +659,7 @@ async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
     assert by_path["global.tx_state.tx_target"].max_age == 8.0
     assert by_path["receiver.main.active.freq_mode.freq_hz"].max_age == 8.0
     assert by_path["receiver.main.active.freq_mode.filter_width"].max_age == 2.0
+    assert by_path["receiver.sub.active.freq_mode.filter_width"].max_age == 2.0
     assert all(item.source.capability_id == str(item.path) for item in observations)
 
 
@@ -3057,26 +3063,11 @@ async def test_a_non_state_store_attribute_leaves_both_reads_ungated() -> None:
 
 _DUAL_WATCH_PATH = "global.tx_state.dual_watch"
 
-# (id, poll method, radio read method, the declared SUB path it feeds)
+# (id, poll method, radio read method, the declared SUB path it feeds).
+# Only the SUB operator controls stay gated on dual receive; freq/mode/
+# s_meter are acquired regardless (MOR-2511 -- pinned by
+# tests/test_ftx1_sub_acquisition.py).
 _SUB_GATED_ROWS: tuple[tuple[str, str, str, str], ...] = (
-    (
-        "sub.freq",
-        "poll_medium",
-        "read_freq",
-        "receiver.sub.active.freq_mode.freq_hz",
-    ),
-    (
-        "sub.mode",
-        "poll_medium",
-        "read_mode",
-        "receiver.sub.active.freq_mode.mode",
-    ),
-    (
-        "sub.s_meter",
-        "poll_rx_meters",
-        "read_s_meter",
-        "receiver.sub.meters.s_meter",
-    ),
     (
         "sub.af_level",
         "poll_slow_controls",

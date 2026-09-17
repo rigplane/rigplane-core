@@ -1437,8 +1437,8 @@ def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
     assert acquisition is not None
 
     assert acquisition.provider == "yaesu_cat"
-    assert len(acquisition.capabilities) == 58
-    assert len(acquisition.field_policies) == 53
+    assert len(acquisition.capabilities) == 59
+    assert len(acquisition.field_policies) == 54
     assert acquisition.default_policy.cadence_seconds == 2.0
     assert acquisition.default_policy.freshness_ttl_seconds == 8.0
 
@@ -1746,9 +1746,6 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("FTX-1", "global.meters.swr"),
         ("FTX-1", "receiver.main.operator_controls.att"),
         ("FTX-1", "receiver.main.operator_controls.manual_notch_freq"),
-        ("FTX-1", "receiver.sub.active.freq_mode.freq_hz"),
-        ("FTX-1", "receiver.sub.active.freq_mode.mode"),
-        ("FTX-1", "receiver.sub.meters.s_meter"),
         ("FTX-1", "receiver.sub.operator_controls.af_level"),
         ("FTX-1", "receiver.sub.operator_controls.rf_gain"),
         ("FTX-1", "receiver.sub.operator_controls.repeater_shift"),
@@ -1808,8 +1805,9 @@ def test_ic7300_declares_the_transmit_meters_absent_outside_transmit() -> None:
     assert acquisition.policy_for(ptt).available_when == ()
 
 
-def test_ftx1_declares_every_sub_receiver_field_on_dual_receive() -> None:
-    """The second receiver exists only while dual receive is on."""
+def test_ftx1_gates_only_sub_operator_controls_on_dual_receive() -> None:
+    """None of SUB freq/mode/width/meter is gated on dual receive (MOR-2511);
+    only the SUB operator controls still exist only while dual receive is on."""
 
     acquisition = get_radio_profile("FTX-1").state_acquisition
     assert acquisition is not None
@@ -1819,16 +1817,22 @@ def test_ftx1_declares_every_sub_receiver_field_on_dual_receive() -> None:
         operator="equals",
         value=True,
     )
-    sub_paths = (
+    ungated_paths = (
         FieldPath.active("sub", "freq_mode", "freq_hz"),
         FieldPath.active("sub", "freq_mode", "mode"),
+        FieldPath.active("sub", "freq_mode", "filter_width"),
         FieldPath.receiver("sub", "meters", "s_meter"),
+    )
+    for path in ungated_paths:
+        assert acquisition.policy_for(path).available_when == (), path
+
+    gated_paths = (
         FieldPath.receiver("sub", "operator_controls", "af_level"),
         FieldPath.receiver("sub", "operator_controls", "rf_gain"),
         FieldPath.receiver("sub", "operator_controls", "squelch"),
         FieldPath.receiver("sub", "operator_controls", "repeater_shift"),
     )
-    for path in sub_paths:
+    for path in gated_paths:
         assert acquisition.policy_for(path).available_when == (clause,), path
 
     # The condition source is itself polled, or nothing would ever resolve it.
