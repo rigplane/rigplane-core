@@ -328,14 +328,19 @@ export function shouldIgnoreEvent(activeElement: Element | null): boolean {
  * shortcut layer must not resolve. */
 const ARROW_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
 
+/** MOR-2507: widgets that consume arrow keys themselves — custom
+ * `role="slider"` value controls, segmented `radiogroup`/`radio` controls,
+ * and an adjustable `separator` splitter. Native range inputs, selects and
+ * text fields are already covered by `shouldIgnoreEvent`'s IGNORED_TAGS; a
+ * plain button consumes no arrows and must keep tuning. */
+const ARROW_KEY_OWNER_SELECTOR = '[role="slider"], [role="radiogroup"], [role="radio"], [role="separator"]';
+
 /**
- * MOR-2507: true when a focused arrow-consuming control — a custom
- * `role="slider"` value control — owns the pressed arrow key. Native
- * range inputs, selects and text fields are already covered by
- * `shouldIgnoreEvent`'s IGNORED_TAGS.
+ * MOR-2507: true when a focused arrow-consuming control owns the pressed
+ * arrow key.
  */
 export function focusedElementOwnsArrowKey(activeElement: Element | null, key: string): boolean {
-  return ARROW_KEYS.has(key) && activeElement?.closest('[role="slider"]') != null;
+  return ARROW_KEYS.has(key) && activeElement?.closest(ARROW_KEY_OWNER_SELECTOR) != null;
 }
 
 /** MOR-1444: true for a single digit character ("0".."9"), the key class a

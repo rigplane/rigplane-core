@@ -595,10 +595,10 @@ Representative bindings from the shared default profile:
 | `Tab` | Swap VFO |
 | `Escape` | Clear RIT/XIT offset |
 
-A focused control owns the keys it consumes: while focus is on a slider
-(`role="slider"` value controls — AF gain, RF gain, PBT, notch) or any form
-field, the arrow keys adjust that control and do not tune; global arrow
-tuning applies when focus is elsewhere.
+A focused control owns the keys it consumes: while focus is on a slider, a
+segmented (`radiogroup`) control, an adjustable separator, or any form
+field, the arrow keys act on that control and do not tune; global arrow
+tuning applies when focus is elsewhere, including on plain buttons.
 
 There is no global keyboard shortcut bound to PTT. Focused PTT controls
 support Space/Enter through their own press/release handlers; this is
