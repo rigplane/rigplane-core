@@ -13,6 +13,23 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-16 — closing audit of the two 2026-09-15 tracts (head `94361667`)
+
+Re-runs the method over the same tract as the two reports below and adjudicates
+each of their fifteen findings at the later head, so that "what closed" is a
+verdict with evidence rather than the difference between two revisions. Every
+closure names the commit that closed it and which of two buckets it belongs to:
+the epic's own pull requests, or other work in the same range.
+
+- [2026-09-16-mechanism-audit-closing-mor2478.md](2026-09-16-mechanism-audit-closing-mor2478.md)
+  — closure ledger plus fresh findings. Verdict: four of the fifteen closed, two
+  partly, one moved rather than closed; no commit from the epic's own pull
+  requests modifies any file under `src/rigplane/`, so every Python-side closure
+  in the range belongs to other work. Also corrects two counts the opening
+  audits carried and one finding they misclassified — the audio-spectrum
+  renderer held its own copy of the PBT conversion rather than consuming the
+  shared one, which the opening audit recorded as a consumer.
+
 ## 2026-09-15 — control conversion and command path (head `e3d435dc`)
 
 Two read-only tracts answering one owner question: why web, rigctld and the CLI
