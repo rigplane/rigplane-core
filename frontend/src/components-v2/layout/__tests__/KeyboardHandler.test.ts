@@ -15,6 +15,7 @@ import ValueControl from '../../controls/value-control/ValueControl.svelte';
 import SegmentedButton from '../../controls/SegmentedButton.svelte';
 import AttenuatorControl from '../../controls/AttenuatorControl.svelte';
 import ActiveReceiverToggle from '../../vfo/ActiveReceiverToggle.svelte';
+import { wheelControl } from '../../controls/value-control/wheel-control';
 import { topologyFixtures } from '../../../semantic/fixtures/topologies';
 
 describe('KeyboardHandler', () => {
@@ -301,6 +302,31 @@ describe('KeyboardHandler', () => {
       expect(onAction).not.toHaveBeenCalled();
     });
 
+    it('a non-editable value control claims nothing: arrows keep tuning (RadioLayout focuses it programmatically)', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      components.push(mount(ValueControl, {
+        target,
+        props: {
+          value: 5, min: 0, max: 10, step: 1, renderer: 'hbar', disabled: true,
+          label: 'AF', onChange: vi.fn(),
+        },
+      }));
+      flushSync();
+      const slider = target.querySelector<HTMLElement>('[role="slider"]')!;
+      slider.focus();
+      expect(document.activeElement).toBe(slider);
+
+      press('ArrowUp');
+
+      expect(onAction).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ action: 'tune', params: { direction: 'up', fine: false } }),
+      );
+      expect(slider.getAttribute('aria-valuenow')).toBe('5');
+    });
+
     it('modified arrows on an owning widget stay global (Ctrl/Ctrl+Shift+ArrowUp bindings)', () => {
       const onAction = vi.fn();
       mountHandler({ config: arrowConfig, onAction });
@@ -511,6 +537,32 @@ describe('KeyboardHandler', () => {
       expect(onAction).not.toHaveBeenCalledWith(
         expect.objectContaining({ action: 'focus_target' }),
       );
+    });
+
+    it('the wheelControl mount retracts the declaration when editable flips while focused', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+      const node = document.createElement('div');
+      node.tabIndex = 0;
+      document.body.appendChild(node);
+      node.focus();
+      const editableLease = { view: { editable: true }, wheel: vi.fn() };
+      const action = wheelControl(node, { view: { editable: true }, lease: editableLease });
+      expect(node.getAttribute('data-owns-arrows')).toBe('both shift');
+
+      press('ArrowUp');
+      expect(onAction).not.toHaveBeenCalled();
+
+      action.update({ view: { editable: false }, lease: editableLease });
+      expect(node.getAttribute('data-owns-arrows')).toBeNull();
+
+      press('ArrowUp');
+      expect(onAction).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ action: 'tune', params: { direction: 'up', fine: false } }),
+      );
+
+      action.destroy();
+      node.remove();
     });
   });
 
