@@ -325,8 +325,12 @@ export function toRfFrontEndProps(
  *    decides, exactly as it did before the field existed.
  *
  *  The second case is not hypothetical: the captured IC-7300 capabilities
- *  fixture in `adapters/__tests__/fixtures/` predates the field. */
-function modeHasTwinPbt(
+ *  fixture in `adapters/__tests__/fixtures/` predates the field.
+ *
+ *  Exported for `adapters/radio-view-model-adapter.ts`, which gates the
+ *  view-model's PBT structure on the same distinction — one definition, shared
+ *  (MOR-2497). */
+export function modeHasTwinPbt(
   caps: Capabilities | null,
   modeConfig: FilterModeConfig | null,
 ): boolean {
@@ -1111,6 +1115,12 @@ export interface AudioSpectrumProps {
    *  `pbtInner`/`pbtOuter` through this range only; without one it draws no
    *  PBT overlay rather than fall back to the capabilities store. */
   pbtRange?: PbtRange;
+  /** The current mode's twin-PBT lattice step (`filterConfig[mode].pbtStepHz`,
+   *  #3519), present only when the resolved mode config declares one — absent
+   *  means the mode has no twin PBT (FM) or the payload predates the field,
+   *  and the renderer then has no honest raw→Hz conversion rather than
+   *  assuming 50 Hz. */
+  pbtStepHz?: number;
   manualNotch: boolean;
   notchFreq: number;
   /** The manual-notch control's published display domain, present only
@@ -1145,6 +1155,7 @@ export function toAudioSpectrumProps(
     pbtInner: rx?.pbtInner ?? 128,
     pbtOuter: rx?.pbtOuter ?? 128,
     ...(pbtRange !== undefined ? { pbtRange } : {}),
+    ...(filterConfig?.pbtStepHz !== undefined ? { pbtStepHz: filterConfig.pbtStepHz } : {}),
     manualNotch: rx?.manualNotch ?? false,
     // notchFilter (MOR-1548): reclassified receiver-scoped.
     notchFreq,

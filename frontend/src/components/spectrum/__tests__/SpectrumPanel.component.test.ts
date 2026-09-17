@@ -465,6 +465,25 @@ import {
 } from '../../../components-v2/layout/StatusBar.svelte';
 import statusBarSource from '../../../components-v2/layout/StatusBar.svelte?raw';
 import { IC7300_CAPABILITIES, IC7300_STATE } from '../../../lib/runtime/adapters/__tests__/fixtures/ic7300-profile';
+import type { Capabilities } from '$lib/types/capabilities';
+
+// MOR-2497 (post-#3519): the captured IC-7300 capabilities predate
+// `pbtStepHz`, so AS CAPTURED they are the legacy payload — not what these
+// production-selector tests mean to drive. The JSON stays a byte-faithful
+// capture (re-deriving it needs the live radio, per its provenance header),
+// so the payload the server serializes TODAY is composed here instead: the
+// capture plus the per-mode twin-PBT steps `rigs/ic7300.toml` declares and
+// `_serialize_filter_config` publishes — 50 Hz for SSB/CW/RTTY, 200 for AM,
+// none for FM.
+const IC7300_STEPPED_CAPABILITIES = {
+  ...IC7300_CAPABILITIES,
+  filterConfig: Object.fromEntries(
+    Object.entries(IC7300_CAPABILITIES.filterConfig ?? {}).map(([mode, config]) => [
+      mode,
+      mode === 'FM' ? config : { ...config, pbtStepHz: mode === 'AM' ? 200 : 50 },
+    ]),
+  ),
+} as Capabilities;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1226,7 +1245,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
 
   it('renders and resizes a fresh PBT-only IC-7300 passband via the production selector (MOR-1649)', () => {
     runtimeHarness.state.currentState = freshPbtOnlyIc7300State();
-    runtimeHarness.state.currentCaps = IC7300_CAPABILITIES;
+    runtimeHarness.state.currentCaps = IC7300_STEPPED_CAPABILITIES;
     authorityHarness.state.useProductionSelector = true;
     const target = mountPanel();
     emitFrame();
@@ -1920,7 +1939,7 @@ describe('managed scope projection (MOR-2367)', () => {
   });
   it('keeps projector-produced overlays through a stale frequency gap and staggered recovery while tuning', () => {
     authorityHarness.state.useProductionSelector = true;
-    const state = structuredClone(IC7300_STATE); const caps = structuredClone(IC7300_CAPABILITIES);
+    const state = structuredClone(IC7300_STATE); const caps = structuredClone(IC7300_STEPPED_CAPABILITIES);
     const rx = state.main!;
     Object.assign(rx, { freqHz: 14_074_000, mode: 'USB', filter: 1, activeSlot: 'A',
       filterWidth: 2400, pbtInner: 128, pbtOuter: 128, dataMode: 0,
@@ -2005,7 +2024,7 @@ describe('managed scope projection (MOR-2367)', () => {
   });
   it('recovers selected-slot geometry through canonical alias hydration without a second width reading', () => {
     authorityHarness.state.useProductionSelector = true;
-    const state = structuredClone(IC7300_STATE); const caps = structuredClone(IC7300_CAPABILITIES);
+    const state = structuredClone(IC7300_STATE); const caps = structuredClone(IC7300_STEPPED_CAPABILITIES);
     const rx = state.main!;
     Object.assign(rx, { freqHz: 14_074_000, mode: 'USB', filter: 1, activeSlot: 'A',
       filterWidth: 2400, pbtInner: 128, pbtOuter: 128, dataMode: 0,

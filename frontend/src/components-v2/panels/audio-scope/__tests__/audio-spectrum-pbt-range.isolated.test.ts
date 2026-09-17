@@ -113,14 +113,24 @@ function baseState(overrides: Partial<SpectrumState> = {}): SpectrumState {
 }
 
 describe('renderer PBT conversion never reads the capabilities store (MOR-2475 PR-4)', () => {
-  it('places the PBT trapezoids by the passed range even when the store disagrees', () => {
+  // MOR-2497 step 2 strengthens what this test guards rather than retiring it.
+  // The Hz now comes off the measured lattice at the passed `filterWidth` and
+  // the passed per-mode `pbtStepHz`, so
+  // the store's `pbt_inner` range cannot steer the geometry even in principle --
+  // it is not consulted for the number at all, and `pbtRange` survives only as
+  // the gate saying the radio publishes PBT. The store range installed here is
+  // still deliberately non-default, so a renderer that regressed to a store
+  // lookup would still move these trapezoids.
+  it('places the PBT trapezoids off the measured lattice, whatever the store holds', () => {
     setCapabilities(STORE_CAPS);
     const { ctx, strokes } = mockCtxWithStrokes();
     renderAudioSpectrum(ctx, 400, 160, baseState({
-      pbtInner: 200, pbtOuter: 56, pbtRange: PASSED_RANGE,
+      pbtInner: 200, pbtOuter: 56, pbtRange: PASSED_RANGE, pbtStepHz: 50,
     }), new AudioSpectrumRendererState());
-    expect(centerXOf(strokes, INNER_PBT_STROKE)).toBeCloseTo(230.375, 9);
-    expect(centerXOf(strokes, OUTER_PBT_STROKE)).toBeCloseTo(169.625, 9);
+    // Raw 200 -> lattice position 38 (+700 Hz), raw 56 -> position 10 (-700 Hz)
+    // at this fixture's 2400 Hz filter; centres 200 +/- (700/2400)*180*0.6.
+    expect(centerXOf(strokes, INNER_PBT_STROKE)).toBeCloseTo(231.5, 9);
+    expect(centerXOf(strokes, OUTER_PBT_STROKE)).toBeCloseTo(168.5, 9);
   });
 
   it('draws no PBT overlay and no passband shift when no range is passed, whatever the store holds', () => {

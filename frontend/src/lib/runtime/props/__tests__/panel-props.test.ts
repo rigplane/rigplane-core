@@ -1294,6 +1294,31 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
     });
   });
 
+  describe('toAudioSpectrumProps pbtStepHz (MOR-2497)', () => {
+    // Pins the three-hop threading: server `pbtStepHz` ->
+    // `resolveFilterModeConfig` -> `SpectrumState.pbtStepHz` -> the
+    // renderer's lattice conversion. Deleting the emission, or reading the
+    // WIDTH-quantising `stepHz` instead of `pbtStepHz` (USB below has them
+    // deliberately different), must fail here.
+    const caps = {
+      capabilities: ['pbt'],
+      filterConfig: {
+        USB: { defaults: [2400], fixed: false, stepHz: 100, pbtStepHz: 50 },
+        AM: { defaults: [6000], fixed: false, stepHz: 250, pbtStepHz: 200 },
+        FM: { defaults: [15000], fixed: true },
+      },
+    } as any;
+    const inMode = (mode: string) => makeState({ main: { ...makeState().main, mode } });
+
+    it.each([['USB', 50], ['AM', 200]] as const)('emits the %s twin-PBT lattice step %s', (mode, step) => {
+      expect(toAudioSpectrumProps(inMode(mode), caps).pbtStepHz).toBe(step);
+    });
+
+    it('emits no pbtStepHz key in FM, where the mode has no twin PBT', () => {
+      expect(toAudioSpectrumProps(inMode('FM'), caps)).not.toHaveProperty('pbtStepHz');
+    });
+  });
+
   describe('toMemoryPanelProps', () => {
     it('does not invent activeFreqHz=0/activeMode="" when state is absent', () => {
       const props = toMemoryPanelProps(null, null);

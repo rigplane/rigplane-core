@@ -22,7 +22,9 @@ import type { Capabilities, ControlRange } from '$lib/types/capabilities';
 import type { FieldStatus, ServerState } from '$lib/types/state';
 import { validateRadioViewModel, type RadioViewModel } from '../../../../semantic/radio-view-model';
 import { toRadioViewModel } from '../radio-view-model-adapter';
-import { deriveIfShift, pbtRawToHz } from '$lib/radio/filter-controls';
+import {
+  deriveIfShift, measuredPbtRawToHz, PBT_MEASURED_STEP_HZ,
+} from '$lib/radio/filter-controls';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 
 function caps(overrides: Partial<Capabilities> = {}): Capabilities {
@@ -58,6 +60,16 @@ const DEFAULT_PBT_RANGE: ControlRange = {
   raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200,
 };
 
+/**
+ * MOR-2497 (post-#3519): a PBT reading in Hz also needs the per-mode lattice
+ * step the server publishes as `filterConfig[mode].pbtStepHz`. Fixtures that
+ * expect a KNOWN Hz reading declare it here; a fixture without it is the
+ * legacy-payload case pinned in the last describe block. Under the pre-change
+ * conversion this key was ignored, so adding it to an existing fixture is
+ * value-neutral there and load-bearing only after the change.
+ */
+const PBT_STEP_50_CONFIG = { USB: { defaults: [2400], fixed: false, pbtStepHz: 50 } };
+
 const fresh: FieldStatus = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const stale: FieldStatus = { storePath: 'x', observed: true, freshness: 'stale', availability: 'stale' };
 
@@ -66,12 +78,20 @@ function bareState(overrides: Partial<ServerState> = {}): ServerState {
   return {
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14195000 },
+    // MOR-2497 step 2: `filterWidth` is now load-bearing for every PBT reading
+    // in Hz -- the measured lattice has `filterWidth / 50 + 1` positions, so
+    // without a width there is no Hz to report and the adapter says `unknown`.
+    // 2400 Hz is a width the radio can actually be at (a whole number of 50 Hz
+    // steps); the fixture previously omitted the field entirely, which the
+    // retired conversion did not care about.
     main: {
       freqHz: 14195000, mode: 'USB', filter: 1, dataMode: 0, att: 0, preamp: 0,
+      filterWidth: 2400,
       nb: false, nr: false, afLevel: 1, rfGain: 1, squelch: 0, sMeter: 0,
     },
     sub: {
       freqHz: 7100000, mode: 'LSB', filter: 2, dataMode: 0, att: 0, preamp: 0,
+      filterWidth: 2400,
       nb: false, nr: false, afLevel: 1, rfGain: 1, squelch: 0, sMeter: 0,
     },
     fieldStatus: {
@@ -237,6 +257,15 @@ describe('dataMode derivation (MOR-1284)', () => {
  * regression/mutation-kill pin on the ADAPTER's wiring to those functions,
  * not a re-proof of their own arithmetic.
  */
+/** MOR-2497 step 2: Hz of a PBT raw on the measured lattice. The width is the
+ *  scale now, so every expectation below names the width it is taken at; the
+ *  declared range is a gate and no longer enters the number. */
+const hz = (raw: number, widthHz = 2400): number => {
+  const value = measuredPbtRawToHz(raw, widthHz, PBT_MEASURED_STEP_HZ);
+  if (value === null) throw new Error(`no lattice at width ${widthHz}`);
+  return value;
+};
+
 describe('pbtInner/pbtOuter/ifShift parity with the real filter-controls helpers (MOR-1284, MOR-1291)', () => {
   const customPbtRange: ControlRange = {
     raw_min: 0, raw_max: 200, raw_center: 100, display_min: -900, display_max: 900,
@@ -264,7 +293,7 @@ describe('pbtInner/pbtOuter/ifShift parity with the real filter-controls helpers
   ];
 
   it.each(MATRIX)('$name', ({ controls, pbtInner, pbtOuter }) => {
-    const parityCaps = caps({ capabilities: ['pbt'], controls });
+    const parityCaps = caps({ capabilities: ['pbt'], controls, filterConfig: PBT_STEP_50_CONFIG });
     // The store is deliberately left at an UNRELATED shape (the neutral
     // default) for every row — MOR-1291 proof-of-independence: the caps
     // object's OWN range must drive the result, never the store.
@@ -274,11 +303,18 @@ describe('pbtInner/pbtOuter/ifShift parity with the real filter-controls helpers
     // called with the SAME explicit range the row's `caps` fixture
     // declares — NOT a copy of the adapter's inputs; the adapter's OUTPUT is
     // compared against what the shipped helpers themselves say.
-    const range = controls.pbt_inner;
-    const explicitRange = { rawCenter: range.raw_center!, displayMin: range.display_min!, displayMax: range.display_max! };
-    const expectedInnerHz = pbtRawToHz(pbtInner, explicitRange);
-    const expectedOuterHz = pbtRawToHz(pbtOuter, explicitRange);
-    const expectedIfShift = deriveIfShift(expectedInnerHz, expectedOuterHz);
+    // MOR-2497 step 2: the declared range is no longer the SCALE. The Hz comes
+    // off the lattice the radio snaps to, whose spacing is the measured 50 Hz
+    // step and whose span is the fixture's 2400 Hz filter width. The declared
+    // range survives as the GATE -- it still decides whether this radio has a
+    // usable PBT at all -- which is why the rows still vary it and why the two
+    // custom-range rows below must now agree with the default-range rows.
+    const width = bareState().main!.filterWidth!;
+    const expectedInnerHz = measuredPbtRawToHz(pbtInner, width, PBT_MEASURED_STEP_HZ);
+    const expectedOuterHz = measuredPbtRawToHz(pbtOuter, width, PBT_MEASURED_STEP_HZ);
+    expect(expectedInnerHz).not.toBeNull();
+    expect(expectedOuterHz).not.toBeNull();
+    const expectedIfShift = deriveIfShift(expectedInnerHz!, expectedOuterHz!);
 
     const view = model(bareState({
       main: { ...bareState().main, pbtInner, pbtOuter },
@@ -294,42 +330,63 @@ describe('pbtInner/pbtOuter/ifShift parity with the real filter-controls helpers
     expect(view.filterPassband!.ifShift.reading).toEqual({ status: 'known', value: expectedIfShift });
   });
 
-  it('the custom-range rows actually produce a different scale than the default (sanity on the discriminator itself)', () => {
-    const defaultHz = pbtRawToHz(50, { rawCenter: 128, displayMin: -1200, displayMax: 1200 });
-    const customHz = pbtRawToHz(50, {
-      rawCenter: customPbtRange.raw_center!,
-      displayMin: customPbtRange.display_min!,
-      displayMax: customPbtRange.display_max!,
+  // MOR-2497 step 2 inverts this discriminator, and that inversion IS the
+  // change. The declared range used to set the scale, so two different ranges
+  // had to read one raw differently -- that is what the retired assertion
+  // checked. On the measured lattice the scale comes from the filter width, so
+  // two different declared ranges must now read the same raw IDENTICALLY, and
+  // it is the WIDTH that has to separate them. Both halves are asserted, so a
+  // regression to a range-driven scale fails the first half and a conversion
+  // that ignores the width fails the second.
+  it('the declared range no longer sets the scale, and the filter width does', () => {
+    // Asserted through the ADAPTER, not through the conversion function. The
+    // range is no longer an argument to that function, so calling it twice
+    // could only compare a value with itself -- which an earlier revision of
+    // this test did, and review caught. The claim worth pinning is about the
+    // adapter: given one state, two unrelated declared ranges must produce the
+    // same reading, and two filter widths must not.
+    setCapabilities(NEUTRAL_STORE_CAPS);
+    const stateAt = (widthHz: number) => bareState({
+      main: { ...bareState().main, filterWidth: widthHz, pbtInner: 50, pbtOuter: 128 },
+      fieldStatus: { ...bareState().fieldStatus, 'main.pbtInner': fresh, 'main.pbtOuter': fresh },
     });
-    expect(customHz).not.toBe(defaultHz);
+    const readingWith = (controls: Record<string, ControlRange>, widthHz: number) =>
+      model(stateAt(widthHz), caps({ capabilities: ['pbt'], controls, filterConfig: PBT_STEP_50_CONFIG })).filterPassband!.pbtInner.reading;
+
+    const underDefault = readingWith({ pbt_inner: DEFAULT_PBT_RANGE }, 2400);
+    expect(underDefault).toEqual({ status: 'known', value: hz(50) });
+    // Same state and width, a range with a different centre and span: the
+    // reading must not move. Under the retired conversion it would have.
+    expect(readingWith({ pbt_inner: customPbtRange }, 2400)).toEqual(underDefault);
+    // Same state and range, a different legal width: the reading must move.
+    expect(readingWith({ pbt_inner: DEFAULT_PBT_RANGE }, 1800)).not.toEqual(underDefault);
   });
 
-  // MOR-2497: `deriveIfShift` no longer clamps to ±1200 Hz. That bound was
-  // measured on the IC-7610 on 2026-09-17 to truncate a reachable state -- at a
-  // 3600 Hz filter both passband edges reach ±1800 Hz -- so the shift now
-  // carries whatever the two edges give. This test keeps its original shape,
-  // including the deliberately wide declared range, and asserts the opposite
-  // outcome: nothing truncates at 1200 any more.
-  it('carries the derived ifShift unclamped, including past the retired ±1200 bound', () => {
-    const wideRange: ControlRange = { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -2000, display_max: 2000 };
-    const parityCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: wideRange } });
-    setCapabilities(NEUTRAL_STORE_CAPS); // store deliberately unrelated — caps' own range must drive this
+  // MOR-2497 step 2 replaces what this test used to assert. It pinned a
+  // +/-1200 Hz clamp inside `deriveIfShift`; that bound was measured on the
+  // IC-7610 on 2026-09-17 to truncate a state the radio reaches, so it is gone
+  // and the adapter must now carry the larger shift through. The fixture's own
+  // 2400 Hz width cannot show this -- half of 2400 is exactly 1200, so the
+  // retired clamp and the truth agree there -- which is why this test sets a
+  // 3600 Hz filter, where an edge reaches 1800 Hz.
+  it('carries an IF shift past the retired ±1200 bound at a filter wide enough to reach it', () => {
+    const parityCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE }, filterConfig: PBT_STEP_50_CONFIG });
+    setCapabilities(NEUTRAL_STORE_CAPS); // store deliberately unrelated
 
-    const expectedInnerHz = pbtRawToHz(255, { rawCenter: 128, displayMin: -2000, displayMax: 2000 });
-    const expectedIfShift = deriveIfShift(expectedInnerHz, expectedInnerHz);
-    expect(Math.abs(expectedInnerHz)).toBeGreaterThan(1200);
-    // Both edges carry the same value, so the mean is that value -- the point
-    // is that it is no longer cut down to 1200.
-    expect(expectedIfShift).toBe(expectedInnerHz);
-    expect(Math.abs(expectedIfShift)).toBeGreaterThan(1200);
+    // Raw 254 is the top reachable position at 3600 Hz: the radio read both
+    // edges back as 254 when both were driven to the top, and that is +1800 Hz
+    // on the lattice.
+    const edgeHz = measuredPbtRawToHz(254, 3600, PBT_MEASURED_STEP_HZ);
+    expect(edgeHz).toBe(1800);
 
     const view = model(bareState({
-      main: { ...bareState().main, pbtInner: 255, pbtOuter: 255 },
+      main: { ...bareState().main, filterWidth: 3600, pbtInner: 254, pbtOuter: 254 },
       fieldStatus: { ...bareState().fieldStatus, 'main.pbtInner': fresh, 'main.pbtOuter': fresh },
     }), parityCaps);
 
-    expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: expectedInnerHz });
-    expect(view.filterPassband!.ifShift.reading).toEqual({ status: 'known', value: expectedInnerHz });
+    expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: 1800 });
+    expect(view.filterPassband!.pbtOuter.reading).toEqual({ status: 'known', value: 1800 });
+    expect(view.filterPassband!.ifShift.reading).toEqual({ status: 'known', value: 1800 });
   });
 });
 
@@ -392,12 +449,15 @@ describe('pbtInner/pbtOuter/ifShift are deterministic in (state, caps) — MOR-1
     // have not arrived yet" state) while THIS call's `caps` already declares
     // a distinct range. The fact must reflect `caps`, not the empty store.
     setCapabilities(NEUTRAL_STORE_CAPS);
-    const capsWithOwnRange = caps({ capabilities: ['pbt'], controls: { pbt_inner: rangeB } });
+    const capsWithOwnRange = caps({ capabilities: ['pbt'], controls: { pbt_inner: rangeB }, filterConfig: PBT_STEP_50_CONFIG });
     const view = model(stateWithPbt, capsWithOwnRange);
-    const expectedFromCaps = pbtRawToHz(200, { rawCenter: 100, displayMin: -900, displayMax: 900 });
-    const shapeAStoreWouldHaveGiven = pbtRawToHz(200, { rawCenter: 128, displayMin: -1200, displayMax: 1200 });
-    expect(expectedFromCaps).not.toBe(shapeAStoreWouldHaveGiven);
-    expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: expectedFromCaps });
+    // MOR-2497 step 2: the value no longer comes from either range -- it comes
+    // from the filter width -- so the original discriminator (caps range vs
+    // store range give different Hz) cannot be written any more. What this test
+    // still guards is intact and is asserted directly: `caps` declaring a
+    // usable range makes the reading KNOWN while the store is empty, and the
+    // number is the lattice value at the state's own width.
+    expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: hz(200) });
   });
 
   it('identical (state, caps) ⇒ identical facts even when the store is left at a THIRD, unrelated range mid-test (determinism, not accidental agreement)', () => {
@@ -443,7 +503,7 @@ describe('ifShift raw-field vs PBT-derived branch selection (MOR-1284)', () => {
 
   it('without if_shift capability but with pbt, derives from PBT even when a stray raw ifShift field is present', () => {
     setCapabilities(NEUTRAL_STORE_CAPS);
-    const pbtOnlyCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE } });
+    const pbtOnlyCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE }, filterConfig: PBT_STEP_50_CONFIG });
     const view = model(bareState({
       main: { ...bareState().main, ifShift: 900, pbtInner: 128, pbtOuter: 128 },
       fieldStatus: {
@@ -451,8 +511,7 @@ describe('ifShift raw-field vs PBT-derived branch selection (MOR-1284)', () => {
         'main.pbtInner': fresh, 'main.pbtOuter': fresh,
       },
     }), pbtOnlyCaps);
-    const defaultRange = { rawCenter: 128, displayMin: -1200, displayMax: 1200 };
-    const expected = deriveIfShift(pbtRawToHz(128, defaultRange), pbtRawToHz(128, defaultRange));
+    const expected = deriveIfShift(hz(128), hz(128));
     expect(view.filterPassband!.ifShift.reading).toEqual({ status: 'known', value: expected });
     expect(view.filterPassband!.ifShift.reading).not.toEqual({ status: 'known', value: 900 });
   });
@@ -480,7 +539,7 @@ describe('ifShiftControlStructural — the presentation-only IF-shift control ga
     const view = model(bareState({
       main: { ...bareState().main, pbtInner: 200, pbtOuter: 60 },
       fieldStatus: { ...bareState().fieldStatus, 'main.pbtInner': fresh, 'main.pbtOuter': fresh },
-    }), caps({ capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE } }));
+    }), caps({ capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE }, filterConfig: PBT_STEP_50_CONFIG }));
     expect(view.filterPassband!.ifShiftControlStructural).toBe(false);
     // The trap: a naive fix that reused `ifShiftStructural` for this flag
     // too would silently break `scope-adapter.ts`'s derived reading for
@@ -574,17 +633,17 @@ describe('filterShapeControlStructural — the presentation-only filter-shape co
  * enforces for filterWidthMin/Max vs `modeObserved`.
  */
 describe('filterPassband honesty gate — no derivation from a half-observed input (MOR-1284, F2 lesson)', () => {
-  const pbtCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE } });
+  const pbtCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE }, filterConfig: PBT_STEP_50_CONFIG });
 
   it('pbtInner fresh, pbtOuter stale-but-observed — ifShift derives from its last value (MOR-2425/R29)', () => {
     const view = model(bareState({
       main: { ...bareState().main, pbtInner: 200, pbtOuter: 128 },
       fieldStatus: { ...bareState().fieldStatus, 'main.pbtInner': fresh, 'main.pbtOuter': stale },
     }), pbtCaps);
-    expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: pbtRawToHz(200) });
-    expect(view.filterPassband!.pbtOuter.reading).toEqual({ status: 'known', value: pbtRawToHz(128) });
+    expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: hz(200) });
+    expect(view.filterPassband!.pbtOuter.reading).toEqual({ status: 'known', value: hz(128) });
     expect(view.filterPassband!.ifShift).toEqual({
-      reading: { status: 'known', value: deriveIfShift(pbtRawToHz(200), pbtRawToHz(128)) },
+      reading: { status: 'known', value: deriveIfShift(hz(200), hz(128)) },
       availability: { structural: true, operational: true },
     });
   });
@@ -612,7 +671,7 @@ describe('filterPassband honesty gate — no derivation from a half-observed inp
     const mainWithoutPbtOuter = { ...bareState().main, pbtInner: 200 };
     delete (mainWithoutPbtOuter as { pbtOuter?: number }).pbtOuter;
     const view = model(bareState({ main: mainWithoutPbtOuter }), pbtCaps);
-    expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: pbtRawToHz(200) });
+    expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: hz(200) });
     expect(view.filterPassband!.pbtOuter.reading).toEqual({ status: 'unknown' });
     expect(view.filterPassband!.ifShift.reading).toEqual({ status: 'unknown' });
   });
@@ -634,8 +693,14 @@ describe('filterPassband validator round-trip (MOR-1284)', () => {
 
 
 describe('PBT display observations (MOR-1692)', () => {
+  // MOR-2497 step 2: the expected Hz below are lattice values at the fixture's
+  // 2400 Hz filter width, written through `hz()` rather than as literals so the
+  // width they belong to is visible. Under the retired conversion the declared
+  // range set the scale and raw 150 read 450 Hz; the radio has no position
+  // there. The declared range is still varied here because it still gates
+  // whether the reading exists at all.
   const range: ControlRange = { raw_min: 0, raw_max: 200, raw_center: 100, display_min: -900, display_max: 900 };
-  const ownCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: range } });
+  const ownCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: range }, filterConfig: PBT_STEP_50_CONFIG });
   const observed = { ...fresh, lastObservedMonotonic: 310658.42975425 };
   const source = (status: FieldStatus | undefined = observed, raw = 150): ServerState => bareState({
     stateContractVersion: 1, providerGeneration: 0,
@@ -647,21 +712,21 @@ describe('PBT display observations (MOR-1692)', () => {
     const input = source({ ...observed, freshness, availability: freshness === 'fresh' ? 'available' : 'stale' });
     const result = model(input, ownCaps).filterPassband!;
     const { display, ...strict } = result.pbtInner;
-    expect(display).toEqual({ state: freshness === 'fresh' ? 'current' : 'stale', value: 450 });
+    expect(display).toEqual({ state: freshness === 'fresh' ? 'current' : 'stale', value: hz(150) });
     // A stale-but-observed reading still carries its last value and is
     // `available` (R29) — freshness no longer distinguishes the strict facts,
     // only the `display` cue above does.
-    expect(strict).toEqual({ reading: { status: 'known', value: 450 }, availability: { structural: true, operational: true } });
-    expect(result.pbtOuter.display).toEqual({ state: 'current', value: 0 });
+    expect(strict).toEqual({ reading: { status: 'known', value: hz(150) }, availability: { structural: true, operational: true } });
+    expect(result.pbtOuter.display).toEqual({ state: 'current', value: hz(100) });
     const { display: outerDisplay, ...strictOuter } = result.pbtOuter;
     const absent = { reading: { status: 'unknown' }, availability: { structural: false, operational: false } };
     expect({ ...result, pbtInner: strict, pbtOuter: strictOuter }).toEqual({
       filterShape: absent, filterShapeControlStructural: false, ifShiftControlStructural: false, dataMode: absent, dataModeChoices: [],
-      ifShift: { reading: { status: 'known', value: 225 }, availability: { structural: true, operational: true } },
+      ifShift: { reading: { status: 'known', value: deriveIfShift(hz(150), hz(100)) }, availability: { structural: true, operational: true } },
       pbtInner: strict,
-      pbtOuter: { reading: { status: 'known', value: 0 }, availability: { structural: true, operational: true } },
+      pbtOuter: { reading: { status: 'known', value: hz(100) }, availability: { structural: true, operational: true } },
     });
-    expect(outerDisplay).toEqual({ state: 'current', value: 0 });
+    expect(outerDisplay).toEqual({ state: 'current', value: hz(100) });
     expect(validateRadioViewModel(model(input, ownCaps))).toEqual(model(input, ownCaps));
   });
 
@@ -685,6 +750,79 @@ describe('PBT display observations (MOR-1692)', () => {
     const input = source(); input.fieldStatus!.main = parent === 'stale'
       ? { ...observed, freshness: 'stale', availability: 'stale' } : { ...observed, observed: false };
     expect(model(input, ownCaps).filterPassband!.pbtInner.display).toEqual(parent === 'stale'
-      ? { state: 'stale', value: 450 } : { state: 'unknown', reason: 'not-observed' });
+      ? { state: 'stale', value: hz(150) } : { state: 'unknown', reason: 'not-observed' });
+  });
+});
+
+/**
+ * Per-mode PBT lattice step (MOR-2497, on top of #3519's `pbtStepHz`). The
+ * step comes from the CURRENT mode's `filterConfig` entry — 50 Hz in
+ * SSB/CW/RTTY, 200 Hz in AM, absent where the mode has no twin PBT (FM).
+ * Structure and reading are separate questions: `modeHasTwinPbt` decides
+ * whether the PBT fields exist at all (radio-wide for a legacy payload that
+ * declares no step in ANY mode), while the Hz reading needs the resolved
+ * mode's own step either way.
+ */
+describe('per-mode PBT lattice step (MOR-2497)', () => {
+  const pbtState = (mode: string, pbtInner: number, pbtOuter: number) => bareState({
+    main: { ...bareState().main, mode, pbtInner, pbtOuter },
+    fieldStatus: { ...bareState().fieldStatus, 'main.pbtInner': fresh, 'main.pbtOuter': fresh },
+  });
+
+  it('AM converts at its declared 200 Hz step, not the 50 Hz SSB step', () => {
+    setCapabilities(NEUTRAL_STORE_CAPS);
+    const amCaps = caps({
+      capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE },
+      filterConfig: {
+        AM: { defaults: [2400], fixed: false, pbtStepHz: 200 },
+        USB: { defaults: [2400], fixed: false, pbtStepHz: 50 },
+      },
+    });
+    // Width 2400, raw 200: position 10 of the 13-position AM lattice is
+    // +800 Hz; the same raw reads +700 Hz at the 50 Hz SSB step.
+    const view = model(pbtState('AM', 200, 128), amCaps);
+    expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: 800 });
+    expect(view.filterPassband!.pbtOuter.reading).toEqual({ status: 'known', value: 0 });
+    expect(view.filterPassband!.ifShift.reading).toEqual({ status: 'known', value: deriveIfShift(800, 0) });
+  });
+
+  it('FM (config present, no pbtStepHz, another mode declares one): no reading AND non-structural PBT fields', () => {
+    setCapabilities(NEUTRAL_STORE_CAPS);
+    const fmCaps = caps({
+      capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE },
+      filterConfig: {
+        USB: { defaults: [2400], fixed: false, pbtStepHz: 50 },
+        FM: { defaults: [15000], fixed: true },
+      },
+    });
+    // filterWidth 2400 is a width that WOULD form a lattice at 50 Hz, so the
+    // refusal can only be attributed to FM declaring no twin-PBT step.
+    const view = model(pbtState('FM', 200, 56), fmCaps);
+    const absent = {
+      reading: { status: 'unknown' as const }, availability: { structural: false, operational: false },
+    };
+    expect(view.filterPassband!.pbtInner).toEqual({ ...absent, display: { state: 'unsupported' } });
+    expect(view.filterPassband!.pbtOuter).toEqual({ ...absent, display: { state: 'unsupported' } });
+    // The derived IF-shift path depends on PBT, so it goes non-structural
+    // with it; a REAL if_shift command (not this fixture) is unaffected.
+    expect(view.filterPassband!.ifShift).toEqual(absent);
+  });
+
+  it('legacy payload (no mode declares pbtStepHz): radio-wide structure, but no Hz reading', () => {
+    setCapabilities(NEUTRAL_STORE_CAPS);
+    const legacyCaps = caps({
+      capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE },
+      filterConfig: { USB: { defaults: [2400], fixed: false } },
+    });
+    const view = model(pbtState('USB', 200, 56), legacyCaps);
+    // Structure is still the radio-wide capability + range decision (the
+    // payload predates the field, so nothing can conclude FM-style absence);
+    // the READING is absent because there is no step to convert with. A
+    // 50 Hz fallback would read +700 here and fail this pin.
+    expect(view.filterPassband!.pbtInner.availability).toEqual({ structural: true, operational: true });
+    expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'unknown' });
+    expect(view.filterPassband!.pbtOuter.availability).toEqual({ structural: true, operational: true });
+    expect(view.filterPassband!.pbtOuter.reading).toEqual({ status: 'unknown' });
+    expect(view.filterPassband!.ifShift.reading).toEqual({ status: 'unknown' });
   });
 });

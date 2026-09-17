@@ -20,6 +20,8 @@
     pbtOuter?: number;
     /** Published PBT raw↔Hz range (see `SpectrumState.pbtRange`) */
     pbtRange?: PbtRange;
+    /** Current mode's twin-PBT lattice step (see `SpectrumState.pbtStepHz`) */
+    pbtStepHz?: number;
     /** Manual notch active */
     manualNotch?: boolean;
     /** Manual notch frequency (0-255 raw, or display units when `notchFreqDomain` is present) */
@@ -41,6 +43,7 @@
     pbtInner = 128,
     pbtOuter = 128,
     pbtRange,
+    pbtStepHz,
     manualNotch = false,
     notchFreq = 128,
     notchFreqDomain,
@@ -78,6 +81,7 @@
           pbtInner,
           pbtOuter,
           pbtRange,
+          pbtStepHz,
           manualNotch,
           notchFreq,
           notchFreqDomain,
@@ -98,7 +102,7 @@
   // A control/readout change must repaint even between FFT frames.
   $effect(() => {
     data; bandwidth; filterWidth; filterWidthMax; pbtInner; pbtOuter;
-    pbtRange; manualNotch; notchFreq; notchFreqDomain; contour; contourFreq;
+    pbtRange; pbtStepHz; manualNotch; notchFreq; notchFreqDomain; contour; contourFreq;
     scheduleDraw();
   });
 

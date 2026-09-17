@@ -7,7 +7,10 @@
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-import { pbtRawToHz, type ControlDisplayDomain, type PbtRange } from '$lib/radio/filter-controls';
+import {
+  measuredPbtRawToHz,
+  type ControlDisplayDomain, type PbtRange,
+} from '$lib/radio/filter-controls';
 
 export interface SpectrumState {
   /** FFT bin amplitudes (0-160 range) */
@@ -27,6 +30,12 @@ export interface SpectrumState {
    *  the radio publishes no usable range, and the renderer never falls back
    *  to the capabilities store behind `pbtRawToHz`. */
   pbtRange?: PbtRange;
+  /** The current mode's twin-PBT lattice step in Hz (`pbtStepHz` from the
+   *  props layer — 50 in SSB/CW/RTTY, 200 in AM). Absent means the mode has
+   *  no twin PBT (FM) or the payload predates the field: there is then no
+   *  honest raw→Hz conversion, and the shift reads 0 exactly as a width that
+   *  forms no lattice already behaved. Never assumed to be 50. */
+  pbtStepHz?: number;
   /** Manual notch active */
   manualNotch: boolean;
   /** Manual notch frequency (0-255 raw, or display units when `notchFreqDomain` is present) */
@@ -113,7 +122,7 @@ export function renderAudioSpectrum(
     rs = _defaultState;
   }
   const { pixels, bandwidth, filterWidth, filterWidthMax, pbtInner, pbtOuter,
-          pbtRange, manualNotch, notchFreq, notchFreqDomain, contour, contourFreq } = state;
+          pbtRange, pbtStepHz, manualNotch, notchFreq, notchFreqDomain, contour, contourFreq } = state;
 
   // Clear
   ctx.clearRect(0, 0, width, height);
@@ -156,10 +165,26 @@ export function renderAudioSpectrum(
   const whiskerLeft = width / 2 - totalHalfW;
   const whiskerRight = width / 2 + totalHalfW;
 
-  // No published range ⇒ no honest Hz conversion: the shift stays 0 rather
-  // than reaching the capabilities store through `pbtRawToHz`'s fallback.
-  const avgPbtHz = pbtRange
-    ? pbtRawToHz(Math.round((pbtInner + pbtOuter) / 2), pbtRange)
+  // MOR-2497 step 2: PBT raw -> Hz on the measured lattice, whose span is the
+  // CURRENT filter width and whose spacing is the current mode's passed
+  // `pbtStepHz`. No published range, no declared step, or a width that forms
+  // no lattice ⇒ no honest Hz conversion and the shift stays 0, exactly as an
+  // absent range already left it. `filterWidth` is the observed width, not the
+  // animated `rs.animFilterWidth` the geometry below tweens through: a value
+  // mid-tween is not a width the radio is in, and the lattice is only defined
+  // at widths it is.
+  const toPbtHz = (raw: number): number | null => (
+    pbtRange && pbtStepHz !== undefined ? measuredPbtRawToHz(raw, filterWidth, pbtStepHz) : null
+  );
+  // Averaged in Hz rather than in raw. Raw steps are unevenly spaced on the
+  // lattice (alternating 3 and 4 raw units at a 3600 Hz filter), so the mean of
+  // two raws can land on a position neither edge occupies, while Hz positions
+  // are exactly one step apart. This is also how `deriveIfShift` combines the
+  // two edges for the passband display, which the scope compares against.
+  const innerPbtHz = toPbtHz(pbtInner);
+  const outerPbtHz = toPbtHz(pbtOuter);
+  const avgPbtHz = innerPbtHz !== null && outerPbtHz !== null
+    ? (innerPbtHz + outerPbtHz) / 2
     : 0;
   const shiftRef = Math.max(rs.animFilterWidth, filterWidthMax * 0.5);
   const cx = width / 2 + (avgPbtHz / shiftRef) * totalHalfW * 0.6;
@@ -223,8 +248,8 @@ export function renderAudioSpectrum(
   if (showFilterOverlay) {
     if (pbtActive && pbtRange) {
       // Twin PBT: draw two separate trapezoids with distinct colors
-      const innerHz = pbtRawToHz(pbtInner, pbtRange);
-      const outerHz = pbtRawToHz(pbtOuter, pbtRange);
+      const innerHz = innerPbtHz ?? 0;
+      const outerHz = outerPbtHz ?? 0;
 
       // Inner PBT trapezoid (cyan/blue)
       const innerCx = width / 2 + (innerHz / shiftRef) * totalHalfW * 0.6;

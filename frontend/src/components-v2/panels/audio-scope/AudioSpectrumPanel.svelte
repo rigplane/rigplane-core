@@ -60,6 +60,7 @@
     pbtInner={p.pbtInner}
     pbtOuter={p.pbtOuter}
     pbtRange={p.pbtRange}
+    pbtStepHz={p.pbtStepHz}
     manualNotch={p.manualNotch}
     notchFreq={p.notchFreq}
     notchFreqDomain={p.notchFreqDomain}
