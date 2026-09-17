@@ -205,7 +205,6 @@ const liveCaps = (): Capabilities => ({
   // USB. Without it the payload is the legacy case: structure but no Hz
   // reading, and the two-slider residue below cannot be observed.
   filterConfig: { USB: { defaults: [2400], fixed: false, pbtStepHz: 50 } },
-  filterConfig: { USB: { defaults: [2400], fixed: false, pbtStepHz: 50 } },
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
