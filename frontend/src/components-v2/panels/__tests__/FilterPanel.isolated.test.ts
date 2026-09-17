@@ -1026,7 +1026,7 @@ describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
     expect(slider.getAttribute('aria-busy')).toBe('true');
     expect(slider.getAttribute('data-command-phase')).toBe('submitted');
     expect(slider.getAttribute('aria-valuenow')).toBe('0');
-    expect(valueText(slider)).toBe('0');
+    expect(valueText(slider)).toBe('0\u00a0Hz');
   });
 
   it('keeps the operator\'s requested value while pending — no snap-back to the stale readback', () => {
@@ -1035,9 +1035,10 @@ describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
     const slider = sliderOf(t, 'PBT Inner');
     slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     vi.advanceTimersByTime(60);
+    flushSync();
     expect(mockHandlers.onPbtInnerChange).toHaveBeenCalledExactlyOnceWith(50);
     expect(slider.getAttribute('aria-valuenow')).toBe('0');
-    expect(valueText(slider)).toBe('50');
+    expect(valueText(slider)).toBe('+50\u00a0Hz');
   });
 
   it('reports confirmed with the confirmed Hz', () => {
@@ -1050,24 +1051,26 @@ describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
     expect(slider.getAttribute('aria-busy')).toBe('false');
     expect(slider.getAttribute('data-command-phase')).toBe('confirmed');
     expect(slider.getAttribute('aria-valuenow')).toBe('600');
-    expect(valueText(slider)).toBe('600');
+    expect(valueText(slider)).toBe('+600\u00a0Hz');
   });
 
   it('reports failed and returns to the last confirmed value', () => {
-    setPassbandFeedback('inner', PENDING);
     const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
     const slider = sliderOf(t, 'PBT Inner');
     slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     vi.advanceTimersByTime(60);
-    expect(valueText(slider)).toBe('50');
+    flushSync();
+    expect(valueText(slider)).toBe('+50\u00a0Hz');
+    // The gesture's own command mints a NEW lifecycle id, then fails: the
+    // draft must retire back to the last confirmed value.
     setPassbandFeedback('inner', {
       confirmed: 0, requestedTarget: 50, phase: 'failed', busy: false, target: null,
       outcome: { phase: 'failed', error: 'echo mismatch' },
-      lifecycleId: 'L', transitionId: 'L:failed',
+      lifecycleId: 'L1', transitionId: 'L1:failed',
     });
     flushSync();
     expect(slider.getAttribute('data-command-phase')).toBe('failed');
-    expect(valueText(slider)).toBe('0');
+    expect(valueText(slider)).toBe('0\u00a0Hz');
     expect(slider.getAttribute('aria-valuenow')).toBe('0');
   });
 
@@ -1083,8 +1086,9 @@ describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
     expect(slider.getAttribute('aria-valuenow')).toBe('0');
     slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     vi.advanceTimersByTime(60);
+    flushSync();
     expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(25);
-    expect(valueText(slider)).toBe('25');
+    expect(valueText(slider)).toBe('+25\u00a0Hz');
   });
 
   it('disables the slider without NaN when the feedback is unavailable', () => {

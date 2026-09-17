@@ -309,14 +309,21 @@ describe('MOR-2425/R41 — freshness is invisible in the semantic tree', () => {
     const differing = live
       .map((line, index) => ({ live: line, held: held[index] }))
       .filter((row) => row.live !== row.held);
-    expect(differing.map((row) => row.held))
-      .toEqual(differing.map((row) => row.live.replace('>', ' disabled="">')));
+    // MOR-1687: the rows are now feedback-integrated scalars, so `disabled`
+    // serializes in source position rather than appended last — compare
+    // with the attribute's position normalized out; every other byte of
+    // the two trees must stay identical.
+    expect(differing.map((row) => row.held.replace(' disabled=""', '')))
+      .toEqual(differing.map((row) => row.live));
     expect(differing).toHaveLength(2);
     for (const row of differing) {
+      expect(row.held).toContain(' disabled=""');
       // The measured PBT domain at this fixture's width 2400 / step 50
       // (MOR-2497): +/-floor(2400/100)*50 = +/-1200, step 50 — never the
-      // retired fabricated +/-1200 @ 25 Hz row constant.
-      expect(row.live).toMatch(/^<input type="range" [^>]*min="-1200" max="1200" step="50">$/);
+      // retired fabricated +/-1200 @ 25 Hz row constant. Trailing
+      // attributes are open since MOR-1687 made the rows
+      // feedback-integrated (spread + scoping class serialize after step).
+      expect(row.live).toMatch(/^<input type="range" [^>]*min="-1200" max="1200" step="50"[^>]*>$/);
     }
   });
 });

@@ -1083,17 +1083,18 @@ describe('passband scalar feedback (MOR-1687 part 1)', () => {
     } as PendingProps);
   });
 
-  it.each(ROWS)('%s: unavailable feedback disables the control without NaN', (field, handler, control, feedbackKey) => {
+  it.each(ROWS)('%s: unavailable feedback keeps commanding through the view reading — never NaN (MOR-2425/R40)', (field, handler, control, feedbackKey) => {
     const spy = vi.fn();
     withSurface(base(), (s) => {
       const input = s.input(`filter-${field}`)!;
-      expect(input.disabled).toBe(true);
+      expect(input.disabled).toBe(false);
       expect(input.value).not.toBe('NaN');
+      expect(input.value).toBe('0');
+      expect(input.dataset.commandPhase).toBeUndefined();
       input.value = '600';
       input.dispatchEvent(new Event('input', { bubbles: true }));
       flushSync();
-      expect(spy).not.toHaveBeenCalled();
-      expect(input.value).toBe('0');
+      expect(spy).toHaveBeenCalledExactlyOnceWith(600);
     }, { [handler]: spy }, {
       [feedbackKey]: passbandFeedback(control, {
         confirmed: null, phase: 'unavailable', availability: 'unavailable',

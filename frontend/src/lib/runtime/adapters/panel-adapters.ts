@@ -885,6 +885,67 @@ export function getPbtOuterControlFeedback(
 }
 
 /**
+ * The measured twin-PBT lattice for the ACTIVE receiver — the mode's
+ * declared `pbtStepHz` at the observed filter width — or `null` when no
+ * lattice forms (no step for the mode, unobserved width, legacy payload).
+ * The same three reads `toFilterProps` and `getIfShiftControlFeedback`
+ * base their conversions on.
+ */
+function measuredPbtLatticeHz(
+  state: ServerState | null, caps: Capabilities | null | undefined,
+): Readonly<{ filterWidthHz: number; stepHz: number }> | null {
+  const rx = state ? (state.active === 'SUB' ? state.sub : state.main) : undefined;
+  const pbtStepHz = resolveFilterModeConfig(caps ?? null, rx?.mode, rx?.dataMode)?.pbtStepHz;
+  const pbtWidthHz = rx?.filterWidth;
+  return pbtStepHz !== undefined && typeof pbtWidthHz === 'number'
+    ? { filterWidthHz: pbtWidthHz, stepHz: pbtStepHz } : null;
+}
+
+/**
+ * Converts a raw-domain PBT feedback onto the measured lattice's Hz — the
+ * unit the displayed value and the write path (`onPbtInnerChange` and
+ * friends) already share. `confirmed`, `target` and `requestedTarget`
+ * convert together; a feedback that is already unavailable, or a mode
+ * with no lattice (FM), fails the whole projection closed instead of
+ * mixing a raw target into an Hz confirmed echo.
+ */
+function pbtFeedbackOnMeasuredLattice(
+  raw: Readonly<ControlFeedback<number>>,
+  lattice: Readonly<{ filterWidthHz: number; stepHz: number }> | null,
+): Readonly<ControlFeedback<number>> {
+  if (raw.availability !== 'available' || lattice === null) {
+    return unavailableControlFeedback(raw);
+  }
+  const hz = (value: number | null): number | null => value === null
+    ? null : measuredPbtRawToHz(value, lattice.filterWidthHz, lattice.stepHz);
+  const confirmed = hz(raw.confirmed);
+  if (confirmed === null) return unavailableControlFeedback(raw);
+  return Object.freeze({
+    ...raw, confirmed, target: hz(raw.target), requestedTarget: hz(raw.requestedTarget),
+  });
+}
+
+/** Qualified PBT Inner feedback in the display unit (Hz on the measured lattice). */
+export function getPbtInnerHzControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  return pbtFeedbackOnMeasuredLattice(
+    getPbtInnerControlFeedback(currentControlSession),
+    measuredPbtLatticeHz(runtime.state, runtime.caps),
+  );
+}
+
+/** Qualified PBT Outer feedback in the display unit (Hz on the measured lattice). */
+export function getPbtOuterHzControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  return pbtFeedbackOnMeasuredLattice(
+    getPbtOuterControlFeedback(currentControlSession),
+    measuredPbtLatticeHz(runtime.state, runtime.caps),
+  );
+}
+
+/**
  * IF-shift feedback is always Hz-domain, never PBT's raw BCD domain: real on
  * a radio with its own `if_shift` command (raw IS Hz there, identity-
  * mapped), or derived from the two PBT feedbacks by converting each side's
@@ -1040,13 +1101,9 @@ export function getIfShiftControlFeedback(
   // at the observed width — the same conversion the reading path uses. A
   // raw that converts to nothing (no step for the mode, no observed width)
   // fails the whole derived feedback closed rather than fabricating Hz.
-  const rx = state ? (state.active === 'SUB' ? state.sub : state.main) : undefined;
-  const pbtStepHz = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode)?.pbtStepHz;
-  const pbtWidthHz = rx?.filterWidth;
-  const toHz = (raw: number): number | null => (
-    pbtStepHz === undefined || typeof pbtWidthHz !== 'number'
-      ? null : measuredPbtRawToHz(raw, pbtWidthHz, pbtStepHz)
-  );
+  const lattice = measuredPbtLatticeHz(state, caps);
+  const toHz = (raw: number): number | null => lattice === null
+    ? null : measuredPbtRawToHz(raw, lattice.filterWidthHz, lattice.stepHz);
   const pairHz = (a: number, b: number): number | null => {
     const innerHz = toHz(a);
     const outerHz = toHz(b);

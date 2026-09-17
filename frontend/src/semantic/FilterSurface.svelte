@@ -96,6 +96,9 @@
     finiteLayout?: FilterFiniteLayout;
     part?: 'all' | 'filter';
     filterWidthFeedback?: Readonly<CommandScalarFeedback>;
+    ifShiftFeedback?: Readonly<CommandScalarFeedback>;
+    pbtInnerFeedback?: Readonly<CommandScalarFeedback>;
+    pbtOuterFeedback?: Readonly<CommandScalarFeedback>;
     onFilterWidthChange?: (width: number) => void;
     onIfShiftChange?: (value: number) => void;
     onPbtInnerChange?: (value: number) => void;
@@ -104,6 +107,7 @@
   }
   let {
     view, handles, finiteLayout, part = 'all', filterWidthFeedback,
+    ifShiftFeedback, pbtInnerFeedback, pbtOuterFeedback,
     onFilterWidthChange, onIfShiftChange, onPbtInnerChange, onPbtOuterChange, onPbtReset,
   }: Props = $props();
 
@@ -218,6 +222,88 @@
       : filterPassband?.pbtDomain;
     return domain === undefined ? { min, max, step } : domain;
   }
+
+  /** The command each passband row's request rides — the same intents
+   *  `makeFilterHandlers` dispatches, so the feedback's lifecycle ids match
+   *  the commands this surface issues. */
+  const PASSBAND_COMMAND: Record<FilterPassbandLevelField, string> = {
+    ifShift: 'set_if_shift', pbtInner: 'set_pbt_inner', pbtOuter: 'set_pbt_outer',
+  };
+
+  function passbandFeedbackOf(field: FilterPassbandLevelField): Readonly<CommandScalarFeedback> | undefined {
+    if (field === 'ifShift') return ifShiftFeedback;
+    if (field === 'pbtInner') return pbtInnerFeedback;
+    return pbtOuterFeedback;
+  }
+
+  /** The width row's contract applied to a passband row: feedback evidence
+   *  when the wiring seam supplies an AVAILABLE projection (values in the
+   *  display unit, Hz), reading evidence otherwise — a held (stale) or
+   *  lattice-less reading keeps commanding through its own view truth
+   *  (MOR-2425/R40), the same fallback `RfFrontEnd.svelte`'s `rfGainInput`
+   *  established. The field's own availability stays the enabled gate in
+   *  both branches. */
+  function passbandInput(field: FilterPassbandLevelField): Readonly<ContinuousScalarInput> {
+    const row = FILTER_PASSBAND_LEVELS.find(([name]) => name === field)!;
+    const limits = passbandLimits(field, row[2], row[3], row[4]);
+    const f = filterPassband?.[field];
+    const enabled = field === 'ifShift'
+      ? f !== undefined && usable(f)
+      : f !== undefined && pbtUsable(f);
+    const domain = {
+      min: limits.min, max: limits.max, step: limits.step,
+      defaultValue: null, fineStepDivisor: 1,
+    };
+    const request = (value: number): void => changePassband(field, value);
+    const feedback = passbandFeedbackOf(field);
+    if (feedback !== undefined && feedback.availability === 'available') {
+      return {
+        evidence: 'command-feedback', feedback, command: PASSBAND_COMMAND[field],
+        domain, enabled, request,
+      };
+    }
+    const value = f === undefined ? null : numberOf(f, limits.min);
+    return {
+      evidence: 'reading',
+      reading: enabled && value !== null && Number.isFinite(value)
+        ? { status: 'known', value } : { status: 'unknown' },
+      ownerKey: `filter-passband-${field}`, domain, enabled, request,
+    };
+  }
+
+  /** The width row's lease/view plumbing, once per passband row. */
+  function createPassbandRow(field: FilterPassbandLevelField): Readonly<{
+    lease: ContinuousScalarRendererLease | null;
+    view: Readonly<ContinuousScalarView>;
+  }> {
+    const scalar = createContinuousScalar(
+      () => passbandInput(field), nativeRangeContinuousScalarPolicy,
+    );
+    let lease: ContinuousScalarRendererLease | null = $state(null);
+    const initialView = untrack(() => scalar.view);
+    let view: Readonly<ContinuousScalarView> = $state(initialView);
+    $effect(() => {
+      const attached = scalar.attachRenderer();
+      lease = attached;
+      return () => attached.dispose();
+    });
+    $effect(() => {
+      view = lease === null ? scalar.view : lease.view;
+    });
+    onDestroy(() => scalar.destroy());
+    return {
+      get lease() { return lease; },
+      get view() { return view; },
+    };
+  }
+  const passbandRows: Record<FilterPassbandLevelField, Readonly<{
+    lease: ContinuousScalarRendererLease | null;
+    view: Readonly<ContinuousScalarView>;
+  }>> = {
+    ifShift: createPassbandRow('ifShift'),
+    pbtInner: createPassbandRow('pbtInner'),
+    pbtOuter: createPassbandRow('pbtOuter'),
+  };
 </script>
 
 {#if modeFilter || filterPassband}
@@ -263,12 +349,19 @@
     {#if filterPassband}
       {#snippet passbandRange(field: FilterPassbandLevelField, min: number, max: number, step: number)}
         {@const display = field === 'ifShift' ? undefined : pbtDisplay(filterPassband[field])}
+        {@const row = passbandRows[field]}
+        <!-- The continuity-fenced view model stays the display truth for the
+             thumb (MOR-1706): a conflicting state replay must not move it,
+             so only the scalar's own gesture draft may override the view. -->
         {#key display?.state}
           <input
             id={`${pendingFilterId}-${field}-input`} type="range" {min} {max} {step}
-            value={numberOf(filterPassband[field], min)}
-            disabled={field === 'ifShift' ? !usable(filterPassband[field]) : !pbtUsable(filterPassband[field])}
-            oninput={(event) => changePassband(field, event.currentTarget.valueAsNumber)}
+            {...feedbackIntegratedRange}
+            value={row.view.draft ?? numberOf(filterPassband[field], min)}
+            disabled={!row.view.editable}
+            data-command-phase={row.view.phase ?? undefined}
+            aria-busy={row.view.busy}
+            oninput={(event) => row.lease?.nativeInput(event.currentTarget.valueAsNumber)}
           />
         {/key}
       {/snippet}

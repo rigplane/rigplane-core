@@ -75,6 +75,16 @@ const mockFilterWidthFeedback = {
   scope: { control: 'filter-width', receiver: 0 as const }, repeatPolicy: 'latest-target-wins' as const,
 };
 
+// MOR-1687 part 1: FilterPanel also consumes the three passband feedback
+// producers; this file's cases render them hidden (hasPbt/hasIfShift
+// false), so an unavailable verdict is the honest stub.
+const mockPassbandUnavailableFeedback = {
+  confirmed: null, target: null, requestedTarget: null, phase: 'unavailable' as const,
+  busy: false, availability: 'unavailable' as const, outcome: null,
+  lifecycleId: null, transitionId: null, providerGeneration: 1, sessionEpoch: 7,
+  scope: { control: 'passband', receiver: 0 as const }, repeatPolicy: 'latest-target-wins' as const,
+};
+
 const mockRfProps = {
   rfGain: 1, squelch: 0, att: 0, pre: 0, digiSel: false, ipPlus: false,
   rfGainAvailable: false, squelchAvailable: false, attAvailable: true, preAvailable: true,
@@ -114,6 +124,9 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getFilterArmed: () => mockFilterArmed,
   getFilterWidthCommandLifecycle: () => mockFilterWidthLifecycle,
   getFilterWidthControlFeedback: () => mockFilterWidthFeedback,
+  getPbtInnerHzControlFeedback: () => mockPassbandUnavailableFeedback,
+  getPbtOuterHzControlFeedback: () => mockPassbandUnavailableFeedback,
+  getIfShiftControlFeedback: () => mockPassbandUnavailableFeedback,
   deriveRfFrontEndProps: () => mockRfProps,
   getRfFrontEndHandlers: () => mockRfHandlers,
   getRfSqlControlFeedback: () => null,

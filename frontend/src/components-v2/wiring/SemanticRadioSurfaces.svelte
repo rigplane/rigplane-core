@@ -56,6 +56,7 @@
     bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getDspControlFeedback,
     getAfLevelControlFeedback, projectDspControlFeedbackToDisplay,
     getFilterWidthControlFeedback, getRfPowerControlFeedback,
+    getIfShiftControlFeedback, getPbtInnerHzControlFeedback, getPbtOuterHzControlFeedback,
     getCwPitchControlFeedback, getKeySpeedControlFeedback, getRfSqlControlFeedback,
     getTxAuxControlFeedback, type TxAuxControlFeedbackField,
     getPendingFrequencyHz,
@@ -1636,6 +1637,9 @@
     activeReceiverIndex === null ? null : getPendingFilterSelection(activeReceiverIndex),
   );
   let filterWidthFeedback = $derived(getFilterWidthControlFeedback());
+  let ifShiftFeedback = $derived(getIfShiftControlFeedback());
+  let pbtInnerFeedback = $derived(getPbtInnerHzControlFeedback());
+  let pbtOuterFeedback = $derived(getPbtOuterHzControlFeedback());
   let cwPitchFeedback = $derived(getCwPitchControlFeedback(controlSession));
   let keySpeedFeedback = $derived(getKeySpeedControlFeedback(controlSession));
   /**
@@ -2319,7 +2323,7 @@
     {#if view?.modeFilter || view?.filterPassband}
       <FilterSurface
         {view} handles={filterInstruments} {finiteLayout}
-        {filterWidthFeedback}
+        {filterWidthFeedback} {ifShiftFeedback} {pbtInnerFeedback} {pbtOuterFeedback}
         onFilterWidthChange={filterIntents.onFilterWidthChange}
         onIfShiftChange={filterIntents.onIfShiftChange}
         onPbtInnerChange={filterIntents.onPbtInnerChange}
@@ -2685,7 +2689,7 @@
         <SemanticControlPanel surface="filter" title="FILTER" {...filterChrome}>
           {#if view}<FilterSurface
             {view} handles={filterInstruments} finiteLayout={filterLayout} part="filter"
-            {filterWidthFeedback}
+            {filterWidthFeedback} {ifShiftFeedback} {pbtInnerFeedback} {pbtOuterFeedback}
             onFilterWidthChange={filterIntents.onFilterWidthChange}
             onIfShiftChange={filterIntents.onIfShiftChange}
             onPbtInnerChange={filterIntents.onPbtInnerChange}
