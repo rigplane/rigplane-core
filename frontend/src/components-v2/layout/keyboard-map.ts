@@ -324,6 +324,20 @@ export function shouldIgnoreEvent(activeElement: Element | null): boolean {
   return IGNORED_TAGS.has(activeElement.tagName);
 }
 
+/** MOR-2507: keys a focused interactive control owns and the global
+ * shortcut layer must not resolve. */
+const ARROW_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+
+/**
+ * MOR-2507: true when a focused arrow-consuming control — a custom
+ * `role="slider"` value control — owns the pressed arrow key. Native
+ * range inputs, selects and text fields are already covered by
+ * `shouldIgnoreEvent`'s IGNORED_TAGS.
+ */
+export function focusedElementOwnsArrowKey(activeElement: Element | null, key: string): boolean {
+  return ARROW_KEYS.has(key) && activeElement?.closest('[role="slider"]') != null;
+}
+
 /** MOR-1444: true for a single digit character ("0".."9"), the key class a
  *  rig profile's keyboard config binds to `band_select`. */
 export function isDigitKey(key: string): boolean {

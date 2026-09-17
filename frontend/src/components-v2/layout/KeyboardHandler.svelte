@@ -6,6 +6,7 @@
     resolveSequenceContinuation,
     resolveSequenceStarts,
     shouldIgnoreEvent,
+    focusedElementOwnsArrowKey,
     isDigitKey,
     isFrequencyDisplayFocused,
     formatShortcut,
@@ -105,6 +106,14 @@
   function handleKeydown(event: KeyboardEvent): void {
     if (!enabled) return;
     if (shouldIgnoreEvent(document.activeElement)) return;
+
+    // MOR-2507: a focused slider owns its arrow keys — the global tuning
+    // shortcut must not also fire. A pending leader must be disarmed, like
+    // the Tab guard below.
+    if (focusedElementOwnsArrowKey(document.activeElement, event.key)) {
+      if (pendingSequences.length) clearLeaderState();
+      return;
+    }
 
     // MOR-1444: with the VFO/frequency display focused, a digit keystroke
     // must feed the frequency-entry box instead of resolving as a band
