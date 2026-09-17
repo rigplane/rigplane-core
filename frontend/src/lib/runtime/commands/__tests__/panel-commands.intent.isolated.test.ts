@@ -2123,8 +2123,8 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
 
 describe('MOR-2500 twin-PBT writers on the measured lattice', () => {
   // The radio snaps twin-PBT writes onto a lattice: step per mode
-  // (`filterConfig[mode].pbtStepHz`), span the CURRENT filter width, so one
-  // edge ranges over +/-filterWidth/2. These pins hold the WRITE path
+  // (`filterConfig[mode].pbtStepHz`), span +/-floor(width/(2*step))*step of
+  // the CURRENT filter width (+/-1800 Hz at 3600, only +/-100 at 250). These pins hold the WRITE path
   // (`makeFilterHandlers`' PBT family) to that lattice: the current edges
   // are read with `measuredPbtRawToHz` and written with
   // `measuredPbtHzToRaw`, one resolution of the mode + dataMode of the
@@ -2245,12 +2245,13 @@ describe('MOR-2500 twin-PBT writers on the measured lattice', () => {
       ...h.state!,
       main: { ...h.state!.main!, mode: 'AM', dataMode: 0, filterWidth: 9000 },
     } as ServerState;
-    // On the AM lattice (9000/200 = 45 steps): +150 Hz snaps to +100 Hz,
-    // raw 130. A 50 Hz step would put +150 Hz at raw 132 on the wrong grid.
+    // On the AM lattice (9000 Hz width, 200 Hz step: 45 positions, centre
+    // raw 128): +150 Hz snaps to +200 Hz, raw 133. A 50 Hz step would put
+    // +150 Hz at raw 132 on the wrong grid.
     makeFilterHandlers().onPbtInnerChange(150);
 
-    expect(exactCalls()).toEqual([['set_pbt_inner', { value: 130, receiver: 0 }]]);
-    expect(measuredPbtHzToRaw(150, 9000, 200)).toBe(130);
+    expect(exactCalls()).toEqual([['set_pbt_inner', { value: 133, receiver: 0 }]]);
+    expect(measuredPbtHzToRaw(150, 9000, 200)).toBe(133);
   });
 
   it('refuses every PBT write in a mode with no twin PBT (FM): no command leaves the handlers', () => {
@@ -2292,10 +2293,10 @@ describe('MOR-2500 twin-PBT writers on the measured lattice', () => {
       sub: { ...base.sub!, mode: 'AM', dataMode: 0, filterWidth: 9000 },
     } as ServerState;
     // MAIN stays USB/3600 where +150 Hz maps to raw 138; SUB's own AM/9000
-    // lattice maps it to raw 130.
+    // lattice maps it to raw 133.
     makeFilterHandlers().onPbtInnerChange(150);
 
-    expect(exactCalls()).toEqual([['set_pbt_inner', { value: 130, receiver: 1 }]]);
+    expect(exactCalls()).toEqual([['set_pbt_inner', { value: 133, receiver: 1 }]]);
   });
 
   it('keeps the native if_shift branch byte-for-byte: Hz offset straight to set_if_shift', () => {

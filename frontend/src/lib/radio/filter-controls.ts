@@ -110,53 +110,54 @@ export function pbtHzToRaw(hz: number, range?: PbtRange): number {
   return Math.max(0, Math.min(255, raw));
 }
 
-// Measured IC PBT passband-edge lattice (MOR-2497 step 1).
+// Measured IC PBT passband-edge lattice (MOR-2497).
 //
-// Every number in this block was measured on the bench on 2026-09-16 by
+// Every number in this block was measured on the bench on 2026-09-17 by
 // sweeping `set_pbt_inner(raw)` over every raw 0..255 and reading the value
-// the radio snapped each write back to, identically on an IC-7610 over LAN
-// and an IC-7300 over serial:
-//   positions = filterWidthHz / stepHz + 1 reachable lattice points,
-//   margin    = floor(255 / (2 * positions)) raw units in from each end,
-//   raw(i)    = margin + round(i * (255 - 2*margin) / (positions - 1)),
+// the radio snapped each write back to, on an IC-7610 over LAN, at widths
+// 500/250/350/3600 Hz (step 50) and AM 6000 Hz (step 200):
+//   positions = 2 * floor(filterWidthHz / (2 * stepHz)) + 1 lattice points,
+//   raw(i)    = floor((i + 0.5) * 256 / positions),  i = 0..positions-1,
 //   Hz(i)     = (i - (positions - 1)/2) * stepHz.
-// `round` is half-up (`Math.round`): the centre then lands on raw 128 on its
-// own (at filter 3600 the centre cell computes exactly 126.5), matching the
-// "0128=center" the IC-7610 CI-V Reference Guide documents; rounding
-// half-to-even instead puts it at 127 and fails the swept-lattice fixture in
-// `filter-controls.test.ts`. The 50 Hz step is pinned against the radio's own
-// display (front panel read `SFT +900`/`BW 1.8` at raw 254, filter 3600 — a
-// 25 Hz step would have read `SFT +450`).
+// The centre position is ALWAYS raw 128 (floor(256/2) with i at the middle
+// index), matching the "0128=center" the IC-7610 CI-V Reference Guide
+// documents; an earlier width/step + 1 model with a margin in from each end
+// reproduced the 3600/1800/500 sweeps but fails the 250/350/AM sweeps the
+// test file pins. One edge spans +/-floor(filterWidthHz/(2*stepHz))*stepHz
+// -- +/-100 Hz at width 250, NOT +/-125 -- so a width that is an odd
+// multiple of the step does NOT reach its own half-width. The 50 Hz step is
+// pinned against the radio's own display (front panel read `SFT +900`/`BW
+// 1.8` at raw 254, filter 3600 -- a 25 Hz step would have read `SFT +450`).
 
-/** PBT lattice step measured on the IC-7610 (LAN) and IC-7300 (serial) on
- *  2026-09-16. The IC-705 and IC-9700 were not on the bench, so this value is
- *  a parameter of the conversion below, not a literal inside it — a caller
- *  applying it to an unmeasured rig is making an inference, and the call site
- *  is where that inference must be visible. */
+/** PBT lattice step measured on the IC-7610 (LAN) on 2026-09-17, against the
+ *  radio's own front-panel display. The IC-705 and IC-9700 were not on the
+ *  bench, so this value is a parameter of the conversion below, not a literal
+ *  inside it — a caller applying it to an unmeasured rig is making an
+ *  inference, and the call site is where that inference must be visible. */
 export const PBT_MEASURED_STEP_HZ = 50;
 
 type PbtLattice = Readonly<{
   positions: number;
-  margin: number;
 }>;
 
 /** The lattice the radio snaps PBT writes onto, or `null` when the declared
  *  filter width cannot form one: zero, negative, `NaN`/infinite, not an
- *  integer multiple of `stepHz`, or finer than one raw unit per position
- *  (adjacent positions would collide on the same raw). */
+ *  integer multiple of `stepHz`, or more positions than the 0..255 wire
+ *  range can keep on distinct raws (adjacent positions would collide). A
+ *  width equal to one step forms the honest single-position lattice (P = 1):
+ *  only the centre is reachable. */
 function pbtLattice(filterWidthHz: number, stepHz: number): PbtLattice | null {
   if (!Number.isFinite(filterWidthHz) || !Number.isFinite(stepHz) || stepHz <= 0) return null;
   const steps = filterWidthHz / stepHz;
   if (!Number.isSafeInteger(steps) || steps < 1) return null;
-  const positions = steps + 1;
-  if (positions - 1 > 255) return null;
-  return { positions, margin: Math.floor(255 / (2 * positions)) };
+  const positions = 2 * Math.floor(filterWidthHz / (2 * stepHz)) + 1;
+  if (positions > 256) return null;
+  return { positions };
 }
 
 /** Raw wire value of lattice position `i`. */
 function latticeRaw(lattice: PbtLattice, i: number): number {
-  return lattice.margin
-    + Math.round((i * (255 - 2 * lattice.margin)) / (lattice.positions - 1));
+  return Math.floor(((i + 0.5) * 256) / lattice.positions);
 }
 
 /** Nearest lattice position to `raw`; an exact tie (a raw sitting halfway
@@ -166,7 +167,7 @@ function latticeRaw(lattice: PbtLattice, i: number): number {
  *  raw must represent. */
 function nearestLatticePosition(lattice: PbtLattice, raw: number): number {
   const last = lattice.positions - 1;
-  const ideal = ((raw - lattice.margin) * last) / (255 - 2 * lattice.margin);
+  const ideal = ((raw + 0.5) * lattice.positions) / 256 - 0.5;
   const lo = Math.max(0, Math.min(last, Math.floor(ideal)));
   const hi = Math.max(0, Math.min(last, Math.ceil(ideal)));
   const dLo = Math.abs(raw - latticeRaw(lattice, lo));
@@ -815,15 +816,16 @@ export function deriveIfShift(pbtInner: number, pbtOuter: number): number {
  *  All three PBT arguments are Hz on the measured lattice, as
  *  `measuredPbtRawToHz` reads them at the CURRENT filter width; the caller
  *  converts the result back to raws with `measuredPbtHzToRaw` at the same
- *  width and step. The edges of a passband span +/-filterWidthHz/2, so the
- *  reachable shift of THIS passband is what gets clamped -- never one edge
- *  alone, which would silently narrow the passband: a requested shift that
- *  would push an edge past the span stops at the boundary instead. A
- *  requested shift between two lattice shifts snaps to the nearest whole
- *  `stepHz` multiple first, so both written edges stay exactly on the
- *  lattice and the width survives the move whole. Degenerate width/step
- *  inputs are the caller's refusal: `measuredPbtRawToHz` returns null for
- *  them before this helper is reached.
+ *  width and step. The lattice reaches +/-floor(filterWidthHz/(2*stepHz))*
+ *  stepHz -- +/-100 Hz at width 250, NOT +/-125 (the 2026-09-17 sweep) --
+ *  so the bound is that MEASURED span, never filterWidthHz/2: a requested
+ *  shift that would push an edge past the reachable span stops at the
+ *  boundary instead, and never clamps one edge alone, which would silently
+ *  narrow the passband. A requested shift between two lattice shifts snaps
+ *  to the nearest whole `stepHz` multiple first, so both written edges stay
+ *  exactly on the lattice and the width survives the move whole. Degenerate
+ *  width/step inputs are the caller's refusal: `measuredPbtRawToHz` returns
+ *  null for them before this helper is reached.
  *
  *  Pinned in `filter-controls.test.ts` ("keeps the passband width on the
  *  write path") and exercised end to end through `onIfShiftChange` in
@@ -835,7 +837,7 @@ export function mapIfShiftToPbt(
   filterWidthHz: number,
   stepHz: number,
 ): { pbtInner: number; pbtOuter: number } {
-  const halfSpan = filterWidthHz / 2;
+  const halfSpan = Math.floor(filterWidthHz / (2 * stepHz)) * stepHz;
   const currentIfShift = deriveIfShift(currentPbtInnerHz, currentPbtOuterHz);
   const requested = Math.round((targetIfShiftHz - currentIfShift) / stepHz) * stepHz;
   const delta = Math.max(
