@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { FieldStatus, ServerState } from '$lib/types/state';
-import { deriveIfShift, pbtRangeFromCaps, pbtRawToHz } from '$lib/radio/filter-controls';
+import { deriveIfShift, pbtRangeFromCaps } from '$lib/radio/filter-controls';
 import { getPassbandEdgesHz } from '../../../../components/spectrum/passband-geometry';
 import { resolveLcdSpectrumFrame } from '../../../../skins/segmentline/lcd-display-contract';
 import { qualifyScopeFrameEnvelope, toScopeDisplayFrame, toSpectrumAuthority } from '../scope-adapter';

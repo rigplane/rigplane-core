@@ -5,44 +5,13 @@ import {
   AudioSpectrumRendererState,
   type SpectrumState,
 } from '../audio-spectrum-renderer';
-import { pbtRawToHz, type PbtRange } from '$lib/radio/filter-controls';
-
-// ── pbtRawToHz (the renderer's conversion path: the one shipped helper from
-//    `$lib/radio/filter-controls`, called with the range the props layer
-//    derived from the radio's published `controls.pbt_inner`) ───────────────
+import type { PbtRange } from '$lib/radio/filter-controls';
 
 /** The range every PBT-publishing profile declares (ic705/ic7300/ic7610/
- *  ic9700: raw_center 128, display ±1200). Values below are pinned from a
- *  measured run of this exact call shape, not carried over by hand. */
+ *  ic9700: raw_center 128, display ±1200). The renderer consumes it only as
+ *  the gate that a usable range is published; the Hz conversion itself is
+ *  the measured lattice (MOR-2497), pinned in `filter-controls.test.ts`. */
 const IC7610_PBT_RANGE: PbtRange = { rawCenter: 128, displayMin: -1200, displayMax: 1200 };
-
-describe('pbtRawToHz', () => {
-  it('returns 0 for center value (128)', () => {
-    expect(pbtRawToHz(128, IC7610_PBT_RANGE)).toBe(0);
-  });
-
-  it('returns positive Hz for values > 128', () => {
-    expect(pbtRawToHz(200, IC7610_PBT_RANGE)).toBe(675);
-  });
-
-  it('returns negative Hz for values < 128', () => {
-    expect(pbtRawToHz(56, IC7610_PBT_RANGE)).toBe(-675);
-  });
-
-  it('returns max Hz at raw=255', () => {
-    expect(pbtRawToHz(255, IC7610_PBT_RANGE)).toBe(1191);
-  });
-
-  it('returns -max Hz at raw=0', () => {
-    expect(pbtRawToHz(0, IC7610_PBT_RANGE)).toBe(-1200);
-  });
-
-  it('supports a custom published range', () => {
-    const custom: PbtRange = { rawCenter: 64, displayMin: -600, displayMax: 600 };
-    expect(pbtRawToHz(64, custom)).toBe(0);
-    expect(pbtRawToHz(128, custom)).toBe(600);
-  });
-});
 
 // ── resetSmoothing ───────────────────────────────────────────────────────────
 
