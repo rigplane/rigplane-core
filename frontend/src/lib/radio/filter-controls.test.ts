@@ -4,6 +4,7 @@ import type { Capabilities, ControlDomain, FilterModeConfig } from '$lib/types/c
 import {
   controlDisplayDomain,
   deriveIfShift,
+  mapIfShiftToPbt,
   measuredPbtHzToRaw,
   measuredPbtRawToHz,
   nrRawToDisplay,
@@ -538,5 +539,31 @@ describe('deriveIfShift reaches the shifts the radio actually reaches (MOR-2497)
     const centred = measuredPbtRawToHz(128, WIDTH, PBT_MEASURED_STEP_HZ);
     expect(centred).toBe(0);
     expect(deriveIfShift(moved!, centred!)).toBe(900);
+  });
+});
+
+describe('mapIfShiftToPbt keeps the passband width on the write path (MOR-2500)', () => {
+  // Edges in Hz, as `measuredPbtRawToHz` reads them: raws 160/96 at filter
+  // 3600 are +450/-450 Hz -- a 900 Hz passband.
+  it('moves both edges by the requested shift when both stay reachable', () => {
+    expect(mapIfShiftToPbt(300, 450, -450, 3600, PBT_MEASURED_STEP_HZ))
+      .toEqual({ pbtInner: 750, pbtOuter: -150 });
+  });
+
+  it('snaps an off-grid requested shift to a whole lattice step', () => {
+    expect(mapIfShiftToPbt(310, 450, -450, 3600, PBT_MEASURED_STEP_HZ))
+      .toEqual({ pbtInner: 750, pbtOuter: -150 });
+    // 325 Hz sits exactly halfway between the +300 and +350 shifts.
+    expect(mapIfShiftToPbt(325, 450, -450, 3600, PBT_MEASURED_STEP_HZ))
+      .toEqual({ pbtInner: 800, pbtOuter: -100 });
+  });
+
+  it('clamps the SHIFT at the reachable span instead of narrowing the passband', () => {
+    // +450/-450 edges at filter 3600: the top edge can only reach +1800, so
+    // the requested +1500 shift clamps to +1350 -- the width stays 900 Hz.
+    expect(mapIfShiftToPbt(1500, 450, -450, 3600, PBT_MEASURED_STEP_HZ))
+      .toEqual({ pbtInner: 1800, pbtOuter: 900 });
+    expect(mapIfShiftToPbt(-1500, 450, -450, 3600, PBT_MEASURED_STEP_HZ))
+      .toEqual({ pbtInner: -900, pbtOuter: -1800 });
   });
 });
