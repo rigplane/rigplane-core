@@ -213,8 +213,11 @@ class FilterWidthRule:
     #: wholly or in part: a profile declaring a step for some modes and not
     #: others reads as "no PBT in CW" when it means "nobody filled CW in".
     #: ``test_pbt_step_declared_by_every_shipped_pbt_capable_profile`` enforces
-    #: both over every shipped rig rather than over a chosen few -- the modes
-    #: left without a step must be exactly FM, WFM and DV.
+    #: both over every shipped rig rather than over a chosen few: among the
+    #: modes a profile's filter table lists, every one other than FM, WFM and
+    #: DV declares a step, and none of those three does. A mode absent from
+    #: that table is outside the guarantee -- the IC-7610 lists PSK in
+    #: ``[modes]`` with no filter entry, and nothing here speaks for it.
     #: Distinct from ``step_hz`` above, which quantises the filter WIDTH; the
     #: two collide at 200 in AM and differ in USB.
     pbt_step_hz: int | None = None

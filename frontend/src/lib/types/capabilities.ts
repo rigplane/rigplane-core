@@ -49,12 +49,13 @@ export interface FilterModeConfig {
    *  twin PBT at all -- the IC-7300 Advanced Manual heads its Twin PBT section
    *  "SSB, CW, RTTY and AM modes" -- so a consumer must read its absence as
    *  "no PBT here", never as a default. Every shipped profile that declares the
-   *  `pbt` capability declares this for every mode that has twin PBT, and for
-   *  no mode that lacks it -- enforced on the server side by
-   *  `test_pbt_step_declared_by_every_shipped_pbt_capable_profile`, which
-   *  requires the modes without a step to be exactly FM, WFM and DV. So an
-   *  absent value cannot mean "this radio was not migrated yet", nor "this
-   *  mode was not filled in".
+   *  `pbt` capability declares this for every mode in its filter table other
+   *  than FM, WFM and DV, and for none of those three -- enforced on the
+   *  server side by
+   *  `test_pbt_step_declared_by_every_shipped_pbt_capable_profile`. So within
+   *  that table an absent value cannot mean "this radio was not migrated yet",
+   *  nor "this mode was not filled in". A mode with no entry in the table at
+   *  all is outside the guarantee and reaches this type as no config.
    *  Distinct from `stepHz` above, which quantises the filter WIDTH; the two
    *  are both 200 in AM and differ in USB. */
   pbtStepHz?: number;
