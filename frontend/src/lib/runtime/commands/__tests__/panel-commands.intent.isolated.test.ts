@@ -1052,6 +1052,12 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
   });
 
   it('preserves debounced filter command order without optimistic filter values', () => {
+    // MOR-2500: the PBT writes need a declared lattice step; with one, the
+    // same 100/-100 Hz values land on the 2400 Hz width's lattice.
+    h.caps = {
+      ...h.caps,
+      filterConfig: { USB: { pbtStepHz: 50 } },
+    } as unknown as Record<string, unknown>;
     const filter = makeFilterHandlers();
     filter.onFilterChange(3);
     filter.onFilterWidthChange(1800);
@@ -1076,7 +1082,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_filter', { filter: 3, receiver: 0 }],
       ['set_filter_width', { width: 1800, receiver: 0 }],
       ['set_filter', { filter: 2, receiver: 0 }],
-      ['set_pbt_inner', { value: 139, receiver: 0 }],
+      ['set_pbt_inner', { value: 138, receiver: 0 }],
       ['set_pbt_outer', { value: 117, receiver: 0 }],
       ['set_pbt_inner', { value: 128, receiver: 0 }],
       ['set_pbt_outer', { value: 128, receiver: 0 }],

@@ -27,7 +27,7 @@ import { relativeVfoIdentityUnknown, resolveFilterModeConfig } from '../props/pa
 import type { Capabilities, FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilities';
 import { modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import {
-  mapIfShiftToPbt, pbtHzToRaw, pbtRangeFromCaps,
+  mapIfShiftToPbt, measuredPbtHzToRaw, measuredPbtRawToHz, pbtRangeFromCaps,
   quantizeFilterWidthToRule,
   resolveControlContract,
   resolveNrLevelContract,
@@ -153,8 +153,36 @@ function toggleVox(): void {
 // caps omitted `controls.pbt_inner` — exactly the fabricated-command class
 // this ticket closes. `pbtRangeFromCaps(getCapabilities())` below is called
 // at each PBT command site instead, and the handler bails (emits nothing)
-// when it comes back `undefined`, rather than ever falling through to
-// `pbtHzToRaw`'s own store-fallback branch.
+// when it comes back `undefined`. MOR-2500: the Hz<->raw conversions the
+// sites call after that gate are the measured-lattice pair
+// (`measuredPbtRawToHz`/`measuredPbtHzToRaw`), never a store-backed
+// proportional fallback.
+
+/**
+ * The twin-PBT write lattice of the ACTIVE receiver's current mode
+ * (MOR-2500) — the same `resolveFilterModeConfig(caps, mode, dataMode)`
+ * resolution of mode + dataMode the readers in
+ * `radio-view-model-adapter.ts` use, so a reader and a writer can never
+ * disagree about which mode's step applies. `null` when state/caps are
+ * unavailable, the mode declares no `pbtStepHz`, or the current
+ * `filterWidth` is not a finite number: a mode with no step (FM) and a
+ * legacy payload where NO mode declares one both refuse here — unlike the
+ * readers' `modeHasTwinPbt`, which keeps the radio-wide capability for the
+ * legacy case, because a WRITE with no lattice to land on has no honest
+ * fallback at all.
+ */
+function activePbtLattice(): { filterWidthHz: number; stepHz: number } | null {
+  const caps = getCapabilities();
+  const activeRx = getActiveReceiver();
+  if (!caps || !activeRx) return null;
+  const stepHz = resolveFilterModeConfig(caps, activeRx.mode, activeRx.dataMode)?.pbtStepHz;
+  const filterWidthHz = activeRx.filterWidth;
+  if (
+    stepHz === undefined
+    || typeof filterWidthHz !== 'number' || !Number.isFinite(filterWidthHz)
+  ) return null;
+  return { filterWidthHz, stepHz };
+}
 
 /* ── Memory Handlers ─────────────────────────────────────────────── */
 
@@ -1007,30 +1035,55 @@ export function makeFilterHandlers() {
           || typeof activeRx?.pbtInner !== 'number'
           || typeof activeRx.pbtOuter !== 'number'
         ) return;
+        // MOR-2500: the current edges are RAW 0..255 — read them in Hz on
+        // the measured lattice FIRST, then move the passband in Hz and
+        // write it back on the same lattice. Feeding the raws to
+        // `mapIfShiftToPbt` as if they were Hz collapsed a 900 Hz passband
+        // to 56 Hz (raws 160/96 at a 3600 Hz filter, shift +300).
+        const lattice = activePbtLattice();
+        if (!lattice) return;
+        const innerHz = measuredPbtRawToHz(activeRx.pbtInner, lattice.filterWidthHz, lattice.stepHz);
+        const outerHz = measuredPbtRawToHz(activeRx.pbtOuter, lattice.filterWidthHz, lattice.stepHz);
+        if (innerHz === null || outerHz === null) return;
         const { pbtInner, pbtOuter } = mapIfShiftToPbt(
           value,
-          activeRx.pbtInner,
-          activeRx.pbtOuter,
+          innerHz,
+          outerHz,
+          lattice.filterWidthHz,
+          lattice.stepHz,
         );
-        dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: pbtHzToRaw(pbtInner, pbtRange), receiver } });
-        dispatchRadioIntent({ name: 'set_pbt_outer', params: { value: pbtHzToRaw(pbtOuter, pbtRange), receiver } });
+        const innerRaw = measuredPbtHzToRaw(pbtInner, lattice.filterWidthHz, lattice.stepHz);
+        const outerRaw = measuredPbtHzToRaw(pbtOuter, lattice.filterWidthHz, lattice.stepHz);
+        if (innerRaw === null || outerRaw === null) return;
+        dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: innerRaw, receiver } });
+        dispatchRadioIntent({ name: 'set_pbt_outer', params: { value: outerRaw, receiver } });
       }
     },
     onPbtInnerChange: (value: number) => {
       // MOR-1291: see `onIfShiftChange`'s pbt branch above — no command
-      // without a caps-declared PBT range.
+      // without a caps-declared PBT range. MOR-2500: no command without a
+      // lattice for the ACTIVE receiver's mode either; `measuredPbtHzToRaw`
+      // snaps the Hz value to the nearest reachable raw on it.
       const pbtRange = pbtRangeFromCaps(getCapabilities());
       if (!pbtRange) return;
       const receiver = knownActiveReceiver('pbtInner');
       if (receiver === null) return;
-      dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: pbtHzToRaw(value, pbtRange), receiver } });
+      const lattice = activePbtLattice();
+      if (!lattice) return;
+      const raw = measuredPbtHzToRaw(value, lattice.filterWidthHz, lattice.stepHz);
+      if (raw === null) return;
+      dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: raw, receiver } });
     },
     onPbtOuterChange: (value: number) => {
       const pbtRange = pbtRangeFromCaps(getCapabilities());
       if (!pbtRange) return;
       const receiver = knownActiveReceiver('pbtOuter');
       if (receiver === null) return;
-      dispatchRadioIntent({ name: 'set_pbt_outer', params: { value: pbtHzToRaw(value, pbtRange), receiver } });
+      const lattice = activePbtLattice();
+      if (!lattice) return;
+      const raw = measuredPbtHzToRaw(value, lattice.filterWidthHz, lattice.stepHz);
+      if (raw === null) return;
+      dispatchRadioIntent({ name: 'set_pbt_outer', params: { value: raw, receiver } });
     },
     onPbtReset: () => {
       const pbtRange = pbtRangeFromCaps(getCapabilities());
@@ -1039,7 +1092,10 @@ export function makeFilterHandlers() {
       const state = getRadioState();
       const prefix = receiver === 1 ? 'sub' : 'main';
       if (receiver === null || !state || !isFieldAvailable(state, `${prefix}.pbtOuter`)) return;
-      const center = pbtHzToRaw(0, pbtRange);
+      const lattice = activePbtLattice();
+      if (!lattice) return;
+      const center = measuredPbtHzToRaw(0, lattice.filterWidthHz, lattice.stepHz);
+      if (center === null) return;
       dispatchRadioIntent({ name: 'set_pbt_inner', params: { value: center, receiver } });
       dispatchRadioIntent({ name: 'set_pbt_outer', params: { value: center, receiver } });
     },
