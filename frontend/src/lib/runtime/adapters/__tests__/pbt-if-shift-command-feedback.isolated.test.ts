@@ -59,7 +59,7 @@ import { measuredPbtRawToHz, deriveIfShift } from '$lib/radio/filter-controls';
 // raw 140 reads +150 Hz.
 const PBT_WIDTH_HZ = 3600;
 const PBT_STEP_HZ = 50;
-const pbtHz = (raw: number) => measuredPbtRawToHz(raw, PBT_WIDTH_HZ, PBT_STEP_HZ);
+const pbtHz = (raw: number, stepHz: number = PBT_STEP_HZ) => measuredPbtRawToHz(raw, PBT_WIDTH_HZ, stepHz);
 const fresh = (marker = 5) => ({
   storePath: 'fixture', observed: true, freshness: 'fresh' as const,
   availability: 'available' as const, lastObservedMonotonic: marker,
@@ -219,6 +219,26 @@ describe('IF-shift command feedback (real on Yaesu, derived on Icom PBT-only)', 
     });
     h.state = stateNoWidth; h.caps = pbtCaps();
     expect(getIfShiftControlFeedback(connected).availability).toBe('unavailable');
+  });
+
+  it('resolves the "-D" variant\'s own step when dataMode > 0 (MOR-2497 review pin)', () => {
+    // USB-D declares a 100 Hz step, USB a 50 Hz one. With dataMode 1 the
+    // resolver must pick USB-D: at width 3600, raws 160/128 read +500/0 on
+    // the 100 Hz lattice (confirmed 250) but +450/0 on the 50 Hz one
+    // (confirmed 225) — an adapter ignoring dataMode lands on 225 and this
+    // pin fails.
+    h.state = state({
+      main: { mode: 'USB', dataMode: 1, filterWidth: PBT_WIDTH_HZ, pbtInner: 160, pbtOuter: 128, ifShift: 60 },
+    });
+    h.caps = {
+      ...pbtCaps(),
+      filterConfig: { 'USB-D': { pbtStepHz: 100 }, USB: { pbtStepHz: PBT_STEP_HZ } },
+    } as unknown as Capabilities;
+    const expected = deriveIfShift(pbtHz(160, 100)!, pbtHz(128, 100)!);
+    expect(expected).toBe(250);
+    expect(getIfShiftControlFeedback(connected)).toMatchObject({
+      confirmed: expected, domain: 'hz', phase: 'idle', availability: 'available',
+    });
   });
 
   it('reports the non-confirmed outcome, not confirmed, when one PBT side confirms and the other fails', () => {
