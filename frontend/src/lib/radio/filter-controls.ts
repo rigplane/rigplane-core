@@ -211,6 +211,26 @@ export function measuredPbtHzToRaw(hz: number, filterWidthHz: number, stepHz: nu
   return latticeRaw(lattice, Math.max(0, Math.min(last, i)));
 }
 
+/** The slider/display domain of the measured twin-PBT lattice — the ONE
+ *  derivation of PBT control bounds (MOR-2497). One edge spans
+ *  +/-floor(filterWidthHz/(2*stepHz))*stepHz — the same measured span
+ *  `measuredPbtRawToHz`/`measuredPbtHzToRaw` convert on and
+ *  `mapIfShiftToPbt` clamps its writes to — with the lattice's own step
+ *  spacing. Returns `null` exactly when `pbtLattice` forms no lattice
+ *  (zero, negative, non-finite, or a width that is not a whole multiple of
+ *  the step): callers in the props/adapter layers treat that as "no domain
+ *  key" and keep their existing `hasPbt` gating — never a NaN bound, never
+ *  the retired fabricated +/-1200. */
+export function measuredPbtDisplayDomain(
+  filterWidthHz: number,
+  stepHz: number,
+): ControlDisplayDomain | null {
+  const lattice = pbtLattice(filterWidthHz, stepHz);
+  if (lattice === null) return null;
+  const span = ((lattice.positions - 1) / 2) * stepHz;
+  return { min: -span, max: span, step: stepHz, origin: 0 };
+}
+
 // Generic control display <-> CI-V wire conversion (MOR-490 / MOR-498)
 // Some IC-7610 controls expose a CI-V wire value on a different scale than the
 // front-panel / slider display (e.g. NR level wire 0-255 vs display 0-15; NB
