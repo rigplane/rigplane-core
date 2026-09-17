@@ -2147,6 +2147,9 @@ def load_rig(path: Path) -> RigConfig:
                 defaults=tuple(int(value) for value in defaults_raw),
                 fixed=bool(raw_rule.get("fixed", False)),
                 step_hz=(int(raw_rule["step_hz"]) if "step_hz" in raw_rule else None),
+                pbt_step_hz=(
+                    int(raw_rule["pbt_step_hz"]) if "pbt_step_hz" in raw_rule else None
+                ),
                 min_hz=(int(raw_rule["min_hz"]) if "min_hz" in raw_rule else None),
                 max_hz=(int(raw_rule["max_hz"]) if "max_hz" in raw_rule else None),
                 segments=segments,

@@ -896,7 +896,21 @@ encoding = "segmented_bcd_index"
 width_min_hz = 50
 width_max_hz = 9999
 
+# Twin PBT step, per mode. Source: IC-7300 Advanced Manual p.40, "Using the
+# Twin PBT" -- its heading names the modes that have it, "SSB, CW, RTTY and AM
+# modes", and its text reads "The PBT is adjustable in 50 Hz steps in the SSB,
+# CW, and RTTY modes, and 200 Hz in the AM mode." FM is absent from that list
+# and therefore declares no pbt_step_hz: the absence means the mode has no twin
+# PBT, not that a default applies. The 50 Hz figure is independently confirmed
+# by a bench sweep of every raw 0..255 on the IC-7610 over LAN and the IC-7300
+# over serial on 2026-09-16 (MOR-2497); 200 Hz for AM is the manual alone.
+#
+# The -D and -R variants take the SSB/CW/RTTY figure by inference: the manual
+# names the base modes, not each variant.
+#
+# Do not confuse with step_hz in the same tables, which quantises the WIDTH.
 [filters.width.USB]
+pbt_step_hz = 50
 min_hz = 50
 max_hz = 3600
 defaults = [3000, 2400, 1800]
@@ -906,6 +920,7 @@ segments = [
 ]
 
 [filters.width.LSB]
+pbt_step_hz = 50
 min_hz = 50
 max_hz = 3600
 defaults = [3000, 2400, 1800]
@@ -915,6 +930,7 @@ segments = [
 ]
 
 [filters.width.USB-D]
+pbt_step_hz = 50
 min_hz = 50
 max_hz = 3600
 defaults = [3000, 1200, 500]
@@ -924,6 +940,7 @@ segments = [
 ]
 
 [filters.width.LSB-D]
+pbt_step_hz = 50
 min_hz = 50
 max_hz = 3600
 defaults = [3000, 1200, 500]
@@ -933,6 +950,7 @@ segments = [
 ]
 
 [filters.width.CW]
+pbt_step_hz = 50
 min_hz = 50
 max_hz = 3600
 defaults = [1200, 500, 250]
@@ -942,6 +960,7 @@ segments = [
 ]
 
 [filters.width.CW-R]
+pbt_step_hz = 50
 min_hz = 50
 max_hz = 3600
 defaults = [1200, 500, 250]
@@ -951,6 +970,7 @@ segments = [
 ]
 
 [filters.width.RTTY]
+pbt_step_hz = 50
 min_hz = 50
 max_hz = 2700
 defaults = [2400, 500, 250]
@@ -960,6 +980,7 @@ segments = [
 ]
 
 [filters.width.RTTY-R]
+pbt_step_hz = 50
 min_hz = 50
 max_hz = 2700
 defaults = [2400, 500, 250]
@@ -969,6 +990,7 @@ segments = [
 ]
 
 [filters.width.AM]
+pbt_step_hz = 200
 min_hz = 200
 max_hz = 10000
 step_hz = 200

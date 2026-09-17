@@ -1716,6 +1716,139 @@ class TestToProfile:
         assert profile.filter_config["USB-D"].defaults == (3000, 1200, 500)
         assert profile.filter_config["FM"].fixed is True
 
+    def test_pbt_step_is_declared_per_mode_and_absent_where_there_is_no_pbt(self):
+        """Twin PBT step per IC-7300 Advanced Manual p.40.
+
+        Its heading names the modes that have twin PBT -- "SSB, CW, RTTY and AM
+        modes" -- and its text gives the steps: 50 Hz in SSB, CW and RTTY,
+        200 Hz in AM. FM is absent from that list, so the profile declares no
+        step for it and a consumer must read that absence as "no PBT in this
+        mode" rather than substituting a default.
+        """
+        profile = load_rig(TEMPLATE_PATH).to_profile()
+        assert profile.filter_config is not None
+        config = profile.filter_config
+        for mode in ("USB", "LSB", "USB-D", "LSB-D", "CW", "CW-R", "RTTY", "RTTY-R"):
+            assert config[mode].pbt_step_hz == 50, mode
+        assert config["AM"].pbt_step_hz == 200
+        assert config["FM"].pbt_step_hz is None
+
+    def test_pbt_step_declared_by_every_shipped_pbt_capable_profile(self):
+        """The absence of a step must mean "this mode has no twin PBT".
+
+        Two ways that reading can be wrong, and both are checked here over
+        every shipped rig rather than over a chosen few, so adding a radio
+        cannot reintroduce either silently.
+
+        A profile can be merely unmigrated -- declaring the capability and no
+        step anywhere -- and a consumer obeying the rule would take PBT away
+        from a radio that has it.
+
+        A profile can also be migrated in part, declaring a step for some modes
+        and not others, which reads as "this radio has no PBT in CW" when it
+        means "nobody filled CW in". So the modes left without a step must be
+        exactly the ones with no twin PBT: the IC-7300 Advanced Manual p.40
+        heads its section "SSB, CW, RTTY and AM modes", which leaves FM, and
+        the FM variants WFM and DV that the IC-705 adds.
+        """
+        no_twin_pbt = {"FM", "WFM", "DV"}
+        checked = 0
+        for name, config in sorted(discover_rigs(RIGS_DIR).items()):
+            profile = config.to_profile()
+            if "pbt" not in (profile.capabilities or ()):
+                continue
+            checked += 1
+            rules = profile.filter_config or {}
+            declared = {
+                mode for mode, rule in rules.items() if rule.pbt_step_hz is not None
+            }
+            missing = set(rules) - declared
+            assert declared, f"{name} declares the pbt capability but no pbt_step_hz"
+            assert missing <= no_twin_pbt, (
+                f"{name}: modes with no pbt_step_hz must be modes with no twin "
+                f"PBT, but {sorted(missing - no_twin_pbt)} are not"
+            )
+            assert not (declared & no_twin_pbt), (
+                f"{name}: {sorted(declared & no_twin_pbt)} have no twin PBT and "
+                f"must declare no step"
+            )
+            assert {rules[mode].pbt_step_hz for mode in declared} <= {50, 200}, (
+                f"{name}: unexpected step value"
+            )
+        assert checked >= 4, f"expected the four Icom profiles, checked {checked}"
+
+    def test_pbt_step_values_of_every_shipped_profile(self):
+        """The values themselves, per profile, so a wrong one cannot hide.
+
+        ic7610 and ic7300 were measured on the bench in SSB and their AM figure
+        comes from the manual; ic705 and ic9700 are inference from those two and
+        say so in their own provenance note. Either way the numbers are pinned
+        here rather than in one representative profile.
+        """
+        expected = {
+            "ic7610": {
+                "USB": 50,
+                "LSB": 50,
+                "USB-D": 50,
+                "LSB-D": 50,
+                "CW": 50,
+                "CW-R": 50,
+                "RTTY": 50,
+                "RTTY-R": 50,
+                "AM": 200,
+                "FM": None,
+            },
+            "ic7300": {
+                "USB": 50,
+                "LSB": 50,
+                "CW": 50,
+                "RTTY": 50,
+                "AM": 200,
+                "FM": None,
+            },
+            "ic705": {
+                "USB": 50,
+                "LSB": 50,
+                "CW": 50,
+                "CW-R": 50,
+                "RTTY": 50,
+                "RTTY-R": 50,
+                "AM": 200,
+                "FM": None,
+                "WFM": None,
+                "DV": None,
+            },
+            "ic9700": {
+                "USB": 50,
+                "LSB": 50,
+                "CW": 50,
+                "CW-R": 50,
+                "RTTY": 50,
+                "RTTY-R": 50,
+                "AM": 200,
+                "FM": None,
+            },
+        }
+        for name, per_mode in expected.items():
+            rules = load_rig(RIGS_DIR / f"{name}.toml").to_profile().filter_config
+            assert rules is not None, name
+            got = {mode: rule.pbt_step_hz for mode, rule in rules.items()}
+            assert got == per_mode, name
+
+    def test_pbt_step_is_not_the_filter_width_step(self):
+        """The two per-mode steps are different quantities that collide in AM.
+
+        `step_hz` quantises the filter WIDTH; `pbt_step_hz` quantises the
+        passband offset. In AM both happen to be 200, which is exactly why a
+        reader might treat one as the other -- so this pins a mode where they
+        differ: USB declares no width step at all (its widths come from
+        segments) while its PBT step is 50.
+        """
+        config = load_rig(TEMPLATE_PATH).to_profile().filter_config
+        assert config is not None
+        assert config["AM"].step_hz == 200 and config["AM"].pbt_step_hz == 200
+        assert config["USB"].step_hz is None and config["USB"].pbt_step_hz == 50
+
     def test_model_and_id(self):
         profile = load_rig(TEMPLATE_PATH).to_profile()
         assert profile.model == "IC-7610"
