@@ -789,8 +789,28 @@ export function quantizeFilterWidthToRule(
         : best);
 }
 
+/** IF shift derived from the two passband edges: their mean.
+ *
+ *  MOR-2497 step 2 removed a `clampToBipolarRange` here, which bounded the
+ *  result to +/-1200 Hz. That bound truncated a state the radio actually
+ *  reaches: measured on the IC-7610 over LAN on 2026-09-17 at a 3600 Hz
+ *  filter, writing raw 254 to BOTH edges reads both back at 254, which is
+ *  +1800 Hz each on the measured lattice, so the true shift is +1800 Hz and
+ *  the clamp reported 1200. Raw 1 on both edges gives -1800 Hz the same way.
+ *
+ *  Nothing is left unbounded by the removal. Both edges come from
+ *  `measuredPbtRawToHz` at one filter width, which cannot exceed
+ *  +/-filter_width/2, so their mean cannot either. At a call site still on the
+ *  retired `pbtRawToHz`, the outputs span -1200..+1191 (raw 0 and raw 255 at
+ *  the declared range), so the mean never reached the clamp there and removing
+ *  it changes nothing those call sites can observe.
+ *
+ *  `mapIfShiftToPbt` below still clamps to +/-1200 on the WRITE path. That is
+ *  the same fabricated bound and it is still wrong, but its call sites move to
+ *  the measured lattice in a later PR of this step and it would otherwise be
+ *  changed twice. */
 export function deriveIfShift(pbtInner: number, pbtOuter: number): number {
-  return clampToBipolarRange((pbtInner + pbtOuter) / 2);
+  return Math.round((pbtInner + pbtOuter) / 2);
 }
 
 export function mapIfShiftToPbt(
