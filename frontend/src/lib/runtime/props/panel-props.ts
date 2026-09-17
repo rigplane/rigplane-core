@@ -425,11 +425,11 @@ export function toFilterProps(
   // and no domain, never the retired fabricated +/-1200 conversion.
   const pbtStepHz = filterConfig?.pbtStepHz;
   const pbtWidthHz = rx?.filterWidth;
-  const pbtDomain = pbtStepHz !== undefined && pbtWidthHz !== undefined
+  const pbtDomain = pbtStepHz !== undefined && typeof pbtWidthHz === 'number'
     ? measuredPbtDisplayDomain(pbtWidthHz, pbtStepHz)
     : null;
   const pbtHz = (raw: number | undefined): number | null => (
-    raw === undefined || pbtStepHz === undefined || pbtWidthHz === undefined
+    raw === undefined || pbtStepHz === undefined || typeof pbtWidthHz !== 'number'
       ? null
       : measuredPbtRawToHz(raw, pbtWidthHz, pbtStepHz)
   );

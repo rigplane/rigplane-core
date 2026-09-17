@@ -1024,11 +1024,11 @@ export function getIfShiftControlFeedback(
   // at the observed width — the same conversion the reading path uses. A
   // raw that converts to nothing (no step for the mode, no observed width)
   // fails the whole derived feedback closed rather than fabricating Hz.
-  const rx = state?.active === 'SUB' ? state.sub : state.main;
+  const rx = state ? (state.active === 'SUB' ? state.sub : state.main) : undefined;
   const pbtStepHz = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode)?.pbtStepHz;
   const pbtWidthHz = rx?.filterWidth;
   const toHz = (raw: number): number | null => (
-    pbtStepHz === undefined || pbtWidthHz === undefined
+    pbtStepHz === undefined || typeof pbtWidthHz !== 'number'
       ? null : measuredPbtRawToHz(raw, pbtWidthHz, pbtStepHz)
   );
   const pairHz = (a: number, b: number): number | null => {
