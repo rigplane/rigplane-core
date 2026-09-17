@@ -11,6 +11,10 @@ import {
   type KeyboardActionConfig,
 } from '../keyboard-map';
 import VfoSurface from '../../../semantic/VfoSurface.svelte';
+import ValueControl from '../../controls/value-control/ValueControl.svelte';
+import SegmentedButton from '../../controls/SegmentedButton.svelte';
+import AttenuatorControl from '../../controls/AttenuatorControl.svelte';
+import ActiveReceiverToggle from '../../vfo/ActiveReceiverToggle.svelte';
 import { topologyFixtures } from '../../../semantic/fixtures/topologies';
 
 describe('KeyboardHandler', () => {
@@ -189,9 +193,13 @@ describe('KeyboardHandler', () => {
 
   // MOR-2507 — bench-observed on IC-7610/IC-7300: with the AF volume slider
   // focused, one arrow press was handled twice — the slider moved AND the
-  // global tuning shortcut fired. A focused slider owns its arrow keys, so
-  // the global shortcut must not resolve them.
-  describe('focused slider owns its arrow keys (MOR-2507)', () => {
+  // global tuning shortcut fired. A widget that consumes arrow keys declares
+  // it on its focusable element via data-owns-arrows (axis token
+  // horizontal/vertical/both, plus "shift" for deliberate Shift gestures);
+  // the global handler yields exactly those keys: a bare role is not
+  // evidence of consumption, and modified arrows (the Ctrl+Arrow volume and
+  // gain bindings from rigs/_keyboard-default.toml) stay global.
+  describe('focused widget arrow ownership via data-owns-arrows (MOR-2507)', () => {
     const arrowConfig: KeyboardConfig = {
       ...config,
       bindings: [
@@ -206,6 +214,35 @@ describe('KeyboardHandler', () => {
           params: { direction: 'up', fine: false },
         },
         {
+          id: 'tune-left',
+          section: 'Tuning',
+          label: 'Tune Left',
+          sequence: ['ArrowLeft'],
+          action: 'tune',
+          repeatable: true,
+          params: { direction: 'down', fine: false },
+        },
+        {
+          id: 'af-level-up',
+          section: 'Audio',
+          label: 'AF level up',
+          sequence: ['ArrowUp'],
+          modifiers: ['CTRL'],
+          action: 'adjust_af_level',
+          repeatable: true,
+          params: { delta: 5 },
+        },
+        {
+          id: 'rf-gain-up',
+          section: 'RF',
+          label: 'RF gain up',
+          sequence: ['ArrowUp'],
+          modifiers: ['CTRL', 'SHIFT'],
+          action: 'adjust_rf_gain',
+          repeatable: true,
+          params: { delta: 5 },
+        },
+        {
           id: 'band-7',
           section: 'Bands',
           label: 'Select band 7',
@@ -216,30 +253,205 @@ describe('KeyboardHandler', () => {
       ],
     };
 
-    function appendFocusedSlider(): HTMLElement {
-      const slider = document.createElement('div');
-      slider.setAttribute('role', 'slider');
-      slider.tabIndex = 0;
-      slider.setAttribute('aria-label', 'AF');
-      document.body.appendChild(slider);
+    /** Dispatches on the focused element, as a real keypress would target it. */
+    function press(key: string, flags: KeyboardEventInit = {}): KeyboardEvent {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...flags });
+      document.activeElement!.dispatchEvent(event);
+      return event;
+    }
+
+    function appendFocusedOwner(declared: string, attrs: Record<string, string> = {}): HTMLElement {
+      const el = document.createElement('div');
+      el.setAttribute('data-owns-arrows', declared);
+      for (const [name, value] of Object.entries(attrs)) el.setAttribute(name, value);
+      el.tabIndex = 0;
+      document.body.appendChild(el);
+      el.focus();
+      expect(document.activeElement).toBe(el);
+      return el;
+    }
+
+    /** The real shared value-control mount: focusable [role="slider"] that
+     * consumes all four arrows (Shift = fine step). */
+    function mountFocusedHBar(): HTMLElement {
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      components.push(mount(ValueControl, {
+        target,
+        props: {
+          value: 5, min: 0, max: 10, step: 1, renderer: 'hbar',
+          label: 'AF', onChange: vi.fn(),
+        },
+      }));
+      flushSync();
+      const slider = target.querySelector<HTMLElement>('[role="slider"]')!;
       slider.focus();
       expect(document.activeElement).toBe(slider);
       return slider;
     }
 
-    it.each(['ArrowUp', 'ArrowRight'])(
-      'does not dispatch the tuning shortcut when a custom role="slider" control is focused (%s)',
-      (key) => {
-        const onAction = vi.fn();
-        mountHandler({ config: arrowConfig, onAction });
-        appendFocusedSlider();
+    it('a real hbar value control owns its arrows', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
 
-        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
-        document.activeElement!.dispatchEvent(event);
+      mountFocusedHBar();
+      press('ArrowUp');
+      press('ArrowRight');
 
-        expect(onAction).not.toHaveBeenCalled();
-      },
-    );
+      expect(onAction).not.toHaveBeenCalled();
+    });
+
+    it('modified arrows on an owning widget stay global (Ctrl/Ctrl+Shift+ArrowUp bindings)', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+
+      mountFocusedHBar();
+      press('ArrowUp', { ctrlKey: true });
+      press('ArrowUp', { ctrlKey: true, shiftKey: true });
+
+      expect(onAction).toHaveBeenCalledTimes(2);
+      expect(onAction).toHaveBeenNthCalledWith(1,
+        expect.objectContaining({ action: 'adjust_af_level', params: { delta: 5 } }));
+      expect(onAction).toHaveBeenNthCalledWith(2,
+        expect.objectContaining({ action: 'adjust_rf_gain', params: { delta: 5 } }));
+    });
+
+    it('a plain role="radio" button without the hook (real AttenuatorControl) still tunes', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      components.push(mount(AttenuatorControl, {
+        target,
+        props: { values: [0, 10, 20], selected: 0, onchange: vi.fn() },
+      }));
+      flushSync();
+      const radio = target.querySelector<HTMLElement>('[role="radio"]')!;
+      radio.focus();
+      expect(document.activeElement).toBe(radio);
+
+      press('ArrowUp');
+
+      expect(onAction).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ action: 'tune', params: { direction: 'up', fine: false } }),
+      );
+    });
+
+    it('bare roles are not owners: role=slider/radiogroup/separator without the hook still tune', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+
+      for (const role of ['slider', 'radiogroup', 'separator']) {
+        const el = document.createElement('div');
+        el.setAttribute('role', role);
+        el.tabIndex = 0;
+        document.body.appendChild(el);
+        el.focus();
+        press('ArrowUp');
+        el.remove();
+      }
+
+      expect(onAction).toHaveBeenCalledTimes(3);
+    });
+
+    it('the real segmented control owns its arrows', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      components.push(mount(SegmentedButton, {
+        target,
+        props: {
+          options: [{ value: 'lsb', label: 'LSB' }, { value: 'usb', label: 'USB' }],
+          selected: 'lsb',
+          onchange: vi.fn(),
+        },
+      }));
+      flushSync();
+      const group = target.querySelector<HTMLElement>('[role="radiogroup"]')!;
+      group.focus();
+      expect(document.activeElement).toBe(group);
+
+      press('ArrowRight');
+
+      expect(onAction).not.toHaveBeenCalled();
+    });
+
+    it('the real active-receiver toggle owns its arrows', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      components.push(mount(ActiveReceiverToggle, {
+        target,
+        props: { active: 'MAIN', onChange: vi.fn() },
+      }));
+      flushSync();
+      const radio = target.querySelector<HTMLElement>('[role="radio"]')!;
+      radio.focus();
+      expect(document.activeElement).toBe(radio);
+
+      press('ArrowLeft');
+
+      expect(onAction).not.toHaveBeenCalled();
+    });
+
+    it('a vertical-only owner (splitter shape) yields Up/Down but keeps Left/Right global', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+      appendFocusedOwner('vertical', { role: 'separator' });
+
+      press('ArrowUp');
+      expect(onAction).not.toHaveBeenCalled();
+
+      press('ArrowLeft');
+      expect(onAction).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ action: 'tune', params: { direction: 'down', fine: false } }),
+      );
+    });
+
+    it('a focused child inside an owning container is still owned', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+      const owner = document.createElement('div');
+      owner.setAttribute('data-owns-arrows', 'both');
+      const child = document.createElement('div');
+      child.tabIndex = 0;
+      owner.appendChild(child);
+      document.body.appendChild(owner);
+      child.focus();
+      expect(document.activeElement).toBe(child);
+
+      press('ArrowUp');
+
+      expect(onAction).not.toHaveBeenCalled();
+    });
+
+    it('an arrow dispatched on window with an owning widget focused does not tune (activeElement, not event.target)', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+      appendFocusedOwner('both');
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+
+      expect(onAction).not.toHaveBeenCalled();
+    });
+
+    it('a role="button" element without the hook still tunes', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+      const el = document.createElement('div');
+      el.setAttribute('role', 'button');
+      el.tabIndex = 0;
+      document.body.appendChild(el);
+      el.focus();
+
+      press('ArrowUp');
+
+      expect(onAction).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ action: 'tune', params: { direction: 'up', fine: false } }),
+      );
+    });
 
     it('does not dispatch the tuning shortcut when a native range input is focused', () => {
       const onAction = vi.fn();
@@ -261,17 +473,18 @@ describe('KeyboardHandler', () => {
 
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' }));
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }));
 
-      expect(onAction).toHaveBeenCalledTimes(2);
+      expect(onAction).toHaveBeenCalledTimes(3);
       expect(onAction).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'tune', params: { direction: 'up', fine: false } }),
       );
     });
 
-    it('still dispatches non-arrow shortcuts while a slider holds focus', () => {
+    it('still dispatches non-arrow shortcuts while an owning widget holds focus', () => {
       const onAction = vi.fn();
       mountHandler({ config: arrowConfig, onAction });
-      appendFocusedSlider();
+      appendFocusedOwner('both');
 
       window.dispatchEvent(new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true }));
 
@@ -280,7 +493,7 @@ describe('KeyboardHandler', () => {
       );
     });
 
-    it('disarms a pending leader sequence when an arrow is owned by the focused slider', () => {
+    it('disarms a pending leader sequence when an arrow is owned by the focused widget', () => {
       const onAction = vi.fn();
       const target = mountHandler({ config: arrowConfig, onAction });
 
@@ -288,81 +501,15 @@ describe('KeyboardHandler', () => {
       flushSync();
       expect(target.querySelector('.keyboard-leader-pill')).not.toBeNull();
 
-      const slider = appendFocusedSlider();
-      slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      const owner = appendFocusedOwner('both');
+      press('ArrowUp');
       flushSync();
       expect(target.querySelector('.keyboard-leader-pill')).toBeNull();
 
-      slider.blur();
+      owner.blur();
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', bubbles: true, cancelable: true }));
       expect(onAction).not.toHaveBeenCalledWith(
         expect.objectContaining({ action: 'focus_target' }),
-      );
-    });
-
-    function appendFocusedElement(attrs: Record<string, string>): HTMLElement {
-      const el = document.createElement('div');
-      for (const [name, value] of Object.entries(attrs)) el.setAttribute(name, value);
-      el.tabIndex = 0;
-      document.body.appendChild(el);
-      el.focus();
-      expect(document.activeElement).toBe(el);
-      return el;
-    }
-
-    it.each(['ArrowRight', 'ArrowUp'])(
-      'does not dispatch the shortcut when a role="radiogroup" segmented control is focused (%s)',
-      (key) => {
-        const onAction = vi.fn();
-        mountHandler({ config: arrowConfig, onAction });
-        appendFocusedElement({ role: 'radiogroup', 'aria-label': 'Mode' });
-
-        document.activeElement!.dispatchEvent(
-          new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }),
-        );
-
-        expect(onAction).not.toHaveBeenCalled();
-      },
-    );
-
-    it('does not dispatch the shortcut when a role="radio" segment is focused', () => {
-      const onAction = vi.fn();
-      mountHandler({ config: arrowConfig, onAction });
-      appendFocusedElement({ role: 'radio', 'aria-checked': 'false' });
-
-      document.activeElement!.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }),
-      );
-
-      expect(onAction).not.toHaveBeenCalled();
-    });
-
-    it('does not dispatch the shortcut when a role="separator" splitter is focused', () => {
-      const onAction = vi.fn();
-      mountHandler({ config: arrowConfig, onAction });
-      appendFocusedElement({ role: 'separator', 'aria-orientation': 'horizontal' });
-
-      document.activeElement!.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }),
-      );
-
-      expect(onAction).not.toHaveBeenCalled();
-    });
-
-    it('still tunes when a plain button without a role is focused', () => {
-      const onAction = vi.fn();
-      mountHandler({ config: arrowConfig, onAction });
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = 'PTT';
-      document.body.appendChild(button);
-      button.focus();
-      expect(document.activeElement).toBe(button);
-
-      button.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
-
-      expect(onAction).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ action: 'tune', params: { direction: 'up', fine: false } }),
       );
     });
   });
