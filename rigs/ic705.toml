@@ -309,7 +309,25 @@ encoding = "segmented_bcd_index"
 width_min_hz = 50
 width_max_hz = 10000
 
+# Twin PBT step, per mode. Source: IC-7300 Advanced Manual p.40 (page 4-5 in
+# its own numbering), "Using the Twin PBT" -- its heading names the modes that
+# have it, "SSB, CW, RTTY and AM modes", and its text reads "The PBT is
+# adjustable in 50 Hz steps in the SSB, CW, and RTTY modes, and 200 Hz in the
+# AM mode." A mode with no twin PBT declares no pbt_step_hz: the absence is the
+# statement, not an omission awaiting a default.
+#
+# INFERENCE, not measurement, for this radio. The manual quoted above is the
+# IC-7300's; this rig was never on the bench and has no manual of its own here.
+# The values are carried across on the strength of two radios agreeing exactly
+# on two transports in SSB (MOR-2497), and of this rig declaring the same PBT
+# commands. Nothing has confirmed its AM step.
+#
+# The -D and -R variants take the SSB/CW/RTTY figure by the same reasoning:
+# the manual names the base modes, not each variant.
+#
+# Do not confuse with step_hz in the same tables, which quantises the WIDTH.
 [filters.width.USB]
+pbt_step_hz = 50
 min_hz = 50
 max_hz = 3600
 defaults = [3000, 2400, 1800]
@@ -319,6 +337,7 @@ segments = [
 ]
 
 [filters.width.LSB]
+pbt_step_hz = 50
 min_hz = 50
 max_hz = 3600
 defaults = [3000, 2400, 1800]
@@ -328,6 +347,7 @@ segments = [
 ]
 
 [filters.width.CW]
+pbt_step_hz = 50
 min_hz = 50
 max_hz = 3600
 defaults = [1200, 500, 250]
@@ -337,6 +357,7 @@ segments = [
 ]
 
 [filters.width.CW-R]
+pbt_step_hz = 50
 min_hz = 50
 max_hz = 3600
 defaults = [1200, 500, 250]
@@ -346,6 +367,7 @@ segments = [
 ]
 
 [filters.width.RTTY]
+pbt_step_hz = 50
 min_hz = 50
 max_hz = 2700
 defaults = [2400, 500, 250]
@@ -355,6 +377,7 @@ segments = [
 ]
 
 [filters.width.RTTY-R]
+pbt_step_hz = 50
 min_hz = 50
 max_hz = 2700
 defaults = [2400, 500, 250]
@@ -364,6 +387,7 @@ segments = [
 ]
 
 [filters.width.AM]
+pbt_step_hz = 200
 min_hz = 200
 max_hz = 10000
 step_hz = 200

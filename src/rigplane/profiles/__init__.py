@@ -205,6 +205,27 @@ class FilterWidthRule:
     max_hz: int | None = None
     segments: tuple[FilterWidthSegment, ...] = ()
     table: tuple[int, ...] = ()
+    #: Passband-tuning step for this mode, in Hz. ``None`` means the mode has
+    #: no twin PBT at all, which is why it is absent rather than zero: the
+    #: IC-7300 Advanced Manual heads its Twin PBT section "SSB, CW, RTTY and
+    #: AM modes", so FM (and WFM/DV) have no passband tuning to describe.
+    #: That reading is only safe while no PBT-capable profile is unmigrated,
+    #: wholly or in part: a profile declaring a step for some modes and not
+    #: others reads as "no PBT in CW" when it means "nobody filled CW in".
+    #: ``test_pbt_step_declared_by_every_shipped_pbt_capable_profile`` enforces
+    #: both over every shipped rig rather than over a chosen few: among the
+    #: modes a profile's filter table lists, every one other than FM, WFM and
+    #: DV declares a step, and none of those three does. A mode absent from
+    #: that table is outside the guarantee, but not necessarily without a step:
+    #: the browser's ``resolveFilterModeConfig`` falls back to a related entry
+    #: -- ``CW-R`` to ``CW``, ``RTTY-R`` to ``RTTY``, the SSB variants to
+    #: ``SSB`` -- and then carries that mode's value. Only a mode with neither
+    #: an entry nor a fallback, as the IC-7610's ``PSK`` is, resolves to
+    #: nothing, and nothing here speaks for whether that radio has twin PBT
+    #: there.
+    #: Distinct from ``step_hz`` above, which quantises the filter WIDTH; the
+    #: two collide at 200 in AM and differ in USB.
+    pbt_step_hz: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
