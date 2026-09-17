@@ -801,10 +801,13 @@ export function quantizeFilterWidthToRule(
  *  What bounds the result instead. The display-side callers -- in
  *  `panel-adapters.ts`, `radio-view-model-adapter.ts`,
  *  `scope-passband-display.ts` and `panel-props.ts` -- pass two `pbtRawToHz`
- *  outputs taken at ONE declared range, so the mean lies inside that range:
- *  every shipped profile declares +/-1200 (four in their own `[controls]`
- *  block, seven through the same default), and those outputs span
- *  -1200..+1191, which the clamp never cut. A caps payload declaring a wider
+ *  outputs taken at ONE declared range, so the mean lies inside that range.
+ *  Every profile the loader reads -- `rigs/*.toml`, non-recursive, skipping
+ *  `_`-prefixed and `.draft.toml` names, per `rig_loader.py` -- either
+ *  declares `[controls.pbt_inner]` with `raw_center = 128` and
+ *  `display_min`/`display_max` of -1200/+1200, or declares no PBT range at
+ *  all and falls through to `PBT_DEFAULTS`, which is the same +/-1200. So the
+ *  outputs span -1200..+1191 and the clamp never cut them. A caps payload declaring a wider
  *  range -- which the tests exercise deliberately -- now produces the larger
  *  shift instead of a truncated one, and that is the behaviour change. When
  *  these callers move to `measuredPbtRawToHz` (MOR-2497 step 2), both edges
