@@ -15,8 +15,6 @@ import type {
   FilterModeConfig, FilterSegmentConfig,
 } from '$lib/types/capabilities';
 
-const FILTER_BIPOLAR_MIN = -1200;
-const FILTER_BIPOLAR_MAX = 1200;
 const FILTER_WIDTH_MIN = 50;
 const FILTER_WIDTH_MAX = 3600;
 const FILTER_WIDTH_STEP = 50;
@@ -681,10 +679,6 @@ export function nrRawToDisplay(raw: number, range?: ControlDisplayRange): number
   return controlRawToDisplay('nr_level', raw, CONTROL_DEFAULTS.nr_level, range);
 }
 
-function clampToBipolarRange(value: number): number {
-  return Math.max(FILTER_BIPOLAR_MIN, Math.min(FILTER_BIPOLAR_MAX, Math.round(value)));
-}
-
 export function clampFilterWidth(
   value: number,
   maxHz: number = FILTER_WIDTH_MAX,
@@ -809,36 +803,48 @@ export function quantizeFilterWidthToRule(
  *  all and falls through to `PBT_DEFAULTS`, which is the same +/-1200. So the
  *  outputs span -1200..+1191 and the clamp never cut them. A caps payload declaring a wider
  *  range -- which the tests exercise deliberately -- now produces the larger
- *  shift instead of a truncated one, and that is the behaviour change. When
- *  these callers move to `measuredPbtRawToHz` (MOR-2497 step 2), both edges
- *  come from one filter width and the mean cannot exceed +/-filter_width/2,
- *  so nothing is unbounded then either.
- *
- *  `mapIfShiftToPbt` below is the one caller that does NOT pass Hz: its own
- *  caller, `panel-commands.ts: onIfShiftChange`, hands it the raw 0..255 wire
- *  fields. The mean of two raws cannot reach 1200 either, so the clamp never
- *  fired there and its removal changes nothing -- but the units mismatch is a
- *  real defect on that write path, measured and recorded as MOR-2500, not
- *  introduced or fixed here.
- *
- *  `mapIfShiftToPbt` below still clamps to +/-1200 on the WRITE path. That is
- *  the same fabricated bound and it is still wrong, but its call sites move to
- *  the measured lattice in a later PR of this step and it would otherwise be
- *  changed twice. */
+ *  shift instead of a truncated one, and that is the behaviour change.
+ */
 export function deriveIfShift(pbtInner: number, pbtOuter: number): number {
   return Math.round((pbtInner + pbtOuter) / 2);
 }
 
+/** Map an IF-shift request (Hz) onto the two twin-PBT passband edges (Hz),
+ *  preserving the passband width (MOR-2500).
+ *
+ *  All three PBT arguments are Hz on the measured lattice, as
+ *  `measuredPbtRawToHz` reads them at the CURRENT filter width; the caller
+ *  converts the result back to raws with `measuredPbtHzToRaw` at the same
+ *  width and step. The edges of a passband span +/-filterWidthHz/2, so the
+ *  reachable shift of THIS passband is what gets clamped -- never one edge
+ *  alone, which would silently narrow the passband: a requested shift that
+ *  would push an edge past the span stops at the boundary instead. A
+ *  requested shift between two lattice shifts snaps to the nearest whole
+ *  `stepHz` multiple first, so both written edges stay exactly on the
+ *  lattice and the width survives the move whole. Degenerate width/step
+ *  inputs are the caller's refusal: `measuredPbtRawToHz` returns null for
+ *  them before this helper is reached.
+ *
+ *  Pinned in `filter-controls.test.ts` ("keeps the passband width on the
+ *  write path") and exercised end to end through `onIfShiftChange` in
+ *  `panel-commands.intent.isolated.test.ts` (MOR-2500 describe). */
 export function mapIfShiftToPbt(
-  targetIfShift: number,
-  currentPbtInner: number,
-  currentPbtOuter: number,
+  targetIfShiftHz: number,
+  currentPbtInnerHz: number,
+  currentPbtOuterHz: number,
+  filterWidthHz: number,
+  stepHz: number,
 ): { pbtInner: number; pbtOuter: number } {
-  const currentIfShift = deriveIfShift(currentPbtInner, currentPbtOuter);
-  const delta = clampToBipolarRange(targetIfShift) - currentIfShift;
+  const halfSpan = filterWidthHz / 2;
+  const currentIfShift = deriveIfShift(currentPbtInnerHz, currentPbtOuterHz);
+  const requested = Math.round((targetIfShiftHz - currentIfShift) / stepHz) * stepHz;
+  const delta = Math.max(
+    Math.max(-halfSpan - currentPbtInnerHz, -halfSpan - currentPbtOuterHz),
+    Math.min(halfSpan - currentPbtInnerHz, halfSpan - currentPbtOuterHz, requested),
+  );
 
   return {
-    pbtInner: clampToBipolarRange(currentPbtInner + delta),
-    pbtOuter: clampToBipolarRange(currentPbtOuter + delta),
+    pbtInner: currentPbtInnerHz + delta,
+    pbtOuter: currentPbtOuterHz + delta,
   };
 }

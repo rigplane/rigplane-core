@@ -124,6 +124,7 @@ import {
   resetCommandLifecycle,
 } from '$lib/stores/commands.svelte';
 import { setPendingFocus } from '$lib/radio/pending-focus';
+import { measuredPbtHzToRaw, measuredPbtRawToHz } from '$lib/radio/filter-controls';
 
 const freshStatus = {
   storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
@@ -1051,6 +1052,12 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
   });
 
   it('preserves debounced filter command order without optimistic filter values', () => {
+    // MOR-2500: the PBT writes need a declared lattice step; with one, the
+    // same 100/-100 Hz values land on the 2400 Hz width's lattice.
+    h.caps = {
+      ...h.caps,
+      filterConfig: { USB: { pbtStepHz: 50 } },
+    } as unknown as Record<string, unknown>;
     const filter = makeFilterHandlers();
     filter.onFilterChange(3);
     filter.onFilterWidthChange(1800);
@@ -1075,7 +1082,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_filter', { filter: 3, receiver: 0 }],
       ['set_filter_width', { width: 1800, receiver: 0 }],
       ['set_filter', { filter: 2, receiver: 0 }],
-      ['set_pbt_inner', { value: 139, receiver: 0 }],
+      ['set_pbt_inner', { value: 138, receiver: 0 }],
       ['set_pbt_outer', { value: 117, receiver: 0 }],
       ['set_pbt_inner', { value: 128, receiver: 0 }],
       ['set_pbt_outer', { value: 128, receiver: 0 }],
@@ -2111,6 +2118,192 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(panelSource.match(/function toggleVox/g)).toHaveLength(1);
     expect(panelSource.match(/onVoxToggle:\s*toggleVox/g)).toHaveLength(2);
     expect(panelSource).not.toMatch(/dispatchRadioIntent\(\{\s*name:\s*['"]ptt(?:_on|_off)?['"]/);
+  });
+});
+
+describe('MOR-2500 twin-PBT writers on the measured lattice', () => {
+  // The radio snaps twin-PBT writes onto a lattice: step per mode
+  // (`filterConfig[mode].pbtStepHz`), span the CURRENT filter width, so one
+  // edge ranges over +/-filterWidth/2. These pins hold the WRITE path
+  // (`makeFilterHandlers`' PBT family) to that lattice: the current edges
+  // are read with `measuredPbtRawToHz` and written with
+  // `measuredPbtHzToRaw`, one resolution of the mode + dataMode of the
+  // ACTIVE receiver (mirroring `radio-view-model-adapter.ts`), and a mode
+  // with no step -- FM, or a legacy payload no mode of which declares one
+  // -- refuses BEFORE the wire.
+  beforeEach(() => {
+    h.state = state();
+    h.caps = {
+      capabilities: ['pbt'],
+      stateContractVersion: 1,
+      providerGeneration: 31,
+      receivers: 2,
+      vfoScheme: 'main_sub',
+      controls: {
+        pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 },
+      },
+      filterConfig: {
+        USB: { pbtStepHz: 50 },
+        AM: { pbtStepHz: 200 },
+        FM: { fixed: true, defaults: [15000] },
+      },
+    } as unknown as Record<string, unknown>;
+    h.unavailable.clear();
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+  });
+
+  afterEach(() => resetCommandLifecycle());
+
+  function usbEdgesState(): ServerState {
+    return {
+      ...h.state!,
+      main: { ...h.state!.main!, filterWidth: 3600, pbtInner: 160, pbtOuter: 96 },
+    } as ServerState;
+  }
+
+  function dispatchedPbtRaws(): { inner: number; outer: number } {
+    const inner = h.sendCommand.mock.calls
+      .find(([name]) => name === 'set_pbt_inner')?.[1].value as number;
+    const outer = h.sendCommand.mock.calls
+      .find(([name]) => name === 'set_pbt_outer')?.[1].value as number;
+    return { inner, outer };
+  }
+
+  it('moves an asymmetric passband without collapsing its width (MOR-2500 acceptance)', () => {
+    h.state = usbEdgesState();
+    // On the lattice (filter 3600, step 50): raw 160 reads +450 Hz and raw
+    // 96 reads -450 Hz -- a 900 Hz passband. The old write path fed these
+    // raws into `mapIfShiftToPbt` as if they were Hz and dispatched a 56 Hz
+    // passband (raws 163/157).
+    const widthBefore = measuredPbtRawToHz(160, 3600, 50)! - measuredPbtRawToHz(96, 3600, 50)!;
+    expect(widthBefore).toBe(900);
+
+    makeFilterHandlers().onIfShiftChange(300);
+
+    const { inner, outer } = dispatchedPbtRaws();
+    expect(inner).toBe(180);
+    expect(outer).toBe(117);
+    expect(measuredPbtRawToHz(inner, 3600, 50)! - measuredPbtRawToHz(outer, 3600, 50)!)
+      .toBe(widthBefore);
+  });
+
+  it('snaps an off-lattice requested shift to the nearest expressible whole-step shift', () => {
+    h.state = usbEdgesState();
+    // 310 Hz is between the +300 and +350 lattice shifts; the nearest
+    // expressible one is +300, the same raws as the acceptance case.
+    makeFilterHandlers().onIfShiftChange(310);
+
+    const { inner, outer } = dispatchedPbtRaws();
+    expect(inner).toBe(180);
+    expect(outer).toBe(117);
+  });
+
+  it('clamps an out-of-reach shift at the passband span instead of narrowing the passband', () => {
+    h.state = usbEdgesState();
+    // Edges at +/-450 Hz of a 3600 Hz filter: the top edge can only reach
+    // +1800, so the requested +1500 shift clamps to +1350. The width stays
+    // 900 Hz -- the SHIFT is clamped, never one edge alone.
+    makeFilterHandlers().onIfShiftChange(1500);
+
+    const { inner, outer } = dispatchedPbtRaws();
+    expect(inner).toBe(254);
+    expect(outer).toBe(191);
+    expect(measuredPbtRawToHz(inner, 3600, 50)! - measuredPbtRawToHz(outer, 3600, 50)!).toBe(900);
+  });
+
+  it('writes the nearest reachable lattice raw for a Hz edge value (onPbtInner/onPbtOuter)', () => {
+    h.state = usbEdgesState();
+    const filter = makeFilterHandlers();
+    // +1500 Hz at filter 3600 is reachable on the lattice (raw 233); the
+    // old proportional `pbtHzToRaw` saturated it to the unreachable raw 255.
+    filter.onPbtInnerChange(1500);
+    filter.onPbtOuterChange(1500);
+    filter.onPbtInnerChange(-1500);
+
+    expect(exactCalls()).toEqual([
+      ['set_pbt_inner', { value: 233, receiver: 0 }],
+      ['set_pbt_outer', { value: 233, receiver: 0 }],
+      ['set_pbt_inner', { value: 22, receiver: 0 }],
+    ]);
+    expectIntentTransport();
+  });
+
+  it('resets both edges to the lattice centre', () => {
+    h.state = usbEdgesState();
+    makeFilterHandlers().onPbtReset();
+
+    expect(exactCalls()).toEqual([
+      ['set_pbt_inner', { value: 128, receiver: 0 }],
+      ['set_pbt_outer', { value: 128, receiver: 0 }],
+    ]);
+    expectIntentTransport();
+  });
+
+  it('takes the 200 Hz AM step from the mode, not a hardcoded 50 Hz one', () => {
+    h.state = {
+      ...h.state!,
+      main: { ...h.state!.main!, mode: 'AM', dataMode: 0, filterWidth: 9000 },
+    } as ServerState;
+    // On the AM lattice (9000/200 = 45 steps): +150 Hz snaps to +100 Hz,
+    // raw 130. A 50 Hz step would put +150 Hz at raw 132 on the wrong grid.
+    makeFilterHandlers().onPbtInnerChange(150);
+
+    expect(exactCalls()).toEqual([['set_pbt_inner', { value: 130, receiver: 0 }]]);
+    expect(measuredPbtHzToRaw(150, 9000, 200)).toBe(130);
+  });
+
+  it('refuses every PBT write in a mode with no twin PBT (FM): no command leaves the handlers', () => {
+    h.state = {
+      ...h.state!,
+      main: { ...h.state!.main!, mode: 'FM', dataMode: 0, filterWidth: 9000 },
+    } as ServerState;
+    const filter = makeFilterHandlers();
+    filter.onPbtInnerChange(100);
+    filter.onPbtOuterChange(-100);
+    filter.onPbtReset();
+    filter.onIfShiftChange(300);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('refuses every PBT write when no mode declares a step (legacy payload without pbtStepHz)', () => {
+    h.caps = {
+      ...h.caps,
+      filterConfig: {
+        USB: { defaults: [3000, 2400, 1800], fixed: false, minHz: 50, maxHz: 3600, stepHz: 50 },
+      },
+    } as unknown as Record<string, unknown>;
+    const filter = makeFilterHandlers();
+    filter.onPbtInnerChange(100);
+    filter.onPbtOuterChange(-100);
+    filter.onPbtReset();
+    filter.onIfShiftChange(300);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it("resolves the SUB receiver's own mode and width when SUB is active", () => {
+    const base = state('SUB');
+    h.state = {
+      ...base,
+      sub: { ...base.sub!, mode: 'AM', dataMode: 0, filterWidth: 9000 },
+    } as ServerState;
+    // MAIN stays USB/3600 where +150 Hz maps to raw 138; SUB's own AM/9000
+    // lattice maps it to raw 130.
+    makeFilterHandlers().onPbtInnerChange(150);
+
+    expect(exactCalls()).toEqual([['set_pbt_inner', { value: 130, receiver: 1 }]]);
+  });
+
+  it('keeps the native if_shift branch byte-for-byte: Hz offset straight to set_if_shift', () => {
+    h.caps = { ...h.caps, capabilities: ['if_shift', 'pbt'] } as Record<string, unknown>;
+    makeFilterHandlers().onIfShiftChange(300);
+
+    expect(exactCalls()).toEqual([['set_if_shift', { offset: 300, receiver: 0 }]]);
+    expectIntentTransport();
   });
 });
 
