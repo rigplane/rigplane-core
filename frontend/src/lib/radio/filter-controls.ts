@@ -789,8 +789,44 @@ export function quantizeFilterWidthToRule(
         : best);
 }
 
+/** IF shift derived from the two passband edges: their mean.
+ *
+ *  MOR-2497 step 2 removed a `clampToBipolarRange` here, which bounded the
+ *  result to +/-1200 Hz. That bound truncated a state the radio actually
+ *  reaches: measured on the IC-7610 over LAN on 2026-09-17 at a 3600 Hz
+ *  filter, writing raw 254 to BOTH edges reads both back at 254, which is
+ *  +1800 Hz each on the measured lattice, so the true shift is +1800 Hz and
+ *  the clamp reported 1200. Raw 1 on both edges gives -1800 Hz the same way.
+ *
+ *  What bounds the result instead. The display-side callers -- in
+ *  `panel-adapters.ts`, `radio-view-model-adapter.ts`,
+ *  `scope-passband-display.ts` and `panel-props.ts` -- pass two `pbtRawToHz`
+ *  outputs taken at ONE declared range, so the mean lies inside that range.
+ *  Every profile the loader reads -- `rigs/*.toml`, non-recursive, skipping
+ *  `_`-prefixed and `.draft.toml` names, per `rig_loader.py` -- either
+ *  declares `[controls.pbt_inner]` with `raw_center = 128` and
+ *  `display_min`/`display_max` of -1200/+1200, or declares no PBT range at
+ *  all and falls through to `PBT_DEFAULTS`, which is the same +/-1200. So the
+ *  outputs span -1200..+1191 and the clamp never cut them. A caps payload declaring a wider
+ *  range -- which the tests exercise deliberately -- now produces the larger
+ *  shift instead of a truncated one, and that is the behaviour change. When
+ *  these callers move to `measuredPbtRawToHz` (MOR-2497 step 2), both edges
+ *  come from one filter width and the mean cannot exceed +/-filter_width/2,
+ *  so nothing is unbounded then either.
+ *
+ *  `mapIfShiftToPbt` below is the one caller that does NOT pass Hz: its own
+ *  caller, `panel-commands.ts: onIfShiftChange`, hands it the raw 0..255 wire
+ *  fields. The mean of two raws cannot reach 1200 either, so the clamp never
+ *  fired there and its removal changes nothing -- but the units mismatch is a
+ *  real defect on that write path, measured and recorded as MOR-2500, not
+ *  introduced or fixed here.
+ *
+ *  `mapIfShiftToPbt` below still clamps to +/-1200 on the WRITE path. That is
+ *  the same fabricated bound and it is still wrong, but its call sites move to
+ *  the measured lattice in a later PR of this step and it would otherwise be
+ *  changed twice. */
 export function deriveIfShift(pbtInner: number, pbtOuter: number): number {
-  return clampToBipolarRange((pbtInner + pbtOuter) / 2);
+  return Math.round((pbtInner + pbtOuter) / 2);
 }
 
 export function mapIfShiftToPbt(
