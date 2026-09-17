@@ -304,11 +304,13 @@ describe('pbtInner/pbtOuter/ifShift parity with the real filter-controls helpers
     expect(customHz).not.toBe(defaultHz);
   });
 
-  it('ifShift clamps to ±1200 via the real deriveIfShift even when the custom PBT scale would exceed it, while pbtInner/pbtOuter stay UNCLAMPED', () => {
-    // displayMax 2000 pushes raw 255 well past ±1200 Hz before clamping —
-    // `pbtRawToHz` itself never clamps (only `deriveIfShift` does), so a
-    // re-implementation that clamped the wrong function (or neither) would
-    // diverge on exactly one side of this assertion.
+  // MOR-2497: `deriveIfShift` no longer clamps to ±1200 Hz. That bound was
+  // measured on the IC-7610 on 2026-09-17 to truncate a reachable state -- at a
+  // 3600 Hz filter both passband edges reach ±1800 Hz -- so the shift now
+  // carries whatever the two edges give. This test keeps its original shape,
+  // including the deliberately wide declared range, and asserts the opposite
+  // outcome: nothing truncates at 1200 any more.
+  it('carries the derived ifShift unclamped, including past the retired ±1200 bound', () => {
     const wideRange: ControlRange = { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -2000, display_max: 2000 };
     const parityCaps = caps({ capabilities: ['pbt'], controls: { pbt_inner: wideRange } });
     setCapabilities(NEUTRAL_STORE_CAPS); // store deliberately unrelated — caps' own range must drive this
@@ -316,7 +318,10 @@ describe('pbtInner/pbtOuter/ifShift parity with the real filter-controls helpers
     const expectedInnerHz = pbtRawToHz(255, { rawCenter: 128, displayMin: -2000, displayMax: 2000 });
     const expectedIfShift = deriveIfShift(expectedInnerHz, expectedInnerHz);
     expect(Math.abs(expectedInnerHz)).toBeGreaterThan(1200);
-    expect(Math.abs(expectedIfShift)).toBe(1200);
+    // Both edges carry the same value, so the mean is that value -- the point
+    // is that it is no longer cut down to 1200.
+    expect(expectedIfShift).toBe(expectedInnerHz);
+    expect(Math.abs(expectedIfShift)).toBeGreaterThan(1200);
 
     const view = model(bareState({
       main: { ...bareState().main, pbtInner: 255, pbtOuter: 255 },
@@ -324,7 +329,7 @@ describe('pbtInner/pbtOuter/ifShift parity with the real filter-controls helpers
     }), parityCaps);
 
     expect(view.filterPassband!.pbtInner.reading).toEqual({ status: 'known', value: expectedInnerHz });
-    expect(view.filterPassband!.ifShift.reading).toEqual({ status: 'known', value: 1200 });
+    expect(view.filterPassband!.ifShift.reading).toEqual({ status: 'known', value: expectedInnerHz });
   });
 });
 
