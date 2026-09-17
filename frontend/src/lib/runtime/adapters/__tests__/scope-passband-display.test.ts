@@ -332,7 +332,14 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
   });
   it.each(['filterWidth', 'pbtInner', 'pbtOuter'] as const)('never mixes a partial changed %s with retained shape', (leaf) => {
     const input = banded(); let result = project(input); tune(input, 14_075_000, 11); result = project(input, result);
-    input.state!.main![leaf]! += 10; status(input, `main.${leaf}`, { lastObservedMonotonic: 15 });
+    // MOR-2497 step 2: the filter width is quantised now -- a PBT reading only
+    // exists on a lattice of 50 Hz steps -- so the perturbation is one legal
+    // step rather than an arbitrary +10, which would leave 2410 Hz, a width no
+    // lattice can be formed from. The subject here is continuity across a
+    // partial change, not the width domain; the width domain is pinned by
+    // 'refuses a PBT reading at a width off the 50 Hz lattice' below.
+    input.state!.main![leaf]! += leaf === 'filterWidth' ? 50 : 10;
+    status(input, `main.${leaf}`, { lastObservedMonotonic: 15 });
     result = project(input, result); expect(result.display.state).toBe('unknown');
     receipt(input, 3); result = project(input, result); expect(result.display.state).toBe('unknown');
     renew(input, 16, 4); expect(project(input, result).display.state).toBe('current');
@@ -418,15 +425,32 @@ describe('coherent RF passband display', () => {
     input.caps!.capabilities = input.caps!.capabilities.filter((value) => value !== tag);
     expect(project(input, current).display.state).toBe('unsupported');
   });
-  it.each([128, 140])('uses explicit canonical PBT conversion including raw %s', (raw) => {
+  // MOR-2497 step 2: the shift is read off the MEASURED lattice, not off the
+  // profile's declared +/-1200 Hz span. The expected values are written out as
+  // literals rather than recomputed through `measuredPbtRawToHz`, so that a
+  // wrong model cannot satisfy this test by being wrong in both places: at the
+  // fixture's 2400 Hz filter the lattice has 2400/50 + 1 = 49 positions, raw
+  // 128 is the centre (0 Hz) and raw 140 snaps to the position two steps above
+  // it (+100 Hz). Under the retired conversion raw 140 read 113 Hz, a value the
+  // radio cannot produce -- it lies between two reachable positions.
+  it.each([[128, 0], [140, 100]])('reads raw %s off the measured PBT lattice as %s Hz', (raw, expected) => {
     const input = fixture(); pbt(input); input.state!.main!.pbtInner = raw; input.state!.main!.pbtOuter = raw;
-    const scale = pbtRangeFromCaps(input.caps)!;
-    const expected = deriveIfShift(pbtRawToHz(raw, scale), pbtRawToHz(raw, scale));
     const current = project(input); expect(tuple(current).shiftHz).toBe(expected);
     stale(input, 'main.pbtOuter'); expect(tuple(project(input, current))).toEqual(tuple(current));
     input.state!.main!.pbtInner = raw + 1; status(input, 'main.pbtInner', { lastObservedMonotonic: 11 });
     const retired = project(input, current); expect(retired.display.state).toBe('unknown');
     renew(input, 12, 2); expect(project(input, retired).display.state).toBe('current');
+  });
+  // MOR-2497 step 2: a width off the 50 Hz lattice has no PBT reading at all --
+  // the measured model gives positions only at width/50 + 1 points, and 2410 Hz
+  // forms none. The refusal is the same `invalid-observation` an unreadable PBT
+  // leaf already produced, so nothing invents a plausible Hz for a width the
+  // radio cannot actually be in.
+  it('refuses a PBT reading at a width off the 50 Hz lattice', () => {
+    const legal = fixture(); pbt(legal);
+    expect(project(legal).display.state).toBe('current');
+    const input = fixture(); pbt(input); input.state!.main!.filterWidth = 2410;
+    expect(project(input).display.state).not.toBe('current');
   });
   it.each([undefined, { raw_min: 0, raw_max: 255, raw_center: 0, display_min: -1200, display_max: 1200 }])('rejects missing/invalid PBT scale', (scale) => {
     const input = fixture(); pbt(input); input.caps!.controls = scale ? { pbt_inner: scale } : {};

@@ -49,7 +49,7 @@ import {
   resolveFilterModeConfig,
 } from '$lib/runtime/props/panel-props';
 import {
-  deriveIfShift, pbtRangeFromCaps, pbtRawToHz,
+  deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps, PBT_MEASURED_STEP_HZ,
   resolveControlContract, projectNrLevel, controlDisplayDomain,
 } from '$lib/radio/filter-controls';
 import type { NrLevelProjection } from '$lib/radio/filter-controls';
@@ -644,16 +644,26 @@ function deriveFilterPassband(
   // closes: a caps object that declares the `pbt` capability but omits its
   // OWN `controls.pbt_inner` range is treated as an honest "this radio's PBT
   // scale is unknown", never silently coerced to a plausible-looking IC-7610
-  // reading sourced from module-global store state. `pbtRawToHz` is
-  // therefore never invoked with `pbtScale` absent — the store-fallback
-  // branch inside it exists only for the unrelated legacy `panel-props.ts`
-  // v2 call sites that still call it with no `range` argument at all.
+  // reading sourced from module-global store state.
   const pbtScale = pbtRangeFromCaps(caps);
   const hasPbtRange = pbtScale !== undefined;
   const pbtInnerRaw = numOrUndef(rx?.pbtInner);
   const pbtOuterRaw = numOrUndef(rx?.pbtOuter);
-  const pbtInnerHz = pbtScale && pbtInnerRaw !== undefined ? pbtRawToHz(pbtInnerRaw, pbtScale) : undefined;
-  const pbtOuterHz = pbtScale && pbtOuterRaw !== undefined ? pbtRawToHz(pbtOuterRaw, pbtScale) : undefined;
+  // MOR-2497 step 2: raw -> Hz on the lattice the radio snaps PBT writes onto.
+  // Its spacing is the measured 50 Hz step and its span is the CURRENT filter
+  // width, so the width is now as necessary to a PBT reading as the scale is:
+  // without it there is no Hz, and `undefined` here says exactly that.
+  // `scope-passband-display.ts` derives the same shift independently and
+  // compares the two for equality (`strict.ifShiftHz === shiftHz`), so the two
+  // conversions have to move together or the passband display can never reach
+  // `current`.
+  const pbtWidthHz = numOrUndef(rx?.filterWidth ?? undefined);
+  const pbtToHz = (raw: number | undefined): number | undefined => (
+    raw === undefined || pbtWidthHz === undefined ? undefined
+      : measuredPbtRawToHz(raw, pbtWidthHz, PBT_MEASURED_STEP_HZ) ?? undefined
+  );
+  const pbtInnerHz = pbtScale ? pbtToHz(pbtInnerRaw) : undefined;
+  const pbtOuterHz = pbtScale ? pbtToHz(pbtOuterRaw) : undefined;
 
   // `hasPbtRange` gates the DERIVED path the same way `hasPbtCap` alone used
   // to: a radio that declares `pbt` but no usable `pbt_inner` range can never
