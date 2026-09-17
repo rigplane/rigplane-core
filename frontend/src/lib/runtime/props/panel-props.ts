@@ -655,20 +655,27 @@ export function toModeProps(
 
 /**
  * Manual-notch readback (MOR-2475): the same source selection the
- * view-model adapter applies, shared by `toDspProps` and
- * `toAudioSpectrumProps`. Where the radio publishes a `manual_notch_freq`
- * domain and the field's status is usable, the reading is display units
- * decoded from `manualNotchFreq`; otherwise the raw `notchFilter` code,
- * unchanged. A raw position the domain rejects reads as 0 — these props
- * shapes have no unknown state (`?? 0` throughout). The domain is
- * reported whenever the radio publishes a usable one, independent of
- * which source produced `notchFreq`; callers emit it as an absent key
- * when null.
+ * view-model adapter applies, shared by `toDspProps`,
+ * `toAudioSpectrumProps`, and the DSP feedback adapter
+ * (`panel-adapters.ts: getDspControlFeedback`), which must echo the same
+ * field the value side reads. Where the radio publishes a
+ * `manual_notch_freq` domain and the field's status is usable, the
+ * reading is display units decoded from `manualNotchFreq`; otherwise the
+ * raw `notchFilter` code, unchanged. A raw position the domain rejects
+ * reads as 0 — these props shapes have no unknown state (`?? 0`
+ * throughout). The domain is reported whenever the radio publishes a
+ * usable one, independent of which source produced `notchFreq`; callers
+ * emit it as an absent key when null. `source` names the field that
+ * produced `notchFreq`.
  */
-function manualNotchReading(
+export function manualNotchReading(
   state: ServerState | null,
   caps: Capabilities | null,
-): { notchFreq: number; notchFreqDomain: ControlDisplayDomain | null } {
+): {
+  notchFreq: number;
+  notchFreqDomain: ControlDisplayDomain | null;
+  source: 'manualNotchFreq' | 'notchFilter';
+} {
   const rx = state ? activeRx(state) : null;
   const contract = resolveControlContract(caps, 'manual_notch_freq');
   const domain = contract.displayDomain;
@@ -679,6 +686,7 @@ function manualNotchReading(
   return {
     notchFreq: prefer ? contract.rawToDisplay(raw as number) ?? 0 : rx?.notchFilter ?? 0,
     notchFreqDomain: domain,
+    source: prefer ? 'manualNotchFreq' : 'notchFilter',
   };
 }
 
