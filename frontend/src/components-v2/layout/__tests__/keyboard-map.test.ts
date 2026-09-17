@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_KEYBOARD_CONFIG,
+  focusedElementOwnsArrowKey,
   isDigitKey,
   isFrequencyDisplayFocused,
   resolveAction,
@@ -124,6 +125,54 @@ describe('shouldIgnoreEvent', () => {
     expect(shouldIgnoreEvent(null)).toBe(true);
 
     resetLocalExtensionKeyboardScope();
+  });
+});
+
+// MOR-2507 — a focused role="slider" value control owns its arrow keys.
+describe('focusedElementOwnsArrowKey', () => {
+  function buildSlider(): HTMLElement {
+    const slider = document.createElement('div');
+    slider.setAttribute('role', 'slider');
+    document.body.appendChild(slider);
+    return slider;
+  }
+
+  it('owns all four arrow keys for a focused role="slider" element', () => {
+    const slider = buildSlider();
+
+    for (const key of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) {
+      expect(focusedElementOwnsArrowKey(slider, key)).toBe(true);
+    }
+
+    slider.remove();
+  });
+
+  it('owns arrow keys for an element inside a role="slider"', () => {
+    const slider = buildSlider();
+    const child = document.createElement('div');
+    slider.appendChild(child);
+
+    expect(focusedElementOwnsArrowKey(child, 'ArrowRight')).toBe(true);
+
+    slider.remove();
+  });
+
+  it('does not own non-arrow keys even on a role="slider"', () => {
+    const slider = buildSlider();
+
+    expect(focusedElementOwnsArrowKey(slider, '7')).toBe(false);
+    expect(focusedElementOwnsArrowKey(slider, 'm')).toBe(false);
+
+    slider.remove();
+  });
+
+  it('does not own arrows for elements outside any role="slider"', () => {
+    const div = document.createElement('div');
+    const button = document.createElement('button');
+
+    expect(focusedElementOwnsArrowKey(div, 'ArrowUp')).toBe(false);
+    expect(focusedElementOwnsArrowKey(button, 'ArrowRight')).toBe(false);
+    expect(focusedElementOwnsArrowKey(null, 'ArrowUp')).toBe(false);
   });
 });
 

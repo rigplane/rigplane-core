@@ -187,6 +187,120 @@ describe('KeyboardHandler', () => {
     });
   });
 
+  // MOR-2507 — bench-observed on IC-7610/IC-7300: with the AF volume slider
+  // focused, one arrow press was handled twice — the slider moved AND the
+  // global tuning shortcut fired. A focused slider owns its arrow keys, so
+  // the global shortcut must not resolve them.
+  describe('focused slider owns its arrow keys (MOR-2507)', () => {
+    const arrowConfig: KeyboardConfig = {
+      ...config,
+      bindings: [
+        ...config.bindings,
+        {
+          id: 'tune-right',
+          section: 'Tuning',
+          label: 'Tune Right',
+          sequence: ['ArrowRight'],
+          action: 'tune',
+          repeatable: true,
+          params: { direction: 'up', fine: false },
+        },
+        {
+          id: 'band-7',
+          section: 'Bands',
+          label: 'Select band 7',
+          sequence: ['7'],
+          action: 'band_select',
+          params: { index: 7 },
+        },
+      ],
+    };
+
+    function appendFocusedSlider(): HTMLElement {
+      const slider = document.createElement('div');
+      slider.setAttribute('role', 'slider');
+      slider.tabIndex = 0;
+      slider.setAttribute('aria-label', 'AF');
+      document.body.appendChild(slider);
+      slider.focus();
+      expect(document.activeElement).toBe(slider);
+      return slider;
+    }
+
+    it.each(['ArrowUp', 'ArrowRight'])(
+      'does not dispatch the tuning shortcut when a custom role="slider" control is focused (%s)',
+      (key) => {
+        const onAction = vi.fn();
+        mountHandler({ config: arrowConfig, onAction });
+        appendFocusedSlider();
+
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        document.activeElement!.dispatchEvent(event);
+
+        expect(onAction).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not dispatch the tuning shortcut when a native range input is focused', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+      const range = document.createElement('input');
+      range.type = 'range';
+      document.body.appendChild(range);
+      range.focus();
+      expect(document.activeElement).toBe(range);
+
+      range.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+
+      expect(onAction).not.toHaveBeenCalled();
+    });
+
+    it('still tunes when the same arrow keys are pressed with focus on document.body', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+
+      expect(onAction).toHaveBeenCalledTimes(2);
+      expect(onAction).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'tune', params: { direction: 'up', fine: false } }),
+      );
+    });
+
+    it('still dispatches non-arrow shortcuts while a slider holds focus', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: arrowConfig, onAction });
+      appendFocusedSlider();
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '7', bubbles: true, cancelable: true }));
+
+      expect(onAction).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'band_select', params: { index: 7 } }),
+      );
+    });
+
+    it('disarms a pending leader sequence when an arrow is owned by the focused slider', () => {
+      const onAction = vi.fn();
+      const target = mountHandler({ config: arrowConfig, onAction });
+
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'g' }));
+      flushSync();
+      expect(target.querySelector('.keyboard-leader-pill')).not.toBeNull();
+
+      const slider = appendFocusedSlider();
+      slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      flushSync();
+      expect(target.querySelector('.keyboard-leader-pill')).toBeNull();
+
+      slider.blur();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', bubbles: true, cancelable: true }));
+      expect(onAction).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'focus_target' }),
+      );
+    });
+  });
+
   it('supports leader sequences for focus actions', () => {
     const onAction = vi.fn();
     mountHandler({ config, onAction });
