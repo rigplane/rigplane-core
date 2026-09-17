@@ -1849,6 +1849,41 @@ class TestToProfile:
         assert config["AM"].step_hz == 200 and config["AM"].pbt_step_hz == 200
         assert config["USB"].step_hz is None and config["USB"].pbt_step_hz == 50
 
+    def test_every_civ_profile_mode_is_expressible_by_the_mode_enum(self):
+        """A CI-V profile must not list a mode the Mode enum cannot carry.
+
+        The enum is the single decode point for every CI-V mode byte
+        (``commands/mode.py: parse_mode_response``), and
+        ``runtime/radio.py: IcomRadio._coerce_mode`` resolves the same
+        strings on the write path, so a listed mode with no enum member
+        fails both directions. Only profiles declaring a civ_addr route
+        their modes through this enum; the Yaesu CAT profiles (FTX-1,
+        TX-500) have their own mode vocabulary and are out of scope here.
+
+        X6100/X6200 list "DIGI", which the enum cannot express -- the same
+        class of defect as the IC-7610's PSK was before MOR-2504. They are
+        pinned as a known gap here, not fixed by this change.
+        """
+        from rigplane.types import Mode
+
+        known_gaps = {"X6100": {"DIGI"}, "X6200": {"DIGI"}}
+        checked = 0
+        for _name, config in sorted(discover_rigs(RIGS_DIR).items()):
+            if not config.civ_addr:
+                continue
+            checked += 1
+            profile = config.to_profile()
+            unexpressible = {
+                mode
+                for mode in profile.modes
+                if mode.upper().replace("-", "_") not in Mode.__members__
+            }
+            assert unexpressible == known_gaps.get(profile.model, set()), (
+                f"{profile.model}: modes {sorted(unexpressible)} have no Mode "
+                "enum member"
+            )
+        assert checked >= 6, f"expected the six CI-V profiles, checked {checked}"
+
     def test_model_and_id(self):
         profile = load_rig(TEMPLATE_PATH).to_profile()
         assert profile.model == "IC-7610"
