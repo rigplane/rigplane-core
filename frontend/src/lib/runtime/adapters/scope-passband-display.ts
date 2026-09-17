@@ -77,7 +77,7 @@ function capabilityIdentity(caps: Capabilities): string {
   }));
 }
 interface Candidate {
-  identity: string; continuityIdentity: string | null; bandlessIdentity: string; tuple: ScopePassbandTuple;
+  identity: string; continuityIdentity: string | null; bandlessIdentity: string | null; tuple: ScopePassbandTuple;
   stale: boolean; strict: boolean; frequencyCurrent: boolean; frequencyAligned: boolean;
 }
 interface Inspection {
@@ -236,7 +236,8 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
   const effectiveStale = stale && !heldReadbackConfirmed;
   const strict = effectiveStale ? null : toSpectrumAuthority(state, caps);
   const band = findActiveBand(frequency, caps.freqRanges ?? []);
-  const partition = flattenBands(caps.freqRanges ?? []).find((entry) =>
+  const flatBands = flattenBands(caps.freqRanges ?? []);
+  const partition = flatBands.find((entry) =>
     entry.name === band && frequency >= entry.start && frequency <= entry.end);
   const context = [state.providerGeneration, capabilityIdentity(caps), session.epoch,
     selection.receiver, selection.slot, mode, filter, data, 'hardware',
@@ -246,7 +247,8 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
     identity: JSON.stringify([...context, frequency, frame.startFreq, frame.endFreq]),
     continuityIdentity: !partition ? null
       : JSON.stringify([...context, partition.name, partition.start, partition.end, frame.endFreq - frame.startFreq]),
-    bandlessIdentity: JSON.stringify([...context, frame.endFreq - frame.startFreq]),
+    bandlessIdentity: flatBands.length === 0 ? null
+      : JSON.stringify([...context, frame.endFreq - frame.startFreq]),
     strict: frequencyAligned && !!strict && strict.receiver === receiver && strict.frequencyHz === frequency
       && modeName(strict.mode ?? undefined) === mode && strict.filter === `FIL${filter}`
       && strict.filterWidthHz === width && strict.ifShiftHz === shiftHz
@@ -303,12 +305,8 @@ export function projectScopePassbandDisplay(
   const recoveryCancelled = previous.selectionRecovery !== null && selectionRecovery === null;
   const hasTuple = active(previous.display);
   const wasTranslated = hasTuple && previous.display.translated === true;
-  const continuityMatch = candidate !== null && candidate.continuityIdentity !== null
-    && candidate.continuityIdentity === previous.continuityIdentity;
-  const bandEdgeMatch = candidate !== null && !continuityMatch
-    && (candidate.continuityIdentity !== null || previous.continuityIdentity !== null)
+  const continuous = candidate !== null && candidate.bandlessIdentity !== null
     && candidate.bandlessIdentity === previous.bandlessIdentity;
-  const continuous = continuityMatch || bandEdgeMatch;
   const holdingFrequency = hasTuple && continuous && candidate !== null
     && !candidate.frequencyCurrent && candidate.frequencyAligned
     && !regression && !receiptRegression && !changedGeometry;

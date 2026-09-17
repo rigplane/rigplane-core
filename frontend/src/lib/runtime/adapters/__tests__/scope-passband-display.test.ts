@@ -407,6 +407,46 @@ describe('band-edge tuning continuity (MOR-2367)', () => {
     renew(input, 16, 5);
     expect(project(input, result).display.state).toBe('current');
   });
+  it('translates a tuning step taken entirely outside every profile band', () => {
+    const input = banded();
+    let result = project(input);
+    tune(input, 14_360_000, 11);
+    receipt(input, 2, { startFreq: 14_310_000, endFreq: 14_410_000 });
+    result = project(input, result);
+    expect(result.display).toMatchObject({ state: 'stale', translated: true });
+    tune(input, 14_367_000, 12);
+    receipt(input, 3, { startFreq: 14_317_000, endFreq: 14_417_000 });
+    result = project(input, result);
+    expect(result.display).toMatchObject({ state: 'stale', translated: true });
+    expect(tuple(result)).toMatchObject({ frequencyHz: 14_367_000, widthHz: 2400, shiftHz: 0 });
+  });
+  it('translates the step back into the band after several out-of-band steps', () => {
+    const input = banded();
+    let result = project(input);
+    tune(input, 14_360_000, 11);
+    receipt(input, 2, { startFreq: 14_310_000, endFreq: 14_410_000 });
+    result = project(input, result);
+    tune(input, 14_367_000, 12);
+    receipt(input, 3, { startFreq: 14_317_000, endFreq: 14_417_000 });
+    result = project(input, result);
+    tune(input, 14_345_000, 13);
+    receipt(input, 4, { startFreq: 14_295_000, endFreq: 14_395_000 });
+    result = project(input, result);
+    expect(result.display).toMatchObject({ state: 'stale', translated: true });
+    expect(tuple(result)).toMatchObject({ frequencyHz: 14_345_000, widthHz: 2400, shiftHz: 0 });
+  });
+  it('never blanks through a burst that crosses the edge and continues outside', () => {
+    const input = banded();
+    let result = project(input);
+    const frequencies = [14_340_000, 14_345_000, 14_351_000, 14_358_000, 14_367_000];
+    for (const [index, frequency] of frequencies.entries()) {
+      tune(input, frequency, 11 + index);
+      receipt(input, 2 + index, { startFreq: frequency - 50_000, endFreq: frequency + 50_000 });
+      result = project(input, result);
+      expect(result.display).toMatchObject({ state: 'stale', translated: true });
+      expect(tuple(result)).toMatchObject({ frequencyHz: frequency, widthHz: 2400, shiftHz: 0 });
+    }
+  });
   it.each([['another band', 18_100_000], ['outside all bands', 15_000_000]])(
     'translates a single confirmed jump to %s when mode and filter are unchanged', (_name, frequency) => {
       const input = banded();
