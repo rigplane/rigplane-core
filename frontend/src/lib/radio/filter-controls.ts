@@ -798,15 +798,25 @@ export function quantizeFilterWidthToRule(
  *  +1800 Hz each on the measured lattice, so the true shift is +1800 Hz and
  *  the clamp reported 1200. Raw 1 on both edges gives -1800 Hz the same way.
  *
- *  What bounds the result instead. Every production caller today passes two
- *  `pbtRawToHz` outputs taken at ONE declared range, so the mean lies inside
- *  that range: for every shipped profile the range is +/-1200 and the
- *  outputs span -1200..+1191, which the clamp never cut. A caps payload
- *  declaring a wider range -- which the tests exercise deliberately -- now
- *  produces the larger shift instead of a truncated one, and that is the
- *  behaviour change. When the call sites move to `measuredPbtRawToHz`
- *  (MOR-2497 step 2), both edges come from one filter width and the mean
- *  cannot exceed +/-filter_width/2, so nothing is unbounded then either.
+ *  What bounds the result instead. The display-side callers -- in
+ *  `panel-adapters.ts`, `radio-view-model-adapter.ts`,
+ *  `scope-passband-display.ts` and `panel-props.ts` -- pass two `pbtRawToHz`
+ *  outputs taken at ONE declared range, so the mean lies inside that range:
+ *  every shipped profile declares +/-1200 (four in their own `[controls]`
+ *  block, seven through the same default), and those outputs span
+ *  -1200..+1191, which the clamp never cut. A caps payload declaring a wider
+ *  range -- which the tests exercise deliberately -- now produces the larger
+ *  shift instead of a truncated one, and that is the behaviour change. When
+ *  these callers move to `measuredPbtRawToHz` (MOR-2497 step 2), both edges
+ *  come from one filter width and the mean cannot exceed +/-filter_width/2,
+ *  so nothing is unbounded then either.
+ *
+ *  `mapIfShiftToPbt` below is the one caller that does NOT pass Hz: its own
+ *  caller, `panel-commands.ts: onIfShiftChange`, hands it the raw 0..255 wire
+ *  fields. The mean of two raws cannot reach 1200 either, so the clamp never
+ *  fired there and its removal changes nothing -- but the units mismatch is a
+ *  real defect on that write path, measured and recorded as MOR-2500, not
+ *  introduced or fixed here.
  *
  *  `mapIfShiftToPbt` below still clamps to +/-1200 on the WRITE path. That is
  *  the same fabricated bound and it is still wrong, but its call sites move to
