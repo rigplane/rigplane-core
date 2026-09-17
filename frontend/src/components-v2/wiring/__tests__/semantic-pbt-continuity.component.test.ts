@@ -42,18 +42,18 @@ const state = (inner: number | null, outer: number | null, marker = 1, generatio
   // there is no Hz and the projection reports nothing. 2400 Hz is a width the
   // radio can be at; this fixture omitted the field, which the retired
   // conversion did not need.
-  // The pair is deliberately UNEQUAL and on opposite sides of centre 128: this
-  // describe block is about inner and outer being retained independently, and a
-  // fixture where they carry the same number cannot tell a crossed wire from a
-  // correct one. An earlier revision of this file remapped both to 100 while
-  // remapping out-of-range raws, and review caught that the block then stayed
-  // green with the two fields swapped in the adapter.
+  // The pair is deliberately UNEQUAL: this describe block is about inner and
+  // outer being retained independently, and a fixture where they carry the
+  // same number cannot tell a crossed wire from a correct one. An earlier
+  // revision of this file remapped both to 100 while remapping out-of-range
+  // raws, and review caught that the block then stayed green with the two
+  // fields swapped in the adapter.
   // MOR-2497 step 2: a PBT raw is one wire byte, 0..255. This fixture used
   // values outside that range (300, 500, 700, -400 ...) purely as distinct
   // numbers; the retired conversion converted them anyway, the measured one
   // reports no lattice position for a raw the wire cannot carry. Remapped to
-  // distinct reachable raws, keeping each value on the side of centre it was
-  // on, which is what the assertions below are about.
+  // distinct reachable raws, every pair still unequal, which is what the
+  // assertions below are about.
   const receiver = (pbtInner: number | null, pbtOuter: number | null) => ({ freqHz: 14250000, mode: 'USB', filter: 1, dataMode: 0, filterWidth: 2400, sMeter: 0, att: 0, preamp: 0, nb: false, nr: false, afLevel: 0, rfGain: 0, squelch: 0, activeSlot: 'A', vfoA: { freqHz: 14250000, mode: 'USB', filterNum: 1 }, vfoB: { freqHz: 14300000, mode: 'USB', filterNum: 1 }, pbtInner, pbtOuter });
   const field = (name: string) => inner === null && name.endsWith('pbtInner') ? { ...fresh(observedMarker), freshness } : outer === null && name.endsWith('pbtOuter') ? { ...fresh(observedMarker), freshness } : { ...fresh(observedMarker), freshness };
   return { revision: marker, stateRevision: marker, freshnessRevision: marker, observationSeq: marker, updatedAt: '2026-08-15T00:00:00Z', stateContractVersion: 1, providerGeneration: generation, active, split: false, dualWatch: false, ptt: false, tunerStatus: 0, connection: { rigConnected: true, radioReady: true, controlConnected: true }, txTarget: { status: 'unknown', reason: 'fixture' }, main: receiver(inner, outer), sub: receiver(inner, outer), fieldStatus: Object.fromEntries(['active', 'main.freqHz', 'main.mode', 'main.filter', 'main.activeSlot', 'sub.freqHz', 'sub.mode', 'sub.filter', 'sub.activeSlot', 'main.pbtInner', 'main.pbtOuter', 'sub.pbtInner', 'sub.pbtOuter'].map((name) => [name, field(name)])) } as unknown as ServerState;
