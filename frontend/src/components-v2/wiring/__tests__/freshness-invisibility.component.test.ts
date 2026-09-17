@@ -313,7 +313,10 @@ describe('MOR-2425/R41 — freshness is invisible in the semantic tree', () => {
       .toEqual(differing.map((row) => row.live.replace('>', ' disabled="">')));
     expect(differing).toHaveLength(2);
     for (const row of differing) {
-      expect(row.live).toMatch(/^<input type="range" [^>]*min="-1200" max="1200" step="25">$/);
+      // The measured PBT domain at this fixture's width 2400 / step 50
+      // (MOR-2497): +/-floor(2400/100)*50 = +/-1200, step 50 — never the
+      // retired fabricated +/-1200 @ 25 Hz row constant.
+      expect(row.live).toMatch(/^<input type="range" [^>]*min="-1200" max="1200" step="50">$/);
     }
   });
 });

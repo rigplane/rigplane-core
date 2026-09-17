@@ -23,7 +23,7 @@ import type { FieldStatus, ServerState } from '$lib/types/state';
 import { validateRadioViewModel, type RadioViewModel } from '../../../../semantic/radio-view-model';
 import { toRadioViewModel } from '../radio-view-model-adapter';
 import {
-  deriveIfShift, measuredPbtRawToHz, PBT_MEASURED_STEP_HZ,
+  deriveIfShift, measuredPbtDisplayDomain, measuredPbtRawToHz, PBT_MEASURED_STEP_HZ,
 } from '$lib/radio/filter-controls';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 
@@ -723,6 +723,7 @@ describe('PBT display observations (MOR-1692)', () => {
     expect({ ...result, pbtInner: strict, pbtOuter: strictOuter }).toEqual({
       filterShape: absent, filterShapeControlStructural: false, ifShiftControlStructural: false, dataMode: absent, dataModeChoices: [],
       ifShift: { reading: { status: 'known', value: deriveIfShift(hz(150), hz(100)) }, availability: { structural: true, operational: true } },
+      pbtDomain: measuredPbtDisplayDomain(2400, PBT_MEASURED_STEP_HZ),
       pbtInner: strict,
       pbtOuter: { reading: { status: 'known', value: hz(100) }, availability: { structural: true, operational: true } },
     });
@@ -824,5 +825,75 @@ describe('per-mode PBT lattice step (MOR-2497)', () => {
     expect(view.filterPassband!.pbtOuter.availability).toEqual({ structural: true, operational: true });
     expect(view.filterPassband!.pbtOuter.reading).toEqual({ status: 'unknown' });
     expect(view.filterPassband!.ifShift.reading).toEqual({ status: 'unknown' });
+  });
+});
+
+/**
+ * The group's PBT slider domain (MOR-2497 W2b): the adapter carries the SAME
+ * `measuredPbtDisplayDomain` derivation `toFilterProps` already put the v2
+ * `FilterPanel` on (#3527) — one derivation, no second copy; the semantic
+ * surface computes nothing. No domain key (FM, a legacy payload with no
+ * declared step, a width that forms no lattice) leaves the surface on its
+ * own row constants, the same fallback contract `FilterPanel` kept in W2a.
+ */
+describe('filterPassband.pbtDomain — the measured slider domain (MOR-2497)', () => {
+  const latticeCaps = (filterConfig: Capabilities['filterConfig']): Capabilities => caps({
+    capabilities: ['pbt'], controls: { pbt_inner: DEFAULT_PBT_RANGE }, filterConfig,
+  });
+  const stepCaps = latticeCaps({
+    USB: { defaults: [2400], fixed: false, pbtStepHz: 50 },
+    CW: { defaults: [250], fixed: false, pbtStepHz: 50 },
+    AM: { defaults: [6000], fixed: false, pbtStepHz: 200 },
+  });
+  const widthState = (mode: string, filterWidth: number): ServerState => bareState({
+    main: { ...bareState().main, mode, filterWidth, pbtInner: 128, pbtOuter: 128 },
+    fieldStatus: { ...bareState().fieldStatus, 'main.pbtInner': fresh, 'main.pbtOuter': fresh },
+  });
+
+  it.each([
+    ['USB', 3600, 50, 1800],
+    ['USB', 500, 50, 250],
+    ['CW', 250, 50, 100],
+    ['AM', 6000, 200, 3000],
+  ])('%s at width %s / step %s spans +/- %s Hz', (mode, width, step, span) => {
+    setCapabilities(NEUTRAL_STORE_CAPS);
+    const view = model(widthState(mode, width), stepCaps);
+    expect(view.filterPassband!.pbtDomain).toEqual({ min: -span, max: span, step, origin: 0 });
+  });
+
+  it('takes the width of the ACTIVE receiver (SUB at 500 while MAIN sits at 3600)', () => {
+    setCapabilities(NEUTRAL_STORE_CAPS);
+    const state = bareState({
+      active: 'SUB',
+      sub: { ...bareState().sub, mode: 'USB', filterWidth: 500, pbtInner: 128, pbtOuter: 128 },
+      fieldStatus: { ...bareState().fieldStatus, 'sub.pbtInner': fresh, 'sub.pbtOuter': fresh },
+    });
+    const view = model(state, stepCaps);
+    expect(view.filterPassband!.pbtDomain).toEqual({ min: -250, max: 250, step: 50, origin: 0 });
+  });
+
+  it('FM (mode with no step): no domain key — the PBT controls do not exist there', () => {
+    setCapabilities(NEUTRAL_STORE_CAPS);
+    const fmCaps = latticeCaps({
+      USB: { defaults: [2400], fixed: false, pbtStepHz: 50 },
+      FM: { defaults: [15000], fixed: true },
+    });
+    const view = model(widthState('FM', 15000), fmCaps);
+    expect(view.filterPassband!.pbtInner.availability.structural).toBe(false);
+    expect(Object.keys(view.filterPassband!)).not.toContain('pbtDomain');
+  });
+
+  it('legacy payload (no mode declares a step): structural PBT fields but no domain key', () => {
+    setCapabilities(NEUTRAL_STORE_CAPS);
+    const legacyCaps = latticeCaps({ USB: { defaults: [2400], fixed: false } });
+    const view = model(widthState('USB', 3600), legacyCaps);
+    expect(view.filterPassband!.pbtInner.availability.structural).toBe(true);
+    expect(Object.keys(view.filterPassband!)).not.toContain('pbtDomain');
+  });
+
+  it('a width that forms no lattice (125 is not a whole multiple of 50): no domain key', () => {
+    setCapabilities(NEUTRAL_STORE_CAPS);
+    const view = model(widthState('USB', 125), stepCaps);
+    expect(Object.keys(view.filterPassband!)).not.toContain('pbtDomain');
   });
 });

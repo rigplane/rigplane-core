@@ -2174,7 +2174,7 @@ describe('MOR-2500 twin-PBT writers on the measured lattice', () => {
     h.state = usbEdgesState();
     // On the lattice (filter 3600, step 50): raw 160 reads +450 Hz and raw
     // 96 reads -450 Hz -- a 900 Hz passband. The old write path fed these
-    // raws into `mapIfShiftToPbt` as if they were Hz and dispatched a 56 Hz
+    // raws into `mapIfShiftToPbt` as if they were Hz and dispatched a 100 Hz
     // passband (raws 163/157).
     const widthBefore = measuredPbtRawToHz(160, 3600, 50)! - measuredPbtRawToHz(96, 3600, 50)!;
     expect(widthBefore).toBe(900);

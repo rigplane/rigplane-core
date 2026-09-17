@@ -179,7 +179,8 @@ export function measuredPbtDisplayDomain(
   const lattice = pbtLattice(filterWidthHz, stepHz);
   if (lattice === null) return null;
   const span = ((lattice.positions - 1) / 2) * stepHz;
-  return { min: -span, max: span, step: stepHz, origin: 0 };
+  // span 0 (width == step, P = 1) must give min 0, not -0.
+  return { min: span === 0 ? 0 : -span, max: span, step: stepHz, origin: 0 };
 }
 
 // Generic control display <-> CI-V wire conversion (MOR-490 / MOR-498)
@@ -613,13 +614,12 @@ export function controlRangeFromCapsOrDefault(
 }
 
 /**
- * `range`, when supplied (MOR-1290, mirroring `pbtRawToHz`'s own `range`
- * parameter), is used INSTEAD of the capabilities STORE lookup — pass
- * `controlRangeFromCaps(key, caps)` from a caller that already holds a
- * `caps` argument so the conversion is a pure function of that argument
- * rather than a hidden dependency on module-global store state. Every
- * EXISTING call site omits `range` and keeps today's store-lookup behavior
- * unchanged — this parameter is strictly additive. */
+ * `range`, when supplied (MOR-1290), is used INSTEAD of the capabilities
+ * STORE lookup — pass `controlRangeFromCaps(key, caps)` from a caller that
+ * already holds a `caps` argument so the conversion is a pure function of
+ * that argument rather than a hidden dependency on module-global store
+ * state. Every EXISTING call site omits `range` and keeps today's
+ * store-lookup behavior unchanged — this parameter is strictly additive. */
 function controlRawToDisplay(
   key: string, raw: number, fallback: ControlRange, range?: ControlDisplayRange,
 ): number {

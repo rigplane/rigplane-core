@@ -1039,7 +1039,8 @@ export function makeFilterHandlers() {
         // the measured lattice FIRST, then move the passband in Hz and
         // write it back on the same lattice. Feeding the raws to
         // `mapIfShiftToPbt` as if they were Hz collapsed a 900 Hz passband
-        // to 56 Hz (raws 160/96 at a 3600 Hz filter, shift +300).
+        // to 100 Hz (raws 160/96 -> 163/157 at a 3600 Hz filter, shift
+        // +300).
         const lattice = activePbtLattice();
         if (!lattice) return;
         const innerHz = measuredPbtRawToHz(activeRx.pbtInner, lattice.filterWidthHz, lattice.stepHz);

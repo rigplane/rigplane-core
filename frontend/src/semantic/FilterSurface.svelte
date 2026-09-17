@@ -9,8 +9,8 @@
   Doctrine, same as `TxAuxSurface`/`MetersSurface`:
   (1) Facts only — every value and every min/max bound is READ from the
       adapter-produced view model, never re-derived. `resolveFilterModeConfig`
-      and `pbtRawToHz` stay behind the adapter (MOR-1284/1280 rulings); this
-      file imports neither.
+      and `measuredPbtRawToHz` stay behind the adapter (MOR-1284/1280
+      rulings); this file imports neither.
   (2) Two-level availability per field (MOR-977): `structural: false` renders
       nothing; a present-but-unobserved field renders disabled, with reason
       `field-not-observed`, never a guessed value or a fabricated selection
@@ -39,8 +39,11 @@
 <script module lang="ts">
   import type { DisplayObservedField, TxAuxField } from './radio-view-model';
 
-  /** `[field, label, min, max, step]` in RAW Hz, same ranges `FilterPanel`'s
-   *  IF-shift/PBT sliders have always used. */
+  /** `[field, label, min, max, step]` in RAW Hz — the fallback bounds for a
+   *  passband row whose group carries no domain: `ifShift` when the profile
+   *  publishes no `controls.if_shift` entry, the PBT rows when no measured
+   *  lattice forms (no mode step, unobserved width). Same fallback shape the
+   *  v2 `FilterPanel` keeps after W2a (MOR-2497). */
   export const FILTER_PASSBAND_LEVELS = [
     ['ifShift', 'IF shift', -1200, 1200, 25],
     ['pbtInner', 'PBT inner', -1200, 1200, 25],
@@ -202,14 +205,17 @@
     else onPbtOuterChange?.(value);
   }
 
-  /** MOR-1681: the ifShift ROW reads its range/step from the profile-
-   *  published control domain when the group carries one; every other
-   *  row (and a radio that publishes no usable domain) keeps the
-   *  `FILTER_PASSBAND_LEVELS` row constant. */
+  /** MOR-1681/MOR-2497: a passband row reads its range/step from the
+   *  group's published domain when it carries one — `ifShiftDomain` for the
+   *  IF-shift row, `pbtDomain` (the measured twin-PBT lattice at the
+   *  observed width and the mode's step) for the PBT rows; every row
+   *  without a domain keeps its `FILTER_PASSBAND_LEVELS` constant. */
   function passbandLimits(
     field: FilterPassbandLevelField, min: number, max: number, step: number,
   ): Readonly<{ min: number; max: number; step: number }> {
-    const domain = field === 'ifShift' ? filterPassband?.ifShiftDomain : undefined;
+    const domain = field === 'ifShift'
+      ? filterPassband?.ifShiftDomain
+      : filterPassband?.pbtDomain;
     return domain === undefined ? { min, max, step } : domain;
   }
 </script>
