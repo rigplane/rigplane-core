@@ -14,6 +14,9 @@
     pendingDataMode?: number | null;
     pendingModInput?: number | null;
     filterWidthFeedback?: Readonly<CommandScalarFeedback>;
+    ifShiftFeedback?: Readonly<CommandScalarFeedback>;
+    pbtInnerFeedback?: Readonly<CommandScalarFeedback>;
+    pbtOuterFeedback?: Readonly<CommandScalarFeedback>;
     finiteAppearance?: FiniteControlAppearance<FilterFiniteChoiceValue>;
     rendererContext?: FiniteRendererContext | null;
     onModeChange?: (mode: string) => void;
@@ -29,6 +32,7 @@
   let {
     view, presentation = 'grouped', renderSurface = false,
     pendingFilter = null, pendingDataMode = null, pendingModInput = null, filterWidthFeedback,
+    ifShiftFeedback, pbtInnerFeedback, pbtOuterFeedback,
     finiteAppearance, rendererContext = null, onModeChange, onFilterChange,
     onDataModeChange, onModInputChange, onFilterWidthChange, onFilterShapeChange,
     onIfShiftChange, onPbtInnerChange, onPbtOuterChange,
@@ -49,7 +53,8 @@
     {#if renderSurface && view !== null}
       <FilterSurface
         {view} {handles} finiteLayout={presentation === 'independent' ? independent : undefined}
-        {filterWidthFeedback} {onFilterWidthChange}
+        {filterWidthFeedback} {ifShiftFeedback} {pbtInnerFeedback} {pbtOuterFeedback}
+        {onFilterWidthChange}
         {onIfShiftChange} {onPbtInnerChange} {onPbtOuterChange}
       />
     {:else}

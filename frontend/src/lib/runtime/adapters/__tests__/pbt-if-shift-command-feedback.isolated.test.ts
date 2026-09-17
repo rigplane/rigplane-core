@@ -49,7 +49,8 @@ import {
   IF_SHIFT_COMMAND_DESCRIPTOR, PBT_INNER_COMMAND_DESCRIPTOR, PBT_OUTER_COMMAND_DESCRIPTOR,
 } from '$lib/stores/commands.svelte';
 import {
-  getIfShiftControlFeedback, getPbtInnerControlFeedback, getPbtOuterControlFeedback,
+  getIfShiftControlFeedback, getPbtInnerControlFeedback, getPbtInnerHzControlFeedback,
+  getPbtOuterControlFeedback, getPbtOuterHzControlFeedback,
 } from '../panel-adapters';
 import { measuredPbtRawToHz, deriveIfShift } from '$lib/radio/filter-controls';
 
@@ -336,5 +337,69 @@ describe('IF-shift command feedback (real on Yaesu, derived on Icom PBT-only)', 
     const fourth = getIfShiftControlFeedback(connected);
     expect(third.transitionId).not.toBe(fourth.transitionId);
     expect(third.lifecycleId ?? third.transitionId).not.toBe(fourth.lifecycleId ?? fourth.transitionId);
+  });
+});
+
+describe('Hz-display PBT inner/outer command feedback (MOR-1687 part 1)', () => {
+  afterEach(reset);
+
+  it('converts confirmed, target AND requestedTarget to Hz on the measured lattice — one unit for every value', () => {
+    h.state = state(); h.caps = pbtCaps();
+    h.commands = [command(PBT_INNER_COMMAND_DESCRIPTOR, 'value', 150)];
+    const feedback = getPbtInnerHzControlFeedback(connected);
+    expect(feedback).toMatchObject({
+      confirmed: pbtHz(131), target: pbtHz(150), requestedTarget: pbtHz(150),
+      phase: 'submitted', busy: true, availability: 'available',
+      scope: { control: 'pbt-inner', receiver: 0 },
+    });
+    expect(feedback.confirmed).not.toBe(131);
+  });
+
+  it('outer mirrors inner on its own raw', () => {
+    h.state = state(); h.caps = pbtCaps();
+    expect(getPbtOuterHzControlFeedback(connected)).toMatchObject({
+      confirmed: pbtHz(140), target: null, requestedTarget: null, phase: 'idle',
+    });
+    expect(getPbtOuterHzControlFeedback(connected).confirmed).not.toBe(140);
+  });
+
+  it('is unavailable in a mode with no lattice step (FM-shaped), never NaN', () => {
+    h.state = state({
+      main: { mode: 'FM', dataMode: 0, filterWidth: PBT_WIDTH_HZ, pbtInner: 131, pbtOuter: 140, ifShift: 60 },
+    });
+    h.caps = { ...pbtCaps(), filterConfig: { FM: {} } } as unknown as Capabilities;
+    for (const feedback of [getPbtInnerHzControlFeedback(connected), getPbtOuterHzControlFeedback(connected)]) {
+      expect(feedback).toMatchObject({
+        confirmed: null, target: null, requestedTarget: null,
+        phase: 'unavailable', availability: 'unavailable',
+      });
+      expect([feedback.confirmed, feedback.target, feedback.requestedTarget].some(Number.isNaN)).toBe(false);
+    }
+  });
+
+  it('is unavailable when the observed filter width forms no lattice (width unobserved)', () => {
+    h.state = state({
+      main: { mode: 'USB', dataMode: 0, pbtInner: 131, pbtOuter: 140, ifShift: 60 },
+    });
+    h.caps = pbtCaps();
+    expect(getPbtInnerHzControlFeedback(connected).availability).toBe('unavailable');
+    expect(getPbtOuterHzControlFeedback(connected).availability).toBe('unavailable');
+  });
+
+  it('keeps an unavailable raw producer unavailable (FTX-1-shaped caps)', () => {
+    h.state = state(); h.caps = ftx1Caps();
+    expect(getPbtInnerHzControlFeedback(connected).availability).toBe('unavailable');
+    expect(getPbtOuterHzControlFeedback(connected).availability).toBe('unavailable');
+  });
+
+  it('passes a failed terminal outcome through with the confirmed Hz echo', () => {
+    h.state = state(); h.caps = pbtCaps();
+    h.commands = [command(PBT_INNER_COMMAND_DESCRIPTOR, 'value', 150, {
+      status: 'failed', error: 'echo mismatch',
+    })];
+    expect(getPbtInnerHzControlFeedback(connected)).toMatchObject({
+      confirmed: pbtHz(131), requestedTarget: pbtHz(150), phase: 'failed', busy: false,
+      outcome: { phase: 'failed', error: 'echo mismatch' },
+    });
   });
 });
