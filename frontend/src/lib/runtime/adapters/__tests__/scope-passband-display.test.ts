@@ -475,15 +475,25 @@ describe('coherent RF passband display', () => {
     expect(current.display.state).toBe('current');
     expect(tuple(current).shiftHz).toBe(800);
   });
-  it('refuses a PBT reading in FM: the mode has no twin PBT, so it declares no step', () => {
+  it('FM (mode without twin PBT): no PBT reading, but the passband display stays current with shift 0', () => {
     const input = fixture(); pbt(input);
     input.caps!.modes = [...input.caps!.modes!, 'FM'];
     input.caps!.filterConfig = { ...input.caps!.filterConfig, FM: { defaults: [15000], fixed: true } };
     input.state!.main!.mode = 'FM';
     input.state!.main!.pbtInner = 200; input.state!.main!.pbtOuter = 200;
     // filterWidth stays 2400 — a width that WOULD form a lattice at 50 Hz, so
-    // the refusal is attributable only to the absent step, not to the width.
-    expect(project(input).display).toEqual({ state: 'unknown', reason: 'invalid-observation' });
+    // the outcome is attributable only to the absent step, not to the width.
+    // Owner ruling 2026-09-17: with no twin PBT there is no PBT to engage, so
+    // the shift is the KNOWN zero of a passband that cannot be displaced —
+    // the display and its overlay stay valid at the observed filter width.
+    const current = project(input);
+    expect(current.display.state).toBe('current');
+    expect(tuple(current)).toMatchObject({ mode: 'FM', widthHz: 2400, shiftHz: 0 });
+    // The PBT side of the ruling: no PBT reading or control exists in FM.
+    const passband = toRadioViewModel(input.state, input.caps)?.filterPassband;
+    expect(passband?.pbtInner.availability).toEqual({ structural: false, operational: false });
+    expect(passband?.pbtInner.reading).toEqual({ status: 'unknown' });
+    expect(passband?.ifShift.reading).toEqual({ status: 'unknown' });
   });
   it('refuses a PBT reading when no mode declares a step (legacy pre-pbtStepHz payload)', () => {
     const input = fixture(); pbt(input);
