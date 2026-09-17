@@ -1733,6 +1733,29 @@ class TestToProfile:
         assert config["AM"].pbt_step_hz == 200
         assert config["FM"].pbt_step_hz is None
 
+    def test_psk_filter_config_mirrors_cw(self):
+        """PSK/PSK-R share the CW IF-filter table and declare the PBT step.
+
+        Table (FIL defaults 1200/500/250, selectable 50-500 Hz in 50 Hz steps
+        and 600-3600 Hz in 100 Hz steps): IC-7610 Basic Manual, PDF p.34
+        "Selecting the IF filter", where CW and PSK share one row. The 50 Hz
+        PBT step was measured on a real IC-7610 over LAN on 2026-09-17 in PSK
+        at FIL2 (500 Hz): sweeping PBT Inner raw 0..255 read back 11
+        positions, raw 11..244. PSK-R is declared by inference from PSK --
+        the manual's Twin PBT heading (PDF p.33) names PSK without
+        distinguishing the reversed variant, and PSK-R was not separately
+        measured.
+        """
+        profile = load_rig(TEMPLATE_PATH).to_profile()
+        config = profile.filter_config
+        assert config is not None
+        for mode in ("PSK", "PSK-R"):
+            rule = config[mode]
+            assert rule.defaults == (1200, 500, 250), mode
+            assert rule.segments == config["CW"].segments, mode
+            assert rule.min_hz == 50 and rule.max_hz == 3600, mode
+            assert rule.pbt_step_hz == 50, mode
+
     def test_pbt_step_declared_by_every_shipped_pbt_capable_profile(self):
         """The absence of a step must mean "this mode has no twin PBT".
 
@@ -1795,6 +1818,8 @@ class TestToProfile:
                 "CW-R": 50,
                 "RTTY": 50,
                 "RTTY-R": 50,
+                "PSK": 50,
+                "PSK-R": 50,
                 "AM": 200,
                 "FM": None,
             },

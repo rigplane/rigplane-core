@@ -13,6 +13,7 @@ from rigplane.backends.icom7610.drivers import serial_session as serial
 from rigplane.commands import (
     _CMD_ACK,
     _CMD_FREQ_GET,
+    _CMD_MODE_GET,
     _CMD_LEVEL,
     _CMD_METER,
     _CMD_PTT,
@@ -433,6 +434,38 @@ class TestMode:
     ) -> None:
         await radio.set_mode("USB")
         assert len(mock_transport.sent_packets) > 0
+
+    @pytest.mark.asyncio
+    async def test_set_mode_psk_emits_civ_psk_byte(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        # CI-V mode byte 0x12 = PSK: IC-7610 CI-V Reference Guide 2021,
+        # "Operating mode" table; ACKed (FB) by a real IC-7610 over LAN on
+        # 2026-09-17.
+        await radio.set_mode("PSK")
+        assert mock_transport.sent_packets[-1].endswith(b"\xfe\xfe\x98\xe0\x06\x12\xfd")
+
+    @pytest.mark.asyncio
+    async def test_set_mode_psk_r_emits_civ_psk_r_byte(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        # CI-V mode byte 0x13 = PSK-R: same table as above.
+        await radio.set_mode("PSK-R")
+        assert mock_transport.sent_packets[-1].endswith(b"\xfe\xfe\x98\xe0\x06\x13\xfd")
+
+    @pytest.mark.asyncio
+    async def test_get_mode_parses_psk_fil2(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        # Raw mode read cmd 0x04 answering data ``12 02`` = PSK, FIL2, as
+        # captured from a real IC-7610 over LAN on 2026-09-17.
+        civ = build_civ_frame(
+            CONTROLLER_ADDR, IC_7610_ADDR, _CMD_MODE_GET, data=bytes([0x12, 0x02])
+        )
+        mock_transport.queue_response(_wrap_civ_in_udp(civ))
+        mode_name, filt = await radio.get_mode()
+        assert mode_name == "PSK"
+        assert filt == 2
 
 
 class TestSetModeSelected0x26:
@@ -2207,6 +2240,13 @@ class TestCoerceModeHyphenNormalization:
     def test_coerce_mode_hyphenated_rtty_r(self) -> None:
         assert IcomRadio._coerce_mode("RTTY-R") == Mode.RTTY_R
 
+    def test_coerce_mode_psk(self) -> None:
+        assert IcomRadio._coerce_mode("PSK") == Mode.PSK
+
+    def test_coerce_mode_hyphenated_psk_r(self) -> None:
+        """The rig-TOML display label "PSK-R" coerces like "CW-R"/"RTTY-R"."""
+        assert IcomRadio._coerce_mode("PSK-R") == Mode.PSK_R
+
     def test_coerce_mode_hyphenated_lowercase_and_whitespace(self) -> None:
         """Hyphen normalization composes with existing case/whitespace tolerance."""
         assert IcomRadio._coerce_mode("  cw-r  ") == Mode.CW_R
@@ -2236,6 +2276,18 @@ class TestCoerceModeHyphenNormalization:
         assert "Supported modes:" in message
         assert "CW_R" in message
         assert "RTTY_R" in message
+
+
+class TestPskModeEnumValues:
+    """The PSK/PSK-R members carry the CI-V mode bytes from the IC-7610
+    CI-V Reference Guide 2021, "Operating mode" table (0x12 = PSK,
+    0x13 = PSK-R), confirmed on a real IC-7610 over LAN on 2026-09-17."""
+
+    def test_psk_civ_byte(self) -> None:
+        assert Mode.PSK == 0x12
+
+    def test_psk_r_civ_byte(self) -> None:
+        assert Mode.PSK_R == 0x13
 
 
 # ---------------------------------------------------------------------------

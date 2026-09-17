@@ -496,6 +496,12 @@ class TestCapabilitiesEndpoint:
         assert data["filterConfig"]["AM"]["pbtStepHz"] == 200
         assert "stepHz" not in data["filterConfig"]["USB"]
         assert "pbtStepHz" not in data["filterConfig"]["FM"]
+        # MOR-2504: PSK/PSK-R publish the CW-shaped filter table (IC-7610
+        # Basic Manual, PDF p.34) and the bench-measured 50 Hz PBT step
+        # (real IC-7610 over LAN, 2026-09-17, PSK at FIL2).
+        assert data["filterConfig"]["PSK"]["defaults"] == [1200, 500, 250]
+        assert data["filterConfig"]["PSK"]["pbtStepHz"] == 50
+        assert data["filterConfig"]["PSK-R"]["pbtStepHz"] == 50
 
     @pytest.mark.asyncio
     async def test_capabilities_include_keyboard_config(self):

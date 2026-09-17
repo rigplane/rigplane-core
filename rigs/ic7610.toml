@@ -989,6 +989,37 @@ segments = [
     { hz_min = 600, hz_max = 2700, step_hz = 100, index_min = 10 },
 ]
 
+# PSK shares the CW row of the filter table: IC-7610 Basic Manual, PDF p.34
+# "Selecting the IF filter" puts CW and PSK in ONE row (FIL 1 1.2 kHz,
+# FIL 2 500 Hz, FIL 3 250 Hz; selectable 50-500 Hz in 50 Hz steps and
+# 600 Hz-3.6 kHz in 100 Hz steps). Twin PBT applies: PDF p.33 "Using the
+# Twin PBT" is headed "SSB, CW, RTTY, PSK and AM modes". The 50 Hz step was
+# measured on the bench on 2026-09-17 (real IC-7610 over LAN, PSK at FIL2,
+# 500 Hz): sweeping PBT Inner raw 0..255 read back 11 positions, raw
+# 11..244, 50.0 Hz per step.
+[filters.width.PSK]
+pbt_step_hz = 50
+min_hz = 50
+max_hz = 3600
+defaults = [1200, 500, 250]
+segments = [
+    { hz_min = 50, hz_max = 500, step_hz = 50, index_min = 0 },
+    { hz_min = 600, hz_max = 3600, step_hz = 100, index_min = 10 },
+]
+
+# PSK-R takes the PSK figure by inference: the manual names PSK without
+# distinguishing the reversed variant, and PSK-R was not separately
+# measured on the bench.
+[filters.width.PSK-R]
+pbt_step_hz = 50
+min_hz = 50
+max_hz = 3600
+defaults = [1200, 500, 250]
+segments = [
+    { hz_min = 50, hz_max = 500, step_hz = 50, index_min = 0 },
+    { hz_min = 600, hz_max = 3600, step_hz = 100, index_min = 10 },
+]
+
 [filters.width.AM]
 pbt_step_hz = 200
 min_hz = 200
