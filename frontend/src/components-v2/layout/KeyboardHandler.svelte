@@ -107,10 +107,10 @@
     if (!enabled) return;
     if (shouldIgnoreEvent(document.activeElement)) return;
 
-    // MOR-2507: a focused slider owns its arrow keys — the global tuning
-    // shortcut must not also fire. A pending leader must be disarmed, like
-    // the Tab guard below.
-    if (focusedElementOwnsArrowKey(document.activeElement, event.key)) {
+    // MOR-2507: a widget that declared data-owns-arrows owns exactly those
+    // unmodified arrow keys — the global shortcut must not also fire. A
+    // pending leader must be disarmed, like the Tab guard below.
+    if (focusedElementOwnsArrowKey(document.activeElement, event)) {
       if (pendingSequences.length) clearLeaderState();
       return;
     }

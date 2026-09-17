@@ -64,6 +64,7 @@
   class:compact
   class:disabled
   role="radiogroup"
+  data-owns-arrows="both"
   tabindex={disabled ? -1 : 0}
   style={styleValue}
   title={title ?? undefined}

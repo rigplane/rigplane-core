@@ -6,6 +6,10 @@ interface WheelControl { readonly view: WheelView | null | undefined; readonly l
 
 export function wheelControl(node: HTMLElement, initial: WheelControl) {
   let options = initial;
+  // MOR-2507: every value-control renderer mounts this action on its
+  // focusable element; that element consumes all four arrow keys (Shift =
+  // fine step), which it declares for the global shortcut layer.
+  node.setAttribute('data-owns-arrows', 'both shift');
   let armed = false;
   let epoch = initial.view?.interactionEpoch;
   let lastTime = 0;

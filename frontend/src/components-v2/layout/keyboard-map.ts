@@ -324,23 +324,37 @@ export function shouldIgnoreEvent(activeElement: Element | null): boolean {
   return IGNORED_TAGS.has(activeElement.tagName);
 }
 
-/** MOR-2507: keys a focused interactive control owns and the global
- * shortcut layer must not resolve. */
-const ARROW_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
-
-/** MOR-2507: widgets that consume arrow keys themselves — custom
- * `role="slider"` value controls, segmented `radiogroup`/`radio` controls,
- * and an adjustable `separator` splitter. Native range inputs, selects and
- * text fields are already covered by `shouldIgnoreEvent`'s IGNORED_TAGS; a
- * plain button consumes no arrows and must keep tuning. */
-const ARROW_KEY_OWNER_SELECTOR = '[role="slider"], [role="radiogroup"], [role="radio"], [role="separator"]';
+/** MOR-2507: axis each arrow key belongs to, matched against the owning
+ * widget's data-owns-arrows declaration. */
+const ARROW_AXIS: Readonly<Record<string, 'horizontal' | 'vertical'>> = {
+  ArrowLeft: 'horizontal',
+  ArrowRight: 'horizontal',
+  ArrowUp: 'vertical',
+  ArrowDown: 'vertical',
+};
 
 /**
- * MOR-2507: true when a focused arrow-consuming control owns the pressed
- * arrow key.
+ * MOR-2507: true when the focused widget declared, via `data-owns-arrows`
+ * on its focusable element (an axis token `horizontal`/`vertical`/`both`,
+ * plus `shift` when Shift+arrow is a deliberate gesture such as a value
+ * control's fine step), that it consumes the pressed arrow. Modified
+ * arrows (ctrl/alt/meta — the Ctrl+Arrow volume and gain bindings) stay
+ * global; a bare ARIA role is not evidence of consumption, and native
+ * inputs/selects/text fields are already covered by `shouldIgnoreEvent`'s
+ * IGNORED_TAGS.
  */
-export function focusedElementOwnsArrowKey(activeElement: Element | null, key: string): boolean {
-  return ARROW_KEYS.has(key) && activeElement?.closest(ARROW_KEY_OWNER_SELECTOR) != null;
+export function focusedElementOwnsArrowKey(
+  activeElement: Element | null,
+  event: { key: string; ctrlKey?: boolean; altKey?: boolean; metaKey?: boolean; shiftKey?: boolean },
+): boolean {
+  if (event.ctrlKey || event.altKey || event.metaKey) return false;
+  const axis = ARROW_AXIS[event.key];
+  if (axis === undefined) return false;
+  const declared = activeElement?.closest('[data-owns-arrows]')?.getAttribute('data-owns-arrows');
+  if (declared === null || declared === undefined) return false;
+  const tokens = declared.split(/\s+/);
+  if (!tokens.includes(axis) && !tokens.includes('both')) return false;
+  return !event.shiftKey || tokens.includes('shift');
 }
 
 /** MOR-1444: true for a single digit character ("0".."9"), the key class a

@@ -1043,6 +1043,7 @@
     class="spectrum-split-separator"
     class:active={splitCapture !== null}
     role="separator"
+    data-owns-arrows="vertical"
     aria-label="Resize spectrum and waterfall"
     aria-orientation="horizontal"
     aria-valuemin={Math.round(splitBounds.min * 100)}
