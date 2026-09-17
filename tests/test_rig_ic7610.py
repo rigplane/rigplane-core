@@ -258,17 +258,18 @@ class TestReversedModeFilterRules:
     while the profile filter keys are hyphenated ("CW-R", "PSK-R")."""
 
     def test_cw_r_underscore_resolves_cw_r_rule(self, profile):
-        assert profile.resolve_filter_rule("CW_R") == profile.resolve_filter_rule("CW-R")
+        assert profile.resolve_filter_rule("CW_R") == profile.resolve_filter_rule(
+            "CW-R"
+        )
 
     def test_rtty_r_underscore_resolves_rtty_r_rule(self, profile):
-        assert (
-            profile.resolve_filter_rule("RTTY_R")
-            == profile.resolve_filter_rule("RTTY-R")
+        assert profile.resolve_filter_rule("RTTY_R") == profile.resolve_filter_rule(
+            "RTTY-R"
         )
 
     def test_psk_r_underscore_resolves_psk_r_rule(self, profile):
-        assert (
-            profile.resolve_filter_rule("PSK_R") == profile.resolve_filter_rule("PSK-R")
+        assert profile.resolve_filter_rule("PSK_R") == profile.resolve_filter_rule(
+            "PSK-R"
         )
 
     def test_hyphen_forms_still_resolve(self, profile):
