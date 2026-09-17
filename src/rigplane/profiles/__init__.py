@@ -209,10 +209,12 @@ class FilterWidthRule:
     #: no twin PBT at all, which is why it is absent rather than zero: the
     #: IC-7300 Advanced Manual heads its Twin PBT section "SSB, CW, RTTY and
     #: AM modes", so FM (and WFM/DV) have no passband tuning to describe.
-    #: That reading is only safe while no PBT-capable profile is merely
-    #: unmigrated, which
+    #: That reading is only safe while no PBT-capable profile is unmigrated,
+    #: wholly or in part: a profile declaring a step for some modes and not
+    #: others reads as "no PBT in CW" when it means "nobody filled CW in".
     #: ``test_pbt_step_declared_by_every_shipped_pbt_capable_profile`` enforces
-    #: over every shipped rig rather than over a chosen few.
+    #: both over every shipped rig rather than over a chosen few -- the modes
+    #: left without a step must be exactly FM, WFM and DV.
     #: Distinct from ``step_hz`` above, which quantises the filter WIDTH; the
     #: two collide at 200 in AM and differ in USB.
     pbt_step_hz: int | None = None

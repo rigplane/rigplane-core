@@ -1736,12 +1736,22 @@ class TestToProfile:
     def test_pbt_step_declared_by_every_shipped_pbt_capable_profile(self):
         """The absence of a step must mean "this mode has no twin PBT".
 
-        That reading is only safe while no PBT-capable profile is simply
-        unmigrated -- an unmigrated one declares the capability and no step
-        anywhere, and a consumer obeying the rule would take PBT away from a
-        radio that has it. This walks every shipped profile rather than naming
-        four, so adding a rig cannot reintroduce the ambiguity silently.
+        Two ways that reading can be wrong, and both are checked here over
+        every shipped rig rather than over a chosen few, so adding a radio
+        cannot reintroduce either silently.
+
+        A profile can be merely unmigrated -- declaring the capability and no
+        step anywhere -- and a consumer obeying the rule would take PBT away
+        from a radio that has it.
+
+        A profile can also be migrated in part, declaring a step for some modes
+        and not others, which reads as "this radio has no PBT in CW" when it
+        means "nobody filled CW in". So the modes left without a step must be
+        exactly the ones with no twin PBT: the IC-7300 Advanced Manual p.40
+        heads its section "SSB, CW, RTTY and AM modes", which leaves FM, and
+        the FM variants WFM and DV that the IC-705 adds.
         """
+        no_twin_pbt = {"FM", "WFM", "DV"}
         checked = 0
         for name, config in sorted(discover_rigs(RIGS_DIR).items()):
             profile = config.to_profile()
@@ -1749,13 +1759,22 @@ class TestToProfile:
                 continue
             checked += 1
             rules = profile.filter_config or {}
-            steps = {
-                mode: rule.pbt_step_hz
-                for mode, rule in rules.items()
-                if rule.pbt_step_hz is not None
+            declared = {
+                mode for mode, rule in rules.items() if rule.pbt_step_hz is not None
             }
-            assert steps, f"{name} declares the pbt capability but no pbt_step_hz"
-            assert set(steps.values()) <= {50, 200}, f"{name}: {steps}"
+            missing = set(rules) - declared
+            assert declared, f"{name} declares the pbt capability but no pbt_step_hz"
+            assert missing <= no_twin_pbt, (
+                f"{name}: modes with no pbt_step_hz must be modes with no twin "
+                f"PBT, but {sorted(missing - no_twin_pbt)} are not"
+            )
+            assert not (declared & no_twin_pbt), (
+                f"{name}: {sorted(declared & no_twin_pbt)} have no twin PBT and "
+                f"must declare no step"
+            )
+            assert {rules[mode].pbt_step_hz for mode in declared} <= {50, 200}, (
+                f"{name}: unexpected step value"
+            )
         assert checked >= 4, f"expected the four Icom profiles, checked {checked}"
 
     def test_pbt_step_values_of_every_shipped_profile(self):
