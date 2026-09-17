@@ -154,7 +154,7 @@ describe('confirmed VFO selection recovery (MOR-2441)', () => {
       expect(result.display.state).toBe('current');
       expect(tuple(result)).toMatchObject({ frequencyHz: 14_090_000, widthHz: 1800 });
     });
-  it.each(['mode', 'filter', 'DATA', 'session', 'provider', 'band', 'frame', 'regression'])(
+  it.each(['mode', 'filter', 'DATA', 'session', 'provider', 'frame', 'regression'])(
     'retires an interrupted selection recovery on %s change', (change) => {
       const input = banded(); let result = project(input);
       select(input, 'B', 20); receipt(input, 2); result = project(input, result);
@@ -166,7 +166,6 @@ describe('confirmed VFO selection recovery (MOR-2441)', () => {
       if (change === 'DATA') { rx.dataMode = 1; status(input, 'main.dataMode', { lastObservedMonotonic: 21 }); }
       if (change === 'session') input.session!.epoch = 2;
       if (change === 'provider') { input.state!.providerGeneration = 2; input.caps!.providerGeneration = 2; }
-      if (change === 'band') { rx.freqHz = rx.vfoB!.freqHz = 7_100_000; status(input, 'main.freqHz', { lastObservedMonotonic: 21 }); status(input, 'main.vfoB.freqHz', { lastObservedMonotonic: 21 }); }
       if (change === 'regression') status(input, 'main.activeSlot', { lastObservedMonotonic: 19 });
       receipt(input, 4, change === 'frame' ? { mode: 1 } : {});
       result = project(input, result); expect(result.display.state).toBe('unknown');
@@ -175,6 +174,26 @@ describe('confirmed VFO selection recovery (MOR-2441)', () => {
       receipt(input, 5, change === 'frame' ? { mode: 1 } : {});
       expect(project(input, result).display.state).toBe('unknown');
     });
+  it('keeps an interrupted selection recovery across band-edge tuning', () => {
+    const input = banded(); let result = project(input);
+    select(input, 'B', 20); receipt(input, 2); result = project(input, result);
+    status(input, 'main.filterWidth', { lastObservedMonotonic: 20.1 });
+    receipt(input, 3); result = project(input, result);
+    expect(result.selectionRecovery).not.toBeNull();
+    const rx = input.state!.main!;
+    rx.freqHz = rx.vfoB!.freqHz = 14_367_000;
+    status(input, 'main.freqHz', { lastObservedMonotonic: 21 });
+    status(input, 'main.vfoB.freqHz', { lastObservedMonotonic: 21 });
+    receipt(input, 4, { startFreq: 14_317_000, endFreq: 14_417_000 });
+    result = project(input, result);
+    expect(result.display.state).toBe('unknown');
+    expect(result.selectionRecovery).not.toBeNull();
+    for (const leaf of ['pbtInner', 'pbtOuter']) status(input, `main.${leaf}`, { lastObservedMonotonic: 22 });
+    receipt(input, 5, { startFreq: 14_317_000, endFreq: 14_417_000 });
+    result = project(input, result);
+    expect(result.display.state).toBe('current');
+    expect(tuple(result)).toMatchObject({ frequencyHz: 14_367_000, widthHz: 2400 });
+  });
   it('requires the selected axis and retires invalid frames during recovery', () => {
     const input = banded(); let result = project(input);
     select(input, 'B', 20);
@@ -317,8 +336,6 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
     ['DATA', (i) => { i.state!.main!.dataMode = 1; status(i, 'main.dataMode', { lastObservedMonotonic: 12 }); }],
     ['frame mode', (i) => receipt(i, 3, { mode: 1 })],
     ['span', (i) => receipt(i, 3, { endFreq: 14_200_000 })],
-    ['band', (i) => tune(i, 18_100_000, 12)],
-    ['outside profile bands', (i) => tune(i, 15_000_000, 12)],
     ['band definitions', (i) => { i.caps!.freqRanges[0].bands![5].end += 100; }],
     ['null frame', (i) => { i.frame = null; }],
     ['500ms frame silence', (i) => { i.frame = { ...i.frame!, authority: { ...i.frame!.authority, nowMonotonic: 500 } }; }],
@@ -370,6 +387,108 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
     expect(result.display.state).toBe('stale'); expect(tuple(result).frequencyHz).toBe(14_075_000);
     tune(input, 14_075_000, 12); result = project(input, result); expect(result.display.state).toBe('stale');
     renew(input, 16, 3); expect(project(input, result).display.state).toBe('current');
+  });
+});
+
+describe('band-edge tuning continuity (MOR-2367)', () => {
+  it('translates the last coherent geometry across the band edge instead of retiring', () => {
+    const input = banded();
+    let result = project(input);
+    expect(result.display.state).toBe('current');
+    tune(input, 14_318_000, 11);
+    receipt(input, 2, { startFreq: 14_268_000, endFreq: 14_368_000 });
+    result = project(input, result);
+    expect(result.display.state).toBe('stale');
+    tune(input, 14_367_000, 12);
+    receipt(input, 3, { startFreq: 14_317_000, endFreq: 14_417_000 });
+    result = project(input, result);
+    expect(result.display).toMatchObject({ state: 'stale', translated: true });
+    expect(tuple(result)).toMatchObject({ frequencyHz: 14_367_000, widthHz: 2400, shiftHz: 0 });
+  });
+  it('translates the geometry back into the band on the return tuning', () => {
+    const input = banded();
+    let result = project(input);
+    tune(input, 14_318_000, 11);
+    receipt(input, 2, { startFreq: 14_268_000, endFreq: 14_368_000 });
+    result = project(input, result);
+    tune(input, 14_367_000, 12);
+    receipt(input, 3, { startFreq: 14_317_000, endFreq: 14_417_000 });
+    result = project(input, result);
+    tune(input, 14_200_000, 13);
+    receipt(input, 4, { startFreq: 14_150_000, endFreq: 14_250_000 });
+    result = project(input, result);
+    expect(result.display).toMatchObject({ state: 'stale', translated: true });
+    expect(tuple(result)).toMatchObject({ frequencyHz: 14_200_000, widthHz: 2400, shiftHz: 0 });
+    renew(input, 16, 5);
+    expect(project(input, result).display.state).toBe('current');
+  });
+  it('translates a tuning step taken entirely outside every profile band', () => {
+    const input = banded();
+    let result = project(input);
+    tune(input, 14_360_000, 11);
+    receipt(input, 2, { startFreq: 14_310_000, endFreq: 14_410_000 });
+    result = project(input, result);
+    expect(result.display).toMatchObject({ state: 'stale', translated: true });
+    tune(input, 14_367_000, 12);
+    receipt(input, 3, { startFreq: 14_317_000, endFreq: 14_417_000 });
+    result = project(input, result);
+    expect(result.display).toMatchObject({ state: 'stale', translated: true });
+    expect(tuple(result)).toMatchObject({ frequencyHz: 14_367_000, widthHz: 2400, shiftHz: 0 });
+  });
+  it('translates the step back into the band after several out-of-band steps', () => {
+    const input = banded();
+    let result = project(input);
+    tune(input, 14_360_000, 11);
+    receipt(input, 2, { startFreq: 14_310_000, endFreq: 14_410_000 });
+    result = project(input, result);
+    tune(input, 14_367_000, 12);
+    receipt(input, 3, { startFreq: 14_317_000, endFreq: 14_417_000 });
+    result = project(input, result);
+    tune(input, 14_345_000, 13);
+    receipt(input, 4, { startFreq: 14_295_000, endFreq: 14_395_000 });
+    result = project(input, result);
+    expect(result.display).toMatchObject({ state: 'stale', translated: true });
+    expect(tuple(result)).toMatchObject({ frequencyHz: 14_345_000, widthHz: 2400, shiftHz: 0 });
+  });
+  it('never blanks through a burst that crosses the edge and continues outside', () => {
+    const input = banded();
+    let result = project(input);
+    const frequencies = [14_340_000, 14_345_000, 14_351_000, 14_358_000, 14_367_000];
+    for (const [index, frequency] of frequencies.entries()) {
+      tune(input, frequency, 11 + index);
+      receipt(input, 2 + index, { startFreq: frequency - 50_000, endFreq: frequency + 50_000 });
+      result = project(input, result);
+      expect(result.display).toMatchObject({ state: 'stale', translated: true });
+      expect(tuple(result)).toMatchObject({ frequencyHz: frequency, widthHz: 2400, shiftHz: 0 });
+    }
+  });
+  it.each([['another band', 18_100_000], ['outside all bands', 15_000_000]])(
+    'translates a single confirmed jump to %s when mode and filter are unchanged', (_name, frequency) => {
+      const input = banded();
+      let result = project(input);
+      tune(input, frequency, 11);
+      receipt(input, 2, { startFreq: frequency - 50_000, endFreq: frequency + 50_000 });
+      result = project(input, result);
+      expect(result.display).toMatchObject({ state: 'stale', translated: true });
+      expect(tuple(result)).toMatchObject({ frequencyHz: frequency, widthHz: 2400, shiftHz: 0 });
+    });
+  it.each(['mode', 'filter'])('still retires a band-edge crossing when the %s changes', (change) => {
+    const input = banded();
+    let result = project(input);
+    tune(input, 14_367_000, 11);
+    const rx = input.state!.main!;
+    if (change === 'mode') {
+      rx.mode = rx.vfoA!.mode = 'LSB';
+      status(input, 'main.mode', { lastObservedMonotonic: 11 });
+      status(input, 'main.vfoA.mode', { lastObservedMonotonic: 11 });
+    } else {
+      rx.filter = 2; rx.vfoA!.filterNum = 2;
+      status(input, 'main.filter', { lastObservedMonotonic: 11 });
+      status(input, 'main.vfoA.filterNum', { lastObservedMonotonic: 11 });
+    }
+    receipt(input, 2, { startFreq: 14_317_000, endFreq: 14_417_000 });
+    result = project(input, result);
+    expect(result.display.state).toBe('unknown');
   });
 });
 
