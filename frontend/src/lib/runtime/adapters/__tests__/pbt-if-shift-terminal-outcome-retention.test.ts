@@ -33,15 +33,24 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   subscribeRadioState: () => () => {},
 }));
 
+// MOR-2497: the derived feedback converts each PBT raw on the measured
+// lattice — the mode's declared `pbtStepHz` at the observed filter width —
+// before the outcome merge. The fixture mirrors
+// `pbt-if-shift-command-feedback.isolated.test.ts`: USB at filter 3600 on
+// the 50 Hz step, so a real lattice exists and the merge under test is
+// reached; without it the conversion fails closed to 'unavailable' before
+// any terminal outcome can be reported.
 const PBT_SCALE = { raw_center: 128, display_min: -1200, display_max: 1200 };
+const PBT_WIDTH_HZ = 3600;
+const PBT_STEP_HZ = 50;
 const fresh = (marker = 5) => ({
   storePath: 'fixture', observed: true, freshness: 'fresh' as const,
   availability: 'available' as const, lastObservedMonotonic: marker,
 });
 const fixtureState = (): ServerState => ({
   stateContractVersion: 1, providerGeneration: 3, active: 'MAIN',
-  main: { pbtInner: 131, pbtOuter: 140, ifShift: 60 },
-  sub: { pbtInner: 132, pbtOuter: 141, ifShift: 61 },
+  main: { mode: 'USB', dataMode: 0, filterWidth: PBT_WIDTH_HZ, pbtInner: 131, pbtOuter: 140, ifShift: 60 },
+  sub: { mode: 'USB', dataMode: 0, filterWidth: PBT_WIDTH_HZ, pbtInner: 132, pbtOuter: 141, ifShift: 61 },
   fieldStatus: {
     'main.pbtInner': fresh(), 'main.pbtOuter': fresh(), 'main.ifShift': fresh(),
     'sub.pbtInner': fresh(), 'sub.pbtOuter': fresh(), 'sub.ifShift': fresh(),
@@ -51,6 +60,7 @@ const pbtCaps = (): Capabilities => ({
   stateContractVersion: 1, providerGeneration: 3, receivers: 1, vfoScheme: 'single',
   capabilities: ['pbt'],
   controls: { pbt_inner: PBT_SCALE },
+  filterConfig: { USB: { pbtStepHz: PBT_STEP_HZ } },
 } as unknown as Capabilities);
 
 describe('IF-shift derived outcome across OUTCOME_RETENTION_MS (MOR-2425 regression)', () => {
