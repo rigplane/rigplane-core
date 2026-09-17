@@ -494,4 +494,20 @@ describe('measuredPbt conversion (honest handling of degenerate input)', () => {
     expect(measuredPbtHzToRaw(5000, 3600, PBT_MEASURED_STEP_HZ)).toBe(254);
     expect(measuredPbtHzToRaw(-5000, 3600, PBT_MEASURED_STEP_HZ)).toBe(1);
   });
+
+  it('resolves an exact half-step Hz tie toward the centre on both sides of the centre', () => {
+    // Positions are exactly stepHz (50 Hz) apart, so only an exact half-step
+    // — an odd multiple of 25 Hz — ties. Above the centre, +1775 sits exactly
+    // between +1750 (raw 250) and +1800 (raw 254); below it, -1775 sits
+    // exactly between -1800 (raw 1) and -1750 (raw 5). Both must resolve to
+    // the centre-side position: "always round down" fails the -1775 case,
+    // "always round up" fails the +1775 case, and "away from the centre"
+    // fails both.
+    expect(measuredPbtHzToRaw(1775, 3600, PBT_MEASURED_STEP_HZ)).toBe(250);
+    expect(measuredPbtHzToRaw(-1775, 3600, PBT_MEASURED_STEP_HZ)).toBe(5);
+    // The same rule one step out from the centre: +25 and -25 tie between
+    // 0 Hz (raw 128) and +/-50 Hz and both resolve to the centre.
+    expect(measuredPbtHzToRaw(25, 3600, PBT_MEASURED_STEP_HZ)).toBe(128);
+    expect(measuredPbtHzToRaw(-25, 3600, PBT_MEASURED_STEP_HZ)).toBe(128);
+  });
 });
