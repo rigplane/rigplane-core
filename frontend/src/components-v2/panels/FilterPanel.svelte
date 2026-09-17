@@ -64,6 +64,13 @@
   let pbtInner = $derived(p.pbtInner ?? 0);
   let pbtOuter = $derived(p.pbtOuter ?? 0);
   let hasPbt = $derived(p.hasPbt ?? false);
+  // MOR-2497: PBT slider bounds come from the measured lattice through the
+  // props layer (`toFilterProps`'s `pbtDomain`, derived by
+  // `measuredPbtDisplayDomain` — e.g. +/-1800/50 at USB 3600). Null keeps
+  // this row's own explicit today-behaviour constants, the same fallback
+  // contract `ifShiftDomain` established (MOR-1681) — a legacy payload that
+  // publishes no `pbtStepHz` has no lattice to read bounds from.
+  let pbtDomain = $derived(p.pbtDomain ?? { min: -1200, max: 1200, step: 25 });
   const onFilterChange = handlers.onFilterChange;
   const onFilterWidthChange = handlers.onFilterWidthChange;
   const onFilterShapeChange = handlers.onFilterShapeChange;
@@ -463,9 +470,9 @@
       <ValueControl
         label="PBT Inner"
         value={pbtInner}
-        min={-1200}
-        max={1200}
-        step={25}
+        min={pbtDomain.min}
+        max={pbtDomain.max}
+        step={pbtDomain.step}
         unit="Hz"
         renderer="bipolar"
         accentColor="var(--v2-accent-cyan)"
@@ -475,27 +482,27 @@
       <ValueControl
         label="PBT Outer"
         value={pbtOuter}
-        min={-1200}
-        max={1200}
-        step={25}
+        min={pbtDomain.min}
+        max={pbtDomain.max}
+        step={pbtDomain.step}
         unit="Hz"
         renderer="bipolar"
         accentColor="var(--v2-accent-green-bright)"
         onChange={onPbtOuterChange ?? (() => {})}
         variant="hardware-illuminated"
       />
-    {/if}
 
-    <div class="filter-actions">
-      <button
-        type="button"
-        class="pbt-reset-button v2-control-button"
-        style="--control-accent:var(--v2-text-disabled); --control-active-text:var(--v2-text-bright)"
-        onclick={() => onPbtReset?.()}
-      >
-        Reset
-      </button>
-    </div>
+      <div class="filter-actions">
+        <button
+          type="button"
+          class="pbt-reset-button v2-control-button"
+          style="--control-accent:var(--v2-text-disabled); --control-active-text:var(--v2-text-bright)"
+          onclick={() => onPbtReset?.()}
+        >
+          Reset
+        </button>
+      </div>
+    {/if}
   </div>
 {/if}
 

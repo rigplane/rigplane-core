@@ -5,6 +5,7 @@ import {
   controlDisplayDomain,
   deriveIfShift,
   mapIfShiftToPbt,
+  measuredPbtDisplayDomain,
   measuredPbtHzToRaw,
   measuredPbtRawToHz,
   nrRawToDisplay,
@@ -602,6 +603,44 @@ describe('deriveIfShift reaches the shifts the radio actually reaches (MOR-2497)
     const centred = measuredPbtRawToHz(128, WIDTH, PBT_MEASURED_STEP_HZ);
     expect(centred).toBe(0);
     expect(deriveIfShift(moved!, centred!)).toBe(900);
+  });
+});
+
+describe('measuredPbtDisplayDomain (the ONE slider-bounds derivation, MOR-2497)', () => {
+  // The span is the MEASURED per-side reach, +/-floor(width/(2*step))*step —
+  // the same lattice `measuredPbtRawToHz`/`measuredPbtHzToRaw` convert on —
+  // never +/-filterWidthHz/2 (which would read +/-125 at width 250 where the
+  // radio reaches only +/-100) and never the retired fabricated +/-1200.
+  it.each([
+    ['USB', 3600, 50, 1800],
+    ['USB', 500, 50, 250],
+    ['CW', 250, 50, 100],
+    ['AM', 6000, 200, 3000],
+    ['CW', 350, 50, 150],
+  ])('%s at width %s / step %s spans +/-%s Hz', (_mode, width, step, span) => {
+    expect(measuredPbtDisplayDomain(width, step)).toEqual({
+      min: -span, max: span, step, origin: 0,
+    });
+  });
+
+  it('keeps the AM step 200, never a hardcoded 50', () => {
+    expect(measuredPbtDisplayDomain(6000, 200)!.step).toBe(200);
+  });
+
+  it('bounds equal what the extreme raws read on the lattice (USB 3600)', () => {
+    const domain = measuredPbtDisplayDomain(3600, PBT_MEASURED_STEP_HZ)!;
+    expect(domain.max).toBe(measuredPbtRawToHz(254, 3600, PBT_MEASURED_STEP_HZ));
+    expect(domain.min).toBe(measuredPbtRawToHz(1, 3600, PBT_MEASURED_STEP_HZ));
+  });
+
+  it('returns null where no lattice forms — never a NaN or a +/-1200 stand-in', () => {
+    // 125 is not a whole multiple of the 50 Hz step; a mode without twin PBT
+    // (FM) never calls this at all — its callers see no domain key, the same
+    // "no lattice" absence.
+    expect(measuredPbtDisplayDomain(125, PBT_MEASURED_STEP_HZ)).toBeNull();
+    expect(measuredPbtDisplayDomain(Number.NaN, PBT_MEASURED_STEP_HZ)).toBeNull();
+    expect(measuredPbtDisplayDomain(3600, Number.NaN)).toBeNull();
+    expect(measuredPbtDisplayDomain(0, PBT_MEASURED_STEP_HZ)).toBeNull();
   });
 });
 

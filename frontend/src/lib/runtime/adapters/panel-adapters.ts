@@ -15,6 +15,7 @@ import {
   toFilterProps, toBandSelectorProps,
   toAudioSpectrumProps, toMemoryPanelProps,
   toAmberTelemetryProps, toVfoControlProps,
+  resolveFilterModeConfig,
   manualNotchReading,
 } from '../props/panel-props';
 import {
@@ -65,7 +66,7 @@ import type { DisplayObservation } from '../../../semantic/radio-view-model';
 import { modInputCommand, modInputStateKey, type ModInputStateKey } from '$lib/radio/mod-input';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import {
-  deriveIfShift, pbtRangeFromCaps, pbtRawToHz, projectNrLevel,
+  deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps, projectNrLevel,
   resolveControlContract,
 } from '$lib/radio/filter-controls';
 
@@ -887,9 +888,9 @@ export function getPbtOuterControlFeedback(
  * IF-shift feedback is always Hz-domain, never PBT's raw BCD domain: real on
  * a radio with its own `if_shift` command (raw IS Hz there, identity-
  * mapped), or derived from the two PBT feedbacks by converting each side's
- * raw value with `pbtRawToHz` first. `domain` is a real, checkable field —
- * not a comment that can rot — so a caller or test can assert it instead of
- * trusting prose about which domain `confirmed`/`target` are in.
+ * raw value on the measured lattice first. `domain` is a real, checkable
+ * field — not a comment that can rot — so a caller or test can assert it
+ * instead of trusting prose about which domain `confirmed`/`target` are in.
  */
 export interface IfShiftControlFeedback extends ControlFeedback<number> {
   readonly domain: 'hz';
@@ -998,11 +999,15 @@ function unavailableIfShiftFeedback(
  * (`caps.capabilities.includes('if_shift')`) `radio-view-model-adapter.ts`'s
  * `ifShiftControlStructural` uses to decide whether to show a real IF-shift
  * control at all. Derived from the two PBT feedbacks on a PBT-only radio
- * (Icom IC-7300): each side's raw value is converted to Hz with
- * `pbtRawToHz(raw, pbtRangeFromCaps(caps))` before combining with
- * `deriveIfShift`, mirroring `deriveFilterPassband`'s own `ifShiftValue`
- * fallback — this is that same formula's pending-target-aware lifecycle
- * layer, not a second, independent re-derivation of the confirmed reading.
+ * (Icom IC-7300): each side's raw value converts on the MEASURED lattice
+ * (MOR-2497 — the current mode's declared `pbtStepHz` and the observed
+ * filter width, the same conversion `deriveFilterPassband` reads its
+ * `ifShift` fallback with) before combining with `deriveIfShift` — this is
+ * that same formula's pending-target-aware lifecycle layer, not a second,
+ * independent re-derivation of the confirmed reading. No lattice — a legacy
+ * payload without `pbtStepHz`, or a width that has not been observed —
+ * converts nothing, so the derived feedback is unavailable: no fabricated
+ * +/-1200-scale Hz, the same fail-closed refusal the reading path applies.
  */
 export function getIfShiftControlFeedback(
   currentControlSession?: ControlSessionSnapshot,
@@ -1025,22 +1030,40 @@ export function getIfShiftControlFeedback(
   const scope = Object.freeze({ control: 'if-shift', receiver });
   const inner = getPbtInnerControlFeedback(currentControlSession);
   const outer = getPbtOuterControlFeedback(currentControlSession);
-  const scale = pbtRangeFromCaps(caps);
+  const hasDeclaredScale = pbtRangeFromCaps(caps) !== undefined;
   const providerGeneration = typeof inner.providerGeneration === 'number' ? inner.providerGeneration : null;
-  if (inner.availability !== 'available' || outer.availability !== 'available' || scale === undefined
+  if (inner.availability !== 'available' || outer.availability !== 'available' || !hasDeclaredScale
     || inner.confirmed === null || outer.confirmed === null) {
     return unavailableIfShiftFeedback(scope, epoch, providerGeneration);
   }
-  const toHz = (raw: number): number => pbtRawToHz(raw, scale);
-  const confirmed = deriveIfShift(toHz(inner.confirmed), toHz(outer.confirmed));
+  // MOR-2497: raw -> Hz on the measured lattice — the mode's declared step
+  // at the observed width — the same conversion the reading path uses. A
+  // raw that converts to nothing (no step for the mode, no observed width)
+  // fails the whole derived feedback closed rather than fabricating Hz.
+  const rx = state ? (state.active === 'SUB' ? state.sub : state.main) : undefined;
+  const pbtStepHz = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode)?.pbtStepHz;
+  const pbtWidthHz = rx?.filterWidth;
+  const toHz = (raw: number): number | null => (
+    pbtStepHz === undefined || typeof pbtWidthHz !== 'number'
+      ? null : measuredPbtRawToHz(raw, pbtWidthHz, pbtStepHz)
+  );
+  const pairHz = (a: number, b: number): number | null => {
+    const innerHz = toHz(a);
+    const outerHz = toHz(b);
+    return innerHz === null || outerHz === null ? null : deriveIfShift(innerHz, outerHz);
+  };
+  const confirmed = pairHz(inner.confirmed, outer.confirmed);
+  if (confirmed === null) {
+    return unavailableIfShiftFeedback(scope, epoch, providerGeneration);
+  }
   const busy = inner.busy || outer.busy;
   const innerForTarget = inner.busy && inner.target !== null ? inner.target : inner.confirmed;
   const outerForTarget = outer.busy && outer.target !== null ? outer.target : outer.confirmed;
-  const target = busy ? deriveIfShift(toHz(innerForTarget), toHz(outerForTarget)) : null;
+  const target = busy ? pairHz(innerForTarget, outerForTarget) : null;
   const innerForRequested = inner.requestedTarget ?? inner.confirmed;
   const outerForRequested = outer.requestedTarget ?? outer.confirmed;
   const requestedTarget = inner.requestedTarget === null && outer.requestedTarget === null
-    ? null : deriveIfShift(toHz(innerForRequested), toHz(outerForRequested));
+    ? null : pairHz(innerForRequested, outerForRequested);
   const { phase, outcome } = busy
     ? { phase: mergeBusyPhase(inner, outer), outcome: null }
     : mergeTerminalOutcome(inner, outer);

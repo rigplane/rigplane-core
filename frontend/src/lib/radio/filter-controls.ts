@@ -5,8 +5,10 @@
  * No imports from `components-v2/*`. Safe to use in `$lib/runtime/`.
  */
 
-// PBT raw <-> display conversion
-// Reads range from capabilities if available, falls back to IC-7610 defaults
+// PBT raw <-> display conversion. The Hz converters live on the measured
+// lattice below (MOR-2497); `PbtRange`/`pbtRangeFromCaps` remain as the
+// structural gate that decides whether a caps payload declares a usable
+// `controls.pbt_inner` entry at all.
 import { getControlRange } from '$lib/stores/capabilities.svelte';
 import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
 import { exactDecimalInteger, exactDecimalNumber } from '$lib/types/exact-decimal';
@@ -19,9 +21,6 @@ const FILTER_WIDTH_MIN = 50;
 const FILTER_WIDTH_MAX = 3600;
 const FILTER_WIDTH_STEP = 50;
 
-// Default PBT range (IC-7610 / standard CI-V)
-const PBT_DEFAULTS = { rawCenter: 128, displayMin: -1200, displayMax: 1200 } as const;
-
 export type PbtRange = { rawCenter: number; displayMin: number; displayMax: number };
 
 /** Legacy numeric consumers must not inspect discriminated exact domains. */
@@ -29,43 +28,23 @@ function isLegacyControlRange(control: unknown): control is CapabilityControlRan
   return control !== null && typeof control === 'object' && !('mapping' in control);
 }
 
-function pbtRange(): PbtRange {
-  try {
-    const ctrl = getControlRange('pbt_inner');
-    if (
-      ctrl &&
-      ctrl.raw_center !== undefined &&
-      ctrl.display_min !== undefined &&
-      ctrl.display_max !== undefined
-    ) {
-      return {
-        rawCenter: ctrl.raw_center,
-        displayMin: ctrl.display_min,
-        displayMax: ctrl.display_max,
-      };
-    }
-  } catch {
-    // capabilities store not available (e.g. in tests)
-  }
-  return PBT_DEFAULTS;
-}
-
 /**
  * Derives a `PbtRange` explicitly from a `Capabilities` object's own
- * `controls.pbt_inner` entry (MOR-1284 F1) — the same shape `pbtRange()`
- * reads from the capabilities STORE singleton, but sourced from an argument
- * a caller already has in hand rather than a module-global. Returns
- * `undefined` when the caps object carries no usable range, so `pbtRawToHz`/
- * `pbtHzToRaw` fall through to their own store-lookup default.
+ * `controls.pbt_inner` entry (MOR-1284 F1) — the structural gate saying
+ * this caps payload declares a usable PBT range. Callers still holding one
+ * (MOR-2497, after the Hz converters moved to the measured lattice):
+ * `panel-commands.ts`'s write-path guards, `panel-adapters.ts`'s
+ * `pbtStructural` and derived IF-shift availability gate,
+ * `radio-view-model-adapter.ts`'s `hasPbtRange`,
+ * `scope-passband-display.ts`'s `validScale`, and
+ * `toAudioSpectrumProps`'s renderer `pbtRange` prop. Returns `undefined`
+ * when the caps object carries no usable range: absent, never fabricated.
  *
  * MOR-1291: "usable" requires each of `raw_center`/`display_min`/
  * `display_max` to be a finite number (rejecting `NaN`/`Infinity`, not just
- * `undefined`), plus `raw_center !== 0` and `display_max !== 0` — both are
- * divisors in `pbtRawToHz`/`pbtHzToRaw`, so a zero there would silently
- * produce `NaN`/`Infinity` "known" readings rather than an honest
- * unavailable one. A caps payload with a malformed `pbt_inner` entry is
- * treated the same as one with no entry at all: `undefined`, never a
- * fabricated or garbage value.
+ * `undefined`), plus `raw_center !== 0` and `display_max !== 0`. A caps
+ * payload with a malformed `pbt_inner` entry is treated the same as one
+ * with no entry at all: `undefined`, never a fabricated or garbage value.
  */
 export function pbtRangeFromCaps(caps: Capabilities | null | undefined): PbtRange | undefined {
   const ctrl = caps?.controls?.pbt_inner;
@@ -79,35 +58,6 @@ export function pbtRangeFromCaps(caps: Capabilities | null | undefined): PbtRang
     return undefined;
   }
   return { rawCenter, displayMin, displayMax };
-}
-
-/**
- * `range`, when supplied (MOR-1284 F1), is used INSTEAD of the capabilities
- * STORE lookup — pass `pbtRangeFromCaps(caps)` from a caller that already
- * holds a `caps` argument so the conversion is a pure function of that
- * argument rather than a hidden dependency on module-global store state
- * (the fabrication class MOR-1280's F2 fix closed for filterWidthMin/Max).
- * Every EXISTING call site omits `range` and keeps today's store-lookup
- * behavior unchanged — this parameter is strictly additive.
- */
-export function pbtRawToHz(raw: number, range?: PbtRange): number {
-  const { rawCenter, displayMax } = range ?? pbtRange();
-  return Math.round((raw - rawCenter) * (displayMax / rawCenter));
-}
-
-/**
- * `range`, when supplied (MOR-1291, mirroring `pbtRawToHz`'s own `range`
- * parameter, MOR-1284 F1), is used INSTEAD of the capabilities STORE lookup
- * — pass `pbtRangeFromCaps(caps)` from a caller that already holds a `caps`
- * argument so the conversion is a pure function of that argument rather than
- * a hidden dependency on module-global store state. Every EXISTING call site
- * omits `range` and keeps today's store-lookup behavior unchanged — this
- * parameter is strictly additive.
- */
-export function pbtHzToRaw(hz: number, range?: PbtRange): number {
-  const { rawCenter, displayMax } = range ?? pbtRange();
-  const raw = Math.round(hz * (rawCenter / displayMax) + rawCenter);
-  return Math.max(0, Math.min(255, raw));
 }
 
 // Measured IC PBT passband-edge lattice (MOR-2497).
@@ -129,11 +79,12 @@ export function pbtHzToRaw(hz: number, range?: PbtRange): number {
 // pinned against the radio's own display (front panel read `SFT +900`/`BW
 // 1.8` at raw 254, filter 3600 -- a 25 Hz step would have read `SFT +450`).
 
-/** PBT lattice step measured on the IC-7610 (LAN) on 2026-09-17, against the
- *  radio's own front-panel display. The IC-705 and IC-9700 were not on the
- *  bench, so this value is a parameter of the conversion below, not a literal
- *  inside it — a caller applying it to an unmeasured rig is making an
- *  inference, and the call site is where that inference must be visible. */
+/** PBT lattice step measured on the IC-7610 (LAN) on 2026-09-16, against the
+ *  radio's own front-panel display (MOR-2497). The IC-705 and IC-9700 were
+ *  not on the bench, so this value is a parameter of the conversion below,
+ *  not a literal inside it — a caller applying it to an unmeasured rig is
+ *  making an inference, and the call site is where that inference must be
+ *  visible. */
 export const PBT_MEASURED_STEP_HZ = 50;
 
 type PbtLattice = Readonly<{
@@ -194,7 +145,7 @@ export function measuredPbtRawToHz(raw: number, filterWidthHz: number, stepHz: n
  *  exactly `stepHz` apart in Hz, so only an exact half-step ties, and the tie
  *  resolves toward the centre for the same reason as in
  *  `nearestLatticePosition`. An `hz` beyond the lattice clamps to the extreme
- *  reachable raw, the same clamp `pbtHzToRaw` above applies. */
+ *  reachable raw. */
 export function measuredPbtHzToRaw(hz: number, filterWidthHz: number, stepHz: number): number | null {
   const lattice = pbtLattice(filterWidthHz, stepHz);
   if (lattice === null || !Number.isFinite(hz)) return null;
@@ -209,6 +160,26 @@ export function measuredPbtHzToRaw(hz: number, filterWidthHz: number, stepHz: nu
     ? (dLo < dHi ? lo : hi)
     : (Math.abs(lo - centre) <= Math.abs(hi - centre) ? lo : hi);
   return latticeRaw(lattice, Math.max(0, Math.min(last, i)));
+}
+
+/** The slider/display domain of the measured twin-PBT lattice — the ONE
+ *  derivation of PBT control bounds (MOR-2497). One edge spans
+ *  +/-floor(filterWidthHz/(2*stepHz))*stepHz — the same measured span
+ *  `measuredPbtRawToHz`/`measuredPbtHzToRaw` convert on and
+ *  `mapIfShiftToPbt` clamps its writes to — with the lattice's own step
+ *  spacing. Returns `null` exactly when `pbtLattice` forms no lattice
+ *  (zero, negative, non-finite, or a width that is not a whole multiple of
+ *  the step): callers in the props/adapter layers treat that as "no domain
+ *  key" and keep their existing `hasPbt` gating — never a NaN bound, never
+ *  the retired fabricated +/-1200. */
+export function measuredPbtDisplayDomain(
+  filterWidthHz: number,
+  stepHz: number,
+): ControlDisplayDomain | null {
+  const lattice = pbtLattice(filterWidthHz, stepHz);
+  if (lattice === null) return null;
+  const span = ((lattice.positions - 1) / 2) * stepHz;
+  return { min: -span, max: span, step: stepHz, origin: 0 };
 }
 
 // Generic control display <-> CI-V wire conversion (MOR-490 / MOR-498)
@@ -793,18 +764,13 @@ export function quantizeFilterWidthToRule(
  *  +1800 Hz each on the measured lattice, so the true shift is +1800 Hz and
  *  the clamp reported 1200. Raw 1 on both edges gives -1800 Hz the same way.
  *
- *  What bounds the result instead. The display-side callers -- in
+ *  What bounds the result instead. Every display-side caller -- in
  *  `panel-adapters.ts`, `radio-view-model-adapter.ts`,
- *  `scope-passband-display.ts` and `panel-props.ts` -- pass two `pbtRawToHz`
- *  outputs taken at ONE declared range, so the mean lies inside that range.
- *  Every profile the loader reads -- `rigs/*.toml`, non-recursive, skipping
- *  `_`-prefixed and `.draft.toml` names, per `rig_loader.py` -- either
- *  declares `[controls.pbt_inner]` with `raw_center = 128` and
- *  `display_min`/`display_max` of -1200/+1200, or declares no PBT range at
- *  all and falls through to `PBT_DEFAULTS`, which is the same +/-1200. So the
- *  outputs span -1200..+1191 and the clamp never cut them. A caps payload declaring a wider
- *  range -- which the tests exercise deliberately -- now produces the larger
- *  shift instead of a truncated one, and that is the behaviour change.
+ *  `scope-passband-display.ts` and `panel-props.ts` -- converts both edges
+ *  with `measuredPbtRawToHz` at ONE width and step, and one edge cannot
+ *  leave +/-floor(width/(2*step))*step Hz there, so their mean cannot
+ *  either (MOR-2497). Callers with no lattice convert nothing and never
+ *  reach this helper.
  */
 export function deriveIfShift(pbtInner: number, pbtOuter: number): number {
   return Math.round((pbtInner + pbtOuter) / 2);

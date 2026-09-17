@@ -798,6 +798,70 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
       });
     });
 
+    // MOR-2497: the panel's PBT readings and slider bounds come off the
+    // measured lattice — step per mode from the profile (`pbtStepHz`), span
+    // +/-floor(width/(2*step))*step at the OBSERVED filter width — not the
+    // retired fixed +/-1200 proportional scale.
+    describe('PBT Hz readings and slider bounds follow the measured lattice', () => {
+      const pbtCaps = (): any => ({
+        capabilities: ['pbt', 'filter_width'],
+        filterConfig: {
+          USB: { defaults: [3600, 1800, 500], fixed: false, pbtStepHz: 50 },
+          AM: { defaults: [9000, 6000, 3000], fixed: false, pbtStepHz: 200 },
+          FM: { defaults: [15000, 10000, 7000], fixed: true },
+        },
+      });
+      const pbtState = (mode: string, filterWidth: number, raws: [number, number]): any => ({
+        active: 'MAIN',
+        main: { mode, dataMode: 0, filterWidth, pbtInner: raws[0], pbtOuter: raws[1] },
+      });
+
+      it('reads raw 254 at USB 3600 as +1800 Hz and offers the +/-1800/50 domain', () => {
+        const props = toFilterProps(pbtState('USB', 3600, [254, 128]), pbtCaps());
+        expect(props.pbtInner).toBe(1800);
+        expect(props.pbtOuter).toBe(0);
+        expect(props.pbtDomain).toEqual({ min: -1800, max: 1800, step: 50, origin: 0 });
+      });
+
+      it('reads raw 128 at width 250 as 0 Hz and offers only +/-100, not +/-125', () => {
+        const props = toFilterProps(pbtState('USB', 250, [128, 128]), pbtCaps());
+        expect(props.pbtInner).toBe(0);
+        expect(props.pbtDomain).toEqual({ min: -100, max: 100, step: 50, origin: 0 });
+      });
+
+      it('takes the 200 Hz AM step and the +/-3000 span at AM 6000', () => {
+        const props = toFilterProps(pbtState('AM', 6000, [128, 128]), pbtCaps());
+        expect(props.pbtDomain).toEqual({ min: -3000, max: 3000, step: 200, origin: 0 });
+      });
+
+      it('emits no domain and no Hz reading in FM, where the mode has no twin PBT', () => {
+        const props = toFilterProps(pbtState('FM', 9000, [128, 128]), pbtCaps());
+        expect(props.hasPbt).toBe(false);
+        expect(props.pbtDomain).toBeNull();
+        expect(props.pbtInner).toBeNull();
+      });
+
+      it('emits no domain and no Hz reading when the width is unobserved', () => {
+        const state = pbtState('USB', 3600, [254, 254]);
+        delete state.main.filterWidth;
+        const props = toFilterProps(state, pbtCaps());
+        expect(props.pbtDomain).toBeNull();
+        expect(props.pbtInner).toBeNull();
+        expect(props.pbtOuter).toBeNull();
+      });
+
+      it('legacy payload without pbtStepHz: hasPbt stays true, but no fabricated +/-1200 reading', () => {
+        const legacy: any = {
+          capabilities: ['pbt', 'filter_width'],
+          filterConfig: { USB: { defaults: [3600, 1800, 500], fixed: false } },
+        };
+        const props = toFilterProps(pbtState('USB', 3600, [200, 128]), legacy);
+        expect(props.hasPbt).toBe(true);
+        expect(props.pbtDomain).toBeNull();
+        expect(props.pbtInner).toBeNull();
+      });
+    });
+
     it('does not invent USB / a three-filter FIL1-FIL3 catalog without state or capabilities', () => {
       const props = toFilterProps(null, null);
       expect(props.currentMode).toBe('---');

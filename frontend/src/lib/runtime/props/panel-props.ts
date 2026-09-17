@@ -16,9 +16,10 @@ import type { Capabilities, ControlDomain, FilterModeConfig } from '$lib/types/c
 import {
   controlDisplayDomain,
   deriveIfShift,
+  measuredPbtDisplayDomain,
+  measuredPbtRawToHz,
   nrRawToDisplay,
   pbtRangeFromCaps,
-  pbtRawToHz,
   projectNrLevel,
   resolveControlContract,
 } from '$lib/radio/filter-controls';
@@ -397,8 +398,18 @@ export interface FilterProps {
   ifShiftDomain: ControlDisplayDomain | null;
   hasIfShift: boolean;
   hasPbt: boolean;
-  pbtInner: number;
-  pbtOuter: number;
+  /** PBT edge readings in Hz on the measured lattice, or `null` when none
+   *  converts — no step for the mode (FM), an unobserved filter width, or a
+   *  legacy payload that publishes no `pbtStepHz`. Never a value fabricated
+   *  off the retired fixed +/-1200 scale (MOR-2497). */
+  pbtInner: number | null;
+  pbtOuter: number | null;
+  /** The measured twin-PBT slider domain at the observed width and the
+   *  mode's step (`measuredPbtDisplayDomain`, MOR-2497), or `null` when no
+   *  lattice forms — `FilterPanel.svelte` then keeps its own explicit
+   *  today-behaviour constants, the same fallback contract `ifShiftDomain`
+   *  established (MOR-1681). */
+  pbtDomain: ControlDisplayDomain | null;
 }
 
 export function toFilterProps(
@@ -406,9 +417,24 @@ export function toFilterProps(
   caps: Capabilities | null,
 ): FilterProps {
   const rx = state ? activeRx(state) : null;
-  const pbtInner = pbtRawToHz(rx?.pbtInner ?? 128);
-  const pbtOuter = pbtRawToHz(rx?.pbtOuter ?? 128);
   const filterConfig = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode);
+  // MOR-2497: PBT reads in Hz on the measured lattice — the mode's declared
+  // step and the OBSERVED filter width — through the one derivation both
+  // control surfaces share (`measuredPbtDisplayDomain`). No lattice (no step
+  // for this mode, an unobserved width, a legacy payload) means no reading
+  // and no domain, never the retired fabricated +/-1200 conversion.
+  const pbtStepHz = filterConfig?.pbtStepHz;
+  const pbtWidthHz = rx?.filterWidth;
+  const pbtDomain = pbtStepHz !== undefined && typeof pbtWidthHz === 'number'
+    ? measuredPbtDisplayDomain(pbtWidthHz, pbtStepHz)
+    : null;
+  const pbtHz = (raw: number | undefined): number | null => (
+    raw === undefined || pbtStepHz === undefined || typeof pbtWidthHz !== 'number'
+      ? null
+      : measuredPbtRawToHz(raw, pbtWidthHz, pbtStepHz)
+  );
+  const pbtInner = pbtHz(rx?.pbtInner);
+  const pbtOuter = pbtHz(rx?.pbtOuter);
   return {
     // MOR-1409 A11: no fabricated USB / three-filter FIL1-FIL3 catalog
     // stand-in. `filterLabels` is a capability-derived choice set (like
@@ -452,7 +478,7 @@ export function toFilterProps(
     filterConfig,
     ifShift: hasCap(caps, 'if_shift')
       ? (rx?.ifShift ?? 0)
-      : deriveIfShift(pbtInner, pbtOuter),
+      : (pbtInner !== null && pbtOuter !== null ? deriveIfShift(pbtInner, pbtOuter) : 0),
     // MOR-1681: the IF-shift range/step come from the profile's published
     // `controls.if_shift` entry when usable; the legacy fallback step is
     // the family's today UI step (25 Hz, the semantic row and non-table
@@ -476,6 +502,7 @@ export function toFilterProps(
     hasPbt: hasCap(caps, 'pbt') && modeHasTwinPbt(caps, filterConfig),
     pbtInner,
     pbtOuter,
+    pbtDomain,
   };
 }
 
