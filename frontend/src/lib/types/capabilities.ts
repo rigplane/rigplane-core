@@ -54,8 +54,13 @@ export interface FilterModeConfig {
    *  server side by
    *  `test_pbt_step_declared_by_every_shipped_pbt_capable_profile`. So within
    *  that table an absent value cannot mean "this radio was not migrated yet",
-   *  nor "this mode was not filled in". A mode with no entry in the table at
-   *  all is outside the guarantee and reaches this type as no config.
+   *  nor "this mode was not filled in". A mode with no entry of its own is
+   *  outside the guarantee, but not necessarily without a step:
+   *  `resolveFilterModeConfig` falls back to a related entry -- `CW-R` to
+   *  `CW`, `RTTY-R` to `RTTY`, the SSB variants to `SSB` -- and then carries
+   *  that mode's value. Only a mode with neither an entry nor a fallback, as
+   *  the IC-7610's `PSK` is, resolves to no config at all, and nothing here
+   *  speaks for whether that radio has twin PBT there.
    *  Distinct from `stepHz` above, which quantises the filter WIDTH; the two
    *  are both 200 in AM and differ in USB. */
   pbtStepHz?: number;

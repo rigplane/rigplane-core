@@ -216,8 +216,13 @@ class FilterWidthRule:
     #: both over every shipped rig rather than over a chosen few: among the
     #: modes a profile's filter table lists, every one other than FM, WFM and
     #: DV declares a step, and none of those three does. A mode absent from
-    #: that table is outside the guarantee -- the IC-7610 lists PSK in
-    #: ``[modes]`` with no filter entry, and nothing here speaks for it.
+    #: that table is outside the guarantee, but not necessarily without a step:
+    #: the browser's ``resolveFilterModeConfig`` falls back to a related entry
+    #: -- ``CW-R`` to ``CW``, ``RTTY-R`` to ``RTTY``, the SSB variants to
+    #: ``SSB`` -- and then carries that mode's value. Only a mode with neither
+    #: an entry nor a fallback, as the IC-7610's ``PSK`` is, resolves to
+    #: nothing, and nothing here speaks for whether that radio has twin PBT
+    #: there.
     #: Distinct from ``step_hz`` above, which quantises the filter WIDTH; the
     #: two collide at 200 in AM and differ in USB.
     pbt_step_hz: int | None = None
