@@ -309,6 +309,33 @@ export function toRfFrontEndProps(
 
 /* ── Filter ──────────────────────────────────────────────────── */
 
+/** Whether the CURRENT mode has twin PBT, given the radio's published filter
+ *  table. Twin PBT belongs to the mode, not only to the radio: the IC-7300
+ *  Advanced Manual p.40 heads its Twin PBT section "SSB, CW, RTTY and AM
+ *  modes", and the profile says which by declaring `pbtStepHz` per mode.
+ *
+ *  Two absences have to be told apart, and conflating them is the whole reason
+ *  this is a function rather than one `!== undefined`:
+ *
+ *  - a payload where SOME mode declares a step and this one does not — the
+ *    radio has no twin PBT here, so the controls go away;
+ *  - a payload where NO mode declares one — an older server that does not
+ *    publish the field at all. Reading that as "no PBT anywhere" would take the
+ *    controls away from a radio that has them, so the radio-wide capability
+ *    decides, exactly as it did before the field existed.
+ *
+ *  The second case is not hypothetical: the captured IC-7300 capabilities
+ *  fixture in `adapters/__tests__/fixtures/` predates the field. */
+function modeHasTwinPbt(
+  caps: Capabilities | null,
+  modeConfig: FilterModeConfig | null,
+): boolean {
+  if (modeConfig?.pbtStepHz !== undefined) return true;
+  const published = Object.values(caps?.filterConfig ?? {});
+  const anyModeDeclares = published.some((entry) => entry?.pbtStepHz !== undefined);
+  return !anyModeDeclares;
+}
+
 export function resolveFilterModeConfig(
   caps: Capabilities | null,
   mode: string | undefined,
@@ -435,7 +462,14 @@ export function toFilterProps(
     // radio gets the row hidden instead of a permanently-disabled control
     // with a synthetic reading (PBT Inner/Outer are the real controls there).
     hasIfShift: hasCap(caps, 'if_shift'),
-    hasPbt: hasCap(caps, 'pbt'),
+    // MOR-2497: twin PBT is a property of the MODE, not only of the radio.
+    // The IC-7300 Advanced Manual p.40 heads its Twin PBT section "SSB, CW,
+    // RTTY and AM modes", and the profile says so per mode by declaring a
+    // `pbtStepHz` for the modes that have it and none for those that do not.
+    // Gating on the radio-wide capability alone left the PBT controls live in
+    // FM, where the radio has no passband tuning at all, so the panel offered
+    // two controls that command nothing.
+    hasPbt: hasCap(caps, 'pbt') && modeHasTwinPbt(caps, filterConfig),
     pbtInner,
     pbtOuter,
   };

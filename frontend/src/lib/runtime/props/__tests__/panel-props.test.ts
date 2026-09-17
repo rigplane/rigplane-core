@@ -741,6 +741,63 @@ describe('A11 — batch-A projections do not fabricate defaults (MOR-1409)', () 
   });
 
   describe('toFilterProps', () => {
+    // MOR-2497: twin PBT belongs to the mode, not only to the radio. The
+    // IC-7300 Advanced Manual p.40 heads its Twin PBT section "SSB, CW, RTTY
+    // and AM modes"; the profile carries that per mode as `pbtStepHz`, present
+    // for the modes that have PBT and absent for those that do not. Before
+    // this gate, `hasPbt` followed the radio-wide capability alone and the
+    // panel showed two live PBT controls in FM, commanding nothing.
+    describe('hasPbt follows the mode, not just the radio capability', () => {
+      const capsFor = (): any => ({
+        capabilities: ['pbt', 'filter_width'],
+        filterConfig: {
+          USB: { defaults: [3000, 2400, 1800], fixed: false, pbtStepHz: 50 },
+          AM: { defaults: [9000, 6000, 3000], fixed: false, stepHz: 200, pbtStepHz: 200 },
+          FM: { defaults: [15000, 10000, 7000], fixed: true },
+        },
+      });
+      const stateIn = (mode: string): any => ({
+        active: 'MAIN',
+        main: { mode, dataMode: 0, pbtInner: 128, pbtOuter: 128 },
+      });
+
+      it.each([['USB', true], ['AM', true], ['FM', false]])(
+        'in %s mode reports %s', (mode, expected) => {
+          expect(toFilterProps(stateIn(mode), capsFor()).hasPbt).toBe(expected);
+        });
+
+      it('stays false when the radio declares no pbt capability at all', () => {
+        const caps = { ...capsFor(), capabilities: ['filter_width'] };
+        expect(toFilterProps(stateIn('USB'), caps).hasPbt).toBe(false);
+      });
+
+      it('falls back to the radio capability when NO mode publishes a step', () => {
+        // An older server that does not publish `pbtStepHz` at all. Reading
+        // that as "no PBT anywhere" would take the controls away from a radio
+        // that has them, so the radio-wide capability decides, as it did
+        // before the field existed. The captured IC-7300 capabilities fixture
+        // under adapters/__tests__/fixtures/ is exactly this payload.
+        const legacy: any = {
+          capabilities: ['pbt', 'filter_width'],
+          filterConfig: {
+            USB: { defaults: [3000, 2400, 1800], fixed: false },
+            FM: { defaults: [15000], fixed: true },
+          },
+        };
+        expect(toFilterProps(stateIn('USB'), legacy).hasPbt).toBe(true);
+        // And even FM stays on there -- not because the radio has PBT in FM,
+        // but because that payload says nothing about modes, and inventing a
+        // refusal from silence is the failure this separation exists to avoid.
+        expect(toFilterProps(stateIn('FM'), legacy).hasPbt).toBe(true);
+      });
+
+      it('is false for a mode the profile does not describe', () => {
+        // No filterConfig entry and no fallback candidate: nothing says this
+        // radio has PBT there, so the controls stay off rather than guessing.
+        expect(toFilterProps(stateIn('PSK'), capsFor()).hasPbt).toBe(false);
+      });
+    });
+
     it('does not invent USB / a three-filter FIL1-FIL3 catalog without state or capabilities', () => {
       const props = toFilterProps(null, null);
       expect(props.currentMode).toBe('---');
