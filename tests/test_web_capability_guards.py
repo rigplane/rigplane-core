@@ -487,6 +487,15 @@ class TestCapabilitiesEndpoint:
         assert data["filterConfig"]["USB-D"]["defaults"] == [3000, 1200, 500]
         assert data["filterConfig"]["AM"]["stepHz"] == 200
         assert data["filterConfig"]["FM"]["fixed"] is True
+        # MOR-2497: the per-mode twin-PBT step reaches the browser, and its
+        # ABSENCE is the signal that a mode has no twin PBT (FM). `stepHz` and
+        # `pbtStepHz` are different quantities that collide at 200 in AM, so
+        # USB is pinned too, where the width step is absent and the PBT step
+        # is 50.
+        assert data["filterConfig"]["USB"]["pbtStepHz"] == 50
+        assert data["filterConfig"]["AM"]["pbtStepHz"] == 200
+        assert "stepHz" not in data["filterConfig"]["USB"]
+        assert "pbtStepHz" not in data["filterConfig"]["FM"]
 
     @pytest.mark.asyncio
     async def test_capabilities_include_keyboard_config(self):

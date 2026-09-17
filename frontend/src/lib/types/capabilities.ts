@@ -43,7 +43,13 @@ export interface FilterSegmentConfig {
 export interface FilterModeConfig {
   defaults: number[];
   fixed: boolean;
+  /** Quantisation of the filter WIDTH for this mode. */
   stepHz?: number;
+  /** Passband-tuning step for this mode, in Hz. Absent means the mode has no
+   *  twin PBT at all -- the IC-7300 Advanced Manual heads its Twin PBT section
+   *  "SSB, CW, RTTY and AM modes" -- so a consumer must read its absence as
+   *  "no PBT here", never as a default. */
+  pbtStepHz?: number;
   minHz?: number;
   maxHz?: number;
   segments?: FilterSegmentConfig[];

@@ -561,6 +561,7 @@ def _serialize_filter_config(profile: "RadioProfile") -> dict[str, dict[str, obj
             "defaults": list(rule.defaults),
             "fixed": rule.fixed,
             **({"stepHz": rule.step_hz} if rule.step_hz is not None else {}),
+            **({"pbtStepHz": rule.pbt_step_hz} if rule.pbt_step_hz is not None else {}),
             **({"minHz": rule.min_hz} if rule.min_hz is not None else {}),
             **({"maxHz": rule.max_hz} if rule.max_hz is not None else {}),
             **(

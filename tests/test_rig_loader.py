@@ -1716,6 +1716,37 @@ class TestToProfile:
         assert profile.filter_config["USB-D"].defaults == (3000, 1200, 500)
         assert profile.filter_config["FM"].fixed is True
 
+    def test_pbt_step_is_declared_per_mode_and_absent_where_there_is_no_pbt(self):
+        """Twin PBT step per IC-7300 Advanced Manual p.40.
+
+        Its heading names the modes that have twin PBT -- "SSB, CW, RTTY and AM
+        modes" -- and its text gives the steps: 50 Hz in SSB, CW and RTTY,
+        200 Hz in AM. FM is absent from that list, so the profile declares no
+        step for it and a consumer must read that absence as "no PBT in this
+        mode" rather than substituting a default.
+        """
+        profile = load_rig(TEMPLATE_PATH).to_profile()
+        assert profile.filter_config is not None
+        config = profile.filter_config
+        for mode in ("USB", "LSB", "USB-D", "LSB-D", "CW", "CW-R", "RTTY", "RTTY-R"):
+            assert config[mode].pbt_step_hz == 50, mode
+        assert config["AM"].pbt_step_hz == 200
+        assert config["FM"].pbt_step_hz is None
+
+    def test_pbt_step_is_not_the_filter_width_step(self):
+        """The two per-mode steps are different quantities that collide in AM.
+
+        `step_hz` quantises the filter WIDTH; `pbt_step_hz` quantises the
+        passband offset. In AM both happen to be 200, which is exactly why a
+        reader might treat one as the other -- so this pins a mode where they
+        differ: USB declares no width step at all (its widths come from
+        segments) while its PBT step is 50.
+        """
+        config = load_rig(TEMPLATE_PATH).to_profile().filter_config
+        assert config is not None
+        assert config["AM"].step_hz == 200 and config["AM"].pbt_step_hz == 200
+        assert config["USB"].step_hz is None and config["USB"].pbt_step_hz == 50
+
     def test_model_and_id(self):
         profile = load_rig(TEMPLATE_PATH).to_profile()
         assert profile.model == "IC-7610"

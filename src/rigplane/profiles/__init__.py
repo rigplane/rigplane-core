@@ -205,6 +205,12 @@ class FilterWidthRule:
     max_hz: int | None = None
     segments: tuple[FilterWidthSegment, ...] = ()
     table: tuple[int, ...] = ()
+    #: Passband-tuning step for this mode, in Hz. ``None`` means the mode has
+    #: no twin PBT at all, which is why it is absent rather than zero: the
+    #: IC-7300 Advanced Manual heads its Twin PBT section "SSB, CW, RTTY and
+    #: AM modes", so FM (and WFM/DV) have no passband tuning to describe.
+    #: Distinct from ``step_hz`` above, which quantises the filter WIDTH.
+    pbt_step_hz: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
