@@ -1030,16 +1030,41 @@ describe('passband scalar feedback (MOR-1687 part 1)', () => {
 
   it.each(ROWS)('%s: keeps the operator\'s requested value on the thumb while pending — no snap-back', (field, handler, control, feedbackKey) => {
     const spy = vi.fn();
-    withSurface(base(), (s) => {
-      const input = s.input(`filter-${field}`)!;
+    // A live view: a stale readback push arriving mid-pending changes the
+    // field's own display value, which re-evaluates the input's value
+    // expression — the gesture draft must still win over that push.
+    const state = new SvelteMap<string, RadioViewModel>([['view', base()]]);
+    const withPushedReadback = (value: number): RadioViewModel => {
+      const current = state.get('view')!;
+      const group = current.filterPassband!;
+      const original = group[field] as {
+        reading: { status: 'known'; value: number };
+        display?: { state: string; value: number };
+      };
+      const pushed = original.display === undefined
+        ? { ...original, reading: { status: 'known' as const, value } }
+        : { ...original, display: { ...original.display, value } };
+      return { ...current, filterPassband: { ...group, [field]: pushed } as FilterPassbandViewModel };
+    };
+    const component = mount(FilterInstrumentHostFixture, { target, props: {
+      get view() { return state.get('view')!; },
+      renderSurface: true,
+      get [feedbackKey]() { return passbandFeedback(control, PENDING); },
+      get [handler]() { return spy; },
+    } as Record<string, unknown> });
+    try {
+      flushSync();
+      const input = target.querySelector<HTMLInputElement>(`[data-testid="filter-${field}"] input`)!;
       input.value = '600';
       input.dispatchEvent(new Event('input', { bubbles: true }));
       flushSync();
       expect(spy).toHaveBeenCalledExactlyOnceWith(600);
       expect(input.value).toBe('600');
       expect(input.dataset.commandPhase).toBe('submitted');
-      expect(s.output(`filter-${field}`)!.textContent).toBe('0');
-    }, { [handler]: spy }, { [feedbackKey]: passbandFeedback(control, PENDING) } as PendingProps);
+      expect(target.querySelector<HTMLElement>(`[data-testid="filter-${field}"] output`)!.textContent).toBe('0');
+      flushSync(() => state.set('view', withPushedReadback(25)));
+      expect(input.value).toBe('600');
+    } finally { unmount(component); }
   });
 
   it.each(ROWS)('%s: reports confirmed with the confirmed Hz', (field, _handler, control, feedbackKey) => {
