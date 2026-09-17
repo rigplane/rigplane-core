@@ -539,7 +539,9 @@ class RadioProfile:
     ) -> FilterWidthRule | None:
         if not self.filter_config or not mode:
             return None
-        base_mode = str(mode).upper()
+        # Runtime callers pass Mode.name ("CW_R"); profile keys are hyphenated
+        # ("CW-R") — without this lookup and fallback both miss (MOR-2505).
+        base_mode = str(mode).upper().replace("_", "-")
         candidates: list[str] = []
         if data_mode > 0:
             candidates.append(f"{base_mode}-D")
