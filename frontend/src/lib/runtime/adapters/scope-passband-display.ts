@@ -1,8 +1,9 @@
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import {
-  deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps, PBT_MEASURED_STEP_HZ,
+  deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps,
 } from '$lib/radio/filter-controls';
+import { resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
 import { findActiveBand, flattenBands } from '$lib/radio/band-plan';
 import type { ScopeFramePresentation } from '../scope-frame-host';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
@@ -201,14 +202,21 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
   }
   const data = has('data_mode') ? read(`${key}.dataMode`, rx.dataMode) : 'structurally-unsupported';
   // MOR-2497 step 2: PBT raw -> Hz on the lattice the radio actually snaps to,
-  // whose spacing is the measured 50 Hz step and whose span is the CURRENT
-  // filter width -- not the fixed +/-1200 Hz the profile declares. `width` is
-  // the observed filter width read above; a width that forms no lattice
-  // (absent, zero, not a multiple of the step) yields `null` here and the
-  // existing `typeof shiftHz !== 'number'` guard below turns that into
-  // `invalid-observation`, the same refusal an unreadable PBT already got.
+  // whose spacing is the CURRENT mode's declared step (`pbtStepHz`, #3519 —
+  // 50 Hz in SSB/CW/RTTY, 200 Hz in AM, absent where the mode has no twin PBT)
+  // and whose span is the CURRENT filter width -- not the fixed +/-1200 Hz the
+  // profile declares. `width` is the observed filter width read above; a mode
+  // that declares no step (FM), or a width that forms no lattice (absent, zero,
+  // not a multiple of the step), yields `null` here and the existing
+  // `typeof shiftHz !== 'number'` guard below turns that into
+  // `invalid-observation`, the same refusal an unreadable PBT already got. FM
+  // is refused for the step's absence, never because a 15000 Hz width forms no
+  // lattice; nothing falls back to 50. Resolved from the same (mode, dataMode)
+  // the view-model adapter resolves, so `strict.ifShiftHz === shiftHz` below
+  // compares two derivations of one step.
+  const pbtStep = resolveFilterModeConfig(caps, mode, rx.dataMode)?.pbtStepHz;
   const toHz = (raw: number): number | null => (
-    width === undefined ? null : measuredPbtRawToHz(raw, width, PBT_MEASURED_STEP_HZ)
+    width === undefined || pbtStep === undefined ? null : measuredPbtRawToHz(raw, width, pbtStep)
   );
   const innerHz = !native && validScale && inner !== undefined ? toHz(inner) : null;
   const outerHz = !native && validScale && outer !== undefined ? toHz(outer) : null;

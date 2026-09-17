@@ -49,7 +49,7 @@ import {
   resolveFilterModeConfig,
 } from '$lib/runtime/props/panel-props';
 import {
-  deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps, PBT_MEASURED_STEP_HZ,
+  deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps,
   resolveControlContract, projectNrLevel, controlDisplayDomain,
 } from '$lib/radio/filter-controls';
 import type { NrLevelProjection } from '$lib/radio/filter-controls';
@@ -650,17 +650,23 @@ function deriveFilterPassband(
   const pbtInnerRaw = numOrUndef(rx?.pbtInner);
   const pbtOuterRaw = numOrUndef(rx?.pbtOuter);
   // MOR-2497 step 2: raw -> Hz on the lattice the radio snaps PBT writes onto.
-  // Its spacing is the measured 50 Hz step and its span is the CURRENT filter
-  // width, so the width is now as necessary to a PBT reading as the scale is:
-  // without it there is no Hz, and `undefined` here says exactly that.
+  // Its spacing is the CURRENT mode's declared step (`pbtStepHz`, #3519 — 50 Hz
+  // in SSB/CW/RTTY, 200 Hz in AM, absent where the mode has no twin PBT at
+  // all) and its span is the CURRENT filter width, so the width and the step
+  // are both as necessary to a PBT reading as the scale is: without either
+  // there is no Hz, and `undefined` here says exactly that. No step ever falls
+  // back to 50 — FM is refused because the mode declares no step, not because
+  // its width happens to form no lattice.
   // `scope-passband-display.ts` derives the same shift independently and
   // compares the two for equality (`strict.ifShiftHz === shiftHz`), so the two
   // conversions have to move together or the passband display can never reach
   // `current`.
+  const filterConfig = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode);
+  const pbtStepHz = filterConfig?.pbtStepHz;
   const pbtWidthHz = numOrUndef(rx?.filterWidth ?? undefined);
   const pbtToHz = (raw: number | undefined): number | undefined => (
-    raw === undefined || pbtWidthHz === undefined ? undefined
-      : measuredPbtRawToHz(raw, pbtWidthHz, PBT_MEASURED_STEP_HZ) ?? undefined
+    raw === undefined || pbtWidthHz === undefined || pbtStepHz === undefined ? undefined
+      : measuredPbtRawToHz(raw, pbtWidthHz, pbtStepHz) ?? undefined
   );
   const pbtInnerHz = pbtScale ? pbtToHz(pbtInnerRaw) : undefined;
   const pbtOuterHz = pbtScale ? pbtToHz(pbtOuterRaw) : undefined;

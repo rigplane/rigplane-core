@@ -1111,6 +1111,12 @@ export interface AudioSpectrumProps {
    *  `pbtInner`/`pbtOuter` through this range only; without one it draws no
    *  PBT overlay rather than fall back to the capabilities store. */
   pbtRange?: PbtRange;
+  /** The current mode's twin-PBT lattice step (`filterConfig[mode].pbtStepHz`,
+   *  #3519), present only when the resolved mode config declares one — absent
+   *  means the mode has no twin PBT (FM) or the payload predates the field,
+   *  and the renderer then has no honest raw→Hz conversion rather than
+   *  assuming 50 Hz. */
+  pbtStepHz?: number;
   manualNotch: boolean;
   notchFreq: number;
   /** The manual-notch control's published display domain, present only
@@ -1145,6 +1151,7 @@ export function toAudioSpectrumProps(
     pbtInner: rx?.pbtInner ?? 128,
     pbtOuter: rx?.pbtOuter ?? 128,
     ...(pbtRange !== undefined ? { pbtRange } : {}),
+    ...(filterConfig?.pbtStepHz !== undefined ? { pbtStepHz: filterConfig.pbtStepHz } : {}),
     manualNotch: rx?.manualNotch ?? false,
     // notchFilter (MOR-1548): reclassified receiver-scoped.
     notchFreq,
