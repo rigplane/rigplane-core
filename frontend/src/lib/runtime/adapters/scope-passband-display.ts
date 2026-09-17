@@ -3,7 +3,7 @@ import type { ServerState } from '$lib/types/state';
 import {
   deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps,
 } from '$lib/radio/filter-controls';
-import { resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
+import { modeHasTwinPbt, resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
 import { findActiveBand, flattenBands } from '$lib/radio/band-plan';
 import type { ScopeFramePresentation } from '../scope-frame-host';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
@@ -201,26 +201,32 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
     }
   }
   const data = has('data_mode') ? read(`${key}.dataMode`, rx.dataMode) : 'structurally-unsupported';
-  // MOR-2497 step 2: PBT raw -> Hz on the lattice the radio actually snaps to,
-  // whose spacing is the CURRENT mode's declared step (`pbtStepHz`, #3519 —
-  // 50 Hz in SSB/CW/RTTY, 200 Hz in AM, absent where the mode has no twin PBT)
-  // and whose span is the CURRENT filter width -- not the fixed +/-1200 Hz the
-  // profile declares. `width` is the observed filter width read above; a mode
-  // that declares no step (FM), or a width that forms no lattice (absent, zero,
-  // not a multiple of the step), yields `null` here and the existing
-  // `typeof shiftHz !== 'number'` guard below turns that into
-  // `invalid-observation`, the same refusal an unreadable PBT already got. FM
-  // is refused for the step's absence, never because a 15000 Hz width forms no
-  // lattice; nothing falls back to 50. Resolved from the same (mode, dataMode)
-  // the view-model adapter resolves, so `strict.ifShiftHz === shiftHz` below
-  // compares two derivations of one step.
-  const pbtStep = resolveFilterModeConfig(caps, mode, rx.dataMode)?.pbtStepHz;
+  // MOR-2497 step 2: PBT raw -> Hz on the lattice the radio actually snaps
+  // to, whose spacing is the CURRENT mode's declared step (`pbtStepHz`,
+  // #3519 — 50 Hz in SSB/CW/RTTY, 200 Hz in AM) and whose span is the
+  // CURRENT filter width. Three step cases:
+  // - the mode declares a step: convert on the lattice; a width that forms
+  //   no lattice yields `null`, the same refusal an unreadable PBT gets;
+  // - another mode declares one but this one does not (FM): the mode has no
+  //   twin PBT, so there is no PBT reading at all and the shift is the
+  //   KNOWN zero of a passband that cannot be displaced — the display and
+  //   its overlay stay valid (owner ruling 2026-09-17);
+  // - no mode declares one (a payload predating the field): PBT may really
+  //   be engaged and nothing can convert it, so the reading keeps failing
+  //   closed — never a 50 Hz fallback, never a pretended zero.
+  // In the zero case the strict authority carries no shift reading either
+  // (the view-model PBT fields are non-structural there), so the comparison
+  // below pins `strict.ifShiftHz` to null rather than to the tuple's 0 —
+  // one fact stated two ways, pinned so the two sides move together.
+  const modeConfig = resolveFilterModeConfig(caps, mode, rx.dataMode);
+  const pbtStep = modeConfig?.pbtStepHz;
+  const pbtShiftZero = !native && pbtStep === undefined && !modeHasTwinPbt(caps, modeConfig);
   const toHz = (raw: number): number | null => (
     width === undefined || pbtStep === undefined ? null : measuredPbtRawToHz(raw, width, pbtStep)
   );
   const innerHz = !native && validScale && inner !== undefined ? toHz(inner) : null;
   const outerHz = !native && validScale && outer !== undefined ? toHz(outer) : null;
-  const shiftHz = native ? shift
+  const shiftHz = native ? shift : pbtShiftZero ? 0
     : innerHz !== null && outerHz !== null ? deriveIfShift(innerHz, outerHz) : undefined;
   if (invalid || !positive(frequency) || !positive(width) || !mode || !caps.modes?.some((m) => modeName(m) === mode)
     || !integer(filter) || filter === 0 || !caps.filters.includes(`FIL${filter}`)
@@ -269,7 +275,11 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
       : JSON.stringify([...context, partition.name, partition.start, partition.end, frame.endFreq - frame.startFreq]),
     strict: frequencyAligned && !!strict && strict.receiver === receiver && strict.frequencyHz === frequency
       && modeName(strict.mode ?? undefined) === mode && strict.filter === `FIL${filter}`
-      && strict.filterWidthHz === width && strict.ifShiftHz === shiftHz
+      && strict.filterWidthHz === width
+      // Modes WITH twin PBT keep the exact two-derivation equality. In the
+      // known-zero case the authority structurally has no shift reading, so
+      // null is the expected value there — not a loosening.
+      && (pbtShiftZero ? strict.ifShiftHz === null : strict.ifShiftHz === shiftHz)
       && (!has('data_mode') || strict.dataMode === data),
   };
   return result;

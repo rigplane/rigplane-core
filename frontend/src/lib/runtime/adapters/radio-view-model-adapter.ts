@@ -658,24 +658,22 @@ function deriveFilterPassband(
   // in SSB/CW/RTTY, 200 Hz in AM, absent where the mode has no twin PBT at
   // all) and its span is the CURRENT filter width, so the width and the step
   // are both as necessary to a PBT reading as the scale is: without either
-  // there is no Hz, and `undefined` here says exactly that. No step ever falls
-  // back to 50 — FM is refused because the mode declares no step, not because
-  // its width happens to form no lattice.
-  // `scope-passband-display.ts` derives the same shift independently and
-  // compares the two for equality (`strict.ifShiftHz === shiftHz`), so the two
-  // conversions have to move together or the passband display can never reach
-  // `current`.
+  // there is no Hz reading, and `undefined` here says exactly that. No step
+  // ever falls back to 50. In a mode without twin PBT this absent reading is
+  // not a passband-display refusal: `scope-passband-display.ts` takes the
+  // shift there as the KNOWN zero of a passband that cannot be displaced and
+  // pins this side's `strict.ifShiftHz` to null, one fact stated two ways.
   const filterConfig = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode);
   const pbtStepHz = filterConfig?.pbtStepHz;
   // MOR-2497 (owner ruling 2026-09-17): a mode without twin PBT (FM) has no
-  // PBT controls at all — the fields go NON-structural, and with them the
-  // derived IF-shift path that depends on them. `modeHasTwinPbt` (the ONE
-  // definition, shared with `toFilterProps`'s `hasPbt` gate) tells that
-  // absence apart from a legacy payload that declares no step in ANY mode,
-  // where the radio-wide capability keeps deciding structure, exactly as
-  // before — structure and reading are separate questions: in that legacy
-  // case the fields stay structural but still yield no Hz reading, because
-  // the step is absent either way.
+  // PBT controls at all — the fields go NON-structural, and with them this
+  // PBT-derived IF-shift reading. `modeHasTwinPbt` (the ONE definition,
+  // shared with `toFilterProps`'s `hasPbt` gate) tells that absence apart
+  // from a legacy payload that declares no step in ANY mode, where the
+  // radio-wide capability keeps deciding structure, exactly as before —
+  // structure and reading are separate questions: in that legacy case the
+  // fields stay structural but still yield no Hz reading, because the step
+  // is absent either way.
   const pbtStructural = hasPbtCap && hasPbtRange && modeHasTwinPbt(caps, filterConfig);
   const pbtWidthHz = numOrUndef(rx?.filterWidth ?? undefined);
   const pbtToHz = (raw: number | undefined): number | undefined => (
