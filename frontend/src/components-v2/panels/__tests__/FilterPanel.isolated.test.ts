@@ -828,7 +828,7 @@ describe('PBT sliders visibility', () => {
     it.each([
       ['SSB 3600 (50 Hz lattice)', { min: -1800, max: 1800, step: 50, origin: 0 }, 50],
       ['AM 6000 (200 Hz lattice)', { min: -3000, max: 3000, step: 200, origin: 0 }, 200],
-    ])('%s: one ArrowRight moves the centred inner edge by %s Hz', (_name, domain, stepHz) => {
+    ])('%s: one ArrowRight moves the centred inner edge by %s Hz', (_name, domain, stepHz: number) => {
       const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: domain });
       const labels = Array.from(t.querySelectorAll('.vc-label')).map(el => el.textContent);
       const innerIndex = labels.indexOf('PBT Inner');
