@@ -1806,9 +1806,8 @@ def test_ic7300_declares_the_transmit_meters_absent_outside_transmit() -> None:
 
 
 def test_ftx1_gates_only_sub_operator_controls_on_dual_receive() -> None:
-    """SUB freq/mode/width/meter read in single receive (MOR-2511, bench T204:
-    the FTX-1 answers ``FB;``/``MD1;``/``SH1;``/``SM1;`` there); only the SUB
-    operator controls still exist only while dual receive is on."""
+    """None of SUB freq/mode/width/meter is gated on dual receive (MOR-2511);
+    only the SUB operator controls still exist only while dual receive is on."""
 
     acquisition = get_radio_profile("FTX-1").state_acquisition
     assert acquisition is not None

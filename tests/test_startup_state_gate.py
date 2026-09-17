@@ -922,9 +922,8 @@ async def test_field_declared_absent_in_the_current_mode_does_not_hold_the_gate(
 
 
 DUAL_WATCH = FieldPath.global_("tx_state", "dual_watch")
-# Ungated since MOR-2511 (bench T204: the radio answers FB;/MD1;/SH1;/SM1; in
-# single receive), so these hold the gate open until first observation like
-# any unconditional declared field.
+# Ungated since MOR-2511, so these hold the gate open until first
+# observation like any unconditional declared field.
 FTX1_SUB_UNGATED_PATHS = (
     FieldPath.active("sub", "freq_mode", "freq_hz"),
     FieldPath.active("sub", "freq_mode", "mode"),

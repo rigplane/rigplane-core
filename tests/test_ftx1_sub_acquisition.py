@@ -1,13 +1,17 @@
 """FTX-1 SUB-receiver acquisition while the radio is in single receive.
 
-Bench 2026-09-17 (MOR-2511, acceptance build 65c1fe05): with SUB selected the
-FTX-1 receives on both sides, yet the server's ``sub`` object carried no
-observed state -- ``freqHz: 0``, ``filterWidth: null``, meter 0, field status
-``unavailable`` / ``undeclared``. The FTX-1 answers the SUB-side reads
-(``FB;``/``MD1;``/``SM1;``/``SH1;``) in single receive (MOR-2425 bench T204),
-so the poll path must acquire them there. These tests drive the production
-observation adapter against the real FTX-1 profile and a mock CAT transport
-with dual receive observed OFF -- the bench condition.
+Bench 2026-09-17 (MOR-2511, acceptance build 65c1fe05): with SUB selected, the
+server's ``sub`` object carried no observed state -- ``freqHz: 0``,
+``filterWidth: null``, meter 0, field status ``unavailable`` / ``undeclared``.
+The same session, on raw CAT with the radio in single receive (``FR01``,
+``VS1``), established that the SUB-side frequency, mode and filter-width
+reads (``FB;``/``MD1;``/``SH1;``) answer with SUB's own values. ``SM1;``
+answers there too, but whether it reports SUB's own meter in single receive
+is not established.
+
+The test below drives the production observation adapter against the real
+FTX-1 profile and a mock CAT transport with dual receive observed OFF -- the
+bench condition.
 """
 # mypy: disable-error-code=untyped-decorator
 

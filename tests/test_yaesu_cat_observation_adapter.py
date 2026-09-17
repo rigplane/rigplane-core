@@ -3065,8 +3065,8 @@ _DUAL_WATCH_PATH = "global.tx_state.dual_watch"
 
 # (id, poll method, radio read method, the declared SUB path it feeds).
 # Only the SUB operator controls stay gated on dual receive; freq/mode/
-# s_meter are acquired in single receive too (MOR-2511, bench T204 -- pinned
-# by tests/test_ftx1_sub_acquisition.py).
+# s_meter are acquired regardless (MOR-2511 -- pinned by
+# tests/test_ftx1_sub_acquisition.py).
 _SUB_GATED_ROWS: tuple[tuple[str, str, str, str], ...] = (
     (
         "sub.af_level",
