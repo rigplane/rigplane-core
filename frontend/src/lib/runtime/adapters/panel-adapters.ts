@@ -15,6 +15,7 @@ import {
   toFilterProps, toBandSelectorProps,
   toAudioSpectrumProps, toMemoryPanelProps,
   toAmberTelemetryProps, toVfoControlProps,
+  manualNotchReading,
 } from '../props/panel-props';
 import {
   makeAgcHandlers, makeModeHandlers, makeAntennaHandlers,
@@ -565,6 +566,20 @@ export function getDspControlFeedback(
   const session = currentControlSession ?? runtime.controlSession;
   const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
   const descriptor = DSP_COMMAND_DESCRIPTORS[field];
+  // MOR-1680: on the FTX-1 the poll feeds `manualNotchFreq` while
+  // `notchFilter` is only written by `set_notch_filter`'s post-write
+  // readback, so the confirmed echo must follow the SAME source selection
+  // the value side reads — `manualNotchReading`'s choice, never a second
+  // one here. The store-registered descriptor identity is untouched; this
+  // local variant only repoints the state-backed confirmation field.
+  const notchReading = field === 'notchFilter' ? manualNotchReading(state, caps) : null;
+  const echoDescriptor = notchReading !== null && notchReading.source === 'manualNotchFreq'
+    ? Object.freeze({
+      ...descriptor,
+      fieldPath: (scope: ControlFeedbackScope) => `${scope.receiver === 1 ? 'sub' : 'main'}.manualNotchFreq`,
+      confirmed: () => Number.isSafeInteger(notchReading.notchFreq) ? notchReading.notchFreq : null,
+    })
+    : descriptor;
   const receiver: 0 | 1 = state?.active === 'SUB' ? 1 : 0;
   const scope = Object.freeze({
     control: field === 'nbLevel' ? 'nb-level'
@@ -576,7 +591,7 @@ export function getDspControlFeedback(
     receiver: field === 'nbWidth' || field === 'nbDepth' ? 0 as const : receiver,
   });
   const feedback = projectControlFeedback(
-    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+    echoDescriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
   );
   try {
     const view = toRadioViewModel(state, caps);
@@ -603,10 +618,11 @@ export function getDspControlFeedback(
     const receiverState = receiverId === 'SUB' ? state?.sub : state?.main;
     const base = receiverId === 'SUB' ? 'sub' : 'main';
     const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+    const echoField = notchReading?.source === 'manualNotchFreq' ? 'manualNotchFreq' : field;
     const observation = qualifyDisplayObservation({
-      state, caps, receiver: receiverId, path: `${base}.${field}`,
+      state, caps, receiver: receiverId, path: `${base}.${echoField}`,
       structural: tags.includes(DSP_FEEDBACK_CAPABILITIES[field]),
-      value: receiverState?.[field],
+      value: receiverState?.[echoField],
     });
     return hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
       ? feedback : unavailableControlFeedback(feedback);
