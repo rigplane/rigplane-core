@@ -48,7 +48,12 @@ export interface FilterModeConfig {
   /** Passband-tuning step for this mode, in Hz. Absent means the mode has no
    *  twin PBT at all -- the IC-7300 Advanced Manual heads its Twin PBT section
    *  "SSB, CW, RTTY and AM modes" -- so a consumer must read its absence as
-   *  "no PBT here", never as a default. */
+   *  "no PBT here", never as a default. Every shipped profile that declares the
+   *  `pbt` capability declares this for the modes that have it, enforced on the
+   *  server side by `test_pbt_step_declared_by_every_shipped_pbt_capable_profile`,
+   *  so an absent value cannot mean "this radio was not migrated yet".
+   *  Distinct from `stepHz` above, which quantises the filter WIDTH; the two
+   *  are both 200 in AM and differ in USB. */
   pbtStepHz?: number;
   minHz?: number;
   maxHz?: number;

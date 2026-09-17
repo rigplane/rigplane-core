@@ -1733,6 +1733,89 @@ class TestToProfile:
         assert config["AM"].pbt_step_hz == 200
         assert config["FM"].pbt_step_hz is None
 
+    def test_pbt_step_declared_by_every_shipped_pbt_capable_profile(self):
+        """The absence of a step must mean "this mode has no twin PBT".
+
+        That reading is only safe while no PBT-capable profile is simply
+        unmigrated -- an unmigrated one declares the capability and no step
+        anywhere, and a consumer obeying the rule would take PBT away from a
+        radio that has it. This walks every shipped profile rather than naming
+        four, so adding a rig cannot reintroduce the ambiguity silently.
+        """
+        checked = 0
+        for name, config in sorted(discover_rigs(RIGS_DIR).items()):
+            profile = config.to_profile()
+            if "pbt" not in (profile.capabilities or ()):
+                continue
+            checked += 1
+            rules = profile.filter_config or {}
+            steps = {
+                mode: rule.pbt_step_hz
+                for mode, rule in rules.items()
+                if rule.pbt_step_hz is not None
+            }
+            assert steps, f"{name} declares the pbt capability but no pbt_step_hz"
+            assert set(steps.values()) <= {50, 200}, f"{name}: {steps}"
+        assert checked >= 4, f"expected the four Icom profiles, checked {checked}"
+
+    def test_pbt_step_values_of_every_shipped_profile(self):
+        """The values themselves, per profile, so a wrong one cannot hide.
+
+        ic7610 and ic7300 were measured on the bench in SSB and their AM figure
+        comes from the manual; ic705 and ic9700 are inference from those two and
+        say so in their own provenance note. Either way the numbers are pinned
+        here rather than in one representative profile.
+        """
+        expected = {
+            "ic7610": {
+                "USB": 50,
+                "LSB": 50,
+                "USB-D": 50,
+                "LSB-D": 50,
+                "CW": 50,
+                "CW-R": 50,
+                "RTTY": 50,
+                "RTTY-R": 50,
+                "AM": 200,
+                "FM": None,
+            },
+            "ic7300": {
+                "USB": 50,
+                "LSB": 50,
+                "CW": 50,
+                "RTTY": 50,
+                "AM": 200,
+                "FM": None,
+            },
+            "ic705": {
+                "USB": 50,
+                "LSB": 50,
+                "CW": 50,
+                "CW-R": 50,
+                "RTTY": 50,
+                "RTTY-R": 50,
+                "AM": 200,
+                "FM": None,
+                "WFM": None,
+                "DV": None,
+            },
+            "ic9700": {
+                "USB": 50,
+                "LSB": 50,
+                "CW": 50,
+                "CW-R": 50,
+                "RTTY": 50,
+                "RTTY-R": 50,
+                "AM": 200,
+                "FM": None,
+            },
+        }
+        for name, per_mode in expected.items():
+            rules = load_rig(RIGS_DIR / f"{name}.toml").to_profile().filter_config
+            assert rules is not None, name
+            got = {mode: rule.pbt_step_hz for mode, rule in rules.items()}
+            assert got == per_mode, name
+
     def test_pbt_step_is_not_the_filter_width_step(self):
         """The two per-mode steps are different quantities that collide in AM.
 

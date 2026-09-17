@@ -904,6 +904,10 @@ width_max_hz = 9999
 # PBT, not that a default applies. The 50 Hz figure is independently confirmed
 # by a bench sweep of every raw 0..255 on the IC-7610 over LAN and the IC-7300
 # over serial on 2026-09-16 (MOR-2497); 200 Hz for AM is the manual alone.
+#
+# The -D and -R variants take the SSB/CW/RTTY figure by inference: the manual
+# names the base modes, not each variant.
+#
 # Do not confuse with step_hz in the same tables, which quantises the WIDTH.
 [filters.width.USB]
 pbt_step_hz = 50
