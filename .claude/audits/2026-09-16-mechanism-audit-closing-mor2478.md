@@ -332,12 +332,13 @@ Prior ruling:     the commit itself, 966f315e #3514 (MOR-2497): "Step 1
                   why the verdict is not "dead": the method's step 2
                   exists precisely to stop a half-landed migration being
                   reported as a gap.
-In-flight:        yes — MOR-2497 step 2 was under way at this revision,
-                  converting audio-spectrum-renderer.ts,
+In-flight:        yes — MOR-2497 step 2 was reported as under way at
+                  this revision, converting audio-spectrum-renderer.ts,
                   scope-passband-display.ts and
                   radio-view-model-adapter.ts, which is where a consumer
-                  lands. Not yet on `main` at this revision and therefore
-                  not read into evidence here.
+                  lands. Reported, not inspected: that work was not on
+                  `main` at this revision and was not read into evidence
+                  here.
 Required surface: exists.
 Depends on:       none. Do NOT delete on this evidence.
 Confidence:       high on the consumer count; the verdict is
