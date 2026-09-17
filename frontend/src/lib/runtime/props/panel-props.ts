@@ -325,8 +325,12 @@ export function toRfFrontEndProps(
  *    decides, exactly as it did before the field existed.
  *
  *  The second case is not hypothetical: the captured IC-7300 capabilities
- *  fixture in `adapters/__tests__/fixtures/` predates the field. */
-function modeHasTwinPbt(
+ *  fixture in `adapters/__tests__/fixtures/` predates the field.
+ *
+ *  Exported for `adapters/radio-view-model-adapter.ts`, which gates the
+ *  view-model's PBT structure on the same distinction — one definition, shared
+ *  (MOR-2497). */
+export function modeHasTwinPbt(
   caps: Capabilities | null,
   modeConfig: FilterModeConfig | null,
 ): boolean {

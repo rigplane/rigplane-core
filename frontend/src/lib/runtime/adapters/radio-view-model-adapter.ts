@@ -47,6 +47,7 @@ import { getFrequencyPermit, type FrequencyPermit, type TxPermit } from '$lib/ut
 import {
   relativeVfoIdentityUnknown,
   resolveFilterModeConfig,
+  modeHasTwinPbt,
 } from '$lib/runtime/props/panel-props';
 import {
   deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps,
@@ -558,7 +559,10 @@ function deriveModeFilter(
  *    for the ifShiftControlStructural-mirroring split.
  *  - `pbtInner`/`pbtOuter` are OPTIONAL, gated on `hasCap(caps, 'pbt')` AND a
  *    usable `pbt_inner` range declared by THIS `caps` argument itself
- *    (`pbtRangeFromCaps`, MOR-1291) — `toFilterProps`'s own `hasPbt`
+ *    (`pbtRangeFromCaps`, MOR-1291) AND the current mode having twin PBT
+ *    (`modeHasTwinPbt`, MOR-2497 — FM has none; a legacy payload that declares
+ *    no step in any mode keeps the radio-wide decision). `toFilterProps`'s
+ *    own `hasPbt`
  *    capability check alone is not enough here: unlike the v2 `panel-props.ts`
  *    path, this fact layer never falls back to a plausible IC-7610-shaped
  *    default (rawCenter 128 / ±1200 Hz) when a radio's own capabilities omit
@@ -663,6 +667,16 @@ function deriveFilterPassband(
   // `current`.
   const filterConfig = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode);
   const pbtStepHz = filterConfig?.pbtStepHz;
+  // MOR-2497 (owner ruling 2026-09-17): a mode without twin PBT (FM) has no
+  // PBT controls at all — the fields go NON-structural, and with them the
+  // derived IF-shift path that depends on them. `modeHasTwinPbt` (the ONE
+  // definition, shared with `toFilterProps`'s `hasPbt` gate) tells that
+  // absence apart from a legacy payload that declares no step in ANY mode,
+  // where the radio-wide capability keeps deciding structure, exactly as
+  // before — structure and reading are separate questions: in that legacy
+  // case the fields stay structural but still yield no Hz reading, because
+  // the step is absent either way.
+  const pbtStructural = hasPbtCap && hasPbtRange && modeHasTwinPbt(caps, filterConfig);
   const pbtWidthHz = numOrUndef(rx?.filterWidth ?? undefined);
   const pbtToHz = (raw: number | undefined): number | undefined => (
     raw === undefined || pbtWidthHz === undefined || pbtStepHz === undefined ? undefined
@@ -675,9 +689,11 @@ function deriveFilterPassband(
   // to: a radio that declares `pbt` but no usable `pbt_inner` range can never
   // actually produce a PBT-derived ifShift Hz value (there is no scale to
   // convert with), so claiming `structural: true` there would promise a
-  // reading that can never arrive. `hasIfShiftCap`'s own branch is untouched
+  // reading that can never arrive. MOR-2497 adds the mode gate on top via
+  // `pbtStructural`: a mode with no twin PBT (FM) offers no PBT-derived shift
+  // either. `hasIfShiftCap`'s own branch is untouched
   // — a REAL if_shift command needs no PBT scale at all.
-  const ifShiftStructural = hasIfShiftCap || (hasPbtCap && hasPbtRange);
+  const ifShiftStructural = hasIfShiftCap || pbtStructural;
   const ifShiftOperational = hasIfShiftCap
     ? ifShiftRawObserved
     : (pbtInnerObserved && pbtOuterObserved);
@@ -735,18 +751,20 @@ function deriveFilterPassband(
     // dead" doctrine `ifShiftControlStructural` above already established,
     // never a plausible IC-7610-shaped reading manufactured from a
     // module-global store fallback (see the `pbtScale` doc comment above).
+    // MOR-2497 adds the third conjunct: the CURRENT mode must have twin PBT
+    // (`modeHasTwinPbt`) — in FM the controls do not exist.
     pbtInner: {
-      ...txAuxField(hasPbtCap && hasPbtRange, pbtInnerObserved, pbtInnerHz),
+      ...txAuxField(pbtStructural, pbtInnerObserved, pbtInnerHz),
       display: qualifyDisplayObservation({
         state, caps, receiver: onSub ? 'SUB' : 'MAIN', path: `${base}pbtInner`,
-        structural: hasPbtCap && hasPbtRange, value: pbtInnerHz,
+        structural: pbtStructural, value: pbtInnerHz,
       }),
     },
     pbtOuter: {
-      ...txAuxField(hasPbtCap && hasPbtRange, pbtOuterObserved, pbtOuterHz),
+      ...txAuxField(pbtStructural, pbtOuterObserved, pbtOuterHz),
       display: qualifyDisplayObservation({
         state, caps, receiver: onSub ? 'SUB' : 'MAIN', path: `${base}pbtOuter`,
-        structural: hasPbtCap && hasPbtRange, value: pbtOuterHz,
+        structural: pbtStructural, value: pbtOuterHz,
       }),
     },
     dataModeChoices,
