@@ -7,9 +7,16 @@ interface WheelControl { readonly view: WheelView | null | undefined; readonly l
 export function wheelControl(node: HTMLElement, initial: WheelControl) {
   let options = initial;
   // MOR-2507: every value-control renderer mounts this action on its
-  // focusable element; that element consumes all four arrow keys (Shift =
-  // fine step), which it declares for the global shortcut layer.
-  node.setAttribute('data-owns-arrows', 'both shift');
+  // focusable element; while editable, that element consumes all four
+  // arrow keys (Shift = fine step) and declares them for the global
+  // shortcut layer. A non-editable control (tabindex -1, aria-disabled)
+  // consumes nothing, so the declaration retracts — RadioLayout focuses
+  // such controls programmatically.
+  function syncArrowOwnership(): void {
+    if (options.view?.editable) node.setAttribute('data-owns-arrows', 'both shift');
+    else node.removeAttribute('data-owns-arrows');
+  }
+  syncArrowOwnership();
   let armed = false;
   let epoch = initial.view?.interactionEpoch;
   let lastTime = 0;
@@ -81,6 +88,7 @@ export function wheelControl(node: HTMLElement, initial: WheelControl) {
     update(next: WheelControl) {
       if (next.lease !== options.lease) disarm();
       options = next;
+      syncArrowOwnership();
       if (!next.view?.editable || next.view.interactionEpoch !== epoch) disarm();
       epoch = next.view?.interactionEpoch;
     },

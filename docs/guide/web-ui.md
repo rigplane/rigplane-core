@@ -594,12 +594,13 @@ Representative bindings from the shared default profile:
 | `m` / `Shift+M` / `Shift+S` | Toggle active receiver / activate MAIN / activate SUB |
 | `Escape` | Clear RIT/XIT offset |
 
-Value controls, the segmented receiver/mode controls, and the spectrum
-splitter declare `data-owns-arrows` and own their unmodified arrow keys:
-while one is focused, the arrows act on that control instead of tuning
-(Shift steps a value control finely). Modified arrows — the `Ctrl+ArrowUp`/
-`ArrowDown` AF level and `Ctrl+Shift+ArrowUp`/`ArrowDown` RF gain bindings —
-and focus anywhere else, including plain buttons, keep the global bindings.
+Editable value controls, the active-receiver toggle, and the spectrum
+splitter (Up/Down only) own their unmodified arrow keys: while one is
+focused, those arrows act on that control instead of tuning (Shift steps a
+value control finely; a control that is not editable owns nothing).
+Modified arrows — the `Ctrl+ArrowUp`/`ArrowDown` AF level and
+`Ctrl+Shift+ArrowUp`/`ArrowDown` RF gain bindings — and focus anywhere
+else, including plain buttons, keep the global bindings.
 
 There is no global keyboard shortcut bound to PTT. Focused PTT controls
 support Space/Enter through their own press/release handlers; this is
