@@ -1257,6 +1257,17 @@ def _build_public_state_payload_from_dict(
     health_revision: int = 0,
 ) -> dict[str, Any]:
     state = copy.deepcopy(state)
+    for receiver in (state.get("main"), state.get("sub")):
+        if not isinstance(receiver, dict):
+            continue
+        for holder in (
+            receiver,
+            receiver.get("vfo_a"),
+            receiver.get("vfo_b"),
+            receiver.get("unselected_vfo"),
+        ):
+            if isinstance(holder, dict) and isinstance(holder.get("mode"), str):
+                holder["mode"] = holder["mode"].replace("_", "-")
     state.setdefault(
         "tx_target",
         {"status": "unknown", "reason": "not-observed"},
