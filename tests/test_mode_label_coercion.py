@@ -12,13 +12,12 @@ silently drifting out of sync with the enum again.
 Scope note: only rig profiles that are actually reachable through
 ``IcomRadio``/``CoreRadio`` (the class that owns ``_coerce_mode``) are
 covered here — see ``_CORERADIO_ROUTED_MODELS`` below, mirrored from
-``backends/factory.py::create_radio``'s model routing. Two pre-existing
-label/enum gaps are unrelated to the hyphen-normalization bug this ticket
-fixes (the labels have no ``Mode`` enum member at all, hyphenated or not)
-and are marked ``xfail(strict=True)`` rather than silently excluded, so a
+``backends/factory.py::create_radio``'s model routing. One pre-existing
+label/enum gap is unrelated to the hyphen-normalization bug this ticket
+fixes (the label has no ``Mode`` enum member at all, hyphenated or not)
+and is marked ``xfail(strict=True)`` rather than silently excluded, so a
 future full fix is visible as an actionable failure:
 
-- IC-7610 ``PSK`` / ``PSK-R`` — no ``Mode.PSK`` / ``Mode.PSK_R`` member.
 - X6200 ``DIGI`` — no ``Mode.DIGI`` member.
 """
 
@@ -48,8 +47,6 @@ _CORERADIO_ROUTED_MODELS = {"IC-705", "IC-7300", "IC-7610", "IC-9700", "X6200"}
 # (model, label) pairs with no Mode enum member at all — a separate,
 # pre-existing gap, not a hyphen/underscore drift bug.
 _KNOWN_UNMAPPED_LABELS = {
-    ("IC-7610", "PSK"),
-    ("IC-7610", "PSK-R"),
     ("X6200", "DIGI"),
 }
 
