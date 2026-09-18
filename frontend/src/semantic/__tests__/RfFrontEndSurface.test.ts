@@ -280,7 +280,9 @@ describe('carry-forwards 2+3: the PREAMP mutex disables the control WITH AN EXPL
 
 describe('carry-forward 4: the mutex explanation names the code, never a peer control', () => {
   it('the label text never mentions DIGI-SEL', () => {
-    const label = DISABLED_REASON_LABEL['mutually-exclusive-control']!;
+    const key = DISABLED_REASON_LABEL['mutually-exclusive-control'];
+    expect(key).toBeDefined();
+    const label = key === undefined ? '' : t(key);
     expect(label.toUpperCase()).not.toContain('DIGI-SEL');
     expect(label.toUpperCase()).not.toContain('DIGISEL');
   });

@@ -369,11 +369,6 @@
     field: rf?.ipPlus, invoke: (next) => onIpPlusToggle?.(next),
   }));
 
-  const preampMutexReason = (): string | undefined => {
-    if (preMutex === null) return undefined;
-    return reasonLabel(preMutex.code);
-  };
-
   /** MOR-2511 B2: matches any disabled reason on 'rfFrontEnd.preamp' (mutex or receiver-lacks-control). */
   const preampDisabledReason = (): DisabledReason | undefined =>
     presentation.view?.disabledReasons.find((reason) => reason.field === 'rfFrontEnd.preamp');
