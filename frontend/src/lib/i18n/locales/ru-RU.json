@@ -254,6 +254,12 @@
 
   "core.cwKeyer.breakIn.blocked": "TX не разрешён: {reason}",
 
+  "core.cwKeyer.breakInDelay.valueText.unavailable": "Задержка break-in недоступна",
+  "core.cwKeyer.breakInDelay.valueText.draft": "Черновик {draft}; последнее подтверждённое {confirmed}",
+  "core.cwKeyer.breakInDelay.valueText.requested": "Запрошено {displayed}; последнее подтверждённое {confirmed}",
+  "core.cwKeyer.breakInDelay.valueText.outcome": "Подтверждено {confirmed}; запрос {requested} {phase}",
+  "core.cwKeyer.breakInDelay.valueText.confirmed": "Подтверждено {confirmed}",
+
   "core.rxTx.blocked.permitUnknown": "разрешение для вашей частоты передачи не подтверждено",
   "core.rxTx.blocked.fault": "неустранённая ошибка TX не даёт перейти на передачу",
   "core.rxTx.blocked.busy": "сеанс TX уже выполняется",

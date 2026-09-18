@@ -318,20 +318,31 @@
   let breakInDelayValueText = $derived.by(() => {
     const confirmed = breakInDelayView.confirmed;
     if (confirmed === null) {
-      return 'Break-in delay unavailable';
+      return t('core.cwKeyer.breakInDelay.valueText.unavailable');
     }
-    if (breakInDelayView.draft !== null) {
-      return `Draft ${breakInDelayView.draft}; last confirmed ${confirmed}`;
+    const draft = breakInDelayView.draft;
+    if (draft !== null) {
+      return t('core.cwKeyer.breakInDelay.valueText.draft', {
+        draft,
+        confirmed,
+      });
     }
     if (breakInDelayBusy) {
-      return `Requested ${breakInDelayView.displayed}; last confirmed ${confirmed}`;
+      return t('core.cwKeyer.breakInDelay.valueText.requested', {
+        displayed: breakInDelayView.displayed ?? confirmed,
+        confirmed,
+      });
     }
     const requested = breakInDelayView.feedback.requestedTarget;
     if (breakInDelayView.feedback.outcome !== null && requested !== null
       && breakInDelayView.feedback.outcome.phase !== 'confirmed') {
-      return `Confirmed ${confirmed}; request ${requested} ${breakInDelayView.feedback.outcome.phase}`;
+      return t('core.cwKeyer.breakInDelay.valueText.outcome', {
+        confirmed,
+        requested,
+        phase: breakInDelayView.feedback.outcome.phase,
+      });
     }
-    return `Confirmed ${confirmed}`;
+    return t('core.cwKeyer.breakInDelay.valueText.confirmed', { confirmed });
   });
   function noteBreakInDelayInput(target: HTMLInputElement): void {
     breakInDelayLease.input(target.valueAsNumber);

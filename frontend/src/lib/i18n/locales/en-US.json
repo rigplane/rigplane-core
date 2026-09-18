@@ -274,6 +274,12 @@
 
   "core.cwKeyer.breakIn.blocked": "TX not permitted: {reason}",
 
+  "core.cwKeyer.breakInDelay.valueText.unavailable": "Break-in delay unavailable",
+  "core.cwKeyer.breakInDelay.valueText.draft": "Draft {draft}; last confirmed {confirmed}",
+  "core.cwKeyer.breakInDelay.valueText.requested": "Requested {displayed}; last confirmed {confirmed}",
+  "core.cwKeyer.breakInDelay.valueText.outcome": "Confirmed {confirmed}; request {requested} {phase}",
+  "core.cwKeyer.breakInDelay.valueText.confirmed": "Confirmed {confirmed}",
+
   "core.rxTx.blocked.permitUnknown": "your transmit frequency's permission has not been confirmed",
   "core.rxTx.blocked.fault": "an unresolved TX fault is blocking the key",
   "core.rxTx.blocked.busy": "a TX session is already in progress",

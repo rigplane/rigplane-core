@@ -229,5 +229,13 @@
 
   "glossary.callsign": "コールサイン",
   "glossary.squelch": "スケルチ",
-  "glossary.bandPlan": "バンドプラン"
+  "glossary.bandPlan": "バンドプラン",
+
+  "core.cwKeyer.breakIn.blocked": "TX 不許可: {reason}",
+
+  "core.cwKeyer.breakInDelay.valueText.unavailable": "ブレークイン遅延は利用できません",
+  "core.cwKeyer.breakInDelay.valueText.draft": "下書き {draft}; 最終確定 {confirmed}",
+  "core.cwKeyer.breakInDelay.valueText.requested": "要求 {displayed}; 最終確定 {confirmed}",
+  "core.cwKeyer.breakInDelay.valueText.outcome": "確定 {confirmed}; 要求 {requested} {phase}",
+  "core.cwKeyer.breakInDelay.valueText.confirmed": "確定 {confirmed}"
 }
