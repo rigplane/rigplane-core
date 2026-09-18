@@ -202,6 +202,15 @@
   "core.vfo.splitDigest.tx": "TX {frequency}",
 
   "core.filter.passband.pendingChip": "保留中 {target} Hz",
+  "core.filter.passband.control.pbtInner": "PBT inner",
+  "core.filter.passband.control.pbtOuter": "PBT outer",
+  "core.filter.passband.control.ifShift": "IF shift",
+  "core.filter.passband.pendingAnnouncement": "{control} {target} を要求しました。無線機はまだ確認していません。",
+  "core.filter.passband.confirmedAnnouncement": "{control} が {confirmed} で確認されました。",
+  "core.filter.passband.failedAnnouncement": "{control} {target} は適用されませんでした。確認済みの値は {confirmed} のままです。",
+  "core.filter.passband.timedOutAnnouncement": "{control} {target} はタイムアウトしました。確認済みの値は {confirmed} のままです。",
+  "core.filter.passband.cancelledAnnouncement": "{control} の {target} の要求は取り消されました。確認済みの値は {confirmed} のままです。",
+  "core.filter.passband.supersededAnnouncement": "{control} の {target} の要求は置き換えられました。確認済みの値は {confirmed} のままです。",
 
   "core.txGuard.modInputNotLan": "MOD 入力が {source} のため LAN 経由の音声は送信 (TX) されません。",
   "core.txGuard.setLan": "LAN に設定",

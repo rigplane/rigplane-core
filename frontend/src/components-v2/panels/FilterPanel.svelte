@@ -398,6 +398,65 @@
     consumeReadOnlyWidthStatus(view);
   });
 
+  // MOR-1687 part 2: the three passband rows announce through the same
+  // issued-status seam the width row uses — one message family
+  // (`core.filter.passband.*Announcement`) whose `{control}` placeholder
+  // resolves from `core.filter.passband.control.*`, not three per-control
+  // families. The pins live in FilterPanel.isolated.test.ts's passband
+  // describe (en-US texts plus the ru-RU family pin).
+  function formatIssuedPassbandStatus(
+    control: 'pbtInner' | 'pbtOuter' | 'ifShift',
+    snapshot: Readonly<HBarIssuedStatusSnapshot>,
+  ): string {
+    const feedback = snapshot.view.feedback;
+    const controlName = t(`core.filter.passband.control.${control}`);
+    const target = feedback.requestedTarget !== null && Number.isFinite(feedback.requestedTarget)
+      ? `${feedback.requestedTarget} Hz` : '--- Hz';
+    const confirmed = feedback.confirmed !== null && Number.isFinite(feedback.confirmed)
+      ? `${feedback.confirmed} Hz` : '--- Hz';
+    let message: string;
+    switch (snapshot.announcement.phase) {
+      case 'submitted':
+      case 'queued':
+      case 'dispatched':
+      case 'awaiting-confirmation':
+        message = t('core.filter.passband.pendingAnnouncement', { control: controlName, target });
+        break;
+      case 'confirmed':
+        message = t('core.filter.passband.confirmedAnnouncement', { control: controlName, confirmed });
+        break;
+      case 'failed':
+        message = t('core.filter.passband.failedAnnouncement', { control: controlName, target, confirmed });
+        break;
+      case 'timed-out':
+        message = t('core.filter.passband.timedOutAnnouncement', { control: controlName, target, confirmed });
+        break;
+      case 'cancelled':
+        message = t('core.filter.passband.cancelledAnnouncement', { control: controlName, target, confirmed });
+        break;
+      case 'superseded':
+        message = t('core.filter.passband.supersededAnnouncement', { control: controlName, target, confirmed });
+        break;
+      default:
+        message = '';
+    }
+    return snapshot.view.error === null ? message
+      : `${message.replace(/[.!?]$/, '')}: ${snapshot.view.error}`;
+  }
+  let passbandStatusText = $state<Record<'pbtInner' | 'pbtOuter' | 'ifShift', string | null>>({
+    pbtInner: null, pbtOuter: null, ifShift: null,
+  });
+  function passbandIssuedStatus(control: 'pbtInner' | 'pbtOuter' | 'ifShift'): Readonly<HBarIssuedStatusPresentation> {
+    return {
+      get text() { return passbandStatusText[control]; },
+      format: (snapshot) => formatIssuedPassbandStatus(control, snapshot),
+      accept(text) { passbandStatusText[control] = text; },
+    };
+  }
+  const ifShiftStatusPresentation = passbandIssuedStatus('ifShift');
+  const pbtInnerStatusPresentation = passbandIssuedStatus('pbtInner');
+  const pbtOuterStatusPresentation = passbandIssuedStatus('pbtOuter');
+
   let lifecycleTarget = $derived(filterWidthFeedback.busy ? filterWidthFeedback.target : null);
 
   function openSettings(): void {
@@ -474,6 +533,7 @@
         renderer="bipolar"
         accentColor="var(--v2-accent-cyan)"
         variant="hardware-illuminated"
+        issuedStatusPresentation={ifShiftStatusPresentation}
       />
       {@render pendingPassbandChip(passbandPendingTarget(ifShiftFeedback))}
     {/if}
@@ -557,6 +617,7 @@
         renderer="bipolar"
         accentColor="var(--v2-accent-cyan)"
         variant="hardware-illuminated"
+        issuedStatusPresentation={ifShiftStatusPresentation}
       />
       {@render pendingPassbandChip(passbandPendingTarget(ifShiftFeedback))}
     {/if}
@@ -569,6 +630,7 @@
         renderer="bipolar"
         accentColor="var(--v2-accent-cyan)"
         variant="hardware-illuminated"
+        issuedStatusPresentation={pbtInnerStatusPresentation}
       />
       {@render pendingPassbandChip(passbandPendingTarget(pbtInnerFeedback))}
       <ValueControl
@@ -579,6 +641,7 @@
         renderer="bipolar"
         accentColor="var(--v2-accent-green-bright)"
         variant="hardware-illuminated"
+        issuedStatusPresentation={pbtOuterStatusPresentation}
       />
       {@render pendingPassbandChip(passbandPendingTarget(pbtOuterFeedback))}
 

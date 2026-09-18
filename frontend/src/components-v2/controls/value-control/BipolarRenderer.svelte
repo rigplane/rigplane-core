@@ -19,6 +19,7 @@
     type LegacyReadingPresentation,
     type ScalarAccessibilityPresentation,
   } from './scalar-render-presentation';
+  import type { HBarIssuedStatusPresentation } from './skin';
 
   interface Props {
     binding: ContinuousScalarRendererSeat;
@@ -38,6 +39,7 @@
     title?: string | null;
     accessibility?: ScalarAccessibilityPresentation;
     legacy?: LegacyReadingPresentation;
+    issuedStatusPresentation?: Readonly<HBarIssuedStatusPresentation>;
   }
 
   let {
@@ -58,6 +60,7 @@
     title = null,
     accessibility,
     legacy,
+    issuedStatusPresentation,
   }: Props = $props();
 
   const feedbackDescriptionId = $props.id();
@@ -120,6 +123,24 @@
     return extent > 0 ? Math.abs(renderedValue - center) / extent : 0;
   });
   let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy, accessibility));
+  // The same issued-status seam HBarRenderer carries: an optional
+  // presentation object replaces the scalar's built-in English one-shot
+  // status with caller-formatted text, keeping ONE polite region per row.
+  $effect(() => {
+    const snapshot = view;
+    if (issuedStatusPresentation === undefined || snapshot.evidence !== 'command-feedback') return;
+    const announcement = snapshot.presentation.politeAnnouncement;
+    if (announcement !== null) {
+      const formatted = untrack(() => issuedStatusPresentation.format({ view: snapshot, announcement }));
+      untrack(() => issuedStatusPresentation.accept(formatted));
+    } else if (snapshot.feedback.transitionId === null) {
+      untrack(() => issuedStatusPresentation.accept(null));
+    }
+  });
+  let statusText = $derived(issuedStatusPresentation === undefined
+    ? renderPresentation.status === null ? null
+      : `${renderPresentation.status}${renderPresentation.error === null ? '' : `: ${renderPresentation.error}`}`
+    : issuedStatusPresentation.text);
 
   function handlePointerDown(e: PointerEvent) {
     if (!containerEl) return;
@@ -251,14 +272,14 @@
   {#if renderPresentation.description !== null}
     <span id={feedbackDescriptionId} class="sr-only">{renderPresentation.description}</span>
   {/if}
-  {#if renderPresentation.status !== null}
+  {#if statusText !== null}
     <span
       class="sr-only"
       role="status"
       aria-live="polite"
       aria-atomic="true"
       data-control-feedback-status
-    >{renderPresentation.status}{renderPresentation.error === null ? '' : `: ${renderPresentation.error}`}</span>
+    >{statusText}</span>
   {/if}
 
   <div class="vc-axis" aria-hidden="true">
