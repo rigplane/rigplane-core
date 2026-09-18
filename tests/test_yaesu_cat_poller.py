@@ -2584,8 +2584,9 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
         # unconditional and MAIN-only, mirroring the legacy poller.
         ("receiver.main.operator_controls.agc", 3),
         # filter_width/if_shift need their runtime caps (absent here); narrow
-        # is unconditional and MAIN-only, like AGC (MOR-445).
+        # is unconditional and per-receiver, like AGC (MOR-445/MOR-2511).
         ("receiver.main.operator_toggles.narrow", True),
+        ("receiver.sub.operator_toggles.narrow", True),
         # active-slot (MOR-446): unconditional like AGC/narrow, the SUB index
         # coerces to the neutral "SUB" str. split is skipped: this radio lacks
         # the ``split`` runtime cap.

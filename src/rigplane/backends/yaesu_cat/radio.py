@@ -1495,14 +1495,11 @@ class YaesuCatRadio:
     async def read_nb_level(self, receiver: int = 0) -> int:
         """Read noise blanker level without mutating legacy state.
 
-        The FTX-1 has a single noise-blanker path (``NL0``); the ``receiver``
-        argument is accepted for protocol symmetry but does not select a
-        per-receiver command (no ``NL1`` exists).
-
         Returns:
             NB level (0 = OFF, 1–10 = level).
         """
-        result = await self._query("get_nb_level")
+        cmd = "get_nb_level" if receiver == 0 else "get_nb_level_sub"
+        result = await self._query(cmd)
         return int(result["level"])
 
     async def get_nb_level(self, receiver: int = 0) -> int:
@@ -1516,19 +1513,17 @@ class YaesuCatRadio:
         off-domain values raise ``ValueError`` before any CAT write.
         """
         validate_control_raw_value(self.profile.controls, "nb_level", level)
-        await self._write("set_nb_level", level=level)
+        key = self._receiver_level_write_key("set_nb_level", receiver)
+        await self._write(key, level=level)
 
     async def read_nr_level(self, receiver: int = 0) -> int:
         """Read noise reduction level without mutating legacy state.
 
-        The FTX-1 has a single noise-reduction path (``RL0``); the ``receiver``
-        argument is accepted for protocol symmetry but does not select a
-        per-receiver command (no ``RL1`` exists).
-
         Returns:
             NR level (0 = OFF, 1–10 = level).
         """
-        result = await self._query("get_nr_level")
+        cmd = "get_nr_level" if receiver == 0 else "get_nr_level_sub"
+        result = await self._query(cmd)
         return int(result["level"])
 
     async def get_nr_level(self, receiver: int = 0) -> int:
@@ -1542,19 +1537,17 @@ class YaesuCatRadio:
         off-domain values raise ``ValueError`` before any CAT write.
         """
         validate_control_raw_value(self.profile.controls, "nr_level", level)
-        await self._write("set_nr_level", level=level)
+        key = self._receiver_level_write_key("set_nr_level", receiver)
+        await self._write(key, level=level)
 
     async def read_auto_notch(self, receiver: int = 0) -> bool:
         """Read auto notch state without mutating legacy state.
 
-        The FTX-1 has a single auto-notch path (``BC0``); the ``receiver``
-        argument is accepted for protocol symmetry but does not select a
-        per-receiver command (no ``BC1`` exists).
-
         Returns:
             ``True`` when auto notch is ON.
         """
-        result = await self._query("get_auto_notch")
+        cmd = "get_auto_notch" if receiver == 0 else "get_auto_notch_sub"
+        result = await self._query(cmd)
         return bool(result["state"] == "1")
 
     async def get_auto_notch(self, receiver: int = 0) -> bool:
@@ -1563,20 +1556,20 @@ class YaesuCatRadio:
 
     async def set_auto_notch(self, state: bool, receiver: int = 0) -> None:
         """Set auto notch state."""
-        await self._write("set_auto_notch", state="1" if state else "0")
+        key = self._receiver_level_write_key("set_auto_notch", receiver)
+        await self._write(key, state="1" if state else "0")
 
     async def read_manual_notch(self, receiver: int = 0) -> bool:
         """Read manual notch ON/OFF state without mutating legacy state.
 
-        Issues a single ``BP00`` read. The FTX-1 has a single manual-notch
-        path; the ``receiver`` argument is accepted for protocol symmetry but
-        does not select a per-receiver command (no ``BP10`` exists). Use
+        Issues a single read of the ``BP00``/``BP10`` pair. Use
         :meth:`read_manual_notch_freq` for the freq index in a separate read.
 
         Returns:
             ``True`` when the manual notch is enabled.
         """
-        result = await self._query("get_manual_notch")
+        cmd = "get_manual_notch" if receiver == 0 else "get_manual_notch_sub"
+        result = await self._query(cmd)
         return bool(result["state"])
 
     async def get_manual_notch(self, receiver: int = 0) -> tuple[bool, int]:
@@ -1590,24 +1583,24 @@ class YaesuCatRadio:
         return bool(state_result["state"]), freq_result["freq"]
 
     async def set_manual_notch(self, state: bool, receiver: int = 0) -> None:
-        """Set manual notch ON/OFF (BP00)."""
-        await self._write("set_manual_notch", state=1 if state else 0)
+        """Set manual notch ON/OFF."""
+        key = self._receiver_level_write_key("set_manual_notch", receiver)
+        await self._write(key, state=1 if state else 0)
 
     async def read_manual_notch_freq(self, receiver: int = 0) -> int:
         """Read manual notch frequency index without mutating legacy state.
 
-        Issues a single ``BP01`` read. The FTX-1 has a single manual-notch
-        path; the ``receiver`` argument is accepted for protocol symmetry but
-        does not select a per-receiver command (no ``BP11`` exists).
+        Issues a single read of the ``BP01``/``BP11`` pair.
 
         Returns:
             Manual notch frequency raw index.
         """
-        result = await self._query("get_manual_notch_freq")
+        cmd = "get_manual_notch_freq" if receiver == 0 else "get_manual_notch_freq_sub"
+        result = await self._query(cmd)
         return int(result["freq"])
 
     async def get_manual_notch_freq(self, receiver: int = 0) -> int:
-        """Get manual notch frequency raw index (BP01).
+        """Get manual notch frequency raw index.
 
         Standalone freq-only getter for symmetry with :meth:`set_manual_notch_freq`.
         Use :meth:`get_manual_notch` to fetch state+freq together in one call.
@@ -1615,13 +1608,14 @@ class YaesuCatRadio:
         return await self.read_manual_notch_freq(receiver)
 
     async def set_manual_notch_freq(self, freq: int, receiver: int = 0) -> None:
-        """Set manual notch frequency raw index (BP01).
+        """Set manual notch frequency raw index.
 
         The value must lie on the profile's ``manual_notch_freq`` raw
         domain; off-domain values raise ``ValueError`` before any CAT write.
         """
         validate_control_raw_value(self.profile.controls, "manual_notch_freq", freq)
-        await self._write("set_manual_notch_freq", freq=freq)
+        key = self._receiver_level_write_key("set_manual_notch_freq", receiver)
+        await self._write(key, freq=freq)
 
     async def set_notch_filter(self, level: int, receiver: int = 0) -> None:
         """Set notch filter position (manual notch frequency raw index).
@@ -1734,19 +1728,16 @@ class YaesuCatRadio:
     async def read_if_shift(self, receiver: int = 0) -> int:
         """Read IF shift offset in Hz without mutating legacy state.
 
-        The FTX-1 has a single IF-shift path (``IS0``); the ``receiver``
-        argument is accepted for protocol symmetry but does not select a
-        per-receiver command (no ``IS1`` exists).
-
         Returns:
             Signed offset in Hz (negative = downshift).
         """
-        result = await self._query("get_if_shift")
+        cmd = "get_if_shift" if receiver == 0 else "get_if_shift_sub"
+        result = await self._query(cmd)
         offset: int = result["offset"]
         return -offset if result["sign"] == "-" else offset
 
     async def get_if_shift(self, receiver: int = 0) -> int:
-        """Get IF shift offset in Hz (signed, IS0).
+        """Get IF shift offset in Hz (signed).
 
         Returns:
             Signed offset in Hz (negative = downshift).
@@ -1754,23 +1745,20 @@ class YaesuCatRadio:
         return await self.read_if_shift(receiver)
 
     async def set_if_shift(self, offset: int, receiver: int = 0) -> None:
-        """Set IF shift offset in Hz (signed, IS0).
+        """Set IF shift offset in Hz (signed).
 
         The value must lie on the profile's ``if_shift`` raw domain;
         off-domain values raise ``ValueError`` before any CAT write.
         """
         validate_control_raw_value(self.profile.controls, "if_shift", offset)
         sign = "+" if offset >= 0 else "-"
-        await self._write("set_if_shift", sign=sign, offset=abs(offset))
+        key = self._receiver_level_write_key("set_if_shift", receiver)
+        await self._write(key, sign=sign, offset=abs(offset))
 
     async def read_narrow(self, receiver: int = 0) -> bool:
-        """Read narrow filter state without mutating legacy state.
-
-        The FTX-1 has a single narrow path (``NA0``); the ``receiver``
-        argument is accepted for protocol symmetry but does not select a
-        per-receiver command (no ``NA1`` exists).
-        """
-        result = await self._query("get_narrow")
+        """Read narrow filter state without mutating legacy state."""
+        cmd = "get_narrow" if receiver == 0 else "get_narrow_sub"
+        result = await self._query(cmd)
         return bool(result["state"] == "1")
 
     async def get_narrow(self, receiver: int = 0) -> bool:
@@ -1779,7 +1767,8 @@ class YaesuCatRadio:
 
     async def set_narrow(self, state: bool, receiver: int = 0) -> None:
         """Set narrow filter state."""
-        await self._write("set_narrow", state="1" if state else "0")
+        key = self._receiver_level_write_key("set_narrow", receiver)
+        await self._write(key, state="1" if state else "0")
 
     # -- D5: Split/Dual Watch -----------------------------------------------
 

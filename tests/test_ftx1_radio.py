@@ -757,6 +757,24 @@ async def test_set_nb_level(connected_radio):
     connected_radio._transport.write.assert_called_once_with("NL0003;")
 
 
+# SUB (P1=1) frames and answer values below: bench probe 2026-09-18,
+# MOR-2511 comment 01:22Z -- each SUB form answered its own value with
+# MAIN untouched (NL1003; / RL105; / BC11; / BP10001; / BP11120; /
+# IS10+0200; / NA11;).
+@pytest.mark.asyncio
+async def test_get_nb_level_sub_sends_nl1(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="NL1003")
+    assert await connected_radio.get_nb_level(receiver=1) == 3
+    connected_radio._transport.query.assert_called_once_with("NL1;")
+
+
+@pytest.mark.asyncio
+async def test_set_nb_level_sub_sends_nl1(connected_radio):
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_nb_level(3, receiver=1)
+    connected_radio._transport.write.assert_called_once_with("NL1003;")
+
+
 @pytest.mark.asyncio
 async def test_get_nr_level(connected_radio):
     connected_radio._transport.query = AsyncMock(return_value="RL007")
@@ -789,6 +807,20 @@ async def test_set_nr_level_rejects_off_domain_without_cat_write(
 
 
 @pytest.mark.asyncio
+async def test_get_nr_level_sub_sends_rl1(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="RL105")
+    assert await connected_radio.get_nr_level(receiver=1) == 5
+    connected_radio._transport.query.assert_called_once_with("RL1;")
+
+
+@pytest.mark.asyncio
+async def test_set_nr_level_sub_sends_rl1(connected_radio):
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_nr_level(5, receiver=1)
+    connected_radio._transport.write.assert_called_once_with("RL105;")
+
+
+@pytest.mark.asyncio
 async def test_get_auto_notch_on(connected_radio):
     connected_radio._transport.query = AsyncMock(return_value="BC01")
     assert await connected_radio.get_auto_notch() is True
@@ -808,6 +840,20 @@ async def test_set_auto_notch(connected_radio):
 
 
 @pytest.mark.asyncio
+async def test_get_auto_notch_sub_sends_bc1(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="BC11")
+    assert await connected_radio.get_auto_notch(receiver=1) is True
+    connected_radio._transport.query.assert_called_once_with("BC1;")
+
+
+@pytest.mark.asyncio
+async def test_set_auto_notch_sub_sends_bc1(connected_radio):
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_auto_notch(True, receiver=1)
+    connected_radio._transport.write.assert_called_once_with("BC11;")
+
+
+@pytest.mark.asyncio
 async def test_get_manual_notch(connected_radio):
     """get_manual_notch calls both BP00 and BP01 queries."""
     responses = iter(["BP00001", "BP01120"])
@@ -822,6 +868,20 @@ async def test_set_manual_notch(connected_radio):
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_manual_notch(True)
     connected_radio._transport.write.assert_called_once_with("BP00001;")
+
+
+@pytest.mark.asyncio
+async def test_get_manual_notch_sub_sends_bp10(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="BP10001")
+    assert await connected_radio.read_manual_notch(receiver=1) is True
+    connected_radio._transport.query.assert_called_once_with("BP10;")
+
+
+@pytest.mark.asyncio
+async def test_set_manual_notch_sub_sends_bp10(connected_radio):
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_manual_notch(True, receiver=1)
+    connected_radio._transport.write.assert_called_once_with("BP10001;")
 
 
 @pytest.mark.asyncio
@@ -868,6 +928,20 @@ async def test_set_manual_notch_freq_rejects_off_domain_without_cat_write(
     with pytest.raises(ValueError, match="manual_notch_freq must be within 1-320"):
         await connected_radio.set_manual_notch_freq(freq)
     connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_manual_notch_freq_sub_sends_bp11(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="BP11120")
+    assert await connected_radio.read_manual_notch_freq(receiver=1) == 120
+    connected_radio._transport.query.assert_called_once_with("BP11;")
+
+
+@pytest.mark.asyncio
+async def test_set_manual_notch_freq_sub_sends_bp11(connected_radio):
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_manual_notch_freq(120, receiver=1)
+    connected_radio._transport.write.assert_called_once_with("BP11120;")
 
 
 # ---------------------------------------------------------------------------
@@ -962,6 +1036,20 @@ async def test_set_if_shift_rejects_off_domain_without_cat_write(
 
 
 @pytest.mark.asyncio
+async def test_get_if_shift_sub_sends_is1(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="IS10+0200")
+    assert await connected_radio.get_if_shift(receiver=1) == 200
+    connected_radio._transport.query.assert_called_once_with("IS1;")
+
+
+@pytest.mark.asyncio
+async def test_set_if_shift_sub_sends_is1(connected_radio):
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_if_shift(200, receiver=1)
+    connected_radio._transport.write.assert_called_once_with("IS10+0200;")
+
+
+@pytest.mark.asyncio
 async def test_set_if_shift_without_profile_domain_raises(config):
     """A profile without an if_shift control domain fails honestly instead
     of passing the value through to the wire (MOR-1681)."""
@@ -991,6 +1079,20 @@ async def test_set_narrow(connected_radio):
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_narrow(False)
     connected_radio._transport.write.assert_called_once_with("NA00;")
+
+
+@pytest.mark.asyncio
+async def test_get_narrow_sub_sends_na1(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="NA11")
+    assert await connected_radio.get_narrow(receiver=1) is True
+    connected_radio._transport.query.assert_called_once_with("NA1;")
+
+
+@pytest.mark.asyncio
+async def test_set_narrow_sub_sends_na1(connected_radio):
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_narrow(True, receiver=1)
+    connected_radio._transport.write.assert_called_once_with("NA11;")
 
 
 # ---------------------------------------------------------------------------

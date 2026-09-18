@@ -124,26 +124,35 @@ def _make_radio() -> MagicMock:
     radio.read_preamp = AsyncMock(return_value=2)
     radio.get_agc = AsyncMock(return_value=3)
     radio.read_agc = AsyncMock(return_value=3)
-    # Filter / IF-shift / narrow DSP controls (MOR-445). MAIN-only: the
-    # ``read_filter_width`` decode reads (but never writes) legacy state, and
-    # IF-shift/narrow have no per-receiver CAT command (no IS1/NA1).
+    # Filter / IF-shift / narrow DSP controls (MOR-445). The
+    # ``read_filter_width`` decode reads (but never writes) legacy state.
+    # IF-shift/narrow have SUB forms (bench 2026-09-18, MOR-2511 comment
+    # 01:22Z); the SUB answers differ from MAIN's so a MAIN echo fails.
     radio.get_filter_width = AsyncMock(return_value=500)
     radio.read_filter_width = AsyncMock(return_value=500)
     radio.get_if_shift = AsyncMock(return_value=200)
-    radio.read_if_shift = AsyncMock(return_value=200)
+    radio.read_if_shift = AsyncMock(
+        side_effect=lambda receiver=0: 200 if receiver == 0 else 210
+    )
     radio.get_narrow = AsyncMock(return_value=True)
-    radio.read_narrow = AsyncMock(return_value=True)
+    radio.read_narrow = AsyncMock(side_effect=lambda receiver=0: receiver == 0)
     # NB/NR levels + derived toggles, auto/manual notch DSP controls (MOR-444).
-    # MAIN-only: no per-receiver CAT command (no NL1/RL1/BC1/BP10/BP11). The
+    # SUB forms exist (bench 2026-09-18, MOR-2511 comment 01:22Z). The
     # nb/nr toggles are derived from the non-zero level read in the same cycle.
     radio.get_nb_level = AsyncMock(return_value=5)
-    radio.read_nb_level = AsyncMock(return_value=5)
+    radio.read_nb_level = AsyncMock(
+        side_effect=lambda receiver=0: 5 if receiver == 0 else 3
+    )
     radio.get_nr_level = AsyncMock(return_value=9)
-    radio.read_nr_level = AsyncMock(return_value=9)
+    radio.read_nr_level = AsyncMock(
+        side_effect=lambda receiver=0: 9 if receiver == 0 else 5
+    )
     radio.get_auto_notch = AsyncMock(return_value=True)
-    radio.read_auto_notch = AsyncMock(return_value=True)
-    radio.read_manual_notch = AsyncMock(return_value=True)
-    radio.read_manual_notch_freq = AsyncMock(return_value=128)
+    radio.read_auto_notch = AsyncMock(side_effect=lambda receiver=0: receiver == 0)
+    radio.read_manual_notch = AsyncMock(side_effect=lambda receiver=0: receiver == 0)
+    radio.read_manual_notch_freq = AsyncMock(
+        side_effect=lambda receiver=0: 128 if receiver == 0 else 120
+    )
     # TX meters: ALC/COMP mirror power/swr as stream-like meters (MOR-448/460).
     radio.get_alc_meter = AsyncMock(return_value=42)
     radio.read_alc_meter = AsyncMock(return_value=42)
@@ -842,10 +851,11 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
     # attenuator ``read`` returns a bool; the int registry path receives the
     # coerced ``int(True) == 1``.
     # IF-shift (operator_controls, gated on ``if_shift`` cap) and narrow
-    # (operator_toggles, unconditional like AGC) are MAIN-only DSP controls
-    # (MOR-445), emitted after the RF front-end in the slow-control lane.
+    # (operator_toggles, unconditional like AGC) are per-receiver DSP
+    # controls (MOR-445/MOR-2511), each SUB read following its MAIN twin.
     # NB/NR levels + derived nb/nr toggles, auto/manual notch + manual notch
-    # freq (MOR-444) follow, MAIN-only, gated on ``nb``/``nr``/``notch`` caps.
+    # freq (MOR-444) follow, gated on ``nb``/``nr``/``notch`` caps, SUB reads
+    # after their MAIN twins (bench 2026-09-18, MOR-2511 comment 01:22Z).
     # The nb/nr toggles are derived from the level read in the same cycle
     # (``level > 0``); a non-zero level → toggle ON, a single read each.
     assert [(str(item.path), item.value) for item in observations] == [
@@ -866,14 +876,23 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
         ("receiver.main.operator_controls.preamp", 2),
         ("receiver.main.operator_controls.agc", 3),
         ("receiver.main.operator_controls.if_shift", 200),
+        ("receiver.sub.operator_controls.if_shift", 210),
         ("receiver.main.operator_toggles.narrow", True),
+        ("receiver.sub.operator_toggles.narrow", False),
         ("receiver.main.operator_controls.nb_level", 5),
         ("receiver.main.operator_toggles.nb", True),
+        ("receiver.sub.operator_controls.nb_level", 3),
+        ("receiver.sub.operator_toggles.nb", True),
         ("receiver.main.operator_controls.nr_level", 9),
         ("receiver.main.operator_toggles.nr", True),
+        ("receiver.sub.operator_controls.nr_level", 5),
+        ("receiver.sub.operator_toggles.nr", True),
         ("receiver.main.operator_toggles.auto_notch", True),
+        ("receiver.sub.operator_toggles.auto_notch", False),
         ("receiver.main.operator_toggles.manual_notch", True),
+        ("receiver.sub.operator_toggles.manual_notch", False),
         ("receiver.main.operator_controls.manual_notch_freq", 128),
+        ("receiver.sub.operator_controls.manual_notch_freq", 120),
         # Tone / CTCSS squelch-type (MOR-457): MAIN-only per-receiver toggles
         # grouped with the other receiver DSP toggles, derived from a single
         # ``read_sql_type(0)`` CAT ``CT`` read. The default code 1 ("TONE")
@@ -916,14 +935,15 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
     assert radio.read_attenuator.await_count == 1
     assert radio.read_preamp.await_count == 1
     assert radio.read_agc.await_count == 1
-    assert radio.read_if_shift.await_count == 1
-    assert radio.read_narrow.await_count == 1
-    # Single CAT read per family — nb/nr toggles derive from the level read.
-    assert radio.read_nb_level.await_count == 1
-    assert radio.read_nr_level.await_count == 1
-    assert radio.read_auto_notch.await_count == 1
-    assert radio.read_manual_notch.await_count == 1
-    assert radio.read_manual_notch_freq.await_count == 1
+    assert radio.read_if_shift.await_count == 2
+    assert radio.read_narrow.await_count == 2
+    # Single CAT read per family and receiver — nb/nr toggles derive from the
+    # level read.
+    assert radio.read_nb_level.await_count == 2
+    assert radio.read_nr_level.await_count == 2
+    assert radio.read_auto_notch.await_count == 2
+    assert radio.read_manual_notch.await_count == 2
+    assert radio.read_manual_notch_freq.await_count == 2
     # Tone/CTCSS: a SINGLE read_sql_type feeds both derived booleans (MOR-457).
     assert radio.read_sql_type.await_count == 1
     radio.get_sql_type.assert_not_awaited()
@@ -960,7 +980,8 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
 
     # ATT/preamp/if_shift are gated by their runtime capabilities (dropped
     # here); AGC and narrow have no FTX-1 capability tag and mirror the legacy
-    # poller's unconditional poll, so they still emit when policy is pollable.
+    # poller's unconditional poll, so they still emit when policy is pollable
+    # — narrow for both receivers (MOR-2511), AGC MAIN-only.
     assert [(str(item.path), item.value) for item in observations] == [
         ("global.tx_state.dual_watch", True),
         (
@@ -970,6 +991,7 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
         ("receiver.sub.operator_controls.af_level", pytest.approx(_normalized_255(64))),
         ("receiver.main.operator_controls.agc", 3),
         ("receiver.main.operator_toggles.narrow", True),
+        ("receiver.sub.operator_toggles.narrow", False),
         # active-slot is unconditional (like AGC/narrow), so it still emits when
         # policy is pollable even though no FTX-1 capability tag gates it.
         ("global.slow_state.active", "SUB"),
@@ -981,7 +1003,7 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
     radio.read_preamp.assert_not_awaited()
     assert radio.read_agc.await_count == 1
     radio.read_if_shift.assert_not_awaited()
-    assert radio.read_narrow.await_count == 1
+    assert radio.read_narrow.await_count == 2
     # NB/NR/notch dropped: their runtime caps are absent (MOR-444).
     radio.read_nb_level.assert_not_awaited()
     radio.read_nr_level.assert_not_awaited()
@@ -1021,9 +1043,13 @@ async def test_slow_poll_derives_nb_nr_toggles_off_from_zero_level() -> None:
     assert by_path["receiver.main.operator_toggles.nb"] is False
     assert by_path["receiver.main.operator_controls.nr_level"] == 0
     assert by_path["receiver.main.operator_toggles.nr"] is False
-    # Single read per family — the toggle reuses the level read.
-    assert radio.read_nb_level.await_count == 1
-    assert radio.read_nr_level.await_count == 1
+    assert by_path["receiver.sub.operator_controls.nb_level"] == 0
+    assert by_path["receiver.sub.operator_toggles.nb"] is False
+    assert by_path["receiver.sub.operator_controls.nr_level"] == 0
+    assert by_path["receiver.sub.operator_toggles.nr"] is False
+    # Single read per receiver and family — the toggle reuses the level read.
+    assert radio.read_nb_level.await_count == 2
+    assert radio.read_nr_level.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -1495,10 +1521,11 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         # AGC has no FTX-1 capability tag → unconditional, MAIN-only; ATT and
         # preamp are skipped because this radio lacks those runtime caps.
         ("receiver.main.operator_controls.agc", 3),
-        # narrow is unconditional (like AGC) → emits; filter_width and if_shift
-        # are skipped because this radio lacks the ``filter_width`` /
-        # ``if_shift`` runtime caps.
+        # narrow is unconditional (like AGC) and per-receiver (MOR-2511), so
+        # the SUB read emits too; filter_width and if_shift are skipped
+        # because this radio lacks the ``filter_width`` / ``if_shift`` caps.
         ("receiver.main.operator_toggles.narrow", True),
+        ("receiver.sub.operator_toggles.narrow", True),
         # Tone / CTCSS squelch-type (MOR-457): gated on the ``sql_type`` cap
         # (present here); a single ``read_sql_type`` (code 1 = "TONE") derives
         # both booleans and does not mutate legacy state.
@@ -2246,14 +2273,23 @@ async def test_happy_path_slow_poll_unchanged_when_all_reads_succeed() -> None:
         ("receiver.main.operator_controls.preamp", 2),
         ("receiver.main.operator_controls.agc", 3),
         ("receiver.main.operator_controls.if_shift", 200),
+        ("receiver.sub.operator_controls.if_shift", 210),
         ("receiver.main.operator_toggles.narrow", True),
+        ("receiver.sub.operator_toggles.narrow", False),
         ("receiver.main.operator_controls.nb_level", 5),
         ("receiver.main.operator_toggles.nb", True),
+        ("receiver.sub.operator_controls.nb_level", 3),
+        ("receiver.sub.operator_toggles.nb", True),
         ("receiver.main.operator_controls.nr_level", 9),
         ("receiver.main.operator_toggles.nr", True),
+        ("receiver.sub.operator_controls.nr_level", 5),
+        ("receiver.sub.operator_toggles.nr", True),
         ("receiver.main.operator_toggles.auto_notch", True),
+        ("receiver.sub.operator_toggles.auto_notch", False),
         ("receiver.main.operator_toggles.manual_notch", True),
+        ("receiver.sub.operator_toggles.manual_notch", False),
         ("receiver.main.operator_controls.manual_notch_freq", 128),
+        ("receiver.sub.operator_controls.manual_notch_freq", 120),
         ("receiver.main.operator_toggles.repeater_tone", True),
         ("receiver.main.operator_toggles.repeater_tsql", False),
         ("receiver.main.operator_controls.tone_freq", 8850),
@@ -2926,9 +2962,13 @@ _NOTCH_FREQ_PATH = "receiver.main.operator_controls.manual_notch_freq"
 
 def _availability_store(*, mode: str, freq_hz: int) -> StateStore:
     store = StateStore()
+    # Both receivers carry the same mode/freq so the SUB manual-notch-freq
+    # clause (a twin of MAIN's) resolves on the same snapshot.
     for path, value in (
         (FieldPath.active("main", "freq_mode", "mode"), mode),
         (FieldPath.active("main", "freq_mode", "freq_hz"), freq_hz),
+        (FieldPath.active("sub", "freq_mode", "mode"), mode),
+        (FieldPath.active("sub", "freq_mode", "freq_hz"), freq_hz),
     ):
         store.apply(
             Observation(
@@ -2964,6 +3004,8 @@ async def test_slow_poll_does_not_read_manual_notch_freq_in_fm(
     ):
         observations = await adapter.poll_slow_controls()
 
+    # Both receivers are in FM: MAIN by the store's mode, SUB by the twin
+    # clause on its own mode, so neither notch-freq read goes out.
     radio.read_manual_notch_freq.assert_not_awaited()
     assert _NOTCH_FREQ_PATH not in [str(item.path) for item in observations]
     # A read never sent is not a failed read: it does not go through
@@ -2987,6 +3029,12 @@ async def test_slow_poll_reads_manual_notch_freq_in_usb() -> None:
 
     radio.read_manual_notch_freq.assert_awaited()
     assert _NOTCH_FREQ_PATH in [str(item.path) for item in observations]
+    # The SUB twin is sent too once SUB is observed in USB (its clause is a
+    # twin of MAIN's; the store observes both receivers).
+    assert [call.args[:1] for call in radio.read_manual_notch_freq.await_args_list] == [
+        (0,),
+        (1,),
+    ]
 
 
 @pytest.mark.asyncio
@@ -3025,6 +3073,8 @@ async def test_slow_poll_withholds_a_read_whose_condition_is_unobserved() -> Non
     paths = [str(item.path) for item in observations]
 
     radio.read_attenuator.assert_not_awaited()
+    # Both MAIN and SUB notch-freq reads are withheld while their conditions
+    # are unobserved (SUB's clause mirrors MAIN's).
     radio.read_manual_notch_freq.assert_not_awaited()
     assert _ATT_PATH not in paths
     assert _NOTCH_FREQ_PATH not in paths
@@ -3037,7 +3087,10 @@ async def test_slow_poll_withholds_a_read_whose_condition_is_unobserved() -> Non
     paths = [str(item.path) for item in observations]
 
     radio.read_attenuator.assert_awaited()
-    radio.read_manual_notch_freq.assert_awaited()
+    assert [call.args[:1] for call in radio.read_manual_notch_freq.await_args_list] == [
+        (0,),
+        (1,),
+    ]
     assert _ATT_PATH in paths
     assert _NOTCH_FREQ_PATH in paths
 
@@ -3091,6 +3144,62 @@ _SUB_CONTROL_ROWS: tuple[tuple[str, str, str, str], ...] = (
         "poll_slow_controls",
         "read_repeater_shift",
         "receiver.sub.operator_controls.repeater_shift",
+    ),
+    # DSP SUB reads (bench 2026-09-18, MOR-2511 comment 01:22Z). The nb/nr
+    # toggle rows share the level read of the row above them.
+    (
+        "sub.nb_level",
+        "poll_slow_controls",
+        "read_nb_level",
+        "receiver.sub.operator_controls.nb_level",
+    ),
+    (
+        "sub.nb",
+        "poll_slow_controls",
+        "read_nb_level",
+        "receiver.sub.operator_toggles.nb",
+    ),
+    (
+        "sub.nr_level",
+        "poll_slow_controls",
+        "read_nr_level",
+        "receiver.sub.operator_controls.nr_level",
+    ),
+    (
+        "sub.nr",
+        "poll_slow_controls",
+        "read_nr_level",
+        "receiver.sub.operator_toggles.nr",
+    ),
+    (
+        "sub.auto_notch",
+        "poll_slow_controls",
+        "read_auto_notch",
+        "receiver.sub.operator_toggles.auto_notch",
+    ),
+    (
+        "sub.manual_notch",
+        "poll_slow_controls",
+        "read_manual_notch",
+        "receiver.sub.operator_toggles.manual_notch",
+    ),
+    (
+        "sub.manual_notch_freq",
+        "poll_slow_controls",
+        "read_manual_notch_freq",
+        "receiver.sub.operator_controls.manual_notch_freq",
+    ),
+    (
+        "sub.if_shift",
+        "poll_slow_controls",
+        "read_if_shift",
+        "receiver.sub.operator_controls.if_shift",
+    ),
+    (
+        "sub.narrow",
+        "poll_slow_controls",
+        "read_narrow",
+        "receiver.sub.operator_toggles.narrow",
     ),
 )
 

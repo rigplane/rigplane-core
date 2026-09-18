@@ -46,6 +46,20 @@ _MAIN_AF = FieldPath.receiver("main", "operator_controls", "af_level")
 _MAIN_RF = FieldPath.receiver("main", "operator_controls", "rf_gain")
 _MAIN_SQL = FieldPath.receiver("main", "operator_controls", "squelch")
 _MAIN_SHIFT = FieldPath.receiver("main", "operator_controls", "repeater_shift")
+_SUB_NB_LEVEL = FieldPath.receiver("sub", "operator_controls", "nb_level")
+_SUB_NB = FieldPath.receiver("sub", "operator_toggles", "nb")
+_SUB_NR_LEVEL = FieldPath.receiver("sub", "operator_controls", "nr_level")
+_SUB_NR = FieldPath.receiver("sub", "operator_toggles", "nr")
+_SUB_AUTO_NOTCH = FieldPath.receiver("sub", "operator_toggles", "auto_notch")
+_SUB_MANUAL_NOTCH = FieldPath.receiver("sub", "operator_toggles", "manual_notch")
+_SUB_MANUAL_NOTCH_FREQ = FieldPath.receiver(
+    "sub", "operator_controls", "manual_notch_freq"
+)
+_SUB_IF_SHIFT = FieldPath.receiver("sub", "operator_controls", "if_shift")
+_SUB_NARROW = FieldPath.receiver("sub", "operator_toggles", "narrow")
+_MAIN_NB_LEVEL = FieldPath.receiver("main", "operator_controls", "nb_level")
+_MAIN_IF_SHIFT = FieldPath.receiver("main", "operator_controls", "if_shift")
+_MAIN_NARROW = FieldPath.receiver("main", "operator_toggles", "narrow")
 
 # SUB on 144.500 MHz USB, width table index 14 (2500 Hz in the profile's SSB
 # table), raw meter 78 (the -36 dBm / S5 calibration point). ``SM1;`` answers
@@ -82,11 +96,18 @@ _CAT_ANSWERS = {
     "PA0;": "PA00",
     "GT0;": "GT06",
     "IS0;": "IS00+0000",
+    "IS1;": "IS10+0200",
     "NA0;": "NA00",
+    "NA1;": "NA11",
     "NL0;": "NL0000",
+    "NL1;": "NL1003",
     "RL0;": "RL000",
+    "RL1;": "RL105",
     "BC0;": "BC00",
+    "BC1;": "BC11",
     "BP00;": "BP00000",
+    "BP10;": "BP10001",
+    "BP11;": "BP11120",
     "CT0;": "CT00",
     "CN00;": "CN00008",
     "VS;": "VS0",
@@ -107,12 +128,21 @@ def _bench_radio() -> YaesuCatRadio:
 
 
 def _single_receive_store() -> StateStore:
-    """The bench condition: dual receive (``FR``) observed OFF."""
+    """The bench condition: dual receive (``FR``) observed OFF and SUB in USB
+    (the probe's mode), so the SUB notch-freq clause resolves permissively."""
     store = StateStore()
     store.apply(
         Observation(
             path=FieldPath.global_("tx_state", "dual_watch"),
             value=False,
+            source=SourceMetadata(source="yaesu_poll_response", provider="yaesu_cat"),
+            timestamp_monotonic=0.0,
+        )
+    )
+    store.apply(
+        Observation(
+            path=FieldPath.active("sub", "freq_mode", "mode"),
+            value="USB",
             source=SourceMetadata(source="yaesu_poll_response", provider="yaesu_cat"),
             timestamp_monotonic=0.0,
         )
@@ -162,3 +192,33 @@ async def test_sub_operator_controls_are_acquired_in_single_receive() -> None:
     assert snapshot.field(_MAIN_SQL).value == pytest.approx(0 / 255)
     assert snapshot.field(_SUB_SHIFT).value == 1
     assert snapshot.field(_MAIN_SHIFT).value == 3
+
+
+@pytest.mark.asyncio
+async def test_sub_dsp_controls_are_acquired_in_single_receive() -> None:
+    """The nine DSP paths slice C declares are read on the slow tier with
+    dual receive OFF, each answering SUB's own value (bench 2026-09-18 pairs
+    in ``_CAT_ANSWERS``), not MAIN's."""
+
+    radio = _bench_radio()
+    store = _single_receive_store()
+    radio._state_store = store
+
+    adapter = YaesuObservationAdapter.from_radio(radio)
+    for observation in await adapter.poll_slow_controls():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    assert snapshot.field(_SUB_NB_LEVEL).value == 3
+    assert snapshot.field(_SUB_NB).value is True
+    assert snapshot.field(_SUB_NR_LEVEL).value == 5
+    assert snapshot.field(_SUB_NR).value is True
+    assert snapshot.field(_SUB_AUTO_NOTCH).value is True
+    assert snapshot.field(_SUB_MANUAL_NOTCH).value is True
+    assert snapshot.field(_SUB_MANUAL_NOTCH_FREQ).value == 120
+    assert snapshot.field(_SUB_IF_SHIFT).value == 200
+    assert snapshot.field(_SUB_NARROW).value is True
+    # MAIN contrasts from the same probe rows: a MAIN echo cannot pass.
+    assert snapshot.field(_MAIN_NB_LEVEL).value == 0
+    assert snapshot.field(_MAIN_IF_SHIFT).value == 0
+    assert snapshot.field(_MAIN_NARROW).value is False

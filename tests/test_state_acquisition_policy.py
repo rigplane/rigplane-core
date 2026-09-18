@@ -1437,8 +1437,8 @@ def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
     assert acquisition is not None
 
     assert acquisition.provider == "yaesu_cat"
-    assert len(acquisition.capabilities) == 59
-    assert len(acquisition.field_policies) == 54
+    assert len(acquisition.capabilities) == 68
+    assert len(acquisition.field_policies) == 63
     assert acquisition.default_policy.cadence_seconds == 2.0
     assert acquisition.default_policy.freshness_ttl_seconds == 8.0
 
@@ -1746,6 +1746,7 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("FTX-1", "global.meters.swr"),
         ("FTX-1", "receiver.main.operator_controls.att"),
         ("FTX-1", "receiver.main.operator_controls.manual_notch_freq"),
+        ("FTX-1", "receiver.sub.operator_controls.manual_notch_freq"),
         ("IC-7300", "global.meters.alc"),
         ("IC-7300", "global.meters.comp"),
         ("IC-7300", "global.meters.power"),
