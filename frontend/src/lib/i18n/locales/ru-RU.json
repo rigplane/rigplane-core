@@ -285,6 +285,8 @@
 
   "core.disabledReason.missing": "Не поддерживается этим трансивером",
   "core.disabledReason.unobserved": "Ещё не считано",
+  "core.disabledReason.mutuallyExclusiveControl": "Отключено: другое управление активно",
+  "core.disabledReason.receiverLacksControl": "Недоступно на этом приёмнике",
 
   "core.txGuard.modInputNotLan": "Вход MOD установлен в {source}, а не LAN — голос из веб-интерфейса не уйдёт в эфир (TX).",
   "core.txGuard.setLan": "Включить LAN",

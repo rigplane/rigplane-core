@@ -58,7 +58,7 @@
     type ContinuousScalarView,
   } from '../primitives/scalar/continuous-scalar.svelte';
   import { formatKnownLevel } from './format-level';
-  import type { RadioViewModel, RfFrontEndField } from './radio-view-model';
+  import type { RadioViewModel, RfFrontEndField, DisabledReason, DisabledReasonCode } from './radio-view-model';
   import {
     DISABLED_REASON_LABEL,
     RF_FRONT_END_LEVELS,
@@ -116,6 +116,7 @@
   const preampId = $props.id();
   const pendingPreampId = `${preampId}-pending`;
   const preampMutexId = `${preampId}-mutex`;
+  const attenuatorMutexId = `${preampId}-att-mutex`;
 
   const safeGeneration = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -368,24 +369,51 @@
     field: rf?.ipPlus, invoke: (next) => onIpPlusToggle?.(next),
   }));
 
-  const preampMutexReason = (): string | undefined =>
-    preMutex === null ? undefined : DISABLED_REASON_LABEL[preMutex.code];
-  const preampSeat = createChoiceRendererSeat<number>(() => ({
-    context: rendererContext ?? null, field: rf?.preamp, label: 'Preamp', blocked: preMutex !== null,
-    options: preampChoices().map((value) => ({
-      value, label: preampChoiceText(value),
-      ...(preampMutexReason() === undefined ? {} : { disabledReason: preampMutexReason() }),
-    })),
-    ...(pendingPreamp === null ? {} : {
-      requested: { kind: 'requested-target' as const, target: pendingPreamp },
-    }),
-    invoke: (level) => onPreChange?.(level),
-  }));
-  const attenuatorSeat = createChoiceRendererSeat<number>(() => ({
-    context: rendererContext ?? null, field: rf?.attenuator, label: 'Attenuator',
-    options: attenuatorChoices().map((value) => ({ value, label: attenuatorChoiceText(value) })),
-    invoke: (db) => onAttChange?.(db),
-  }));
+  /** MOR-2511 B2: matches any disabled reason on 'rfFrontEnd.preamp' (mutex or receiver-lacks-control). */
+  const preampDisabledReason = (): DisabledReason | undefined =>
+    presentation.view?.disabledReasons.find((reason) => reason.field === 'rfFrontEnd.preamp');
+  const preampReasonText = (): string | undefined => {
+    const reason = preampDisabledReason();
+    return reason === undefined ? undefined : reasonLabel(reason.code);
+  };
+
+  /** MOR-2511 B2: safe lookup of disabled reason label — returns undefined if code not in map. */
+  const reasonLabel = (code: DisabledReasonCode | undefined): string | undefined =>
+    code === undefined ? undefined : (DISABLED_REASON_LABEL[code] ? t(DISABLED_REASON_LABEL[code]!) : undefined);
+
+  const preampSeat = createChoiceRendererSeat<number>(() => {
+    const reason = preampReasonText();
+    return {
+      context: rendererContext ?? null, field: rf?.preamp, label: 'Preamp', blocked: preampDisabledReason() !== undefined,
+      options: preampChoices().map((value) => ({
+        value, label: preampChoiceText(value),
+        ...(reason === undefined ? {} : { disabledReason: reason }),
+      })),
+      ...(pendingPreamp === null ? {} : {
+        requested: { kind: 'requested-target' as const, target: pendingPreamp },
+      }),
+      invoke: (level) => onPreChange?.(level),
+    };
+  });
+
+  /** MOR-2511 B2: matches any disabled reason on 'rfFrontEnd.attenuator' (receiver-lacks-control today; lookup by field so future reasons on this field are picked up too). */
+  const attenuatorDisabledReason = (): DisabledReason | undefined =>
+    presentation.view?.disabledReasons.find((reason) => reason.field === 'rfFrontEnd.attenuator');
+  const attenuatorReasonText = (): string | undefined => {
+    const reason = attenuatorDisabledReason();
+    return reason === undefined ? undefined : reasonLabel(reason.code);
+  };
+  const attenuatorSeat = createChoiceRendererSeat<number>(() => {
+    const reason = attenuatorReasonText();
+    return {
+      context: rendererContext ?? null, field: rf?.attenuator, label: 'Attenuator', blocked: attenuatorDisabledReason() !== undefined,
+      options: attenuatorChoices().map((value) => ({
+        value, label: attenuatorChoiceText(value),
+        ...(reason === undefined ? {} : { disabledReason: reason }),
+      })),
+      invoke: (db) => onAttChange?.(db),
+    };
+  });
   const digiSelSeat = createToggleRendererSeat(() => ({
     context: rendererContext ?? null, field: rf?.digiSel, label: RF_FRONT_END_TOGGLES[0][1],
     invoke: (next) => onDigiSelToggle?.(next),
@@ -503,10 +531,10 @@
         class="rf-front-end-row" role="radiogroup" aria-label="Preamp"
         data-testid="rf-front-end-preamp"
         data-observed={usable(rf.preamp)}
-        data-disabled-reason={preMutex?.code}
+        data-disabled-reason={preampDisabledReason()?.code}
         data-preamp-status={pendingPreamp !== null ? 'pending' : 'confirmed'}
         aria-describedby={[
-          preMutex === null ? null : preampMutexId,
+          preampDisabledReason() === undefined ? null : preampMutexId,
           pendingPreamp === null ? null : pendingPreampId,
         ].filter(Boolean).join(' ') || undefined}
       >
@@ -525,11 +553,11 @@
         </div>
         {#if rf.preamp.reading.status === 'known' && rf.preValues.includes(rf.preamp.reading.value)}
           <output class="sr-only" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{preampChoiceText(rf.preamp.reading.value)}</output>
-        {:else}
+        {:else if preampDisabledReason() === undefined || preampDisabledReason()?.code !== 'receiver-lacks-control'}
           <output class="rf-front-end-unknown" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{rf.preamp.reading.status === 'known' ? preampChoiceText(rf.preamp.reading.value) : '?'}</output>
         {/if}
-        {#if preMutex}
-          <p id={preampMutexId} data-testid="rf-front-end-preamp-mutex-reason">{DISABLED_REASON_LABEL[preMutex.code]}</p>
+        {#if preampDisabledReason()}
+          <p id={preampMutexId} data-testid="rf-front-end-preamp-mutex-reason">{reasonLabel(preampDisabledReason()!.code)}</p>
         {/if}
         {#if pendingPreamp !== null}
           <span id={pendingPreampId} class="sr-only">{t('core.rfFrontEnd.preamp.pendingAnnouncement')}</span>
@@ -548,11 +576,14 @@
     {:else}
       <div
         class="rf-front-end-row" role={compact ? undefined : 'radiogroup'} aria-label="Attenuator"
-        data-testid="rf-front-end-attenuator" data-observed={usable(rf.attenuator)}
+        data-testid="rf-front-end-attenuator"
+        data-observed={usable(rf.attenuator)}
+        data-disabled-reason={attenuatorDisabledReason()?.code}
+        aria-describedby={attenuatorDisabledReason() === undefined ? undefined : attenuatorMutexId}
       >
         <span class="rf-front-end-row-label">ATT</span>
         {#if compact}
-          <fieldset class="rf-front-end-att-control" disabled={!attenuatorBehavior.available}>
+          <fieldset class="rf-front-end-att-control" disabled={!attenuatorBehavior.available || attenuatorDisabledReason() !== undefined}>
             <AttenuatorControl
               values={[...rf.attValues]}
               selected={rf.attenuator.reading.status === 'known' ? rf.attenuator.reading.value : Number.NaN}
@@ -568,7 +599,7 @@
                 type="button" role="radio" class="rf-front-end-choice"
                 data-testid={`rf-front-end-attenuator-${value}`}
                 aria-checked={attenuatorBehavior.isSelected(value)}
-                disabled={!attenuatorBehavior.available}
+                disabled={!attenuatorBehavior.available || attenuatorDisabledReason() !== undefined}
                 onclick={() => attenuatorBehavior.invoke(value)}
               >{attenuatorChoiceText(value)}</button>
             {/each}
@@ -576,8 +607,11 @@
         {/if}
         {#if rf.attenuator.reading.status === 'known' && rf.attValues.includes(rf.attenuator.reading.value)}
           <output class="sr-only" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{attenuatorChoiceText(rf.attenuator.reading.value)}</output>
-        {:else}
+        {:else if attenuatorDisabledReason() === undefined || attenuatorDisabledReason()?.code !== 'receiver-lacks-control'}
           <output class="rf-front-end-unknown" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{rf.attenuator.reading.status === 'known' ? attenuatorChoiceText(rf.attenuator.reading.value) : '?'}</output>
+        {/if}
+        {#if attenuatorDisabledReason()}
+          <p id={attenuatorMutexId} data-testid="rf-front-end-attenuator-mutex-reason">{reasonLabel(attenuatorDisabledReason()!.code)}</p>
         {/if}
       </div>
     {/if}

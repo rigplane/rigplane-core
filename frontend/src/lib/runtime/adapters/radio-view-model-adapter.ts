@@ -81,7 +81,7 @@ type Fact = { status: 'known'; value: boolean } | { status: 'unknown' };
 type Reason = {
   field: string;
   code: 'capability-unavailable' | 'field-not-observed' | 'tx-target-unknown' | 'out-of-band'
-    | 'mutually-exclusive-control';
+    | 'mutually-exclusive-control' | 'receiver-lacks-control';
 };
 type Readable = {
   freqHz?: number; mode?: string; filter?: number | null; filterNum?: number | null;
@@ -188,6 +188,12 @@ function topFieldAvailable(state: ServerState | null, field: string): boolean {
  * absent-key semantics remain unchanged. */
 function strictFieldAvailable(state: ServerState | null, field: string): boolean {
   return seen(state, field) && topFieldAvailable(state, field);
+}
+
+/** MOR-2511 B2: true when the field is explicitly marked undeclared for this
+ *  receiver (e.g. SUB.att on FTX-1). */
+function fieldUndeclared(state: ServerState | null, path: string): boolean {
+  return state?.fieldStatus?.[path]?.availability === 'undeclared';
 }
 
 /** `fieldFresh` is the raw `topFieldAvailable` read; a structurally-absent
@@ -1009,6 +1015,11 @@ function deriveReceiverIndicators(
     const sMeterOperational = receiverOperational && sMeterRetained;
     const providerGeneration = state?.providerGeneration;
 
+    // MOR-2511 B2: if the receiver's att/preamp is undeclared, it is
+    // structurally absent for THIS receiver regardless of radio-wide capability.
+    const attStructural = hasAttenuator && !fieldUndeclared(state, path('att'));
+    const preampStructural = hasPreamp && !fieldUndeclared(state, path('preamp'));
+
     return {
       receiver,
       availability: { structural: true, operational: receiverOperational },
@@ -1037,8 +1048,8 @@ function deriveReceiverIndicators(
       nbActive: strictField(hasNb, 'nb', boolOrUndef(rx?.nb)),
       nrActive: strictField(hasNr, 'nr', boolOrUndef(rx?.nr)),
       notchMode: txAuxField(hasNotch, notchOperational, notchMode),
-      attenuator: strictField(hasAttenuator, 'att', numOrUndef(rx?.att)),
-      preamp: strictField(hasPreamp, 'preamp', numOrUndef(rx?.preamp)),
+      attenuator: strictField(attStructural, 'att', numOrUndef(rx?.att)),
+      preamp: strictField(preampStructural, 'preamp', numOrUndef(rx?.preamp)),
       rfGain: {
         ...strictField(hasRfGain, 'rfGain', numOrUndef(rx?.rfGain)),
         display: qualifyDisplayObservation({
@@ -1918,6 +1929,17 @@ export function toRadioViewModel(
     tx, txAux, ritXit, antenna,
   );
   if (rfFrontEndMutex) disabledReasons.push(rfFrontEndMutex);
+  // MOR-2511 B2: active receiver lacks att/preamp control (undeclared on this receiver)
+  if (rfFrontEnd) {
+    const onSub = state?.active === 'SUB';
+    const base = onSub ? 'sub.' : 'main.';
+    if (fieldUndeclared(state, `${base}att`)) {
+      disabledReasons.push({ field: 'rfFrontEnd.attenuator', code: 'receiver-lacks-control' });
+    }
+    if (fieldUndeclared(state, `${base}preamp`)) {
+      disabledReasons.push({ field: 'rfFrontEnd.preamp', code: 'receiver-lacks-control' });
+    }
+  }
   disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit));
 
   return {

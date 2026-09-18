@@ -27,9 +27,10 @@ export type RfFrontEndFiniteChoiceValue = number;
 
 /** Carry-forward 4 (MOR-1293): keyed by the generic CODE, never by a peer-
  *  control name — the mutex label must read the same whichever control
- *  triggers it. */
+ *  triggers it. Values are i18n keys under `core.disabledReason.*`. */
 export const DISABLED_REASON_LABEL: Partial<Record<DisabledReasonCode, string>> = {
-  'mutually-exclusive-control': 'disabled: another control is active',
+  'mutually-exclusive-control': 'core.disabledReason.mutuallyExclusiveControl',
+  'receiver-lacks-control': 'core.disabledReason.receiverLacksControl',
 };
 
 export interface RfFrontEndControlSession {

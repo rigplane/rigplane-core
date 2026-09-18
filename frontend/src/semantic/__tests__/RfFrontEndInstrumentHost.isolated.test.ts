@@ -8,6 +8,7 @@ import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter
 import { getRfSqlControlFeedback } from '$lib/runtime/adapters/panel-adapters';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+import { t } from '$lib/i18n';
 
 const activation = vi.hoisted(() => ({ selected: undefined as unknown }));
 const captures = vi.hoisted(() => ({
@@ -676,11 +677,85 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
     expect(target.querySelector('[data-testid="external-Preamp"]')).not.toBeNull();
     const preamp = captures.choiceReads.map((read) => read()).find((input) => input.label === 'Preamp')!;
     expect(preamp.requested).toEqual({ kind: 'requested-target', target: 2 });
-    const reason = DISABLED_REASON_LABEL['mutually-exclusive-control'];
+    const reason = t(DISABLED_REASON_LABEL['mutually-exclusive-control']!);
     const option = target.querySelector<HTMLElement>('[data-testid="external-Preamp-0"]')!;
     expect(option.title).toBe(reason);
     const describedBy = option.getAttribute('aria-describedby')!;
     expect(target.querySelector(`#${describedBy}`)?.textContent).toBe(reason);
+  });
+
+  // MOR-2511 B2: the receiver-lacks-control hint must arrive through the
+  // REAL adapter. The view is built by `toRadioViewModel(state, caps)` — the
+  // same call the wiring makes — from an FTX-1-shaped two-receiver state
+  // copied from the adapter test's own `MOR-2511 B2` describe: caps declare
+  // attenuator and preamp, MAIN's att/preamp fields are observed, and SUB's
+  // are explicitly UNDECLARED. The adapter itself derives the kept-but-
+  // disabled rows and their `receiver-lacks-control` reasons; nothing is
+  // hand-injected onto the view here.
+  const mor2511Caps = (): Capabilities => ({
+    ...capabilities({ receivers: 2 }),
+    capabilities: ['audio', 'dual_rx', 'rf_gain', 'squelch', 'attenuator', 'preamp'],
+    preValues: [0, 1, 2],
+    attValues: [0, 6, 12, 18],
+  });
+
+  function mor2511State(active: 'MAIN' | 'SUB'): ServerState {
+    const base = state({ receivers: 2, active });
+    const fieldStatus = { ...base.fieldStatus };
+    fieldStatus['main.att'] = { storePath: 'main.att', observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 1 };
+    fieldStatus['main.preamp'] = { storePath: 'main.preamp', observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 1 };
+    fieldStatus['sub.att'] = { storePath: 'sub.att', observed: false, freshness: 'unknown', availability: 'undeclared' };
+    fieldStatus['sub.preamp'] = { storePath: 'sub.preamp', observed: false, freshness: 'unknown', availability: 'undeclared' };
+    return { ...base, fieldStatus };
+  }
+
+  const mor2511View = (active: 'MAIN' | 'SUB'): RadioViewModel => {
+    const view = toRadioViewModel(mor2511State(active), mor2511Caps());
+    if (view === null) throw new Error('expected the real adapter to derive a view');
+    return view;
+  };
+
+  it('renders the preamp row from the real adapter: kept, disabled, with the receiver-lacks-control hint', () => {
+    const r = renderFinite(mor2511View('SUB'));
+    const row = r.el('preamp');
+    expect(row).not.toBeNull();
+    expect(row?.dataset.disabledReason).toBe('receiver-lacks-control');
+    const describedBy = row?.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy ?? '')?.textContent).toBe('Not available on this receiver');
+    expect(row?.querySelector('.rf-front-end-unknown')).toBeNull();
+    for (const value of [0, 1, 2]) {
+      expect(r.el(`preamp-${value}`)?.hasAttribute('disabled')).toBe(true);
+    }
+  });
+
+  it('renders the attenuator row from the real adapter: kept, disabled, with the receiver-lacks-control hint', () => {
+    const r = renderFinite(mor2511View('SUB'));
+    const row = r.el('attenuator');
+    expect(row).not.toBeNull();
+    expect(row?.dataset.disabledReason).toBe('receiver-lacks-control');
+    const describedBy = row?.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy ?? '')?.textContent).toBe('Not available on this receiver');
+    expect(row?.querySelector('.rf-front-end-unknown')).toBeNull();
+    for (const value of [0, 6, 12, 18]) {
+      expect(r.el(`attenuator-${value}`)?.hasAttribute('disabled')).toBe(true);
+    }
+  });
+
+  it('renders both rows enabled with no reason and no hint anywhere when MAIN is active', () => {
+    const r = renderFinite(mor2511View('MAIN'));
+    expect(r.el('preamp')).not.toBeNull();
+    expect(r.el('attenuator')).not.toBeNull();
+    expect(r.el('preamp')?.hasAttribute('data-disabled-reason')).toBe(false);
+    expect(r.el('attenuator')?.hasAttribute('data-disabled-reason')).toBe(false);
+    expect(target.textContent).not.toContain('Not available on this receiver');
+    for (const value of [0, 1, 2]) {
+      expect(r.el(`preamp-${value}`)?.hasAttribute('disabled')).toBe(false);
+    }
+    for (const value of [0, 6, 12, 18]) {
+      expect(r.el(`attenuator-${value}`)?.hasAttribute('disabled')).toBe(false);
+    }
   });
 
   /**

@@ -448,6 +448,55 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
     }), INDICATOR_CAPS).radioWideIndicators!;
     expect(assignmentOnly.rfState).toBe('unknown');
   });
+
+  // MOR-2511 B2: receiver lacks att/preamp control (undeclared on this receiver)
+  describe('MOR-2511 B2: receiver lacks att/preamp control when undeclared', () => {
+    const mor2511State = (): ServerState => {
+      const base = indicatorState({ active: 'SUB' });
+      const fieldStatus = { ...base.fieldStatus } as Record<string, FieldStatus>;
+      // MAIN.att/preamp are available
+      fieldStatus['main.att'] = { ...fresh, lastObservedMonotonic: 0 };
+      fieldStatus['main.preamp'] = { ...fresh, lastObservedMonotonic: 0 };
+      // SUB.att/preamp are UNDECLARED (receiver lacks this control)
+      fieldStatus['sub.att'] = { storePath: 'sub.att', observed: false, freshness: 'unknown', availability: 'undeclared' };
+      fieldStatus['sub.preamp'] = { storePath: 'sub.preamp', observed: false, freshness: 'unknown', availability: 'undeclared' };
+      return { ...base, fieldStatus, active: 'SUB' } as ServerState;
+    };
+
+    it('SUB att/preamp in rfFrontEnd are structurally present but operationally unavailable when active SUB has undeclared fields', () => {
+      const view = model(mor2511State(), INDICATOR_CAPS, RECEIVING);
+      // rfFrontEnd now keeps structural=true but operational=false for undeclared fields
+      expect(view.rfFrontEnd?.attenuator.availability).toEqual({ structural: true, operational: false });
+      expect(view.rfFrontEnd?.attenuator.reading).toEqual({ status: 'unknown' });
+      expect(view.rfFrontEnd?.preamp.availability).toEqual({ structural: true, operational: false });
+      expect(view.rfFrontEnd?.preamp.reading).toEqual({ status: 'unknown' });
+      // receiverIndicators still show structural=false for SUB (badge has no room for hint)
+      const sub = view.receiverIndicators?.find((indicator) => indicator.receiver === 'SUB');
+      expect(sub?.attenuator.availability).toEqual({ structural: false, operational: false });
+      expect(sub?.preamp.availability).toEqual({ structural: false, operational: false });
+      // MAIN should be unchanged
+      const main = view.receiverIndicators?.find((indicator) => indicator.receiver === 'MAIN');
+      expect(main?.attenuator.availability).toEqual({ structural: true, operational: true });
+      expect(main?.attenuator.reading).toEqual({ status: 'known', value: 0 });
+      expect(main?.preamp.availability).toEqual({ structural: true, operational: true });
+      expect(main?.preamp.reading).toEqual({ status: 'known', value: 0 });
+    });
+
+    it('disabledReasons contains receiver-lacks-control for active receiver SUB when att/preamp undeclared', () => {
+      const view = model(mor2511State(), INDICATOR_CAPS, RECEIVING);
+      expect(view.disabledReasons).toContainEqual({ field: 'rfFrontEnd.attenuator', code: 'receiver-lacks-control' });
+      expect(view.disabledReasons).toContainEqual({ field: 'rfFrontEnd.preamp', code: 'receiver-lacks-control' });
+    });
+
+    it('MAIN att/preamp remain available when active receiver is MAIN and SUB fields are undeclared', () => {
+      const state = mor2511State();
+      const view = model({ ...state, active: 'MAIN' }, INDICATOR_CAPS, RECEIVING);
+      expect(view.rfFrontEnd?.attenuator.availability).toEqual({ structural: true, operational: true });
+      expect(view.rfFrontEnd?.preamp.availability).toEqual({ structural: true, operational: true });
+      // No receiver-lacks-control reason when MAIN is active
+      expect(view.disabledReasons.some((r) => r.code === 'receiver-lacks-control')).toBe(false);
+    });
+  });
 });
 
 const RADIO_WIDE_CAPS = caps({
