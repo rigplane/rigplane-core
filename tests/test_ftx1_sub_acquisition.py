@@ -3,12 +3,12 @@
 Bench 2026-09-17 (MOR-2511, acceptance build 65c1fe05): with SUB selected, the
 server's ``sub`` object carried no observed state -- ``freqHz: 0``,
 ``filterWidth: null``, meter 0, field status ``unavailable`` / ``undeclared``.
-In single receive (``FR01``, ``VS1``) the radio answers all four SUB-side
-reads (``FB;``/``MD1;``/``SH1;``/``SM1;``); the frequency is established as
-SUB's own, while the mode, width and meter payloads are not (same mode and
-width codes as MAIN in that capture).
 
-The test below drives the production observation adapter against the real
+Bench 2026-09-18 (MOR-2511 comment, 01:22Z): in single receive (``FR01``)
+each paired command probed answered SUB's own value with MAIN untouched --
+mode, width, AF, RF gain, squelch and repeater shift among them.
+
+The tests below drive the production observation adapter against the real
 FTX-1 profile and a mock CAT transport with dual receive observed OFF -- the
 bench condition.
 """
@@ -38,6 +38,14 @@ _SUB_FREQ = FieldPath.active("sub", "freq_mode", "freq_hz")
 _SUB_MODE = FieldPath.active("sub", "freq_mode", "mode")
 _SUB_FILTER_WIDTH = FieldPath.active("sub", "freq_mode", "filter_width")
 _SUB_S_METER = FieldPath.receiver("sub", "meters", "s_meter")
+_SUB_AF = FieldPath.receiver("sub", "operator_controls", "af_level")
+_SUB_RF = FieldPath.receiver("sub", "operator_controls", "rf_gain")
+_SUB_SQL = FieldPath.receiver("sub", "operator_controls", "squelch")
+_SUB_SHIFT = FieldPath.receiver("sub", "operator_controls", "repeater_shift")
+_MAIN_AF = FieldPath.receiver("main", "operator_controls", "af_level")
+_MAIN_RF = FieldPath.receiver("main", "operator_controls", "rf_gain")
+_MAIN_SQL = FieldPath.receiver("main", "operator_controls", "squelch")
+_MAIN_SHIFT = FieldPath.receiver("main", "operator_controls", "repeater_shift")
 
 # SUB on 144.500 MHz USB, width table index 14 (2500 Hz in the profile's SSB
 # table), raw meter 78 (the -36 dBm / S5 calibration point). ``SM1;`` answers
@@ -57,6 +65,34 @@ _CAT_ANSWERS = {
     "SM1;": "SM0078",
     "FT;": "FT0",
     "TX;": "TX0",
+    # Slow-tier answers. The AG/RG/SQ/OS MAIN/SUB pairs are the bench-probe
+    # rows of 2026-09-18 (MOR-2511 comment, 01:22Z): SUB differs from MAIN on
+    # every pair, so an assertion on the SUB path cannot pass on a MAIN echo.
+    # The remaining entries are minimal parseable answers for the other reads
+    # ``poll_slow_controls`` issues on this profile.
+    "FR;": "FR01",
+    "AG0;": "AG0000",
+    "AG1;": "AG1020",
+    "RG0;": "RG0255",
+    "RG1;": "RG1225",
+    "SQ0;": "SQ0000",
+    "SQ1;": "SQ1025",
+    "OS0;": "OS03",
+    "OS1;": "OS11",
+    "PA0;": "PA00",
+    "GT0;": "GT06",
+    "IS0;": "IS00+0000",
+    "NA0;": "NA00",
+    "NL0;": "NL0000",
+    "RL0;": "RL000",
+    "BC0;": "BC00",
+    "BP00;": "BP00000",
+    "CT0;": "CT00",
+    "CN00;": "CN00008",
+    "VS;": "VS0",
+    "CS;": "CS0",
+    "RM8;": "RM8080020",
+    "RM7;": "RM7010000",
 }
 
 
@@ -101,3 +137,28 @@ async def test_sub_state_is_acquired_in_single_receive() -> None:
     assert snapshot.field(_SUB_MODE).value == "USB"
     assert snapshot.field(_SUB_FILTER_WIDTH).value == 2500
     assert snapshot.field(_SUB_S_METER).value == -36
+
+
+@pytest.mark.asyncio
+async def test_sub_operator_controls_are_acquired_in_single_receive() -> None:
+    """The four controls MOR-2511 slice D ungated are read on the slow tier
+    with dual receive OFF, each answering SUB's own value (bench 2026-09-18
+    pairs in ``_CAT_ANSWERS``), not MAIN's."""
+
+    radio = _bench_radio()
+    store = _single_receive_store()
+    radio._state_store = store
+
+    adapter = YaesuObservationAdapter.from_radio(radio)
+    for observation in await adapter.poll_slow_controls():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    assert snapshot.field(_SUB_AF).value == pytest.approx(20 / 255)
+    assert snapshot.field(_MAIN_AF).value == pytest.approx(0 / 255)
+    assert snapshot.field(_SUB_RF).value == pytest.approx(225 / 255)
+    assert snapshot.field(_MAIN_RF).value == pytest.approx(255 / 255)
+    assert snapshot.field(_SUB_SQL).value == pytest.approx(25 / 255)
+    assert snapshot.field(_MAIN_SQL).value == pytest.approx(0 / 255)
+    assert snapshot.field(_SUB_SHIFT).value == 1
+    assert snapshot.field(_MAIN_SHIFT).value == 3

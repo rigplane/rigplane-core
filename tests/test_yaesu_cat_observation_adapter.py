@@ -3057,17 +3057,17 @@ async def test_a_non_state_store_attribute_leaves_both_reads_ungated() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Dual receive: the CAT ``FR`` read and the SUB fields it gates
+# Dual receive: the CAT ``FR`` read and the SUB operator controls
 # ---------------------------------------------------------------------------
 
 
 _DUAL_WATCH_PATH = "global.tx_state.dual_watch"
 
 # (id, poll method, radio read method, the declared SUB path it feeds).
-# Only the SUB operator controls stay gated on dual receive; freq/mode/
-# s_meter are acquired regardless (MOR-2511 -- pinned by
-# tests/test_ftx1_sub_acquisition.py).
-_SUB_GATED_ROWS: tuple[tuple[str, str, str, str], ...] = (
+# No SUB operator control is gated on dual receive any more (bench
+# 2026-09-18, MOR-2511); both parametrized tests below pin that each read
+# goes out and lands on its own path in either dual-receive state.
+_SUB_CONTROL_ROWS: tuple[tuple[str, str, str, str], ...] = (
     (
         "sub.af_level",
         "poll_slow_controls",
@@ -3151,53 +3151,27 @@ async def test_single_receive_is_observed_as_dual_watch_false() -> None:
     ] == [False]
 
 
-@pytest.mark.asyncio
-async def test_dual_receive_is_read_before_the_sub_controls_it_gates() -> None:
-    """The gating read must precede the reads whose clauses name it."""
-
-    radio, adapter = _dual_watch_adapter(on=True)
-    order: list[str] = []
-
-    def _record(name: str) -> None:
-        original = getattr(radio, name)
-
-        async def _call(*args: object, **kwargs: object) -> object:
-            order.append(f"{name}{args[:1]}")
-            return await original(*args, **kwargs)
-
-        setattr(radio, name, _call)
-
-    for method in ("get_rx_func", "read_af_level", "read_rf_gain", "read_squelch"):
-        _record(method)
-
-    await adapter.poll_slow_controls()
-
-    assert order[0] == "get_rx_func()"
-    for method in ("read_af_level", "read_rf_gain", "read_squelch"):
-        assert order.index("get_rx_func()") < order.index(f"{method}(1,)")
-
-
 @pytest.mark.parametrize(
     ("poll", "method", "path"),
-    [row[1:] for row in _SUB_GATED_ROWS],
-    ids=[row[0] for row in _SUB_GATED_ROWS],
+    [row[1:] for row in _SUB_CONTROL_ROWS],
+    ids=[row[0] for row in _SUB_CONTROL_ROWS],
 )
 @pytest.mark.asyncio
-async def test_sub_read_is_withheld_while_dual_receive_is_off(
+async def test_sub_read_is_sent_while_dual_receive_is_off(
     poll: str, method: str, path: str
 ) -> None:
     radio, adapter = _dual_watch_adapter(on=False)
 
     observations = await getattr(adapter, poll)()
 
-    assert not _sub_receiver_awaited(radio, method)
-    assert path not in [str(item.path) for item in observations]
+    assert _sub_receiver_awaited(radio, method)
+    assert path in [str(item.path) for item in observations]
 
 
 @pytest.mark.parametrize(
     ("poll", "method", "path"),
-    [row[1:] for row in _SUB_GATED_ROWS],
-    ids=[row[0] for row in _SUB_GATED_ROWS],
+    [row[1:] for row in _SUB_CONTROL_ROWS],
+    ids=[row[0] for row in _SUB_CONTROL_ROWS],
 )
 @pytest.mark.asyncio
 async def test_sub_read_is_sent_while_dual_receive_is_on(

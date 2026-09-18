@@ -1746,10 +1746,6 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("FTX-1", "global.meters.swr"),
         ("FTX-1", "receiver.main.operator_controls.att"),
         ("FTX-1", "receiver.main.operator_controls.manual_notch_freq"),
-        ("FTX-1", "receiver.sub.operator_controls.af_level"),
-        ("FTX-1", "receiver.sub.operator_controls.rf_gain"),
-        ("FTX-1", "receiver.sub.operator_controls.repeater_shift"),
-        ("FTX-1", "receiver.sub.operator_controls.squelch"),
         ("IC-7300", "global.meters.alc"),
         ("IC-7300", "global.meters.comp"),
         ("IC-7300", "global.meters.power"),
@@ -1805,37 +1801,28 @@ def test_ic7300_declares_the_transmit_meters_absent_outside_transmit() -> None:
     assert acquisition.policy_for(ptt).available_when == ()
 
 
-def test_ftx1_gates_only_sub_operator_controls_on_dual_receive() -> None:
-    """None of SUB freq/mode/width/meter is gated on dual receive (MOR-2511);
-    only the SUB operator controls still exist only while dual receive is on."""
+def test_ftx1_gates_nothing_on_dual_receive() -> None:
+    """Bench 2026-09-18 (MOR-2511): every SUB-side read answers SUB's own
+    value in single receive, so no SUB path is gated on dual receive."""
 
     acquisition = get_radio_profile("FTX-1").state_acquisition
     assert acquisition is not None
 
-    clause = AvailabilityClause(
-        field=FieldPath.global_("tx_state", "dual_watch"),
-        operator="equals",
-        value=True,
-    )
-    ungated_paths = (
+    sub_paths = (
         FieldPath.active("sub", "freq_mode", "freq_hz"),
         FieldPath.active("sub", "freq_mode", "mode"),
         FieldPath.active("sub", "freq_mode", "filter_width"),
         FieldPath.receiver("sub", "meters", "s_meter"),
-    )
-    for path in ungated_paths:
-        assert acquisition.policy_for(path).available_when == (), path
-
-    gated_paths = (
         FieldPath.receiver("sub", "operator_controls", "af_level"),
         FieldPath.receiver("sub", "operator_controls", "rf_gain"),
         FieldPath.receiver("sub", "operator_controls", "squelch"),
         FieldPath.receiver("sub", "operator_controls", "repeater_shift"),
     )
-    for path in gated_paths:
-        assert acquisition.policy_for(path).available_when == (clause,), path
+    for path in sub_paths:
+        assert acquisition.policy_for(path).available_when == (), path
 
-    # The condition source is itself polled, or nothing would ever resolve it.
+    # dual_watch is still polled: the web state publishes it for display
+    # (tests/test_web_server_coverage.py asserts the ``dualWatch`` key).
     dual_watch = FieldPath.global_("tx_state", "dual_watch")
     assert acquisition.capability_for(dual_watch).can_poll
     assert acquisition.policy_for(dual_watch).available_when == ()
