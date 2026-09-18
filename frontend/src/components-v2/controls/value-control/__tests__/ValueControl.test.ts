@@ -793,3 +793,77 @@ describe('fill percentage', () => {
     expect(wrapper?.getAttribute('style')).toContain('--vc-fill-percent: 50%');
   });
 });
+
+describe('MOR-2512: command modifiers leave the renderer alone', () => {
+  const renderers = [
+    { name: 'hbar', selector: '.vc-hbar', skin: undefined },
+    { name: 'bipolar', selector: '.vc-bipolar', skin: undefined },
+    { name: 'discrete', selector: '.vc-discrete', skin: undefined },
+    { name: 'knob', selector: '.vc-knob', skin: undefined },
+    { name: 'professional', selector: '.pro-knob', skin: ProfessionalKnob },
+  ] as const;
+
+  it.each(renderers)(
+    '%s ignores Ctrl+Arrow, Alt+Arrow, Meta+Arrow',
+    ({ name, selector, skin }) => {
+      const onChange = vi.fn();
+      const target = mountControl({
+        value: 50,
+        min: 0,
+        max: 100,
+        step: 10,
+        label: name,
+        renderer: name === 'professional' ? 'knob' : name,
+        skin: skin ? { name: `test-${name}`, knob: skin } : undefined,
+        debounceMs: 0,
+        onChange,
+      });
+      const slider = getSlider(target);
+      const wrapper = target.querySelector(selector) as HTMLElement;
+      expect(wrapper).toBeTruthy();
+
+      // Ctrl+ArrowUp should not change value and should not prevent default
+      const ctrlEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowUp',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      slider?.dispatchEvent(ctrlEvent);
+      expect(ctrlEvent.defaultPrevented).toBe(false);
+      expect(onChange).not.toHaveBeenCalled();
+
+      // Alt+ArrowUp should not change value and should not prevent default
+      const altEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowUp',
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      slider?.dispatchEvent(altEvent);
+      expect(altEvent.defaultPrevented).toBe(false);
+      expect(onChange).not.toHaveBeenCalled();
+
+      // Meta+ArrowUp should not change value and should not prevent default
+      const metaEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowUp',
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      slider?.dispatchEvent(metaEvent);
+      expect(metaEvent.defaultPrevented).toBe(false);
+      expect(onChange).not.toHaveBeenCalled();
+
+      // Plain ArrowUp should change value (sanity check - existing behavior)
+      const plainEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowUp',
+        bubbles: true,
+        cancelable: true,
+      });
+      slider?.dispatchEvent(plainEvent);
+      expect(plainEvent.defaultPrevented).toBe(true);
+      expect(onChange).toHaveBeenCalledWith(60);
+    },
+  );
+});
