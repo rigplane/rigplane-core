@@ -40,7 +40,6 @@
   "core.statusbar.power.toggleOn": "Переключить питание (трансивер ON — нажмите, чтобы выключить)",
   "core.statusbar.power.toggleOff": "Переключить питание (трансивер OFF — нажмите, чтобы включить)",
   "core.statusbar.power.toggleUnknown": "Состояние питания трансивера неизвестно",
-  "core.statusbar.power.unsupported": "Этот трансивер не поддерживает управление питанием",
   "core.statusbar.power.confirmTurnOff": "Выключить трансивер?",
   "core.statusbar.power.confirmTurnOn": "Включить трансивер?",
   "core.statusbar.power.failedTurnOff": "Не удалось выключить трансивер: {detail}",

@@ -135,15 +135,12 @@
   let radioPowerOn = $derived(getRadioPowerOn());
   let isPoweredOff = $derived(radioPowerOn === false);
   // MOR-1673: radios without power_control (e.g. FTX-1) cannot toggle
-  // power — the button stays rendered but disabled so the status-bar
-  // layout does not shift (owner decision 2026-09-15), and
-  // handlePowerToggle re-checks this before confirming or dispatching.
+  // power — no power control is rendered at all, rather than a disabled
+  // button that still advertises an unusable action.
   let powerControlSupported = $derived(hasCapability('power_control'));
 
   let powerTooltip = $derived(
-    !powerControlSupported
-      ? t('core.statusbar.power.unsupported')
-      : radioPowerOn === true
+    radioPowerOn === true
       ? t('core.statusbar.power.toggleOn')
       : radioPowerOn === false
         ? t('core.statusbar.power.toggleOff')
@@ -269,9 +266,9 @@
   }
 
   async function handlePowerToggle() {
-    // Defence in depth: never confirm or dispatch when the capability is
-    // absent or the power state is unknown.
-    if (!powerControlSupported || radioPowerOn === null) return;
+    // Defence in depth: never confirm or dispatch when the power state is
+    // unknown.
+    if (radioPowerOn === null) return;
     if (radioPowerOn === true) {
       if (!confirm(t('core.statusbar.power.confirmTurnOff'))) return;
       try {
@@ -466,18 +463,20 @@
       <Unplug size={14} strokeWidth={2} />
       <span class="btn-label">{controlState === 'connected' ? t('core.statusbar.connection.actionDisconnect') : t('core.statusbar.connection.actionConnect')}</span>
     </button>
-    <button
-      type="button"
-      class="control-btn power-toggle-btn"
-      class:is-on={radioPowerOn === true}
-      class:power-unknown={radioPowerOn === null}
-      disabled={radioPowerOn === null || !powerControlSupported}
-      onclick={handlePowerToggle}
-      title={powerTooltip}
-    >
-      <Power size={14} strokeWidth={2} />
-      <span class="btn-label">{powerLabel}</span>
-    </button>
+    {#if powerControlSupported}
+      <button
+        type="button"
+        class="control-btn power-toggle-btn"
+        class:is-on={radioPowerOn === true}
+        class:power-unknown={radioPowerOn === null}
+        disabled={radioPowerOn === null}
+        onclick={handlePowerToggle}
+        title={powerTooltip}
+      >
+        <Power size={14} strokeWidth={2} />
+        <span class="btn-label">{powerLabel}</span>
+      </button>
+    {/if}
   </div>
 </div>
 
