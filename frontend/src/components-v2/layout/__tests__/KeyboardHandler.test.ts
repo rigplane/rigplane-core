@@ -192,6 +192,70 @@ describe('KeyboardHandler', () => {
     });
   });
 
+  // MOR-2512 §2 — with a digit selected on the frequency readout, one
+  // ArrowUp press was handled twice: the readout stepped the digit AND the
+  // global binding fired, because the readout declared no arrow ownership.
+  // The readout now declares data-owns-arrows="vertical" on its root ONLY
+  // while a digit is selected, so the global layer yields exactly then and
+  // keeps firing with no digit selected (MOR-2364's no-digit pins above).
+  describe('frequency readout owns ArrowUp only while a digit is selected (MOR-2512)', () => {
+    const stepConfig: KeyboardConfig = {
+      ...config,
+      bindings: [
+        {
+          id: 'step-up',
+          section: 'Tuning',
+          label: 'Increase tuning step',
+          sequence: ['ArrowUp'],
+          action: 'adjust_tuning_step',
+          params: { direction: 'up' },
+        },
+      ],
+    };
+
+    /** Real semantic VfoSurface mount with a live, non-inert readout —
+     * the MOR-2364 harness shape, minus its inert-state machinery. */
+    function mountReadoutHarness() {
+      const base = topologyFixtures['1/single'];
+      const current: RadioViewModel = { ...base, vfos: base.vfos.map((vfo) => ({ ...vfo, display: {
+        frequencyHz: { state: 'current', value: vfo.frequencyHz! },
+        mode: { state: 'current', value: 'USB' }, filter: { state: 'current', value: 'FIL1' },
+      } })) };
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      const onTuneFrequency = vi.fn();
+      const onAction = vi.fn();
+      components.push(mount(VfoSurface, { target, props: { viewModel: current, onTuneFrequency } }));
+      mountHandler({ config: stepConfig, onAction });
+      flushSync();
+      const frequency = target.querySelector<HTMLElement>('.freq')!;
+      frequency.focus();
+      return { frequency, onAction, onTuneFrequency };
+    }
+
+    it('fires adjust_tuning_step with no digit selected, and yields to the readout once a digit is selected', () => {
+      const h = mountReadoutHarness();
+      expect(document.activeElement).toBe(h.frequency);
+      expect(h.frequency.hasAttribute('data-owns-arrows')).toBe(false);
+
+      h.frequency.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      flushSync();
+      expect(h.onAction).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ action: 'adjust_tuning_step', params: { direction: 'up' } }),
+      );
+
+      const digits = h.frequency.querySelectorAll<HTMLElement>('.digit');
+      digits[digits.length - 1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      expect(h.frequency.getAttribute('data-owns-arrows')).toBe('vertical');
+
+      h.frequency.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      flushSync();
+      expect(h.onAction).toHaveBeenCalledTimes(1);
+      expect(h.onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 14_195_001);
+    });
+  });
+
   // MOR-2507 — bench-observed on IC-7610/IC-7300: with the AF volume slider
   // focused, one arrow press was handled twice — the slider moved AND the
   // global tuning shortcut fired. A widget that consumes arrow keys declares

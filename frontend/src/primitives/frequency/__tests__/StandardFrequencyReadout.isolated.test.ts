@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its test-only effect harness.
+import { effect_root } from 'svelte/internal/client';
 import type { ComponentProps } from 'svelte';
 import type { FrequencyRenderer } from '../../../../component-kit-api/src/index';
 
@@ -13,9 +15,14 @@ import AlternateFrequencyReadoutHarness, {
   clearRetainedInteractions, retainedInteractions,
 } from './AlternateFrequencyReadoutHarness.svelte';
 import { projectFrequencyReadout } from '../frequency-readout';
+import {
+  createFrequencyInteraction,
+  type FrequencyInteraction,
+} from '../frequency-interaction.svelte';
 import FrequencyDisplay from '../../../components-v2/display/FrequencyDisplay.svelte';
 
 const mounted: ReturnType<typeof mount>[] = [];
+const roots: (() => void)[] = [];
 
 function mountReadout(props: ComponentProps<typeof StandardFrequencyReadout>): HTMLElement {
   const target = document.createElement('div');
@@ -33,6 +40,8 @@ beforeEach(() => {
 afterEach(() => {
   mounted.forEach((component) => unmount(component));
   mounted.length = 0;
+  roots.forEach((dispose) => dispose());
+  roots.length = 0;
   selectedFrequency.current = undefined;
   clearRetainedInteractions();
   document.body.innerHTML = '';
@@ -132,6 +141,62 @@ describe('StandardFrequencyReadout', () => {
     expect(mountReadout({ model: unknown, presentation: 'interactive' }).textContent?.trim()).toBe('—');
     expect(mountReadout({ model: unknown, presentation: 'passive' }).textContent?.replace(/\s/g, '')).toBe('--.---.---');
   });
+});
+
+// MOR-2512 §2 — the readout owns the arrow keys ONLY while a digit is
+// selected: with no digit selected the global keyboard map keeps its
+// arrows (MOR-2364's no-digit path), and the ownership declaration is the
+// data-owns-arrows hook the global layer's focusedElementOwnsArrowKey
+// reads off the closest ancestor of the active element.
+describe('digit-scoped arrow ownership on the readout root (MOR-2512)', () => {
+  function mountInteractiveReadout() {
+    const model = projectFrequencyReadout({ confirmedHz: 14_250_000 });
+    const onFreqChange = vi.fn();
+    let interaction!: FrequencyInteraction;
+    roots.push(effect_root(() => {
+      interaction = createFrequencyInteraction({
+        confirmedHz: 14_250_000,
+        digits: model.digits,
+        disabled: false,
+        minFreq: 0,
+        maxFreq: 999_000_000,
+        onFreqChange,
+      });
+    }));
+    flushSync();
+    const target = mountReadout({ model, presentation: 'interactive', interaction });
+    const root = target.querySelector<HTMLElement>('.freq')!;
+    const digits = Array.from(target.querySelectorAll<HTMLElement>('.digit'));
+    return { root, oneHzDigit: digits[digits.length - 1], onFreqChange };
+  }
+
+  it('has no data-owns-arrows with no digit selected, and "vertical" once one is', () => {
+    const { root, oneHzDigit } = mountInteractiveReadout();
+
+    expect(root.hasAttribute('data-owns-arrows')).toBe(false);
+
+    oneHzDigit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    expect(root.getAttribute('data-owns-arrows')).toBe('vertical');
+  });
+
+  it('steps a selected digit on plain ArrowUp and consumes the event', () => {
+    const { root, oneHzDigit, onFreqChange } = mountInteractiveReadout();
+    oneHzDigit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+
+    const event = new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true });
+    root.dispatchEvent(event);
+
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_250_001);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  // BLOCKED: the modified-arrow guard (ctrl/alt/meta ArrowUp must not step
+  // the digit) needs hasCommandModifier from components-v2/layout/
+  // keyboard-map, which the primitives eslint boundary (ADR 2026-04-12)
+  // forbids this primitive from importing. See the MOR-2512 part-2 handoff.
+  it.todo('ignores modified arrows while a digit is selected (MOR-2512 §2, blocked)');
 });
 
 describe('alternate frequency renderer', () => {
