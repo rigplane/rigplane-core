@@ -304,18 +304,19 @@ freshness_ttl_seconds = 2.0
 
 # Dual receive (CAT `FR`; FTX-1_CAT_OM_ENG_2508-C printed page 16: P1 `00` = dual
 # receive, `01` = single receive), published on the canonical
-# `global.tx_state.dual_watch` path rigs/ic7610.toml already declares. In
-# single receive the radio answers all four SUB-side reads
-# (`FB;`/`MD1;`/`SH1;`/`SM1;`, bench 2026-09-17, MOR-2511): the frequency is
-# SUB's own; whether the mode, width and meter payloads are SUB's own is not
-# established (same mode/width codes as MAIN in that capture). Per the
-# owner's 2026-09-17 ruling "show SUB always" none of the four reads is
-# gated on this field any more; only the SUB operator controls below still
-# declare themselves absent until it is observed true. Read in
+# `global.tx_state.dual_watch` path rigs/ic7610.toml already declares. Bench
+# 2026-09-18 (MOR-2511 comment, 01:22Z): in single receive every SUB-side
+# read probed answered SUB's own value with MAIN untouched, so no SUB field
+# is gated on this one any more (pinned by tests/test_state_acquisition_policy.py::
+# test_ftx1_gates_nothing_on_dual_receive). The field itself stays published
+# for display: the web state exposes the ``dualWatch`` key
+# (tests/test_web_server_coverage.py asserts it). Read in
 # backends/yaesu_cat/observations.py:
-# YaesuObservationAdapter.poll_slow_controls ahead of the SUB reads it gates,
-# so it rides the same YaesuCatPoller._SLOW_INTERVAL as the rest of this tier
-# and carries that tier's cadence rather than the IC-7610's 1.5s.
+# YaesuObservationAdapter.poll_slow_controls, whose FR-derived emission is
+# pinned by tests/test_yaesu_cat_observation_adapter.py::
+# test_single_receive_is_observed_as_dual_watch_false, so it rides the same
+# YaesuCatPoller._SLOW_INTERVAL as the rest of this tier and carries that
+# tier's cadence rather than the IC-7610's 1.5s.
 [state_acquisition.field_policies."global.tx_state.dual_watch"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
@@ -343,26 +344,22 @@ freshness_ttl_seconds = 2.0
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
+# SUB operator controls (CAT ``AG1``/``RG1``/``SQ1``/``OS1``), ungated since
+# the bench probe of 2026-09-18 (MOR-2511 comment, 01:22Z) showed each read
+# answering SUB's own value in single receive; acquisition in single receive
+# is pinned by tests/test_ftx1_sub_acquisition.py::
+# test_sub_operator_controls_are_acquired_in_single_receive.
 [state_acquisition.field_policies."receiver.sub.operator_controls.af_level"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
-available_when = [
-    { field = "global.tx_state.dual_watch", equals = true },
-]
 
 [state_acquisition.field_policies."receiver.sub.operator_controls.rf_gain"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
-available_when = [
-    { field = "global.tx_state.dual_watch", equals = true },
-]
 
 [state_acquisition.field_policies."receiver.sub.operator_controls.squelch"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
-available_when = [
-    { field = "global.tx_state.dual_watch", equals = true },
-]
 
 # Bench probe 2026-09-08: `RA0;` was refused (`?;`) with MAIN on 461.550 MHz
 # FM. `RA` has a fixed P1 and no SUB form, so band and mode could not be
@@ -563,9 +560,6 @@ freshness_ttl_seconds = 2.0
 [state_acquisition.field_policies."receiver.sub.operator_controls.repeater_shift"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
-available_when = [
-    { field = "global.tx_state.dual_watch", equals = true },
-]
 
 [ctcss]
 table = "standard_50"

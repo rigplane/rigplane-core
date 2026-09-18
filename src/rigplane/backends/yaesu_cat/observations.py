@@ -729,10 +729,6 @@ class YaesuObservationAdapter:
     async def poll_slow_controls(self) -> tuple[Observation, ...]:
         adapter = self._adapter()
         observations: list[Observation] = []
-        # First read of the cycle: the SUB fields below name this path in their
-        # profile ``available_when`` clauses. Pinned by
-        # ``tests/test_yaesu_cat_observation_adapter.py::
-        # test_dual_receive_is_read_before_the_sub_controls_it_gates``.
         if self._can_poll(_DUAL_WATCH):
             ok, mode = await self._safe_read(
                 "main.rx_func", self.radio.get_rx_func(), paths=(_DUAL_WATCH,)
