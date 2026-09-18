@@ -4,7 +4,6 @@
   import { hasTx, hasDualReceiver, hasAnyScope, hasSpectrum, receiverLabel } from '$lib/stores/capabilities.svelte';
   import { HardwareButton } from '$lib/Button';
   import SpectrumPanel from '../../components/spectrum/SpectrumPanel.svelte';
-  import AmberLcdDisplay from '../panels/lcd/AmberLcdDisplay.svelte';
   import FrequencyDisplay from '../display/FrequencyDisplay.svelte';
   import LinearSMeter from '../meters/LinearSMeter.svelte';
   import CollapsiblePanel from '../controls/CollapsiblePanel.svelte';
@@ -519,13 +518,13 @@
 <!-- ═══ LANDSCAPE: fullscreen spectrum + VFO overlay ═══ -->
 <div class="m-landscape">
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
+  <!-- MOR-2511 — a radio without a spectrum renders no stage at all; the
+       overlay below is absolutely positioned inside .m-landscape and does not
+       depend on this element. Pinned by the no-spectrum orientation tests in
+       MobileRadioLayout.component.svelte.test.ts. -->
   {#if hasSpectrum()}
     <div class="m-ls-spectrum">
       <SpectrumPanel hideAutoStepToggle={true} />
-    </div>
-  {:else}
-    <div class="m-ls-spectrum">
-      <AmberLcdDisplay />
     </div>
   {/if}
   <div class="m-ls-overlay">
@@ -672,14 +671,12 @@
   <!-- ═══ SCROLLABLE CONTENT ═══ -->
   <main class="m-content">
 
-    <!-- Spectrum / Waterfall / LCD -->
+    <!-- Spectrum / Waterfall — MOR-2511: absent entirely on a radio without
+         a spectrum; pinned by the no-spectrum orientation tests in
+         MobileRadioLayout.component.svelte.test.ts. -->
     {#if hasSpectrum()}
       <section class="m-spectrum">
         <SpectrumPanel hideAutoStepToggle={true} />
-      </section>
-    {:else}
-      <section class="m-spectrum">
-        <AmberLcdDisplay />
       </section>
     {/if}
 

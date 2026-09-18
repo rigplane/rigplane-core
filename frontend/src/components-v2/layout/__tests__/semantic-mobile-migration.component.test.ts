@@ -28,7 +28,6 @@ vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
   const stub = await import('./SpectrumPanelStub.svelte');
   return { default: stub.default };
 });
-vi.mock('../panels/lcd/AmberLcdDisplay.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../display/FrequencyDisplay.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../meters/LinearSMeter.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../controls/CollapsiblePanel.svelte', () => ({ default: function S() { return {}; } }));
