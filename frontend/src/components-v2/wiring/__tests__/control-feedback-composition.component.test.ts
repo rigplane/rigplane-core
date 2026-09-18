@@ -7,8 +7,8 @@
  * Harness: the `semantic-pbt-continuity.component.test.ts` seam set — the
  * REAL radio/capabilities stores, the REAL runtime, the REAL
  * `panel-adapters` producers and the REAL `SemanticRadioSurfaces` ->
- * `FilterSurface` prop wiring; only the network write (`sendCommand`) and
- * the transport's control-session read are stubbed. Pending commands come
+ * `FilterSurface` prop wiring; the `vi.mock` blocks below are the complete
+ * list of stubbed seams. Pending commands come
  * from the REAL lifecycle store via `dispatchRadioIntent` — the same
  * producer `panel-commands.ts`'s handlers call — so the feedback these
  * tests observe is the exact object production code projects, not a
