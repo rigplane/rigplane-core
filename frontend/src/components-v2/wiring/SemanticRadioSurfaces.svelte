@@ -1637,9 +1637,9 @@
     activeReceiverIndex === null ? null : getPendingFilterSelection(activeReceiverIndex),
   );
   let filterWidthFeedback = $derived(getFilterWidthControlFeedback());
-  let ifShiftFeedback = $derived(getIfShiftControlFeedback());
-  let pbtInnerFeedback = $derived(getPbtInnerHzControlFeedback());
-  let pbtOuterFeedback = $derived(getPbtOuterHzControlFeedback());
+  let ifShiftFeedback = $derived(getIfShiftControlFeedback(controlSession));
+  let pbtInnerFeedback = $derived(getPbtInnerHzControlFeedback(controlSession));
+  let pbtOuterFeedback = $derived(getPbtOuterHzControlFeedback(controlSession));
   let cwPitchFeedback = $derived(getCwPitchControlFeedback(controlSession));
   let keySpeedFeedback = $derived(getKeySpeedControlFeedback(controlSession));
   /**
