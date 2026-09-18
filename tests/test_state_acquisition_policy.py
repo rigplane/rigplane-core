@@ -1746,6 +1746,7 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("FTX-1", "global.meters.swr"),
         ("FTX-1", "receiver.main.operator_controls.att"),
         ("FTX-1", "receiver.main.operator_controls.manual_notch_freq"),
+        ("FTX-1", "receiver.sub.operator_controls.manual_notch_freq"),
         ("IC-7300", "global.meters.alc"),
         ("IC-7300", "global.meters.comp"),
         ("IC-7300", "global.meters.power"),

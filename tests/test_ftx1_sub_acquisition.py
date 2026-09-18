@@ -128,12 +128,21 @@ def _bench_radio() -> YaesuCatRadio:
 
 
 def _single_receive_store() -> StateStore:
-    """The bench condition: dual receive (``FR``) observed OFF."""
+    """The bench condition: dual receive (``FR``) observed OFF and SUB in USB
+    (the probe's mode), so the SUB notch-freq clause resolves permissively."""
     store = StateStore()
     store.apply(
         Observation(
             path=FieldPath.global_("tx_state", "dual_watch"),
             value=False,
+            source=SourceMetadata(source="yaesu_poll_response", provider="yaesu_cat"),
+            timestamp_monotonic=0.0,
+        )
+    )
+    store.apply(
+        Observation(
+            path=FieldPath.active("sub", "freq_mode", "mode"),
+            value="USB",
             source=SourceMetadata(source="yaesu_poll_response", provider="yaesu_cat"),
             timestamp_monotonic=0.0,
         )

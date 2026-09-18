@@ -2962,9 +2962,13 @@ _NOTCH_FREQ_PATH = "receiver.main.operator_controls.manual_notch_freq"
 
 def _availability_store(*, mode: str, freq_hz: int) -> StateStore:
     store = StateStore()
+    # Both receivers carry the same mode/freq so the SUB manual-notch-freq
+    # clause (a twin of MAIN's) resolves on the same snapshot.
     for path, value in (
         (FieldPath.active("main", "freq_mode", "mode"), mode),
         (FieldPath.active("main", "freq_mode", "freq_hz"), freq_hz),
+        (FieldPath.active("sub", "freq_mode", "mode"), mode),
+        (FieldPath.active("sub", "freq_mode", "freq_hz"), freq_hz),
     ):
         store.apply(
             Observation(
@@ -3000,11 +3004,9 @@ async def test_slow_poll_does_not_read_manual_notch_freq_in_fm(
     ):
         observations = await adapter.poll_slow_controls()
 
-    # MAIN is mode-gated off in FM; the SUB twin declares no clause, so only
-    # the SUB read goes out.
-    assert [call.args[:1] for call in radio.read_manual_notch_freq.await_args_list] == [
-        (1,)
-    ]
+    # Both receivers are in FM: MAIN by the store's mode, SUB by the twin
+    # clause on its own mode, so neither notch-freq read goes out.
+    radio.read_manual_notch_freq.assert_not_awaited()
     assert _NOTCH_FREQ_PATH not in [str(item.path) for item in observations]
     # A read never sent is not a failed read: it does not go through
     # ``_log_field_skip``, so nothing warns about the field.
@@ -3027,6 +3029,12 @@ async def test_slow_poll_reads_manual_notch_freq_in_usb() -> None:
 
     radio.read_manual_notch_freq.assert_awaited()
     assert _NOTCH_FREQ_PATH in [str(item.path) for item in observations]
+    # The SUB twin is sent too once SUB is observed in USB (its clause is a
+    # twin of MAIN's; the store observes both receivers).
+    assert [call.args[:1] for call in radio.read_manual_notch_freq.await_args_list] == [
+        (0,),
+        (1,),
+    ]
 
 
 @pytest.mark.asyncio
@@ -3065,11 +3073,9 @@ async def test_slow_poll_withholds_a_read_whose_condition_is_unobserved() -> Non
     paths = [str(item.path) for item in observations]
 
     radio.read_attenuator.assert_not_awaited()
-    # MAIN is withheld while its condition is unobserved; the SUB twin
-    # declares no clause, so its read goes out regardless.
-    assert [call.args[:1] for call in radio.read_manual_notch_freq.await_args_list] == [
-        (1,)
-    ]
+    # Both MAIN and SUB notch-freq reads are withheld while their conditions
+    # are unobserved (SUB's clause mirrors MAIN's).
+    radio.read_manual_notch_freq.assert_not_awaited()
     assert _ATT_PATH not in paths
     assert _NOTCH_FREQ_PATH not in paths
 
@@ -3081,7 +3087,10 @@ async def test_slow_poll_withholds_a_read_whose_condition_is_unobserved() -> Non
     paths = [str(item.path) for item in observations]
 
     radio.read_attenuator.assert_awaited()
-    assert len(radio.read_manual_notch_freq.await_args_list) == 2
+    assert [call.args[:1] for call in radio.read_manual_notch_freq.await_args_list] == [
+        (0,),
+        (1,),
+    ]
     assert _ATT_PATH in paths
     assert _NOTCH_FREQ_PATH in paths
 

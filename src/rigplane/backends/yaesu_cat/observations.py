@@ -875,8 +875,10 @@ class YaesuObservationAdapter:
         # has no FTX-1 capability tag and is polled unconditionally (gated by
         # policy only), mirroring the legacy poller's "always — lightweight
         # query" treatment, like AGC. The SUB reads (MOR-2511) answer their
-        # own value in single receive (bench 2026-09-18) and mirror the
-        # AF/RF/SQL SUB guards: ``dual_rx`` + the control's capability.
+        # own value in single receive (bench 2026-09-18). Every SUB read
+        # carries ``dual_rx`` + the control's capability where its MAIN twin
+        # has one (narrow has none) + ``_can_poll``/``_available`` per field,
+        # matching the AF/RF/SQL SUB guards.
         if self._has_runtime_capability("if_shift") and self._can_poll(_MAIN_IF_SHIFT):
             ok, value = await self._safe_read(
                 "main.if_shift", self.radio.read_if_shift(0), paths=(_MAIN_IF_SHIFT,)
@@ -891,6 +893,7 @@ class YaesuObservationAdapter:
             self._has_runtime_capability("dual_rx")
             and self._has_runtime_capability("if_shift")
             and self._can_poll(_SUB_IF_SHIFT)
+            and self._available(_SUB_IF_SHIFT)
         ):
             ok, value = await self._safe_read(
                 "sub.if_shift", self.radio.read_if_shift(1), paths=(_SUB_IF_SHIFT,)
@@ -954,6 +957,7 @@ class YaesuObservationAdapter:
             self._has_runtime_capability("dual_rx")
             and self._has_runtime_capability("nb")
             and self._can_poll(_SUB_NB_LEVEL)
+            and self._available(_SUB_NB_LEVEL)
         ):
             ok, nb_level = await self._safe_read(
                 "sub.nb_level",
@@ -1004,6 +1008,7 @@ class YaesuObservationAdapter:
             self._has_runtime_capability("dual_rx")
             and self._has_runtime_capability("nr")
             and self._can_poll(_SUB_NR_LEVEL)
+            and self._available(_SUB_NR_LEVEL)
         ):
             ok, nr_level = await self._safe_read(
                 "sub.nr_level",
