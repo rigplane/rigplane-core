@@ -31,7 +31,6 @@ export type ScopePassbandDisplay =
 export interface ScopePassbandDisplayState {
   readonly display: ScopePassbandDisplay;
   readonly identity: string | null;
-  readonly continuityIdentity: string | null;
   readonly bandlessIdentity: string | null;
   readonly domain: string | null;
   readonly observations: Observations;
@@ -54,7 +53,7 @@ const EMPTY_OBSERVATIONS: Observations = Object.freeze({});
 const EMPTY_PATHS: readonly string[] = Object.freeze([]);
 export const EMPTY_SCOPE_PASSBAND_DISPLAY: ScopePassbandDisplayState = Object.freeze({
   display: Object.freeze({ state: 'unknown', reason: 'not-observed' }),
-  identity: null, continuityIdentity: null, bandlessIdentity: null, domain: null, observations: EMPTY_OBSERVATIONS,
+  identity: null, bandlessIdentity: null, domain: null, observations: EMPTY_OBSERVATIONS,
   geometryPaths: EMPTY_PATHS, receipt: 0, floors: null, frequencyHoldRecovery: false,
   selection: null, selectionRecovery: null,
 });
@@ -80,7 +79,7 @@ function capabilityIdentity(caps: Capabilities): string {
   }));
 }
 interface Candidate {
-  identity: string; continuityIdentity: string | null; bandlessIdentity: string | null; tuple: ScopePassbandTuple;
+  identity: string; bandlessIdentity: string | null; tuple: ScopePassbandTuple;
   stale: boolean; strict: boolean; frequencyCurrent: boolean; frequencyAligned: boolean;
 }
 interface Inspection {
@@ -273,8 +272,6 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
   result.candidate = {
       tuple, stale: effectiveStale, frequencyCurrent, frequencyAligned,
     identity: JSON.stringify([...context, frequency, frame.startFreq, frame.endFreq]),
-    continuityIdentity: !partition ? null
-      : JSON.stringify([...context, partition.name, partition.start, partition.end, frame.endFreq - frame.startFreq]),
     bandlessIdentity: flatBands.length === 0 ? null
       : JSON.stringify([...context, frame.endFreq - frame.startFreq]),
     strict: frequencyAligned && !!strict && strict.receiver === receiver && strict.frequencyHz === frequency
@@ -399,7 +396,6 @@ export function projectScopePassbandDisplay(
   }
   return Object.freeze({
     display: Object.freeze(display), identity: candidate?.identity ?? previous.identity,
-    continuityIdentity: candidate?.continuityIdentity ?? null,
     bandlessIdentity: candidate?.bandlessIdentity ?? null,
     domain: next.domain ?? previous.domain,
     observations: Object.freeze(observations),
