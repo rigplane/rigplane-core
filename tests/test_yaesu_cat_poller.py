@@ -2581,8 +2581,9 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
             pytest.approx(_normalized_255(8)),
         ),
         # ATT/preamp need their runtime caps (absent here); AGC is
-        # unconditional and MAIN-only, mirroring the legacy poller.
+        # unconditional and per-receiver, like narrow (MOR-445/MOR-2511).
         ("receiver.main.operator_controls.agc", 3),
+        ("receiver.sub.operator_controls.agc", 3),
         # filter_width/if_shift need their runtime caps (absent here); narrow
         # is unconditional and per-receiver, like AGC (MOR-445/MOR-2511).
         ("receiver.main.operator_toggles.narrow", True),

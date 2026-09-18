@@ -2010,6 +2010,32 @@ async def test_set_agc(connected_radio):
     connected_radio._transport.write.assert_called_once_with("GT02;")
 
 
+# SUB (P1=1) frames and answer values below: bench probe 2026-09-18,
+# MOR-2511 comment 01:22Z -- `GT1;` answered SUB's own value (`GT11;`)
+# with MAIN untouched (`GT06;`).
+@pytest.mark.asyncio
+async def test_read_agc_sub_sends_gt1(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="GT16")
+    assert await connected_radio.read_agc(1) == 6
+    connected_radio._transport.query.assert_called_once_with("GT1;")
+
+
+@pytest.mark.asyncio
+async def test_set_agc_sub_sends_gt1(connected_radio):
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_agc(1, receiver=1)
+    connected_radio._transport.write.assert_called_once_with("GT11;")
+
+
+@pytest.mark.asyncio
+async def test_set_agc_sub_auto_collapses_to_gt14(connected_radio):
+    """The AUTO collapse (MOR-498) applies on SUB too: a SUB AUTO request
+    (read-side 5) is written ``GT14;`` (AUTO), not the rejected ``GT15;``."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_agc(5, receiver=1)
+    connected_radio._transport.write.assert_called_once_with("GT14;")
+
+
 @pytest.mark.parametrize("mode", [0, 1, 2, 3])
 @pytest.mark.asyncio
 async def test_set_agc_manual_modes_passthrough(connected_radio, mode):

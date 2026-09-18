@@ -845,9 +845,10 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
 
     observations = await adapter.poll_slow_controls()
 
-    # ATT/preamp/AGC are MAIN-only: the FTX-1 has no per-receiver CAT
-    # command for these front-end controls (no RA1/PA1/GT1), matching the
-    # legacy poller which only writes ``main.{att,preamp,agc}``. The
+    # ATT/preamp are MAIN-only: the FTX-1 has no per-receiver CAT command
+    # for these front-end controls (no RA1/PA1), matching the legacy poller
+    # which only writes ``main.{att,preamp,agc}``. AGC is per-receiver
+    # (``GT0``/``GT1``, bench 2026-09-18, MOR-2511 comment 01:22Z). The
     # attenuator ``read`` returns a bool; the int registry path receives the
     # coerced ``int(True) == 1``.
     # IF-shift (operator_controls, gated on ``if_shift`` cap) and narrow
@@ -875,6 +876,7 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
         ("receiver.main.operator_controls.att", 1),
         ("receiver.main.operator_controls.preamp", 2),
         ("receiver.main.operator_controls.agc", 3),
+        ("receiver.sub.operator_controls.agc", 3),
         ("receiver.main.operator_controls.if_shift", 200),
         ("receiver.sub.operator_controls.if_shift", 210),
         ("receiver.main.operator_toggles.narrow", True),
@@ -934,7 +936,7 @@ async def test_slow_poll_emits_declared_control_observations_only() -> None:
     assert radio.read_squelch.await_count == 2
     assert radio.read_attenuator.await_count == 1
     assert radio.read_preamp.await_count == 1
-    assert radio.read_agc.await_count == 1
+    assert radio.read_agc.await_count == 2
     assert radio.read_if_shift.await_count == 2
     assert radio.read_narrow.await_count == 2
     # Single CAT read per family and receiver — nb/nr toggles derive from the
@@ -981,7 +983,7 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
     # ATT/preamp/if_shift are gated by their runtime capabilities (dropped
     # here); AGC and narrow have no FTX-1 capability tag and mirror the legacy
     # poller's unconditional poll, so they still emit when policy is pollable
-    # — narrow for both receivers (MOR-2511), AGC MAIN-only.
+    # — narrow and AGC for both receivers (MOR-2511).
     assert [(str(item.path), item.value) for item in observations] == [
         ("global.tx_state.dual_watch", True),
         (
@@ -990,6 +992,7 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
         ),
         ("receiver.sub.operator_controls.af_level", pytest.approx(_normalized_255(64))),
         ("receiver.main.operator_controls.agc", 3),
+        ("receiver.sub.operator_controls.agc", 3),
         ("receiver.main.operator_toggles.narrow", True),
         ("receiver.sub.operator_toggles.narrow", False),
         # active-slot is unconditional (like AGC/narrow), so it still emits when
@@ -1001,7 +1004,7 @@ async def test_slow_poll_skips_sub_controls_without_matching_runtime_capability(
     radio.read_squelch.assert_not_awaited()
     radio.read_attenuator.assert_not_awaited()
     radio.read_preamp.assert_not_awaited()
-    assert radio.read_agc.await_count == 1
+    assert radio.read_agc.await_count == 2
     radio.read_if_shift.assert_not_awaited()
     assert radio.read_narrow.await_count == 2
     # NB/NR/notch dropped: their runtime caps are absent (MOR-444).
@@ -1518,9 +1521,11 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
             "receiver.sub.operator_controls.squelch",
             pytest.approx(_normalized_255(8)),
         ),
-        # AGC has no FTX-1 capability tag → unconditional, MAIN-only; ATT and
-        # preamp are skipped because this radio lacks those runtime caps.
+        # AGC has no FTX-1 capability tag → unconditional and per-receiver
+        # (MOR-2511); ATT and preamp are skipped because this radio lacks
+        # those runtime caps.
         ("receiver.main.operator_controls.agc", 3),
+        ("receiver.sub.operator_controls.agc", 3),
         # narrow is unconditional (like AGC) and per-receiver (MOR-2511), so
         # the SUB read emits too; filter_width and if_shift are skipped
         # because this radio lacks the ``filter_width`` / ``if_shift`` caps.
@@ -2272,6 +2277,7 @@ async def test_happy_path_slow_poll_unchanged_when_all_reads_succeed() -> None:
         ("receiver.main.operator_controls.att", 1),
         ("receiver.main.operator_controls.preamp", 2),
         ("receiver.main.operator_controls.agc", 3),
+        ("receiver.sub.operator_controls.agc", 3),
         ("receiver.main.operator_controls.if_shift", 200),
         ("receiver.sub.operator_controls.if_shift", 210),
         ("receiver.main.operator_toggles.narrow", True),
@@ -3144,6 +3150,14 @@ _SUB_CONTROL_ROWS: tuple[tuple[str, str, str, str], ...] = (
         "poll_slow_controls",
         "read_repeater_shift",
         "receiver.sub.operator_controls.repeater_shift",
+    ),
+    # SUB AGC (bench 2026-09-18, MOR-2511 comment 01:22Z: `GT1;` answered
+    # `GT11;` with MAIN at `GT06;`).
+    (
+        "sub.agc",
+        "poll_slow_controls",
+        "read_agc",
+        "receiver.sub.operator_controls.agc",
     ),
     # DSP SUB reads (bench 2026-09-18, MOR-2511 comment 01:22Z). The nb/nr
     # toggle rows share the level read of the row above them.
