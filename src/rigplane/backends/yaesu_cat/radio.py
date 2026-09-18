@@ -2642,16 +2642,17 @@ class YaesuCatRadio:
     # -- AGC ----------------------------------------------------------------
 
     async def read_agc(self, receiver: int = 0) -> int:
-        """Read AGC mode (GT0) without mutating legacy state.
+        """Read AGC mode without mutating legacy state.
 
         Returns:
             0=OFF, 1=FAST, 2=MID, 3=SLOW, 4=AUTO-F, 5=AUTO-M, 6=AUTO-S.
         """
-        result = await self._query("get_agc")
+        cmd = "get_agc" if receiver == 0 else "get_agc_sub"
+        result = await self._query(cmd)
         return int(result["mode"])
 
     async def get_agc(self, receiver: int = 0) -> int:
-        """Get AGC mode (GT0).
+        """Get AGC mode.
 
         Returns:
             0=OFF, 1=FAST, 2=MID, 3=SLOW, 4=AUTO-F, 5=AUTO-M, 6=AUTO-S.
@@ -2659,14 +2660,14 @@ class YaesuCatRadio:
         return await self.read_agc(receiver)
 
     async def set_agc(self, mode: int, receiver: int = 0) -> None:
-        """Set AGC mode (GT0).
+        """Set AGC mode.
 
         The FTX-1 read side reports 0–6 (4/5/6 = the auto-selected
         A-FAST/A-MID/A-SLOW for the current mode), but the SET side only
         accepts 0–4 where ``4`` means AUTO; writing ``GT05;``/``GT06;`` is
         rejected and the value sticks at the prior setting. Manual modes
         (0–3) are sent verbatim; any AUTO request (4, 5, or 6) is collapsed
-        to ``GT04;`` (AUTO), letting the radio re-derive the auto speed.
+        to AUTO, letting the radio re-derive the auto speed.
 
         ``mode`` must be one of the profile's declared ``[agc] modes``
         (MOR-1522) — an out-of-domain value raises instead of being sent
@@ -2679,7 +2680,8 @@ class YaesuCatRadio:
                 f"{self._config.model!r}, got {mode}"
             )
         wire_mode = 4 if mode >= 4 else mode
-        await self._write("set_agc", mode=str(wire_mode))
+        key = self._receiver_level_write_key("set_agc", receiver)
+        await self._write(key, mode=str(wire_mode))
 
     # -- Key speed (KS) -------------------------------------------------------
 
