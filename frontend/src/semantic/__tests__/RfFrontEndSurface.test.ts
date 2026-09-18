@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
+import { t } from '$lib/i18n';
 import {
   DISABLED_REASON_LABEL, RF_FRONT_END_LEVELS, RF_FRONT_END_TOGGLES, UNKNOWN_TEXT,
 } from '../RfFrontEndSurface.svelte';
@@ -232,7 +233,7 @@ describe('carry-forwards 2+3: the PREAMP mutex disables the control WITH AN EXPL
 
   it('shows the mutex explanation text, not merely an attribute', () => {
     const r = render(withReasons([MUTEX]));
-    expect(r.text('preamp-mutex-reason')).toBe(DISABLED_REASON_LABEL['mutually-exclusive-control']);
+    expect(r.text('preamp-mutex-reason')).toBe(t(DISABLED_REASON_LABEL['mutually-exclusive-control']!));
     r.dispose();
   });
 
@@ -285,7 +286,7 @@ describe('carry-forward 4: the mutex explanation names the code, never a peer co
   });
 
   it('is keyed by DisabledReasonCode, not by field name', () => {
-    expect(Object.keys(DISABLED_REASON_LABEL)).toEqual(['mutually-exclusive-control']);
+    expect(Object.keys(DISABLED_REASON_LABEL).sort()).toEqual(['mutually-exclusive-control', 'receiver-lacks-control'].sort());
   });
 });
 

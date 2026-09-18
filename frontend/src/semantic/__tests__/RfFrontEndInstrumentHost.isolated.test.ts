@@ -8,6 +8,7 @@ import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter
 import { getRfSqlControlFeedback } from '$lib/runtime/adapters/panel-adapters';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+import { t } from '$lib/i18n';
 
 const activation = vi.hoisted(() => ({ selected: undefined as unknown }));
 const captures = vi.hoisted(() => ({
@@ -676,11 +677,40 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
     expect(target.querySelector('[data-testid="external-Preamp"]')).not.toBeNull();
     const preamp = captures.choiceReads.map((read) => read()).find((input) => input.label === 'Preamp')!;
     expect(preamp.requested).toEqual({ kind: 'requested-target', target: 2 });
-    const reason = DISABLED_REASON_LABEL['mutually-exclusive-control'];
+    const reason = t(DISABLED_REASON_LABEL['mutually-exclusive-control']!);
     const option = target.querySelector<HTMLElement>('[data-testid="external-Preamp-0"]')!;
     expect(option.title).toBe(reason);
     const describedBy = option.getAttribute('aria-describedby')!;
     expect(target.querySelector(`#${describedBy}`)?.textContent).toBe(reason);
+  });
+
+  // MOR-2511 B2: receiver-lacks-control reason for preamp and attenuator
+  it('renders preamp disabled with receiver-lacks-control reason from disabledReasons', () => {
+    const view: RadioViewModel = {
+      ...finiteBase(),
+      disabledReasons: [{ field: 'rfFrontEnd.preamp', code: 'receiver-lacks-control' }] as DisabledReason[],
+    };
+    const r = renderFinite(view);
+    for (const value of [0, 1, 2]) {
+      expect(r.el(`preamp-${value}`)!.hasAttribute('disabled')).toBe(true);
+    }
+    expect(r.el('preamp-mutex-reason')).not.toBeNull();
+    expect(r.el('preamp-mutex-reason')?.textContent).toBe(t(DISABLED_REASON_LABEL['receiver-lacks-control']!));
+    expect(r.el('preamp')?.dataset.disabledReason).toBe('receiver-lacks-control');
+  });
+
+  it('renders attenuator disabled with receiver-lacks-control reason from disabledReasons', () => {
+    const view: RadioViewModel = {
+      ...finiteBase(),
+      disabledReasons: [{ field: 'rfFrontEnd.attenuator', code: 'receiver-lacks-control' }] as DisabledReason[],
+    };
+    const r = renderFinite(view);
+    for (const value of [0, 6, 12, 18]) {
+      expect(r.el(`attenuator-${value}`)!.hasAttribute('disabled')).toBe(true);
+    }
+    expect(r.el('attenuator-mutex-reason')).not.toBeNull();
+    expect(r.el('attenuator-mutex-reason')?.textContent).toBe(t(DISABLED_REASON_LABEL['receiver-lacks-control']!));
+    expect(r.el('attenuator')?.dataset.disabledReason).toBe('receiver-lacks-control');
   });
 
   /**
