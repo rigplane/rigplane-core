@@ -463,14 +463,17 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
       return { ...base, fieldStatus, active: 'SUB' } as ServerState;
     };
 
-    it('SUB att/preamp are structurally absent when active receiver is SUB and fields are undeclared', () => {
+    it('SUB att/preamp in rfFrontEnd are structurally present but operationally unavailable when active SUB has undeclared fields', () => {
       const view = model(mor2511State(), INDICATOR_CAPS, RECEIVING);
+      // rfFrontEnd now keeps structural=true but operational=false for undeclared fields
+      expect(view.rfFrontEnd?.attenuator.availability).toEqual({ structural: true, operational: false });
+      expect(view.rfFrontEnd?.attenuator.reading).toEqual({ status: 'unknown' });
+      expect(view.rfFrontEnd?.preamp.availability).toEqual({ structural: true, operational: false });
+      expect(view.rfFrontEnd?.preamp.reading).toEqual({ status: 'unknown' });
+      // receiverIndicators still show structural=false for SUB (badge has no room for hint)
       const sub = view.receiverIndicators?.find((indicator) => indicator.receiver === 'SUB');
-      expect(sub).toBeDefined();
       expect(sub?.attenuator.availability).toEqual({ structural: false, operational: false });
-      expect(sub?.attenuator.reading).toEqual({ status: 'unknown' });
       expect(sub?.preamp.availability).toEqual({ structural: false, operational: false });
-      expect(sub?.preamp.reading).toEqual({ status: 'unknown' });
       // MAIN should be unchanged
       const main = view.receiverIndicators?.find((indicator) => indicator.receiver === 'MAIN');
       expect(main?.attenuator.availability).toEqual({ structural: true, operational: true });
@@ -488,9 +491,8 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
     it('MAIN att/preamp remain available when active receiver is MAIN and SUB fields are undeclared', () => {
       const state = mor2511State();
       const view = model({ ...state, active: 'MAIN' }, INDICATOR_CAPS, RECEIVING);
-      const main = view.receiverIndicators?.find((indicator) => indicator.receiver === 'MAIN');
-      expect(main?.attenuator.availability).toEqual({ structural: true, operational: true });
-      expect(main?.preamp.availability).toEqual({ structural: true, operational: true });
+      expect(view.rfFrontEnd?.attenuator.availability).toEqual({ structural: true, operational: true });
+      expect(view.rfFrontEnd?.preamp.availability).toEqual({ structural: true, operational: true });
       // No receiver-lacks-control reason when MAIN is active
       expect(view.disabledReasons.some((r) => r.code === 'receiver-lacks-control')).toBe(false);
     });
