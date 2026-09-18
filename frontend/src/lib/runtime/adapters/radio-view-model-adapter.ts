@@ -938,15 +938,10 @@ function deriveRfFrontEnd(
   const rx = onSub ? state?.sub : state?.main;
   const base = onSub ? 'sub.' : 'main.';
 
-  // MOR-2511 B2: if the active receiver's att/preamp is undeclared, it is
-  // structurally absent for the active receiver regardless of radio-wide capability.
-  const preampStructural = hasPreCap && !fieldUndeclared(state, `${base}preamp`);
-  const attStructural = hasAttCap && !fieldUndeclared(state, `${base}att`);
-
   return {
-    preamp: txAuxField(preampStructural, topFieldAvailable(state, `${base}preamp`), numOrUndef(rx?.preamp)),
+    preamp: txAuxField(hasPreCap, topFieldAvailable(state, `${base}preamp`), numOrUndef(rx?.preamp)),
     preValues: caps.preValues ?? [],
-    attenuator: txAuxField(attStructural, topFieldAvailable(state, `${base}att`), numOrUndef(rx?.att)),
+    attenuator: txAuxField(hasAttCap, topFieldAvailable(state, `${base}att`), numOrUndef(rx?.att)),
     attValues: caps.attValues ?? [],
     rfGain: txAuxField(hasRfGainCap, topFieldAvailable(state, `${base}rfGain`), numOrUndef(rx?.rfGain)),
     squelch: txAuxField(hasSquelchCap, topFieldAvailable(state, `${base}squelch`), numOrUndef(rx?.squelch)),
