@@ -294,11 +294,20 @@ def _level_for_power(value: Any, radio: Any) -> int:
     return int(native)
 
 
+# Commands whose control a shipped profile may declare a ``quantization =
+# "reject"`` scalar domain for. Display-only entries carrying a band but no
+# quantization (pbt_inner/pbt_outer, IC-7610 nb_depth/nr_level) are
+# deliberately absent; a radio publishing no domain for an entry here is a
+# no-op as well. Both limits are pinned by
+# tests/test_handlers_coverage.py::test_enqueue_display_only_control_without_quantization_is_not_domain_checked
+# and ::test_enqueue_icom_nb_level_without_reject_domain_is_not_domain_checked.
 _PUBLISHED_DOMAIN_COMMANDS: dict[str, tuple[str, str]] = {
     "set_notch_filter": ("manual_notch_freq", "value"),
     "set_if_shift": ("if_shift", "offset"),
     "set_cw_pitch": ("cw_pitch", "value"),
     "set_nr_level": ("nr_level", "level"),
+    "set_nb_level": ("nb_level", "level"),
+    "set_rit_frequency": ("rit", "freq"),
 }
 
 _LEGACY_DOMAIN_KEYS = (
