@@ -1200,30 +1200,32 @@ class YaesuCatPoller:
                 await radio.set_preamp(level, receiver)
 
             # ── DSP / Noise ──
-            case SetAgc(mode=mode):
-                await radio.set_agc(mode)
-            case SetNB(on=on):
-                await radio.set_nb(on)
-            case SetNR(on=on):
-                await radio.set_nr(on)
-            case SetNBLevel(level=level):
-                await radio.set_nb_level(level)
-            case SetNRLevel(level=level):
-                await radio.set_nr_level(level)
-            case SetAutoNotch(on=on):
-                await radio.set_auto_notch(on)
-            case SetManualNotch(on=on):
-                await radio.set_manual_notch(on)
-            case SetNotchFilter(level=level):
-                await radio.set_manual_notch_freq(level)
+            # Receiver forwarded per-arm; pinned by
+            # test_execute_command_forwards_the_receiver_to_the_radio.
+            case SetAgc(mode=mode, receiver=rx):
+                await radio.set_agc(mode, receiver=rx)
+            case SetNB(on=on, receiver=rx):
+                await radio.set_nb(on, receiver=rx)
+            case SetNR(on=on, receiver=rx):
+                await radio.set_nr(on, receiver=rx)
+            case SetNBLevel(level=level, receiver=rx):
+                await radio.set_nb_level(level, receiver=rx)
+            case SetNRLevel(level=level, receiver=rx):
+                await radio.set_nr_level(level, receiver=rx)
+            case SetAutoNotch(on=on, receiver=rx):
+                await radio.set_auto_notch(on, receiver=rx)
+            case SetManualNotch(on=on, receiver=rx):
+                await radio.set_manual_notch(on, receiver=rx)
+            case SetNotchFilter(level=level, receiver=rx):
+                await radio.set_manual_notch_freq(level, receiver=rx)
 
             # ── Filters ──
             case SetFilter(filter_num=_num):
                 raise NotImplementedError(
                     "SetFilter unsupported by Yaesu CAT dispatcher"
                 )
-            case SetFilterWidth(width=width):
-                await radio.set_filter_width(width)
+            case SetFilterWidth(width=width, receiver=rx):
+                await radio.set_filter_width(width, receiver=rx)
             case SetFilterShape(shape=_shape):
                 raise NotImplementedError(
                     "SetFilterShape unsupported by Yaesu CAT dispatcher"
@@ -1232,8 +1234,8 @@ class YaesuCatPoller:
                 raise NotImplementedError(f"{name} unsupported by Yaesu CAT dispatcher")
 
             # ── IF Shift ──
-            case SetIfShift(offset=offset):
-                await radio.set_if_shift(offset)
+            case SetIfShift(offset=offset, receiver=rx):
+                await radio.set_if_shift(offset, receiver=rx)
 
             # ── CW ──
             case SetKeySpeed(speed=speed):

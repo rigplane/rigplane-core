@@ -3844,6 +3844,50 @@ async def test_execute_command_set_power_raw_255_unit_rejected() -> None:
     radio.set_power.assert_not_awaited()
 
 
+# ---------------------------------------------------------------------------
+# Command dispatch — receiver forwarding (MOR-2511)
+# ---------------------------------------------------------------------------
+
+_RECEIVER_FORWARDING_CASES = [
+    ("set_agc", "SetAgc", {"mode": 3}),
+    ("set_nb", "SetNB", {"on": True}),
+    ("set_nr", "SetNR", {"on": True}),
+    ("set_nb_level", "SetNBLevel", {"level": 5}),
+    ("set_nr_level", "SetNRLevel", {"level": 7}),
+    ("set_auto_notch", "SetAutoNotch", {"on": True}),
+    ("set_manual_notch", "SetManualNotch", {"on": True}),
+    ("set_manual_notch_freq", "SetNotchFilter", {"level": 120}),
+    ("set_if_shift", "SetIfShift", {"offset": 200}),
+    ("set_filter_width", "SetFilterWidth", {"width": 2400}),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("radio_method", "command_name", "kwargs"),
+    _RECEIVER_FORWARDING_CASES,
+    ids=[name for name, _, _ in _RECEIVER_FORWARDING_CASES],
+)
+async def test_execute_command_forwards_the_receiver_to_the_radio(
+    radio_method: str,
+    command_name: str,
+    kwargs: dict,  # noqa: UP006
+) -> None:
+    """Pinned by MOR-2511: SUB-side commands must not land on MAIN."""
+    import rigplane.runtime._poller_types as poller_types
+
+    for receiver in (1, 0):
+        radio = make_radio()
+        setattr(radio, radio_method, AsyncMock())
+        poller = YaesuCatPoller(radio, callback=lambda s: None, fast_interval=10.0)
+
+        command = getattr(poller_types, command_name)(**kwargs, receiver=receiver)
+        await poller._execute_command(command)  # noqa: SLF001
+
+        value = next(iter(kwargs.values()))
+        getattr(radio, radio_method).assert_awaited_once_with(value, receiver=receiver)
+
+
 def test_slow_group_interval_matches_the_profile_slow_control_cadence() -> None:
     """The FTX-1 profile's slow tier must name the interval that re-reads it.
 
