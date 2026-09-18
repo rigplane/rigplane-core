@@ -4,7 +4,7 @@ import {
   deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps,
 } from '$lib/radio/filter-controls';
 import { modeHasTwinPbt, resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
-import { findActiveBand, flattenBands } from '$lib/radio/band-plan';
+import { flattenBands } from '$lib/radio/band-plan';
 import type { ScopeFramePresentation } from '../scope-frame-host';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import { derivePresentationCapabilities, type ReceiverId } from './presentation-capabilities';
@@ -262,7 +262,6 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
   // retain the conservative stale/first-stale behavior below.
   const effectiveStale = stale && !heldReadbackConfirmed;
   const strict = effectiveStale ? null : toSpectrumAuthority(state, caps);
-  const band = findActiveBand(frequency, caps.freqRanges ?? []);
   const flatBands = flattenBands(caps.freqRanges ?? []);
   const context = [state.providerGeneration, capabilityIdentity(caps), session.epoch,
     selection.receiver, selection.slot, mode, filter, data, 'hardware',
