@@ -28,7 +28,6 @@ vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
   const stub = await import('./SpectrumPanelStub.svelte');
   return { default: stub.default };
 });
-vi.mock('../panels/lcd/AmberLcdDisplay.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../display/FrequencyDisplay.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../meters/LinearSMeter.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../controls/CollapsiblePanel.svelte', () => ({ default: function S() { return {}; } }));
@@ -302,6 +301,21 @@ describe('semantic VFO / RX-TX adoption in the mobile shell', () => {
     expect(mobileLayoutSource).not.toContain('RxTxSurface');
     expect(mobileLayoutSource).not.toContain('VfoSurface');
   });
+});
+
+// ---------------------------------------------------------------------------
+// 1b. Spectrum slot (MOR-2511): this suite's `hasSpectrum` mock returns true,
+// so it carries the with-spectrum counterpart of the no-spectrum pins in
+// MobileRadioLayout.component.svelte.test.ts.
+// ---------------------------------------------------------------------------
+describe('spectrum slot with a spectrum-capable radio (MOR-2511)', () => {
+  it.each([['portrait', false], ['landscape', true]] as const)(
+    'mounts the SpectrumPanel in the %s spectrum slot', (_label, landscape) => {
+      setViewport(landscape);
+      const t = mountMobile();
+      const slot = t.querySelector(landscape ? '.m-ls-spectrum' : '.m-spectrum');
+      expect(slot?.querySelector('.spectrum-panel-stub')).not.toBeNull();
+    });
 });
 
 // ---------------------------------------------------------------------------
