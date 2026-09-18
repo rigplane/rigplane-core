@@ -1016,6 +1016,11 @@ describe('passband scalar feedback (MOR-1687 part 1)', () => {
     ['pbtOuter', 'onPbtOuterChange', 'pbt-outer', 'pbtOuterFeedback'],
     ['ifShift', 'onIfShiftChange', 'if-shift', 'ifShiftFeedback'],
   ] as const;
+  /** The en-US `core.filter.passband.control.*` names — what the {control}
+   *  placeholder of the one announcement family resolves to per row. */
+  const PASSBAND_CONTROL_NAME = {
+    pbtInner: 'PBT inner', pbtOuter: 'PBT outer', ifShift: 'IF shift',
+  } as const;
 
   it.each(ROWS)('%s: shows the pending target on the thumb, marked unconfirmed, canonical readout untouched', (field, _handler, control, feedbackKey) => {
     withSurface(base(), (s) => {
@@ -1026,6 +1031,39 @@ describe('passband scalar feedback (MOR-1687 part 1)', () => {
       expect(input.disabled).toBe(false);
       expect(s.output(`filter-${field}`)!.textContent).toBe('0');
     }, {}, { [feedbackKey]: passbandFeedback(control, PENDING) } as PendingProps);
+  });
+
+  it.each(ROWS)('%s: announces a submitted command politely with the control name and target', (field, _handler, control, feedbackKey) => {
+    withSurface(base(), (s) => {
+      const status = s.group(`filter-${field}`)!.querySelector<HTMLElement>('[data-control-feedback-status]');
+      expect(status).not.toBeNull();
+      expect(status!.getAttribute('role')).toBe('status');
+      expect(status!.getAttribute('aria-live')).toBe('polite');
+      expect(status!.textContent).toBe(`${PASSBAND_CONTROL_NAME[field]} 600 Hz requested; not yet confirmed by the radio.`);
+    }, {}, { [feedbackKey]: passbandFeedback(control, PENDING) } as PendingProps);
+  });
+
+  it.each(ROWS)('%s: announces the confirmed outcome with the confirmed Hz', (field, _handler, control, feedbackKey) => {
+    const current = base();
+    const group = current.filterPassband!;
+    if (field === 'ifShift') {
+      group.ifShift = { reading: { status: 'known', value: 600 }, availability: { structural: true, operational: true } };
+    } else {
+      group[field] = {
+        reading: { status: 'known', value: 600 }, availability: { structural: true, operational: true },
+        display: { state: 'current', value: 600 },
+      } as typeof group.pbtInner;
+    }
+    withSurface(current, (s) => {
+      const status = s.group(`filter-${field}`)!.querySelector<HTMLElement>('[data-control-feedback-status]');
+      expect(status).not.toBeNull();
+      expect(status!.textContent).toBe(`${PASSBAND_CONTROL_NAME[field]} confirmed at 600 Hz.`);
+    }, {}, {
+      [feedbackKey]: passbandFeedback(control, {
+        confirmed: 600, requestedTarget: 600, phase: 'confirmed',
+        outcome: { phase: 'confirmed' }, lifecycleId: '7:passband', transitionId: '7:passband:confirmed',
+      }),
+    } as PendingProps);
   });
 
   it.each(ROWS)('%s: keeps the operator\'s requested value through the command\'s OWN lifecycle — no snap-back to the stale readback', (field, handler, control, feedbackKey) => {

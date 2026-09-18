@@ -87,6 +87,7 @@
     type CommandScalarFeedback, type ContinuousScalarInput,
     type ContinuousScalarRendererLease, type ContinuousScalarView,
   } from '../primitives/scalar/continuous-scalar.svelte';
+  import type { PoliteControlAnnouncement } from '../primitives/control-feedback/control-feedback-presentation';
   import type { FilterFiniteLayout, FilterInstrumentHandles } from './filter-instruments';
   import type { RadioViewModel } from './radio-view-model';
 
@@ -146,12 +147,12 @@
   let filterWidthLease: ContinuousScalarRendererLease | null = $state(null);
   const initialFilterWidthView = untrack(() => filterWidthScalar.view);
   let filterWidthView: Readonly<ContinuousScalarView> = $state(initialFilterWidthView);
-  type IssuedFilterWidthAnnouncement = Readonly<{
+  type IssuedAnnouncement = Readonly<{
     authorityKey: string;
     eventKey: string;
     text: string;
   }>;
-  function filterWidthAuthorityKey(current: Readonly<ContinuousScalarView>): string {
+  function scalarAuthorityKey(current: Readonly<ContinuousScalarView>): string {
     const domain = current.domain;
     const shared = [
       current.evidence, current.editable, domain.min, domain.max, domain.step,
@@ -168,9 +169,9 @@
   }
   function nextFilterWidthAnnouncement(
     current: Readonly<ContinuousScalarView>,
-    previous: IssuedFilterWidthAnnouncement | null,
-  ): IssuedFilterWidthAnnouncement | null {
-    const authorityKey = filterWidthAuthorityKey(current);
+    previous: IssuedAnnouncement | null,
+  ): IssuedAnnouncement | null {
+    const authorityKey = scalarAuthorityKey(current);
     const issued = current.presentation?.politeAnnouncement;
     if (issued === null || issued === undefined || current.announcement === null) {
       return previous?.authorityKey === authorityKey ? previous : null;
@@ -181,7 +182,7 @@
       text: current.error === null ? current.announcement : `${current.announcement}: ${current.error}`,
     });
   }
-  let filterWidthAnnouncement: IssuedFilterWidthAnnouncement | null = $state(
+  let filterWidthAnnouncement: IssuedAnnouncement | null = $state(
     nextFilterWidthAnnouncement(initialFilterWidthView, null),
   );
   $effect(() => {
@@ -270,10 +271,74 @@
     };
   }
 
+  /** The width row's announcement contract, formatted through the ONE
+   *  passband message family (`core.filter.passband.*Announcement`) whose
+   *  `{control}` placeholder resolves from `core.filter.passband.control.*`
+   *  — same keys the v2 FilterPanel's issued-status formatter reads. */
+  function formatPassbandAnnouncementText(
+    field: FilterPassbandLevelField,
+    feedback: Readonly<CommandScalarFeedback>,
+    phase: Readonly<PoliteControlAnnouncement['phase']>,
+    error: string | null,
+  ): string {
+    const controlName = t(`core.filter.passband.control.${field}`);
+    const target = feedback.requestedTarget !== null && Number.isFinite(feedback.requestedTarget)
+      ? `${feedback.requestedTarget} Hz` : '--- Hz';
+    const confirmed = feedback.confirmed !== null && Number.isFinite(feedback.confirmed)
+      ? `${feedback.confirmed} Hz` : '--- Hz';
+    let message: string;
+    switch (phase) {
+      case 'submitted':
+      case 'queued':
+      case 'dispatched':
+      case 'awaiting-confirmation':
+        message = t('core.filter.passband.pendingAnnouncement', { control: controlName, target });
+        break;
+      case 'confirmed':
+        message = t('core.filter.passband.confirmedAnnouncement', { control: controlName, confirmed });
+        break;
+      case 'failed':
+        message = t('core.filter.passband.failedAnnouncement', { control: controlName, target, confirmed });
+        break;
+      case 'timed-out':
+        message = t('core.filter.passband.timedOutAnnouncement', { control: controlName, target, confirmed });
+        break;
+      case 'cancelled':
+        message = t('core.filter.passband.cancelledAnnouncement', { control: controlName, target, confirmed });
+        break;
+      case 'superseded':
+        message = t('core.filter.passband.supersededAnnouncement', { control: controlName, target, confirmed });
+        break;
+      default:
+        message = '';
+    }
+    return error === null ? message : `${message.replace(/[.!?]$/, '')}: ${error}`;
+  }
+  function nextPassbandAnnouncement(
+    field: FilterPassbandLevelField,
+    current: Readonly<ContinuousScalarView>,
+    previous: IssuedAnnouncement | null,
+  ): IssuedAnnouncement | null {
+    const authorityKey = scalarAuthorityKey(current);
+    if (current.evidence !== 'command-feedback') {
+      return previous?.authorityKey === authorityKey ? previous : null;
+    }
+    const issued = current.presentation?.politeAnnouncement;
+    if (issued === null || issued === undefined || current.announcement === null) {
+      return previous?.authorityKey === authorityKey ? previous : null;
+    }
+    return Object.freeze({
+      authorityKey,
+      eventKey: JSON.stringify([authorityKey, issued.transitionId]),
+      text: formatPassbandAnnouncementText(field, current.feedback, issued.phase, current.error),
+    });
+  }
+
   /** The width row's lease/view plumbing, once per passband row. */
   function createPassbandRow(field: FilterPassbandLevelField): Readonly<{
     lease: ContinuousScalarRendererLease | null;
     view: Readonly<ContinuousScalarView>;
+    announcement: IssuedAnnouncement | null;
   }> {
     const scalar = createContinuousScalar(
       () => passbandInput(field), nativeRangeContinuousScalarPolicy,
@@ -281,23 +346,30 @@
     let lease: ContinuousScalarRendererLease | null = $state(null);
     const initialView = untrack(() => scalar.view);
     let view: Readonly<ContinuousScalarView> = $state(initialView);
+    let announcement: IssuedAnnouncement | null = $state(
+      nextPassbandAnnouncement(field, initialView, null),
+    );
     $effect(() => {
       const attached = scalar.attachRenderer();
       lease = attached;
       return () => attached.dispose();
     });
     $effect(() => {
-      view = lease === null ? scalar.view : lease.view;
+      const next = lease === null ? scalar.view : lease.view;
+      view = next;
+      announcement = nextPassbandAnnouncement(field, next, untrack(() => announcement));
     });
     onDestroy(() => scalar.destroy());
     return {
       get lease() { return lease; },
       get view() { return view; },
+      get announcement() { return announcement; },
     };
   }
   const passbandRows: Record<FilterPassbandLevelField, Readonly<{
     lease: ContinuousScalarRendererLease | null;
     view: Readonly<ContinuousScalarView>;
+    announcement: IssuedAnnouncement | null;
   }>> = {
     ifShift: createPassbandRow('ifShift'),
     pbtInner: createPassbandRow('pbtInner'),
@@ -356,7 +428,7 @@
              pending target in Hz (MOR-1691: the thumb shows the operator's
              requested value until readback confirms or terminates). -->
         {@const pendingTarget = row.view.busy && row.view.target !== null ? row.view.target : null}
-        {#key display?.state}
+          {#key display?.state}
           <input
             id={`${pendingFilterId}-${field}-input`} type="range" {min} {max} {step}
             {...feedbackIntegratedRange}
@@ -366,7 +438,16 @@
             aria-busy={row.view.busy}
             oninput={(event) => row.lease?.nativeInput(event.currentTarget.valueAsNumber)}
           />
-        {/key}
+          {/key}
+      {/snippet}
+      {#snippet passbandStatus(field: FilterPassbandLevelField)}
+        {@const announcement = passbandRows[field].announcement}
+        {#if announcement !== null}
+          {#key announcement.eventKey}
+            <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
+              data-control-feedback-status>{announcement.text}</span>
+          {/key}
+        {/if}
       {/snippet}
       {#if !finiteLayout}
         {@render handles.shape()}
@@ -391,6 +472,7 @@
                 {/if}
               </span>
               <output class="pbt-value" aria-live="off">{measured && 'value' in display ? display.value : '—'}</output>
+              {@render passbandStatus(field)}
             </div>
           {:else}
             <label
@@ -401,6 +483,7 @@
               <span class="filter-level-name">{label}</span>
               {@render passbandRange(field, limits.min, limits.max, limits.step)}
               <output>{textOf(filterPassband[field])}</output>
+              {@render passbandStatus(field)}
             </label>
           {/if}
         {/if}

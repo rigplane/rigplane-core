@@ -332,7 +332,7 @@
       binding={rendererSeat} {label} {displayFn} {unknownDisplay}
       {fillColor} {fillGradient} {trackColor}
       {accentColor} {showValue} {showLabel} {compact} {variant} {unit} {shortcutHint} {title}
-      {accessibility} {legacy}
+      {accessibility} {legacy} {issuedStatusPresentation}
     />
   {:else if renderer === 'knob'}
     <KnobRenderer {...knobProps} />

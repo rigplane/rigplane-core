@@ -398,6 +398,65 @@
     consumeReadOnlyWidthStatus(view);
   });
 
+  // MOR-1687 part 2: the three passband rows announce through the same
+  // issued-status seam the width row uses — one message family
+  // (`core.filter.passband.*Announcement`) whose `{control}` placeholder
+  // resolves from `core.filter.passband.control.*`, not three per-control
+  // families. The pins live in FilterPanel.isolated.test.ts's passband
+  // describe (en-US texts plus the ru-RU family pin).
+  function formatIssuedPassbandStatus(
+    control: 'pbtInner' | 'pbtOuter' | 'ifShift',
+    snapshot: Readonly<HBarIssuedStatusSnapshot>,
+  ): string {
+    const feedback = snapshot.view.feedback;
+    const controlName = t(`core.filter.passband.control.${control}`);
+    const target = feedback.requestedTarget !== null && Number.isFinite(feedback.requestedTarget)
+      ? `${feedback.requestedTarget} Hz` : '--- Hz';
+    const confirmed = feedback.confirmed !== null && Number.isFinite(feedback.confirmed)
+      ? `${feedback.confirmed} Hz` : '--- Hz';
+    let message: string;
+    switch (snapshot.announcement.phase) {
+      case 'submitted':
+      case 'queued':
+      case 'dispatched':
+      case 'awaiting-confirmation':
+        message = t('core.filter.passband.pendingAnnouncement', { control: controlName, target });
+        break;
+      case 'confirmed':
+        message = t('core.filter.passband.confirmedAnnouncement', { control: controlName, confirmed });
+        break;
+      case 'failed':
+        message = t('core.filter.passband.failedAnnouncement', { control: controlName, target, confirmed });
+        break;
+      case 'timed-out':
+        message = t('core.filter.passband.timedOutAnnouncement', { control: controlName, target, confirmed });
+        break;
+      case 'cancelled':
+        message = t('core.filter.passband.cancelledAnnouncement', { control: controlName, target, confirmed });
+        break;
+      case 'superseded':
+        message = t('core.filter.passband.supersededAnnouncement', { control: controlName, target, confirmed });
+        break;
+      default:
+        message = '';
+    }
+    return snapshot.view.error === null ? message
+      : `${message.replace(/[.!?]$/, '')}: ${snapshot.view.error}`;
+  }
+  let passbandStatusText = $state<Record<'pbtInner' | 'pbtOuter' | 'ifShift', string | null>>({
+    pbtInner: null, pbtOuter: null, ifShift: null,
+  });
+  function passbandIssuedStatus(control: 'pbtInner' | 'pbtOuter' | 'ifShift'): Readonly<HBarIssuedStatusPresentation> {
+    return {
+      get text() { return passbandStatusText[control]; },
+      format: (snapshot) => formatIssuedPassbandStatus(control, snapshot),
+      accept(text) { passbandStatusText[control] = text; },
+    };
+  }
+  const ifShiftStatusPresentation = passbandIssuedStatus('ifShift');
+  const pbtInnerStatusPresentation = passbandIssuedStatus('pbtInner');
+  const pbtOuterStatusPresentation = passbandIssuedStatus('pbtOuter');
+
   let lifecycleTarget = $derived(filterWidthFeedback.busy ? filterWidthFeedback.target : null);
 
   function openSettings(): void {
@@ -425,6 +484,17 @@
     onIfShiftChange(0);
   }
 </script>
+
+<!-- One chip shape for every passband row (MOR-1687 part 2): the text is
+     core.filter.passband.pendingChip, so a locale renders one translated
+     label — pinned by the ru-RU chip test in FilterPanel.isolated.test.ts. -->
+{#snippet pendingPassbandChip(target: number | null)}
+  {#if target !== null}
+    <span class="bw-pending-target" data-pending-passband-target>
+      {t('core.filter.passband.pendingChip', { target })}
+    </span>
+  {/if}
+{/snippet}
 
 {#if isTableMode}
   <div class="panel-body">
@@ -463,12 +533,9 @@
         renderer="bipolar"
         accentColor="var(--v2-accent-cyan)"
         variant="hardware-illuminated"
+        issuedStatusPresentation={ifShiftStatusPresentation}
       />
-      {#if passbandPendingTarget(ifShiftFeedback) !== null}
-        <span class="bw-pending-target" data-pending-passband-target>
-          PENDING {passbandPendingTarget(ifShiftFeedback)} Hz
-        </span>
-      {/if}
+      {@render pendingPassbandChip(passbandPendingTarget(ifShiftFeedback))}
     {/if}
 
     <div class="filter-actions">
@@ -550,12 +617,9 @@
         renderer="bipolar"
         accentColor="var(--v2-accent-cyan)"
         variant="hardware-illuminated"
+        issuedStatusPresentation={ifShiftStatusPresentation}
       />
-      {#if passbandPendingTarget(ifShiftFeedback) !== null}
-        <span class="bw-pending-target" data-pending-passband-target>
-          PENDING {passbandPendingTarget(ifShiftFeedback)} Hz
-        </span>
-      {/if}
+      {@render pendingPassbandChip(passbandPendingTarget(ifShiftFeedback))}
     {/if}
     {#if hasPbt}
       <ValueControl
@@ -566,12 +630,9 @@
         renderer="bipolar"
         accentColor="var(--v2-accent-cyan)"
         variant="hardware-illuminated"
+        issuedStatusPresentation={pbtInnerStatusPresentation}
       />
-      {#if passbandPendingTarget(pbtInnerFeedback) !== null}
-        <span class="bw-pending-target" data-pending-passband-target>
-          PENDING {passbandPendingTarget(pbtInnerFeedback)} Hz
-        </span>
-      {/if}
+      {@render pendingPassbandChip(passbandPendingTarget(pbtInnerFeedback))}
       <ValueControl
         {...feedbackIntegratedRange}
         binding={pbtOuterBinding}
@@ -580,12 +641,9 @@
         renderer="bipolar"
         accentColor="var(--v2-accent-green-bright)"
         variant="hardware-illuminated"
+        issuedStatusPresentation={pbtOuterStatusPresentation}
       />
-      {#if passbandPendingTarget(pbtOuterFeedback) !== null}
-        <span class="bw-pending-target" data-pending-passband-target>
-          PENDING {passbandPendingTarget(pbtOuterFeedback)} Hz
-        </span>
-      {/if}
+      {@render pendingPassbandChip(passbandPendingTarget(pbtOuterFeedback))}
 
       <div class="filter-actions">
         <button

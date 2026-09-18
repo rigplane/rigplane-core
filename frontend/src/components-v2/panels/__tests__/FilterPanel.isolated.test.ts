@@ -1032,6 +1032,48 @@ describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
     expect(pendingChip(t)).toBe('PENDING 600 Hz');
   });
 
+  it('renders the pending chip through core.filter.passband.pendingChip, not a literal', () => {
+    setPassbandFeedback('inner', PENDING);
+    setLocale('ru-RU');
+    const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
+    expect(pendingChip(t)).toBe('ОЖИДАНИЕ 600 Гц');
+  });
+
+  const rowStatus = (t: HTMLElement, label: string): string | null =>
+    sliderOf(t, label).closest('.vc-bipolar')
+      ?.querySelector<HTMLElement>('[data-control-feedback-status]')?.textContent ?? null;
+
+  it('announces a submitted passband command politely with the control name and target', () => {
+    setPassbandFeedback('inner', PENDING);
+    const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
+    expect(rowStatus(t, 'PBT Inner')).toBe('PBT inner 600 Hz requested; not yet confirmed by the radio.');
+  });
+
+  it('announces the confirmed outcome with the confirmed Hz', () => {
+    setPassbandFeedback('inner', {
+      confirmed: 600, requestedTarget: 600, phase: 'confirmed',
+      outcome: { phase: 'confirmed' }, lifecycleId: 'L', transitionId: 'L:confirmed',
+    });
+    const t = mountPanel({ hasPbt: true, pbtInner: 600, pbtOuter: 0, pbtDomain: USB_DOMAIN });
+    expect(rowStatus(t, 'PBT Inner')).toBe('PBT inner confirmed at 600 Hz.');
+  });
+
+  it('names the IF-shift row through the same message family', () => {
+    setPassbandFeedback('ifShift', {
+      phase: 'submitted', busy: true, target: 300, requestedTarget: 300,
+      lifecycleId: 'L', transitionId: 'L:submitted',
+    });
+    const t = mountPanel({ hasIfShift: true, hasPbt: false, ifShift: 0 });
+    expect(rowStatus(t, 'IF Shift')).toBe('IF shift 300 Hz requested; not yet confirmed by the radio.');
+  });
+
+  it('renders the announcement through the passband message family, not the built-in English status (ru-RU)', () => {
+    setPassbandFeedback('inner', PENDING);
+    setLocale('ru-RU');
+    const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
+    expect(rowStatus(t, 'PBT Inner')).toBe('Запрошен PBT inner 600 Hz; радио ещё не подтвердило значение.');
+  });
+
   it('keeps the operator\'s requested value visible through the command\'s OWN lifecycle — no snap-back', () => {
     const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
     const slider = sliderOf(t, 'PBT Inner');
