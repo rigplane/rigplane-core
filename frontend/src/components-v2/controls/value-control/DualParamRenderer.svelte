@@ -13,6 +13,7 @@
     DualParamLane,
   } from './dual-param-issued-status';
   import './value-control.css';
+  import { hasCommandModifier } from '../../layout/keyboard-map';
 
   interface Props {
     binding: ContinuousPairBinding;
@@ -160,6 +161,7 @@
 
 
   function handleKeyDown(e: KeyboardEvent) {
+    if (hasCommandModifier(e)) return;
     if (lease.key({ key: e.key, fine: e.shiftKey })) e.preventDefault();
   }
 

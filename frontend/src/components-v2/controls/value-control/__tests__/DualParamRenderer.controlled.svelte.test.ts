@@ -388,3 +388,56 @@ describe('binding-only DualParamRenderer', () => {
     expect(target.querySelectorAll('[data-control-feedback-status]')).toHaveLength(2);
   });
 });
+
+describe('MOR-2512: command modifiers leave the renderer alone', () => {
+  it('ignores Ctrl+Arrow, Alt+Arrow, Meta+Arrow on DualParamRenderer', () => {
+    const { binding, lease } = fakeBinding(1);
+    const { target } = mountReactive(binding);
+    const control = slider(target);
+    const initialAriaNow = control.getAttribute('aria-valuenow');
+
+    // Ctrl+ArrowUp should not change value and should not prevent default
+    const ctrlEvent = new KeyboardEvent('keydown', {
+      key: 'ArrowUp',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    control.dispatchEvent(ctrlEvent);
+    expect(ctrlEvent.defaultPrevented).toBe(false);
+    expect(control.getAttribute('aria-valuenow')).toBe(initialAriaNow);
+    expect(lease.key).not.toHaveBeenCalled();
+
+    // Alt+ArrowUp should not change value and should not prevent default
+    const altEvent = new KeyboardEvent('keydown', {
+      key: 'ArrowUp',
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    control.dispatchEvent(altEvent);
+    expect(altEvent.defaultPrevented).toBe(false);
+    expect(control.getAttribute('aria-valuenow')).toBe(initialAriaNow);
+
+    // Meta+ArrowUp should not change value and should not prevent default
+    const metaEvent = new KeyboardEvent('keydown', {
+      key: 'ArrowUp',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    control.dispatchEvent(metaEvent);
+    expect(metaEvent.defaultPrevented).toBe(false);
+    expect(control.getAttribute('aria-valuenow')).toBe(initialAriaNow);
+
+    // Plain ArrowUp should be handled (existing behavior - lease.key called)
+    const plainEvent = new KeyboardEvent('keydown', {
+      key: 'ArrowUp',
+      bubbles: true,
+      cancelable: true,
+    });
+    control.dispatchEvent(plainEvent);
+    expect(plainEvent.defaultPrevented).toBe(true);
+    expect(lease.key).toHaveBeenCalledWith({ key: 'ArrowUp', fine: false });
+  });
+});
