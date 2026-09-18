@@ -2,17 +2,13 @@
  * MOR-1673 — StatusBar power-toggle capability gating and truthful
  * unknown-state rendering. Mounts the real StatusBar.svelte with
  * controllable `getRadioPowerOn` / `hasCapability` mocks and pins:
- *   1. a radio without `power_control` keeps the button rendered but
- *      disabled (layout stability, owner decision 2026-09-15): known-state
- *      label/styling kept, truthful unsupported tooltip, and no confirm or
- *      dispatch even when the disabled attribute is bypassed;
+ *   1. a radio without `power_control` renders no power control at all —
+ *      no button and no UNKNOWN label;
  *   2. capability + unknown state: disabled, neutral (`power-unknown`,
  *      never `is-on`), truthful label/tooltip, and no confirm or
  *      dispatch even when the disabled attribute is bypassed (defence
  *      in depth on the handler itself);
  *   3./4. known ON / OFF keep today's confirm → powerOff / powerOn flow.
- * The unsupported + unknown combination follows the unsupported tooltip
- * with the unknown label/neutrality.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
@@ -116,48 +112,13 @@ describe('StatusBar power toggle (MOR-1673)', () => {
     return btn!;
   }
 
-  it('unsupported radio: button rendered but disabled, known-state look kept, truthful tooltip, no dispatch', async () => {
-    power.powerControl = false;
-    // Deliberately ON: the known-state OFF label and is-on styling must
-    // stay exactly as on main — only the capability differs.
-    power.radioPowerOn = true;
-    const host = render();
-    const btn = powerButton(host);
-
-    expect(btn.disabled).toBe(true);
-    expect(btn.classList.contains('is-on')).toBe(true);
-    expect(btn.classList.contains('power-unknown')).toBe(false);
-    expect(btn.textContent).toContain('OFF');
-    expect(btn.title).toBe('This radio does not support power control');
-
-    // Defence in depth: strip the disabled attribute and click anyway —
-    // the handler itself must refuse (no confirm, no dispatch).
-    btn.removeAttribute('disabled');
-    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    await vi.waitFor(() => expect(confirmSpy).not.toHaveBeenCalled());
-    expect(sys.powerOn).not.toHaveBeenCalled();
-    expect(sys.powerOff).not.toHaveBeenCalled();
-    expect(alertSpy).not.toHaveBeenCalled();
-  });
-
-  it('unsupported radio + unknown state: unsupported tooltip wins, unknown label and neutrality kept', async () => {
+  it('unsupported radio (no power_control): renders no power control at all', () => {
     power.powerControl = false;
     power.radioPowerOn = null;
     const host = render();
-    const btn = powerButton(host);
 
-    expect(btn.disabled).toBe(true);
-    expect(btn.classList.contains('power-unknown')).toBe(true);
-    expect(btn.classList.contains('is-on')).toBe(false);
-    expect(btn.textContent).toContain('UNKNOWN');
-    expect(btn.title).toBe('This radio does not support power control');
-
-    btn.removeAttribute('disabled');
-    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    await vi.waitFor(() => expect(confirmSpy).not.toHaveBeenCalled());
-    expect(sys.powerOn).not.toHaveBeenCalled();
-    expect(sys.powerOff).not.toHaveBeenCalled();
-    expect(alertSpy).not.toHaveBeenCalled();
+    expect(host.querySelector('.power-toggle-btn')).toBeNull();
+    expect(host.querySelector('.status-controls')?.textContent ?? '').not.toContain('UNKNOWN');
   });
 
   it('capability + unknown state: disabled, neutral, truthful text, and no dispatch even with disabled bypassed', async () => {

@@ -40,7 +40,6 @@
   "core.statusbar.power.toggleOn": "Toggle power (radio is ON — click to power off)",
   "core.statusbar.power.toggleOff": "Toggle power (radio is OFF — click to power on)",
   "core.statusbar.power.toggleUnknown": "Radio power state unknown",
-  "core.statusbar.power.unsupported": "This radio does not support power control",
   "core.statusbar.power.confirmTurnOff": "Turn OFF the radio?",
   "core.statusbar.power.confirmTurnOn": "Turn ON the radio?",
   "core.statusbar.power.failedTurnOff": "Failed to turn off radio: {detail}",
