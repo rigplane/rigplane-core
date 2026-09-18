@@ -1255,7 +1255,9 @@ async def test_enqueue_icom_off_domain_rit_frequency_rejected_before_enqueue(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("freq", [-9999, 9999])
-async def test_enqueue_icom_in_domain_rit_frequency_boundary_accepted(freq: int) -> None:
+async def test_enqueue_icom_in_domain_rit_frequency_boundary_accepted(
+    freq: int,
+) -> None:
     """The Icom ``rit`` domain's closed boundaries still queue (MOR-2510)."""
     queue = _QueueRecorder()
     handler = _control_handler(
