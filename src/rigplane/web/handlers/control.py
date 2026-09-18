@@ -6,7 +6,7 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -31,6 +31,7 @@ from ...core.exceptions import TimeoutError as RigplaneTimeoutError
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
 from ...core.state_store import FreshnessState, StateStore
 from ...profiles import RadioProfile, resolve_radio_profile
+from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
 from ...runtime.tx_interlock import RfState, evaluate_tx_interlock
 from ...runtime.managed_tx_state import ManagedTxOutcome
 from ..protocol import (  # noqa: TID251
@@ -293,28 +294,94 @@ def _level_for_power(value: Any, radio: Any) -> int:
     return int(native)
 
 
-def _notch_position_from_param(radio: "Radio | None", params: dict[str, Any]) -> int:
-    """Resolve the manual-notch position for ``set_notch_filter``.
+_PUBLISHED_DOMAIN_COMMANDS: dict[str, tuple[str, str]] = {
+    "set_notch_filter": ("manual_notch_freq", "value"),
+    "set_if_shift": ("if_shift", "offset"),
+    "set_cw_pitch": ("cw_pitch", "value"),
+    "set_nr_level": ("nr_level", "level"),
+}
 
-    Radios implementing
-    :class:`~rigplane.core.radio_protocol.ControlDomainCapable` that
-    publish a ``manual_notch_freq`` domain take any raw position
-    ``decode_control_raw`` answers for. Every other radio follows the
+_LEGACY_DOMAIN_KEYS = (
+    "raw_min",
+    "raw_max",
+    "display_min",
+    "display_max",
+    "decode_quantum",
+    "encode_rounding",
+)
+
+
+def _published_controls(radio: object) -> Mapping[str, object] | None:
+    """Return the active profile's published control table, if any."""
+    controls = getattr(getattr(radio, "profile", None), "controls", None)
+    return controls if isinstance(controls, Mapping) else None
+
+
+def _published_control_entry(
+    radio: object, control: str
+) -> Mapping[str, object] | None:
+    """Return the active profile's declaration for *control*, if any."""
+    controls = _published_controls(radio)
+    entry = controls.get(control) if controls is not None else None
+    return entry if isinstance(entry, Mapping) else None
+
+
+def _refuse_off_domain_control(
+    radio: object, name: str, params: Mapping[str, Any]
+) -> None:
+    """Refuse an off-domain value for a command whose control publishes a domain.
+
+    ``set_notch_filter`` already answers ``400 invalid_request`` for a
+    position outside the radio's published ``manual_notch_freq`` domain;
+    every command in ``_PUBLISHED_DOMAIN_COMMANDS`` gets the same ingress
+    check, so an off-domain value is refused before it is queued instead
+    of being ACKed and dropped by the backend. Normalized domains carrying
+    ``quantization = "reject"`` are validated as raw values and complete
+    legacy rational domains as display values; a control the active
+    profile does not publish is left untouched.
+    """
+    mapped = _PUBLISHED_DOMAIN_COMMANDS.get(name)
+    if mapped is None:
+        return
+    control, param = mapped
+    value = params.get(param)
+    if value is None:
+        return
+    if isinstance(radio, ControlDomainCapable) and (
+        radio.control_display_bounds(control) is not None
+    ):
+        raw = int(value)
+        if radio.decode_control_raw(control, raw) is None:
+            raise ValueError(
+                f"{control} value {raw!r} is outside the radio's published "
+                f"{control} domain"
+            )
+        return
+    entry = _published_control_entry(radio, control)
+    if entry is None:
+        return
+    controls = _published_controls(radio)
+    if entry.get("quantization") == "reject":
+        validate_control_raw_value(controls, control, int(value))
+        return
+    if all(key in entry for key in _LEGACY_DOMAIN_KEYS):
+        encode_legacy_control(controls, control, int(value))
+
+
+def _notch_position_from_param(radio: "Radio | None", params: dict[str, Any]) -> int:
+    """Resolve the raw manual-notch position for ``set_notch_filter``.
+
+    Radios publishing a ``manual_notch_freq`` domain take any raw position
+    that domain admits (validated at ingress by
+    ``_refuse_off_domain_control``). Every other radio follows the
     documented raw 0-255 integer wire contract shared with
     ``set_rf_gain``/``set_sql``/``set_squelch``, enforced by the same
     coercion (``command_dispatch._raw_int_level_from_param``), which
     raises before the command is queued.
     """
     value = params["value"]
-    if isinstance(radio, ControlDomainCapable):
-        if radio.control_display_bounds("manual_notch_freq") is not None:
-            level = int(value)
-            if radio.decode_control_raw("manual_notch_freq", level) is None:
-                raise ValueError(
-                    "manual-notch position is outside the radio's published "
-                    "manual-notch domain"
-                )
-            return level
+    if _published_control_entry(radio, "manual_notch_freq") is not None:
+        return int(value)
     wire_level: int = _raw_int_level_from_param(value)
     return wire_level
 
@@ -1800,6 +1867,8 @@ class ControlHandler:
         result = await self._enqueue_read_only(name, params, radio)
         if result is not None:
             return result
+
+        _refuse_off_domain_control(radio, name, params)
 
         q = self._server.command_queue if self._server is not None else None
         if q is None:
