@@ -228,6 +228,24 @@ describe('ActiveReceiverToggle', () => {
         first.querySelector('[data-active-receiver-segment="SUB"]'),
       );
     });
+
+    // MOR-2512 — Ctrl/Alt/Meta+Arrow belongs to the global keyboard map
+    // (Ctrl+ArrowUp/Down adjust_af_level); the widget must neither move
+    // selection nor swallow the event so the window-level global handler
+    // sees it.
+    it('Ctrl+ArrowRight neither moves selection nor swallows the event', () => {
+      const onChange = vi.fn();
+      const t = mountToggle({ active: 'MAIN', onChange });
+      const main = t.querySelector<HTMLButtonElement>('[data-active-receiver-segment="MAIN"]')!;
+      main.focus();
+      const event = new KeyboardEvent('keydown', {
+        key: 'ArrowRight', ctrlKey: true, bubbles: true, cancelable: true,
+      });
+      main.dispatchEvent(event);
+
+      expect(onChange).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+    });
   });
 
   describe('availability', () => {
