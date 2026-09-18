@@ -910,6 +910,39 @@ async def test_http_single_command_uses_http_command_service_source(
 
 
 @pytest.mark.asyncio
+async def test_http_off_domain_published_control_answers_400_invalid_request() -> None:
+    """POST /api/v1/commands refuses an off-domain FTX-1 value with 400.
+
+    MOR-2510: ``set_if_shift`` offset 30 is off the published 20 Hz
+    lattice, so the HTTP ingress answers ``invalid_request`` instead of
+    ``ok: true`` for a command the radio path would silently drop.
+    """
+    profile = resolve_radio_profile(model="FTX-1")
+    radio = SimpleNamespace(
+        connected=True,
+        capabilities=set(profile.capabilities),
+        profile=profile,
+        supports_command=lambda command, receiver=None: receiver in (None, 0),
+    )
+    srv = WebServer(radio, WebConfig())
+    writer = _FakeWriter()
+
+    await srv._handle_http_single_command(  # noqa: SLF001
+        writer,
+        {
+            "id": "off-domain",
+            "name": "set_if_shift",
+            "params": {"offset": 30, "receiver": 0},
+        },
+    )
+
+    status, body = _response_json(writer)
+    assert status == 400
+    assert body["error"] == "invalid_request"
+    assert "if_shift" in body["message"]
+
+
+@pytest.mark.asyncio
 async def test_http_raw_civ_transaction_enters_command_lifecycle() -> None:
     frame = SimpleNamespace(command=0x03, sub=None, data=b"\x01")
     radio = SimpleNamespace(

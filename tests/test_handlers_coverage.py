@@ -1135,11 +1135,93 @@ async def test_websocket_manual_notch_position_off_ftx1_domain_rejected_before_e
         "ok": False,
         "error": "command_failed",
         "message": (
-            "manual-notch position is outside the radio's published manual-notch domain"
+            "manual_notch_freq value "
+            f"{value} is outside the radio's published manual_notch_freq domain"
         ),
     }
     assert queue.items == []
     assert radio.notch_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "control", "param", "off_domain"),
+    [
+        ("set_if_shift", "if_shift", "offset", 30),
+        ("set_cw_pitch", "cw_pitch", "value", 305),
+        ("set_nr_level", "nr_level", "level", 11),
+    ],
+)
+async def test_enqueue_ftx1_off_domain_control_rejected_before_enqueue(
+    name: str, control: str, param: str, off_domain: int
+) -> None:
+    """FTX-1 controls with a published ``reject`` domain refuse off-domain values.
+
+    MOR-2510: every command in the published-domain table gets the
+    manual-notch ingress check, so a value the radio path would drop is
+    refused before it reaches the queue instead of being ACKed.
+    """
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        radio=_Ftx1NotchDomainRadio(),
+        server=SimpleNamespace(command_queue=queue),
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        await handler._enqueue_command(name, {param: off_domain, "receiver": 0})
+
+    message = str(excinfo.value)
+    assert control in message
+    assert "domain" in message
+    assert queue.items == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "param", "accepted"),
+    [
+        ("set_if_shift", "offset", -1200),
+        ("set_if_shift", "offset", 40),
+        ("set_cw_pitch", "value", 300),
+        ("set_cw_pitch", "value", 1000),
+        ("set_nr_level", "level", 0),
+        ("set_nr_level", "level", 10),
+    ],
+)
+async def test_enqueue_ftx1_in_domain_control_accepted(
+    name: str, param: str, accepted: int
+) -> None:
+    """In-domain FTX-1 positions still queue unchanged (MOR-2510)."""
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        radio=_Ftx1NotchDomainRadio(),
+        server=SimpleNamespace(command_queue=queue),
+    )
+
+    result = await handler._enqueue_command(name, {param: accepted, "receiver": 0})
+
+    assert result[param] == accepted
+    assert len(queue.items) == 1
+
+
+@pytest.mark.asyncio
+async def test_enqueue_icom_off_domain_cw_pitch_rejected_before_enqueue() -> None:
+    """A non-ControlDomainCapable Icom refuses off its legacy ``cw_pitch`` band.
+
+    IC-7610 declares ``[controls.cw_pitch]`` as a legacy rational band
+    (300-900 Hz, MOR-1883); the same ingress check refuses 950 instead of
+    queueing it (MOR-2510).
+    """
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        radio=_capable_radio(), server=SimpleNamespace(command_queue=queue)
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        await handler._enqueue_command("set_cw_pitch", {"value": 950})
+
+    assert "cw_pitch" in str(excinfo.value)
+    assert queue.items == []
 
 
 async def test_enqueue_set_rf_power_yaesu_tags_watts_unit() -> None:
