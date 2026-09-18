@@ -264,8 +264,6 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
   const strict = effectiveStale ? null : toSpectrumAuthority(state, caps);
   const band = findActiveBand(frequency, caps.freqRanges ?? []);
   const flatBands = flattenBands(caps.freqRanges ?? []);
-  const partition = flatBands.find((entry) =>
-    entry.name === band && frequency >= entry.start && frequency <= entry.end);
   const context = [state.providerGeneration, capabilityIdentity(caps), session.epoch,
     selection.receiver, selection.slot, mode, filter, data, 'hardware',
     envelope.transportEpoch, frame.mode];
