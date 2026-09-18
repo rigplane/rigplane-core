@@ -26,8 +26,8 @@ const mockProps = {
   ifShift: 0,
   hasIfShift: true,
   hasPbt: false,
-  pbtInner: 0,
-  pbtOuter: 0,
+  pbtInner: 0 as number | null,
+  pbtOuter: 0 as number | null,
   pbtDomain: null as ControlDisplayDomain | null,
   ifShiftDomain: null as ControlDisplayDomain | null,
 };
@@ -1018,8 +1018,10 @@ describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
   };
   const valueText = (slider: HTMLElement): string =>
     slider.closest('.vc-bipolar')!.querySelector<HTMLElement>('.vc-value')!.textContent ?? '';
+  const pendingChip = (t: HTMLElement): string | null =>
+    t.querySelector<HTMLElement>('[data-pending-passband-target]')?.textContent?.trim() ?? null;
 
-  it('reports a pending PBT inner command without presenting the target as confirmed', () => {
+  it('shows a pending PBT inner command as PENDING target Hz, never as the confirmed value', () => {
     setPassbandFeedback('inner', PENDING);
     const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
     const slider = sliderOf(t, 'PBT Inner');
@@ -1027,17 +1029,38 @@ describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
     expect(slider.getAttribute('data-command-phase')).toBe('submitted');
     expect(slider.getAttribute('aria-valuenow')).toBe('0');
     expect(valueText(slider)).toBe('0\u00a0Hz');
+    expect(pendingChip(t)).toBe('PENDING 600 Hz');
   });
 
-  it('keeps the operator\'s requested value while pending — no snap-back to the stale readback', () => {
-    setPassbandFeedback('inner', PENDING);
+  it('keeps the operator\'s requested value visible through the command\'s OWN lifecycle — no snap-back', () => {
     const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
     const slider = sliderOf(t, 'PBT Inner');
     slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     vi.advanceTimersByTime(60);
     flushSync();
     expect(mockHandlers.onPbtInnerChange).toHaveBeenCalledExactlyOnceWith(50);
+    // Production mints a NEW command id per dispatch, so the pending
+    // lifecycle never shares the id the gesture observed — the draft
+    // retires and the requested value survives as the PENDING target.
+    setPassbandFeedback('inner', {
+      phase: 'submitted', busy: true, target: 50, requestedTarget: 50,
+      lifecycleId: 'fresh-1', transitionId: 'fresh-1:submitted',
+    });
+    flushSync();
+    expect(valueText(slider)).toBe('0\u00a0Hz');
     expect(slider.getAttribute('aria-valuenow')).toBe('0');
+    expect(slider.getAttribute('data-command-phase')).toBe('submitted');
+    expect(pendingChip(t)).toBe('PENDING 50 Hz');
+    // Readback confirms: the chip retires and the control ends on the
+    // confirmed Hz.
+    setPassbandFeedback('inner', {
+      confirmed: 50, requestedTarget: 50, phase: 'confirmed', busy: false, target: null,
+      outcome: { phase: 'confirmed' }, lifecycleId: 'fresh-1', transitionId: 'fresh-1:confirmed',
+    });
+    flushSync();
+    expect(pendingChip(t)).toBeNull();
+    expect(slider.getAttribute('data-command-phase')).toBe('confirmed');
+    expect(slider.getAttribute('aria-valuenow')).toBe('50');
     expect(valueText(slider)).toBe('+50\u00a0Hz');
   });
 
@@ -1052,6 +1075,7 @@ describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
     expect(slider.getAttribute('data-command-phase')).toBe('confirmed');
     expect(slider.getAttribute('aria-valuenow')).toBe('600');
     expect(valueText(slider)).toBe('+600\u00a0Hz');
+    expect(pendingChip(t)).toBeNull();
   });
 
   it('reports failed and returns to the last confirmed value', () => {
@@ -1072,6 +1096,7 @@ describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
     expect(slider.getAttribute('data-command-phase')).toBe('failed');
     expect(valueText(slider)).toBe('0\u00a0Hz');
     expect(slider.getAttribute('aria-valuenow')).toBe('0');
+    expect(pendingChip(t)).toBeNull();
   });
 
   it('reports the same lifecycle on the real IF-shift row (native if_shift radio)', () => {
@@ -1084,6 +1109,7 @@ describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
     expect(slider.getAttribute('data-command-phase')).toBe('submitted');
     expect(slider.getAttribute('aria-busy')).toBe('true');
     expect(slider.getAttribute('aria-valuenow')).toBe('0');
+    expect(pendingChip(t)).toBe('PENDING 300 Hz');
     slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     vi.advanceTimersByTime(60);
     flushSync();
@@ -1091,9 +1117,21 @@ describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
     expect(valueText(slider)).toBe('+25\u00a0Hz');
   });
 
-  it('disables the slider without NaN when the feedback is unavailable', () => {
+  it('held (stale) reading: the feedback is absent and the slider keeps dispatching — same contract as the semantic surface (MOR-2425/R40)', () => {
     setPassbandFeedback('inner', { confirmed: null, phase: 'unavailable', availability: 'unavailable' });
-    const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0 });
+    const t = mountPanel({ hasPbt: true, pbtInner: 100, pbtOuter: 0, pbtDomain: USB_DOMAIN });
+    const slider = sliderOf(t, 'PBT Inner');
+    expect(slider.getAttribute('aria-disabled')).toBe('false');
+    expect(slider.getAttribute('aria-valuenow')).toBe('100');
+    expect(valueText(slider)).toBe('+100\u00a0Hz');
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(60);
+    expect(mockHandlers.onPbtInnerChange).toHaveBeenCalledExactlyOnceWith(150);
+  });
+
+  it('an unobserved reading stays disabled without NaN when the feedback is unavailable', () => {
+    setPassbandFeedback('inner', { confirmed: null, phase: 'unavailable', availability: 'unavailable' });
+    const t = mountPanel({ hasPbt: true, pbtInner: null, pbtOuter: null });
     const slider = sliderOf(t, 'PBT Inner');
     expect(slider.getAttribute('aria-disabled')).toBe('true');
     expect(valueText(slider)).not.toContain('NaN');

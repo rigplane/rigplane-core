@@ -240,9 +240,8 @@
    *  when the wiring seam supplies an AVAILABLE projection (values in the
    *  display unit, Hz), reading evidence otherwise — a held (stale) or
    *  lattice-less reading keeps commanding through its own view truth
-   *  (MOR-2425/R40), the same fallback `RfFrontEnd.svelte`'s `rfGainInput`
-   *  established. The field's own availability stays the enabled gate in
-   *  both branches. */
+   *  (MOR-2425/R40). The field's own availability stays the enabled gate
+   *  in both branches. */
   function passbandInput(field: FilterPassbandLevelField): Readonly<ContinuousScalarInput> {
     const row = FILTER_PASSBAND_LEVELS.find(([name]) => name === field)!;
     const limits = passbandLimits(field, row[2], row[3], row[4]);
@@ -351,13 +350,17 @@
         {@const display = field === 'ifShift' ? undefined : pbtDisplay(filterPassband[field])}
         {@const row = passbandRows[field]}
         <!-- The continuity-fenced view model stays the display truth for the
-             thumb (MOR-1706): a conflicting state replay must not move it,
-             so only the scalar's own gesture draft may override the view. -->
+             thumb (MOR-1706): a conflicting state replay must not move it.
+             Above it, two explicitly unconfirmed sources may: the scalar's
+             own gesture draft, and — while a command is in flight — the
+             pending target in Hz (MOR-1691: the thumb shows the operator's
+             requested value until readback confirms or terminates). -->
+        {@const pendingTarget = row.view.busy && row.view.target !== null ? row.view.target : null}
         {#key display?.state}
           <input
             id={`${pendingFilterId}-${field}-input`} type="range" {min} {max} {step}
             {...feedbackIntegratedRange}
-            value={row.view.draft ?? numberOf(filterPassband[field], min)}
+            value={row.view.draft ?? pendingTarget ?? numberOf(filterPassband[field], min)}
             disabled={!row.view.editable}
             data-command-phase={row.view.phase ?? undefined}
             aria-busy={row.view.busy}
