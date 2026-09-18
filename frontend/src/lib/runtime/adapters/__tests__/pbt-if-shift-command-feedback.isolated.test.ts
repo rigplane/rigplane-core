@@ -355,6 +355,19 @@ describe('Hz-display PBT inner/outer command feedback (MOR-1687 part 1)', () => 
     expect(feedback.confirmed).not.toBe(131);
   });
 
+  it('is unavailable when a pending target raw does not convert on the lattice (MOR-1687)', () => {
+    // The panel write path emits on-lattice raws only; a foreign command
+    // can submit an off-lattice one (9999 never converts at any width).
+    // One unconvertible value fails the whole feedback closed instead of
+    // an available feedback with a null target.
+    h.state = state(); h.caps = pbtCaps();
+    h.commands = [command(PBT_INNER_COMMAND_DESCRIPTOR, 'value', 9999)];
+    expect(getPbtInnerHzControlFeedback(connected)).toMatchObject({
+      confirmed: null, target: null, requestedTarget: null,
+      phase: 'unavailable', availability: 'unavailable', busy: false,
+    });
+  });
+
   it('outer mirrors inner on its own raw', () => {
     h.state = state(); h.caps = pbtCaps();
     expect(getPbtOuterHzControlFeedback(connected)).toMatchObject({
