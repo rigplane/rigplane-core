@@ -426,6 +426,17 @@
   }
 </script>
 
+<!-- One chip shape for every passband row (MOR-1687 part 2): the text is
+     core.filter.passband.pendingChip, so a locale renders one translated
+     label — pinned by the ru-RU chip test in FilterPanel.isolated.test.ts. -->
+{#snippet pendingPassbandChip(target: number | null)}
+  {#if target !== null}
+    <span class="bw-pending-target" data-pending-passband-target>
+      {t('core.filter.passband.pendingChip', { target })}
+    </span>
+  {/if}
+{/snippet}
+
 {#if isTableMode}
   <div class="panel-body">
     <div
@@ -464,11 +475,7 @@
         accentColor="var(--v2-accent-cyan)"
         variant="hardware-illuminated"
       />
-      {#if passbandPendingTarget(ifShiftFeedback) !== null}
-        <span class="bw-pending-target" data-pending-passband-target>
-          PENDING {passbandPendingTarget(ifShiftFeedback)} Hz
-        </span>
-      {/if}
+      {@render pendingPassbandChip(passbandPendingTarget(ifShiftFeedback))}
     {/if}
 
     <div class="filter-actions">
@@ -551,11 +558,7 @@
         accentColor="var(--v2-accent-cyan)"
         variant="hardware-illuminated"
       />
-      {#if passbandPendingTarget(ifShiftFeedback) !== null}
-        <span class="bw-pending-target" data-pending-passband-target>
-          PENDING {passbandPendingTarget(ifShiftFeedback)} Hz
-        </span>
-      {/if}
+      {@render pendingPassbandChip(passbandPendingTarget(ifShiftFeedback))}
     {/if}
     {#if hasPbt}
       <ValueControl
@@ -567,11 +570,7 @@
         accentColor="var(--v2-accent-cyan)"
         variant="hardware-illuminated"
       />
-      {#if passbandPendingTarget(pbtInnerFeedback) !== null}
-        <span class="bw-pending-target" data-pending-passband-target>
-          PENDING {passbandPendingTarget(pbtInnerFeedback)} Hz
-        </span>
-      {/if}
+      {@render pendingPassbandChip(passbandPendingTarget(pbtInnerFeedback))}
       <ValueControl
         {...feedbackIntegratedRange}
         binding={pbtOuterBinding}
@@ -581,11 +580,7 @@
         accentColor="var(--v2-accent-green-bright)"
         variant="hardware-illuminated"
       />
-      {#if passbandPendingTarget(pbtOuterFeedback) !== null}
-        <span class="bw-pending-target" data-pending-passband-target>
-          PENDING {passbandPendingTarget(pbtOuterFeedback)} Hz
-        </span>
-      {/if}
+      {@render pendingPassbandChip(passbandPendingTarget(pbtOuterFeedback))}
 
       <div class="filter-actions">
         <button

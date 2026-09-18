@@ -1032,6 +1032,13 @@ describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
     expect(pendingChip(t)).toBe('PENDING 600 Hz');
   });
 
+  it('renders the pending chip through core.filter.passband.pendingChip, not a literal', () => {
+    setPassbandFeedback('inner', PENDING);
+    setLocale('ru-RU');
+    const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
+    expect(pendingChip(t)).toBe('ОЖИДАНИЕ 600 Гц');
+  });
+
   it('keeps the operator\'s requested value visible through the command\'s OWN lifecycle — no snap-back', () => {
     const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
     const slider = sliderOf(t, 'PBT Inner');
