@@ -194,6 +194,19 @@ export function getEventModifiers(event: {
   return modifiers;
 }
 
+/** True when ctrl, alt, or meta is held — the modified-arrow class the
+ * global keyboard map owns; consumed by the SegmentedButton,
+ * ActiveReceiverToggle, and SpectrumPanel split-separator key handlers
+ * (MOR-2512), pinned by the "hasCommandModifier" block in
+ * keyboard-map.test.ts and each widget's MOR-2512 guard test. */
+export function hasCommandModifier(event: {
+  ctrlKey?: boolean;
+  altKey?: boolean;
+  metaKey?: boolean;
+}): boolean {
+  return Boolean(event.ctrlKey) || Boolean(event.altKey) || Boolean(event.metaKey);
+}
+
 /**
  * Characters that are produced via Shift on a standard keyboard.
  * When the binding key is one of these and doesn't explicitly list SHIFT
@@ -347,7 +360,7 @@ export function focusedElementOwnsArrowKey(
   activeElement: Element | null,
   event: { key: string; ctrlKey?: boolean; altKey?: boolean; metaKey?: boolean; shiftKey?: boolean },
 ): boolean {
-  if (event.ctrlKey || event.altKey || event.metaKey) return false;
+  if (hasCommandModifier(event)) return false;
   const axis = ARROW_AXIS[event.key];
   if (axis === undefined) return false;
   const declared = activeElement?.closest('[data-owns-arrows]')?.getAttribute('data-owns-arrows');

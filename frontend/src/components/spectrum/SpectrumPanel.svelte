@@ -46,6 +46,7 @@
     isFixedScope as isFixedScopeFn,
   } from './spectrum-logic';
   import { PanoramaViewportCenter } from './panorama-motion';
+  import { hasCommandModifier } from '../../components-v2/layout/keyboard-map';
 
   // --- Props ---
   // `hideSourceControls` is forwarded to SpectrumToolbar so layouts that surface
@@ -247,6 +248,7 @@
   }
 
   function handleSplitKeydown(event: KeyboardEvent): void {
+    if (hasCommandModifier(event)) return;
     if (splitRegion) splitRegionHeight = splitRegion.getBoundingClientRect().height;
     const bounds = resolveSplitBounds(splitRegionHeight);
     const current = clampSplitRatio(splitRatio, bounds);
