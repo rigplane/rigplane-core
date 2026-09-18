@@ -476,9 +476,9 @@ freshness_ttl_seconds = 2.0
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
-# SUB twin of the MAIN FM-family clause above (bench 2026-09-08): the SUB
-# ``BP11;`` read has the same no-decimal answer in FM, so it is withheld
-# outside the FM family for the same reason as MAIN.
+# SUB twin of the MAIN FM-family clause above. The SUB `BP11;` answer in FM
+# has not been probed; the read is withheld on the same condition as MAIN
+# rather than risk a DeclaredCommandDefect at startup (bench 2026-09-08, MAIN).
 [state_acquisition.field_policies."receiver.sub.operator_controls.manual_notch_freq"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
