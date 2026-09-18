@@ -1,3 +1,4 @@
+import { hasCommandModifier } from '$lib/utils/keyboard-modifiers';
 import { adjustFreqByDigit, type DigitInfo } from './frequency-tuning';
 
 export interface FrequencyInteractionInput {
@@ -72,6 +73,7 @@ export function createFrequencyInteraction(
   }
 
   function handleKeyDown(event: KeyboardEvent): void {
+    if (hasCommandModifier(event)) return;
     if (inert || selectedDigitIndex === null) return;
     const digit = current.digits.find((candidate) => candidate.digitIndex === selectedDigitIndex);
     if (!digit || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;

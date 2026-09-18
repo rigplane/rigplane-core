@@ -192,11 +192,23 @@ describe('digit-scoped arrow ownership on the readout root (MOR-2512)', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
-  // BLOCKED: the modified-arrow guard (ctrl/alt/meta ArrowUp must not step
-  // the digit) needs hasCommandModifier from components-v2/layout/
-  // keyboard-map, which the primitives eslint boundary (ADR 2026-04-12)
-  // forbids this primitive from importing. See the MOR-2512 part-2 handoff.
-  it.todo('ignores modified arrows while a digit is selected (MOR-2512 §2, blocked)');
+  // MOR-2512 §2: modified arrows belong to the global keyboard map (the
+  // Ctrl/Cmd/Alt+Arrow bindings); a selected digit must not step on them
+  // and must not eat them. Plain ArrowUp stepping is pinned by the test
+  // above.
+  it('ignores modified arrows while a digit is selected', () => {
+    const { root, oneHzDigit, onFreqChange } = mountInteractiveReadout();
+    oneHzDigit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+
+    const modified = new KeyboardEvent('keydown', {
+      key: 'ArrowUp', ctrlKey: true, bubbles: true, cancelable: true,
+    });
+    root.dispatchEvent(modified);
+
+    expect(onFreqChange).not.toHaveBeenCalled();
+    expect(modified.defaultPrevented).toBe(false);
+  });
 });
 
 describe('alternate frequency renderer', () => {
