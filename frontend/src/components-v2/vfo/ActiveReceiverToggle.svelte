@@ -26,6 +26,8 @@
 </script>
 
 <script lang="ts">
+  import { hasCommandModifier } from '../layout/keyboard-map';
+
   type Receiver = 'MAIN' | 'SUB';
 
   interface Props {
@@ -93,6 +95,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent, current: Receiver): void {
+    if (hasCommandModifier(event)) return;
     const { key } = event;
     if (key === 'ArrowLeft' || key === 'ArrowUp') {
       event.preventDefault();

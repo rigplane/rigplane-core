@@ -330,6 +330,39 @@ describe('keyboard navigation', () => {
     pressKey(getContainer(target), 'ArrowRight');
     expect(onchange).not.toHaveBeenCalled();
   });
+
+  // MOR-2512 — Ctrl/Alt/Meta+Arrow belongs to the global keyboard map
+  // (Ctrl+ArrowUp/Down adjust_af_level); the widget must neither step nor
+  // swallow the event so the window-level global handler sees it.
+  it('Ctrl+ArrowRight neither steps nor swallows the event', () => {
+    const onchange = vi.fn();
+    const { target } = mountAndTrack({
+      options: ATT_OPTIONS, selected: 0, onchange,
+    });
+    const container = getContainer(target);
+    container.focus();
+    const event = new KeyboardEvent('keydown', {
+      key: 'ArrowRight', ctrlKey: true, bubbles: true, cancelable: true,
+    });
+    container.dispatchEvent(event);
+
+    expect(onchange).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('Shift+ArrowRight still steps, and data-owns-arrows declares shift', () => {
+    const onchange = vi.fn();
+    const { target } = mountAndTrack({
+      options: ATT_OPTIONS, selected: 0, onchange,
+    });
+    const container = getContainer(target);
+    container.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'ArrowRight', shiftKey: true, bubbles: true,
+    }));
+
+    expect(onchange).toHaveBeenCalledWith(6);
+    expect(container.getAttribute('data-owns-arrows')).toBe('both shift');
+  });
 });
 
 // ---------------------------------------------------------------------------

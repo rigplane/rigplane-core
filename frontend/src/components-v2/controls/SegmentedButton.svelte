@@ -1,5 +1,6 @@
 <script lang="ts">
   import './control-button.css';
+  import { hasCommandModifier } from '../layout/keyboard-map';
 
   interface Option {
     value: string | number;
@@ -47,6 +48,7 @@
   );
 
   function handleKeydown(event: KeyboardEvent) {
+    if (hasCommandModifier(event)) return;
     if (disabled) return;
     const currentIndex = options.findIndex((o) => o.value === selected);
     if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
@@ -64,7 +66,7 @@
   class:compact
   class:disabled
   role="radiogroup"
-  data-owns-arrows="both"
+  data-owns-arrows="both shift"
   tabindex={disabled ? -1 : 0}
   style={styleValue}
   title={title ?? undefined}

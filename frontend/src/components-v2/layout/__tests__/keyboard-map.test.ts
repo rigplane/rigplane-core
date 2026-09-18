@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_KEYBOARD_CONFIG,
   focusedElementOwnsArrowKey,
+  hasCommandModifier,
   isDigitKey,
   isFrequencyDisplayFocused,
   resolveAction,
@@ -231,6 +232,24 @@ describe('focusedElementOwnsArrowKey', () => {
     expect(focusedElementOwnsArrowKey(null, evt('ArrowUp'))).toBe(false);
 
     owner.remove();
+  });
+});
+
+// MOR-2512 — the shared predicate for the modified-arrow class the global
+// keyboard map owns (Ctrl+Arrow adjust_af_level / adjust_rf_gain); the
+// focusedElementOwnsArrowKey ctrl/alt/meta pin above and the three widget
+// guard tests consume the same rule through it.
+describe('hasCommandModifier', () => {
+  it('is true for ctrl, alt, or meta', () => {
+    expect(hasCommandModifier({ ctrlKey: true })).toBe(true);
+    expect(hasCommandModifier({ altKey: true })).toBe(true);
+    expect(hasCommandModifier({ metaKey: true })).toBe(true);
+  });
+
+  it('is false for shift alone and for no modifiers', () => {
+    const shiftOnly: { shiftKey: boolean; ctrlKey?: boolean } = { shiftKey: true };
+    expect(hasCommandModifier(shiftOnly)).toBe(false);
+    expect(hasCommandModifier({})).toBe(false);
   });
 });
 

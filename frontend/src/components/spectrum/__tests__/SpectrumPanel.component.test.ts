@@ -1019,6 +1019,24 @@ describe('SpectrumPanel spectrum/waterfall separator (MOR-2461)', () => {
     expect(Number(storageMap.get('rigplane-spectrum-split-ratio')))
       .toBeCloseTo(1 - 80 / 372);
   });
+
+  // MOR-2512 — Ctrl/Alt/Meta+Arrow belongs to the global keyboard map
+  // (Ctrl+ArrowUp/Down adjust_af_level); the separator must neither step
+  // nor swallow the event so the window-level global handler sees it.
+  it('leaves Ctrl+ArrowUp to the global keyboard map', () => {
+    storageMap.set('rigplane-spectrum-split-ratio', '0.5');
+    const target = mountPanel();
+    const { separator } = splitElements(target);
+    separator.focus();
+    const event = new KeyboardEvent('keydown', {
+      key: 'ArrowUp', ctrlKey: true, bubbles: true, cancelable: true,
+    });
+    separator.dispatchEvent(event);
+    flushSync();
+
+    expect(separator.getAttribute('aria-valuenow')).toBe('50');
+    expect(event.defaultPrevented).toBe(false);
+  });
 });
 
 describe('SpectrumPanel Observation authority and final-gesture intents', () => {
