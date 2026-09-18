@@ -3,6 +3,7 @@ import type {
   KeyboardConfig as CapKeyboardConfig,
 } from '$lib/types/capabilities';
 import { isLocalExtensionKeyboardScopeActive } from '$lib/local-extensions/keyboard-scope';
+import { hasCommandModifier } from '$lib/utils/keyboard-modifiers';
 
 export type KeyboardBindingConfig = CapKeyboardBindingConfig;
 export type KeyboardConfig = CapKeyboardConfig;
@@ -194,18 +195,10 @@ export function getEventModifiers(event: {
   return modifiers;
 }
 
-/** True when ctrl, alt, or meta is held — the modified-arrow class the
- * global keyboard map owns; consumed by the SegmentedButton,
- * ActiveReceiverToggle, and SpectrumPanel split-separator key handlers
- * (MOR-2512), pinned by the "hasCommandModifier" block in
- * keyboard-map.test.ts and each widget's MOR-2512 guard test. */
-export function hasCommandModifier(event: {
-  ctrlKey?: boolean;
-  altKey?: boolean;
-  metaKey?: boolean;
-}): boolean {
-  return Boolean(event.ctrlKey) || Boolean(event.altKey) || Boolean(event.metaKey);
-}
+// MOR-2512: hasCommandModifier moved to $lib/utils/keyboard-modifiers so
+// primitives can consume it; re-exported here so every existing keyboard-map
+// importer keeps working unchanged.
+export { hasCommandModifier };
 
 /**
  * Characters that are produced via Shift on a standard keyboard.
