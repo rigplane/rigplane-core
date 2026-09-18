@@ -29,8 +29,6 @@ that class of defect is release-blocking by definition and is not on this list.
 - **PBT values can briefly blank or show a transient endpoint during
   acquisition gaps.** The radio state is unaffected; the last confirmed values
   return without intervention. (MOR-1692)
-- **No PBT Reset action.** Restoring both passband controls to neutral requires
-  setting each slider manually. (MOR-1690)
 - **Manual Notch Width renders as a slider although the radio accepts only
   three values** (WIDE/MID/NAR). Positions between detents are quantized; the
   affordance suggests more precision than exists. (MOR-1685)
@@ -38,8 +36,6 @@ that class of defect is release-blocking by definition and is not on this list.
   only after canonical radio readback (~1 s), which makes precise placement
   awkward; the SDR-screen skin's rendering of the same control tracks
   correctly. (MOR-1693)
-- **PBT Inner/Outer lack gesture-local draft and pending feedback.** Numbers
-  follow delayed readback rather than the thumb. (MOR-1691)
 - **Filter Shape and grouped Notch choices give no pending/accepted
   feedback.** The commands themselves dispatch and confirm correctly.
   (MOR-1689)
@@ -52,30 +48,28 @@ that class of defect is release-blocking by definition and is not on this list.
   read-only remote-testbed GET NAK'd twice with documented `16 22` DATA as
   the adjacent control. Any build or profile advertising CW APF for IC-7300
   exposes a nonfunctional control. (MOR-2144)
-- **A power-state control is offered on radios whose power cannot be switched
-  over CAT**; it presents a readiness the radio does not have, and unknown
-  power state is not always rendered neutrally. (MOR-1673)
 
 ## FTX-1 specific
 
-- **NR level does not honor the radio's native 0–10 domain**; the UI exposes
-  a finer projected scale whose consecutive steps can map to the same radio
-  value. (MOR-1678)
 - **Filter-width (SH) codes and mode routing do not follow CAT 2508-C Table 5
   in every mode**; the wrong width-table family can be offered for some modes.
   (MOR-1679)
-- **Manual-notch position does not use the documented CAT 001..320 code
-  range**; endpoint positions are unreachable and the excluded code 000 can be
-  emitted. (MOR-1680)
-- **IF Shift does not use the official 20 Hz lattice**; requested values are
-  quantized by the radio. (MOR-1681)
-- **CW Pitch is exposed as 300–900 Hz in 5 Hz steps although the radio
-  supports 300–1050 Hz in exact 10 Hz steps**; pitch above 900 Hz is
-  unreachable from the UI, and off-lattice requests are floored by the
-  software before reaching the radio. (MOR-1682)
+- **Manual-notch position on the FTX-1 is shown as a position, not in Hz.**
+  The radio's own display does the same; the CAT code range is bounded to
+  001..320 since #3480/#3526. (MOR-1680, owner ruling 2026-09-17)
+- **IF Shift, CW Pitch and NR level on the FTX-1 follow the CAT lattices in
+  software (20 Hz, 10 Hz to 1050 Hz, 0–10) but have not been re-run on the
+  radio since the change.** (MOR-1681, MOR-1682, MOR-1678 — hardware rerun
+  pending)
 - **The band picker omits 6 m, 2 m, and 70 cm** although the radio supports
   them; use the frequency entry or the radio's own controls for those bands.
   (MOR-1674)
+- **Attenuator and preamp cannot be set for the SUB receiver.** The FTX-1 CAT
+  `RA`/`PA` commands have no SUB form; the controls are shown disabled with
+  the hint "Not available on this receiver" while SUB is active. (MOR-2511,
+  owner ruling 2026-09-17)
+- **NARROW cannot be switched from the web on either receiver.** The setting
+  is read and shown; no write intent exists yet. (MOR-2511 follow-up)
 
 ## rigctld write handling during transmit
 
@@ -92,7 +86,8 @@ that class of defect is release-blocking by definition and is not on this list.
   change; it discovers the real value on its next read. (MOR-1881)
 - **For up to about a second after an unkey, the seat may still read the
   radio as transmitting and drop a mode/VFO/split write the same way.**
-  (MOR-1881)
+  (MOR-1881; owner ruling 2026-09-17 on MOR-1892: not to be narrowed further
+  for the beta)
 - **Frequency and RIT/XIT are exempt from both limitations above.** Bench
   measurement showed both radios accept and apply these writes while
   keyed, so the two families are classified TX-SAFE and are always
@@ -112,16 +107,14 @@ that class of defect is release-blocking by definition and is not on this list.
   advanced tooling, not part of the frequency/mode/PTT command flow a
   logging or digital-mode client uses for normal operation. (MOR-1882)
 
-## Dual-receiver topology (permanent limitation)
+## Dual-receiver topology
 
-**Dual-receiver hardware certification is permanently out of scope for this
-product line.** The dual-RX bench hardware (IC-7610, X6200) was destroyed and
-no replacement is planned (owner ruling on MOR-1568, 2026-08-17). This beta —
-and future releases until stated otherwise — does not include representative
-dual-receiver hardware certification. IC-7300 and FTX-1 acceptance evidence
-covers only the controls and receiver behaviors those radios actually expose.
-Positive dual-watch, dual-scope, simultaneous MAIN/SUB audio/routing, and
-related dual-receiver command/readback paths (including the dual-receiver
-cockpit skin) are covered by automated profile fixtures and fail-closed tests,
-not by real dual-receiver hardware. Do not treat those paths as
-hardware-certified.
+**Dual-receiver hardware certification is not part of this beta.** The bench
+holds an IC-7610 (returned 2026-09-14) and an FTX-1; the IC-7610's dual-watch,
+dual-scope and simultaneous MAIN/SUB audio-routing paths were not re-run for
+this beta and remain covered by automated profile fixtures and fail-closed
+tests only. What was accepted on hardware: single-receive SUB operation on the
+FTX-1 — frequency, mode, width, S-meter, AF/RF/squelch, repeater shift, NB/NR,
+notch, IF shift, NARROW and AGC read from the SUB receiver, and AGC and NB
+writes measured landing on SUB with MAIN unchanged (MOR-2511, 2026-09-18). Do
+not treat any other dual-receiver path as hardware-certified.
