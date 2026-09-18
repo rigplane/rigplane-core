@@ -305,6 +305,8 @@
 
   "core.disabledReason.missing": "Not supported by this radio",
   "core.disabledReason.unobserved": "Not yet observed",
+  "core.disabledReason.mutuallyExclusiveControl": "Disabled: another control is active",
+  "core.disabledReason.receiverLacksControl": "Not available on this receiver",
 
   "core.txGuard.modInputNotLan": "MOD input is {source}, not LAN — your voice from the web will not be transmitted (TX).",
   "core.txGuard.setLan": "Set LAN",

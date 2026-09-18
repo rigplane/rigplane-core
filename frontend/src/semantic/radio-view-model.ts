@@ -119,7 +119,11 @@ export type DisabledReasonCode =
    *  Distinct from `capability-unavailable` (the control doesn't exist) and
    *  `field-not-observed` (this control's OWN reading is unobserved) —
    *  here the control itself is fine, a PEER control's state disables it. */
-  | 'mutually-exclusive-control';
+  | 'mutually-exclusive-control'
+  /** MOR-2511 B2: the active receiver's profile does not declare this control
+   *  (e.g. SUB.att/preamp on FTX-1). The control is structurally absent for
+   *  this receiver regardless of the radio-wide capability. */
+  | 'receiver-lacks-control';
 
 export interface DisabledReason {
   field: string;
@@ -1257,7 +1261,7 @@ const SLOT_IDS: readonly VfoSlotId[] = ['A', 'B'];
 const VFO_SCHEMES: readonly VfoScheme[] = ['single', 'ab', 'ab_shared', 'main_sub'];
 const DISABLED_REASON_CODES: readonly DisabledReasonCode[] = [
   'capability-unavailable', 'field-not-observed', 'tx-target-unknown', 'out-of-band',
-  'mutually-exclusive-control',
+  'mutually-exclusive-control', 'receiver-lacks-control',
 ];
 
 function oneOf<T>(value: unknown, allowed: readonly T[], path: string): T {

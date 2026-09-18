@@ -222,6 +222,11 @@
   "core.error.transport.timeout.body": "{host} から応答がありません。トランシーバーの電源が入っており、到達可能であることを確認してください。",
   "core.error.literalBrace.example": "プレースホルダーを参照するには '{'name} と書きます。",
 
+  "core.disabledReason.missing": "このトランシーバーではサポートされていません",
+  "core.disabledReason.unobserved": "まだ観測されていません",
+  "core.disabledReason.mutuallyExclusiveControl": "無効: 別の制御がアクティブです",
+  "core.disabledReason.receiverLacksControl": "このレシーバーでは使用できません",
+
   "glossary.callsign": "コールサイン",
   "glossary.squelch": "スケルチ",
   "glossary.bandPlan": "バンドプラン"
