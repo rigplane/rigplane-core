@@ -329,7 +329,7 @@
     }
     if (breakInDelayBusy) {
       return t('core.cwKeyer.breakInDelay.valueText.requested', {
-        displayed: breakInDelayView.displayed!,
+        displayed: breakInDelayView.displayed ?? confirmed,
         confirmed,
       });
     }
