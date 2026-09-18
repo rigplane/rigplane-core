@@ -1150,6 +1150,8 @@ async def test_websocket_manual_notch_position_off_ftx1_domain_rejected_before_e
         ("set_if_shift", "if_shift", "offset", 30),
         ("set_cw_pitch", "cw_pitch", "value", 305),
         ("set_nr_level", "nr_level", "level", 11),
+        ("set_nb_level", "nb_level", "level", 11),
+        ("set_rit_frequency", "rit", "freq", 10000),
     ],
 )
 async def test_enqueue_ftx1_off_domain_control_rejected_before_enqueue(
@@ -1186,6 +1188,10 @@ async def test_enqueue_ftx1_off_domain_control_rejected_before_enqueue(
         ("set_cw_pitch", "value", 1000),
         ("set_nr_level", "level", 0),
         ("set_nr_level", "level", 10),
+        ("set_nb_level", "level", 0),
+        ("set_nb_level", "level", 10),
+        ("set_rit_frequency", "freq", -9999),
+        ("set_rit_frequency", "freq", 9999),
     ],
 )
 async def test_enqueue_ftx1_in_domain_control_accepted(
@@ -1222,6 +1228,92 @@ async def test_enqueue_icom_off_domain_cw_pitch_rejected_before_enqueue() -> Non
 
     assert "cw_pitch" in str(excinfo.value)
     assert queue.items == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("freq", [-10000, 10000])
+async def test_enqueue_icom_off_domain_rit_frequency_rejected_before_enqueue(
+    freq: int,
+) -> None:
+    """An Icom RC control with a published ``reject`` domain refuses too.
+
+    Every shipped Icom profile declares ``[controls.rit]`` as a normalized
+    ``reject`` domain (-9999..9999 Hz); the ingress check refuses an
+    off-domain clarifier offset before it reaches the queue (MOR-2510).
+    """
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        radio=_capable_radio(), server=SimpleNamespace(command_queue=queue)
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        await handler._enqueue_command("set_rit_frequency", {"freq": freq})
+
+    assert "rit" in str(excinfo.value)
+    assert queue.items == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("freq", [-9999, 9999])
+async def test_enqueue_icom_in_domain_rit_frequency_boundary_accepted(freq: int) -> None:
+    """The Icom ``rit`` domain's closed boundaries still queue (MOR-2510)."""
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        radio=_capable_radio(), server=SimpleNamespace(command_queue=queue)
+    )
+
+    result = await handler._enqueue_command("set_rit_frequency", {"freq": freq})
+
+    assert result == {"freq": freq}
+    assert len(queue.items) == 1
+
+
+@pytest.mark.asyncio
+async def test_enqueue_icom_nb_level_without_reject_domain_is_not_domain_checked() -> (
+    None
+):
+    """A control with a display band but no quantization is a no-op.
+
+    IC-7610 ``[controls.nb_level]`` declares only ``raw_min``/``raw_max``;
+    it carries no ``quantization = "reject"``, so the ingress check leaves
+    ``set_nb_level`` at today's behaviour (MOR-2510).
+    """
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        radio=_capable_radio(), server=SimpleNamespace(command_queue=queue)
+    )
+
+    result = await handler._enqueue_command(
+        "set_nb_level", {"level": 42, "receiver": 0}
+    )
+
+    assert result == {"level": 42, "receiver": 0}
+    assert len(queue.items) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "param", "value"),
+    [("set_nr_level", "level", 42), ("set_pbt_inner", "value", 5000)],
+)
+async def test_enqueue_display_only_control_without_quantization_is_not_domain_checked(
+    name: str, param: str, value: int
+) -> None:
+    """Display-only entries without ``quantization`` are skipped by design.
+
+    IC-7610 ``[controls.nr_level]`` (display 0-15) and ``[controls.pbt_inner]``
+    (display -1200..1200) publish a display band but no quantization, so the
+    ingress check deliberately does not validate them (MOR-2510).
+    """
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        radio=_capable_radio(), server=SimpleNamespace(command_queue=queue)
+    )
+
+    result = await handler._enqueue_command(name, {param: value, "receiver": 0})
+
+    assert result[param] == value
+    assert len(queue.items) == 1
 
 
 async def test_enqueue_set_rf_power_yaesu_tags_watts_unit() -> None:
