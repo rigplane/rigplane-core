@@ -119,6 +119,6 @@ dual-scope and simultaneous MAIN/SUB audio-routing paths were not re-run for
 this beta and remain covered by automated profile fixtures and fail-closed
 tests only. What was accepted on hardware: single-receive SUB operation on the
 FTX-1 — frequency, mode, width, S-meter, AF/RF/squelch, repeater shift, NB/NR,
-notch, IF shift, NARROW and AGC read from and written to the SUB receiver
-(MOR-2511, 2026-09-18). Do not treat any other dual-receiver path as
-hardware-certified.
+notch, IF shift, NARROW and AGC read from the SUB receiver, and AGC and NB
+writes measured landing on SUB with MAIN unchanged (MOR-2511, 2026-09-18). Do
+not treat any other dual-receiver path as hardware-certified.
