@@ -39,7 +39,7 @@ import { topologyFixtures, withCwKeyer, withModeFilter, withTxAux } from '../fix
 import type {
   Availability, BreakInMode, CwKeyerField, CwKeyerViewModel, DisabledReason, RadioViewModel,
 } from '../radio-view-model';
-import { t } from '$lib/i18n';
+import { t, setLocale, getLocale } from '$lib/i18n';
 import type {
   ControlFeedbackPresentationInput, PresentationPhase,
 } from '../../primitives/control-feedback/control-feedback-presentation';
@@ -414,9 +414,27 @@ describe('Break-in Delay separates draft, submitted target and confirmed truth',
     const unavailableInput = unavailable.input('breakInDelay')!;
     expect(unavailableInput.disabled).toBe(true);
     expect(unavailableInput.dataset.commandPhase).toBe('unavailable');
-    expect(unavailableInput.getAttribute('aria-valuetext')).toBe('Break-in delay unavailable');
+    expect(unavailableInput.getAttribute('aria-valuetext')).toBe(t('core.cwKeyer.breakInDelay.valueText.unavailable'));
     expect(unavailable.text('breakInDelay-value')).toContain('— unavailable');
     unavailable.dispose();
+  });
+
+  it('renders the break-in delay value text in Russian when locale is ru-RU', () => {
+    const previousLocale = getLocale();
+    setLocale('ru-RU');
+    try {
+      const onLevelChange = vi.fn();
+      const r = render(base(), {
+        onLevelChange, breakInDelayFeedback: feedback('unavailable', { confirmed: null }),
+      });
+      const unavailableInput = r.input('breakInDelay')!;
+      expect(unavailableInput.getAttribute('aria-valuetext')).toBe(
+        'Задержка break-in недоступна',
+      );
+      r.dispose();
+    } finally {
+      setLocale(previousLocale);
+    }
   });
 
   it('rounds and clamps a programmatic final candidate before dispatch', () => {
@@ -558,7 +576,7 @@ describe('Break-in Delay separates draft, submitted target and confirmed truth',
     const r = renderReactiveFeedback(feedback('idle', { confirmed }));
     expect(r.input().disabled).toBe(true);
     expect(r.input().hasAttribute('aria-valuenow')).toBe(false);
-    expect(r.input().getAttribute('aria-valuetext')).toBe('Break-in delay unavailable');
+    expect(r.input().getAttribute('aria-valuetext')).toBe(t('core.cwKeyer.breakInDelay.valueText.unavailable'));
     expect(r.output().textContent).toContain('— unavailable');
     r.input().value = '99';
     r.input().dispatchEvent(new Event('input', { bubbles: true }));
