@@ -12,6 +12,7 @@
   } from '../../../../primitives/scalar/value-control-core';
   import { projectScalarRenderPresentation } from '../scalar-render-presentation';
   import type { KnobSkinRendererProps } from '../skin';
+  import { hasCommandModifier } from '../../../layout/keyboard-map';
 
   let { binding, label, displayFn, unknownDisplay,
     accentColor = '#00e5ff', showValue = true, showLabel = true, compact = false,
@@ -114,6 +115,7 @@
     activePointer = null;
   }
   function onKey(e: KeyboardEvent) {
+    if (hasCommandModifier(e)) return;
     if (lease.key({ key: e.key, fine: e.shiftKey })) e.preventDefault();
   }
   function onDbl() { lease.reset(); }

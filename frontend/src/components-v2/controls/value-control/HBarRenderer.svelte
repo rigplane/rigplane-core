@@ -15,6 +15,7 @@
     projectScalarRenderPresentation,
   } from './scalar-render-presentation';
   import type { HBarSkinRendererProps } from './skin';
+  import { hasCommandModifier } from '../../layout/keyboard-map';
 
   type Props = HBarSkinRendererProps;
 
@@ -197,6 +198,7 @@
 
 
   function handleKeyDown(e: KeyboardEvent) {
+    if (hasCommandModifier(e)) return;
     if (lease.key({ key: e.key, fine: e.shiftKey })) e.preventDefault();
   }
 

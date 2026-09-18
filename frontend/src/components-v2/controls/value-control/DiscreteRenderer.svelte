@@ -19,6 +19,7 @@
     type LegacyReadingPresentation,
     type ScalarAccessibilityPresentation,
   } from './scalar-render-presentation';
+  import { hasCommandModifier } from '../../layout/keyboard-map';
 
   interface Props {
     binding: ContinuousScalarRendererSeat;
@@ -224,6 +225,7 @@
 
 
   function handleKeyDown(e: KeyboardEvent) {
+    if (hasCommandModifier(e)) return;
     if (lease.key({ key: e.key, fine: e.shiftKey })) e.preventDefault();
   }
 
