@@ -53,13 +53,15 @@ _MAIN_SQL = FieldPath.receiver("main", "operator_controls", "squelch")
 _SUB_AF = FieldPath.receiver("sub", "operator_controls", "af_level")
 _SUB_RF = FieldPath.receiver("sub", "operator_controls", "rf_gain")
 _SUB_SQL = FieldPath.receiver("sub", "operator_controls", "squelch")
-# RF front-end + AGC controls (MOR-443). MAIN-only: the FTX-1 has no
-# per-receiver CAT command for these (no RA1/PA1/GT1), so emitting them for
+# RF front-end controls (MOR-443). ATT/preamp stay MAIN-only: the FTX-1 has
+# no per-receiver CAT command for them (no RA1/PA1), so emitting them for
 # the sub receiver would mislabel the shared front-end read. This mirrors the
-# legacy poller, which only writes ``main.{att,preamp,agc}``.
+# legacy poller, which only writes ``main.{att,preamp,agc}``. AGC has the
+# SUB form ``GT1`` (bench 2026-09-18, MOR-2511 comment, 01:22Z).
 _MAIN_ATT = FieldPath.receiver("main", "operator_controls", "att")
 _MAIN_PREAMP = FieldPath.receiver("main", "operator_controls", "preamp")
 _MAIN_AGC = FieldPath.receiver("main", "operator_controls", "agc")
+_SUB_AGC = FieldPath.receiver("sub", "operator_controls", "agc")
 _MAIN_S_METER = FieldPath.receiver("main", "meters", "s_meter")
 _SUB_S_METER = FieldPath.receiver("sub", "meters", "s_meter")
 _ALC_METER = FieldPath.global_("meters", "alc")
@@ -833,10 +835,14 @@ class YaesuObservationAdapter:
                         native_id="read_squelch",
                     )
                 )
-        # RF front-end + AGC (MOR-443) — MAIN-only. ATT/preamp gate on their
-        # runtime capabilities (matching the legacy poller's ``attenuator`` /
-        # ``preamp`` gates); AGC has no FTX-1 capability tag and is polled
-        # unconditionally (gated by policy only), mirroring the legacy poller.
+        # RF front-end + AGC (MOR-443). ATT/preamp gate on their runtime
+        # capabilities (matching the legacy poller's ``attenuator`` /
+        # ``preamp`` gates) and stay MAIN-only (no RA1/PA1 form); AGC has
+        # no FTX-1 capability tag and is polled unconditionally (gated by
+        # policy only), mirroring the legacy poller. The SUB AGC read
+        # (MOR-2511) answers SUB's own value in single receive (bench
+        # 2026-09-18, comment 01:22Z) and carries the ``dual_rx`` +
+        # ``_can_poll``/``_available`` guards of the other SUB reads.
         # The ``RA0`` attenuator read returns a bool; the int registry path
         # receives the coerced ``int(on_off)`` (0/1) — no scaling beyond the
         # bool→int match (cross-vendor calibration is MOR-453).
@@ -869,6 +875,18 @@ class YaesuObservationAdapter:
             if ok:
                 observations.append(
                     adapter.observation(_MAIN_AGC, value, native_id="read_agc")
+                )
+        if (
+            self._has_runtime_capability("dual_rx")
+            and self._can_poll(_SUB_AGC)
+            and self._available(_SUB_AGC)
+        ):
+            ok, value = await self._safe_read(
+                "sub.agc", self.radio.read_agc(1), paths=(_SUB_AGC,)
+            )
+            if ok:
+                observations.append(
+                    adapter.observation(_SUB_AGC, value, native_id="read_agc")
                 )
         # IF-shift / narrow (MOR-445). IF-shift gates on the ``if_shift``
         # capability (matching the legacy poller's ``if_shift`` gate); narrow

@@ -57,9 +57,11 @@ _SUB_MANUAL_NOTCH_FREQ = FieldPath.receiver(
 )
 _SUB_IF_SHIFT = FieldPath.receiver("sub", "operator_controls", "if_shift")
 _SUB_NARROW = FieldPath.receiver("sub", "operator_toggles", "narrow")
+_SUB_AGC = FieldPath.receiver("sub", "operator_controls", "agc")
 _MAIN_NB_LEVEL = FieldPath.receiver("main", "operator_controls", "nb_level")
 _MAIN_IF_SHIFT = FieldPath.receiver("main", "operator_controls", "if_shift")
 _MAIN_NARROW = FieldPath.receiver("main", "operator_toggles", "narrow")
+_MAIN_AGC = FieldPath.receiver("main", "operator_controls", "agc")
 
 # SUB on 144.500 MHz USB, width table index 14 (2500 Hz in the profile's SSB
 # table), raw meter 78 (the -36 dBm / S5 calibration point). ``SM1;`` answers
@@ -79,11 +81,11 @@ _CAT_ANSWERS = {
     "SM1;": "SM0078",
     "FT;": "FT0",
     "TX;": "TX0",
-    # Slow-tier answers. The AG/RG/SQ/OS MAIN/SUB pairs are the bench-probe
-    # rows of 2026-09-18 (MOR-2511 comment, 01:22Z): SUB differs from MAIN on
-    # every pair, so an assertion on the SUB path cannot pass on a MAIN echo.
-    # The remaining entries are minimal parseable answers for the other reads
-    # ``poll_slow_controls`` issues on this profile.
+    # Slow-tier answers. The AG/RG/SQ/OS/GT MAIN/SUB pairs are the
+    # bench-probe rows of 2026-09-18 (MOR-2511 comment, 01:22Z): SUB differs
+    # from MAIN on every pair, so an assertion on the SUB path cannot pass on
+    # a MAIN echo. The remaining entries are minimal parseable answers for the
+    # other reads ``poll_slow_controls`` issues on this profile.
     "FR;": "FR01",
     "AG0;": "AG0000",
     "AG1;": "AG1020",
@@ -95,6 +97,7 @@ _CAT_ANSWERS = {
     "OS1;": "OS11",
     "PA0;": "PA00",
     "GT0;": "GT06",
+    "GT1;": "GT11",
     "IS0;": "IS00+0000",
     "IS1;": "IS10+0200",
     "NA0;": "NA00",
@@ -196,9 +199,9 @@ async def test_sub_operator_controls_are_acquired_in_single_receive() -> None:
 
 @pytest.mark.asyncio
 async def test_sub_dsp_controls_are_acquired_in_single_receive() -> None:
-    """The nine DSP paths slice C declares are read on the slow tier with
-    dual receive OFF, each answering SUB's own value (bench 2026-09-18 pairs
-    in ``_CAT_ANSWERS``), not MAIN's."""
+    """The nine DSP paths slice C declares, plus the SUB AGC twin (slice B),
+    are read on the slow tier with dual receive OFF, each answering SUB's
+    own value (bench 2026-09-18 pairs in ``_CAT_ANSWERS``), not MAIN's."""
 
     radio = _bench_radio()
     store = _single_receive_store()
@@ -218,7 +221,9 @@ async def test_sub_dsp_controls_are_acquired_in_single_receive() -> None:
     assert snapshot.field(_SUB_MANUAL_NOTCH_FREQ).value == 120
     assert snapshot.field(_SUB_IF_SHIFT).value == 200
     assert snapshot.field(_SUB_NARROW).value is True
+    assert snapshot.field(_SUB_AGC).value == 1
     # MAIN contrasts from the same probe rows: a MAIN echo cannot pass.
     assert snapshot.field(_MAIN_NB_LEVEL).value == 0
     assert snapshot.field(_MAIN_IF_SHIFT).value == 0
     assert snapshot.field(_MAIN_NARROW).value is False
+    assert snapshot.field(_MAIN_AGC).value == 6

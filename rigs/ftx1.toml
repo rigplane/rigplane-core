@@ -109,6 +109,7 @@ polling_only = [
     "receiver.main.operator_controls.att",
     "receiver.main.operator_controls.preamp",
     "receiver.main.operator_controls.agc",
+    "receiver.sub.operator_controls.agc",
     "receiver.main.operator_controls.if_shift",
     "receiver.main.operator_toggles.narrow",
     "receiver.main.active.freq_mode.filter_width",
@@ -386,6 +387,15 @@ cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
 [state_acquisition.field_policies."receiver.main.operator_controls.agc"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+# SUB twin of the AGC policy above: `GT1;` answered SUB's own value with
+# MAIN untouched — bench probe 2026-09-18 (MOR-2511 comment, 01:22Z:
+# `GT11;` read back from SUB while MAIN stayed at `GT06;`). The same probe
+# found SUB's AGC stored per mode: after a SUB mode change the 1.0s cadence
+# tick re-reads the new mode's slot.
+[state_acquisition.field_policies."receiver.sub.operator_controls.agc"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
@@ -1166,6 +1176,10 @@ set_manual_notch_freq_sub = { cat = { write = "BP11{freq:03d};" } }
 # ── AGC ──
 get_agc        = { cat = { read = "GT0;", parse = "GT0{mode};" } }
 set_agc        = { cat = { write = "GT0{mode};" } }
+# SUB (P1=1) form — bench probe 2026-09-18 (MOR-2511 comment, 01:22Z):
+# `GT1;` answered SUB's own value (`GT11;`) with MAIN untouched (`GT06;`).
+get_agc_sub = { cat = { read = "GT1;", parse = "GT1{mode};" } }
+set_agc_sub = { cat = { write = "GT1{mode};" } }
 
 # ── Filter / IF ──
 # SH: P1=rx (0=MAIN,1=SUB), P2P2P2=value (3 digits)

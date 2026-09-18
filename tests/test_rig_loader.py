@@ -3698,8 +3698,8 @@ class TestFtx1ManualOnlyCommands:
     def test_exact_retained_membership(self):
         _assert_manual_only_membership(
             "ftx1.toml",
-            123,
-            "02ec883f2b31d02edd841b412718608c95480cbc5c4617b888a3fb0f4403eaf7",
+            125,
+            "dbc54d534fa86d9cd1e7c1f17c81fb6d8959e3c6b91a2824442de77020020c06",
             self._REMOVED_NAMES,
         )
 
