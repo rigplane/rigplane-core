@@ -48,6 +48,7 @@
   data-freq-status={interactive ? model.status : undefined}
   data-vfo-freq={interactive && vfoFreqHook ? '' : undefined}
   data-vfo-active={interactive && vfoFreqHook ? active : undefined}
+  data-owns-arrows={interactive && interaction?.selectedDigitIndex !== null && interaction?.selectedDigitIndex !== undefined ? 'vertical' : undefined}
   aria-describedby={interactive && model.status === 'pending' && model.pendingAnnouncement ? pendingId : undefined}
   aria-disabled={interactive ? interaction?.inert ?? true : undefined}
   {style}
