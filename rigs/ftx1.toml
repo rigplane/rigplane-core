@@ -120,6 +120,15 @@ polling_only = [
     "receiver.main.operator_toggles.auto_notch",
     "receiver.main.operator_toggles.manual_notch",
     "receiver.main.operator_controls.manual_notch_freq",
+    "receiver.sub.operator_controls.nb_level",
+    "receiver.sub.operator_toggles.nb",
+    "receiver.sub.operator_controls.nr_level",
+    "receiver.sub.operator_toggles.nr",
+    "receiver.sub.operator_toggles.auto_notch",
+    "receiver.sub.operator_toggles.manual_notch",
+    "receiver.sub.operator_controls.manual_notch_freq",
+    "receiver.sub.operator_controls.if_shift",
+    "receiver.sub.operator_toggles.narrow",
     "global.operator_controls.power_level",
     "global.operator_controls.mic_gain",
     "global.tx_state.compressor_on",
@@ -396,7 +405,7 @@ cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
 # NB/NR levels + derived toggles, auto/manual notch DSP controls (MOR-444).
-# Slow-changing operator controls, MAIN-only (no per-receiver CAT command). The
+# Slow-changing operator controls; SUB twins below (MOR-2511). The
 # ``nb``/``nr`` toggles are derived from the level read in the same poll cycle.
 [state_acquisition.field_policies."receiver.main.operator_controls.nb_level"]
 cadence_seconds = 1.0
@@ -434,6 +443,50 @@ freshness_ttl_seconds = 2.0
 available_when = [
     { field = "receiver.main.active.freq_mode.mode", not_in = ["FM", "FM-N", "DATA-FM", "DATA-FM-N"] },
 ]
+
+# SUB DSP controls (CAT ``NL1``/``RL1``/``BC1``/``BP10``/``BP11``/``IS1``/
+# ``NA1``): each answered SUB's own value in single receive — bench probe
+# 2026-09-18 (MOR-2511 comment, 01:22Z), pinned by
+# tests/test_ftx1_sub_acquisition.py::
+# test_sub_dsp_controls_are_acquired_in_single_receive. The same probe found
+# SUB's IF shift, NARROW, notch and AGC stored per mode: after a SUB mode
+# change the 1.0s cadence tick re-reads the new mode's slot (the acquisition
+# machinery has no re-read-on-dependency-change hook).
+[state_acquisition.field_policies."receiver.sub.operator_controls.nb_level"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.nb"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.nr_level"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.nr"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.auto_notch"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.manual_notch"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.manual_notch_freq"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.if_shift"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.narrow"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
 
 [state_acquisition.field_policies."global.operator_controls.power_level"]
 cadence_seconds = 1.0
@@ -1091,6 +1144,18 @@ get_manual_notch = { cat = { read = "BP00;", parse = "BP00{state:03d};" } }
 set_manual_notch = { cat = { write = "BP00{state:03d};" } }
 get_manual_notch_freq = { cat = { read = "BP01;", parse = "BP01{freq:03d};" } }
 set_manual_notch_freq = { cat = { write = "BP01{freq:03d};" } }
+# SUB (P1=1) forms — bench probe 2026-09-18 (MOR-2511 comment, 01:22Z):
+# each answered SUB's own value with MAIN untouched.
+get_nb_level_sub   = { cat = { read = "NL1;", parse = "NL1{level:03d};" } }
+set_nb_level_sub   = { cat = { write = "NL1{level:03d};" } }
+get_nr_level_sub   = { cat = { read = "RL1;", parse = "RL1{level:02d};" } }
+set_nr_level_sub   = { cat = { write = "RL1{level:02d};" } }
+get_auto_notch_sub = { cat = { read = "BC1;", parse = "BC1{state};" } }
+set_auto_notch_sub = { cat = { write = "BC1{state};" } }
+get_manual_notch_sub = { cat = { read = "BP10;", parse = "BP10{state:03d};" } }
+set_manual_notch_sub = { cat = { write = "BP10{state:03d};" } }
+get_manual_notch_freq_sub = { cat = { read = "BP11;", parse = "BP11{freq:03d};" } }
+set_manual_notch_freq_sub = { cat = { write = "BP11{freq:03d};" } }
 
 # ── AGC ──
 get_agc        = { cat = { read = "GT0;", parse = "GT0{mode};" } }
@@ -1108,6 +1173,10 @@ get_if_shift   = { cat = { read = "IS0;", parse = "IS00{sign}{offset:04d};" } }
 set_if_shift   = { cat = { write = "IS00{sign}{offset:04d};" } }
 get_narrow     = { cat = { read = "NA0;", parse = "NA0{state};" } }
 set_narrow     = { cat = { write = "NA0{state};" } }
+get_if_shift_sub = { cat = { read = "IS1;", parse = "IS10{sign}{offset:04d};" } }
+set_if_shift_sub = { cat = { write = "IS10{sign}{offset:04d};" } }
+get_narrow_sub   = { cat = { read = "NA1;", parse = "NA1{state};" } }
+set_narrow_sub   = { cat = { write = "NA1{state};" } }
 
 # ── TX / Power ──
 get_power      = { cat = { read = "PC;", parse = "PC{head}{watts:03d};" } }
