@@ -80,6 +80,30 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getModInputArmed: () => ({ armed: false, value: null }),
   getBreakInDelayControlFeedback: () => null,
   getFilterWidthControlFeedback: h.filterWidthFeedback,
+  // MOR-1687 part 1 — `SemanticRadioSurfaces.svelte` imports the passband
+  // feedback producers unconditionally; this file never leaves the VFO
+  // lane, so honest unavailable stubs only need to satisfy the import.
+  getPbtInnerHzControlFeedback: () => ({
+    confirmed: null, target: null, requestedTarget: null, phase: 'unavailable' as const,
+    busy: false, availability: 'unavailable' as const, outcome: null,
+    lifecycleId: null, transitionId: null, providerGeneration: 1, sessionEpoch: 7,
+    scope: { control: 'pbt-inner', receiver: 0 as const },
+    repeatPolicy: 'latest-target-wins' as const,
+  }),
+  getPbtOuterHzControlFeedback: () => ({
+    confirmed: null, target: null, requestedTarget: null, phase: 'unavailable' as const,
+    busy: false, availability: 'unavailable' as const, outcome: null,
+    lifecycleId: null, transitionId: null, providerGeneration: 1, sessionEpoch: 7,
+    scope: { control: 'pbt-outer', receiver: 0 as const },
+    repeatPolicy: 'latest-target-wins' as const,
+  }),
+  getIfShiftControlFeedback: () => ({
+    confirmed: null, target: null, requestedTarget: null, phase: 'unavailable' as const,
+    busy: false, availability: 'unavailable' as const, outcome: null,
+    lifecycleId: null, transitionId: null, providerGeneration: 1, sessionEpoch: 7,
+    scope: { control: 'if-shift', receiver: 0 as const },
+    repeatPolicy: 'latest-target-wins' as const,
+  }),
   getCwPitchControlFeedback: h.cwPitchFeedback,
   getKeySpeedControlFeedback: h.keySpeedFeedback,
   getTxAuxControlFeedback: h.txAuxFeedback,

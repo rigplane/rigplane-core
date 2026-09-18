@@ -26,8 +26,8 @@ const mockProps = {
   ifShift: 0,
   hasIfShift: true,
   hasPbt: false,
-  pbtInner: 0,
-  pbtOuter: 0,
+  pbtInner: 0 as number | null,
+  pbtOuter: 0 as number | null,
   pbtDomain: null as ControlDisplayDomain | null,
   ifShiftDomain: null as ControlDisplayDomain | null,
 };
@@ -110,6 +110,27 @@ function setWidthFeedback(overrides: Partial<CommandScalarFeedback>): void {
   feedbackOverride.set('value', { ...feedbackFromLifecycle(), ...overrides });
 }
 
+const passbandOverride = new SvelteMap<string, Readonly<CommandScalarFeedback> | null>([
+  ['inner', null], ['outer', null], ['ifShift', null],
+]);
+function passbandFeedback(control: string, confirmed: number): Readonly<CommandScalarFeedback> {
+  propsVersion.get('value');
+  return {
+    confirmed, target: null, requestedTarget: null, phase: 'idle', busy: false,
+    availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+    providerGeneration: 1, sessionEpoch: 7,
+    scope: { control, receiver: 0 }, repeatPolicy: 'latest-target-wins',
+  } as Readonly<CommandScalarFeedback>;
+}
+function setPassbandFeedback(
+  key: 'inner' | 'outer' | 'ifShift', overrides: Partial<CommandScalarFeedback>,
+): void {
+  const base = key === 'inner' ? passbandFeedback('pbt-inner', mockProps.pbtInner ?? 0)
+    : key === 'outer' ? passbandFeedback('pbt-outer', mockProps.pbtOuter ?? 0)
+      : passbandFeedback('if-shift', mockProps.ifShift);
+  passbandOverride.set(key, { ...base, ...overrides });
+}
+
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveFilterProps: () => {
     propsVersion.get('value');
@@ -118,6 +139,12 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getFilterHandlers: () => mockHandlers,
   getFilterArmed: () => unarmed,
   getFilterWidthControlFeedback: () => feedbackOverride.get('value') ?? feedbackFromLifecycle(),
+  getPbtInnerHzControlFeedback: () => passbandOverride.get('inner')
+    ?? passbandFeedback('pbt-inner', mockProps.pbtInner ?? 0),
+  getPbtOuterHzControlFeedback: () => passbandOverride.get('outer')
+    ?? passbandFeedback('pbt-outer', mockProps.pbtOuter ?? 0),
+  getIfShiftControlFeedback: () => passbandOverride.get('ifShift')
+    ?? passbandFeedback('if-shift', mockProps.ifShift),
 }));
 
 import FilterPanel from '../FilterPanel.svelte';
@@ -230,6 +257,9 @@ beforeEach(() => {
     presentation: null,
   });
   feedbackOverride.set('value', null);
+  passbandOverride.set('inner', null);
+  passbandOverride.set('outer', null);
+  passbandOverride.set('ifShift', null);
 });
 
 afterEach(() => {
@@ -962,6 +992,152 @@ describe('IF Shift domain range and step (MOR-1681)', () => {
     const t = mountPanel({ filterConfig: TABLE_CONFIG, ifShiftDomain: null });
     stepIfShift(t, 1);
     expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(20);
+  });
+});
+
+/**
+ * MOR-1687 part 1: PBT Inner/Outer and IF Shift ride the same
+ * feedback-integrated bipolar scalar the width control uses. Confirmed,
+ * target and requested values are all in the DISPLAY unit (Hz on the
+ * measured lattice) — the mock below hands the component exactly the
+ * shapes `getPbtInnerHzControlFeedback`/`getPbtOuterHzControlFeedback`/
+ * `getIfShiftControlFeedback` produce.
+ */
+describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const USB_DOMAIN = { min: -1800, max: 1800, step: 50, origin: 0 };
+  const PENDING: Partial<CommandScalarFeedback> = {
+    phase: 'submitted', busy: true, target: 600, requestedTarget: 600,
+    lifecycleId: 'L', transitionId: 'L:submitted',
+  };
+  const sliderOf = (t: HTMLElement, label: string): HTMLElement => {
+    const labels = Array.from(t.querySelectorAll('.vc-label')).map(el => el.textContent);
+    return t.querySelectorAll<HTMLElement>('[role="slider"]')[labels.indexOf(label)];
+  };
+  const valueText = (slider: HTMLElement): string =>
+    slider.closest('.vc-bipolar')!.querySelector<HTMLElement>('.vc-value')!.textContent ?? '';
+  const pendingChip = (t: HTMLElement): string | null =>
+    t.querySelector<HTMLElement>('[data-pending-passband-target]')?.textContent?.trim() ?? null;
+
+  it('shows a pending PBT inner command as PENDING target Hz, never as the confirmed value', () => {
+    setPassbandFeedback('inner', PENDING);
+    const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
+    const slider = sliderOf(t, 'PBT Inner');
+    expect(slider.getAttribute('aria-busy')).toBe('true');
+    expect(slider.getAttribute('data-command-phase')).toBe('submitted');
+    expect(slider.getAttribute('aria-valuenow')).toBe('0');
+    expect(valueText(slider)).toBe('0\u00a0Hz');
+    expect(pendingChip(t)).toBe('PENDING 600 Hz');
+  });
+
+  it('keeps the operator\'s requested value visible through the command\'s OWN lifecycle — no snap-back', () => {
+    const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
+    const slider = sliderOf(t, 'PBT Inner');
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(60);
+    flushSync();
+    expect(mockHandlers.onPbtInnerChange).toHaveBeenCalledExactlyOnceWith(50);
+    // Production mints a NEW command id per dispatch, so the pending
+    // lifecycle never shares the id the gesture observed — the draft
+    // retires and the requested value survives as the PENDING target.
+    setPassbandFeedback('inner', {
+      phase: 'submitted', busy: true, target: 50, requestedTarget: 50,
+      lifecycleId: 'fresh-1', transitionId: 'fresh-1:submitted',
+    });
+    flushSync();
+    expect(valueText(slider)).toBe('0\u00a0Hz');
+    expect(slider.getAttribute('aria-valuenow')).toBe('0');
+    expect(slider.getAttribute('data-command-phase')).toBe('submitted');
+    expect(pendingChip(t)).toBe('PENDING 50 Hz');
+    // Readback confirms: the chip retires and the control ends on the
+    // confirmed Hz.
+    setPassbandFeedback('inner', {
+      confirmed: 50, requestedTarget: 50, phase: 'confirmed', busy: false, target: null,
+      outcome: { phase: 'confirmed' }, lifecycleId: 'fresh-1', transitionId: 'fresh-1:confirmed',
+    });
+    flushSync();
+    expect(pendingChip(t)).toBeNull();
+    expect(slider.getAttribute('data-command-phase')).toBe('confirmed');
+    expect(slider.getAttribute('aria-valuenow')).toBe('50');
+    expect(valueText(slider)).toBe('+50\u00a0Hz');
+  });
+
+  it('reports confirmed with the confirmed Hz', () => {
+    setPassbandFeedback('inner', {
+      confirmed: 600, requestedTarget: 600, phase: 'confirmed',
+      outcome: { phase: 'confirmed' }, lifecycleId: 'L', transitionId: 'L:confirmed',
+    });
+    const t = mountPanel({ hasPbt: true, pbtInner: 600, pbtOuter: 0, pbtDomain: USB_DOMAIN });
+    const slider = sliderOf(t, 'PBT Inner');
+    expect(slider.getAttribute('aria-busy')).toBe('false');
+    expect(slider.getAttribute('data-command-phase')).toBe('confirmed');
+    expect(slider.getAttribute('aria-valuenow')).toBe('600');
+    expect(valueText(slider)).toBe('+600\u00a0Hz');
+    expect(pendingChip(t)).toBeNull();
+  });
+
+  it('reports failed and returns to the last confirmed value', () => {
+    const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0, pbtDomain: USB_DOMAIN });
+    const slider = sliderOf(t, 'PBT Inner');
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(60);
+    flushSync();
+    expect(valueText(slider)).toBe('+50\u00a0Hz');
+    // The gesture's own command mints a NEW lifecycle id, then fails: the
+    // draft must retire back to the last confirmed value.
+    setPassbandFeedback('inner', {
+      confirmed: 0, requestedTarget: 50, phase: 'failed', busy: false, target: null,
+      outcome: { phase: 'failed', error: 'echo mismatch' },
+      lifecycleId: 'L1', transitionId: 'L1:failed',
+    });
+    flushSync();
+    expect(slider.getAttribute('data-command-phase')).toBe('failed');
+    expect(valueText(slider)).toBe('0\u00a0Hz');
+    expect(slider.getAttribute('aria-valuenow')).toBe('0');
+    expect(pendingChip(t)).toBeNull();
+  });
+
+  it('reports the same lifecycle on the real IF-shift row (native if_shift radio)', () => {
+    setPassbandFeedback('ifShift', {
+      phase: 'submitted', busy: true, target: 300, requestedTarget: 300,
+      lifecycleId: 'L', transitionId: 'L:submitted',
+    });
+    const t = mountPanel({ hasIfShift: true, hasPbt: false, ifShift: 0 });
+    const slider = sliderOf(t, 'IF Shift');
+    expect(slider.getAttribute('data-command-phase')).toBe('submitted');
+    expect(slider.getAttribute('aria-busy')).toBe('true');
+    expect(slider.getAttribute('aria-valuenow')).toBe('0');
+    expect(pendingChip(t)).toBe('PENDING 300 Hz');
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(60);
+    flushSync();
+    expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(25);
+    expect(valueText(slider)).toBe('+25\u00a0Hz');
+  });
+
+  it('held (stale) reading: the feedback is absent and the slider keeps dispatching — same contract as the semantic surface (MOR-2425/R40)', () => {
+    setPassbandFeedback('inner', { confirmed: null, phase: 'unavailable', availability: 'unavailable' });
+    const t = mountPanel({ hasPbt: true, pbtInner: 100, pbtOuter: 0, pbtDomain: USB_DOMAIN });
+    const slider = sliderOf(t, 'PBT Inner');
+    expect(slider.getAttribute('aria-disabled')).toBe('false');
+    expect(slider.getAttribute('aria-valuenow')).toBe('100');
+    expect(valueText(slider)).toBe('+100\u00a0Hz');
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(60);
+    expect(mockHandlers.onPbtInnerChange).toHaveBeenCalledExactlyOnceWith(150);
+  });
+
+  it('an unobserved reading stays disabled without NaN when the feedback is unavailable', () => {
+    setPassbandFeedback('inner', { confirmed: null, phase: 'unavailable', availability: 'unavailable' });
+    const t = mountPanel({ hasPbt: true, pbtInner: null, pbtOuter: null });
+    const slider = sliderOf(t, 'PBT Inner');
+    expect(slider.getAttribute('aria-disabled')).toBe('true');
+    expect(valueText(slider)).not.toContain('NaN');
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(60);
+    expect(mockHandlers.onPbtInnerChange).not.toHaveBeenCalled();
   });
 });
 

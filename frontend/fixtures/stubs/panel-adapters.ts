@@ -31,7 +31,10 @@ export function getBreakInDelayControlFeedback() {
   });
 }
 
-function unavailableScalarFeedback(control: 'cw-pitch' | 'keyer-speed' | 'af-level' | 'rf-power') {
+function unavailableScalarFeedback(
+  control: 'cw-pitch' | 'keyer-speed' | 'af-level' | 'rf-power'
+    | 'pbt-inner' | 'pbt-outer' | 'if-shift',
+) {
   return Object.freeze({
     confirmed: null, target: null, requestedTarget: null,
     phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
@@ -58,6 +61,24 @@ export function getFilterWidthControlFeedback() {
     scope: Object.freeze({ control: 'filter-width', receiver: 0 as const }),
     repeatPolicy: 'latest-target-wins' as const,
   });
+}
+
+/**
+ * MOR-1687 part 1 — `SemanticRadioSurfaces.svelte` now also imports the
+ * three passband feedback producers unconditionally. Same MOR-1271/MOR-1320
+ * module-resolution lesson as `getPendingFrequencyHz` below: an export
+ * missing here fails the whole fixture harness at build time. The offline
+ * fixture has no passband command authority, so the honest answer is the
+ * same unavailable shape every other scalar stub here returns.
+ */
+export function getPbtInnerHzControlFeedback() {
+  return unavailableScalarFeedback('pbt-inner');
+}
+export function getPbtOuterHzControlFeedback() {
+  return unavailableScalarFeedback('pbt-outer');
+}
+export function getIfShiftControlFeedback() {
+  return unavailableScalarFeedback('if-shift');
 }
 
 const txAuxControls = Object.freeze({

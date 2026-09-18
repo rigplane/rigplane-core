@@ -10,7 +10,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
+import { createRawSnippet, flushSync, mount, unmount, type ComponentProps } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { getLocale, setLocale } from '$lib/i18n';
 import FilterSurface, {
@@ -114,6 +114,9 @@ type PendingProps = {
   pendingFilter?: number | null;
   pendingDataMode?: number | null;
   filterWidthFeedback?: Readonly<CommandScalarFeedback>;
+  ifShiftFeedback?: Readonly<CommandScalarFeedback>;
+  pbtInnerFeedback?: Readonly<CommandScalarFeedback>;
+  pbtOuterFeedback?: Readonly<CommandScalarFeedback>;
   presentation?: 'grouped' | 'independent';
 };
 function render(view: RadioViewModel, handlers: Handlers = {}, extra: PendingProps = {}) {
@@ -124,6 +127,9 @@ function render(view: RadioViewModel, handlers: Handlers = {}, extra: PendingPro
     get pendingFilter() { return extra.pendingFilter; },
     get pendingDataMode() { return extra.pendingDataMode; },
     get filterWidthFeedback() { return extra.filterWidthFeedback; },
+    get ifShiftFeedback() { return extra.ifShiftFeedback; },
+    get pbtInnerFeedback() { return extra.pbtInnerFeedback; },
+    get pbtOuterFeedback() { return extra.pbtOuterFeedback; },
     get onDataModeChange() { return handlers.onDataModeChange; },
     get onModeChange() { return handlers.onModeChange; },
     get onFilterChange() { return handlers.onFilterChange; },
@@ -982,6 +988,167 @@ describe('full Filter Width scalar feedback', () => {
     input.value = '3000';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     expect(request).not.toHaveBeenCalled();
+  });
+});
+
+// ── 5a. Passband scalar feedback: PBT inner/outer and IF shift (MOR-1687 part 1) ─
+
+/**
+ * The same feedback-integrated scalar contract the Filter Width row above
+ * adopted, applied to the three passband rows. Values are in the DISPLAY
+ * unit (Hz on the measured lattice) for confirmed AND target/requested —
+ * never the raw BCD scale the wire carries.
+ */
+describe('passband scalar feedback (MOR-1687 part 1)', () => {
+  const passbandFeedback = (
+    control: string, over: Partial<CommandScalarFeedback> = {},
+  ): Readonly<CommandScalarFeedback> => ({
+    confirmed: 0, target: null, requestedTarget: null, phase: 'idle', busy: false,
+    availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+    sessionEpoch: 7, scope: { control, receiver: 0 }, repeatPolicy: 'latest-target-wins', ...over,
+  });
+  const PENDING: Partial<CommandScalarFeedback> = {
+    phase: 'submitted', busy: true, target: 600, requestedTarget: 600,
+    lifecycleId: '7:passband', transitionId: '7:passband:submitted',
+  };
+  const ROWS = [
+    ['pbtInner', 'onPbtInnerChange', 'pbt-inner', 'pbtInnerFeedback'],
+    ['pbtOuter', 'onPbtOuterChange', 'pbt-outer', 'pbtOuterFeedback'],
+    ['ifShift', 'onIfShiftChange', 'if-shift', 'ifShiftFeedback'],
+  ] as const;
+
+  it.each(ROWS)('%s: shows the pending target on the thumb, marked unconfirmed, canonical readout untouched', (field, _handler, control, feedbackKey) => {
+    withSurface(base(), (s) => {
+      const input = s.input(`filter-${field}`)!;
+      expect(input.dataset.commandPhase).toBe('submitted');
+      expect(input.getAttribute('aria-busy')).toBe('true');
+      expect(input.value).toBe('600');
+      expect(input.disabled).toBe(false);
+      expect(s.output(`filter-${field}`)!.textContent).toBe('0');
+    }, {}, { [feedbackKey]: passbandFeedback(control, PENDING) } as PendingProps);
+  });
+
+  it.each(ROWS)('%s: keeps the operator\'s requested value through the command\'s OWN lifecycle — no snap-back to the stale readback', (field, handler, control, feedbackKey) => {
+    const spy = vi.fn();
+    // Production mints a NEW command id per dispatch (radio-intents.ts
+    // makeCommandId), so the pending lifecycle never shares the id the
+    // gesture observed — the gesture draft retires the moment it appears.
+    // What must keep the requested value on the thumb is the pending
+    // target itself, even when a stale readback push moves the view.
+    const viewState = new SvelteMap<string, RadioViewModel>([['view', base()]]);
+    const feedbackState = new SvelteMap<string, Readonly<CommandScalarFeedback>>([
+      ['feedback', passbandFeedback(control)],
+    ]);
+    const withPushedReadback = (value: number): RadioViewModel => {
+      const current = viewState.get('view')!;
+      const group = current.filterPassband!;
+      const original = group[field] as {
+        reading: { status: 'known'; value: number };
+        display?: { state: string; value: number };
+      };
+      const pushed = original.display === undefined
+        ? { ...original, reading: { status: 'known' as const, value } }
+        : { ...original, display: { ...original.display, value } };
+      return { ...current, filterPassband: { ...group, [field]: pushed } as FilterPassbandViewModel };
+    };
+    const component = mount(FilterInstrumentHostFixture, { target, props: {
+      get view() { return viewState.get('view')!; },
+      renderSurface: true,
+      get [feedbackKey]() { return feedbackState.get('feedback')!; },
+      get [handler]() { return spy; },
+    } as ComponentProps<typeof FilterInstrumentHostFixture> });
+    try {
+      flushSync();
+      const input = target.querySelector<HTMLInputElement>(`[data-testid="filter-${field}"] input`)!;
+      expect(input.value).toBe('0');
+      input.value = '600';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(spy).toHaveBeenCalledExactlyOnceWith(600);
+      // The dispatched command mints a fresh lifecycle id and a stale
+      // readback push lands while it is in flight.
+      flushSync(() => {
+        feedbackState.set('feedback', passbandFeedback(control, {
+          ...PENDING, lifecycleId: 'fresh-1', transitionId: 'fresh-1:submitted',
+        }));
+        viewState.set('view', withPushedReadback(25));
+      });
+      expect(input.value).toBe('600');
+      expect(input.dataset.commandPhase).toBe('submitted');
+      expect(target.querySelector<HTMLElement>(`[data-testid="filter-${field}"] output`)!.textContent).toBe('25');
+      // Readback confirms: the thumb and the readout end on the confirmed Hz.
+      flushSync(() => {
+        feedbackState.set('feedback', passbandFeedback(control, {
+          confirmed: 600, requestedTarget: 600, phase: 'confirmed',
+          outcome: { phase: 'confirmed' }, lifecycleId: 'fresh-1', transitionId: 'fresh-1:confirmed',
+        }));
+        viewState.set('view', withPushedReadback(600));
+      });
+      expect(input.value).toBe('600');
+      expect(input.dataset.commandPhase).toBe('confirmed');
+      expect(input.getAttribute('aria-busy')).toBe('false');
+      expect(target.querySelector<HTMLElement>(`[data-testid="filter-${field}"] output`)!.textContent).toBe('600');
+    } finally { unmount(component); }
+  });
+
+  it.each(ROWS)('%s: reports confirmed with the confirmed Hz', (field, _handler, control, feedbackKey) => {
+    const current = base();
+    const group = current.filterPassband!;
+    if (field === 'ifShift') {
+      group.ifShift = { reading: { status: 'known', value: 600 }, availability: { structural: true, operational: true } };
+    } else {
+      group[field] = {
+        reading: { status: 'known', value: 600 }, availability: { structural: true, operational: true },
+        display: { state: 'current', value: 600 },
+      } as typeof group.pbtInner;
+    }
+    withSurface(current, (s) => {
+      const input = s.input(`filter-${field}`)!;
+      expect(input.dataset.commandPhase).toBe('confirmed');
+      expect(input.getAttribute('aria-busy')).toBe('false');
+      expect(input.value).toBe('600');
+      expect(s.output(`filter-${field}`)!.textContent).toBe('600');
+    }, {}, {
+      [feedbackKey]: passbandFeedback(control, {
+        confirmed: 600, requestedTarget: 600, phase: 'confirmed',
+        outcome: { phase: 'confirmed' }, lifecycleId: '7:passband', transitionId: '7:passband:confirmed',
+      }),
+    } as PendingProps);
+  });
+
+  it.each(ROWS)('%s: reports failed and returns to the last confirmed value', (field, _handler, control, feedbackKey) => {
+    withSurface(base(), (s) => {
+      const input = s.input(`filter-${field}`)!;
+      expect(input.dataset.commandPhase).toBe('failed');
+      expect(input.getAttribute('aria-busy')).toBe('false');
+      expect(input.value).toBe('0');
+      expect(s.output(`filter-${field}`)!.textContent).toBe('0');
+    }, {}, {
+      [feedbackKey]: passbandFeedback(control, {
+        requestedTarget: 600, phase: 'failed',
+        outcome: { phase: 'failed', error: 'radio refused' },
+        lifecycleId: '7:passband', transitionId: '7:passband:failed',
+      }),
+    } as PendingProps);
+  });
+
+  it.each(ROWS)('%s: unavailable feedback keeps commanding through the view reading — never NaN (MOR-2425/R40)', (field, handler, control, feedbackKey) => {
+    const spy = vi.fn();
+    withSurface(base(), (s) => {
+      const input = s.input(`filter-${field}`)!;
+      expect(input.disabled).toBe(false);
+      expect(input.value).not.toBe('NaN');
+      expect(input.value).toBe('0');
+      expect(input.dataset.commandPhase).toBeUndefined();
+      input.value = '600';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(spy).toHaveBeenCalledExactlyOnceWith(600);
+    }, { [handler]: spy }, {
+      [feedbackKey]: passbandFeedback(control, {
+        confirmed: null, phase: 'unavailable', availability: 'unavailable',
+      }),
+    } as PendingProps);
   });
 });
 

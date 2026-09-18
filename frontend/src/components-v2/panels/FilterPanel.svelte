@@ -7,7 +7,9 @@
   import { getShortcutHint, joinShortcutHints } from '../layout/shortcut-hints';
   import { t } from '$lib/i18n';
   import {
+    createBipolarContinuousScalarPolicy,
     createContinuousScalar,
+    type CommandScalarFeedback,
     type ContinuousScalarPolicy,
     type ContinuousScalarView,
   } from '../../primitives/scalar/continuous-scalar.svelte';
@@ -22,6 +24,9 @@
     getFilterHandlers,
     getFilterArmed,
     getFilterWidthControlFeedback,
+    getIfShiftControlFeedback,
+    getPbtInnerHzControlFeedback,
+    getPbtOuterHzControlFeedback,
   } from '$lib/runtime/adapters/panel-adapters';
 
   const handlers = getFilterHandlers();
@@ -48,7 +53,6 @@
   let filterWidthMin = $derived(p.filterWidthMin ?? 50);
   let filterWidthMax = $derived(p.filterWidthMax ?? 9999);
   let filterConfig = $derived(p.filterConfig ?? null);
-  let ifShift = $derived(p.ifShift);
   // MOR-1494: only radios with a REAL if_shift command (Yaesu-family, e.g.
   // FTX-1) show this control. Icom radios (PBT-only, e.g. IC-7300) have no
   // if_shift command at all — showing it permanently disabled with a
@@ -61,8 +65,6 @@
   // radio that publishes none (table-mode row 20 Hz, non-table row 25 Hz).
   let tableIfShiftDomain = $derived(p.ifShiftDomain ?? { min: -1200, max: 1200, step: 20 });
   let defaultIfShiftDomain = $derived(p.ifShiftDomain ?? { min: -1200, max: 1200, step: 25 });
-  let pbtInner = $derived(p.pbtInner ?? 0);
-  let pbtOuter = $derived(p.pbtOuter ?? 0);
   let hasPbt = $derived(p.hasPbt ?? false);
   // MOR-2497: PBT slider bounds come from the measured lattice through the
   // props layer (`toFilterProps`'s `pbtDomain`, derived by
@@ -255,6 +257,92 @@
   const feedbackIntegratedRange = { 'feedback-policy': 'feedback-integrated' } as const;
   onDestroy(() => filterWidthBinding.destroy());
 
+  // MOR-1687 part 1: PBT Inner/Outer and IF Shift ride the same
+  // feedback-integrated bipolar scalar the width control uses. The
+  // producers hand back values in the DISPLAY unit — Hz on the measured
+  // PBT lattice (or the identity-mapped real if_shift scale) — for
+  // confirmed, target and requestedTarget alike.
+  let ifShiftFeedback = $derived(getIfShiftControlFeedback());
+  let pbtInnerFeedback = $derived(getPbtInnerHzControlFeedback());
+  let pbtOuterFeedback = $derived(getPbtOuterHzControlFeedback());
+  const passbandPolicy = createBipolarContinuousScalarPolicy({
+    debounceMs: 50, describeTarget: (value) => `${value} Hz`,
+  });
+  // The bipolar policy does not retain a gesture draft once the command's
+  // own lifecycle id appears, so the panel shows the in-flight target the
+  // same way the table-mode width row does — a PENDING chip beside the
+  // canonical readout (MOR-1691), never as the confirmed value.
+  function passbandPendingTarget(feedback: Readonly<CommandScalarFeedback>): number | null {
+    return feedback.busy && feedback.target !== null ? feedback.target : null;
+  }
+  function ifShiftInput() {
+    const domain = isTableMode ? tableIfShiftDomain : defaultIfShiftDomain;
+    const common = {
+      command: 'set_if_shift',
+      domain: {
+        min: domain.min, max: domain.max, step: domain.step,
+        defaultValue: 0, fineStepDivisor: 10,
+      },
+      request: (value: number) => onIfShiftChange(value),
+    };
+    if (ifShiftFeedback.availability === 'available') {
+      return {
+        ...common, evidence: 'command-feedback' as const, feedback: ifShiftFeedback,
+        enabled: hasIfShift && (isTableMode || !hasPbt),
+      };
+    }
+    return {
+      ...common, evidence: 'reading' as const,
+      reading: Number.isFinite(p.ifShift) ? { status: 'known' as const, value: p.ifShift } : { status: 'unknown' as const },
+      ownerKey: 'filter-panel-if-shift',
+      enabled: hasIfShift && (isTableMode || !hasPbt),
+    };
+  }
+  const ifShiftBinding = createContinuousScalar(ifShiftInput, passbandPolicy);
+  function pbtInput(
+    feedback: Readonly<CommandScalarFeedback>, command: string,
+    readingHz: number | null, ownerKey: string, request: (value: number) => void,
+  ) {
+    const common = {
+      command,
+      domain: {
+        min: pbtDomain.min, max: pbtDomain.max, step: pbtDomain.step,
+        defaultValue: 0, fineStepDivisor: 10,
+      },
+      request,
+    };
+    if (feedback.availability === 'available') {
+      return {
+        ...common, evidence: 'command-feedback' as const, feedback,
+        enabled: hasPbt,
+      };
+    }
+    return {
+      ...common, evidence: 'reading' as const,
+      reading: readingHz !== null && Number.isFinite(readingHz)
+        ? { status: 'known' as const, value: readingHz } : { status: 'unknown' as const },
+      ownerKey,
+      // MOR-2425/R40, same fallback the semantic FilterSurface keeps: a
+      // held (stale) reading still commands through its own props truth.
+      enabled: hasPbt,
+    };
+  }
+  const pbtInnerBinding = createContinuousScalar(
+    () => pbtInput(pbtInnerFeedback, 'set_pbt_inner', p.pbtInner, 'filter-panel-pbt-inner',
+      (value) => onPbtInnerChange(value)),
+    passbandPolicy,
+  );
+  const pbtOuterBinding = createContinuousScalar(
+    () => pbtInput(pbtOuterFeedback, 'set_pbt_outer', p.pbtOuter, 'filter-panel-pbt-outer',
+      (value) => onPbtOuterChange(value)),
+    passbandPolicy,
+  );
+  onDestroy(() => {
+    ifShiftBinding.destroy();
+    pbtInnerBinding.destroy();
+    pbtOuterBinding.destroy();
+  });
+
   function formatIssuedWidthStatus(snapshot: Readonly<HBarIssuedStatusSnapshot>): string {
     const feedback = snapshot.view.feedback;
     const requested = formatExactWidthDisplay(feedback.requestedTarget ?? Number.NaN);
@@ -368,17 +456,19 @@
 
     {#if hasIfShift}
       <ValueControl
+        {...feedbackIntegratedRange}
+        binding={ifShiftBinding}
         label="IF SHIFT"
-        value={ifShift}
-        min={tableIfShiftDomain.min}
-        max={tableIfShiftDomain.max}
-        step={tableIfShiftDomain.step}
         unit="Hz"
         renderer="bipolar"
         accentColor="var(--v2-accent-cyan)"
-        onChange={onIfShiftChange}
         variant="hardware-illuminated"
       />
+      {#if passbandPendingTarget(ifShiftFeedback) !== null}
+        <span class="bw-pending-target" data-pending-passband-target>
+          PENDING {passbandPendingTarget(ifShiftFeedback)} Hz
+        </span>
+      {/if}
     {/if}
 
     <div class="filter-actions">
@@ -453,44 +543,49 @@
 
     {#if hasIfShift}
       <ValueControl
+        {...feedbackIntegratedRange}
+        binding={ifShiftBinding}
         label={hasPbt ? "IF Shift (derived)" : "IF Shift"}
-        value={ifShift}
-        min={defaultIfShiftDomain.min}
-        max={defaultIfShiftDomain.max}
-        step={defaultIfShiftDomain.step}
         unit="Hz"
         renderer="bipolar"
         accentColor="var(--v2-accent-cyan)"
-        disabled={hasPbt}
-        onChange={onIfShiftChange}
         variant="hardware-illuminated"
       />
+      {#if passbandPendingTarget(ifShiftFeedback) !== null}
+        <span class="bw-pending-target" data-pending-passband-target>
+          PENDING {passbandPendingTarget(ifShiftFeedback)} Hz
+        </span>
+      {/if}
     {/if}
     {#if hasPbt}
       <ValueControl
+        {...feedbackIntegratedRange}
+        binding={pbtInnerBinding}
         label="PBT Inner"
-        value={pbtInner}
-        min={pbtDomain.min}
-        max={pbtDomain.max}
-        step={pbtDomain.step}
         unit="Hz"
         renderer="bipolar"
         accentColor="var(--v2-accent-cyan)"
-        onChange={onPbtInnerChange ?? (() => {})}
         variant="hardware-illuminated"
       />
+      {#if passbandPendingTarget(pbtInnerFeedback) !== null}
+        <span class="bw-pending-target" data-pending-passband-target>
+          PENDING {passbandPendingTarget(pbtInnerFeedback)} Hz
+        </span>
+      {/if}
       <ValueControl
+        {...feedbackIntegratedRange}
+        binding={pbtOuterBinding}
         label="PBT Outer"
-        value={pbtOuter}
-        min={pbtDomain.min}
-        max={pbtDomain.max}
-        step={pbtDomain.step}
         unit="Hz"
         renderer="bipolar"
         accentColor="var(--v2-accent-green-bright)"
-        onChange={onPbtOuterChange ?? (() => {})}
         variant="hardware-illuminated"
       />
+      {#if passbandPendingTarget(pbtOuterFeedback) !== null}
+        <span class="bw-pending-target" data-pending-passband-target>
+          PENDING {passbandPendingTarget(pbtOuterFeedback)} Hz
+        </span>
+      {/if}
 
       <div class="filter-actions">
         <button
