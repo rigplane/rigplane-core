@@ -8,8 +8,18 @@ vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
   const s = await import('./SpectrumPanelStub.svelte');
   return { default: s.default };
 });
-vi.mock('../display/FrequencyDisplay.svelte', () => ({ default: function S() { return {}; } }));
-vi.mock('../meters/LinearSMeter.svelte', () => ({ default: function S() { return {}; } }));
+// MOR-2511: echo fixtures render the header's bound props (frequency,
+// S-meter value) as DOM text the active-receiver tests below can pin.
+// Two-level specifiers, like the DockMeterPanel mock below: one level
+// ('../display/…') would not resolve from __tests__/ and mock nothing.
+vi.mock('../../display/FrequencyDisplay.svelte', async () => {
+  const s = await import('./fixtures/FrequencyDisplayEcho.svelte');
+  return { default: s.default };
+});
+vi.mock('../../meters/LinearSMeter.svelte', async () => {
+  const s = await import('./fixtures/LinearSMeterEcho.svelte');
+  return { default: s.default };
+});
 vi.mock('../controls/BottomSheet.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../controls/BandSelector.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('../panels/FilterPanel.svelte', () => ({ default: function S() { return {}; } }));
@@ -153,7 +163,7 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
   return {
     ...actual,
     makeVfoHandlers: () => ({
-      onMainFreqChange: n, onSubFreqChange: n, onVfoSwap: n, onVfoEqual: n, onReceiverSelect: n,
+      onMainFreqChange: n, onSubFreqChange: n, onFreqChange: n, onVfoSwap: n, onVfoEqual: n, onReceiverSelect: n,
       onMainVfoClick: onMainVfoClickSpy, onSubVfoClick: onSubVfoClickSpy,
     }),
     // MOR-1265 — the semantic wiring now also composes the txAux intents.
@@ -235,6 +245,7 @@ import {
 } from '$lib/stores/radio.svelte';
 import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { getTxPermit } from '$lib/utils/tx-permit';
+import { toVfoProps, type VfoStateProps } from '$lib/runtime/props/panel-props';
 
 let tx: ManagedAppTxHarness;
 let components: ReturnType<typeof mount>[] = [];
@@ -652,6 +663,66 @@ describe('MobileRadioLayout receiver selector (#719)', () => {
     } finally {
       Element.prototype.scrollIntoView = origScroll;
     }
+  });
+});
+
+describe('mobile header follows the active receiver (MOR-2511)', () => {
+  // Owner-measured state (MOR-2511, 2026-09-18): dual-RX rig with MAIN on
+  // 14.074.000 USB FIL1 and SUB on 14.200.400 USB.
+  const MAIN_RX: VfoStateProps = { receiver: 'main', freq: 14074000, mode: 'USB', filter: 'FIL1', sValue: 3, isActive: true, badges: {} };
+  const SUB_RX: VfoStateProps = { receiver: 'sub', freq: 14200400, mode: 'USB', filter: 'FIL1', sValue: 7, isActive: false, badges: {} };
+  let defaultVfo: VfoStateProps;
+
+  beforeEach(() => {
+    vi.mocked(hasDualReceiver).mockReturnValue(true);
+    // The module mock returns one shared object for both receivers; these
+    // tests need per-receiver projections, so capture the shared object and
+    // re-point the projection for the duration of this block only.
+    defaultVfo = toVfoProps(null, 'main');
+    vi.mocked(toVfoProps).mockImplementation((_state, receiver) => (receiver === 'sub' ? SUB_RX : MAIN_RX));
+  });
+
+  afterEach(() => {
+    vi.mocked(toVfoProps).mockImplementation(() => defaultVfo);
+  });
+
+  function setActiveReceiver(active: 'MAIN' | 'SUB') {
+    (radio as unknown as { current: { active?: 'MAIN' | 'SUB' } | null }).current = { active };
+  }
+
+  it('renders SUB values in the header when SUB is the active receiver', () => {
+    setActiveReceiver('SUB');
+    const t = mountMobile();
+    expect(t.querySelector('.m-vfo-freq')?.textContent).toBe('14200400');
+    expect(t.querySelector('.m-vfo-mode')?.textContent).toBe('USB');
+    expect(t.querySelector('.m-vfo-sub')?.textContent).toBe('14.074');
+    expect(t.querySelector('.m-vfo-sub')?.getAttribute('title')).toBe('MAIN');
+    expect(t.querySelector('.m-smeter-bar')?.textContent).toBe('7');
+    rotate(true);
+    expect(t.querySelector('[data-testid="freq-echo"]')?.textContent).toBe('14200400');
+  });
+
+  it('renders MAIN values in the header when MAIN is the active receiver', () => {
+    setActiveReceiver('MAIN');
+    const t = mountMobile();
+    expect(t.querySelector('.m-vfo-freq')?.textContent).toBe('14074000');
+    expect(t.querySelector('.m-vfo-mode')?.textContent).toBe('USB');
+    const sub = t.querySelector('.m-vfo-sub');
+    expect(sub?.textContent).toBe('14.200');
+    expect(sub?.getAttribute('title')).toBe('SUB');
+    expect(t.querySelector('.m-smeter-bar')?.textContent).toBe('3');
+  });
+
+  it('tunes the active receiver: a +1 step with SUB active dispatches receiver 1', () => {
+    setActiveReceiver('SUB');
+    const t = mountMobile();
+    const callsBefore = radioIntentSpy.mock.calls.length;
+    // Tuning strip order: [-10, -1, +1, +10]; USB keeps the 1000 Hz default
+    // step (SSB_STEPS contains it), so +1 tunes SUB to 14.200.400 + 1000.
+    t.querySelectorAll<HTMLButtonElement>('.m-tune-btn')[2].click();
+    flushSync();
+    expect(radioIntentSpy.mock.calls.length).toBe(callsBefore + 1);
+    expect(radioIntentSpy.mock.lastCall).toEqual([14201400, 1, 'step']);
   });
 });
 

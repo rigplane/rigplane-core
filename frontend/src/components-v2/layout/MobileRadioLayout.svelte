@@ -118,6 +118,11 @@
   let receiverDeckWidth = $state<number | null>(null);
   let vfoFreqElement = $state<HTMLElement | null>(null);
   let activeReceiver = $derived((radioState?.active ?? 'MAIN') as 'MAIN' | 'SUB');
+  // MOR-2511: the header shows the ACTIVE receiver's VFO; the small secondary
+  // readout names the other one. Pinned by MobileRadioLayout.component.svelte.test.ts,
+  // describe "mobile header follows the active receiver (MOR-2511)".
+  let activeVfo = $derived(activeReceiver === 'SUB' ? subVfo : mainVfo);
+  let otherVfo = $derived(activeReceiver === 'SUB' ? mainVfo : subVfo);
 
   function selectReceiver(target: 'MAIN' | 'SUB') {
     if (target === 'MAIN') {
@@ -208,8 +213,11 @@
   });
 
   function tuneBy(delta: number) {
-    const freq = mainVfo.freq + delta * tuningStep;
-    vfoHandlers.onMainFreqChange(freq);
+    // MOR-2511: a step tunes the active receiver — onFreqChange takes the
+    // receiver (0 = MAIN, 1 = SUB) and 'step' for a relative tune; pinned by
+    // the "tunes the active receiver" test in MobileRadioLayout.component.svelte.test.ts.
+    const freq = activeVfo.freq + delta * tuningStep;
+    vfoHandlers.onFreqChange(freq, activeReceiver === 'SUB' ? 1 : 0, 'step');
   }
 
   function selectStep(hz: number) {
@@ -530,13 +538,13 @@
   <div class="m-ls-overlay">
     <div class="m-ls-vfo">
       <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}"></span>
-      <FrequencyDisplay freq={mainVfo.freq} compact active />
+      <FrequencyDisplay freq={activeVfo.freq} compact active />
     </div>
     <div class="m-ls-quick-modes">
       {#each QUICK_MODES as m}
         <button
           class="m-ls-mode-btn"
-          class:m-ls-mode-active={mainVfo.mode === m}
+          class:m-ls-mode-active={activeVfo.mode === m}
           onclick={() => modeHandlers.onModeChange(m)}
         >{m}</button>
       {/each}
@@ -555,7 +563,7 @@
       <button class="m-ls-tune-btn" onclick={() => tuneBy(1)}>
         <ChevronRight size={20} />
       </button>
-      <span class="m-ls-filter">{mainVfo.filter}</span>
+      <span class="m-ls-filter">{activeVfo.filter}</span>
       {#if txCapable}
         <button
           type="button"
@@ -638,7 +646,7 @@
     <div class="m-vfo-row">
       <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}" title={managedTxRf === 'unknown' ? 'TX status unknown' : txPermit === 'allowed' ? t('core.mobile.tx.allowed') : t('core.mobile.tx.notAllowedBand')}></span>
       <div class="m-vfo-freq" bind:this={vfoFreqElement}>
-        <FrequencyDisplay freq={mainVfo.freq} compact active />
+        <FrequencyDisplay freq={activeVfo.freq} compact active />
       </div>
       <button class="m-settings-btn" onclick={() => (setupOpen = true)} aria-label={t('core.mobile.setupButton')}>
         <Settings size={16} />
@@ -646,10 +654,10 @@
       </button>
     </div>
     <div class="m-vfo-meta">
-      <span class="m-vfo-mode">{mainVfo.mode}</span>
-      <span class="m-vfo-filter">{mainVfo.filter}</span>
-      {#if hasDualReceiver() && subVfo.freq > 0}
-        <span class="m-vfo-sub">{(subVfo.freq / 1_000_000).toFixed(3)}</span>
+      <span class="m-vfo-mode">{activeVfo.mode}</span>
+      <span class="m-vfo-filter">{activeVfo.filter}</span>
+      {#if hasDualReceiver() && otherVfo.freq > 0}
+        <span class="m-vfo-sub" title={receiverLabel(activeReceiver === 'SUB' ? 'MAIN' : 'SUB')}>{(otherVfo.freq / 1_000_000).toFixed(3)}</span>
       {/if}
       {#if ritXit.ritActive}
         <span class="m-vfo-rit" title="RIT offset">
@@ -665,7 +673,7 @@
 
   <!-- ═══ S-METER BAR ═══ -->
   <div class="m-smeter-bar">
-    <LinearSMeter value={mainVfo.sValue} compact label="" />
+    <LinearSMeter value={activeVfo.sValue} compact label="" />
   </div>
 
   <!-- ═══ SCROLLABLE CONTENT ═══ -->
