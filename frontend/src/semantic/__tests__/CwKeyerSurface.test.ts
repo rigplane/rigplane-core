@@ -414,7 +414,7 @@ describe('Break-in Delay separates draft, submitted target and confirmed truth',
     const unavailableInput = unavailable.input('breakInDelay')!;
     expect(unavailableInput.disabled).toBe(true);
     expect(unavailableInput.dataset.commandPhase).toBe('unavailable');
-    expect(unavailableInput.getAttribute('aria-valuetext')).toBe(t('core.cwKeyer.breakInDelay.valueText.unavailable'));
+    expect(unavailableInput.getAttribute('aria-valuetext')).toBe('Break-in delay unavailable');
     expect(unavailable.text('breakInDelay-value')).toContain('— unavailable');
     unavailable.dispose();
   });
@@ -576,7 +576,7 @@ describe('Break-in Delay separates draft, submitted target and confirmed truth',
     const r = renderReactiveFeedback(feedback('idle', { confirmed }));
     expect(r.input().disabled).toBe(true);
     expect(r.input().hasAttribute('aria-valuenow')).toBe(false);
-    expect(r.input().getAttribute('aria-valuetext')).toBe(t('core.cwKeyer.breakInDelay.valueText.unavailable'));
+    expect(r.input().getAttribute('aria-valuetext')).toBe('Break-in delay unavailable');
     expect(r.output().textContent).toContain('— unavailable');
     r.input().value = '99';
     r.input().dispatchEvent(new Event('input', { bubbles: true }));

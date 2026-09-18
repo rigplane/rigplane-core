@@ -320,34 +320,29 @@
     if (confirmed === null) {
       return t('core.cwKeyer.breakInDelay.valueText.unavailable');
     }
-    const c = confirmed;
     const draft = breakInDelayView.draft;
     if (draft !== null) {
       return t('core.cwKeyer.breakInDelay.valueText.draft', {
         draft,
-        confirmed: c,
+        confirmed,
       });
     }
     if (breakInDelayBusy) {
-      const displayed = breakInDelayView.displayed;
-      if (displayed === null) {
-        return t('core.cwKeyer.breakInDelay.valueText.unavailable');
-      }
       return t('core.cwKeyer.breakInDelay.valueText.requested', {
-        displayed,
-        confirmed: c,
+        displayed: breakInDelayView.displayed!,
+        confirmed,
       });
     }
     const requested = breakInDelayView.feedback.requestedTarget;
     if (breakInDelayView.feedback.outcome !== null && requested !== null
       && breakInDelayView.feedback.outcome.phase !== 'confirmed') {
       return t('core.cwKeyer.breakInDelay.valueText.outcome', {
-        confirmed: c,
+        confirmed,
         requested,
         phase: breakInDelayView.feedback.outcome.phase,
       });
     }
-    return t('core.cwKeyer.breakInDelay.valueText.confirmed', { confirmed: c });
+    return t('core.cwKeyer.breakInDelay.valueText.confirmed', { confirmed });
   });
   function noteBreakInDelayInput(target: HTMLInputElement): void {
     breakInDelayLease.input(target.valueAsNumber);
