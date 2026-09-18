@@ -653,21 +653,38 @@ function projectDspRawValueToDisplay(
   return display !== null && Number.isFinite(display) ? display : null;
 }
 
+/**
+ * Projects a raw feedback's `confirmed`/`target`/`requestedTarget` through
+ * `project` into the display unit. A null raw stays null; any non-null raw
+ * whose projection is null fails the whole feedback closed
+ * (`unavailableControlFeedback`). Every other field passes through into a
+ * frozen copy, so an unavailable input stays unavailable.
+ */
+export function projectControlFeedbackToDisplay(
+  feedback: Readonly<ControlFeedback<number>>,
+  project: (raw: number) => number | null,
+): Readonly<ControlFeedback<number>> {
+  const confirmed = feedback.confirmed === null ? null : project(feedback.confirmed);
+  const target = feedback.target === null ? null : project(feedback.target);
+  const requestedTarget = feedback.requestedTarget === null
+    ? null : project(feedback.requestedTarget);
+  if ((feedback.confirmed !== null && confirmed === null)
+    || (feedback.target !== null && target === null)
+    || (feedback.requestedTarget !== null && requestedTarget === null)) {
+    return unavailableControlFeedback(feedback);
+  }
+  return Object.freeze({ ...feedback, confirmed, target, requestedTarget });
+}
+
 /** Pure raw-to-display projection; descriptor-unit confirmation remains untouched. */
 export function projectDspControlFeedbackToDisplay(
   field: TransformedDspControlFeedbackField,
   rawFeedback: Readonly<ControlFeedback<number>>,
   caps: Capabilities | null | undefined,
 ): Readonly<ControlFeedback<number>> {
-  const project = (raw: number | null): number | null | undefined =>
-    raw === null ? null : projectDspRawValueToDisplay(field, raw, caps) ?? undefined;
-  const confirmed = project(rawFeedback.confirmed);
-  const target = project(rawFeedback.target);
-  const requestedTarget = project(rawFeedback.requestedTarget);
-  if (confirmed === undefined || target === undefined || requestedTarget === undefined) {
-    return unavailableControlFeedback(rawFeedback);
-  }
-  return Object.freeze({ ...rawFeedback, confirmed, target, requestedTarget });
+  return projectControlFeedbackToDisplay(
+    rawFeedback, (raw) => projectDspRawValueToDisplay(field, raw, caps),
+  );
 }
 
 type RfSqlFeedbackLane = Readonly<{
@@ -904,10 +921,11 @@ function measuredPbtLatticeHz(
 /**
  * Converts a raw-domain PBT feedback onto the measured lattice's Hz — the
  * unit the displayed value and the write path (`onPbtInnerChange` and
- * friends) already share. `confirmed`, `target` and `requestedTarget`
- * convert together; a feedback that is already unavailable, or a mode
- * with no lattice (FM), fails the whole projection closed instead of
- * mixing a raw target into an Hz confirmed echo.
+ * friends) already share. A feedback that is already unavailable, or a
+ * mode with no lattice (FM), fails the whole projection closed; on the
+ * lattice every non-null value of `confirmed`, `target` and
+ * `requestedTarget` must convert, so one unconvertible raw fails the
+ * whole feedback closed instead of mixing a raw target into an Hz echo.
  */
 function pbtFeedbackOnMeasuredLattice(
   raw: Readonly<ControlFeedback<number>>,
@@ -916,13 +934,9 @@ function pbtFeedbackOnMeasuredLattice(
   if (raw.availability !== 'available' || lattice === null) {
     return unavailableControlFeedback(raw);
   }
-  const hz = (value: number | null): number | null => value === null
-    ? null : measuredPbtRawToHz(value, lattice.filterWidthHz, lattice.stepHz);
-  const confirmed = hz(raw.confirmed);
-  if (confirmed === null) return unavailableControlFeedback(raw);
-  return Object.freeze({
-    ...raw, confirmed, target: hz(raw.target), requestedTarget: hz(raw.requestedTarget),
-  });
+  return projectControlFeedbackToDisplay(
+    raw, (value) => measuredPbtRawToHz(value, lattice.filterWidthHz, lattice.stepHz),
+  );
 }
 
 /** Qualified PBT Inner feedback in the display unit (Hz on the measured lattice). */
