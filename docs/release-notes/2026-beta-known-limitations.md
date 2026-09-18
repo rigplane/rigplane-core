@@ -29,10 +29,6 @@ that class of defect is release-blocking by definition and is not on this list.
 - **PBT values can briefly blank or show a transient endpoint during
   acquisition gaps.** The radio state is unaffected; the last confirmed values
   return without intervention. (MOR-1692)
-- **No PBT Reset action on the default skin.** The v2 and LCD filter panels
-  carry a Reset button (`FilterPanel.svelte: onPbtReset`); the default skin's
-  filter surface does not, so restoring both passband controls to neutral
-  there means setting each slider manually. (MOR-1690)
 - **Manual Notch Width renders as a slider although the radio accepts only
   three values** (WIDE/MID/NAR). Positions between detents are quantized; the
   affordance suggests more precision than exists. (MOR-1685)
