@@ -304,6 +304,21 @@ describe('semantic VFO / RX-TX adoption in the mobile shell', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 1b. Spectrum slot (MOR-2511): this suite's `hasSpectrum` mock returns true,
+// so it carries the with-spectrum counterpart of the no-spectrum pins in
+// MobileRadioLayout.component.svelte.test.ts.
+// ---------------------------------------------------------------------------
+describe('spectrum slot with a spectrum-capable radio (MOR-2511)', () => {
+  it.each([['portrait', false], ['landscape', true]] as const)(
+    'mounts the SpectrumPanel in the %s spectrum slot', (_label, landscape) => {
+      setViewport(landscape);
+      const t = mountMobile();
+      const slot = t.querySelector(landscape ? '.m-ls-spectrum' : '.m-spectrum');
+      expect(slot?.querySelector('.spectrum-panel-stub')).not.toBeNull();
+    });
+});
+
+// ---------------------------------------------------------------------------
 // 2. Momentary PTT and latched TRANSMIT stay distinct
 // ---------------------------------------------------------------------------
 describe('mobile managed TX intent routing', () => {

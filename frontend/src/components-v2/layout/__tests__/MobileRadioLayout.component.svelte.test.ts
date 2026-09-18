@@ -379,6 +379,25 @@ describe('MobileRadioLayout structure', () => {
   it('renders settings button', () => {
     expect(mountMobile().querySelector('.m-settings-btn')).not.toBeNull();
   });
+
+  // MOR-2511 — this suite's module-level `hasSpectrum` mock returns false, so
+  // both orientations here are the no-spectrum case: no panorama slot renders
+  // at all, and nothing substitutes the amber LCD cockpit in its place.
+  it('renders no spectrum section in portrait when the radio has no spectrum', () => {
+    const t = mountMobile();
+    expect(t.querySelector('.m-spectrum')).toBeNull();
+    expect(t.querySelector('.spectrum-panel-stub')).toBeNull();
+    expect(t.querySelector('.amber-lcd')).toBeNull();
+  });
+
+  it('renders no spectrum stage in landscape when the radio has no spectrum', () => {
+    const t = mountLandscape();
+    expect(t.querySelector('.m-ls-spectrum')).toBeNull();
+    expect(t.querySelector('.spectrum-panel-stub')).toBeNull();
+    expect(t.querySelector('.amber-lcd')).toBeNull();
+    // The VFO overlay survives without the stage element.
+    expect(t.querySelector('.m-ls-overlay')).not.toBeNull();
+  });
 });
 
 // MOR-1486 ruling B (owner, session 19) — mobile has no `applyModeDefault()`
