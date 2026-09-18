@@ -41,6 +41,7 @@ vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({
 import { DSP_COMMAND_DESCRIPTORS, type DspCommandFeedbackField } from '$lib/stores/commands.svelte';
 import {
   getDspControlFeedback,
+  projectControlFeedbackToDisplay,
   projectDspControlFeedbackToDisplay,
   type ControlFeedback,
 } from '../panel-adapters';
@@ -429,4 +430,42 @@ describe('pure transformed DSP feedback projection', () => {
     expect(Object.isFrozen(display)).toBe(true);
     expect([h.stateReads, h.capsReads, h.commandReads, h.sessionReads]).toEqual([0, 0, 0, 0]);
   });
+});
+
+describe('core feedback value projector (MOR-1687)', () => {
+  const project = (raw: number): number | null => (raw < 0 ? null : raw * 2);
+
+  it('keeps an unavailable input unavailable', () => {
+    const unavailable = rawFeedback({
+      confirmed: null, target: null, requestedTarget: null,
+      phase: 'unavailable', busy: false, availability: 'unavailable',
+    });
+    expect(projectControlFeedbackToDisplay(unavailable, project)).toMatchObject({
+      confirmed: null, target: null, requestedTarget: null,
+      phase: 'unavailable', busy: false, availability: 'unavailable',
+    });
+  });
+
+  it('keeps a null raw null and freezes the copy with the projected fields', () => {
+    const projected = projectControlFeedbackToDisplay(
+      rawFeedback({ confirmed: 3, target: null, requestedTarget: 5 }), project,
+    );
+    expect(projected).toEqual({
+      ...rawFeedback(), confirmed: 6, target: null, requestedTarget: 10,
+    });
+    expect(Object.isFrozen(projected)).toBe(true);
+  });
+
+  it.each(['confirmed', 'target', 'requestedTarget'] as const)(
+    'fails the whole feedback closed when only %s fails to project',
+    (slot) => {
+      const raw = rawFeedback({ confirmed: 3, target: 4, requestedTarget: 5, [slot]: -1 });
+      expect(projectControlFeedbackToDisplay(raw, project)).toMatchObject({
+        confirmed: null, target: null, requestedTarget: null,
+        phase: 'unavailable', busy: false, availability: 'unavailable',
+        outcome: null, lifecycleId: null, transitionId: null,
+        scope: raw.scope, repeatPolicy: raw.repeatPolicy,
+      });
+    },
+  );
 });
