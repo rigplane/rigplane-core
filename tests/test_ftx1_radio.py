@@ -2534,13 +2534,13 @@ async def test_set_nr_on_uses_default_when_radio_level_zero(connected_radio):
 @pytest.mark.asyncio
 async def test_set_nr_sub_reads_and_writes_sub(connected_radio):
     """MOR-2518: SUB reads ``RL1;``: the MAIN mirror says 7 while the radio
-    answers ``RL1002``, so ``RL1002;`` is written."""
+    answers ``RL102`` (RL level is two digits), so ``RL102;`` is written."""
     connected_radio._state.main.nr_level = 7
-    connected_radio._transport.query = AsyncMock(return_value="RL1002")
+    connected_radio._transport.query = AsyncMock(return_value="RL102")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_nr(True, receiver=1)
     connected_radio._transport.query.assert_called_once_with("RL1;")
-    connected_radio._transport.write.assert_called_once_with("RL1002;")
+    connected_radio._transport.write.assert_called_once_with("RL102;")
 
 
 @pytest.mark.asyncio
