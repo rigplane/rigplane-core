@@ -2149,13 +2149,13 @@ async def test_read_filter_width_does_not_mutate_state() -> None:
     radio.read_mode = AsyncMock(return_value=("USB", None))  # type: ignore[method-assign]
     radio.radio_state.main.mode = "USB"
     radio.radio_state.main.filter_width = 999
-    # SSB table → code 12 decodes to 2400 Hz (see rigs/ftx1.toml SSB table).
+    # SSB table (2508-C Table 5): code 12 decodes to 2250 Hz.
     radio._query = AsyncMock(return_value={"code": 12})  # type: ignore[method-assign]
     state_before = radio.radio_state
 
     value = await radio.read_filter_width(0)
 
-    assert value == 2400
+    assert value == 2250
     assert isinstance(value, int)
     # A write to legacy state is not permitted.
     assert radio.radio_state is state_before
@@ -2172,28 +2172,29 @@ async def test_read_filter_width_uses_current_mode_not_stale_state() -> None:
     the mode mirror is stale. Resolving the table from the mirror picks the
     wrong table (or none), so the raw SH index leaks out as the "Hz" value.
 
-    Setup: the mirror says ``USB`` (where SH code 20 = 3200 Hz), but the rig's
-    ACTUAL mode is ``CW`` (where SH code 20 = 4000 Hz; see rigs/ftx1.toml).
-    A correct readback decodes against the CW table → 4000 Hz. The old code
-    decodes against the stale USB table → 3200 Hz (wrong table), and if no
-    table resolved at all it would return the raw code 20.
+    Setup: the mirror says ``USB`` (where SH code 20 = 3000 Hz), but the rig's
+    ACTUAL mode is ``CW-U`` (where SH code 20 = 3500 Hz; see rigs/ftx1.toml,
+    2508-C Table 5). A correct readback decodes against the CW-U table →
+    3500 Hz. The old code decoded against the stale USB table → 3000 Hz
+    (wrong table), and if no table resolved at all it returned the raw code
+    20 as if it were Hz.
     """
     radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
     # Stale legacy mirror — wrong mode (and never updated by polling).
     radio.radio_state.main.mode = "USB"
     # The CAT layer reports the rig's true current mode.
-    radio.read_mode = AsyncMock(return_value=("CW", None))  # type: ignore[method-assign]
+    radio.read_mode = AsyncMock(return_value=("CW-U", None))  # type: ignore[method-assign]
     radio._query = AsyncMock(return_value={"code": 20})  # type: ignore[method-assign]
 
     # Threaded-mode call (the poll path passes the freshly-read mode).
-    value_threaded = await radio.read_filter_width(0, mode="CW")
+    value_threaded = await radio.read_filter_width(0, mode="CW-U")
     # Fallback call (no mode supplied) must read the mode fresh, not use state.
     value_fallback = await radio.read_filter_width(0)
 
-    assert value_threaded == 4000
-    assert value_fallback == 4000
-    # Must NOT be the stale-USB-table decode (3200) nor the raw code (20).
-    assert value_threaded != 3200
+    assert value_threaded == 3500
+    assert value_fallback == 3500
+    # Must NOT be the stale-USB-table decode (3000) nor the raw code (20).
+    assert value_threaded != 3000
     assert value_threaded != 20
 
 

@@ -63,8 +63,9 @@ _MAIN_IF_SHIFT = FieldPath.receiver("main", "operator_controls", "if_shift")
 _MAIN_NARROW = FieldPath.receiver("main", "operator_toggles", "narrow")
 _MAIN_AGC = FieldPath.receiver("main", "operator_controls", "agc")
 
-# SUB on 144.500 MHz USB, width table index 14 (2500 Hz in the profile's SSB
-# table), raw meter 78 (the -36 dBm / S5 calibration point). ``SM1;`` answers
+# SUB on 144.500 MHz USB, Table 5 width code 14 (2450 Hz — 2508-C codes
+# count from 01), raw meter 78 (the -36 dBm / S5 calibration point).
+# ``SM1;`` answers
 # with the side digit echoed 0 -- the firmware quirk from f18b397f that the
 # profile's parse template absorbs.
 # The mock transport answers WITHOUT the trailing ";" -- the radio's query
@@ -168,7 +169,7 @@ async def test_sub_state_is_acquired_in_single_receive() -> None:
     snapshot = store.snapshot()
     assert snapshot.field(_SUB_FREQ).value == 144_500_000
     assert snapshot.field(_SUB_MODE).value == "USB"
-    assert snapshot.field(_SUB_FILTER_WIDTH).value == 2500
+    assert snapshot.field(_SUB_FILTER_WIDTH).value == 2450
     assert snapshot.field(_SUB_S_METER).value == -36
 
 

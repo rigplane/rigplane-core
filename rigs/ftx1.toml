@@ -644,38 +644,80 @@ list = [
 [filters]
 list = ["FIL1", "FIL2", "FIL3"]
 encoding = "table_index"
+# SH WIDTH codes (2508-C Table 5) count from 01; code 00 is the
+# mode-dependent "(Default)" with no Hz value. Pinned by
+# tests/test_dsp_filter_family.py::TestFtx1Table5LoaderPins.
+first_code = 1
 width_min_hz = 50
-width_max_hz = 4500
+width_max_hz = 4000
 
+# Table 5 LSB/USB row: codes 01-23.
 [filters.width.SSB]
 defaults = [2400, 1800, 300]
-# 24 entries, codes 00-23. Code 23 not in official PDF; assumed 4500 Hz.
-table = [300, 400, 600, 850, 1100, 1200, 1500, 1650, 1800, 1950, 2100, 2250, 2400, 2450, 2500, 2600, 2700, 2800, 2900, 3000, 3200, 3500, 4000, 4500]
+table = [300, 400, 600, 850, 1100, 1200, 1500, 1650, 1800, 1950, 2100, 2250, 2400, 2450, 2500, 2600, 2700, 2800, 2900, 3000, 3200, 3500, 4000]
 
-[filters.width.CW]
+# Table 5 CW-L/CW-U/DATA-L/DATA-U/RTTY-L/RTTY-U/PSK rows: codes 01-21.
+# Kept identical by
+# tests/test_dsp_filter_family.py::TestFtx1Table5LoaderPins::test_cw_family_tables_cannot_drift_apart.
+[filters.width.CW-L]
 defaults = [500, 300, 50]
-# 22 entries, codes 00-21. Code 21 not in official PDF; assumed 4500 Hz.
-table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 1200, 1400, 1700, 2000, 2400, 3000, 3200, 3500, 4000, 4500]
+table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 1200, 1400, 1700, 2000, 2400, 3000, 3200, 3500, 4000]
 
-[filters.width.DATA]
-defaults = [3000, 500, 50]
-# 22 entries, codes 00-21. Code 21 not in official PDF; assumed 4500 Hz.
-table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 1200, 1400, 1700, 2000, 2400, 3000, 3200, 3500, 4000, 4500]
-
-[filters.width.RTTY]
+[filters.width.CW-U]
 defaults = [500, 300, 50]
-# 22 entries, codes 00-21. Code 21 not in official PDF; assumed 4500 Hz.
-table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 1200, 1400, 1700, 2000, 2400, 3000, 3200, 3500, 4000, 4500]
+table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 1200, 1400, 1700, 2000, 2400, 3000, 3200, 3500, 4000]
+
+[filters.width.DATA-L]
+defaults = [500, 300, 50]
+table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 1200, 1400, 1700, 2000, 2400, 3000, 3200, 3500, 4000]
+
+[filters.width.DATA-U]
+defaults = [500, 300, 50]
+table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 1200, 1400, 1700, 2000, 2400, 3000, 3200, 3500, 4000]
+
+[filters.width.RTTY-L]
+defaults = [500, 300, 50]
+table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 1200, 1400, 1700, 2000, 2400, 3000, 3200, 3500, 4000]
+
+[filters.width.RTTY-U]
+defaults = [500, 300, 50]
+table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 1200, 1400, 1700, 2000, 2400, 3000, 3200, 3500, 4000]
+
+[filters.width.PSK]
+defaults = [500, 300, 50]
+table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 1200, 1400, 1700, 2000, 2400, 3000, 3200, 3500, 4000]
+
+# Table 5 fixed-width rows: AM-N code 01 = 6000 Hz; AM/FM-N/DATA-FM-N
+# code 02 = 9000 Hz; FM/DATA-FM code 03 = 16000 Hz.
+[filters.width.AM-N]
+fixed = true
+defaults = [6000]
+table = [6000]
 
 [filters.width.AM]
 fixed = true
 defaults = [9000]
 table = [9000]
 
+[filters.width.FM-N]
+fixed = true
+defaults = [9000]
+table = [9000]
+
+[filters.width.DATA-FM-N]
+fixed = true
+defaults = [9000]
+table = [9000]
+
 [filters.width.FM]
 fixed = true
-defaults = [12500]
-table = [12500]
+defaults = [16000]
+table = [16000]
+
+[filters.width.DATA-FM]
+fixed = true
+defaults = [16000]
+table = [16000]
 
 [vfo]
 scheme = "ab_shared"

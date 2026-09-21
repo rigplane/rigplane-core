@@ -1660,7 +1660,7 @@ class YaesuCatRadio:
 
     async def read_filter_width(
         self, receiver: int = 0, mode: str | None = None
-    ) -> int:
+    ) -> int | None:
         """Read filter width in Hz (SH0/SH1) without mutating legacy state.
 
         Translates the radio's table-index code to Hz using the active
@@ -1679,14 +1679,15 @@ class YaesuCatRadio:
                 (other call sites), the mode is read fresh via ``read_mode``.
 
         Returns:
-            Filter width in Hz. When no table is defined for the encoding/mode,
-            the raw index is returned (compat fallback).
+            Filter width in Hz, or ``None`` when the answer carries no Hz
+            value: a mode with no Table 5 width row (C4FM), the code-00
+            "(Default)" answer, or a code outside the table.
         """
         if mode is None and self.profile.filter_width_encoding == "table_index":
             mode, _ = await self.read_mode(receiver)
         cmd = "get_filter_width" if receiver == 0 else "get_filter_width_sub"
         result = await self._query(cmd)
-        index = int(result["code"])
+        code = int(result["code"])
         rule = (
             self.profile.resolve_filter_rule(mode)
             if self.profile.filter_width_encoding == "table_index"
@@ -1696,20 +1697,27 @@ class YaesuCatRadio:
             return int(rule.defaults[0])
         table = self._filter_width_table(receiver, mode)
         if table is None:
-            return index
+            return None
         try:
-            return int(table_index_to_hz(index, table=table))
+            # Table 5 codes count from ``first_code``; codes below it (the
+            # code-00 "(Default)") are outside the 0-based codec table.
+            return int(
+                table_index_to_hz(
+                    code - self.profile.filter_width_first_code, table=table
+                )
+            )
         except ValueError:
-            return index
+            return None
 
-    async def get_filter_width(self, receiver: int = 0) -> int:
+    async def get_filter_width(self, receiver: int = 0) -> int | None:
         """Get filter width in Hz (SH0/SH1).
 
         Args:
             receiver: 0=MAIN, 1=SUB.
 
         Returns:
-            Filter width in Hz.
+            Filter width in Hz, or ``None`` when the radio's answer
+            carries no Hz value for the current mode.
         """
         return await self.read_filter_width(receiver)
 
@@ -1717,12 +1725,31 @@ class YaesuCatRadio:
         """Set filter width in Hz (SH0/SH1).
 
         Translates Hz to the radio's table-index code using the active
-        profile's filter rule for the current mode. When no table is
-        defined, ``width_hz`` is sent as the raw index (compat fallback).
+        profile's filter rule for the current mode. Fixed-width modes
+        refuse with the same ``CommandError`` as
+        ``RadioProfile.encode_filter_width`` does for segmented rules.
+        When no table is defined, ``width_hz`` is sent as the raw index
+        (compat fallback).
         """
         cmd = "set_filter_width" if receiver == 0 else "set_filter_width_sub"
-        table = self._filter_width_table(receiver)
-        index = width_hz if table is None else hz_to_table_index(width_hz, table=table)
+        rule = None
+        if self.profile.filter_width_encoding == "table_index":
+            target = self._state.receiver("SUB" if receiver else "MAIN")
+            mode = getattr(target, "mode", None)
+            rule = self.profile.resolve_filter_rule(mode)
+            if rule is not None and rule.fixed:
+                raise CommandError(
+                    f"set_filter_width is unsupported for fixed-width mode {mode}"
+                )
+        table = rule.table if (rule is not None and rule.table) else None
+        index = (
+            width_hz
+            if table is None
+            else (
+                hz_to_table_index(width_hz, table=table)
+                + self.profile.filter_width_first_code
+            )
+        )
         await self._write(cmd, code=index)
 
     async def read_if_shift(self, receiver: int = 0) -> int:
