@@ -1637,23 +1637,16 @@ class YaesuCatRadio:
 
     # -- D4: Filters --------------------------------------------------------
 
-    def _filter_width_table(
-        self, receiver: int = 0, mode: str | None = None
-    ) -> tuple[int, ...] | None:
+    def _filter_width_table(self, mode: str | None) -> tuple[int, ...] | None:
         """Return the filter-width table for a mode, or None.
 
-        When ``mode`` is given it is used directly (the caller already knows the
-        current mode); otherwise the mode is read from the legacy ``self._state``
-        mirror. SET callers pass no mode (the mirror is updated synchronously on
-        ``set_mode``), while the read/poll path threads the freshly-read mode.
+        Returns None for non-``table_index`` encodings and for modes
+        without a table row; the caller supplies the radio's live mode
+        (``read_filter_width`` resolves it via ``read_mode``).
         """
-        profile = self.profile
-        if profile.filter_width_encoding != "table_index":
+        if self.profile.filter_width_encoding != "table_index":
             return None
-        if mode is None:
-            target = self._state.receiver("SUB" if receiver else "MAIN")
-            mode = getattr(target, "mode", None)
-        rule = profile.resolve_filter_rule(mode)
+        rule = self.profile.resolve_filter_rule(mode)
         if rule and rule.table:
             return rule.table
         return None
@@ -1695,7 +1688,7 @@ class YaesuCatRadio:
         )
         if rule and rule.fixed and rule.defaults:
             return int(rule.defaults[0])
-        table = self._filter_width_table(receiver, mode)
+        table = self._filter_width_table(mode)
         if table is None:
             return None
         try:
@@ -1725,30 +1718,31 @@ class YaesuCatRadio:
         """Set filter width in Hz (SH0/SH1).
 
         Translates Hz to the radio's table-index code using the active
-        profile's filter rule for the current mode. Fixed-width modes
-        refuse with the same ``CommandError`` as
-        ``RadioProfile.encode_filter_width`` does for segmented rules.
-        When no table is defined, ``width_hz`` is sent as the raw index
-        (compat fallback).
+        profile's filter rule for the radio's live mode, read fresh via
+        ``read_mode`` exactly as ``read_filter_width`` does — the legacy
+        ``self._state`` mirror can hold a stale mode. Fixed-width modes
+        and live modes without a width table (C4FM) refuse with the same
+        ``CommandError`` as ``RadioProfile.encode_filter_width`` does for
+        segmented rules. Encodings other than ``table_index`` send
+        ``width_hz`` as the raw index.
         """
         cmd = "set_filter_width" if receiver == 0 else "set_filter_width_sub"
-        rule = None
-        if self.profile.filter_width_encoding == "table_index":
-            target = self._state.receiver("SUB" if receiver else "MAIN")
-            mode = getattr(target, "mode", None)
-            rule = self.profile.resolve_filter_rule(mode)
-            if rule is not None and rule.fixed:
-                raise CommandError(
-                    f"set_filter_width is unsupported for fixed-width mode {mode}"
-                )
-        table = rule.table if (rule is not None and rule.table) else None
-        index = (
-            width_hz
-            if table is None
-            else (
-                hz_to_table_index(width_hz, table=table)
-                + self.profile.filter_width_first_code
+        if self.profile.filter_width_encoding != "table_index":
+            await self._write(cmd, code=width_hz)
+            return
+        mode, _ = await self.read_mode(receiver)
+        rule = self.profile.resolve_filter_rule(mode)
+        if rule is not None and rule.fixed:
+            raise CommandError(
+                f"set_filter_width is unsupported for fixed-width mode {mode}"
             )
+        if rule is None or not rule.table:
+            raise CommandError(
+                f"set_filter_width is unsupported for mode {mode} without a width table"
+            )
+        index = (
+            hz_to_table_index(width_hz, table=rule.table)
+            + self.profile.filter_width_first_code
         )
         await self._write(cmd, code=index)
 
