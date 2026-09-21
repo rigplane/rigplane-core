@@ -317,8 +317,16 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
   });
 
   it('memory store: dispatches set_memory_mode + memory_write for the fixture\'s live freq/mode', () => {
+    // MOR-2513: the wire leaves are nullable; this scenario stores a live
+    // observation — throw (never fabricate) if the fixture loses it.
+    const memRx = IC7300_STATE.main!;
+    if (typeof memRx.freqHz !== 'number' || typeof memRx.mode !== 'string') {
+      throw new Error('fixture main freq/mode observed');
+    }
+    const storeFreq = memRx.freqHz;
+    const storeMode = memRx.mode;
     const ok = expectFrames(
-      () => makeMemoryHandlers().onStore(5, IC7300_STATE.main!.freqHz, IC7300_STATE.main!.mode),
+      () => makeMemoryHandlers().onStore(5, storeFreq, storeMode),
       [
         ['set_memory_mode', { channel: 5 }],
         ['memory_write', {}],

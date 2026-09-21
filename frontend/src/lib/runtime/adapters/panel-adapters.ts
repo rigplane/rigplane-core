@@ -912,7 +912,7 @@ function measuredPbtLatticeHz(
   state: ServerState | null, caps: Capabilities | null | undefined,
 ): Readonly<{ filterWidthHz: number; stepHz: number }> | null {
   const rx = state ? (state.active === 'SUB' ? state.sub : state.main) : undefined;
-  const pbtStepHz = resolveFilterModeConfig(caps ?? null, rx?.mode, rx?.dataMode)?.pbtStepHz;
+  const pbtStepHz = resolveFilterModeConfig(caps ?? null, rx?.mode ?? undefined, rx?.dataMode ?? undefined)?.pbtStepHz;
   const pbtWidthHz = rx?.filterWidth;
   return pbtStepHz !== undefined && typeof pbtWidthHz === 'number'
     ? { filterWidthHz: pbtWidthHz, stepHz: pbtStepHz } : null;

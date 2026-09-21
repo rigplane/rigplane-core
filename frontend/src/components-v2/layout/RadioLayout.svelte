@@ -365,9 +365,6 @@
   let connectionStatus = $derived(runtime.connectionStatus);
 
   let activeReceiverLabel = $derived(radioState?.active === 'SUB' ? 'SUB' : 'MAIN');
-  let activeModeLabel = $derived(radioState?.active === 'SUB' ? (radioState?.sub?.mode ?? '') : (radioState?.main?.mode ?? ''));
-  let activeFilterLabel = $derived(radioState?.active === 'SUB' ? (radioState?.sub?.filter ?? '') : (radioState?.main?.filter ?? ''));
-  let activeFreq = $derived(radioState?.active === 'SUB' ? (radioState?.sub?.freqHz ?? 0) : (radioState?.main?.freqHz ?? 0));
   let receiverDeckElement = $state<HTMLElement | null>(null);
   let receiverDeckWidth = $state<number | null>(null);
   let manualVfoScaleOverrides = $state<VfoLayoutScaleOverrides>({});
@@ -895,15 +892,18 @@
 
   {#if !semanticMeters}
     <section class="bottom-dock">
+      <!-- MOR-2513: a null (unobserved) meter maps onto the absent reading,
+           so MetersDockPanel's own priority order leaves that tile not
+           drawn — never a fabricated zero. -->
       <MetersDockPanel
-        sValue={radioState?.active === 'SUB' ? radioState?.sub?.sMeter : radioState?.main?.sMeter}
-        powerMeter={radioState?.powerMeter}
-        swrMeter={radioState?.swrMeter}
-        alcMeter={radioState?.alcMeter}
-        idMeter={radioState?.idMeter}
-        vdMeter={radioState?.vdMeter}
-        compMeter={radioState?.compMeter}
-        compressorOn={radioState?.compressorOn}
+        sValue={(radioState?.active === 'SUB' ? radioState?.sub?.sMeter : radioState?.main?.sMeter) ?? undefined}
+        powerMeter={radioState?.powerMeter ?? undefined}
+        swrMeter={radioState?.swrMeter ?? undefined}
+        alcMeter={radioState?.alcMeter ?? undefined}
+        idMeter={radioState?.idMeter ?? undefined}
+        vdMeter={radioState?.vdMeter ?? undefined}
+        compMeter={radioState?.compMeter ?? undefined}
+        compressorOn={radioState?.compressorOn ?? undefined}
         txActive={meterTxActive}
       />
     </section>

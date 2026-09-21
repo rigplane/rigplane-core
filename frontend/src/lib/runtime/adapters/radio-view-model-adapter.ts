@@ -84,7 +84,7 @@ type Reason = {
     | 'mutually-exclusive-control' | 'receiver-lacks-control';
 };
 type Readable = {
-  freqHz?: number; mode?: string; filter?: number | null; filterNum?: number | null;
+  freqHz?: number | null; mode?: string | null; filter?: number | null; filterNum?: number | null;
 };
 type Position = { slot: Slot; base: string; filterKey: 'filter' | 'filterNum'; src: Readable | null };
 
@@ -513,21 +513,24 @@ function deriveModeFilter(
   const widthObserved = topFieldAvailable(state, `${base}filterWidth`);
   // The active mode-keyed filter config, resolved by the ONE shipped
   // derivation (`resolveFilterModeConfig`) — see the doc comment above.
-  const filterConfig = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode);
+  // MOR-2513: null mode/dataMode (unobserved) resolves no config.
+  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined);
   const activeBase = activeId === 'SUB' ? 'sub' : 'main';
   const activeRx = activeId === null ? undefined : state?.[activeBase];
   const dataValue = activeRx?.dataMode;
   const configObserved = activeId !== null && strictFieldAvailable(state, activeBase + '.mode')
     && (!hasCap(caps, 'data_mode') || (isDataModeValue(dataValue) && strictFieldAvailable(state, activeBase + '.dataMode')));
   const activeFilterConfiguration = configObserved
-    ? copyFilterConfiguration(resolveFilterModeConfig(caps, activeRx?.mode, activeRx?.dataMode), filterChoices) : null;
+    ? copyFilterConfiguration(resolveFilterModeConfig(caps, activeRx?.mode ?? undefined, activeRx?.dataMode ?? undefined), filterChoices) : null;
   const widthMin = filterConfig?.minHz ?? filterConfig?.table?.[0] ?? caps.filterWidthMin;
   const widthMax = filterConfig?.maxHz
     ?? (filterConfig?.table?.length ? filterConfig.table[filterConfig.table.length - 1] : undefined)
     ?? caps.filterWidthMax;
   return {
     activeFilterConfiguration,
-    currentMode: txAuxField(hasModes, modeObserved, rx?.mode),
+    // MOR-2513: a null (unobserved) mode maps onto the absent value, so
+    // the reading is `unknown` — never a fabricated mode.
+    currentMode: txAuxField(hasModes, modeObserved, rx?.mode ?? undefined),
     modeChoices,
     currentFilter: txAuxField(hasFilters, filterObserved, numOrUndef(rx?.filter ?? undefined)),
     filterChoices,
@@ -664,7 +667,8 @@ function deriveFilterPassband(
   // not a passband-display refusal: `scope-passband-display.ts` takes the
   // shift there as the KNOWN zero of a passband that cannot be displaced and
   // pins this side's `strict.ifShiftHz` to null, one fact stated two ways.
-  const filterConfig = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode);
+  // MOR-2513: null mode/dataMode (unobserved) resolves no config.
+  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined);
   const pbtStepHz = filterConfig?.pbtStepHz;
   // MOR-2497 (owner ruling 2026-09-17): a mode without twin PBT (FM) has no
   // PBT controls at all — the fields go NON-structural, and with them this

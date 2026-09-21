@@ -29,7 +29,7 @@ export function qualifyRadioDisplayObservation<T extends Scalar>({
   caps: Capabilities | null;
   path: string;
   structural: boolean;
-  value: T | undefined;
+  value: T | null | undefined;
 }): DisplayObservation<T> {
   if (!structural) return { state: 'unsupported' };
   if (!validIdentity(state, caps) || path === '' || path.includes('.')) {
@@ -46,7 +46,7 @@ export function qualifyDisplayObservation<T extends Scalar>({
   receiver: ReceiverId;
   path: string;
   structural: boolean;
-  value: T | undefined;
+  value: T | null | undefined;
 }): DisplayObservation<T> {
   if (!structural) return { state: 'unsupported' };
   const receiverKey = receiver === 'MAIN' ? 'main' : 'sub';
@@ -60,7 +60,10 @@ export function qualifyDisplayObservation<T extends Scalar>({
   return qualifyEvidence(state, path, value);
 }
 
-function qualifyEvidence<T extends Scalar>(state: ServerState, path: string, value: T | undefined): DisplayObservation<T> {
+// A ``null`` value (an unobserved wire leaf, MOR-2513) reaches the same
+// ``unknown``/``invalid-value`` verdict as an absent one — the typeof
+// guard below already fails closed for every non-Scalar.
+function qualifyEvidence<T extends Scalar>(state: ServerState, path: string, value: T | null | undefined): DisplayObservation<T> {
   const leaf = state.fieldStatus?.[path];
   if (!leaf || !hasObservation(leaf)) return { state: 'unknown', reason: 'not-observed' };
   const statuses = [leaf];

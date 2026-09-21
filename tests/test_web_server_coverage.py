@@ -2086,11 +2086,13 @@ async def test_same_value_observation_metadata_updates_http_and_initial_ws_full_
     )
 
 
-def test_empty_state_store_marks_legacy_defaults_as_unread() -> None:
+def test_empty_state_store_publishes_null_not_legacy_defaults() -> None:
     """No observation, so no legacy default is presented as confirmed state.
 
-    ``powerOn`` reads ``undeclared`` rather than ``missing``:
-    ``rigs/ic7610.toml`` names ``global.tx_state.power_on`` in neither
+    MOR-2513: the key stays present but its value is null. The absence
+    reason stays in ``fieldStatus``; ``powerOn`` reads ``undeclared``
+    rather than ``missing``: ``rigs/ic7610.toml`` names
+    ``global.tx_state.power_on`` in neither
     ``[state_acquisition.field_policies]`` nor
     ``[state_acquisition.capabilities]`` (MOR-2425/T201; the value was
     ``missing`` before, when the projection had no other answer).
@@ -2100,9 +2102,9 @@ def test_empty_state_store_marks_legacy_defaults_as_unread() -> None:
 
     public_state = srv.build_public_state()
 
-    assert public_state["powerOn"] is True
-    assert public_state["main"]["freqHz"] == 0
-    assert public_state["main"]["mode"] == "USB"
+    assert public_state["powerOn"] is None
+    assert public_state["main"]["freqHz"] is None
+    assert public_state["main"]["mode"] is None
     assert public_state["fieldStatus"]["powerOn"] == {
         "storePath": "global.tx_state.power_on",
         "observed": False,
@@ -2143,7 +2145,7 @@ def test_partial_state_store_marks_observed_and_unread_fields_separately() -> No
     public_state = srv.build_public_state()
 
     assert public_state["main"]["freqHz"] == 14_074_000
-    assert public_state["main"]["mode"] == "USB"
+    assert public_state["main"]["mode"] is None
     freq_status = public_state["fieldStatus"]["main.freqHz"]
     assert freq_status["storePath"] == "receiver.0.active.freq_mode.freq_hz"
     assert freq_status["observed"] is True

@@ -127,6 +127,14 @@ import {
 import { setPendingFocus } from '$lib/radio/pending-focus';
 import { measuredPbtHzToRaw, measuredPbtRawToHz } from '$lib/radio/filter-controls';
 
+/** MOR-2513: the wire leaf is nullable; the accumulator scenarios below run
+ * against a confirmed frequency — throw (never fabricate) otherwise. */
+function observedFreq(): number {
+  const freq = h.state?.main?.freqHz;
+  if (typeof freq !== 'number') throw new Error('fixture main.freqHz observed');
+  return freq;
+}
+
 const freshStatus = {
   storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
 } as const;
@@ -1352,7 +1360,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
 
   it('MOR-1425: a burst of rapid steps within one round trip accumulates onto the pending target, not the stale confirmed value', () => {
     const vfo = makeVfoHandlers();
-    const confirmed = h.state!.main!.freqHz; // 14_074_000, unchanged for the whole burst
+    const confirmed = observedFreq(); // 14_074_000, unchanged for the whole burst
     const step = 1_000;
     // Every gesture computes its target off the STILL-CONFIRMED value, the
     // exact MOR-1425 mechanism (the presentation layer's `freq` prop does
@@ -1374,6 +1382,15 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.patchReceiver).not.toHaveBeenCalled();
   });
 
+  it('MOR-2513: onMainFreqChange computes no step from a null (unobserved) frequency', () => {
+    h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: null } };
+    h.state.fieldStatus = { ...h.state.fieldStatus,
+      'main.freqHz': { ...freshStatus, storePath: 'main.freqHz', observed: false } };
+    h.sendCommand.mockClear();
+    makeVfoHandlers().onMainFreqChange(14_100_000);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+  });
+
   it('MOR-1425: a contradictory confirmed frequency mid-burst resets accumulation to the new truth', () => {
     // Driven through the real wiring (not the low-level accumulator
     // directly) so this fails if the accumulator is ever un-wired from
@@ -1385,7 +1402,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     // 2nd gesture must be paced (held, not sent) until the 3rd gesture's
     // contradiction both resets AND cancels it.
     const vfo = makeVfoHandlers();
-    const confirmed = h.state!.main!.freqHz;
+    const confirmed = observedFreq();
     vfo.onMainFreqChange(confirmed + 1_000); // cold, immediate: target C+1_000
     vfo.onMainFreqChange(confirmed + 1_000); // hot, accumulates to C+2_000, paced (NOT sent yet)
     expect(h.sendCommand).toHaveBeenCalledTimes(1);
@@ -1410,7 +1427,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
 
   it('MOR-1864: associates delayed accepted echoes by exact target and marker across a reversal', () => {
     const vfo = makeVfoHandlers();
-    const start = h.state!.main!.freqHz;
+    const start = observedFreq();
     const setObservation = (frequency: number, marker: number) => {
       h.state = {
         ...h.state!,
@@ -1458,7 +1475,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
 
   it('MOR-1864: preserves all 70 delayed alternating pairs without target drift', () => {
     const vfo = makeVfoHandlers();
-    const start = h.state!.main!.freqHz;
+    const start = observedFreq();
     const observed = (frequency: number, marker: number) => {
       h.state = {
         ...h.state!, main: { ...h.state!.main!, freqHz: frequency },
@@ -1471,7 +1488,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     for (let index = 0; index < 140; index++) {
       if (index > 0) vi.advanceTimersByTime(250);
       if (index >= 2) observed(index % 2 === 0 ? start + 1_000 : start, index);
-      const shown = h.state!.main!.freqHz;
+      const shown = observedFreq();
       vfo.onMainFreqChange(shown + (index % 2 === 0 ? 1_000 : -1_000));
       vi.advanceTimersByTime(0);
       const command = getCommandLifecycles().at(-1)!;
@@ -1484,7 +1501,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
 
   it('MOR-1864: stale TTL preserves a known marker, while pending targets cannot explain changed truth', () => {
     const vfo = makeVfoHandlers();
-    const start = h.state!.main!.freqHz;
+    const start = observedFreq();
     vfo.onMainFreqChange(start + 1_000);
     h.state = { ...h.state!, fieldStatus: { ...h.state!.fieldStatus, 'main.freqHz': {
       ...freshStatus, storePath: 'main.freqHz', freshness: 'stale', availability: 'stale',
@@ -1515,7 +1532,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     } };
     h.caps = { ...h.caps!, receivers: 1, vfoScheme: 'ab' };
     const vfo = makeVfoHandlers();
-    const start = h.state!.main!.freqHz;
+    const start = observedFreq();
     vfo.onMainFreqChange(start + 1_000);
     vfo.onMainFreqChange(start + 1_000);
     vfo.onVfoSelect('MAIN', 'B');
@@ -1528,7 +1545,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
 
   it('MOR-1864: excludes pre-burst, pending, and failed records from changed-value association', () => {
     const vfo = makeVfoHandlers();
-    const start = h.state!.main!.freqHz;
+    const start = observedFreq();
     const setObservation = (frequency: number, marker: number) => {
       h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: frequency }, fieldStatus: {
         ...h.state!.fieldStatus, 'main.freqHz': {
@@ -1557,7 +1574,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
 
   it("MOR-1425 review B1: onFreqChange(freq, receiver, 'step') opts a relative gesture into the accumulate path instead of the 'jump' default", () => {
     const vfo = makeVfoHandlers();
-    const confirmed = h.state!.main!.freqHz;
+    const confirmed = observedFreq();
     // Two 'step' gestures at the SAME receiver, mid-burst: the media-key /
     // spectrum-wheel shape (fixed increment off confirmed truth), not an
     // arbitrary absolute target.

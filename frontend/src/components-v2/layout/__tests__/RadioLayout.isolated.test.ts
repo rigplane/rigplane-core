@@ -1017,3 +1017,37 @@ describe('SDR hardware scope snippet routing (MOR-2358)', () => {
     expect(stub?.getAttribute('data-hide-scope-controls')).toBe('true');
   });
 });
+
+describe('MOR-2513 — an all-unobserved payload never prints a fabricated reading', () => {
+  it('renders no null/NaN/undefined text and no fabricated 0.000.000 frequency', () => {
+    // Every leaf that carries a fieldStatus entry goes null with
+    // observed:false (txTarget keeps its in-band unknown-status object) —
+    // the payload shape a freshly connected FTX-1 with nothing observed
+    // produces. Connection, health and revision counters keep their
+    // delivered values.
+    const unobserved = structuredClone(stateFixture) as unknown as ServerState;
+    for (const [path, status] of Object.entries(unobserved.fieldStatus ?? {})) {
+      if (status) status.observed = false;
+      if (path === 'txTarget') continue;
+      const parts = path.split('.');
+      let holder: Record<string, unknown> | null = unobserved as unknown as Record<string, unknown>;
+      for (const part of parts.slice(0, -1)) {
+        const next: unknown = holder?.[part];
+        holder = typeof next === 'object' && next !== null
+          ? next as Record<string, unknown> : null;
+        if (holder === null) break;
+      }
+      if (holder !== null) holder[parts[parts.length - 1]] = null;
+    }
+    rt.state = unobserved;
+    radio.current = unobserved;
+    rt.caps = capsFixture;
+
+    const t = mountLayout('desktop-v2');
+    flushSync();
+    const text = t.textContent ?? '';
+    for (const forbidden of ['null', 'NaN', 'undefined', '0.000']) {
+      expect(text, `rendered text must not contain ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+});

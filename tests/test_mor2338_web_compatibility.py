@@ -104,7 +104,7 @@ async def test_unobserved_receiver_default_is_not_observed_notch_telemetry() -> 
 
     assert status == 200
     assert state["main"]["notchFilter"] == 37
-    assert state["sub"]["notchFilter"] == 0
+    assert state["sub"]["notchFilter"] is None
     field = state["fieldStatus"]["sub.notchFilter"]
     assert field["observed"] is False
     assert field["freshness"] == "unknown"

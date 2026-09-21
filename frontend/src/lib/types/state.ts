@@ -9,6 +9,11 @@
  *
  * Excludes the client-only ``meterSource`` (never server-sent) and the
  * frontend-only ``UiState`` / ``PendingCommand`` types (MOR-881).
+ * Leaves with a ``fieldStatus`` entry publish ``null`` while unobserved
+ * and keep their value when stale; ``txTarget`` excepted — it encodes
+ * absence in-band (an unknown-status object), not as null (MOR-2513;
+ * pinned by ``tests/web/test_state_schema_conformance.py::
+ * test_snapshot_path_unobserved_null_leaves_conform``).
  */
 export interface ServerStatePublic {
   revision: number;
@@ -19,63 +24,65 @@ export interface ServerStatePublic {
   updatedAt: string;
   stateContractVersion?: 1;
   providerGeneration?: number;
-  active: "MAIN" | "SUB";
-  powerOn?: boolean;
-  ptt: boolean;
-  powerLevel?: number;
-  split: boolean;
-  dualWatch: boolean;
-  scanning?: boolean;
-  scanType?: number;
-  scanResumeMode?: number;
-  tuningStep?: number;
-  overflow?: boolean;
-  tunerStatus: number;
-  ritFreq?: number;
-  ritOn?: boolean;
-  ritTx?: boolean;
-  compMeter?: number;
-  vdMeter?: number;
-  idMeter?: number;
-  powerMeter?: number;
-  swrMeter?: number;
-  alcMeter?: number;
-  cwPitch?: number;
-  micGain?: number;
-  keySpeed?: number;
-  mainSubTracking?: boolean;
-  compressorOn?: boolean;
-  compressorLevel?: number;
-  monitorOn?: boolean;
-  breakInDelay?: number;
+  active: ("MAIN" | "SUB") | null;
+  powerOn?: boolean | null;
+  ptt: boolean | null;
+  powerLevel?: number | null;
+  split: boolean | null;
+  dualWatch: boolean | null;
+  scanning?: boolean | null;
+  scanType?: number | null;
+  scanResumeMode?: number | null;
+  tuningStep?: number | null;
+  overflow?: boolean | null;
+  tunerStatus: number | null;
+  ritFreq?: number | null;
+  ritOn?: boolean | null;
+  ritTx?: boolean | null;
+  compMeter?: number | null;
+  vdMeter?: number | null;
+  idMeter?: number | null;
+  powerMeter?: number | null;
+  swrMeter?: number | null;
+  alcMeter?: number | null;
+  cwPitch?: number | null;
+  micGain?: number | null;
+  keySpeed?: number | null;
+  mainSubTracking?: boolean | null;
+  compressorOn?: boolean | null;
+  compressorLevel?: number | null;
+  monitorOn?: boolean | null;
+  breakInDelay?: number | null;
   cwSpot?: boolean | null;
-  breakIn?: number;
-  dialLock?: boolean;
-  driveGain?: number;
-  monitorGain?: number;
-  vfoSelect?: number;
+  breakIn?: number | null;
+  dialLock?: boolean | null;
+  driveGain?: number | null;
+  monitorGain?: number | null;
+  vfoSelect?: number | null;
   yaesu?: {
     [k: string]: number | null;
   } | null;
-  voxOn?: boolean;
-  voxGain?: number;
-  antiVoxGain?: number;
-  voxDelay?: number;
-  ssbTxBandwidth?: number;
-  refAdjust?: number;
-  dashRatio?: number;
-  nbDepth?: number;
-  nbWidth?: number;
-  txAntenna?: number;
-  rxAntenna1?: boolean;
-  rxAntenna2?: boolean;
+  voxOn?: boolean | null;
+  voxGain?: number | null;
+  antiVoxGain?: number | null;
+  voxDelay?: number | null;
+  ssbTxBandwidth?: number | null;
+  refAdjust?: number | null;
+  dashRatio?: number | null;
+  nbDepth?: number | null;
+  nbWidth?: number | null;
+  txAntenna?: number | null;
+  rxAntenna1?: boolean | null;
+  rxAntenna2?: boolean | null;
   dataOffModInput?: number | null;
   data1ModInput?: number | null;
   data2ModInput?: number | null;
   data3ModInput?: number | null;
-  txBandEdges?: {
-    [k: string]: number;
-  }[];
+  txBandEdges?:
+    | {
+        [k: string]: number;
+      }[]
+    | null;
   scopeControls?: ScopeControlsPublic;
   txTarget: KnownTxTargetPublic | UnknownTxTargetPublic;
   main: ReceiverStatePublic;
@@ -93,19 +100,19 @@ export interface ServerStatePublic {
  * Spectrum-scope control state.
  */
 export interface ScopeControlsPublic {
-  receiver: number;
-  dual: boolean;
-  mode: number;
-  span: number;
-  edge: number;
-  hold: boolean;
-  refDb: number;
-  speed: number;
-  duringTx: boolean;
-  centerType: number;
-  vbwNarrow: boolean;
-  rbw: number;
-  fixedEdge: FixedEdgePublic;
+  receiver: number | null;
+  dual: boolean | null;
+  mode: number | null;
+  span: number | null;
+  edge: number | null;
+  hold: boolean | null;
+  refDb: number | null;
+  speed: number | null;
+  duringTx: boolean | null;
+  centerType: number | null;
+  vbwNarrow: boolean | null;
+  rbw: number | null;
+  fixedEdge: FixedEdgePublic | null;
 }
 /**
  * Scope fixed-edge sub-object.
@@ -144,61 +151,61 @@ export interface UnknownTxTargetPublic {
 export interface ReceiverStatePublic {
   vfoA?: VfoSlotPublic;
   vfoB?: VfoSlotPublic;
-  activeSlot?: string;
+  activeSlot?: string | null;
   unselectedVfo?: VfoSlotPublic | null;
-  freqHz: number;
-  mode: string;
+  freqHz: number | null;
+  mode: string | null;
   filter: number | null;
-  dataMode: number;
+  dataMode: number | null;
   filterWidth?: number | null;
-  att: number;
-  preamp: number;
-  nb: boolean;
-  nr: boolean;
-  digisel?: boolean;
-  ipplus?: boolean;
-  sMeterSqlOpen?: boolean;
-  agc?: number;
-  audioPeakFilter?: number;
-  autoNotch?: boolean;
-  manualNotch?: boolean;
-  twinPeakFilter?: boolean;
-  filterShape?: number;
-  agcTimeConstant?: number;
-  afLevel: number;
-  rfGain: number;
-  squelch: number;
-  sMeter: number;
-  apfTypeLevel?: number;
-  apfOn?: boolean;
-  apfFreq?: number;
-  nrLevel?: number;
-  pbtInner?: number;
-  pbtOuter?: number;
-  nbLevel?: number;
-  digiselShift?: number;
-  afMute?: boolean;
-  contour?: number;
-  ifShift?: number;
-  narrow?: boolean;
-  manualNotchFreq?: number;
-  manualNotchWidth?: number;
-  notchFilter?: number;
-  repeaterTone?: boolean;
-  repeaterTsql?: boolean;
-  toneFreq?: number;
-  tsqlFreq?: number;
-  repeaterShift?: number;
+  att: number | null;
+  preamp: number | null;
+  nb: boolean | null;
+  nr: boolean | null;
+  digisel?: boolean | null;
+  ipplus?: boolean | null;
+  sMeterSqlOpen?: boolean | null;
+  agc?: number | null;
+  audioPeakFilter?: number | null;
+  autoNotch?: boolean | null;
+  manualNotch?: boolean | null;
+  twinPeakFilter?: boolean | null;
+  filterShape?: number | null;
+  agcTimeConstant?: number | null;
+  afLevel: number | null;
+  rfGain: number | null;
+  squelch: number | null;
+  sMeter: number | null;
+  apfTypeLevel?: number | null;
+  apfOn?: boolean | null;
+  apfFreq?: number | null;
+  nrLevel?: number | null;
+  pbtInner?: number | null;
+  pbtOuter?: number | null;
+  nbLevel?: number | null;
+  digiselShift?: number | null;
+  afMute?: boolean | null;
+  contour?: number | null;
+  ifShift?: number | null;
+  narrow?: boolean | null;
+  manualNotchFreq?: number | null;
+  manualNotchWidth?: number | null;
+  notchFilter?: number | null;
+  repeaterTone?: boolean | null;
+  repeaterTsql?: boolean | null;
+  toneFreq?: number | null;
+  tsqlFreq?: number | null;
+  repeaterShift?: number | null;
   dcd?: boolean | null;
 }
 /**
  * One VFO slot (A or B) within a receiver.
  */
 export interface VfoSlotPublic {
-  freqHz: number;
-  mode: string;
+  freqHz: number | null;
+  mode: string | null;
   filterNum: number | null;
-  dataMode: number;
+  dataMode: number | null;
 }
 /**
  * Synthetic connection object injected from the backend connection scalars.

@@ -951,6 +951,35 @@ def _camel_case_state(d: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _null_unobserved_public_leaves(payload: dict[str, Any]) -> None:
+    """Null every public leaf whose ``fieldStatus`` entry says unobserved —
+    ``txTarget`` excepted: it encodes absence in-band (an unknown-status
+    object), not as null.
+
+    The key stays present with value ``null`` whatever the absence
+    reason; an observed leaf keeps its value when stale (MOR-2513,
+    pinned by ``tests/test_web_runtime_helpers.py::
+    test_unobserved_leaves_publish_null_with_keys_present`` and
+    ``test_observed_value_stays_published_after_the_freshness_tick_marks_it_stale``).
+    """
+
+    field_status = payload.get("fieldStatus")
+    if not isinstance(field_status, dict):
+        return
+    for public_path, status in field_status.items():
+        if status.get("observed") is not False or public_path == "txTarget":
+            continue
+        parts = public_path.split(".")
+        holder: dict[str, Any] | None = payload
+        for part in parts[:-1]:
+            nested = holder.get(part) if holder is not None else None
+            holder = nested if isinstance(nested, dict) else None
+            if holder is None:
+                break
+        if holder is not None and parts[-1] in holder:
+            holder[parts[-1]] = None
+
+
 def _snapshot_receiver_key(receiver_id: str | None) -> str | None:
     if receiver_id is None:
         return None
@@ -1335,7 +1364,9 @@ def _build_public_state_payload_from_dict(
         "audio": audio_clients,
     }
 
-    return _camel_case_state(state)
+    public = _camel_case_state(state)
+    _null_unobserved_public_leaves(public)
+    return public
 
 
 def build_public_state_payload(

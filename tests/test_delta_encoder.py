@@ -4,7 +4,29 @@ from __future__ import annotations
 
 import pytest
 
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import StateStore
 from rigplane.web._delta_encoder import DeltaEncoder, apply_delta
+from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+
+
+def _freq_observation(at: float) -> Observation:
+    return Observation(
+        path=FieldPath.active("0", "freq_mode", "freq_hz"),
+        value=14_074_000,
+        source=SourceMetadata(
+            source="poll_response",
+            provider="test",
+            transport="fake",
+            native_id="test",
+        ),
+        timestamp_monotonic=at,
+        max_age=None,
+    )
 
 
 class TestDeltaEncoder:
@@ -70,6 +92,29 @@ class TestDeltaEncoder:
 
         assert delta["type"] == "delta"
         assert delta["changed"] == {"power": 100}
+
+    def test_first_observation_delta_carries_the_real_value_from_null(self):
+        """MOR-2513: an unobserved leaf publishes null, and the delta for
+        its first observation carries the real value (null -> value)."""
+        empty = build_public_state_payload_from_snapshot(
+            StateStore().snapshot(), radio=None, receiver_count=1
+        )
+        assert empty["main"]["freqHz"] is None
+
+        encoder = DeltaEncoder()
+        full = encoder.encode(empty)
+        assert full["type"] == "full"
+        assert full["data"]["main"]["freqHz"] is None
+
+        store = StateStore()
+        store.apply(_freq_observation(1.0))
+        observed = build_public_state_payload_from_snapshot(
+            store.snapshot(), radio=None, receiver_count=1
+        )
+        delta = encoder.encode(observed)
+
+        assert delta["type"] == "delta"
+        assert delta["changed"]["main"]["freqHz"] == 14_074_000
 
     def test_removed_field_in_delta(self):
         """Removed fields should appear in 'removed' list."""
