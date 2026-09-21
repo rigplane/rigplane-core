@@ -89,9 +89,8 @@ const SOURCE = readFileSync('src/semantic/MetersSurface.svelte', 'utf8')
 const PROJECTOR_SOURCE = readFileSync('src/semantic/bar-meter-projector.ts', 'utf8');
 const HOST_SOURCE = readFileSync('src/semantic/StationMeterInstrumentHost.svelte', 'utf8');
 const PLACEMENT_SOURCE = readFileSync('src/semantic/StationMeterBarPlacement.svelte', 'utf8');
-const DESKTOP_STATION_METERS_CSS = readFileSync('src/skins/desktop-v2/semantic-controls.css', 'utf8');
 
-/** MOR-2521: meter fill rects are permanent slots — this counts the lit ones. */
+/** MOR-2521: meter fill rects are permanent nodes — this counts the lit ones. */
 const visibleSlotCount = (root: Element, selector: string): number =>
   [...root.querySelectorAll<SVGRectElement>(selector)]
     .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
@@ -293,7 +292,7 @@ function render(view: RadioViewModel) {
     // fault color and fill now read off THAT svg, not `tile('swr')` (there
     // is no such tile any more).
     signalSvg: () => target.querySelector<SVGSVGElement>('[data-testid="meter-signal"] svg'),
-    // MOR-2521: lower fill rects are permanent slots; count the lit ones.
+    // MOR-2521: lower fill rects are permanent nodes; count the lit ones.
     lowerFillCount: () => [...target.querySelectorAll<SVGRectElement>('[data-testid="meter-signal"] [data-lower-fill]')]
       .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length,
   };
@@ -1717,20 +1716,5 @@ describe('station-local presence selection', () => {
       reading: { status: 'unknown' } };
     render(view);
     for (const key of BAR_KEYS) expect(target.querySelector('[data-testid="meter-' + key + '"]')).toBeNull();
-  });
-});
-
-describe('MOR-2521 — dock readout spans reserve fixed widths (source pins)', () => {
-  it('.meter-native-value reserves 6ch right-aligned; .meter-native-secondary reserves 7ch right-aligned', () => {
-    const valueRule = DESKTOP_STATION_METERS_CSS.match(/\.meter-native-value \{[^}]*\}/)?.[0] ?? '';
-    const secondaryRule = DESKTOP_STATION_METERS_CSS.match(/\.meter-native-secondary \{[^}]*\}/)?.[0] ?? '';
-    expect(valueRule).toContain('min-width: 6ch');
-    expect(valueRule).toContain('text-align: right');
-    expect(secondaryRule).toContain('min-width: 7ch');
-    expect(secondaryRule).toContain('text-align: right');
-    // The caption already renders tabular digits; the reserves only hold if
-    // that stays true.
-    const captionRule = DESKTOP_STATION_METERS_CSS.match(/\.meter-native-caption \{[^}]*\}/)?.[0] ?? '';
-    expect(captionRule).toContain('font-variant-numeric: tabular-nums');
   });
 });

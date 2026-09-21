@@ -328,7 +328,7 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     const normal = mountMeter({ frame });
     expect(normal.textContent).toContain(projection.primaryText);
     expect(normal.textContent).toContain(projection.secondaryText);
-    // MOR-2521: all 20 fill slots exist permanently; exactly the 10 the
+    // MOR-2521: all 20 fill rects exist permanently; exactly the 10 the
     // 0.5-smoothed frame lights are visible.
     const fills = [...normal.querySelectorAll<SVGRectElement>('[data-meter-fill]')];
     expect(fills).toHaveLength(20);
@@ -376,7 +376,7 @@ describe('LinearSMeter calibrated S-meter domain', () => {
 
     expect(target.textContent).toContain(primary);
     expect(target.textContent).toContain(secondary);
-    // MOR-2521: unprojectable domains keep every slot present but hidden.
+    // MOR-2521: unprojectable domains keep every fill rect present but hidden.
     const fills = [...target.querySelectorAll<SVGRectElement>('[data-meter-fill]')];
     expect(fills).toHaveLength(20);
     expect(fills.every((rect) => rect.getAttribute('visibility') === 'hidden')).toBe(true);
@@ -616,38 +616,6 @@ describe('MOR-2521 — the S-meter never adds or removes nodes across a value sw
     expect(steps[0].counts).toEqual({ rect: 83, line: 82, fill: 20 });
     // 0.0004 * 20 = 0.008 <= 0.01: the sub-1% guard renders no visible fill.
     expect(steps.map((step) => step.visibleLowerFills)).toEqual([0, 11, 20, 0]);
-  });
-});
-
-describe('MOR-2521 — readout slot declarations (source pins)', () => {
-  const source = readFileSync(
-    resolve(process.cwd(), 'src/components-v2/meters/LinearSMeter.svelte'),
-    'utf8',
-  );
-
-  it('every {displaySUnit} text uses a fixed anchor, never middle', () => {
-    const blocks = source.match(/<text[^>]*>\{displaySUnit\}<\/text>/gs) ?? [];
-    // sdr-screen's value text (end-anchored at a literal x) and the default
-    // variant's S-unit (start-anchored at its reserved slot's left edge).
-    expect(blocks).toHaveLength(2);
-    for (const block of blocks) expect(block).not.toContain('text-anchor="middle"');
-  });
-
-  it('the default variant anchors both readouts at slot left edges reserved by char count', () => {
-    expect(source).toMatch(/const S_UNIT_SLOT_CHARS = 5;/);
-    expect(source).toMatch(/const DBM_SLOT_CHARS = 8;/);
-    expect(source).toMatch(/const MONO_ADVANCE_EM = 0\.6;/);
-    const sUnitLine = source.match(/^.*sUnitSlotX.*$/m)?.[0] ?? '';
-    const dbmLine = source.match(/^.*dbmSlotX.*$/m)?.[0] ?? '';
-    expect(sUnitLine).toContain('READOUT_CX - (S_UNIT_SLOT_CHARS * MONO_ADVANCE_EM * S_UNIT_FS) / 2');
-    expect(dbmLine).toContain('READOUT_CX - (DBM_SLOT_CHARS * MONO_ADVANCE_EM * DBM_FS) / 2');
-    // blocks[1]: the default variant renders after the sdr-screen variant.
-    const sUnitBlock = source.match(/<text[^>]*>\{displaySUnit\}<\/text>/gs)?.[1] ?? '';
-    const dbmBlock = source.match(/<text[^>]*>\{displayDbm\}<\/text>/gs)?.[0] ?? '';
-    expect(sUnitBlock).toContain('x={sUnitSlotX}');
-    expect(sUnitBlock).toContain('text-anchor="start"');
-    expect(dbmBlock).toContain('x={dbmSlotX}');
-    expect(dbmBlock).toContain('text-anchor="start"');
   });
 });
 

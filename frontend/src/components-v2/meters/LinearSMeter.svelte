@@ -402,16 +402,6 @@
     return i === full ? Math.max(1, SEG_W * frac) : SEG_W;
   }
 
-  // MOR-2521: both readouts are start-anchored at the left edge of a width
-  // reserved for their longest string, so no reading ever moves the anchor
-  // or another element (source-pinned in __tests__/LinearSMeter.test.ts).
-  // Roboto Mono advances 0.6em per glyph.
-  const S_UNIT_SLOT_CHARS = 5; // "S9+60" — the S scale's longest readout
-  const DBM_SLOT_CHARS = 8;   // "−127 dBm" — S0 against the −73 dBm S9 reference
-  const MONO_ADVANCE_EM = 0.6;
-  const sUnitSlotX = $derived(READOUT_CX - (S_UNIT_SLOT_CHARS * MONO_ADVANCE_EM * S_UNIT_FS) / 2);
-  const dbmSlotX = $derived(READOUT_CX - (DBM_SLOT_CHARS * MONO_ADVANCE_EM * DBM_FS) / 2);
-
   // v2.11.1 SDR SVG geometry; the current calibrated scale still owns positions.
   const SDR_CELLS = 40;
   const SDR_CELL_WIDTH = 328 / SDR_CELLS;
@@ -539,7 +529,7 @@
     stroke-width="1"
   />
 
-  <!-- Segments (MOR-2521): every fill rect is a permanent slot — a reading
+  <!-- Segments (MOR-2521): every fill rect is a permanent node — a reading
        changes only its width/fill/visibility attributes, never its
        presence. -->
   {#each Array(SEG_COUNT) as _, i}
@@ -632,7 +622,7 @@
         stroke-width="1"
       />
 
-      <!-- Lower row segments (MOR-2521: permanent fill slots, as above) -->
+      <!-- Lower row segments (MOR-2521: permanent fill nodes, as above) -->
       {#each Array(SEG_COUNT) as _, i}
         {@const x = segX(i)}
 
@@ -674,27 +664,25 @@
     visibility={showPeak ? 'visible' : 'hidden'}
   />
 
-  <!-- Value readout (MOR-2521): start-anchored at the fixed left edge of a
-       slot reserved for the longest string — a reading never moves the
-       slot or another element. -->
+  <!-- Value readout: dBm aligned to bar center, S-unit above it -->
   <text
-    x={sUnitSlotX}
+    x={READOUT_CX}
     y={TRACK_Y - (compact ? 2 : 3)}
     font-family="'Roboto Mono', monospace"
     font-size={S_UNIT_FS}
     font-weight="700"
     fill="var(--v2-text-lighter)"
-    text-anchor="start"
+    text-anchor="middle"
     dominant-baseline="text-after-edge"
   >{displaySUnit}</text>
 
   <text
-    x={dbmSlotX}
+    x={READOUT_CX}
     y={TRACK_Y + TRACK_H / 2}
     font-family="'Roboto Mono', monospace"
     font-size={DBM_FS}
     fill="var(--v2-text-dim)"
-    text-anchor="start"
+    text-anchor="middle"
     dominant-baseline="central"
   >{displayDbm}</text>
   </g>

@@ -258,7 +258,7 @@ function pushSession(next: ControlSessionSnapshot): void {
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 /** SVG elements have `.dataset` too, but don't satisfy `q`'s `HTMLElement` bound. */
 const qSvg = (sel: string) => target.querySelector(sel) as SVGSVGElement | null;
-// MOR-2521: S-meter fill rects are permanent slots; count the lit ones.
+// MOR-2521: S-meter fill rects are permanent nodes; count the lit ones.
 const signalFillCount = (): number => [...qSvg('[data-testid="meter-signal"] svg')!
   .querySelectorAll<SVGRectElement>('[data-meter-fill]')]
   .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;

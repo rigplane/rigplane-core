@@ -51,7 +51,7 @@ function descriptor(over: Partial<LowerScaleDescriptor> = {}): LowerScaleDescrip
 function lowerSegs(target: HTMLElement) {
   return Array.from(target.querySelectorAll('[data-lower-segment]'));
 }
-// MOR-2521: lower fill rects are permanent slots; these are the lit ones.
+// MOR-2521: lower fill rects are permanent nodes; these are the lit ones.
 function lowerFills(target: HTMLElement) {
   return Array.from(target.querySelectorAll<SVGRectElement>('[data-lower-fill]'))
     .filter((rect) => rect.getAttribute('visibility') !== 'hidden');
@@ -89,7 +89,7 @@ describe('LinearSMeter lowerScale prop — structural elements', () => {
     expect(lowerSegs(target)).toHaveLength(20);
   });
 
-  it('MOR-2521: keeps all 20 lower fill slots present (hidden, not absent) at valueFraction 0', () => {
+  it('MOR-2521: keeps all 20 lower fill rects present (hidden, not absent) at valueFraction 0', () => {
     const target = mountMeter({ value: 0, lowerScale: descriptor({ valueFraction: 0 }) });
     expect(target.querySelectorAll('[data-lower-fill]')).toHaveLength(20);
     expect(lowerFills(target)).toHaveLength(0);

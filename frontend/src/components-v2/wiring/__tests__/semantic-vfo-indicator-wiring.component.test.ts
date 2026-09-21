@@ -383,8 +383,8 @@ describe('production receiver-indicator partitioning', () => {
     }));
     render(caps('main_sub', 2), state(), {}, props);
     const meter = () => target.querySelector('[data-indicator-receiver="MAIN"] [data-testid="receiver-s-meter"] svg')!;
-    // MOR-2521: fill rects are permanent slots (count the lit ones) and the
-    // peak line is a permanent node (shown = visible).
+    // MOR-2521: fill rects are permanent nodes (count the lit ones) and
+    // the peak line is too (shown = visible).
     const fillCount = () => [...meter().querySelectorAll<SVGRectElement>('[data-meter-fill]')]
       .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
     const hasPeak = () => meter().querySelector('[data-meter-peak]')?.getAttribute('visibility') === 'visible';

@@ -295,7 +295,7 @@ describe('ReceiverInstrumentHost', () => {
     const meterFrames = () => Array.from(root.querySelectorAll('[data-meter-frame]'))
       .map((node) => node.getAttribute('data-meter-frame'));
     const initialMeterFrames = meterFrames();
-    // MOR-2521: fill rects are permanent slots; count the lit ones.
+    // MOR-2521: fill rects are permanent nodes; count the lit ones.
     const meterFills = () => [...root.querySelectorAll<SVGRectElement>('[data-meter-owner="MAIN"] [data-meter-fill]')]
       .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
     expect(initialMeterFrames).toHaveLength(2); expect(new Set(initialMeterFrames).size).toBe(2);
@@ -338,7 +338,7 @@ describe('ReceiverInstrumentHost', () => {
   it('uses shared meter continuity for sample, session, source, and unknown transitions', () => {
     const publisher = new Publisher(publication({ mainS: 20 })); const root = mountFixture(publisher);
     const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
-    // MOR-2521: fill rects are permanent slots; count the lit ones.
+    // MOR-2521: fill rects are permanent nodes; count the lit ones.
     const fills = () => [...meter().querySelectorAll<SVGRectElement>('[data-meter-fill]')]
       .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
     const frame = meter().querySelector('[data-meter-frame]')?.getAttribute('data-meter-frame');
@@ -425,7 +425,7 @@ describe('ReceiverInstrumentHost', () => {
     const publisher = new Publisher(publication({ mainS: 20, scheme: 'main_sub' }));
     const root = mountFixture(publisher);
     const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
-    // MOR-2521: fill rects are permanent slots; count the lit ones.
+    // MOR-2521: fill rects are permanent nodes; count the lit ones.
     const fills = () => [...meter().querySelectorAll<SVGRectElement>('[data-meter-fill]')]
       .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
     const frame = meter().querySelector('[data-meter-frame]')?.getAttribute('data-meter-frame');
