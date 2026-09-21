@@ -76,7 +76,13 @@ class TestIc7610FilterWidthRoundtrip:
 
 
 class TestFtx1FilterWidthRoundtrip:
-    """FTX-1 uses table-index encoding with mode-specific tables."""
+    """FTX-1 uses table-index encoding with mode-specific tables.
+
+    0-based over ``rule.table`` (the codec's native indexing); the device
+    code numbering — 2508-C Table 5 counts from 01 via
+    ``[filters].first_code`` — is pinned end to end by the SH frames in
+    tests/test_ftx1_radio.py.
+    """
 
     def test_usb_table_round_trip_at_table_entries(self) -> None:
         profile = load_rig(_RIGS_DIR / "ftx1.toml").to_profile()
@@ -98,6 +104,98 @@ class TestFtx1FilterWidthRoundtrip:
         for idx in range(len(rule.table)):
             hz = table_index_to_hz(idx, table=rule.table)
             assert hz_to_table_index(hz, table=rule.table) == idx
+
+
+# 2508-C Table 5 Hz lists, spelled literally so the profile tables are
+# compared against the manual rather than against themselves.
+_TABLE5_SSB_HZ = (
+    300,
+    400,
+    600,
+    850,
+    1100,
+    1200,
+    1500,
+    1650,
+    1800,
+    1950,
+    2100,
+    2250,
+    2400,
+    2450,
+    2500,
+    2600,
+    2700,
+    2800,
+    2900,
+    3000,
+    3200,
+    3500,
+    4000,
+)
+_TABLE5_CW_FAMILY_HZ = (
+    50,
+    100,
+    150,
+    200,
+    250,
+    300,
+    350,
+    400,
+    450,
+    500,
+    600,
+    800,
+    1200,
+    1400,
+    1700,
+    2000,
+    2400,
+    3000,
+    3200,
+    3500,
+    4000,
+)
+# The seven Table 5 modes that share the CW-family width list.
+_FTX1_CW_FAMILY = ("CW-L", "CW-U", "DATA-L", "DATA-U", "RTTY-L", "RTTY-U", "PSK")
+
+
+class TestFtx1Table5LoaderPins:
+    """Loader-level pins over rigs/ftx1.toml (MOR-1679)."""
+
+    @pytest.mark.parametrize(
+        ("mode", "manual_hz"),
+        [
+            ("USB", _TABLE5_SSB_HZ),
+            ("LSB", _TABLE5_SSB_HZ),
+            *[(mode, _TABLE5_CW_FAMILY_HZ) for mode in _FTX1_CW_FAMILY],
+        ],
+    )
+    def test_width_table_equals_the_manual(
+        self, mode: str, manual_hz: tuple[int, ...]
+    ) -> None:
+        profile = load_rig(_RIGS_DIR / "ftx1.toml").to_profile()
+        rule = profile.resolve_filter_rule(mode)
+        assert rule is not None, mode
+        assert rule.table == manual_hz, mode
+
+    def test_cw_family_tables_cannot_drift_apart(self) -> None:
+        profile = load_rig(_RIGS_DIR / "ftx1.toml").to_profile()
+        rules = profile.filter_config or {}
+        tables = {rules[mode].table for mode in _FTX1_CW_FAMILY}
+        assert len(tables) == 1
+
+    def test_every_mode_list_entry_except_c4fm_resolves_a_rule(self) -> None:
+        config = load_rig(_RIGS_DIR / "ftx1.toml")
+        profile = config.to_profile()
+        for mode in config.modes:
+            if mode in {"C4FM-DN", "C4FM-VW"}:
+                continue
+            assert profile.resolve_filter_rule(mode) is not None, mode
+
+    def test_first_code_is_loaded_from_the_toml(self) -> None:
+        profile = load_rig(_RIGS_DIR / "ftx1.toml").to_profile()
+        assert profile.filter_width_first_code == 1
 
 
 # ---------------------------------------------------------------------------
@@ -514,21 +612,21 @@ def ftx1_radio() -> YaesuCatRadio:
 async def test_yaesu_set_filter_width_translates_hz_to_index(
     ftx1_radio: YaesuCatRadio,
 ) -> None:
-    """FTX-1 USB table: 2400 Hz lives at index 12."""
+    """FTX-1 USB table (2508-C Table 5): 2400 Hz is code 13."""
     ftx1_radio._transport.write = AsyncMock()  # type: ignore[method-assign]
     await ftx1_radio.set_filter_width(2400)
-    ftx1_radio._transport.write.assert_called_once_with("SH0012;")
+    ftx1_radio._transport.write.assert_called_once_with("SH0013;")
 
 
 @pytest.mark.asyncio
 async def test_yaesu_get_filter_width_translates_index_to_hz(
     ftx1_radio: YaesuCatRadio,
 ) -> None:
-    """FTX-1 USB table: index 12 → 2400 Hz."""
+    """FTX-1 USB table (2508-C Table 5): code 13 → 2400 Hz."""
     # The width table is resolved from the radio's CURRENT mode, read fresh via
     # CAT (MOR-507) — not the legacy state mirror.
     ftx1_radio.read_mode = AsyncMock(return_value=("USB", None))  # type: ignore[method-assign]
-    ftx1_radio._transport.query = AsyncMock(return_value="SH0012")
+    ftx1_radio._transport.query = AsyncMock(return_value="SH0013")
     assert await ftx1_radio.get_filter_width() == 2400
 
 

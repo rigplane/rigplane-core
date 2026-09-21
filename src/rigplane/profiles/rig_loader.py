@@ -604,6 +604,7 @@ class RigConfig:
     filter_width_min: int = 50
     filter_width_max: int = 9999
     filter_width_encoding: str = "segmented_bcd_index"
+    filter_width_first_code: int = 0
     filter_config: dict[str, FilterWidthRule] | None = None
     max_watts: int | None = None
     data_mode_count: int = 0
@@ -797,6 +798,7 @@ class RigConfig:
             filter_width_min=self.filter_width_min,
             filter_width_max=self.filter_width_max,
             filter_width_encoding=self.filter_width_encoding,
+            filter_width_first_code=self.filter_width_first_code,
             filter_config=self.filter_config,
             max_watts=self.max_watts,
             att_values=self.att_values,
@@ -2122,6 +2124,7 @@ def load_rig(path: Path) -> RigConfig:
     filter_width_min = int(filter_section.get("width_min_hz", 50))
     filter_width_max = int(filter_section.get("width_max_hz", 9999))
     filter_width_encoding = str(filter_section.get("encoding", "segmented_bcd_index"))
+    filter_width_first_code = int(filter_section.get("first_code", 0))
     filter_config_raw = filter_section.get("width", {})
     filter_config: dict[str, FilterWidthRule] | None = None
     if isinstance(filter_config_raw, dict) and filter_config_raw:
@@ -2566,6 +2569,7 @@ def load_rig(path: Path) -> RigConfig:
         filter_width_min=filter_width_min,
         filter_width_max=filter_width_max,
         filter_width_encoding=filter_width_encoding,
+        filter_width_first_code=filter_width_first_code,
         filter_config=filter_config,
         max_watts=max_watts,
         vfo_scheme=scheme,

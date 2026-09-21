@@ -951,28 +951,188 @@ async def test_set_manual_notch_freq_sub_sends_bp11(connected_radio):
 
 @pytest.mark.asyncio
 async def test_get_filter_width(connected_radio):
-    """get_filter_width returns Hz (issue #1101): index 10 → 2100 Hz on USB."""
+    """get_filter_width returns Hz (issue #1101): USB code 10 → 1950 Hz.
+
+    2508-C Table 5: USB codes 01-23 count from 300 Hz, so code 10 is
+    1950 Hz (the old zero-based table published 2100 for it)."""
 
     # The width table is resolved from the radio's CURRENT mode, read fresh via
     # CAT (MOR-507): get_filter_width issues a mode query (MD0;) then the
-    # filter query (SH0;). Mode code "2" → USB; USB table index 10 → 2100 Hz.
+    # filter query (SH0;). Mode code "2" → USB; USB code 10 → 1950 Hz.
     async def fake_query(cmd: str) -> str:
         return "MD02" if cmd.startswith("MD") else "SH0010"
 
     connected_radio._transport.query = AsyncMock(side_effect=fake_query)
-    assert await connected_radio.get_filter_width() == 2100
+    assert await connected_radio.get_filter_width() == 1950
     connected_radio._transport.query.assert_any_call("SH0;")
     connected_radio._transport.query.assert_any_call("MD0;")
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode_answer", "code_answer", "expected_hz"),
+    [
+        ("MD03", "SH0021", 4000),  # CW-U: Table 5 last code 21 → 4000 Hz
+        ("MD0C", "SH0019", 3200),  # DATA-U: code 19 → 3200 Hz
+        ("MD02", "SH0020", 3000),  # USB: code 20 → 3000 Hz
+        ("MD02", "SH0023", 4000),  # USB: last code 23 → 4000 Hz
+    ],
+)
+async def test_get_filter_width_table5_codes(
+    connected_radio, mode_answer, code_answer, expected_hz
+):
+    """MOR-1679: every Table 5 code decodes at its manual Hz, MAIN."""
+
+    async def fake_query(cmd: str) -> str:
+        return mode_answer if cmd.startswith("MD") else code_answer
+
+    connected_radio._transport.query = AsyncMock(side_effect=fake_query)
+    assert await connected_radio.get_filter_width() == expected_hz
+
+
+@pytest.mark.asyncio
+async def test_get_filter_width_sub(connected_radio):
+    """SUB reads decode through the same table with P1=1 (MOR-1679)."""
+
+    async def fake_query(cmd: str) -> str:
+        return "MD12" if cmd.startswith("MD1") else "SH1010"
+
+    connected_radio._transport.query = AsyncMock(side_effect=fake_query)
+    assert await connected_radio.get_filter_width(receiver=1) == 1950
+
+
+@pytest.mark.asyncio
 async def test_set_filter_width(connected_radio):
-    """set_filter_width takes Hz (issue #1101): 1200 Hz → index 6 on USB."""
+    """set_filter_width takes Hz (issue #1101): 2400 Hz → code 13 on USB."""
     connected_radio._transport.write = AsyncMock()
-    # Default mode is "USB"; USB table index 6 → 1500 Hz; index 12 → 2400 Hz.
-    # Use 2400 Hz as it lands exactly on a table entry.
+    # Default mode is "USB"; Table 5 code 13 → 2400 Hz.
     await connected_radio.set_filter_width(2400)
-    connected_radio._transport.write.assert_called_once_with("SH0012;")
+    connected_radio._transport.write.assert_called_once_with("SH0013;")
+
+
+@pytest.mark.asyncio
+async def test_set_filter_width_sub(connected_radio):
+    """SUB writes serialize with P1=1 (MOR-1679): 2400 Hz → SH1013;."""
+    connected_radio._transport.write = AsyncMock()
+    connected_radio._state.sub.mode = "USB"
+    await connected_radio.set_filter_width(2400, receiver=1)
+    connected_radio._transport.write.assert_called_once_with("SH1013;")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("family_mode", "manual_hz"),
+    [
+        (
+            "USB",
+            (
+                300,
+                400,
+                600,
+                850,
+                1100,
+                1200,
+                1500,
+                1650,
+                1800,
+                1950,
+                2100,
+                2250,
+                2400,
+                2450,
+                2500,
+                2600,
+                2700,
+                2800,
+                2900,
+                3000,
+                3200,
+                3500,
+                4000,
+            ),
+        ),
+        (
+            "CW-U",
+            (
+                50,
+                100,
+                150,
+                200,
+                250,
+                300,
+                350,
+                400,
+                450,
+                500,
+                600,
+                800,
+                1200,
+                1400,
+                1700,
+                2000,
+                2400,
+                3000,
+                3200,
+                3500,
+                4000,
+            ),
+        ),
+    ],
+)
+@pytest.mark.parametrize("receiver", [0, 1])
+async def test_filter_width_full_table_round_trip(
+    connected_radio, family_mode, manual_hz, receiver
+):
+    """Every Table 5 code 01..N round-trips to its manual Hz, MAIN and SUB."""
+
+    prefix = "SH1" if receiver else "SH0"
+    getattr(connected_radio._state, "sub" if receiver else "main").mode = family_mode
+    for code, hz in enumerate(manual_hz, start=1):
+        frame = f"{prefix}{code:03d}"
+        connected_radio._transport.query = AsyncMock(return_value=frame)
+        assert (
+            await connected_radio.read_filter_width(receiver, mode=family_mode) == hz
+        ), (family_mode, code)
+        connected_radio._transport.write = AsyncMock()
+        await connected_radio.set_filter_width(hz, receiver=receiver)
+        connected_radio._transport.write.assert_called_once_with(f"{frame};")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "fixed_hz"),
+    [
+        ("AM-N", 6000),
+        ("AM", 9000),
+        ("FM-N", 9000),
+        ("DATA-FM-N", 9000),
+        ("FM", 16000),
+        ("DATA-FM", 16000),
+    ],
+)
+async def test_fixed_mode_width_read_and_set_refusal(connected_radio, mode, fixed_hz):
+    """MOR-1679: fixed modes read their manual Hz and refuse to set."""
+    connected_radio._transport.query = AsyncMock(return_value="SH0002")
+    assert await connected_radio.read_filter_width(0, mode=mode) == fixed_hz
+    connected_radio._transport.write = AsyncMock()
+    connected_radio._state.main.mode = mode
+    with pytest.raises(CommandError):
+        await connected_radio.set_filter_width(fixed_hz)
+    connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_read_filter_width_unavailable_yields_none(connected_radio):
+    """MOR-1679: answers without a Table 5 Hz value never yield a number."""
+    # C4FM-DN has no Table 5 row.
+    connected_radio._transport.query = AsyncMock(return_value="SH0005")
+    assert await connected_radio.read_filter_width(0, mode="C4FM-DN") is None
+    # Code 00 is the mode-dependent "(Default)".
+    connected_radio._transport.query = AsyncMock(return_value="SH0000")
+    assert await connected_radio.read_filter_width(0, mode="USB") is None
+    # A code past the table's last entry.
+    connected_radio._transport.query = AsyncMock(return_value="SH0024")
+    assert await connected_radio.read_filter_width(0, mode="USB") is None
 
 
 @pytest.mark.asyncio

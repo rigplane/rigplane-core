@@ -371,6 +371,11 @@ class RadioProfile:
     filter_width_min: int = 50
     filter_width_max: int = 9999
     filter_width_encoding: str = "segmented_bcd_index"
+    # Device code ``table[0]`` answers to under ``table_index`` encoding;
+    # codes below it carry no Hz value (FTX-1 2508-C Table 5 counts from
+    # 01). Pinned for ftx1 by
+    # tests/test_dsp_filter_family.py::TestFtx1Table5LoaderPins.
+    filter_width_first_code: int = 0
     filter_config: dict[str, FilterWidthRule] | None = None
     max_watts: int | None = None
     att_values: tuple[int, ...] | None = None
