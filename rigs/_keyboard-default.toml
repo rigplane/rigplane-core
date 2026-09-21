@@ -412,7 +412,7 @@ id = "af-level-up"
 section = "Levels"
 label = "AF gain up"
 key = "ArrowUp"
-modifiers = ["CTRL"]
+modifiers = ["ALT"]
 action = "adjust_af_level"
 repeatable = true
 [keyboard.bindings.params]
@@ -423,7 +423,7 @@ id = "af-level-down"
 section = "Levels"
 label = "AF gain down"
 key = "ArrowDown"
-modifiers = ["CTRL"]
+modifiers = ["ALT"]
 action = "adjust_af_level"
 repeatable = true
 [keyboard.bindings.params]
@@ -434,7 +434,7 @@ id = "rf-level-up"
 section = "Levels"
 label = "RF gain up"
 key = "ArrowUp"
-modifiers = ["CTRL", "SHIFT"]
+modifiers = ["ALT", "SHIFT"]
 action = "adjust_rf_gain"
 repeatable = true
 [keyboard.bindings.params]
@@ -445,7 +445,7 @@ id = "rf-level-down"
 section = "Levels"
 label = "RF gain down"
 key = "ArrowDown"
-modifiers = ["CTRL", "SHIFT"]
+modifiers = ["ALT", "SHIFT"]
 action = "adjust_rf_gain"
 repeatable = true
 [keyboard.bindings.params]

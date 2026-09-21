@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DEFAULT_KEYBOARD_CONFIG,
   focusedElementOwnsArrowKey,
+  formatShortcut,
   hasCommandModifier,
   isDigitKey,
   isFrequencyDisplayFocused,
@@ -236,7 +237,8 @@ describe('focusedElementOwnsArrowKey', () => {
 });
 
 // MOR-2512 — the shared predicate for the modified-arrow class the global
-// keyboard map owns (Ctrl+Arrow adjust_af_level / adjust_rf_gain); the
+// keyboard map owns (Alt+Arrow adjust_af_level / adjust_rf_gain since
+// MOR-2515 moved the defaults off macOS-reserved Ctrl+Arrow); the
 // focusedElementOwnsArrowKey ctrl/alt/meta pin above and the three widget
 // guard tests consume the same rule through it.
 describe('hasCommandModifier', () => {
@@ -250,6 +252,42 @@ describe('hasCommandModifier', () => {
     const shiftOnly: { shiftKey: boolean; ctrlKey?: boolean } = { shiftKey: true };
     expect(hasCommandModifier(shiftOnly)).toBe(false);
     expect(hasCommandModifier({})).toBe(false);
+  });
+});
+
+// MOR-2515 — the AF/RF defaults moved to Alt/Option+Arrow, and the hint must
+// name the key as the viewer's platform does: "Option" on Apple platforms,
+// "Alt" elsewhere. formatShortcut is the single place hint text is built
+// (panel shortcutHint props and the help overlay both render its output).
+describe('formatShortcut platform naming (MOR-2515)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubNavigatorPlatform(platform: string): void {
+    vi.stubGlobal('navigator', { platform });
+  }
+
+  it('names ALT "Option" on an Apple platform', () => {
+    stubNavigatorPlatform('MacIntel');
+    expect(formatShortcut({ id: 'af-level-up', section: 'Levels', sequence: ['ArrowUp'], modifiers: ['ALT'], action: 'adjust_af_level' }))
+      .toBe('Option+ArrowUp');
+    expect(formatShortcut({ id: 'rf-level-up', section: 'Levels', sequence: ['ArrowUp'], modifiers: ['ALT', 'SHIFT'], action: 'adjust_rf_gain' }))
+      .toBe('Option+Shift+ArrowUp');
+  });
+
+  it('names ALT "Alt" on other platforms', () => {
+    stubNavigatorPlatform('Win32');
+    expect(formatShortcut({ id: 'af-level-up', section: 'Levels', sequence: ['ArrowUp'], modifiers: ['ALT'], action: 'adjust_af_level' }))
+      .toBe('Alt+ArrowUp');
+    expect(formatShortcut({ id: 'rf-level-up', section: 'Levels', sequence: ['ArrowDown'], modifiers: ['SHIFT', 'ALT'], action: 'adjust_rf_gain' }))
+      .toBe('Alt+Shift+ArrowDown');
+  });
+
+  it('reads userAgentData.platform first when present', () => {
+    vi.stubGlobal('navigator', { platform: 'Win32', userAgentData: { platform: 'macOS' } });
+    expect(formatShortcut({ id: 'af-level-up', section: 'Levels', sequence: ['ArrowUp'], modifiers: ['ALT'], action: 'adjust_af_level' }))
+      .toBe('Option+ArrowUp');
   });
 });
 

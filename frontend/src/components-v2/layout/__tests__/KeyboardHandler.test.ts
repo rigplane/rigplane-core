@@ -340,8 +340,9 @@ describe('KeyboardHandler', () => {
   // it on its focusable element via data-owns-arrows (axis token
   // horizontal/vertical/both, plus "shift" for deliberate Shift gestures);
   // the global handler yields exactly those keys: a bare role is not
-  // evidence of consumption, and modified arrows (the Ctrl+Arrow volume and
-  // gain bindings from rigs/_keyboard-default.toml) stay global.
+  // evidence of consumption, and modified arrows (the Alt/Option+Arrow
+  // volume and gain bindings from rigs/_keyboard-default.toml, MOR-2515)
+  // stay global.
   describe('focused widget arrow ownership via data-owns-arrows (MOR-2507)', () => {
     const arrowConfig: KeyboardConfig = {
       ...config,
@@ -482,6 +483,37 @@ describe('KeyboardHandler', () => {
         expect.objectContaining({ action: 'adjust_af_level', params: { delta: 5 } }));
       expect(onAction).toHaveBeenNthCalledWith(2,
         expect.objectContaining({ action: 'adjust_rf_gain', params: { delta: 5 } }));
+    });
+
+    // MOR-2515 — the shipped defaults bind AF/RF to Alt/Option+Arrow; the
+    // literal default chord gets the same composition pin the Ctrl class
+    // case above carries: global action fires once, slider does not step.
+    it('Alt+ArrowUp on an owning widget fires the global binding once and the slider does not step (MOR-2515 default chord)', () => {
+      const altDefaultConfig: KeyboardConfig = {
+        ...arrowConfig,
+        bindings: [
+          ...arrowConfig.bindings,
+          {
+            id: 'af-level-up-alt',
+            section: 'Levels',
+            label: 'AF gain up',
+            sequence: ['ArrowUp'],
+            modifiers: ['ALT'],
+            action: 'adjust_af_level',
+            repeatable: true,
+            params: { delta: 5 },
+          },
+        ],
+      };
+      const onAction = vi.fn();
+      mountHandler({ config: altDefaultConfig, onAction });
+
+      const slider = mountFocusedHBar();
+      press('ArrowUp', { altKey: true });
+
+      expect(onAction).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ action: 'adjust_af_level', params: { delta: 5 } }));
+      expect(slider.getAttribute('aria-valuenow')).toBe('5');
     });
 
     it('a plain role="radio" button without the hook (real AttenuatorControl) still tunes', () => {
@@ -631,6 +663,41 @@ describe('KeyboardHandler', () => {
       expect(document.activeElement).toBe(range);
 
       range.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+
+      expect(onAction).not.toHaveBeenCalled();
+    });
+
+    // MOR-2515 — on macOS Option+Arrow inside a focused text input is word
+    // navigation; the global map must keep skipping editable targets for a
+    // modified arrow, not just bare ones, so the browser keeps the gesture.
+    it('does not dispatch the Alt+ArrowUp default when a text input is focused (word navigation)', () => {
+      const onAction = vi.fn();
+      mountHandler({
+        config: {
+          ...arrowConfig,
+          bindings: [
+            ...arrowConfig.bindings,
+            {
+              id: 'af-level-up-alt',
+              section: 'Levels',
+              label: 'AF gain up',
+              sequence: ['ArrowUp'],
+              modifiers: ['ALT'],
+              action: 'adjust_af_level',
+              repeatable: true,
+              params: { delta: 5 },
+            },
+          ],
+        },
+        onAction,
+      });
+      const input = document.createElement('input');
+      input.type = 'text';
+      document.body.appendChild(input);
+      input.focus();
+      expect(document.activeElement).toBe(input);
+
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', altKey: true, bubbles: true, cancelable: true }));
 
       expect(onAction).not.toHaveBeenCalled();
     });

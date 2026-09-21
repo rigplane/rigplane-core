@@ -27,8 +27,9 @@
  * `{ delta: 5 }` or `{ delta: -5 }` — never `direction`. Before this fix,
  * `dispatchKeyboardRadioAction`'s `adjust_af_level`/`adjust_rf_gain` cases
  * read ONLY `params.direction` and never `params.delta` — a source-level
- * dead control on every profile, not fixture-specific: press Ctrl+ArrowUp
- * (or Ctrl+Shift+ArrowUp) and nothing was sent. Both cases now interpret a
+ * dead control on every profile, not fixture-specific: press Alt+ArrowUp
+ * (or Alt+Shift+ArrowUp; Ctrl+Arrow until MOR-2515 moved the defaults)
+ * and nothing was sent. Both cases now interpret a
  * declared `delta` as RAW units against the control's declared domain
  * (`caps.controls.af_level`/`rf_gain`, `raw_min`/`raw_max` — 0/255 on this
  * fixture), converted to the handler's normalized/raw wire shape as
@@ -38,9 +39,9 @@
  * HANDLER-CAPABILITY PROBES further down (NOT profile behavior, not
  * counted in the 17/11 split) proving the fallback path is intact.
  * STRENGTHENED (round-2 review): `af-level-up`/`rf-level-up` carry
- * `modifiers: ['CTRL']`/`['CTRL','SHIFT']` — `keyboard-map.ts`'s
- * `modifiersMatch()` (line ~206) resolves plain ArrowUp to `step-up`
- * (`adjust_tuning_step`) and only Ctrl+ArrowUp reaches `af-level-up`, so
+ * `modifiers: ['ALT']`/`['ALT','SHIFT']` (Ctrl until MOR-2515) —
+ * `keyboard-map.ts`'s `modifiersMatch()` (line ~206) resolves plain ArrowUp to `step-up`
+ * (`adjust_tuning_step`) and only Alt+ArrowUp reaches `af-level-up`, so
  * this was a genuinely reachable, user-visible dead control on this
  * profile before the fix — not a theoretical gap.
  *
@@ -59,8 +60,8 @@
  * walk claimed `af-level-up`/`rf-level-up`/`step-up` share `ArrowUp` as a
  * three-way shadow, and that `scope_toggle_fst` (`F`) shadows
  * `open_filter_settings` — both FALSE. Every one of those bindings also
- * declares a `modifiers` array (`step-up`: none, `af-level-up`: `['CTRL']`,
- * `rf-level-up`: `['CTRL','SHIFT']`; `open-filter-settings`: none,
+ * declares a `modifiers` array (`step-up`: none, `af-level-up`: `['ALT']`,
+ * `rf-level-up`: `['ALT','SHIFT']`; `open-filter-settings`: none,
  * `scope-toggle-fst`: `['SHIFT']`) that `modifiersMatch()` discriminates
  * on exactly — each key+modifier combination resolves to its own single
  * binding, with no shadow. The direction in the original claim was also

@@ -598,9 +598,13 @@ Editable value controls, the active-receiver toggle, and the spectrum
 splitter (Up/Down only) own their unmodified arrow keys: while one is
 focused, those arrows act on that control instead of tuning (Shift steps a
 value control finely; a control that is not editable owns nothing).
-Modified arrows — the `Ctrl+ArrowUp`/`ArrowDown` AF level and
-`Ctrl+Shift+ArrowUp`/`ArrowDown` RF gain bindings — and focus anywhere
-else, including plain buttons, keep the global bindings.
+Modified arrows — the `Alt`/`Option`+`ArrowUp`/`ArrowDown` AF level and
+`Alt`/`Option`+`Shift`+`ArrowUp`/`ArrowDown` RF gain bindings (one set on
+every platform; macOS reserves Ctrl+Arrow for Mission Control / App Exposé,
+which is why the defaults avoid it) — and focus anywhere else, including
+plain buttons, keep the global bindings. Inside a focused text input the
+global map stays silent and the browser keeps Alt/Option+Arrow for word
+navigation.
 
 There is no global keyboard shortcut bound to PTT. Focused PTT controls
 support Space/Enter through their own press/release handlers; this is

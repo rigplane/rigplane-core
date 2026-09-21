@@ -230,9 +230,9 @@ describe('ActiveReceiverToggle', () => {
     });
 
     // MOR-2512 — Ctrl/Alt/Meta+Arrow belongs to the global keyboard map
-    // (Ctrl+ArrowUp/Down adjust_af_level); the widget must neither move
-    // selection nor swallow the event so the window-level global handler
-    // sees it.
+    // (Alt/Option+ArrowUp/Down adjust_af_level since MOR-2515); the widget
+    // must neither move selection nor swallow the event so the window-level
+    // global handler sees it.
     it('Ctrl+ArrowRight neither moves selection nor swallows the event', () => {
       const onChange = vi.fn();
       const t = mountToggle({ active: 'MAIN', onChange });
