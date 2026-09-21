@@ -2,12 +2,9 @@
  * MOR-1679 — FTX-1 filter-width rendering and write emission in
  * FilterPanel, pinned against the GENERATED capabilities fixture (see
  * `lib/runtime/adapters/__tests__/fixtures/ftx1-profile.ts`). Table 5
- * semantics: only table entries are ever emitted; bounds are the table's
- * first and last entry; fixed modes are not operable; a null width reads
- * as the existing '--- Hz' unavailable treatment.
- *
- * Same harness shape as `FilterPanel.isolated.test.ts` (module-scope
- * panel-adapters mock), which is why this file is isolated-pool.
+ * semantics pinned here: bounds are the table's first and last entry;
+ * fixed modes are not operable; a null width reads as the existing
+ * '--- Hz' unavailable treatment.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
@@ -150,8 +147,7 @@ describe('MOR-1679 FTX-1 table-mode width quantization (Table 5)', () => {
     pressKey(t, 'ArrowRight');
     vi.advanceTimersByTime(60);
     // The candidate equals the confirmed canonical, so the binding sends
-    // nothing — a step that cannot move stays silent rather than re-echo
-    // the boundary value.
+    // nothing.
     expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
   });
 

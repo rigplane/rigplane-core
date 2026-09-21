@@ -14,10 +14,7 @@
  * txBands, audioConfig/webrtc required by `validateCapabilities`), laid
  * out compactly (sorted keys; filterConfig one mode per line). The full
  * byte-faithful payload does not fit this change's line ceiling; the
- * values are the serializer's own output, unedited. Pins against this
- * fixture: `ftx1-filter-width-conformance.test.ts`,
- * `FilterPanel.ftx1-table5.isolated.test.ts`, and the MOR-1679 describe
- * in `panel-commands.intent.isolated.test.ts`.
+ * values are the serializer's own output, unedited.
  */
 import type { Capabilities } from '$lib/types/capabilities';
 import ftx1CapabilitiesJson from './ftx1-capabilities.json';

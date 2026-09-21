@@ -2903,9 +2903,8 @@ describe('MOR-1576 (review B1) — onFilterDefaults validates the whole array be
 /**
  * MOR-1679 — the FTX-1 filter-width write path against CAT 2508-C
  * Table 5, on the GENERATED capabilities fixture (`ftx1-profile.ts`).
- * The browser works in Hz from the mode's table; the server does the SH
- * encoding. Pins the emitted intent: `set_filter_width` with the table
- * Hz and the ACTIVE receiver, on the real handler layer.
+ * Pins the emitted intent: `set_filter_width` with the table Hz and
+ * the ACTIVE receiver, on the real handler layer.
  */
 describe('MOR-1679 FTX-1 Table 5 filter-width write path', () => {
   function ftx1State(mode: string, active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {

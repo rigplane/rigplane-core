@@ -1,12 +1,9 @@
 /**
  * MOR-1679 — FTX-1 filter-width browser conformance against CAT 2508-C
  * Table 5, on the GENERATED capabilities fixture (see
- * `fixtures/ftx1-profile.ts` for how it was produced).
- *
- * Pins the mode-resolution layer (`resolveFilterModeConfig`) and the
- * props layer (`toFilterProps`) for every FTX-1 mode name the state can
- * carry. Literal expectations only — never derived from the fixture under
- * test.
+ * `fixtures/ftx1-profile.ts` for how it was produced). Pins
+ * `resolveFilterModeConfig` and `toFilterProps` over the mode table
+ * below.
  */
 import { describe, expect, it } from 'vitest';
 import { validateCapabilities } from '$lib/types/capabilities';
