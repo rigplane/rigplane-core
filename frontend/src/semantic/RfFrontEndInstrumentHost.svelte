@@ -506,6 +506,7 @@
           <ValueControl
             {...feedbackIntegratedControl}
             binding={binding} {label} renderer="hbar" showLabel={false} showValue={false} compact={true}
+            variant="hardware-illuminated" accentColor="var(--v2-accent-cyan-alt)"
             displayFn={valueText} issuedStatusPresentation={scalarIssuedStatuses[field]}
           />
         {/key}

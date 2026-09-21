@@ -301,6 +301,27 @@
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const afLevelBinding = createContinuousScalar(input, policy);
 
+  const CHANNEL_GAIN_DOMAIN = {
+    min: -60, max: 12, step: 1, defaultValue: null, fineStepDivisor: 1,
+  } as const;
+  function channelGainInput(channel: 'main' | 'sub'): Readonly<ContinuousScalarInput> {
+    const value = channel === 'main' ? routingGains?.main : routingGains?.sub;
+    const known = value !== undefined && Number.isFinite(value);
+    return {
+      domain: CHANNEL_GAIN_DOMAIN,
+      enabled: known && rx?.routingFocus.availability.operational === true
+        && onChannelGainChange !== undefined,
+      request: (next: number) => onChannelGainChange?.(channel, next),
+      evidence: 'reading',
+      reading: known ? { status: 'known', value } : { status: 'unknown' },
+      ownerKey: `rx-audio-gain:${channel}`,
+    };
+  }
+  const channelGainBindings = {
+    main: createContinuousScalar(() => channelGainInput('main'), policy),
+    sub: createContinuousScalar(() => channelGainInput('sub'), policy),
+  } as const;
+
   onMount(() => {
     stop = subscribeControlAuthority((next) => {
       const nextAuthority = authority(next);
@@ -317,6 +338,8 @@
   onDestroy(() => {
     try { stop?.(); } finally {
       afLevelBinding.destroy();
+      channelGainBindings.main.destroy();
+      channelGainBindings.sub.destroy();
       for (const seat of finiteSeats) seat.destroy();
     }
   });
@@ -437,14 +460,18 @@
 {#snippet channelGain(channel: 'main' | 'sub')}
   {#if rx?.routingFocus.availability.structural}
     {@const value = channel === 'main' ? routingGains?.main : routingGains?.sub}
-    <label class="rx-audio-gain" data-testid={`rx-audio-${channel}-gain`}>
-      <span>{channel.toUpperCase()}</span>
-      <input type="range" min="-60" max="12" step="1" value={value ?? 0}
-        aria-label={`${channel.toUpperCase()} gain in decibels`}
-        disabled={value === undefined || !rx.routingFocus.availability.operational
-          || onChannelGainChange === undefined}
-        oninput={(event) => onChannelGainChange?.(channel, event.currentTarget.valueAsNumber)} />
-      <output>{value === undefined ? UNKNOWN_TEXT : `${value} dB`}</output>
+    <label class="rx-audio-level rx-audio-gain" data-testid={`rx-audio-${channel}-gain`}
+      data-observed={rx.routingFocus.availability.operational && value !== undefined}>
+      <span class="rx-audio-name">{channel.toUpperCase()}</span>
+      <ValueControl
+        {...feedbackIntegratedControl}
+        binding={channelGainBindings[channel]}
+        label={`${channel.toUpperCase()} gain in decibels`}
+        renderer="hbar" showLabel={false} showValue={false} compact={true}
+        variant="hardware-illuminated" accentColor="var(--v2-accent-cyan-alt)"
+      />
+      <output data-testid={`rx-audio-${channel}-gain-value`}
+        >{value === undefined ? UNKNOWN_TEXT : `${value} dB`}</output>
     </label>
   {/if}
 {/snippet}
@@ -541,8 +568,13 @@
 
 <style>
   .rx-audio-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
-  .rx-audio-level, .rx-audio-gain { display: flex; align-items: baseline; gap: 0.5rem; }
-  .rx-audio-level :global(.vc-hbar), .rx-audio-gain input { flex: 1 1 auto; min-width: 0; }
+  .rx-audio-level { display: flex; align-items: baseline; gap: 0.5rem; }
+  .rx-audio-level :global(.vc-hbar) { flex: 1 1 auto; min-width: 0; }
+  .rx-audio-gain > output {
+    min-width: 6ch;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
   .rx-audio-name { min-width: 7ch; }
   .rx-audio-status { margin: 0; color: var(--v2-text-dim, #8ca0b8); font-size: 10px; }
   .rx-audio-mod-selector { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; max-width: 100%; }
