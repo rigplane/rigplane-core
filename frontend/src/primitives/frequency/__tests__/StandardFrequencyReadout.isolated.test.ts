@@ -213,10 +213,10 @@ describe('digit-scoped arrow ownership on the readout root (MOR-2512)', () => {
 
 // MOR-2514 — the live-page defect: selecting a digit was a one-way door.
 // The readout declared data-owns-arrows for as long as the selection
-// lived and nothing ever ended it. The pins below cover the three
-// release paths (Escape, focusout past the group, toggle click) and the
-// two non-releases (focus moving between digits inside the group, and
-// the no-digit state's unconsumed Escape).
+// lived and nothing ever ended it. The pins below cover the two release
+// paths (Escape, focusout past the group) and the non-releases (focus
+// moving between digits inside the group, a repeated click on the
+// selected digit, and the no-digit state's unconsumed Escape).
 describe('releasing a selected digit (MOR-2514)', () => {
   const HINT = 'Esc or click away to deselect';
 
@@ -286,14 +286,13 @@ describe('releasing a selected digit (MOR-2514)', () => {
     expect(digits[2].classList.contains('selected')).toBe(false);
   });
 
-  it('toggles off when the selected digit is clicked again and moves on a different digit', () => {
+  it('keeps the digit selected when it is clicked again and moves on a different digit', () => {
     const { root, digits } = mountInteractiveReadout();
     selectDigit(digits[0]);
     selectDigit(digits[0]);
-    expect(digits[0].classList.contains('selected')).toBe(false);
-    expect(root.hasAttribute('data-owns-arrows')).toBe(false);
+    expect(digits[0].classList.contains('selected')).toBe(true);
+    expect(root.getAttribute('data-owns-arrows')).toBe('vertical');
 
-    selectDigit(digits[0]);
     selectDigit(digits[3]);
     expect(digits[0].classList.contains('selected')).toBe(false);
     expect(digits[3].classList.contains('selected')).toBe(true);

@@ -72,7 +72,7 @@ export function createFrequencyInteraction(
   function handleDigitClick(digit: DigitInfo, event: MouseEvent): void {
     if (inert) return;
     event.stopPropagation();
-    selectedDigitIndex = selectedDigitIndex === digit.digitIndex ? null : digit.digitIndex;
+    selectedDigitIndex = digit.digitIndex;
   }
 
   function handleKeyDown(event: KeyboardEvent): void {
