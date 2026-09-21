@@ -161,6 +161,20 @@ const dataModeCount = IC7300_CAPABILITIES.dataModeCount!;
 const afLevelRange = IC7300_CAPABILITIES.controls!.af_level!;
 const rfGainRange = IC7300_CAPABILITIES.controls!.rf_gain!;
 
+// MOR-2513: wire leaves are nullable; the CASES arithmetic below is only
+// honest when these fixture observations are present. Throw (never
+// fabricate) if the fixture ever loses one.
+if (typeof main.freqHz !== 'number') throw new Error('fixture main.freqHz observed');
+if (typeof main.dataMode !== 'number') throw new Error('fixture main.dataMode observed');
+if (typeof main.afLevel !== 'number') throw new Error('fixture main.afLevel observed');
+if (typeof main.rfGain !== 'number') throw new Error('fixture main.rfGain observed');
+if (typeof main.preamp !== 'number') throw new Error('fixture main.preamp observed');
+if (typeof main.att !== 'number') throw new Error('fixture main.att observed');
+if (typeof scope.span !== 'number') throw new Error('fixture scopeControls.span observed');
+if (typeof scope.refDb !== 'number') throw new Error('fixture scopeControls.refDb observed');
+const probeAfLevel = main.afLevel;
+const probeRfGain = main.rfGain;
+
 /** Wraps `current` to the NEXT entry in a fixture-declared option list. */
 function wrap(values: number[], current: number): number {
   return values[(values.indexOf(current) + 1) % values.length];
@@ -204,7 +218,7 @@ const CASES: readonly KeyboardCase[] = [
   { action: 'clear_rit_xit', frames: [], gate: 'top-level ritFreq unobserved' },
   { action: 'adjust_af_level', params: { delta: 5 },
     frames: [['set_af_level', {
-      level: Math.max(0, Math.min(1, main.afLevel + 5 / (afLevelRange.raw_max - afLevelRange.raw_min))),
+      level: Math.max(0, Math.min(1, probeAfLevel + 5 / (afLevelRange.raw_max - afLevelRange.raw_min))),
       receiver: 0,
       level_unit: 'normalized',
     }]],
@@ -275,6 +289,34 @@ describe('IC-7300 fixture — keyboard action fan-out conformance (MOR-1563)', (
     });
   }
 
+  // MOR-2513: with the observations absent (null leaves, fieldStatus
+  // observed:false), no keyboard action may compute a command from a null
+  // current value. Every action listed here DISPATCHES on the live fixture
+  // above; each must REFUSE here.
+  it('MOR-2513: no command is computed from a null (unobserved) current value', () => {
+    const nullState = structuredClone(IC7300_STATE);
+    nullState.main = {
+      ...nullState.main!,
+      freqHz: null, mode: null, dataMode: null, filter: null,
+      preamp: null, att: null, agc: null, nr: null, nb: null,
+      afLevel: null, rfGain: null,
+    };
+    nullState.scopeControls = { ...nullState.scopeControls!, span: null, refDb: null, hold: null };
+    nullState.fieldStatus = Object.fromEntries(
+      Object.entries(nullState.fieldStatus ?? {}).map(
+        ([path, status]) => [path, { ...status!, observed: false }],
+      ),
+    );
+    h.state = nullState;
+    const params = { direction: 'up', fine: false, index: 5, step: 1, mode: 'LSB', delta: 5 };
+    for (const action of ['tune', 'band_select', 'cycle_data_mode', 'cycle_filter',
+      'cycle_preamp', 'cycle_att', 'cycle_agc', 'toggle_nr', 'toggle_nb',
+      'adjust_af_level', 'adjust_rf_gain', 'scope_span_step', 'scope_ref_step',
+      'scope_toggle_hold']) {
+      expectRefusal(() => dispatchKeyboardRadioAction({ action, params }));
+    }
+  });
+
   // MOR-1577 handler-capability probes: NOT this profile's declared binding
   // shape (real bindings send `{ delta }`, asserted as DISPATCH above) —
   // these prove the `direction`-based fallback path documented in the
@@ -284,7 +326,7 @@ describe('IC-7300 fixture — keyboard action fan-out conformance (MOR-1563)', (
     expectFrames(
       () => dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'up' } }),
       [['set_af_level', {
-        level: Math.max(0, Math.min(1, main.afLevel + 0.05)),
+        level: Math.max(0, Math.min(1, probeAfLevel + 0.05)),
         receiver: 0,
         level_unit: 'normalized',
       }]],
@@ -294,7 +336,7 @@ describe('IC-7300 fixture — keyboard action fan-out conformance (MOR-1563)', (
   it('HANDLER-CAPABILITY PROBE (not profile behavior, MOR-1577): adjust_rf_gain dispatches set_rf_gain given {direction}', () => {
     expectFrames(
       () => dispatchKeyboardRadioAction({ action: 'adjust_rf_gain', params: { direction: 'down' } }),
-      [['set_rf_gain', { level: Math.round(Math.max(0, Math.min(1, main.rfGain - 0.05)) * 255), receiver: 0 }]],
+      [['set_rf_gain', { level: Math.round(Math.max(0, Math.min(1, probeRfGain - 0.05)) * 255), receiver: 0 }]],
     );
   });
 });
