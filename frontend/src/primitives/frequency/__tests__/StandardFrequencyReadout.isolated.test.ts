@@ -211,6 +211,108 @@ describe('digit-scoped arrow ownership on the readout root (MOR-2512)', () => {
   });
 });
 
+// MOR-2514 — the live-page defect: selecting a digit was a one-way door.
+// The readout declared data-owns-arrows for as long as the selection
+// lived and nothing ever ended it. The pins below cover the three
+// release paths (Escape, focusout past the group, toggle click) and the
+// two non-releases (focus moving between digits inside the group, and
+// the no-digit state's unconsumed Escape).
+describe('releasing a selected digit (MOR-2514)', () => {
+  const HINT = 'Esc or click away to deselect';
+
+  function mountInteractiveReadout() {
+    const model = projectFrequencyReadout({ confirmedHz: 14_250_000 });
+    const onFreqChange = vi.fn();
+    let interaction!: FrequencyInteraction;
+    roots.push(effect_root(() => {
+      interaction = createFrequencyInteraction({
+        confirmedHz: 14_250_000,
+        digits: model.digits,
+        disabled: false,
+        minFreq: 0,
+        maxFreq: 999_000_000,
+        onFreqChange,
+        selectedDigitHint: HINT,
+      });
+    }));
+    flushSync();
+    const target = mountReadout({ model, presentation: 'interactive', interaction });
+    const root = target.querySelector<HTMLElement>('.freq')!;
+    const digits = Array.from(target.querySelectorAll<HTMLElement>('.digit'));
+    return { root, digits, onFreqChange };
+  }
+
+  function selectDigit(digit: HTMLElement): void {
+    digit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+  }
+
+  it('releases on Escape and consumes it only while a digit is selected', () => {
+    const { root, digits } = mountInteractiveReadout();
+    selectDigit(digits[0]);
+    expect(root.getAttribute('data-owns-arrows')).toBe('vertical');
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    root.dispatchEvent(escape);
+    flushSync();
+
+    expect(escape.defaultPrevented).toBe(true);
+    expect(digits[0].classList.contains('selected')).toBe(false);
+    expect(root.hasAttribute('data-owns-arrows')).toBe(false);
+
+    const bare = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    root.dispatchEvent(bare);
+    expect(bare.defaultPrevented).toBe(false);
+  });
+
+  it('releases on focusout past the group and keeps digit-to-digit focus inside it selected', () => {
+    const { root, digits } = mountInteractiveReadout();
+    selectDigit(digits[0]);
+
+    root.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: digits[1] }));
+    flushSync();
+    expect(digits[0].classList.contains('selected')).toBe(true);
+
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    root.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: outside }));
+    flushSync();
+    expect(digits[0].classList.contains('selected')).toBe(false);
+    expect(root.hasAttribute('data-owns-arrows')).toBe(false);
+
+    selectDigit(digits[2]);
+    root.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+    flushSync();
+    expect(digits[2].classList.contains('selected')).toBe(false);
+  });
+
+  it('toggles off when the selected digit is clicked again and moves on a different digit', () => {
+    const { root, digits } = mountInteractiveReadout();
+    selectDigit(digits[0]);
+    selectDigit(digits[0]);
+    expect(digits[0].classList.contains('selected')).toBe(false);
+    expect(root.hasAttribute('data-owns-arrows')).toBe(false);
+
+    selectDigit(digits[0]);
+    selectDigit(digits[3]);
+    expect(digits[0].classList.contains('selected')).toBe(false);
+    expect(digits[3].classList.contains('selected')).toBe(true);
+  });
+
+  it('carries the release hint as a title on the selected digit only', () => {
+    const { digits } = mountInteractiveReadout();
+    expect(digits[0].hasAttribute('title')).toBe(false);
+    selectDigit(digits[0]);
+    expect(digits[0].getAttribute('title')).toBe(HINT);
+  });
+
+  it('focuses the readout group when a digit click selects it', () => {
+    const { root, digits } = mountInteractiveReadout();
+    selectDigit(digits[0]);
+    expect(document.activeElement).toBe(root);
+  });
+});
+
 describe('alternate frequency renderer', () => {
   it('receives the real passive interaction and stays inert after teardown', () => {
     selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;

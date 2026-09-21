@@ -45,6 +45,16 @@
      */
     pendingAnnouncement?: string;
     /**
+     * MOR-2514 — already-localized text telling the operator how to
+     * release a selected digit (Esc, click away). Rendered as the
+     * selected digit's title by the standard readout. Passed in rather
+     * than resolved here — this primitive stays i18n-blind, same as
+     * `pendingAnnouncement` above. Pinned as a literal by the MOR-2514
+     * tests in StandardFrequencyReadout.isolated.test.ts and
+     * KeyboardHandler.test.ts.
+     */
+    selectedDigitHint?: string;
+    /**
      * MOR-1480 — when true (the default), this primitive emits its own
      * `data-vfo-freq` + `data-vfo-active` (mirroring `active`) on its
      * focusable root, so the MOR-1444 keyboard routing guard
@@ -76,6 +86,7 @@
     onFreqChange,
     pendingDisplayHz = null,
     pendingAnnouncement,
+    selectedDigitHint,
     vfoFreqHook = true,
   }: Props = $props();
 
@@ -91,6 +102,7 @@
     get minFreq() { return minFreq; },
     get maxFreq() { return maxFreq; },
     get onFreqChange() { return onFreqChange; },
+    get selectedDigitHint() { return selectedDigitHint; },
   });
 </script>
 

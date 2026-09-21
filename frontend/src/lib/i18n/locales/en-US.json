@@ -217,6 +217,7 @@
   "core.vfo.selectAction": "Select {label}",
   "core.vfo.txTarget.label": "TX target",
   "core.vfo.freq.pendingAnnouncement": "Pending, not yet confirmed",
+  "core.vfo.freq.selectedDigitHint": "Esc or click away to deselect",
   "core.filter.select.pendingAnnouncement": "Pending, not yet confirmed",
   "core.filter.width.pendingAnnouncement": "Filter width {target} requested; not yet confirmed by the radio.",
   "core.filter.width.confirmedAnnouncement": "Filter width confirmed at {confirmed}.",

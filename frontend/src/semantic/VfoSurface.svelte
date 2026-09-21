@@ -639,6 +639,7 @@
               contextKey={`${frequencyLifetimeKey ?? 'unscoped'}:${viewModel.topologyId}:${vfo.receiver}:${slotKey(vfo.slot)}`}
               pendingDisplayHz={pendingHz}
               pendingAnnouncement={pendingHz !== null ? t('core.vfo.freq.pendingAnnouncement') : undefined}
+              selectedDigitHint={t('core.vfo.freq.selectedDigitHint')}
               compact={appearance === 'semantic'}
               active={vfo.isActive}
               receiver={vfo.receiver === 'SUB' ? 'sub' : 'main'}
