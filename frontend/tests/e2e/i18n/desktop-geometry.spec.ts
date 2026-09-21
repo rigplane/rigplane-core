@@ -554,6 +554,11 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
               const cardBox = card.getBoundingClientRect();
               return [...card.querySelectorAll<HTMLElement>('[data-vfo-row], [data-vfo-row] *')]
               .filter(target => {
+                // A `display: contents` wrapper (e.g. .frequency-readout-content)
+                // generates no box: its rect is 0/0/0/0 and it cannot be clipped.
+                // getClientRects() stays empty for it (and for display: none)
+                // while a real zero-width box still reports one rect.
+                if (target.getClientRects().length === 0) return false;
                 const style = getComputedStyle(target);
                 const box = target.getBoundingClientRect();
                 return style.display !== 'none' && style.visibility !== 'hidden'
