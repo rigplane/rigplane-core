@@ -154,7 +154,10 @@ export const DEFAULT_KEYBOARD_CONFIG: KeyboardConfig = {
 /** Tags whose focused presence should suppress keyboard shortcuts. */
 export const IGNORED_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 
-const MODIFIER_ORDER = ['CTRL', 'SHIFT', 'ALT', 'META'] as const;
+// Display order for formatShortcut's prefix only — matching sorts both
+// sides alphabetically. Alt/Option precedes Shift per platform convention
+// ("Alt+Shift", "Option+Shift"); no pre-MOR-2515 chord combined the two.
+const MODIFIER_ORDER = ['CTRL', 'ALT', 'SHIFT', 'META'] as const;
 
 /** MOR-2515: Apple platforms label the key that produces the Alt modifier
  * "Option", and a hint must name the key as the viewer's platform does.
