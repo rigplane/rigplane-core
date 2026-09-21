@@ -357,6 +357,17 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     r.dispose();
   });
 
+  // MOR-2524: the separate-form sliders carry the same hardware-illuminated
+  // fader frame AF LEVEL's row selects (`hw-illum` + its `hil-thumb` cap),
+  // not the modern thin-line look.
+  it.each(RF_FRONT_END_LEVELS)('renders the separate %s slider as the hardware-illuminated fader', (field) => {
+    const r = render(base());
+    const frame = r.el(field)!.querySelector<HTMLElement>('.vc-hbar');
+    expect(frame?.classList.contains('hw-illum')).toBe(true);
+    expect(frame?.querySelector('.hil-thumb')).not.toBeNull();
+    r.dispose();
+  });
+
   it('emits the slider value verbatim, on the way out', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { onLevelChange });

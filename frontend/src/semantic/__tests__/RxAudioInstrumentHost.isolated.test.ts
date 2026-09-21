@@ -256,9 +256,14 @@ describe('RxAudioInstrumentHost', () => {
 
   it('retains one binding across layout replacement and retires the detached renderer lease', () => {
     const r = render(); const binding = scalarCapture.bindings[0] as ContinuousScalarBinding;
+    // The AF binding plus the two channel-gain bindings the host also owns
+    // (MOR-2524) — none of the three may be recreated by a layout switch.
+    const before = [...scalarCapture.bindings];
+    expect(before).toHaveLength(3);
     const oldLease = r.slider().rendererLease;
     r.props.layout = 'independent'; flushSync();
-    expect(scalarCapture.bindings).toEqual([binding]);
+    expect(scalarCapture.bindings).toEqual(before);
+    expect(scalarCapture.bindings[0]).toBe(binding);
     expect(oldLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
     expect(r.slider().rendererLease.key({ key: 'ArrowRight', fine: false })).toBe(true);
     expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(0.21);
