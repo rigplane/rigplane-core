@@ -60,6 +60,7 @@
   import type {
     RfFrontEndAuthorityPublication,
     RfFrontEndFiniteChoiceValue,
+    RfFrontEndFiniteHandles,
     RfFrontEndLevelFeedback,
     RfFrontEndLevelField,
     RfFrontEndLevelHandles,
@@ -76,6 +77,9 @@
     rfSqlFeedback?: RfFrontEndLevelFeedback | null;
     layout?: 'grouped' | 'independent';
     renderSurface?: boolean;
+    /** Passes a finite layout to the surface, the way the Standard face's
+     *  seats do (MOR-2524). */
+    surfaceFiniteLayout?: boolean;
     pendingPreamp?: number | null;
     finiteAppearance?: FiniteControlAppearance<RfFrontEndFiniteChoiceValue>;
     rendererContext?: FiniteRendererContext | null;
@@ -87,7 +91,7 @@
 
   let {
     publication, view, subscribeControlAuthority, controlModel, rfSqlFeedback,
-    layout = 'grouped', renderSurface = false, pendingPreamp = null,
+    layout = 'grouped', renderSurface = false, surfaceFiniteLayout = false, pendingPreamp = null,
     finiteAppearance, rendererContext = null,
     onPreampChange, onAttenuatorChange, onLevelChange, onToggle,
   }: Props = $props();
@@ -96,6 +100,15 @@
   });
   let selection = $derived(finiteAppearance === undefined ? {} : { finiteAppearance, rendererContext });
 </script>
+
+{#snippet seatFiniteLayout(rfFrontEndInstruments: RfFrontEndFiniteHandles)}
+  <div data-finite-layout>
+    {@render rfFrontEndInstruments.attenuator()}
+    {@render rfFrontEndInstruments.preamp()}
+    {@render rfFrontEndInstruments.digiSel()}
+    {@render rfFrontEndInstruments.ipPlus()}
+  </div>
+{/snippet}
 
 <RfFrontEndInstrumentHost
   {presentation} {subscribeControlAuthority} {onLevelChange} {pendingPreamp}
@@ -106,7 +119,10 @@
 >
   {#snippet children(handles: RfFrontEndLevelHandles)}
     {#if renderSurface && view !== null}
-      <RfFrontEndSurface {view} levelHandles={handles} />
+      <RfFrontEndSurface
+        {view} levelHandles={handles}
+        finiteLayout={surfaceFiniteLayout ? seatFiniteLayout : undefined}
+      />
     {:else}
       {#key layout}
         <section data-layout={layout} data-handle-kind={handles.kind}>

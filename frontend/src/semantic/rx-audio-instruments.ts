@@ -83,8 +83,10 @@ export interface RxAudioInstrumentHandles {
   readonly routingFocus: Snippet;
   readonly routingSplit: Snippet;
   readonly routingSplitToggle?: Snippet;
-  readonly mainGain?: Snippet;
-  readonly subGain?: Snippet;
+  /** `hardware` drives the same variant ternary AF LEVEL's `afLevelControl`
+   *  uses; omitted, it is the hardware instrument face. */
+  readonly mainGain?: Snippet<[hardware?: boolean]>;
+  readonly subGain?: Snippet<[hardware?: boolean]>;
   readonly modInputSource: Snippet;
   readonly setModInputLan: Snippet;
 }

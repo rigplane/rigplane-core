@@ -256,9 +256,14 @@ describe('RxAudioInstrumentHost', () => {
 
   it('retains one binding across layout replacement and retires the detached renderer lease', () => {
     const r = render(); const binding = scalarCapture.bindings[0] as ContinuousScalarBinding;
+    // The AF binding plus the two channel-gain bindings the host also owns
+    // (MOR-2524) — none of the three may be recreated by a layout switch.
+    const before = [...scalarCapture.bindings];
+    expect(before).toHaveLength(3);
     const oldLease = r.slider().rendererLease;
     r.props.layout = 'independent'; flushSync();
-    expect(scalarCapture.bindings).toEqual([binding]);
+    expect(scalarCapture.bindings).toEqual(before);
+    expect(scalarCapture.bindings[0]).toBe(binding);
     expect(oldLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
     expect(r.slider().rendererLease.key({ key: 'ArrowRight', fine: false })).toBe(true);
     expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(0.21);
@@ -272,6 +277,43 @@ describe('RxAudioInstrumentHost', () => {
     expect(r.publisher.handlers.size).toBe(0);
     lease.pointer(token, 0.8); lease.endPointer(token);
     expect(r.onAfLevelChange).not.toHaveBeenCalled();
+  });
+});
+
+/* MOR-2524 — the channel-gain handles carry AF LEVEL's own `hardware` flag:
+ * the same snippet ternary, so a non-hardware call renders the modern variant. */
+describe('RxAudioInstrumentHost channel-gain appearance (MOR-2524)', () => {
+  const gainAudio = (): RxAudioViewModel => ({
+    ...audio(0.2),
+    routingFocus: {
+      reading: { status: 'known', value: 'both' },
+      availability: { structural: true, operational: true },
+    },
+  } as RxAudioViewModel);
+
+  function renderGains(hardware: boolean): HTMLElement | null {
+    activation.selected = undefined;
+    const initial = publication();
+    const component = mount(Fixture, { target, props: {
+      publication: initial, rxAudio: gainAudio(),
+      subscribeControlAuthority: new Publisher(initial).subscribe,
+      layout: 'grouped', gainHardware: hardware,
+    } });
+    components.push(component);
+    flushSync();
+    return target.querySelector<HTMLElement>('[data-testid="rx-audio-main-gain"] .vc-hbar');
+  }
+
+  it('renders the hardware-illuminated fader on the hardware call', () => {
+    const frame = renderGains(true);
+    expect(frame?.classList.contains('hw-illum')).toBe(true);
+    expect(frame?.querySelector('.hil-thumb')).not.toBeNull();
+  });
+
+  it('renders the modern variant on a non-hardware call', () => {
+    const frame = renderGains(false);
+    expect(frame?.classList.contains('hw-illum')).toBe(false);
+    expect(frame?.querySelector('.vc-thumb')).not.toBeNull();
   });
 });
 

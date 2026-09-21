@@ -20,6 +20,9 @@
     view?: RadioViewModel;
     subscribeControlAuthority: SubscribeRxAudioAuthority;
     layout?: 'grouped' | 'independent';
+    /** Renders the channel-gain handles with this `hardware` flag (MOR-2524);
+     *  undefined renders neither handle. */
+    gainHardware?: boolean;
     onAfLevelChange?: (value: number) => void;
     onMonitorMode?: (mode: MonitorMode) => void;
     onRoutingFocus?: (focus: AudioFocus) => void;
@@ -31,7 +34,8 @@
   }
 
   let {
-    publication, rxAudio, view, subscribeControlAuthority, layout = 'grouped', onAfLevelChange,
+    publication, rxAudio, view, subscribeControlAuthority, layout = 'grouped', gainHardware,
+    onAfLevelChange,
     onMonitorMode, onRoutingFocus, onRoutingSplit, onSetModInputLan, onModInputChange,
     finiteAppearance, rendererContext = null,
   }: Props = $props();
@@ -58,6 +62,12 @@
       {#key layout}
         <section data-layout={layout}>
           <div data-af-slot={layout}>{@render handles.afLevel()}</div>
+          {#if gainHardware !== undefined && handles.mainGain}
+            <div data-gain-hardware={gainHardware}>{@render handles.mainGain(gainHardware)}</div>
+          {/if}
+          {#if gainHardware !== undefined && handles.subGain}
+            <div data-gain-sub>{@render handles.subGain(gainHardware)}</div>
+          {/if}
         </section>
       {/key}
     {/if}

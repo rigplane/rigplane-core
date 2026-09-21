@@ -182,7 +182,7 @@ import {
   acknowledgeCommand, beginCommand, getCommandLifecycles, resetCommandLifecycle,
 } from '$lib/stores/commands.svelte';
 import { MOD_INPUT_SOURCES, modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
-import { FOCUS_CHOICES, SPLIT_CHOICES } from '../../../semantic/rx-audio-instruments';
+import { FOCUS_CHOICES, SPLIT_CHOICES, UNKNOWN_TEXT } from '../../../semantic/rx-audio-instruments';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import HostedRadioLayoutFixture from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
@@ -208,6 +208,7 @@ const finiteAppearance = {
 
 const RADIO_LAYOUT_SOURCE = readFileSync('src/components-v2/layout/RadioLayout.svelte', 'utf8');
 const DESKTOP_V2_CONTROL_CSS = readFileSync('src/skins/desktop-v2/semantic-controls.css', 'utf8');
+const RX_AUDIO_HOST_SOURCE = readFileSync('src/semantic/RxAudioInstrumentHost.svelte', 'utf8');
 
 /**
  * (a), half one. Read BEFORE any `mockClear()` — the only pin that can see a
@@ -440,11 +441,65 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
   it('dispatches dual channel gain through the existing audio-routing handler', () => {
     h.audioRouting = { focus: 'both', split_stereo: false, main_gain_db: -6, sub_gain_db: 2 };
     renderHostedFace('desktop-v2');
-    const main = q<HTMLInputElement>('[data-testid="rx-audio-main-gain"] input');
+    const main = q<HTMLElement>('[data-testid="rx-audio-main-gain"] [role="slider"]');
+    const sub = q<HTMLElement>('[data-testid="rx-audio-sub-gain"] [role="slider"]');
     expect(main).not.toBeNull();
-    Object.defineProperty(main!, 'valueAsNumber', { configurable: true, value: -12 });
-    main!.dispatchEvent(new Event('input', { bubbles: true }));
-    expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ main_gain_db: -12 });
+    expect(sub).not.toBeNull();
+    main!.dispatchEvent(new KeyboardEvent(
+      'keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true },
+    ));
+    sub!.dispatchEvent(new KeyboardEvent(
+      'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
+    ));
+    flushSync();
+    expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ main_gain_db: -7 });
+    expect(audioManager.setAudioConfig).toHaveBeenCalledWith({ sub_gain_db: 3 });
+  });
+
+  /* MOR-2524: the MAIN/SUB pair is the shared ValueControl hbar in the
+   * hardware-illuminated fader variant, laid out on AF LEVEL's block — label
+   * above-left, value above-right — with the raw `<input type="range">` gone. */
+  it('renders the MAIN/SUB gain pair as the hardware-illuminated fader on AF LEVEL\'s block', () => {
+    h.audioRouting = { focus: 'both', split_stereo: false, main_gain_db: -6, sub_gain_db: 2 };
+    renderHostedFace('desktop-v2');
+    for (const [channel, db] of [['main', -6], ['sub', 2]] as const) {
+      const row = q<HTMLElement>(`[data-testid="rx-audio-${channel}-gain"]`)!;
+      expect(row.querySelector('input')).toBeNull();
+      expect(row.classList.contains('rx-audio-level')).toBe(true);
+      expect(row.querySelector('.rx-audio-name')?.textContent).toBe(channel.toUpperCase());
+      const frame = row.querySelector<HTMLElement>('.vc-hbar');
+      expect(frame?.classList.contains('hw-illum')).toBe(true);
+      expect(frame?.querySelector('.hil-thumb')).not.toBeNull();
+      const slider = row.querySelector<HTMLElement>('[role="slider"]')!;
+      expect(slider.getAttribute('aria-label')).toBe(`${channel.toUpperCase()} gain in decibels`);
+      expect(slider.getAttribute('aria-valuemin')).toBe('-60');
+      expect(slider.getAttribute('aria-valuemax')).toBe('12');
+      expect(slider.getAttribute('aria-valuenow')).toBe(String(db));
+      expect(row.querySelector('output')?.textContent).toBe(`${db} dB`);
+    }
+  });
+
+  it('renders an unobserved channel gain as the unlit fader with no number and no text', () => {
+    renderHostedFace('desktop-v2');
+    for (const channel of ['main', 'sub'] as const) {
+      const row = q<HTMLElement>(`[data-testid="rx-audio-${channel}-gain"]`)!;
+      const slider = row.querySelector<HTMLElement>('[role="slider"]')!;
+      expect(slider.getAttribute('aria-valuenow')).toBeNull();
+      expect(slider.getAttribute('aria-disabled')).toBe('true');
+      const output = row.querySelector<HTMLElement>('output');
+      expect(output).not.toBeNull();
+      expect(output!.textContent).toBe('');
+      const rowText = row.textContent ?? '';
+      expect(rowText).not.toContain(UNKNOWN_TEXT);
+      expect(rowText).not.toMatch(/\d/);
+    }
+  });
+
+  // jsdom computes no layout; this checks the two declarations are written,
+  // not that they guarantee no shift.
+  it('keeps the dB readout width floor and tabular-digit declarations in the host CSS', () => {
+    expect(RX_AUDIO_HOST_SOURCE).toMatch(/\.rx-audio-gain > output \{[^}]*min-width: 7ch/);
+    expect(RX_AUDIO_HOST_SOURCE).toMatch(/\.rx-audio-gain > output \{[^}]*tabular-nums/);
   });
 
   it('does not render dual controls for a single-receiver radio', () => {

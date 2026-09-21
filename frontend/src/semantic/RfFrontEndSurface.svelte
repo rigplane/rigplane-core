@@ -49,11 +49,14 @@
 
 {#if rf}
   <section class="rf-front-end-surface" data-testid="rf-front-end-surface" aria-label="RF front end">
+    <!-- `finiteLayout !== undefined` is the same Standard-seat signal AF
+         LEVEL's row rides on (`RxAudioSurface` renders `handles.afLevel()`
+         bare on this same no-layout path). -->
     {#if levelHandles.kind === 'combined'}
-      {@render levelHandles.rfSql()}
+      {@render levelHandles.rfSql(finiteLayout !== undefined)}
     {:else}
-      {#if rf.rfGain.availability.structural}{@render levelHandles.rfGain()}{/if}
-      {#if rf.squelch.availability.structural}{@render levelHandles.squelch()}{/if}
+      {#if rf.rfGain.availability.structural}{@render levelHandles.rfGain(finiteLayout !== undefined)}{/if}
+      {#if rf.squelch.availability.structural}{@render levelHandles.squelch(finiteLayout !== undefined)}{/if}
     {/if}
 
     {#if finiteLayout}

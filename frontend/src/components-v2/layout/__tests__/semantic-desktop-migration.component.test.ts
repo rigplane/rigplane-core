@@ -2588,7 +2588,10 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
       .not.toBeNull();
     expect(rxAudio.querySelector('[data-testid="rx-audio-main-gain"]')).not.toBeNull();
     expect(rxAudio.querySelector('[data-testid="rx-audio-sub-gain"]')).not.toBeNull();
-    expect(radioLayoutSource).toContain(":global([data-testid='rx-audio-main-gain'] output)");
+    // MOR-2524: the MAIN/SUB dB readouts are visible operator values on AF
+    // LEVEL's block now, so Standard must not keep them sr-only.
+    expect(radioLayoutSource).not.toContain(":global([data-testid='rx-audio-main-gain'] output)");
+    expect(radioLayoutSource).not.toContain(":global([data-testid='rx-audio-sub-gain'] output)");
 
     const cw = t.querySelector('[data-panel-id="semantic-cw"]')!;
     expect(cw.querySelector('[data-testid="cw-keyer-posture"]')?.closest('p')

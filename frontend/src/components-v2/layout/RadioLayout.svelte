@@ -1203,8 +1203,6 @@
      tree, while the stable controls retain the visible operator contract. */
   .desktop-control-face.standard-face :global([data-testid='rf-front-end-preamp-mutex-reason']),
   .desktop-control-face.standard-face :global([data-testid='rx-audio-focus-value']),
-  .desktop-control-face.standard-face :global([data-testid='rx-audio-main-gain'] output),
-  .desktop-control-face.standard-face :global([data-testid='rx-audio-sub-gain'] output),
   .desktop-control-face.standard-face :global([data-testid='rx-audio-mod-source']),
   .desktop-control-face.standard-face :global([data-testid='rx-audio-mod-readiness']) {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
