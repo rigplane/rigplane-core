@@ -417,9 +417,7 @@ export function toFilterProps(
   caps: Capabilities | null,
 ): FilterProps {
   const rx = state ? activeRx(state) : null;
-  // MOR-2513: an unobserved mode/dataMode arrives as null — map it onto the
-  // absent-reading representation (`undefined`) so no filter config is
-  // resolved from a value the radio never provided.
+  // MOR-2513: an unobserved mode/dataMode (null) resolves no config.
   const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined);
   // MOR-2497: PBT reads in Hz on the measured lattice — the mode's declared
   // step and the OBSERVED filter width — through the one derivation both

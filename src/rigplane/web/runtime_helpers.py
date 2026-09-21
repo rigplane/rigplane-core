@@ -954,18 +954,13 @@ def _camel_case_state(d: dict[str, Any]) -> dict[str, Any]:
 def _null_unobserved_public_leaves(payload: dict[str, Any]) -> None:
     """Null every public leaf whose ``fieldStatus`` entry says unobserved.
 
-    MOR-2513 owner ruling: the key stays present with value ``null``
-    whatever the absence reason (``missing`` / ``undeclared`` /
-    ``unavailable`` stay distinguishable in ``fieldStatus``); an observed
-    leaf keeps its value when it later goes stale, so staleness never
-    re-nulls it. Pinned by ``tests/test_web_runtime_helpers.py::
-    test_unobserved_leaves_publish_null_with_keys_present``,
-    ``test_ftx1_empty_store_nulls_every_unobserved_status_leaf`` and
-    ``test_observed_value_stays_published_after_the_freshness_tick_marks_it_stale``.
+    The key stays present with value ``null`` whatever the absence
+    reason; an observed leaf keeps its value when stale (MOR-2513,
+    pinned by ``tests/test_web_runtime_helpers.py::
+    test_unobserved_leaves_publish_null_with_keys_present`` and
+    ``test_observed_value_stays_published_after_the_freshness_tick_marks_it_stale``).
     Paths without a status entry (connection, health, revisions,
-    ``wsClients``, and ``txTarget`` — whose unobserved encoding is the
-    in-band unknown-status object, not a dataclass default) are not radio
-    observations and are left untouched.
+    ``wsClients``, ``txTarget``) are not radio observations.
     """
 
     field_status = payload.get("fieldStatus")

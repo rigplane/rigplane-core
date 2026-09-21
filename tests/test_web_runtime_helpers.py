@@ -1620,9 +1620,7 @@ def test_unobserved_leaves_publish_null_with_keys_present() -> None:
 
 
 def test_ftx1_empty_store_nulls_every_unobserved_status_leaf() -> None:
-    """FTX-1 with nothing observed: each published leaf whose status says
-    unobserved is null, and the three absence reasons all occur.
-    """
+    """FTX-1 unobserved: every published leaf is null; all three absence reasons occur."""
 
     payload = _profile_payload("FTX-1", StateStore().snapshot(), receiver_count=2)
     field_status = payload["fieldStatus"]
@@ -1723,48 +1721,38 @@ def test_observed_values_match_the_prewire_contract_byte_for_byte() -> None:
 
     payload = _profile_payload("IC-7610", store.snapshot(), receiver_count=2)
 
-    observed_source = {
-        "source": "poll_response",
-        "provider": "parity",
-        "transport": "fake",
-        "nativeId": "test",
-        "capabilityId": None,
-        "commandSource": None,
-        "sessionId": None,
-    }
+    def expected_status(store_path: str, at: float) -> dict[str, Any]:
+        return {
+            "storePath": store_path,
+            "observed": True,
+            "freshness": "fresh",
+            "availability": "available",
+            "lastObservedMonotonic": at,
+            "maxAge": 10.0,
+            "source": {
+                "source": "poll_response",
+                "provider": "parity",
+                "transport": "fake",
+                "nativeId": "test",
+                "capabilityId": None,
+                "commandSource": None,
+                "sessionId": None,
+            },
+            "quality": ["confirmed"],
+        }
+
     assert payload["main"]["freqHz"] == 14_074_000
-    assert payload["fieldStatus"]["main.freqHz"] == {
-        "storePath": "receiver.0.active.freq_mode.freq_hz",
-        "observed": True,
-        "freshness": "fresh",
-        "availability": "available",
-        "lastObservedMonotonic": 1.0,
-        "maxAge": 10.0,
-        "source": observed_source,
-        "quality": ["confirmed"],
-    }
+    assert payload["fieldStatus"]["main.freqHz"] == expected_status(
+        "receiver.0.active.freq_mode.freq_hz", 1.0
+    )
     assert payload["main"]["mode"] == "USB"
-    assert payload["fieldStatus"]["main.mode"] == {
-        "storePath": "receiver.0.active.freq_mode.mode",
-        "observed": True,
-        "freshness": "fresh",
-        "availability": "available",
-        "lastObservedMonotonic": 1.1,
-        "maxAge": 10.0,
-        "source": observed_source,
-        "quality": ["confirmed"],
-    }
+    assert payload["fieldStatus"]["main.mode"] == expected_status(
+        "receiver.0.active.freq_mode.mode", 1.1
+    )
     assert payload["powerOn"] is True
-    assert payload["fieldStatus"]["powerOn"] == {
-        "storePath": "global.tx_state.power_on",
-        "observed": True,
-        "freshness": "fresh",
-        "availability": "available",
-        "lastObservedMonotonic": 1.2,
-        "maxAge": 10.0,
-        "source": observed_source,
-        "quality": ["confirmed"],
-    }
+    assert payload["fieldStatus"]["powerOn"] == expected_status(
+        "global.tx_state.power_on", 1.2
+    )
     assert payload["stateRevision"] == 3
     assert payload["observationSeq"] == 3
     assert payload["txTarget"] == {"status": "unknown", "reason": "not-observed"}

@@ -62,11 +62,7 @@ class _Strict(BaseModel):
 
 
 class VfoSlotPublic(_Strict):
-    """One VFO slot (A or B) within a receiver.
-
-    Every leaf publishes ``null`` while unobserved (MOR-2513; see
-    ``ServerStatePublic``).
-    """
+    """One VFO slot (A or B) within a receiver."""
 
     freqHz: int | None = None
     mode: str | None = None
@@ -82,9 +78,6 @@ class ReceiverStatePublic(_Strict):
     ``dataMode``). The redundancy is intentional back-compat (radio_state.py
     ``_receiver_to_dict``); the slot view is the canonical source-of-truth and
     the scalars are derived from ``activeSlot``.
-
-    Every leaf publishes ``null`` while unobserved (MOR-2513; see
-    ``ServerStatePublic``).
     """
 
     # Slot view (MOR-881: previously absent from state.ts).
@@ -164,11 +157,7 @@ class FixedEdgePublic(_Strict):
 
 
 class ScopeControlsPublic(_Strict):
-    """Spectrum-scope control state.
-
-    Every leaf (and the ``fixedEdge`` object as a whole) publishes
-    ``null`` while unobserved (MOR-2513; see ``ServerStatePublic``).
-    """
+    """Spectrum-scope control state."""
 
     receiver: int | None = None
     dual: bool | None = None
@@ -295,14 +284,10 @@ class ServerStatePublic(_Strict):
 
     Excludes the client-only ``meterSource`` (never server-sent) and the
     frontend-only ``UiState`` / ``PendingCommand`` types (MOR-881).
-
-    Every leaf with a ``fieldStatus`` entry publishes ``null`` while that
-    entry says unobserved, whatever the absence reason; an observed leaf
-    keeps its value when it goes stale (MOR-2513; pinned by
+    Leaves with a ``fieldStatus`` entry publish ``null`` while unobserved
+    and keep their value when stale (MOR-2513; pinned by
     ``tests/web/test_state_schema_conformance.py::
-    test_snapshot_path_unobserved_null_leaves_conform``). Leaves with no
-    status entry (connection, radioHealth, revisions, ``txTarget``) are
-    not radio observations and never null.
+    test_snapshot_path_unobserved_null_leaves_conform``).
     """
 
     # Revisions / sequence counters.
