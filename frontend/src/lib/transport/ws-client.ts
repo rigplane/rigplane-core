@@ -944,7 +944,13 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
     const data = envelope.data;
     if (data.stateContractVersion !== 1 || data.providerGeneration !== generation) return null;
     const nextState = syncEnvelopeRevisions({ ...data }, envelope);
-    if (!isValidServerState(nextState)) return null;
+    // MOR-2513: a dropped full envelope leaves BOTH stores empty (capabilities
+    // are only refreshed after a full is accepted), so the page silently
+    // renders no radio surfaces — this rejection must at least be visible.
+    if (!isValidServerState(nextState)) {
+      console.error('[rigplane] state: rejected a full state envelope that failed contract validation');
+      return null;
+    }
     if (capabilitiesMatchGeneration(generation) && !matchesCurrentCapabilityTopology(nextState as any)) return null;
     if (
       _acceptedProviderGeneration === generation
@@ -987,7 +993,10 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
   if (candidate) {
     for (const key of removed) delete candidate[key];
     syncEnvelopeRevisions(candidate, envelope);
-    if (!isValidServerState(candidate)) return null;
+    if (!isValidServerState(candidate)) {
+      console.error('[rigplane] state: rejected a delta state envelope that failed contract validation');
+      return null;
+    }
     if (capabilitiesMatchGeneration(generation) && !matchesCurrentCapabilityTopology(candidate as any)) return null;
   }
   if (_acceptedProviderGeneration !== generation || !_hasReceivedFullState || _fullState === null) {

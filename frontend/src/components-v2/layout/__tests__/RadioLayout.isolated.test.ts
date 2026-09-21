@@ -7,6 +7,12 @@ import type { ServerState } from '$lib/types/state';
 import type { ContinuousScalarBinding, ContinuousScalarRendererLease } from '../../../primitives/scalar/continuous-scalar.svelte';
 import stateFixture from '$lib/runtime/adapters/__tests__/fixtures/ic7300-state.json';
 import capsFixture from '$lib/runtime/adapters/__tests__/fixtures/ic7300-capabilities.json';
+import ftx1StateJson from '$lib/runtime/adapters/__tests__/fixtures/ftx1-state-unobserved-leaves.json';
+import ftx1CapsJson from '$lib/runtime/adapters/__tests__/fixtures/ftx1-capabilities.json';
+import {
+  FTX1_STATE,
+  FTX1_STATE_FULLY_UNOBSERVED,
+} from '$lib/runtime/adapters/__tests__/fixtures/ftx1-profile';
 import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { hasEverConnected } from '$lib/stores/connection.svelte';
 
@@ -192,7 +198,7 @@ vi.mock('$lib/stores/tuning.svelte', () => ({
 import RadioLayout from './fixtures/HostedRadioLayoutFixture.svelte';
 import App from '../../../App.svelte';
 import { extractVfoState, extractMeterState, hasLiveAudioFromState } from '../layout-utils';
-import { radio } from '$lib/stores/radio.svelte';
+import { isValidServerState, radio } from '$lib/stores/radio.svelte';
 import { resolveSkinId, type SkinId } from '../../../skins/registry';
 
 // ---------------------------------------------------------------------------
@@ -1047,6 +1053,55 @@ describe('MOR-2513 — an all-unobserved payload never prints a fabricated readi
     flushSync();
     const text = t.textContent ?? '';
     for (const forbidden of ['null', 'NaN', 'undefined', '0.000']) {
+      expect(text, `rendered text must not contain ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+});
+
+// MOR-2513 bench regression: the REAL FTX-1 payload (108 unobserved-null
+// leaves, dual-receiver ab_shared, SUB att/preamp undeclared) rendered NO
+// radio surfaces at 86187ed3 because ingestion silently dropped it —
+// `ftx1-state-unobserved-leaves.json` is that exact `/api/v1/state` body.
+// The ingestion seam is asserted here through the real validator (the
+// stores' own test file additionally drives the real `setRadioState`);
+// the mount itself proves the composition the bench lost: both receivers'
+// VFO rows and no null/NaN/undefined text.
+describe('MOR-2513 — the live FTX-1 payload mounts the default desktop composition', () => {
+  const mountFtx1 = (state: typeof FTX1_STATE): HTMLElement => {
+    expect(isValidServerState(state)).toBe(true);
+    vi.mocked(hasDualReceiver).mockReturnValue(true);
+    rt.state = state;
+    radio.current = state;
+    // `validIdentity` requires the caps/state pair to name one provider
+    // generation; the capabilities capture (backend 60d05a42) predates the
+    // state capture (86187ed3), so it is aligned to the state's.
+    rt.caps = { ...ftx1CapsJson, providerGeneration: ftx1StateJson.providerGeneration };
+    return mountLayout('desktop-v2');
+  };
+
+  it('renders six VFO rows across MAIN and SUB instrument sections', () => {
+    const t = mountFtx1(FTX1_STATE);
+    expect(ftx1StateJson.main.dataMode).toBeNull();
+    expect(ftx1StateJson.sub.att).toBeNull();
+    expect(t.querySelectorAll('[data-receiver-instrument="MAIN"]')).toHaveLength(1);
+    expect(t.querySelectorAll('[data-receiver-instrument="SUB"]')).toHaveLength(1);
+    expect(t.querySelectorAll('[data-vfo-row]')).toHaveLength(6);
+  });
+
+  it('prints no null/NaN/undefined text from the null leaves', () => {
+    const t = mountFtx1(FTX1_STATE);
+    flushSync();
+    const text = t.textContent ?? '';
+    for (const forbidden of ['null', 'NaN', 'undefined']) {
+      expect(text, `rendered text must not contain ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+
+  it('still mounts all six VFO rows with every nullable leaf null', () => {
+    const t = mountFtx1(FTX1_STATE_FULLY_UNOBSERVED);
+    expect(t.querySelectorAll('[data-vfo-row]')).toHaveLength(6);
+    const text = t.textContent ?? '';
+    for (const forbidden of ['null', 'NaN', 'undefined']) {
       expect(text, `rendered text must not contain ${forbidden}`).not.toContain(forbidden);
     }
   });

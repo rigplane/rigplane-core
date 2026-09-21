@@ -113,29 +113,37 @@ function validCounter(value: unknown): value is number {
     && value >= 0;
 }
 
+// MOR-2513: a leaf with a `fieldStatus` entry publishes `null` while
+// unobserved (see `state.ts`'s generated header), so `null` is a valid wire
+// value for exactly the leaves that type declares nullable; a value of any
+// other wrong type stays invalid.
+function numberOrNull(value: unknown): boolean {
+  return value === null || (typeof value === 'number' && Number.isFinite(value));
+}
+
+function stringOrNull(value: unknown): boolean {
+  return value === null || typeof value === 'string';
+}
+
+function boolOrNull(value: unknown): boolean {
+  return value === null || typeof value === 'boolean';
+}
+
 function validReceiver(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const receiver = value as Record<string, unknown>;
-  return typeof receiver.freqHz === 'number'
-    && Number.isFinite(receiver.freqHz)
-    && typeof receiver.mode === 'string'
-    && (typeof receiver.filter === 'number' || receiver.filter === null)
-    && typeof receiver.dataMode === 'number'
-    && Number.isFinite(receiver.dataMode)
-    && typeof receiver.sMeter === 'number'
-    && Number.isFinite(receiver.sMeter)
-    && typeof receiver.att === 'number'
-    && Number.isFinite(receiver.att)
-    && typeof receiver.preamp === 'number'
-    && Number.isFinite(receiver.preamp)
-    && typeof receiver.nb === 'boolean'
-    && typeof receiver.nr === 'boolean'
-    && typeof receiver.afLevel === 'number'
-    && Number.isFinite(receiver.afLevel)
-    && typeof receiver.rfGain === 'number'
-    && Number.isFinite(receiver.rfGain)
-    && typeof receiver.squelch === 'number'
-    && Number.isFinite(receiver.squelch);
+  return numberOrNull(receiver.freqHz)
+    && stringOrNull(receiver.mode)
+    && numberOrNull(receiver.filter)
+    && numberOrNull(receiver.dataMode)
+    && numberOrNull(receiver.sMeter)
+    && numberOrNull(receiver.att)
+    && numberOrNull(receiver.preamp)
+    && boolOrNull(receiver.nb)
+    && boolOrNull(receiver.nr)
+    && numberOrNull(receiver.afLevel)
+    && numberOrNull(receiver.rfGain)
+    && numberOrNull(receiver.squelch);
 }
 
 function validConnection(value: unknown): boolean {
@@ -168,12 +176,11 @@ export function isValidServerState(value: unknown): value is ServerState {
     || !validCounter(state.freshnessRevision)
     || !validCounter(state.observationSeq)
     || typeof state.updatedAt !== 'string'
-    || (state.active !== 'MAIN' && state.active !== 'SUB')
-    || typeof state.ptt !== 'boolean'
-    || typeof state.split !== 'boolean'
-    || typeof state.dualWatch !== 'boolean'
-    || typeof state.tunerStatus !== 'number'
-    || !Number.isFinite(state.tunerStatus)
+    || (state.active !== 'MAIN' && state.active !== 'SUB' && state.active !== null)
+    || !boolOrNull(state.ptt)
+    || !boolOrNull(state.split)
+    || !boolOrNull(state.dualWatch)
+    || !numberOrNull(state.tunerStatus)
     || !validReceiver(state.main)
     || (state.sub !== undefined && state.sub !== null && !validReceiver(state.sub))
     || !validConnection(state.connection)
@@ -207,8 +214,12 @@ export function matchesCurrentCapabilityTopology(state: ServerState): boolean {
   if (record.scopeControls !== undefined) {
     if (!record.scopeControls || typeof record.scopeControls !== 'object' || Array.isArray(record.scopeControls)) return false;
     const receiver = (record.scopeControls as Record<string, unknown>).receiver;
-    const receiverIndex: number = Number.isSafeInteger(receiver) ? receiver as number : -1;
-    if (receiverIndex < 0 || receiverIndex > (hasSubReceiver ? 1 : 0)) return false;
+    // MOR-2513: `receiver` is null while the scope block is unobserved.
+    if (receiver !== null) {
+      if (!Number.isSafeInteger(receiver)) return false;
+      const receiverIndex = receiver as number;
+      if (receiverIndex < 0 || receiverIndex > (hasSubReceiver ? 1 : 0)) return false;
+    }
   }
   return true;
 }
