@@ -151,8 +151,8 @@ export function toVfoProps(
     'IP+': rx.ipplus ?? false,
     'ANF': rx.autoNotch ?? false,
     'NOTCH': rx.manualNotch ?? false,
-    'ATT': rx.att > 0,
-    'PRE': rx.preamp > 0,
+    'ATT': (rx.att ?? 0) > 0,
+    'PRE': (rx.preamp ?? 0) > 0,
     'RFG': (rx.rfGain ?? 1) < 1,
     'SQL': (rx.squelch ?? 0) > 0,
     'ATU': (state.tunerStatus ?? 0) > 0,
@@ -417,7 +417,10 @@ export function toFilterProps(
   caps: Capabilities | null,
 ): FilterProps {
   const rx = state ? activeRx(state) : null;
-  const filterConfig = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode);
+  // MOR-2513: an unobserved mode/dataMode arrives as null — map it onto the
+  // absent-reading representation (`undefined`) so no filter config is
+  // resolved from a value the radio never provided.
+  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined);
   // MOR-2497: PBT reads in Hz on the measured lattice — the mode's declared
   // step and the OBSERVED filter width — through the one derivation both
   // control surfaces share (`measuredPbtDisplayDomain`). No lattice (no step
@@ -433,8 +436,8 @@ export function toFilterProps(
       ? null
       : measuredPbtRawToHz(raw, pbtWidthHz, pbtStepHz)
   );
-  const pbtInner = pbtHz(rx?.pbtInner);
-  const pbtOuter = pbtHz(rx?.pbtOuter);
+  const pbtInner = pbtHz(rx?.pbtInner ?? undefined);
+  const pbtOuter = pbtHz(rx?.pbtOuter ?? undefined);
   return {
     // MOR-1409 A11: no fabricated USB / three-filter FIL1-FIL3 catalog
     // stand-in. `filterLabels` is a capability-derived choice set (like
@@ -1172,7 +1175,8 @@ export function toAudioSpectrumProps(
   caps: Capabilities | null,
 ): AudioSpectrumProps {
   const rx = state ? activeRx(state) : null;
-  const filterConfig = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode);
+  // MOR-2513: null mode/dataMode (unobserved) resolves no config.
+  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined);
   const filterWidthMax = filterConfig?.table?.length
     ? filterConfig.table[filterConfig.table.length - 1]
     : (filterConfig?.maxHz ?? caps?.filterWidthMax ?? 4000);

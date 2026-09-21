@@ -139,7 +139,7 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
     }
     return true;
   }
-  function read<T extends Scalar>(path: string, value: T | undefined, radio = false): T | undefined {
+  function read<T extends Scalar>(path: string, value: T | null | undefined, radio = false): T | undefined {
     const args = { state, caps, path, value, structural: true };
     const observation = radio ? qualifyRadioDisplayObservation(args)
       : qualifyDisplayObservation({ ...args, receiver: selection!.receiver });
@@ -218,7 +218,7 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
   // (the view-model PBT fields are non-structural there), so the comparison
   // below pins `strict.ifShiftHz` to null rather than to the tuple's 0 —
   // one fact stated two ways, pinned so the two sides move together.
-  const modeConfig = resolveFilterModeConfig(caps, mode, rx.dataMode);
+  const modeConfig = resolveFilterModeConfig(caps, mode, rx.dataMode ?? undefined);
   const pbtStep = modeConfig?.pbtStepHz;
   const pbtShiftZero = !native && pbtStep === undefined && !modeHasTwinPbt(caps, modeConfig);
   const toHz = (raw: number): number | null => (
