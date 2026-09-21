@@ -1640,11 +1640,12 @@ def test_ftx1_empty_store_nulls_every_unobserved_status_leaf() -> None:
                 holder = None
                 break
             holder = holder[part]
-        if holder is None:
-            # An incomplete ``unselectedVfo`` group is popped wholesale and
-            # publishes no leaf at all.
+        if holder is None or parts[-1] not in holder:
+            # Either the group is popped wholesale (an incomplete
+            # ``unselectedVfo``) or the seeded store path has no public key
+            # in the payload's RadioState superset (receiver-scoped seeds
+            # like ``keySpeed``); no leaf is published either way.
             continue
-        assert parts[-1] in holder, public_path
         assert holder[parts[-1]] is None, public_path
 
     # Leaves without a field-status entry are not radio observations and
