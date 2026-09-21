@@ -276,6 +276,24 @@ describe('source pins: content-sized rows (MOR-2509 slice 1)', () => {
   });
 });
 
+describe('source pins: the tile fills its wrapper (MOR-2509 correction 5)', () => {
+  const indicatorCss = styleBlock('src/semantic/VfoIndicatorRow.svelte');
+
+  it('the wrapper is a column so its stretched height reaches the tile, in every appearance', () => {
+    expect(rulesFor(surfaceCss, '.receiver-instrument').join('\n'))
+      .toMatch(/display:\s*flex;\s*flex-direction:\s*column/);
+    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .receiver-instrument > :where(.vfo-tile)").join('\n'))
+      .toMatch(/flex:\s*1/);
+    expect(rulesFor(surfaceCss, '.receiver-instrument > :global(.indicator-row)').join('\n'))
+      .toMatch(/flex:\s*1/);
+  });
+
+  it('extra height lands below the chip row, not in stretched or centred rows', () => {
+    expect(rule(panelCss, '.panel')).toMatch(/align-content:\s*start/);
+    expect(rulesFor(indicatorCss, '.indicator-row').join('\n')).toMatch(/align-content:\s*start/);
+  });
+});
+
 describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', () => {
   const opsCss = styleBlock('src/semantic/VfoOperationGroup.svelte');
   const segmentCss = styleBlock('src/components-v2/vfo/ActiveReceiverToggle.svelte');
