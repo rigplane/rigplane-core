@@ -926,7 +926,7 @@
         "id": "af-level-up",
         "label": "AF gain up",
         "modifiers": [
-          "CTRL"
+          "ALT"
         ],
         "params": {
           "delta": 5
@@ -942,7 +942,7 @@
         "id": "af-level-down",
         "label": "AF gain down",
         "modifiers": [
-          "CTRL"
+          "ALT"
         ],
         "params": {
           "delta": -5
@@ -958,7 +958,7 @@
         "id": "rf-level-up",
         "label": "RF gain up",
         "modifiers": [
-          "CTRL",
+          "ALT",
           "SHIFT"
         ],
         "params": {
@@ -975,7 +975,7 @@
         "id": "rf-level-down",
         "label": "RF gain down",
         "modifiers": [
-          "CTRL",
+          "ALT",
           "SHIFT"
         ],
         "params": {

@@ -156,6 +156,29 @@ export const IGNORED_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 
 const MODIFIER_ORDER = ['CTRL', 'SHIFT', 'ALT', 'META'] as const;
 
+/** MOR-2515: Apple platforms label the key that produces the Alt modifier
+ * "Option", and a hint must name the key as the viewer's platform does.
+ * controls/install-prompt-utils.ts's detectPlatform answers a different
+ * question (ios/android/desktop install prompts) and does not distinguish
+ * macOS, so this check is scoped to hint rendering here. */
+function isOptionNamingPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const uaData = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
+  return /mac/i.test(uaData?.platform ?? navigator.platform ?? '');
+}
+
+const MODIFIER_DISPLAY_NAMES: Record<string, string> = {
+  CTRL: 'Ctrl',
+  SHIFT: 'Shift',
+  META: 'Meta',
+};
+
+function modifierDisplayName(modifier: string): string {
+  const normalized = normalizeModifier(modifier);
+  if (normalized === 'ALT') return isOptionNamingPlatform() ? 'Option' : 'Alt';
+  return MODIFIER_DISPLAY_NAMES[normalized] ?? normalized;
+}
+
 function normalizeModifier(modifier: string): string {
   return modifier.trim().toUpperCase();
 }
@@ -304,7 +327,7 @@ export function formatShortcut(binding: KeyboardBindingConfig): string {
     const prefix = index === 0 && binding.modifiers?.length
       ? [...binding.modifiers].map(normalizeModifier).sort((left, right) => {
           return MODIFIER_ORDER.indexOf(left as (typeof MODIFIER_ORDER)[number]) - MODIFIER_ORDER.indexOf(right as (typeof MODIFIER_ORDER)[number]);
-        }).join('+') + '+'
+        }).map(modifierDisplayName).join('+') + '+'
       : '';
     return `${prefix}${step}`;
   });
@@ -344,8 +367,8 @@ const ARROW_AXIS: Readonly<Record<string, 'horizontal' | 'vertical'>> = {
  * on its focusable element (an axis token `horizontal`/`vertical`/`both`,
  * plus `shift` when Shift+arrow is a deliberate gesture such as a value
  * control's fine step), that it consumes the pressed arrow. Modified
- * arrows (ctrl/alt/meta — the Ctrl+Arrow volume and gain bindings) stay
- * global; a bare ARIA role is not evidence of consumption, and native
+ * arrows (ctrl/alt/meta — the Alt/Option+Arrow volume and gain bindings)
+ * stay global; a bare ARIA role is not evidence of consumption, and native
  * inputs/selects/text fields are already covered by `shouldIgnoreEvent`'s
  * IGNORED_TAGS.
  */

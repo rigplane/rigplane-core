@@ -332,8 +332,9 @@ describe('keyboard navigation', () => {
   });
 
   // MOR-2512 — Ctrl/Alt/Meta+Arrow belongs to the global keyboard map
-  // (Ctrl+ArrowUp/Down adjust_af_level); the widget must neither step nor
-  // swallow the event so the window-level global handler sees it.
+  // (Alt/Option+ArrowUp/Down adjust_af_level since MOR-2515); the widget
+  // must neither step nor swallow the event so the window-level global
+  // handler sees it.
   it('Ctrl+ArrowRight neither steps nor swallows the event', () => {
     const onchange = vi.fn();
     const { target } = mountAndTrack({
