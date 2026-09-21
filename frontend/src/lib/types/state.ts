@@ -9,14 +9,11 @@
  *
  * Excludes the client-only ``meterSource`` (never server-sent) and the
  * frontend-only ``UiState`` / ``PendingCommand`` types (MOR-881).
- *
- * Every leaf with a ``fieldStatus`` entry publishes ``null`` while that
- * entry says unobserved, whatever the absence reason; an observed leaf
- * keeps its value when it goes stale (MOR-2513; pinned by
- * ``tests/web/test_state_schema_conformance.py::
- * test_snapshot_path_unobserved_null_leaves_conform``). Leaves with no
- * status entry (connection, radioHealth, revisions, ``txTarget``) are
- * not radio observations and never null.
+ * Leaves with a ``fieldStatus`` entry publish ``null`` while unobserved
+ * and keep their value when stale; ``txTarget`` excepted — it encodes
+ * absence in-band (an unknown-status object), not as null (MOR-2513;
+ * pinned by ``tests/web/test_state_schema_conformance.py::
+ * test_snapshot_path_unobserved_null_leaves_conform``).
  */
 export interface ServerStatePublic {
   revision: number;
@@ -101,9 +98,6 @@ export interface ServerStatePublic {
 }
 /**
  * Spectrum-scope control state.
- *
- * Every leaf (and the ``fixedEdge`` object as a whole) publishes
- * ``null`` while unobserved (MOR-2513; see ``ServerStatePublic``).
  */
 export interface ScopeControlsPublic {
   receiver: number | null;
@@ -153,9 +147,6 @@ export interface UnknownTxTargetPublic {
  * ``dataMode``). The redundancy is intentional back-compat (radio_state.py
  * ``_receiver_to_dict``); the slot view is the canonical source-of-truth and
  * the scalars are derived from ``activeSlot``.
- *
- * Every leaf publishes ``null`` while unobserved (MOR-2513; see
- * ``ServerStatePublic``).
  */
 export interface ReceiverStatePublic {
   vfoA?: VfoSlotPublic;
@@ -209,9 +200,6 @@ export interface ReceiverStatePublic {
 }
 /**
  * One VFO slot (A or B) within a receiver.
- *
- * Every leaf publishes ``null`` while unobserved (MOR-2513; see
- * ``ServerStatePublic``).
  */
 export interface VfoSlotPublic {
   freqHz: number | null;

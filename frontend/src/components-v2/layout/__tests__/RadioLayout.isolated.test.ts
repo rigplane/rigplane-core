@@ -1021,9 +1021,10 @@ describe('SDR hardware scope snippet routing (MOR-2358)', () => {
 describe('MOR-2513 — an all-unobserved payload never prints a fabricated reading', () => {
   it('renders no null/NaN/undefined text and no fabricated 0.000.000 frequency', () => {
     // Every leaf that carries a fieldStatus entry goes null with
-    // observed:false — the payload shape a freshly connected FTX-1 with
-    // nothing observed produces. Non-observation leaves (connection,
-    // health, revision counters, txTarget) keep their delivered values.
+    // observed:false (txTarget keeps its in-band unknown-status object) —
+    // the payload shape a freshly connected FTX-1 with nothing observed
+    // produces. Connection, health and revision counters keep their
+    // delivered values.
     const unobserved = structuredClone(stateFixture) as unknown as ServerState;
     for (const [path, status] of Object.entries(unobserved.fieldStatus ?? {})) {
       if (status) status.observed = false;

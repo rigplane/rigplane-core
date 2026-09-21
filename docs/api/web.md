@@ -980,9 +980,11 @@ Canonical full state payload for web consumers (camelCase keys).
   requests, so radio-health-only changes are not hidden behind `304 Not Modified`.
 - State keys are always present. A field whose observation has not arrived —
   unsupported by the radio, or simply not read yet — publishes `null`, never a
-  fabricated default; `fieldStatus` keeps the reason (`missing`, `undeclared`
-  or `unavailable`) per public leaf path (for example `main.freqHz`). Once a
-  value has been observed it stays published, even when it later goes stale
+  fabricated default; `txTarget` excepted: it encodes absence fail-closed
+  in-band (an unknown-status object), not as a dataclass default. `fieldStatus`
+  keeps the reason (`missing`, `undeclared` or `unavailable`) per public leaf
+  path (for example `main.freqHz`). Once a value has been observed it stays
+  published, even when it later goes stale
   (`runtime_helpers.py: _null_unobserved_public_leaves`).
 
 ```json

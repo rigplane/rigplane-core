@@ -285,8 +285,9 @@ class ServerStatePublic(_Strict):
     Excludes the client-only ``meterSource`` (never server-sent) and the
     frontend-only ``UiState`` / ``PendingCommand`` types (MOR-881).
     Leaves with a ``fieldStatus`` entry publish ``null`` while unobserved
-    and keep their value when stale (MOR-2513; pinned by
-    ``tests/web/test_state_schema_conformance.py::
+    and keep their value when stale; ``txTarget`` excepted — it encodes
+    absence in-band (an unknown-status object), not as null (MOR-2513;
+    pinned by ``tests/web/test_state_schema_conformance.py::
     test_snapshot_path_unobserved_null_leaves_conform``).
     """
 

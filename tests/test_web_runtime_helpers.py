@@ -1620,7 +1620,10 @@ def test_unobserved_leaves_publish_null_with_keys_present() -> None:
 
 
 def test_ftx1_empty_store_nulls_every_unobserved_status_leaf() -> None:
-    """FTX-1 unobserved: every published leaf is null; all three absence reasons occur."""
+    """FTX-1 unobserved: each leaf whose status says unobserved is null;
+    txTarget (in-band unknown object) and paths without an entry keep
+    their delivered values; all three absence reasons occur.
+    """
 
     payload = _profile_payload("FTX-1", StateStore().snapshot(), receiver_count=2)
     field_status = payload["fieldStatus"]
