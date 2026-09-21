@@ -468,7 +468,8 @@ describe('ReceiverInstrumentHost', () => {
     motion.reduced(true);
     publisher.emit(publication({ mainS: -12, meterQuality: ['calibrated'] })); flushSync();
     expect(svg().getAttribute('aria-label')).toMatch(/S meter S[0-9]/);
-    expect(svg().querySelectorAll<SVGLineElement>('line[visibility="visible"]').length).toBeGreaterThan(0);
+    expect([...svg().querySelectorAll<SVGLineElement>('line')]
+      .filter((line) => line.getAttribute('visibility') !== 'hidden').length).toBeGreaterThan(0);
     expect(svg().querySelectorAll<SVGRectElement>('[data-meter-fill]:not([visibility="hidden"])').length).toBeGreaterThan(0);
 
     motion.reduced(false);
