@@ -1726,7 +1726,7 @@ def test_observed_values_match_the_prewire_contract_byte_for_byte() -> None:
         "source": "poll_response",
         "provider": "parity",
         "transport": "fake",
-        "nativeId": "parity",
+        "nativeId": "test",
         "capabilityId": None,
         "commandSource": None,
         "sessionId": None,

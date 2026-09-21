@@ -62,12 +62,16 @@ class _Strict(BaseModel):
 
 
 class VfoSlotPublic(_Strict):
-    """One VFO slot (A or B) within a receiver."""
+    """One VFO slot (A or B) within a receiver.
 
-    freqHz: int = 0
-    mode: str = "USB"
+    Every leaf publishes ``null`` while unobserved (MOR-2513; see
+    ``ServerStatePublic``).
+    """
+
+    freqHz: int | None = None
+    mode: str | None = None
     filterNum: int | None = None
-    dataMode: int = 0
+    dataMode: int | None = None
 
 
 class ReceiverStatePublic(_Strict):
@@ -78,68 +82,71 @@ class ReceiverStatePublic(_Strict):
     ``dataMode``). The redundancy is intentional back-compat (radio_state.py
     ``_receiver_to_dict``); the slot view is the canonical source-of-truth and
     the scalars are derived from ``activeSlot``.
+
+    Every leaf publishes ``null`` while unobserved (MOR-2513; see
+    ``ServerStatePublic``).
     """
 
     # Slot view (MOR-881: previously absent from state.ts).
     vfoA: VfoSlotPublic
     vfoB: VfoSlotPublic
-    activeSlot: str = "A"
+    activeSlot: str | None = None
     # Relative inactive-VFO readback for providers that cannot prove absolute
     # A/B identity. Additive and optional for older providers/clients.
     unselectedVfo: VfoSlotPublic | None = None
 
     # Legacy active-slot scalars (derived from the active slot). ``freq`` is
     # renamed to ``freqHz`` by ``_RECEIVER_KEY_MAP``; the rest pass through.
-    freqHz: int = 0
-    mode: str = "USB"
+    freqHz: int | None = None
+    mode: str | None = None
     filter: int | None = None
-    dataMode: int = 0
+    dataMode: int | None = None
 
     filterWidth: int | None = None
-    att: int = 0
-    preamp: int = 0
-    nb: bool = False
-    nr: bool = False
-    digisel: bool = False
-    ipplus: bool = False
-    sMeterSqlOpen: bool = False
-    agc: int = 0
-    audioPeakFilter: int = 0
-    autoNotch: bool = False
-    manualNotch: bool = False
-    twinPeakFilter: bool = False
-    filterShape: int = 0
-    agcTimeConstant: int = 0
+    att: int | None = None
+    preamp: int | None = None
+    nb: bool | None = None
+    nr: bool | None = None
+    digisel: bool | None = None
+    ipplus: bool | None = None
+    sMeterSqlOpen: bool | None = None
+    agc: int | None = None
+    audioPeakFilter: int | None = None
+    autoNotch: bool | None = None
+    manualNotch: bool | None = None
+    twinPeakFilter: bool | None = None
+    filterShape: int | None = None
+    agcTimeConstant: int | None = None
     # These three are normalized to float in [0, 1] by the snapshot path
     # (_normalize_public_level_snapshot_value in runtime_helpers.py).  Pydantic
     # lax mode coerces the int(0) from the dataclass path, so float is the
     # correct canonical type for both producers.
-    afLevel: float = 0.0
-    rfGain: float = 0.0
-    squelch: float = 0.0
-    sMeter: int = 0
-    apfTypeLevel: int = 0
-    apfOn: bool = False
-    apfFreq: int = 0
-    nrLevel: int = 0
-    pbtInner: int = 128
-    pbtOuter: int = 128
-    nbLevel: int = 0
-    digiselShift: int = 0
-    afMute: bool = False
-    contour: int = 0
-    ifShift: int = 0
-    narrow: bool = False
-    manualNotchFreq: int = 0
-    manualNotchWidth: int = 0
+    afLevel: float | None = None
+    rfGain: float | None = None
+    squelch: float | None = None
+    sMeter: int | None = None
+    apfTypeLevel: int | None = None
+    apfOn: bool | None = None
+    apfFreq: int | None = None
+    nrLevel: int | None = None
+    pbtInner: int | None = None
+    pbtOuter: int | None = None
+    nbLevel: int | None = None
+    digiselShift: int | None = None
+    afMute: bool | None = None
+    contour: int | None = None
+    ifShift: int | None = None
+    narrow: bool | None = None
+    manualNotchFreq: int | None = None
+    manualNotchWidth: int | None = None
     # notch_filter (MOR-1548): reclassified from global to receiver-scoped,
     # matching the ic7610.toml cmd29 route's own per-receiver rationale.
-    notchFilter: int = 0
-    repeaterTone: bool = False
-    repeaterTsql: bool = False
-    toneFreq: int = 0
-    tsqlFreq: int = 0
-    repeaterShift: int = 0
+    notchFilter: int | None = None
+    repeaterTone: bool | None = None
+    repeaterTsql: bool | None = None
+    toneFreq: int | None = None
+    tsqlFreq: int | None = None
+    repeaterShift: int | None = None
 
     # Snapshot-path only: ``dcd`` is the canonical squelch-open status; it is
     # also dual-published as the deprecated ``sMeterSqlOpen`` alias (MOR-466).
@@ -157,21 +164,25 @@ class FixedEdgePublic(_Strict):
 
 
 class ScopeControlsPublic(_Strict):
-    """Spectrum-scope control state."""
+    """Spectrum-scope control state.
 
-    receiver: int = 0
-    dual: bool = False
-    mode: int = 0
-    span: int = 0
-    edge: int = 0
-    hold: bool = False
-    refDb: float = 0.0
-    speed: int = 0
-    duringTx: bool = False
-    centerType: int = 0
-    vbwNarrow: bool = False
-    rbw: int = 0
-    fixedEdge: FixedEdgePublic
+    Every leaf (and the ``fixedEdge`` object as a whole) publishes
+    ``null`` while unobserved (MOR-2513; see ``ServerStatePublic``).
+    """
+
+    receiver: int | None = None
+    dual: bool | None = None
+    mode: int | None = None
+    span: int | None = None
+    edge: int | None = None
+    hold: bool | None = None
+    refDb: float | None = None
+    speed: int | None = None
+    duringTx: bool | None = None
+    centerType: int | None = None
+    vbwNarrow: bool | None = None
+    rbw: int | None = None
+    fixedEdge: FixedEdgePublic | None = None
 
 
 class FieldStatusPublic(_Strict):
@@ -284,6 +295,14 @@ class ServerStatePublic(_Strict):
 
     Excludes the client-only ``meterSource`` (never server-sent) and the
     frontend-only ``UiState`` / ``PendingCommand`` types (MOR-881).
+
+    Every leaf with a ``fieldStatus`` entry publishes ``null`` while that
+    entry says unobserved, whatever the absence reason; an observed leaf
+    keeps its value when it goes stale (MOR-2513; pinned by
+    ``tests/web/test_state_schema_conformance.py::
+    test_snapshot_path_unobserved_null_leaves_conform``). Leaves with no
+    status entry (connection, radioHealth, revisions, ``txTarget``) are
+    not radio observations and never null.
     """
 
     # Revisions / sequence counters.
@@ -302,63 +321,63 @@ class ServerStatePublic(_Strict):
     # ``active`` is set to "MAIN"/"SUB" in exactly three places:
     #   _civ_rx.py (0xD2 frame), _dual_rx_runtime.py, and RadioState default.
     # No other values are produced; the Literal is safe.
-    active: Literal["MAIN", "SUB"]
-    powerOn: bool = True
-    ptt: bool = False
+    active: Literal["MAIN", "SUB"] | None = None
+    powerOn: bool | None = None
+    ptt: bool | None = None
     # Normalized to float in [0, 1] by the snapshot path via
     # _normalize_public_level_snapshot_value (runtime_helpers.py).
-    powerLevel: float = 0.0
-    split: bool = False
-    dualWatch: bool = False
-    scanning: bool = False
-    scanType: int = 0
-    scanResumeMode: int = 0
-    tuningStep: int = 0
-    overflow: bool = False
-    tunerStatus: int = 0
-    ritFreq: int = 0
-    ritOn: bool = False
-    ritTx: bool = False
-    compMeter: int = 0
-    vdMeter: int = 0
-    idMeter: int = 0
-    powerMeter: int = 0
-    swrMeter: int = 0
-    alcMeter: int = 0
-    cwPitch: int = 0
-    micGain: int = 0
-    keySpeed: int = 0
-    mainSubTracking: bool = False
-    compressorOn: bool = False
-    compressorLevel: int = 0
-    monitorOn: bool = False
-    breakInDelay: int = 0
+    powerLevel: float | None = None
+    split: bool | None = None
+    dualWatch: bool | None = None
+    scanning: bool | None = None
+    scanType: int | None = None
+    scanResumeMode: int | None = None
+    tuningStep: int | None = None
+    overflow: bool | None = None
+    tunerStatus: int | None = None
+    ritFreq: int | None = None
+    ritOn: bool | None = None
+    ritTx: bool | None = None
+    compMeter: int | None = None
+    vdMeter: int | None = None
+    idMeter: int | None = None
+    powerMeter: int | None = None
+    swrMeter: int | None = None
+    alcMeter: int | None = None
+    cwPitch: int | None = None
+    micGain: int | None = None
+    keySpeed: int | None = None
+    mainSubTracking: bool | None = None
+    compressorOn: bool | None = None
+    compressorLevel: int | None = None
+    monitorOn: bool | None = None
+    breakInDelay: int | None = None
     cwSpot: bool | None = None
-    breakIn: int = 0
-    dialLock: bool = False
-    driveGain: int = 0
-    monitorGain: int = 0
+    breakIn: int | None = None
+    dialLock: bool | None = None
+    driveGain: int | None = None
+    monitorGain: int | None = None
     # Compatibility alias derived from canonical ``active``; never Store truth.
-    vfoSelect: int = 0
+    vfoSelect: int | None = None
     # Opaque compatibility only; generic controls must not treat it as truth.
     yaesu: dict[str, int | None] | None = None
-    voxOn: bool = False
-    voxGain: int = 0
-    antiVoxGain: int = 0
-    voxDelay: int = 0
-    ssbTxBandwidth: int = 0
-    refAdjust: int = 0
-    dashRatio: int = 0
-    nbDepth: int = 0
-    nbWidth: int = 0
-    txAntenna: int = 1
-    rxAntenna1: bool = False
-    rxAntenna2: bool = False
+    voxOn: bool | None = None
+    voxGain: int | None = None
+    antiVoxGain: int | None = None
+    voxDelay: int | None = None
+    ssbTxBandwidth: int | None = None
+    refAdjust: int | None = None
+    dashRatio: int | None = None
+    nbDepth: int | None = None
+    nbWidth: int | None = None
+    txAntenna: int | None = None
+    rxAntenna1: bool | None = None
+    rxAntenna2: bool | None = None
     dataOffModInput: int | None = None
     data1ModInput: int | None = None
     data2ModInput: int | None = None
     data3ModInput: int | None = None
-    txBandEdges: list[dict[str, int]] = Field(default_factory=list)
+    txBandEdges: list[dict[str, int]] | None = None
     scopeControls: ScopeControlsPublic
     txTarget: TxTargetPublic
 
