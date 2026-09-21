@@ -175,7 +175,9 @@ function activePbtLattice(): { filterWidthHz: number; stepHz: number } | null {
   const caps = getCapabilities();
   const activeRx = getActiveReceiver();
   if (!caps || !activeRx) return null;
-  const stepHz = resolveFilterModeConfig(caps, activeRx.mode, activeRx.dataMode)?.pbtStepHz;
+  // MOR-2513: null mode/dataMode (unobserved) resolves no config, hence no
+  // lattice and no PBT write computed from an unknown mode.
+  const stepHz = resolveFilterModeConfig(caps, activeRx.mode ?? undefined, activeRx.dataMode ?? undefined)?.pbtStepHz;
   const filterWidthHz = activeRx.filterWidth;
   if (
     stepHz === undefined
@@ -223,7 +225,7 @@ function currentMemorySnapshot(): MemorySnapshot | null {
   const receiver = context.state[receiverKey];
   if (!receiver) return null;
 
-  let source: { freqHz?: number; mode?: string } = receiver;
+  let source: { freqHz?: number | null; mode?: string | null } = receiver;
   let base = `${receiverKey}.`;
   const relative = context.caps.vfoScheme === 'ab'
     && relativeVfoIdentityUnknown(context.state, context.caps, receiverKey);
@@ -848,7 +850,8 @@ function activeFilterRule(receiver: Receiver): FilterModeConfig | null {
   const caps = getCapabilities();
   if (!state || !caps) return null;
   const rx = receiver === 1 ? state.sub : state.main;
-  return resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode);
+  // MOR-2513: null mode/dataMode (unobserved) resolves no config.
+  return resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined);
 }
 
 export function makeFilterHandlers() {
@@ -1397,14 +1400,14 @@ export function makeVfoHandlers() {
       const context = currentA03cContext();
       const main = context?.state.main;
       if (!context || knownA03cReceiver(context, 'MAIN', 'freqHz') !== 0
-        || !Number.isSafeInteger(freq) || !main) return;
+        || !Number.isSafeInteger(freq) || !main || typeof main.freqHz !== 'number') return;
       tuningAccumulator().step(0, main.freqHz, freq, currentTuningMarker(0));
     },
     onSubFreqChange: (freq: number) => {
       const context = currentA03cContext();
       const sub = context?.state.sub;
       if (!context || knownA03cReceiver(context, 'SUB', 'freqHz') !== 1
-        || !Number.isSafeInteger(freq) || !sub) return;
+        || !Number.isSafeInteger(freq) || !sub || typeof sub.freqHz !== 'number') return;
       tuningAccumulator().step(1, sub.freqHz, freq, currentTuningMarker(1));
     },
     // MOR-1425 review B1: callers mix ABSOLUTE targets (spectrum click/
@@ -1419,7 +1422,8 @@ export function makeVfoHandlers() {
         || !Number.isSafeInteger(freq)) return;
       if (kind === 'jump') { tuningAccumulator().jump(receiver, freq); return; }
       const confirmed = receiver === 1 ? context.state.sub : context.state.main;
-      if (!confirmed) return;
+      // MOR-2513: an unobserved current frequency (null) computes no step.
+      if (!confirmed || typeof confirmed.freqHz !== 'number') return;
       tuningAccumulator().step(receiver, confirmed.freqHz, freq, currentTuningMarker(receiver));
     },
     onModeChange: (mode: string, receiver?: Receiver) => {
@@ -1718,7 +1722,9 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
       const delta = Number.isSafeInteger(safeParams.deltaHz) ? safeParams.deltaHz
         : direction && Number.isSafeInteger(step) && step > 0 ? (direction === 'down' ? -step : step) : null;
       const frequency = rx?.freqHz;
-      const target = typeof delta === 'number' && Number.isSafeInteger(frequency) ? frequency + delta : null;
+      // MOR-2513: null (unobserved) frequency computes no target.
+      const target = typeof delta === 'number' && typeof frequency === 'number'
+        && Number.isSafeInteger(frequency) ? frequency + delta : null;
       if (keyboardReceiverField(context, 'freqHz') && Number.isSafeInteger(step) && step > 0
         && typeof frequency === 'number' && Number.isSafeInteger(frequency) && frequency > 0
         && typeof target === 'number' && Number.isSafeInteger(target) && target > 0) makeVfoHandlers().onFreqChange(target, receiver, 'step');
@@ -1739,7 +1745,8 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
     case 'cycle_data_mode': {
       const count = context.caps.dataModeCount;
       if (keyboardReceiverField(context, 'dataMode') && typeof count === 'number' && Number.isSafeInteger(count) && count > 0
-        && Number.isSafeInteger(rx?.dataMode) && rx.dataMode >= 0 && rx.dataMode < count) {
+        && typeof rx?.dataMode === 'number' && Number.isSafeInteger(rx.dataMode)
+        && rx.dataMode >= 0 && rx.dataMode < count) {
         makeModeHandlers().onDataModeChange((rx.dataMode + 1) % count);
       }
       return true;

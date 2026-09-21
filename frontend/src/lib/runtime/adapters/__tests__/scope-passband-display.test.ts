@@ -93,6 +93,13 @@ function tuple(result: ScopePassbandDisplayState) {
 function pbt(input: ScopePassbandDisplayInput): void {
   input.caps!.capabilities = input.caps!.capabilities.filter((tag) => tag !== 'if_shift').concat('pbt');
 }
+/** MOR-2513: wire leaves are nullable; the transition fixtures carry an
+ * observed frequency — throw (never fabricate) if that ever changes. */
+function nudgeFrequency(input: ScopePassbandDisplayInput, delta = 100): void {
+  const rx = input.state?.main;
+  if (typeof rx?.freqHz !== 'number') throw new Error('fixture main.freqHz observed');
+  rx.freqHz += delta;
+}
 function slotted(input: ScopePassbandDisplayInput): void {
   input.caps!.vfoScheme = 'ab'; input.selection = { receiver: 'MAIN', slot: 'A' };
 }
@@ -630,7 +637,7 @@ describe('coherent RF passband display', () => {
     ['control epoch', (i) => { i.session = { state: 'connected', epoch: 2 }; }],
     ['receiver', (i) => { i.caps!.receivers = 2; i.caps!.vfoScheme = 'ab_shared'; i.caps!.capabilities.push('dual_rx'); i.state!.active = 'SUB'; i.selection = { receiver: 'SUB', slot: 'single' }; receipt(i, 2); }],
     ['slot', (i) => { i.state!.main!.activeSlot = 'B'; i.selection = { receiver: 'MAIN', slot: 'B' }; }],
-    ['frequency', (i) => { i.state!.main!.freqHz += 100; }],
+    ['frequency', (i) => { nudgeFrequency(i); }],
     ['mode', (i) => { i.state!.main!.mode = 'LSB'; }],
     ['DATA', (i) => { i.state!.main!.dataMode = 1; }],
     ['filter', (i) => { i.state!.main!.filter = 2; }],
@@ -802,7 +809,7 @@ describe('coherent RF passband display', () => {
 
   it.each(['freqHz', 'mode', 'filter'])('denies strict alias disagreement for %s', (field) => {
     const input = fixture(); slotted(input);
-    if (field === 'freqHz') input.state!.main!.freqHz += 100;
+    if (field === 'freqHz') nudgeFrequency(input);
     if (field === 'mode') input.state!.main!.mode = 'LSB';
     if (field === 'filter') input.state!.main!.filter = 2;
     expect(project(input).display.state).toBe('unknown');

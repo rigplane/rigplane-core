@@ -500,9 +500,10 @@ In the SAME state snapshot:
   is actively running (`observationSeq` advanced 4512 → 4683 across samples);
   value 0 is legitimate (no signal on the FT8 calling frequency at sample time).
 - `sub.sMeter`: `observed:false / freshness:unknown / availability:missing`.
-  Degraded CLEANLY — the body shows the default `0` but `fieldStatus` honestly
-  reports it as missing, NOT a false "fresh 0". The SUB `SM1;` → `SM0000;`
-  mismatch no longer aborts the MAIN s-meter emission.
+  Degraded CLEANLY — the body publishes `null` for the unobserved leaf
+  (MOR-2513; `runtime_helpers.py: _null_unobserved_public_leaves`) and
+  `fieldStatus` honestly reports it as missing, NOT a false "fresh 0". The SUB
+  `SM1;` → `SM0000;` mismatch no longer aborts the MAIN s-meter emission.
 
 **MAIN mode decodes correctly: `main.mode = "DATA-U"`** (was `UNKNOWN(C)` in the
 prior run). The hex mode-map fix decodes `MD0;` byte `C` (hex 12) → `DATA-U`.

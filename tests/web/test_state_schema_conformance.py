@@ -337,6 +337,28 @@ def test_snapshot_path_normalized_level_fields_conform() -> None:
     ServerStatePublic.model_validate(payload)
 
 
+def test_snapshot_path_unobserved_null_leaves_conform() -> None:
+    """Unobserved leaves publish ``null`` and still validate (MOR-2513).
+
+    Every key stays present; the schema types the nullable leaves as
+    ``| None`` so the honest payload is conformant by construction.
+    """
+
+    payload = build_public_state_payload_from_snapshot(
+        StateStore().snapshot(),
+        radio=None,
+        receiver_count=1,
+    )
+
+    assert payload["main"]["freqHz"] is None
+    assert payload["main"]["mode"] is None
+    assert payload["powerOn"] is None
+    assert payload["scopeControls"]["fixedEdge"] is None
+    assert payload["txBandEdges"] is None
+
+    ServerStatePublic.model_validate(payload)
+
+
 def test_profile_gated_field_status_conforms() -> None:
     """A profile-gated payload emits — and validates — the two new literals.
 
