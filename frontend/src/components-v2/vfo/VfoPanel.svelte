@@ -134,7 +134,7 @@
   data-layout-profile={layoutProfile}
   style={Object.entries(receiverChromeVars).map(([key, value]) => `${key}:${value}`).join(';')}
 >
-  <div class="panel-identity">
+  <div class="panel-identity" data-vfo-row="identity">
     <button
       type="button" class="panel-header" disabled={onSelectHeader === undefined}
       aria-label={onSelectHeader ? `Select ${receiverLabel}` : undefined}
@@ -175,7 +175,7 @@
     <StatusIndicator label={filter ?? '—'} active={filter !== null} color={filter === null ? 'muted' : 'cyan'} size="default" />
   </div>
 
-  <div class="display-row">
+  <div class="display-row" data-vfo-row="main">
     <div class="freq-row">
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <span class="vfo-freq" data-vfo-freq data-freq-tunable={!frequencyDisabled}
@@ -226,7 +226,7 @@
     </div>
   </div>
 
-    <div class="control-strip">
+    <div class="control-strip" data-vfo-row="chips">
       <StatusIndicator label={slotTag} active={false} color="muted" size="default" />
 
       {#if bandText}

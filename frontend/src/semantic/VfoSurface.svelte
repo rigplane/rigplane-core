@@ -987,12 +987,12 @@
     background: linear-gradient(180deg, var(--v2-bg-gradient-start, #0a0e14) 0%, var(--v2-bg-panel, #05080c) 100%);
     border: 1px solid var(--v2-border-panel, #18222d); border-radius: 4px;
   }
-  .receiver-instrument { flex: 1 1 490px; min-width: 0; padding: var(--vfo-instrument-inset-block, 6px) 12px; }
+  .receiver-instrument { flex: 1 1 490px; min-width: 0; padding: var(--vfo-instrument-inset-block) 12px; }
   .receiver-instrument + .receiver-instrument { border-left: 1px solid var(--v2-border-panel, #18222d); }
   .bridge {
     flex: 0 0 180px; min-width: 0; display: flex; flex-direction: column;
     justify-content: center; gap: 10px; padding: 10px;
-    margin-block: var(--vfo-instrument-inset-block, 6px);
+    margin-block: var(--vfo-instrument-inset-block);
     border-inline: 1px solid var(--v2-border-panel, #18222d);
   }
   .freq-stack { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -1027,7 +1027,7 @@
   [data-vfo-appearance='standard'] .instrument-panel:not(:has(> .standard-pair-bridge)) {
     --vfo-instrument-inset-block: 8px;
   }
-  [data-vfo-appearance='standard'] .receiver-instrument { padding: var(--vfo-instrument-inset-block, 8px); }
+  [data-vfo-appearance='standard'] .receiver-instrument { padding: var(--vfo-instrument-inset-block); }
   [data-vfo-appearance='standard'] .instrument-active {
     border: 1px solid var(--v2-accent-cyan, #00d4ff); border-radius: 4px;
     box-shadow: 0 0 6px rgba(0,212,255,.3), inset 0 0 16px rgba(0,212,255,.06);

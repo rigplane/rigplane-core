@@ -124,7 +124,7 @@ describe.each(['2/main_sub', '1/ab'] as const)('standard panel rows (%s)', (id) 
     const root = mountSurface({ viewModel: fixture(), appearance: 'standard' });
     expect(panels(root).length).toBeGreaterThan(0);
     for (const panel of panels(root)) {
-      const mainRow = panel.querySelector('.display-row');
+      const mainRow = panel.querySelector('[data-vfo-row="main"]');
       expect(mainRow, 'panel has a main row').not.toBeNull();
       const freq = mainRow!.querySelector('[data-vfo-freq]');
       expect(freq, 'frequency readout inside the main row').not.toBeNull();
@@ -140,13 +140,13 @@ describe.each(['2/main_sub', '1/ab'] as const)('standard panel rows (%s)', (id) 
   it('the identity row carries name, mode and filter, ahead of the main row', () => {
     const root = mountSurface({ viewModel: fixture(), appearance: 'standard' });
     for (const panel of panels(root)) {
-      const identity = panel.querySelector('.panel-identity');
+      const identity = panel.querySelector('[data-vfo-row="identity"]');
       expect(identity, 'panel has an identity row').not.toBeNull();
       expect(identity!.querySelector('.vfo-label')?.textContent?.trim()).toBeTruthy();
       const texts = statusTexts(identity!);
       expect(texts).toContain(dominantMode);
       expect(texts).toContain(dominantFilter);
-      const mainRow = panel.querySelector('.display-row')!;
+      const mainRow = panel.querySelector('[data-vfo-row="main"]')!;
       expect(identity!.compareDocumentPosition(mainRow) & FOLLOWS,
         'identity row precedes the main row').toBeTruthy();
     }
@@ -155,8 +155,8 @@ describe.each(['2/main_sub', '1/ab'] as const)('standard panel rows (%s)', (id) 
   it('the indicator row follows the main row and no longer carries mode or filter', () => {
     const root = mountSurface({ viewModel: fixture(), appearance: 'standard' });
     for (const panel of panels(root)) {
-      const mainRow = panel.querySelector('.display-row')!;
-      const indicatorRow = panel.querySelector('.control-strip');
+      const mainRow = panel.querySelector('[data-vfo-row="main"]')!;
+      const indicatorRow = panel.querySelector('[data-vfo-row="chips"]');
       expect(indicatorRow, 'panel has an indicator row').not.toBeNull();
       expect(mainRow.compareDocumentPosition(indicatorRow!) & FOLLOWS,
         'indicator row follows the main row').toBeTruthy();
@@ -301,16 +301,22 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
   });
 
   it('the bridge block inset and the panel wrapper padding read one custom property', () => {
-    const INSET = /var\(--vfo-instrument-inset-block/;
     expect(rulesFor(surfaceCss, '.instrument-panel').join('\n'))
       .toMatch(/--vfo-instrument-inset-block:\s*6px/);
-    expect(rulesFor(surfaceCss, '.receiver-instrument').join('\n')).toMatch(INSET);
-    expect(rulesFor(surfaceCss, '.bridge').join('\n'))
-      .toMatch(/margin-block:\s*var\(--vfo-instrument-inset-block/);
     const standardScope = rulesFor(surfaceCss,
       "[data-vfo-appearance='standard'] .instrument-panel:not(:has(> .standard-pair-bridge))").join('\n');
     expect(standardScope).toMatch(/--vfo-instrument-inset-block:\s*8px/);
-    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .receiver-instrument").join('\n'))
-      .toMatch(/padding:\s*var\(--vfo-instrument-inset-block/);
+    const FALLBACK_FREE = /var\(--vfo-instrument-inset-block\)(?![^;]*,)/;
+    for (const [label, declaration, css] of [
+      ['base wrapper', 'padding', rulesFor(surfaceCss, '.receiver-instrument').join('\n')],
+      ['standard wrapper', 'padding', rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .receiver-instrument").join('\n')],
+      ['bridge', 'margin-block', rulesFor(surfaceCss, '.bridge').join('\n')],
+    ] as const) {
+      const value = css.match(new RegExp(`${declaration}:\\\\s*([^;]*);`))
+        ?? css.match(new RegExp(`${declaration}:[ \\n]*([^;]*);`));
+      expect(value, `${label} declares ${declaration}`).toBeTruthy();
+      expect(value![1], `${label} reads the inset without a fallback literal`)
+        .toMatch(FALLBACK_FREE);
+    }
   });
 });

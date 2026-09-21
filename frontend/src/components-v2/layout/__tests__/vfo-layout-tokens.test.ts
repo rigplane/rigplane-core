@@ -28,17 +28,12 @@ describe('getVfoLayoutTokens', () => {
 
     expect(tokens.bridgeWidth).toBe('132px');
     expect(tokens.bridgePadX).toBe('4px');
-    expect(tokens.panelHeaderHeight).toBe('18px');
     expect(tokens.headerBadgeHeight).toBe('12px');
     expect(tokens.badgeInsetY).toBe('3px');
     expect(tokens.headerGroupGap).toBe('5px');
     expect(tokens.headerBadgeGap).toBe('3px');
-    expect(tokens.panelMeterHeight).toBe('58px');
-    expect(tokens.panelBodyHeight).toBe('64px');
     expect(tokens.controlStripGap).toBe('4px');
     expect(tokens.controlBadgeHeight).toBe('16px');
-    expect(tokens.controlStripHeight).toBe('22px');
-    expect(tokens.displayRowHeight).toBe('38px');
     expect(tokens.frequencySize).toBe('22px');
     expect(tokens.opsBadgeWidth).toBe('62px');
     expect(tokens.meterVariant).toBe('vfo');
@@ -49,13 +44,8 @@ describe('getVfoLayoutTokens', () => {
 
     expect(tokens.bridgeWidth).toBe('132px');
     expect(tokens.bridgePadX).toBe('5px');
-    expect(tokens.panelHeaderHeight).toBe('18px');
-    expect(tokens.panelMeterHeight).toBe('60px');
-    expect(tokens.panelBodyHeight).toBe('62px');
     expect(tokens.controlStripGap).toBe('4px');
     expect(tokens.controlBadgeHeight).toBe('16px');
-    expect(tokens.controlStripHeight).toBe('22px');
-    expect(tokens.displayRowHeight).toBe('36px');
     expect(tokens.frequencySize).toBe('22px');
     expect(tokens.opsBadgeWidth).toBe('64px');
     expect(tokens.meterVariant).toBe('vfo-wide');
@@ -67,20 +57,16 @@ describe('getVfoLayoutTokens', () => {
       overrides: {
         topRowScale: 1.05,
         frequencyScale: 0.95,
-        meterScale: 1.1,
         badgeScale: 1.08,
       },
     });
 
-    expect(tokens.panelMeterHeight).toBe('69px');
-    expect(tokens.panelHeaderHeight).toBe('20px');
     expect(tokens.headerBadgeHeight).toBe('14px');
     expect(tokens.badgeInsetY).toBe('3px');
     expect(tokens.headerGroupGap).toBe('5.67px');
     expect(tokens.headerBadgeGap).toBe('3.4px');
     expect(tokens.controlStripGap).toBe('4.54px');
     expect(tokens.controlBadgeHeight).toBe('18px');
-    expect(tokens.controlStripHeight).toBe('24px');
     expect(tokens.frequencySize).toBe('21.95px');
     expect(tokens.controlBadgeMinHeight).toBe('18px');
   });
@@ -88,21 +74,19 @@ describe('getVfoLayoutTokens', () => {
 
 describe('parseVfoLayoutScaleOverrides', () => {
   it('parses manual scale overrides from URL query params', () => {
-    expect(parseVfoLayoutScaleOverrides('?vfoScale=1.08&vfoFreqScale=0.92&vfoMeterScale=1.1&vfoBadgeScale=1.04&vfoBridgeScale=0.98')).toEqual({
+    expect(parseVfoLayoutScaleOverrides('?vfoScale=1.08&vfoFreqScale=0.92&vfoBadgeScale=1.04&vfoBridgeScale=0.98')).toEqual({
       topRowScale: 1.08,
       frequencyScale: 0.92,
-      meterScale: 1.1,
       badgeScale: 1.04,
       bridgeScale: 0.98,
     });
   });
 
   it('ignores invalid values and clamps high values', () => {
-    expect(parseVfoLayoutScaleOverrides('?vfoScale=bad&vfoMeterScale=2.9')).toEqual({
+    expect(parseVfoLayoutScaleOverrides('?vfoScale=bad&vfoBadgeScale=2.9')).toEqual({
       topRowScale: undefined,
       frequencyScale: undefined,
-      meterScale: 1.8,
-      badgeScale: undefined,
+      badgeScale: 1.8,
       bridgeScale: undefined,
     });
   });
@@ -118,8 +102,6 @@ describe('vfoLayoutStyleVars', () => {
     expect(style).toContain('--vfo-badge-inset-y: 3px');
     expect(style).toContain('--vfo-header-group-gap: 5px');
     expect(style).toContain('--vfo-control-strip-gap: 4px');
-    expect(style).toContain('--vfo-panel-meter-height: 60px');
-    expect(style).toContain('--vfo-control-strip-height: 22px');
     expect(style).toContain('--vfo-header-badge-padding-x: 5px');
     expect(style).toContain('--vfo-control-badge-padding-x: 6px');
     expect(style).toContain('--vfo-control-badge-height: 16px');
