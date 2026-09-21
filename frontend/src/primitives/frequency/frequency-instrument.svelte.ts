@@ -19,6 +19,7 @@ export interface FrequencyInstrumentInput {
   readonly minFreq: number;
   readonly maxFreq: number;
   readonly onFreqChange?: (frequencyHz: number) => void;
+  readonly selectedDigitHint?: string;
 }
 
 export interface FrequencyInstrumentBinding {
@@ -44,6 +45,7 @@ export function createFrequencyInstrumentBinding(
     get minFreq() { return current.minFreq; },
     get maxFreq() { return current.maxFreq; },
     get onFreqChange() { return current.onFreqChange; },
+    get selectedDigitHint() { return current.selectedDigitHint; },
   });
 
   return {

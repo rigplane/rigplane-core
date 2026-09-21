@@ -184,6 +184,7 @@
   "core.vfo.activeReceiver.known": "アクティブな受信機: {receiver}",
   "core.vfo.activeReceiver.unknown": "アクティブな受信機: 不明",
   "core.vfo.selectAction": "{label} を選択",
+  "core.vfo.freq.selectedDigitHint": "Esc キーか範囲外のクリックで選択を解除",
   "core.vfo.txTarget.label": "TX target",
   "core.vfo.split.label": "Split",
   "core.vfo.dualWatch.label": "Dual watch",

@@ -197,6 +197,7 @@
   "core.vfo.selectAction": "Выбрать {label}",
   "core.vfo.txTarget.label": "TX target",
   "core.vfo.freq.pendingAnnouncement": "В ожидании, ещё не подтверждено",
+  "core.vfo.freq.selectedDigitHint": "Esc или щелчок вне разряда снимает выделение",
   "core.filter.select.pendingAnnouncement": "В ожидании, ещё не подтверждено",
   "core.filter.width.pendingAnnouncement": "Запрошена ширина фильтра {target}; радио ещё не подтвердило её.",
   "core.filter.width.confirmedAnnouncement": "Радио подтвердило ширину фильтра {confirmed}.",

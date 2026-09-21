@@ -10,12 +10,14 @@ export interface FrequencyInteractionInput {
   readonly minFreq: number;
   readonly maxFreq: number;
   readonly onFreqChange?: (frequencyHz: number) => void;
+  readonly selectedDigitHint?: string;
 }
 
 export interface FrequencyInteraction {
   readonly inert: boolean;
   readonly selectedDigitIndex: number | null;
   readonly hoveredDigitIndex: number | null;
+  readonly selectedDigitHint: string | undefined;
   handleWheel(digit: DigitInfo, event: WheelEvent): void;
   handleDigitClick(digit: DigitInfo, event: MouseEvent): void;
   handleKeyDown(event: KeyboardEvent): void;
@@ -23,6 +25,7 @@ export interface FrequencyInteraction {
   handleDigitLeave(): void;
   isSelected(digit: DigitInfo): boolean;
   isHovered(digit: DigitInfo): boolean;
+  releaseSelection(): void;
 }
 
 export interface FrequencyInteractionLease {
@@ -75,6 +78,12 @@ export function createFrequencyInteraction(
   function handleKeyDown(event: KeyboardEvent): void {
     if (hasCommandModifier(event)) return;
     if (inert || selectedDigitIndex === null) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      reset();
+      return;
+    }
     const digit = current.digits.find((candidate) => candidate.digitIndex === selectedDigitIndex);
     if (!digit || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
     event.preventDefault();
@@ -98,6 +107,7 @@ export function createFrequencyInteraction(
     get inert() { return inert; },
     get selectedDigitIndex() { return selectedDigitIndex; },
     get hoveredDigitIndex() { return hoveredDigitIndex; },
+    get selectedDigitHint() { return current.selectedDigitHint; },
     handleWheel,
     handleDigitClick,
     handleKeyDown,
@@ -105,6 +115,7 @@ export function createFrequencyInteraction(
     handleDigitLeave,
     isSelected: (digit) => selectedDigitIndex === digit.digitIndex,
     isHovered: (digit) => hoveredDigitIndex === digit.digitIndex,
+    releaseSelection: reset,
   };
   resetInteraction.set(interaction, reset);
   return interaction;
@@ -151,6 +162,7 @@ export function createFrequencyInteractionLease(
     get inert() { return !active() || owner.inert; },
     get selectedDigitIndex() { return active() ? owner.selectedDigitIndex : null; },
     get hoveredDigitIndex() { return active() ? owner.hoveredDigitIndex : null; },
+    get selectedDigitHint() { return active() ? owner.selectedDigitHint : undefined; },
     handleWheel(digit, event) { if (active(true)) owner.handleWheel(digit, event); },
     handleDigitClick(digit, event) { if (active(true)) owner.handleDigitClick(digit, event); },
     handleKeyDown(event) { if (active(true)) owner.handleKeyDown(event); },
@@ -158,6 +170,7 @@ export function createFrequencyInteractionLease(
     handleDigitLeave() { if (active(true)) owner.handleDigitLeave(); },
     isSelected: (digit) => active() && owner.isSelected(digit),
     isHovered: (digit) => active() && owner.isHovered(digit),
+    releaseSelection() { if (active(true)) owner.releaseSelection(); },
   };
   return { interaction, get revoked() { return revoked; }, revoke };
 }

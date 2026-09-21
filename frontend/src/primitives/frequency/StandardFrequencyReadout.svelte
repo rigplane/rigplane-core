@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { FrequencyInteraction } from './frequency-interaction.svelte';
+  import type { DigitInfo } from './frequency-tuning';
   import type { FrequencyReadoutModel } from './frequency-readout';
 
   export type FrequencyReadoutPresentation = 'interactive' | 'passive';
@@ -39,11 +40,28 @@
   let style = $derived(cssVars
     ? Object.entries(cssVars).map(([key, value]) => `${key}:${value}`).join(';')
     : undefined);
+
+  let root: HTMLDivElement | null = null;
+
+  function handleDigitActivate(digit: DigitInfo, event: MouseEvent): void {
+    interaction?.handleDigitClick(digit, event);
+    if ((interaction?.selectedDigitIndex ?? null) !== null && root !== null
+      && !(document.activeElement instanceof Node && root.contains(document.activeElement))) {
+      root.focus();
+    }
+  }
+
+  function handleFocusOut(event: FocusEvent): void {
+    const next = event.relatedTarget;
+    if (next instanceof Node && root?.contains(next)) return;
+    interaction?.releaseSelection();
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <div
+  bind:this={root}
   class="freq" class:compact class:inactive={!active} class:interactive
   data-freq-status={interactive ? model.status : undefined}
   data-vfo-freq={interactive && vfoFreqHook ? '' : undefined}
@@ -56,6 +74,7 @@
   role={interactive ? 'group' : undefined}
   aria-label={interactive ? 'Frequency display' : undefined}
   onkeydown={interactive ? interaction?.handleKeyDown : undefined}
+  onfocusout={interactive ? handleFocusOut : undefined}
 >
   {#if !model.known}
     {#if interactive}
@@ -73,8 +92,9 @@
         class="digit"
         class:selected={interaction?.isSelected(digit)}
         class:hovered={interaction?.isHovered(digit)}
+        title={interaction?.isSelected(digit) ? interaction?.selectedDigitHint : undefined}
         onwheel={(event) => interaction?.handleWheel(digit, event)}
-        onclick={(event) => interaction?.handleDigitClick(digit, event)}
+        onclick={(event) => handleDigitActivate(digit, event)}
         onmouseenter={() => interaction?.handleDigitEnter(digit)}
         onmouseleave={() => interaction?.handleDigitLeave()}
       >{digit.char}</span>
@@ -87,8 +107,9 @@
         class="digit"
         class:selected={interaction?.isSelected(digit)}
         class:hovered={interaction?.isHovered(digit)}
+        title={interaction?.isSelected(digit) ? interaction?.selectedDigitHint : undefined}
         onwheel={(event) => interaction?.handleWheel(digit, event)}
-        onclick={(event) => interaction?.handleDigitClick(digit, event)}
+        onclick={(event) => handleDigitActivate(digit, event)}
         onmouseenter={() => interaction?.handleDigitEnter(digit)}
         onmouseleave={() => interaction?.handleDigitLeave()}
       >{digit.char}</span>
@@ -101,8 +122,9 @@
         class="digit"
         class:selected={interaction?.isSelected(digit)}
         class:hovered={interaction?.isHovered(digit)}
+        title={interaction?.isSelected(digit) ? interaction?.selectedDigitHint : undefined}
         onwheel={(event) => interaction?.handleWheel(digit, event)}
-        onclick={(event) => interaction?.handleDigitClick(digit, event)}
+        onclick={(event) => handleDigitActivate(digit, event)}
         onmouseenter={() => interaction?.handleDigitEnter(digit)}
         onmouseleave={() => interaction?.handleDigitLeave()}
       >{digit.char}</span>

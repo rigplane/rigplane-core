@@ -256,6 +256,84 @@ describe('KeyboardHandler', () => {
     });
   });
 
+  // MOR-2514 — the release half of the MOR-2512 ownership contract:
+  // Escape while a digit is selected ends the selection and is consumed
+  // (the global Escape binding must not also fire), and afterwards a
+  // bare ArrowUp reaches the global map again. The hint title is pinned
+  // as the en-US literal resolved through the real VfoSurface -> t()
+  // chain, never as t(key).
+  describe('Escape releases the selected digit and restores global ArrowUp (MOR-2514)', () => {
+    const releaseConfig: KeyboardConfig = {
+      ...config,
+      bindings: [
+        {
+          id: 'step-up',
+          section: 'Tuning',
+          label: 'Increase tuning step',
+          sequence: ['ArrowUp'],
+          action: 'adjust_tuning_step',
+          params: { direction: 'up' },
+        },
+        { id: 'stop', section: 'Safety', label: 'Stop scan', sequence: ['Escape'], action: 'scan_stop' },
+      ],
+    };
+
+    function mountReleaseHarness() {
+      const base = topologyFixtures['1/single'];
+      const current: RadioViewModel = { ...base, vfos: base.vfos.map((vfo) => ({ ...vfo, display: {
+        frequencyHz: { state: 'current', value: vfo.frequencyHz! },
+        mode: { state: 'current', value: 'USB' }, filter: { state: 'current', value: 'FIL1' },
+      } })) };
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      const onTuneFrequency = vi.fn();
+      const onAction = vi.fn();
+      components.push(mount(VfoSurface, { target, props: { viewModel: current, onTuneFrequency } }));
+      mountHandler({ config: releaseConfig, onAction });
+      flushSync();
+      const frequency = target.querySelector<HTMLElement>('.freq')!;
+      frequency.focus();
+      return { frequency, onAction, onTuneFrequency };
+    }
+
+    it('consumes Escape while selected, then returns bare ArrowUp to adjust_tuning_step', () => {
+      const h = mountReleaseHarness();
+      expect(h.frequency.hasAttribute('data-owns-arrows')).toBe(false);
+
+      h.frequency.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      flushSync();
+      expect(h.onAction).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ action: 'adjust_tuning_step', params: { direction: 'up' } }),
+      );
+
+      const lastDigit = h.frequency.querySelectorAll<HTMLElement>('.digit');
+      const oneHzDigit = lastDigit[lastDigit.length - 1];
+      oneHzDigit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      expect(h.frequency.getAttribute('data-owns-arrows')).toBe('vertical');
+      expect(oneHzDigit.getAttribute('title')).toBe('Esc or click away to deselect');
+
+      h.frequency.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      flushSync();
+      expect(h.onAction).toHaveBeenCalledTimes(1);
+      expect(h.onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 14_195_001);
+
+      const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      h.frequency.dispatchEvent(escape);
+      flushSync();
+      expect(escape.defaultPrevented).toBe(true);
+      expect(h.onAction).toHaveBeenCalledTimes(1);
+      expect(h.frequency.hasAttribute('data-owns-arrows')).toBe(false);
+
+      h.frequency.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      flushSync();
+      expect(h.onAction).toHaveBeenCalledTimes(2);
+      expect(h.onAction).toHaveBeenLastCalledWith(
+        expect.objectContaining({ action: 'adjust_tuning_step', params: { direction: 'up' } }),
+      );
+    });
+  });
+
   // MOR-2507 — bench-observed on IC-7610/IC-7300: with the AF volume slider
   // focused, one arrow press was handled twice — the slider moved AND the
   // global tuning shortcut fired. A widget that consumes arrow keys declares
