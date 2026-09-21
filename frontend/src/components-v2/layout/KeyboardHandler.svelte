@@ -10,6 +10,7 @@
     isDigitKey,
     isFrequencyDisplayFocused,
     formatShortcut,
+    ALT_HINTS_DELAY_MS,
     type KeyboardActionConfig,
     type KeyboardBindingConfig,
     type KeyboardConfig,
@@ -32,6 +33,8 @@
   let leaderLabel = $state<string | null>(null);
   let helpOpen = $state(false);
   let leaderTimer: ReturnType<typeof setTimeout> | null = null;
+  let altHintTimer: ReturnType<typeof setTimeout> | null = null;
+  let altHoldBlocked = false;
 
   function groupBindings(bindings: KeyboardBindingConfig[]): Array<[string, KeyboardBindingConfig[]]> {
     const groups = new Map<string, KeyboardBindingConfig[]>();
@@ -53,6 +56,24 @@
       clearTimeout(leaderTimer);
       leaderTimer = null;
     }
+  }
+
+  function altHoldActive(): boolean {
+    return altHintTimer !== null || document.body.dataset.shortcutHints === 'true' || altHoldBlocked;
+  }
+
+  function clearAltHold(): void {
+    if (altHintTimer !== null) {
+      clearTimeout(altHintTimer);
+      altHintTimer = null;
+    }
+    delete document.body.dataset.shortcutHints;
+    altHoldBlocked = false;
+  }
+
+  function suppressAltHold(): void {
+    clearAltHold();
+    altHoldBlocked = true;
   }
 
   function dispatch(action: KeyboardActionConfig): void {
@@ -105,6 +126,10 @@
 
   function handleKeydown(event: KeyboardEvent): void {
     if (!enabled) return;
+    // Any keydown other than Alt — including a modifier-only keydown such
+    // as the RF chord's Shift — means a chord, and keeps the hints hidden
+    // for the rest of that Alt hold.
+    if (event.key !== 'Alt' && altHoldActive()) suppressAltHold();
     if (shouldIgnoreEvent(document.activeElement)) return;
 
     // MOR-2507: a widget that declared data-owns-arrows owns exactly those
@@ -172,7 +197,12 @@
     }
 
     if (event.key === 'Alt' && keyboardConfig.altHints) {
-      document.body.dataset.shortcutHints = 'true';
+      if (!altHoldBlocked && altHintTimer === null && document.body.dataset.shortcutHints !== 'true') {
+        altHintTimer = setTimeout(() => {
+          altHintTimer = null;
+          document.body.dataset.shortcutHints = 'true';
+        }, ALT_HINTS_DELAY_MS);
+      }
       return;
     }
 
@@ -205,17 +235,22 @@
 
   function handleKeyup(event: KeyboardEvent): void {
     if (event.key === 'Alt') {
-      delete document.body.dataset.shortcutHints;
+      clearAltHold();
     }
+  }
+
+  function handleVisibilityChange(): void {
+    if (document.visibilityState === 'hidden') clearAltHold();
   }
 
   onDestroy(() => {
     clearLeaderState();
-    delete document.body.dataset.shortcutHints;
+    clearAltHold();
   });
 </script>
 
-<svelte:window onkeydown={handleKeydown} onkeyup={handleKeyup} />
+<svelte:window onkeydown={handleKeydown} onkeyup={handleKeyup} onblur={clearAltHold} />
+<svelte:document onvisibilitychange={handleVisibilityChange} />
 
 {#if leaderLabel}
   <div class="keyboard-leader-pill" aria-live="polite">

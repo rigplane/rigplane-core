@@ -5,6 +5,7 @@ import type { RadioViewModel } from '../../../semantic/radio-view-model';
 
 import KeyboardHandler from '../KeyboardHandler.svelte';
 import {
+  ALT_HINTS_DELAY_MS,
   resolveSequenceContinuation,
   resolveSequenceStarts,
   type KeyboardConfig,
@@ -895,14 +896,213 @@ describe('KeyboardHandler', () => {
     expect(target.textContent).toContain('Test Keyboard Help');
   });
 
-  it('toggles body shortcut hints while Alt is held', () => {
-    mountHandler({ config });
+  // MOR-2523 — the default AF/RF chords are Alt/Option+ArrowUp/Down
+  // (+Shift), so hints raised on the Alt keydown itself flashed over every
+  // control on each keyboard volume/gain adjustment. Alt held ALONE still
+  // reveals them, but only after ALT_HINTS_DELAY_MS with no other key down;
+  // any other keydown during the hold — including a modifier-only keydown
+  // such as the RF chord's Shift — suppresses them for the rest of that
+  // hold.
+  describe('Alt-held shortcut hints (MOR-2523)', () => {
+    const chordConfig: KeyboardConfig = {
+      ...config,
+      bindings: [
+        ...config.bindings,
+        {
+          id: 'af-level-up',
+          section: 'Levels',
+          label: 'AF level up',
+          sequence: ['ArrowUp'],
+          modifiers: ['ALT'],
+          action: 'adjust_af_level',
+          repeatable: true,
+          params: { delta: 5 },
+        },
+        {
+          id: 'rf-gain-up',
+          section: 'RF',
+          label: 'RF gain up',
+          sequence: ['ArrowUp'],
+          modifiers: ['ALT', 'SHIFT'],
+          action: 'adjust_rf_gain',
+          repeatable: true,
+          params: { delta: 5 },
+        },
+      ],
+    };
 
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Alt' }));
-    expect(document.body.dataset.shortcutHints).toBe('true');
+    function keydown(key: string, flags: KeyboardEventInit = {}): void {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...flags }));
+      flushSync();
+    }
 
-    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Alt' }));
-    expect(document.body.dataset.shortcutHints).toBeUndefined();
+    function keyup(key: string): void {
+      window.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true }));
+      flushSync();
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    it('reveals the hints only after Alt is held alone past the delay, and hides them on Alt release', () => {
+      mountHandler({ config: chordConfig });
+
+      keydown('Alt');
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS - 1);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      vi.advanceTimersByTime(1);
+      expect(document.body.dataset.shortcutHints).toBe('true');
+
+      keyup('Alt');
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+    });
+
+    it('an Alt+ArrowUp chord before the delay suppresses the hints for the rest of the hold and still fires adjust_af_level once', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: chordConfig, onAction });
+
+      keydown('Alt');
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      keydown('ArrowUp', { altKey: true });
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      expect(onAction).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ action: 'adjust_af_level', params: { delta: 5 } }),
+      );
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      expect(onAction).toHaveBeenCalledTimes(1);
+
+      keyup('Alt');
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+    });
+
+    it('a chord key after the hints are shown removes them at once and keeps them off for the rest of the hold', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: chordConfig, onAction });
+
+      keydown('Alt');
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS);
+      expect(document.body.dataset.shortcutHints).toBe('true');
+
+      keydown('ArrowUp', { altKey: true });
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      expect(onAction).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ action: 'adjust_af_level', params: { delta: 5 } }),
+      );
+
+      keyup('Alt');
+      keydown('ArrowDown', { altKey: true });
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+
+      keydown('Alt');
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS);
+      expect(document.body.dataset.shortcutHints).toBe('true');
+      keyup('Alt');
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+    });
+
+    it('the Alt+Shift+ArrowUp RF chord — Shift keydown included — never shows the hints', () => {
+      const onAction = vi.fn();
+      mountHandler({ config: chordConfig, onAction });
+
+      keydown('Alt');
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      keydown('Shift');
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+
+      keydown('ArrowUp', { altKey: true, shiftKey: true });
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      expect(onAction).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ action: 'adjust_rf_gain', params: { delta: 5 } }),
+      );
+
+      keyup('Alt');
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+    });
+
+    it('releasing Alt before the delay shows nothing', () => {
+      mountHandler({ config: chordConfig });
+
+      keydown('Alt');
+      keyup('Alt');
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+    });
+
+    it('window blur cancels a pending hold and removes already-shown hints', () => {
+      mountHandler({ config: chordConfig });
+
+      keydown('Alt');
+      window.dispatchEvent(new FocusEvent('blur'));
+      flushSync();
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+
+      keydown('Alt');
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS);
+      expect(document.body.dataset.shortcutHints).toBe('true');
+      window.dispatchEvent(new FocusEvent('blur'));
+      flushSync();
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+    });
+
+    it('document hidden cancels a pending hold and removes already-shown hints', () => {
+      mountHandler({ config: chordConfig });
+
+      try {
+        keydown('Alt');
+        Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+        vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+        expect(document.body.dataset.shortcutHints).toBeUndefined();
+
+        keydown('Alt');
+        vi.advanceTimersByTime(ALT_HINTS_DELAY_MS);
+        expect(document.body.dataset.shortcutHints).toBe('true');
+        document.dispatchEvent(new Event('visibilitychange'));
+        expect(document.body.dataset.shortcutHints).toBeUndefined();
+      } finally {
+        Reflect.deleteProperty(document, 'visibilityState');
+      }
+    });
+
+    it('unmounting the handler mid-hold clears the shown hints and the pending timer', () => {
+      mountHandler({ config: chordConfig });
+
+      keydown('Alt');
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS);
+      expect(document.body.dataset.shortcutHints).toBe('true');
+      components.forEach((component) => unmount(component));
+      components = [];
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+
+      mountHandler({ config: chordConfig });
+      keydown('Alt');
+      components.forEach((component) => unmount(component));
+      components = [];
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+    });
+
+    it('shows nothing when the profile disables alt hints', () => {
+      mountHandler({ config: { ...chordConfig, altHints: false } });
+
+      keydown('Alt');
+      vi.advanceTimersByTime(ALT_HINTS_DELAY_MS * 10);
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+      keyup('Alt');
+      expect(document.body.dataset.shortcutHints).toBeUndefined();
+    });
   });
 
   // MOR-1449 — rigs/_keyboard-default.toml used to bind the bare "Tab" key
