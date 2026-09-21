@@ -640,6 +640,15 @@ list = [
     "FM-N", "DATA-U", "AM-N", "PSK", "DATA-FM-N",
     "C4FM-DN", "C4FM-VW",
 ]
+# MD (OPERATING MODE) P2 codes, one per name above, parallel to list
+# (FTX-1 CAT OM 2508-C): 1-9, A-F, then H and I. The manual marks 0, G and
+# J unused; H = C4FM-DN and I = C4FM-VW.
+codes = [
+    "1", "2", "3", "4", "5",
+    "6", "7", "8", "9", "A",
+    "B", "C", "D", "E", "F",
+    "H", "I",
+]
 
 [filters]
 list = ["FIL1", "FIL2", "FIL3"]

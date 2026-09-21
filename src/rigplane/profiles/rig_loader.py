@@ -613,6 +613,9 @@ class RigConfig:
     protocol_type: str = "civ"
     protocol_address: int | None = None
     protocol_baud: int | None = None
+    # Optional per-mode single-character CAT mode codes, parallel to
+    # ``modes`` (MOR-2518; consumed by the Yaesu MD codec).
+    mode_codes: tuple[str, ...] | None = None
     controls: dict[str, ControlSpec] | None = None
     _control_domains: dict[str, _ScalarControlDomain] | None = field(
         default=None, repr=False
@@ -2115,6 +2118,27 @@ def load_rig(path: Path) -> RigConfig:
     modes = data["modes"].get("list", [])
     if not modes:
         raise RigLoadError(f"{filename}: [modes].list must not be empty")
+    # MOR-2518: optional [modes].codes — one single-character code per mode,
+    # parallel to list (Yaesu CAT MD P2 codes).
+    raw_mode_codes = data["modes"].get("codes")
+    mode_codes: tuple[str, ...] | None = None
+    if raw_mode_codes is not None:
+        if not isinstance(raw_mode_codes, list) or not all(
+            isinstance(code, str) for code in raw_mode_codes
+        ):
+            raise RigLoadError(f"{filename}: [modes].codes must be a list of strings")
+        if len(raw_mode_codes) != len(modes):
+            raise RigLoadError(
+                f"{filename}: [modes].codes has {len(raw_mode_codes)} entries "
+                f"for {len(modes)} modes"
+            )
+        if any(len(code) != 1 for code in raw_mode_codes):
+            raise RigLoadError(
+                f"{filename}: [modes].codes entries must be single characters"
+            )
+        if len(set(raw_mode_codes)) != len(raw_mode_codes):
+            raise RigLoadError(f"{filename}: [modes].codes entries must be unique")
+        mode_codes = tuple(raw_mode_codes)
 
     # Validate [filters]
     filter_section = data["filters"]
@@ -2565,6 +2589,7 @@ def load_rig(path: Path) -> RigConfig:
         default_baud=radio.get("default_baud", 19200),
         capabilities=tuple(features),
         modes=tuple(modes),
+        mode_codes=mode_codes,
         filters=tuple(filters),
         filter_width_min=filter_width_min,
         filter_width_max=filter_width_max,

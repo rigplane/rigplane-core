@@ -209,17 +209,18 @@ class YaesuCatRadio:
         else:
             self._audio_driver = audio_driver
 
-        # Build bidirectional mode code ↔ name maps.
-        # FTX-1 CAT MD codes are 1-based HEX nibbles (MOR-473): index 0 in the
-        # modes list → code "1", index 9 → "A", index 11 → "C" (DATA-U), etc.
-        # The decimal map silently broke every mode at index >= 10. Codes 1-9
-        # are unchanged (hex == dec). Multi-char hex (C4FM at 16-17 → "10"/"11")
-        # is a pre-existing OUT-OF-SCOPE limitation: the MD parser's single-char
-        # ``{mode}`` group cannot carry a two-char code.
+        # Bidirectional mode code ↔ name maps from the profile's
+        # ``[modes].codes`` (MOR-2518): one single-character MD P2 code per
+        # mode; codes the rig's CAT manual leaves unused map to no mode.
+        if self._config.mode_codes is None:
+            raise ValueError(
+                f"rig profile {self._config.id!r} declares no [modes].codes; "
+                "the Yaesu CAT backend requires one single-character code "
+                "per mode"
+            )
         self._code_to_mode: dict[str, str] = {}
         self._mode_to_code: dict[str, str] = {}
-        for i, name in enumerate(self._config.modes):
-            code = format(i + 1, "X")
+        for name, code in zip(self._config.modes, self._config.mode_codes, strict=True):
             self._code_to_mode[code] = name
             self._mode_to_code[name] = code
 
@@ -637,14 +638,18 @@ class YaesuCatRadio:
         """Enable or disable the noise blanker.
 
         For radios with ``level_is_toggle`` (e.g. FTX-1), translates to
-        ``set_nb_level(0)`` for off and ``set_nb_level(default)`` for on.
-        No-op if neither ``set_nb`` nor ``set_nb_level`` is defined.
+        ``set_nb_level(0)`` for off and ``set_nb_level(level)`` for on,
+        where *level* is the receiver's live level read via ``NL`` — kept
+        when nonzero, midpoint default otherwise — not the legacy
+        ``self._state`` mirror, which the observation pipeline never writes
+        (MOR-2518).  No-op if neither ``set_nb`` nor ``set_nb_level`` is
+        defined.
         """
         if self._has_write_command("set_nb"):
             await self._write("set_nb", state="1" if on else "0")
         elif self._has_write_command("set_nb_level"):
             if on:
-                current = self._state.main.nb_level
+                current = await self.read_nb_level(receiver)
                 level = current if current > 0 else self._default_nb_level()
                 await self.set_nb_level(level, receiver=receiver)
             else:
@@ -654,14 +659,18 @@ class YaesuCatRadio:
         """Enable or disable noise reduction.
 
         For radios with ``level_is_toggle`` (e.g. FTX-1), translates to
-        ``set_nr_level(0)`` for off and ``set_nr_level(default)`` for on.
-        No-op if neither ``set_nr`` nor ``set_nr_level`` is defined.
+        ``set_nr_level(0)`` for off and ``set_nr_level(level)`` for on,
+        where *level* is the receiver's live level read via ``RL`` — kept
+        when nonzero, midpoint default otherwise — not the legacy
+        ``self._state`` mirror, which the observation pipeline never writes
+        (MOR-2518).  No-op if neither ``set_nr`` nor ``set_nr_level`` is
+        defined.
         """
         if self._has_write_command("set_nr"):
             await self._write("set_nr", state="1" if on else "0")
         elif self._has_write_command("set_nr_level"):
             if on:
-                current = self._state.main.nr_level
+                current = await self.read_nr_level(receiver)
                 level = current if current > 0 else self._default_nr_level()
                 await self.set_nr_level(level, receiver=receiver)
             else:
@@ -866,7 +875,7 @@ class YaesuCatRadio:
         rit_on = result["rx"] == "1"
         xit_on = result["tx"] == "1"
         mode_code = result["mode"]
-        mode_name = self._code_to_mode.get(mode_code, f"UNKNOWN({mode_code})")
+        mode_name = self._mode_name(mode_code)
         vfo = int(result["vfo"])
 
         # Populate state atomically.
@@ -926,18 +935,33 @@ class YaesuCatRadio:
 
     # -- Mode ---------------------------------------------------------------
 
+    def _mode_name(self, code: str) -> str:
+        """Map a one-character MD P2 code to its profile mode name.
+
+        Codes the profile does not assign (the manual's unused letters)
+        raise :class:`CatParseError` rather than decoding to a neighbour
+        mode or a placeholder name (MOR-2518).
+        """
+        name = self._code_to_mode.get(code)
+        if name is None:
+            raise CatParseError(
+                "{mode}",
+                code,
+                f"mode code is not assigned in profile {self._config.model!r}",
+            )
+        return name
+
     async def read_mode(self, receiver: int = 0) -> tuple[str, int | None]:
         """Read the current operating mode without mutating legacy state.
 
         Returns:
             Tuple of (mode_name, None).  Mode names are from the rig
-            profile (e.g. ``"USB"``, ``"LSB"``, ``"CW-U"``).
+            profile (e.g. ``"USB"``, ``"LSB"``, ``"CW-U"``).  A mode code
+            the profile does not assign raises ``CatParseError``.
         """
         cmd = "get_mode" if receiver == 0 else "get_mode_sub"
         result = await self._query(cmd)
-        code: str = result["mode"]
-        mode_name = self._code_to_mode.get(code, f"UNKNOWN({code})")
-        return mode_name, None
+        return self._mode_name(result["mode"]), None
 
     async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
         """Get the current operating mode.
@@ -985,8 +1009,9 @@ class YaesuCatRadio:
         """Whether DATA mode is active.
 
         On Yaesu radios, DATA mode is embedded in the mode string (e.g.
-        ``USB-D``).  We derive it from the current mode name rather than
-        issuing a separate CAT query.
+        ``DATA-U``).  We derive it from the radio's live mode answer
+        (``MD0;``), not the legacy ``self._state`` mirror, which the
+        observation pipeline never writes (MOR-2518).
 
         This is a read-only derivation: it returns a flat ``bool`` and does
         not synthesize or mutate the private ``self._state`` mirror. The
@@ -994,7 +1019,7 @@ class YaesuCatRadio:
         non-mutating ``read_*`` paths; ``_state`` is legacy compat only
         (MOR-434).
         """
-        mode = self._state.main.mode or ""
+        mode, _ = await self.read_mode(0)
         return mode.endswith("-D") or "DATA" in mode.upper()
 
     async def set_data_mode(self, on: int | bool, receiver: int = 0) -> None:
@@ -1721,10 +1746,11 @@ class YaesuCatRadio:
         profile's filter rule for the radio's live mode, read fresh via
         ``read_mode`` exactly as ``read_filter_width`` does — the legacy
         ``self._state`` mirror can hold a stale mode. Fixed-width modes
-        and live modes without a width table (C4FM) refuse with the same
-        ``CommandError`` as ``RadioProfile.encode_filter_width`` does for
-        segmented rules. Encodings other than ``table_index`` send
-        ``width_hz`` as the raw index.
+        and live modes without a width table (C4FM-DN, read back as
+        ``MD0H;``) refuse with the same ``CommandError`` as
+        ``RadioProfile.encode_filter_width`` does for segmented rules.
+        Encodings other than ``table_index`` send ``width_hz`` as the raw
+        index.
         """
         cmd = "set_filter_width" if receiver == 0 else "set_filter_width_sub"
         if self.profile.filter_width_encoding != "table_index":

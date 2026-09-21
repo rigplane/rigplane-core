@@ -411,6 +411,7 @@ Optional section for radios that support the spectrum scope.
 | Field  | Type     | Required | Description                                        |
 |--------|----------|----------|----------------------------------------------------|
 | `list` | string[] | yes      | Supported operating modes (e.g. `"USB"`, `"CW"`)  |
+| `codes` | string[] | no | One single-character code per mode, parallel to `list` (validated: same length, one character each, unique). Yaesu CAT `MD` P2 codes. |
 
 ## `[filters]` — IF Filters
 
