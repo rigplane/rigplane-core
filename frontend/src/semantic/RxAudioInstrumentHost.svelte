@@ -457,7 +457,7 @@
   {/if}
 {/snippet}
 
-{#snippet channelGain(channel: 'main' | 'sub')}
+{#snippet channelGain(channel: 'main' | 'sub', hardware: boolean)}
   {#if rx?.routingFocus.availability.structural}
     {@const value = channel === 'main' ? routingGains?.main : routingGains?.sub}
     <label class="rx-audio-level rx-audio-gain" data-testid={`rx-audio-${channel}-gain`}
@@ -468,15 +468,16 @@
         binding={channelGainBindings[channel]}
         label={`${channel.toUpperCase()} gain in decibels`}
         renderer="hbar" showLabel={false} showValue={false} compact={true}
-        variant="hardware-illuminated" accentColor="var(--v2-accent-cyan-alt)"
+        variant={hardware ? 'hardware-illuminated' : 'modern'}
+        accentColor={hardware ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
       />
       <output data-testid={`rx-audio-${channel}-gain-value`}
-        >{value === undefined ? UNKNOWN_TEXT : `${value} dB`}</output>
+        >{value === undefined ? '' : `${value} dB`}</output>
     </label>
   {/if}
 {/snippet}
-{#snippet mainGain()}{@render channelGain('main')}{/snippet}
-{#snippet subGain()}{@render channelGain('sub')}{/snippet}
+{#snippet mainGain(hardware = true)}{@render channelGain('main', hardware)}{/snippet}
+{#snippet subGain(hardware = true)}{@render channelGain('sub', hardware)}{/snippet}
 
 {#snippet routingSplit()}
   {#if rx?.routingSplit.availability.structural}

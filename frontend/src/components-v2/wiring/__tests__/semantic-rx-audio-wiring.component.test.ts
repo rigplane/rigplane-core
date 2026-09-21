@@ -479,14 +479,19 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
     }
   });
 
-  it('renders an unobserved channel gain as the unlit fader with no number', () => {
+  it('renders an unobserved channel gain as the unlit fader with no number and no text', () => {
     renderHostedFace('desktop-v2');
     for (const channel of ['main', 'sub'] as const) {
       const row = q<HTMLElement>(`[data-testid="rx-audio-${channel}-gain"]`)!;
       const slider = row.querySelector<HTMLElement>('[role="slider"]')!;
       expect(slider.getAttribute('aria-valuenow')).toBeNull();
       expect(slider.getAttribute('aria-disabled')).toBe('true');
-      expect(row.querySelector('output')?.textContent).toBe(UNKNOWN_TEXT);
+      const output = row.querySelector<HTMLElement>('output');
+      expect(output).not.toBeNull();
+      expect(output!.textContent).toBe('');
+      const rowText = row.textContent ?? '';
+      expect(rowText).not.toContain(UNKNOWN_TEXT);
+      expect(rowText).not.toMatch(/\d/);
     }
   });
 

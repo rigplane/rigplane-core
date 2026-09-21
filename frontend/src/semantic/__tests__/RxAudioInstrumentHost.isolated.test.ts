@@ -280,6 +280,43 @@ describe('RxAudioInstrumentHost', () => {
   });
 });
 
+/* MOR-2524 — the channel-gain handles carry AF LEVEL's own `hardware` flag:
+ * the same snippet ternary, so a non-hardware call renders the modern variant. */
+describe('RxAudioInstrumentHost channel-gain appearance (MOR-2524)', () => {
+  const gainAudio = (): RxAudioViewModel => ({
+    ...audio(0.2),
+    routingFocus: {
+      reading: { status: 'known', value: 'both' },
+      availability: { structural: true, operational: true },
+    },
+  } as RxAudioViewModel);
+
+  function renderGains(hardware: boolean): HTMLElement | null {
+    activation.selected = undefined;
+    const initial = publication();
+    const component = mount(Fixture, { target, props: {
+      publication: initial, rxAudio: gainAudio(),
+      subscribeControlAuthority: new Publisher(initial).subscribe,
+      layout: 'grouped', gainHardware: hardware,
+    } });
+    components.push(component);
+    flushSync();
+    return target.querySelector<HTMLElement>('[data-testid="rx-audio-main-gain"] .vc-hbar');
+  }
+
+  it('renders the hardware-illuminated fader on the hardware call', () => {
+    const frame = renderGains(true);
+    expect(frame?.classList.contains('hw-illum')).toBe(true);
+    expect(frame?.querySelector('.hil-thumb')).not.toBeNull();
+  });
+
+  it('renders the modern variant on a non-hardware call', () => {
+    const frame = renderGains(false);
+    expect(frame?.classList.contains('hw-illum')).toBe(false);
+    expect(frame?.querySelector('.vc-thumb')).not.toBeNull();
+  });
+});
+
 /**
  * RX-B/RX-C — the five finite handles (`monitorMode`, `routingFocus`,
  * `routingSplit`, `modInputSource`, `setModInputLan`). Per the RX-B/RX-C
