@@ -258,10 +258,13 @@ function pushSession(next: ControlSessionSnapshot): void {
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 /** SVG elements have `.dataset` too, but don't satisfy `q`'s `HTMLElement` bound. */
 const qSvg = (sel: string) => target.querySelector(sel) as SVGSVGElement | null;
-const signalFillCount = (): number => qSvg('[data-testid="meter-signal"] svg')!
-  .querySelectorAll('[data-meter-fill]').length;
+// MOR-2521: S-meter fill rects are permanent nodes; count the lit ones.
+const signalFillCount = (): number => [...qSvg('[data-testid="meter-signal"] svg')!
+  .querySelectorAll<SVGRectElement>('[data-meter-fill]')]
+  .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
+// MOR-2521: the peak line is a permanent node; shown = visible.
 const signalHasPeak = (): boolean => qSvg('[data-testid="meter-signal"] svg')!
-  .querySelector('[data-meter-peak]') !== null;
+  .querySelector('[data-meter-peak]')?.getAttribute('visibility') === 'visible';
 const barSvg = (field: string): SVGSVGElement =>
   qSvg(`[data-testid="meter-${field}"] svg`)!;
 const barFillCount = (field: string): number =>

@@ -80,7 +80,10 @@ function segmentRects(target: HTMLElement): SVGRectElement[] {
 
 function renderedFillFraction(target: HTMLElement): number {
   const segments = segmentRects(target);
-  const fills = Array.from(target.querySelectorAll('[data-meter-fill]')) as SVGRectElement[];
+  // MOR-2521: fill rects are permanent slots; the rendered fill is the
+  // visible (lit) tail of them.
+  const fills = Array.from(target.querySelectorAll<SVGRectElement>('[data-meter-fill]'))
+    .filter((rect) => rect.getAttribute('visibility') !== 'hidden');
   const last = fills.at(-1);
   if (!last) return 0;
   const index = Number(last.getAttribute('data-meter-fill'));
@@ -91,7 +94,7 @@ function renderedFillFraction(target: HTMLElement): number {
 function renderedPeakFraction(target: HTMLElement): number | null {
   const segments = segmentRects(target);
   const peak = target.querySelector('[data-meter-peak]');
-  if (!peak || segments.length < 2) return null;
+  if (!peak || peak.getAttribute('visibility') === 'hidden' || segments.length < 2) return null;
   const barX = Number(segments[0].getAttribute('x'));
   const pitch = Number(segments[1].getAttribute('x')) - barX;
   return (Number(peak.getAttribute('x1')) - barX) / (pitch * segments.length);

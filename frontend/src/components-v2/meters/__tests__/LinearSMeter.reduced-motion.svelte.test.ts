@@ -154,7 +154,9 @@ afterEach(() => {
 });
 
 function peakLineCount(target: HTMLElement): number {
-  return target.querySelectorAll('line[stroke-width="2"]').length;
+  // MOR-2521: the peak line is a permanent node; count the shown ones.
+  return [...target.querySelectorAll<SVGLineElement>('line[stroke-width="2"]')]
+    .filter((line) => line.getAttribute('visibility') !== 'hidden').length;
 }
 
 describe('LinearSMeter — prefers-reduced-motion (MOR-1233)', () => {

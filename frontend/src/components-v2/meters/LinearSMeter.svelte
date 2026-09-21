@@ -389,6 +389,19 @@
   let displaySUnit = $derived(signalProjection.primaryText);
   let displayDbm   = $derived(signalProjection.secondaryText);
 
+  // ── MOR-2521: stable node set ───────────────────────────────────────────────
+  // Fill rects (and the peak line) are permanent nodes: a reading changes
+  // only their width/fill/visibility attributes, never their presence — the
+  // node-count sweep in __tests__/LinearSMeter.test.ts fails if a value step
+  // adds or removes a node. The `frac > 0.01` arm keeps the sub-1% partial
+  // guard the conditional markup used to carry (pinned by the same sweep).
+  function segLit(i: number, full: number, frac: number): boolean {
+    return i < full || (i === full && frac > 0.01);
+  }
+  function segWidth(i: number, full: number, frac: number): number {
+    return i === full ? Math.max(1, SEG_W * frac) : SEG_W;
+  }
+
   // v2.11.1 SDR SVG geometry; the current calibrated scale still owns positions.
   const SDR_CELLS = 40;
   const SDR_CELL_WIDTH = 328 / SDR_CELLS;
@@ -516,7 +529,9 @@
     stroke-width="1"
   />
 
-  <!-- Segments -->
+  <!-- Segments (MOR-2521): every fill rect is a permanent node — a reading
+       changes only its width/fill/visibility attributes, never its
+       presence. -->
   {#each Array(SEG_COUNT) as _, i}
     {@const x = segX(i)}
 
@@ -529,21 +544,13 @@
     />
 
     <!-- Active -->
-    {#if i < fullSegs}
-      <rect
-        data-meter-fill={i}
-        {x} y={TRACK_Y + 1}
-        width={SEG_W} height={TRACK_H - 2}
-        fill={activeColor(i)}
-      />
-    {:else if i === fullSegs && fracSeg > 0.01}
-      <rect
-        data-meter-fill={i}
-        {x} y={TRACK_Y + 1}
-        width={Math.max(1, SEG_W * fracSeg)} height={TRACK_H - 2}
-        fill={activeColor(i)}
-      />
-    {/if}
+    <rect
+      data-meter-fill={i}
+      {x} y={TRACK_Y + 1}
+      width={segWidth(i, fullSegs, fracSeg)} height={TRACK_H - 2}
+      fill={activeColor(i)}
+      visibility={segLit(i, fullSegs, fracSeg) ? 'visible' : 'hidden'}
+    />
   {/each}
   </g>
   {/if}
@@ -615,7 +622,7 @@
         stroke-width="1"
       />
 
-      <!-- Lower row segments -->
+      <!-- Lower row segments (MOR-2521: permanent fill nodes, as above) -->
       {#each Array(SEG_COUNT) as _, i}
         {@const x = segX(i)}
 
@@ -628,21 +635,13 @@
         />
 
         <!-- Fill — the one part of this row that depends on valueFraction/fault -->
-        {#if i < lowerFullSegs}
-          <rect
-            data-lower-fill={i}
-            {x} y={LOWER_TRACK_Y + 1}
-            width={SEG_W} height={LOWER_TRACK_H - 2}
-            fill={lowerActiveColor()}
-          />
-        {:else if i === lowerFullSegs && lowerFracSeg > 0.01}
-          <rect
-            data-lower-fill={i}
-            {x} y={LOWER_TRACK_Y + 1}
-            width={Math.max(1, SEG_W * lowerFracSeg)} height={LOWER_TRACK_H - 2}
-            fill={lowerActiveColor()}
-          />
-        {/if}
+        <rect
+          data-lower-fill={i}
+          {x} y={LOWER_TRACK_Y + 1}
+          width={segWidth(i, lowerFullSegs, lowerFracSeg)} height={LOWER_TRACK_H - 2}
+          fill={lowerActiveColor()}
+          visibility={segLit(i, lowerFullSegs, lowerFracSeg) ? 'visible' : 'hidden'}
+        />
       {/each}
     </g>
   {/if}
@@ -654,17 +653,16 @@
        `data-lower-relevant`. -->
   {#if mainPresent}
   <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
-  <!-- Peak hold indicator -->
-  {#if showPeak}
-    <line
-      data-meter-peak
-      x1={peakX} y1={TRACK_Y}
-      x2={peakX} y2={TRACK_Y + TRACK_H}
-      stroke={peakColor}
-      stroke-width="2"
-      opacity="0.9"
-    />
-  {/if}
+  <!-- Peak hold indicator (MOR-2521: permanent node, hidden while unarmed) -->
+  <line
+    data-meter-peak
+    x1={peakX} y1={TRACK_Y}
+    x2={peakX} y2={TRACK_Y + TRACK_H}
+    stroke={peakColor}
+    stroke-width="2"
+    opacity="0.9"
+    visibility={showPeak ? 'visible' : 'hidden'}
+  />
 
   <!-- Value readout: dBm aligned to bar center, S-unit above it -->
   <text

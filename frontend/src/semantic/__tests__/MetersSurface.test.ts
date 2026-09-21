@@ -90,6 +90,11 @@ const PROJECTOR_SOURCE = readFileSync('src/semantic/bar-meter-projector.ts', 'ut
 const HOST_SOURCE = readFileSync('src/semantic/StationMeterInstrumentHost.svelte', 'utf8');
 const PLACEMENT_SOURCE = readFileSync('src/semantic/StationMeterBarPlacement.svelte', 'utf8');
 
+/** MOR-2521: meter fill rects are permanent nodes — this counts the lit ones. */
+const visibleSlotCount = (root: Element, selector: string): number =>
+  [...root.querySelectorAll<SVGRectElement>(selector)]
+    .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
+
 const AVAIL: Availability = { structural: true, operational: true };
 const RF_STATES: readonly MeterRfState[] = ['receiving', 'transmitting', 'uncertain', 'unknown'];
 
@@ -287,7 +292,9 @@ function render(view: RadioViewModel) {
     // fault color and fill now read off THAT svg, not `tile('swr')` (there
     // is no such tile any more).
     signalSvg: () => target.querySelector<SVGSVGElement>('[data-testid="meter-signal"] svg'),
-    lowerFillCount: () => target.querySelectorAll('[data-testid="meter-signal"] [data-lower-fill]').length,
+    // MOR-2521: lower fill rects are permanent nodes; count the lit ones.
+    lowerFillCount: () => [...target.querySelectorAll<SVGRectElement>('[data-testid="meter-signal"] [data-lower-fill]')]
+      .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length,
   };
 }
 
@@ -832,7 +839,8 @@ describe('station signal rendering honors the explicit sample domain (MOR-2425)'
           expect(signal.textContent).toContain(String(value));
           expect(signal.textContent).toContain(stateText);
           expect(signal.textContent).not.toMatch(/S[0-9]|dBm/);
-          expect(signal.querySelectorAll('[data-main-relevant] line')).toHaveLength(0);
+          expect([...signal.querySelectorAll<SVGLineElement>('[data-main-relevant] line')]
+            .every((line) => line.getAttribute('visibility') === 'hidden')).toBe(true);
           expect(signal.querySelectorAll('[data-segment]')).toHaveLength(20);
           expect([...signal.attributes].some((attribute) => attribute.name.startsWith('data-dl-')))
             .toBe(false);
@@ -860,8 +868,11 @@ describe('station signal rendering honors the explicit sample domain (MOR-2425)'
         const tile = s.tile('signal')!;
         expect(tile.textContent).toContain('\u221212 dB rel S9');
         expect(tile.textContent).toContain('scale unavailable');
-        expect(tile.querySelectorAll('[data-meter-fill], [data-meter-peak]')).toHaveLength(0);
-        expect(tile.querySelectorAll('[data-main-relevant] line')).toHaveLength(0);
+        expect([...tile.querySelectorAll<SVGRectElement>('[data-meter-fill]')]
+          .every((rect) => rect.getAttribute('visibility') === 'hidden')).toBe(true);
+        expect(tile.querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
+        expect([...tile.querySelectorAll<SVGLineElement>('[data-main-relevant] line')]
+          .every((line) => line.getAttribute('visibility') === 'hidden')).toBe(true);
       });
     } finally {
       clearCapabilities();
@@ -915,14 +926,14 @@ describe('the host descriptor and LinearSMeter share one signal projection', () 
         const tile = s.tile('signal')!;
         expect(tile.dataset.dlUnknown).toBe('false');
         expect(tile.dataset.dlLitCount).toBe('1');
-        expect(tile.querySelectorAll('[data-meter-fill]')).toHaveLength(1);
+        expect(visibleSlotCount(tile, '[data-meter-fill]')).toBe(1);
         expect(tile.textContent).toContain('\u2212121 dBm');
       });
 
       withSurface(withField(base(), 'signal', { unknown: true }), (s) => {
         const tile = s.tile('signal')!;
         expect(tile.dataset.dlUnknown).toBe('true');
-        expect(tile.querySelectorAll('[data-meter-fill]')).toHaveLength(0);
+        expect(visibleSlotCount(tile, '[data-meter-fill]')).toBe(0);
         expect(tile.textContent).toContain('S ?');
       });
     } finally {
@@ -964,7 +975,7 @@ describe('the host descriptor and LinearSMeter share one signal projection', () 
       const initialTicks = tickXs();
       const initialPlus20 = labelX('+20');
       expect(tile.dataset.dlLitCount).toBe('1');
-      expect(tile.querySelectorAll('[data-meter-fill]')).toHaveLength(1);
+      expect(visibleSlotCount(tile, '[data-meter-fill]')).toBe(1);
       expect(tile.textContent).toContain('S1');
 
       const replacementCaps = makeFaultCaps();
@@ -981,7 +992,7 @@ describe('the host descriptor and LinearSMeter share one signal projection', () 
       expect(retainedSvg.isConnected).toBe(true);
       expect(tile.querySelector('svg')).toBe(retainedSvg);
       expect(tile.dataset.dlLitCount).toBe('2');
-      expect(tile.querySelectorAll('[data-meter-fill]')).toHaveLength(2);
+      expect(visibleSlotCount(tile, '[data-meter-fill]')).toBe(2);
       expect(tile.textContent).toContain('S2');
       expect(replacementTicks).not.toEqual(initialTicks);
       expect(replacementPlus20).not.toBe(initialPlus20);
@@ -1194,10 +1205,10 @@ describe('station level meters honor explicit sample domains (MOR-2425)', () => 
       view = withMeterDomain(view, 'swr', { kind: 'unknown' });
       withSurface(view, (s) => {
         expect(s.tile('power')!.textContent).toContain('50 unit unknown');
-        expect(s.tile('power')!.querySelectorAll('[data-gauge-fill]')).toHaveLength(0);
+        expect(visibleSlotCount(s.tile('power')!, '[data-gauge-fill]')).toBe(0);
         expect(s.tile('power')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).toBeNull();
         expect(s.signalSvg()!.textContent).toContain('3 unit unknown');
-        expect(s.signalSvg()!.querySelectorAll('[data-lower-fill]')).toHaveLength(0);
+        expect(visibleSlotCount(s.signalSvg()!, '[data-lower-fill]')).toBe(0);
         expect(s.signalSvg()!.getAttribute('data-lower-fault')).toBe('false');
       });
     } finally {
@@ -1218,7 +1229,7 @@ describe('station level meters honor explicit sample domains (MOR-2425)', () => 
       const component = mount(MetersSurface, { target, props });
       flushSync();
       const ticks = () => target.querySelectorAll('[data-lower-tick-mark]').length;
-      const fills = () => target.querySelectorAll('[data-lower-fill]').length;
+      const fills = () => visibleSlotCount(target, '[data-lower-fill]');
       const fault = () => target.querySelector('[data-lower-fault]')?.getAttribute('data-lower-fault');
       expect(ticks()).toBe(6);
       expect(fills()).toBeGreaterThan(0);
@@ -1570,12 +1581,12 @@ describe('persistent TX instruments', () => {
               expect(text).not.toMatch(/IDLE|170/);
               expect(description).toContain('Not measuring in receive');
               expect(description).not.toMatch(/170|\?/);
-              expect(el.querySelectorAll(key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]')).toHaveLength(0);
+              expect(visibleSlotCount(el, key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]')).toBe(0);
               expect(el.getAttribute('data-fault')).not.toBe('true');
             } else if (state === 'unknown') {
               expect(text).not.toMatch(/IDLE|170|\?/);
               expect(description).not.toContain('170');
-              expect(el.querySelectorAll(key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]')).toHaveLength(0);
+              expect(visibleSlotCount(el, key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]')).toBe(0);
               expect(el.getAttribute('data-fault')).not.toBe('true');
             } else {
               // current or stale (R29): the retained value renders
@@ -1585,7 +1596,7 @@ describe('persistent TX instruments', () => {
               // above for the digit case — so the digit check here is
               // power/alc only.
               if (key !== 'swr') expect(text).toContain('170');
-              expect(el.querySelectorAll(key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]').length).toBeGreaterThan(0);
+              expect(visibleSlotCount(el, key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]')).toBeGreaterThan(0);
               if (indeterminate) expect(description).toContain('RF relevance indeterminate');
             }
           }
@@ -1598,7 +1609,7 @@ describe('persistent TX instruments', () => {
     });
     withSurface(view, () => {
       expect(target.querySelectorAll('[data-lower-tick-mark]')).toHaveLength(6);
-      expect(target.querySelectorAll('[data-lower-fill]').length).toBeGreaterThan(0);
+      expect(visibleSlotCount(target, '[data-lower-fill]')).toBeGreaterThan(0);
       const svg = target.querySelector('[data-lower-fault]')!;
       expect(svg.textContent).not.toMatch(/dBm|uncalibrated/);
       expect(svg.querySelectorAll('[data-main-relevant]')).toHaveLength(absent ? 0 : 2);
@@ -1614,7 +1625,8 @@ describe('persistent TX instruments', () => {
     for (const key of TX_KEYS) props.view = withField(props.view, key, { relevant: false });
     flushSync();
     expect(nodes.every((node) => node.isConnected)).toBe(true);
-    expect(target.querySelectorAll('[data-meter="power"] [data-gauge-fill], [data-meter="alc"] [data-gauge-fill], [data-lower-fill], [data-meter="power"] [data-testid="bar-gauge-peak-marker"], [data-meter="alc"] [data-testid="bar-gauge-peak-marker"]')).toHaveLength(0);
+    expect(visibleSlotCount(target, '[data-meter="power"] [data-gauge-fill], [data-meter="alc"] [data-gauge-fill], [data-lower-fill]')).toBe(0);
+    expect(target.querySelectorAll('[data-meter="power"] [data-testid="bar-gauge-peak-marker"], [data-meter="alc"] [data-testid="bar-gauge-peak-marker"]')).toHaveLength(0);
     for (const key of ['power', 'alc']) expect(target.querySelector(`[data-meter="${key}"]`)?.textContent).not.toMatch(/200|\?/);
     props.view = { ...props.view, meters: { ...props.view.meters!, rfState: 'transmitting' } };
     for (const key of TX_KEYS) props.view = withRaw(withField(props.view, key, { relevant: true }), key, 10);
@@ -1645,8 +1657,8 @@ it('uses current display calibration while preserving VD/ID/COMP through RX idle
       expect(projected).toMatchObject({ motionFraction: 0.25, displayText: '50W', gauge: true });
       expect(target.querySelector('[data-meter="power"]')?.textContent)
         .toContain(projected.displayText);
-      expect(target.querySelectorAll('[data-meter="power"] [data-gauge-fill]'))
-        .toHaveLength(Math.ceil(projected.motionFraction! * 10));
+      expect(visibleSlotCount(target, '[data-meter="power"] [data-gauge-fill]'))
+        .toBe(Math.ceil(projected.motionFraction! * 10));
       const other = ['drainVoltage', 'drainCurrent', 'compression'].map((key) =>
         target.querySelector(`[data-meter="${key}"]`)!.outerHTML);
       props.view = { ...props.view, meters: { ...props.view.meters!, rfState: 'receiving',
