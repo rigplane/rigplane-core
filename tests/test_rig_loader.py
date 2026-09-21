@@ -160,6 +160,68 @@ class TestLoadRig:
         rig = load_rig(p)
         assert rig.model == "IC-7300"
 
+    def test_modes_codes_load_parallel_to_list(self, tmp_path):
+        """MOR-2518: [modes].codes loads as a parallel single-character code
+        list (Yaesu CAT MD P2 codes)."""
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML.replace(
+                'list = ["USB", "LSB", "CW"]',
+                'list = ["USB", "LSB", "CW"]\ncodes = ["2", "1", "3"]',
+            ),
+        )
+        rig = load_rig(p)
+        assert rig.mode_codes == ("2", "1", "3")
+
+    def test_modes_codes_absent_by_default(self, tmp_path):
+        p = _write_toml(tmp_path, _MINIMAL_TOML)
+        rig = load_rig(p)
+        assert rig.mode_codes is None
+
+    def test_modes_codes_length_mismatch_rejected(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML.replace(
+                'list = ["USB", "LSB", "CW"]',
+                'list = ["USB", "LSB", "CW"]\ncodes = ["2", "1"]',
+            ),
+        )
+        with pytest.raises(RigLoadError, match=r"\[modes\]\.codes"):
+            load_rig(p)
+
+    def test_modes_codes_non_string_entry_rejected(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML.replace(
+                'list = ["USB", "LSB", "CW"]',
+                'list = ["USB", "LSB", "CW"]\ncodes = [2, 1, 3]',
+            ),
+        )
+        with pytest.raises(RigLoadError, match=r"\[modes\]\.codes"):
+            load_rig(p)
+
+    def test_modes_codes_multi_character_entry_rejected(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML.replace(
+                'list = ["USB", "LSB", "CW"]',
+                'list = ["USB", "LSB", "CW"]\ncodes = ["10", "1", "2"]',
+            ),
+        )
+        with pytest.raises(RigLoadError, match=r"\[modes\]\.codes"):
+            load_rig(p)
+
+    def test_modes_codes_duplicate_entry_rejected(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML.replace(
+                'list = ["USB", "LSB", "CW"]',
+                'list = ["USB", "LSB", "CW"]\ncodes = ["1", "1", "2"]',
+            ),
+        )
+        with pytest.raises(RigLoadError, match=r"\[modes\]\.codes"):
+            load_rig(p)
+
     def test_shipped_ctcss_profiles_resolve_standard_table(self):
         for name in ("ic705.toml", "ic7300.toml", "ic9700.toml", "ftx1.toml"):
             rig = load_rig(RIGS_DIR / name)

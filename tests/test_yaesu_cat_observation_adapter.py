@@ -2109,18 +2109,22 @@ async def test_active_slot_coerces_main_index_to_neutral_str() -> None:
 async def test_public_get_data_mode_returns_flat_value_without_state_synthesis() -> (
     None
 ):
-    """MOR-434: a public ``get_*`` returns a flat value, not synthesized state.
+    """MOR-434/MOR-2518: a public ``get_*`` returns a flat value, not
+    synthesized state.
 
     ``get_data_mode`` is the representative public read called out for the
-    provider backends. It derives a flat ``bool`` from the existing mode and
-    must not fabricate or hand out a synthesized ``RadioState`` as consumer
-    state. The consumer pipeline is fed by :class:`YaesuObservationAdapter`
-    (which uses the non-mutating ``read_*`` paths); the private ``self._state``
-    mirror is legacy compat only.
+    provider backends. It derives a flat ``bool`` from the radio's live mode
+    answer (``MD0;``, MOR-2518) and must not fabricate or hand out a
+    synthesized ``RadioState`` as consumer state. The consumer pipeline is
+    fed by :class:`YaesuObservationAdapter` (which uses the non-mutating
+    ``read_*`` paths); the private ``self._state`` mirror is legacy compat
+    only.
     """
     # Real backend; only the USB audio driver is stubbed (not under test).
     radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
-    radio.radio_state.main.mode = "USB-D"
+    radio._transport._connected = True
+    radio._transport.query = AsyncMock(return_value="MD0C")  # DATA-U
+    radio.radio_state.main.mode = "LSB"
     state_before = radio.radio_state
 
     result = await radio.get_data_mode()
@@ -2130,8 +2134,8 @@ async def test_public_get_data_mode_returns_flat_value_without_state_synthesis()
     assert isinstance(result, bool)
     # No synthesized RadioState handed back as consumer state.
     assert radio.radio_state is state_before
-    # The read derives from the mirror without mutating it.
-    assert radio.radio_state.main.mode == "USB-D"
+    # The live read does not mutate the legacy mirror.
+    assert radio.radio_state.main.mode == "LSB"
 
 
 @pytest.mark.asyncio
