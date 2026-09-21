@@ -154,6 +154,11 @@ export const DEFAULT_KEYBOARD_CONFIG: KeyboardConfig = {
 /** Tags whose focused presence should suppress keyboard shortcuts. */
 export const IGNORED_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 
+/** Milliseconds Alt/Option must stay the only key down before the body
+ * shortcut hints appear; any other keydown during the hold keeps them
+ * hidden for the rest of that hold. */
+export const ALT_HINTS_DELAY_MS = 400;
+
 // Display order for formatShortcut's prefix only — matching sorts both
 // sides alphabetically. Alt/Option precedes Shift per platform convention
 // ("Alt+Shift", "Option+Shift"); no pre-MOR-2515 chord combined the two.
