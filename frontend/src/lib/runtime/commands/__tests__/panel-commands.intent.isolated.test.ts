@@ -13,6 +13,7 @@ import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import { FTX1_CAPABILITIES } from '../../adapters/__tests__/fixtures/ftx1-profile';
 
 const h = vi.hoisted(() => ({
   state: null as ServerState | null,
@@ -2896,5 +2897,86 @@ describe('MOR-1576 (review B1) — onFilterDefaults validates the whole array be
       ['set_filter_width', { width: 2400, receiver: 0 }],
       ['set_filter', { filter: 2, receiver: 0 }],
     ]);
+  });
+});
+
+/**
+ * MOR-1679 — the FTX-1 filter-width write path against CAT 2508-C
+ * Table 5, on the GENERATED capabilities fixture (`ftx1-profile.ts`).
+ * The browser works in Hz from the mode's table; the server does the SH
+ * encoding. Pins the emitted intent: `set_filter_width` with the table
+ * Hz and the ACTIVE receiver, on the real handler layer.
+ */
+describe('MOR-1679 FTX-1 Table 5 filter-width write path', () => {
+  function ftx1State(mode: string, active: 'MAIN' | 'SUB' = 'MAIN'): ServerState {
+    const current = a06State(active);
+    const paths = ['active', 'main.mode', 'main.filterWidth', 'sub.mode', 'sub.filterWidth'];
+    return {
+      ...current,
+      fieldStatus: Object.fromEntries(paths.map((path) => [path, { ...freshStatus, storePath: path }])),
+      main: { ...current.main, mode, dataMode: 0, filterWidth: 2400 },
+      sub: { ...current.sub, mode, dataMode: 0, filterWidth: 2400 },
+    } as ServerState;
+  }
+
+  function ftx1Caps(): Capabilities {
+    return { ...FTX1_CAPABILITIES, stateContractVersion: 1, providerGeneration: 31 } as unknown as Capabilities;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    h.unavailable.clear();
+    h.caps = ftx1Caps() as unknown as Record<string, unknown>;
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+  });
+
+  afterEach(() => {
+    resetCommandLifecycle();
+    vi.useRealTimers();
+  });
+
+  it.each([
+    ['USB', 3200],
+    ['USB', 2450],
+    ['DATA-U', 50],
+    ['CW-L', 4000],
+  ] as const)('onFilterWidthChange(%s, %i) dispatches the table Hz for the MAIN receiver unchanged',
+    (mode, width) => {
+      h.state = ftx1State(mode);
+      makeFilterHandlers().onFilterWidthChange(width);
+      vi.advanceTimersByTime(200);
+
+      expect(exactCalls()).toEqual([['set_filter_width', { width, receiver: 0 }]]);
+      expectIntentTransport();
+    },
+  );
+
+  it('routes the write to the SUB receiver when SUB is active', () => {
+    h.state = ftx1State('USB', 'SUB');
+    makeFilterHandlers().onFilterWidthChange(3200);
+    vi.advanceTimersByTime(200);
+
+    expect(exactCalls()).toEqual([['set_filter_width', { width: 3200, receiver: 1 }]]);
+    expectIntentTransport();
+  });
+
+  it.each([
+    [3050],
+    [4500],
+  ])('the synchronous commit authority rejects the off-table width %i entirely', (width) => {
+    h.state = ftx1State('USB');
+    makeFilterHandlers().onFilterWidthCommit(width, 0, 31);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('the synchronous commit authority accepts a Table 5 entry for the active receiver', () => {
+    h.state = ftx1State('USB');
+    makeFilterHandlers().onFilterWidthCommit(3200, 0, 31);
+
+    expect(exactCalls()).toEqual([['set_filter_width', { width: 3200, receiver: 0 }]]);
+    expectIntentTransport();
   });
 });

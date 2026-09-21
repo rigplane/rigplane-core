@@ -249,7 +249,12 @@
       feedback: filterWidthFeedback,
       command: 'set_filter_width',
       domain: { min, max, step: 1, defaultValue: min, fineStepDivisor: 1 },
-      enabled: filterWidthFeedback.availability === 'available' && tableReadingInRange,
+      // MOR-1679: a fixed-width mode (FTX-1 Table 5 AM/AM-N/FM family,
+      // each a single-entry table) must not command a width write — the
+      // control reads the fixed Hz disabled. Pinned by
+      // FilterPanel.ftx1-table5.isolated.test.ts's fixed-mode describe.
+      enabled: !filterConfig?.fixed
+        && filterWidthFeedback.availability === 'available' && tableReadingInRange,
       request: onFilterWidthChange,
     };
   }
@@ -479,8 +484,12 @@
   }
 
   function handleTableReset(): void {
-    const defaultWidth = 3200;
-    onFilterWidthChange(defaultWidth);
+    // MOR-1679: no width write for a fixed-width mode — only the IF-shift
+    // reset remains (same pin as the disabled width control above).
+    if (!filterConfig?.fixed) {
+      const defaultWidth = 3200;
+      onFilterWidthChange(defaultWidth);
+    }
     onIfShiftChange(0);
   }
 </script>
