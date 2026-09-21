@@ -290,7 +290,12 @@
 
 .desktop-control-face.standard-face .desktop-station-meters .meter-native-value {
   margin-left: auto;
-  min-width: 0;
+  /* MOR-2521: a fixed right-aligned reserve sized for the dock's longest
+     reading ("S9+60", "13.8 V") — the span's box keeps one width across
+     readings, so the caption's other spans cannot shift when the value
+     changes (source-pinned in MetersSurface.test.ts). */
+  min-width: 6ch;
+  text-align: right;
   font-size: 14px;
   font-weight: 700;
   overflow-wrap: anywhere;
@@ -298,6 +303,9 @@
 }
 
 .desktop-control-face.standard-face .desktop-station-meters .meter-native-secondary {
+  /* MOR-2521: same reserve treatment — "−127 dBm" is the longest secondary. */
+  min-width: 7ch;
+  text-align: right;
   font-size: 11px;
   color: var(--v2-text-secondary);
 }
