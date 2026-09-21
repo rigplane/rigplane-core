@@ -579,7 +579,7 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
 
 describe('the combined RF/SQL knob (controlModel="combined")', () => {
   it('renders the required host handle and stays free of runtime imports', () => {
-    expect(CODE).toContain('{@render levelHandles.rfSql()}');
+    expect(CODE).toContain('{@render levelHandles.rfSql(finiteLayout !== undefined)}');
     expect(CODE).not.toMatch(/from ['"]\$lib\/runtime|from ['"][^'"]*runtime\/adapters/);
   });
 
