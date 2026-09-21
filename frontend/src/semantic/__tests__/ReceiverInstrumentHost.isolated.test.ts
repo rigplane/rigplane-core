@@ -295,7 +295,9 @@ describe('ReceiverInstrumentHost', () => {
     const meterFrames = () => Array.from(root.querySelectorAll('[data-meter-frame]'))
       .map((node) => node.getAttribute('data-meter-frame'));
     const initialMeterFrames = meterFrames();
-    const meterFills = () => root.querySelectorAll('[data-meter-owner="MAIN"] [data-meter-fill]').length;
+    // MOR-2521: fill rects are permanent slots; count the lit ones.
+    const meterFills = () => [...root.querySelectorAll<SVGRectElement>('[data-meter-owner="MAIN"] [data-meter-fill]')]
+      .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
     expect(initialMeterFrames).toHaveLength(2); expect(new Set(initialMeterFrames).size).toBe(2);
     const retainedFill = meterFills();
     const first = retainedInteractions()[0]; const count = retainedInteractions().length;
@@ -336,7 +338,9 @@ describe('ReceiverInstrumentHost', () => {
   it('uses shared meter continuity for sample, session, source, and unknown transitions', () => {
     const publisher = new Publisher(publication({ mainS: 20 })); const root = mountFixture(publisher);
     const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
-    const fills = () => meter().querySelectorAll('[data-meter-fill]').length;
+    // MOR-2521: fill rects are permanent slots; count the lit ones.
+    const fills = () => [...meter().querySelectorAll<SVGRectElement>('[data-meter-fill]')]
+      .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
     const frame = meter().querySelector('[data-meter-frame]')?.getAttribute('data-meter-frame');
     const high = fills();
     publisher.emit(publication({ mainS: -48 })); flushSync();
@@ -421,7 +425,9 @@ describe('ReceiverInstrumentHost', () => {
     const publisher = new Publisher(publication({ mainS: 20, scheme: 'main_sub' }));
     const root = mountFixture(publisher);
     const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
-    const fills = () => meter().querySelectorAll('[data-meter-fill]').length;
+    // MOR-2521: fill rects are permanent slots; count the lit ones.
+    const fills = () => [...meter().querySelectorAll<SVGRectElement>('[data-meter-fill]')]
+      .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
     const frame = meter().querySelector('[data-meter-frame]')?.getAttribute('data-meter-frame');
     const high = fills();
 
@@ -429,7 +435,7 @@ describe('ReceiverInstrumentHost', () => {
 
     expect(meter().querySelector('[data-meter-frame]')?.getAttribute('data-meter-frame')).toBe(frame);
     expect(fills()).toBeLessThan(high);
-    expect(meter().querySelector('[data-meter-peak]')).toBeNull();
+    expect(meter().querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
 
     publisher.emit(publication({ mainS: 20, scheme: 'ab_shared', epoch: 2 })); flushSync();
     const reseededHigh = fills();
@@ -440,7 +446,7 @@ describe('ReceiverInstrumentHost', () => {
 
     publisher.emit(publication({ mainS: -48, scheme: 'main_sub', epoch: 2 })); flushSync();
     expect(fills()).toBeLessThan(reseededHigh);
-    expect(meter().querySelector('[data-meter-peak]')).toBeNull();
+    expect(meter().querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
     expect(meter().querySelector('[data-meter-frame]')?.getAttribute('data-meter-frame')).toBe(frame);
   });
 
@@ -450,24 +456,26 @@ describe('ReceiverInstrumentHost', () => {
     const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
     const svg = () => meter().querySelector('svg')!;
     expect(svg().getAttribute('aria-label')).toContain('raw, uncalibrated');
-    expect(svg().querySelectorAll('line')).toHaveLength(0);
+    expect([...svg().querySelectorAll<SVGLineElement>('line')]
+      .every((line) => line.getAttribute('visibility') === 'hidden')).toBe(true);
 
     publisher.emit(publication({ mainS: 53, meterQuality: [] })); flushSync();
     expect(svg().getAttribute('aria-label')).toContain('unit unknown');
-    expect(svg().querySelectorAll('line')).toHaveLength(0);
-    expect(svg().querySelectorAll('[data-meter-fill]')).toHaveLength(0);
+    expect([...svg().querySelectorAll<SVGLineElement>('line')]
+      .every((line) => line.getAttribute('visibility') === 'hidden')).toBe(true);
+    expect(svg().querySelectorAll<SVGRectElement>('[data-meter-fill]:not([visibility="hidden"])')).toHaveLength(0);
 
     motion.reduced(true);
     publisher.emit(publication({ mainS: -12, meterQuality: ['calibrated'] })); flushSync();
     expect(svg().getAttribute('aria-label')).toMatch(/S meter S[0-9]/);
-    expect(svg().querySelectorAll('line').length).toBeGreaterThan(0);
-    expect(svg().querySelectorAll('[data-meter-fill]').length).toBeGreaterThan(0);
+    expect(svg().querySelectorAll<SVGLineElement>('line[visibility="visible"]').length).toBeGreaterThan(0);
+    expect(svg().querySelectorAll<SVGRectElement>('[data-meter-fill]:not([visibility="hidden"])').length).toBeGreaterThan(0);
 
     motion.reduced(false);
     publisher.emit(publication({ mainS: 20, meterQuality: ['calibrated'], epoch: 2 })); flushSync();
-    const resetFill = svg().querySelectorAll('[data-meter-fill]').length;
+    const resetFill = svg().querySelectorAll<SVGRectElement>('[data-meter-fill]:not([visibility="hidden"])').length;
     publisher.emit(publication({ mainS: -48, meterQuality: ['calibrated'], epoch: 2 })); flushSync();
-    expect(svg().querySelectorAll('[data-meter-fill]')).toHaveLength(resetFill);
+    expect(svg().querySelectorAll<SVGRectElement>('[data-meter-fill]:not([visibility="hidden"])')).toHaveLength(resetFill);
   });
 
   it('requires the synchronous publisher and owns no fallback clocks or continuity comparison', () => {

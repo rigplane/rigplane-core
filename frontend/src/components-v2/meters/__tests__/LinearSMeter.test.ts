@@ -328,7 +328,11 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     const normal = mountMeter({ frame });
     expect(normal.textContent).toContain(projection.primaryText);
     expect(normal.textContent).toContain(projection.secondaryText);
-    expect(normal.querySelectorAll('[data-meter-fill]')).toHaveLength(10);
+    // MOR-2521: all 20 fill slots exist permanently; exactly the 10 the
+    // 0.5-smoothed frame lights are visible.
+    const fills = [...normal.querySelectorAll<SVGRectElement>('[data-meter-fill]')];
+    expect(fills).toHaveLength(20);
+    expect(fills.filter((rect) => rect.getAttribute('visibility') !== 'hidden')).toHaveLength(10);
     expect(Number(normal.querySelector('[data-meter-peak]')?.getAttribute('x1'))).toBeCloseTo(396);
 
     const sdr = mountMeter({ frame, variant: 'sdr-screen' });
@@ -372,9 +376,13 @@ describe('LinearSMeter calibrated S-meter domain', () => {
 
     expect(target.textContent).toContain(primary);
     expect(target.textContent).toContain(secondary);
-    expect(target.querySelectorAll('[data-meter-fill]')).toHaveLength(0);
-    expect(target.querySelector('[data-meter-peak]')).toBeNull();
-    expect(target.querySelectorAll('line')).toHaveLength(0);
+    // MOR-2521: unprojectable domains keep every slot present but hidden.
+    const fills = [...target.querySelectorAll<SVGRectElement>('[data-meter-fill]')];
+    expect(fills).toHaveLength(20);
+    expect(fills.every((rect) => rect.getAttribute('visibility') === 'hidden')).toBe(true);
+    expect(target.querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
+    expect([...target.querySelectorAll<SVGLineElement>('line')]
+      .every((line) => line.getAttribute('visibility') === 'hidden')).toBe(true);
     expect(target.querySelector('svg')?.getAttribute('aria-label')).toBe(
       projection.accessibleDescription,
     );
@@ -495,6 +503,151 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     expect(source).toMatch(/\{#each signalProjection\.ticks as t\}/);
     expect(source).toMatch(/\{@const tx = fractionToX\(t\.fraction\)\}/);
     expect(source).not.toMatch(/\brawToSegments\b|function rawToX\b/);
+  });
+});
+
+// ── MOR-2521: value updates change attributes, never the node set ──────────
+
+describe('MOR-2521 — the S-meter never adds or removes nodes across a value sweep', () => {
+  // Host-frame input drives segment/peak geometry directly (no ballistics),
+  // so every step is a deterministic render. The sweep crosses full-segment
+  // boundaries, the sub-1% fractional guard (0.15025 -> fracSeg 0.005),
+  // exact segment boundaries (fracSeg 0), and the peak line's show/hide
+  // threshold (peak 0.95 early, no peak late).
+  const SWEEP = [
+    { smoothedFraction: 0, peakFraction: 0.95 },
+    { smoothedFraction: 0.05, peakFraction: 0.95 },
+    { smoothedFraction: 0.15025, peakFraction: 0.95 },
+    { smoothedFraction: 0.275, peakFraction: 0.95 },
+    { smoothedFraction: 0.55, peakFraction: null },
+    { smoothedFraction: 0.9275, peakFraction: null },
+    { smoothedFraction: 1, peakFraction: null },
+  ] as const;
+
+  interface NodeCounts { rect: number; line: number; fill: number }
+  interface SweepStep {
+    counts: NodeCounts;
+    visibleFills: number;
+    peakVisible: boolean;
+  }
+
+  function nodeCounts(target: HTMLElement): NodeCounts {
+    return {
+      rect: target.querySelectorAll('svg rect').length,
+      line: target.querySelectorAll('svg line').length,
+      fill: target.querySelectorAll('[data-meter-fill]').length,
+    };
+  }
+
+  function sweep(extra: Record<string, unknown> = {}): SweepStep[] {
+    const projection = projectSignalMeter(0);
+    const state = proxy({
+      frame: {
+        projection,
+        smoothedFraction: SWEEP[0].smoothedFraction,
+        peakFraction: SWEEP[0].peakFraction,
+      } satisfies SignalMeterFrame,
+      ...extra,
+    });
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    roots.push(target);
+    const component = mount(LinearSMeter, { target, props: state as ComponentProps<typeof LinearSMeter> });
+    components.push(component);
+    return SWEEP.map((step) => {
+      state.frame = {
+        projection,
+        smoothedFraction: step.smoothedFraction,
+        peakFraction: step.peakFraction,
+      } satisfies SignalMeterFrame;
+      flushSync();
+      return {
+        counts: nodeCounts(target),
+        visibleFills: [...target.querySelectorAll<SVGRectElement>('[data-meter-fill]')]
+          .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length,
+        peakVisible: target.querySelector('[data-meter-peak]')?.getAttribute('visibility') === 'visible',
+      };
+    });
+  }
+
+  it('default variant: one node count for every sweep step, while lit/peak state still tracks the reading', () => {
+    const steps = sweep();
+    for (const step of steps) expect(step.counts).toEqual(steps[0].counts);
+    // Literally: container background + bar track + 20 dim + 20 permanent
+    // fill rects = 42 rects; 81 calibration ticks (8 mark intervals x 10
+    // subdivisions + the final major, under this file's IC7610_LIKE_CAL)
+    // + 1 permanent peak line = 82 lines.
+    expect(steps[0].counts).toEqual({ rect: 42, line: 82, fill: 20 });
+    expect(steps.map((step) => step.visibleFills)).toEqual([0, 1, 3, 6, 11, 19, 20]);
+    expect(steps.map((step) => step.peakVisible)).toEqual([true, true, true, true, false, false, false]);
+  });
+
+  it('sdr-screen variant: one node count for every sweep step', () => {
+    const steps = sweep({ variant: 'sdr-screen' });
+    for (const step of steps) expect(step.counts).toEqual(steps[0].counts);
+    // 80 permanent half-cell rects; no lines, no data-meter-fill slots.
+    expect(steps[0].counts).toEqual({ rect: 80, line: 0, fill: 0 });
+  });
+
+  it('with lowerScale: one node count for every valueFraction step, while the lit lower count still tracks it', () => {
+    const projection = projectSignalMeter(0);
+    const state = proxy({
+      frame: { projection, smoothedFraction: 0.55, peakFraction: null } satisfies SignalMeterFrame,
+      lowerScale: { label: 'SWR', ticks: [], valueFraction: 0, fault: false, relevant: true },
+    });
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    roots.push(target);
+    const component = mount(LinearSMeter, { target, props: state as ComponentProps<typeof LinearSMeter> });
+    components.push(component);
+    const fractions = [0, 0.53, 1, 0.0004];
+    const steps = fractions.map((valueFraction) => {
+      state.lowerScale = { ...state.lowerScale, valueFraction };
+      flushSync();
+      return {
+        counts: nodeCounts(target),
+        visibleLowerFills: [...target.querySelectorAll<SVGRectElement>('[data-lower-fill]')]
+          .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length,
+      };
+    });
+    for (const step of steps) expect(step.counts).toEqual(steps[0].counts);
+    // 42 main-bar rects + lower track + 20 lower dim + 20 lower fill = 83;
+    // 82 lines + 0 lower ticks (empty ticks array).
+    expect(steps[0].counts).toEqual({ rect: 83, line: 82, fill: 20 });
+    // 0.0004 * 20 = 0.008 <= 0.01: the sub-1% guard renders no visible fill.
+    expect(steps.map((step) => step.visibleLowerFills)).toEqual([0, 11, 20, 0]);
+  });
+});
+
+describe('MOR-2521 — readout slot declarations (source pins)', () => {
+  const source = readFileSync(
+    resolve(process.cwd(), 'src/components-v2/meters/LinearSMeter.svelte'),
+    'utf8',
+  );
+
+  it('every {displaySUnit} text uses a fixed anchor, never middle', () => {
+    const blocks = source.match(/<text[^>]*>\{displaySUnit\}<\/text>/gs) ?? [];
+    // sdr-screen's value text (end-anchored at a literal x) and the default
+    // variant's S-unit (start-anchored at its reserved slot's left edge).
+    expect(blocks).toHaveLength(2);
+    for (const block of blocks) expect(block).not.toContain('text-anchor="middle"');
+  });
+
+  it('the default variant anchors both readouts at slot left edges reserved by char count', () => {
+    expect(source).toMatch(/const S_UNIT_SLOT_CHARS = 5;/);
+    expect(source).toMatch(/const DBM_SLOT_CHARS = 8;/);
+    expect(source).toMatch(/const MONO_ADVANCE_EM = 0\.6;/);
+    const sUnitLine = source.match(/^.*sUnitSlotX.*$/m)?.[0] ?? '';
+    const dbmLine = source.match(/^.*dbmSlotX.*$/m)?.[0] ?? '';
+    expect(sUnitLine).toContain('READOUT_CX - (S_UNIT_SLOT_CHARS * MONO_ADVANCE_EM * S_UNIT_FS) / 2');
+    expect(dbmLine).toContain('READOUT_CX - (DBM_SLOT_CHARS * MONO_ADVANCE_EM * DBM_FS) / 2');
+    // blocks[1]: the default variant renders after the sdr-screen variant.
+    const sUnitBlock = source.match(/<text[^>]*>\{displaySUnit\}<\/text>/gs)?.[1] ?? '';
+    const dbmBlock = source.match(/<text[^>]*>\{displayDbm\}<\/text>/gs)?.[0] ?? '';
+    expect(sUnitBlock).toContain('x={sUnitSlotX}');
+    expect(sUnitBlock).toContain('text-anchor="start"');
+    expect(dbmBlock).toContain('x={dbmSlotX}');
+    expect(dbmBlock).toContain('text-anchor="start"');
   });
 });
 

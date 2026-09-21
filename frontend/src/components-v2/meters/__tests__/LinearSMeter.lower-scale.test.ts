@@ -51,8 +51,10 @@ function descriptor(over: Partial<LowerScaleDescriptor> = {}): LowerScaleDescrip
 function lowerSegs(target: HTMLElement) {
   return Array.from(target.querySelectorAll('[data-lower-segment]'));
 }
+// MOR-2521: lower fill rects are permanent slots; these are the lit ones.
 function lowerFills(target: HTMLElement) {
-  return Array.from(target.querySelectorAll('[data-lower-fill]')) as SVGRectElement[];
+  return Array.from(target.querySelectorAll<SVGRectElement>('[data-lower-fill]'))
+    .filter((rect) => rect.getAttribute('visibility') !== 'hidden');
 }
 function viewBoxOf(target: HTMLElement): string {
   return target.querySelector('svg')!.getAttribute('viewBox')!;
@@ -85,6 +87,12 @@ describe('LinearSMeter lowerScale prop — structural elements', () => {
   it('renders exactly the default 20 lower-row background segments, mirroring the main bar', () => {
     const target = mountMeter({ value: 0, lowerScale: descriptor() });
     expect(lowerSegs(target)).toHaveLength(20);
+  });
+
+  it('MOR-2521: keeps all 20 lower fill slots present (hidden, not absent) at valueFraction 0', () => {
+    const target = mountMeter({ value: 0, lowerScale: descriptor({ valueFraction: 0 }) });
+    expect(target.querySelectorAll('[data-lower-fill]')).toHaveLength(20);
+    expect(lowerFills(target)).toHaveLength(0);
   });
 });
 
@@ -208,7 +216,8 @@ it('null clears normal-motion main fill and peak without remounting the lower sc
     const svg = target.querySelector('svg');
     const lower = target.querySelector('[data-lower-tick-mark]');
     const main = () => target.querySelector('[data-main-relevant]')!;
-    const lit = () => main().querySelectorAll('rect:not([data-segment])').length - 2;
+    const lit = () => [...main().querySelectorAll<SVGRectElement>('[data-meter-fill]')]
+      .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
     expect(lit()).toBeGreaterThan(10);
     props.value = null;
     flushSync();
@@ -217,7 +226,8 @@ it('null clears normal-motion main fill and peak without remounting the lower sc
     props.value = 10;
     flushSync();
     expect(lit()).toBe(0);
-    expect(target.querySelectorAll('line[stroke-width="2"]')).toHaveLength(0);
+    expect([...target.querySelectorAll<SVGLineElement>('line[stroke-width="2"]')]
+      .filter((line) => line.getAttribute('visibility') !== 'hidden')).toHaveLength(0);
     expect(target.querySelector('svg') === svg).toBe(true);
     expect(target.querySelector('[data-lower-tick-mark]') === lower).toBe(true);
   } finally {
