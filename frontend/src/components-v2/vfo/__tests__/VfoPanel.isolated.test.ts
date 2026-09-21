@@ -196,7 +196,10 @@ describe('panel structure', () => {
 
   it('renders filter badge with correct filter text', () => {
     const t = mountPanel(baseProps);
-    const indicators = Array.from(t.querySelectorAll('.control-strip .v2-status-indicator'));
+    // MOR-2509: the filter chip moved from the control strip to the identity
+    // row (name + mode + filter on one line); the control strip keeps the
+    // slot/band/badges/choices chips.
+    const indicators = Array.from(t.querySelectorAll('.panel-identity .v2-status-indicator'));
     expect(indicators.some((el) => el.textContent?.trim() === '2.4k')).toBe(true);
   });
 

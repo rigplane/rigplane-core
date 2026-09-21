@@ -1032,14 +1032,6 @@
     --btn-compact-padding-inline: 4px;
     --btn-compact-font-size: 9px;
     --vfo-control-strip-gap: 2px;
-    --vfo-panel-body-height: 100px;
-    --vfo-control-strip-height: 54px;
-  }
-  [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] :global(.control-strip) {
-    align-content: center;
-    flex-wrap: wrap;
-    overflow: visible;
-    white-space: normal;
   }
   @media (min-width: 951px) and (max-width: 1280px) {
     [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
@@ -1070,9 +1062,6 @@
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .rf-lamp:empty) {
     display: none;
-  }
-  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.vfo-ops) {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge :global(.split-digest) {
     display: grid;
@@ -1142,8 +1131,7 @@
       gap: 1px;
     }
     [data-vfo-appearance='standard'] .standard-receiver {
-      --vfo-panel-body-height: 64px;
-      --vfo-control-strip-height: 22px;
+      --vfo-control-strip-gap: 2px;
     }
     [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
       flex-basis: calc(100% - 192px);

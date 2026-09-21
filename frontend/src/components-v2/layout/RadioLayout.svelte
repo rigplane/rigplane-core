@@ -1283,10 +1283,19 @@
 
   .receiver-deck {
     position: relative;
-    overflow: hidden;
+    overflow: visible;
     padding: 5px;
     min-height: 0;
     border-color: var(--v2-border-panel);
+  }
+
+  /* 84d5e41d added `overflow: hidden` to `.receiver-deck` itself to keep the
+     legacy fixed-height VFO header inside its grid row. MOR-2509 keeps that
+     containment scoped to the legacy root only: the semantic deck's rows are
+     content-sized and must never be clipped (pinned by
+     `semantic/__tests__/VfoSurface.panel-rows.test.ts`). */
+  .radio-layout:not(.semantic-deck) > .receiver-deck {
+    overflow: hidden;
   }
 
   .receiver-deck :global(.vfo-header) {

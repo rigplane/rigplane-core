@@ -134,103 +134,104 @@
   data-layout-profile={layoutProfile}
   style={Object.entries(receiverChromeVars).map(([key, value]) => `${key}:${value}`).join(';')}
 >
-  <button
-    type="button" class="panel-header" disabled={onSelectHeader === undefined}
-    aria-label={onSelectHeader ? `Select ${receiverLabel}` : undefined}
-    title={headerReason}
-    onclick={onSelectHeader}
-  >
-    <div class="header-title-group">
-      <span class="vfo-label">{receiverLabel}</span>
+  <div class="panel-identity">
+    <button
+      type="button" class="panel-header" disabled={onSelectHeader === undefined}
+      aria-label={onSelectHeader ? `Select ${receiverLabel}` : undefined}
+      title={headerReason}
+      onclick={onSelectHeader}
+    >
+      <div class="header-title-group">
+        <span class="vfo-label">{receiverLabel}</span>
+      </div>
+
+      <div class="header-badges">
+        {#if sMeter || meterPresent}<span class="header-tag meter-tag">BAR</span>{/if}
+        <span class="header-tag slot-tag">{slotTag}</span>
+      </div>
+    </button>
+
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="mode-badge-wrapper"
+      class:mode-disabled={controlsDisabled || onModeClick === undefined}
+      data-vfo-controls-disabled={controlsDisabled}
+      aria-disabled={controlsDisabled || onModeClick === undefined}
+      onclick={(e) => {
+        e.stopPropagation();
+        if (!controlsDisabled) onModeClick?.();
+      }}
+      title={!controlsDisabled && onModeClick ? `Change mode (current: ${mode})` : undefined}
+    >
+      <StatusIndicator
+        label={mode ?? '—'}
+        active={true}
+        color="cyan"
+        size="default"
+      />
     </div>
 
-    <div class="header-badges">
-      {#if sMeter || meterPresent}<span class="header-tag meter-tag">BAR</span>{/if}
-      <span class="header-tag slot-tag">{slotTag}</span>
-    </div>
-  </button>
-
-  <div class="smeter-row panel-meter"
-    data-meter-space={!sMeter && !meterPresent && reserveMeterSpace ? 'reserved' : undefined}>
-    {#if sMeter}
-      <div data-testid="receiver-s-meter" data-receiver={receiver}>
-        {@render sMeter()}
-      </div>
-    {:else if meterPresent}
-      <div data-testid="receiver-s-meter" data-receiver={receiver}
-        data-operational={meterOperational === undefined ? undefined : String(meterOperational)}
-        aria-label={sValue === null ? `${receiverLabel} S meter unknown` : undefined}>
-        <LinearSMeter value={typeof sValue === 'number' && Number.isFinite(sValue) ? sValue : null} compact label={slotTag} variant={meterVariant} source={meterSource} session={continuitySession} />
-      </div>
-    {/if}
+    <StatusIndicator label={filter ?? '—'} active={filter !== null} color={filter === null ? 'muted' : 'cyan'} size="default" />
   </div>
 
-  <div class="panel-body">
-    <div class="display-row">
-      <div class="freq-row">
-        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-        <span class="vfo-freq" data-vfo-freq data-freq-tunable={!frequencyDisabled}
-          data-display-state={frequencyState} class:display-unknown={displayHz === null}
-          role={frequencyEntryButton ? 'button' : undefined}
-          aria-label={frequencyEntryButton ? `Set frequency — ${receiverLabel}` : undefined}
-          tabindex={frequencyEntryButton ? 0 : undefined}
-          onclickcapture={handleFrequencyClick}
-          onkeydowncapture={handleFrequencyKeydown}
-          >
-          <span class="frequency-readout-content" aria-hidden={frequencyEntryButton ? 'true' : undefined}>
-            {#if frequency}
-              {@render frequency()}
-            {:else if freq !== null && freq !== undefined && Number.isFinite(freq)}
-              <FrequencyDisplayInteractive
-                {freq} {displayHz} {pendingDisplayHz} {contextKey}
-                disabled={frequencyDisabled
-                  || (frequencyState !== 'current' && frequencyState !== 'stale')}
-                active={isActive} {receiver} {onFreqChange} vfoFreqHook={false}
-              />
-            {:else}
-              <span class="freq unknown-frequency">{formatFrequency(pendingDisplayHz ?? displayHz)}</span>
-            {/if}
-          </span>
+  <div class="display-row">
+    <div class="freq-row">
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <span class="vfo-freq" data-vfo-freq data-freq-tunable={!frequencyDisabled}
+        data-display-state={frequencyState} class:display-unknown={displayHz === null}
+        role={frequencyEntryButton ? 'button' : undefined}
+        aria-label={frequencyEntryButton ? `Set frequency — ${receiverLabel}` : undefined}
+        tabindex={frequencyEntryButton ? 0 : undefined}
+        onclickcapture={handleFrequencyClick}
+        onkeydowncapture={handleFrequencyKeydown}
+        >
+        <span class="frequency-readout-content" aria-hidden={frequencyEntryButton ? 'true' : undefined}>
+          {#if frequency}
+            {@render frequency()}
+          {:else if freq !== null && freq !== undefined && Number.isFinite(freq)}
+            <FrequencyDisplayInteractive
+              {freq} {displayHz} {pendingDisplayHz} {contextKey}
+              disabled={frequencyDisabled
+                || (frequencyState !== 'current' && frequencyState !== 'stale')}
+              active={isActive} {receiver} {onFreqChange} vfoFreqHook={false}
+            />
+          {:else}
+            <span class="freq unknown-frequency">{formatFrequency(pendingDisplayHz ?? displayHz)}</span>
+          {/if}
         </span>
-      </div>
+      </span>
+    </div>
 
-      {#if rit?.active}
-        <div class="rit-row">
-          <span class="rit-label">RIT</span>
-          <span class="rit-offset">{formatRitOffset(rit.offset)}</span>
+    {#if rit?.active}
+      <div class="rit-row">
+        <span class="rit-label">RIT</span>
+        <span class="rit-offset">{formatRitOffset(rit.offset)}</span>
+      </div>
+    {/if}
+
+    <div class="smeter-row panel-meter"
+      data-meter-space={!sMeter && !meterPresent && reserveMeterSpace ? 'reserved' : undefined}>
+      {#if sMeter}
+        <div data-testid="receiver-s-meter" data-receiver={receiver}>
+          {@render sMeter()}
+        </div>
+      {:else if meterPresent}
+        <div data-testid="receiver-s-meter" data-receiver={receiver}
+          data-operational={meterOperational === undefined ? undefined : String(meterOperational)}
+          aria-label={sValue === null ? `${receiverLabel} S meter unknown` : undefined}>
+          <LinearSMeter value={typeof sValue === 'number' && Number.isFinite(sValue) ? sValue : null} compact label={slotTag} variant={meterVariant} source={meterSource} session={continuitySession} />
         </div>
       {/if}
     </div>
+  </div>
 
     <div class="control-strip">
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <div
-        class="mode-badge-wrapper"
-        class:mode-disabled={controlsDisabled || onModeClick === undefined}
-        data-vfo-controls-disabled={controlsDisabled}
-        aria-disabled={controlsDisabled || onModeClick === undefined}
-        onclick={(e) => {
-          e.stopPropagation();
-          if (!controlsDisabled) onModeClick?.();
-        }}
-        title={!controlsDisabled && onModeClick ? `Change mode (current: ${mode})` : undefined}
-      >
-        <StatusIndicator
-          label={mode ?? '—'}
-          active={true}
-          color="cyan"
-          size="default"
-        />
-      </div>
-
       <StatusIndicator label={slotTag} active={false} color="muted" size="default" />
 
       {#if bandText}
         <StatusIndicator label={bandText} active={true} color="cyan" size="default" />
       {/if}
-
-      <StatusIndicator label={filter ?? '—'} active={filter !== null} color={filter === null ? 'muted' : 'cyan'} size="default" />
 
       {#each badgeItems as item (item.label)}
         <span data-indicator-fact={item.label.split(' ')[0]?.toLowerCase()} data-state={item.state}>
@@ -261,21 +262,18 @@
         {/if}
       {/each}
     </div>
-  </div>
 </div>
 
 <style>
   .panel {
     display: grid;
-    grid-template-rows:
-      var(--vfo-panel-header-height, 18px)
-      var(--vfo-panel-meter-height, 58px)
-      var(--vfo-panel-body-height, 64px);
+    grid-template-rows: auto auto auto;
+    gap: var(--vfo-panel-body-gap, 4px);
     min-height: 100%;
+    min-width: 0;
     background: linear-gradient(180deg, var(--v2-bg-gradient-start) 0%, var(--v2-bg-darkest) 100%);
     border: 1px solid var(--v2-border-darker);
     border-radius: 4px;
-    overflow: hidden;
     font-family: 'Roboto Mono', monospace;
     transition: border-color 150ms ease, box-shadow 150ms ease;
   }
@@ -297,19 +295,23 @@
     filter: saturate(0.4) brightness(0.85);
   }
 
+  /* MOR-2509: the identity row is one line — panel name plus the header's
+     own tags plus the mode/filter chips the control strip used to carry.
+     `VfoSurface.panel-rows.test.ts` pins membership and row order. */
+  .panel-identity {
+    display: flex;
+    align-items: center;
+    gap: var(--vfo-header-group-gap, 5px);
+    padding: var(--vfo-badge-inset-y, 3px) var(--vfo-panel-pad-x, 10px) 0;
+    min-width: 0;
+  }
+
   .panel-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    min-height: var(--vfo-panel-header-height, 18px);
-    padding:
-      var(--vfo-badge-inset-y, 3px)
-      var(--vfo-panel-pad-x, 10px)
-      0;
-    border-bottom: none;
-    width: 100%;
-    border-top: 0;
-    border-inline: 0;
+    gap: var(--vfo-header-badge-gap, 3px);
+    border: 0;
+    padding: 0;
     background: transparent;
     color: inherit;
     font: inherit;
@@ -364,11 +366,15 @@
     color: var(--v2-text-muted);
   }
 
+  /* MOR-2509: the meter shares the display row with the readout — the
+     readout keeps its fixed em-sized share, the meter takes the rest. */
   .panel-meter {
+    flex: 1 1 auto;
+    min-width: 0;
     padding: 0 var(--vfo-panel-meter-pad-x, 6px);
   }
 
-  .panel-meter > div { width: 100%; height: 100%; }
+  .panel-meter > div { width: 100%; }
 
 
   .sr-only {
@@ -409,30 +415,18 @@
 
 
 
-  .panel-body {
-    display: grid;
-    grid-template-rows:
-      var(--vfo-display-row-height, 38px)
-      var(--vfo-control-strip-height, 22px);
-    gap: var(--vfo-panel-body-gap, 4px);
-    padding:
-      0
-      var(--vfo-panel-body-pad-x, 10px)
-      var(--vfo-panel-body-pad-bottom, 0px);
-    min-height: 0;
-  }
-
   .display-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: var(--vfo-display-row-gap, 12px);
-    min-height: var(--vfo-display-row-height, 38px);
+    padding: 0 var(--vfo-panel-body-pad-x, 10px);
+    min-width: 0;
   }
 
   .freq-row {
     display: flex;
     align-items: center;
+    flex: 0 0 auto;
     min-width: 0;
   }
 
@@ -501,16 +495,19 @@
     color: var(--v2-accent-yellow);
   }
 
+  /* MOR-2509: the indicator row wraps instead of being clipped — pinned by
+     `VfoSurface.panel-rows.test.ts`'s control-strip source pin. */
   .control-strip {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: var(--vfo-control-strip-gap, 4px);
-    min-height: var(--vfo-control-strip-height, 22px);
-    overflow: hidden;
-    white-space: nowrap;
+    padding:
+      0
+      var(--vfo-panel-body-pad-x, 10px)
+      var(--vfo-panel-body-pad-bottom, 0px);
+    min-width: 0;
   }
-
-
 
   @media (max-width: 1280px) {
     .vfo-freq {
@@ -526,16 +523,6 @@
 
     .vfo-freq {
       font-size: 32px;
-    }
-
-    .panel-body {
-      grid-template-rows: auto auto;
-    }
-
-    .control-strip {
-      white-space: normal;
-      overflow: visible;
-      flex-wrap: wrap;
     }
   }
 </style>
