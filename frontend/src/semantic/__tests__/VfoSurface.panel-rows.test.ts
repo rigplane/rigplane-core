@@ -229,11 +229,11 @@ function rule(css: string, selector: string): string {
   return standalone[0];
 }
 
-describe('source pins: content-sized rows (MOR-2509 slice 1)', () => {
-  const panelCss = styleBlock('src/components-v2/vfo/VfoPanel.svelte');
-  const surfaceCss = styleBlock('src/semantic/VfoSurface.svelte');
-  const layoutCss = styleBlock('src/components-v2/layout/RadioLayout.svelte');
+const panelCss = styleBlock('src/components-v2/vfo/VfoPanel.svelte');
+const surfaceCss = styleBlock('src/semantic/VfoSurface.svelte');
+const layoutCss = styleBlock('src/components-v2/layout/RadioLayout.svelte');
 
+describe('source pins: content-sized rows (MOR-2509 slice 1)', () => {
   it('the VfoPanel control strip declares wrapping and never hides overflow', () => {
     const strips = rulesFor(panelCss, '.control-strip');
     expect(strips.join('\n')).toMatch(/flex-wrap:\s*wrap/);
@@ -273,5 +273,39 @@ describe('source pins: content-sized rows (MOR-2509 slice 1)', () => {
           .toMatch(/:not\(\.semantic-deck\)/);
       }
     }
+  });
+});
+
+describe('source pins: bridge height and hit targets (MOR-2509 correction)', () => {
+  const opsCss = styleBlock('src/semantic/VfoOperationGroup.svelte');
+  const segmentCss = styleBlock('src/components-v2/vfo/ActiveReceiverToggle.svelte');
+
+  it('the bridge caption renders on one line', () => {
+    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge .active-receiver").join('\n'))
+      .toMatch(/white-space:\s*nowrap/);
+  });
+
+  it('every bridge control declares a 24px min-height floor', () => {
+    expect(rulesFor(opsCss, ".vfo-ops[data-vfo-operation-appearance='standard'] .vfo-op").join('\n'))
+      .toMatch(/min-height:\s*max\(24px/);
+    expect(rulesFor(opsCss, ".fact-toggles[data-vfo-operation-appearance='standard'] .fact-toggle").join('\n'))
+      .toMatch(/min-height:\s*max\(24px/);
+    expect(rulesFor(segmentCss, '.segment.embedded').join('\n'))
+      .toMatch(/min-height:\s*max\(24px/);
+    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge .vfo-select").join('\n'))
+      .toMatch(/min-height:\s*24px/);
+  });
+
+  it('the bridge declares no min-height and block padding no larger than the panels', () => {
+    const bridgeRules = [...surfaceCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(([, selectorList]) => selectorList.split(',').some((member) => member.trim().endsWith('.bridge')
+        || member.trim().endsWith('.standard-pair-bridge')));
+    expect(bridgeRules.length).toBeGreaterThan(0);
+    for (const [, selectorList, body] of bridgeRules) {
+      expect(body, `${selectorList.trim()} must not size the bridge`).not.toMatch(/min-height/);
+    }
+    const standardBridge = rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge").join('\n');
+    expect(standardBridge).toMatch(/padding:\s*4px/);
+    expect(standardBridge).not.toMatch(/padding:\s*(1[0-9]|[5-9])px/);
   });
 });

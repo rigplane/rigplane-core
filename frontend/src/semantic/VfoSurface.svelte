@@ -1023,7 +1023,19 @@
     border: 1px solid var(--v2-accent-cyan, #00d4ff); border-radius: 4px;
     box-shadow: 0 0 6px rgba(0,212,255,.3), inset 0 0 16px rgba(0,212,255,.06);
   }
-  [data-vfo-appearance='standard'] .bridge { flex-basis: 136px; }
+  /* MOR-2509: the bridge must never size the flex row taller than the panels
+     beside it — compact padding/gap (matching the pair bridge below) and a
+     one-line caption keep its content below the panels' height; the panels
+     define the row. Pinned by `VfoSurface.panel-rows.test.ts`. The basis
+     covers the one-line caption at its 11px monospace metrics:
+     21 chars x 0.6em x 11px = 138.6px + 2x4px padding + 2x1px borders. */
+  [data-vfo-appearance='standard'] .bridge {
+    flex-basis: 152px;
+    padding: 4px;
+    gap: 3px;
+  }
+  [data-vfo-appearance='standard'] .bridge .active-receiver { white-space: nowrap; }
+  [data-vfo-appearance='standard'] .bridge .vfo-select { min-height: 24px; }
   [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
     flex: 1 1 0;
     padding: 6px;
