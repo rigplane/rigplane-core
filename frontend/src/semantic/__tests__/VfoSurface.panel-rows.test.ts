@@ -276,13 +276,17 @@ describe('source pins: content-sized rows (MOR-2509 slice 1)', () => {
   });
 });
 
-describe('source pins: bridge height and hit targets (MOR-2509 correction)', () => {
+describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', () => {
   const opsCss = styleBlock('src/semantic/VfoOperationGroup.svelte');
   const segmentCss = styleBlock('src/components-v2/vfo/ActiveReceiverToggle.svelte');
 
-  it('the bridge caption renders on one line', () => {
-    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge .active-receiver").join('\n'))
-      .toMatch(/white-space:\s*nowrap/);
+  it('the caption wraps: no active-receiver rule declares nowrap', () => {
+    for (const [, selector, body] of surfaceCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (selector.includes('.active-receiver')) {
+        expect(body, `${selector.trim()} must not pin the caption to one line`)
+          .not.toMatch(/white-space:\s*nowrap/);
+      }
+    }
   });
 
   it('every bridge control declares a 24px min-height floor', () => {
@@ -296,16 +300,17 @@ describe('source pins: bridge height and hit targets (MOR-2509 correction)', () 
       .toMatch(/min-height:\s*24px/);
   });
 
-  it('the bridge declares no min-height and block padding no larger than the panels', () => {
-    const bridgeRules = [...surfaceCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
-      .filter(([, selectorList]) => selectorList.split(',').some((member) => member.trim().endsWith('.bridge')
-        || member.trim().endsWith('.standard-pair-bridge')));
-    expect(bridgeRules.length).toBeGreaterThan(0);
-    for (const [, selectorList, body] of bridgeRules) {
-      expect(body, `${selectorList.trim()} must not size the bridge`).not.toMatch(/min-height/);
-    }
-    const standardBridge = rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge").join('\n');
-    expect(standardBridge).toMatch(/padding:\s*4px/);
-    expect(standardBridge).not.toMatch(/padding:\s*(1[0-9]|[5-9])px/);
+  it('the bridge block inset and the panel wrapper padding read one custom property', () => {
+    const INSET = /var\(--vfo-instrument-inset-block/;
+    expect(rulesFor(surfaceCss, '.instrument-panel').join('\n'))
+      .toMatch(/--vfo-instrument-inset-block:\s*6px/);
+    expect(rulesFor(surfaceCss, '.receiver-instrument').join('\n')).toMatch(INSET);
+    expect(rulesFor(surfaceCss, '.bridge').join('\n'))
+      .toMatch(/margin-block:\s*var\(--vfo-instrument-inset-block/);
+    const standardScope = rulesFor(surfaceCss,
+      "[data-vfo-appearance='standard'] .instrument-panel:not(:has(> .standard-pair-bridge))").join('\n');
+    expect(standardScope).toMatch(/--vfo-instrument-inset-block:\s*8px/);
+    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .receiver-instrument").join('\n'))
+      .toMatch(/padding:\s*var\(--vfo-instrument-inset-block/);
   });
 });

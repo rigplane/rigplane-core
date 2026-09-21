@@ -977,16 +977,22 @@
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
   /* Receiver/bridge composition ported from v2.11.1 SdrVfoScreen and VfoHeader. */
+  /* MOR-2509: one source for the block inset both sides of a row read — the
+     panel wrappers as padding, the bridge as margin-block — so the bridge's
+     visible box always lines up with the panels'. Pinned by
+     `VfoSurface.panel-rows.test.ts`. */
   .instrument-panel {
     display: flex; align-items: stretch; width: 100%; min-width: 0;
+    --vfo-instrument-inset-block: 6px;
     background: linear-gradient(180deg, var(--v2-bg-gradient-start, #0a0e14) 0%, var(--v2-bg-panel, #05080c) 100%);
     border: 1px solid var(--v2-border-panel, #18222d); border-radius: 4px;
   }
-  .receiver-instrument { flex: 1 1 490px; min-width: 0; padding: 6px 12px; }
+  .receiver-instrument { flex: 1 1 490px; min-width: 0; padding: var(--vfo-instrument-inset-block, 6px) 12px; }
   .receiver-instrument + .receiver-instrument { border-left: 1px solid var(--v2-border-panel, #18222d); }
   .bridge {
     flex: 0 0 180px; min-width: 0; display: flex; flex-direction: column;
     justify-content: center; gap: 10px; padding: 10px;
+    margin-block: var(--vfo-instrument-inset-block, 6px);
     border-inline: 1px solid var(--v2-border-panel, #18222d);
   }
   .freq-stack { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -1018,27 +1024,18 @@
   .receiver-instrument .secondary-slot .vfo-freq { font-size: 18px; margin: 2px 0; }
   .receiver-instrument .vfo-select { justify-self: end; grid-column: 2; grid-row: 1 / 3; }
   .bridge .vfo-identity-selectors { flex-direction: column; }
-  [data-vfo-appearance='standard'] .receiver-instrument { padding: 8px; }
+  [data-vfo-appearance='standard'] .instrument-panel:not(:has(> .standard-pair-bridge)) {
+    --vfo-instrument-inset-block: 8px;
+  }
+  [data-vfo-appearance='standard'] .receiver-instrument { padding: var(--vfo-instrument-inset-block, 8px); }
   [data-vfo-appearance='standard'] .instrument-active {
     border: 1px solid var(--v2-accent-cyan, #00d4ff); border-radius: 4px;
     box-shadow: 0 0 6px rgba(0,212,255,.3), inset 0 0 16px rgba(0,212,255,.06);
   }
-  /* MOR-2509: the bridge must never size the flex row taller than the panels
-     beside it — compact padding/gap (matching the pair bridge below) and a
-     one-line caption keep its content below the panels' height; the panels
-     define the row. Pinned by `VfoSurface.panel-rows.test.ts`. The basis
-     covers the one-line caption at its 11px monospace metrics:
-     21 chars x 0.6em x 11px = 138.6px + 2x4px padding + 2x1px borders. */
-  [data-vfo-appearance='standard'] .bridge {
-    flex-basis: 152px;
-    padding: 4px;
-    gap: 3px;
-  }
-  [data-vfo-appearance='standard'] .bridge .active-receiver { white-space: nowrap; }
+  [data-vfo-appearance='standard'] .bridge { flex-basis: 136px; }
   [data-vfo-appearance='standard'] .bridge .vfo-select { min-height: 24px; }
   [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
     flex: 1 1 0;
-    padding: 6px;
     --btn-compact-min-height: 18px;
     --btn-compact-padding-block: 1px;
     --btn-compact-padding-inline: 4px;
