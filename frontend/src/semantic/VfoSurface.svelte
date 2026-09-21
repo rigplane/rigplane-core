@@ -987,7 +987,15 @@
     background: linear-gradient(180deg, var(--v2-bg-gradient-start, #0a0e14) 0%, var(--v2-bg-panel, #05080c) 100%);
     border: 1px solid var(--v2-border-panel, #18222d); border-radius: 4px;
   }
-  .receiver-instrument { flex: 1 1 490px; min-width: 0; padding: var(--vfo-instrument-inset-block) 12px; }
+  /* MOR-2509: the row stretches every wrapper to the tallest item (bridge
+     included); the wrapper is a column so its tile grows to the same edge.
+     Pinned by `VfoSurface.panel-rows.test.ts`. */
+  .receiver-instrument {
+    flex: 1 1 490px; min-width: 0;
+    display: flex; flex-direction: column;
+    padding: var(--vfo-instrument-inset-block) 12px;
+  }
+  .receiver-instrument > :global(.indicator-row) { flex: 1 1 auto; min-height: 0; }
   .receiver-instrument + .receiver-instrument { border-left: 1px solid var(--v2-border-panel, #18222d); }
   .bridge {
     flex: 0 0 180px; min-width: 0; display: flex; flex-direction: column;
@@ -1100,6 +1108,8 @@
   [data-vfo-appearance='standard'] .receiver-instrument > :where(.vfo-tile) {
     display: block;
     inline-size: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
   }
   [data-vfo-appearance='standard'] .vfo-role { grid-column: 1; grid-row: 1; }
   [data-vfo-appearance='standard'] .vfo-mode {

@@ -268,6 +268,7 @@
   .panel {
     display: grid;
     grid-template-rows: auto auto auto;
+    align-content: start;
     gap: var(--vfo-panel-body-gap, 4px);
     min-height: 100%;
     min-width: 0;

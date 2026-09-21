@@ -211,6 +211,7 @@
 <style>
   .indicator-row {
     display: grid;
+    align-content: start;
     gap: 4px;
     min-width: 0;
     padding: 5px 7px;
