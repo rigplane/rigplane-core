@@ -4,7 +4,6 @@ export type VfoMeterVariant = 'vfo' | 'vfo-wide';
 export interface VfoLayoutScaleOverrides {
   topRowScale?: number;
   frequencyScale?: number;
-  meterScale?: number;
   badgeScale?: number;
   bridgeScale?: number;
 }
@@ -12,15 +11,10 @@ export interface VfoLayoutScaleOverrides {
 export interface VfoLayoutTokens {
   bridgeWidth: string;
   bridgePadX: string;
-  panelHeaderHeight: string;
   headerBadgeHeight: string;
   badgeInsetY: string;
   headerGroupGap: string;
   headerBadgeGap: string;
-  panelMeterHeight: string;
-  panelBodyHeight: string;
-  displayRowHeight: string;
-  controlStripHeight: string;
   controlStripGap: string;
   panelPadX: string;
   panelMeterPadX: string;
@@ -57,7 +51,6 @@ interface VfoLayoutTokenBase {
   badgeInsetY: number;
   headerGroupGap: number;
   headerBadgeGap: number;
-  panelMeterHeight: number;
   panelPadX: number;
   panelMeterPadX: number;
   panelBodyPadX: number;
@@ -85,8 +78,6 @@ interface VfoLayoutTokenBase {
   meterVariant: VfoMeterVariant;
 }
 
-const TOP_ROW_INNER_HEIGHT = 140;
-
 // Top-row scaling is intentionally centralized here. Do not tune frequency,
 // meter, and badge sizes independently in component CSS. If the composition
 // needs visual changes, adjust the scale model or the explicit override knobs
@@ -100,7 +91,6 @@ const VFO_LAYOUT_BASE: Record<VfoLayoutProfile, VfoLayoutTokenBase> = {
     badgeInsetY: 3,
     headerGroupGap: 5,
     headerBadgeGap: 3,
-    panelMeterHeight: 58,
     panelPadX: 10,
     panelMeterPadX: 6,
     panelBodyPadX: 10,
@@ -135,7 +125,6 @@ const VFO_LAYOUT_BASE: Record<VfoLayoutProfile, VfoLayoutTokenBase> = {
     badgeInsetY: 3,
     headerGroupGap: 5,
     headerBadgeGap: 3,
-    panelMeterHeight: 60,
     panelPadX: 10,
     panelMeterPadX: 6,
     panelBodyPadX: 10,
@@ -210,7 +199,6 @@ export function parseVfoLayoutScaleOverrides(search?: string | URLSearchParams |
   return {
     topRowScale: parseOverrideValue(params.get('vfoScale')),
     frequencyScale: parseOverrideValue(params.get('vfoFreqScale')),
-    meterScale: parseOverrideValue(params.get('vfoMeterScale')),
     badgeScale: parseOverrideValue(params.get('vfoBadgeScale')),
     bridgeScale: parseOverrideValue(params.get('vfoBridgeScale')),
   };
@@ -232,32 +220,21 @@ export function getVfoLayoutTokens(
   const overrides = options.overrides ?? {};
   const sharedScale = resolveAutoTopRowScale(profile, options.width) * (overrides.topRowScale ?? 1);
   const bridgeScale = clamp(sharedScale * (overrides.bridgeScale ?? 1), 0.85, 1.25);
-  const meterScale = clamp(sharedScale * (overrides.meterScale ?? 1), 0.85, 1.35);
   const frequencyScale = clamp(sharedScale * (overrides.frequencyScale ?? 1), 0.75, 1.3);
   const badgeScale = clamp(sharedScale * (overrides.badgeScale ?? 1), 0.85, 1.25);
 
   const headerBadgeHeight = Math.round(base.headerBadgeHeight * badgeScale);
   const badgeInsetY = Math.round(base.badgeInsetY * badgeScale);
-  const panelHeaderHeight = headerBadgeHeight + (badgeInsetY * 2);
-  const panelMeterHeight = Math.round(base.panelMeterHeight * meterScale);
   const panelBodyGap = Math.round(base.panelBodyGap * badgeScale);
   const controlBadgeHeight = Math.round(base.controlBadgeMinHeight * badgeScale);
-  const controlStripHeight = controlBadgeHeight + (badgeInsetY * 2);
-  const panelBodyHeight = TOP_ROW_INNER_HEIGHT - panelHeaderHeight - panelMeterHeight;
-  const displayRowHeight = Math.max(24, panelBodyHeight - controlStripHeight - panelBodyGap);
 
   return {
     bridgeWidth: toPx(base.bridgeWidth * bridgeScale),
     bridgePadX: toPx(base.bridgePadX * bridgeScale),
-    panelHeaderHeight: toPx(panelHeaderHeight),
     headerBadgeHeight: toPx(headerBadgeHeight),
     badgeInsetY: toPx(badgeInsetY),
     headerGroupGap: toPx(base.headerGroupGap * badgeScale),
     headerBadgeGap: toPx(base.headerBadgeGap * badgeScale),
-    panelMeterHeight: toPx(panelMeterHeight),
-    panelBodyHeight: toPx(panelBodyHeight),
-    displayRowHeight: toPx(displayRowHeight),
-    controlStripHeight: toPx(controlStripHeight),
     controlStripGap: toPx(base.controlStripGap * badgeScale),
     panelPadX: toPx(base.panelPadX),
     panelMeterPadX: toPx(base.panelMeterPadX),
@@ -295,15 +272,10 @@ export function vfoLayoutStyleVars(
   const vars: Record<string, string> = {
     '--vfo-bridge-width': tokens.bridgeWidth,
     '--vfo-bridge-pad-x': tokens.bridgePadX,
-    '--vfo-panel-header-height': tokens.panelHeaderHeight,
     '--vfo-header-badge-height': tokens.headerBadgeHeight,
     '--vfo-badge-inset-y': tokens.badgeInsetY,
     '--vfo-header-group-gap': tokens.headerGroupGap,
     '--vfo-header-badge-gap': tokens.headerBadgeGap,
-    '--vfo-panel-meter-height': tokens.panelMeterHeight,
-    '--vfo-panel-body-height': tokens.panelBodyHeight,
-    '--vfo-display-row-height': tokens.displayRowHeight,
-    '--vfo-control-strip-height': tokens.controlStripHeight,
     '--vfo-control-strip-gap': tokens.controlStripGap,
     '--vfo-panel-pad-x': tokens.panelPadX,
     '--vfo-panel-meter-pad-x': tokens.panelMeterPadX,

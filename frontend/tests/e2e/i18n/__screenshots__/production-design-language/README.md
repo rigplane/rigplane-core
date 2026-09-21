@@ -452,7 +452,7 @@ This source capture is **compared-fail**, not a visual PASS. A subsequent
 exact-head CI run must compare successfully against the replacements.
 Physical radio/profile acceptance remains separate.
 
-## Linux re-pin provenance (current — 2026-09-14 MOR-2467 Standard panel cleanup)
+## Linux re-pin provenance (superseded — 2026-09-14 MOR-2467 Standard panel cleanup)
 
 | Field | Value |
 | --- | --- |
@@ -479,14 +479,34 @@ CI run must compare successfully against these replacements.
 | FieldLine dark | compared-fail (6,867 px); inspected and accepted | `960cb61d8b5e9b5a00a3f8611043603df7723aa70aa4e387ce52036d02b1a7c7` |
 | FieldLine light | compared-fail (13,366 px); inspected and accepted | `2d972c5647ea99eef22ac4bffa99f3e32683427af2ebbb98aab0111142b296d5` |
 
+## Linux re-pin provenance (current — 2026-09-21 MOR-2509 VFO panel skeleton)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `40a01126239559421ff80e9388152ba76e022faa` |
+| CI run / job | [Tests (quick) #35654800078](https://github.com/rigplane/rigplane-core/actions/runs/35654800078) / job `106516106686` |
+| Command | `npm run test:e2e:i18n` (`playwright test -c ./playwright.i18n.config.ts`) |
+| Source | `actual.png` attachments from that run's `mor-1400-production-visual-diagnostics` artifact, copied byte-for-byte. |
+| Reason | MOR-2509 rebuilds the Standard VFO panel as three rows — identity, frequency beside the meter, indicator chips — and sizes the bridge controls to 24 px. |
+
+The source run reported 91 passed and 4 failed; the four failures are the
+production-root comparisons below.
+
+| Scene | Disposition | SHA-256 |
+| --- | --- | --- |
+| StudioLine dark | compared-fail (2,439 px); inspected and accepted | `a600e3b6e1f38305994ca0bcac0db40ee782ad4b3a889291990869193d891d65` |
+| StudioLine light | compared-fail (35,111 px); inspected and accepted | `be19cd5f21ba974e4e742bb1d361960ce2faba17dde32fca1ec1019fe80fb30e` |
+| FieldLine dark | compared-fail (9,579 px); inspected and accepted | `392db9700990aa20985fc805ddd9bcd45ea98493fb471d439b6025b4c9d761d9` |
+| FieldLine light | compared-fail (39,220 px); inspected and accepted | `2eb89eb987e4b007185eeeab9dfee7e83d0538a4608a11c7cb20ee04e7b3d03f` |
+
 ## Named expectations
 
 | File | Workspace/theme case | SHA-256 |
 | --- | --- | --- |
-| `studioline--dark--production-root.png` | clean StudioLine × dark | `357a53837101374b37891edebe5e26da50e8036c01a92d185eaa1d033b008567` |
-| `studioline--light--production-root.png` | persisted StudioLine × light | `75cbe648157d04ffd49a2b2f93f41426fa9d0686c672fa67bb6dbf0c732e546c` |
-| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `960cb61d8b5e9b5a00a3f8611043603df7723aa70aa4e387ce52036d02b1a7c7` |
-| `fieldline--light--production-root.png` | persisted FieldLine × light | `2d972c5647ea99eef22ac4bffa99f3e32683427af2ebbb98aab0111142b296d5` |
+| `studioline--dark--production-root.png` | clean StudioLine × dark | `a600e3b6e1f38305994ca0bcac0db40ee782ad4b3a889291990869193d891d65` |
+| `studioline--light--production-root.png` | persisted StudioLine × light | `be19cd5f21ba974e4e742bb1d361960ce2faba17dde32fca1ec1019fe80fb30e` |
+| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `392db9700990aa20985fc805ddd9bcd45ea98493fb471d439b6025b4c9d761d9` |
+| `fieldline--light--production-root.png` | persisted FieldLine × light | `2eb89eb987e4b007185eeeab9dfee7e83d0538a4608a11c7cb20ee04e7b3d03f` |
 
 All images are RGB PNGs at 1280×800. Changes to any expected image require a
 new reviewed Linux re-pin with the same provenance record; macOS/local output

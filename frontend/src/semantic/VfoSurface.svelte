@@ -977,16 +977,30 @@
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
   /* Receiver/bridge composition ported from v2.11.1 SdrVfoScreen and VfoHeader. */
+  /* MOR-2509: one source for the block inset both sides of a row read — the
+     panel wrappers as padding, the bridge as margin-block — so the bridge's
+     visible box always lines up with the panels'. Pinned by
+     `VfoSurface.panel-rows.test.ts`. */
   .instrument-panel {
     display: flex; align-items: stretch; width: 100%; min-width: 0;
+    --vfo-instrument-inset-block: 6px;
     background: linear-gradient(180deg, var(--v2-bg-gradient-start, #0a0e14) 0%, var(--v2-bg-panel, #05080c) 100%);
     border: 1px solid var(--v2-border-panel, #18222d); border-radius: 4px;
   }
-  .receiver-instrument { flex: 1 1 490px; min-width: 0; padding: 6px 12px; }
+  /* MOR-2509: the row stretches every wrapper to the tallest item (bridge
+     included); the wrapper is a column so its tile grows to the same edge.
+     Pinned by `VfoSurface.panel-rows.test.ts`. */
+  .receiver-instrument {
+    flex: 1 1 490px; min-width: 0;
+    display: flex; flex-direction: column;
+    padding: var(--vfo-instrument-inset-block) 12px;
+  }
+  .receiver-instrument > :global(.indicator-row) { flex: 1 1 auto; min-height: 0; }
   .receiver-instrument + .receiver-instrument { border-left: 1px solid var(--v2-border-panel, #18222d); }
   .bridge {
     flex: 0 0 180px; min-width: 0; display: flex; flex-direction: column;
     justify-content: center; gap: 10px; padding: 10px;
+    margin-block: var(--vfo-instrument-inset-block);
     border-inline: 1px solid var(--v2-border-panel, #18222d);
   }
   .freq-stack { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -1018,28 +1032,23 @@
   .receiver-instrument .secondary-slot .vfo-freq { font-size: 18px; margin: 2px 0; }
   .receiver-instrument .vfo-select { justify-self: end; grid-column: 2; grid-row: 1 / 3; }
   .bridge .vfo-identity-selectors { flex-direction: column; }
-  [data-vfo-appearance='standard'] .receiver-instrument { padding: 8px; }
+  [data-vfo-appearance='standard'] .instrument-panel:not(:has(> .standard-pair-bridge)) {
+    --vfo-instrument-inset-block: 8px;
+  }
+  [data-vfo-appearance='standard'] .receiver-instrument { padding: var(--vfo-instrument-inset-block); }
   [data-vfo-appearance='standard'] .instrument-active {
     border: 1px solid var(--v2-accent-cyan, #00d4ff); border-radius: 4px;
     box-shadow: 0 0 6px rgba(0,212,255,.3), inset 0 0 16px rgba(0,212,255,.06);
   }
   [data-vfo-appearance='standard'] .bridge { flex-basis: 136px; }
+  [data-vfo-appearance='standard'] .bridge .vfo-select { min-height: 24px; }
   [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
     flex: 1 1 0;
-    padding: 6px;
     --btn-compact-min-height: 18px;
     --btn-compact-padding-block: 1px;
     --btn-compact-padding-inline: 4px;
     --btn-compact-font-size: 9px;
     --vfo-control-strip-gap: 2px;
-    --vfo-panel-body-height: 100px;
-    --vfo-control-strip-height: 54px;
-  }
-  [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] :global(.control-strip) {
-    align-content: center;
-    flex-wrap: wrap;
-    overflow: visible;
-    white-space: normal;
   }
   @media (min-width: 951px) and (max-width: 1280px) {
     [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
@@ -1071,9 +1080,6 @@
   [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .rf-lamp:empty) {
     display: none;
   }
-  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.vfo-ops) {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
   [data-vfo-appearance='standard'] .standard-pair-bridge :global(.split-digest) {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1102,6 +1108,8 @@
   [data-vfo-appearance='standard'] .receiver-instrument > :where(.vfo-tile) {
     display: block;
     inline-size: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
   }
   [data-vfo-appearance='standard'] .vfo-role { grid-column: 1; grid-row: 1; }
   [data-vfo-appearance='standard'] .vfo-mode {
@@ -1142,8 +1150,7 @@
       gap: 1px;
     }
     [data-vfo-appearance='standard'] .standard-receiver {
-      --vfo-panel-body-height: 64px;
-      --vfo-control-strip-height: 22px;
+      --vfo-control-strip-gap: 2px;
     }
     [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
       flex-basis: calc(100% - 192px);

@@ -280,7 +280,7 @@ describe('VfoHeader visual regression', () => {
           "row": "RX 7.170 TX 14.214",
           "title": "SPLIT",
         },
-        "wrapperStyle": "--vfo-bridge-width: 132px; --vfo-bridge-pad-x: 4px; --vfo-panel-header-height: 18px; --vfo-header-badge-height: 12px; --vfo-badge-inset-y: 3px; --vfo-header-group-gap: 5px; --vfo-header-badge-gap: 3px; --vfo-panel-meter-height: 58px; --vfo-panel-body-height: 64px; --vfo-display-row-height: 38px; --vfo-control-strip-height: 22px; --vfo-control-strip-gap: 4px; --vfo-panel-pad-x: 10px; --vfo-panel-meter-pad-x: 6px; --vfo-panel-body-pad-x: 10px; --vfo-panel-body-pad-bottom: 0px; --vfo-panel-body-gap: 4px; --vfo-display-row-gap: 12px; --vfo-frequency-size: 22px; --vfo-frequency-letter-spacing: 0.025em; --vfo-ops-gap: 4px; --vfo-ops-padding-y: 4px; --vfo-ops-stack-gap: 4px; --vfo-ops-secondary-margin-top: 0px; --vfo-ops-secondary-padding-top: 4px; --vfo-ops-badge-width: 62px; --vfo-ops-badge-height: 21px; --vfo-ops-badge-padding-x: 8px; --vfo-ops-badge-radius: 4px; --vfo-ops-badge-font-size: 10px; --vfo-header-badge-padding-x: 5px; --vfo-control-badge-padding-x: 6px; --vfo-panel-badge-radius: 3px; --vfo-control-badge-height: 16px; --vfo-control-badge-min-height: 16px; --vfo-control-badge-font-size: 7px",
+        "wrapperStyle": "--vfo-bridge-width: 132px; --vfo-bridge-pad-x: 4px; --vfo-header-badge-height: 12px; --vfo-badge-inset-y: 3px; --vfo-header-group-gap: 5px; --vfo-header-badge-gap: 3px; --vfo-control-strip-gap: 4px; --vfo-panel-pad-x: 10px; --vfo-panel-meter-pad-x: 6px; --vfo-panel-body-pad-x: 10px; --vfo-panel-body-pad-bottom: 0px; --vfo-panel-body-gap: 4px; --vfo-display-row-gap: 12px; --vfo-frequency-size: 22px; --vfo-frequency-letter-spacing: 0.025em; --vfo-ops-gap: 4px; --vfo-ops-padding-y: 4px; --vfo-ops-stack-gap: 4px; --vfo-ops-secondary-margin-top: 0px; --vfo-ops-secondary-padding-top: 4px; --vfo-ops-badge-width: 62px; --vfo-ops-badge-height: 21px; --vfo-ops-badge-padding-x: 8px; --vfo-ops-badge-radius: 4px; --vfo-ops-badge-font-size: 10px; --vfo-header-badge-padding-x: 5px; --vfo-control-badge-padding-x: 6px; --vfo-panel-badge-radius: 3px; --vfo-control-badge-height: 16px; --vfo-control-badge-min-height: 16px; --vfo-control-badge-font-size: 7px",
       }
     `);
   });
@@ -342,7 +342,7 @@ describe('VfoHeader visual regression', () => {
           "row": "RX 7.170 TX 14.214",
           "title": "SPLIT",
         },
-        "wrapperStyle": "--vfo-bridge-width: 132px; --vfo-bridge-pad-x: 5px; --vfo-panel-header-height: 18px; --vfo-header-badge-height: 12px; --vfo-badge-inset-y: 3px; --vfo-header-group-gap: 5px; --vfo-header-badge-gap: 3px; --vfo-panel-meter-height: 60px; --vfo-panel-body-height: 62px; --vfo-display-row-height: 36px; --vfo-control-strip-height: 22px; --vfo-control-strip-gap: 4px; --vfo-panel-pad-x: 10px; --vfo-panel-meter-pad-x: 6px; --vfo-panel-body-pad-x: 10px; --vfo-panel-body-pad-bottom: 0px; --vfo-panel-body-gap: 4px; --vfo-display-row-gap: 12px; --vfo-frequency-size: 22px; --vfo-frequency-letter-spacing: 0.025em; --vfo-ops-gap: 4px; --vfo-ops-padding-y: 4px; --vfo-ops-stack-gap: 4px; --vfo-ops-secondary-margin-top: 0px; --vfo-ops-secondary-padding-top: 5px; --vfo-ops-badge-width: 64px; --vfo-ops-badge-height: 21px; --vfo-ops-badge-padding-x: 8px; --vfo-ops-badge-radius: 4px; --vfo-ops-badge-font-size: 10px; --vfo-header-badge-padding-x: 5px; --vfo-control-badge-padding-x: 6px; --vfo-panel-badge-radius: 3px; --vfo-control-badge-height: 16px; --vfo-control-badge-min-height: 16px; --vfo-control-badge-font-size: 7px",
+        "wrapperStyle": "--vfo-bridge-width: 132px; --vfo-bridge-pad-x: 5px; --vfo-header-badge-height: 12px; --vfo-badge-inset-y: 3px; --vfo-header-group-gap: 5px; --vfo-header-badge-gap: 3px; --vfo-control-strip-gap: 4px; --vfo-panel-pad-x: 10px; --vfo-panel-meter-pad-x: 6px; --vfo-panel-body-pad-x: 10px; --vfo-panel-body-pad-bottom: 0px; --vfo-panel-body-gap: 4px; --vfo-display-row-gap: 12px; --vfo-frequency-size: 22px; --vfo-frequency-letter-spacing: 0.025em; --vfo-ops-gap: 4px; --vfo-ops-padding-y: 4px; --vfo-ops-stack-gap: 4px; --vfo-ops-secondary-margin-top: 0px; --vfo-ops-secondary-padding-top: 5px; --vfo-ops-badge-width: 64px; --vfo-ops-badge-height: 21px; --vfo-ops-badge-padding-x: 8px; --vfo-ops-badge-radius: 4px; --vfo-ops-badge-font-size: 10px; --vfo-header-badge-padding-x: 5px; --vfo-control-badge-padding-x: 6px; --vfo-panel-badge-radius: 3px; --vfo-control-badge-height: 16px; --vfo-control-badge-min-height: 16px; --vfo-control-badge-font-size: 7px",
       }
     `);
   });
@@ -371,9 +371,7 @@ describe('RadioLayout top-row profile switching', () => {
     const mainPanel = target.querySelector('.vfo-main-panel .panel');
 
     expect(receiverDeck?.getAttribute('style')).toContain('--vfo-frequency-size: 22px');
-    expect(receiverDeck?.getAttribute('style')).toContain('--vfo-panel-meter-height: 60px');
     expect(receiverDeck?.getAttribute('style')).toContain('--vfo-badge-inset-y: 3px');
-    expect(receiverDeck?.getAttribute('style')).toContain('--vfo-control-strip-height: 22px');
     expect(receiverDeck?.getAttribute('style')).toContain('--vfo-control-strip-gap: 4px');
     expect(mainPanel?.getAttribute('data-layout-profile')).toBe('wide');
     expect(mainPanel?.querySelector('svg')?.getAttribute('data-variant')).toBe('vfo-wide');
@@ -383,14 +381,13 @@ describe('RadioLayout top-row profile switching', () => {
     vi.stubGlobal('ResizeObserver', ResizeObserverStub);
 
     const previousUrl = window.location.href;
-    window.history.replaceState({}, '', '/?vfoScale=1.05&vfoFreqScale=0.9&vfoMeterScale=1.1');
+    window.history.replaceState({}, '', '/?vfoScale=1.05&vfoFreqScale=0.9');
 
     const target = mountWithCleanup(RadioLayout, UNDECLARED);
     const receiverDeck = target.querySelector('.receiver-deck');
 
-    expect(receiverDeck?.getAttribute('style')).toContain('--vfo-panel-meter-height: 69px');
-    expect(receiverDeck?.getAttribute('style')).toContain('--vfo-panel-header-height: 19px');
-    expect(receiverDeck?.getAttribute('style')).toContain('--vfo-control-strip-height: 23px');
+    expect(receiverDeck?.getAttribute('style')).toContain('--vfo-ops-badge-height: 22.05px');
+    expect(receiverDeck?.getAttribute('style')).toContain('--vfo-control-badge-height: 17px');
     expect(receiverDeck?.getAttribute('style')).toContain('--vfo-header-badge-padding-x: 5.25px');
     expect(receiverDeck?.getAttribute('style')).toContain('--vfo-control-badge-padding-x: 6.3px');
     expect(receiverDeck?.getAttribute('style')).toContain('--vfo-frequency-size: 20.79px');

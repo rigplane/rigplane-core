@@ -228,7 +228,7 @@
   .vfo-ops[data-vfo-operation-appearance='sdr'] .vfo-op,
   .fact-toggles[data-vfo-operation-appearance='standard'] .fact-toggle,
   .vfo-ops[data-vfo-operation-appearance='standard'] .vfo-op {
-    width: 100%; min-width: 0; min-height: var(--vfo-ops-badge-height, 18px);
+    width: 100%; min-width: 0; min-height: max(24px, var(--vfo-ops-badge-height, 18px));
     padding: 4px var(--vfo-ops-badge-padding-x, 6px);
     border-radius: var(--vfo-ops-badge-radius, 4px);
     font-size: var(--vfo-ops-badge-font-size, 10px); box-sizing: border-box;

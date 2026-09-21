@@ -232,7 +232,9 @@
   }
 
   .segment.embedded {
-    min-height: var(--vfo-ops-badge-height, 18px);
+    /* MOR-2509: 24px WCAG 2.5.8 hit-target floor for bridge segments —
+       pinned by `semantic/__tests__/VfoSurface.panel-rows.test.ts`. */
+    min-height: max(24px, var(--vfo-ops-badge-height, 18px));
     border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12));
     border-radius: var(--vfo-ops-badge-radius, 4px);
   }
