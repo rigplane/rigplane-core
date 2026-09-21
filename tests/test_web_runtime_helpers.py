@@ -1374,12 +1374,12 @@ def test_observed_scope_settings_popover_leaves_survive_frontend_parent_veto() -
         assert _frontend_availability(field_status, path) == "available", suffix
 
 
-def _profile_field_status(
+def _profile_payload(
     model: str,
     snapshot: StateSnapshot,
     *,
     receiver_count: int = 1,
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, Any]:
     """Project ``snapshot`` the way ``WebServer`` projects it for ``model``.
 
     ``WebServer._build_public_state_from_snapshot`` derives the two
@@ -1393,14 +1393,25 @@ def _profile_field_status(
     declared = None
     if acquisition is not None:
         availability, declared = snapshot_field_status_inputs(acquisition, snapshot)
-    payload = build_public_state_payload_from_snapshot(
+    return build_public_state_payload_from_snapshot(
         snapshot,
         radio=None,
         receiver_count=receiver_count,
         availability=availability,
         declared=declared,
     )
-    return cast(dict[str, dict[str, Any]], payload["fieldStatus"])
+
+
+def _profile_field_status(
+    model: str,
+    snapshot: StateSnapshot,
+    *,
+    receiver_count: int = 1,
+) -> dict[str, dict[str, Any]]:
+    return cast(
+        dict[str, dict[str, Any]],
+        _profile_payload(model, snapshot, receiver_count=receiver_count)["fieldStatus"],
+    )
 
 
 def _ic7300_store(**observed: Any) -> tuple[StateStore, FreshnessClock]:
@@ -1585,3 +1596,191 @@ def test_field_status_reports_unavailable_after_the_freshness_tick_discards() ->
     status = after["main.manualNotchFreq"]
     assert status["observed"] is False
     assert status["availability"] == "unavailable"
+
+
+def test_unobserved_leaves_publish_null_with_keys_present() -> None:
+    """MOR-2513: a leaf the store never observed publishes ``null``.
+
+    Every absence reason maps to null — ``missing``, ``undeclared`` and
+    ``unavailable`` alike; the reason stays in ``fieldStatus``.
+    """
+
+    payload = _profile_payload("IC-7300", StateStore().snapshot())
+
+    assert payload["main"]["freqHz"] is None
+    assert payload["main"]["mode"] is None
+    assert payload["powerOn"] is None
+    assert payload["scopeControls"]["mode"] is None
+    assert payload["main"]["pbtInner"] is None
+    assert payload["fieldStatus"]["main.freqHz"]["observed"] is False
+    assert payload["fieldStatus"]["powerOn"]["observed"] is False
+    # ``txTarget`` encodes absence fail-closed in-band (an unknown-status
+    # object), not as a dataclass default; it is not nulled.
+    assert payload["txTarget"] == {"status": "unknown", "reason": "not-observed"}
+
+
+def test_ftx1_empty_store_nulls_every_unobserved_status_leaf() -> None:
+    """FTX-1 with nothing observed: each published leaf whose status says
+    unobserved is null, and the three absence reasons all occur.
+    """
+
+    payload = _profile_payload("FTX-1", StateStore().snapshot(), receiver_count=2)
+    field_status = payload["fieldStatus"]
+
+    absence_reasons = {entry["availability"] for entry in field_status.values()}
+    assert absence_reasons == {"missing", "undeclared", "unavailable"}
+
+    for public_path, status in field_status.items():
+        if status["observed"] is not False or public_path == "txTarget":
+            continue
+        parts = public_path.split(".")
+        holder: Any = payload
+        for part in parts[:-1]:
+            if not isinstance(holder, dict) or part not in holder:
+                holder = None
+                break
+            holder = holder[part]
+        if holder is None:
+            # An incomplete ``unselectedVfo`` group is popped wholesale and
+            # publishes no leaf at all.
+            continue
+        assert parts[-1] in holder, public_path
+        assert holder[parts[-1]] is None, public_path
+
+    # Leaves without a field-status entry are not radio observations and
+    # keep their delivered values.
+    assert payload["connection"] == {
+        "rigConnected": False,
+        "radioReady": False,
+        "controlConnected": False,
+    }
+    assert payload["radioDetail"] == {"status": "disconnected"}
+    assert payload["wsClients"] == {"scope": 0, "control": 0, "audio": 0}
+    assert isinstance(payload["revision"], int)
+
+
+def test_observed_value_stays_published_after_the_freshness_tick_marks_it_stale() -> (
+    None
+):
+    """Ruling 3: staleness after a first observation never re-nulls the leaf."""
+
+    clock = FreshnessClock()
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        _observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=clock.now(),
+            max_age=10.0,
+        )
+    )
+    clock.advance(60.0)
+    store.mark_stale_due()
+
+    payload = _profile_payload("IC-7610", store.snapshot(), receiver_count=2)
+
+    assert payload["main"]["freqHz"] == 14_074_000
+    assert payload["fieldStatus"]["main.freqHz"]["freshness"] == "stale"
+    assert payload["fieldStatus"]["main.freqHz"]["observed"] is True
+
+
+def test_observed_values_match_the_prewire_contract_byte_for_byte() -> None:
+    """Observed leaves and their fieldStatus entries equal the literals the
+    pre-MOR-2513 projection emitted for this exact store (pinned from the
+    base projection on the merge base of this branch); only unobserved
+    leaves change.
+    """
+
+    store = StateStore()
+    store.apply(
+        _observation(
+            FieldPath.active("0", "freq_mode", "freq_hz"),
+            14_074_000,
+            at=1.0,
+            max_age=10.0,
+            provider="parity",
+        )
+    )
+    store.apply(
+        _observation(
+            FieldPath.active("0", "freq_mode", "mode"),
+            "USB",
+            at=1.1,
+            max_age=10.0,
+            provider="parity",
+        )
+    )
+    store.apply(
+        _observation(
+            FieldPath.global_("tx_state", "power_on"),
+            True,
+            at=1.2,
+            max_age=10.0,
+            provider="parity",
+        )
+    )
+
+    payload = _profile_payload("IC-7610", store.snapshot(), receiver_count=2)
+
+    observed_source = {
+        "source": "poll_response",
+        "provider": "parity",
+        "transport": "fake",
+        "nativeId": "parity",
+        "capabilityId": None,
+        "commandSource": None,
+        "sessionId": None,
+    }
+    assert payload["main"]["freqHz"] == 14_074_000
+    assert payload["fieldStatus"]["main.freqHz"] == {
+        "storePath": "receiver.0.active.freq_mode.freq_hz",
+        "observed": True,
+        "freshness": "fresh",
+        "availability": "available",
+        "lastObservedMonotonic": 1.0,
+        "maxAge": 10.0,
+        "source": observed_source,
+        "quality": ["confirmed"],
+    }
+    assert payload["main"]["mode"] == "USB"
+    assert payload["fieldStatus"]["main.mode"] == {
+        "storePath": "receiver.0.active.freq_mode.mode",
+        "observed": True,
+        "freshness": "fresh",
+        "availability": "available",
+        "lastObservedMonotonic": 1.1,
+        "maxAge": 10.0,
+        "source": observed_source,
+        "quality": ["confirmed"],
+    }
+    assert payload["powerOn"] is True
+    assert payload["fieldStatus"]["powerOn"] == {
+        "storePath": "global.tx_state.power_on",
+        "observed": True,
+        "freshness": "fresh",
+        "availability": "available",
+        "lastObservedMonotonic": 1.2,
+        "maxAge": 10.0,
+        "source": observed_source,
+        "quality": ["confirmed"],
+    }
+    assert payload["stateRevision"] == 3
+    assert payload["observationSeq"] == 3
+    assert payload["txTarget"] == {"status": "unknown", "reason": "not-observed"}
+    assert payload["connection"] == {
+        "rigConnected": False,
+        "radioReady": False,
+        "controlConnected": False,
+    }
+    assert payload["radioDetail"] == {"status": "disconnected"}
+    assert payload["radioHealth"] == {
+        "serverReachable": True,
+        "radioLink": "unknown",
+        "readiness": "stalled",
+        "likelyCause": "unknown",
+        "sinceMs": 0,
+        "lastError": None,
+    }
+    # The same store's base projection showed the ``pbtInner`` dataclass
+    # default (128); the unobserved leaf now publishes null instead.
+    assert payload["main"]["pbtInner"] is None
