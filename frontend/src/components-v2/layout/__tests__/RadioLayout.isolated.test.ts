@@ -1072,7 +1072,10 @@ describe('MOR-2513 — the live FTX-1 payload mounts the default desktop composi
     vi.mocked(hasDualReceiver).mockReturnValue(true);
     rt.state = state;
     radio.current = state;
-    rt.caps = ftx1CapsJson;
+    // `validIdentity` requires the caps/state pair to name one provider
+    // generation; the capabilities capture (backend 60d05a42) predates the
+    // state capture (86187ed3), so it is aligned to the state's.
+    rt.caps = { ...ftx1CapsJson, providerGeneration: ftx1StateJson.providerGeneration };
     return mountLayout('desktop-v2');
   };
 

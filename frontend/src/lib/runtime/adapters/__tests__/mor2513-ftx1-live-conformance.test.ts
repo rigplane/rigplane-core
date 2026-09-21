@@ -22,16 +22,21 @@ import {
 
 const TX_OFF: MetersTxAuthority = { radioTx: 'off', txRisk: 'none' };
 
+// The two captures come from different bench sessions (capabilities at
+// backend 60d05a42, state at 86187ed3); `validIdentity` requires the pair
+// to name one provider generation, so the caps' is aligned to the state's.
+const CAPS = { ...FTX1_CAPABILITIES, providerGeneration: FTX1_STATE.providerGeneration };
+
 describe('FTX-1 live payload — view model (MOR-2513)', () => {
   it('builds a validator-clean model from the live capture', () => {
     expect(() =>
-      validateRadioViewModel(toRadioViewModel(FTX1_STATE, FTX1_CAPABILITIES, TX_OFF)),
+      validateRadioViewModel(toRadioViewModel(FTX1_STATE, CAPS, TX_OFF)),
     ).not.toThrow();
   });
 
   it('carries one unslotted VFO per structural receiver with live MAIN readings', () => {
     const view = validateRadioViewModel(
-      toRadioViewModel(FTX1_STATE, FTX1_CAPABILITIES, TX_OFF));
+      toRadioViewModel(FTX1_STATE, CAPS, TX_OFF));
     expect(view.vfos.map((vfo) => vfo.receiver)).toEqual(['MAIN', 'SUB']);
     expect(view.vfos.every((vfo) => vfo.slot.kind === 'unslotted')).toBe(true);
     const main = view.vfos[0]!;
@@ -42,9 +47,9 @@ describe('FTX-1 live payload — view model (MOR-2513)', () => {
 
   it('maps the unobserved main.filter onto an unknown reading while the mode-keyed config stays resolved', () => {
     const view = validateRadioViewModel(
-      toRadioViewModel(FTX1_STATE, FTX1_CAPABILITIES, TX_OFF));
+      toRadioViewModel(FTX1_STATE, CAPS, TX_OFF));
     expect(view.modeFilter).toBeDefined();
-    expect(view.modeFilter!.currentMode).toEqual({ status: 'known', value: 'USB' });
+    expect(view.modeFilter!.currentMode.reading).toEqual({ status: 'known', value: 'USB' });
     expect(view.modeFilter!.currentFilter.reading.status).toBe('unknown');
     expect(view.modeFilter!.filterWidth.reading).toEqual({ status: 'known', value: 3000 });
     expect(view.modeFilter!.activeFilterConfiguration).not.toBeNull();
@@ -52,7 +57,7 @@ describe('FTX-1 live payload — view model (MOR-2513)', () => {
 
   it('exposes meters with known Vd and unknown TX leaves over the null readings', () => {
     const view = validateRadioViewModel(
-      toRadioViewModel(FTX1_STATE, FTX1_CAPABILITIES, TX_OFF));
+      toRadioViewModel(FTX1_STATE, CAPS, TX_OFF));
     expect(FTX1_STATE.powerMeter).toBeNull();
     expect(view.meters).toBeDefined();
     expect(view.meters!.drainVoltage.reading).toEqual({ status: 'known', value: 13.8 });
@@ -61,7 +66,7 @@ describe('FTX-1 live payload — view model (MOR-2513)', () => {
 
   it('marks SUB att structurally absent — the live capture declares it undeclared', () => {
     const view = validateRadioViewModel(
-      toRadioViewModel(FTX1_STATE, FTX1_CAPABILITIES, TX_OFF));
+      toRadioViewModel(FTX1_STATE, CAPS, TX_OFF));
     const sub = view.receiverIndicators!.find((item) => item.receiver === 'SUB')!;
     expect(sub.attenuator.availability.structural).toBe(false);
   });
@@ -71,13 +76,13 @@ describe('FTX-1 fully-unobserved payload — view model (MOR-2513)', () => {
   it('still builds a validator-clean model with every nullable leaf null', () => {
     expect(() =>
       validateRadioViewModel(
-        toRadioViewModel(FTX1_STATE_FULLY_UNOBSERVED, FTX1_CAPABILITIES, TX_OFF)),
+        toRadioViewModel(FTX1_STATE_FULLY_UNOBSERVED, CAPS, TX_OFF)),
     ).not.toThrow();
   });
 
   it('degrades every VFO reading and the mode/filter facts to unknown', () => {
     const view = validateRadioViewModel(
-      toRadioViewModel(FTX1_STATE_FULLY_UNOBSERVED, FTX1_CAPABILITIES, TX_OFF));
+      toRadioViewModel(FTX1_STATE_FULLY_UNOBSERVED, CAPS, TX_OFF));
     for (const vfo of view.vfos) {
       expect(vfo.frequencyHz).toBeNull();
       expect(vfo.mode).toBeNull();
