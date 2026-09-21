@@ -453,7 +453,7 @@
   });
 </script>
 
-{#snippet rfSql()}
+{#snippet rfSql(hardware = false)}
   {@const view = pairView}
   <div
     class="rf-front-end-level" data-testid="rf-front-end-rf-sql"
@@ -472,6 +472,7 @@
     <div class="rf-front-end-slider">
       {#key rendererEpoch}
         <DualParamRenderer binding={pair} showValues={false}
+          variant={hardware ? 'hardware-illuminated' : 'modern'}
           issuedStatusPresentation={pairIssuedStatus} />
       {/key}
     </div>
@@ -484,7 +485,7 @@
   </div>
 {/snippet}
 
-{#snippet scalar(field: RfFrontEndLevelField)}
+{#snippet scalar(field: RfFrontEndLevelField, hardware: boolean)}
   {@const current = rf?.[field]}
   {#if current?.availability.structural}
     {@const binding = scalars[field]}
@@ -506,7 +507,8 @@
           <ValueControl
             {...feedbackIntegratedControl}
             binding={binding} {label} renderer="hbar" showLabel={false} showValue={false} compact={true}
-            variant="hardware-illuminated" accentColor="var(--v2-accent-cyan-alt)"
+            variant={hardware ? 'hardware-illuminated' : 'modern'}
+            accentColor={hardware ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
             displayFn={valueText} issuedStatusPresentation={scalarIssuedStatuses[field]}
           />
         {/key}
@@ -518,8 +520,8 @@
   {/if}
 {/snippet}
 
-{#snippet rfGain()}{@render scalar('rfGain')}{/snippet}
-{#snippet squelch()}{@render scalar('squelch')}{/snippet}
+{#snippet rfGain(hardware = false)}{@render scalar('rfGain', hardware)}{/snippet}
+{#snippet squelch(hardware = false)}{@render scalar('squelch', hardware)}{/snippet}
 
 {#snippet preamp()}
   {#if rf?.preamp.availability.structural}

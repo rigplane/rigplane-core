@@ -572,7 +572,7 @@
   .rx-audio-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .rx-audio-level :global(.vc-hbar) { flex: 1 1 auto; min-width: 0; }
   .rx-audio-gain > output {
-    min-width: 6ch;
+    min-width: 7ch;
     text-align: right;
     font-variant-numeric: tabular-nums;
   }

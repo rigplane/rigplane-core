@@ -495,11 +495,10 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
     }
   });
 
-  // jsdom computes no layout, so the no-shift guarantee is pinned where the
-  // rule is written: the dB readout reserves the width of its longest value
-  // ('-60 dB') and uses tabular digits.
-  it('reserves the dB readout width so a value change cannot shift the row', () => {
-    expect(RX_AUDIO_HOST_SOURCE).toMatch(/\.rx-audio-gain > output \{[^}]*min-width: 6ch/);
+  // jsdom computes no layout; this checks the two declarations are written,
+  // not that they guarantee no shift.
+  it('keeps the dB readout width floor and tabular-digit declarations in the host CSS', () => {
+    expect(RX_AUDIO_HOST_SOURCE).toMatch(/\.rx-audio-gain > output \{[^}]*min-width: 7ch/);
     expect(RX_AUDIO_HOST_SOURCE).toMatch(/\.rx-audio-gain > output \{[^}]*tabular-nums/);
   });
 

@@ -357,14 +357,22 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     r.dispose();
   });
 
-  // MOR-2524: the separate-form sliders carry the same hardware-illuminated
-  // fader frame AF LEVEL's row selects (`hw-illum` + its `hil-thumb` cap),
-  // not the modern thin-line look.
-  it.each(RF_FRONT_END_LEVELS)('renders the separate %s slider as the hardware-illuminated fader', (field) => {
-    const r = render(base());
+  // MOR-2524: the level variant follows the surface's `finiteLayout` signal —
+  // the Standard seat renders the fader AF LEVEL's row selects, the grouped
+  // (no-layout) face renders the modern thin line, same as `afLevel()`.
+  it.each(RF_FRONT_END_LEVELS)('renders the separate %s slider as the fader on the Standard seat layout', (field) => {
+    const r = render(base(), { surfaceFiniteLayout: true });
     const frame = r.el(field)!.querySelector<HTMLElement>('.vc-hbar');
     expect(frame?.classList.contains('hw-illum')).toBe(true);
     expect(frame?.querySelector('.hil-thumb')).not.toBeNull();
+    r.dispose();
+  });
+
+  it.each(RF_FRONT_END_LEVELS)('renders the separate %s slider modern on the grouped surface', (field) => {
+    const r = render(base());
+    const frame = r.el(field)!.querySelector<HTMLElement>('.vc-hbar');
+    expect(frame?.classList.contains('hw-illum')).toBe(false);
+    expect(frame?.querySelector('.vc-thumb')).not.toBeNull();
     r.dispose();
   });
 
@@ -573,6 +581,16 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
   it('renders the required host handle and stays free of runtime imports', () => {
     expect(CODE).toContain('{@render levelHandles.rfSql()}');
     expect(CODE).not.toMatch(/from ['"]\$lib\/runtime|from ['"][^'"]*runtime\/adapters/);
+  });
+
+  it('renders the combined control modern on the grouped surface and as the fader on the Standard seat layout', () => {
+    const grouped = render(base(), { controlModel: 'combined' });
+    expect(grouped.el('rf-sql')!.querySelector('.vc-dual')?.classList.contains('hw-illum')).toBe(false);
+    expect(grouped.el('rf-sql')!.querySelector('.vc-dual .vc-thumb')).not.toBeNull();
+    grouped.dispose();
+    const seated = render(base(), { controlModel: 'combined', surfaceFiniteLayout: true });
+    expect(seated.el('rf-sql')!.querySelector('.vc-dual')?.classList.contains('hw-illum')).toBe(true);
+    seated.dispose();
   });
 
   it('renders one rf-sql control instead of the two separate sliders', () => {

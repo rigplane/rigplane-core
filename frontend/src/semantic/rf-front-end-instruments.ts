@@ -68,9 +68,15 @@ export interface RfFrontEndFiniteHandles {
   readonly ipPlus: Snippet;
 }
 
+/** `hardware` drives the same variant ternary AF LEVEL's `afLevelControl`
+ *  uses; the surface passes it as `finiteLayout !== undefined`, so only the
+ *  finite-layout-bearing (Standard seat) face renders the fader. */
 export type RfFrontEndLevelHandles =
-  | Readonly<{ kind: 'combined'; rfSql: Snippet } & RfFrontEndFiniteHandles>
-  | Readonly<{ kind: 'separate'; rfGain: Snippet; squelch: Snippet } & RfFrontEndFiniteHandles>;
+  | Readonly<{ kind: 'combined'; rfSql: Snippet<[hardware?: boolean]> } & RfFrontEndFiniteHandles>
+  | Readonly<
+    { kind: 'separate'; rfGain: Snippet<[hardware?: boolean]>; squelch: Snippet<[hardware?: boolean]> }
+    & RfFrontEndFiniteHandles
+  >;
 
 /** DSP analogue (`dsp-instruments.ts`'s `DspFiniteLayout`): a layout snippet
  *  that places the four finite handles wherever the active face wants them,
