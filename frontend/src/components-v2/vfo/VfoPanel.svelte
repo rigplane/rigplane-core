@@ -640,7 +640,9 @@
   }
 
   .vfo-freq {
-    inline-size: 6.1em;
+    /* 8 tabular digits + 2 separators at weight 800; 6.5em keeps the Linux
+       fallback face (measured 212px at 34px on the CI runner) inside the slot. */
+    inline-size: 6.5em;
     max-inline-size: 100%;
     font-size: clamp(26px, 4.4cqw, 38px);
     line-height: 1.15;
