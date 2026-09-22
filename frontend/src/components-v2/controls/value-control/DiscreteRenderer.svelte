@@ -485,16 +485,31 @@
     touch-action: none;
     isolation: isolate;
     overflow: visible;
+    /* MOR-2522: the focus/arming ring is a box-shadow, which follows this
+     * radius — it lives on the unfocused rule so the control's shape never
+     * changes between states. */
+    border-radius: 2px;
   }
 
   .compact .vc-track-container {
     min-height: 14px;
   }
 
-  .vc-track-container:focus-visible {
-    outline: var(--vc-focus-ring-width, 2px) solid var(--vc-focus-ring);
-    outline-offset: 3px;
-    border-radius: 2px;
+  /* The class is doubled on purpose. Compiled, Svelte appends one scope
+   * class — whatever hash it is — making this rule (0,4,0) against
+   * studioline's `:focus-visible` rule (0,3,0), which loads dynamically
+   * AFTER the component styles (fixtures/main.ts): a single class would
+   * tie, the language stylesheet would win on source order, and the frame
+   * would return on the studioline page. The MOR-2522 cascade pin in
+   * focus-ring-token-wiring.test.ts re-derives this ranking and fails a
+   * selector that drops back to a tie.
+   */
+  .vc-track-container.vc-track-container:focus-visible {
+    /* MOR-2522: keyboard focus lights the control (owner ruling: no frame).
+     * This block declares no geometry — the size/position pin in
+     * focus-ring-token-wiring.test.ts fails any property beyond the ring. */
+    outline: none;
+    box-shadow: var(--vc-focus-ring-shadow);
   }
 
   .vc-track {
