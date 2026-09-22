@@ -86,7 +86,11 @@ function view(): RadioViewModel {
       drainCurrent: { ...known(0.7), relevant: true },
     },
     band: {
-      currentBand: known('20m'), bandChoices: [], currentBandTx: 'allowed',
+      currentBand: known('20m'),
+      // MOR-2526: main mirrors currentBand (MAIN is the active receiver);
+      // sub stays unknown — this fixture's empty bandChoices name no band.
+      receiverBands: { main: known('20m'), sub: unknown() },
+      bandChoices: [], currentBandTx: 'allowed',
       tuneMinHz: 30_000, tuneMaxHz: 74_800_000,
     },
     filterPassband: {

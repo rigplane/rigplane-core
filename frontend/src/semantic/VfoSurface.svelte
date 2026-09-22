@@ -552,14 +552,18 @@
       state: rfState ?? 'unknown',
     };
 
-    const bandField = viewModel.band?.currentBand;
+    // MOR-2526 (owner ruling 2026-09-22): the tray band is THIS panel's
+    // receiver's own reading — `receiverBands` derives each entry from its
+    // own receiver's frequency, so the inactive panel shows its band too.
+    // An unread frequency keeps the unlit BAND label in place; the inactive
+    // panel's dim treatment is the one `.panel:not(.active)` already applies.
+    const bandField = viewModel.band?.receiverBands[receiver === 'MAIN' ? 'main' : 'sub'];
     if (bandField?.availability.structural) {
       const reading = bandField.reading;
-      const known = vfo?.isActive === true && bandField.availability.operational
-        && reading.status === 'known';
+      const known = bandField.availability.operational && reading.status === 'known';
       sections.tray.band = {
         key: 'band',
-        text: known && reading.status === 'known' ? reading.value.toUpperCase() : 'BAND',
+        text: reading.status === 'known' ? reading.value.toUpperCase() : 'BAND',
         lit: known,
         state: reading.status,
       };

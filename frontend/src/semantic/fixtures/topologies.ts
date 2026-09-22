@@ -379,10 +379,20 @@ export function withBand(
 ): RadioViewModel {
   const avail: Availability = { structural: true, operational: true };
   const known = <T>(value: T): BandField<T> => ({ reading: { status: 'known', value }, availability: avail });
+  const currentBand: BandField<string> = currentBandTx === 'allowed'
+    ? known('20m')
+    : { reading: { status: 'unknown' }, availability: avail };
   const band: BandViewModel = {
-    currentBand: currentBandTx === 'allowed'
-      ? known('20m')
-      : { reading: { status: 'unknown' }, availability: avail },
+    currentBand,
+    // MOR-2526: `main` mirrors `currentBand` — every topology fixture's
+    // active receiver is MAIN, and the contract makes `currentBand` the
+    // active entry of this map, so the two must never disagree. `sub`
+    // stays honestly unknown: the dual fixtures park SUB at 21.295 MHz,
+    // outside the named bands listed below.
+    receiverBands: {
+      main: currentBand,
+      sub: { reading: { status: 'unknown' }, availability: avail },
+    },
     bandChoices: [
       {
         name: '40m', startHz: 7000000, endHz: 7300000, defaultHz: 7100000, bsrCode: 2,
