@@ -847,6 +847,8 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
       .toMatch(/flex:\s*0 0 var\(--vfo-bridge-width\)/);
     expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge").join('\n'))
       .toMatch(/--vfo-bridge-width:\s*168px/);
+    expect(rulesFor(surfaceCss, '.bridge').join('\n'))
+      .toMatch(/--vfo-bridge-width:\s*150px/);
   });
 });
 
@@ -956,7 +958,8 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
   it('distinguishes TUNER tuning from on by lamp treatment, not by blinking', () => {
     const root = mountSurface({ viewModel: functionsFixture({ atu: 'tuning' }), appearance: 'standard' });
     const tuner = root.querySelector<HTMLButtonElement>('[data-vfo-tuner]')!;
-    expect(tuner.getAttribute('aria-checked')).toBe('mixed');
+    expect(tuner.getAttribute('role')).toBe('switch');
+    expect(tuner.getAttribute('aria-checked')).toBe('true');
     expect(tuner.getAttribute('data-active')).toBe('true');
     expect(tuner.getAttribute('data-indicator-color')).toBe('orange');
     expect(tuner.getAttribute('aria-label')).toBe('Tuner: tuning');
@@ -974,6 +977,7 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     for (const [selector, name] of Object.entries(bareNames)) {
       const button = root.querySelector<HTMLButtonElement>(selector)!;
       expect(button.getAttribute('data-active')).toBe('false');
+      expect(button.getAttribute('role'), name).not.toBe('switch');
       expect(button.getAttribute('aria-checked')).toBeNull();
       expect(button.getAttribute('aria-label')).toBe(name);
       expect(button.disabled).toBe(true);
@@ -986,6 +990,24 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
       const name = button.getAttribute('aria-label') ?? button.textContent ?? '';
       expect(name, name).not.toContain('unknown');
     }
+  });
+
+  it('every bridge switch carries a valid aria-checked and no other key pretends to be one', () => {
+    const lit = mountSurface({ viewModel: functionsFixture({
+      atu: 'on', vox: true, dialLock: true,
+    }), appearance: 'standard' });
+    for (const button of Array.from(lit.querySelectorAll<HTMLButtonElement>('[data-instrument-bridge] button'))) {
+      if (button.getAttribute('role') === 'switch') {
+        expect(['true', 'false'], button.textContent ?? '').toContain(button.getAttribute('aria-checked'));
+      } else {
+        expect(button.getAttribute('aria-checked'), button.textContent ?? '').toBeNull();
+      }
+    }
+    const unknown = mountSurface({ viewModel: functionsFixture({
+      atu: 'unknown', vox: 'unknown', dialLock: 'unknown',
+    }), appearance: 'standard' });
+    expect(unknown.querySelectorAll('[data-instrument-bridge] button[role="switch"]').length)
+      .toBeLessThan(unknown.querySelectorAll('[data-instrument-bridge] button').length);
   });
 
   it('does not draw a function the profile lacks', () => {
@@ -1029,6 +1051,15 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     const root = mountSurface({ viewModel: functionsFixture(), appearance: 'standard', hasSplit: false });
     expect(root.querySelector('[data-vfo-split]')).toBeNull();
     expect(root.querySelector('[data-vfo-dual-watch]')).not.toBeNull();
+  });
+
+  it('renders no fact-toggles container when both latching capabilities are absent', () => {
+    const root = mountSurface({
+      viewModel: functionsFixture(), hasSplit: false, hasDualWatch: false,
+    });
+    expect(root.querySelector('[data-vfo-split]')).toBeNull();
+    expect(root.querySelector('[data-vfo-dual-watch]')).toBeNull();
+    expect(root.querySelector('.fact-toggles')).toBeNull();
   });
 
   it('renders no DW key when the dual_watch capability is absent', () => {

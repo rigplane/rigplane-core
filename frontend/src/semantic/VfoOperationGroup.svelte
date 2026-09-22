@@ -74,9 +74,15 @@
     return t(fact.value ? 'core.vfo.state.on' : 'core.vfo.state.off');
   }
 
-  /** A switch over an unread fact carries no state claim: aria-checked is
-   *  omitted (a bare role="switch" reads as false) — never the word
-   *  "unknown" in the accessible name. */
+  /** A key over an unread fact carries no state claim: it renders as a
+   *  plain button — `role="switch"` without `aria-checked` would read as an
+   *  invented "off" (aria-checked is REQUIRED on switch, WAI-ARIA 1.2).
+   *  "Tuning" is a KNOWN state: the key stays a checked switch and the
+   *  name says it ("Tuner: tuning") — "mixed" is not valid on switch. */
+  function switchRole(fact: BooleanFact): 'switch' | undefined {
+    return fact.status === 'known' ? 'switch' : undefined;
+  }
+
   function checkedState(fact: BooleanFact): 'true' | 'false' | undefined {
     return fact.status === 'known' ? String(fact.value) as 'true' | 'false' : undefined;
   }
@@ -105,10 +111,15 @@
     return value === 'tuning' ? value : t(value === 'on' ? 'core.vfo.state.on' : 'core.vfo.state.off');
   }
 
-  function tunerChecked(operation: VfoRadioFunctionOperation): 'true' | 'false' | 'mixed' | undefined {
+  function tunerRole(operation: VfoRadioFunctionOperation): 'switch' | undefined {
+    return atuValue(operation) === null ? undefined : 'switch';
+  }
+
+  /** Tuning is a lit state: checked, with the name carrying the word
+   *  "tuning" (see `tunerStateWord`). */
+  function tunerChecked(operation: VfoRadioFunctionOperation): 'true' | 'false' | undefined {
     const value = atuValue(operation);
-    if (value === null) return undefined;
-    return value === 'tuning' ? 'mixed' : value === 'on' ? 'true' : 'false';
+    return value === null ? undefined : value === 'off' ? 'false' : 'true';
   }
 
   /** Present but unoperational is unobserved — the same wording family the
@@ -247,7 +258,7 @@
                 surface="hardware"
                 indicatorStyle="dot"
                 indicatorColor="cyan"
-                role="switch"
+                role={switchRole(projection.split.reading)}
                 ariaChecked={checkedState(projection.split.reading)}
                 active={projection.split.reading.status === 'known' && projection.split.reading.value}
                 ariaLabel={switchLabel(t('core.vfo.split.label'), projection.split.reading)}
@@ -266,7 +277,7 @@
                 surface="hardware"
                 indicatorStyle="dot"
                 indicatorColor="green"
-                role="switch"
+                role={switchRole(projection.dualWatch.reading)}
                 ariaChecked={checkedState(projection.dualWatch.reading)}
                 active={projection.dualWatch.reading.status === 'known' && projection.dualWatch.reading.value}
                 ariaLabel={switchLabel(t('core.vfo.dualWatch.label'), projection.dualWatch.reading)}
@@ -290,7 +301,7 @@
                 surface="hardware"
                 indicatorStyle="dot"
                 indicatorColor={atuValue(functions.tuner) === 'tuning' ? 'orange' : 'red'}
-                role="switch"
+                role={tunerRole(functions.tuner)}
                 ariaChecked={tunerChecked(functions.tuner)}
                 active={atuValue(functions.tuner) === 'on' || atuValue(functions.tuner) === 'tuning'}
                 ariaLabel={atuValue(functions.tuner) === null
@@ -312,7 +323,7 @@
                 surface="hardware"
                 indicatorStyle="dot"
                 indicatorColor="amber"
-                role="switch"
+                role={switchRole(vox)}
                 ariaChecked={checkedState(vox)}
                 active={vox.status === 'known' && vox.value}
                 ariaLabel={switchLabel('VOX', vox)}
@@ -332,7 +343,7 @@
                 surface="hardware"
                 indicatorStyle="dot"
                 indicatorColor="cyan"
-                role="switch"
+                role={switchRole(lock)}
                 ariaChecked={checkedState(lock)}
                 active={lock.status === 'known' && lock.value}
                 ariaLabel={switchLabel('Lock', lock)}
@@ -349,6 +360,7 @@
       </div>
     {/if}
   {:else}
+  {#if hasLatching}
   <div class="fact-toggles" data-vfo-operation-appearance={appearance}>
     {#if projection.split.availability.structural}
       {@const splitReasonId = reasonId('split', projection.split.availability.reason)}
@@ -360,7 +372,7 @@
         data-op="split"
         data-active={triState(projection.split.reading)}
         data-color="cyan"
-        role="switch"
+        role={switchRole(projection.split.reading)}
         aria-checked={checkedState(projection.split.reading)}
         aria-label={switchLabel(t('core.vfo.split.label'), projection.split.reading)}
         aria-describedby={splitReasonId}
@@ -381,7 +393,7 @@
         data-op="dw"
         data-active={triState(projection.dualWatch.reading)}
         data-color="green"
-        role="switch"
+        role={switchRole(projection.dualWatch.reading)}
         aria-checked={checkedState(projection.dualWatch.reading)}
         aria-label={switchLabel(t('core.vfo.dualWatch.label'), projection.dualWatch.reading)}
         aria-describedby={dualWatchReasonId}
@@ -392,6 +404,7 @@
       {#if dualWatchReasonId}<span id={dualWatchReasonId} class="sr-only">{projection.dualWatch.availability.reason}</span>{/if}
     {/if}
   </div>
+  {/if}
 
   {#if hasActions}
     <div

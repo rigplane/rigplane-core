@@ -756,6 +756,7 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     // 1/ab fixture carries dualWatch: { status: 'unknown' } verbatim.
     const target = mountSurface({ viewModel: topologyFixtures['1/ab'] });
     const toggle = target.querySelector<HTMLButtonElement>('[data-vfo-dual-watch]')!;
+    expect(toggle.getAttribute('role')).not.toBe('switch');
     expect(toggle.getAttribute('aria-checked')).toBeNull();
     expect(toggle.getAttribute('aria-label')).toBe('Dual watch');
     expect(toggle.textContent).toBe('DW');
@@ -788,6 +789,7 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     const model: RadioViewModel = validateRadioViewModel({ ...base, split: { status: 'unknown' } });
     const target = mountSurface({ viewModel: model });
     const toggle = target.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
+    expect(toggle.getAttribute('role')).not.toBe('switch');
     expect(toggle.getAttribute('aria-checked')).toBeNull();
     expect(toggle.getAttribute('aria-label')).toBe('Split');
     expect(toggle.textContent).toBe('SPLIT');
