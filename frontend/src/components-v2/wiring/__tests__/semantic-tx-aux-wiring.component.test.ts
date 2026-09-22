@@ -44,6 +44,7 @@ const h = vi.hoisted(() => ({
   filterShapeChange: vi.fn(),
   dataModeChange: vi.fn(),
   split: vi.fn(),
+  dialLock: vi.fn(),
   dualWatch: vi.fn(),
   mainReceiver: vi.fn(),
   subReceiver: vi.fn(),
@@ -180,7 +181,7 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
       onQuickSplit: h.quickSplit,
       onQuickDw: h.quickDualWatch,
     }),
-    makeSystemHandlers: () => ({ onSpeak: h.speak }),
+    makeSystemHandlers: () => ({ onSpeak: h.speak, onDialLock: h.dialLock }),
     makeVoxHandlers: () => ({
       onVoxToggle: h.voxToggle, onVoxGainChange: h.voxGain,
       onAntiVoxGainChange: h.antiVoxGain, onVoxDelayChange: h.voxDelay,
@@ -1654,5 +1655,67 @@ describe('MOR-1341 — desktop-v2 mounts a real meters zone when the group is pr
     // R9 sanity: a readout-only zone adds no key/unkey affordance.
     expect(zone!.querySelector('[data-testid="rx-tx-key"]')).toBeNull();
     expect(zone!.querySelector('[data-testid="rx-tx-unkey"]')).toBeNull();
+  });
+});
+
+describe('MOR-2509 bridge radio-function keys share state with the TX panel', () => {
+  /** vfoCaps plus the dial-lock capability and state leaf the LOCK key reads. */
+  function bridgeFunctionState(tunerStatus: 0 | 1 | 2, voxOn: boolean, dialLock: boolean): ServerState {
+    const base = liveState(true);
+    return {
+      ...base,
+      ...(tunerStatus === 0 ? {} : { tunerStatus }),
+      ...(voxOn ? { voxOn } : {}),
+      ...(dialLock ? { dialLock } : {}),
+      fieldStatus: {
+        ...base.fieldStatus,
+        dialLock: fresh,
+      },
+    } as unknown as ServerState;
+  }
+
+  function bridgeFunctionCaps(): Capabilities {
+    return { ...vfoCaps(), capabilities: [...vfoCaps().capabilities, 'dial_lock'] } as Capabilities;
+  }
+
+  it('flipping the state once is read identically by both control points', () => {
+    h.caps = bridgeFunctionCaps();
+    renderHostedDesktop();
+    pushRadioState(bridgeFunctionState(0, false, false));
+    const bridgeTuner = q<HTMLButtonElement>('[data-vfo-tuner]')!;
+    const bridgeVox = q<HTMLButtonElement>('[data-vfo-vox]')!;
+    const bridgeLock = q<HTMLButtonElement>('[data-vfo-lock]')!;
+    const txTuner = q<HTMLButtonElement>('[data-testid="tx-aux-atu"]')!;
+    const txVox = q<HTMLButtonElement>('[data-testid="tx-aux-vox"]')!;
+    expect(bridgeTuner.getAttribute('aria-checked')).toBe('false');
+    expect(txTuner.getAttribute('aria-pressed')).toBe('false');
+    expect(bridgeVox.getAttribute('aria-checked')).toBe('false');
+    expect(txVox.getAttribute('aria-pressed')).toBe('false');
+    expect(bridgeLock.getAttribute('aria-checked')).toBe('false');
+
+    pushRadioState(bridgeFunctionState(1, true, true));
+    expect(bridgeTuner.getAttribute('aria-checked')).toBe('true');
+    expect(txTuner.getAttribute('aria-pressed')).toBe('true');
+    expect(bridgeVox.getAttribute('aria-checked')).toBe('true');
+    expect(txVox.getAttribute('aria-pressed')).toBe('true');
+    expect(bridgeLock.getAttribute('aria-checked')).toBe('true');
+
+    pushRadioState(bridgeFunctionState(2, false, false));
+    expect(bridgeTuner.getAttribute('aria-checked')).toBe('mixed');
+    expect(bridgeTuner.getAttribute('data-indicator-color')).toBe('orange');
+    expect(txTuner.getAttribute('aria-pressed')).toBe('true');
+    expect(txTuner.textContent).toContain('tuning');
+  });
+
+  it('clicking the bridge keys dispatches the TX panel handlers, not a fork', () => {
+    h.caps = bridgeFunctionCaps();
+    renderHostedDesktop();
+    pushRadioState(bridgeFunctionState(0, false, false));
+    q<HTMLButtonElement>('[data-vfo-tuner]')!.click();
+    q<HTMLButtonElement>('[data-vfo-vox]')!.click();
+    q<HTMLButtonElement>('[data-vfo-lock]')!.click();
+    expect(h.atuToggle).toHaveBeenCalledOnce();
+    expect(h.voxToggle).toHaveBeenCalledOnce();
+    expect(h.dialLock).toHaveBeenCalledOnce();
   });
 });
