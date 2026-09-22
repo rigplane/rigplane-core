@@ -1056,4 +1056,105 @@ describe('command lifecycle store', () => {
       expect(statusOf('af-cancel')).toBe('cancelled');
     });
   });
+
+  describe('MOR-2533 admitted width and readback-equality confirmation', () => {
+    const marker = (m: number) => ({
+      observed: true, freshness: 'fresh' as const, availability: 'available' as const,
+      lastObservedMonotonic: m,
+    });
+    const ifShiftSnapshot = (value: number, m: number): ServerState => ({
+      stateContractVersion: 1, providerGeneration: 3, active: 'MAIN',
+      main: { ifShift: value }, sub: {},
+      fieldStatus: { 'main.ifShift': marker(m) },
+    } as unknown as ServerState);
+    const widthSnapshot = (value: number, m: number): ServerState => ({
+      stateContractVersion: 1, providerGeneration: 3, active: 'MAIN',
+      main: { filterWidth: value }, sub: {},
+      fieldStatus: { 'main.filterWidth': marker(m) },
+    } as unknown as ServerState);
+    const statusOf = (id: string) => store.getCommandLifecycle(id, 7)?.status;
+    // The pre-fix acknowledgeCommand has no admitted-width parameter; the
+    // cast keeps this pin compiling against both shapes.
+    const acknowledgeWithWidth = (id: string, admittedWidth: number): void =>
+      (store.acknowledgeCommand as unknown as (
+        id: string, epoch: number, eventEpoch: number,
+        admittedLevel: undefined, admittedWidth: number,
+      ) => void)(id, 7, 7, undefined, admittedWidth);
+    const admittedWidthOf = (id: string): number | undefined =>
+      (store.getCommandLifecycle(id, 7) as { admittedWidth?: number } | undefined)?.admittedWidth;
+
+    it('keeps an acknowledged IF-shift command awaiting when the first post-ACK readback is the pre-command value', () => {
+      emitState(ifShiftSnapshot(200, 4));
+      store.beginCommand({
+        id: 'if-shift-120', name: 'set_if_shift', params: { offset: 120, receiver: 0 }, originalEpoch: 7,
+      });
+      store.acknowledgeCommand('if-shift-120', 7, 7);
+
+      // A scheduled poll still carrying the pre-command value 200 is not
+      // proof the write to 120 landed.
+      emitState(ifShiftSnapshot(200, 5));
+      expect(statusOf('if-shift-120')).toBe('acknowledged');
+
+      emitState(ifShiftSnapshot(120, 6));
+      expect(statusOf('if-shift-120')).toBe('confirmed');
+    });
+
+    it('replay of stand trace 1: a 180 readback confirms nothing newer than the fifth command, 200 confirms the sixth', () => {
+      emitState(ifShiftSnapshot(100, 4));
+      for (const value of [100, 120, 140, 160, 180, 200]) {
+        store.beginCommand({
+          id: `if-shift-${value}`, name: 'set_if_shift',
+          params: { offset: value, receiver: 0 }, originalEpoch: 7,
+        });
+        store.acknowledgeCommand(`if-shift-${value}`, 7, 7);
+      }
+
+      // 180 is the fifth command's target; the sixth (200) stays awaiting,
+      // and the superseded fifth never confirms.
+      emitState(ifShiftSnapshot(180, 5));
+      expect(statusOf('if-shift-200')).toBe('acknowledged');
+      expect(statusOf('if-shift-180')).toBe('acknowledged');
+      expect(store.getCommandLifecycles().some((command) => command.status === 'confirmed')).toBe(false);
+
+      emitState(ifShiftSnapshot(200, 6));
+      expect(statusOf('if-shift-200')).toBe('confirmed');
+    });
+
+    it('confirms an admitted width on the admitted value only — the requested 2350 never matters', () => {
+      emitState(widthSnapshot(2400, 4));
+      store.beginCommand({
+        id: 'width-2350', name: 'set_filter_width', params: { width: 2350, receiver: 0 }, originalEpoch: 7,
+      });
+      acknowledgeWithWidth('width-2350', 2400);
+      expect(admittedWidthOf('width-2350')).toBe(2400);
+
+      emitState(widthSnapshot(2200, 5));
+      expect(statusOf('width-2350')).toBe('acknowledged');
+      emitState(widthSnapshot(2350, 6));
+      expect(statusOf('width-2350')).toBe('acknowledged');
+      emitState(widthSnapshot(2400, 7));
+      expect(statusOf('width-2350')).toBe('confirmed');
+    });
+
+    it('targets the admitted width when present and the requested width otherwise', () => {
+      const view = (admitted: object): CommandDescriptorView => ({ params: { width: 2350 }, ...admitted });
+      expect(store.FILTER_WIDTH_COMMAND_DESCRIPTOR.target(view({ admittedWidth: 2400 }))).toBe(2400);
+      expect(store.FILTER_WIDTH_COMMAND_DESCRIPTOR.target(view({}))).toBe(2350);
+      expect(store.FILTER_WIDTH_COMMAND_DESCRIPTOR.target(view({ admittedWidth: -1 }))).toBe(2350);
+      expect(store.FILTER_WIDTH_COMMAND_DESCRIPTOR.target(view({ admittedWidth: 2400.5 }))).toBe(2350);
+    });
+
+    it('confirms an un-admitted width on equality with the requested width only', () => {
+      emitState(widthSnapshot(3000, 4));
+      store.beginCommand({
+        id: 'width-plain', name: 'set_filter_width', params: { width: 2400, receiver: 0 }, originalEpoch: 7,
+      });
+      store.acknowledgeCommand('width-plain', 7, 7);
+
+      emitState(widthSnapshot(2200, 5));
+      expect(statusOf('width-plain')).toBe('acknowledged');
+      emitState(widthSnapshot(2400, 6));
+      expect(statusOf('width-plain')).toBe('confirmed');
+    });
+  });
 });
