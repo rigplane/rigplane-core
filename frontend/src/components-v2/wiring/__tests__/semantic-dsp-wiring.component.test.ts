@@ -595,28 +595,25 @@ describe('AGC choice group', () => {
    * column wrapper — the button lays bare children out as a flex row, which
    * clipped the two side by side. jsdom has no layout, so this asserts the
    * structure only; the stand probe owns the geometry. */
-  it('stacks the AUTO label and reserved speed line inside one wrapper in the key', () => {
-    h.caps = ftxAgcCaps();
-    h.state = stateWithAgc(2);
-    render();
+  it.each([[2, ''], [6, 'SLOW']] as const)(
+    'stacks the AUTO label and reserved speed line inside one wrapper in the key (read-back %i)',
+    (readback, speed) => {
+      h.caps = ftxAgcCaps();
+      h.state = stateWithAgc(readback);
+      render();
 
-    const key = q<HTMLButtonElement>('[data-testid="dsp-agcMode-4"]')!;
-    const stack = key.querySelector<HTMLElement>('.agc-key-stack')!;
-    expect(stack.parentElement).toBe(key);
-    /* classList, not className: Svelte appends its own scope class to every
-     * element this component styles. */
-    expect([...stack.children].map(child => [
-      child.classList.contains('agc-key-label'),
-      child.classList.contains('agc-auto-speed'),
-    ])).toEqual([[true, false], [false, true]]);
-    expect(stack.querySelector('.agc-key-label')!.textContent).toBe('AUTO');
-    expect(stack.querySelector('.agc-auto-speed')!.textContent).toBe('');
-
-    publishAuthority(stateWithAgc(6));
-    flushSync();
-    expect(q<HTMLElement>('[data-testid="dsp-agcMode-4"] .agc-key-stack .agc-auto-speed')!
-      .textContent).toBe('SLOW');
-  });
+      const key = q<HTMLButtonElement>('[data-testid="dsp-agcMode-4"]')!;
+      const stack = key.querySelector<HTMLElement>('.agc-key-stack')!;
+      expect(stack.parentElement).toBe(key);
+      /* classList, not className: Svelte appends its own scope class to every
+       * element this component styles. */
+      expect([...stack.children].map(child => [
+        child.classList.contains('agc-key-label'),
+        child.classList.contains('agc-auto-speed'),
+      ])).toEqual([[true, false], [false, true]]);
+      expect(stack.querySelector('.agc-key-label')!.textContent).toBe('AUTO');
+      expect(stack.querySelector('.agc-auto-speed')!.textContent).toBe(speed);
+    });
 
   it('keeps declared labels unlit and disabled when AGC is present but unread', () => {
     h.caps = ftxAgcCaps();
