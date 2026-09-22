@@ -262,27 +262,24 @@ describe('segment rendering logic', () => {
   });
 });
 
-// ── Smoother release τ (MOR-481) ───────────────────────────────────────────
-// The bar fill must track the fast numeric readout within ~150 ms. The
-// falling-edge time constant is the second arg to createSmoother(); a slow
-// release (e.g. 0.25 ≈ 250 ms) makes the bar visibly lag the number on
-// downward steps. Pin the snappier release here so a regression is caught.
+// ── Smoother attack/release constants (MOR-2509 v7) ────────────────────────
+// The owner-approved v7 meter ballistics: the displayed level rises fast
+// (attack ≤ 50 ms) and falls slowly (decay τ ≈ 300 ms), with the peak-hold
+// marker and the ~250 ms afterglow carrying the recent high reading. This
+// replaces the MOR-481 fast-release pin (~150 ms tracking) — the visible
+// lag of the falling bar is now the design, not a regression.
 
-describe('LinearSMeter smoother release τ', () => {
+describe('LinearSMeter attack and decay constants', () => {
   const source = readFileSync(
     resolve(process.cwd(), 'src/components-v2/meters/signal-meter-motion.svelte.ts'),
     'utf8',
   );
 
-  it('moves the snappy attack/release policy unchanged into the motion binding', () => {
+  it('pins the v7 attack and decay constants in the motion binding', () => {
     const attack = Number(source.match(/ATTACK_SECONDS\s*=\s*([0-9.]+)/)?.[1]);
     const release = Number(source.match(/RELEASE_SECONDS\s*=\s*([0-9.]+)/)?.[1]);
-    // Attack unchanged (fast punch-in).
-    expect(attack).toBeCloseTo(0.06, 5);
-    // Release reduced from 0.25 → 0.10 so the bar reaches the target within
-    // ~150 ms. Anything ≥ 0.25 reintroduces the visible lag (MOR-481).
-    expect(release).toBeCloseTo(0.1, 5);
-    expect(release).toBeLessThan(0.25);
+    expect(attack).toBeCloseTo(0.05, 5);
+    expect(release).toBeCloseTo(0.3, 5);
     expect(source).toMatch(/createSmoother\(ATTACK_SECONDS, RELEASE_SECONDS\)/);
   });
 });
