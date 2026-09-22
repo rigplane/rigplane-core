@@ -31,7 +31,7 @@ import type {
   MeterValueDomain, MetersViewModel,
   AudioFocus, MonitorMode, RxAudioViewModel, ModeFilterViewModel,
   ActiveFilterConfiguration, FilterPassbandViewModel, DspViewModel, RfFrontEndViewModel,
-  BandChoice, BandViewModel, RitXitViewModel, AntennaViewModel, ScanViewModel,
+  BandChoice, BandField, BandViewModel, RitXitViewModel, AntennaViewModel, ScanViewModel,
   BreakInMode, CwKeyerViewModel, ScopeControlsViewModel,
   ScopeDisplayViewModel, ScopeSourceKind, ScopeHealthState,
   ReceiverIndicatorViewModel, TxTargetViewModel,
@@ -1249,7 +1249,22 @@ function deriveBand(
     }));
 
   const onSub = state?.active === 'SUB';
-  const rx = onSub ? state?.sub : state?.main;
+  // MOR-2526 (owner ruling 2026-09-22): the band READING is per receiver —
+  // each entry derives from ITS OWN receiver's observed frequency leaf with
+  // the one `findActiveBand` mechanism, so a dual-receiver radio whose SUB
+  // sits on VHF while MAIN is on HF carries two different honest readings.
+  // One derivation function for both receivers; `currentBand` below is the
+  // active receiver's entry of this map, never a second computation.
+  const receiverBand = (key: 'main' | 'sub'): BandField<string> => {
+    const observed = topFieldAvailable(state, `${key}.freqHz`);
+    const hz = numOrUndef(state?.[key]?.freqHz);
+    const name = observed && hz !== undefined
+      ? findActiveBand(hz, freqRanges) ?? undefined
+      : undefined;
+    return txAuxField(bandChoices.length > 0, observed, name);
+  };
+  const receiverBands = { main: receiverBand('main'), sub: receiverBand('sub') };
+  const currentBand = onSub ? receiverBands.sub : receiverBands.main;
   // MOR-1356: which receiver the raw `state.active` names is an ORDINARY fact
   // — every reading below keeps reading it ungated, per this file's own
   // convention. The PERMIT is the exception: `activeReceiver` (passed in by
@@ -1258,13 +1273,7 @@ function deriveBand(
   // cannot carry TX permission (see `currentBandTx`).
   const activeConfirmed = activeReceiver !== null;
   const freqObserved = topFieldAvailable(state, onSub ? 'sub.freqHz' : 'main.freqHz');
-  const freqHz = numOrUndef(rx?.freqHz);
-  // Never over a `?? 14074000` stand-in, where the shipped `toBandSelectorProps`
-  // fabricates exactly that; an unobserved or plan-less frequency stays unknown.
-  const currentName = freqObserved && freqHz !== undefined
-    ? findActiveBand(freqHz, freqRanges) ?? undefined
-    : undefined;
-  const currentBand = txAuxField(bandChoices.length > 0, freqObserved, currentName);
+  const freqHz = numOrUndef((onSub ? state?.sub : state?.main)?.freqHz);
   const reading = currentBand.reading;
   const currentChoice = reading.status === 'known'
     ? bandChoices.find((band) => band.name === reading.value)
@@ -1287,6 +1296,7 @@ function deriveBand(
   const ends = freqRanges.map((range) => range.end).filter((hz) => Number.isFinite(hz));
   return {
     currentBand,
+    receiverBands,
     bandChoices,
     currentBandTx,
     tuneMinHz: starts.length > 0 ? Math.min(...starts) : null,

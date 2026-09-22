@@ -210,6 +210,8 @@ describe('band (MOR-1262 slice 7A)', () => {
   it('every field of a fully-populated group round-trips its own value', () => {
     const validated = validateRadioViewModel(withBand(base)).band as BandViewModel;
     expect(validated.currentBand.reading).toEqual({ status: 'known', value: '20m' });
+    expect(validated.receiverBands.main.reading).toEqual({ status: 'known', value: '20m' });
+    expect(validated.receiverBands.sub.reading).toEqual({ status: 'unknown' });
     expect(validated.bandChoices.map((c) => c.name)).toEqual(['40m', '20m', 'MW']);
     expect(validated.bandChoices[1]).toEqual({
       name: '20m', startHz: 14000000, endHz: 14350000, defaultHz: 14195000, bsrCode: 5,
@@ -218,5 +220,46 @@ describe('band (MOR-1262 slice 7A)', () => {
     expect(validated.currentBandTx).toBe('allowed');
     expect(validated.tuneMinHz).toBe(30000);
     expect(validated.tuneMaxHz).toBe(60000000);
+  });
+
+  // ── MOR-2526: the per-receiver band map is part of the group shape ──────
+  it('rejects a band group missing receiverBands (no partial 7A shape survives)', () => {
+    const withB = withBand(base);
+    const { receiverBands: _receiverBands, ...withoutMap } = withB.band as BandViewModel;
+    expect(() => validateRadioViewModel({ ...withB, band: withoutMap })).toThrow(TypeError);
+  });
+
+  it('rejects receiverBands missing a receiver key with a precise error path', () => {
+    const withB = withBand(base);
+    const { sub: _sub, ...mainOnly } = (withB.band as BandViewModel).receiverBands;
+    expect(() => validateRadioViewModel({
+      ...withB, band: { ...withB.band, receiverBands: mainOnly },
+    })).toThrow(TypeError);
+  });
+
+  it('rejects an extra receiver key inside receiverBands', () => {
+    const withB = withBand(base);
+    expect(() => validateRadioViewModel({
+      ...withB,
+      band: {
+        ...withB.band,
+        receiverBands: { ...withB.band!.receiverBands, rx3: withB.band!.receiverBands.main },
+      },
+    })).toThrow(TypeError);
+  });
+
+  it('rejects a non-string receiverBands.sub reading value with a precise error path', () => {
+    const withB = withBand(base);
+    const malformed = {
+      ...withB,
+      band: {
+        ...withB.band,
+        receiverBands: {
+          ...withB.band!.receiverBands,
+          sub: { reading: { status: 'known', value: 2 }, availability: AVAIL },
+        },
+      },
+    };
+    expect(() => validateRadioViewModel(malformed)).toThrow(/\$\.band\.receiverBands\.sub\.reading\.value/);
   });
 });
