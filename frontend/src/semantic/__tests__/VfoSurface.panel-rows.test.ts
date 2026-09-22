@@ -578,7 +578,7 @@ describe('the live FTX-1 payload (many null leaves) prints no placeholder', () =
     expect(bwTabs[0].textContent?.trim()).toMatch(/^BW \d+$/);
   });
 
-  it('unknown leaves stay unlit in place and no chip prints a placeholder', () => {
+  it('unknown leaves stay unlit while the absent filter selector reserves slots without FIL chips', () => {
     const root = mountFtx1();
     for (const panel of panels(root)) {
       for (const chip of panel.querySelectorAll('[data-tray-tab], [data-chip]')) {
@@ -594,13 +594,15 @@ describe('the live FTX-1 payload (many null leaves) prints no placeholder', () =
       }
       expect(panel.textContent, 'the whole panel text carries no dash').not.toContain('—');
     }
-    // The filter leaf is unobserved in this capture: the FIL chip stays,
-    // unlit, carrying its label only.
+    // The captured radio has no filter selector, so each row reserves its
+    // fixed-width slot without drawing or naming a filter chip.
     const filChips = root.querySelectorAll('[data-chip="filter"]');
-    expect(filChips.length).toBe(2);
-    for (const chip of Array.from(filChips)) {
-      expect(chip.getAttribute('data-lit')).toBe('false');
-      expect(chip.textContent?.trim()).toBe('FIL');
+    expect(filChips).toHaveLength(0);
+    for (const panel of panels(root)) {
+      const slots = panel.querySelectorAll('.chip-slot');
+      expect(slots).toHaveLength(1);
+      expect(slots[0].getAttribute('aria-hidden')).toBe('true');
+      expect(slots[0].textContent).toBe('');
     }
     // Lit state is the model's own reading status, chip by chip.
     const caps = { ...FTX1_CAPABILITIES, providerGeneration: FTX1_STATE.providerGeneration };

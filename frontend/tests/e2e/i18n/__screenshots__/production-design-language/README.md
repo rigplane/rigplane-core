@@ -479,7 +479,26 @@ CI run must compare successfully against these replacements.
 | FieldLine dark | compared-fail (6,867 px); inspected and accepted | `960cb61d8b5e9b5a00a3f8611043603df7723aa70aa4e387ce52036d02b1a7c7` |
 | FieldLine light | compared-fail (13,366 px); inspected and accepted | `2d972c5647ea99eef22ac4bffa99f3e32683427af2ebbb98aab0111142b296d5` |
 
-## Linux re-pin provenance (current — 2026-09-22 MOR-2509 VFO deck batch)
+## Linux re-pin provenance (current — 2026-09-22 MOR-2530 no filter selector → width follows the `filter_width` tag)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `4dfcedbba7219a0fb89797b553932b442dc8379b` |
+| CI run / job | [Tests (quick) #35751501254](https://github.com/rigplane/rigplane-core/actions/runs/35751501254) / job `106826588818` |
+| Command | `npm run test:e2e:i18n` (`playwright test -c ./playwright.i18n.config.ts`) |
+| Source | the `actual` image attachments of the four MOR-1400 production-root cases in that run's `mor-1400-production-visual-diagnostics` artifact (`playwright-report/data/*.png`, 1280×800), classified against the previous baselines by content hash (expected), red-pixel share (diff) and nearest scene (actual) with `v7_classify.py` |
+| Reason | MOR-2530 splits "has a filter selector" (a non-empty `caps.filters`) from "has a width control" (`filter_width` in `caps.capabilities`). The i18n `mockCapabilities` (`fixtures.ts`, model IC-7610) declares `filters` but carries only `['scope','audio','tx']`, so in this synthetic scene the width facts read structurally absent: the tray `BW` tab and the filter panel's Width row are no longer drawn and the rows below move up. A real IC-7610 profile declares `filter_width` (all eight `rigs/*.toml` except x6100/x6200) and keeps both. Pixel deltas measured against the superseded baselines with `v6_pixdiff.py` (threshold 8/255 per channel). |
+
+| Scene | Disposition | Changed px (of 1,024,000) | SHA-256 |
+| --- | --- | --- | --- |
+| StudioLine dark | compared-fail; inspected (BW tab and Width row absent, rows below shifted) and accepted | 20,287 | `0f7fcda01a0fc0a7d4531202d6668660c7dc4041019eed6dae0cb0930b27638c` |
+| StudioLine light | compared-fail; inspected and accepted | 19,567 | `d27167565d017c06f05388625f3f592a2adc27c86082fe1b0b21b6984635ca66` |
+| FieldLine dark | compared-fail; inspected and accepted | 25,455 | `83c9f215aac3d70ac4e1315491e9d2e5fbfa55b9a0af3a0ff7357028d3311db9` |
+| FieldLine light | compared-fail; inspected and accepted | 18,914 | `f0bff7753086b32dad21adcd08c700036c890687838530676a3ee4948744828b` |
+
+A subsequent exact-head quick run must confirm these four comparisons pass.
+
+## Linux re-pin provenance (superseded — 2026-09-22 MOR-2509 VFO deck batch)
 
 | Field | Value |
 | --- | --- |

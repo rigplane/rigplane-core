@@ -435,6 +435,20 @@ class TestCapabilitiesEndpoint:
         assert audio_data["audio"] is True
 
     @pytest.mark.asyncio
+    async def test_ftx1_capabilities_omit_filter_selector_but_keep_width_tables(self):
+        radio = _make_radio("FTX-1")
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+
+        data = _parse_json_body(writer)
+        assert data["filters"] == []
+        assert "filter_width" in data["capabilities"]
+        assert data["filterConfig"]["SSB"]["table"][0] == 300
+        assert data["filterConfig"]["SSB"]["table"][-1] == 4000
+
+    @pytest.mark.asyncio
     async def test_capabilities_allows_nullable_tx_bands(self):
         """Profiles without configured bands serialize the established null value."""
         radio = _make_radio("IC-7610")

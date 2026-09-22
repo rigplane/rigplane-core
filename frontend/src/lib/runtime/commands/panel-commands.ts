@@ -872,22 +872,18 @@ export function makeFilterHandlers() {
     // never dispatches the alignment-error-triggering values the live
     // bench reported (1050/2150/3150 Hz).
     //
-    // MOR-1576: gates on `knownActiveReceiver('filter')`, matching
-    // `onFilterPresetChange` below — NOT `knownActiveReceiver('filterWidth')`
-    // as before. The write only needs receiver identity plus the mode/
-    // dataMode `activeFilterRule` resolves the quantization rule from; it
-    // never reads a confirmed prior `filterWidth` value, so requiring one
-    // as a receiver-identity proxy only produced false refusals on radios
-    // (e.g. the IC-7300 live bench) that never confirm `filterWidth`
-    // readback at all.
+    // MOR-2529: the direct width write needs receiver identity, not a
+    // selected-filter reading. The FTX-1 fixture keeps `main.filter`
+    // undeclared while width writes remain available; the component-path
+    // regression test exercises that exact state.
     onFilterWidthChange: (() => {
       let timer: ReturnType<typeof setTimeout> | null = null;
       return (width: number) => {
-        if (knownActiveReceiver('filter') === null) return;
+        if (knownActiveReceiver() === null) return;
         if (timer) clearTimeout(timer);
         timer = setTimeout(() => {
           timer = null;
-          const receiver = knownActiveReceiver('filter');
+          const receiver = knownActiveReceiver();
           if (receiver === null) return;
           const quantized = quantizeFilterWidthToRule(width, activeFilterRule(receiver));
           dispatchRadioIntent({ name: 'set_filter_width', params: { width: quantized, receiver } });
@@ -972,10 +968,8 @@ export function makeFilterHandlers() {
         }, 200);
       };
     })(),
-    // MOR-1576: gates on `knownActiveReceiver('filter')` — same relaxation
-    // as `onFilterWidthChange` above, for the same reason (receiver identity
-    // + mode/dataMode resolve the quantization rule; no confirmed prior
-    // `filterWidth` reading is needed).
+    // MOR-1576: defaults require the observed active filter slot but not a
+    // confirmed prior `filterWidth` reading.
     //
     // MOR-1576 review (B1): `quantizeFilterWidthToRule` passes non-finite
     // input straight through when no usable rule/segment covers it

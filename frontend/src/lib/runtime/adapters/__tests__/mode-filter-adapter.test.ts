@@ -9,9 +9,9 @@
  * whenever a receiver exists" gate (mode/filter are REQUIRED fields on
  * `ReceiverStatePublic`, so they are never actually absent), `modeFilter`
  * would appear on every model that file builds. `deriveModeFilter`'s
- * evidence gate requires a non-empty capability-declared choice set instead
- * — this file separately pins that a radio with real modes/filters DOES get
- * the group, and that the empty-choice-set baseline still gets none.
+ * evidence gate requires a capability-declared mode/filter choice set or the
+ * `filter_width` tag instead — this file pins the mode and filter choice-set
+ * signals and that the empty-choice-set, width-absent baseline gets no group.
  */
 import { describe, expect, it } from 'vitest';
 import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
@@ -90,7 +90,10 @@ describe('modeFilter evidence gate (MOR-1280, N3)', () => {
 });
 
 describe('modeFilter per-field derivation (MOR-1280)', () => {
-  const fullCaps = caps({ modes: ['USB', 'LSB', 'CW'], filters: ['FIL1', 'FIL2', 'FIL3'] });
+  const fullCaps = caps({
+    capabilities: ['scope', 'audio', 'tx', 'filter_width'],
+    modes: ['USB', 'LSB', 'CW'], filters: ['FIL1', 'FIL2', 'FIL3'],
+  });
 
   it('reports the capability-declared choice sets verbatim', () => {
     const view = model(bareState(), fullCaps);
@@ -124,7 +127,7 @@ describe('modeFilter per-field derivation (MOR-1280)', () => {
     expect(view.modeFilter!.currentFilter.availability.structural).toBe(true);
   });
 
-  it('marks currentFilter/filterWidth structurally absent when no filters are declared, even with modes present', () => {
+  it('marks currentFilter and filterWidth absent without filter choices or filter_width, even with modes present', () => {
     const view = model(bareState(), caps({ modes: ['USB'] }));
     expect(view.modeFilter!.currentFilter.availability.structural).toBe(false);
     expect(view.modeFilter!.filterWidth.availability.structural).toBe(false);
@@ -200,6 +203,7 @@ describe('filterWidthMin/Max parity with the real resolveFilterModeConfig (MOR-1
     RTTY: { defaults: [300], fixed: false, minHz: 50, maxHz: 900 },
   };
   const parityCaps = caps({
+    capabilities: ['scope', 'audio', 'tx', 'filter_width'],
     modes: ['USB', 'LSB', 'CW', 'CW-R', 'RTTY', 'RTTY-R', 'FM'],
     filters: ['FIL1'],
     filterConfig,
@@ -261,6 +265,7 @@ describe('filterWidthMin/Max observation gate (MOR-1280, F2)', () => {
   // probe below — the whole point is that a mode-independent fallback is
   // still knowable the instant the mode is observed, with no filterConfig at all.
   const fullCaps = caps({
+    capabilities: ['scope', 'audio', 'tx', 'filter_width'],
     modes: ['USB', 'LSB', 'CW'], filters: ['FIL1', 'FIL2', 'FIL3'],
     filterWidthMin: 50, filterWidthMax: 9999,
   });

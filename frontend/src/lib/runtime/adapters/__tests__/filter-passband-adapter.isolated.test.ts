@@ -119,9 +119,10 @@ describe('filterPassband evidence gate (MOR-1284, N3)', () => {
     expect(Object.keys(view)).not.toContain('filterPassband');
   });
 
-  it('emits filterPassband once filters alone are declared (filterShape structural signal)', () => {
+  it('does not emit filterPassband from filter choices without the filter_width capability', () => {
     const view = model(bareState(), caps({ filters: ['FIL1'] }));
-    expect(view.filterPassband).toBeDefined();
+    expect(view.filterPassband).toBeUndefined();
+    expect(Object.keys(view)).not.toContain('filterPassband');
   });
 
   it('emits filterPassband once the pbt capability alone is declared', () => {
@@ -153,8 +154,10 @@ describe('filterPassband per-field structural gates (MOR-1284)', () => {
     expect(view.filterPassband!.pbtInner.availability.structural).toBe(true);
   });
 
-  it('pbtInner/pbtOuter are structurally absent without the pbt capability, even with filters present', () => {
-    const view = model(bareState(), caps({ filters: ['FIL1'] }));
+  it('pbtInner/pbtOuter are structurally absent without pbt, even with filter_width present', () => {
+    const view = model(bareState(), caps({
+      filters: ['FIL1'], capabilities: ['filter_width'],
+    }));
     expect(view.filterPassband!.pbtInner.availability.structural).toBe(false);
     expect(view.filterPassband!.pbtOuter.availability.structural).toBe(false);
     expect(view.filterPassband!.filterShape.availability.structural).toBe(true);
@@ -202,7 +205,7 @@ describe('filterPassband per-field structural gates (MOR-1284)', () => {
       active: 'SUB',
       sub: { ...bareState().sub, filterShape: 3 },
       fieldStatus: { ...bareState().fieldStatus, 'sub.filterShape': fresh },
-    }), caps({ filters: ['FIL1'] }));
+    }), caps({ filters: ['FIL1'], capabilities: ['filter_width'] }));
     expect(view.filterPassband!.filterShape.reading).toEqual({ status: 'known', value: 3 });
   });
 });
@@ -517,7 +520,9 @@ describe('ifShift raw-field vs PBT-derived branch selection (MOR-1284)', () => {
   });
 
   it('with neither if_shift nor pbt, ifShift is structurally absent', () => {
-    const view = model(bareState(), caps({ filters: ['FIL1'] }));
+    const view = model(bareState(), caps({
+      filters: ['FIL1'], capabilities: ['filter_width'],
+    }));
     expect(view.filterPassband!.ifShift.availability.structural).toBe(false);
     expect(view.filterPassband!.ifShift.reading).toEqual({ status: 'unknown' });
   });
@@ -577,7 +582,9 @@ describe('ifShiftControlStructural — the presentation-only IF-shift control ga
   });
 
   it('neither if_shift nor pbt: false', () => {
-    const view = model(bareState(), caps({ filters: ['FIL1'] }));
+    const view = model(bareState(), caps({
+      filters: ['FIL1'], capabilities: ['filter_width'],
+    }));
     expect(view.filterPassband!.ifShiftControlStructural).toBe(false);
   });
 
@@ -591,30 +598,32 @@ describe('ifShiftControlStructural — the presentation-only IF-shift control ga
  * `filterShapeControlStructural` (MOR-1502) — a SEPARATE, presentation-only
  * flag `FilterInstrumentHost.svelte` uses to decide whether to show the SHARP/SOFT
  * shape ROW, deliberately independent of `filterShape.availability.
- * structural` above (which is `hasFilters` alone — see the "per-field
- * structural gates" block — because `scope-adapter.ts` still needs the
- * derived reading for ANY radio with a declared filter catalog, filter_shape-
- * capable or not). `filterShapeControlStructural` answers the narrower
+ * structural` above (which is `hasCap(caps, 'filter_width')` — see the
+ * "per-field structural gates" block — because `scope-adapter.ts` still needs
+ * the derived reading for a width-capable radio, filter_shape-capable or not).
+ * `filterShapeControlStructural` answers the narrower
  * question: does the radio have a REAL `filter_shape` command
  * (`hasCap(caps, 'filter_shape')`).
  */
 describe('filterShapeControlStructural — the presentation-only filter-shape control gate (MOR-1502)', () => {
-  it('FTX-1-shaped (filters, no filter_shape): false, even though the derived fact stays structural', () => {
+  it('FTX-1-shaped (filter_width, no filter_shape): false, even though the derived fact stays structural', () => {
     const view = model(bareState({
       main: { ...bareState().main, filterShape: 1 },
       fieldStatus: { ...bareState().fieldStatus, 'main.filterShape': fresh },
-    }), caps({ filters: ['FIL1', 'FIL2', 'FIL3'] }));
+    }), caps({
+      filters: ['FIL1', 'FIL2', 'FIL3'], capabilities: ['filter_width'],
+    }));
     expect(view.filterPassband!.filterShapeControlStructural).toBe(false);
-    // The trap: a naive fix that reused `hasFilters` for this flag too
+    // The trap: a naive fix that reused `hasWidth` for this flag too
     // would silently break `scope-adapter.ts`'s derived reading for exactly
     // this radio shape (the FTX-1). It must stay untouched.
     expect(view.filterPassband!.filterShape.availability.structural).toBe(true);
     expect(view.filterPassband!.filterShape.reading).toEqual({ status: 'known', value: 1 });
   });
 
-  it('IC-7300-shaped (filters + filter_shape): true', () => {
+  it('IC-7300-shaped (filter_width + filter_shape): true', () => {
     const view = model(bareState(), caps({
-      filters: ['FIL1', 'FIL2', 'FIL3'], capabilities: ['filter_shape'],
+      filters: ['FIL1', 'FIL2', 'FIL3'], capabilities: ['filter_width', 'filter_shape'],
     }));
     expect(view.filterPassband!.filterShapeControlStructural).toBe(true);
   });
@@ -686,7 +695,7 @@ describe('filterPassband validator round-trip (MOR-1284)', () => {
   it('degrades a malformed raw value (wrong JS type) to unknown rather than throwing or coercing', () => {
     const view = model(bareState({
       main: { ...bareState().main, filterShape: 'sharp' as unknown as number },
-    }), caps({ filters: ['FIL1'] }));
+    }), caps({ filters: ['FIL1'], capabilities: ['filter_width'] }));
     expect(view.filterPassband!.filterShape.reading).toEqual({ status: 'unknown' });
   });
 });

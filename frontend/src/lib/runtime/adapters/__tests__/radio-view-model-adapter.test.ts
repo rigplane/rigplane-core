@@ -274,7 +274,7 @@ const INDICATOR_CAPS = caps({
   filters: ['FIL1'],
   agcLabels: { '2': 'SLOW' },
   capabilities: [
-    ...DUAL, 'agc', 'nb', 'nr', 'notch', 'attenuator', 'preamp',
+    ...DUAL, 'filter_width', 'agc', 'nb', 'nr', 'notch', 'attenuator', 'preamp',
     'rf_gain', 'digisel', 'ip_plus',
   ],
 });
@@ -711,6 +711,35 @@ describe('dialLock over the live-captured profiles (MOR-2509)', () => {
       reading: { status: 'unknown' },
       availability: { structural: true, operational: false },
     });
+  });
+});
+
+describe('filter selector and width capability split (MOR-2530)', () => {
+  it('FTX-1 omits the selector while retaining width facts and bounds', () => {
+    const { state, caps } = PROFILES.ftx1;
+    const view = validateRadioViewModel(toRadioViewModel(state, caps)!);
+
+    expect(caps.filters).toEqual([]);
+    expect(caps.capabilities).toContain('filter_width');
+    expect(view.modeFilter!.filterChoices).toEqual([]);
+    expect(view.modeFilter!.currentFilter.availability.structural).toBe(false);
+    expect(view.modeFilter!.filterWidth.availability.structural).toBe(true);
+    expect(view.modeFilter!.filterWidthMin.reading).toEqual({ status: 'known', value: 300 });
+    expect(view.modeFilter!.filterWidthMax.reading).toEqual({ status: 'known', value: 4000 });
+    expect(view.filterPassband!.filterShape.availability.structural).toBe(true);
+    expect(view.receiverIndicators!.every((item) => item.bandwidthHz.availability.structural)).toBe(true);
+  });
+
+  it('IC-7300 retains both selector and width facts', () => {
+    const { state, caps } = PROFILES.ic7300;
+    const view = validateRadioViewModel(toRadioViewModel(state, caps)!);
+
+    expect(caps.filters).toEqual(['FIL1', 'FIL2', 'FIL3']);
+    expect(caps.capabilities).toContain('filter_width');
+    expect(view.modeFilter!.filterChoices).toEqual(['FIL1', 'FIL2', 'FIL3']);
+    expect(view.modeFilter!.currentFilter.availability.structural).toBe(true);
+    expect(view.modeFilter!.filterWidth.availability.structural).toBe(true);
+    expect(view.filterPassband!.filterShape.availability.structural).toBe(true);
   });
 });
 
@@ -1398,7 +1427,8 @@ describe('MOR-2374 shared DATA and filter configuration', () => {
     segments: [{ hzMin: 50, hzMax: 500, stepHz: 50, indexMin: 0 }], table: [50, 100, 500],
   };
   const dataCaps = (extra: Partial<Capabilities> = {}) => caps({
-    capabilities: [...DUAL, 'data_mode'], modes: ['USB'], filters: ['FIL1', 'FIL2'],
+    capabilities: [...DUAL, 'data_mode', 'filter_width'],
+    modes: ['USB'], filters: ['FIL1', 'FIL2'],
     dataModeCount: 3, filterConfig: { USB: config }, ...extra,
   });
   function state() {
@@ -1457,7 +1487,9 @@ describe('MOR-2374 shared DATA and filter configuration', () => {
   it('leaves fallback presentation to the component and does not infer DATA support', () => {
     expect(toRadioViewModel(state(), dataCaps({ dataModeLabels: undefined }))!.filterPassband!.dataModeChoices)
       .toEqual([0, 1, 2, 3].map(value => ({ value, label: null })));
-    const fp = toRadioViewModel(state(), dataCaps({ capabilities: DUAL }))!.filterPassband!;
+    const fp = toRadioViewModel(state(), dataCaps({
+      capabilities: [...DUAL, 'filter_width'],
+    }))!.filterPassband!;
     expect(fp.dataModeChoices).toEqual([]);
     expect(fp.dataMode.availability.structural).toBe(false);
   });

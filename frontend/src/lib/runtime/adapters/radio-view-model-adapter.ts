@@ -484,8 +484,9 @@ function copyFilterConfiguration(
  * `ReceiverStatePublic.mode`/`.filter` are REQUIRED fields — always present
  * once any receiver exists — so "a raw field was observed" carries no
  * evidence here (it would fire for every radio ever built). The only honest
- * signal is the capability-declared choice set: no declared modes AND no
- * declared filters is NO group, never an all-unknowns placeholder (pinned
+ * signals are the capability-declared mode/filter choice sets and the
+ * `filter_width` capability: when none is present there is NO group, never
+ * an all-unknowns placeholder (pinned
  * against `radio-view-model-adapter.test.ts`'s own `modes: [], filters: []`
  * baseline fixtures, which must keep emitting no `modeFilter`).
  *
@@ -502,12 +503,13 @@ function deriveModeFilter(
   if (!caps) return undefined;
   const modeChoices = caps.modes ?? [];
   const filterChoices = caps.filters ?? [];
-  if (modeChoices.length === 0 && filterChoices.length === 0) return undefined;
+  const hasFilterSelect = filterChoices.length > 0;
+  const hasWidth = hasCap(caps, 'filter_width');
+  if (modeChoices.length === 0 && !hasFilterSelect && !hasWidth) return undefined;
   const onSub = state?.active === 'SUB';
   const rx = onSub ? state?.sub : state?.main;
   const base = onSub ? 'sub.' : 'main.';
   const hasModes = modeChoices.length > 0;
-  const hasFilters = filterChoices.length > 0;
   const modeObserved = topFieldAvailable(state, `${base}mode`);
   const filterObserved = topFieldAvailable(state, `${base}filter`);
   const widthObserved = topFieldAvailable(state, `${base}filterWidth`);
@@ -532,9 +534,9 @@ function deriveModeFilter(
     // the reading is `unknown` — never a fabricated mode.
     currentMode: txAuxField(hasModes, modeObserved, rx?.mode ?? undefined),
     modeChoices,
-    currentFilter: txAuxField(hasFilters, filterObserved, numOrUndef(rx?.filter ?? undefined)),
+    currentFilter: txAuxField(hasFilterSelect, filterObserved, numOrUndef(rx?.filter ?? undefined)),
     filterChoices,
-    filterWidth: txAuxField(hasFilters, widthObserved, numOrUndef(rx?.filterWidth ?? undefined)),
+    filterWidth: txAuxField(hasWidth, widthObserved, numOrUndef(rx?.filterWidth ?? undefined)),
     // F2 fix (verify round 1): the bounds' VALUE comes from
     // `resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode)` — caps + MODE,
     // never from `filterWidth` — so their operational gate must be
@@ -542,8 +544,8 @@ function deriveModeFilter(
     // published mode-derived bounds as confirmed while `currentMode` itself
     // read unknown (fabrication), and withheld derivable bounds whenever a
     // width readback simply hadn't arrived yet (false negative).
-    filterWidthMin: txAuxField(hasFilters, modeObserved, numOrUndef(widthMin)),
-    filterWidthMax: txAuxField(hasFilters, modeObserved, numOrUndef(widthMax)),
+    filterWidthMin: txAuxField(hasWidth, modeObserved, numOrUndef(widthMin)),
+    filterWidthMax: txAuxField(hasWidth, modeObserved, numOrUndef(widthMax)),
   };
 }
 
@@ -560,8 +562,8 @@ function deriveModeFilter(
  *    `hasCap(caps, 'data_mode')` (`toModeProps`'s own `hasDataMode` gate),
  *    never "was it observed".
  *  - `filterShape` the FACT is part of the same filter subsystem 4A's
- *    `filterWidth` is, so its structural gate is the SAME `hasFilters`
- *    signal that field uses — it is NOT re-gated on the `filter_shape`
+ *    `filterWidth` is, so its structural gate is the SAME `filter_width`
+ *    capability that field uses — it is NOT re-gated on the `filter_shape`
  *    capability tag. `filterShapeControlStructural` (MOR-1502) is the
  *    separate, presentation-only flag that IS gated on `hasCap(caps,
  *    'filter_shape')` — see its doc comment on `FilterPassbandViewModel`
@@ -597,12 +599,12 @@ function deriveFilterPassband(
   state: ServerState | null, caps: Capabilities | null, activeId: ReceiverId | null,
 ): FilterPassbandViewModel | undefined {
   if (!caps) return undefined;
-  const hasFilters = (caps.filters ?? []).length > 0;
+  const hasWidth = hasCap(caps, 'filter_width');
   const hasPbtCap = hasCap(caps, 'pbt');
   const hasIfShiftCap = hasCap(caps, 'if_shift');
   const hasDataModeCap = hasCap(caps, 'data_mode');
   const hasFilterShapeCap = hasCap(caps, 'filter_shape');
-  if (!hasFilters && !hasPbtCap && !hasIfShiftCap && !hasDataModeCap) return undefined;
+  if (!hasWidth && !hasPbtCap && !hasIfShiftCap && !hasDataModeCap) return undefined;
 
   const onSub = state?.active === 'SUB';
   const rx = onSub ? state?.sub : state?.main;
@@ -722,16 +724,16 @@ function deriveFilterPassband(
     : null;
 
   return {
-    filterShape: txAuxField(hasFilters, filterShapeObserved, numOrUndef(rx?.filterShape)),
-    // MOR-1502 review round. Deliberately NOT `hasFilters` above.
+    filterShape: txAuxField(hasWidth, filterShapeObserved, numOrUndef(rx?.filterShape)),
+    // MOR-1502 review round. Deliberately NOT `hasWidth` above.
     // `filterShape`'s own structural/operational/value stay exactly as they
-    // were — a radio with filters but no `filter_shape` command still gets
+    // were — a radio with filter width but no `filter_shape` command still gets
     // an honest derived `filterShape` READING for any consumer of the raw
     // fact (`scope-adapter.ts` reads `filterPassband.filterShape` directly).
     // This flag answers a DIFFERENT question — does the radio have a REAL
     // `filter_shape` COMMAND of its own — for `FilterInstrumentHost.svelte` to
     // decide whether to show the SHARP/SOFT shape CONTROL at all. The FTX-1
-    // (filters, no filter_shape) has no such command; showing the control
+    // (`filter_width`, no `filter_shape`) has no such command; showing the control
     // permanently disabled is a dead control, not a usable one (the owner's
     // MOR-1494 ruling, applied here per MOR-1502: hide capability-absent
     // controls, don't show them dead). See
@@ -973,7 +975,7 @@ function deriveReceiverIndicators(
   structuralReceivers: readonly ReceiverId[],
   operationalReceivers: readonly ReceiverId[],
 ): readonly ReceiverIndicatorViewModel[] {
-  const hasFilters = (caps.filters?.length ?? 0) > 0;
+  const hasWidth = hasCap(caps, 'filter_width');
   const hasAgc = hasCap(caps, 'agc');
   const hasNb = hasCap(caps, 'nb');
   const hasNr = hasCap(caps, 'nr');
@@ -1047,7 +1049,7 @@ function deriveReceiverIndicators(
             }
           : null,
       },
-      bandwidthHz: strictField(hasFilters, 'filterWidth', numOrUndef(rx?.filterWidth)),
+      bandwidthHz: strictField(hasWidth, 'filterWidth', numOrUndef(rx?.filterWidth)),
       agcMode: strictField(hasAgc, 'agc', agcMode),
       nbActive: strictField(hasNb, 'nb', boolOrUndef(rx?.nb)),
       nrActive: strictField(hasNr, 'nr', boolOrUndef(rx?.nr)),
