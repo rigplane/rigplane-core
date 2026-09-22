@@ -303,7 +303,7 @@
         </div>
       </div>
     {:else}
-      <div class="dsp-agc-grid" data-testid="dsp-agcMode"
+      <div class="dsp-agc-grid" role="radiogroup" aria-label="AGC" data-testid="dsp-agcMode"
         style={`--agc-columns: ${Math.min(3, agcOptions.length)}`}
         data-disabled-reason={agcBehavior.available ? undefined : 'field-not-observed'}>
         {@render agcKeys()}

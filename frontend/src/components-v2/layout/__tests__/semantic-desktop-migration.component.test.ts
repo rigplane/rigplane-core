@@ -2707,8 +2707,9 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     const grid = fallback.querySelector('.agc-finite-grid')!;
     expect(grid).not.toBeNull();
     expect(grid.classList.contains('dsp-finite-grid')).toBe(false);
-    expect(grid.querySelector('[data-field="agcMode"] > [data-testid="dsp-agcMode"]'))
-      .not.toBeNull();
+    const agc = grid.querySelector('[data-field="agcMode"] > [data-testid="dsp-agcMode"]')!;
+    expect(agc.getAttribute('role')).toBe('radiogroup');
+    expect(agc.getAttribute('aria-label')).toBe('AGC');
   });
 
   it('migrates combined and legacy panel preferences without appending duplicates', () => {

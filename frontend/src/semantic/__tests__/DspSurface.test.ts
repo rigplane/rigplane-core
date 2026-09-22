@@ -589,6 +589,8 @@ describe('agcMode renders the capability-derived settable choice set', () => {
     // MOR-1522: withDsp()'s agcModes [1, 2, 3] is the IC-7300/IC-7610 domain
     // (FAST/MID/SLOW, no OFF at all) — the surface must not synthesize one.
     withSurface(base(), (s) => {
+      expect(s.control('agcMode')!.getAttribute('role')).toBe('radiogroup');
+      expect(s.control('agcMode')!.getAttribute('aria-label')).toBe('AGC');
       expect(s.agcButton(0)).toBeNull();
       expect(s.agcButton(1)!.textContent?.trim()).toBe('FAST');
       expect(s.agcButton(2)!.textContent?.trim()).toBe('MID');
