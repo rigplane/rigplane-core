@@ -548,3 +548,105 @@ describe('band round-trip (MOR-1294)', () => {
     expect(view.band).toBeDefined();
   });
 });
+
+/**
+ * MOR-2526 (owner ruling 2026-09-22) — the band READING is per receiver.
+ * `receiverBands` derives each entry from ITS OWN receiver's observed
+ * frequency with the one `findActiveBand` mechanism; `currentBand` is the
+ * active receiver's ENTRY of that map, pinned here by object identity so a
+ * second, drifting derivation cannot exist. Unknown frequency ⇒ unknown
+ * band ⇒ unlit tab; a frequency inside a range that names no band (the real
+ * FTX-1 2m `freqRange` carries no `bands`) stays unknown too — no invented
+ * band name.
+ */
+describe('per-receiver band readings (MOR-2526)', () => {
+  /** A plan with a NAMED 2m band, unlike the real FTX-1 2m range below. */
+  const vhfNamedCaps = caps({
+    freqRanges: [
+      ...HF_RANGES,
+      {
+        start: 144000000, end: 148000000, label: '2m',
+        bands: [{ name: '2m', start: 144000000, end: 148000000, default: 145500000 }],
+      },
+    ],
+    txBands: HAM_TX_BANDS,
+  });
+  /** The real FTX-1 shape: a 2m range with NO named bands inside it. */
+  const vhfUnnamedCaps = caps({ freqRanges: [...HF_RANGES, { start: 144000000, end: 148000000, label: '2m' }], txBands: HAM_TX_BANDS });
+  const subOnVhf = (): ServerState => bareState({
+    sub: { ...bareState().sub, freqHz: 145500000 },
+    fieldStatus: { ...bareState().fieldStatus, 'sub.freqHz': fresh },
+  });
+
+  it('derives each entry from its OWN receiver: SUB 40m while MAIN reads 20m', () => {
+    // bareState: MAIN 14.195 MHz (20m), SUB 7.100 MHz (40m), MAIN active.
+    const view = model(bareState(), hfCaps);
+    expect(view.band!.receiverBands.main.reading).toEqual({ status: 'known', value: '20m' });
+    expect(view.band!.receiverBands.sub.reading).toEqual({ status: 'known', value: '40m' });
+  });
+
+  it('currentBand IS the active receiver\'s entry — one source, not two (identity pin)', () => {
+    // Reference identity is assertable only on the RAW adapter output:
+    // `validateRadioViewModel` rebuilds every group from its validated
+    // fields (`validateBand` returns fresh `currentBand`/`receiverBands`
+    // objects), so identity cannot survive validation. One invocation per
+    // comparison — two `toRadioViewModel` calls build two models,
+    // value-equal but never reference-equal.
+    const raw = toRadioViewModel(bareState(), hfCaps);
+    expect(raw).not.toBeNull();
+    expect(raw!.band!.currentBand).toBe(raw!.band!.receiverBands.main);
+    const rawSub = toRadioViewModel(bareState({
+      active: 'SUB',
+      fieldStatus: { ...bareState().fieldStatus, 'sub.freqHz': fresh },
+    }), hfCaps);
+    expect(rawSub).not.toBeNull();
+    expect(rawSub!.band!.currentBand).toBe(rawSub!.band!.receiverBands.sub);
+    // The validated model still carries the same value shape end to end.
+    const view = model(bareState(), hfCaps);
+    expect(view.band!.currentBand).toEqual(view.band!.receiverBands.main);
+    expect(view.band!.currentBand.reading).toEqual({ status: 'known', value: '20m' });
+    const onSub = model(bareState({
+      active: 'SUB',
+      fieldStatus: { ...bareState().fieldStatus, 'sub.freqHz': fresh },
+    }), hfCaps);
+    expect(onSub.band!.currentBand).toEqual(onSub.band!.receiverBands.sub);
+    expect(onSub.band!.currentBand.reading).toEqual({ status: 'known', value: '40m' });
+    // MAIN keeps its own reading — the inactive entry is not overwritten.
+    expect(onSub.band!.receiverBands.main.reading).toEqual({ status: 'known', value: '20m' });
+  });
+
+  it('SUB on 2m with MAIN on 20m carries two different honest readings', () => {
+    const view = model(subOnVhf(), vhfNamedCaps);
+    expect(view.band!.receiverBands.main.reading).toEqual({ status: 'known', value: '20m' });
+    expect(view.band!.receiverBands.sub.reading).toEqual({ status: 'known', value: '2m' });
+    // MAIN is active: currentBand stays the MAIN entry, not SUB's.
+    expect(view.band!.currentBand.reading).toEqual({ status: 'known', value: '20m' });
+  });
+
+  it('a frequency inside a range that names no band reads unknown — no invented band (real FTX-1 2m shape)', () => {
+    const view = model(subOnVhf(), vhfUnnamedCaps);
+    expect(view.band!.receiverBands.sub).toEqual({
+      reading: { status: 'unknown' },
+      availability: { structural: true, operational: true },
+    });
+  });
+
+  it('an unobserved SUB frequency leaves the SUB entry unknown while MAIN stays known', () => {
+    const view = model(bareState({
+      fieldStatus: { ...bareState().fieldStatus, 'sub.freqHz': unobserved },
+    }), hfCaps);
+    expect(view.band!.receiverBands.sub).toEqual({
+      reading: { status: 'unknown' },
+      availability: { structural: true, operational: false },
+    });
+    expect(view.band!.receiverBands.main.reading).toEqual({ status: 'known', value: '20m' });
+  });
+
+  it('a plan with ranges but no named bands leaves every entry structurally absent', () => {
+    const view = model(bareState(), caps({ freqRanges: [{ start: 30000, end: 148000000, label: 'all' }] }));
+    expect(view.band!.receiverBands.main.availability.structural).toBe(false);
+    expect(view.band!.receiverBands.sub.availability.structural).toBe(false);
+    // Same gate `currentBand` has always had (see the evidence-gate pin above).
+    expect(view.band!.currentBand.availability.structural).toBe(false);
+  });
+});

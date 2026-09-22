@@ -650,7 +650,18 @@ export interface BandChoice {
  * argument, keyed on the ACTIVE receiver's observed frequency — `unknown`
  * when the frequency was never observed or when no band of the plan contains
  * it, where the shipped `toBandSelectorProps` substitutes a fabricated
- * 14.074 MHz.
+ * 14.074 MHz. It is the ACTIVE receiver's entry of `receiverBands` below —
+ * one derivation, not a second one (MOR-2526).
+ *
+ * `receiverBands` (MOR-2526, owner ruling 2026-09-22) is the SAME
+ * `findActiveBand` lookup keyed on EACH receiver's OWN observed frequency: a
+ * receiver whose frequency is known has a band, so the FTX-1 can hold MAIN
+ * on 40 m while SUB sits on 2 m and each panel's tray reads its own entry.
+ * An entry is `unknown` when that receiver's frequency is unobserved OR when
+ * no named band of the plan contains it (the real FTX-1 2 m `freqRange`
+ * carries no named bands, so a 145.5 MHz SUB reads `unknown`, never an
+ * invented band). Both map keys are always present; a radio without a SUB
+ * receiver simply never reads the `sub` entry.
  *
  * `currentBandTx` is the FAIL-CLOSED, LIVE-FREQUENCY answer to "may the
  * operator key right now" — see its own comment below. It is a different
@@ -666,6 +677,10 @@ export interface BandChoice {
  */
 export interface BandViewModel {
   currentBand: BandField<string>;
+  /** Per-receiver band readings (MOR-2526); `currentBand` is the active
+   * receiver's entry of this map — the adapter derives each entry once from
+   * its own receiver's frequency and never computes `currentBand` twice. */
+  receiverBands: Readonly<Record<'main' | 'sub', BandField<string>>>;
   bandChoices: readonly BandChoice[];
   /**
    * SAFETY (MOR-1294, corrected by the verify F1 ruling). "May the operator
@@ -2070,12 +2085,18 @@ function validateBandChoice(value: unknown, path: string): BandChoice {
   };
 }
 
-/** N4 again: exactly the five facts the adapter reads, no speculative keys.
+/** N4 again: exactly the six facts the adapter reads, no speculative keys.
  *  See `radio-view-model-adapter.ts::deriveBand`. */
 function validateBand(value: unknown, path: string): BandViewModel {
   const v = record(value, path);
-  exactKeys(v, ['currentBand', 'bandChoices', 'currentBandTx', 'tuneMinHz', 'tuneMaxHz'], path);
+  exactKeys(v, ['currentBand', 'receiverBands', 'bandChoices', 'currentBandTx', 'tuneMinHz', 'tuneMaxHz'], path);
   if (!Array.isArray(v.bandChoices)) invalid(`${path}.bandChoices`, 'an array');
+  const bandsRecord = record(v.receiverBands, `${path}.receiverBands`);
+  exactKeys(bandsRecord, ['main', 'sub'], `${path}.receiverBands`);
+  const receiverBands = {
+    main: validateTxAuxField(bandsRecord.main, `${path}.receiverBands.main`, str),
+    sub: validateTxAuxField(bandsRecord.sub, `${path}.receiverBands.sub`, str),
+  };
   const currentBand = validateTxAuxField(v.currentBand, `${path}.currentBand`, str);
   const currentBandTx = oneOf(v.currentBandTx, TX_PERMITS, `${path}.currentBandTx`);
   // The fail-closed cross-field invariant (MOR-1294), the same shape as the
@@ -2086,6 +2107,7 @@ function validateBand(value: unknown, path: string): BandViewModel {
   }
   return {
     currentBand,
+    receiverBands,
     bandChoices: v.bandChoices.map((b, i) => validateBandChoice(b, `${path}.bandChoices[${i}]`)),
     currentBandTx,
     tuneMinHz: nullableNumber(v.tuneMinHz, `${path}.tuneMinHz`),

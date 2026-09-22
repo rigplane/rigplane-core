@@ -479,7 +479,26 @@ CI run must compare successfully against these replacements.
 | FieldLine dark | compared-fail (6,867 px); inspected and accepted | `960cb61d8b5e9b5a00a3f8611043603df7723aa70aa4e387ce52036d02b1a7c7` |
 | FieldLine light | compared-fail (13,366 px); inspected and accepted | `2d972c5647ea99eef22ac4bffa99f3e32683427af2ebbb98aab0111142b296d5` |
 
-## Linux re-pin provenance (current — 2026-09-22 MOR-2530 no filter selector → width follows the `filter_width` tag)
+## Linux re-pin provenance (current — 2026-09-22 MOR-2526 per-receiver band)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `977ff1d2` (branch `codex/mor-2526-per-receiver-band` after merging `main` ac730b76) |
+| CI run / job | [Tests (quick) #35755221418](https://github.com/rigplane/rigplane-core/actions/runs/35755221418) / job `106839257328` |
+| Command | `npm run test:e2e:i18n` (`playwright test -c ./playwright.i18n.config.ts`) |
+| Source | the `actual` attachments of the four MOR-1400 production-root cases in that run's `mor-1400-production-visual-diagnostics` artifact (`playwright-report/data/*.png`, 1280×800), classified by content hash / red-pixel share / nearest scene with `v7_classify.py` |
+| Reason | MOR-2526: the tray band tab lights from each receiver's own frequency (`BandViewModel.receiverBands`) instead of from the radio-wide reading gated on the active receiver. The i18n mock state carries known MAIN (20 m) and SUB (40 m) frequencies but no observed active receiver, so both tabs read unlit `BAND` before and `20M` / `40M` lit now; the change is confined to the two tray rows (bbox x 253–1027, y 53–73 dark / 53–349 light incl. anti-aliasing). Deltas measured with `v6_pixdiff.py` (threshold 8/255). |
+
+| Scene | Disposition | Changed px (of 1,024,000) | SHA-256 |
+| --- | --- | --- | --- |
+| StudioLine dark | compared-fail; inspected (both tray band tabs lit) and accepted | 2,218 | `1a921f02992218117c736c1c25e445d6b9b6b7d6c2c40f997137f089df19d6ad` |
+| StudioLine light | compared-fail; inspected and accepted | 2,421 | `a7e1a4107a03c0bebcba9f4056e360b3254eb2f8dc07f8494246f61c1785fb9a` |
+| FieldLine dark | compared-fail; inspected and accepted | 2,415 | `46aa2dd27713d0d8ca717594a03562004d37e9a2ddce7dfdc38cd19e518d9b5c` |
+| FieldLine light | compared-fail; inspected and accepted | 2,433 | `5f130150b42bc86b07bce8c5678ced45b066a75c637937a641fd5d56644cbb4c` |
+
+A subsequent exact-head quick run must confirm these four comparisons pass.
+
+## Linux re-pin provenance (superseded — 2026-09-22 MOR-2530 no filter selector → width follows the `filter_width` tag)
 
 | Field | Value |
 | --- | --- |

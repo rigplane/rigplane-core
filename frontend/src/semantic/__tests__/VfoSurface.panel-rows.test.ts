@@ -88,6 +88,20 @@ function standardFixture(
             reading: { status: 'unknown' as const },
             availability: banded.band.currentBand.availability,
           },
+          // MOR-2526: the unknown axis flips EVERY band reading. In a real
+          // payload `currentBand` IS the active receiver's map entry (one
+          // object), so a variant flipping one and not the other models a
+          // shape the adapter cannot emit.
+          receiverBands: {
+            main: {
+              reading: { status: 'unknown' as const },
+              availability: banded.band.receiverBands.main.availability,
+            },
+            sub: {
+              reading: { status: 'unknown' as const },
+              availability: banded.band.receiverBands.sub.availability,
+            },
+          },
           currentBandTx: 'denied' as const,
         },
     }
@@ -223,6 +237,48 @@ describe('standard tray tabs (2/main_sub)', () => {
     expect(band.textContent?.trim()).toBe('20M');
     expect(band.getAttribute('data-lit')).toBe('true');
     expect(mainPanel.querySelector('[data-tray-tab="bw"]')?.textContent?.trim()).toBe('BW 2400');
+  });
+
+  // ── MOR-2526 (owner ruling 2026-09-22): the tray band is per receiver ───
+  it('the inactive panel\'s tray band shows its OWN receiver\'s band, lit', () => {
+    const baseFixture = standardFixture('2/main_sub');
+    // SUB parked on 7.100 MHz — inside this fixture's named 40m band — with
+    // its own reading known; MAIN stays the active receiver on 20m.
+    const viewModel = validateRadioViewModel({
+      ...baseFixture,
+      vfos: baseFixture.vfos.map(
+        (vfo) => vfo.receiver === 'SUB' ? { ...vfo, frequencyHz: 7100000 } : vfo,
+      ),
+      band: {
+        ...baseFixture.band!,
+        receiverBands: {
+          ...baseFixture.band!.receiverBands,
+          sub: {
+            reading: { status: 'known', value: '40m' },
+            availability: { structural: true, operational: true },
+          },
+        },
+      },
+    });
+    const root = mountSurface({ viewModel, appearance: 'standard' });
+    const subPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'SUB')!;
+    const subBand = subPanel.querySelector('[data-tray-tab="band"]')!;
+    expect(subBand.textContent?.trim()).toBe('40M');
+    expect(subBand.getAttribute('data-lit')).toBe('true');
+    // The active MAIN panel keeps its own 20m reading — two different bands
+    // on one radio, which is the whole point of the per-receiver map.
+    const mainPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
+    expect(mainPanel.querySelector('[data-tray-tab="band"]')?.textContent?.trim()).toBe('20M');
+  });
+
+  it('an unread SUB frequency keeps the inactive panel\'s BAND tab unlit in place', () => {
+    // withBand's SUB entry is unknown (its SUB sits outside the named bands):
+    // the tab keeps its own label, never a placeholder and never MAIN's band.
+    const root = mountSurface({ viewModel: standardFixture('2/main_sub'), appearance: 'standard' });
+    const subPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'SUB')!;
+    const subBand = subPanel.querySelector('[data-tray-tab="band"]')!;
+    expect(subBand.textContent?.trim()).toBe('BAND');
+    expect(subBand.getAttribute('data-lit')).toBe('false');
   });
 
   it('the radio-wide ANT tab is drawn once, on the active receiver\'s panel only', () => {
@@ -504,14 +560,16 @@ describe('the live FTX-1 payload (many null leaves) prints no placeholder', () =
     expect(root.querySelector('[data-tray-tab="ant"]')).toBeNull();
     expect(root.querySelector('[data-chip="ip-plus"]')).toBeNull();
     expect(root.querySelector('[data-chip="digi-sel"]')).toBeNull();
-    // The band group follows freqRanges and BW the filters group: both stay,
-    // band lit only on the active receiver's panel.
+    // The band group follows freqRanges and BW the filters group: both stay.
+    // MOR-2526: each panel reads its OWN receiver's band — in this capture
+    // MAIN (14.074 MHz) and SUB (14.073 MHz) are both observed inside the
+    // named 20m band, so both tabs are lit with their own reading.
     const bandTabs = root.querySelectorAll('[data-tray-tab="band"]');
     expect(bandTabs.length).toBe(2);
-    expect(bandTabs[0].textContent?.trim()).toMatch(/^\d+[A-Z]$/);
+    expect(bandTabs[0].textContent?.trim()).toBe('20M');
     expect(bandTabs[0].getAttribute('data-lit')).toBe('true');
-    expect(bandTabs[1].textContent?.trim()).toBe('BAND');
-    expect(bandTabs[1].getAttribute('data-lit')).toBe('false');
+    expect(bandTabs[1].textContent?.trim()).toBe('20M');
+    expect(bandTabs[1].getAttribute('data-lit')).toBe('true');
     const bwTabs = root.querySelectorAll('[data-tray-tab="bw"]');
     expect(bwTabs.length).toBe(2);
     for (const tab of Array.from(bwTabs)) {
