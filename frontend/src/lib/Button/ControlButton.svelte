@@ -30,6 +30,23 @@
     ariaLabel?: string;
     ariaExpanded?: boolean;
     ariaControls?: string;
+    /** Widget semantics the presets never needed (MOR-2509): a bridge key
+     *  renders as `role="switch"`/`role="radio"` with a tri-state
+     *  `aria-checked`, none of which the flat `aria-pressed`-style props
+     *  above can express. */
+    role?: string;
+    ariaChecked?: boolean | 'true' | 'false' | 'mixed';
+    tabindex?: number;
+    onkeydown?: (event: KeyboardEvent) => void;
+    /** Data attributes rendered on the `<button>` as `data-*`: an entry
+     *  `{ 'vfo-split': true }` renders `data-vfo-split="true"`, and a key
+     *  already carrying the `data-` prefix passes through verbatim;
+     *  undefined and null members are omitted. Pinned data hooks stay on
+     *  the interactive element itself. */
+    data?: Record<string, string | number | boolean | undefined | null>;
+    /** Reserves the dot indicator's padding slot without painting a dot,
+     *  so lamp and lampless keys in one row keep the same label axis. */
+    reserveIndicator?: boolean;
     onclick?: (event: MouseEvent) => void;
     onpointerdown?: (event: PointerEvent) => void;
     onpointerup?: (event: PointerEvent) => void;
@@ -53,6 +70,12 @@
     ariaLabel,
     ariaExpanded,
     ariaControls,
+    role,
+    ariaChecked,
+    tabindex,
+    onkeydown,
+    data,
+    reserveIndicator = false,
     onclick,
     onpointerdown,
     onpointerup,
@@ -107,6 +130,10 @@
   data-indicator-color={indicatorColor}
   data-glow={glowAttr}
   data-armed={armed || undefined}
+  data-reserve-indicator={reserveIndicator || undefined}
+  role={role}
+  aria-checked={ariaChecked}
+  tabindex={tabindex}
   aria-describedby={describedBy}
   aria-label={ariaLabel}
   aria-expanded={ariaExpanded}
@@ -115,10 +142,14 @@
   data-shortcut-hint={shortcutHint ?? undefined}
   {disabled}
   onclick={handleClick}
+  onkeydown={onkeydown}
   onpointerdown={handlePointerDown}
   onpointerup={handlePointerUp}
   onpointercancel={handlePointerCancel}
   onpointerleave={handlePointerLeave}
+  {...Object.fromEntries(Object.entries(data ?? {})
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([name, value]) => [name.startsWith('data-') ? name : `data-${name}`, value]))}
 >
   {@render children?.()}
 </button>

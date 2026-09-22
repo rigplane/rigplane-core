@@ -278,7 +278,7 @@ async function standardGeometry(page: Page) {
     const clippedOverflow = /(hidden|clip|auto|scroll)/;
     const descendants = [...receiver.querySelectorAll<HTMLElement>(
       '.receiver-instrument, [data-testid="receiver-s-meter"], [data-vfo-freq], '
-        + '[data-instrument-bridge], [data-instrument-bridge] .active-receiver, '
+        + '[data-instrument-bridge], '
         + '[data-instrument-bridge] [data-testid="vfo-shared-indicators"], '
         + '[data-instrument-bridge] [data-indicator-fact], [data-instrument-bridge] button, '
         + '[data-instrument-bridge] [data-testid="vfo-split-digest"], '
@@ -315,7 +315,7 @@ async function standardGeometry(page: Page) {
       return [];
     });
     const textTargets = descendants.filter(element => element.matches(
-      '[data-instrument-bridge] button, [data-instrument-bridge] .active-receiver, '
+      '[data-instrument-bridge] button, '
         + '[data-instrument-bridge] [data-indicator-fact], [data-instrument-bridge] [data-split-rx], '
         + '[data-instrument-bridge] [data-split-tx]',
     ));
@@ -390,7 +390,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       const stateScreenshot = info.outputPath(`mor2458-${stateName}.png`);
       await page.screenshot({ path: stateScreenshot, fullPage: true });
       await info.attach(`mor2458-${stateName}`, { path: stateScreenshot, contentType: 'image/png' });
-      const targetBadges = await page.locator('[data-standard-vfo-slot] [data-indicator-fact="tx"][data-state="transmitting"], [data-standard-vfo-slot] [data-indicator-fact="tx?"]').evaluateAll(
+      const targetBadges = await page.locator('[data-standard-vfo-slot] [data-chip="tx"][data-lit="true"]').evaluateAll(
         elements => elements.map(element => ({
           slot: element.closest('[data-standard-vfo-slot]')?.getAttribute('data-standard-vfo-slot'),
           text: element.textContent?.trim(),
@@ -399,7 +399,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       const result = {
         geometry,
         targetBadges,
-        vfoFacts: await page.locator('[data-standard-vfo-slot] [data-indicator-fact="rx"], [data-standard-vfo-slot] [data-indicator-fact="tx"], [data-standard-vfo-slot] [data-indicator-fact="antenna"], [data-standard-vfo-slot] [data-indicator-fact="tune"], [data-standard-vfo-slot] [data-indicator-fact="rit"], [data-standard-vfo-slot] [data-indicator-fact="xit"]').evaluateAll(
+        vfoFacts: await page.locator('[data-standard-vfo-slot] [data-indicator-fact="tx"][data-lit="true"], [data-standard-vfo-slot] [data-indicator-fact="ant"], [data-standard-vfo-slot] [data-indicator-fact="rit"], [data-standard-vfo-slot] [data-indicator-fact="xit"]').evaluateAll(
           elements => elements.map(element => ({
             fact: element.getAttribute('data-indicator-fact'),
             slot: element.closest('[data-standard-vfo-slot]')?.getAttribute('data-standard-vfo-slot'),
@@ -502,12 +502,12 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     expect(rx.overlay!.box.bottom).toBeLessThanOrEqual(892);
     expect(rx.overlay!.gapAfter).toBeCloseTo(rx.overlay!.gapBefore, 1);
     expect(rx.overlay!.rightAfter).toBeCloseTo(rx.overlay!.rightBefore, 1);
-    expect(tx.targetBadges).toEqual([{ slot: 'B', text: 'TX 14.332.000' }]);
+    expect(tx.targetBadges).toEqual([{ slot: 'B', text: 'TX' }]);
     expect(rx.targetBadges).toEqual([]);
     expect(unknown.targetBadges).toEqual([]);
     for (const result of [rx, tx]) {
       expect(result.vfoFacts).toEqual(expect.arrayContaining([
-        { fact: 'rx', slot: 'A' }, { fact: 'tune', slot: 'A' },
+        { fact: 'ant', slot: 'A' },
         { fact: 'rit', slot: 'A' }, { fact: 'xit', slot: 'A' },
         { fact: 'tx', slot: 'B' },
       ]));
@@ -576,7 +576,9 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       });
       await info.attach('compact-vfo-pair', { body: JSON.stringify(geometry), contentType: 'application/json' });
       if (width > 1050) {
-        expect.soft(geometry.panel.height, 'the full Standard VFO row stays compact').toBeLessThanOrEqual(190);
+        // MOR-2509: the approved airy panel is ~189px tall plus the wrapper
+        // inset on both sides; 205 keeps that ceiling without the old 190.
+        expect.soft(geometry.panel.height, 'the full Standard VFO row stays compact').toBeLessThanOrEqual(205);
         expect.soft(geometry.cards[0].top, 'A and B cards start together').toBeCloseTo(geometry.cards[1].top, 0);
         expect.soft(geometry.cards[0].bottom, 'A and B cards end together').toBeCloseTo(geometry.cards[1].bottom, 0);
       }
@@ -590,17 +592,16 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       }
       const bridge = page.locator('[data-instrument-bridge]');
       await expect(bridge.locator('[data-indicator-fact], [data-vfo-operation-digest]')).toHaveCount(0);
-      await expect(cards.nth(0).locator('[data-indicator-fact="rx"]')).toContainText('RX 14.035.720');
-      await expect(cards.locator('[data-indicator-fact="tx"]')).toHaveCount(0);
-      const strips = cards.locator('[data-vfo-row="chips"]');
-      await expect(strips).toHaveCount(2);
-      const identities = cards.locator('[data-vfo-row="identity"]');
-      await expect(identities).toHaveCount(2);
-      await expect(identities.nth(0).locator('.mode-badge-wrapper')).toHaveAttribute('data-vfo-controls-disabled', 'false');
-      await expect(identities.nth(1).locator('.mode-badge-wrapper')).toHaveAttribute('data-vfo-controls-disabled', 'true');
-      await expect(identities.nth(0)).toContainText(/CW.*FIL3/);
-      await expect(identities.nth(1)).toContainText(/USB.*FIL1/);
-      for (const fact of ['ant', 'tune', 'rit', 'xit']) {
+      await expect(cards.locator('[data-chip="tx"][data-lit="true"]')).toHaveCount(0);
+      const dspRows = cards.locator('[data-vfo-row="dsp"]');
+      await expect(dspRows).toHaveCount(2);
+      const receiverRows = cards.locator('[data-vfo-row="receiver"]');
+      await expect(receiverRows).toHaveCount(2);
+      await expect(receiverRows.nth(0).locator('.mode-badge-wrapper')).toHaveAttribute('data-vfo-controls-disabled', 'false');
+      await expect(receiverRows.nth(1).locator('.mode-badge-wrapper')).toHaveAttribute('data-vfo-controls-disabled', 'true');
+      await expect(receiverRows.nth(0)).toContainText(/CW.*FIL3/);
+      await expect(receiverRows.nth(1)).toContainText(/USB.*FIL1/);
+      for (const fact of ['ant', 'rit', 'xit']) {
         await expect(cards.nth(0).locator(`[data-indicator-fact="${fact}"]`)).toBeVisible();
         await expect(cards.nth(1).locator(`[data-indicator-fact="${fact}"]`)).toHaveCount(0);
       }
@@ -620,6 +621,9 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       await expect(root).not.toHaveClass(/sdr-test/);
       await expect(page.locator('[data-vfo-appearance]').first()).toHaveAttribute('data-vfo-appearance', 'standard');
       await expect(page.locator('[data-vfo-tile]')).toHaveCount(topology === 'topology-1-single' ? 1 : 2);
+      // MOR-2509: every panel owns five fixed rows — tray, receiver, main,
+      // under and the DSP group.
+      await expect(page.locator('[data-vfo-row]')).toHaveCount(topology === 'topology-1-single' ? 5 : 10);
       const geometry = await standardGeometry(page);
       const boxes = geometry.boxes as Record<string, DOMRect>;
       expect.soft(boxes.receiver.y, 'receiver deck follows status').toBeGreaterThanOrEqual(boxes.status.y + boxes.status.height - 1);
@@ -662,6 +666,15 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
         if (instrument.secondary) expect.soft(instrument.primary!.fontSize).toBeGreaterThan(instrument.secondary.fontSize);
       }
       if (topology === 'topology-2-main-sub') await expect(page.locator('.standard-face .spectrum-panel')).toBeVisible();
+      if (width === 1440) {
+        // MOR-2509: the digits themselves must compute a bold weight — the
+        // language's hero-numeral 200 must lose to the deck's token.
+        const digits = page.locator('[data-vfo-row="main"] .digit');
+        await expect(digits.first()).toBeVisible();
+        const digitWeight = await digits.first()
+          .evaluate((digit) => Number.parseInt(getComputedStyle(digit).fontWeight, 10));
+        expect.soft(digitWeight, 'the readout digits compute >= 700 weight').toBeGreaterThanOrEqual(700);
+      }
       const unkey = page.getByTestId('rx-tx-unkey');
       await expect(unkey).toHaveCount(1);
       await focusWithoutActivation(page, unkey);
@@ -729,7 +742,14 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       const boxes = geometry.boxes as Record<string, DOMRect>;
       const bodyTop = Math.min(boxes.left.y, boxes.center.y, boxes.right.y);
       expectStandardReceiverIntegrity(geometry, bodyTop);
-      expect(geometry.receiverIntegrity.actionNames).toEqual(['main', 'sub', 'equalize', 'swap', 'speak']);
+      expect(geometry.receiverIntegrity.actionNames).toEqual(['main', 'sub', 'swap', 'equalize', 'speak']);
+      if (known) {
+        const digits = page.locator('[data-vfo-row="main"] .digit');
+        await expect(digits.first()).toBeVisible();
+        const digitWeight = await digits.first()
+          .evaluate((digit) => Number.parseInt(getComputedStyle(digit).fontWeight, 10));
+        expect.soft(digitWeight, 'the readout digits compute >= 700 weight').toBeGreaterThanOrEqual(700);
+      }
       expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
         .geometryCommands.filter(c => c.type === 'cmd'))).toEqual([]);
     });
@@ -767,7 +787,9 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
       const errors: string[] = []; page.on('pageerror', e => errors.push(String(e)));
       await boot(page, layout, width, known);
       if (layout === 'standard' && width === 900) {
-        const stripFailures = await page.locator('.receiver-instrument .control-strip').evaluateAll(strips =>
+        const panelRows = page.locator('.receiver-instrument [data-vfo-row]');
+        await expect(panelRows.first(), '900px Standard cards paint their panel rows').toBeVisible();
+        const stripFailures = await panelRows.evaluateAll(strips =>
           strips.flatMap(strip => {
             const card = strip.closest('.receiver-instrument')!.getBoundingClientRect();
             const box = strip.getBoundingClientRect();
@@ -776,7 +798,7 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
               ? [{ scrollWidth: strip.scrollWidth, clientWidth: strip.clientWidth,
                 strip: box.toJSON(), card: card.toJSON() }] : [];
           }));
-        expect.soft(stripFailures, '900px Standard cards keep every status chip contained').toEqual([]);
+        expect.soft(stripFailures, '900px Standard cards keep every panel row contained').toEqual([]);
       }
       const unkey = page.getByTestId('rx-tx-unkey');
       await expect(unkey).toHaveCount(1);
@@ -789,7 +811,8 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
       await info.attach('bounds', { contentType: 'application/json', path: boundsPath });
       const semanticFrequency = page.locator('[data-vfo-freq]').first();
       if (known) await expect(semanticFrequency).toContainText('035');
-      else await expect(semanticFrequency).toHaveText('—');
+      // MOR-2509: the Standard panel's unobserved readout paints no glyph.
+      else await expect(semanticFrequency).toHaveText(layout === 'standard' ? '' : '—');
       if (layout.startsWith('lcd')) {
         const scope = await page.locator('.lcd-frame .lcd-scope,.lcd-frame .lcd-filter-row').boundingBox();
         expect.soft(scope!.height, 'LCD keeps space for its scope').toBeGreaterThanOrEqual(80);
@@ -847,7 +870,7 @@ for (const layout of ['standard', 'sdr-test']) for (const language of ['studioli
     else expect(await page.locator('html').getAttribute('data-design-language')).toBeNull();
     await expect(page.locator('[data-vfo-appearance]').first()).toHaveAttribute('data-vfo-appearance', layout === 'standard' ? 'standard' : 'sdr');
     const frequency = page.locator('.receiver-instrument [data-vfo-freq]').first();
-    await expect(frequency).toHaveText('—');
+    await expect(frequency).toHaveText(layout === 'standard' ? '' : '—');
     const paint = await frequency.evaluate(e => {
       const read = (e: Element) => { const s = getComputedStyle(e); return [s.fontFamily, s.fontSize, s.fontWeight, s.lineHeight, s.color, s.textShadow, s.letterSpacing]; };
       return { outer: read(e), inner: read(e.querySelector('.freq')!) };

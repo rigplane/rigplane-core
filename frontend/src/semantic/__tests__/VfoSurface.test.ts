@@ -362,6 +362,7 @@ function withRadioWide(
     ...base,
     radioWideIndicators: {
       rfState: 'receiving', antenna: indicatorField(1), atu: indicatorField('off'),
+      dialLock: indicatorField(false),
       ritActive: indicatorField(false), ritOffset: indicatorField(0),
       xitActive: indicatorField(true), xitOffset: indicatorField(0),
       actions: {
@@ -751,13 +752,13 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     });
   });
 
-  it('unknown dualWatch renders an explicit "unknown" tri-state, never "off"', () => {
+  it('unknown dualWatch carries no state claim: bare name, no aria-checked', () => {
     // 1/ab fixture carries dualWatch: { status: 'unknown' } verbatim.
     const target = mountSurface({ viewModel: topologyFixtures['1/ab'] });
     const toggle = target.querySelector<HTMLButtonElement>('[data-vfo-dual-watch]')!;
-    expect(toggle.getAttribute('aria-checked')).toBe('mixed');
-    expect(toggle.getAttribute('aria-label')).toContain('unknown');
-    expect(toggle.getAttribute('aria-label')).not.toContain('off');
+    expect(toggle.getAttribute('role')).not.toBe('switch');
+    expect(toggle.getAttribute('aria-checked')).toBeNull();
+    expect(toggle.getAttribute('aria-label')).toBe('Dual watch');
     expect(toggle.textContent).toBe('DW');
   });
 
@@ -783,16 +784,17 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     expect(target.querySelectorAll('[role="radiogroup"]')).toHaveLength(1);
   });
 
-  it('unknown split renders an explicit "unknown" tri-state', () => {
+  it('unknown split carries no state claim: bare name, no aria-checked', () => {
     const base = topologyFixtures['1/ab'];
     const model: RadioViewModel = validateRadioViewModel({ ...base, split: { status: 'unknown' } });
     const target = mountSurface({ viewModel: model });
     const toggle = target.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
-    expect(toggle.getAttribute('aria-checked')).toBe('mixed');
-    expect(toggle.getAttribute('aria-label')).toContain('unknown');
+    expect(toggle.getAttribute('role')).not.toBe('switch');
+    expect(toggle.getAttribute('aria-checked')).toBeNull();
+    expect(toggle.getAttribute('aria-label')).toBe('Split');
     expect(toggle.textContent).toBe('SPLIT');
     // R1 (review cycle 1): pin the disabled attribute itself, not just the
-    // aria-checked/text-content facts above — mutation M14 deleted
+    // aria-checked/label facts above — mutation M14 deleted
     // `disabled={viewModel.split.status === 'unknown'}` and every other
     // assertion in this file still passed (dualWatch's equivalent was
     // pinned; split's was not).
@@ -2598,9 +2600,9 @@ describe('MOR-2342 historical instrument presentations', () => {
   });
 
   it.each([
-    ['off', false, 0, true, 'RIT OFF 0 Hz', 'known'],
-    ['on', true, 120, true, 'RIT ON 120 Hz', 'known'],
-    ['unknown', null, null, true, 'RIT — — Hz', 'unknown'],
+    ['off', false, 0, true, 'RIT', 'off'],
+    ['on', true, 120, true, 'RIT +120', 'on'],
+    ['unknown', null, null, true, 'RIT', 'unknown'],
     ['unsupported', null, null, false, null, null],
   ] as const)(
     'renders the Standard active-VFO RIT %s state once with structural gating',
@@ -2757,7 +2759,10 @@ describe('MOR-2342 preserved instrument intents', () => {
     const tune = vi.fn(); const split = vi.fn();
     const root = mountSurface({ viewModel: model, appearance, onTuneFrequency: tune, onToggleSplit: split });
     expect(root.querySelector('.digit')).toBeNull();
-    expect(root.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('—');
+    // MOR-2509: the Standard panel paints no glyph for an unobserved
+    // frequency; the semantic/sdr tile keeps its dash fallback.
+    expect(root.querySelector('[data-vfo-freq]')?.textContent?.trim())
+      .toBe(appearance === 'standard' ? '' : '—');
     const toggle = root.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
     expect(toggle.disabled).toBe(true); toggle.click();
     expect(split).not.toHaveBeenCalled(); expect(tune).not.toHaveBeenCalled();

@@ -41,7 +41,9 @@
   import FrequencyDisplayInteractive from '../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
-  import VfoPanel from '../components-v2/vfo/VfoPanel.svelte';
+  import VfoPanel, { type VfoPanelSections } from '../components-v2/vfo/VfoPanel.svelte';
+  import { formatRitOffset } from '../components-v2/vfo/vfo-utils';
+  import { ControlButton } from '$lib/Button';
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import VfoOperationGroup from './VfoOperationGroup.svelte';
   import { formatKnownLevel } from './format-level';
@@ -56,7 +58,10 @@
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
   import { renderSlot } from './design-language-renderers';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
-  import type { BooleanFact, DisplayObservation, RadioViewModel, ReceiverIndicatorViewModel, VfoViewModel } from './radio-view-model';
+  import type {
+    BooleanFact, DisplayObservation, DspField, TxAuxField,
+    RadioViewModel, ReceiverIndicatorViewModel, VfoViewModel,
+  } from './radio-view-model';
 
   interface Props {
     viewModel: RadioViewModel;
@@ -114,6 +119,15 @@
      * and an operationally-fine dual strip — is unchanged.
      */
     disabled?: boolean;
+    /**
+     * MOR-2509 review — capability gates for the SPLIT / dual-watch keys,
+     * read off the radio caps BY THE CALLER (this surface stays
+     * capability-blind, the `hasDualReceiver` precedent). `false` renders
+     * no key at all, never a disabled one. Defaults keep every existing
+     * caller rendering exactly as before.
+     */
+    hasSplit?: boolean;
+    hasDualWatch?: boolean;
     /**
      * MOR-1421 — a PLAIN boolean, not a capability lookup: this surface stays
      * capability-blind by ADR (v3, MOR-1063), so the caller (`SemanticRadioSurfaces`,
@@ -189,6 +203,17 @@
     onSelectMainReceiver?: () => void;
     onSelectSubReceiver?: () => void;
     onSpeak?: () => void;
+    /**
+     * MOR-2509 bridge radio functions — the same intents the TX panel's
+     * TUNER/VOX controls and the dial-lock key dispatch (`set_tuner_status`,
+     * `set_vox`, `set_dial_lock`); the facts themselves always come from the
+     * view model (`radioWideIndicators.atu`/`dialLock`, `txAux.vox`), so
+     * both control points read one state. Optional: absent callbacks leave
+     * the keys present but not operational.
+     */
+    onToggleTuner?: () => void;
+    onToggleVox?: () => void;
+    onToggleDialLock?: () => void;
     operationInput?: VfoOperationProjectionInput;
     operationControls?: Snippet;
   }
@@ -204,6 +229,8 @@
     showVfoList = true,
     groupLabel,
     disabled = false,
+    hasSplit = true,
+    hasDualWatch = true,
     hasDualReceiver = true,
     onTuneFrequency,
     pendingFrequencyHz,
@@ -219,6 +246,9 @@
     onSelectMainReceiver,
     onSelectSubReceiver,
     onSpeak,
+    onToggleTuner,
+    onToggleVox,
+    onToggleDialLock,
     operationInput,
     operationControls,
   }: Props = $props();
@@ -280,11 +310,21 @@
     return {
       hasVfoPair,
       hasDualReceiver,
+      hasSplit,
+      hasDualWatch,
       relativeIdentityUnknown,
       activeReceiver: viewModel.activeReceiver,
       split: viewModel.split,
       dualWatch: viewModel.dualWatch,
       actions: viewModel.radioWideIndicators?.actions,
+      radioFunctions: {
+        tuner: viewModel.radioWideIndicators?.atu,
+        vox: viewModel.txAux?.vox,
+        dialLock: viewModel.radioWideIndicators?.dialLock,
+        onToggleTuner,
+        onToggleVox,
+        onToggleDialLock,
+      },
       callbacks: {
         onToggleSplit,
         onToggleDualWatch,
@@ -370,6 +410,25 @@
   function displayValue<T>(display: DisplayObservation<T> | undefined, strict: T | null): T | null {
     if (display === undefined) return strict;
     return display.state === 'current' || display.state === 'stale' ? display.value : null;
+  }
+
+  /**
+   * MOR-2509 — the panel's MODE/FIL tri-state: known text, null for unread
+   * (the panel draws the dim label), undefined for structurally unsupported
+   * (the panel keeps the slot and draws no chip). Both carriers of
+   * "unsupported" — the observation's own state and the modeFilter group's
+   * structural flag — collapse into the one undefined answer here.
+   */
+  function displayModeOrFilter(
+    vfo: VfoViewModel | undefined,
+    observation: DisplayObservation<string> | undefined,
+    strict: string | null,
+    structural: TxAuxField<unknown> | undefined,
+  ): string | null | undefined {
+    if (vfo === undefined) return null;
+    if (observation?.state === 'unsupported') return undefined;
+    if (structural !== undefined && !structural.availability.structural) return undefined;
+    return displayValue(observation, strict);
   }
 
   function hasDigitReadout(vfo: VfoViewModel): boolean {
@@ -468,91 +527,171 @@
     ),
   );
 
-  function standardBadges(indicator: ReceiverIndicatorViewModel | undefined, vfo?: VfoViewModel) {
-    const badges: { label: string; active: boolean; color: 'cyan' | 'orange' | 'muted' | 'red' | 'amber'; state: string }[] = [];
+  /**
+   * MOR-2509 slice 2 — the panel screen's chips, projected from the same
+   * facts the old flat badge list read. Every slot keeps its place unlit
+   * with its own label when a reading is unknown, and a structurally absent
+   * field contributes no element at all. Radio-wide facts follow the rule
+   * the flat badges already had: ANT on the active receiver's panel (the
+   * view model's antenna is radio-wide), RIT/XIT/SPLIT on the active-slot
+   * panel.
+   */
+  function standardPanelSections(
+    indicator: ReceiverIndicatorViewModel | undefined,
+    vfo: VfoViewModel | undefined,
+    receiver: ReceiverId,
+  ): VfoPanelSections {
+    const sections: VfoPanelSections = {
+      tray: {}, annunciators: [], dsp: [], under: {},
+      tx: { lit: false, state: 'unknown' },
+    };
     const wide = viewModel.radioWideIndicators;
-    const rfState = viewModel.radioWideIndicators?.rfState;
-    if (vfo?.isActiveSlot) {
-      const rxHz = displayValue(vfo.display?.frequencyHz, vfo.frequencyHz);
-      badges.push({ label: `RX ${formatFrequency(rxHz)}`, active: rxHz !== null,
-        color: rxHz === null ? 'muted' : 'cyan', state: vfo.display?.frequencyHz.state ?? (rxHz === null ? 'unknown' : 'current') });
-      if (wide?.antenna.availability.structural) {
-        const value = wide.antenna.reading.status === 'known' ? wide.antenna.reading.value : null;
-        badges.push({ label: `ANT ${value ?? '—'}`, active: value !== null,
-          color: value === null ? 'muted' : 'cyan', state: wide.antenna.reading.status });
-      }
-      if (wide?.atu.availability.structural) {
-        const value = wide.atu.reading.status === 'known' ? wide.atu.reading.value.toUpperCase() : null;
-        badges.push({ label: `TUNE ${value ?? '—'}`, active: value === 'ON' || value === 'TUNING',
-          color: value === null ? 'muted' : value === 'OFF' ? 'cyan' : 'orange', state: wide.atu.reading.status });
-      }
-      if (wide && (wide.ritActive.availability.structural || wide.ritOffset.availability.structural)) {
-        const active = wide.ritActive.reading.status === 'known' ? wide.ritActive.reading.value : null;
-        const offset = wide.ritOffset.reading.status === 'known' ? wide.ritOffset.reading.value : null;
-        badges.push({ label: `RIT ${active === null ? '—' : active ? 'ON' : 'OFF'} ${offset ?? '—'} Hz`,
-          active: active === true, color: active === null || offset === null ? 'muted' : active ? 'orange' : 'cyan',
-          state: active === null || offset === null ? 'unknown' : 'known' });
-      }
-      if (wide && (wide.xitActive.availability.structural || wide.xitOffset.availability.structural)) {
-        const active = wide.xitActive.reading.status === 'known' ? wide.xitActive.reading.value : null;
-        const offset = wide.xitOffset.reading.status === 'known' ? wide.xitOffset.reading.value : null;
-        badges.push({ label: `XIT ${active === null ? '—' : active ? 'ON' : 'OFF'} ${offset ?? '—'} Hz`,
-          active: active === true, color: active === null || offset === null ? 'muted' : active ? 'orange' : 'cyan',
-          state: active === null || offset === null ? 'unknown' : 'known' });
-      }
-    }
-    if (vfo?.isTxTarget && viewModel.txTarget.status === 'known') {
-      const transmitting = rfState === 'transmitting';
-      const uncertain = rfState === 'uncertain';
-      badges.push({
-        label: `${uncertain ? 'TX?' : 'TX'} ${formatFrequency(viewModel.txTarget.frequencyHz)}`,
-        active: true,
-        color: transmitting ? 'red' : uncertain ? 'amber' : 'orange',
-        state: rfState ?? 'unknown',
-      });
-    }
-    // A split TX target may be the inactive slot. It receives only RF truth;
-    // receiver-local badges still belong exclusively to the active VFO.
-    if (!indicator || (vfo !== undefined && !vfo.isActiveSlot)) return badges;
-    const numeric = (name: string, field: ReceiverIndicatorViewModel['bandwidthHz'], unit = '') => {
-      if (!field.availability.structural) return;
-      const reading = field.reading;
-      const value = reading.status === 'known' && Number.isFinite(reading.value) ? reading.value : null;
-      badges.push({ label: `${name} ${value ?? '—'}${value !== null ? unit : ''}`, active: value !== null, color: value !== null ? 'cyan' : 'muted', state: reading.status });
+    const rfState = wide?.rfState;
+    sections.tx = {
+      lit: vfo?.isTxTarget === true && viewModel.txTarget.status === 'known' && rfState === 'transmitting',
+      state: rfState ?? 'unknown',
     };
-    const toggle = (name: string, field: ReceiverIndicatorViewModel['nbActive']) => {
-      if (!field.availability.structural) return;
-      const value = field.reading.status === 'known' ? field.reading.value : null;
-      badges.push({ label: `${name} ${value === null ? '—' : value ? 'ON' : 'OFF'}`, active: value === true, color: value === null ? 'muted' : 'cyan', state: value === null ? 'unknown' : value ? 'on' : 'off' });
-    };
-    numeric('BW', indicator.bandwidthHz, ' Hz');
-    if (indicator.agcMode.availability.structural) {
-      const reading = indicator.agcMode.reading;
-      const value = reading.status === 'known' ? reading.value : null;
-      badges.push({ label: `AGC ${value ?? '—'}`, active: value !== null, color: value === null ? 'muted' : 'cyan', state: reading.status });
-    }
-    toggle('NB', indicator.nbActive); toggle('NR', indicator.nrActive);
-    if (indicator.notchMode.availability.structural) {
-      const reading = indicator.notchMode.reading;
-      const value = reading.status === 'known' ? reading.value : null;
-      badges.push({ label: `NOTCH ${value?.toUpperCase() ?? '—'}`, active: value !== null && value !== 'off', color: value === null ? 'muted' : 'orange', state: reading.status });
-    }
-    numeric('ATT', indicator.attenuator, ' dB'); numeric('P.AMP', indicator.preamp);
-    toggle('IP+', indicator.ipPlus); toggle('DIGI-SEL', indicator.digiSel);
-    if (indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported') {
-      const shown = displayValue(indicator.rfGain.display, indicator.rfGain.reading.status === 'known' ? indicator.rfGain.reading.value : null);
-      const text = shown === null
-        ? '—'
-        : formatKnownLevel(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3]);
-      badges.push({ label: `RFG ${text}`, active: shown !== null, color: shown === null ? 'muted' : 'cyan', state: indicator.rfGain.display?.state ?? indicator.rfGain.reading.status });
-    }
-    return badges;
-  }
 
-  function standardBand(vfo: VfoViewModel): string | null {
-    const band = viewModel.band?.currentBand;
-    return vfo.isActive && band?.availability.structural && band.availability.operational
-      && band.reading.status === 'known' ? band.reading.value : null;
+    const bandField = viewModel.band?.currentBand;
+    if (bandField?.availability.structural) {
+      const reading = bandField.reading;
+      const known = vfo?.isActive === true && bandField.availability.operational
+        && reading.status === 'known';
+      sections.tray.band = {
+        key: 'band',
+        text: known && reading.status === 'known' ? reading.value.toUpperCase() : 'BAND',
+        lit: known,
+        state: reading.status,
+      };
+    }
+    // Owner ruling 2026-09-21: single-port radios draw no ANT tab at all —
+    // the antenna group's port count (absent group = one port or fewer) is
+    // the one existing count.
+    if (wide?.antenna.availability.structural && (viewModel.antenna?.antennaCount ?? 0) > 1
+      && viewModel.activeReceiver.status === 'known'
+      && viewModel.activeReceiver.receiver === receiver && vfo?.isActiveSlot) {
+      const reading = wide.antenna.reading;
+      sections.tray.ant = {
+        key: 'ant',
+        text: reading.status === 'known' ? `ANT ${reading.value}` : 'ANT',
+        lit: reading.status === 'known',
+        state: reading.status,
+      };
+    }
+    if (indicator?.bandwidthHz.availability.structural) {
+      const reading = indicator.bandwidthHz.reading;
+      const known = reading.status === 'known' && Number.isFinite(reading.value);
+      sections.tray.bw = {
+        key: 'bw',
+        text: known && reading.status === 'known' ? `BW ${reading.value}` : 'BW',
+        lit: known,
+        state: reading.status,
+      };
+    }
+
+    if (indicator) {
+      if (indicator.agcMode.availability.structural) {
+        const reading = indicator.agcMode.reading;
+        sections.annunciators.push({
+          key: 'agc', group: 'agc', family: 'amber',
+          text: reading.status === 'known' ? `AGC ${String(reading.value)}` : 'AGC',
+          lit: reading.status === 'known',
+        });
+      }
+      const frontLamp = (key: string, text: string, lit: boolean) => {
+        sections.annunciators.push({ key, group: 'front', family: 'red', text, lit });
+      };
+      const levelLamp = (key: string, label: string, field: ReceiverIndicatorViewModel['preamp']) => {
+        if (!field.availability.structural) return;
+        const reading = field.reading;
+        if (reading.status === 'known' && reading.value > 0) {
+          frontLamp(key, `${label} ${reading.value}`, true);
+        } else {
+          frontLamp(key, label, false);
+        }
+      };
+      levelLamp('preamp', 'P.AMP', indicator.preamp);
+      levelLamp('att', 'ATT', indicator.attenuator);
+      const frontToggle = (key: string, field: ReceiverIndicatorViewModel['ipPlus']) => {
+        if (!field.availability.structural) return;
+        const value = field.reading.status === 'known' ? field.reading.value : null;
+        sections.annunciators.push({
+          key, group: 'front', family: 'red',
+          text: key === 'ip-plus' ? 'IP+' : 'DIGI-SEL', lit: value === true,
+        });
+      };
+      frontToggle('ip-plus', indicator.ipPlus);
+      frontToggle('digi-sel', indicator.digiSel);
+      if (indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported') {
+        const shown = displayValue(
+          indicator.rfGain.display,
+          indicator.rfGain.reading.status === 'known' ? indicator.rfGain.reading.value : null,
+        );
+        sections.annunciators.push({
+          key: 'rfg', group: 'rfg', family: 'brown',
+          text: shown === null
+            ? 'RFG'
+            : `RFG ${formatKnownLevel(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3])}`,
+          lit: shown !== null,
+        });
+      }
+
+      // DSP levels come from the radio-wide dsp group and follow the gate
+      // below: their text shows on the panel whose VFO is its receiver's
+      // active slot; every other panel stays lit/unlit without a number.
+      const levelSuffix = (field: DspField<number> | undefined): string =>
+        vfo?.isActiveSlot && field?.availability.structural && field.reading.status === 'known'
+          ? ` ${field.reading.value}` : '';
+      const dspToggle = (
+        key: 'nb' | 'nr',
+        field: ReceiverIndicatorViewModel['nbActive'],
+        level: DspField<number> | undefined,
+      ) => {
+        if (!field.availability.structural) return;
+        const value = field.reading.status === 'known' ? field.reading.value : null;
+        sections.dsp.push({
+          key, text: value === true ? `${key.toUpperCase()}${levelSuffix(level)}` : key.toUpperCase(),
+          lit: value === true,
+        });
+      };
+      dspToggle('nb', indicator.nbActive, viewModel.dsp?.nbLevel);
+      dspToggle('nr', indicator.nrActive, viewModel.dsp?.nrLevel);
+      if (indicator.notchMode.availability.structural) {
+        const value = indicator.notchMode.reading.status === 'known' ? indicator.notchMode.reading.value : null;
+        const text = value === 'auto' ? 'NOTCH A' : value === 'manual' ? 'NOTCH M' : 'NOTCH';
+        sections.dsp.push({ key: 'notch', text, lit: value === 'auto' || value === 'manual' });
+      }
+    }
+
+    if (viewModel.activeReceiver.status === 'known'
+      && viewModel.activeReceiver.receiver === receiver && vfo?.isActiveSlot && wide) {
+      const offsetChip = (key: 'rit' | 'xit') => {
+        const activeField = key === 'rit' ? wide.ritActive : wide.xitActive;
+        const offsetField = key === 'rit' ? wide.ritOffset : wide.xitOffset;
+        if (!activeField.availability.structural && !offsetField.availability.structural) return;
+        const active = activeField.reading.status === 'known' ? activeField.reading.value : null;
+        const offset = offsetField.reading.status === 'known' ? offsetField.reading.value : null;
+        const lit = active === true && offset !== null;
+        sections.under[key] = {
+          key,
+          text: lit ? `${key.toUpperCase()} ${formatRitOffset(offset)}` : key.toUpperCase(),
+          lit,
+          state: active === null || (active === true && offset === null) ? 'unknown' : active ? 'on' : 'off',
+        };
+      };
+      offsetChip('rit');
+      offsetChip('xit');
+    }
+    if (viewModel.activeReceiver.status === 'known'
+      && viewModel.activeReceiver.receiver === receiver && vfo?.isActiveSlot && hasVfoPair) {
+      sections.under.split = {
+        key: 'split',
+        text: 'SPLIT',
+        lit: viewModel.split.status === 'known' && viewModel.split.value,
+        state: viewModel.split.status === 'known' ? (viewModel.split.value ? 'on' : 'off') : 'unknown',
+      };
+    }
+    return sections;
   }
 
 </script>
@@ -771,12 +910,24 @@
 
   {#snippet standardPairSelectors(pair: { receiver: ReceiverId; left: VfoViewModel; right: VfoViewModel; absolute: boolean })}
     {#if pair.absolute}
+    <!--
+      MOR-2509 bridge: the A/B selector keys render through the shared
+      Button family's fill look; the filled key says which slot is active
+      (`data-standard-select-vfo` keeps the pinned e2e hook).
+    -->
     <div class="standard-vfo-selectors" aria-label="Select VFO">
       {#each [pair.left, pair.right] as vfo (slotKey(vfo.slot))}
         {@const slot = vfo.slot.kind === 'slotted' ? vfo.slot.id : '—'}
-        <button type="button" class="vfo-select" data-standard-select-vfo={slot}
-          data-active={vfo.isActiveSlot} disabled={disabled || vfo.isActiveSlot}
-          onclick={() => selectVfo(vfo)}>SELECT {slot}</button>
+        <ControlButton
+          indicatorStyle="fill"
+          indicatorColor="cyan"
+          reserveIndicator
+          active={vfo.isActiveSlot}
+          ariaLabel={`SELECT ${slot}`}
+          disabled={disabled || vfo.isActiveSlot}
+          data={{ 'standard-select-vfo': slot }}
+          onclick={() => selectVfo(vfo)}
+        >{slot}</ControlButton>
       {/each}
     </div>
     {:else}
@@ -870,8 +1021,10 @@
             : undefined}
           frequencyDisabled={!dominant || (fixed !== undefined && !fixed.isActiveSlot) || readoutDisabled(dominant)}
           controlsDisabled={fixed !== undefined && !fixed.isActiveSlot}
-          mode={dominant ? displayValue(dominant.display?.mode, dominant.mode) : null}
-          filter={dominant ? displayValue(dominant.display?.filter, dominant.filter) : null}
+          mode={displayModeOrFilter(dominant, dominant?.display?.mode, dominant?.mode ?? null,
+            viewModel.modeFilter?.currentMode)}
+          filter={displayModeOrFilter(dominant, dominant?.display?.filter, dominant?.filter ?? null,
+            viewModel.modeFilter?.currentFilter)}
           sValue={indicator?.sMeter.availability.operational && indicator.sMeter.reading.status === 'known'
             && Number.isFinite(indicator.sMeter.reading.value) ? indicator.sMeter.reading.value : null}
           sMeter={receiverInstruments === undefined || (fixed && !fixed.isActiveSlot) ? undefined : hostedMeter}
@@ -880,8 +1033,7 @@
           meterSource={indicator?.sMeter.source}
           {continuitySession}
           isActive={dominant?.isActive ?? false}
-          badgeItems={standardBadges(indicator, dominant)}
-          bandText={dominant ? standardBand(dominant) : null}
+          sections={standardPanelSections(indicator, dominant, receiver)}
           slotChoices={choices}
           reserveMeterSpace={fixed !== undefined && !fixed.isActiveSlot}
           onFreqChange={receiverInstruments === undefined && dominant
@@ -919,7 +1071,7 @@
       {/if}
       {#if showRadioWideFacts}
         <div class="bridge" data-instrument-bridge>
-          {@render activeReceiverStatus()}
+          {#if appearance !== 'standard'}{@render activeReceiverStatus()}{/if}
           {@render identitySelectors()}
           {#if appearance === 'standard'}{@render standardOperationContent()}
           {:else}{@render radioWideContent()}{/if}
@@ -987,6 +1139,10 @@
   .instrument-panel {
     display: flex; align-items: stretch; width: 100%; min-width: 0;
     --vfo-instrument-inset-block: 6px;
+    /* MOR-2509: the deck's bridge-width token — the standard bridge
+       narrows it to fit the function keys; the 1050px breakpoint
+       override below sets the same property. */
+    --vfo-bridge-width: 180px;
     background: linear-gradient(180deg, var(--v2-bg-gradient-start, #0a0e14) 0%, var(--v2-bg-panel, #05080c) 100%);
     border: 1px solid var(--v2-border-panel, #18222d); border-radius: 4px;
   }
@@ -1001,7 +1157,7 @@
   .receiver-instrument > :global(.indicator-row) { flex: 1 1 auto; min-height: 0; }
   .receiver-instrument + .receiver-instrument { border-left: 1px solid var(--v2-border-panel, #18222d); }
   .bridge {
-    flex: 0 0 180px; min-width: 0; display: flex; flex-direction: column;
+    flex: 0 0 var(--vfo-bridge-width); min-width: 0; display: flex; flex-direction: column;
     justify-content: center; gap: 10px; padding: 10px;
     margin-block: var(--vfo-instrument-inset-block);
     border-inline: 1px solid var(--v2-border-panel, #18222d);
@@ -1043,15 +1199,14 @@
     border: 1px solid var(--v2-accent-cyan, #00d4ff); border-radius: 4px;
     box-shadow: 0 0 6px rgba(0,212,255,.3), inset 0 0 16px rgba(0,212,255,.06);
   }
-  [data-vfo-appearance='standard'] .bridge { flex-basis: 136px; }
-  [data-vfo-appearance='standard'] .bridge .vfo-select { min-height: 24px; }
+  [data-vfo-appearance='standard'] .bridge { --vfo-bridge-width: 168px; }
+  [data-vfo-appearance='standard'] .bridge .vfo-select { min-height: 28px; }
   [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
     flex: 1 1 0;
     --btn-compact-min-height: 18px;
     --btn-compact-padding-block: 1px;
     --btn-compact-padding-inline: 4px;
     --btn-compact-font-size: 9px;
-    --vfo-control-strip-gap: 2px;
   }
   @media (min-width: 951px) and (max-width: 1280px) {
     [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
@@ -1059,17 +1214,24 @@
       --btn-compact-padding-block: 0;
       --btn-compact-padding-inline: 3px;
     }
-    [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] :global(.control-strip) {
-      line-height: 14px;
-    }
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge {
     flex: 0 0 clamp(190px, 14vw, 220px);
     padding: 4px;
     gap: 3px;
     --vfo-ops-gap: 3px;
-    --vfo-ops-badge-padding-x: 3px;
-    --vfo-ops-badge-font-size: 9px;
+    /* MOR-2509: the bridge keys' family tokens — 28px key height,
+       12px labels, dot packed tighter than panel keys. */
+    --btn-min-height: 28px;
+    --btn-font-size: 12px;
+    --indicator-dot-offset: 4px;
+    --indicator-dot-gap: 4px;
+  }
+  [data-vfo-appearance='standard'] .bridge:not(.standard-pair-bridge) {
+    --btn-min-height: 28px;
+    --btn-font-size: 12px;
+    --indicator-dot-offset: 4px;
+    --indicator-dot-gap: 4px;
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .facts) {
     display: grid;
@@ -1093,12 +1255,7 @@
     text-align: center;
   }
   .standard-vfo-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
-  .standard-vfo-selectors .vfo-select {
-    min-width: 0; padding: 4px 3px; font-size: 9px; font-weight: 700;
-  }
-  .standard-vfo-selectors .vfo-select[data-active='true'] {
-    border-color: var(--v2-accent-cyan, #00d4ff); color: var(--v2-accent-cyan, #00d4ff);
-  }
+  .standard-vfo-selectors > :global(button) { min-width: 0; width: 100%; }
   .standard-tx-target {
     display: block; padding: 3px 5px; border: 1px solid var(--v2-accent-red, #ff2020);
     border-radius: 3px; color: var(--v2-accent-red, #ff2020); font-size: 9px;
@@ -1120,7 +1277,6 @@
   }
   [data-vfo-appearance='standard'] .vfo-freq {
     grid-column: 1 / -1; grid-row: 2;
-    font-size: clamp(34px, 3vw, 44px); margin: 4px 0; text-align: left;
   }
   [data-vfo-appearance='standard'] .receiver-instrument .vfo-select {
     grid-column: 3; grid-row: 1 / 3;
@@ -1144,16 +1300,13 @@
   @media (max-width: 1050px) {
     .instrument-panel { flex-wrap: wrap; }
     .receiver-instrument { flex-basis: calc(50% - 90px); }
-    .bridge { flex-basis: 150px; }
+    .bridge { --vfo-bridge-width: 150px; }
     .receiver-instrument .vfo-freq { font-size: 26px; }
   }
   @media (max-width: 950px) {
     [data-vfo-appearance='standard'] .standard-pair-bridge {
       padding: 2px;
       gap: 1px;
-    }
-    [data-vfo-appearance='standard'] .standard-receiver {
-      --vfo-control-strip-gap: 2px;
     }
     [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
       flex-basis: calc(100% - 192px);
