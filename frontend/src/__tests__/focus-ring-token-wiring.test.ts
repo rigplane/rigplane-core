@@ -543,9 +543,8 @@ describe('MOR-1232: regression guard — no new unpaired outline:none suppressio
     });
   }
 
-  // MOR-2522: the renderer focus rules double the container class to outrank
-  // the studioline focus contract (cascade pins in section 8). A repeated
-  // simple selector names the SAME element, so the pairing must read
+  // MOR-2522: the existing renderer focus rules double the container class.
+  // A repeated simple selector names the SAME element, so the pairing must read
   // `.x.x:focus-visible` as treating `.x`; before selectorTargets
   // normalised compounds, the raw string failed the equality and every
   // renderer's base `outline: none` counted as unpaired (round-4 RED).
@@ -777,9 +776,9 @@ describe('MOR-2522: the value-control ring clears 3:1 on the studioline surfaces
   });
 });
 
-/* ── 8. MOR-2522: language BLOCK contracts exclude value controls ───────── */
+/* ── 8. MOR-2522: app BLOCK contract owns value-control exclusions ──────── */
 
-describe('MOR-2522: language BLOCK contracts cannot collide with value-control owners', () => {
+describe('MOR-2522: app BLOCK contract cannot collide with value-control owners', () => {
   const RENDERER_CONTAINERS: Array<{ file: string; container: string }> = [
     { file: 'components-v2/controls/value-control/HBarRenderer.svelte', container: '.vc-track-container' },
     { file: 'components-v2/controls/value-control/DiscreteRenderer.svelte', container: '.vc-track-container' },
@@ -788,19 +787,28 @@ describe('MOR-2522: language BLOCK contracts cannot collide with value-control o
     { file: 'components-v2/controls/value-control/DualParamRenderer.svelte', container: '.vc-track-container' },
   ];
 
-  for (const language of ['studioline', 'fieldline']) {
-    it(`${language} excludes native ranges and both value-control containers`, () => {
-      const blocks = ruleBlocks(
-        stripComments(read(`presentation/languages/${language}/${language}.css`)),
-      );
-      const contract = blocks.find(
-        (block) => /:focus-visible/.test(block.selector) && /--focus-c-surface/.test(block.body),
-      );
-      expect(contract, `${language}: expected a BLOCK focus contract`).toBeTruthy();
-      expect(contract!.selector).toContain("input[type='range']");
-      expect(contract!.selector).toContain('.vc-track-container');
-      expect(contract!.selector).toContain('.vc-knob-container');
-      expect(contract!.body).not.toMatch(/outline|box-shadow|filter/);
+  it('app.css owns both the language-strengthened BLOCK selector and every exclusion', () => {
+    const blocks = ruleBlocks(stripComments(read('app.css')));
+    const contract = blocks.find(
+      (block) => block.selector.startsWith(':focus-visible:not(') && /--focus-c-surface/.test(block.body),
+    );
+    expect(contract, 'expected the app-owned BLOCK focus contract').toBeTruthy();
+    expect(contract!.selector).toMatch(
+      /\[data-design-language\]\[data-design-language\]\s+:focus-visible:not\(/,
+    );
+    expect(contract!.selector).toContain("input[type='range']");
+    expect(contract!.selector).toContain('.vc-track-container');
+    expect(contract!.selector).toContain('.vc-knob-container');
+    expect(contract!.body).not.toMatch(/outline|box-shadow|filter/);
+  });
+
+  for (const language of ['studioline', 'fieldline', 'segmentline']) {
+    it(`${language} supplies focus roles but no focus selector or component exclusion`, () => {
+      const css = stripComments(read(`presentation/languages/${language}/${language}.css`));
+      const focusRoles = Object.keys(parseTokens(css)).filter((name) => name.startsWith('--focus-c-'));
+      expect(focusRoles).toHaveLength(8);
+      expect(css).not.toMatch(/:focus-visible/);
+      expect(css).not.toMatch(/\.vc-(?:track|knob)-container/);
     });
   }
 
@@ -830,8 +838,8 @@ describe('MOR-2522: native range sliders light on keyboard focus instead of draw
   // `var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow))` pinned below,
   // with nothing declared past the theme twin.
   //
-  // Round 2 (stand probe at 224ff7e3): the shared rule wins the language
-  // contracts but LOSES box-shadow on the desktop-v2/sdr-test skins, where
+  // Round 2 (stand probe at 224ff7e3): the shared rule is the range owner but
+  // LOSES box-shadow on the desktop-v2/sdr-test skins, where
   // semantic-controls.css's track chrome is (0,3,2) — box-shadow does not
   // merge across rules, so the focused slider showed track-only with no ring
   // at all. The illumination there is carried by a :focus-visible variant of
@@ -880,18 +888,14 @@ describe('MOR-2522: native range sliders light on keyboard focus instead of draw
     expect(read('../fixtures/main.ts')).toMatch(/import '\.\.\/src\/app\.css';/);
   });
 
-  it('the app-wide and language BLOCK contracts exclude native ranges', () => {
+  it('the app-wide BLOCK contract excludes native ranges; language sheets expose no focus selector', () => {
     const appBlock = ruleBlocks(stripComments(read('app.css'))).find(
       (block) => block.selector.startsWith(':focus-visible:not('),
     );
     expect(appBlock!.selector).toContain("input[type='range']");
-    for (const lang of ['studioline', 'fieldline']) {
+    for (const lang of ['studioline', 'fieldline', 'segmentline']) {
       const file = `presentation/languages/${lang}/${lang}.css`;
-      const contract = ruleBlocks(stripComments(read(file))).find(
-        (block) => /:focus-visible/.test(block.selector) && /--focus-c-surface/.test(block.body),
-      );
-      expect(contract, `expected a BLOCK focus rule in ${lang}.css`).toBeTruthy();
-      expect(contract!.selector).toContain("input[type='range']");
+      expect(stripComments(read(file)), file).not.toMatch(/:focus-visible/);
     }
   });
 

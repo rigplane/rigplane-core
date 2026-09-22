@@ -205,14 +205,6 @@
   --dl-studioline-muted: #d5dbde;
 }
 
-/* ── One focus contract, never re-suppressed (MOR-977 §1.2.5) ───────────── */
-[data-design-language='studioline'][data-design-language]
-  :focus-visible:not(:where(input[type='range'], .vc-track-container, .vc-knob-container)) {
-  background-color: var(--focus-c-surface);
-  border-color: var(--focus-c-border);
-  color: var(--focus-c-text);
-}
-
 /* ── The channel strip: no boxes, one optical left margin ───────────────── */
 [data-design-language='studioline'][data-design-language] .vfo-surface,
 [data-design-language='studioline'][data-design-language] .rx-tx-surface {

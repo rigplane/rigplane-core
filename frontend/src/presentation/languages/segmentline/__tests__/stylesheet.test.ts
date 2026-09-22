@@ -135,10 +135,23 @@ describe('the CSS half honours the same constraints as the token half', () => {
     for (const value of contentDeclarations) expect(value).toBe("''");
   });
 
-  it('never re-suppresses the focus ring, and applies it as `outline` (MOR-977 §1.2.5)', () => {
-    expect(css).not.toMatch(/outline:\s*none/);
-    const focus = findExact(`${ATTR} .rx-tx-key:focus-visible`)!;
-    expect(focus.declarations.outline).toBe('2px solid var(--dl-segmentline-ink-strong)');
+  it('supplies MOR-2522 BLOCK roles without suppressing focus or drawing a language outline', () => {
+    const focusRoles = RULES.find(
+      (rule) =>
+        rule.selector === ATTR && rule.declarations['--focus-c-surface'] !== undefined,
+    );
+    expect(focusRoles).toBeDefined();
+    expect({
+      surface: focusRoles!.declarations['--focus-c-surface'],
+      border: focusRoles!.declarations['--focus-c-border'],
+      text: focusRoles!.declarations['--focus-c-text'],
+    }).toEqual({
+      surface: 'var(--dl-segmentline-glass)',
+      border: 'var(--dl-segmentline-ink-strong)',
+      text: 'var(--dl-segmentline-ink-strong)',
+    });
+    expect(css).not.toMatch(/:focus-visible/);
+    expect(css).not.toMatch(/outline\s*:/);
   });
 
   it('wins on specificity rather than on `!important`', () => {

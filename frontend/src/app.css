@@ -7,7 +7,14 @@
   box-sizing: border-box;
 }
 
-:focus-visible:not(input[type='range'], .vc-track-container, .vc-knob-container) {
+/* MOR-2522: app.css owns the BLOCK selector and its value-control exclusions.
+ * Design-language stylesheets only remap the --focus-c-* roles. The doubled
+ * generic activation attribute gives this branch enough specificity to beat
+ * the dynamically loaded language base paint without naming a language or a
+ * component inside a language stylesheet. */
+:focus-visible:not(input[type='range'], .vc-track-container, .vc-knob-container),
+[data-design-language][data-design-language]
+  :focus-visible:not(input[type='range'], .vc-track-container, .vc-knob-container) {
   background-color: var(--focus-c-surface);
   border-color: var(--focus-c-border);
   color: var(--focus-c-text);
@@ -20,17 +27,8 @@
  * RitXitScanSurface.svelte, components-v2/panels/AudioRoutingControl.svelte
  * and CwPanel.svelte — because this is the only stylesheet every context
  * loads unconditionally (App.svelte and fixtures/main.ts both import it; the
- * four semantic surfaces import no CSS of their own). The doubled attribute
- * is the same one-step specificity raise studioline.css applies to its own
- * selectors: (0,3,1) outranks the studioline/fieldline universal
- * `:focus-visible` contracts (0,3,0) on specificity alone, so the dynamically
- * loaded language stylesheet cannot win a tie on source order — pinned, from
- * the real stylesheets, by 'the shared rule outranks both language focus
- * contracts on specificity alone' in
- * src/__tests__/focus-ring-token-wiring.test.ts, whose companion test 'the
- * doubled attribute and the element type are both load-bearing' proves the
- * weaker selector forms tie or lose. The ring is the value-control
- * token where value-control.css is loaded (its studioline-scoped colour
+ * four semantic surfaces import no CSS of their own). The ring is the
+ * value-control token where value-control.css is loaded (its studioline-scoped colour
  * override included), its theme twin where that file is absent — the chain is
  * exactly those two levels, `var(--vc-focus-ring-shadow,
  * var(--v2-focus-ring-shadow))`, pinned in the same describe, with nothing

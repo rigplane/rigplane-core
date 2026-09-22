@@ -249,9 +249,24 @@ describe('the CSS half honours the same constraints as the token half', () => {
     expect(css).not.toMatch(/content:\s*'/);
   });
 
-  it('never re-suppresses the focus ring, and applies it as `outline` (MOR-977 §1.2.5)', () => {
-    expect(css).not.toMatch(/outline:\s*none/);
-    expect(css).toMatch(/outline:\s*3px solid var\(--dl-fieldline-focus\)/);
+  it('supplies MOR-2522 BLOCK roles without suppressing focus or drawing a language outline', () => {
+    const focusRoles = RULES.find(
+      (rule) =>
+        rule.selector === "[data-design-language='fieldline'][data-design-language]" &&
+        rule.declarations['--focus-c-surface'] !== undefined,
+    );
+    expect(focusRoles).toBeDefined();
+    expect({
+      surface: focusRoles!.declarations['--focus-c-surface'],
+      border: focusRoles!.declarations['--focus-c-border'],
+      text: focusRoles!.declarations['--focus-c-text'],
+    }).toEqual({
+      surface: 'color-mix(in srgb, var(--dl-fieldline-surface) 70%, var(--dl-fieldline-focus))',
+      border: 'var(--dl-fieldline-focus)',
+      text: 'var(--dl-fieldline-text)',
+    });
+    expect(css).not.toMatch(/:focus-visible/);
+    expect(css).not.toMatch(/outline\s*:/);
   });
 
   it('wins on specificity rather than on `!important`', () => {

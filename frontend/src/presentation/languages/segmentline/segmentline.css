@@ -149,13 +149,6 @@
   color: var(--dl-segmentline-ink-strong);
 }
 
-[data-design-language='segmentline'][data-design-language] .rx-tx-key:focus-visible,
-[data-design-language='segmentline'][data-design-language] .rx-tx-unkey:focus-visible {
-  background-color: var(--focus-c-surface);
-  border-color: var(--focus-c-border);
-  color: var(--focus-c-text);
-}
-
 /* ── Seven-segment readout ───────────────────────────────────────────── */
 
 [data-design-language='segmentline'][data-design-language] .vfo-freq {
