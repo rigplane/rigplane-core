@@ -274,12 +274,22 @@
         seat={agcSeat} renderer={finiteAppearance.choice}
       />{/key}{/key}
     {:else}
-      <div class="dsp-row" data-testid="dsp-agcMode"
+      <div class="dsp-agc-grid" data-testid="dsp-agcMode"
+        data-columns={Math.min(5, agcOptions.length)}
+        style={`--agc-columns: ${Math.min(5, agcOptions.length)}`}
         data-disabled-reason={agcBehavior.available ? undefined : 'field-not-observed'}>
         {#each agcOptions as option (option.value)}
-          <button type="button" class="dsp-choice" data-testid={`dsp-agcMode-${option.value}`}
-            aria-pressed={agcBehavior.selected === undefined ? undefined : agcBehavior.isSelected(option.value)}
-            disabled={!agcBehavior.available} onclick={() => agcBehavior.invoke(option.value)}>{option.label}</button>
+          {@const isAuto = option.value === dsp.agcMode.autoMode}
+          <div class="agc-key" data-testid={`dsp-agcMode-${option.value}`}>
+            <HardwareButton indicator="edge-left" color="cyan"
+              active={agcBehavior.isSelected(option.value)} disabled={!agcBehavior.available}
+              ariaLabel={isAuto && dsp.agcMode.autoSelectedSpeed
+                ? `${option.label} ${dsp.agcMode.autoSelectedSpeed}` : option.label}
+              onclick={() => agcBehavior.invoke(option.value)}>
+              <span class="agc-key-label">{option.label}</span>
+              {#if isAuto}<span class="agc-auto-speed">{dsp.agcMode.autoSelectedSpeed ?? ''}</span>{/if}
+            </HardwareButton>
+          </div>
         {/each}
       </div>
     {/if}
@@ -293,6 +303,21 @@
 
 <style>
   .dsp-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .dsp-agc-grid {
+    display: grid;
+    grid-template-columns: repeat(var(--agc-columns), minmax(28px, 1fr));
+    gap: var(--dl-studioline-gap-micro, var(--dl-fieldline-gap, 6px));
+    width: 100%;
+  }
+  .agc-key { display: flex; min-width: 0; }
+  .agc-key :global(button) { flex: 1 1 auto; min-width: 28px; min-height: 28px; }
+  .agc-key-label, .agc-auto-speed { display: block; }
+  .agc-auto-speed {
+    min-height: 1em;
+    color: var(--dl-studioline-muted, var(--dl-fieldline-muted, var(--dl-segmentline-ink-soft, currentcolor)));
+    font-size: 0.75em;
+    line-height: 1;
+  }
   .compact-dsp-button {
     display: grid; grid-template-columns: minmax(0, 1fr) 24px; gap: 2px; min-width: 0;
   }

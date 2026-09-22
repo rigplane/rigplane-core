@@ -398,6 +398,15 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.patchRadioState).not.toHaveBeenCalled();
   });
 
+  it.each([0, 1, 2, 3, 4])('dispatches AGC key %i as its exact set_agc code', (mode) => {
+    makeAgcHandlers().onAgcModeChange(mode);
+
+    expect(exactCalls()).toEqual([
+      ['set_agc', { mode, receiver: 0 }],
+    ]);
+    expectIntentTransport();
+  });
+
   it('preserves the complete DSP conversions and notch command order on typed lifecycle', () => {
     const dsp = makeDspHandlers();
     dsp.onNrModeChange(1);

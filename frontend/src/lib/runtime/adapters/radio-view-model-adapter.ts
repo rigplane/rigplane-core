@@ -865,6 +865,35 @@ function deriveDsp(
     ? manualNotchFreqContract.rawToDisplay(manualNotchFreqRaw) ?? undefined
     : numOrUndef(rx?.notchFilter);
   const notchFreqDomain = manualNotchFreqContract.displayDomain;
+  const rawAgcMode = numOrUndef(rx?.agc);
+  const agcReadable = topFieldAvailable(state, `${base}agc`);
+  const rawAgcReadback = caps.agcReadback;
+  const agcReadback = rawAgcReadback !== null && typeof rawAgcReadback === 'object'
+    ? rawAgcReadback as Record<string, unknown>
+    : null;
+  const agcReadbackModes = Array.isArray(agcReadback?.modes)
+    && agcReadback.modes.every(mode => Number.isSafeInteger(mode))
+    ? agcReadback.modes as number[]
+    : null;
+  const agcAutoMode = Number.isSafeInteger(agcReadback?.autoMode)
+    && (caps.agcModes ?? []).includes(agcReadback!.autoMode as number)
+    ? agcReadback!.autoMode as number
+    : undefined;
+  const rawAutoSpeedLabels = agcReadback?.autoSpeedLabels;
+  const agcAutoSpeedLabels = rawAutoSpeedLabels !== null
+    && typeof rawAutoSpeedLabels === 'object' && !Array.isArray(rawAutoSpeedLabels)
+    ? rawAutoSpeedLabels as Record<string, unknown>
+    : null;
+  const projectedAutoSpeed = agcReadable && rawAgcMode !== undefined
+    && agcReadbackModes?.includes(rawAgcMode)
+    ? agcAutoSpeedLabels?.[String(rawAgcMode)]
+    : undefined;
+  const agcAutoSelectedSpeed = typeof projectedAutoSpeed === 'string' && projectedAutoSpeed.trim()
+    ? projectedAutoSpeed
+    : undefined;
+  const projectedAgcMode = agcAutoSelectedSpeed !== undefined && agcAutoMode !== undefined
+    ? agcAutoMode
+    : rawAgcMode;
 
   return {
     nrActive: txAuxField(hasNrCap, topFieldAvailable(state, `${base}nr`), boolOrUndef(rx?.nr)),
@@ -883,7 +912,11 @@ function deriveDsp(
     manualNotchWidth: txAuxField(
       hasNotchCap, topFieldAvailable(state, `${base}manualNotchWidth`), numOrUndef(rx?.manualNotchWidth),
     ),
-    agcMode: txAuxField(hasAgcCap, topFieldAvailable(state, `${base}agc`), numOrUndef(rx?.agc)),
+    agcMode: {
+      ...txAuxField(hasAgcCap, agcReadable, projectedAgcMode),
+      ...(agcAutoMode === undefined ? {} : { autoMode: agcAutoMode }),
+      ...(agcAutoSelectedSpeed === undefined ? {} : { autoSelectedSpeed: agcAutoSelectedSpeed }),
+    },
     agcModes: caps.agcModes ?? [],
     agcTimeConstant: txAuxField(
       hasAgcCap, topFieldAvailable(state, `${base}agcTimeConstant`), numOrUndef(rx?.agcTimeConstant),

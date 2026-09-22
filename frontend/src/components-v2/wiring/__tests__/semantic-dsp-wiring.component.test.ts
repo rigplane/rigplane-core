@@ -318,6 +318,28 @@ const liveCaps = (withDsp: boolean): Capabilities => ({
   } } : {}),
 } as unknown as Capabilities);
 
+const ftxAgcCaps = (): Capabilities => ({
+  ...liveCaps(true),
+  agcModes: [0, 1, 2, 3, 4],
+  agcLabels: { '0': 'OFF', '1': 'FAST', '2': 'MID', '3': 'SLOW', '4': 'AUTO' },
+  agcReadback: {
+    modes: [0, 1, 2, 3, 4, 5, 6], autoMode: 4,
+    autoSpeedLabels: { '4': 'FAST', '5': 'MID', '6': 'SLOW' },
+  },
+} as unknown as Capabilities);
+
+function stateWithAgc(value: number, observed = true): ServerState {
+  const state = liveState(true);
+  return {
+    ...state,
+    main: { ...state.main, agc: value },
+    fieldStatus: {
+      ...state.fieldStatus,
+      'main.agc': observed ? fresh : { ...fresh, observed: false, availability: 'missing' },
+    },
+  } as unknown as ServerState;
+}
+
 const finiteAppearance = {
   action: FiniteControlRendererFixture as FiniteControlAppearance['action'],
   toggle: FiniteControlRendererFixture as FiniteControlAppearance['toggle'],
@@ -548,6 +570,74 @@ describe('every dsp intent reaches its own command-bus handler', () => {
     q<HTMLButtonElement>('[data-testid="dsp-agcMode-1"]')!.click();
     flushSync();
     expect(h.agcMode).toHaveBeenCalledExactlyOnceWith(1);
+  });
+});
+
+describe('AGC choice group', () => {
+  const agcGroup = () => q<HTMLElement>('[data-testid="dsp-agcMode"]');
+  const agcButtons = () => [...agcGroup()!.querySelectorAll<HTMLButtonElement>('button')];
+
+  it('lights only the confirmed known key and reserves an empty AUTO speed line', () => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(2);
+    render();
+
+    expect(agcButtons().map(button => button.textContent?.trim())).toEqual([
+      'OFF', 'FAST', 'MID', 'SLOW', 'AUTO',
+    ]);
+    expect(agcButtons().map(button => button.dataset.active)).toEqual([
+      'false', 'false', 'true', 'false', 'false',
+    ]);
+    expect(q<HTMLElement>('[data-testid="dsp-agcMode-4"] .agc-auto-speed')!.textContent).toBe('');
+  });
+
+  it('keeps declared labels unlit and disabled when AGC is present but unread', () => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(6, false);
+    render();
+
+    expect(agcButtons()).toHaveLength(5);
+    expect(agcButtons().every(button => button.disabled && button.dataset.active === 'false')).toBe(true);
+    expect(q<HTMLElement>('[data-testid="dsp-agcMode-4"] .agc-auto-speed')!.textContent).toBe('');
+    expect(agcGroup()!.textContent).not.toMatch(/[—?]|UNKNOWN/i);
+    expect(agcButtons().map(button => button.getAttribute('aria-label')).join(' '))
+      .not.toMatch(/[—?]|UNKNOWN/i);
+  });
+
+  it('omits the choice group when AGC is structurally absent', () => {
+    h.caps = {
+      ...liveCaps(true), capabilities: liveCaps(true).capabilities.filter(capability => capability !== 'agc'),
+    } as Capabilities;
+    render();
+
+    expect(agcGroup()).toBeNull();
+  });
+
+  it.each([
+    [4, 'FAST'], [5, 'MID'], [6, 'SLOW'],
+  ] as const)('projects readback %i to AUTO with %s', (readback, speed) => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(readback);
+    render();
+
+    expect(q<HTMLButtonElement>('[data-testid="dsp-agcMode-4"] button')!.dataset.active).toBe('true');
+    expect(q<HTMLElement>('[data-testid="dsp-agcMode-4"] .agc-auto-speed')!.textContent).toBe(speed);
+  });
+
+  it('keeps IC-7300-shaped direct modes unchanged', () => {
+    render();
+
+    expect(agcButtons().map(button => button.textContent?.trim())).toEqual(['FAST', 'MID', 'SLOW']);
+    expect(agcButtons().map(button => button.dataset.active)).toEqual(['false', 'true', 'false']);
+  });
+
+  it('routes every FTX-1 key as its settable code', () => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(2);
+    render();
+
+    for (const button of agcButtons()) button.click();
+    expect(h.agcMode.mock.calls).toEqual([[0], [1], [2], [3], [4]]);
   });
 });
 

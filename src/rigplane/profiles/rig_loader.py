@@ -586,6 +586,9 @@ class RigConfig:
     pre_labels: dict[str, str] | None
     agc_modes: tuple[int, ...] | None
     agc_labels: dict[str, str] | None
+    agc_readback_modes: tuple[int, ...] | None
+    agc_auto_mode: int | None
+    agc_auto_speed_labels: dict[str, str] | None
     break_in_modes: tuple[int, ...] | None = None
     break_in_labels: dict[str, str] | None = None
     notch_width_values: tuple[int, ...] | None = None
@@ -810,6 +813,9 @@ class RigConfig:
             pre_labels=self.pre_labels,
             agc_modes=self.agc_modes,
             agc_labels=self.agc_labels,
+            agc_readback_modes=self.agc_readback_modes,
+            agc_auto_mode=self.agc_auto_mode,
+            agc_auto_speed_labels=self.agc_auto_speed_labels,
             ctcss_tones_centihz=self.ctcss_tones_centihz,
             break_in_modes=self.break_in_modes,
             break_in_labels=self.break_in_labels,
@@ -2302,9 +2308,94 @@ def load_rig(path: Path) -> RigConfig:
     pre_values = tuple(pre_section["values"]) if "values" in pre_section else None
     pre_labels = dict(pre_section["labels"]) if "labels" in pre_section else None
 
+    agc_section = data.get("agc", {})
+    if agc_section:
+        _reject_unknown_keys(
+            filename,
+            "[agc]",
+            agc_section,
+            frozenset(
+                {
+                    "modes",
+                    "labels",
+                    "readback_modes",
+                    "auto_mode",
+                    "auto_speed_labels",
+                }
+            ),
+        )
     agc_modes, agc_labels = _parse_enumerated_domain(
-        filename, "[agc]", data.get("agc", {}), values_key="modes"
+        filename,
+        "[agc]",
+        {key: agc_section[key] for key in ("modes", "labels") if key in agc_section},
+        values_key="modes",
     )
+    raw_agc_readback_modes = agc_section.get("readback_modes")
+    agc_readback_modes = (
+        tuple(raw_agc_readback_modes) if raw_agc_readback_modes is not None else None
+    )
+    if agc_readback_modes is not None and (
+        not agc_readback_modes
+        or any(
+            isinstance(mode, bool) or not isinstance(mode, int)
+            for mode in agc_readback_modes
+        )
+    ):
+        raise RigLoadError(
+            f"{filename}: [agc].readback_modes must be a non-empty list of integers"
+        )
+    if agc_readback_modes is not None and agc_modes is None:
+        raise RigLoadError(
+            f"{filename}: [agc].readback_modes declared without [agc].modes"
+        )
+    if (
+        agc_readback_modes is not None
+        and agc_modes is not None
+        and not set(agc_modes).issubset(agc_readback_modes)
+    ):
+        raise RigLoadError(
+            f"{filename}: [agc].readback_modes must include every [agc].modes entry"
+        )
+    agc_auto_mode = agc_section.get("auto_mode")
+    if agc_auto_mode is not None and (
+        isinstance(agc_auto_mode, bool) or not isinstance(agc_auto_mode, int)
+    ):
+        raise RigLoadError(f"{filename}: [agc].auto_mode must be an integer")
+    if agc_auto_mode is not None and (
+        agc_modes is None or agc_auto_mode not in agc_modes
+    ):
+        raise RigLoadError(
+            f"{filename}: [agc].auto_mode must match an entry in [agc].modes"
+        )
+    raw_agc_auto_speed_labels = agc_section.get("auto_speed_labels")
+    if raw_agc_auto_speed_labels is not None and not isinstance(
+        raw_agc_auto_speed_labels, dict
+    ):
+        raise RigLoadError(f"{filename}: [agc].auto_speed_labels must be a table")
+    agc_auto_speed_labels = (
+        dict(raw_agc_auto_speed_labels)
+        if raw_agc_auto_speed_labels is not None
+        else None
+    )
+    if agc_auto_speed_labels is not None:
+        if agc_readback_modes is None or agc_auto_mode is None:
+            raise RigLoadError(
+                f"{filename}: [agc].auto_speed_labels requires readback_modes and auto_mode"
+            )
+        declared_readbacks = {str(mode) for mode in agc_readback_modes}
+        orphan_speed_labels = sorted(set(agc_auto_speed_labels) - declared_readbacks)
+        if orphan_speed_labels:
+            raise RigLoadError(
+                f"{filename}: [agc].auto_speed_labels key {orphan_speed_labels[0]!r} "
+                "has no matching entry in [agc].readback_modes"
+            )
+        if any(
+            not isinstance(label, str) or not label.strip()
+            for label in agc_auto_speed_labels.values()
+        ):
+            raise RigLoadError(
+                f"{filename}: [agc].auto_speed_labels values must be non-empty strings"
+            )
 
     # Parse break_in/notch-width/ssb_tx_bw/filter_shape enumerated domains
     # (MOR-1534). Each was declared in TOML (or, for filter_shape, nowhere
@@ -2615,6 +2706,9 @@ def load_rig(path: Path) -> RigConfig:
         pre_labels=pre_labels,
         agc_modes=agc_modes,
         agc_labels=agc_labels,
+        agc_readback_modes=agc_readback_modes,
+        agc_auto_mode=agc_auto_mode,
+        agc_auto_speed_labels=agc_auto_speed_labels,
         ctcss_tones_centihz=ctcss_tones_centihz,
         break_in_modes=break_in_modes,
         break_in_labels=break_in_labels,

@@ -584,6 +584,20 @@ def _serialize_filter_config(profile: "RadioProfile") -> dict[str, dict[str, obj
     return result
 
 
+def _serialize_agc_readback(profile: "RadioProfile") -> dict[str, object] | None:
+    if (
+        profile.agc_readback_modes is None
+        or profile.agc_auto_mode is None
+        or profile.agc_auto_speed_labels is None
+    ):
+        return None
+    return {
+        "modes": list(profile.agc_readback_modes),
+        "autoMode": profile.agc_auto_mode,
+        "autoSpeedLabels": profile.agc_auto_speed_labels,
+    }
+
+
 def _serialize_keyboard_config(profile: "RadioProfile") -> dict[str, object] | None:
     keyboard = profile.keyboard
     if keyboard is None:
@@ -3139,6 +3153,7 @@ class WebServer:
                         list(profile.agc_modes) if profile.agc_modes else None
                     ),
                     "agcLabels": profile.agc_labels,
+                    "agcReadback": _serialize_agc_readback(profile),
                     "scanTypeValues": (
                         list(profile.scan_type_values)
                         if profile.scan_type_values is not None
@@ -3622,6 +3637,7 @@ class WebServer:
             "preLabels": profile.pre_labels if profile.pre_labels else {},
             "agcModes": list(profile.agc_modes) if profile.agc_modes else [],
             "agcLabels": profile.agc_labels if profile.agc_labels else {},
+            "agcReadback": _serialize_agc_readback(profile),
             "scanTypeValues": (
                 list(profile.scan_type_values)
                 if profile.scan_type_values is not None

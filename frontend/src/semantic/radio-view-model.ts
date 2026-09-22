@@ -511,7 +511,10 @@ export interface DspViewModel {
    */
   notchFreqDomain?: ControlDisplayDomain;
   manualNotchWidth: DspField<number>;
-  agcMode: DspField<number>;
+  agcMode: DspField<number> & {
+    autoMode?: number;
+    autoSelectedSpeed?: string;
+  };
   agcModes: readonly number[];
   agcTimeConstant: DspField<number>;
 }
@@ -2027,6 +2030,20 @@ function validateDsp(value: unknown, path: string): DspViewModel {
   const notchFreqDomain = optionalGroup(
     v.notchFreqDomain, `${path}.notchFreqDomain`, validateNrLevelDisplayDomain,
   );
+  const rawAgcMode = record(v.agcMode, `${path}.agcMode`);
+  exactKeys(rawAgcMode, ['reading', 'availability', 'autoMode', 'autoSelectedSpeed'], `${path}.agcMode`);
+  const agcMode = {
+    ...validateTxAuxField({
+      reading: rawAgcMode.reading,
+      availability: rawAgcMode.availability,
+    }, `${path}.agcMode`, num),
+    ...(rawAgcMode.autoMode === undefined ? {} : {
+      autoMode: num(rawAgcMode.autoMode, `${path}.agcMode.autoMode`),
+    }),
+    ...(rawAgcMode.autoSelectedSpeed === undefined ? {} : {
+      autoSelectedSpeed: nonBlank(rawAgcMode.autoSelectedSpeed, `${path}.agcMode.autoSelectedSpeed`),
+    }),
+  };
   return {
     nrActive: validateTxAuxField(v.nrActive, `${path}.nrActive`, bool),
     nrLevel: validateTxAuxField(v.nrLevel, `${path}.nrLevel`, num),
@@ -2039,7 +2056,7 @@ function validateDsp(value: unknown, path: string): DspViewModel {
     notchFreq: validateTxAuxField(v.notchFreq, `${path}.notchFreq`, num),
     ...(notchFreqDomain !== undefined ? { notchFreqDomain } : {}),
     manualNotchWidth: validateTxAuxField(v.manualNotchWidth, `${path}.manualNotchWidth`, num),
-    agcMode: validateTxAuxField(v.agcMode, `${path}.agcMode`, num),
+    agcMode,
     agcModes: numArray(v.agcModes, `${path}.agcModes`),
     agcTimeConstant: validateTxAuxField(v.agcTimeConstant, `${path}.agcTimeConstant`, num),
   };
