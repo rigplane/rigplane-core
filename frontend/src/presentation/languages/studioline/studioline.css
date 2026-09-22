@@ -150,10 +150,12 @@
 [data-design-language='studioline'][data-design-language][data-language-mode='light'] {
   --dl-vfo-panel-background: linear-gradient(180deg, #f9f6f0 0%, #f2eee7 38%, #e9e4db 100%);
   --dl-vfo-panel-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), inset 0 -12px 24px rgba(65, 54, 40, 0.08), 0 6px 18px rgba(44, 37, 29, 0.16);
-  /* The glass rides above content now, so light mode must gloss without a
-     white veil: soft-light keeps the paper and the ink where they were. */
-  --dl-vfo-panel-sheen: var(--v2-vfo-panel-sheen-override, linear-gradient(115deg, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0.12) 22%, transparent 38%));
-  --dl-vfo-panel-sheen-blend: soft-light;
+  /* No glass over content in light mode (block N1): the over-layer token
+     is nulled here and the gloss moves under the content via the under
+     token, where it can lighten the paper but never a glyph. The override
+     wrapper keeps prefers-contrast: more able to kill this layer too. */
+  --dl-vfo-panel-sheen: none;
+  --dl-vfo-panel-sheen-under: var(--v2-vfo-panel-sheen-override, linear-gradient(115deg, rgba(255, 255, 255, 0.72) 0%, rgba(255, 255, 255, 0.2) 22%, transparent 38%));
   /* Light-mode dim chrome: quiet grey frames against the warm paper, and
      muted ink for the readout. --dl-vfo-dim-text is NOT overridden here: it
      is ink on the dim fills, which stay dark in both modes. */

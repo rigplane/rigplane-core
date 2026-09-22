@@ -391,11 +391,10 @@
       0 0 12px 1px var(--receiver-panel-glow-outer);
   }
 
-  /* The glass, painted as the panel's last box — above the content, like the
-     v8 mock-up's .glass. Under content (z-index: -1) it vanished into the
-     ground: the pixel probe measured no contribution at all. The blend and
-     strength are per-mode tokens; prefers-contrast: more zeroes the whole
-     layer through --v2-vfo-panel-sheen-override. */
+  /* The glass OVER the content — dark mode only (the mock-up is dark-only,
+     and there a screen blend of faint white cannot darken a glyph). Light
+     mode nulls this token and glosses from under the content instead.
+     prefers-contrast: more zeroes it via --v2-vfo-panel-sheen-override. */
   .panel::after {
     content: '';
     position: absolute;
@@ -407,10 +406,27 @@
     mix-blend-mode: var(--dl-vfo-panel-sheen-blend, normal);
   }
 
+  /* The glass UNDER the content — the light mode gloss, read from a token
+     only a light block sets. It needs no negative z-index: the three rows
+     below carry position: relative, and among equal-z positioned boxes tree
+     order decides, so this first box paints above the panel's own
+     background yet below every row — it can lighten the ground, never a
+     glyph. */
+  .panel::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    clip-path: inset(0 round var(--vfo-panel-radius, 10px));
+    background: var(--dl-vfo-panel-sheen-under, none);
+  }
+
   /* The inactive receiver is quieter through explicit colour variants —
      chips, tabs, the frequency numeral and the receiver name; the glass
-     itself stays on the dim panel, only the glows drop (v8 mock-up). A lit
-     TX alarm keeps the full red, and the meter keeps its own paint. */
+     itself stays on the dim panel, while the glows and the meter's lit
+     filter drop (v8 mock-up). A lit TX alarm keeps the full red, and the
+     meter keeps its own paint. */
   .panel:not(.active) {
     --vfo-neon-fill: var(--dl-vfo-primary-neon-dim, #16396f);
     --vfo-neon-frame: var(--dl-vfo-frame-dim, #9fb0c4);
@@ -443,6 +459,8 @@
 
   /* ── Tray: tabs hanging from the panel's top edge ─────────────────── */
   .tray {
+    /* Positioned so this row paints above the ::before under-glass. */
+    position: relative;
     display: flex;
     justify-content: center;
     gap: 3px;
@@ -491,6 +509,8 @@
 
   /* ── Receiver row: name once, large mode/filter chips, lamps, TX ───── */
   .receiver-row {
+    /* Positioned so this row paints above the ::before under-glass. */
+    position: relative;
     display: flex;
     align-items: flex-start;
     gap: 5px;
@@ -630,6 +650,8 @@
 
   /* ── Main row: readout + under chips, DSP column, meter slot ──────── */
   .display-row {
+    /* Positioned so this row paints above the ::before under-glass. */
+    position: relative;
     display: grid;
     grid-template-columns: auto 66px minmax(0, 1fr);
     gap: 12px;

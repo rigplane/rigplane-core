@@ -131,7 +131,12 @@
 
 /* High contrast pushes both label tones to the rail; the numeral weight is
    already 700 and has nowhere useful to go, so unlike studioline — which must
-   bump 200 → 600 — this bundle changes colour only. */
+   bump 200 → 600 — this bundle changes colour only.
+   RULE: quieting the inactive readout yields to legibility. Both tones pin
+   to #ffffff here, so the dim inks (--dl-vfo-frequency-ink-dim /
+   --dl-vfo-name-ink-dim, both var(--dl-fieldline-muted)) resolve equal to
+   the active ink — the inactive panel deliberately does NOT dim in high
+   contrast. This is the one mode where that is correct. */
 [data-design-language='fieldline'][data-design-language][data-theme='high-contrast'] {
   --dl-fieldline-text: #ffffff;
   --dl-fieldline-muted: #ffffff;
