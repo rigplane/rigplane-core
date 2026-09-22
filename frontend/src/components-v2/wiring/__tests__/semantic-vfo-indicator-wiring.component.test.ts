@@ -491,8 +491,9 @@ describe('production receiver-indicator partitioning', () => {
       const trackW = Number(track.getAttribute('x2')) - x1;
       return (Number(fill.getAttribute('x2')) - x1) / trackW;
     };
-    // 100 W on a 100 W scale fills the TX-target row completely.
-    expect(lowerFillFraction('MAIN')).toBeCloseTo(1, 3);
+    // 100 W on a 100 W scale lights every segment of the TX-target row —
+    // the last lit dash ends one pitch-gap short of the track's right edge.
+    expect(lowerFillFraction('MAIN')).toBeCloseTo(1, 2);
     // The SUB receiver keeps the row, unlit.
     expect(lowerFillFraction('SUB')).toBe(0);
   });

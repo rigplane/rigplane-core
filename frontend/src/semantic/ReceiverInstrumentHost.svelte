@@ -31,7 +31,7 @@
 
   // The Po row's 0/25/50/75/100 labels are face geometry over the radio's
   // own watt scale — the same treatment `MetersSurface.svelte` gives its
-  // SWR row and `LinearSMeter` gives its S-unit marks.
+  // SWR row and the meter component gives its S-unit marks.
   const POWER_LOWER_SCALE_TICKS = [
     { value: 0, label: '0' },
     { value: 0.25, label: '25' },

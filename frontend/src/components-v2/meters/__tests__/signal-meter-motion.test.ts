@@ -34,6 +34,7 @@ function projection(
     accessibleDescription: primaryText,
     crossoverFraction: scaleMode === 's' ? 0.55 : null,
     uniformScaleKnots: [{ at: 0, to: 0 }, { at: 1, to: 1 }],
+    uniformScaleMarks: [],
     marks: [],
     ticks: [],
   };
@@ -80,7 +81,12 @@ function installMotionHarness(initialReduced = false): MotionHarness {
     },
     runFrame(nowMs: number) {
       clock = nowMs;
-      for (const callback of [...frames.values()]) callback(nowMs);
+      // One-shot semantics, matching the platform: pending callbacks are
+      // removed before they run, so a rescheduling callback survives to the
+      // next call instead of being re-invoked (and duplicated) forever.
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const callback of pending) callback(nowMs);
     },
     restore() {
       window.matchMedia = originalMatchMedia;

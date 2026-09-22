@@ -52,6 +52,20 @@ export interface SignalScaleKnot {
   readonly to: number;
 }
 
+/**
+ * MOR-2509: one numeral the evenly spaced face may draw, and the slot
+ * fraction it sits at. Only what the radio's own calibration declares can
+ * be labelled: an S-unit numeral requires a declared S-labelled knot at
+ * that unit, and a +dB numeral requires the calibration's top to reach
+ * that many dB over S9. A numeral the calibration cannot place is simply
+ * absent — its slot stays empty, so nothing shifts between radios.
+ */
+export interface SignalScaleMark {
+  readonly slot: number;
+  readonly text: string;
+  readonly overS9: boolean;
+}
+
 export interface SignalMeterProjectionMark {
   readonly actual: number;
   readonly fraction: number;
@@ -75,6 +89,8 @@ export interface SignalMeterProjection {
   readonly crossoverFraction: number | null;
   /** MOR-2509: calibrated-fraction → evenly-spaced-scale transfer knots. */
   readonly uniformScaleKnots: readonly SignalScaleKnot[];
+  /** MOR-2509: the numerals the calibration itself can place on that scale. */
+  readonly uniformScaleMarks: readonly SignalScaleMark[];
   readonly marks: readonly SignalMeterProjectionMark[];
   readonly ticks: readonly SignalMeterProjectionTick[];
 }
@@ -327,6 +343,40 @@ export function lerpScaleKnots(
   return knots[knots.length - 1].to;
 }
 
+const OVER_S9_MARK_DECIBELS = [20, 40, 60] as const;
+
+/**
+ * MOR-2509: the numerals the evenly spaced face draws for this
+ * calibration. S-unit numerals come from declared S-labelled knots (a
+ * two-knot S0/S9 table declares no S-unit numeral between them, so none
+ * may be invented); +dB numerals come from the fixed over-S9 set, each
+ * drawn only while the calibration's own top reaches it.
+ */
+function uniformScaleMarksFor(
+  calibration: readonly SmeterCalibrationPoint[],
+): readonly SignalScaleMark[] {
+  if (!isSmeterCalibratedForCalibration(calibration)) return [];
+  const marks: SignalScaleMark[] = [];
+  for (const point of calibration) {
+    const unit = /^S([1-9])$/.exec(point.label);
+    if (unit) {
+      const value = Number.parseInt(unit[1], 10);
+      marks.push({ slot: (value - 1) / 14, text: String(value), overS9: false });
+    }
+  }
+  const calMax = calibration[calibration.length - 1].actual;
+  for (const db of OVER_S9_MARK_DECIBELS) {
+    if (db <= calMax) {
+      marks.push({
+        slot: S9_UNIFORM_FRACTION + (db / 60) * OVER_S9_SPAN_FRACTION,
+        text: `+${db}`,
+        overS9: true,
+      });
+    }
+  }
+  return marks;
+}
+
 /**
  * Resolve every display-facing S-meter value from one capability snapshot.
  * The facade remains the only store reader; the pure primitives above own all
@@ -359,6 +409,8 @@ export function projectSignalMeter(
     : null;
   const uniformScaleKnots = scaleMode === 's'
     ? uniformScaleKnotsFor(projectionCalibration) : IDENTITY_SCALE_KNOTS;
+  const uniformScaleMarks = scaleMode === 's'
+    ? uniformScaleMarksFor(projectionCalibration) : [];
 
   if (value === null) {
     const legacy = domain === undefined;
@@ -375,6 +427,7 @@ export function projectSignalMeter(
       accessibleDescription: `S meter reading unknown${secondaryText ? `, ${secondaryText}` : ''}`,
       crossoverFraction,
       uniformScaleKnots,
+      uniformScaleMarks,
       marks,
       ticks,
     };
@@ -390,6 +443,7 @@ export function projectSignalMeter(
       accessibleDescription: `S meter ${primaryText} raw, uncalibrated`,
       crossoverFraction,
       uniformScaleKnots,
+      uniformScaleMarks,
       marks,
       ticks,
     };
@@ -412,6 +466,7 @@ export function projectSignalMeter(
         : `S meter ${valueText}, ${stateText}`,
       crossoverFraction,
       uniformScaleKnots,
+      uniformScaleMarks,
       marks,
       ticks,
     };
@@ -429,6 +484,7 @@ export function projectSignalMeter(
     accessibleDescription: `S meter ${primaryText}, ${secondaryText}`,
     crossoverFraction,
     uniformScaleKnots,
+    uniformScaleMarks,
     marks,
     ticks,
   };

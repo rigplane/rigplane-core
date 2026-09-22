@@ -390,9 +390,10 @@
   // Pixel-locked geometry: this SVG carries no viewBox, so one user unit is
   // one CSS pixel and the 2px-lit / 1px-gap dash pattern renders in whole
   // device-independent pixels at every rendered width. The segment count
-  // follows from the measured track length, and the fill — one dash-patterned
-  // line per tone zone — is a permanent node whose length is the only thing a
-  // reading changes.
+  // follows from the measured track length, the lit extent snaps to whole
+  // segments, and the fill — one dash-patterned line per tone zone — is a
+  // permanent node whose length or visibility is the only thing a reading
+  // changes.
   const VFO_SEG_PITCH = 3;
   const VFO_SEG_LIT = 2;
   const VFO_SEG_DASH = `${VFO_SEG_LIT} ${VFO_SEG_PITCH - VFO_SEG_LIT}`;
@@ -424,14 +425,13 @@
   const VFO_PO_Y = 44;
   const VFO_PO_H = 6;
   const VFO_TOTAL_H = 52;
-  // The evenly spaced 1..9 / +20..+60 scale is face geometry, not radio
-  // data; the fill reaches a labelled position through the projection's
-  // calibration-derived transfer knots, so the reading stays truthful.
-  const VFO_SCALE_LABELS = ['1', '3', '5', '7', '9', '+20', '+40', '+60'] as const;
-  const VFO_TONE_BLUE = 'var(--v2-meter-blue, #58a0ff)';
-  const VFO_TONE_RED = 'var(--v2-meter-red, #e2362c)';
-  const VFO_TONE_UNLIT = 'var(--v2-meter-unlit, #18212a)';
-  const VFO_TONE_LIGHT = 'var(--v2-text-lighter, #EAF1F8)';
+  // Segment tones live on the theme token layer (`tokens.css` defines each
+  // exactly once); this component consumes the tokens without re-stating
+  // their values.
+  const VFO_TONE_BLUE = 'var(--v2-meter-blue)';
+  const VFO_TONE_RED = 'var(--v2-meter-red)';
+  const VFO_TONE_UNLIT = 'var(--v2-meter-unlit)';
+  const VFO_TONE_LIGHT = 'var(--v2-text-lighter)';
 
   let vfoWidth = $state(0);
   let vfoSvgElement = $state.raw<SVGSVGElement | null>(null);
@@ -458,6 +458,20 @@
     ? vfoTrackX + vfoTrackW
     : vfoTrackX + Math.round((S9_UNIFORM_FRACTION * vfoTrackW) / VFO_SEG_PITCH) * VFO_SEG_PITCH);
 
+  /** The lit extent at a fractional fill position: whole segments only —
+   *  a segment lights when the fill covers at least half of it, and the
+   *  extent is that segment's right edge, so every rendered dash is a
+   *  whole 2px dash. */
+  function vfoLitExtentX(fraction: number): number {
+    const fillPx = fraction * vfoTrackW;
+    const segment = Math.floor((fillPx - VFO_SEG_LIT / 2) / VFO_SEG_PITCH);
+    if (segment < 0) return vfoTrackX;
+    return vfoTrackX + Math.min(
+      vfoTrackW - (VFO_SEG_PITCH - VFO_SEG_LIT),
+      segment * VFO_SEG_PITCH + VFO_SEG_LIT,
+    );
+  }
+
   const vfoFillFraction = $derived(signalProjection.motionFraction === null ? 0
     : lerpScaleKnots(signalProjection.uniformScaleKnots, meterFrame.smoothedFraction));
   const vfoPeakFraction = $derived(signalProjection.motionFraction === null ? 0
@@ -467,36 +481,38 @@
   const vfoGlowFraction = $derived(Math.max(vfoFillFraction,
     meterFrame.afterglowFraction === null ? 0
       : lerpScaleKnots(signalProjection.uniformScaleKnots, meterFrame.afterglowFraction)));
-  const vfoFillX = $derived(vfoTrackX + vfoFillFraction * vfoTrackW);
-  const vfoPeakX = $derived(vfoTrackX + vfoPeakFraction * vfoTrackW);
-  const vfoGlowX = $derived(vfoTrackX + vfoGlowFraction * vfoTrackW);
+  const vfoFillEndX = $derived(vfoLitExtentX(vfoFillFraction));
+  const vfoGlowEndX = $derived(vfoLitExtentX(vfoGlowFraction));
+  // The marker sits on the same snapped grid as the bar's lit extent — the
+  // snap is monotone, so the peak cannot fall below the displayed extent.
+  const vfoPeakX = $derived(vfoLitExtentX(vfoPeakFraction));
   const vfoBarMidY = VFO_BAR_Y + VFO_BAR_H / 2;
+  // An unread meter is the empty unlit face: the scale stays, the fill and
+  // peak never move off the left end, and the readout slots stay empty —
+  // no placeholder glyph may stand where a reading is not.
+  const vfoReadingKnown = $derived(signalProjection.motionFraction !== null);
 
   // Peak marker: rises with the bar, holds ~1 s, then falls. Under
-  // prefers-reduced-motion the v7 face shows the stepped bar only.
+  // prefers-reduced-motion the v7 face shows the stepped bar only. Below
+  // S9 the marker keeps the face's light accent; past S9 one red family.
   const vfoShowPeak = $derived(
-    signalProjection.scaleMode !== 'none' && signalProjection.motionFraction !== null
+    signalProjection.scaleMode !== 'none' && vfoReadingKnown
       && mainPresent && !meterFrame.reducedMotion
       && (meterFrame.peakFraction ?? 0) - meterFrame.smoothedFraction > 0.3,
   );
-  const vfoPeakColor = $derived.by(() => {
-    const peak = meterFrame.peakFraction ?? 0;
-    if (signalProjection.crossoverFraction === null || peak <= signalProjection.crossoverFraction) {
-      return 'var(--v2-accent-cyan-bright)';
-    }
-    return peak <= 15 / 20 ? 'var(--v2-accent-yellow)'
-      : peak <= 18 / 20 ? 'var(--v2-accent-orange-alt)' : 'var(--v2-accent-red-alt)';
-  });
+  const vfoPeakColor = $derived(
+    signalProjection.crossoverFraction !== null
+      && (meterFrame.peakFraction ?? 0) > signalProjection.crossoverFraction
+      ? VFO_TONE_RED : 'var(--v2-accent-cyan-bright)',
+  );
 
   const vfoLowerFraction = $derived(
     lowerScale ? Math.min(1, Math.max(0, lowerScale.valueFraction)) : 0,
   );
-  const vfoLowerFillX = $derived(vfoTrackX + vfoLowerFraction * vfoTrackW);
+  const vfoLowerFillEndX = $derived(vfoLitExtentX(vfoLowerFraction));
   const vfoTotalH = $derived(lowerScale ? VFO_TOTAL_H : VFO_BAR_Y + VFO_BAR_H + 4);
 
-  function vfoLabelTone(index: number): string {
-    return index < 5 ? VFO_TONE_LIGHT : VFO_TONE_RED;
-  }
+  const vfoScaleMarks = $derived(signalProjection.uniformScaleMarks);
 </script>
 
 {#if variant === 'sdr-screen'}
@@ -542,23 +558,23 @@
     {#if mainPresent}
     <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
       {#if signalProjection.scaleMode === 's'}
-        {#each VFO_SCALE_LABELS as label, index (label)}
-          {@const x = vfoTrackX + (index / 7) * vfoTrackW}
+        {#each vfoScaleMarks as mark, index (mark.text)}
+          {@const x = vfoTrackX + mark.slot * vfoTrackW}
           <text
             data-scale-label={index}
             x={x} y={VFO_LABEL_Y}
             font-family="'Roboto Mono', monospace"
             font-size={VFO_LABEL_FS}
             font-weight="700"
-            fill={vfoLabelTone(index)}
+            fill={mark.overS9 ? VFO_TONE_RED : VFO_TONE_LIGHT}
             text-anchor="middle"
             dominant-baseline="text-before-edge"
-          >{label}</text>
+          >{mark.text}</text>
           <line
             data-scale-tick={index}
             x1={x} y1={VFO_TICK_Y1}
             x2={x} y2={VFO_TICK_Y2}
-            stroke={vfoLabelTone(index)}
+            stroke={mark.overS9 ? VFO_TONE_RED : VFO_TONE_LIGHT}
             stroke-width="1"
             opacity="0.7"
           />
@@ -575,40 +591,41 @@
       />
       <line
         data-meter-glow
-        x1={Math.min(vfoFillX, vfoS9X)} y1={vfoBarMidY}
-        x2={Math.min(vfoGlowX, vfoS9X)} y2={vfoBarMidY}
+        x1={Math.min(vfoFillEndX, vfoS9X)} y1={vfoBarMidY}
+        x2={Math.min(vfoGlowEndX, vfoS9X)} y2={vfoBarMidY}
         stroke={VFO_TONE_BLUE}
         stroke-width={VFO_BAR_H}
         stroke-dasharray={VFO_SEG_DASH}
         stroke-opacity="0.35"
-        visibility={vfoGlowX > vfoFillX + 0.5 ? 'visible' : 'hidden'}
+        visibility={vfoGlowEndX > vfoFillEndX ? 'visible' : 'hidden'}
       />
       <line
         data-meter-glow-red
-        x1={Math.max(vfoFillX, vfoS9X)} y1={vfoBarMidY}
-        x2={Math.max(vfoGlowX, vfoS9X)} y2={vfoBarMidY}
+        x1={Math.max(vfoFillEndX, vfoS9X)} y1={vfoBarMidY}
+        x2={Math.max(vfoGlowEndX, vfoS9X)} y2={vfoBarMidY}
         stroke={VFO_TONE_RED}
         stroke-width={VFO_BAR_H}
         stroke-dasharray={VFO_SEG_DASH}
         stroke-opacity="0.35"
-        visibility={vfoGlowX > Math.max(vfoFillX, vfoS9X) + 0.5 ? 'visible' : 'hidden'}
+        visibility={vfoGlowEndX > Math.max(vfoFillEndX, vfoS9X) ? 'visible' : 'hidden'}
       />
       <line
         data-meter-fill
         x1={vfoTrackX} y1={vfoBarMidY}
-        x2={Math.min(vfoFillX, vfoS9X)} y2={vfoBarMidY}
+        x2={Math.min(vfoFillEndX, vfoS9X)} y2={vfoBarMidY}
         stroke={VFO_TONE_BLUE}
         stroke-width={VFO_BAR_H}
         stroke-dasharray={VFO_SEG_DASH}
+        visibility={vfoFillEndX > vfoTrackX ? 'visible' : 'hidden'}
       />
       <line
         data-meter-fill-red
         x1={vfoS9X} y1={vfoBarMidY}
-        x2={Math.max(vfoFillX, vfoS9X)} y2={vfoBarMidY}
+        x2={vfoFillEndX > vfoS9X ? vfoFillEndX : vfoS9X} y2={vfoBarMidY}
         stroke={VFO_TONE_RED}
         stroke-width={VFO_BAR_H}
         stroke-dasharray={VFO_SEG_DASH}
-        visibility={vfoFillX > vfoS9X + 0.5 ? 'visible' : 'hidden'}
+        visibility={vfoFillEndX > vfoS9X ? 'visible' : 'hidden'}
       />
       <line
         data-meter-peak
@@ -629,17 +646,17 @@
         fill={VFO_TONE_LIGHT}
         text-anchor="start"
         dominant-baseline="text-after-edge"
-      >{displaySUnit}</text>
+      >{vfoReadingKnown ? displaySUnit : ''}</text>
       <text
         data-meter-reading-secondary
         x={vfoReadoutX}
         y={VFO_SECONDARY_Y}
         font-family="'Roboto Mono', monospace"
         font-size={VFO_READOUT_SECONDARY_FS}
-        fill="var(--v2-text-secondary, #A0B4C8)"
+        fill="var(--v2-text-secondary)"
         text-anchor="start"
         dominant-baseline="central"
-      >{displayDbm}</text>
+      >{vfoReadingKnown ? displayDbm : ''}</text>
     </g>
     {/if}
 
@@ -657,7 +674,7 @@
             font-family="'Roboto Mono', monospace"
             font-size={VFO_PO_LABEL_FS}
             font-weight="700"
-            fill="var(--v2-text-dim, #6F8196)"
+            fill="var(--v2-text-dim)"
             text-anchor="middle"
             dominant-baseline="text-before-edge"
           >{t.label}</text>
@@ -665,7 +682,7 @@
             data-lower-tick-mark={t.value}
             x1={x} y1={VFO_PO_TICK_Y1}
             x2={x} y2={VFO_PO_TICK_Y2}
-            stroke="var(--v2-text-dim, #6F8196)"
+            stroke="var(--v2-text-dim)"
             stroke-width="1"
             opacity="0.7"
           />
@@ -681,12 +698,23 @@
         <line
           data-lower-fill
           x1={vfoTrackX} y1={VFO_PO_Y + VFO_PO_H / 2}
-          x2={vfoLowerFillX} y2={VFO_PO_Y + VFO_PO_H / 2}
+          x2={vfoLowerFillEndX} y2={VFO_PO_Y + VFO_PO_H / 2}
           stroke={VFO_TONE_BLUE}
           stroke-width={VFO_PO_H}
           stroke-dasharray={VFO_SEG_DASH}
-          visibility={vfoLowerFillX > vfoTrackX + 0.5 ? 'visible' : 'hidden'}
+          visibility={vfoLowerFillEndX > vfoTrackX ? 'visible' : 'hidden'}
         />
+        <text
+          data-lower-row-label
+          x={vfoReadoutX}
+          y={VFO_PO_LABEL_Y}
+          font-family="'Roboto Mono', monospace"
+          font-size={VFO_PO_LABEL_FS}
+          font-weight="700"
+          fill="var(--v2-text-dim)"
+          text-anchor="start"
+          dominant-baseline="text-before-edge"
+        >{lowerScale.label}</text>
       </g>
     {/if}
   </svg>
