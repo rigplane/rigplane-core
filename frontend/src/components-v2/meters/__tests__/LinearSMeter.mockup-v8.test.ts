@@ -253,15 +253,16 @@ describe('MOR-2509 R2-2 — mock-up v8 S-meter geometry', () => {
   });
 
   it('peaks with a constant 2px light marker and .38 afterglow, in each zone', () => {
-    // Two ARMED frames with the marker on OPPOSITE sides of the S9 raster
-    // split (312px). Why the previous pair was red on the build host: the
-    // marker arms only while peak − smoothed > 0.3 on the CALIBRATED axis —
-    // the +20 reading's min(1, mf+0.4) peak clamped to 1 against mf 0.836,
-    // a delta of 0.164, so the marker stayed hidden; and the −36 reading's
-    // +0.4 peak lerped through the knots to ≈356px, already past the 312px
-    // split, so even the 'below' marker sat over S9. The frames below keep
-    // a 0.4 delta under the clamp: −48 (S1, mf 0.061, peak 0.461) places
-    // the marker at 257px; S9 (mf 0.55, peak 0.95) places it at 446px.
+    // Two ARMED frames with READING and marker on OPPOSITE sides of the S9
+    // raster split (312px). Why the previous pairs failed: the marker arms
+    // only while peak − smoothed > 0.3 on the CALIBRATED axis — the +20
+    // reading's min(1, mf+0.4) peak clamped to 1 against mf 0.836 (delta
+    // 0.164, hidden), and 0 dB was exactly S9, not past it. +10 dB is the
+    // highest FTX-1 reading that can still arm: mf 0.693 leaves a delta of
+    // 0.3068 to the peak clamp at 1 — just over the 0.3 threshold — and its
+    // own bar sits at 352px, past the split. The lerped peak (1 → 6/7)
+    // lands at 470px; the −48 reading (S1, mf 0.061, peak 0.461) places its
+    // marker at 257px, left of the split.
     const frameAt = (value: number, peakFraction: number) => {
       const projection = projectSignalMeter(value);
       return {
@@ -276,7 +277,7 @@ describe('MOR-2509 R2-2 — mock-up v8 S-meter geometry', () => {
     const below = mountMeter({ frame: frameAt(-48, 0.4611), variant: 'vfo', compact: true });
     expect(marker(below).getAttribute('visibility')).toBe('visible');
     expect(Number(marker(below).getAttribute('x1'))).toBeLessThan(S9_RASTER_X);
-    const past = mountMeter({ frame: frameAt(0, 0.95), variant: 'vfo', compact: true });
+    const past = mountMeter({ frame: frameAt(10, 1), variant: 'vfo', compact: true });
     expect(marker(past).getAttribute('visibility')).toBe('visible');
     expect(Number(marker(past).getAttribute('x1'))).toBeGreaterThan(S9_RASTER_X);
     // One constant light tone at every zone — the v7 cyan/red zone colours
