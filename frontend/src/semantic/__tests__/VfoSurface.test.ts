@@ -2758,7 +2758,10 @@ describe('MOR-2342 preserved instrument intents', () => {
     const tune = vi.fn(); const split = vi.fn();
     const root = mountSurface({ viewModel: model, appearance, onTuneFrequency: tune, onToggleSplit: split });
     expect(root.querySelector('.digit')).toBeNull();
-    expect(root.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('—');
+    // MOR-2509: the Standard panel paints no glyph for an unobserved
+    // frequency; the semantic/sdr tile keeps its dash fallback.
+    expect(root.querySelector('[data-vfo-freq]')?.textContent?.trim())
+      .toBe(appearance === 'standard' ? '' : '—');
     const toggle = root.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
     expect(toggle.disabled).toBe(true); toggle.click();
     expect(split).not.toHaveBeenCalled(); expect(tune).not.toHaveBeenCalled();

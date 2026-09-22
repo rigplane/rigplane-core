@@ -130,8 +130,8 @@
    *  unknown keeps the family tone. */
   function legacyLampColor(color: string): string {
     if (color === 'white') return 'var(--v2-text-primary, #ffffff)';
-    if (color === 'muted') return 'var(--v2-badge-inactive-text, inherit)';
-    return `var(--v2-badge-${color}-text, inherit)`;
+    if (color === 'muted') return 'var(--v2-badge-inactive-text)';
+    return `var(--v2-badge-${color}-text)`;
   }
 
   function handleFrequencyClick(event: MouseEvent): void {
