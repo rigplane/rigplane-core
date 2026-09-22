@@ -104,19 +104,27 @@
   --dl-vfo-slate: #5b6a79;
   --dl-vfo-slate-dim: #46525e;
   --dl-vfo-frame: #ffffff;
-  --dl-vfo-frame-dim: #ffffff;
+  --dl-vfo-frame-dim: #9fb0c4;
   --dl-vfo-tab-frame: #ffffff;
-  --dl-vfo-tab-frame-dim: #ffffff;
-  --dl-vfo-dim-text: #ffffff;
+  --dl-vfo-tab-frame-dim: #b9c4cf;
+  --dl-vfo-dim-text: #e3eaf2;
+  /* The inactive readout is grey, not white: the v8 mock-up quiets the
+     frequency numeral to #a9b5c1 and the receiver name to #7f8d9b so the
+     active VFO is unambiguous. */
+  --dl-vfo-frequency-ink-dim: #a9b5c1;
+  --dl-vfo-name-ink-dim: #7f8d9b;
   --dl-vfo-unlit-text: #5a6875;
   --dl-vfo-unlit-border: #1f2832;
   --dl-vfo-unlit-fill: rgba(255, 255, 255, 0.012);
   --dl-vfo-rhythm: 1;
   --dl-vfo-rhythm-narrow: calc(var(--dl-vfo-rhythm) * 0.78);
   --dl-vfo-frequency-weight: 800;
-  --dl-vfo-panel-background: linear-gradient(180deg, #0b0f14 0%, #0a0e13 38%, #070a0e 100%);
+  --dl-vfo-panel-background: linear-gradient(180deg, #10161d 0%, #0a0e13 38%, #070a0e 100%);
   --dl-vfo-panel-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 -18px 30px rgba(0, 0, 0, 0.45), 0 6px 18px rgba(0, 0, 0, 0.5);
-  --dl-vfo-panel-sheen: var(--v2-vfo-panel-sheen-override, linear-gradient(115deg, rgba(255, 255, 255, 0.055) 0%, rgba(255, 255, 255, 0.018) 22%, transparent 38%));
+  /* The glass the v8 mock-up paints over each panel's content: the 115°
+     sheen plus a 3px scanline raster, both in one token because the layer
+     is one ::after box. */
+  --dl-vfo-panel-sheen: var(--v2-vfo-panel-sheen-override, linear-gradient(115deg, rgba(255, 255, 255, 0.055) 0%, rgba(255, 255, 255, 0.018) 22%, transparent 38%), repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.022) 0 1px, transparent 1px 3px));
   --dl-vfo-panel-sheen-blend: screen;
   --dl-vfo-bridge-background: linear-gradient(180deg, #161c23, #0f141a);
   --dl-vfo-bridge-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 6px 18px rgba(0, 0, 0, 0.5);
@@ -142,8 +150,17 @@
 [data-design-language='studioline'][data-design-language][data-language-mode='light'] {
   --dl-vfo-panel-background: linear-gradient(180deg, #f9f6f0 0%, #f2eee7 38%, #e9e4db 100%);
   --dl-vfo-panel-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), inset 0 -12px 24px rgba(65, 54, 40, 0.08), 0 6px 18px rgba(44, 37, 29, 0.16);
-  --dl-vfo-panel-sheen: var(--v2-vfo-panel-sheen-override, linear-gradient(115deg, rgba(255, 255, 255, 0.72) 0%, rgba(255, 255, 255, 0.2) 22%, transparent 38%));
-  --dl-vfo-panel-sheen-blend: normal;
+  /* The glass rides above content now, so light mode must gloss without a
+     white veil: soft-light keeps the paper and the ink where they were. */
+  --dl-vfo-panel-sheen: var(--v2-vfo-panel-sheen-override, linear-gradient(115deg, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0.12) 22%, transparent 38%));
+  --dl-vfo-panel-sheen-blend: soft-light;
+  /* Light-mode dim chrome: quiet grey frames against the warm paper, and
+     muted ink for the readout. --dl-vfo-dim-text is NOT overridden here: it
+     is ink on the dim fills, which stay dark in both modes. */
+  --dl-vfo-frame-dim: #a9b3bd;
+  --dl-vfo-tab-frame-dim: #b6bec7;
+  --dl-vfo-frequency-ink-dim: #525e6b;
+  --dl-vfo-name-ink-dim: #66707c;
   --dl-vfo-meter-well-background: #151b22;
   --dl-vfo-meter-well-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.72), inset 0 0 0 1px #34404d, 0 1px 0 rgba(255, 255, 255, 0.7);
   --dl-vfo-unlit-text: #6b6459;

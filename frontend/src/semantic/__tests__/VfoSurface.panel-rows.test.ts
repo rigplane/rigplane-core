@@ -746,6 +746,27 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(filterOwners).toEqual(['.panel', '.panel:not(.active)']);
   });
 
+  it('the inactive panel quiets the frequency numeral and the receiver name (R2-4)', () => {
+    const inactive = rulesFor(panelCss, '.panel:not(.active)').join('\n');
+    const base = rule(panelCss, '.panel');
+    // The dim inks exist ONLY on the inactive panel: the base wiring never
+    // defines them, so the active readout keeps the inherited ink and the
+    // secondary label tone — the two panels can never render the same
+    // frequency ink.
+    expect(inactive).toMatch(/--vfo-frequency-ink:\s*var\(--dl-vfo-frequency-ink-dim,\s*#a9b5c1\)/);
+    expect(inactive).toMatch(/--vfo-name-ink:\s*var\(--dl-vfo-name-ink-dim,\s*#7f8d9b\)/);
+    expect(base).not.toContain('--vfo-frequency-ink:');
+    expect(base).not.toContain('--vfo-name-ink:');
+    expect(rulesFor(panelCss, '.vfo-freq').join('\n'))
+      .toMatch(/color:\s*var\(--vfo-frequency-ink,\s*currentcolor\)/);
+    expect(rulesFor(panelCss, '.vfo-label').join('\n'))
+      .toMatch(/color:\s*var\(--vfo-name-ink,\s*var\(--v2-text-secondary\)\)/);
+    // An unread frequency stays an unlit label even on the inactive panel:
+    // the (0,2,0) display-unknown rule outranks the (0,1,0) base rule.
+    expect(rulesFor(panelCss, '.vfo-freq.display-unknown').join('\n'))
+      .toMatch(/color:\s*var\(--vfo-unlit-text\)/);
+  });
+
   it('keeps filled chip ink mode-independent while light mode owns a light panel', () => {
     const base = [...studiolineCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
       .find(([, selectors, body]) => selectors.trim() === "[data-design-language='studioline'][data-design-language]"
@@ -754,10 +775,24 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
       studiolineCss,
       "[data-design-language='studioline'][data-design-language][data-language-mode='light']",
     ).join('\n');
-    for (const token of ['frame', 'frame-dim', 'tab-frame', 'tab-frame-dim', 'dim-text']) {
+    // Only the ACTIVE frames and ink stay white and mode-independent.
+    for (const token of ['frame', 'tab-frame']) {
       expect(base, `--dl-vfo-${token} stays white`).toMatch(new RegExp(`--dl-vfo-${token}:\\s*#ffffff`));
       expect(light, `light mode does not replace --dl-vfo-${token}`).not.toContain(`--dl-vfo-${token}:`);
     }
+    // The dim chrome follows the v8 mock-up: greyed frames, softened chip
+    // ink, and the grey inactive readout of R2-4.
+    expect(base).toMatch(/--dl-vfo-frame-dim:\s*#9fb0c4/);
+    expect(base).toMatch(/--dl-vfo-tab-frame-dim:\s*#b9c4cf/);
+    expect(base).toMatch(/--dl-vfo-dim-text:\s*#e3eaf2/);
+    expect(base).toMatch(/--dl-vfo-frequency-ink-dim:\s*#a9b5c1/);
+    expect(base).toMatch(/--dl-vfo-name-ink-dim:\s*#7f8d9b/);
+    // Light mode owns its own quiet dim values — except the chip ink, which
+    // sits on the dim fills and those stay dark in both modes.
+    for (const token of ['frame-dim', 'tab-frame-dim', 'frequency-ink-dim', 'name-ink-dim']) {
+      expect(light, `light mode owns --dl-vfo-${token}`).toContain(`--dl-vfo-${token}:`);
+    }
+    expect(light).not.toContain('--dl-vfo-dim-text:');
     expect(base).toMatch(/--dl-vfo-amber-chip-text:\s*#ffd47a/);
     expect(base).toMatch(/--dl-vfo-amber-chip-text-dim:\s*#b89a5e/);
     expect(light).toMatch(/--dl-vfo-red-text:\s*#a33228/);
@@ -766,6 +801,34 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(light).toMatch(/--dl-vfo-panel-background:\s*linear-gradient\([^;]*#f9f6f0[^;]*#e9e4db/);
     expect(light).toMatch(/--dl-vfo-meter-well-background:\s*#151b22/);
     expect(light).toMatch(/--dl-vfo-panel-sheen:\s*var\(--v2-vfo-panel-sheen-override,/);
+  });
+
+  it('the dark ground and glass match the v8 mock-up: #10161d top stop, scanlines in the sheen', () => {
+    const base = [...studiolineCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .find(([, selectors, body]) => selectors.trim() === "[data-design-language='studioline'][data-design-language]"
+        && body.includes('--dl-vfo-primary-neon:'))?.[2] ?? '';
+    const light = rulesFor(
+      studiolineCss,
+      "[data-design-language='studioline'][data-design-language][data-language-mode='light']",
+    ).join('\n');
+    expect(base).toMatch(
+      /--dl-vfo-panel-background:\s*linear-gradient\(180deg,\s*#10161d 0%,\s*#0a0e13 38%,\s*#070a0e 100%\)/,
+    );
+    // One token, two layers: the 115° sheen over the 3px scanline raster,
+    // exactly the mock-up's .glass background. Both die together under
+    // prefers-contrast: more through the override.
+    expect(base).toMatch(/--dl-vfo-panel-sheen:\s*var\(--v2-vfo-panel-sheen-override,/);
+    expect(base).toMatch(
+      /--dl-vfo-panel-sheen:[^;]*rgba\(255, 255, 255, 0\.055\)[^;]*rgba\(255, 255, 255, 0\.018\)[^;]*transparent 38%/,
+    );
+    expect(base).toMatch(
+      /--dl-vfo-panel-sheen:[^;]*repeating-linear-gradient\(180deg,\s*rgba\(255, 255, 255, 0\.022\) 0 1px,\s*transparent 1px 3px\)/,
+    );
+    expect(base).toMatch(/--dl-vfo-panel-sheen-blend:\s*screen/);
+    // The glass rides above content, so light mode glosses instead of
+    // veiling: soft-light, and no scanline raster on paper.
+    expect(light).toMatch(/--dl-vfo-panel-sheen-blend:\s*soft-light/);
+    expect(light).not.toMatch(/--dl-vfo-panel-sheen:[^;]*repeating-linear-gradient/);
   });
 
   it('every readout rule that sets a digit weight resolves it from the deck token', () => {
@@ -844,15 +907,20 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
           && body.includes('--dl-vfo-'))?.[2] ?? '';
       for (const token of ['panel-background', 'panel-shadow', 'panel-sheen', 'bridge-background',
         'bridge-shadow', 'meter-well-background', 'meter-well-shadow', 'meter-lit-filter',
-        'frequency-glow', 'primary-glow', 'red-glow', 'amber-glow', 'dsp-glow']) {
+        'frequency-glow', 'primary-glow', 'red-glow', 'amber-glow', 'dsp-glow',
+        'frequency-ink-dim', 'name-ink-dim']) {
         expect(root, `${language} owns --dl-vfo-${token}`).toContain(`--dl-vfo-${token}:`);
       }
     }
 
     expect(rule(panelCss, '.panel')).toMatch(/background:\s*var\(--dl-vfo-panel-background/);
-    const sheen = rule(panelCss, '.panel::before');
+    // The glass is the panel's last box, ABOVE the content (the v8 mock-up's
+    // .glass), never the old z-index: -1 under-content placement whose
+    // contribution the pixel probe measured as zero.
+    const sheen = rule(panelCss, '.panel::after');
     expect(sheen).toMatch(/pointer-events:\s*none/);
-    expect(sheen).toMatch(/z-index:\s*-1/);
+    expect(sheen).toMatch(/position:\s*absolute/);
+    expect(sheen).not.toMatch(/z-index:\s*-/);
     expect(sheen).toMatch(/mix-blend-mode:\s*var\(--dl-vfo-panel-sheen-blend/);
     expect(rulesFor(panelCss, '.panel-meter').join('\n'))
       .toMatch(/background:\s*var\(--dl-vfo-meter-well-background/);

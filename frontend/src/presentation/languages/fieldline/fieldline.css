@@ -100,6 +100,9 @@
   --dl-vfo-tab-frame: var(--dl-fieldline-text);
   --dl-vfo-tab-frame-dim: var(--dl-fieldline-muted);
   --dl-vfo-dim-text: var(--dl-fieldline-text);
+  /* The inactive readout quiets to the muted label tone, never further. */
+  --dl-vfo-frequency-ink-dim: var(--dl-fieldline-muted);
+  --dl-vfo-name-ink-dim: var(--dl-fieldline-muted);
   --dl-vfo-unlit-fill: transparent;
   --dl-vfo-panel-background: var(--dl-fieldline-surface);
   --dl-vfo-panel-shadow: 0 0 0 transparent;
