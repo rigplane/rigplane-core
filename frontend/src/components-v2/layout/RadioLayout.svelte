@@ -1429,8 +1429,6 @@
       contain: inline-size;
     }
 
-    /* The unstacked rule at 0-2-0 clamps the center row with `contain: size`;
-       the stacked band needs the row's intrinsic inline size instead. */
     .desktop-control-face.standard-face .content-row { contain: inline-size; }
 
     .bottom-dock {
