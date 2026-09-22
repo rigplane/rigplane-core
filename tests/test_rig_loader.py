@@ -3743,7 +3743,11 @@ class _CatOnlyDeclaresAllGroupBAbsent:
 
 
 class TestFtx1ManualOnlyCommands:
-    """MOR-2257: retain CAT 2508-C names; RC has no row in that edition."""
+    """MOR-2257: retain CAT 2508-C names; RC has no row in that edition.
+
+    MOR-2531 added two 2508-C names: ``vfo_swap`` (SV; — SWAP VFO) and
+    ``vfo_equalize`` (AB; — MAIN-side to SUB-side), the FTX-1's M⇄S / M=S.
+    """
 
     _REMOVED_NAMES = frozenset(
         {
@@ -3770,8 +3774,8 @@ class TestFtx1ManualOnlyCommands:
     def test_exact_retained_membership(self):
         _assert_manual_only_membership(
             "ftx1.toml",
-            125,
-            "dbc54d534fa86d9cd1e7c1f17c81fb6d8959e3c6b91a2824442de77020020c06",
+            127,
+            "ad913476ed9199bd8f3a0c3943ff5fcc05115f2568deba77cea7c6e83fd8ac22",
             self._REMOVED_NAMES,
         )
 
