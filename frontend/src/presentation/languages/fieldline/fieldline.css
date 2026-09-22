@@ -50,6 +50,14 @@
   --dl-fieldline-surface: #0a0a0a;
   --dl-fieldline-text: #f2f5f7;
   --dl-fieldline-muted: #c2cbd2;
+  --focus-c-text: var(--dl-fieldline-text);
+  --focus-c-surface: color-mix(in srgb, var(--dl-fieldline-surface) 70%, var(--dl-fieldline-focus));
+  --focus-c-border: var(--dl-fieldline-focus);
+  --focus-c-channel: var(--dl-fieldline-surface);
+  --focus-c-fill: var(--dl-fieldline-focus);
+  --focus-c-cap: var(--dl-fieldline-text);
+  --focus-c-cap-border: var(--dl-fieldline-muted);
+  --focus-c-slit: var(--dl-fieldline-focus);
   /* Knocked-out label text on a filled slab or band: black in BOTH modes. */
   --dl-fieldline-knockout: #0a0a0a;
   /* 8px rhythm throughout — no micro/macro split, because this grammar ranks
@@ -149,13 +157,11 @@
 }
 
 /* ── One focus contract, never re-suppressed (MOR-977 §1.2.5) ───────────── */
-[data-design-language='fieldline'][data-design-language] :focus-visible {
-  /* Outline shorthand matching the token literal exactly (MOR-1232 D5). 3px
-     and hugging the edge: thick borders give the ring room, so it reads as an
-     inversion of the block rather than as a halo standing off it — the
-     opposite placement to studioline's 3px offset (MOR-977 §3.2). */
-  outline: 3px solid var(--dl-fieldline-focus);
-  outline-offset: 0;
+[data-design-language='fieldline'][data-design-language]
+  :focus-visible:not(:where(input[type='range'], .vc-track-container, .vc-knob-container)) {
+  background-color: var(--focus-c-surface);
+  border-color: var(--focus-c-border);
+  color: var(--focus-c-text);
 }
 
 /* ── Stacked blocks: hard edges, 8px rhythm, nothing soft ───────────────── */

@@ -7,16 +7,10 @@
   box-sizing: border-box;
 }
 
-:focus-visible {
-  /* MOR-1232: `outline`, never `box-shadow`. This is the app-wide default that
-   * every component without a focus rule of its own relies on, and a global
-   * box-shadow (0,1,0) loses to any Svelte-scoped component box-shadow
-   * (0,2,0+) — see the note on --focus-ring in styles/tokens.css.
-   * --v2-focus-ring carries the per-skin, contrast-checked ring colour once the
-   * components-v2 theme layer is loaded; skins are code-split, so the legacy
-   * --focus-ring fallback stays live until a v2 layout mounts. */
-  outline: var(--v2-focus-ring, var(--focus-ring));
-  outline-offset: 2px;
+:focus-visible:not(input[type='range'], .vc-track-container, .vc-knob-container) {
+  background-color: var(--focus-c-surface);
+  border-color: var(--focus-c-border);
+  color: var(--focus-c-text);
 }
 
 /* MOR-2522: a native range slider LIGHTS on keyboard focus, never draws a
@@ -51,6 +45,19 @@
 input[type='range'][type='range']:focus-visible {
   outline: none;
   box-shadow: var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow));
+}
+
+@media (forced-colors: active) {
+  :focus-visible {
+    background-color: revert !important;
+    border-color: revert !important;
+    color: revert !important;
+    box-shadow: none !important;
+    filter: none !important;
+    forced-color-adjust: auto;
+    outline: 2px solid Highlight !important;
+    outline-offset: 2px !important;
+  }
 }
 
 body {

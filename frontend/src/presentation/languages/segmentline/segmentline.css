@@ -28,6 +28,15 @@
   --dl-segmentline-ink-soft: rgba(var(--dl-segmentline-ink) / 0.34);
   --dl-segmentline-ink-ghost: rgba(var(--dl-segmentline-ink) / 0.09);
 
+  --focus-c-text: var(--dl-segmentline-ink-strong);
+  --focus-c-surface: var(--dl-segmentline-glass);
+  --focus-c-border: var(--dl-segmentline-ink-strong);
+  --focus-c-channel: var(--dl-segmentline-bezel);
+  --focus-c-fill: var(--dl-segmentline-ink-strong);
+  --focus-c-cap: var(--dl-segmentline-glass);
+  --focus-c-cap-border: var(--dl-segmentline-ink-strong);
+  --focus-c-slit: var(--dl-segmentline-bezel);
+
   --dl-segmentline-tx-mark: #7a1a0a;
   --dl-segmentline-rx-tuning: #a97400;
 
@@ -142,8 +151,9 @@
 
 [data-design-language='segmentline'][data-design-language] .rx-tx-key:focus-visible,
 [data-design-language='segmentline'][data-design-language] .rx-tx-unkey:focus-visible {
-  outline: 2px solid var(--dl-segmentline-ink-strong);
-  outline-offset: 1px;
+  background-color: var(--focus-c-surface);
+  border-color: var(--focus-c-border);
+  color: var(--focus-c-text);
 }
 
 /* ── Seven-segment readout ───────────────────────────────────────────── */

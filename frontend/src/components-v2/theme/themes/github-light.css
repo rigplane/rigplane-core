@@ -30,6 +30,14 @@
   --v2-accent-cyan-bright: #218bff;
   --v2-accent-cyan-teal: #0550ae;
   --v2-accent-cyan-alt: #0969da;
+  --focus-c-text: var(--v2-text-primary);
+  --focus-c-surface: var(--v2-bg-darker);
+  --focus-c-border: var(--v2-accent-cyan);
+  --focus-c-channel: var(--v2-bg-darkest);
+  --focus-c-fill: var(--v2-accent-cyan);
+  --focus-c-cap: var(--v2-text-primary);
+  --focus-c-cap-border: var(--v2-accent-cyan-teal);
+  --focus-c-slit: var(--v2-accent-cyan-teal);
 
   /* ── Colors: Text ────────────────────────────────────── */
   --v2-text-primary: #1f2328;

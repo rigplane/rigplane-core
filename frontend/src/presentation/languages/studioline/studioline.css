@@ -41,6 +41,14 @@
   --dl-studioline-surface: #0e1113;
   --dl-studioline-text: #eef1f2;
   --dl-studioline-muted: #748086;
+  --focus-c-text: var(--dl-studioline-text);
+  --focus-c-surface: color-mix(in srgb, var(--dl-studioline-surface) 72%, var(--dl-studioline-focus));
+  --focus-c-border: var(--dl-studioline-focus);
+  --focus-c-channel: var(--dl-studioline-surface);
+  --focus-c-fill: var(--dl-studioline-focus);
+  --focus-c-cap: var(--dl-studioline-text);
+  --focus-c-cap-border: var(--dl-studioline-muted);
+  --focus-c-slit: var(--dl-studioline-focus);
   /* 6px rhythm with a 4:1 macro/micro gap ratio (MOR-977 §2.3 geometry). */
   --dl-studioline-gap-micro: 6px;
   --dl-studioline-gap-macro: 24px;
@@ -198,11 +206,11 @@
 }
 
 /* ── One focus contract, never re-suppressed (MOR-977 §1.2.5) ───────────── */
-[data-design-language='studioline'][data-design-language] :focus-visible {
-  /* Outline shorthand, matching the token literal exactly (MOR-1232 D5). */
-  outline: 2px solid var(--dl-studioline-focus);
-  /* No box edge to hug in a borderless grammar — the ring stands off instead. */
-  outline-offset: 3px;
+[data-design-language='studioline'][data-design-language]
+  :focus-visible:not(:where(input[type='range'], .vc-track-container, .vc-knob-container)) {
+  background-color: var(--focus-c-surface);
+  border-color: var(--focus-c-border);
+  color: var(--focus-c-text);
 }
 
 /* ── The channel strip: no boxes, one optical left margin ───────────────── */

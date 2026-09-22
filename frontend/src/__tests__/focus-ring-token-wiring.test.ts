@@ -1,74 +1,7 @@
 /**
- * MOR-1232 — the `--focus-ring` design token (frontend/src/styles/tokens.css)
- * was declared but never referenced anywhere, and several components
- * suppressed keyboard focus outright with a bare `outline: none` that had no
- * visible replacement. MOR-1087 needs a v3 accessibility/keyboard-focus
- * evidence run to pass, and it provably cannot while the focus ring is dead.
- *
- * These tests pin the wiring and the contrast math, not the pixels:
- *
- *   1. The global default (`src/app.css`) consumes the ring tokens and is
- *      `outline`-shaped. This is load-bearing, not cosmetic: a global
- *      `:focus-visible` rule has specificity (0,1,0), so a `box-shadow` ring
- *      declared there is discarded by ANY Svelte-scoped component rule that
- *      sets `box-shadow` (compiled to `.foo.svelte-<hash>` = (0,2,0)+) — and
- *      `box-shadow` is the most-used decorative property in this codebase.
- *      `outline` paints on an independent layer, is not clipped by an
- *      ancestor `overflow: hidden`, and survives forced-colours mode.
- *      The concrete regression this pins is TxPanel's PTT button, which sets
- *      a red glow `box-shadow` while transmitting and has no focus rule of
- *      its own — see the dedicated test below.
- *
- *   2. components-v2 gets its own token trio
- *      (`--v2-focus-ring-color` → `--v2-focus-ring` / `--v2-focus-ring-shadow`)
- *      rather than being forced onto the legacy `--accent` (#4db6ff), which
- *      fails the WCAG 1.4.11 3:1 non-text minimum against every surface of all
- *      five light v2 skins. The colour is NOT assumed to be theme-correct just
- *      because it is per-skin: test group 5 recomputes the ratio for every skin
- *      from the real hex values and fails under 3:1. Two skins (nord-light,
- *      solarized-light) needed an explicit `--v2-focus-ring-color` override
- *      because their accent — not the legacy one — was itself under 3:1.
- *
- *   3. Every identified "suppress it entirely" site pairs its `outline: none`
- *      with a real `:focus-visible` treatment wired to one of those tokens.
- *
- *   4. The two local overrides whose shape already matched the token
- *      (box-shadow ring, same colour source) reference it.
- *
- *   5. A regression guard, scoped to the SELECTOR (not the file): a decorative
- *      `box-shadow` on an unrelated rule elsewhere in the file does not satisfy
- *      it. File-scoping was the first version's blind spot — it passed
- *      `control-button.css` and `StatusBar.svelte` on the pre-fix revision,
- *      i.e. it missed the very bug this ticket fixes in the two
- *      highest-impact files.
- *
- * Deliberately NOT touched (recorded, not silently dropped):
- *   - BandSelector.svelte / ProfessionalKnob.svelte keep their per-widget ring
- *     SHAPE (a tab strip's inset 1px ring, a knob's circular 4px-offset ring);
- *     forcing them onto --v2-focus-ring's 2px/2px-offset rectangle would
- *     reshape the widget without live visual verification. BandSelector's ring
- *     COLOUR is aligned to --v2-focus-ring-color (contrast, no shape change);
- *     ProfessionalKnob's comes from a per-instance `accentColor` prop
- *     (literal default #00e5ff), so aligning it is a behaviour question for
- *     the owner, not a token swap.
- *   - legacy `src/components/spectrum/*` suppressions: pre-v3 code, listed
- *     under LEGACY_DEBT below rather than silently masked by the guard.
- *
- * MOR-1254 follow-up (fixed here, see section 5's extended loop and section 7
- * below): the five value-control renderers (Knob/HBar/Discrete/Bipolar/
- * DualParam) used to colour their focus outline with `--vc-accent` /
- * `--vc-rf-accent` — the general per-instance accent, shared with tick marks
- * and fills, unchecked for contrast (1.48-1.74 on nord-light) — while
- * `--vc-focus-ring` (value-control.css) was declared and referenced NOWHERE,
- * a second instance of this ticket's dead-token defect. `--vc-focus-ring` now
- * resolves to `--v2-focus-ring-color` (the same contrast-pinned per-skin
- * knob), and all five renderers, including DualParamRenderer, consume it.
- *
- * MOR-2522 changed the CARRIER, not the colour: the renderers' outline frame
- * and wheel-control.ts's inline `node.style.outline` are gone; focus and
- * arming light the control with the full-opacity `--vc-focus-ring-shadow`
- * spread ring instead. Section 7 pins that shape contract, and the studioline
- * pins below hold the ring to 3:1 on both studioline surfaces.
+ * MOR-1232 and MOR-1254 tests preserve the legacy and value-owner history.
+ * The named MOR-2522 PART A tests add the app-wide colour BLOCK contract,
+ * forced-colours owner, exact language mappings, and the PART B/C ratchet.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { extname, join } from 'node:path';
@@ -113,8 +46,8 @@ function ruleBlocks(css: string): Array<{ selector: string; body: string }> {
 /** The element(s) a selector list targets, with pseudo-classes/elements
  *  stripped: `.a:focus, .b input:focus-visible` → ['.a', '.b input'].
  *  A repeated simple selector in one compound names the same element —
- *  `.a.a:focus-visible` is the MOR-2522 specificity raise over the studioline
- *  focus contract — so compounds are deduplicated before comparison; raw
+ *  `.a.a:focus-visible` is one element with a repeated class, so compounds
+ *  are deduplicated before comparison; raw
  *  string equality would misread the doubled class as a different element
  *  and report the base rule as unpaired. The simple-selector split is
  *  escape-aware: a `.` or `#` preceded by a backslash belongs to the
@@ -210,10 +143,8 @@ function contrast(a: string, b: string): number {
  * values and parenthesised arguments are dropped first. A type is counted
  * once per compound, as a leading identifier — MOR-2522's native-range rule
  * (`input[type='range'][type='range']:focus-visible`, section 9) is the first
- * ranked selector whose win lives in the c column; the section-9 pin 'the
- * doubled attribute and the element type are both load-bearing' fails if the
- * count is dropped. Pseudo-elements keep their historical c count; no ranked
- * selector uses one. */
+ * ranked selector whose win lives in the c column. Pseudo-elements keep their
+ * historical c count; no ranked selector uses one. */
 function specificity(selector: string): [number, number, number] {
   const stripped = selector.replace(/'[^']*'/g, "''").replace(/\([^()]*\)/g, '');
   let a = 0;
@@ -266,39 +197,28 @@ function shadowLayers(value: string): string[] {
   return layers;
 }
 
-/** Svelte compiles a scoped rule by appending one scope class to its
- * selector. The hash VALUE is irrelevant — whatever it is, it contributes
- * exactly one class-level token — so the compiled specificity is the source
- * specificity with b + 1. This models Svelte's append-a-class scoping; a
- * compiler that switched to zero-specificity :where() scoping would need
- * this model (and the doubled classes) re-derived. */
-function svelteCompiled(selector: string): [number, number, number] {
-  const [a, b, c] = specificity(selector);
-  return [a, b + 1, c];
-}
-
 function globalFocusRule(): string {
-  // Comments are stripped so prose about box-shadow/outline in the rule's own
-  // explanatory comment cannot satisfy or defeat the assertions below.
-  const rule = stripComments(read('app.css')).match(/:focus-visible\s*\{[^}]*\}/);
-  expect(rule, 'expected a top-level :focus-visible rule in app.css').not.toBeNull();
-  return rule![0];
+  const rule = ruleBlocks(stripComments(read('app.css'))).find(
+    (block) => block.selector.startsWith(':focus-visible:not('),
+  );
+  expect(rule, 'expected the top-level BLOCK focus rule in app.css').toBeTruthy();
+  return `${rule!.selector} {${rule!.body}}`;
 }
 
 /* ── 1. token wiring ─────────────────────────────────────────────────────── */
 
 describe('MOR-1232: --focus-ring token wiring', () => {
-  it('app.css global :focus-visible default consumes the ring tokens', () => {
+  it('app.css global :focus-visible default consumes the three BLOCK colour roles', () => {
     const rule = globalFocusRule();
-    expect(rule).toMatch(/outline:\s*var\(--v2-focus-ring,\s*var\(--focus-ring\)\)/);
-    expect(rule).toMatch(/outline-offset:/);
+    expect(rule).toMatch(/background-color:\s*var\(--focus-c-surface\)/);
+    expect(rule).toMatch(/border-color:\s*var\(--focus-c-border\)/);
+    expect(rule).toMatch(/color:\s*var\(--focus-c-text\)/);
+    expect(rule).not.toMatch(/outline|box-shadow|filter|::(?:before|after)/);
   });
 
-  it('the legacy --focus-ring token is outline-shaped, so the global rule can use it', () => {
+  it('the legacy --focus-ring token remains outline-shaped for PART B/C allowlisted sites', () => {
     const css = read('styles/tokens.css');
     expect(css).toMatch(/--focus-ring:\s*2px solid var\(--accent\)\s*;/);
-    // A box-shadow-shaped value here would silently make `outline: var(--focus-ring)`
-    // invalid at computed-value time — i.e. no ring at all.
     expect(css).not.toMatch(/--focus-ring:\s*0 0 0/);
   });
 
@@ -307,6 +227,33 @@ describe('MOR-1232: --focus-ring token wiring', () => {
     expect(css).toMatch(/--v2-focus-ring-color:\s*var\(--v2-accent-cyan\)/);
     expect(css).toMatch(/--v2-focus-ring:\s*2px solid var\(--v2-focus-ring-color\)/);
     expect(css).toMatch(/--v2-focus-ring-shadow:\s*0 0 0 2px var\(--v2-focus-ring-color\)/);
+  });
+
+  it('MOR-2522 declares all eight Variant C roles in the dark and github-light token layers', () => {
+    const dark = parseTokens(read('components-v2/theme/tokens.css'));
+    const light = parseTokens(read('components-v2/theme/themes/github-light.css'));
+    expect(Object.fromEntries(Object.entries(dark).filter(([name]) => name.startsWith('--focus-c-'))))
+      .toEqual({
+        '--focus-c-text': '#c9d6e3',
+        '--focus-c-surface': '#2f261a',
+        '--focus-c-border': '#65533b',
+        '--focus-c-channel': '#111519',
+        '--focus-c-fill': '#ffc064',
+        '--focus-c-cap': '#949eaa',
+        '--focus-c-cap-border': '#c3ccd6',
+        '--focus-c-slit': '#ffd58a',
+      });
+    expect(Object.fromEntries(Object.entries(light).filter(([name]) => name.startsWith('--focus-c-'))))
+      .toEqual({
+        '--focus-c-text': 'var(--v2-text-primary)',
+        '--focus-c-surface': 'var(--v2-bg-darker)',
+        '--focus-c-border': 'var(--v2-accent-cyan)',
+        '--focus-c-channel': 'var(--v2-bg-darkest)',
+        '--focus-c-fill': 'var(--v2-accent-cyan)',
+        '--focus-c-cap': 'var(--v2-text-primary)',
+        '--focus-c-cap-border': 'var(--v2-accent-cyan-teal)',
+        '--focus-c-slit': 'var(--v2-accent-cyan-teal)',
+      });
   });
 });
 
@@ -347,30 +294,18 @@ describe('MOR-2509: the Standard deck uses the shared three-step focus treatment
 
 /* ── 2. the global default must survive scoped box-shadows (F1) ──────────── */
 
-describe('MOR-1232: the global focus default cannot be masked by a component box-shadow', () => {
-  it('is outline-based, not box-shadow-based, and does not disable the outline', () => {
+describe('MOR-2522: the global focus default changes colour without replacing component effects', () => {
+  it('declares only background, border, and text colours', () => {
     const rule = globalFocusRule();
-    expect(rule).toMatch(/outline:\s*var\(/);
-    expect(
-      OUTLINE_NONE.test(rule),
-      'the global default must not set `outline: none` — nothing else can be relied on ' +
-        'to paint a ring for components that have no focus rule of their own',
-    ).toBe(false);
-    expect(
-      /box-shadow/.test(rule),
-      'a box-shadow here is (0,1,0) and loses to every Svelte-scoped component shadow',
-    ).toBe(false);
+    const properties = [...rule.matchAll(/(?:^|[;{])\s*([\w-]+)\s*:/g)].map((match) => match[1]);
+    expect(properties).toEqual(['background-color', 'border-color', 'color']);
   });
 
-  it('TxPanel PTT button keeps its focus ring while transmitting (.ptt-held red glow)', () => {
+  it('keeps the TxPanel transmitting glow outside the BLOCK declaration set', () => {
     const tx = read('components-v2/panels/TxPanel.svelte');
-    // The held/latched transmit state paints a scoped box-shadow …
     expect(tx).toMatch(/\.ptt-button\.ptt-held,[\s\S]{0,80}\{[^}]*box-shadow:/);
-    // … and TxPanel declares no focus treatment at all, so the PTT button —
-    // the most safety-critical control in the app — depends entirely on the
-    // global default surviving that shadow.
     expect(/:focus/.test(tx), 'TxPanel gained a focus rule; re-derive this test').toBe(false);
-    expect(globalFocusRule()).toMatch(/outline:\s*var\(/);
+    expect(globalFocusRule()).not.toMatch(/box-shadow/);
   });
 
   it('many components-v2 files set a box-shadow with no focus rule of their own', () => {
@@ -842,21 +777,9 @@ describe('MOR-2522: the value-control ring clears 3:1 on the studioline surfaces
   });
 });
 
-/* ── 8. MOR-2522: the suppression outranks the studioline focus contract ──── */
+/* ── 8. MOR-2522: language BLOCK contracts exclude value controls ───────── */
 
-describe('MOR-2522: renderer focus suppression outranks the studioline focus contract', () => {
-  // How the frame came back on the studioline page (review of bf14409b):
-  // Svelte compiles `.vc-track-container:focus-visible` to
-  // `.vc-track-container.svelte-xxxx:focus-visible` = (0,3,0); studioline's
-  // `:focus-visible` rule is also (0,3,0) and loads dynamically AFTER the
-  // component styles (fixtures/main.ts), so it won the tie on source order
-  // and its literal outline framed the slider again. The fix doubles the
-  // class — the same one-step raise studioline.css itself uses — so the
-  // compiled rule is (0,4,0) and wins on specificity alone, whatever the
-  // load order. These pins re-derive that ranking from both stylesheets:
-  // a selector that drops back to a tie fails here, and so does a raise of
-  // the studioline rule's own specificity.
-  const STUDIOLINE = 'presentation/languages/studioline/studioline.css';
+describe('MOR-2522: language BLOCK contracts cannot collide with value-control owners', () => {
   const RENDERER_CONTAINERS: Array<{ file: string; container: string }> = [
     { file: 'components-v2/controls/value-control/HBarRenderer.svelte', container: '.vc-track-container' },
     { file: 'components-v2/controls/value-control/DiscreteRenderer.svelte', container: '.vc-track-container' },
@@ -865,41 +788,30 @@ describe('MOR-2522: renderer focus suppression outranks the studioline focus con
     { file: 'components-v2/controls/value-control/DualParamRenderer.svelte', container: '.vc-track-container' },
   ];
 
-  const studiolineFocus = ruleBlocks(stripComments(read(STUDIOLINE))).find(
-    (b) => /:focus-visible/.test(b.selector) && /outline/.test(b.body),
-  );
-
-  it('the studioline focus contract is still the (0,3,0) literal-outline rule this ranking assumes', () => {
-    expect(studiolineFocus, 'expected a :focus-visible outline rule in studioline.css').toBeTruthy();
-    expect(`${studiolineFocus!.selector} = ${specificity(studiolineFocus!.selector)}`).toBe(
-      `[data-design-language='studioline'][data-design-language] :focus-visible = 0,3,0`,
-    );
-  });
-
-  it('the language stylesheet still loads dynamically, i.e. after the component styles', () => {
-    // The premise of "wins on specificity alone, never on order": the
-    // language CSS must stay a dynamic import in the harness. A static
-    // import would flip the source order this pin deliberately ignores.
-    expect(read('../fixtures/main.ts')).toMatch(
-      /import\('\.\.\/src\/presentation\/languages\/studioline\/studioline\.css'\)/,
-    );
-  });
+  for (const language of ['studioline', 'fieldline']) {
+    it(`${language} excludes native ranges and both value-control containers`, () => {
+      const blocks = ruleBlocks(
+        stripComments(read(`presentation/languages/${language}/${language}.css`)),
+      );
+      const contract = blocks.find(
+        (block) => /:focus-visible/.test(block.selector) && /--focus-c-surface/.test(block.body),
+      );
+      expect(contract, `${language}: expected a BLOCK focus contract`).toBeTruthy();
+      expect(contract!.selector).toContain("input[type='range']");
+      expect(contract!.selector).toContain('.vc-track-container');
+      expect(contract!.selector).toContain('.vc-knob-container');
+      expect(contract!.body).not.toMatch(/outline|box-shadow|filter/);
+    });
+  }
 
   for (const { file, container } of RENDERER_CONTAINERS) {
-    it(`${file}: compiled :focus-visible rule outranks the studioline rule on specificity alone`, () => {
+    it(`${file}: the #3569 renderer owner remains present`, () => {
       const css = stripComments(styleText(file, read(file)));
       const rule = ruleBlocks(css).find(
         (b) => b.selector.includes(`${container}:focus-visible`) && b.body.includes('outline: none'),
       );
       expect(rule, `${file}: expected the ${container} :focus-visible suppression rule`).toBeTruthy();
-      const compiled = svelteCompiled(rule!.selector);
-      const rival = specificity(studiolineFocus!.selector);
-      expect(
-        outranks(compiled, rival),
-        `${file}: compiled ${rule!.selector} → ${compiled} must outrank studioline ` +
-          `${studiolineFocus!.selector} → ${rival} by specificity, because the language ` +
-          'stylesheet loads later and would win any tie on source order.',
-      ).toBe(true);
+      expect(rule!.body).toMatch(/box-shadow:\s*var\(--vc-focus-ring-shadow\)/);
     });
   }
 });
@@ -964,44 +876,23 @@ describe('MOR-2522: native range sliders light on keyboard focus instead of draw
   });
 
   it('app.css is the unconditional shared load in both the app and the harness', () => {
-    // The premise of "one shared home": both entry points import app.css
-    // statically. The harness then loads the language stylesheet dynamically
-    // (section 8's pin), which is exactly why the rule must win on
-    // specificity, not order.
     expect(read('App.svelte')).toMatch(/import '\.\/app\.css';/);
     expect(read('../fixtures/main.ts')).toMatch(/import '\.\.\/src\/app\.css';/);
   });
 
-  it('the shared rule outranks both language focus contracts on specificity alone', () => {
+  it('the app-wide and language BLOCK contracts exclude native ranges', () => {
+    const appBlock = ruleBlocks(stripComments(read('app.css'))).find(
+      (block) => block.selector.startsWith(':focus-visible:not('),
+    );
+    expect(appBlock!.selector).toContain("input[type='range']");
     for (const lang of ['studioline', 'fieldline']) {
       const file = `presentation/languages/${lang}/${lang}.css`;
       const contract = ruleBlocks(stripComments(read(file))).find(
-        (b) => /:focus-visible/.test(b.selector) && /outline/.test(b.body),
+        (block) => /:focus-visible/.test(block.selector) && /--focus-c-surface/.test(block.body),
       );
-      expect(contract, `expected a :focus-visible outline rule in ${lang}.css`).toBeTruthy();
-      const rival = specificity(contract!.selector);
-      expect(
-        outranks(specificity(RANGE_RULE_SELECTOR), rival),
-        `${RANGE_RULE_SELECTOR} = ${specificity(RANGE_RULE_SELECTOR)} must outrank ` +
-          `${contract!.selector} = ${rival}: the language stylesheet loads after app.css ` +
-          '(fixtures/main.ts), so a tie would be lost on source order.',
-      ).toBe(true);
+      expect(contract, `expected a BLOCK focus rule in ${lang}.css`).toBeTruthy();
+      expect(contract!.selector).toContain("input[type='range']");
     }
-  });
-
-  it('the doubled attribute and the element type are both load-bearing: weaker selectors tie or lose', () => {
-    // Discriminating halves of the cascade pin. Drop one attribute and the
-    // rule falls to (0,2,1), which the (0,3,0) studioline contract beats on
-    // b — the exact regression shape 17b7c794 fixed for the renderers. Drop
-    // the element type instead and (0,3,0) only TIES the contract, so the
-    // later-loading language stylesheet wins on source order; the real rule's
-    // victory lives in the c column, which is why specificity() counts types.
-    const studioline = ruleBlocks(
-      stripComments(read('presentation/languages/studioline/studioline.css')),
-    ).find((b) => /:focus-visible/.test(b.selector) && /outline/.test(b.body))!;
-    const rival = specificity(studioline.selector);
-    expect(outranks(specificity("input[type='range']:focus-visible"), rival)).toBe(false);
-    expect(outranks(specificity("[type='range'][type='range']:focus-visible"), rival)).toBe(false);
   });
 
   it('the desktop-v2 generic frame rule no longer matches range inputs', () => {
@@ -1123,5 +1014,198 @@ describe('MOR-2522: native range sliders light on keyboard focus instead of draw
     for (const file of NATIVE_RANGE_SURFACES) {
       expect(stripComments(styleText(file, read(file))), file).not.toMatch(/outline\s*:/);
     }
+  });
+});
+
+type FocusRule = { file: string; selector: string; body: string };
+
+const PART_B_C_FOCUS_ALLOWLIST = new Set([
+  'components/spectrum/EiBiBrowser.svelte|.eibi-search:focus',
+  'components/spectrum/SpectrumPanel.svelte|.spectrum-split-separator:focus-visible',
+  'components/spectrum/SpectrumPanel.svelte|.passband-resize-zone:hover::before, .passband-resize-zone:focus-visible::before, .passband-resize-zone.active::before',
+  'components/spectrum/SpectrumPanel.svelte|.passband-resize-zone:focus-visible',
+  'components/spectrum/SpectrumToolbar.svelte|.toolbar-select:focus',
+  'components-v2/controls/BandSelector.svelte|.band-tab:focus-visible',
+  'components-v2/controls/LanguageSelector.svelte|.lang-select:hover, .lang-select:focus',
+  'components-v2/controls/LanguageSelector.svelte|.lang-select:focus-visible',
+  'components-v2/controls/ManagedTotStatusControl.svelte|.managed-tot-trigger:hover, .managed-tot-trigger:focus-visible',
+  'components-v2/controls/SegmentedButton.svelte|.segmented-button:focus-visible',
+  'components-v2/controls/SegmentedButton.svelte|.segment:focus',
+  'components-v2/controls/WorkspaceImportExport.svelte|button:focus-visible, textarea:focus-visible, input:focus-visible',
+  'components-v2/controls/WorkspaceSettingsPanel.svelte|.ws-row select:focus-visible, button:focus-visible',
+  "components-v2/controls/control-button.css|.v2-control-button:focus, .desktop-control-face.standard-face :is( .semantic-control-panel button, [data-vfo-appearance='standard'] .vfo-select, [data-vfo-operation-appearance='standard'] .fact-toggle, [data-vfo-operation-appearance='standard'] .vfo-op, .reset-order-btn, .status-bar .control-btn, .status-bar .now-playing, .status-bar .managed-tot-trigger, .status-bar .theme-button, .spectrum-toolbar .toolbar-btn ):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment):focus, .desktop-control-face.standard-face .band-tab:focus",
+  "components-v2/controls/control-button.css|.v2-control-button:focus-visible, .desktop-control-face.standard-face :is( .semantic-control-panel button, [data-vfo-appearance='standard'] .vfo-select, [data-vfo-operation-appearance='standard'] .fact-toggle, [data-vfo-operation-appearance='standard'] .vfo-op, .reset-order-btn, .status-bar .control-btn, .status-bar .now-playing, .status-bar .managed-tot-trigger, .status-bar .theme-button, .spectrum-toolbar .toolbar-btn ):not(.panel-header, .drag-handle, .passband-resize-zone, .band-segment):focus-visible, .desktop-control-face.standard-face .band-tab:focus-visible",
+  "components-v2/controls/control-button.css|[data-vfo-appearance='standard'] :is( .panel-header, .slot-choice, .vfo-freq[role='button'], [data-instrument-bridge] .v2-control-button ):focus-visible",
+  "components-v2/controls/control-button.css|[data-vfo-appearance='standard'] :is( .panel.active .panel-header, .panel.active .vfo-freq[role='button'], .slot-choice[data-vfo-active='true'], [data-instrument-bridge] .v2-control-button:is( .active, [data-active='true'], [aria-pressed='true'], [aria-checked='true'] ) ):focus-visible",
+  'components-v2/controls/value-control/skins/ProfessionalKnob.svelte|.pro-ctr:focus-visible',
+  'components-v2/dialogs/SendReportDialog.svelte|.field input:focus, .field textarea:focus',
+  'components-v2/dialogs/SendReportDialog.svelte|.field input:focus-visible, .field textarea:focus-visible',
+  'components-v2/layout/MobileRadioLayout.svelte|.m-ls-unkey:focus-visible',
+  'components-v2/layout/MobileRadioLayout.svelte|.m-receiver-pill:focus-visible',
+  'components-v2/layout/RadioLayout.svelte|.standard-tx-settings-trigger:focus-visible, .standard-tx-disclosure:focus-visible',
+  'components-v2/layout/StatusBar.svelte|.skin-switcher:hover, .skin-switcher:focus-within',
+  'components-v2/layout/StatusBar.svelte|.skin-select:focus',
+  'components-v2/layout/StatusBar.svelte|.skin-select:focus-visible',
+  'components-v2/layout/mobile-chip-bar.svelte|.m-chip:focus-visible',
+  'components-v2/panels/MemoryPanel.svelte|.ch-name-input:focus-visible',
+  'components-v2/panels/ModePanel.svelte|.mod-input-select:focus-visible',
+  'components-v2/vfo/ActiveReceiverToggle.svelte|.segment:focus-visible',
+  "skins/desktop-v2/semantic-controls.css|.desktop-control-face .semantic-control-panel section :is(button, input:not([type='range']), select):focus-visible",
+]);
+
+const VALUE_OWNER_FILES = new Set([
+  'components-v2/controls/value-control/BipolarRenderer.svelte',
+  'components-v2/controls/value-control/DiscreteRenderer.svelte',
+  'components-v2/controls/value-control/DualParamRenderer.svelte',
+  'components-v2/controls/value-control/HBarRenderer.svelte',
+  'components-v2/controls/value-control/KnobRenderer.svelte',
+]);
+
+function focusRules(): FocusRule[] {
+  return walk(FRONTEND_SRC)
+    .filter((file) => !file.includes(join('src', '__tests__')) && !/\.(?:test|spec)\./.test(file))
+    .flatMap((file) => {
+      const rel = file.slice(FRONTEND_SRC.length + 1);
+      const css = stripComments(styleText(rel, readFileSync(file, 'utf-8')));
+      return ruleBlocks(css)
+        .filter((block) => block.selector.includes(':focus'))
+        .map((block) => ({
+          file: rel,
+          selector: block.selector.replace(/\s+/g, ' '),
+          body: block.body,
+        }));
+    });
+}
+
+function isFocusOwnerException(rule: FocusRule): boolean {
+  if (rule.file === 'app.css' && rule.body.includes('forced-color-adjust: auto')) return true;
+  if (
+    rule.file === 'app.css' &&
+    rule.selector === "input[type='range'][type='range']:focus-visible"
+  ) return true;
+  if (
+    rule.file === 'skins/desktop-v2/semantic-controls.css' &&
+    rule.selector.includes("input[type='range']:focus-visible")
+  ) return true;
+  return VALUE_OWNER_FILES.has(rule.file) && rule.selector.includes(':focus-visible');
+}
+
+function focusContractAudit(
+  rules: FocusRule[],
+  allowlist: ReadonlySet<string>,
+): { unexpected: string[]; stale: string[] } {
+  const used = new Set<string>();
+  const unexpected: string[] = [];
+  for (const rule of rules) {
+    if (isFocusOwnerException(rule)) continue;
+    const reasons: string[] = [];
+    if (/(^|;)\s*outline\s*:/.test(rule.body)) reasons.push('outline');
+    if (/(^|;)\s*filter\s*:/.test(rule.body)) reasons.push('filter');
+    if (/(^|;)\s*box-shadow\s*:/.test(rule.body)) reasons.push('box-shadow');
+    if (/::[\w-]+/.test(rule.selector)) reasons.push('pseudo-element');
+    const tokenFile =
+      rule.file.endsWith('/tokens.css') || rule.file.startsWith('components-v2/theme/themes/');
+    if (
+      !tokenFile &&
+      /#[0-9a-f]{3,8}\b|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/i.test(rule.body)
+    ) reasons.push('literal-colour');
+    if (reasons.length === 0) continue;
+    const key = `${rule.file}|${rule.selector}`;
+    if (allowlist.has(key)) used.add(key);
+    else unexpected.push(`${key} [${reasons.join(', ')}]`);
+  }
+  return { unexpected, stale: [...allowlist].filter((entry) => !used.has(entry)) };
+}
+
+describe('MOR-2522 PART A: app-wide BLOCK focus contract', () => {
+  it('maps all eight semantic roles for each design language exactly', () => {
+    const cases: Array<[string, Record<string, string>]> = [
+      [
+        'studioline',
+        {
+          '--focus-c-text': 'var(--dl-studioline-text)',
+          '--focus-c-surface':
+            'color-mix(in srgb, var(--dl-studioline-surface) 72%, var(--dl-studioline-focus))',
+          '--focus-c-border': 'var(--dl-studioline-focus)',
+          '--focus-c-channel': 'var(--dl-studioline-surface)',
+          '--focus-c-fill': 'var(--dl-studioline-focus)',
+          '--focus-c-cap': 'var(--dl-studioline-text)',
+          '--focus-c-cap-border': 'var(--dl-studioline-muted)',
+          '--focus-c-slit': 'var(--dl-studioline-focus)',
+        },
+      ],
+      [
+        'fieldline',
+        {
+          '--focus-c-text': 'var(--dl-fieldline-text)',
+          '--focus-c-surface':
+            'color-mix(in srgb, var(--dl-fieldline-surface) 70%, var(--dl-fieldline-focus))',
+          '--focus-c-border': 'var(--dl-fieldline-focus)',
+          '--focus-c-channel': 'var(--dl-fieldline-surface)',
+          '--focus-c-fill': 'var(--dl-fieldline-focus)',
+          '--focus-c-cap': 'var(--dl-fieldline-text)',
+          '--focus-c-cap-border': 'var(--dl-fieldline-muted)',
+          '--focus-c-slit': 'var(--dl-fieldline-focus)',
+        },
+      ],
+      [
+        'segmentline',
+        {
+          '--focus-c-text': 'var(--dl-segmentline-ink-strong)',
+          '--focus-c-surface': 'var(--dl-segmentline-glass)',
+          '--focus-c-border': 'var(--dl-segmentline-ink-strong)',
+          '--focus-c-channel': 'var(--dl-segmentline-bezel)',
+          '--focus-c-fill': 'var(--dl-segmentline-ink-strong)',
+          '--focus-c-cap': 'var(--dl-segmentline-glass)',
+          '--focus-c-cap-border': 'var(--dl-segmentline-ink-strong)',
+          '--focus-c-slit': 'var(--dl-segmentline-bezel)',
+        },
+      ],
+    ];
+    for (const [language, expected] of cases) {
+      const tokens = parseTokens(
+        read(`presentation/languages/${language}/${language}.css`),
+      );
+      expect(
+        Object.fromEntries(Object.entries(tokens).filter(([name]) => name.startsWith('--focus-c-'))),
+      ).toEqual(expected);
+    }
+  });
+
+  it('forced colours disables custom focus effects and installs the sole system frame', () => {
+    const forced = ruleBlocks(stripComments(read('app.css'))).find(
+      (block) => block.selector === ':focus-visible' && block.body.includes('forced-color-adjust'),
+    );
+    expect(forced, 'expected the forced-colours focus owner').toBeTruthy();
+    expect(forced!.body).toMatch(/background-color:\s*revert !important/);
+    expect(forced!.body).toMatch(/border-color:\s*revert !important/);
+    expect(forced!.body).toMatch(/color:\s*revert !important/);
+    expect(forced!.body).toMatch(/box-shadow:\s*none !important/);
+    expect(forced!.body).toMatch(/filter:\s*none !important/);
+    expect(forced!.body).toMatch(/forced-color-adjust:\s*auto/);
+    expect(forced!.body).toMatch(/outline:\s*2px solid Highlight !important/);
+    expect(forced!.body).toMatch(/outline-offset:\s*2px !important/);
+  });
+
+  it('the PART_B_C_FOCUS_ALLOWLIST is exact and no unowned focus violation escapes it', () => {
+    const audit = focusContractAudit(focusRules(), PART_B_C_FOCUS_ALLOWLIST);
+    expect(audit.unexpected).toEqual([]);
+    expect(audit.stale).toEqual([]);
+  });
+
+  it('rejects a new literal component outline outside PART_B_C_FOCUS_ALLOWLIST', () => {
+    const fixture = focusContractAudit(
+      [
+        {
+          file: 'components-v2/controls/NewControl.svelte',
+          selector: '.new-control:focus-visible',
+          body: 'outline: 2px solid #fff;',
+        },
+      ],
+      new Set<string>(),
+    );
+    expect(fixture.unexpected).toEqual([
+      'components-v2/controls/NewControl.svelte|.new-control:focus-visible [outline, literal-colour]',
+    ]);
   });
 });

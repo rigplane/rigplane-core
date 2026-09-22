@@ -32,6 +32,14 @@
   --v2-focus-ring-shadow: 0 0 0 2px var(--v2-focus-ring-color);
   --v2-focus-ring-lit-filter: brightness(1.18) saturate(1.08);
   --v2-focus-ring-dim-filter: brightness(1.32) saturate(1.12);
+  --focus-c-text: #c9d6e3;
+  --focus-c-surface: #2f261a;
+  --focus-c-border: #65533b;
+  --focus-c-channel: #111519;
+  --focus-c-fill: #ffc064;
+  --focus-c-cap: #949eaa;
+  --focus-c-cap-border: #c3ccd6;
+  --focus-c-slit: #ffd58a;
   --v2-accent-orange: #FF6A00;
   --v2-accent-red: #FF2020;
   --v2-accent-green: #00CC66;
