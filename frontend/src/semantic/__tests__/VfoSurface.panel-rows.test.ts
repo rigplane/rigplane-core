@@ -587,7 +587,9 @@ function styleBlock(path: string): string {
 function rulesFor(css: string, selector: string): string[] {
   const bodies: string[] = [];
   for (const [, selectorList, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    if (selectorList.split(',').some((member) => member.trim() === selector)) {
+    // A selector written across lines (indented continuation) must match its
+    // single-line spelling: collapse runs of whitespace before comparing.
+    if (selectorList.split(',').some((member) => member.replace(/\s+/g, ' ').trim() === selector)) {
       bodies.push(body);
     }
   }
