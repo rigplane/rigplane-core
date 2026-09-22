@@ -1099,7 +1099,9 @@
   }
   .radio-layout.desktop-control-face.standard-face {
     grid-template-columns: 228px minmax(0, 1fr) 228px;
-    grid-template-rows: auto 28px minmax(200px, auto) minmax(0, 1fr) auto;
+    /* The center column keeps its 320px floor; short viewports scroll instead
+       of overlapping the station meters dock. */
+    grid-template-rows: auto 28px minmax(200px, auto) minmax(min-content, 1fr) auto;
     gap: 5px;
   }
   .desktop-control-face > .receiver-deck,
