@@ -463,7 +463,7 @@ describe('standard under-frequency chips (2/main_sub)', () => {
 });
 
 describe('bridge operation grid (standard appearance)', () => {
-  it('2/main_sub: one grid container holds the operation controls with unchanged accessible names', () => {
+  it('2/main_sub: one grid container holds the mock-up operation controls and accessible names', () => {
     const root = mountSurface({ viewModel: standardFixture('2/main_sub'), appearance: 'standard' });
     const bridge = root.querySelector('[data-instrument-bridge]');
     expect(bridge).not.toBeNull();
@@ -475,7 +475,7 @@ describe('bridge operation grid (standard appearance)', () => {
       expect(grid[0].contains(action), 'every operation control sits in the grid').toBe(true);
     }
     expect(actions.map((button) => button.getAttribute('aria-label') ?? button.textContent?.trim()))
-      .toEqual(['MAIN', 'SUB', 'M↔S', 'M=S', 'Quick split', 'Quick dual watch', 'SPEAK']);
+      .toEqual(['MAIN', 'SUB', 'M↔S', 'M=S']);
   });
 
   it('1/ab: the pair bridge grid keeps its controls and names', () => {
@@ -486,7 +486,7 @@ describe('bridge operation grid (standard appearance)', () => {
     expect(grid.length).toBe(1);
     const actions = Array.from(bridge!.querySelectorAll<HTMLButtonElement>('[data-dual-action]'));
     expect(actions.map((button) => button.getAttribute('aria-label') ?? button.textContent?.trim()))
-      .toEqual(['A↔B', 'A=B', 'Quick split', 'Quick dual watch', 'SPEAK']);
+      .toEqual(['A↔B', 'A=B']);
   });
 });
 
@@ -1024,7 +1024,7 @@ describe('mock-up /tmp/vfo-deck-final-mockup-v8.html (2026-09-22)', () => {
     ).join('\n'), 'changing the function key 4px internal gap turns this red')
       .toMatch(/column-gap:\s*4px/);
 
-    const lampRule = rulesFor(buttons,
+    const lampRule = rulesFor(buttons.replace(/\s+/g, ' '),
       ".vfo-ops[data-vfo-operation-appearance='standard'] .v2-control-button[data-indicator-style='dot']::before",
     ).join('\n');
     expect(lampRule, 'changing the 7px lamp diameter turns this red')
@@ -1070,8 +1070,8 @@ describe('mock-up /tmp/vfo-deck-final-mockup-v8.html (2026-09-22)', () => {
       expect(studio, `changing the mock-up ${claim} token turns this red`).toMatch(pattern);
     }
     const field = language('fieldline');
-    expect(field, "changing fieldline's quieter #165466 to #103f4c fill pair turns this red")
-      .toMatch(/--dl-vfo-key-selected-background:\s*linear-gradient\(180deg,\s*#165466,\s*#103f4c\)/);
+    expect(field, "changing fieldline's flat #165466 selected fill turns this red")
+      .toMatch(/--dl-vfo-key-selected-background:\s*#165466/);
     expect(field, "changing fieldline's quieter #72aeba border turns this red")
       .toMatch(/--dl-vfo-key-selected-border:\s*#72aeba/);
     expect(field, "allowing fieldline's selected key to glow turns this red")

@@ -1706,7 +1706,7 @@ describe('MOR-2509 bridge radio-function keys share state with the TX panel', ()
     pushRadioState(bridgeFunctionState(2, false, false));
     expect(bridgeTuner.getAttribute('aria-checked')).toBe('true');
     expect(bridgeTuner.getAttribute('aria-label')).toBe('Tuner: tuning');
-    expect(bridgeTuner.getAttribute('data-indicator-color')).toBe('orange');
+    expect(bridgeTuner.getAttribute('data-indicator-color')).toBe('red');
     expect(txTuner.getAttribute('aria-pressed')).toBe('true');
     expect(txTuner.textContent).toContain('tuning');
   });
