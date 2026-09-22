@@ -294,7 +294,7 @@ function singleReceiverState(): ServerState {
 /** 1/single caps: no `dual_rx` tag, or the topology derivation contradicts itself. */
 const singleReceiverCaps = (): Capabilities => ({
   ...mainSubCaps(), receivers: 1, vfoScheme: 'single', scope: false,
-  capabilities: mainSubCaps().capabilities.filter((t) => t !== 'dual_watch'),
+  capabilities: ['audio', 'tx', 'split'],
 } as unknown as Capabilities);
 
 /** The ticket's operational audio-scope condition: scope=false + audioFft=true. */
