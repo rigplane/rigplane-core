@@ -262,27 +262,24 @@ describe('segment rendering logic', () => {
   });
 });
 
-// ── Smoother release τ (MOR-481) ───────────────────────────────────────────
-// The bar fill must track the fast numeric readout within ~150 ms. The
-// falling-edge time constant is the second arg to createSmoother(); a slow
-// release (e.g. 0.25 ≈ 250 ms) makes the bar visibly lag the number on
-// downward steps. Pin the snappier release here so a regression is caught.
+// ── Smoother attack/release constants (MOR-2509 v7) ────────────────────────
+// The owner-approved v7 meter ballistics: the displayed level rises fast
+// (attack ≤ 50 ms) and falls slowly (decay τ ≈ 300 ms), with the peak-hold
+// marker and the ~250 ms afterglow carrying the recent high reading. This
+// replaces the MOR-481 fast-release pin (~150 ms tracking) — the visible
+// lag of the falling bar is now the design, not a regression.
 
-describe('LinearSMeter smoother release τ', () => {
+describe('LinearSMeter attack and decay constants', () => {
   const source = readFileSync(
     resolve(process.cwd(), 'src/components-v2/meters/signal-meter-motion.svelte.ts'),
     'utf8',
   );
 
-  it('moves the snappy attack/release policy unchanged into the motion binding', () => {
+  it('pins the v7 attack and decay constants in the motion binding', () => {
     const attack = Number(source.match(/ATTACK_SECONDS\s*=\s*([0-9.]+)/)?.[1]);
     const release = Number(source.match(/RELEASE_SECONDS\s*=\s*([0-9.]+)/)?.[1]);
-    // Attack unchanged (fast punch-in).
-    expect(attack).toBeCloseTo(0.06, 5);
-    // Release reduced from 0.25 → 0.10 so the bar reaches the target within
-    // ~150 ms. Anything ≥ 0.25 reintroduces the visible lag (MOR-481).
-    expect(release).toBeCloseTo(0.1, 5);
-    expect(release).toBeLessThan(0.25);
+    expect(attack).toBeCloseTo(0.05, 5);
+    expect(release).toBeCloseTo(0.3, 5);
     expect(source).toMatch(/createSmoother\(ATTACK_SECONDS, RELEASE_SECONDS\)/);
   });
 });
@@ -321,6 +318,8 @@ describe('LinearSMeter calibrated S-meter domain', () => {
       projection,
       smoothedFraction: 0.5,
       peakFraction: 0.8,
+      afterglowFraction: null,
+      reducedMotion: false,
     } satisfies SignalMeterFrame;
     const frameOnly = { frame } satisfies ComponentProps<typeof LinearSMeter>;
     expect(frameOnly.frame).toBe(frame);
@@ -346,6 +345,8 @@ describe('LinearSMeter calibrated S-meter domain', () => {
       projection,
       smoothedFraction: projection.motionFraction!,
       peakFraction: 0.9,
+      afterglowFraction: null,
+      reducedMotion: false,
     } satisfies SignalMeterFrame;
     const normal = mountMeter({ frame });
     const sdr = mountMeter({ frame, variant: 'sdr-screen' });
@@ -371,7 +372,7 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     if (domain.kind === 'engineering') setCapabilities(makeCaps());
     const projection = projectSignalMeter(-12, domain);
     const target = mountMeter({
-      frame: { projection, smoothedFraction: 0.8, peakFraction: 0.95 },
+      frame: { projection, smoothedFraction: 0.8, peakFraction: 0.95, afterglowFraction: null, reducedMotion: false },
     });
 
     expect(target.textContent).toContain(primary);
@@ -398,7 +399,7 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
     try {
       const projection = projectSignalMeter(0);
-      mountMeter({ frame: { projection, smoothedFraction: 0.5, peakFraction: null } });
+      mountMeter({ frame: { projection, smoothedFraction: 0.5, peakFraction: null, afterglowFraction: null, reducedMotion: false } });
       expect(requestFrame).not.toHaveBeenCalled();
       mountMeter({ projection });
       expect(requestFrame).toHaveBeenCalledTimes(2);
@@ -409,7 +410,7 @@ describe('LinearSMeter calibrated S-meter domain', () => {
 
   it('rejects frame input combined with local value, projection, source, or session owners', () => {
     const projection = projectSignalMeter(0);
-    const frame = { projection, smoothedFraction: 0.5, peakFraction: null } satisfies SignalMeterFrame;
+    const frame = { projection, smoothedFraction: 0.5, peakFraction: null, afterglowFraction: null, reducedMotion: false } satisfies SignalMeterFrame;
     // @ts-expect-error -- a host frame and local value are exclusive owners.
     const invalidValue: ComponentProps<typeof LinearSMeter> = { frame, value: 0 };
     const invalidProjection: ComponentProps<typeof LinearSMeter> = { frame, projection: undefined };
@@ -435,7 +436,7 @@ describe('LinearSMeter calibrated S-meter domain', () => {
 
   it('rejects a dynamic switch between local-owner and host-frame modes', () => {
     const projection = projectSignalMeter(0);
-    const frame = { projection, smoothedFraction: 0.5, peakFraction: null } satisfies SignalMeterFrame;
+    const frame = { projection, smoothedFraction: 0.5, peakFraction: null, afterglowFraction: null, reducedMotion: false } satisfies SignalMeterFrame;
     const state: ComponentProps<typeof LinearSMeter> = proxy({ value: 0 });
     const target = document.createElement('div');
     document.body.appendChild(target);
@@ -546,6 +547,8 @@ describe('MOR-2521 — the S-meter never adds or removes nodes across a value sw
         projection,
         smoothedFraction: SWEEP[0].smoothedFraction,
         peakFraction: SWEEP[0].peakFraction,
+        afterglowFraction: null,
+        reducedMotion: false,
       } satisfies SignalMeterFrame,
       ...extra,
     });
@@ -559,6 +562,8 @@ describe('MOR-2521 — the S-meter never adds or removes nodes across a value sw
         projection,
         smoothedFraction: step.smoothedFraction,
         peakFraction: step.peakFraction,
+        afterglowFraction: null,
+        reducedMotion: false,
       } satisfies SignalMeterFrame;
       flushSync();
       return {
@@ -592,7 +597,10 @@ describe('MOR-2521 — the S-meter never adds or removes nodes across a value sw
   it('with lowerScale: one node count for every valueFraction step, while the lit lower count still tracks it', () => {
     const projection = projectSignalMeter(0);
     const state = proxy({
-      frame: { projection, smoothedFraction: 0.55, peakFraction: null } satisfies SignalMeterFrame,
+      frame: {
+        projection, smoothedFraction: 0.55, peakFraction: null,
+        afterglowFraction: null, reducedMotion: false,
+      } satisfies SignalMeterFrame,
       lowerScale: { label: 'SWR', ticks: [], valueFraction: 0, fault: false, relevant: true },
     });
     const target = document.createElement('div');

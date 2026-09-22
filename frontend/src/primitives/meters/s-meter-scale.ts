@@ -27,7 +27,10 @@ export function getCalibratedScaleMaxRaw(calibration: readonly SmeterCalibration
   return isSmeterCalibrated(calibration) ? getScaleMaxRaw(calibration) : MAX_RAW;
 }
 
-function interpolateRaw(raw: number, calibration: readonly SmeterCalibrationPoint[]): number {
+/** A raw byte's dB-rel-S9 value on the calibration table (linear between
+ *  knots). Exported for scale-geometry consumers (MOR-2509); the reading
+ *  paths above remain the only source of operator-facing text. */
+export function interpolateRaw(raw: number, calibration: readonly SmeterCalibrationPoint[]): number {
   const value = clampRaw(raw);
   if (calibration.length === 0) return 0;
   if (value <= calibration[0].raw) return calibration[0].actual;
@@ -61,7 +64,10 @@ export function calibratedToRaw(actual: number, calibration: readonly SmeterCali
   return calibration[calibration.length - 1].raw;
 }
 
-function rawToSFloat(raw: number, calibration: readonly SmeterCalibrationPoint[]): number {
+/** S-unit position of a raw byte as a continuous float (1.0 at S1, 9.0 at
+ *  S9), interpolated over the table's S-labelled knots. Exported for the
+ *  scale-geometry consumers (MOR-2509). */
+export function rawToSFloat(raw: number, calibration: readonly SmeterCalibrationPoint[]): number {
   const s9Raw = getS9Raw(calibration);
   const value = clampRaw(raw);
   const sPoints = calibration.filter((point) => /^S\d$/.test(point.label));
