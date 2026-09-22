@@ -1,6 +1,6 @@
 <script lang="ts">
   import VfoPanel, { type VfoPanelSections } from './VfoPanel.svelte';
-  import { getCapabilities, receiverLabel, vfoSlotLabel } from '$lib/stores/capabilities.svelte';
+  import { getCapabilities, receiverLabel } from '$lib/stores/capabilities.svelte';
   import { findActiveBand } from '../controls/band-utils';
   import { formatBadges, formatRitOffset } from './vfo-utils';
   import type { VfoLayoutProfile } from '../layout/vfo-layout-tokens';
@@ -25,9 +25,11 @@
     layoutProfile = 'baseline', onModeClick, onFreqChange,
   }: Props = $props();
 
-  let slot = $derived<'A' | 'B'>(receiver === 'main' ? 'A' : 'B');
   let label = $derived(receiverLabel(receiver === 'main' ? 'MAIN' : 'SUB'));
-  let slotTag = $derived(vfoSlotLabel(slot).replace(/^VFO /, ''));
+  // The v7 meter face no longer paints the slot label (MOR-2509 package B),
+  // so the i18n lookup retired with it; the meter's label channel still
+  // receives the plain slot id.
+  let slotTag = $derived(receiver === 'main' ? 'A' : 'B');
   let bandText = $derived(findActiveBand(freq, getCapabilities()?.freqRanges ?? []));
 
   // The legacy deck has no indicator view model, so its facts map onto the

@@ -112,7 +112,6 @@ describe('formatRitOffset', () => {
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   receiverLabel: vi.fn((id: 'MAIN' | 'SUB') => id),
-  vfoSlotLabel: vi.fn((slot: 'A' | 'B') => (slot === 'A' ? 'VFO A' : 'VFO B')),
   getCapabilities: vi.fn(() => ({
     freqRanges: [
       {
@@ -132,7 +131,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getSmeterRedline: vi.fn(() => null),
 }));
 
-import { getCapabilities, receiverLabel, vfoSlotLabel } from '$lib/stores/capabilities.svelte';
+import { getCapabilities, receiverLabel } from '$lib/stores/capabilities.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 
@@ -158,7 +157,6 @@ function mountLegacyPanel(props: ComponentProps<typeof LegacyVfoPanelAdapter>) {
 beforeEach(() => {
   components = [];
   vi.mocked(receiverLabel).mockImplementation((id: 'MAIN' | 'SUB') => id);
-  vi.mocked(vfoSlotLabel).mockImplementation((slot: 'A' | 'B') => (slot === 'A' ? 'VFO A' : 'VFO B'));
 });
 
 afterEach(() => {
@@ -427,7 +425,7 @@ describe('callbacks', () => {
   });
 });
 
-describe('receiverLabel / vfoSlotLabel integration', () => {
+describe('receiverLabel integration', () => {
   it('uses receiverLabel("MAIN") for receiver=main', () => {
     mountLegacyPanel({ ...baseProps, receiver: 'main' });
     expect(vi.mocked(receiverLabel)).toHaveBeenCalledWith('MAIN');
@@ -438,21 +436,16 @@ describe('receiverLabel / vfoSlotLabel integration', () => {
     expect(vi.mocked(receiverLabel)).toHaveBeenCalledWith('SUB');
   });
 
-  it('uses vfoSlotLabel("A") for receiver=main', () => {
-    mountLegacyPanel({ ...baseProps, receiver: 'main' });
-    expect(vi.mocked(vfoSlotLabel)).toHaveBeenCalledWith('A');
-  });
-
-  it('uses vfoSlotLabel("B") for receiver=sub', () => {
-    mountLegacyPanel({ ...baseProps, receiver: 'sub' });
-    expect(vi.mocked(vfoSlotLabel)).toHaveBeenCalledWith('B');
-  });
-
   it('renders the receiver label in the header', () => {
     vi.mocked(receiverLabel).mockReturnValue('MAIN');
     const t = mountLegacyPanel({ ...baseProps, receiver: 'main' });
     expect(t.querySelector('.vfo-label')?.textContent?.trim()).toBe('MAIN');
   });
+
+  // The vfoSlotLabel("A"/"B") pins retired with the v7 meter face: the panel
+  // paints no slot label any more (the receiver name is the identity row and
+  // the bridge SELECT keys carry the slot), so the i18n lookup had no
+  // consumer left. The receiver-name i18n path stays pinned above.
 
   it('reads band ranges through getCapabilities()', () => {
     mountLegacyPanel(baseProps);
