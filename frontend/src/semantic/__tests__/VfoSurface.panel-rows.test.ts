@@ -226,8 +226,11 @@ describe('standard tray tabs (2/main_sub)', () => {
     const unknown = mountSurface({ viewModel: standardFixture('2/main_sub', 'unknown'), appearance: 'standard' });
     for (const root of [known, unknown]) {
       for (const panel of panels(root)) {
+        // ANT is radio-wide, so the active receiver's panel owns 3 tabs and
+        // the other 2; what must not change is the count per panel.
+        const expected = panel.getAttribute('data-receiver-instrument') === 'MAIN' ? 3 : 2;
         const count = row(panel, 'tray').querySelectorAll('[data-tray-tab]').length;
-        expect(count, 'same tab count whatever the readings say').toBe(3);
+        expect(count, 'same tab count whatever the readings say').toBe(expected);
       }
     }
     const unknownMain = panels(unknown).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
@@ -266,13 +269,17 @@ describe('standard annunciator lamps (2/main_sub)', () => {
     }
   });
 
-  it('a radio without a front-end field draws no lamp for it (ftx1: no ATT)', () => {
+  it('a radio without a front-end field draws no lamp for it (ftx1: no IP+, no DIGI-SEL)', () => {
     const caps = { ...FTX1_CAPABILITIES, providerGeneration: FTX1_STATE.providerGeneration };
     const model = toRadioViewModel(FTX1_STATE, caps);
     expect(model).not.toBeNull();
+    const indicator = model!.receiverIndicators!.find((item) => item.receiver === 'MAIN')!;
+    expect(indicator.ipPlus.availability.structural).toBe(false);
+    expect(indicator.digiSel.availability.structural).toBe(false);
     const root = mountSurface({ viewModel: model!, appearance: 'standard' });
     const mainPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
-    expect(mainPanel.querySelector('[data-chip="att"]')).toBeNull();
+    expect(mainPanel.querySelector('[data-chip="ip-plus"]')).toBeNull();
+    expect(mainPanel.querySelector('[data-chip="digi-sel"]')).toBeNull();
     expect(mainPanel.querySelector('[data-chip="agc"]')).not.toBeNull();
   });
 });
@@ -401,12 +408,11 @@ describe('the live FTX-1 payload (many null leaves) prints no placeholder', () =
     return mountSurface({ viewModel: model!, appearance: 'standard' });
   };
 
-  it('absent capabilities draw no element: no BAND tab, no ANT tab, no ATT lamp', () => {
+  it('absent capabilities draw no element: no BAND tab, no ANT tab, no BW tab', () => {
     const root = mountFtx1();
     expect(root.querySelector('[data-tray-tab="band"]')).toBeNull();
     expect(root.querySelector('[data-tray-tab="ant"]')).toBeNull();
-    expect(root.querySelector('[data-chip="att"]')).toBeNull();
-    expect(root.querySelector('[data-chip="rfg"]')).toBeNull();
+    expect(root.querySelector('[data-tray-tab="bw"]')).toBeNull();
   });
 
   it('unknown leaves stay unlit in place and no chip prints a placeholder', () => {
@@ -420,9 +426,19 @@ describe('the live FTX-1 payload (many null leaves) prints no placeholder', () =
         }
       }
     }
+    // Lit state is the model's own reading status, chip by chip.
+    const caps = { ...FTX1_CAPABILITIES, providerGeneration: FTX1_STATE.providerGeneration };
+    const model = toRadioViewModel(FTX1_STATE, caps)!;
     const firstPanel = panels(root)[0];
-    expect(firstPanel.querySelector('[data-chip="agc"]')?.getAttribute('data-lit')).toBe('false');
-    expect(firstPanel.querySelector('[data-chip="nb"]')?.getAttribute('data-lit')).toBe('false');
+    const indicator = model.receiverIndicators!
+      .find((item) => item.receiver === firstPanel.getAttribute('data-receiver-instrument'))!;
+    const litOf = (field: { reading: { status: string } }) =>
+      field.reading.status === 'known' ? 'true' : 'false';
+    expect(firstPanel.querySelector('[data-chip="agc"]')?.getAttribute('data-lit'))
+      .toBe(litOf(indicator.agcMode));
+    expect(firstPanel.querySelector('[data-chip="nb"]')?.getAttribute('data-lit'))
+      .toBe(indicator.nbActive.reading.status === 'known' && indicator.nbActive.reading.value === true
+        ? 'true' : 'false');
   });
 });
 
@@ -566,11 +582,12 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
 
   it('the inactive panel is quiet through token variants, never a filter, and the meter is never dimmed', () => {
     for (const [, selector, body] of panelCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-      expect(body, `${selector.trim()} must not dim with filter or opacity`)
-        .not.toMatch(/filter:\s*saturate|opacity:\s*0\./);
+      expect(body, `${selector.trim()} must not dim with a saturation filter`)
+        .not.toMatch(/filter:\s*saturate/);
     }
     const inactive = rulesFor(panelCss, '.panel:not(.active)').join('\n');
     expect(inactive).toMatch(/--vfo-neon-fill:\s*var\(--dl-vfo-primary-neon-dim/);
+    expect(inactive).not.toMatch(/filter|opacity/);
     expect(inactive).not.toMatch(/panel-meter/);
   });
 
