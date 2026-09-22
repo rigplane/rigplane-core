@@ -968,4 +968,9 @@
   svg {
     display: block;
   }
+  [data-meter-fill],
+  [data-meter-fill-red],
+  [data-lower-fill] {
+    filter: var(--v2-meter-lit-filter, none);
+  }
 </style>

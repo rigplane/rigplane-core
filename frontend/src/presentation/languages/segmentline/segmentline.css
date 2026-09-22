@@ -53,6 +53,24 @@
   --dl-vfo-tab-frame: var(--dl-segmentline-ink-strong);
   --dl-vfo-tab-frame-dim: rgba(var(--dl-segmentline-ink) / 0.55);
   --dl-vfo-dim-text: var(--dl-segmentline-ink-strong);
+  --dl-vfo-unlit-fill: transparent;
+  --dl-vfo-panel-background: var(--dl-segmentline-glass);
+  --dl-vfo-panel-shadow: 0 0 0 transparent;
+  --dl-vfo-panel-sheen: none;
+  --dl-vfo-panel-sheen-blend: normal;
+  --dl-vfo-bridge-background: var(--dl-segmentline-glass);
+  --dl-vfo-bridge-shadow: 0 0 0 transparent;
+  --dl-vfo-meter-well-background: var(--dl-segmentline-glass);
+  --dl-vfo-meter-well-shadow: 0 0 0 transparent;
+  --dl-vfo-meter-lit-filter: none;
+  --dl-vfo-frequency-glow: none;
+  --dl-vfo-primary-glow: none;
+  --dl-vfo-red-glow: none;
+  --dl-vfo-amber-glow: none;
+  --dl-vfo-brown-glow: none;
+  --dl-vfo-dsp-glow: none;
+  --dl-vfo-slate-glow: none;
+  --dl-vfo-bridge-lamp-glow: none;
 }
 
 /* ── Glass ───────────────────────────────────────────────────────────── */
