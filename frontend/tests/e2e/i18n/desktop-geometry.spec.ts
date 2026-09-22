@@ -205,6 +205,7 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
       .evaluateAll(elements => elements.map(element => ({
         tag: element.tagName, className: element.className,
         testId: element.getAttribute('data-testid'),
+        skinId: element.getAttribute('data-debug-skin-id'),
       }))).catch(() => []);
     const workspace = await page.evaluate(() => localStorage.getItem('rigplane:workspace'))
       .catch(() => '<workspace unavailable>');
