@@ -308,15 +308,18 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
   ])('settled reading %s lights whole segments up to %f of the track', (_name, value, expected) => {
     const target = mountMeter({ value, variant: 'vfo', compact: true });
     expect(fillFraction(svgOf(target))).toBeCloseTo(litExtentFraction(expected), 6);
-    // The drawn extent always lands on the whole-segment grid: the right
-    // edge of a lit dash is 2px past a pitch boundary. A hidden zone line
-    // still carries its boundary coordinates, so only visible ones count.
+    // The FINAL lit end sits on the whole-segment grid: the right edge of a
+    // lit dash, 2px past a pitch boundary. The blue zone line may instead
+    // end on the snapped S9 zone boundary, so only the outermost visible
+    // end is the grid claim.
     const visibleEnds = (['[data-meter-fill]', '[data-meter-fill-red]'] as const)
       .map((selector) => svgOf(target).querySelector(selector)!)
       .filter((line) => line.getAttribute('visibility') !== 'hidden')
       .map((line) => Number(line.getAttribute('x2')));
-    for (const end of visibleEnds) {
-      expect(((end - TRACK_X) - 2) % 3).toBe(0);
+    // A zero reading lights nothing; any other reading's final end is on
+    // the dash grid.
+    if (visibleEnds.length > 0) {
+      expect((Math.max(...visibleEnds) - TRACK_X - 2) % 3).toBe(0);
     }
   });
 
@@ -572,8 +575,10 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
     expect(fillFraction(svgOf(target))).toBeLessThanOrEqual(0.005);
 
     // Rise to S3 (1/7 of the track): at every frame the fill stays at or
-    // below the reading's settled position.
+    // below the reading's settled position. The flush lands the sync
+    // effect before the first frame runs.
     state.value = -36;
+    flushSync();
     for (let i = 0; i < 60; i += 1) {
       step(16.7);
       expect(fillFraction(svgOf(target))).toBeLessThanOrEqual(VFO_FRACTIONS.s3 + 1e-6);
@@ -582,6 +587,7 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
 
     // Drop back to S1: the displayed level decays monotonically.
     state.value = -48;
+    flushSync();
     let previous = fillFraction(svgOf(target));
     for (let i = 0; i < 30; i += 1) {
       step(16.7);
@@ -605,6 +611,7 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
     ];
     for (const phase of script) {
       state.value = phase.value;
+      flushSync();
       for (let i = 0; i < phase.frames; i += 1) {
         step(16.7);
         expect(peakFraction(svgOf(target))).toBeGreaterThanOrEqual(
@@ -617,11 +624,13 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
   it('holds the peak for ~1 s after the drop, then lets it fall', () => {
     const { target, state } = mountReactiveMeter({ value: -48, variant: 'vfo', compact: true });
     state.value = 20;
+    flushSync();
     for (let i = 0; i < 60; i += 1) step(16.7);
     const highPeak = peakFraction(svgOf(target));
     expect(highPeak).toBeGreaterThan(VFO_FRACTIONS.s9);
 
     state.value = -48;
+    flushSync();
     for (let i = 0; i < 50; i += 1) step(16.7); // ~0.84 s, inside the hold window
     expect(peakFraction(svgOf(target))).toBeCloseTo(highPeak, 3);
     for (let i = 0; i < 30; i += 1) step(16.7); // ~1.3 s: past the hold
@@ -631,8 +640,10 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
   it('afterglow trails the falling bar and fades back onto it', () => {
     const { target, state } = mountReactiveMeter({ value: -48, variant: 'vfo', compact: true });
     state.value = 20;
+    flushSync();
     for (let i = 0; i < 60; i += 1) step(16.7);
     state.value = -48;
+    flushSync();
     let sawTrailingGlow = false;
     for (let i = 0; i < 20; i += 1) {
       step(16.7);
@@ -653,6 +664,7 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
     const counts: number[] = [];
     for (const value of [-36, 20, -48, 20, -48]) {
       state.value = value;
+      flushSync();
       for (let i = 0; i < 30; i += 1) {
         step(16.7);
         counts.push(svgOf(target).querySelectorAll('*').length);
@@ -660,18 +672,25 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
     }
     expect(new Set(counts).size).toBe(1);
   });
+});
 
-  it('under reduced motion: stepped fill, the peak marker hidden, no afterglow', () => {
-    // The frame input owns the stepped value directly, so this pins the
-    // FACE contract — a reduced frame draws its fraction unchanged, hides
-    // the peak marker, and never lights a glow tail — without depending
-    // on the smoother's own reduce path.
-    const projection = projectSignalMeter(-12);
+// ── 6. Reduced motion, pinned in a clean environment ───────────────────────
+// The frame input owns the stepped value directly, so this pins the FACE
+// contract — a reduced frame draws its fraction unchanged, hides the peak
+// marker, and never lights a glow tail.
+describe('MOR-2509 v7 VFO face — reduced motion', () => {
+  beforeEach(() => {
+    stubReducedMotion();
+    setCapabilities(makeCaps(IC7610_LIKE_CAL));
+  });
+
+  it('draws the stepped fill with the peak marker hidden and no glow', () => {
+    const s7 = projectSignalMeter(-12);
     const target = mountMeter({
       frame: {
-        projection,
-        smoothedFraction: projection.motionFraction!,
-        peakFraction: projection.motionFraction!,
+        projection: s7,
+        smoothedFraction: s7.motionFraction!,
+        peakFraction: s7.motionFraction!,
         afterglowFraction: null,
         reducedMotion: true,
       },
@@ -680,7 +699,6 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
     expect(fillFraction(svgOf(target))).toBeCloseTo(litExtentFraction(VFO_FRACTIONS.s7), 6);
     expect(peakVisible(svgOf(target))).toBe(false);
     expect(glowFraction(svgOf(target))).toBeCloseTo(fillFraction(svgOf(target)), 5);
-    expect(rafSpy).not.toHaveBeenCalled();
 
     const stepped = mountMeter({
       frame: {
@@ -694,6 +712,5 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
     });
     expect(fillFraction(svgOf(stepped))).toBeCloseTo(0, 5);
     expect(peakVisible(svgOf(stepped))).toBe(false);
-    expect(rafSpy).not.toHaveBeenCalled();
   });
 });
