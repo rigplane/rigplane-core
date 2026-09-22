@@ -128,6 +128,22 @@
   --dl-vfo-panel-sheen-blend: screen;
   --dl-vfo-bridge-background: linear-gradient(180deg, #161c23, #0f141a);
   --dl-vfo-bridge-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 6px 18px rgba(0, 0, 0, 0.5);
+  --dl-vfo-key-border: #242d38;
+  --dl-vfo-key-ink: #9fb0c0;
+  --dl-vfo-key-background: linear-gradient(180deg, #1a222c, #10161d);
+  --dl-vfo-key-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.6);
+  --dl-vfo-key-lamp-border: #3b4653;
+  --dl-vfo-key-cyan: #22d3ee;
+  --dl-vfo-key-red: #e2362c;
+  --dl-vfo-key-amber: #ffd47a;
+  --dl-vfo-key-violet: #9a78e0;
+  --dl-vfo-key-selected-background: linear-gradient(180deg, #1391b0, #0b5f78);
+  --dl-vfo-key-selected-border: #67e8f9;
+  --dl-vfo-key-selected-ink: #fff;
+  --dl-vfo-key-selected-shadow: 0 0 10px rgba(34, 211, 238, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  --dl-vfo-key-lit-ink: #e8f1f8;
+  --dl-vfo-key-lit-border: #3a4a5a;
+  --dl-vfo-key-separator: #242d38;
   --dl-vfo-meter-well-background: #05070a;
   --dl-vfo-meter-well-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.9), inset 0 0 0 1px #1a222b, 0 1px 0 rgba(255, 255, 255, 0.05);
   --dl-vfo-meter-lit-filter: var(--v2-vfo-meter-lit-filter-override, brightness(1.15) saturate(1.2));
@@ -146,7 +162,6 @@
   --dl-vfo-brown-glow: var(--v2-vfo-glow-override, 0 0 7px rgba(190, 110, 40, 0.45));
   --dl-vfo-dsp-glow: var(--v2-vfo-glow-override, 0 0 8px rgba(200, 220, 240, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12));
   --dl-vfo-slate-glow: var(--v2-vfo-glow-override, 0 0 7px rgba(140, 165, 190, 0.3));
-  --dl-vfo-bridge-lamp-glow: var(--v2-vfo-glow-override, 0 0 0 1px color-mix(in srgb, var(--indicator-color) 20%, transparent), 0 0 6px color-mix(in srgb, var(--indicator-color) 30%, transparent), 0 0 12px color-mix(in srgb, var(--indicator-color) 18%, transparent));
   /* The readout primitive reads the skin variable below for its digit
      weight; re-pointing it here (the --bg precedent) is what makes the
      language own the VFO readout's numerals. Without a definition the

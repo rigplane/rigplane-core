@@ -64,7 +64,13 @@
     functions.vox.availability,
     functions.dialLock.availability,
   ].some((operation) => operation.structural));
-  let hasStandardBridge = $derived(hasActions || hasLatching || hasFunctions);
+  let hasStandardBridge = $derived(
+    hasReceiverSelector
+    || projection.equalize.availability.structural
+    || projection.swap.availability.structural
+    || hasLatching
+    || hasFunctions,
+  );
 
   function triState(fact: BooleanFact): 'true' | 'false' | 'mixed' {
     return fact.status === 'known' ? String(fact.value) as 'true' | 'false' : 'mixed';
@@ -141,13 +147,6 @@
   {#if controls}
     {@render controls()}
   {:else if appearance === 'standard'}
-    <!--
-      MOR-2509 package C — the bridge between the receiver panels is the
-      radio's front-panel HARDWARE, rendered through the shared Button
-      family: dot-lamp latching keys, reserved-slot momentary keys, and the
-      flat fill selector keys. The semantic/sdr branch below keeps the raw
-      controls those appearances always rendered.
-    -->
     {#if hasStandardBridge}
       <div
         class="vfo-ops"
@@ -169,10 +168,7 @@
           />
         {/if}
 
-        {#if projection.swap.availability.structural || projection.equalize.availability.structural
-          || projection.quickSplit.availability.structural
-          || projection.quickDualWatch.availability.structural
-          || projection.speak.availability.structural}
+        {#if projection.swap.availability.structural || projection.equalize.availability.structural}
           <div class="ops-row">
             {#if projection.swap.availability.structural}
               {@const id = reasonId('swap', projection.swap.availability.reason)}
@@ -204,49 +200,6 @@
               {#if id}<span {id} class="sr-only">{projection.equalize.availability.reason}</span>{/if}
             {/if}
 
-            {#if projection.quickSplit.availability.structural}
-              {@const id = reasonId('quick-split', projection.quickSplit.availability.reason)}
-              <ControlButton
-                surface="hardware"
-                reserveIndicator
-                ariaLabel={t('core.vfo.ops.quickSplit')}
-                describedBy={id}
-                title={projection.quickSplit.availability.reason}
-                disabled={!projection.quickSplit.availability.operational}
-                data={{ 'vfo-quick-split': true, 'dual-action': 'quick-split', 'ops-wide': true, color: 'muted' }}
-                onclick={() => emit({ kind: 'quick-split' })}
-              >{t('core.vfo.ops.quickSplit')}</ControlButton>
-              {#if id}<span {id} class="sr-only">{projection.quickSplit.availability.reason}</span>{/if}
-            {/if}
-
-            {#if projection.quickDualWatch.availability.structural}
-              {@const id = reasonId('quick-dual-watch', projection.quickDualWatch.availability.reason)}
-              <ControlButton
-                surface="hardware"
-                reserveIndicator
-                ariaLabel={t('core.vfo.ops.quickDualWatch')}
-                describedBy={id}
-                title={projection.quickDualWatch.availability.reason}
-                disabled={!projection.quickDualWatch.availability.operational}
-                data={{ 'vfo-quick-dual-watch': true, 'dual-action': 'quick-dual-watch', 'ops-wide': true, color: 'muted' }}
-                onclick={() => emit({ kind: 'quick-dual-watch' })}
-              >{t('core.vfo.ops.quickDualWatch')}</ControlButton>
-              {#if id}<span {id} class="sr-only">{projection.quickDualWatch.availability.reason}</span>{/if}
-            {/if}
-
-            {#if projection.speak.availability.structural}
-              {@const id = reasonId('speak', projection.speak.availability.reason)}
-              <ControlButton
-                surface="hardware"
-                reserveIndicator
-                describedBy={id}
-                title={projection.speak.availability.reason ?? 'Speak current frequency aloud'}
-                disabled={!projection.speak.availability.operational}
-                data={{ 'dual-action': 'speak' }}
-                onclick={() => emit({ kind: 'speak' })}
-              >SPEAK</ControlButton>
-              {#if id}<span {id} class="sr-only">{projection.speak.availability.reason}</span>{/if}
-            {/if}
           </div>
         {/if}
 
@@ -276,7 +229,7 @@
               <ControlButton
                 surface="hardware"
                 indicatorStyle="dot"
-                indicatorColor="green"
+                indicatorColor="cyan"
                 role={switchRole(projection.dualWatch.reading)}
                 ariaChecked={checkedState(projection.dualWatch.reading)}
                 active={projection.dualWatch.reading.status === 'known' && projection.dualWatch.reading.value}
@@ -300,7 +253,7 @@
               <ControlButton
                 surface="hardware"
                 indicatorStyle="dot"
-                indicatorColor={atuValue(functions.tuner) === 'tuning' ? 'orange' : 'red'}
+                indicatorColor={atuValue(functions.tuner) === 'tuning' ? 'amber' : 'red'}
                 role={tunerRole(functions.tuner)}
                 ariaChecked={tunerChecked(functions.tuner)}
                 active={atuValue(functions.tuner) === 'on' || atuValue(functions.tuner) === 'tuning'}
@@ -322,7 +275,7 @@
               <ControlButton
                 surface="hardware"
                 indicatorStyle="dot"
-                indicatorColor="amber"
+                indicatorColor="violet"
                 role={switchRole(vox)}
                 ariaChecked={checkedState(vox)}
                 active={vox.status === 'known' && vox.value}
@@ -520,33 +473,25 @@
   .split-digest[data-vfo-operation-appearance='sdr'] {
     flex-wrap: wrap; justify-content: center; font-size: 9px;
   }
-  /* MOR-2509 bridge: one fixed column of group rows; every key renders
-   * through the shared Button family, so height and text size read the
-   * family tokens scoped here (28px key height, 12px labels). The dot sits
-   * tighter than the family default because a bridge key is narrower than
-   * a panel key. */
+  /* MOR-2509 bridge: one fixed column of mock-up v8 group rows. */
   .vfo-ops[data-vfo-operation-appearance='standard'] {
     display: flex; flex-direction: column; flex-wrap: nowrap;
-    gap: var(--vfo-ops-gap, 4px);
-    --btn-min-height: 28px;
-    --btn-font-size: 12px;
-    --indicator-dot-offset: 4px;
-    --indicator-dot-gap: 4px;
+    gap: 0;
   }
   .ops-row {
-    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--vfo-ops-gap, 4px);
+    display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 6px;
   }
-  .functions-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .functions-row > :global(.v2-control-button[data-indicator-style='dot']) {
-    --btn-font-size: 11px;
-    padding-left: calc(var(--indicator-dot-reserve) + 1px);
-    padding-right: 4px;
+  :global(.active-receiver-toggle + .ops-row),
+  .ops-row + .ops-row {
+    margin-block-start: 6px;
   }
-  .ops-row > :global(.v2-control-button) { min-width: 0; width: 100%; }
-  .ops-row > :global([data-ops-wide]) { grid-column: 1 / -1; }
+  .ops-row > :global(.v2-control-button) {
+    grid-column: span 3; min-width: 0; width: 100%;
+  }
+  .functions-row > :global(.v2-control-button) { grid-column: span 2; }
   .bridge-divider {
-    height: 1px; margin-block: calc(var(--vfo-ops-gap, 4px) / 2);
-    background: var(--v2-border-panel, rgba(255, 255, 255, 0.12));
+    height: 1px; margin: 8px 0;
+    background: var(--dl-vfo-key-separator, #242d38);
   }
 </style>

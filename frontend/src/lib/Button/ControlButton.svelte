@@ -1,6 +1,12 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import type { IndicatorColor, IndicatorStyle, GlowVariant, ButtonSurface } from './types';
+  import type {
+    ButtonAppearance,
+    ButtonSurface,
+    GlowVariant,
+    IndicatorColor,
+    IndicatorStyle,
+  } from './types';
   // MOR-1536: the shared armed-state CSS seat — see the file's own doc
   // comment. Imported here (not by every caller) because this is the one
   // place `data-armed` is ever rendered onto the DOM.
@@ -14,6 +20,7 @@
     active?: boolean;
     disabled?: boolean;
     compact?: boolean;
+    appearance?: ButtonAppearance;
     surface?: ButtonSurface;
     indicatorStyle?: IndicatorStyle;
     indicatorColor?: IndicatorColor;
@@ -59,6 +66,7 @@
     active = false,
     disabled = false,
     compact = false,
+    appearance,
     surface = 'flat',
     indicatorStyle,
     indicatorColor,
@@ -124,6 +132,7 @@
   type="button"
   class="v2-control-button"
   class:v2-control-button--compact={compact}
+  data-appearance={appearance}
   data-active={localActive}
   data-surface={surface !== 'flat' ? surface : undefined}
   data-indicator-style={indicatorStyle}

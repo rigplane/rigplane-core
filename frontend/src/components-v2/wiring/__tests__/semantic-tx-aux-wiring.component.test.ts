@@ -547,7 +547,7 @@ describe('hosted Standard VFO operation instruments', () => {
     q<HTMLButtonElement>('[data-testid="external-Dual watch"]')!.click();
     q<HTMLButtonElement>('[data-testid="external-Receiver-SUB"]')!.click();
     q<HTMLButtonElement>('[data-testid="external-M=S"]')!.click();
-    q<HTMLButtonElement>('[data-testid="external-M↔S"]')!.click();
+    q<HTMLButtonElement>('[data-testid="external-M⇄S"]')!.click();
     q<HTMLButtonElement>('[data-testid="external-SPEAK"]')!.click();
     expect(h.split).toHaveBeenCalledOnce();
     expect(h.dualWatch).toHaveBeenCalledExactlyOnceWith(true);
@@ -655,7 +655,7 @@ describe('hosted Standard VFO operation instruments', () => {
     h.caps = vfoCaps();
     h.selectedFiniteAppearance = finiteAppearance;
     renderHostedDesktop();
-    const retained = ['Split', 'Dual watch', 'Receiver', 'M=S', 'M↔S', 'SPEAK']
+    const retained = ['Split', 'Dual watch', 'Receiver', 'M=S', 'M⇄S', 'SPEAK']
       .map((label) => retainedInvocations.get(label)!);
     unmount(component!);
     component = null;
@@ -1709,7 +1709,8 @@ describe('MOR-2509 bridge radio-function keys share state with the TX panel', ()
     pushRadioState(bridgeFunctionState(2, false, false));
     expect(bridgeTuner.getAttribute('aria-checked')).toBe('true');
     expect(bridgeTuner.getAttribute('aria-label')).toBe('Tuner: tuning');
-    expect(bridgeTuner.getAttribute('data-indicator-color')).toBe('orange');
+    // TUNING reads amber so it stays visually distinct from ON (red).
+    expect(bridgeTuner.getAttribute('data-indicator-color')).toBe('amber');
     expect(txTuner.getAttribute('aria-pressed')).toBe('true');
     expect(txTuner.textContent).toContain('tuning');
   });

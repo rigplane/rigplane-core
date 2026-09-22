@@ -13,8 +13,8 @@ describe('vfoSwapLabel', () => {
     expect(vfoSwapLabel('ab')).toBe('A↔B');
   });
 
-  it('returns M↔S for main_sub scheme', () => {
-    expect(vfoSwapLabel('main_sub')).toBe('M↔S');
+  it('returns M⇄S for main_sub scheme', () => {
+    expect(vfoSwapLabel('main_sub')).toBe('M⇄S');
   });
 
   it('defaults to A↔B for unknown scheme', () => {
@@ -139,9 +139,9 @@ describe('always-visible buttons (main_sub scheme)', () => {
     vi.mocked(getVfoScheme).mockReturnValue('main_sub');
   });
 
-  it('renders M↔S swap button', () => {
+  it('renders M⇄S swap button', () => {
     const t = mountComponent(baseProps);
-    expect(getButtonLabels(t)).toContain('M↔S');
+    expect(getButtonLabels(t)).toContain('M⇄S');
   });
 
   it('renders M→S copy button', () => {

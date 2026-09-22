@@ -2,7 +2,7 @@
 
 /** Returns the swap button label for the given VFO scheme. */
 export function vfoSwapLabel(scheme: string): string {
-  return scheme === 'main_sub' ? 'M↔S' : 'A↔B';
+  return scheme === 'main_sub' ? 'M⇄S' : 'A↔B';
 }
 
 /** Returns the copy button label for the given VFO scheme. */

@@ -163,13 +163,14 @@
       {#if embedded && hardware}
         <!--
           MOR-2509 bridge: the segment renders through the shared Button
-          family's fill look — the filled key IS the "which receiver is
+          family's selected appearance — the filled key IS the "which receiver is
           active" announcement the old text caption carried. Radio
           semantics (roving tabindex, arrows) ride the family's
           passthrough props unchanged.
         -->
         <ControlButton
-          indicatorStyle="fill"
+          appearance="selected"
+          surface="hardware"
           indicatorColor="cyan"
           reserveIndicator
           role="radio"
@@ -294,17 +295,13 @@
     background: transparent;
   }
 
-  /* MOR-2509 hardware bridge: the keys' family tokens — 28px key height
-     and 12px labels, the same numbers `VfoOperationGroup`'s ops column
-     scopes. Pinned by `semantic/__tests__/VfoSurface.panel-rows.test.ts`. */
   .active-receiver-toggle.embedded.hardware {
-    --btn-min-height: 28px;
-    --btn-font-size: 12px;
-    --indicator-dot-offset: 4px;
-    --indicator-dot-gap: 4px;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 6px;
   }
 
   .active-receiver-toggle.embedded.hardware > :global(button) {
+    grid-column: span 3;
     width: 100%;
     min-width: 0;
   }

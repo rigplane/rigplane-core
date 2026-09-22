@@ -1280,9 +1280,9 @@ async function buildAuditCases(capabilities: Capabilities): Promise<AuditCase[]>
     {
       panel: 'VFO OPS',
       control: 'Swap',
-      action: 'click M↔S',
+      action: 'click M⇄S',
       expected: 'vfo_swap {}',
-      locate: (page) => page.getByRole('button', { name: 'M↔S' }),
+      locate: (page) => page.getByRole('button', { name: 'M⇄S' }),
       act: async (_page, locator) => locator.click(),
       verify: (_ctx, commands) =>
         verifySingleCommand(commands, { name: 'vfo_swap' }),
