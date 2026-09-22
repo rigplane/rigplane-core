@@ -244,6 +244,28 @@ function outranks(
   );
 }
 
+/** Comma-split a box-shadow list at paren depth zero — the desktop-v2 track
+ * chrome's `var(--vc-hw-channel-shadow-1, #000f)` fallbacks contain commas,
+ * so a naive `value.split(',')` would shred every layer that carries one.
+ * MOR-2522's compose pin (section 9) compares the focus variant's shadow list
+ * against the track rule's layer-for-layer. */
+function shadowLayers(value: string): string[] {
+  const layers: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    else if (ch === ',' && depth === 0) {
+      layers.push(value.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  layers.push(value.slice(start).trim());
+  return layers;
+}
+
 /** Svelte compiles a scoped rule by appending one scope class to its
  * selector. The hash VALUE is irrelevant — whatever it is, it contributes
  * exactly one class-level token — so the compiled specificity is the source
@@ -894,8 +916,18 @@ describe('MOR-2522: native range sliders light on keyboard focus instead of draw
   // it), so the rule consumes --vc-focus-ring-shadow only as a preference over
   // its theme twin, with the legacy --accent ring as the terminal token when
   // no theme layer loads at all (the harness's theme=none capture mode).
+  //
+  // Round 2 (stand probe at 224ff7e3): the shared rule wins the language
+  // contracts but LOSES box-shadow on the desktop-v2/sdr-test skins, where
+  // semantic-controls.css's track chrome is (0,3,2) — box-shadow does not
+  // merge across rules, so the focused slider showed track-only with no ring
+  // at all. The illumination there is carried by a :focus-visible variant of
+  // the track rule's own selector, pinned below from the real stylesheet.
   const RANGE_RULE_SELECTOR = "input[type='range'][type='range']:focus-visible";
   const RANGE_ONLY = /^(?:outline|box-shadow)$/;
+  const SKIN_CSS = 'skins/desktop-v2/semantic-controls.css';
+  const RING_TOKEN_CHAIN =
+    'var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow, 0 0 0 2px var(--accent)))';
   const NATIVE_RANGE_SURFACES = [
     'semantic/FilterSurface.svelte',
     'semantic/DspSurface.svelte',
@@ -973,17 +1005,93 @@ describe('MOR-2522: native range sliders light on keyboard focus instead of draw
   });
 
   it('the desktop-v2 generic frame rule no longer matches range inputs', () => {
-    // semantic-controls.css's `section :is(button, input, select):focus-visible`
-    // is (0,3,2) — outranking even the doubled-attribute rule — so excluding
-    // range inputs from that selector is what frees app.css's lighting to
-    // apply on the desktop-v2/sdr-test skins; on the stand this rule never
-    // loads at all.
-    const frame = ruleBlocks(stripComments(read('skins/desktop-v2/semantic-controls.css'))).find(
+    // semantic-controls.css's `section :is(button, input:not([type='range']),
+    // select):focus-visible` outranks even the doubled-attribute rule, so
+    // excluding range inputs from that selector is what frees them from the
+    // FRAME on the desktop-v2/sdr-test skins (the stand's filter panel is one:
+    // `.desktop-control-face .semantic-control-panel`). The ILLUMINATION there
+    // is not app.css's, though — the same file's track chrome owns box-shadow
+    // at (0,3,2) — but the composing variant pinned directly below.
+    const frame = ruleBlocks(stripComments(read(SKIN_CSS))).find(
       (b) => /:is\(button/.test(b.selector) && /:focus-visible/.test(b.selector),
     );
     expect(frame, 'expected the desktop-v2 generic :focus-visible frame rule').toBeTruthy();
     expect(frame!.selector).toContain("input:not([type='range'])");
     expect(frame!.body).toMatch(/outline:\s*2px solid/);
+  });
+
+  // The round-2 cascade pins. The track chrome rule and its :focus-visible
+  // variant are both located in the REAL stylesheet, and the ranking is
+  // recomputed from their live selectors: the pin fails if the track rule
+  // gains specificity (a tie is a loss — the chrome would eat the ring again)
+  // or if the focus variant loses it.
+  const skinBlocks = ruleBlocks(stripComments(read(SKIN_CSS)));
+  // The track chrome: the unfocused rule that owns box-shadow on the INPUT
+  // element itself (the ::-webkit-slider-thumb / ::-moz-range-thumb rules
+  // style a different element and never collide with the ring).
+  const trackChrome = skinBlocks.find(
+    (b) =>
+      /input\[type='range'\]/.test(b.selector) &&
+      !/:focus/.test(b.selector) &&
+      !/::/.test(b.selector) &&
+      /box-shadow/.test(b.body),
+  );
+  const skinFocus = skinBlocks.find((b) =>
+    /input\[type='range'\]:focus-visible/.test(b.selector),
+  );
+
+  it('the desktop-v2 focus variant is the track rule’s own selector plus :focus-visible', () => {
+    expect(trackChrome, 'expected the desktop-v2 track chrome rule').toBeTruthy();
+    expect(skinFocus, 'expected a :focus-visible variant of the track rule').toBeTruthy();
+    // Not a parallel selector that could drift: exactly the track compound
+    // with the focus pseudo appended — same element, one state later.
+    expect(skinFocus!.selector).toBe(`${trackChrome!.selector}:focus-visible`);
+  });
+
+  it('the focus variant outranks the track chrome on specificity alone', () => {
+    const focus = specificity(skinFocus!.selector);
+    const track = specificity(trackChrome!.selector);
+    expect(
+      outranks(focus, track),
+      `${skinFocus!.selector} = ${focus} must outrank the track chrome ` +
+        `${trackChrome!.selector} = ${track}: box-shadow does not merge across ` +
+        'rules, so a tie or a loss means the focused slider paints track-only ' +
+        'with no ring — the 224ff7e3 stand defect.',
+    ).toBe(true);
+  });
+
+  it('app.css’s shared rule cannot win this collision — the skin variant is load-bearing', () => {
+    // Discriminating half: (0,3,1) loses the c column to the track rule's two
+    // type selectors (`section`, `input`). If the track rule ever DROPS below
+    // the shared rule this pin fails too, because the variant would then be
+    // redundant duplication rather than the only carrier of the ring.
+    const track = specificity(trackChrome!.selector);
+    expect(outranks(specificity(RANGE_RULE_SELECTOR), track)).toBe(false);
+  });
+
+  it('the focus variant composes: ring token chain prepended to the track chrome, layer-for-layer', () => {
+    const shadowOf = (body: string) => {
+      // A box-shadow value never contains `;` (its commas sit inside var()),
+      // so cutting at the first semicolon isolates the one declaration even
+      // in the track rule's multi-declaration body.
+      const value = body.match(/box-shadow:\s*([^;]*)/)?.[1].trim();
+      expect(value, 'expected a box-shadow declaration').toBeTruthy();
+      return shadowLayers(value!);
+    };
+    const focusLayers = shadowOf(skinFocus!.body);
+    const trackLayers = shadowOf(trackChrome!.body);
+    // The ring is the shared token chain — never a colour literal — …
+    expect(focusLayers[0]).toBe(RING_TOKEN_CHAIN);
+    // … and every chrome layer survives, in order, behind it: the track rule
+    // is restated, not overridden, so the composition cannot silently drop the
+    // channel shading when one of the two rules is edited.
+    expect(focusLayers.slice(1)).toEqual(trackLayers);
+    // No-geometry pin: the variant declares the ring and nothing else.
+    const properties = skinFocus!.body
+      .split(';')
+      .map((d) => d.split(':')[0].trim())
+      .filter(Boolean);
+    expect(properties).toEqual(['box-shadow']);
   });
 
   it('the six native-range surfaces declare no private outline treatment of their own', () => {

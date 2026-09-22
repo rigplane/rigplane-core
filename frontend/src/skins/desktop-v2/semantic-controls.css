@@ -139,6 +139,26 @@
   cursor: pointer;
 }
 
+/* MOR-2522: focus LIGHTS the slider, and the light must compose with the
+ * track chrome, not lose to it. box-shadow does not merge across rules — one
+ * winner takes the whole property — and app.css's shared ring rule (0,3,1)
+ * loses the c column to the track rule above (0,3,2: two classes, one
+ * attribute, TWO types), so the ring can only reach the screen from a variant
+ * of THAT selector. This is it: the same compound plus :focus-visible,
+ * (0,4,2), declaring the ring token chain PREPENDED to the same three inset
+ * layers, so the chrome stays and the ring appears outside it. Same token
+ * chain as app.css (never a colour literal for the ring); app.css remains the
+ * fallback on surfaces where this skin is not loaded. Pinned, from this file,
+ * by 'the desktop-v2 focus variant composes the ring with the track chrome'
+ * and its cascade companions in section 9 of
+ * src/__tests__/focus-ring-token-wiring.test.ts. */
+.desktop-control-face .semantic-control-panel section input[type='range']:focus-visible {
+  box-shadow: var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow, 0 0 0 2px var(--accent))),
+    inset 0 2px 4px var(--vc-hw-channel-shadow-1, #000f),
+    inset 0 -1px 2px var(--vc-hw-channel-shadow-2, #0009),
+    inset 0 0 0 1px var(--vc-hw-channel-border, #0008);
+}
+
 .desktop-control-face .semantic-control-panel input[type='range']::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: 2px;
