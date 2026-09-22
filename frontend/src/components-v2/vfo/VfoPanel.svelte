@@ -837,6 +837,17 @@
 
   @container (max-width: 470px) {
     .smeter-row { grid-column: 1 / -1; }
+    /* The test "the narrow under-row trims fixed chip boxes only inside the
+       meter-under-frequency query" pins this one-line 235px fit. */
+    .chip-amber[data-chip='split'] {
+      width: calc(76px - var(--dl-vfo-amber-chip-narrow-width-trim, 4px));
+    }
+    .chip-amber[data-chip='rit'] {
+      width: calc(92px - var(--dl-vfo-amber-chip-narrow-width-trim, 4px));
+    }
+    .chip-amber[data-chip='xit'] {
+      width: calc(64px - var(--dl-vfo-amber-chip-narrow-width-trim, 4px));
+    }
   }
 
   .sr-only {

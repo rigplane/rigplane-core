@@ -666,6 +666,19 @@ function rule(css: string, selector: string): string {
   return standalone[0];
 }
 
+function atRuleBlock(css: string, prelude: string): string {
+  const start = css.indexOf(prelude);
+  expect(start, `at-rule "${prelude}" exists`).toBeGreaterThanOrEqual(0);
+  const open = css.indexOf('{', start);
+  let depth = 0;
+  for (let index = open; index < css.length; index += 1) {
+    if (css[index] === '{') depth += 1;
+    if (css[index] === '}') depth -= 1;
+    if (depth === 0) return css.slice(open + 1, index);
+  }
+  throw new Error(`at-rule "${prelude}" is not closed`);
+}
+
 type Specificity = readonly [number, number, number];
 
 function selectorList(selectorList: string): string[] {
@@ -862,6 +875,24 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(compact).toMatch(/--vfo-large-chip-width:\s*60px/);
     expect(compact).toMatch(/\.lamp\[data-chip='att'\]\s*\{\s*width:\s*46px/);
     expect(compact).toMatch(/\.lamp\[data-chip='rfg'\]\s*\{\s*width:\s*64px/);
+  });
+
+  it('the narrow under-row trims fixed chip boxes only inside the meter-under-frequency query', () => {
+    const prelude = '@container (max-width: 470px)';
+    const narrow = atRuleBlock(panelCss, prelude);
+    const narrowStart = panelCss.indexOf(prelude);
+    const narrowEnd = panelCss.indexOf('{', narrowStart) + narrow.length + 2;
+    const outsideNarrow = panelCss.slice(0, narrowStart) + panelCss.slice(narrowEnd);
+    const trim = '--dl-vfo-amber-chip-narrow-width-trim';
+
+    expect(narrow.match(new RegExp(trim, 'g'))).toHaveLength(3);
+    expect(narrow).toMatch(/\.chip-amber\[data-chip='split'\]\s*\{[^}]*width:\s*calc\(76px - var\(--dl-vfo-amber-chip-narrow-width-trim,\s*4px\)\)/);
+    expect(narrow).toMatch(/\.chip-amber\[data-chip='rit'\]\s*\{[^}]*width:\s*calc\(92px - var\(--dl-vfo-amber-chip-narrow-width-trim,\s*4px\)\)/);
+    expect(narrow).toMatch(/\.chip-amber\[data-chip='xit'\]\s*\{[^}]*width:\s*calc\(64px - var\(--dl-vfo-amber-chip-narrow-width-trim,\s*4px\)\)/);
+    expect(narrow).not.toMatch(/flex-wrap:\s*wrap/);
+    expect(outsideNarrow).not.toContain(trim);
+    expect(rule(panelCss, '.under-row')).toMatch(/gap:\s*6px/);
+    expect(92 + 64 + 76 - (3 * 4) + (2 * 6)).toBe(232);
   });
 
   it('chip colours consume the --dl-vfo-* language tokens', () => {
