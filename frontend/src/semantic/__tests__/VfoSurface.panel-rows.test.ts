@@ -1329,7 +1329,7 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
 
   it('stacks an absolute Standard pair at the 1024-class breakpoint', () => {
     const compact = surfaceCss.slice(surfaceCss.indexOf('@media (max-width: 1050px)'));
-    expect(compact.slice(0, compact.indexOf('@media (max-width: 950px)')))
+    expect(compact.slice(0, compact.indexOf('@media (max-width: 760px)')))
       .toMatch(/\.standard-receiver\[data-standard-vfo-slot\][^{]*\{[^}]*flex-basis:\s*calc\(100% - 192px\)/s);
   });
 });

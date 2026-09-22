@@ -1,9 +1,9 @@
 {
   "ticket": "MOR-1090",
-  "generatedAt": "2026-09-22T04:54:23.492Z",
-  "commit": "f1b0cedc60a47a516a934f7a64c50556c4c44d39",
-  "commitShort": "f1b0cedc",
-  "branch": "codex/mor-2509-vfo-batch",
+  "generatedAt": "2026-09-22T18:01:27.587Z",
+  "commit": "22e670519cd223a61711b5208a87c0a74680ae6b",
+  "commitShort": "22e67051",
+  "branch": "codex/mor-2509-r2-batch",
   "platform": "linux-arm64",
   "node": "v20.20.2",
   "playwright": "1.58.2",

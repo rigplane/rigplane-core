@@ -2,7 +2,55 @@
 
 Tracked, reviewed screenshots compared by `npm run test:e2e:visual` (`playwright.visual.config.ts`, whose `testDir` runs every `*.spec.ts` under `tests/e2e/visual/`): `visual-baselines.spec.ts` for a representative slice of the MOR-1070/1085 fixture matrix, `gallery-baselines.spec.ts` (MOR-2219) for the `gallery-*` rows below, which preserve individual instrument looks rendered on the `?demo=control-buttons` page, and `spectrum-baselines.spec.ts` for the `spectrum-panel--managed-frame` row. Distinct from `frontend/fixtures-baselines/` (gitignored capture OUTPUT from `capture.mjs`/`capture-ptt.mjs`) — this directory is the APPROVED, committed comparison target.
 
-## Linux re-pin provenance — 2026-09-22 MOR-2509 VFO deck batch
+## Linux re-pin provenance — 2026-09-22 MOR-2509 round-2 deck (current)
+
+MOR-2509 round 2 (on `codex/mor-2509-r2-batch`): the bridge rows now fill the
+deck block and the inactive receiver is dimmed; the `panadapter-first` and
+`unified-instrument` LCD faces pick up one 12-px strip inside the deck (the
+S-meter label row).
+
+The committed PNGs and `manifest.json` come from the Linux regeneration run
+[35764235628](https://github.com/rigplane/rigplane-core/actions/runs/35764235628)
+(`visual.yml` with `regenerate=true`) at source head
+`22e670519cd223a61711b5208a87c0a74680ae6b` (`manifest.json` `commit`); the
+artifact `regenerated-baselines` was downloaded with `gh run download`. Of the
+30 PNGs in the artifact, 15 were copied over this directory — each differs by
+more than 8/255 in some pixel from the previously committed file — 13 were
+byte-identical, and 2 (`peer-split-chassis--1100x800.png`,
+`peer-split-chassis--desktop.png`) differed in bytes only with no pixel above
+the threshold and were intentionally left as committed. Per copied scene:
+pixels differing by more than 8/255 in any channel against the previously
+committed PNG (Pillow `ImageChops.difference`, whole image), and the SHA-256
+prefix of the committed file:
+
+| Scene | changed px | share | new SHA-256 (16) |
+|---|---:|---:|---|
+| `dual-main-sub--desktop--fieldline.png` | 139254 | 13.60% | `55ba47a0881a0032` |
+| `dual-main-sub--desktop--studioline--light.png` | 146799 | 14.34% | `4928e64b2022b171` |
+| `dual-main-sub--desktop--studioline.png` | 109532 | 10.70% | `4459a3395e21eaa5` |
+| `dual-main-sub--desktop.png` | 136865 | 13.37% | `05f394a320390fcc` |
+| `dual-main-sub--phone-portrait.png` | 77715 | 25.52% | `19d072992f8f7faf` |
+| `panadapter-first--1100x800.png` | 48 | 0.01% | `2ef9ddb1a8adb3d5` |
+| `panadapter-first--desktop.png` | 42 | 0.00% | `fb8fcfba5e02adc1` |
+| `topology-1-single--desktop.png` | 211716 | 20.68% | `4e04663683b2ec7e` |
+| `tx-phase-fault--desktop--fieldline.png` | 198873 | 19.42% | `3f390c121fe585c1` |
+| `tx-phase-fault--desktop.png` | 110742 | 10.81% | `927d871f0b9566df` |
+| `tx-phase-rx--desktop.png` | 136865 | 13.37% | `05f394a320390fcc` |
+| `tx-phase-tx--desktop--studioline.png` | 114557 | 11.19% | `2b928311d3686d8b` |
+| `tx-phase-tx--desktop.png` | 111047 | 10.84% | `502f7d99154d86fc` |
+| `unified-instrument--1100x800.png` | 48 | 0.01% | `a3db6f72b7954375` |
+| `unified-instrument--desktop.png` | 56 | 0.01% | `c6b4b4b7921afb54` |
+
+The four `panadapter-first`/`unified-instrument` rows (≤ 0.01 %) are the LCD
+faces: the 12-px S-meter label strip inside the deck is the only change.
+`topology-1-single--desktop` and `dual-main-sub--phone-portrait` change the
+most because the deck spans their full width.
+
+## Linux re-pin provenance — 2026-09-22 MOR-2509 VFO deck batch (superseded)
+
+Superseded by the round-2 re-pin above (run 35764235628); kept as the record
+of the round-1 deck batch. Its table below compares against the pre-batch
+files, not against the currently committed ones.
 
 MOR-2509 (packages A–E on `codex/mor-2509-vfo-batch`): the v7 S-meter face
 (`LinearSMeter` `vfo` variant — dash segments, declared-only scale numerals,
