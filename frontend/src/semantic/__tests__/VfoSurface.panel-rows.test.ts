@@ -72,7 +72,9 @@ function receiverIndicator(
 
 /** Fixtures with receiver indicators plus a full radio-wide action block
  *  (single-receiver schemes get no MAIN/SUB selector actions). */
-function standardFixture(id: TopologyFixtureId, readings: 'known' | 'unknown' = 'known'): RadioViewModel {
+function standardFixture(
+  id: TopologyFixtureId, readings: 'known' | 'unknown' = 'known', antennaPorts = 2,
+): RadioViewModel {
   const base = topologyFixtures[id];
   const dual = id.startsWith('2/');
   const banded = id === '2/main_sub' ? withBand(base) : base;
@@ -95,6 +97,11 @@ function standardFixture(id: TopologyFixtureId, readings: 'known' | 'unknown' = 
     ...band,
     receiverIndicators: (dual ? (['MAIN', 'SUB'] as const) : (['MAIN'] as const))
       .map((receiver) => receiverIndicator(receiver, readings)),
+    antenna: {
+      txAntenna: readings === 'known' ? indicatorField(1) : unknownField(),
+      rxAnt: readings === 'known' ? indicatorField(false) : unknownField(),
+      antennaCount: antennaPorts,
+    },
     radioWideIndicators: {
       rfState: readings === 'known' ? 'receiving' : 'uncertain',
       antenna: readings === 'known' ? indicatorField(1) : unknownField(),
@@ -226,6 +233,13 @@ describe('standard tray tabs (2/main_sub)', () => {
       .toBe('MAIN');
     expect(antTabs[0].getAttribute('data-indicator-fact')).toBe('ant');
     expect(antTabs[0].textContent?.trim()).toBe('ANT 1');
+  });
+
+  it('draws no ANT tab on a single-port radio (owner ruling, 2026-09-21)', () => {
+    const root = mountSurface({
+      viewModel: standardFixture('2/main_sub', 'known', 1), appearance: 'standard',
+    });
+    expect(root.querySelectorAll('[data-tray-tab="ant"]')).toHaveLength(0);
   });
 
   it('the ANT tab stays on the active-slot panel of a single-receiver A/B pair', () => {
@@ -369,6 +383,10 @@ describe('standard under-frequency chips (2/main_sub)', () => {
     const keys = Array.from(under.querySelectorAll('[data-chip]'))
       .map((chip) => chip.getAttribute('data-chip'));
     expect(keys).toEqual(['rit', 'xit', 'split']);
+    // Radio-wide values appear on ONE panel: the active receiver's.
+    expect(root.querySelectorAll('[data-chip="rit"]')).toHaveLength(1);
+    expect(root.querySelectorAll('[data-chip="xit"]')).toHaveLength(1);
+    expect(root.querySelectorAll('[data-chip="split"]')).toHaveLength(1);
     expect(under.querySelector('[data-chip="rit"]')?.textContent?.trim()).toBe('RIT +120');
     expect(under.querySelector('[data-chip="rit"]')?.getAttribute('data-lit')).toBe('true');
     expect(under.querySelector('[data-chip="rit"]')?.getAttribute('data-indicator-fact')).toBe('rit');
@@ -454,7 +472,20 @@ describe('the live FTX-1 payload (many null leaves) prints no placeholder', () =
           expect(text, `chip ${chip.getAttribute('data-chip') ?? chip.getAttribute('data-tray-tab')} must not print ${forbidden}`)
             .not.toContain(forbidden);
         }
+        if (chip.getAttribute('data-lit') === 'false') {
+          expect(chip.textContent?.trim(), 'an unlit chip keeps its label, never an empty frame')
+            .not.toBe('');
+        }
       }
+      expect(panel.textContent, 'the whole panel text carries no dash').not.toContain('—');
+    }
+    // The filter leaf is unobserved in this capture: the FIL chip stays,
+    // unlit, carrying its label only.
+    const filChips = root.querySelectorAll('[data-chip="filter"]');
+    expect(filChips.length).toBe(2);
+    for (const chip of Array.from(filChips)) {
+      expect(chip.getAttribute('data-lit')).toBe('false');
+      expect(chip.textContent?.trim()).toBe('FIL');
     }
     // Lit state is the model's own reading status, chip by chip.
     const caps = { ...FTX1_CAPABILITIES, providerGeneration: FTX1_STATE.providerGeneration };
@@ -619,6 +650,23 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(inactive).toMatch(/--vfo-neon-fill:\s*var\(--dl-vfo-primary-neon-dim/);
     expect(inactive).not.toMatch(/filter|opacity/);
     expect(inactive).not.toMatch(/panel-meter/);
+  });
+
+  it('the readout digits reach a bold weight through one chain (studioline owns it)', () => {
+    const strip = (path: string) =>
+      readFileSync(path, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const studioline = strip('src/presentation/languages/studioline/studioline.css');
+    // The language defines the panel numeral weight and routes the skin
+    // variable the readout primitive reads; without both, the primitive's
+    // var() chain resolves invalid-at-computed-value and the digits inherit.
+    expect(studioline).toMatch(/--dl-vfo-frequency-weight:\s*800/);
+    expect(studioline).toMatch(/--v2-vfo-font-weight:\s*var\(--dl-vfo-frequency-weight\)/);
+    const routing = [...studioline.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(([, , body]) => body.includes('--v2-vfo-font-weight'));
+    expect(routing.length, 'the skin variable is re-pointed in exactly one block').toBe(1);
+    expect(routing[0][1].trim()).toBe("[data-design-language='studioline'][data-design-language]");
+    const readout = readFileSync('src/primitives/frequency/StandardFrequencyReadout.svelte', 'utf8');
+    expect(readout).toMatch(/'--freq-font-weight':\s*'var\(--v2-vfo-font-weight\)'/);
   });
 
   it('each design language stylesheet defines the panel tokens at exactly one root block', () => {

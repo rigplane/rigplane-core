@@ -393,6 +393,13 @@ describe('badge rendering', () => {
     const t = mountPanel({ ...baseProps, badges: { pre: 'P1' } });
     expect(t.querySelector('.lamp')?.textContent?.trim()).toBe('P1');
   });
+
+  it('carries a legacy badge colour through to the lamp', () => {
+    // The suite's getComputedStyle mock maps --v2-badge-atu-color to 'green'.
+    const t = mountPanel({ ...baseProps, badges: { atu: true } });
+    const lamp = t.querySelector<HTMLElement>('.lamp');
+    expect(lamp?.getAttribute('style')).toContain('--vfo-lamp-color: var(--v2-badge-green-text)');
+  });
 });
 
 describe('callbacks', () => {

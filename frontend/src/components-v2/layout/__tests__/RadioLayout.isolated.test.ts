@@ -1079,7 +1079,7 @@ describe('MOR-2513 — the live FTX-1 payload mounts the default desktop composi
     return mountLayout('desktop-v2');
   };
 
-  it('renders six VFO rows across MAIN and SUB instrument sections', () => {
+  it('renders ten fixed VFO rows across MAIN and SUB instrument sections', () => {
     const t = mountFtx1(FTX1_STATE);
     expect(ftx1StateJson.main.dataMode).toBeNull();
     expect(ftx1StateJson.sub.att).toBeNull();

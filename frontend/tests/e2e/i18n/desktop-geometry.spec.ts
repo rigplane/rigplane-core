@@ -621,6 +621,9 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       await expect(root).not.toHaveClass(/sdr-test/);
       await expect(page.locator('[data-vfo-appearance]').first()).toHaveAttribute('data-vfo-appearance', 'standard');
       await expect(page.locator('[data-vfo-tile]')).toHaveCount(topology === 'topology-1-single' ? 1 : 2);
+      // MOR-2509: every panel owns five fixed rows — tray, receiver, main,
+      // under and the DSP group.
+      await expect(page.locator('[data-vfo-row]')).toHaveCount(topology === 'topology-1-single' ? 5 : 10);
       const geometry = await standardGeometry(page);
       const boxes = geometry.boxes as Record<string, DOMRect>;
       expect.soft(boxes.receiver.y, 'receiver deck follows status').toBeGreaterThanOrEqual(boxes.status.y + boxes.status.height - 1);
@@ -768,7 +771,9 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
       const errors: string[] = []; page.on('pageerror', e => errors.push(String(e)));
       await boot(page, layout, width, known);
       if (layout === 'standard' && width === 900) {
-        const stripFailures = await page.locator('.receiver-instrument [data-vfo-row]').evaluateAll(strips =>
+        const panelRows = page.locator('.receiver-instrument [data-vfo-row]');
+        await expect(panelRows.first(), '900px Standard cards paint their panel rows').toBeVisible();
+        const stripFailures = await panelRows.evaluateAll(strips =>
           strips.flatMap(strip => {
             const card = strip.closest('.receiver-instrument')!.getBoundingClientRect();
             const box = strip.getBoundingClientRect();
