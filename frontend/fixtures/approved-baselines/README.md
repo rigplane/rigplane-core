@@ -18,7 +18,7 @@ The committed PNGs and `manifest.json` come from the Linux regeneration run
 (`visual.yml` with `regenerate=true`) at source head
 `f1b0cedc60a47a516a934f7a64c50556c4c44d39` (`manifest.json` `commit`); the
 artifact `regenerated-baselines` was downloaded with `gh run download` and
-copied over this directory unchanged. Seventeen captures changed, twelve are
+copied over this directory unchanged. Seventeen captures changed, thirteen are
 byte-identical. Per scene: pixels differing by more than 8/255 in any channel
 against the previously committed PNG (Pillow `ImageChops.difference`, whole
 image), and the SHA-256 prefix of the committed file:
@@ -56,7 +56,7 @@ image), and the SHA-256 prefix of the committed file:
 | `unified-instrument--1100x800.png` | 84 | 0.01% | `3ae439e860c2659c` |
 | `unified-instrument--desktop.png` | 98 | 0.01% | `f6611c9c887afd16` |
 
-The five `panadapter-first`/`peer-split-chassis`/`unified-instrument` rows
+The six `panadapter-first`/`peer-split-chassis`/`unified-instrument` rows
 (≤ 0.07 %) are the LCD faces: a one-segment difference in the classic S-meter
 band (the same band differed by 84–168 px between the two regeneration runs
 of 2026-09-21, before this batch existed — capture noise the comparator's
