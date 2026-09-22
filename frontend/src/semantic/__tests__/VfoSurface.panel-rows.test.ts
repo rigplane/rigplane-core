@@ -75,9 +75,20 @@ function receiverIndicator(
 function standardFixture(id: TopologyFixtureId, readings: 'known' | 'unknown' = 'known'): RadioViewModel {
   const base = topologyFixtures[id];
   const dual = id.startsWith('2/');
+  const banded = id === '2/main_sub' ? withBand(base) : base;
+  const band = banded.band
+    ? {
+      band: {
+        ...banded.band,
+        currentBand: readings === 'known'
+          ? banded.band.currentBand
+          : { reading: { status: 'unknown' as const }, availability: banded.band.currentBand.availability },
+      },
+    }
+    : {};
   return validateRadioViewModel({
-    ...base,
-    ...(id === '2/main_sub' ? withBand(base) : {}),
+    ...banded,
+    ...band,
     receiverIndicators: (dual ? (['MAIN', 'SUB'] as const) : (['MAIN'] as const))
       .map((receiver) => receiverIndicator(receiver, readings)),
     radioWideIndicators: {
@@ -408,11 +419,16 @@ describe('the live FTX-1 payload (many null leaves) prints no placeholder', () =
     return mountSurface({ viewModel: model!, appearance: 'standard' });
   };
 
-  it('absent capabilities draw no element: no BAND tab, no ANT tab, no BW tab', () => {
+  it('absent capabilities draw no element, present ones stay: no BAND or ANT tab, BW present', () => {
     const root = mountFtx1();
     expect(root.querySelector('[data-tray-tab="band"]')).toBeNull();
     expect(root.querySelector('[data-tray-tab="ant"]')).toBeNull();
-    expect(root.querySelector('[data-tray-tab="bw"]')).toBeNull();
+    const bwTabs = root.querySelectorAll('[data-tray-tab="bw"]');
+    expect(bwTabs.length).toBe(2);
+    for (const tab of Array.from(bwTabs)) {
+      expect(tab.getAttribute('data-lit')).toBe('true');
+    }
+    expect(bwTabs[0].textContent?.trim()).toMatch(/^BW \d+$/);
   });
 
   it('unknown leaves stay unlit in place and no chip prints a placeholder', () => {
