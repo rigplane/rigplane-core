@@ -484,7 +484,7 @@ CI run must compare successfully against these replacements.
 | Field | Value |
 | --- | --- |
 | Source code commit | `99418f5d849a03d0796fa3cad4b9e11bce2456d5` (branch `codex/mor-2509-r2-batch`, PR #3570) |
-| CI run / job | [Tests (quick) #35768979309](https://github.com/rigplane/rigplane-core/actions/runs/35768979309) / job `` |
+| CI run / job | [Tests (quick) #35768979309](https://github.com/rigplane/rigplane-core/actions/runs/35768979309) / job `106885633422` |
 | Command | `npm run test:e2e:i18n` (`playwright test -c ./playwright.i18n.config.ts`) |
 | Source | the `actual` attachments of the four MOR-1400 production-root cases in that run's `mor-1400-production-visual-diagnostics` artifact (`playwright-report/data/*.png`, 1280×800), classified by content hash / red-pixel share / nearest scene with `v7_classify.py`, copied byte-for-byte |
 | Reason | MOR-2509 correction round 2 (owner remarks at the stand 2026-09-22): the inactive receiver's frequency and name are dimmed and its panel quieter, the panel sheen applies in both colour modes, the S-meter follows mock-up v8 (548 px flex track, odd S-unit labels plus declared `+` knots), and the bridge is 212 px wide with `HardwareButton` edge-left keys filling the block; the deck's height changes, so every row below it moves. Deltas measured against the superseded baselines with Pillow `ImageChops.difference` (threshold 8/255 per channel); the bounding box spans from the deck's top edge (y 46–52) to the last content row (y 630–631) in every scene. |
