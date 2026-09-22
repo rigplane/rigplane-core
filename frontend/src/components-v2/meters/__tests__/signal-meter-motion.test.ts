@@ -215,13 +215,15 @@ describe('createSignalMeterMotion ballistics constants and afterglow (MOR-2509)'
   });
 
   it('afterglow never drops below the displayed level and converges onto it', () => {
-    const binding = createSignalMeterMotion({ projection: projection(0.8), present: true });
+    const binding = createSignalMeterMotion({
+      projection: projection(0.8), present: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
     binding.start();
     expect(binding.frame.afterglowFraction).toBeCloseTo(0.8, 5);
 
     // A drop: the displayed level decays toward 0.2 while the afterglow
     // trails it, decaying over ~250 ms and never falling behind the bar.
-    binding.sync({ projection: projection(0.2), present: true });
+    binding.sync({ projection: projection(0.2), present: true, source: MAIN_SOURCE, session: SESSION_1 });
     let sawTrailing = false;
     for (let frame = 1; frame <= 40; frame += 1) {
       harness!.runFrame(frame * 16.7);
@@ -237,12 +239,14 @@ describe('createSignalMeterMotion ballistics constants and afterglow (MOR-2509)'
   });
 
   it('runs a third frame loop only while the afterglow is decaying', () => {
-    const binding = createSignalMeterMotion({ projection: projection(0.8), present: true });
+    const binding = createSignalMeterMotion({
+      projection: projection(0.8), present: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
     binding.start();
     // Steady state: smoother + peak ticker only.
     expect(harness!.activeFrames).toBe(2);
 
-    binding.sync({ projection: projection(0.2), present: true });
+    binding.sync({ projection: projection(0.2), present: true, source: MAIN_SOURCE, session: SESSION_1 });
     expect(harness!.activeFrames).toBe(3);
     // The trail follows the bar one 250 ms window back, so it keeps a frame
     // scheduled until the bar itself has settled.
@@ -253,7 +257,9 @@ describe('createSignalMeterMotion ballistics constants and afterglow (MOR-2509)'
   });
 
   it('reports a null afterglow and the reduced flag under reduced motion', () => {
-    const binding = createSignalMeterMotion({ projection: projection(0.8), present: true });
+    const binding = createSignalMeterMotion({
+      projection: projection(0.8), present: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
     binding.start();
     harness!.setReduced(true);
     expect(binding.frame.reducedMotion).toBe(true);
@@ -263,9 +269,11 @@ describe('createSignalMeterMotion ballistics constants and afterglow (MOR-2509)'
   });
 
   it('clears the afterglow with the sample when presence drops', () => {
-    const binding = createSignalMeterMotion({ projection: projection(0.8), present: true });
+    const binding = createSignalMeterMotion({
+      projection: projection(0.8), present: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
     binding.start();
-    binding.sync({ projection: projection(0.2), present: true });
+    binding.sync({ projection: projection(0.2), present: true, source: MAIN_SOURCE, session: SESSION_1 });
     harness!.runFrame(16.7);
     expect(binding.frame.afterglowFraction).not.toBeNull();
 

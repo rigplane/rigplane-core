@@ -42,10 +42,14 @@ describe('MOR-2342 opt-in SDR meter', () => {
     expect(root.textContent).not.toContain('S9');
     expect(root.querySelector('svg')?.getAttribute('aria-label')).not.toContain('dBm');
   });
-  it('retains the existing Standard meter and its distinct 20 segments', () => {
+  it('renders the v7 pixel-locked face, not the SDR cell grid, for the vfo-wide variant', () => {
     const root = render(0, 'vfo-wide');
-    expect(root.querySelector('svg')?.getAttribute('viewBox')).toMatch(/^0 0 600 /);
-    expect(root.querySelectorAll('[data-segment]')).toHaveLength(20);
+    // MOR-2509: no viewBox — one user unit is one CSS pixel — and the
+    // segmented look is one dash-patterned track line per zone, not N
+    // per-segment rects.
+    expect(root.querySelector('svg')?.getAttribute('viewBox')).toBeNull();
+    expect(root.querySelectorAll('[data-segment]')).toHaveLength(0);
     expect(root.querySelector('[data-sdr-segment]')).toBeNull();
+    expect(root.querySelector('[data-meter-track]')?.getAttribute('stroke-dasharray')).toBe('2 1');
   });
 });

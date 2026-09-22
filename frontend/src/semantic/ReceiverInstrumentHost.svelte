@@ -1,7 +1,7 @@
 <script module lang="ts">
   import type { Snippet } from 'svelte';
   import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
-  import type { LowerScaleDescriptor } from '../components-v2/meters/LinearSMeter.svelte';
+  import type { LowerScaleDescriptor } from '../components-v2/meters/lower-scale';
   import { normalizePower } from '../components-v2/panels/meter-utils';
   import { projectTxMeterPresentation } from './bar-meter-projector';
   import type {

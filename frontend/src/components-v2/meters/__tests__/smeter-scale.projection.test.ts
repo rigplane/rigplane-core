@@ -45,7 +45,7 @@ describe('projectSignalMeter', () => {
 
     expect(Object.keys(projection).sort()).toEqual([
       'accessibleDescription', 'crossoverFraction', 'marks', 'motionFraction', 'primaryText',
-      'scaleMode', 'secondaryText', 'ticks',
+      'scaleMode', 'secondaryText', 'ticks', 'uniformScaleKnots',
     ]);
     expect(projection.scaleMode).toBe('s');
     expect(projection.motionFraction).toBeCloseTo(11 / 9 / 20);

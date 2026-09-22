@@ -142,10 +142,16 @@ beforeEach(() => {
   clearRetainedInteractions(); motion = installMotionHarness();
   expect(setCapabilities(capabilities())).toBe(true);
 });
+let originalClientWidth: PropertyDescriptor | undefined;
 afterEach(() => {
   components.forEach((component) => unmount(component)); components = [];
   document.body.replaceChildren(); selectedFrequency.current = undefined; motion.restore();
   selectedMeter.current = undefined;
+  if (originalClientWidth) {
+    Object.defineProperty(Element.prototype, 'clientWidth', originalClientWidth);
+    originalClientWidth = undefined;
+  }
+  vi.unstubAllGlobals();
   clearCapabilities();
 });
 function mountFixture(publisher: Publisher, props: Record<string, unknown> = {}): HTMLElement {
@@ -335,12 +341,45 @@ describe('ReceiverInstrumentHost', () => {
     expect(motion.frames).toBe(0); expect(motion.listeners).toBe(0); expect(publisher.handlers.size).toBe(0);
   });
 
+  // MOR-2509: the fixture's meters are the v7 VFO face — pixel-locked
+  // dash lines whose lit extent is a position, not a count of rects. jsdom
+  // supplies neither ResizeObserver nor layout width, so these tests stub
+  // both before mounting.
+  function installMeterGeometry(): void {
+    vi.stubGlobal('ResizeObserver', class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    });
+    originalClientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth');
+    Object.defineProperty(Element.prototype, 'clientWidth', {
+      configurable: true,
+      get: () => 606,
+    });
+  }
+
   it('uses shared meter continuity for sample, session, source, and unknown transitions', () => {
+    installMeterGeometry();
     const publisher = new Publisher(publication({ mainS: 20 })); const root = mountFixture(publisher);
     const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
-    // MOR-2521: fill rects are permanent nodes; count the lit ones.
-    const fills = () => [...meter().querySelectorAll<SVGRectElement>('[data-meter-fill]')]
-      .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
+    // MOR-2509: the fill is a dash-patterned line; the lit extent is the
+    // visible zone lines' end position on the drawn track (fraction 0..1).
+    const fills = () => {
+      const svg = meter().querySelector('svg')!;
+      const track = svg.querySelector('[data-meter-track]')!;
+      const x1 = Number(track.getAttribute('x1'));
+      const trackW = Number(track.getAttribute('x2')) - x1;
+      const end = Math.max(
+        ...(('[data-meter-fill],[data-meter-fill-red]')
+          .split(',')
+          .map((selector) => {
+            const line = svg.querySelector(selector)!;
+            return line.getAttribute('visibility') === 'hidden'
+              ? x1 : Number(line.getAttribute('x2'));
+          })),
+      );
+      return (end - x1) / trackW;
+    };
     const frame = meter().querySelector('[data-meter-frame]')?.getAttribute('data-meter-frame');
     const high = fills();
     publisher.emit(publication({ mainS: -48 })); flushSync();
@@ -422,12 +461,28 @@ describe('ReceiverInstrumentHost', () => {
   });
 
   it('resets retained MAIN meter history at a real topology boundary', () => {
+    installMeterGeometry();
     const publisher = new Publisher(publication({ mainS: 20, scheme: 'main_sub' }));
     const root = mountFixture(publisher);
     const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
-    // MOR-2521: fill rects are permanent nodes; count the lit ones.
-    const fills = () => [...meter().querySelectorAll<SVGRectElement>('[data-meter-fill]')]
-      .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
+    // MOR-2509: the fill is a dash-patterned line; the lit extent is the
+    // visible zone lines' end position on the drawn track (fraction 0..1).
+    const fills = () => {
+      const svg = meter().querySelector('svg')!;
+      const track = svg.querySelector('[data-meter-track]')!;
+      const x1 = Number(track.getAttribute('x1'));
+      const trackW = Number(track.getAttribute('x2')) - x1;
+      const end = Math.max(
+        ...(('[data-meter-fill],[data-meter-fill-red]')
+          .split(',')
+          .map((selector) => {
+            const line = svg.querySelector(selector)!;
+            return line.getAttribute('visibility') === 'hidden'
+              ? x1 : Number(line.getAttribute('x2'));
+          })),
+      );
+      return (end - x1) / trackW;
+    };
     const frame = meter().querySelector('[data-meter-frame]')?.getAttribute('data-meter-frame');
     const high = fills();
 
@@ -455,15 +510,20 @@ describe('ReceiverInstrumentHost', () => {
     const root = mountFixture(publisher);
     const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
     const svg = () => meter().querySelector('svg')!;
+    // MOR-2509: the v7 face draws no S scale labels and no peak marker for
+    // a raw domain, and no motion at all for an unprojectable one — the
+    // unlit track itself stays, as it does for a zero reading.
     expect(svg().getAttribute('aria-label')).toContain('raw, uncalibrated');
-    expect([...svg().querySelectorAll<SVGLineElement>('line')]
-      .every((line) => line.getAttribute('visibility') === 'hidden')).toBe(true);
+    expect(svg().querySelectorAll('[data-scale-label]')).toHaveLength(0);
+    expect(svg().querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
 
     publisher.emit(publication({ mainS: 53, meterQuality: [] })); flushSync();
     expect(svg().getAttribute('aria-label')).toContain('unit unknown');
-    expect([...svg().querySelectorAll<SVGLineElement>('line')]
-      .every((line) => line.getAttribute('visibility') === 'hidden')).toBe(true);
-    expect(svg().querySelectorAll<SVGRectElement>('[data-meter-fill]:not([visibility="hidden"])')).toHaveLength(0);
+    expect(svg().querySelectorAll('[data-scale-label]')).toHaveLength(0);
+    expect(svg().querySelector('[data-meter-peak]')?.getAttribute('visibility')).toBe('hidden');
+    const unprojectableTrack = svg().querySelector('[data-meter-track]')!;
+    expect(Number(svg().querySelector('[data-meter-fill]')!.getAttribute('x2')))
+      .toBeCloseTo(Number(unprojectableTrack.getAttribute('x1')), 5);
 
     motion.reduced(true);
     publisher.emit(publication({ mainS: -12, meterQuality: ['calibrated'] })); flushSync();

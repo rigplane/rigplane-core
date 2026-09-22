@@ -1,44 +1,10 @@
 <script module lang="ts">
-  /**
-   * MOR-2250 (PR 2 of 2): a second scale row this component can render below
-   * its own bar. Deliberately generic — no field or branch anywhere in this
-   * component may name a specific meter (no "SWR", no "S9"): the caller
-   * (`MetersSurface.svelte`) owns what the row actually measures, this
-   * component only knows how to draw "a labeled scale row with ticks and a
-   * fill fraction". A future meter-selector (instrument-group declarations,
-   * a later ticket) swaps what descriptor the caller builds; it needs no
-   * change here.
-   */
-  export interface LowerScaleTick {
-    /** Position along the row, 0 (left edge) .. 1 (right edge) — a plain
-     *  fraction, independent of any calibration domain; the caller places
-     *  its own tick marks. */
-    readonly value: number;
-    readonly label: string;
-  }
-
-  export interface LowerScaleDescriptor {
-    readonly label: string;
-    readonly unit?: string;
-    readonly stateText?: string;
-    readonly accessibleDescription?: string;
-    readonly ticks: readonly LowerScaleTick[];
-    /** 0..1 — how much of the row's segments are lit. 0 is a legitimate
-     *  "not reading right now" state (e.g. not transmitting), not "absent" —
-     *  see the `lowerScale` prop doc below for what "absent" means instead. */
-    readonly valueFraction: number;
-    readonly fault: boolean;
-    /**
-     * MOR-2250 fix cycle 2: this row's OWN relevance (the field's own
-     * fact-layer `relevant`, e.g. `meters.swr.relevant`) — independent of
-     * the `relevant` PROP below, which dims the main bar. The two drive two
-     * SIBLING `<g>` groups (`data-lower-relevant` here, `data-main-relevant`
-     * on the main-bar groups), neither an ancestor of the other, so their
-     * opacities can never compound: each renders at exactly its own fact's
-     * value, never the product of both.
-     */
-    readonly relevant: boolean;
-  }
+  // MOR-2250/MOR-2509: the lower-scale row's shape lives in `lower-scale.ts`
+  // so semantic hosts can build descriptors without importing the component;
+  // re-exported here because `MetersSurface` and the wiring already import
+  // the type from this file.
+  import type { LowerScaleTick, LowerScaleDescriptor } from './lower-scale';
+  export type { LowerScaleTick, LowerScaleDescriptor };
 </script>
 
 <script lang="ts">

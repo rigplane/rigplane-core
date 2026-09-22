@@ -94,6 +94,7 @@ export function createSignalMeterMotion(
   let afterglowFrameId = 0;
   let afterglowUnsubscribe: (() => void) | undefined;
   let started = false;
+  let samplePresent = false;
 
   function cancelAfterglow(): void {
     if (afterglowFrameId) {
@@ -159,7 +160,7 @@ export function createSignalMeterMotion(
     get smoothedFraction() { return ballistics.view.smoothedValue; },
     get peakFraction() { return ballistics.view.peakValue; },
     get afterglowFraction() {
-      if (prefersReducedMotion()) return null;
+      if (prefersReducedMotion() || !samplePresent) return null;
       return Math.max(ballistics.view.smoothedValue, afterglowValue);
     },
     get reducedMotion() { return ballistics.view.reducedMotion; },
@@ -176,6 +177,7 @@ export function createSignalMeterMotion(
         source: input.source,
         session: input.session,
       });
+      samplePresent = sample !== null;
       if (sample === null) {
         cancelAfterglow();
         afterglowValue = 0;
@@ -186,8 +188,9 @@ export function createSignalMeterMotion(
       }
     },
     start: () => {
-      ballistics.start();
+      if (started) return;
       started = true;
+      ballistics.start();
       afterglowUnsubscribe = onReducedMotionChange((reduced) => {
         if (reduced) {
           cancelAfterglow();
@@ -196,8 +199,9 @@ export function createSignalMeterMotion(
       });
     },
     stop: () => {
-      ballistics.stop();
+      if (!started) return;
       started = false;
+      ballistics.stop();
       cancelAfterglow();
       afterglowUnsubscribe?.();
       afterglowUnsubscribe = undefined;

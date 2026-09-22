@@ -109,9 +109,21 @@ afterEach(() => {
   if (originalClientWidth) {
     Object.defineProperty(Element.prototype, 'clientWidth', originalClientWidth);
   }
+  vi.unstubAllGlobals();
   clearCapabilities();
   vi.restoreAllMocks();
 });
+
+// Settled-geometry mounts run under prefers-reduced-motion so the local
+// motion snaps to the reading synchronously — the same determinism trick
+// `LinearSMeter.display.test.ts` uses for its color reads.
+function stubReducedMotion(): void {
+  vi.stubGlobal('matchMedia', (query: string): MediaQueryList => ({
+    matches: query === '(prefers-reduced-motion: reduce)', media: query, onchange: null,
+    addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
+  }) as unknown as MediaQueryList);
+}
 
 function mountMeter(props: ComponentProps<typeof LinearSMeter>): HTMLElement {
   const target = document.createElement('div');
@@ -196,7 +208,7 @@ const VFO_FRACTIONS = {
 // ── 1. Geometry: whole-pixel segments, fixed reading slot ───────────────────
 
 describe('MOR-2509 v7 VFO face — segment geometry', () => {
-  beforeEach(() => { setCapabilities(makeCaps(IC7610_LIKE_CAL)); });
+  beforeEach(() => { stubReducedMotion(); setCapabilities(makeCaps(IC7610_LIKE_CAL)); });
 
   it('draws a 2px lit / 1px gap dash pattern on a whole-pixel track length', () => {
     const target = mountMeter({ value: 0, variant: 'vfo', compact: true });
@@ -264,7 +276,7 @@ describe('MOR-2509 v7 VFO face — segment geometry', () => {
 // ── 2. Truthful level→position mapping on the evenly spaced scale ───────────
 
 describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scale', () => {
-  beforeEach(() => { setCapabilities(makeCaps(IC7610_LIKE_CAL)); });
+  beforeEach(() => { stubReducedMotion(); setCapabilities(makeCaps(IC7610_LIKE_CAL)); });
 
   it.each([
     ['S1 (-48)', -48, VFO_FRACTIONS.s1],
@@ -320,7 +332,7 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
 // ── 3. The Po lower scale row ────────────────────────────────────────────────
 
 describe('MOR-2509 v7 VFO face — the Po lower scale', () => {
-  beforeEach(() => { setCapabilities(makeCaps(IC7610_LIKE_CAL)); });
+  beforeEach(() => { stubReducedMotion(); setCapabilities(makeCaps(IC7610_LIKE_CAL)); });
 
   const PO_TICKS = [
     { value: 0, label: '0' },

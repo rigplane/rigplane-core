@@ -418,9 +418,14 @@ describe('production receiver-indicator partitioning', () => {
       const x1 = Number(track.getAttribute('x1'));
       const trackW = Number(track.getAttribute('x2')) - x1;
       expect(trackW).toBeGreaterThan(0);
+      // A hidden zone line still carries its boundary coordinates, so only
+      // visible ones count as fill.
       const end = Math.max(
-        Number(svg.querySelector('[data-meter-fill]')!.getAttribute('x2')),
-        Number(svg.querySelector('[data-meter-fill-red]')!.getAttribute('x2')),
+        ...(['[data-meter-fill]', '[data-meter-fill-red]'].map((selector) => {
+          const line = svg.querySelector(selector)!;
+          return line.getAttribute('visibility') === 'hidden'
+            ? x1 : Number(line.getAttribute('x2'));
+        })),
       );
       return (end - x1) / trackW;
     };
@@ -466,6 +471,7 @@ describe('production receiver-indicator partitioning', () => {
     } as typeof powerState.fieldStatus;
     render({
       ...caps('main_sub', 2),
+      txBands: null,
       meterCalibrations: {
         s_meter: meterCalibration,
         power: [
