@@ -10,7 +10,7 @@
  * `panel-commands.ts` dispatches (i.e. every `dispatchRadioIntent({ name:
  * '<literal>', ... })` call site) falls in exactly one of the two sets.
  * The 4 `modInputCommand(...)`-derived names are real emissions outside
- * this 87-name literal universe — see `./waived.ts`'s header and the
+ * this 88-name literal universe — see `./waived.ts`'s header and the
  * meta-test's "dynamic mod-input call site" block for how those are
  * tracked instead.
  *
@@ -173,7 +173,7 @@
  * `ritOn`/`ritFreq`/`ritTx` at all — closed by MOR-1574/PR #2488, which
  * brought it in line with the WRITE-path handlers walked here, which
  * always DID gate on those same three unobserved leaves. Also adds
- * ADDITIVE (uncounted, outside the 87-name universe) coverage of the
+ * ADDITIVE (uncounted, outside the 88-name universe) coverage of the
  * dynamic mod-input dispatch across all 4 DATA groups on this fixture —
  * see that file's own header.
  */
@@ -273,10 +273,16 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_rit_status',
   'set_rit_tx_status',
   'set_rit_frequency',
+  // MOR-2535 follow-up — the width row's radio-default reset. Claimed via
+  // `expectRefusal` in the C7 file
+  // (`../mor1561-filter-pbt-family-conformance.isolated.test.ts`): the
+  // IC-7300 fixture never declares the derived `filter_width_radio_default`
+  // capability, so `onFilterWidthReset` (the only dispatch site) refuses.
+  'reset_filter_width',
 ]);
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const CLAIMED_INTENTS_COUNT = 87;
+export const CLAIMED_INTENTS_COUNT = 88;
 
 /**
  * `dispatchKeyboardRadioAction` case labels claimed by a conformance case.

@@ -5,7 +5,10 @@
  *
  * Family (per `waived.ts`'s MOR-1561 tag, 5 intents): `set_filter_width`,
  * `set_filter_shape`, `set_if_shift`, `set_pbt_inner`, `set_pbt_outer` — all
- * dispatched from `makeFilterHandlers()` in `panel-commands.ts`.
+ * dispatched from `makeFilterHandlers()` in `panel-commands.ts`. MOR-2535's
+ * follow-up adds a sixth member to the family below: `reset_filter_width`
+ * (`onFilterWidthReset`), claimed via `expectRefusal` — the derived
+ * `filter_width_radio_default` capability is not declared on this profile.
  *
  * UNLIKE MOR-1560's DSP walk (9/9 uniform refusals), `set_filter_width` has
  * FOUR distinct dispatch sites (`onFilterWidthChange`, `onFilterWidthCommit`,
@@ -185,6 +188,11 @@ describe('IC-7300 fixture — filter/PBT family conformance (MOR-1561)', () => {
         vi.useRealTimers();
       }
     });
+  });
+
+  it('reset_filter_width: REFUSES — the derived filter_width_radio_default capability is not declared on this profile, so onFilterWidthReset (the only dispatch site, MOR-2535 follow-up) never reaches the wire', () => {
+    expect(IC7300_CAPABILITIES.capabilities).not.toContain('filter_width_radio_default');
+    expectRefusal(() => makeFilterHandlers().onFilterWidthReset());
   });
 
   it('set_filter_shape: REFUSES — main.filterShape is unobserved (onFilterShapeChange is the only dispatch site)', () => {

@@ -939,7 +939,7 @@ export function makeFilterHandlers() {
     // capability), the width row's double-click resets to the RADIO's own
     // mode-dependent default, not to a profile table entry — only the radio
     // can resolve it (FTX-1 `SH` code 00). This is deliberately NOT a
-    // state-backed optimistic command: no draft, no pending target, no
+    // state-backed command: no draft, no pending target, no
     // lifecycle wait for a value (MOR-2533 — never confirm on time after
     // the ACK); the slider moves when the post-write readback arrives. The
     // wiring seam passes this handler to the surface ONLY when the
