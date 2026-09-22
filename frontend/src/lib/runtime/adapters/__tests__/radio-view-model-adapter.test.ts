@@ -25,6 +25,8 @@ import { resolveFilterModeConfig, toMemoryPanelProps } from '../../props/panel-p
 import {
   toRadioViewModel, type MetersTxAuthority,
 } from '../radio-view-model-adapter';
+import { PROFILES } from './conformance/profiles';
+import { FTX1_STATE_FULLY_UNOBSERVED } from './fixtures/ftx1-profile';
 
 const DUAL = ['scope', 'audio', 'tx', 'dual_rx'];
 const SINGLE = ['scope', 'audio', 'tx'];
@@ -502,7 +504,7 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
 const RADIO_WIDE_CAPS = caps({
   antennas: 1,
   capabilities: [
-    ...DUAL, 'tuner', 'rit', 'xit', 'split', 'dual_watch',
+    ...DUAL, 'tuner', 'rit', 'xit', 'split', 'dual_watch', 'dial_lock',
     'vfo_equalize', 'vfo_swap', 'speech',
   ],
 });
@@ -510,12 +512,12 @@ const RADIO_WIDE_CAPS = caps({
 function radioWideState(overrides: Partial<ServerState> = {}): ServerState {
   const base = observedState();
   const fieldStatus = { ...base.fieldStatus } as Record<string, FieldStatus>;
-  for (const path of ['tunerStatus', 'ritOn', 'ritTx', 'ritFreq', 'txAntenna']) {
+  for (const path of ['tunerStatus', 'ritOn', 'ritTx', 'ritFreq', 'txAntenna', 'dialLock']) {
     fieldStatus[path] = fresh;
   }
   return {
     ...base,
-    tunerStatus: 0, ritOn: false, ritTx: true, ritFreq: 0, txAntenna: 1,
+    tunerStatus: 0, ritOn: false, ritTx: true, ritFreq: 0, txAntenna: 1, dialLock: false,
     fieldStatus,
     ...overrides,
   } as ServerState;
@@ -530,6 +532,10 @@ describe('radio-wide indicators and DUAL actions are singleton contract facts (M
       availability: { structural: true, operational: true },
     });
     expect(shared.atu.reading).toEqual({ status: 'known', value: 'off' });
+    expect(shared.dialLock).toEqual({
+      reading: { status: 'known', value: false },
+      availability: { structural: true, operational: true },
+    });
     expect(shared.ritActive.reading).toEqual({ status: 'known', value: false });
     expect(shared.ritOffset.reading).toEqual({ status: 'known', value: 0 });
     expect(shared.xitActive.reading).toEqual({ status: 'known', value: true });
@@ -539,6 +545,7 @@ describe('radio-wide indicators and DUAL actions are singleton contract facts (M
   const sharedLeafCases = [
     ['txAntenna', (shared: NonNullable<RadioViewModel['radioWideIndicators']>) => shared.antenna],
     ['tunerStatus', (shared: NonNullable<RadioViewModel['radioWideIndicators']>) => shared.atu],
+    ['dialLock', (shared: NonNullable<RadioViewModel['radioWideIndicators']>) => shared.dialLock],
     ['ritOn', (shared: NonNullable<RadioViewModel['radioWideIndicators']>) => shared.ritActive],
     ['ritFreq', (shared: NonNullable<RadioViewModel['radioWideIndicators']>) => shared.ritOffset],
     ['ritTx', (shared: NonNullable<RadioViewModel['radioWideIndicators']>) => shared.xitActive],
@@ -646,6 +653,64 @@ describe('radio-wide indicators and DUAL actions are singleton contract facts (M
     for (const indicator of view.receiverIndicators ?? []) {
       expect(Object.hasOwn(indicator, 'rfState')).toBe(false);
     }
+  });
+
+  it('preserves a known-true dial lock without collapsing it to false', () => {
+    const shared = model(radioWideState({ dialLock: true }), RADIO_WIDE_CAPS).radioWideIndicators!;
+    expect(shared.dialLock).toEqual({
+      reading: { status: 'known', value: true },
+      availability: { structural: true, operational: true },
+    });
+  });
+
+  it('dialLock is structural-absent without the dial_lock capability', () => {
+    const shared = model(radioWideState(), {
+      ...RADIO_WIDE_CAPS,
+      capabilities: RADIO_WIDE_CAPS.capabilities.filter((tag) => tag !== 'dial_lock'),
+    }).radioWideIndicators!;
+    expect(shared.dialLock).toEqual({
+      reading: { status: 'unknown' },
+      availability: { structural: false, operational: false },
+    });
+  });
+});
+
+describe('dialLock over the live-captured profiles (MOR-2509)', () => {
+  it('ic7300: capability declared, leaf never observed → unknown, never false', () => {
+    const ic7300 = PROFILES.ic7300;
+    expect(ic7300.state.dialLock).toBe(false); // pre-MOR-2513 capture: default value, never confirmed
+    expect(ic7300.state.fieldStatus?.dialLock?.observed).toBe(false);
+    expect(ic7300.caps.capabilities.includes('dial_lock')).toBe(true);
+
+    const view = validateRadioViewModel(toRadioViewModel(ic7300.state, ic7300.caps)!);
+    expect(view.radioWideIndicators!.dialLock).toEqual({
+      reading: { status: 'unknown' },
+      availability: { structural: true, operational: false },
+    });
+  });
+
+  it('ftx1: an observed false dial lock survives as known false', () => {
+    const ftx1 = PROFILES.ftx1;
+    expect(ftx1.state.dialLock).toBe(false);
+    expect(ftx1.state.fieldStatus?.dialLock?.observed).toBe(true);
+    expect(ftx1.caps.capabilities.includes('dial_lock')).toBe(true);
+
+    const view = validateRadioViewModel(toRadioViewModel(ftx1.state, ftx1.caps)!);
+    expect(view.radioWideIndicators!.dialLock).toEqual({
+      reading: { status: 'known', value: false },
+      availability: { structural: true, operational: true },
+    });
+  });
+
+  it('ftx1 fully unobserved (MOR-2513): null leaf reads unknown, never false', () => {
+    const state = FTX1_STATE_FULLY_UNOBSERVED;
+    expect(state.dialLock).toBeNull();
+
+    const view = validateRadioViewModel(toRadioViewModel(state, PROFILES.ftx1.caps)!);
+    expect(view.radioWideIndicators!.dialLock).toEqual({
+      reading: { status: 'unknown' },
+      availability: { structural: true, operational: false },
+    });
   });
 });
 
