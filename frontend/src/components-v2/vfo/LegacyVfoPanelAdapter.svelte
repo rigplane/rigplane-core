@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import VfoPanel, { type VfoPanelSections } from './VfoPanel.svelte';
   import { getCapabilities, receiverLabel, vfoSlotLabel } from '$lib/stores/capabilities.svelte';
   import { findActiveBand } from '../controls/band-utils';
@@ -25,9 +26,12 @@
     layoutProfile = 'baseline', onModeClick, onFreqChange,
   }: Props = $props();
 
-  let slot = $derived<'A' | 'B'>(receiver === 'main' ? 'A' : 'B');
+  // The slot tag has no reader of its own anymore (the v7 meter face
+  // ignores `label`), and Svelte evaluates a child prop lazily — compute it
+  // once, untracked, so the store call does not depend on who renders what.
   let label = $derived(receiverLabel(receiver === 'main' ? 'MAIN' : 'SUB'));
-  let slotTag = $derived(vfoSlotLabel(slot).replace(/^VFO /, ''));
+  const slotTag = untrack(() =>
+    vfoSlotLabel(receiver === 'main' ? 'A' : 'B').replace(/^VFO /, ''));
   let bandText = $derived(findActiveBand(freq, getCapabilities()?.freqRanges ?? []));
 
   // The legacy deck has no indicator view model, so its facts map onto the
