@@ -1370,7 +1370,8 @@ describe('RF gain additive display observation', () => {
     // records (the strict projection this digest hashes changed with them),
     // including the mixed-version normalization of the legacy `slot: 'A'`
     // default target to slot null.
-    expect(digest).toBe('c38cb10dec66009e009b9c5eafe923056062478f4e9cae581d7e1f34d920f30f');
+    // MOR-2509: re-read after the radio-wide group gained `dialLock`.
+    expect(digest).toBe('5a7326937f50675898f69f109edc4053c6e01fdefb986d4e8dcc2fb40a6a5ebe');
   });
   it.each([false, true])('projects the explicit display and HOLDS RF gain, stale=%s', (stale) => {
     const view = model(displayState(stale), displayCaps, RECEIVING);

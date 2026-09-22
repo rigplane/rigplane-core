@@ -142,6 +142,7 @@ describe('VfoIndicatorRow', () => {
 function shared(): RadioWideIndicatorsViewModel {
   return {
     rfState: 'receiving', antenna: known(1), atu: known('off'),
+    dialLock: known(false),
     ritActive: known(false), ritOffset: known(0),
     xitActive: known(true), xitOffset: known(0),
     actions: {
