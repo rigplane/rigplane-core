@@ -68,6 +68,7 @@ function standardFixture(id: TopologyFixtureId): RadioViewModel {
       rfState: 'receiving',
       antenna: indicatorField(1),
       atu: indicatorField('off'),
+      dialLock: indicatorField(false),
       ritActive: indicatorField(false),
       ritOffset: indicatorField(0),
       xitActive: indicatorField(false),

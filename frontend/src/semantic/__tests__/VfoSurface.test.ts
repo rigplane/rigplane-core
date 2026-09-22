@@ -362,6 +362,7 @@ function withRadioWide(
     ...base,
     radioWideIndicators: {
       rfState: 'receiving', antenna: indicatorField(1), atu: indicatorField('off'),
+      dialLock: indicatorField(false),
       ritActive: indicatorField(false), ritOffset: indicatorField(0),
       xitActive: indicatorField(true), xitOffset: indicatorField(0),
       actions: {

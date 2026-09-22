@@ -1123,6 +1123,11 @@ function deriveRadioWideIndicators(
     rfState: tx ? meterRfState(tx) : 'unknown',
     antenna: antennaFact,
     atu: txAux?.atu ?? absentAtu,
+    dialLock: txAuxField(
+      hasCap(caps, 'dial_lock'),
+      strictFieldAvailable(state, 'dialLock'),
+      boolOrUndef(state?.dialLock),
+    ),
     ritActive: ritXit?.ritActive ?? absentBoolean,
     ritOffset: ritXit?.ritOffset ?? absentNumber,
     xitActive: ritXit?.xitActive ?? absentBoolean,
