@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { cpSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -23,14 +23,6 @@ const port = readArg('--port', '4173');
 const host = readArg('--host', '127.0.0.1');
 const sourceDist = join(frontendRoot, 'dist');
 const sourceIndex = join(sourceDist, 'index.html');
-
-const build = spawnSync('npm', ['run', 'build'], {
-  cwd: frontendRoot,
-  stdio: 'inherit',
-});
-if (build.status !== 0) {
-  throw new Error(`frontend build failed with status ${build.status ?? 'unknown'}`);
-}
 
 if (!existsSync(sourceIndex)) {
   throw new Error(
