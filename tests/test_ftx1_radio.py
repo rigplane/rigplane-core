@@ -3485,16 +3485,23 @@ async def test_set_vfo_slot_raises_on_ftx1(connected_radio):
 
 
 @pytest.mark.asyncio
-async def test_swap_vfo_ab_raises_on_ftx1(connected_radio):
-    """FTX-1 AB;/BA; copy MAIN↔SUB, not A↔B; swap_vfo_ab raises."""
+@pytest.mark.parametrize("receiver", [0, 1])
+async def test_swap_vfo_ab_raises_on_ftx1(connected_radio, receiver):
+    """FTX-1 AB;/BA; copy MAIN↔SUB, not A↔B; swap_vfo_ab raises for either
+    receiver index and never writes."""
+    connected_radio._transport.write = AsyncMock()
     with pytest.raises(NotImplementedError, match="no symmetric"):
-        await connected_radio.swap_vfo_ab()
+        await connected_radio.swap_vfo_ab(receiver)
+    connected_radio._transport.write.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_equalize_vfo_ab_raises_on_ftx1(connected_radio):
+@pytest.mark.parametrize("receiver", [0, 1])
+async def test_equalize_vfo_ab_raises_on_ftx1(connected_radio, receiver):
+    connected_radio._transport.write = AsyncMock()
     with pytest.raises(NotImplementedError, match="no per-receiver"):
-        await connected_radio.equalize_vfo_ab()
+        await connected_radio.equalize_vfo_ab(receiver)
+    connected_radio._transport.write.assert_not_called()
 
 
 # -- MAIN/SUB receiver operations on FTX-1 (MOR-2531) ------------------------

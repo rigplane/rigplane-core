@@ -26,7 +26,7 @@ export function vfoEqualLabel(scheme: string): string {
 
 /** Returns the TX indicator label for a given VFO slot and scheme. */
 export function vfoTxLabel(scheme: string, slot: 'main' | 'sub'): string {
-  if (scheme === 'main_sub') {
+  if (isReceiverLevelScheme(scheme)) {
     return slot === 'main' ? 'TX→M' : 'TX→S';
   }
   return slot === 'main' ? 'TX→A' : 'TX→B';
