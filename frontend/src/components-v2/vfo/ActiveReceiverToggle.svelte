@@ -26,7 +26,7 @@
 </script>
 
 <script lang="ts">
-  import { ControlButton } from '$lib/Button';
+  import { HardwareButton } from '$lib/Button';
   import { hasCommandModifier } from '../layout/keyboard-map';
 
   type Receiver = 'MAIN' | 'SUB';
@@ -40,8 +40,7 @@
     allowReselect?: boolean;
     /** Render only the segments when the caller already owns the operation group. */
     embedded?: boolean;
-    /** MOR-2509 bridge only: render the segments through the shared Button
-     *  family's fill look. Every other mount keeps the raw segment markup. */
+    /** MOR-2509 bridge only: render the segments through HardwareButton. */
     hardware?: boolean;
     /** Optional label for screen readers. */
     label?: string;
@@ -162,16 +161,13 @@
       {@const reasonId = availability.reason ? `${reasonIdPrefix}-${receiver.toLowerCase()}` : undefined}
       {#if embedded && hardware}
         <!--
-          MOR-2509 bridge: the segment renders through the shared Button
-          family's fill look — the filled key IS the "which receiver is
-          active" announcement the old text caption carried. Radio
-          semantics (roving tabindex, arrows) ride the family's
-          passthrough props unchanged.
+          MOR-2509 bridge: the segment renders through HardwareButton with
+          the same edge-left indicator as MODE keys. Radio semantics
+          (roving tabindex, arrows) ride the family's passthrough props.
         -->
-        <ControlButton
-          indicatorStyle="fill"
-          indicatorColor="cyan"
-          reserveIndicator
+        <HardwareButton
+          indicator="edge-left"
+          color="cyan"
           role="radio"
           ariaChecked={isActive}
           active={isActive}
@@ -186,7 +182,7 @@
             'dual-action': receiver.toLowerCase(),
           }}
           onclick={() => select(receiver)}
-        >{segmentLabels?.[receiver] ?? receiver}</ControlButton>
+        >{segmentLabels?.[receiver] ?? receiver}</HardwareButton>
       {:else}
       <!-- The raw segment below is the pre-bridge markup, kept verbatim:
            every non-standard mount renders exactly what it rendered
@@ -294,17 +290,13 @@
     background: transparent;
   }
 
-  /* MOR-2509 hardware bridge: the keys' family tokens — 28px key height
-     and 12px labels, the same numbers `VfoOperationGroup`'s ops column
-     scopes. Pinned by `semantic/__tests__/VfoSurface.panel-rows.test.ts`. */
   .active-receiver-toggle.embedded.hardware {
-    --btn-min-height: 28px;
-    --btn-font-size: 12px;
-    --indicator-dot-offset: 4px;
-    --indicator-dot-gap: 4px;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 6px;
   }
 
   .active-receiver-toggle.embedded.hardware > :global(button) {
+    grid-column: span 3;
     width: 100%;
     min-width: 0;
   }

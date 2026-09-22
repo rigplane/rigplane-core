@@ -56,9 +56,9 @@ export interface SignalScaleKnot {
  * MOR-2509: one numeral the evenly spaced face may draw, and the slot
  * fraction it sits at. Only what the radio's own calibration declares can
  * be labelled: an S-unit numeral requires a declared S-labelled knot at
- * that unit, and a +dB numeral requires the calibration's top to reach
- * that many dB over S9. A numeral the calibration cannot place is simply
- * absent — its slot stays empty, so nothing shifts between radios.
+ * that odd unit, and a +dB numeral requires a declared `S9+<dB>` knot. A
+ * numeral the calibration cannot place is simply absent — its slot stays
+ * empty, so nothing shifts between radios.
  */
 export interface SignalScaleMark {
   readonly slot: number;
@@ -343,14 +343,26 @@ export function lerpScaleKnots(
   return knots[knots.length - 1].to;
 }
 
-const OVER_S9_MARK_DECIBELS = [20, 40, 60] as const;
+// The deck's narrowest meter track: the mock-up v8 deck is laid out for a
+// panel from 560px, which leaves the meter's track ≈160px. A "+NN" numeral
+// is 3 mono glyphs of ink (≈0.6em each at the face's 12px label size =
+// 21.6px); two adjacent numerals collide when their slot gap is narrower
+// than that ink at this floor.
+const MIN_TRACK_WIDTH_PX = 160;
+const PLUS_NUMERAL_INK_PX = 21.6;
+const MIN_PLUS_MARK_SLOT_GAP = PLUS_NUMERAL_INK_PX / MIN_TRACK_WIDTH_PX;
+export const MIN_SIGNAL_SCALE_LABEL_GAP_PX = 1;
 
 /**
  * MOR-2509: the numerals the evenly spaced face draws for this
- * calibration. S-unit numerals come from declared S-labelled knots (a
- * two-knot S0/S9 table declares no S-unit numeral between them, so none
- * may be invented); +dB numerals come from the fixed over-S9 set, each
- * drawn only while the calibration's own top reaches it.
+ * calibration, per mock-up v8. S-unit numerals sit at the ODD units
+ * (1 3 5 7 9) the table itself declares — a two-knot S0/S9 table declares
+ * no odd numeral between them, so none may be invented. '+dB' numerals sit
+ * only at knots the table declares as `S9+<dB>` (no invented +20 on a
+ * radio without that knot), thinned left-to-right so no numeral's slot sits
+ * closer to the previously kept one than a "+NN" numeral's ink width at the
+ * deck's minimum track width — the S9 slot seeds that walk, so a dense
+ * +10/+20 ladder keeps only +20.
  */
 function uniformScaleMarksFor(
   calibration: readonly SmeterCalibrationPoint[],
@@ -359,22 +371,69 @@ function uniformScaleMarksFor(
   const marks: SignalScaleMark[] = [];
   for (const point of calibration) {
     const unit = /^S([1-9])$/.exec(point.label);
-    if (unit) {
+    if (unit && Number.parseInt(unit[1], 10) % 2 === 1) {
       const value = Number.parseInt(unit[1], 10);
       marks.push({ slot: (value - 1) / 14, text: String(value), overS9: false });
     }
   }
-  const calMax = calibration[calibration.length - 1].actual;
-  for (const db of OVER_S9_MARK_DECIBELS) {
-    if (db <= calMax) {
-      marks.push({
-        slot: S9_UNIFORM_FRACTION + (db / 60) * OVER_S9_SPAN_FRACTION,
-        text: `+${db}`,
-        overS9: true,
-      });
-    }
+  const plusDb = calibration
+    .map((point) => /^S9\+([0-9]+)$/.exec(point.label))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map((match) => Number.parseInt(match[1], 10))
+    .sort((left, right) => left - right);
+  let lastKeptSlot = S9_UNIFORM_FRACTION;
+  for (const db of plusDb) {
+    const slot = S9_UNIFORM_FRACTION + (db / 60) * OVER_S9_SPAN_FRACTION;
+    if (slot - lastKeptSlot < MIN_PLUS_MARK_SLOT_GAP) continue;
+    marks.push({ slot, text: `+${db}`, overS9: true });
+    lastKeptSlot = slot;
   }
   return marks;
+}
+
+/**
+ * Thin the calibration-derived numeral ladder for the rendered track while
+ * preserving the mock-up's label priorities. The named tests "keeps the
+ * FTX-1 548px label array unchanged", "keeps the dense 548px label array
+ * unchanged", "keeps the sparse 548px label array unchanged", "keeps every
+ * 140px FTX-1 label at least its rendered width plus the fixed gap apart",
+ * and "never shows fewer FTX-1 labels when the track becomes wider" pin it.
+ */
+export function thinUniformScaleMarksForWidth(
+  marks: readonly SignalScaleMark[],
+  trackWidthPx: number,
+  labelWidthPx: (mark: SignalScaleMark) => number,
+): readonly SignalScaleMark[] {
+  if (!Number.isFinite(trackWidthPx) || trackWidthPx <= 0 || marks.length < 2) return marks;
+
+  function fits(candidates: readonly SignalScaleMark[]): boolean {
+    for (let index = 1; index < candidates.length; index += 1) {
+      const previous = candidates[index - 1];
+      const current = candidates[index];
+      const distancePx = (current.slot - previous.slot) * trackWidthPx;
+      if (distancePx < Math.max(0, labelWidthPx(current)) + MIN_SIGNAL_SCALE_LABEL_GAP_PX) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (fits(marks)) return marks;
+
+  const plusMarks = marks.filter((mark) => mark.overS9);
+  const topPlusMark = plusMarks.at(-1);
+  const removalOrder = [
+    marks.find((mark) => mark.text === '7'),
+    marks.find((mark) => mark.text === '3'),
+    ...plusMarks.filter((mark) => mark !== topPlusMark),
+  ].filter((mark): mark is SignalScaleMark => mark !== undefined);
+
+  let kept = [...marks];
+  for (const removable of removalOrder) {
+    kept = kept.filter((mark) => mark !== removable);
+    if (fits(kept)) return kept;
+  }
+  return kept;
 }
 
 /**

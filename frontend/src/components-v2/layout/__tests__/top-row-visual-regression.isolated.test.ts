@@ -254,7 +254,7 @@ describe('VfoHeader visual regression', () => {
           {
             "active": "false",
             "color": "muted",
-            "label": "M↔S",
+            "label": "M⇄S",
           },
         ],
         "panels": [
@@ -279,7 +279,7 @@ describe('VfoHeader visual regression', () => {
           "row": "RX 7.170 TX 14.214",
           "title": "SPLIT",
         },
-        "wrapperStyle": "--vfo-bridge-width: 132px; --vfo-bridge-pad-x: 4px; --vfo-header-badge-height: 12px; --vfo-badge-inset-y: 3px; --vfo-header-group-gap: 5px; --vfo-header-badge-gap: 3px; --vfo-control-strip-gap: 4px; --vfo-panel-pad-x: 10px; --vfo-panel-meter-pad-x: 6px; --vfo-panel-body-pad-x: 10px; --vfo-panel-body-pad-bottom: 0px; --vfo-panel-body-gap: 4px; --vfo-display-row-gap: 12px; --vfo-frequency-size: 22px; --vfo-frequency-letter-spacing: 0.025em; --vfo-ops-gap: 4px; --vfo-ops-padding-y: 4px; --vfo-ops-stack-gap: 4px; --vfo-ops-secondary-margin-top: 0px; --vfo-ops-secondary-padding-top: 4px; --vfo-ops-badge-width: 62px; --vfo-ops-badge-height: 21px; --vfo-ops-badge-padding-x: 8px; --vfo-ops-badge-radius: 4px; --vfo-ops-badge-font-size: 10px; --vfo-header-badge-padding-x: 5px; --vfo-control-badge-padding-x: 6px; --vfo-panel-badge-radius: 3px; --vfo-control-badge-height: 16px; --vfo-control-badge-min-height: 16px; --vfo-control-badge-font-size: 7px",
+        "wrapperStyle": "--vfo-bridge-width: 132px; --vfo-bridge-pad-x: 4px; --vfo-header-badge-height: 12px; --vfo-badge-inset-y: 3px; --vfo-header-group-gap: 5px; --vfo-header-badge-gap: 3px; --vfo-control-strip-gap: 4px; --vfo-panel-pad-x: 10px; --vfo-panel-meter-pad-x: 8px; --vfo-panel-body-pad-x: 10px; --vfo-panel-body-pad-bottom: 0px; --vfo-panel-body-gap: 4px; --vfo-display-row-gap: 12px; --vfo-frequency-size: 22px; --vfo-frequency-letter-spacing: 0.025em; --vfo-ops-gap: 4px; --vfo-ops-padding-y: 4px; --vfo-ops-stack-gap: 4px; --vfo-ops-secondary-margin-top: 0px; --vfo-ops-secondary-padding-top: 4px; --vfo-ops-badge-width: 62px; --vfo-ops-badge-height: 21px; --vfo-ops-badge-padding-x: 8px; --vfo-ops-badge-radius: 4px; --vfo-ops-badge-font-size: 10px; --vfo-header-badge-padding-x: 5px; --vfo-control-badge-padding-x: 6px; --vfo-panel-badge-radius: 3px; --vfo-control-badge-height: 16px; --vfo-control-badge-min-height: 16px; --vfo-control-badge-font-size: 7px",
       }
     `);
   });
@@ -316,7 +316,7 @@ describe('VfoHeader visual regression', () => {
           {
             "active": "false",
             "color": "muted",
-            "label": "M↔S",
+            "label": "M⇄S",
           },
         ],
         "panels": [
@@ -341,7 +341,7 @@ describe('VfoHeader visual regression', () => {
           "row": "RX 7.170 TX 14.214",
           "title": "SPLIT",
         },
-        "wrapperStyle": "--vfo-bridge-width: 132px; --vfo-bridge-pad-x: 5px; --vfo-header-badge-height: 12px; --vfo-badge-inset-y: 3px; --vfo-header-group-gap: 5px; --vfo-header-badge-gap: 3px; --vfo-control-strip-gap: 4px; --vfo-panel-pad-x: 10px; --vfo-panel-meter-pad-x: 6px; --vfo-panel-body-pad-x: 10px; --vfo-panel-body-pad-bottom: 0px; --vfo-panel-body-gap: 4px; --vfo-display-row-gap: 12px; --vfo-frequency-size: 22px; --vfo-frequency-letter-spacing: 0.025em; --vfo-ops-gap: 4px; --vfo-ops-padding-y: 4px; --vfo-ops-stack-gap: 4px; --vfo-ops-secondary-margin-top: 0px; --vfo-ops-secondary-padding-top: 5px; --vfo-ops-badge-width: 64px; --vfo-ops-badge-height: 21px; --vfo-ops-badge-padding-x: 8px; --vfo-ops-badge-radius: 4px; --vfo-ops-badge-font-size: 10px; --vfo-header-badge-padding-x: 5px; --vfo-control-badge-padding-x: 6px; --vfo-panel-badge-radius: 3px; --vfo-control-badge-height: 16px; --vfo-control-badge-min-height: 16px; --vfo-control-badge-font-size: 7px",
+        "wrapperStyle": "--vfo-bridge-width: 132px; --vfo-bridge-pad-x: 5px; --vfo-header-badge-height: 12px; --vfo-badge-inset-y: 3px; --vfo-header-group-gap: 5px; --vfo-header-badge-gap: 3px; --vfo-control-strip-gap: 4px; --vfo-panel-pad-x: 10px; --vfo-panel-meter-pad-x: 8px; --vfo-panel-body-pad-x: 10px; --vfo-panel-body-pad-bottom: 0px; --vfo-panel-body-gap: 4px; --vfo-display-row-gap: 12px; --vfo-frequency-size: 22px; --vfo-frequency-letter-spacing: 0.025em; --vfo-ops-gap: 4px; --vfo-ops-padding-y: 4px; --vfo-ops-stack-gap: 4px; --vfo-ops-secondary-margin-top: 0px; --vfo-ops-secondary-padding-top: 5px; --vfo-ops-badge-width: 64px; --vfo-ops-badge-height: 21px; --vfo-ops-badge-padding-x: 8px; --vfo-ops-badge-radius: 4px; --vfo-ops-badge-font-size: 10px; --vfo-header-badge-padding-x: 5px; --vfo-control-badge-padding-x: 6px; --vfo-panel-badge-radius: 3px; --vfo-control-badge-height: 16px; --vfo-control-badge-min-height: 16px; --vfo-control-badge-font-size: 7px",
       }
     `);
   });

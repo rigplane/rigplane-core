@@ -31,6 +31,10 @@ export interface CommandLifecycle {
   /** The server-admitted normalized target from the command response;
    *  absent for an old server, which must leave any admitted-target lane idle. */
   admittedTarget?: number;
+  /** The server-admitted integer-Hz width from a set_filter_width response
+   *  (`admitted_width`); absent when the server could not resolve the observed
+   *  mode's width table, in which case the requested width stays the target. */
+  admittedWidth?: number;
   /** Real backend retention evidence, stored on this reactive lifecycle record. */
   hold?: Readonly<CommandLifecycleHold>;
   /** Permanent latest-target eligibility marker until this record retires. */
@@ -58,12 +62,10 @@ export interface ControlFeedbackScope {
   readonly slot?: string;
 }
 export type StateBackedRepeatPolicy = 'latest-target-wins';
-export type CommandDescriptorView = Pick<CommandLifecycle, 'params' | 'admittedTarget'>;
+export type CommandDescriptorView = Pick<CommandLifecycle, 'params' | 'admittedTarget' | 'admittedWidth'>;
 export interface StateBackedCommandDescriptor<T> {
   readonly intentName: RadioIntentName;
   readonly repeatPolicy: StateBackedRepeatPolicy;
-  /** Keep awaiting radio truth when a post-ack observation reports another value. */
-  readonly requireTargetMatch?: boolean;
   scope(command: CommandDescriptorView): ControlFeedbackScope | null;
   fieldPath(scope: ControlFeedbackScope): string;
   target(command: CommandDescriptorView): T | null;
@@ -133,6 +135,11 @@ function normalizedLevelCommand(
   }
 }
 
+/** The admitted width when it is a non-negative safe integer, else null. */
+const admittedWidthTarget = (command: Pick<CommandLifecycle, 'admittedWidth'>): number | null =>
+  typeof command.admittedWidth === 'number' && Number.isSafeInteger(command.admittedWidth)
+    && command.admittedWidth >= 0 ? command.admittedWidth : null;
+
 export const FILTER_WIDTH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
   intentName: 'set_filter_width', repeatPolicy: 'latest-target-wins',
   scope: (command: Pick<CommandLifecycle, 'params'>) => {
@@ -142,7 +149,13 @@ export const FILTER_WIDTH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<numbe
   },
   fieldPath: (scope: ControlFeedbackScope): FilterWidthFieldPath =>
     scope.receiver === 1 ? 'sub.filterWidth' : 'main.filterWidth',
-  target: (command: Pick<CommandLifecycle, 'params'>) => safeInteger(command.params.width),
+  // The server-admitted table entry wins when present (2350 requested, 2400
+  // admitted → only a 2400 readback confirms); an absent or invalid admitted
+  // width falls back to plain equality with the requested width. Pinned by
+  // 'targets the admitted width when present and the requested width
+  // otherwise' in stores/__tests__/commands.test.ts.
+  target: (command: Pick<CommandLifecycle, 'params' | 'admittedWidth'>) =>
+    admittedWidthTarget(command) ?? safeInteger(command.params.width),
   confirmed: (state: ServerState, scope: ControlFeedbackScope) => finiteNumber(
     (scope.receiver === 1 ? state.sub : state.main)?.filterWidth,
   ),
@@ -171,7 +184,7 @@ function directVfoFrequencyCommand(
 }
 
 export const DIRECT_VFO_FREQUENCY_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
-  intentName: 'set_vfo_freq', repeatPolicy: 'latest-target-wins', requireTargetMatch: true,
+  intentName: 'set_vfo_freq', repeatPolicy: 'latest-target-wins',
   scope: (command) => {
     const parsed = directVfoFrequencyCommand(command);
     return parsed === null ? null : Object.freeze({
@@ -243,7 +256,7 @@ const admittedTargetOf = (command: Pick<CommandLifecycle, 'admittedTarget'>): nu
 /** AF level confirms only on a fresh post-ack same-field readback exactly
  *  equal to the server-admitted target. */
 export const AF_LEVEL_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
-  intentName: 'set_af_level', repeatPolicy: 'latest-target-wins', requireTargetMatch: true,
+  intentName: 'set_af_level', repeatPolicy: 'latest-target-wins',
   scope: (command: Pick<CommandLifecycle, 'params'>) => {
     const receiver = command.params.receiver;
     return receiver === undefined || receiver === 0 || receiver === 1
@@ -259,7 +272,7 @@ export const AF_LEVEL_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> =
 
 /** RF power confirms only against the server-admitted target. */
 export const RF_POWER_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
-  intentName: 'set_rf_power', repeatPolicy: 'latest-target-wins', requireTargetMatch: true,
+  intentName: 'set_rf_power', repeatPolicy: 'latest-target-wins',
   scope: (command: CommandDescriptorView) => admittedTargetOf(command) === null
     ? null : Object.freeze({ control: 'rf-power', receiver: 0 }),
   fieldPath: () => 'powerLevel',
@@ -633,7 +646,13 @@ function reconcileStateBackedCommands(state: ServerState | null): void {
       command.ackFieldObservationTimes = { ...boundaries, [path]: marker };
       continue;
     }
-    if (marker > boundary && (!descriptor.requireTargetMatch || descriptor.matches(confirmed, target))) {
+    // A state-backed lifecycle is confirmed only by a fresh post-ACK readback
+    // exactly equal to ITS target — a newer marker carrying any other value
+    // (a scheduled poll's pre-command value, a mid-drag intermediate) keeps it
+    // awaiting. Pinned by 'keeps an acknowledged IF-shift command awaiting
+    // when the first post-ACK readback is the pre-command value' in
+    // stores/__tests__/commands.test.ts.
+    if (marker > boundary && descriptor.matches(confirmed, target)) {
       transition(command.id, command.originalEpoch, 'confirmed', command.eventEpoch ?? command.originalEpoch);
     }
   }
@@ -677,7 +696,7 @@ export function markCommandDispatched(id: string, originalEpoch: number, eventEp
   command.updatedAt = Date.now();
 }
 export const acknowledgeCommand = (
-  id: string, epoch: number, eventEpoch: number, admittedLevel?: number,
+  id: string, epoch: number, eventEpoch: number, admittedLevel?: number, admittedWidth?: number,
 ): void => {
   // Stored before the transition so the ack-time boundary capture sees it;
   // an already-acknowledged record (ack frame first) may still receive it.
@@ -686,6 +705,14 @@ export const acknowledgeCommand = (
     const command = getCommandLifecycle(id, epoch);
     if (command && (command.status === 'pending' || command.status === 'acknowledged')) {
       command.admittedTarget = admitted;
+      command.updatedAt = Date.now();
+    }
+  }
+  const width = admittedWidthTarget({ admittedWidth });
+  if (width !== null) {
+    const command = getCommandLifecycle(id, epoch);
+    if (command && (command.status === 'pending' || command.status === 'acknowledged')) {
+      command.admittedWidth = width;
       command.updatedAt = Date.now();
     }
   }

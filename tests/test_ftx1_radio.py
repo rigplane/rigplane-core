@@ -2397,11 +2397,9 @@ async def test_set_agc_sub_sends_gt1(connected_radio):
 
 
 @pytest.mark.asyncio
-async def test_set_agc_sub_auto_collapses_to_gt14(connected_radio):
-    """The AUTO collapse (MOR-498) applies on SUB too: a SUB AUTO request
-    (read-side 5) is written ``GT14;`` (AUTO), not the rejected ``GT15;``."""
+async def test_set_agc_sub_auto_sends_gt14(connected_radio):
     connected_radio._transport.write = AsyncMock()
-    await connected_radio.set_agc(5, receiver=1)
+    await connected_radio.set_agc(4, receiver=1)
     connected_radio._transport.write.assert_called_once_with("GT14;")
 
 
@@ -2414,23 +2412,16 @@ async def test_set_agc_manual_modes_passthrough(connected_radio, mode):
     connected_radio._transport.write.assert_called_once_with(f"GT0{mode};")
 
 
-@pytest.mark.parametrize("mode", [4, 5, 6])
 @pytest.mark.asyncio
-async def test_set_agc_auto_modes_map_to_gt04(connected_radio, mode):
-    """MOR-498: live FTX-1 only accepts ``GT04;`` (AUTO) on SET; ``GT05;``/
-    ``GT06;`` are rejected and stick at the prior value. Any AUTO request
-    (read-side 4/5/6) must therefore be written as ``GT04;``."""
+async def test_set_agc_auto_sends_gt04(connected_radio):
     connected_radio._transport.write = AsyncMock()
-    await connected_radio.set_agc(mode)
+    await connected_radio.set_agc(4)
     connected_radio._transport.write.assert_called_once_with("GT04;")
 
 
-@pytest.mark.parametrize("mode", [-1, 7, 99])
+@pytest.mark.parametrize("mode", [-1, 5, 6, 7, 99])
 @pytest.mark.asyncio
 async def test_set_agc_rejects_out_of_domain_value(connected_radio, mode):
-    """MOR-1522: FTX-1 declares AGC modes 0-6 in ``[agc] modes``; a value
-    outside that domain must raise instead of being written to the radio
-    unchecked (the pre-fix behavior sent any int through verbatim/collapsed)."""
     connected_radio._transport.write = AsyncMock()
     with pytest.raises(CommandError):
         await connected_radio.set_agc(mode)

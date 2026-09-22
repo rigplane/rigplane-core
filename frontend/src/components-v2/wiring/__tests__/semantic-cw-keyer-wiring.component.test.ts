@@ -638,20 +638,27 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(txHarness.trace()).toEqual([]);
   });
 
-  it('projects acknowledgement and the first newer radio truth as confirmed, whatever value it carries', () => {
+  it('projects acknowledgement and the first newer radio truth equal to the target as confirmed', () => {
     render();
     const commandId = submitDelay(111);
     deliver(commandId, 'ack');
     expect(delayInput().dataset.commandPhase).toBe('awaiting-confirmation');
     expect(delayInput().value).toBe('111');
 
+    // Mirrors the store pin 'keeps an acknowledged IF-shift command awaiting when
+    // the first post-ACK readback is the pre-command value' (stores/__tests__/commands.test.ts).
     advanceDelay(64, 11);
+    expect(delayInput().dataset.commandPhase).toBe('awaiting-confirmation');
+    expect(delayInput().value).toBe('111');
+    expect(delayInput().getAttribute('aria-busy')).toBe('true');
+
+    advanceDelay(111, 12);
     expect(delayInput().dataset.commandPhase).toBe('confirmed');
-    expect(delayInput().value).toBe('64');
+    expect(delayInput().value).toBe('111');
     expect(delayInput().getAttribute('aria-busy')).toBe('false');
     const live = q<HTMLElement>('[data-control-feedback-status]');
     expect(live?.getAttribute('aria-live')).toBe('polite');
-    expect(live?.textContent).toContain('64');
+    expect(live?.textContent).toContain('111');
   });
 
   it('restores canonical truth after transport failure and timeout', () => {

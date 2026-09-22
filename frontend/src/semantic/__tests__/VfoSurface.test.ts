@@ -422,7 +422,7 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
       ['main', 'MAIN', 'onSelectMainReceiver'],
       ['sub', 'SUB', 'onSelectSubReceiver'],
       ['equalize', 'M=S', 'onEqualizeVfos'],
-      ['swap', 'M↔S', 'onSwapVfos'],
+      ['swap', 'M⇄S', 'onSwapVfos'],
       ['quick-split', 'Quick split', 'onQuickSplit'],
       ['quick-dual-watch', 'Quick dual watch', 'onQuickDualWatch'],
       ['speak', 'SPEAK', 'onSpeak'],
@@ -442,7 +442,7 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
   });
 
   it.each(['semantic', 'sdr', 'standard'] as const)(
-    '%s appearance preserves the same fact and action intent wiring',
+    '%s appearance preserves its admitted fact and action intent wiring',
     (appearance) => {
       const callbacks = {
         onSelectMainReceiver: vi.fn(), onSelectSubReceiver: vi.fn(),
@@ -454,11 +454,20 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
       for (const action of [
         'main', 'sub', 'equalize', 'swap', 'quick-split', 'quick-dual-watch', 'speak',
       ]) {
-        target.querySelector<HTMLButtonElement>(`[data-dual-action="${action}"]`)!.click();
+        const button = target.querySelector<HTMLButtonElement>(`[data-dual-action="${action}"]`);
+        if (appearance === 'standard' && ['quick-split', 'quick-dual-watch', 'speak'].includes(action)) {
+          expect(button).toBeNull();
+        } else {
+          button!.click();
+        }
       }
       target.querySelector<HTMLButtonElement>('[data-vfo-split]')!.click();
       target.querySelector<HTMLButtonElement>('[data-vfo-dual-watch]')!.click();
-      for (const callback of Object.values(callbacks)) expect(callback).toHaveBeenCalledOnce();
+      for (const [name, callback] of Object.entries(callbacks)) {
+        const omitted = appearance === 'standard'
+          && ['onQuickSplit', 'onQuickDualWatch', 'onSpeak'].includes(name);
+        expect(callback).toHaveBeenCalledTimes(omitted ? 0 : 1);
+      }
     },
   );
 

@@ -1099,7 +1099,9 @@
   }
   .radio-layout.desktop-control-face.standard-face {
     grid-template-columns: 228px minmax(0, 1fr) 228px;
-    grid-template-rows: auto 28px minmax(200px, auto) minmax(0, 1fr) auto;
+    /* The center column keeps its 320px floor; short viewports scroll instead
+       of overlapping the station meters dock. */
+    grid-template-rows: auto 28px minmax(200px, auto) minmax(min-content, 1fr) auto;
     gap: 5px;
   }
   .desktop-control-face > .receiver-deck,
@@ -1399,7 +1401,7 @@
     .radio-layout.desktop-control-face { grid-template-columns: 190px minmax(0, 1fr) 190px; }
     .radio-layout.desktop-control-face.standard-face {
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto 28px auto auto minmax(320px, auto) auto auto;
+      grid-template-rows: auto 28px auto auto minmax(min-content, 1fr) auto auto;
     }
     .desktop-control-face.standard-face :global([data-zone-id='receiver-deck']) {
       grid-area: 3 / 1 / 4 / 2;
@@ -1428,6 +1430,8 @@
       overflow-y: auto;
       contain: inline-size;
     }
+
+    .desktop-control-face.standard-face .content-row { contain: inline-size; }
 
     .bottom-dock {
       flex-direction: column;

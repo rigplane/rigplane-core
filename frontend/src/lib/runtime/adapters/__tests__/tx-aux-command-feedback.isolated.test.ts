@@ -124,7 +124,7 @@ describe('imperative qualified raw TX/VOX command feedback', () => {
     expect(h.sessionReads).toBe(0);
   });
 
-  it('keeps ACK awaiting across active-receiver and other-field observations, then confirms on the first newer same-field readback', () => {
+  it('keeps ACK awaiting across active-receiver, other-field, and unequal same-field observations, then confirms on the first newer readback equal to the target', () => {
     h.state = state({ micGain: 100 });
     const command = begin('micGain', 128, 'mic');
     expect(getTxAuxControlFeedback('micGain', connected).phase).toBe('submitted');
@@ -140,15 +140,24 @@ describe('imperative qualified raw TX/VOX command feedback', () => {
     expect(getCommandLifecycle(command.id, 7)?.status).toBe('acknowledged');
     expect(getTxAuxControlFeedback('micGain', connected).scope.receiver).toBe(0);
 
+    // Mirrors the store pin 'keeps an acknowledged IF-shift command awaiting when
+    // the first post-ACK readback is the pre-command value' (stores/__tests__/commands.test.ts).
     emitState(state({ micGain: 127, fieldStatus: { ...state().fieldStatus, micGain: fresh(2) } }));
+    expect(getCommandLifecycle(command.id, 7)?.status).toBe('acknowledged');
+    expect(getTxAuxControlFeedback('micGain', connected)).toMatchObject({
+      confirmed: 127, target: 128, requestedTarget: 128, phase: 'awaiting-confirmation',
+    });
+
+    emitState(state({ micGain: 128, fieldStatus: { ...state().fieldStatus, micGain: fresh(3) } }));
     expect(getCommandLifecycle(command.id, 7)?.status).toBe('confirmed');
     expect(getTxAuxControlFeedback('micGain', connected)).toMatchObject({
-      confirmed: 127, target: null, requestedTarget: 128, phase: 'confirmed',
+      confirmed: 128, target: null, requestedTarget: 128,
+      phase: 'confirmed', outcome: { phase: 'confirmed' }, busy: false,
     });
 
     emitState(state({
       micGain: 128,
-      fieldStatus: { ...state().fieldStatus, micGain: { ...fresh(3), freshness: 'stale' } },
+      fieldStatus: { ...state().fieldStatus, micGain: { ...fresh(4), freshness: 'stale' } },
     }));
     expect(getCommandLifecycle(command.id, 7)?.status).toBe('confirmed');
     expect(getTxAuxControlFeedback('micGain', connected)).toMatchObject({

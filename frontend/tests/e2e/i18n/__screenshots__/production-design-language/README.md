@@ -479,7 +479,26 @@ CI run must compare successfully against these replacements.
 | FieldLine dark | compared-fail (6,867 px); inspected and accepted | `960cb61d8b5e9b5a00a3f8611043603df7723aa70aa4e387ce52036d02b1a7c7` |
 | FieldLine light | compared-fail (13,366 px); inspected and accepted | `2d972c5647ea99eef22ac4bffa99f3e32683427af2ebbb98aab0111142b296d5` |
 
-## Linux re-pin provenance (current — 2026-09-22 MOR-2526 per-receiver band)
+## Linux re-pin provenance (current — 2026-09-22 MOR-2509 correction round 2: dim inactive receiver, v8 S-meter, hardware-key bridge)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `99418f5d849a03d0796fa3cad4b9e11bce2456d5` (branch `codex/mor-2509-r2-batch`, PR #3570) |
+| CI run / job | [Tests (quick) #35768979309](https://github.com/rigplane/rigplane-core/actions/runs/35768979309) / job `106885633422` |
+| Command | `npm run test:e2e:i18n` (`playwright test -c ./playwright.i18n.config.ts`) |
+| Source | the `actual` attachments of the four MOR-1400 production-root cases in that run's `mor-1400-production-visual-diagnostics` artifact (`playwright-report/data/*.png`, 1280×800), classified by content hash / red-pixel share / nearest scene with `v7_classify.py`, copied byte-for-byte |
+| Reason | MOR-2509 correction round 2 (owner remarks at the stand 2026-09-22): the inactive receiver's frequency and name are dimmed and its panel quieter, the panel sheen applies in both colour modes, the S-meter follows mock-up v8 (548 px flex track, odd S-unit labels plus declared `+` knots), and the bridge is 212 px wide with `HardwareButton` edge-left keys filling the block; the deck's height changes, so every row below it moves. Deltas measured against the superseded baselines with Pillow `ImageChops.difference(...).convert('L') > 8`, so the threshold is 8/255 on the luminance of each RGB difference; the bounding box spans from the deck's top edge (y 46–52) to the last content row (y 630–631) in every scene. |
+
+| Scene | Disposition | Changed px (of 1,024,000) | Changed bbox (x0, y0, x1, y1) | SHA-256 |
+| --- | --- | --- | --- | --- |
+| StudioLine dark | compared-fail; inspected (deck redrawn, rows below shifted) and accepted | 134,156 | (5, 52, 1275, 630) | `873b45ed9cc2bd7352b8746c05ac5787217b1e864edcd14cc098e67e7c1c1f88` |
+| StudioLine light | compared-fail; inspected (deck redrawn, rows below shifted) and accepted | 158,646 | (5, 46, 1275, 630) | `499d6b3eca0731d593c92f675071189f846e9b957d88e5922faafc1f9f95e92f` |
+| FieldLine dark | compared-fail; inspected (deck redrawn, rows below shifted) and accepted | 262,575 | (5, 52, 1275, 631) | `f2c1182ad58ab237531bc38eee3d45be6620b87030d4eded370a0f6efb51ea0a` |
+| FieldLine light | compared-fail; inspected (deck redrawn, rows below shifted) and accepted | 188,776 | (5, 52, 1275, 631) | `060f58f2bc767b88ed2fbe40ee27d46297b99c50ff79d9691eb21774534d003e` |
+
+A subsequent exact-head quick run must confirm these four comparisons pass.
+
+## Linux re-pin provenance (superseded — 2026-09-22 MOR-2526 per-receiver band)
 
 | Field | Value |
 | --- | --- |

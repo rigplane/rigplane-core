@@ -445,7 +445,7 @@ describe('DspPanel v3 DSP scalar source integration (MOR-2423)', () => {
     assertModalFeedback(t, 'failed', 'new');
   });
 
-  it('requires the same-field observation to be newer than ACK', () => {
+  it('requires the same-field observation to be newer than ACK and equal to the target', () => {
     const command = beginCommand({
       id: 'exact-nb-level', name: 'set_nb_level', params: { level: 129, receiver: 0 },
       originalEpoch: 1, timeoutMs: 5_000,
@@ -464,9 +464,17 @@ describe('DspPanel v3 DSP scalar source integration (MOR-2423)', () => {
     runtimeState.notify();
     expect(getDspControlFeedback('nbLevel').phase).toBe('awaiting-confirmation');
 
+    // Mirrors the store pin 'keeps an acknowledged IF-shift command awaiting when
+    // the first post-ACK readback is the pre-command value' (stores/__tests__/commands.test.ts).
     const freshWrong = qualifiedState(2);
     freshWrong.main!.nbLevel = 130;
     runtimeState.state = freshWrong;
+    runtimeState.notify();
+    expect(getDspControlFeedback('nbLevel').phase).toBe('awaiting-confirmation');
+
+    const freshExact = qualifiedState(3);
+    freshExact.main!.nbLevel = 129;
+    runtimeState.state = freshExact;
     runtimeState.notify();
     expect(getDspControlFeedback('nbLevel').phase).toBe('confirmed');
   });

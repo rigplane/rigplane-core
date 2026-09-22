@@ -228,11 +228,11 @@ describe('operational availability decides whether a control is USABLE', () => {
     });
   });
 
-  it('omits pressed state for unobserved DSP choices', () => {
+  it('does not light unobserved DSP choices', () => {
     const view = withField(withField(base(), 'notchMode', { unknown: true }), 'agcMode', { unknown: true });
     withSurface(view, (s) => {
       expect(s.notchButton('off')!.getAttribute('aria-pressed')).toBeNull();
-      expect(s.agcButton(1)!.getAttribute('aria-pressed')).toBeNull();
+      expect(s.agcButton(2)!.dataset.active).toBe('false');
     });
   });
 });
@@ -582,25 +582,25 @@ describe('notchMode renders as a three-way choice', () => {
   });
 });
 
-// ── 7. agcMode: dynamic choice set from the fact group + caps-echoed labels ──
+// ── 7. agcMode: capability-derived settable choice set ──────────────────
 
-describe('agcMode renders the capability-derived choice set with caps-echoed labels', () => {
+describe('agcMode renders the capability-derived settable choice set', () => {
   it('renders exactly the declared agcModes entries, labelled from agcLabels — no invented OFF', () => {
     // MOR-1522: withDsp()'s agcModes [1, 2, 3] is the IC-7300/IC-7610 domain
     // (FAST/MID/SLOW, no OFF at all) — the surface must not synthesize one.
     withSurface(base(), (s) => {
       expect(s.agcButton(0)).toBeNull();
-      expect(s.agcButton(1)!.textContent).toBe('FAST');
-      expect(s.agcButton(2)!.textContent).toBe('MID');
-      expect(s.agcButton(3)!.textContent).toBe('SLOW');
-      expect(s.agcButton(2)!.getAttribute('aria-pressed')).toBe('true');
-      expect(s.agcButton(1)!.getAttribute('aria-pressed')).toBe('false');
+      expect(s.agcButton(1)!.textContent?.trim()).toBe('FAST');
+      expect(s.agcButton(2)!.textContent?.trim()).toBe('MID');
+      expect(s.agcButton(3)!.textContent?.trim()).toBe('SLOW');
+      expect(s.agcButton(2)!.dataset.active).toBe('true');
+      expect(s.agcButton(1)!.dataset.active).toBe('false');
     }, { agcLabels: { '1': 'FAST', '2': 'MID', '3': 'SLOW' } });
   });
 
-  it('falls back to the raw ordinal when no label is supplied', () => {
+  it('keeps a declared key honest with its raw code when no label is supplied', () => {
     withSurface(base(), (s) => {
-      expect(s.agcButton(1)!.textContent).toBe('1');
+      expect(s.agcButton(1)!.textContent?.trim()).toBe('1');
     }, { agcLabels: {} });
   });
 

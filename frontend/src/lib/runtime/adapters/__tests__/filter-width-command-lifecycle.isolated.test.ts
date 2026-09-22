@@ -757,7 +757,7 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     expect(getBreakInDelayControlFeedback()).toMatchObject({ phase: 'idle', confirmed: 52 });
   });
 
-  it('confirms from the first fresh canonical truth newer than the ACK boundary, whatever value it carries', async () => {
+  it('confirms from the first fresh canonical truth newer than the ACK boundary and equal to the target', async () => {
     vi.useFakeTimers(); vi.doUnmock('$lib/stores/commands.svelte'); vi.resetModules();
     const store = await import('$lib/stores/commands.svelte');
     const { getBreakInDelayControlFeedback: getLiveFeedback } = await import('../panel-adapters');
@@ -772,12 +772,14 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     expect(getLiveFeedback()).toMatchObject({ phase: 'awaiting-confirmation', target: 64 });
     emitAcceptedState(delayState({ breakInDelay: 64 }));
     expect(store.getCommandLifecycle(record.id, 7)?.status).toBe('acknowledged');
+    // Mirrors the store pin 'keeps an acknowledged IF-shift command awaiting when
+    // the first post-ACK readback is the pre-command value' (stores/__tests__/commands.test.ts).
     runtimeState.state = delayState({ breakInDelay: 48, fieldStatus: { breakInDelay: {
       observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5,
     } } }); emitAcceptedState(runtimeState.state);
-    expect(store.getCommandLifecycle(record.id, 7)?.status).toBe('confirmed');
+    expect(store.getCommandLifecycle(record.id, 7)?.status).toBe('acknowledged');
     expect(getLiveFeedback()).toMatchObject({
-      phase: 'confirmed', confirmed: 48, target: null, outcome: { phase: 'confirmed' },
+      phase: 'awaiting-confirmation', confirmed: 48, target: 64,
     });
     runtimeState.state = delayState({ breakInDelay: 64, fieldStatus: { breakInDelay: {
       observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 6,

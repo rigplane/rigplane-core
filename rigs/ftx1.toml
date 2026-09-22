@@ -1117,26 +1117,17 @@ actual = 1.0
 label = "1.0"
 
 [agc]
-modes = [0, 1, 2, 3, 4, 5, 6]
+modes = [0, 1, 2, 3, 4]
+readback_modes = [0, 1, 2, 3, 4, 5, 6]
+auto_mode = 4
+auto_speed_labels = { "4" = "FAST", "5" = "MID", "6" = "SLOW" }
 
-# MOR-1547: modes 4-6 (auto-selected speeds) use the short "A-F"/"A-M"/"A-S"
-# form, not "A-FAST"/"A-MID"/"A-SLOW". The 6-character body pushed the
-# "AGC "-prefixed status chip in AmberIndStrip (amber-lcd skin) to 10
-# characters — wider than every other chip sharing its flex-wrap strip —
-# which wrapped the DSP zone to a second row that the strip's
-# `overflow: hidden` then silently clipped. "A-F"/"A-M"/"A-S" keeps the
-# "Auto-" disambiguator (a bare "AF"/"AM"/"AS" would collide with the
-# overloaded ham-radio abbreviations AF = Audio Frequency / AM = Amplitude
-# Modulation) while landing at a 3-character body, inside the 4-character
-# FAST/SLOW budget every other shipped [agc.labels] table already fits.
 [agc.labels]
 "0" = "OFF"
 "1" = "FAST"
 "2" = "MID"
 "3" = "SLOW"
-"4" = "A-F"
-"5" = "A-M"
-"6" = "A-S"
+"4" = "AUTO"
 
 [commands]
 # ── Frequency / Mode ──

@@ -13,12 +13,12 @@ describe('vfoSwapLabel', () => {
     expect(vfoSwapLabel('ab')).toBe('A↔B');
   });
 
-  it('returns M↔S for main_sub scheme', () => {
-    expect(vfoSwapLabel('main_sub')).toBe('M↔S');
+  it('returns M⇄S for main_sub scheme', () => {
+    expect(vfoSwapLabel('main_sub')).toBe('M⇄S');
   });
 
-  it('returns M↔S for ab_shared scheme (FTX-1: receiver-level MAIN/SUB swap)', () => {
-    expect(vfoSwapLabel('ab_shared')).toBe('M↔S');
+  it('returns M⇄S for ab_shared scheme (FTX-1: receiver-level MAIN/SUB swap)', () => {
+    expect(vfoSwapLabel('ab_shared')).toBe('M⇄S');
   });
 
   it('defaults to A↔B for unknown scheme', () => {
@@ -156,9 +156,9 @@ describe('always-visible buttons (main_sub scheme)', () => {
     vi.mocked(getVfoScheme).mockReturnValue('main_sub');
   });
 
-  it('renders M↔S swap button', () => {
+  it('renders M⇄S swap button', () => {
     const t = mountComponent(baseProps);
-    expect(getButtonLabels(t)).toContain('M↔S');
+    expect(getButtonLabels(t)).toContain('M⇄S');
   });
 
   it('renders M→S copy button', () => {
@@ -178,10 +178,10 @@ describe('always-visible buttons (ab_shared scheme, dual receiver)', () => {
     vi.mocked(hasDualReceiver).mockReturnValue(true);
   });
 
-  it('renders M↔S swap and M→S copy buttons and no A/B labels', () => {
+  it('renders M⇄S swap and M→S copy buttons and no A/B labels', () => {
     const t = mountComponent(baseProps);
     const labels = getButtonLabels(t);
-    expect(labels).toContain('M↔S');
+    expect(labels).toContain('M⇄S');
     expect(labels).toContain('M→S');
     expect(labels).not.toContain('A↔B');
     expect(labels).not.toContain('A→B');

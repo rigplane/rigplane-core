@@ -601,7 +601,9 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       expect.soft(geometry.bridgeOverflow, 'every bridge item fits its assigned cell').toEqual([]);
       await expect(page.locator('[data-standard-select-vfo]')).toHaveCount(2);
       await expect(page.locator('[data-vfo-split]')).toBeVisible();
-      for (const action of ['equalize', 'swap', 'speak']) {
+      // MOR-2509 round 2: SPEAK and the QUICK keys left the bridge (MOR-2538
+      // remainder); the momentary row is exactly M⇄S / M=S.
+      for (const action of ['equalize', 'swap']) {
         await expect(page.locator(`[data-dual-action="${action}"]`)).toBeVisible();
       }
       const bridge = page.locator('[data-instrument-bridge]');
@@ -761,7 +763,9 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       const boxes = geometry.boxes as Record<string, DOMRect>;
       const bodyTop = Math.min(boxes.left.y, boxes.center.y, boxes.right.y);
       expectStandardReceiverIntegrity(geometry, bodyTop);
-      expect(geometry.receiverIntegrity.actionNames).toEqual(['main', 'sub', 'swap', 'equalize', 'speak']);
+      // Round-2 bridge inventory (MOR-2509): MAIN/SUB segments then the
+      // momentary pair; SPEAK and the QUICK keys are removed entirely.
+      expect(geometry.receiverIntegrity.actionNames).toEqual(['main', 'sub', 'swap', 'equalize']);
       if (known) {
         const digits = page.locator('[data-vfo-row="main"] .digit');
         await expect(digits.first()).toBeVisible();
@@ -817,16 +821,28 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     });
     const tab = page.locator('.standard-face .receiver-instrument .panel .tray .tab').first();
     await expect(tab).toBeVisible();
+    // Mirrors "keeps filled chip ink mode-independent while light mode owns a
+    // light panel" and "the alive layer is token-owned, standard-only and
+    // non-interactive" in VfoSurface.panel-rows.test.ts.
     expect(await tab.evaluate((element) => {
       const panel = element.closest('.panel');
-      if (!panel) return { hitIsContent: false, sheenZIndex: null };
+      if (!panel) return { hitIsContent: false, sheenIsBeforeUnderContent: false, rowsPositioned: false, afterCarriesNoSheen: false };
       const box = element.getBoundingClientRect();
       const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      const before = getComputedStyle(panel, '::before');
+      const after = getComputedStyle(panel, '::after');
       return {
         hitIsContent: hit === element || element.contains(hit),
-        sheenZIndex: getComputedStyle(panel, '::before').zIndex,
+        // The light sheen is the ::before under-glass: a real background and
+        // no z-index — paint order, not a negative z, puts it beneath the rows.
+        sheenIsBeforeUnderContent: before.backgroundImage !== 'none' && before.zIndex === 'auto',
+        // Every direct element child of the panel is positioned, which is
+        // what lifts the content above the ::before under-glass.
+        rowsPositioned: [...panel.children].every((child) => getComputedStyle(child).position !== 'static'),
+        // Light mode nulls --dl-vfo-panel-sheen, so the ::after over-glass paints nothing.
+        afterCarriesNoSheen: after.backgroundImage === 'none',
       };
-    })).toEqual({ hitIsContent: true, sheenZIndex: '-1' });
+    })).toEqual({ hitIsContent: true, sheenIsBeforeUnderContent: true, rowsPositioned: true, afterCarriesNoSheen: true });
   });
 
   for (const width of [1440, 1024] as const) {
@@ -931,6 +947,20 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
       await info.attach('geometry', { path: screenshot, contentType: 'image/png' });
     });
   }
+}
+
+// MOR-2509: at 1100×800 the unstacked Standard grid leaves the center row
+// less than its 320px floor, so the row keeps its min-content minimum and the
+// page scrolls instead of the scope overlapping the station meters dock.
+for (const known of [true, false]) {
+  test(`standard 1100 ${known ? 'observed IC' : 'unknown'} scope ends before station meters`, async ({ page }) => {
+    const errors: string[] = []; page.on('pageerror', e => errors.push(String(e)));
+    await boot(page, 'standard', 1100, known, 'studioline', false, undefined, { height: 800 });
+    const center = await page.locator('.desktop-controls-center .content-row').boundingBox();
+    const meters = await page.locator('[data-panel-id="semantic-meters"]').boundingBox();
+    expect.soft(center!.y + center!.height, 'scope ends before station meters').toBeLessThanOrEqual(meters!.y + 1);
+    expect(errors).toEqual([]);
+  });
 }
 
 // MOR-2425/R41: the freshness cue is gone, so the claim is now the stronger

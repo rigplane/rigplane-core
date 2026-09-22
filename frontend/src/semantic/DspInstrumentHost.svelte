@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, type Snippet } from 'svelte';
-  import { HardwareButton } from '$lib/Button';
+  import { ControlButton, HardwareButton } from '$lib/Button';
   import { t } from '$lib/i18n';
   import { buildAgcOptions } from '../components-v2/panels/agc-utils';
   import { bindChoiceInstrument, bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
@@ -274,12 +274,24 @@
         seat={agcSeat} renderer={finiteAppearance.choice}
       />{/key}{/key}
     {:else}
-      <div class="dsp-row" data-testid="dsp-agcMode"
+      <div class="dsp-agc-grid" data-testid="dsp-agcMode"
+        style={`--agc-columns: ${Math.min(3, agcOptions.length)}`}
         data-disabled-reason={agcBehavior.available ? undefined : 'field-not-observed'}>
         {#each agcOptions as option (option.value)}
-          <button type="button" class="dsp-choice" data-testid={`dsp-agcMode-${option.value}`}
-            aria-pressed={agcBehavior.selected === undefined ? undefined : agcBehavior.isSelected(option.value)}
-            disabled={!agcBehavior.available} onclick={() => agcBehavior.invoke(option.value)}>{option.label}</button>
+          {@const isAuto = option.value === dsp.agcMode.autoMode}
+          <div class="agc-key">
+            <ControlButton surface="hardware" indicatorStyle="edge-left" indicatorColor="cyan"
+              active={agcBehavior.isSelected(option.value)} disabled={!agcBehavior.available}
+              data={{ testid: `dsp-agcMode-${option.value}` }}
+              ariaLabel={isAuto && dsp.agcMode.autoSelectedSpeed
+                ? `${option.label} ${dsp.agcMode.autoSelectedSpeed}` : option.label}
+              onclick={() => agcBehavior.invoke(option.value)}>
+              <span class="agc-key-stack">
+                <span class="agc-key-label">{option.label}</span>
+                {#if isAuto}<span class="agc-auto-speed">{dsp.agcMode.autoSelectedSpeed ?? ''}</span>{/if}
+              </span>
+            </ControlButton>
+          </div>
         {/each}
       </div>
     {/if}
@@ -293,6 +305,29 @@
 
 <style>
   .dsp-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .dsp-agc-grid {
+    display: grid;
+    grid-template-columns: repeat(var(--agc-columns), minmax(28px, 1fr));
+    gap: var(--dl-studioline-gap-micro, var(--dl-fieldline-gap, 6px));
+    width: 100%;
+  }
+  .agc-key { display: flex; min-width: 0; }
+  .agc-key :global(button) {
+    flex: 1 1 auto; min-width: 28px; min-height: 28px;
+  }
+  /* The button lays its children out as a flex row, so the label and the
+   * AUTO speed line only stack vertically inside this single wrapper. */
+  .agc-key-stack {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; min-width: 0; max-width: 100%;
+  }
+  .agc-key-label, .agc-auto-speed { display: block; max-width: 100%; }
+  .agc-auto-speed {
+    min-height: 1em;
+    color: var(--dl-studioline-muted, var(--dl-fieldline-muted, var(--dl-segmentline-ink-soft, currentcolor)));
+    font-size: 0.75em;
+    line-height: 1;
+  }
   .compact-dsp-button {
     display: grid; grid-template-columns: minmax(0, 1fr) 24px; gap: 2px; min-width: 0;
   }

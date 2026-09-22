@@ -43,7 +43,7 @@
   import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
   import VfoPanel, { type VfoPanelSections } from '../components-v2/vfo/VfoPanel.svelte';
   import { formatRitOffset } from '../components-v2/vfo/vfo-utils';
-  import { ControlButton } from '$lib/Button';
+  import { HardwareButton } from '$lib/Button';
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import VfoOperationGroup from './VfoOperationGroup.svelte';
   import { formatKnownLevel } from './format-level';
@@ -915,23 +915,22 @@
   {#snippet standardPairSelectors(pair: { receiver: ReceiverId; left: VfoViewModel; right: VfoViewModel; absolute: boolean })}
     {#if pair.absolute}
     <!--
-      MOR-2509 bridge: the A/B selector keys render through the shared
-      Button family's fill look; the filled key says which slot is active
+      MOR-2509 bridge: the A/B selector keys render through HardwareButton;
+      the edge-left indicator says which slot is active
       (`data-standard-select-vfo` keeps the pinned e2e hook).
     -->
     <div class="standard-vfo-selectors" aria-label="Select VFO">
       {#each [pair.left, pair.right] as vfo (slotKey(vfo.slot))}
         {@const slot = vfo.slot.kind === 'slotted' ? vfo.slot.id : '—'}
-        <ControlButton
-          indicatorStyle="fill"
-          indicatorColor="cyan"
-          reserveIndicator
+        <HardwareButton
+          indicator="edge-left"
+          color="cyan"
           active={vfo.isActiveSlot}
           ariaLabel={`SELECT ${slot}`}
           disabled={disabled || vfo.isActiveSlot}
           data={{ 'standard-select-vfo': slot }}
           onclick={() => selectVfo(vfo)}
-        >{slot}</ControlButton>
+        >{slot}</HardwareButton>
       {/each}
     </div>
     {:else}
@@ -1142,9 +1141,7 @@
   .instrument-panel {
     display: flex; align-items: stretch; width: 100%; min-width: 0;
     --vfo-instrument-inset-block: 6px;
-    /* MOR-2509: the deck's bridge-width token — the standard bridge
-       narrows it to fit the function keys; the 1050px breakpoint
-       override below sets the same property. */
+    /* MOR-2509: the deck's bridge-width token. */
     --vfo-bridge-width: 180px;
     background: linear-gradient(180deg, var(--v2-bg-gradient-start, #0a0e14) 0%, var(--v2-bg-panel, #05080c) 100%);
     border: 1px solid var(--v2-border-panel, #18222d); border-radius: 4px;
@@ -1203,7 +1200,9 @@
     box-shadow: 0 0 6px rgba(0,212,255,.3), inset 0 0 16px rgba(0,212,255,.06);
   }
   [data-vfo-appearance='standard'] .bridge {
-    --vfo-bridge-width: 168px;
+    --vfo-bridge-width: 212px;
+    justify-content: stretch;
+    padding: 12px 10px;
     background: var(--dl-vfo-bridge-background, linear-gradient(180deg, #161c23, #0f141a));
     box-shadow: var(--dl-vfo-bridge-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 6px 18px rgba(0, 0, 0, 0.5));
   }
@@ -1223,22 +1222,17 @@
     }
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge {
-    flex: 0 0 clamp(190px, 14vw, 220px);
-    padding: 4px;
-    gap: 3px;
-    --vfo-ops-gap: 3px;
-    /* MOR-2509: the bridge keys' family tokens — 28px key height,
-       12px labels, dot packed tighter than panel keys. */
-    --btn-min-height: 28px;
+    flex: 0 0 var(--vfo-bridge-width);
+    justify-content: stretch;
+    padding: 12px 10px;
+    gap: 0;
     --btn-font-size: 12px;
-    --indicator-dot-offset: 4px;
-    --indicator-dot-gap: 4px;
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.vfo-ops[data-vfo-operation-appearance='standard']) {
+    display: contents;
   }
   [data-vfo-appearance='standard'] .bridge:not(.standard-pair-bridge) {
-    --btn-min-height: 28px;
     --btn-font-size: 12px;
-    --indicator-dot-offset: 4px;
-    --indicator-dot-gap: 4px;
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .facts) {
     display: grid;
@@ -1261,8 +1255,11 @@
     min-width: 0;
     text-align: center;
   }
-  .standard-vfo-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
-  .standard-vfo-selectors > :global(button) { min-width: 0; width: 100%; }
+  .standard-vfo-selectors {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px;
+    flex: 1 1 0; min-height: 28px; margin-block-end: 6px;
+  }
+  .standard-vfo-selectors > :global(button) { min-width: 0; width: 100%; height: 100%; }
   .standard-tx-target {
     display: block; padding: 3px 5px; border: 1px solid var(--v2-accent-red, #ff2020);
     border-radius: 3px; color: var(--v2-accent-red, #ff2020); font-size: 9px;
@@ -1304,20 +1301,24 @@
   [data-vfo-appearance='standard'] .receiver-instrument .secondary-slot .vfo-select {
     grid-column: 4; grid-row: 1;
   }
+  /* The e2e test "standard 1200px VFO panel does not use narrow mode" pins
+     the qualified Standard bridge at 150 px below 1280 px. The unit test "the
+     bridge width is one custom property and the standard deck uses the mock-up
+     column" pins both that qualified rule and the shared 150 px rule used by
+     the SDR appearance at or below 1050 px. The unit test "keeps the longest
+     function label inside the 150px column below 1280px" pins the inline-padding
+     upper bound that still fits its measured TUNER label. */
+  @media (max-width: 1279px) {
+    [data-vfo-appearance='standard'] .bridge { --vfo-bridge-width: 150px; padding: 12px 6px; }
+  }
   @media (max-width: 1050px) {
     .instrument-panel { flex-wrap: wrap; }
     .receiver-instrument { flex-basis: calc(50% - 90px); }
+    .bridge { --vfo-bridge-width: 150px; }
     [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
       flex-basis: calc(100% - 192px);
     }
-    .bridge { --vfo-bridge-width: 150px; }
     .receiver-instrument .vfo-freq { font-size: 26px; }
-  }
-  @media (max-width: 950px) {
-    [data-vfo-appearance='standard'] .standard-pair-bridge {
-      padding: 2px;
-      gap: 1px;
-    }
   }
   @media (max-width: 760px) {
     .instrument-panel { flex-direction: column; }
