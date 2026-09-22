@@ -194,9 +194,11 @@
     }] : []),
   ]);
 
-  // MOR-2537: `projects FTX-1 read-back 5 to AGC AUTO on %s` and `renders no
-  // numeric text for an unprojectable code on %s` pin this shared projection.
-  function agcLabelFor(agcMode: number): string {
+  // MOR-2537: `projects FTX-1 read-back 5 to AGC AUTO on %s`, `renders no
+  // numeric text for an unprojectable code on %s`, and `renders unread AGC as
+  // a bare unlit chip on %s` pin this shared projection and unread convention.
+  function agcLabelFor(agcMode: number | undefined): string {
+    if (agcMode === undefined) return 'AGC';
     const value = projectAgcReadback(caps, agcMode).indicatorValue;
     return value === undefined ? 'AGC' : `AGC ${value}`;
   }
@@ -249,7 +251,11 @@
           : []),
       ] : []),
       ...(rxAvailable(rxKey, 'agc')
-        ? [{ id: 'agc' as const, label: agcLabelFor(rxState?.agc ?? 2), active: true }]
+        ? [{
+          id: 'agc' as const,
+          label: agcLabelFor(rxState?.agc),
+          active: rxState?.agc !== undefined,
+        }]
         : []),
       ...(hasCap('rf_gain') && rxAvailable(rxKey, 'rfGain') ? [{
         id: 'rfg' as const, label: 'RFG', active: (rxState?.rfGain ?? 1) < 1,

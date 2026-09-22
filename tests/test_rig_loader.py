@@ -655,6 +655,23 @@ labels = { "1" = "FAST", "2" = "MID" }
         ):
             load_rig(p)
 
+    def test_agc_labels_reject_blank_value(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[agc]
+modes = [1, 2, 3]
+labels = { "1" = "FAST", "2" = " ", "3" = "SLOW" }
+""",
+        )
+        with pytest.raises(
+            RigLoadError,
+            match=r"\[agc\]\.labels values must be non-empty strings",
+        ):
+            load_rig(p)
+
     def test_agc_labels_rejects_declared_without_modes(self, tmp_path):
         """MOR-1522 R1 (B2): [agc].labels with no [agc].modes must not load
         silently — that would yield a capability-present radio with an

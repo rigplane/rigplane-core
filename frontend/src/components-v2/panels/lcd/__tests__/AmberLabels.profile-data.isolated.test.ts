@@ -147,6 +147,22 @@ function stateWithAgc(agc: number, preamp = 0): ServerState {
   } as unknown as ServerState;
 }
 
+function stateWithUnreadAgc(): ServerState {
+  const state = stateWithAgc(2);
+  const main = { ...state.main, agc: undefined };
+  return {
+    ...state,
+    main,
+    fieldStatus: {
+      ...state.fieldStatus,
+      'main.agc': {
+        storePath: 'receiver.main.operator_controls.agc',
+        observed: false, freshness: 'unknown', availability: 'available',
+      },
+    },
+  } as unknown as ServerState;
+}
+
 const X6200_AGC_LABELS = { '0': 'OFF', '1': 'FAST', '2': 'SLOW', '3': 'AUTO' };
 
 // `projects every FTX-1 AUTO read-back to the settable AUTO label` consumes
@@ -222,6 +238,15 @@ describe('AmberScope AGC label sourcing (MOR-1529)', () => {
   ] as const)('keeps IC-7300 read-back 2 as AGC MID on %s', (_name, mountFace) => {
     const chip = agcChip(mountFace(stateWithAgc(2), IC7300_AGC_CAPS));
     expect(chip?.textContent?.trim()).toBe('AGC MID');
+  });
+
+  it.each([
+    ['AmberScope', mountScope],
+    ['AmberCockpit', mountCockpit],
+  ] as const)('renders unread AGC as a bare unlit chip on %s', (_name, mountFace) => {
+    const chip = agcChip(mountFace(stateWithUnreadAgc(), IC7300_AGC_CAPS));
+    expect(chip?.textContent?.trim()).toBe('AGC');
+    expect(chip?.classList.contains('active')).toBe(false);
   });
 });
 

@@ -232,7 +232,7 @@ describe('operational availability decides whether a control is USABLE', () => {
     const view = withField(withField(base(), 'notchMode', { unknown: true }), 'agcMode', { unknown: true });
     withSurface(view, (s) => {
       expect(s.notchButton('off')!.getAttribute('aria-pressed')).toBeNull();
-      expect(s.agcButton(1)!.dataset.active).toBe('false');
+      expect(s.agcButton(2)!.dataset.active).toBe('false');
     });
   });
 });

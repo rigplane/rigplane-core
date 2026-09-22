@@ -47,9 +47,11 @@
   let caps = $derived(scopeProps.caps);
   let hasCap = $derived(scopeProps.hasCapability);
 
-  // MOR-2537: `projects FTX-1 read-back 5 to AGC AUTO on %s` and `renders no
-  // numeric text for an unprojectable code on %s` pin this shared projection.
-  function agcLabelFor(agcMode: number): string {
+  // MOR-2537: `projects FTX-1 read-back 5 to AGC AUTO on %s`, `renders no
+  // numeric text for an unprojectable code on %s`, and `renders unread AGC as
+  // a bare unlit chip on %s` pin this shared projection and unread convention.
+  function agcLabelFor(agcMode: number | undefined): string {
+    if (agcMode === undefined) return 'AGC';
     const value = projectAgcReadback(caps, agcMode).indicatorValue;
     return value === undefined ? 'AGC' : `AGC ${value}`;
   }
@@ -171,7 +173,11 @@
   // globalTokens: AGC/SQL/LOCK/SPLIT/RIT
   let globalTokens = $derived<IndToken[]>([
     ...(rxAvailable('agc')
-      ? [{ id: 'agc' as const, label: agcLabelFor(rx?.agc ?? 2), active: true }]
+      ? [{
+        id: 'agc' as const,
+        label: agcLabelFor(rx?.agc),
+        active: rx?.agc !== undefined,
+      }]
       : []),
     ...(hasCap('squelch') && rxAvailable('squelch') ? [{
       id: 'sql' as const, label: 'SQL', active: (rx?.squelch ?? 0) > 0,
