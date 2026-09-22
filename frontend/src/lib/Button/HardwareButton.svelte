@@ -19,6 +19,11 @@
     ariaLabel,
     ariaExpanded,
     ariaControls,
+    role,
+    ariaChecked,
+    tabindex,
+    onkeydown,
+    data,
     onclick,
     onpointerdown,
     onpointerup,
@@ -42,6 +47,11 @@
   {ariaLabel}
   {ariaExpanded}
   {ariaControls}
+  {role}
+  {ariaChecked}
+  {tabindex}
+  {onkeydown}
+  {data}
   {onclick}
   {onpointerdown}
   {onpointerup}

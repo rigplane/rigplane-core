@@ -14,7 +14,7 @@
  * measured separately by `tests/e2e/i18n/desktop-geometry.spec.ts`.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { mount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import type { ReceiverId } from '../radio-view-model';
@@ -519,7 +519,7 @@ describe('standard under-frequency chips (2/main_sub)', () => {
 });
 
 describe('bridge operation grid (standard appearance)', () => {
-  it('2/main_sub: one grid container holds the operation controls with unchanged accessible names', () => {
+  it('2/main_sub: one grid container holds the mock-up operation controls and accessible names', () => {
     const root = mountSurface({ viewModel: standardFixture('2/main_sub'), appearance: 'standard' });
     const bridge = root.querySelector('[data-instrument-bridge]');
     expect(bridge).not.toBeNull();
@@ -531,7 +531,7 @@ describe('bridge operation grid (standard appearance)', () => {
       expect(grid[0].contains(action), 'every operation control sits in the grid').toBe(true);
     }
     expect(actions.map((button) => button.getAttribute('aria-label') ?? button.textContent?.trim()))
-      .toEqual(['MAIN', 'SUB', 'M↔S', 'M=S', 'Quick split', 'Quick dual watch', 'SPEAK']);
+      .toEqual(['MAIN', 'SUB', 'M⇄S', 'M=S']);
   });
 
   it('1/ab: the pair bridge grid keeps its controls and names', () => {
@@ -542,7 +542,7 @@ describe('bridge operation grid (standard appearance)', () => {
     expect(grid.length).toBe(1);
     const actions = Array.from(bridge!.querySelectorAll<HTMLButtonElement>('[data-dual-action]'));
     expect(actions.map((button) => button.getAttribute('aria-label') ?? button.textContent?.trim()))
-      .toEqual(['A↔B', 'A=B', 'Quick split', 'Quick dual watch', 'SPEAK']);
+      .toEqual(['A↔B', 'A=B']);
   });
 });
 
@@ -647,7 +647,9 @@ function styleBlock(path: string): string {
 function rulesFor(css: string, selector: string): string[] {
   const bodies: string[] = [];
   for (const [, selectorList, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    if (selectorList.split(',').some((member) => member.trim() === selector)) {
+    // A selector written across lines (indented continuation) must match its
+    // single-line spelling: collapse runs of whitespace before comparing.
+    if (selectorList.split(',').some((member) => member.replace(/\s+/g, ' ').trim() === selector)) {
       bodies.push(body);
     }
   }
@@ -662,6 +664,108 @@ function rule(css: string, selector: string): string {
     .map(([, , body]) => body);
   expect(standalone, `standalone rule "${selector}" exists`).toHaveLength(1);
   return standalone[0];
+}
+
+function atRuleBlock(css: string, prelude: string): string {
+  const start = css.indexOf(prelude);
+  expect(start, `at-rule "${prelude}" exists`).toBeGreaterThanOrEqual(0);
+  const open = css.indexOf('{', start);
+  let depth = 0;
+  for (let index = open; index < css.length; index += 1) {
+    if (css[index] === '{') depth += 1;
+    if (css[index] === '}') depth -= 1;
+    if (depth === 0) return css.slice(open + 1, index);
+  }
+  throw new Error(`at-rule "${prelude}" is not closed`);
+}
+
+type Specificity = readonly [number, number, number];
+
+function selectorList(selectorList: string): string[] {
+  const selectors: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < selectorList.length; index += 1) {
+    if (selectorList[index] === '(') depth += 1;
+    if (selectorList[index] === ')') depth -= 1;
+    if (selectorList[index] === ',' && depth === 0) {
+      selectors.push(selectorList.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  selectors.push(selectorList.slice(start).trim());
+  return selectors;
+}
+
+function compareSpecificity(left: Specificity, right: Specificity): number {
+  return left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
+}
+
+function specificity(selector: string): Specificity {
+  let remainder = selector;
+  const score = [0, 0, 0];
+  for (const match of selector.matchAll(/:is\(([^()]*)\)/g)) {
+    const strongest = selectorList(match[1])
+      .map(specificity)
+      .sort(compareSpecificity)
+      .at(-1) ?? [0, 0, 0];
+    score[0] += strongest[0];
+    score[1] += strongest[1];
+    score[2] += strongest[2];
+    remainder = remainder.replace(match[0], '');
+  }
+  score[0] += remainder.match(/#[\w-]+/g)?.length ?? 0;
+  score[1] += remainder.match(/\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+/g)?.length ?? 0;
+  score[2] += remainder.match(/::[\w-]+/g)?.length ?? 0;
+  const types = remainder
+    .replace(/#[\w-]+|\.[\w-]+|\[[^\]]+\]|::?[\w-]+|[>+~*]/g, ' ')
+    .match(/[a-zA-Z][\w-]*/g);
+  score[2] += types?.length ?? 0;
+  return score as [number, number, number];
+}
+
+function winningDeclaration(
+  css: string,
+  target: Element,
+  property: string,
+  pseudoElement?: string,
+): string | undefined {
+  const candidates: Array<{ value: string; specificity: Specificity; order: number }> = [];
+  for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const declaration = match[2].match(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`));
+    if (!declaration) continue;
+    for (const selector of selectorList(match[1])) {
+      const hasPseudoElement = selector.includes('::');
+      if ((pseudoElement === undefined) === hasPseudoElement) continue;
+      if (pseudoElement !== undefined && !selector.includes(pseudoElement)) continue;
+      const elementSelector = pseudoElement === undefined ? selector : selector.replace(pseudoElement, '');
+      try {
+        if (!target.matches(elementSelector)) continue;
+      } catch {
+        continue;
+      }
+      candidates.push({
+        value: declaration[1].trim(),
+        specificity: specificity(selector),
+        order: match.index,
+      });
+    }
+  }
+  return candidates.sort((left, right) =>
+    compareSpecificity(left.specificity, right.specificity) || left.order - right.order,
+  ).at(-1)?.value;
+}
+
+function winningInheritedDeclaration(
+  css: string,
+  target: Element,
+  property: string,
+): string | undefined {
+  for (let current: Element | null = target; current !== null; current = current.parentElement) {
+    const value = winningDeclaration(css, current, property);
+    if (value !== undefined) return value;
+  }
+  return undefined;
 }
 
 const panelCss = styleBlock('src/components-v2/vfo/VfoPanel.svelte');
@@ -694,17 +798,17 @@ describe('source pins: fixed slot widths (MOR-2509 slice 2)', () => {
     expect(panel).not.toMatch(/--vfo-panel-(header|meter|body)-height/);
   });
 
-  it('the bridge operation column stacks fixed two-column group rows', () => {
+  it('the bridge operation column stacks fixed six-column group rows', () => {
     const ops = rulesFor(
       styleBlock('src/semantic/VfoOperationGroup.svelte'),
       ".vfo-ops[data-vfo-operation-appearance='standard']",
     ).join('\n');
     expect(ops).toMatch(/display:\s*flex;\s*flex-direction:\s*column/);
-    expect(ops).toMatch(/gap:\s*var\(--vfo-ops-gap/);
+    expect(ops).toMatch(/gap:\s*0/);
     expect(rulesFor(
       styleBlock('src/semantic/VfoOperationGroup.svelte'),
       ".ops-row",
-    ).join('\n')).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+    ).join('\n')).toMatch(/grid-template-columns:\s*repeat\(6,\s*minmax\(0,\s*1fr\)\)/);
     expect(surfaceCss, 'no wider bridge override may exist')
       .not.toMatch(/\.vfo-ops[^}]*grid-template-columns:\s*repeat\(3/);
   });
@@ -773,6 +877,26 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(compact).toMatch(/\.lamp\[data-chip='rfg'\]\s*\{\s*width:\s*64px/);
   });
 
+  it('the narrow under-row sets fixed chip widths only inside the meter-under-frequency query', () => {
+    const prelude = '@container (max-width: 470px)';
+    const narrow = atRuleBlock(panelCss, prelude);
+    const narrowStart = panelCss.indexOf(prelude);
+    const narrowEnd = panelCss.indexOf('{', narrowStart) + narrow.length + 2;
+    const outsideNarrow = panelCss.slice(0, narrowStart) + panelCss.slice(narrowEnd);
+
+    for (const [chip, width] of [['split', 72], ['rit', 88], ['xit', 60]] as const) {
+      const declaration = new RegExp(
+        `\\.chip-amber\\[data-chip='${chip}'\\]\\s*\\{[^}]*width:\\s*${width}px`,
+      );
+      expect(narrow, `${chip} uses its fixed narrow width`).toMatch(declaration);
+      expect(outsideNarrow, `${chip} narrow width stays inside the 470px query`)
+        .not.toMatch(declaration);
+    }
+    expect(panelCss).not.toContain('--dl-vfo-amber-chip-narrow-width-trim');
+    expect(narrow).not.toMatch(/flex-wrap:\s*wrap/);
+    expect(rulesFor(panelCss, '.under-row').some((body) => /gap:\s*6px/.test(body))).toBe(true);
+  });
+
   it('chip colours consume the --dl-vfo-* language tokens', () => {
     expect(panelCss).toMatch(/var\(--dl-vfo-primary-neon,/);
     expect(panelCss).toMatch(/var\(--dl-vfo-red,/);
@@ -806,6 +930,128 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(filterOwners).toEqual(['.panel', '.panel:not(.active)']);
   });
 
+  it('the inactive readout ink differs from the active ink in every mode that dims (R2-4)', () => {
+    const inactive = rulesFor(panelCss, '.panel:not(.active)').join('\n');
+    const base = rule(panelCss, '.panel');
+    // The dim inks exist only on the inactive panel: the base wiring never
+    // defines them, so the active readout keeps the inherited ink and the
+    // secondary label tone.
+    expect(inactive).toMatch(/--vfo-frequency-ink:\s*var\(--dl-vfo-frequency-ink-dim,\s*#a9b5c1\)/);
+    expect(inactive).toMatch(/--vfo-name-ink:\s*var\(--dl-vfo-name-ink-dim,\s*#7f8d9b\)/);
+    expect(base).not.toContain('--vfo-frequency-ink:');
+    expect(base).not.toContain('--vfo-name-ink:');
+    expect(rulesFor(panelCss, '.vfo-freq').join('\n'))
+      .toMatch(/color:\s*var\(--vfo-frequency-ink,\s*currentcolor\)/);
+    expect(rulesFor(panelCss, '.vfo-label').join('\n'))
+      .toMatch(/color:\s*var\(--vfo-name-ink,\s*var\(--v2-text-secondary\)\)/);
+    // An unread frequency stays an unlit label even on the inactive panel:
+    // the (0,2,0) display-unknown rule outranks the (0,1,0) base rule.
+    expect(rulesFor(panelCss, '.vfo-freq.display-unknown').join('\n'))
+      .toMatch(/color:\s*var\(--vfo-unlit-text\)/);
+
+    // jsdom in this harness substitutes no custom properties (the digit-
+    // weight pin below records the same limit), so computed-style equality
+    // cannot be asserted here. Instead each language's dim tokens are
+    // resolved by hand along their var() chains, per mode, and compared
+    // with the active ink each readout ACTUALLY renders:
+    // - frequency: the language's root `color:` on the surface the panel
+    //   inherits from (each language declares one — asserted below);
+    // - name: --v2-text-secondary from .vfo-label's fallback. No language
+    //   stylesheet sets that token (asserted below), so the single
+    //   declaration in theme/tokens.css applies; a theme that overrides
+    //   --v2-text-secondary to a language's dim value would render the two
+    //   names alike — that variation is theme-owned and not covered here.
+    const bodyOf = (css: string, selector: string, marker: string): string => {
+      const found = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .find(([, selectors, body]) => selectors.trim() === selector && body.includes(marker))?.[2];
+      expect(found, `${selector} declares ${marker}`).toBeTruthy();
+      return found ?? '';
+    };
+    const hex = (body: string, token: string): string => {
+      const m = body.match(new RegExp(`--${token}:\\s*(#[0-9a-fA-F]{6})`));
+      expect(m, `token --${token} is a hex literal`).toBeTruthy();
+      return (m?.[1] ?? '').toLowerCase();
+    };
+
+    const theme = readFileSync('src/components-v2/theme/tokens.css', 'utf8');
+    const nameInk = hex(theme, 'v2-text-secondary');
+
+    // studioline, dark and light. The active frequency ink is the language
+    // root's `color: var(--dl-studioline-text)`, resolved from the palette
+    // block per mode; the active name ink is the theme secondary.
+    const stud = readFileSync('src/presentation/languages/studioline/studioline.css', 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const studRoot = "[data-design-language='studioline'][data-design-language]";
+    const studLightSel = "[data-design-language='studioline'][data-design-language][data-language-mode='light']";
+    expect(bodyOf(stud, studRoot, '--dl-studioline-text:'), 'studioline root paints the inherited surface ink')
+      .toMatch(/color:\s*var\(--dl-studioline-text\)/);
+    const studBase = bodyOf(stud, studRoot, '--dl-vfo-frequency-ink-dim:');
+    const studLight = bodyOf(stud, studLightSel, '--dl-vfo-frequency-ink-dim:');
+    const studDarkInk = hex(bodyOf(stud, studRoot, '--dl-studioline-text:'), 'dl-studioline-text');
+    const studLightInk = hex(bodyOf(stud, studLightSel, '--dl-studioline-text:'), 'dl-studioline-text');
+    for (const [mode, block, activeFreqInk] of [
+      ['dark', studBase, studDarkInk],
+      ['light', studLight, studLightInk],
+    ] as const) {
+      expect(hex(block, 'dl-vfo-frequency-ink-dim'), `studioline ${mode}: dim frequency ink differs from the inherited surface ink`)
+        .not.toBe(activeFreqInk);
+      expect(hex(block, 'dl-vfo-name-ink-dim'), `studioline ${mode}: dim name ink differs from the theme label tone`)
+        .not.toBe(nameInk);
+    }
+
+    // fieldline. The dim inks are var(--dl-fieldline-muted) per mode. The
+    // active frequency ink is the language root's `color:
+    // var(--dl-fieldline-text)`; the active name ink is the theme
+    // secondary, NOT the fieldline text token.
+    const field = readFileSync('src/presentation/languages/fieldline/fieldline.css', 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const fieldRoot = "[data-design-language='fieldline'][data-design-language]";
+    const fieldLightSel = "[data-design-language='fieldline'][data-design-language][data-language-mode='light']";
+    expect(bodyOf(field, fieldRoot, '--dl-fieldline-text:'), 'fieldline root paints the inherited surface ink')
+      .toMatch(/color:\s*var\(--dl-fieldline-text\)/);
+    const fieldBase = bodyOf(field, fieldRoot, '--dl-fieldline-text:');
+    const fieldLight = bodyOf(field, fieldLightSel, '--dl-fieldline-text:');
+    const fieldHighContrast = bodyOf(field,
+      "[data-design-language='fieldline'][data-design-language][data-theme='high-contrast']", '--dl-fieldline-text:');
+    for (const [mode, block] of [['default', fieldBase], ['light', fieldLight]] as const) {
+      expect(hex(block, 'dl-fieldline-muted'), `fieldline ${mode}: dim frequency ink differs from the inherited surface ink`)
+        .not.toBe(hex(block, 'dl-fieldline-text'));
+      expect(hex(block, 'dl-fieldline-muted'), `fieldline ${mode}: dim name ink differs from the theme label tone`)
+        .not.toBe(nameInk);
+    }
+    // High contrast pins both palette tones to the same white, and the
+    // high-contrast THEME pins --v2-text-secondary to that white too: the
+    // inactive readout deliberately does not dim there — quieting yields
+    // to legibility at the contrast rail (rule stated in fieldline.css).
+    expect(hex(fieldHighContrast, 'dl-fieldline-muted'), 'fieldline high-contrast keeps the frequency undimmed')
+      .toBe(hex(fieldHighContrast, 'dl-fieldline-text'));
+    const highContrastTheme = readFileSync('src/components-v2/theme/themes/high-contrast.css', 'utf8');
+    expect(highContrastTheme).toMatch(/--v2-text-secondary:\s*#ffffff/);
+
+    // segmentline. The active frequency ink is the language root's
+    // `color: var(--dl-segmentline-ink-strong)`; the dim inks are that ink
+    // at lower alpha, so the numeral's paint differs structurally. The dim
+    // name ink is a translucent ramp value — a different paint from any
+    // opaque theme token, including the default compared here.
+    const seg = readFileSync('src/presentation/languages/segmentline/segmentline.css', 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const segRoot = "[data-design-language='segmentline'][data-design-language]";
+    expect(bodyOf(seg, segRoot, '--dl-segmentline-ink-strong:'), 'segmentline root paints the inherited surface ink')
+      .toMatch(/color:\s*var\(--dl-segmentline-ink-strong\)/);
+    const segBase = bodyOf(seg, segRoot, '--dl-vfo-frequency-ink-dim:');
+    const segInk = bodyOf(seg, segRoot, '--dl-segmentline-ink-strong:');
+    expect(segBase).toMatch(/--dl-vfo-frequency-ink-dim:\s*rgba\(var\(--dl-segmentline-ink\) \/ 0\.75\)/);
+    expect(segBase).toMatch(/--dl-vfo-name-ink-dim:\s*rgba\(var\(--dl-segmentline-ink\) \/ 0\.6\)/);
+    expect(segInk).toMatch(/--dl-segmentline-ink-strong:\s*rgba\(var\(--dl-segmentline-ink\) \/ 1\)/);
+
+    // The name's active ink stays theme-owned: no language stylesheet may
+    // set --v2-text-secondary, or the resolution above would be stale.
+    for (const [language, css] of [['studioline', stud], ['fieldline', field], ['segmentline', seg]] as const) {
+      expect(css, `${language} does not set the theme-owned --v2-text-secondary`)
+        .not.toContain('--v2-text-secondary:');
+    }
+  });
+
   it('keeps filled chip ink mode-independent while light mode owns a light panel', () => {
     const base = [...studiolineCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
       .find(([, selectors, body]) => selectors.trim() === "[data-design-language='studioline'][data-design-language]"
@@ -814,10 +1060,24 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
       studiolineCss,
       "[data-design-language='studioline'][data-design-language][data-language-mode='light']",
     ).join('\n');
-    for (const token of ['frame', 'frame-dim', 'tab-frame', 'tab-frame-dim', 'dim-text']) {
+    // Only the ACTIVE frames and ink stay white and mode-independent.
+    for (const token of ['frame', 'tab-frame']) {
       expect(base, `--dl-vfo-${token} stays white`).toMatch(new RegExp(`--dl-vfo-${token}:\\s*#ffffff`));
       expect(light, `light mode does not replace --dl-vfo-${token}`).not.toContain(`--dl-vfo-${token}:`);
     }
+    // The dim chrome follows the v8 mock-up: greyed frames, softened chip
+    // ink, and the grey inactive readout of R2-4.
+    expect(base).toMatch(/--dl-vfo-frame-dim:\s*#9fb0c4/);
+    expect(base).toMatch(/--dl-vfo-tab-frame-dim:\s*#b9c4cf/);
+    expect(base).toMatch(/--dl-vfo-dim-text:\s*#e3eaf2/);
+    expect(base).toMatch(/--dl-vfo-frequency-ink-dim:\s*#a9b5c1/);
+    expect(base).toMatch(/--dl-vfo-name-ink-dim:\s*#7f8d9b/);
+    // Light mode owns its own quiet dim values — except the chip ink, which
+    // sits on the dim fills and those stay dark in both modes.
+    for (const token of ['frame-dim', 'tab-frame-dim', 'frequency-ink-dim', 'name-ink-dim']) {
+      expect(light, `light mode owns --dl-vfo-${token}`).toContain(`--dl-vfo-${token}:`);
+    }
+    expect(light).not.toContain('--dl-vfo-dim-text:');
     expect(base).toMatch(/--dl-vfo-amber-chip-text:\s*#ffd47a/);
     expect(base).toMatch(/--dl-vfo-amber-chip-text-dim:\s*#b89a5e/);
     expect(light).toMatch(/--dl-vfo-red-text:\s*#a33228/);
@@ -825,7 +1085,40 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(light).toMatch(/--dl-vfo-brown-text:\s*#7a5210/);
     expect(light).toMatch(/--dl-vfo-panel-background:\s*linear-gradient\([^;]*#f9f6f0[^;]*#e9e4db/);
     expect(light).toMatch(/--dl-vfo-meter-well-background:\s*#151b22/);
-    expect(light).toMatch(/--dl-vfo-panel-sheen:\s*var\(--v2-vfo-panel-sheen-override,/);
+    expect(light).toMatch(/--dl-vfo-panel-sheen:\s*none/);
+    expect(light).toMatch(/--dl-vfo-panel-sheen-under:\s*var\(--v2-vfo-panel-sheen-override,/);
+  });
+
+  it('the dark ground and glass match the v8 mock-up: #10161d top stop, scanlines in the sheen', () => {
+    const base = [...studiolineCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .find(([, selectors, body]) => selectors.trim() === "[data-design-language='studioline'][data-design-language]"
+        && body.includes('--dl-vfo-primary-neon:'))?.[2] ?? '';
+    const light = rulesFor(
+      studiolineCss,
+      "[data-design-language='studioline'][data-design-language][data-language-mode='light']",
+    ).join('\n');
+    expect(base).toMatch(
+      /--dl-vfo-panel-background:\s*linear-gradient\(180deg,\s*#10161d 0%,\s*#0a0e13 38%,\s*#070a0e 100%\)/,
+    );
+    // One token, two layers: the 115° sheen over the 3px scanline raster,
+    // exactly the mock-up's .glass background. Both die together under
+    // prefers-contrast: more through the override.
+    expect(base).toMatch(/--dl-vfo-panel-sheen:\s*var\(--v2-vfo-panel-sheen-override,/);
+    expect(base).toMatch(
+      /--dl-vfo-panel-sheen:[^;]*rgba\(255, 255, 255, 0\.055\)[^;]*rgba\(255, 255, 255, 0\.018\)[^;]*transparent 38%/,
+    );
+    expect(base).toMatch(
+      /--dl-vfo-panel-sheen:[^;]*repeating-linear-gradient\(180deg,\s*rgba\(255, 255, 255, 0\.022\) 0 1px,\s*transparent 1px 3px\)/,
+    );
+    expect(base).toMatch(/--dl-vfo-panel-sheen-blend:\s*screen/);
+    // Light mode owns no glass over content (block N1): the over token is
+    // nulled there and the gloss lives UNDER the content via the under
+    // token — no scanline raster on paper.
+    expect(light).toMatch(/--dl-vfo-panel-sheen:\s*none/);
+    expect(light).toMatch(
+      /--dl-vfo-panel-sheen-under:\s*var\(--v2-vfo-panel-sheen-override,\s*linear-gradient\(115deg,\s*rgba\(255, 255, 255, 0\.72\)[^;]*rgba\(255, 255, 255, 0\.2\)[^;]*transparent 38%\)/,
+    );
+    expect(light).not.toMatch(/--dl-vfo-panel-sheen-under:[^;]*repeating-linear-gradient/);
   });
 
   it('every readout rule that sets a digit weight resolves it from the deck token', () => {
@@ -887,6 +1180,35 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     }
   });
 
+  it('every --dl-vfo-key-* token the language bundles declare has a var() reader under src', () => {
+    const declared = new Set<string>();
+    for (const path of [
+      'src/presentation/languages/studioline/studioline.css',
+      'src/presentation/languages/fieldline/fieldline.css',
+      'src/presentation/languages/segmentline/segmentline.css',
+    ]) {
+      const css = readFileSync(path, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+      for (const match of css.matchAll(/--dl-vfo-key-[a-z0-9-]+(?=\s*:)/g)) {
+        declared.add(match[0]);
+      }
+    }
+    // A declared token with no var() reader anywhere under src is an orphan:
+    // re-adding one of the round-5 bridge key tokens turns this red. Today
+    // only --dl-vfo-key-separator survives, read by VfoOperationGroup.svelte.
+    const sourceFiles = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const path = `${dir}/${entry.name}`;
+        if (entry.isDirectory()) return sourceFiles(path);
+        return /\.(?:svelte|css|ts)$/.test(entry.name) ? [path] : [];
+      });
+    const contents = sourceFiles('src').map((path) => readFileSync(path, 'utf8'));
+    const orphans = [...declared].filter((name) => {
+      const reader = new RegExp(`var\\(\\s*${name}[\\s),]`);
+      return !contents.some((content) => reader.test(content));
+    });
+    expect(orphans, 'declared --dl-vfo-key-* tokens with no var() reader under src').toEqual([]);
+  });
+
   it('the alive layer is token-owned, standard-only and non-interactive', () => {
     const theme = readFileSync('src/components-v2/theme/tokens.css', 'utf8');
     expect(theme).toMatch(/@media \(prefers-contrast:\s*more\)[\s\S]*--v2-vfo-glow-override:\s*none/);
@@ -904,16 +1226,31 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
           && body.includes('--dl-vfo-'))?.[2] ?? '';
       for (const token of ['panel-background', 'panel-shadow', 'panel-sheen', 'bridge-background',
         'bridge-shadow', 'meter-well-background', 'meter-well-shadow', 'meter-lit-filter',
-        'frequency-glow', 'primary-glow', 'red-glow', 'amber-glow', 'dsp-glow']) {
+        'frequency-glow', 'primary-glow', 'red-glow', 'amber-glow', 'dsp-glow',
+        'frequency-ink-dim', 'name-ink-dim']) {
         expect(root, `${language} owns --dl-vfo-${token}`).toContain(`--dl-vfo-${token}:`);
       }
     }
 
     expect(rule(panelCss, '.panel')).toMatch(/background:\s*var\(--dl-vfo-panel-background/);
-    const sheen = rule(panelCss, '.panel::before');
+    // The glass is the panel's last box, ABOVE the content, never the old
+    // z-index: -1 under-content placement.
+    const sheen = rule(panelCss, '.panel::after');
     expect(sheen).toMatch(/pointer-events:\s*none/);
-    expect(sheen).toMatch(/z-index:\s*-1/);
+    expect(sheen).toMatch(/position:\s*absolute/);
+    expect(sheen).not.toMatch(/z-index:\s*-/);
     expect(sheen).toMatch(/mix-blend-mode:\s*var\(--dl-vfo-panel-sheen-blend/);
+    // Light mode's gloss is a separate UNDER layer: ::before, still no
+    // negative z-index — the rows are positioned, so tree order paints them
+    // above the first box.
+    const underGlass = rule(panelCss, '.panel::before');
+    expect(underGlass).toMatch(/pointer-events:\s*none/);
+    expect(underGlass).not.toMatch(/z-index:\s*-/);
+    expect(underGlass).toMatch(/background:\s*var\(--dl-vfo-panel-sheen-under,\s*none\)/);
+    for (const row of ['.tray', '.receiver-row', '.display-row']) {
+      expect(rulesFor(panelCss, row).join('\n'), `${row} paints above the under-glass`)
+        .toMatch(/position:\s*relative/);
+    }
     expect(rulesFor(panelCss, '.panel-meter').join('\n'))
       .toMatch(/background:\s*var\(--dl-vfo-meter-well-background/);
     expect(rulesFor(panelCss, '.panel-meter').join('\n'))
@@ -985,16 +1322,6 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
     }
   });
 
-  it('every bridge key declares the 28px height floor and 12px text', () => {
-    const ops = rulesFor(opsCss, ".vfo-ops[data-vfo-operation-appearance='standard']").join('\n');
-    expect(ops).toMatch(/--btn-min-height:\s*28px/);
-    expect(ops).toMatch(/--btn-font-size:\s*12px/);
-    expect(rulesFor(segmentCss, '.active-receiver-toggle.embedded.hardware').join('\n'))
-      .toMatch(/--btn-min-height:\s*28px/);
-    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge .vfo-select").join('\n'))
-      .toMatch(/min-height:\s*28px/);
-  });
-
   it('nothing in the bridge blinks: the operation group declares no animation', () => {
     expect(opsCss).not.toMatch(/@keyframes/);
     expect(opsCss).not.toMatch(/animation\s*:/);
@@ -1020,21 +1347,221 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
     }
   });
 
-  it('the bridge width is one custom property the standard deck narrows', () => {
+  it('the bridge width is one custom property and the standard deck uses the mock-up column', () => {
     expect(rulesFor(surfaceCss, '.instrument-panel').join('\n'))
       .toMatch(/--vfo-bridge-width:\s*180px/);
     expect(rulesFor(surfaceCss, '.bridge').join('\n'))
       .toMatch(/flex:\s*0 0 var\(--vfo-bridge-width\)/);
     expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge").join('\n'))
-      .toMatch(/--vfo-bridge-width:\s*168px/);
-    expect(rulesFor(surfaceCss, '.bridge').join('\n'))
-      .toMatch(/--vfo-bridge-width:\s*150px/);
+      .toMatch(/--vfo-bridge-width:\s*212px/);
+    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .standard-pair-bridge").join('\n'))
+      .toMatch(/flex:\s*0 0 var\(--vfo-bridge-width\)/);
+    // The qualified assertion pins the Standard 150 px rule below 1280 px;
+    // the compact assertion pins the shared 150 px rule used by SDR at 1050 px.
+    const narrowBlock = surfaceCss.slice(
+      surfaceCss.indexOf('@media (max-width: 1279px)'),
+      surfaceCss.indexOf('@media (max-width: 1050px)'),
+    );
+    expect(narrowBlock, 'the narrow bridge rule keeps the attribute-qualified selector')
+      .toMatch(/\[data-vfo-appearance='standard'\] \.bridge\s*\{[^}]*--vfo-bridge-width:\s*150px/s);
+    expect(narrowBlock, 'the Standard 1279px block keeps its attribute-qualified selector')
+      .not.toMatch(/(?:^|[{}])\s*\.bridge\s*\{[^}]*--vfo-bridge-width/s);
+    const compactBlock = surfaceCss.slice(
+      surfaceCss.indexOf('@media (max-width: 1050px)'),
+      surfaceCss.indexOf('@media (max-width: 760px)'),
+    );
+    expect(compactBlock, 'the SDR appearance keeps the shared 150px bridge at 1050px')
+      .toMatch(/(?:^|[{}])\s*\.bridge\s*\{[^}]*--vfo-bridge-width:\s*150px/s);
+    expect(surfaceCss.indexOf('@media (max-width: 1279px)'),
+      'equal specificity with the desktop rule: the narrow rule wins by source order')
+      .toBeGreaterThan(surfaceCss.indexOf('--vfo-bridge-width: 212px'));
   });
 
   it('stacks an absolute Standard pair at the 1024-class breakpoint', () => {
     const compact = surfaceCss.slice(surfaceCss.indexOf('@media (max-width: 1050px)'));
-    expect(compact.slice(0, compact.indexOf('@media (max-width: 950px)')))
+    expect(compact.slice(0, compact.indexOf('@media (max-width: 760px)')))
       .toMatch(/\.standard-receiver\[data-standard-vfo-slot\][^{]*\{[^}]*flex-basis:\s*calc\(100% - 192px\)/s);
+  });
+});
+
+describe('mock-up v8 geometry with the owner 13:28 EDT bridge-key override', () => {
+  it('keeps the mock-up dimensions and type while the Button family owns key paint', () => {
+    const ops = styleBlock('src/semantic/VfoOperationGroup.svelte');
+    const receiver = styleBlock('src/components-v2/vfo/ActiveReceiverToggle.svelte');
+    const buttons = readFileSync('src/components-v2/controls/control-button.css', 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+
+    const operationGrid = rulesFor(ops, '.ops-row').join('\n');
+    const standardBridge = rulesFor(surfaceCss,
+      "[data-vfo-appearance='standard'] .standard-pair-bridge").join('\n');
+    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge").join('\n'),
+      'changing the mock-up 212px bridge column turns this red')
+      .toMatch(/--vfo-bridge-width:\s*212px/);
+    expect(standardBridge, 'changing the mock-up 12px/10px bridge padding turns this red')
+      .toMatch(/padding:\s*12px 10px/);
+    expect(operationGrid, 'changing the six-column bridge grid turns this red')
+      .toMatch(/grid-template-columns:\s*repeat\(6,\s*minmax\(0,\s*1fr\)\)/);
+    expect(operationGrid, 'changing the 6px key gap turns this red').toMatch(/gap:\s*6px/);
+    expect(rulesFor(ops, '.ops-row > :global(.v2-control-button)').join('\n'),
+      'changing a full key from three of six columns turns this red')
+      .toMatch(/grid-column:\s*span 3/);
+    expect(rulesFor(ops, '.functions-row > :global(.v2-control-button)').join('\n'),
+      'changing a function key from two of six columns turns this red')
+      .toMatch(/grid-column:\s*span 2/);
+    expect(rulesFor(receiver, '.active-receiver-toggle.embedded.hardware').join('\n'),
+      'changing the selector grid or its 6px gap turns this red')
+      .toMatch(/grid-template-columns:\s*repeat\(6,\s*minmax\(0,\s*1fr\)\);\s*gap:\s*6px/);
+    expect(rulesFor(receiver, '.active-receiver-toggle.embedded.hardware > :global(button)').join('\n'),
+      'changing a receiver key from three of six columns turns this red')
+      .toMatch(/grid-column:\s*span 3/);
+
+    const keyRule = rulesFor(buttons,
+      ".vfo-ops[data-vfo-operation-appearance='standard'] .v2-control-button").join('\n');
+    for (const [claim, pattern] of [
+      ['28px minimum key height', /min-height:\s*28px/],
+      ['full row width', /width:\s*100%/],
+      ['12px labels', /font-size:\s*12px/],
+      ['700 label weight', /font-weight:\s*700/],
+      ['0.06em label tracking', /letter-spacing:\s*0\.06em/],
+    ] as const) {
+      expect(keyRule, `changing the mock-up ${claim} turns this red`).toMatch(pattern);
+    }
+    expect(keyRule, '28px remains a minimum, not a fixed key height')
+      .not.toMatch(/(?:^|[;{])\s*height:\s*28px/);
+    expect(keyRule, 'the bridge does not replace the Button family paint')
+      .not.toMatch(/(?:^|;)\s*(?:background|border|border-radius|color|box-shadow):/);
+
+    expect(rulesFor(ops, ".vfo-ops[data-vfo-operation-appearance='standard']").join('\n'),
+      'the operation stack consumes the bridge height')
+      .toMatch(/flex:\s*1 1 auto/);
+    expect(operationGrid, 'every present row receives an equal share above its 28px minimum')
+      .toMatch(/flex:\s*1 1 0;\s*min-height:\s*28px/);
+    expect(rulesFor(ops,
+      ".vfo-ops[data-vfo-operation-appearance='standard'] .ops-row > :global(.v2-control-button)",
+    ).join('\n'), 'every key stretches to its row')
+      .toMatch(/height:\s*100%/);
+
+    const divider = rulesFor(ops, '.bridge-divider').join('\n');
+    expect(divider, 'changing the one-pixel separator turns this red').toMatch(/height:\s*1px/);
+    expect(divider, 'changing the separator 8px vertical margin turns this red')
+      .toMatch(/margin:\s*8px 0/);
+    expect(buttons).not.toMatch(/vfo-operation-appearance='standard'[^}]*indicator-style='dot'/s);
+    expect(buttons).not.toContain("data-appearance='selected'");
+  });
+
+  it('keeps the longest function label inside the 212px column', () => {
+    const root = mountSurface({ viewModel: withTxAux(standardFixture('2/main_sub')), appearance: 'standard' });
+    const bridge = root.querySelector<HTMLElement>('[data-instrument-bridge]')!;
+    const keys = Array.from(bridge.querySelectorAll<HTMLButtonElement>('.v2-control-button'));
+    const tuner = bridge.querySelector<HTMLButtonElement>('[data-vfo-tuner]')!;
+    expect(tuner.textContent?.trim()).toBe('TUNER');
+
+    const bridgeWidth = 212;
+    const bridgeBorder = 2;
+    const bridgePadding = 20;
+    const trackGap = 6;
+    const trackWidth = (bridgeWidth - bridgeBorder - bridgePadding - (5 * trackGap)) / 6;
+    const functionKeyBorderBox = (2 * trackWidth) + trackGap;
+    const keyClientWidth = functionKeyBorderBox - 2;
+    const fontSize = 12;
+    const labelWidth = (tuner.textContent!.trim().length * fontSize * 0.6)
+      + ((tuner.textContent!.trim().length - 1) * fontSize * 0.06);
+
+    for (const key of keys) {
+      const isFunction = key.closest('.functions-row') !== null;
+      const borderBox = isFunction ? functionKeyBorderBox : (3 * trackWidth) + (2 * trackGap);
+      Object.defineProperties(key, {
+        clientWidth: { configurable: true, value: borderBox - 2 },
+        scrollWidth: { configurable: true, value: isFunction ? labelWidth : borderBox - 2 },
+      });
+      expect(key.scrollWidth, key.textContent?.trim()).toBeLessThanOrEqual(key.clientWidth);
+    }
+    expect(labelWidth).toBeLessThanOrEqual(keyClientWidth);
+  });
+
+  it('keeps the longest function label inside the 150px column below 1280px', () => {
+    const narrowBlock = surfaceCss.slice(
+      surfaceCss.indexOf('@media (max-width: 1279px)'),
+      surfaceCss.indexOf('@media (max-width: 1050px)'),
+    );
+    const narrowRule = narrowBlock.match(
+      /\[data-vfo-appearance='standard'\] \.bridge\s*\{([^}]*)\}/s);
+    expect(narrowRule, 'the narrow bridge rule keeps the attribute-qualified selector').toBeTruthy();
+    const bridgeWidth = Number(narrowRule![1].match(/--vfo-bridge-width:\s*(\d+)px/)?.[1]);
+    expect(bridgeWidth).toBe(150);
+    const paddingInline = Number(narrowRule![1].match(/padding:\s*12px\s+(\d+)px/)?.[1]);
+    expect(Number.isFinite(paddingInline), 'the narrow rule keeps the 12px block padding').toBe(true);
+
+    // Same measure as "keeps the longest function label inside the 212px
+    // column": TUNER is the longest function label, Roboto Mono advances are
+    // 0.6em, and the tracking adds 0.06em between glyphs.
+    const trackGap = 6;
+    const trackWidth = (bridgeWidth - 2 - (2 * paddingInline) - (5 * trackGap)) / 6;
+    const keyClientWidth = (2 * trackWidth) + trackGap - 2;
+    const labelWidth = (5 * 12 * 0.6) + (4 * 12 * 0.06);
+    expect(keyClientWidth,
+      `TUNER (${labelWidth}px) fits the narrow span-2 key client box (${keyClientWidth}px)`)
+      .toBeGreaterThanOrEqual(labelWidth);
+  });
+
+  it('pins full-height row alignment for a 196px bridge through shared layout tokens', () => {
+    const surface = rulesFor(surfaceCss,
+      "[data-vfo-appearance='standard'] .standard-pair-bridge").join('\n');
+    const ops = styleBlock('src/semantic/VfoOperationGroup.svelte');
+    expect(surface).toMatch(/padding:\s*12px 10px/);
+    expect(surface).toMatch(/justify-content:\s*stretch/);
+    expect(rulesFor(ops, '.ops-row').join('\n'))
+      .toMatch(/flex:\s*1 1 0;\s*min-height:\s*28px/);
+    expect(rulesFor(ops, '.bridge-divider').join('\n'))
+      .toMatch(/height:\s*1px;\s*margin:\s*8px 0/);
+
+    const bridgeHeight = 196;
+    const paddingBlock = 24;
+    const dividerBlock = 17;
+    const interRowGaps = 12;
+    const rowHeight = (bridgeHeight - paddingBlock - dividerBlock - interRowGaps) / 4;
+    const rowTops = [12, 12 + rowHeight + 6, 12 + (2 * (rowHeight + 6)), 148.25];
+    expect(rowHeight).toBe(35.75);
+    expect(rowTops).toEqual([12, 53.75, 95.5, 148.25]);
+    expect(rowTops.at(-1)! + rowHeight).toBe(bridgeHeight - 12);
+  });
+
+  it('resolves family edge bars and one hardware background for selected and function keys', () => {
+    const buttons = readFileSync('src/components-v2/controls/control-button.css', 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const host = document.createElement('div');
+    host.dataset.vfoAppearance = 'standard';
+    host.innerHTML = `
+      <div data-instrument-bridge>
+        <div class="vfo-ops" data-vfo-operation-appearance="standard">
+          <button class="v2-control-button active" data-active="true" data-surface="hardware"
+            data-active-receiver-segment="MAIN"
+            data-indicator-style="edge-left" data-indicator-color="cyan"></button>
+          <button class="v2-control-button active" data-active="true" data-surface="hardware"
+            data-vfo-tuner
+            data-indicator-style="edge-left" data-indicator-color="red"></button>
+        </div>
+      </div>
+      <div class="bridge" data-instrument-bridge>
+        <button class="vfo-select" data-vfo-select-absolute="A"></button>
+      </div>
+    `;
+    const selected = host.querySelector<HTMLButtonElement>('[data-active-receiver-segment]')!;
+    const tuner = host.querySelector<HTMLButtonElement>('[data-vfo-tuner]')!;
+    expect(winningDeclaration(buttons, selected, '--indicator-color')).toBe('var(--indicator-cyan)');
+    expect(winningDeclaration(buttons, tuner, '--indicator-color')).toBe('var(--indicator-red)');
+    for (const key of [selected, tuner]) {
+      expect(winningDeclaration(buttons, key, 'background', '::before'))
+        .toMatch(/var\(--indicator-color\) 50%/);
+      expect(winningDeclaration(buttons, key, 'opacity', '::before')).toBe('1');
+    }
+    const selectedBackground = winningDeclaration(buttons, selected, 'background');
+    const tunerBackground = winningDeclaration(buttons, tuner, 'background');
+    expect(selectedBackground).toBe(tunerBackground);
+    expect(selectedBackground).toMatch(/var\(--hw-gradient-top-1\)/);
+    const identity = host.querySelector<HTMLButtonElement>('[data-vfo-select-absolute]')!;
+    expect(winningInheritedDeclaration(surfaceCss, identity, '--btn-font-size')).toBe('12px');
+    expect(winningInheritedDeclaration(surfaceCss, identity, '--btn-min-height')).toBeUndefined();
   });
 });
 
@@ -1084,11 +1611,26 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     expect(buttons.length).toBeGreaterThan(0);
     for (const button of buttons) {
       expect(button.classList, button.textContent ?? '').toContain('v2-control-button');
-      // Selector keys are the family's flat fill look; every hardware key
-      // must declare the hardware surface the family paints.
-      if (button.closest('[data-standard-select-vfo], [role="radiogroup"]') === null) {
-        expect(button.getAttribute('data-surface'), button.textContent ?? '').toBe('hardware');
-      }
+      expect(button.getAttribute('data-surface'), button.textContent ?? '').toBe('hardware');
+      expect(button.getAttribute('data-indicator-style'), button.textContent ?? '').toBe('edge-left');
+      expect(button.getAttribute('data-appearance'), button.textContent ?? '').toBeNull();
+    }
+    const selected = bridge.querySelector<HTMLButtonElement>(
+      '[data-active-receiver-segment="MAIN"]',
+    )!;
+    expect(selected.getAttribute('data-active')).toBe('true');
+    expect(selected.getAttribute('data-indicator-color')).toBe('cyan');
+    for (const [selector, color] of [
+      ['[data-active-receiver-segment="SUB"]', 'cyan'],
+      ['[data-vfo-swap]', 'cyan'],
+      ['[data-vfo-equalize]', 'cyan'],
+      ['[data-vfo-split]', 'cyan'],
+      ['[data-vfo-dual-watch]', 'cyan'],
+      ['[data-vfo-tuner]', 'red'],
+      ['[data-vfo-vox]', 'violet'],
+      ['[data-vfo-lock]', 'cyan'],
+    ] as const) {
+      expect(bridge.querySelector(selector)?.getAttribute('data-indicator-color'), selector).toBe(color);
     }
   });
 
@@ -1099,39 +1641,35 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
         + ' .bridge-divider, [data-vfo-tuner], [data-vfo-vox], [data-vfo-lock]',
     )).map(keyName);
     expect(order).toEqual([
-      'main', 'sub', 'swap', 'equalize', 'quick-split', 'quick-dual-watch', 'speak',
-      'split', 'dual-watch', 'divider', 'tuner', 'vox', 'lock',
+      'main', 'sub', 'swap', 'equalize', 'split', 'dual-watch',
+      'divider', 'tuner', 'vox', 'lock',
     ]);
     expect(root.querySelector('[data-vfo-tuner]')?.closest('.functions-row')).not.toBeNull();
-    expect(rulesFor(opsCss, '.functions-row').join('\n'))
-      .toMatch(/grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
     const functionKeys = rulesFor(
-      opsCss, ".functions-row > :global(.v2-control-button[data-indicator-style='dot'])",
+      opsCss, '.functions-row > :global(.v2-control-button)',
     ).join('\n');
-    expect(functionKeys).toMatch(/--btn-font-size:\s*11px/);
-    expect(functionKeys).toMatch(/padding-left:\s*calc\(var\(--indicator-dot-reserve\) \+ 1px\)/);
-    expect(functionKeys).toMatch(/padding-right:\s*4px/);
+    expect(functionKeys).toMatch(/grid-column:\s*span 2/);
     expect(rulesFor(opsCss, '.ops-row > :global(.v2-control-button)').join('\n'))
-      .toMatch(/min-width:\s*0;\s*width:\s*100%/);
+      .toMatch(/grid-column:\s*span 3;\s*min-width:\s*0;\s*width:\s*100%/);
     expect(opsCss).not.toContain('.ops-row > :global(*)');
   });
 
-  it('keeps the SPLIT and DW latching keys as dot-lamp switches with unchanged semantics', () => {
+  it('keeps the SPLIT and DW latching keys as cyan edge-bar switches', () => {
     const root = mountSurface({ viewModel: functionsFixture(), appearance: 'standard' });
     const split = root.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
     const dualWatch = root.querySelector<HTMLButtonElement>('[data-vfo-dual-watch]')!;
     for (const button of [split, dualWatch]) {
       expect(button.getAttribute('role')).toBe('switch');
-      expect(button.getAttribute('data-indicator-style')).toBe('dot');
+      expect(button.getAttribute('data-indicator-style')).toBe('edge-left');
       expect(button.classList).toContain('v2-control-button');
     }
     expect(split.getAttribute('data-indicator-color')).toBe('cyan');
-    expect(dualWatch.getAttribute('data-indicator-color')).toBe('green');
+    expect(dualWatch.getAttribute('data-indicator-color')).toBe('cyan');
     expect(split.getAttribute('aria-label')).toBe('Split: on');
     expect(dualWatch.getAttribute('aria-label')).toBe('Dual watch: on');
   });
 
-  it('renders TUNER, VOX and LOCK as dot-lamp switches with lamps lit only when on', () => {
+  it('renders TUNER, VOX and LOCK as edge-bar switches lit only when on', () => {
     const root = mountSurface({ viewModel: functionsFixture({
       atu: 'on', vox: true, dialLock: true,
     }), appearance: 'standard',
@@ -1143,24 +1681,24 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     for (const [button, label] of [[tuner, 'Tuner'], [vox, 'VOX'], [lock, 'Lock']] as const) {
       expect(button, label).not.toBeNull();
       expect(button.getAttribute('role')).toBe('switch');
-      expect(button.getAttribute('data-indicator-style')).toBe('dot');
+      expect(button.getAttribute('data-indicator-style')).toBe('edge-left');
       expect(button.getAttribute('aria-checked')).toBe('true');
       expect(button.getAttribute('data-active')).toBe('true');
       expect(button.disabled).toBe(false);
     }
     expect(tuner.getAttribute('data-indicator-color')).toBe('red');
-    expect(vox.getAttribute('data-indicator-color')).toBe('amber');
+    expect(vox.getAttribute('data-indicator-color')).toBe('violet');
     expect(lock.getAttribute('data-indicator-color')).toBe('cyan');
     expect(tuner.getAttribute('aria-label')).toBe('Tuner: on');
   });
 
-  it('distinguishes TUNER tuning from on by lamp treatment, not by blinking', () => {
+  it('keeps TUNER tuning known and checked with a distinct steady amber bar', () => {
     const root = mountSurface({ viewModel: functionsFixture({ atu: 'tuning' }), appearance: 'standard' });
     const tuner = root.querySelector<HTMLButtonElement>('[data-vfo-tuner]')!;
     expect(tuner.getAttribute('role')).toBe('switch');
     expect(tuner.getAttribute('aria-checked')).toBe('true');
     expect(tuner.getAttribute('data-active')).toBe('true');
-    expect(tuner.getAttribute('data-indicator-color')).toBe('orange');
+    expect(tuner.getAttribute('data-indicator-color')).toBe('amber');
     expect(tuner.getAttribute('aria-label')).toBe('Tuner: tuning');
     const onRoot = mountSurface({ viewModel: functionsFixture({ atu: 'on' }), appearance: 'standard' });
     expect(onRoot.querySelector('[data-vfo-tuner]')!.getAttribute('data-indicator-color')).toBe('red');
@@ -1220,7 +1758,7 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     expect(root.querySelector('[data-vfo-lock]')).toBeNull();
   });
 
-  it('replaces the ACTIVE RECEIVER caption with the filled selector key announcement', () => {
+  it('replaces the ACTIVE RECEIVER caption with the lit edge-bar key announcement', () => {
     const root = mountSurface({ viewModel: functionsFixture(), appearance: 'standard' });
     const bridge = root.querySelector('[data-instrument-bridge]')!;
     expect(bridge.querySelector('[data-testid="vfo-active-receiver"]')).toBeNull();
@@ -1232,12 +1770,15 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     expect(main.textContent?.trim()).toBe('MAIN');
   });
 
-  it('keeps the A/B pair selector keys filled, named and addressable', () => {
+  it('keeps the A/B pair selector keys edge-lit, named and addressable', () => {
     const root = mountSurface({ viewModel: standardFixture('1/ab'), appearance: 'standard' });
     const keys = Array.from(root.querySelectorAll<HTMLButtonElement>('[data-standard-select-vfo]'));
     expect(keys.map((key) => key.getAttribute('data-standard-select-vfo'))).toEqual(['A', 'B']);
     for (const key of keys) {
       expect(key.classList).toContain('v2-control-button');
+      expect(key.getAttribute('data-appearance')).toBeNull();
+      expect(key.getAttribute('data-indicator-style')).toBe('edge-left');
+      expect(key.getAttribute('data-indicator-color')).toBe('cyan');
       expect(key.getAttribute('aria-label')).toBe(`SELECT ${key.getAttribute('data-standard-select-vfo')}`);
     }
     expect(keys[0].getAttribute('data-active')).toBe('true');
@@ -1267,12 +1808,23 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     expect(root.querySelector('[data-vfo-split]')).not.toBeNull();
   });
 
-  it('reserves the lamp slot on lampless keys: the shared sheet aligns both paddings', () => {
+  it('removes the orphan selected appearance and bridge dot-lamp seats', () => {
     const sheet = readFileSync('src/components-v2/controls/control-button.css', 'utf8');
-    const dotRule = sheet.match(
-      /\.v2-control-button\[data-indicator-style='dot'\],\s*\n?\.v2-control-button\[data-reserve-indicator='true'\]\s*\{[^}]*\}/,
-    );
-    expect(dotRule, "the dot padding rule also selects [data-reserve-indicator='true']").toBeTruthy();
-    expect(dotRule![0]).toMatch(/padding-left:\s*calc\(var\(--indicator-dot-reserve\)/);
+    const types = readFileSync('src/lib/Button/types.ts', 'utf8');
+    const control = readFileSync('src/lib/Button/ControlButton.svelte', 'utf8');
+    expect(sheet).not.toContain("data-appearance='selected'");
+    expect(sheet).not.toContain('data-reserve-indicator');
+    expect(types).not.toContain('ButtonAppearance');
+    expect(control).not.toContain('data-appearance=');
+    expect(control).not.toContain('data-reserve-indicator=');
+    for (const path of [
+      'src/semantic/VfoOperationGroup.svelte',
+      'src/components-v2/vfo/ActiveReceiverToggle.svelte',
+      'src/semantic/VfoSurface.svelte',
+    ]) {
+      const source = readFileSync(path, 'utf8');
+      expect(source, path).toContain('<HardwareButton');
+      expect(source, path).not.toContain('<ControlButton');
+    }
   });
 });

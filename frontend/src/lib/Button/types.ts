@@ -2,7 +2,7 @@
  * Control Button Types
  */
 
-export type IndicatorColor = 'cyan' | 'green' | 'amber' | 'red' | 'orange' | 'white' | 'yellow' | 'muted' | 'gray';
+export type IndicatorColor = 'cyan' | 'green' | 'amber' | 'red' | 'orange' | 'violet' | 'white' | 'yellow' | 'muted' | 'gray';
 
 export type IndicatorStyle = 'ring' | 'dot' | 'edge-bottom' | 'edge-left' | 'fill';
 
@@ -37,6 +37,13 @@ export interface BaseButtonProps {
   ariaLabel?: string;
   ariaExpanded?: boolean;
   ariaControls?: string;
+  /** Widget semantics forwarded to the native button. */
+  role?: string;
+  ariaChecked?: boolean | 'true' | 'false' | 'mixed';
+  tabindex?: number;
+  onkeydown?: (event: KeyboardEvent) => void;
+  /** Data attributes forwarded to the native button. */
+  data?: Record<string, string | number | boolean | undefined | null>;
   /** Click handler */
   onclick?: (event: MouseEvent) => void;
   /** Pointer event handlers */
