@@ -1515,20 +1515,25 @@ describe('explicit PBT display (MOR-1692)', () => {
 });
 
 /**
- * MOR-2425 restore — PBT reset. Mounted directly (no `modeFilter`, so
- * `handles.mode()/filter()` are never invoked) rather than through
- * `FilterInstrumentHostFixture`, whose fixed prop list does not forward
- * `onPbtReset` and no other test in this file needs widening for it.
+ * MOR-2425 restore — PBT reset; MOR-2535 — ONE mechanism. Mounted directly
+ * (no `modeFilter`, so `handles.mode()/filter()` are never invoked) rather
+ * than through `FilterInstrumentHostFixture`, whose fixed prop list does
+ * not forward the PBT change callbacks and no other test in this file
+ * needs widening for them.
  *
- * The exact caps-derived CENTER value `onPbtReset` sends over
- * `set_pbt_inner`/`set_pbt_outer` is already pinned end to end, against the
- * REAL `makeFilterHandlers()` factory and a spied `sendCommand`, in
+ * The exact caps-derived CENTRE value a PBT reset sends over
+ * `set_pbt_inner`/`set_pbt_outer` is pinned end to end, against the REAL
+ * `makeFilterHandlers()` factory and a spied `sendCommand`, in
  * `lib/runtime/commands/__tests__/panel-commands.intent.isolated.test.ts`
  * (its `onPbtReset` case: `['set_pbt_inner', { value: 128, receiver: 0 }]`,
- * `['set_pbt_outer', { value: 128, receiver: 0 }]`) — unmodified by this PR.
+ * `['set_pbt_outer', { value: 128, receiver: 0 }]`) — unmodified by this
+ * PR: MOR-2535 rerouted the button through the two rows' scalar-lease
+ * `reset()` path (the same path the double-click gesture uses), whose
+ * 0 Hz centre target reaches `onPbtInnerChange`/`onPbtOuterChange` and
+ * from there the same conversion that factory's `onPbtReset` performs.
  * This describe block proves the surface's OWN half of that chain: the
- * button renders only when PBT is structural, and a click reaches whatever
- * `onPbtReset` callback the wiring seam hands it, exactly once.
+ * button renders only when PBT is structural, and a click resets EACH row
+ * through its own lease, exactly once.
  */
 const pbtStubHandles: FilterInstrumentHandles = {
   mode: createRawSnippet(() => ({ render: () => '<span></span>' })),
@@ -1536,9 +1541,15 @@ const pbtStubHandles: FilterInstrumentHandles = {
   shape: createRawSnippet(() => ({ render: () => '<span></span>' })),
   dataMode: createRawSnippet(() => ({ render: () => '<span></span>' })),
 };
-function renderPbtOnly(view: RadioViewModel, onPbtReset?: () => void) {
+function renderPbtOnly(
+  view: RadioViewModel,
+  handlers: {
+    onPbtInnerChange?: (value: number) => void;
+    onPbtOuterChange?: (value: number) => void;
+  } = {},
+) {
   const component = mount(FilterSurface, {
-    target, props: { view, handles: pbtStubHandles, onPbtReset },
+    target, props: { view, handles: pbtStubHandles, ...handlers },
   });
   flushSync();
   return {
@@ -1574,12 +1585,17 @@ describe('PBT reset (MOR-2425 restore)', () => {
     r.dispose();
   });
 
-  it('click calls onPbtReset exactly once', () => {
-    const onPbtReset = vi.fn();
-    const r = renderPbtOnly(withFilterPassband(topologyFixtures['1/single']), onPbtReset);
+  it('click resets EACH PBT row through its own scalar lease, exactly once (MOR-2535)', () => {
+    const onPbtInnerChange = vi.fn();
+    const onPbtOuterChange = vi.fn();
+    const r = renderPbtOnly(
+      withFilterPassband(topologyFixtures['1/single']),
+      { onPbtInnerChange, onPbtOuterChange },
+    );
     r.button()!.click();
     flushSync();
-    expect(onPbtReset).toHaveBeenCalledExactlyOnceWith();
+    expect(onPbtInnerChange).toHaveBeenCalledExactlyOnceWith(0);
+    expect(onPbtOuterChange).toHaveBeenCalledExactlyOnceWith(0);
     r.dispose();
   });
 });

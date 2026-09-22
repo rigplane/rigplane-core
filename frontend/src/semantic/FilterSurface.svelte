@@ -35,6 +35,14 @@
 
   PENDING AFFORDANCE (MOR-1441 leg 2). The host-owned Filter handle carries
   the pending target separately from confirmed truth.
+
+  DOUBLE-CLICK RESET (MOR-2535). Every range row resets through its scalar
+  lease's `reset()`: the IF-shift and PBT rows carry `defaultValue: 0`
+  (zero offset / passband centre), the width row carries the profile's
+  factory default for the CURRENT filter selection where the mode-keyed
+  configuration declares one — and the gesture is a no-op where it does
+  not (no invented default, nothing shown). The PBT reset button rides
+  the same two leases, so one mechanism serves both gestures.
 -->
 <script module lang="ts">
   import type { DisplayObservedField, TxAuxField } from './radio-view-model';
@@ -104,12 +112,11 @@
     onIfShiftChange?: (value: number) => void;
     onPbtInnerChange?: (value: number) => void;
     onPbtOuterChange?: (value: number) => void;
-    onPbtReset?: () => void;
   }
   let {
     view, handles, finiteLayout, part = 'all', filterWidthFeedback,
     ifShiftFeedback, pbtInnerFeedback, pbtOuterFeedback,
-    onFilterWidthChange, onIfShiftChange, onPbtInnerChange, onPbtOuterChange, onPbtReset,
+    onFilterWidthChange, onIfShiftChange, onPbtInnerChange, onPbtOuterChange,
   }: Props = $props();
 
   const pendingFilterId = $props.id();
@@ -119,12 +126,28 @@
   let filterPassband = $derived(view.filterPassband);
   let fixedWidth = $derived(modeFilter?.activeFilterConfiguration?.fixed === true);
 
+  /** MOR-2535: the width row's double-click reset target — the factory width
+   *  the profile's mode-keyed filter configuration declares for the CURRENT
+   *  filter selection (`activeFilterConfiguration.slots[].factoryWidthHz`,
+   *  itself the adapter's `resolveFilterModeConfig` output; this file only
+   *  joins the two published facts, it never re-derives the config). `null`
+   *  when there is no configuration, no observed filter selection, or no
+   *  declared default for that slot — the double-click is then a no-op and
+   *  nothing is shown, never a fallback to an invented value. */
+  function filterWidthDefaultHz(): number | null {
+    const config = modeFilter?.activeFilterConfiguration;
+    const current = modeFilter?.currentFilter;
+    if (config === null || config === undefined
+      || current === undefined || current.reading.status !== 'known') return null;
+    return config.slots.find((slot) => slot.filter === current.reading.value)?.factoryWidthHz ?? null;
+  }
+
   function filterWidthInput(): Readonly<ContinuousScalarInput> {
     const field = modeFilter?.filterWidth;
     const domain = {
       min: modeFilter ? numberOf(modeFilter.filterWidthMin, 50) : 50,
       max: modeFilter ? numberOf(modeFilter.filterWidthMax, 9999) : 9999,
-      step: 50, defaultValue: null, fineStepDivisor: 1,
+      step: 50, defaultValue: filterWidthDefaultHz(), fineStepDivisor: 1,
     };
     const enabled = field !== undefined && usable(field);
     const request = (value: number) => onFilterWidthChange?.(value);
@@ -252,7 +275,12 @@
       : f !== undefined && pbtUsable(f);
     const domain = {
       min: limits.min, max: limits.max, step: limits.step,
-      defaultValue: null, fineStepDivisor: 1,
+      // MOR-2535: every passband row's reset target is the 0 Hz centre —
+      // the IF shift's zero offset and the PBT rows' passband centre (the
+      // value the PBT reset button has always sent). Zero sits on every
+      // lattice these rows use (the fallback rows and the measured twin-PBT
+      // lattice are both centred on it), so the target is never invented.
+      defaultValue: 0, fineStepDivisor: 1,
     };
     const request = (value: number): void => changePassband(field, value);
     const feedback = passbandFeedbackOf(field);
@@ -404,6 +432,12 @@
               data-command-phase={filterWidthView.phase ?? undefined}
               aria-busy={filterWidthView.busy}
               oninput={(event) => filterWidthLease?.nativeInput(event.currentTarget.valueAsNumber)}
+              ondblclick={() => {
+                // MOR-2535: no declared factory default → no-op (the lease's
+                // policy would otherwise fall back to the domain minimum,
+                // an invented default this surface never sends).
+                if (filterWidthDefaultHz() !== null) filterWidthLease?.reset();
+              }}
             />
           {/if}
           <output>{textOf(modeFilter.filterWidth)}</output>
@@ -437,6 +471,7 @@
             data-command-phase={row.view.phase ?? undefined}
             aria-busy={row.view.busy}
             oninput={(event) => row.lease?.nativeInput(event.currentTarget.valueAsNumber)}
+            ondblclick={() => row.lease?.reset()}
           />
           {/key}
       {/snippet}
@@ -489,9 +524,16 @@
         {/if}
       {/each}
       {#if filterPassband.pbtInner.availability.structural && filterPassband.pbtOuter.availability.structural}
+        <!-- MOR-2535: one mechanism — the button rides the SAME lease
+             `reset()` path the double-click gesture uses, so both gestures
+             dispatch the passband centre through `onPbtInnerChange`/
+             `onPbtOuterChange` and the wiring seam's usual conversion. -->
         <button
           type="button" class="pbt-reset-button" data-testid="filter-pbt-reset"
-          onclick={() => onPbtReset?.()}
+          onclick={() => {
+            passbandRows.pbtInner.lease?.reset();
+            passbandRows.pbtOuter.lease?.reset();
+          }}
         >Reset</button>
       {/if}
       {#if !finiteLayout && part !== 'filter'}
