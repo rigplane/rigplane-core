@@ -528,17 +528,17 @@
   const vfoTotalH = VFO_TOTAL_H;
 
   const vfoScaleMarks = $derived(signalProjection.uniformScaleMarks);
-  // The v8 face shows one reading line — the S-unit only. The accessible
-  // name mirrors that cell: the v7 dBm second line is gone from the visible
-  // DOM and from the screen-reader text alike.
+  // The v8 face reads one line — the S-unit — so the CALIBRATED case alone
+  // drops its second field (the dBm) from the projection's accessible name.
+  // Every other wording ('raw, uncalibrated', the value itself with
+  // 'unit unknown'/'scale unavailable' on unprojectable domains, the
+  // reading-unknown fallback) is a fact the projection states honestly and
+  // stays verbatim — pinned by ReceiverInstrumentHost.isolated.test.ts.
   const vfoAccessibleLabel = $derived.by(() => {
-    if (signalProjection.motionFraction === null) return 'S meter reading unknown';
-    // The raw domain keeps the projection's own 'raw, uncalibrated' wording:
-    // both are facts about the reading, not placeholders (pinned by
-    // ReceiverInstrumentHost.isolated.test.ts).
-    return signalProjection.scaleMode === 'raw'
-      ? `S meter ${displaySUnit} raw, uncalibrated`
-      : `S meter ${displaySUnit}`;
+    if (signalProjection.scaleMode === 's' && signalProjection.motionFraction !== null) {
+      return `S meter ${displaySUnit}`;
+    }
+    return signalProjection.accessibleDescription;
   });
 </script>
 
