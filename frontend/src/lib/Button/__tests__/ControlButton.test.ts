@@ -52,6 +52,17 @@ function mountHarness(family: Family, initial: boolean) {
 // ---------------------------------------------------------------------------
 
 describe('ControlButton', () => {
+  it('data passthrough prefixes data- only for keys that lack it (MOR-2509)', () => {
+    const { el } = mountButton(ControlButton, {
+      data: { 'vfo-split': true, 'data-op': 'split', gone: undefined, dropped: null },
+    });
+    expect(el.getAttribute('data-vfo-split')).toBe('true');
+    expect(el.getAttribute('data-data-vfo-split')).toBeNull();
+    expect(el.getAttribute('data-op')).toBe('split');
+    expect(el.getAttribute('data-gone')).toBeNull();
+    expect(el.getAttribute('data-dropped')).toBeNull();
+  });
+
   it('reflects initial active=false', () => {
     const { el } = mountButton(ControlButton, { active: false });
     expect(el.dataset.active).toBe('false');

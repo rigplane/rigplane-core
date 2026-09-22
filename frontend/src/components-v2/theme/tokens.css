@@ -49,6 +49,14 @@
   --v2-accent-cyan-teal: #228899;
   --v2-accent-cyan-alt: #00FFFF;
 
+  /* ── MOR-2509 (mock-up v7): the VFO S-meter face's segment tones. Lit
+   * below S9, lit at/above S9, and the unlit track. Per-theme overrides
+   * belong with the theme files; these defaults are the owner-approved
+   * values. */
+  --v2-meter-blue: #58a0ff;
+  --v2-meter-red: #e2362c;
+  --v2-meter-unlit: #18212a;
+
   /* ── Colors: Text (~10% brighter) ────────────────────────────────────── */
   --v2-text-primary: #F5F8FC;
   --v2-text-secondary: #A0B4C8;

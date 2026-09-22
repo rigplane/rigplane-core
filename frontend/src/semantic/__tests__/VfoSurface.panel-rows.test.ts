@@ -23,7 +23,7 @@ import {
   type ReceiverIndicatorViewModel,
 } from '../radio-view-model';
 import VfoSurface from '../VfoSurface.svelte';
-import { topologyFixtures, withBand, type TopologyFixtureId } from '../fixtures/topologies';
+import { topologyFixtures, withBand, withTxAux, type TopologyFixtureId } from '../fixtures/topologies';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
 import {
   FTX1_CAPABILITIES, FTX1_STATE,
@@ -475,7 +475,7 @@ describe('bridge operation grid (standard appearance)', () => {
       expect(grid[0].contains(action), 'every operation control sits in the grid').toBe(true);
     }
     expect(actions.map((button) => button.getAttribute('aria-label') ?? button.textContent?.trim()))
-      .toEqual(['MAIN', 'SUB', 'M=S', 'M↔S', 'Quick split', 'Quick dual watch', 'SPEAK']);
+      .toEqual(['MAIN', 'SUB', 'M↔S', 'M=S', 'Quick split', 'Quick dual watch', 'SPEAK']);
   });
 
   it('1/ab: the pair bridge grid keeps its controls and names', () => {
@@ -486,7 +486,7 @@ describe('bridge operation grid (standard appearance)', () => {
     expect(grid.length).toBe(1);
     const actions = Array.from(bridge!.querySelectorAll<HTMLButtonElement>('[data-dual-action]'));
     expect(actions.map((button) => button.getAttribute('aria-label') ?? button.textContent?.trim()))
-      .toEqual(['A=B', 'A↔B', 'Quick split', 'Quick dual watch', 'SPEAK']);
+      .toEqual(['A↔B', 'A=B', 'Quick split', 'Quick dual watch', 'SPEAK']);
   });
 });
 
@@ -631,12 +631,17 @@ describe('source pins: fixed slot widths (MOR-2509 slice 2)', () => {
     expect(panel).not.toMatch(/--vfo-panel-(header|meter|body)-height/);
   });
 
-  it('the bridge operation grid declares two columns', () => {
+  it('the bridge operation column stacks fixed two-column group rows', () => {
     const ops = rulesFor(
       styleBlock('src/semantic/VfoOperationGroup.svelte'),
       ".vfo-ops[data-vfo-operation-appearance='standard']",
     ).join('\n');
-    expect(ops).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+    expect(ops).toMatch(/display:\s*flex;\s*flex-direction:\s*column/);
+    expect(ops).toMatch(/gap:\s*var\(--vfo-ops-gap/);
+    expect(rulesFor(
+      styleBlock('src/semantic/VfoOperationGroup.svelte'),
+      ".ops-row",
+    ).join('\n')).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
     expect(surfaceCss, 'no wider bridge override may exist')
       .not.toMatch(/\.vfo-ops[^}]*grid-template-columns:\s*repeat\(3/);
   });
@@ -800,15 +805,19 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
     }
   });
 
-  it('every bridge control declares a 24px min-height floor', () => {
-    expect(rulesFor(opsCss, ".vfo-ops[data-vfo-operation-appearance='standard'] .vfo-op").join('\n'))
-      .toMatch(/min-height:\s*max\(24px/);
-    expect(rulesFor(opsCss, ".fact-toggles[data-vfo-operation-appearance='standard'] .fact-toggle").join('\n'))
-      .toMatch(/min-height:\s*max\(24px/);
-    expect(rulesFor(segmentCss, '.segment.embedded').join('\n'))
-      .toMatch(/min-height:\s*max\(24px/);
+  it('every bridge key declares the 28px height floor and 12px text', () => {
+    const ops = rulesFor(opsCss, ".vfo-ops[data-vfo-operation-appearance='standard']").join('\n');
+    expect(ops).toMatch(/--btn-min-height:\s*28px/);
+    expect(ops).toMatch(/--btn-font-size:\s*12px/);
+    expect(rulesFor(segmentCss, '.active-receiver-toggle.embedded.hardware').join('\n'))
+      .toMatch(/--btn-min-height:\s*28px/);
     expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge .vfo-select").join('\n'))
-      .toMatch(/min-height:\s*24px/);
+      .toMatch(/min-height:\s*28px/);
+  });
+
+  it('nothing in the bridge blinks: the operation group declares no animation', () => {
+    expect(opsCss).not.toMatch(/@keyframes/);
+    expect(opsCss).not.toMatch(/animation\s*:/);
   });
 
   it('the bridge block inset and the panel wrapper padding read one custom property', () => {
@@ -829,5 +838,242 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
       expect(value![1], `${label} reads the inset without a fallback literal`)
         .toMatch(FALLBACK_FREE);
     }
+  });
+
+  it('the bridge width is one custom property the standard deck narrows', () => {
+    expect(rulesFor(surfaceCss, '.instrument-panel').join('\n'))
+      .toMatch(/--vfo-bridge-width:\s*180px/);
+    expect(rulesFor(surfaceCss, '.bridge').join('\n'))
+      .toMatch(/flex:\s*0 0 var\(--vfo-bridge-width\)/);
+    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge").join('\n'))
+      .toMatch(/--vfo-bridge-width:\s*168px/);
+    expect(rulesFor(surfaceCss, '.bridge').join('\n'))
+      .toMatch(/--vfo-bridge-width:\s*150px/);
+  });
+});
+
+describe('bridge hardware keys (MOR-2509 package C)', () => {
+  /** 2/main_sub with every radio function present and observed. */
+  function functionsFixture(changes?: {
+    atu?: 'off' | 'on' | 'tuning' | 'unknown';
+    vox?: boolean | 'unknown';
+    dialLock?: boolean | 'unknown';
+  }): RadioViewModel {
+    const field = <T>(value: T | 'unknown') => value === 'unknown'
+      ? { reading: { status: 'unknown' as const }, availability: { structural: true, operational: true } }
+      : { reading: { status: 'known' as const, value }, availability: { structural: true, operational: true } };
+    const base = withTxAux(standardFixture('2/main_sub'));
+    return validateRadioViewModel({
+      ...base,
+      ...(changes?.atu !== undefined || changes?.dialLock !== undefined ? {
+        radioWideIndicators: {
+          ...base.radioWideIndicators!,
+          ...(changes?.atu !== undefined ? { atu: field(changes.atu) } : {}),
+          ...(changes?.dialLock !== undefined ? { dialLock: field(changes.dialLock) } : {}),
+        },
+      } : {}),
+      ...(changes?.vox !== undefined ? { txAux: { ...base.txAux!, vox: field(changes.vox) } } : {}),
+    });
+  }
+
+  /** The bridge-local name of an ordered key element. */
+  function keyName(element: Element): string {
+    const action = element.getAttribute('data-dual-action');
+    if (action !== null) return action;
+    const segment = element.getAttribute('data-active-receiver-segment');
+    if (segment !== null) return segment;
+    if (element.hasAttribute('data-vfo-split')) return 'split';
+    if (element.hasAttribute('data-vfo-dual-watch')) return 'dual-watch';
+    if (element.classList.contains('bridge-divider')) return 'divider';
+    if (element.hasAttribute('data-vfo-tuner')) return 'tuner';
+    if (element.hasAttribute('data-vfo-vox')) return 'vox';
+    return 'lock';
+  }
+
+  it('renders every bridge key through the shared button family', () => {
+    const root = mountSurface({ viewModel: functionsFixture(), appearance: 'standard' });
+    const bridge = root.querySelector('[data-instrument-bridge]')!;
+    const buttons = Array.from(bridge.querySelectorAll<HTMLButtonElement>('button'));
+    expect(buttons.length).toBeGreaterThan(0);
+    for (const button of buttons) {
+      expect(button.classList, button.textContent ?? '').toContain('v2-control-button');
+      // Selector keys are the family's flat fill look; every hardware key
+      // must declare the hardware surface the family paints.
+      if (button.closest('[data-standard-select-vfo], [role="radiogroup"]') === null) {
+        expect(button.getAttribute('data-surface'), button.textContent ?? '').toBe('hardware');
+      }
+    }
+  });
+
+  it('orders the groups selector, momentary actions, latching toggles, divider, radio functions', () => {
+    const root = mountSurface({ viewModel: functionsFixture(), appearance: 'standard' });
+    const order = Array.from(root.querySelector('[data-instrument-bridge]')!.querySelectorAll<HTMLElement>(
+      '[data-active-receiver-segment], [data-dual-action], [data-vfo-split], [data-vfo-dual-watch],'
+        + ' .bridge-divider, [data-vfo-tuner], [data-vfo-vox], [data-vfo-lock]',
+    )).map(keyName);
+    expect(order).toEqual([
+      'main', 'sub', 'swap', 'equalize', 'quick-split', 'quick-dual-watch', 'speak',
+      'split', 'dual-watch', 'divider', 'tuner', 'vox', 'lock',
+    ]);
+  });
+
+  it('keeps the SPLIT and DW latching keys as dot-lamp switches with unchanged semantics', () => {
+    const root = mountSurface({ viewModel: functionsFixture(), appearance: 'standard' });
+    const split = root.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
+    const dualWatch = root.querySelector<HTMLButtonElement>('[data-vfo-dual-watch]')!;
+    for (const button of [split, dualWatch]) {
+      expect(button.getAttribute('role')).toBe('switch');
+      expect(button.getAttribute('data-indicator-style')).toBe('dot');
+      expect(button.classList).toContain('v2-control-button');
+    }
+    expect(split.getAttribute('data-indicator-color')).toBe('cyan');
+    expect(dualWatch.getAttribute('data-indicator-color')).toBe('green');
+    expect(split.getAttribute('aria-label')).toBe('Split: on');
+    expect(dualWatch.getAttribute('aria-label')).toBe('Dual watch: on');
+  });
+
+  it('renders TUNER, VOX and LOCK as dot-lamp switches with lamps lit only when on', () => {
+    const root = mountSurface({ viewModel: functionsFixture({
+      atu: 'on', vox: true, dialLock: true,
+    }), appearance: 'standard',
+      onToggleTuner: () => {}, onToggleVox: () => {}, onToggleDialLock: () => {},
+    });
+    const tuner = root.querySelector<HTMLButtonElement>('[data-vfo-tuner]')!;
+    const vox = root.querySelector<HTMLButtonElement>('[data-vfo-vox]')!;
+    const lock = root.querySelector<HTMLButtonElement>('[data-vfo-lock]')!;
+    for (const [button, label] of [[tuner, 'Tuner'], [vox, 'VOX'], [lock, 'Lock']] as const) {
+      expect(button, label).not.toBeNull();
+      expect(button.getAttribute('role')).toBe('switch');
+      expect(button.getAttribute('data-indicator-style')).toBe('dot');
+      expect(button.getAttribute('aria-checked')).toBe('true');
+      expect(button.getAttribute('data-active')).toBe('true');
+      expect(button.disabled).toBe(false);
+    }
+    expect(tuner.getAttribute('data-indicator-color')).toBe('red');
+    expect(vox.getAttribute('data-indicator-color')).toBe('amber');
+    expect(lock.getAttribute('data-indicator-color')).toBe('cyan');
+    expect(tuner.getAttribute('aria-label')).toBe('Tuner: on');
+  });
+
+  it('distinguishes TUNER tuning from on by lamp treatment, not by blinking', () => {
+    const root = mountSurface({ viewModel: functionsFixture({ atu: 'tuning' }), appearance: 'standard' });
+    const tuner = root.querySelector<HTMLButtonElement>('[data-vfo-tuner]')!;
+    expect(tuner.getAttribute('role')).toBe('switch');
+    expect(tuner.getAttribute('aria-checked')).toBe('true');
+    expect(tuner.getAttribute('data-active')).toBe('true');
+    expect(tuner.getAttribute('data-indicator-color')).toBe('orange');
+    expect(tuner.getAttribute('aria-label')).toBe('Tuner: tuning');
+    const onRoot = mountSurface({ viewModel: functionsFixture({ atu: 'on' }), appearance: 'standard' });
+    expect(onRoot.querySelector('[data-vfo-tuner]')!.getAttribute('data-indicator-color')).toBe('red');
+  });
+
+  it('unknown function readings stay unlit and disabled with bare names', () => {
+    const root = mountSurface({ viewModel: functionsFixture({
+      atu: 'unknown', vox: 'unknown', dialLock: 'unknown',
+    }), appearance: 'standard' });
+    const bareNames: Record<string, string> = {
+      '[data-vfo-tuner]': 'Tuner', '[data-vfo-vox]': 'VOX', '[data-vfo-lock]': 'Lock',
+    };
+    for (const [selector, name] of Object.entries(bareNames)) {
+      const button = root.querySelector<HTMLButtonElement>(selector)!;
+      expect(button.getAttribute('data-active')).toBe('false');
+      expect(button.getAttribute('role'), name).not.toBe('switch');
+      expect(button.getAttribute('aria-checked')).toBeNull();
+      expect(button.getAttribute('aria-label')).toBe(name);
+      expect(button.disabled).toBe(true);
+      expect(button.getAttribute('aria-describedby')).toBeTruthy();
+      expect(root.querySelector(`#${button.getAttribute('aria-describedby')}`)?.textContent)
+        .toBe('Not yet observed');
+    }
+    const bridge = root.querySelector('[data-instrument-bridge]')!;
+    for (const button of Array.from(bridge.querySelectorAll<HTMLButtonElement>('button'))) {
+      const name = button.getAttribute('aria-label') ?? button.textContent ?? '';
+      expect(name, name).not.toContain('unknown');
+    }
+  });
+
+  it('every bridge switch carries a valid aria-checked and no other key pretends to be one', () => {
+    const lit = mountSurface({ viewModel: functionsFixture({
+      atu: 'on', vox: true, dialLock: true,
+    }), appearance: 'standard' });
+    for (const button of Array.from(lit.querySelectorAll<HTMLButtonElement>('[data-instrument-bridge] button'))) {
+      if (button.getAttribute('role') === 'switch') {
+        expect(['true', 'false'], button.textContent ?? '').toContain(button.getAttribute('aria-checked'));
+      } else if (button.getAttribute('role') !== 'radio') {
+        expect(button.getAttribute('aria-checked'), button.textContent ?? '').toBeNull();
+      }
+    }
+    const unknown = mountSurface({ viewModel: functionsFixture({
+      atu: 'unknown', vox: 'unknown', dialLock: 'unknown',
+    }), appearance: 'standard' });
+    expect(unknown.querySelectorAll('[data-instrument-bridge] button[role="switch"]').length)
+      .toBeLessThan(unknown.querySelectorAll('[data-instrument-bridge] button').length);
+  });
+
+  it('does not draw a function the profile lacks', () => {
+    const base = topologyFixtures['2/main_sub'];
+    const root = mountSurface({ viewModel: validateRadioViewModel({
+      ...base,
+      receiverIndicators: [receiverIndicator('MAIN'), receiverIndicator('SUB')],
+    }), appearance: 'standard' });
+    expect(root.querySelector('[data-vfo-tuner]')).toBeNull();
+    expect(root.querySelector('[data-vfo-vox]')).toBeNull();
+    expect(root.querySelector('[data-vfo-lock]')).toBeNull();
+  });
+
+  it('replaces the ACTIVE RECEIVER caption with the filled selector key announcement', () => {
+    const root = mountSurface({ viewModel: functionsFixture(), appearance: 'standard' });
+    const bridge = root.querySelector('[data-instrument-bridge]')!;
+    expect(bridge.querySelector('[data-testid="vfo-active-receiver"]')).toBeNull();
+    const group = bridge.querySelector('[role="radiogroup"][aria-label="Active receiver"]')!;
+    expect(group).not.toBeNull();
+    const main = group.querySelector<HTMLButtonElement>('[data-active-receiver-segment="MAIN"]')!;
+    expect(main.getAttribute('aria-checked')).toBe('true');
+    expect(main.getAttribute('data-active')).toBe('true');
+    expect(main.textContent?.trim()).toBe('MAIN');
+  });
+
+  it('keeps the A/B pair selector keys filled, named and addressable', () => {
+    const root = mountSurface({ viewModel: standardFixture('1/ab'), appearance: 'standard' });
+    const keys = Array.from(root.querySelectorAll<HTMLButtonElement>('[data-standard-select-vfo]'));
+    expect(keys.map((key) => key.getAttribute('data-standard-select-vfo'))).toEqual(['A', 'B']);
+    for (const key of keys) {
+      expect(key.classList).toContain('v2-control-button');
+      expect(key.getAttribute('aria-label')).toBe(`SELECT ${key.getAttribute('data-standard-select-vfo')}`);
+    }
+    expect(keys[0].getAttribute('data-active')).toBe('true');
+    expect(keys[0].disabled).toBe(true);
+    expect(keys[1].getAttribute('data-active')).toBe('false');
+    expect(keys[1].disabled).toBe(false);
+  });
+
+  it('renders no SPLIT key when the split capability is absent', () => {
+    const root = mountSurface({ viewModel: functionsFixture(), appearance: 'standard', hasSplit: false });
+    expect(root.querySelector('[data-vfo-split]')).toBeNull();
+    expect(root.querySelector('[data-vfo-dual-watch]')).not.toBeNull();
+  });
+
+  it('renders no fact-toggles container when both latching capabilities are absent', () => {
+    const root = mountSurface({
+      viewModel: functionsFixture(), hasSplit: false, hasDualWatch: false,
+    });
+    expect(root.querySelector('[data-vfo-split]')).toBeNull();
+    expect(root.querySelector('[data-vfo-dual-watch]')).toBeNull();
+    expect(root.querySelector('.fact-toggles')).toBeNull();
+  });
+
+  it('renders no DW key when the dual_watch capability is absent', () => {
+    const root = mountSurface({ viewModel: functionsFixture(), appearance: 'standard', hasDualWatch: false });
+    expect(root.querySelector('[data-vfo-dual-watch]')).toBeNull();
+    expect(root.querySelector('[data-vfo-split]')).not.toBeNull();
+  });
+
+  it('reserves the lamp slot on lampless keys: the shared sheet aligns both paddings', () => {
+    const sheet = readFileSync('src/components-v2/controls/control-button.css', 'utf8');
+    const dotRule = sheet.match(
+      /\.v2-control-button\[data-indicator-style='dot'\],\s*\n?\.v2-control-button\[data-reserve-indicator='true'\]\s*\{[^}]*\}/,
+    );
+    expect(dotRule, "the dot padding rule also selects [data-reserve-indicator='true']").toBeTruthy();
+    expect(dotRule![0]).toMatch(/padding-left:\s*calc\(var\(--indicator-dot-reserve\)/);
   });
 });

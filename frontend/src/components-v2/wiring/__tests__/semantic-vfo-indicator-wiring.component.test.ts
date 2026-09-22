@@ -169,6 +169,25 @@ function caps(vfoScheme: Capabilities['vfoScheme'], receivers: number, dual = re
     meterCalibrations: { s_meter: meterCalibration } } as unknown as Capabilities;
 }
 
+// MOR-2509: the semantic meter face measures its track through
+// ResizeObserver + clientWidth; jsdom supplies neither. The component reads
+// clientWidth at observe time, so a no-op observer plus a fixed prototype
+// width is enough for geometry assertions.
+class NoopResizeObserver {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+let originalClientWidth: PropertyDescriptor | undefined;
+function installMeterGeometry(width = 606): void {
+  vi.stubGlobal('ResizeObserver', NoopResizeObserver);
+  originalClientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth');
+  Object.defineProperty(Element.prototype, 'clientWidth', {
+    configurable: true,
+    get: () => width,
+  });
+}
+
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 let txHarness: ManagedAppTxHarness;
@@ -264,6 +283,10 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  if (originalClientWidth) {
+    Object.defineProperty(Element.prototype, 'clientWidth', originalClientWidth);
+    originalClientWidth = undefined;
+  }
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
   expect(h.sessionSubscriber).toBeNull();
@@ -381,36 +404,98 @@ describe('production receiver-indicator partitioning', () => {
       addEventListener: vi.fn(), removeEventListener: vi.fn(),
       addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
     }));
+    installMeterGeometry();
     render(caps('main_sub', 2), state(), {}, props);
     const meter = () => target.querySelector('[data-indicator-receiver="MAIN"] [data-testid="receiver-s-meter"] svg')!;
-    // MOR-2521: fill rects are permanent nodes (count the lit ones) and
-    // the peak line is too (shown = visible).
-    const fillCount = () => [...meter().querySelectorAll<SVGRectElement>('[data-meter-fill]')]
-      .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
-    const hasPeak = () => meter().querySelector('[data-meter-peak]')?.getAttribute('visibility') === 'visible';
+    // MOR-2509: the semantic face draws the fill as dash-patterned lines,
+    // so the lit extent is the fill end's position on the drawn track.
+    // Under reduced motion the face hides the peak marker (MOR-2509 v7),
+    // so the peak channel's re-seed is no longer observable from this
+    // face's DOM — the fill's re-seed still is.
+    const fillFraction = () => {
+      const svg = meter();
+      const track = svg.querySelector('[data-meter-track]')!;
+      const x1 = Number(track.getAttribute('x1'));
+      const trackW = Number(track.getAttribute('x2')) - x1;
+      expect(trackW).toBeGreaterThan(0);
+      // A hidden zone line still carries its boundary coordinates, so only
+      // visible ones count as fill.
+      const end = Math.max(
+        ...(['[data-meter-fill]', '[data-meter-fill-red]'].map((selector) => {
+          const line = svg.querySelector(selector)!;
+          return line.getAttribute('visibility') === 'hidden'
+            ? x1 : Number(line.getAttribute('x2'));
+        })),
+      );
+      return (end - x1) / trackW;
+    };
     const arm = (generation = 1) => {
       pushMeter(40, generation); pushMeter(-36, generation);
-      expect(hasPeak()).toBe(true);
-      return fillCount();
+      return fillFraction();
     };
 
     const epochFill = arm();
     pushSession({ state: 'connected', epoch: 2 });
-    expect(fillCount()).toBe(epochFill);
-    expect(hasPeak()).toBe(false);
+    expect(fillFraction()).toBeCloseTo(epochFill, 9);
 
     const generationFill = arm();
     pushMeter(-36, 2);
-    expect(fillCount()).toBe(generationFill);
-    expect(hasPeak()).toBe(false);
+    expect(fillFraction()).toBeCloseTo(generationFill, 9);
 
     const reconnectFill = arm(2);
     pushSession({ state: 'disconnected', epoch: 3 });
-    expect(fillCount()).toBe(0);
-    expect(hasPeak()).toBe(false);
+    expect(fillFraction()).toBe(0);
     pushSession({ state: 'connected', epoch: 4 });
-    expect(fillCount()).toBe(reconnectFill);
-    expect(hasPeak()).toBe(false);
+    expect(fillFraction()).toBeCloseTo(reconnectFill, 9);
+  });
+
+  // MOR-2509: meters.power is radio-wide; the Po row is structural on every
+  // VFO panel of a radio that has the meter, but the fraction is fed to the
+  // TX-target receiver's panel only — the other receiver's row stays unlit
+  // in place, never reading zero-as-a-value.
+  it('feeds the Po lower scale to the TX-target receiver only', () => {
+    vi.stubGlobal('matchMedia', (query: string): MediaQueryList => ({
+      matches: query === '(prefers-reduced-motion: reduce)', media: query, onchange: null,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
+    }));
+    installMeterGeometry();
+    const powerState = state({
+      powerMeter: 100,
+      txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14_200_000 },
+    });
+    powerState.fieldStatus = {
+      ...powerState.fieldStatus,
+      powerMeter: { ...fresh, quality: ['calibrated'] },
+      txTarget: { ...fresh },
+    } as typeof powerState.fieldStatus;
+    render({
+      ...caps('main_sub', 2),
+      txBands: null,
+      meterCalibrations: {
+        s_meter: meterCalibration,
+        power: [
+          { raw: 0, actual: 0, label: 'P0' },
+          { raw: 255, actual: 100, label: 'P100' },
+        ],
+      },
+    } as Capabilities, powerState, { intent: 'transmit', observedPtt: 'on' }, { strips: 'dual' });
+
+    const lowerFillFraction = (receiver: 'MAIN' | 'SUB'): number => {
+      const svg = target.querySelector(
+        `[data-indicator-receiver="${receiver}"] [data-testid="receiver-s-meter"] svg`,
+      )!;
+      const track = svg.querySelector('[data-lower-track]')!;
+      const fill = svg.querySelector('[data-lower-fill]')!;
+      const x1 = Number(track.getAttribute('x1'));
+      const trackW = Number(track.getAttribute('x2')) - x1;
+      return (Number(fill.getAttribute('x2')) - x1) / trackW;
+    };
+    // 100 W on a 100 W scale lights every segment of the TX-target row —
+    // the last lit dash ends one pitch-gap short of the track's right edge.
+    expect(lowerFillFraction('MAIN')).toBeCloseTo(1, 2);
+    // The SUB receiver keeps the row, unlit.
+    expect(lowerFillFraction('SUB')).toBe(0);
   });
 
   it.each([

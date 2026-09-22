@@ -278,7 +278,7 @@ async function standardGeometry(page: Page) {
     const clippedOverflow = /(hidden|clip|auto|scroll)/;
     const descendants = [...receiver.querySelectorAll<HTMLElement>(
       '.receiver-instrument, [data-testid="receiver-s-meter"], [data-vfo-freq], '
-        + '[data-instrument-bridge], [data-instrument-bridge] .active-receiver, '
+        + '[data-instrument-bridge], '
         + '[data-instrument-bridge] [data-testid="vfo-shared-indicators"], '
         + '[data-instrument-bridge] [data-indicator-fact], [data-instrument-bridge] button, '
         + '[data-instrument-bridge] [data-testid="vfo-split-digest"], '
@@ -315,7 +315,7 @@ async function standardGeometry(page: Page) {
       return [];
     });
     const textTargets = descendants.filter(element => element.matches(
-      '[data-instrument-bridge] button, [data-instrument-bridge] .active-receiver, '
+      '[data-instrument-bridge] button, '
         + '[data-instrument-bridge] [data-indicator-fact], [data-instrument-bridge] [data-split-rx], '
         + '[data-instrument-bridge] [data-split-tx]',
     ));
@@ -742,7 +742,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       const boxes = geometry.boxes as Record<string, DOMRect>;
       const bodyTop = Math.min(boxes.left.y, boxes.center.y, boxes.right.y);
       expectStandardReceiverIntegrity(geometry, bodyTop);
-      expect(geometry.receiverIntegrity.actionNames).toEqual(['main', 'sub', 'equalize', 'swap', 'speak']);
+      expect(geometry.receiverIntegrity.actionNames).toEqual(['main', 'sub', 'swap', 'equalize', 'speak']);
       if (known) {
         const digits = page.locator('[data-vfo-row="main"] .digit');
         await expect(digits.first()).toBeVisible();

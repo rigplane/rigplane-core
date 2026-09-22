@@ -4,7 +4,7 @@ import type {
   MeterSourceIdentity,
 } from '../../../primitives/meters/meter-ballistics.svelte';
 import type { SignalMeterProjection } from '../smeter-scale';
-import { createSignalMeterMotion } from '../signal-meter-motion.svelte';
+import { AFTERGLOW_FADE_MILLISECONDS, createSignalMeterMotion } from '../signal-meter-motion.svelte';
 
 const MAIN_SOURCE = {
   providerGeneration: 1,
@@ -33,6 +33,8 @@ function projection(
     secondaryText: motionFraction === null ? '' : '\u2212121 dBm',
     accessibleDescription: primaryText,
     crossoverFraction: scaleMode === 's' ? 0.55 : null,
+    uniformScaleKnots: [{ at: 0, to: 0 }, { at: 1, to: 1 }],
+    uniformScaleMarks: [],
     marks: [],
     ticks: [],
   };
@@ -42,6 +44,8 @@ interface MotionHarness {
   readonly activeFrames: number;
   readonly listenerCount: number;
   setReduced(reduced: boolean): void;
+  /** Advance the fake clock and run every scheduled frame at `nowMs`. */
+  runFrame(nowMs: number): void;
   restore(): void;
 }
 
@@ -65,6 +69,9 @@ function installMotionHarness(initialReduced = false): MotionHarness {
   const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
     frames.delete(id);
   });
+  const nowSpy = vi.spyOn(performance, 'now');
+  let clock = 0;
+  nowSpy.mockImplementation(() => clock);
   return {
     get activeFrames() { return frames.size; },
     get listenerCount() { return listeners.size; },
@@ -72,10 +79,20 @@ function installMotionHarness(initialReduced = false): MotionHarness {
       reduced = next;
       listeners.forEach((callback) => callback());
     },
+    runFrame(nowMs: number) {
+      clock = nowMs;
+      // One-shot semantics, matching the platform: pending callbacks are
+      // removed before they run, so a rescheduling callback survives to the
+      // next call instead of being re-invoked (and duplicated) forever.
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const callback of pending) callback(nowMs);
+    },
     restore() {
       window.matchMedia = originalMatchMedia;
       requestFrame.mockRestore();
       cancelFrame.mockRestore();
+      nowSpy.mockRestore();
     },
   };
 }
@@ -99,7 +116,9 @@ describe('createSignalMeterMotion', () => {
     binding.start();
     binding.start();
     expect(harness!.activeFrames).toBe(2);
-    expect(harness!.listenerCount).toBe(2);
+    // Smoother + peak ticker subscribe; the MOR-2509 afterglow envelope
+    // adds its own listener without scheduling a frame at rest.
+    expect(harness!.listenerCount).toBe(3);
 
     binding.stop();
     binding.stop();
@@ -193,5 +212,82 @@ describe('createSignalMeterMotion', () => {
     expect(binding.frame.smoothedFraction).toBe(0.5);
     harness!.setReduced(false);
     expect(harness!.activeFrames).toBe(2);
+  });
+});
+
+// ── MOR-2509: attack/decay constants and the afterglow envelope ────────────
+
+describe('createSignalMeterMotion ballistics constants and afterglow (MOR-2509)', () => {
+  it('exposes the v7 afterglow fade window as a named constant', () => {
+    expect(AFTERGLOW_FADE_MILLISECONDS).toBe(250);
+  });
+
+  it('afterglow never drops below the displayed level and converges onto it', () => {
+    const binding = createSignalMeterMotion({
+      projection: projection(0.8), present: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    binding.start();
+    expect(binding.frame.afterglowFraction).toBeCloseTo(0.8, 5);
+
+    // A drop: the displayed level decays toward 0.2 while the afterglow
+    // trails it, decaying over ~250 ms and never falling behind the bar.
+    binding.sync({ projection: projection(0.2), present: true, source: MAIN_SOURCE, session: SESSION_1 });
+    let sawTrailing = false;
+    for (let frame = 1; frame <= 40; frame += 1) {
+      harness!.runFrame(frame * 16.7);
+      const glow = binding.frame.afterglowFraction!;
+      const displayed = binding.frame.smoothedFraction;
+      expect(glow).toBeGreaterThanOrEqual(displayed - 1e-9);
+      if (glow > displayed + 0.02) sawTrailing = true;
+    }
+    expect(sawTrailing).toBe(true);
+    for (let frame = 41; frame <= 120; frame += 1) harness!.runFrame(frame * 16.7);
+    expect(binding.frame.afterglowFraction! - binding.frame.smoothedFraction)
+      .toBeLessThanOrEqual(0.02);
+  });
+
+  it('runs a third frame loop only while the afterglow is decaying', () => {
+    const binding = createSignalMeterMotion({
+      projection: projection(0.8), present: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    binding.start();
+    // Steady state: smoother + peak ticker only.
+    expect(harness!.activeFrames).toBe(2);
+
+    binding.sync({ projection: projection(0.2), present: true, source: MAIN_SOURCE, session: SESSION_1 });
+    expect(harness!.activeFrames).toBe(3);
+    // The trail follows the bar one 250 ms window back, so it keeps a frame
+    // scheduled until the bar itself has settled.
+    for (let frame = 1; frame <= 120; frame += 1) harness!.runFrame(frame * 16.7);
+    expect(harness!.activeFrames).toBe(2);
+    binding.stop();
+    expect(harness!.activeFrames).toBe(0);
+  });
+
+  it('reports a null afterglow and the reduced flag under reduced motion', () => {
+    const binding = createSignalMeterMotion({
+      projection: projection(0.8), present: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    binding.start();
+    harness!.setReduced(true);
+    expect(binding.frame.reducedMotion).toBe(true);
+    expect(binding.frame.afterglowFraction).toBeNull();
+    expect(binding.frame.smoothedFraction).toBeCloseTo(0.8, 5);
+    binding.stop();
+  });
+
+  it('clears the afterglow with the sample when presence drops', () => {
+    const binding = createSignalMeterMotion({
+      projection: projection(0.8), present: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    binding.start();
+    binding.sync({ projection: projection(0.2), present: true, source: MAIN_SOURCE, session: SESSION_1 });
+    harness!.runFrame(16.7);
+    expect(binding.frame.afterglowFraction).not.toBeNull();
+
+    binding.sync({ projection: projection(0.2), present: false });
+    expect(binding.frame.afterglowFraction).toBeNull();
+    expect(binding.frame.smoothedFraction).toBe(0);
+    binding.stop();
   });
 });
