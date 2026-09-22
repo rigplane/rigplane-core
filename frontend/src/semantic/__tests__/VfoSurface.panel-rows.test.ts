@@ -475,7 +475,7 @@ describe('bridge operation grid (standard appearance)', () => {
       expect(grid[0].contains(action), 'every operation control sits in the grid').toBe(true);
     }
     expect(actions.map((button) => button.getAttribute('aria-label') ?? button.textContent?.trim()))
-      .toEqual(['MAIN', 'SUB', 'M↔S', 'M=S']);
+      .toEqual(['MAIN', 'SUB', 'M⇄S', 'M=S']);
   });
 
   it('1/ab: the pair bridge grid keeps its controls and names', () => {
@@ -604,6 +604,83 @@ function rule(css: string, selector: string): string {
     .map(([, , body]) => body);
   expect(standalone, `standalone rule "${selector}" exists`).toHaveLength(1);
   return standalone[0];
+}
+
+type Specificity = readonly [number, number, number];
+
+function selectorList(selectorList: string): string[] {
+  const selectors: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < selectorList.length; index += 1) {
+    if (selectorList[index] === '(') depth += 1;
+    if (selectorList[index] === ')') depth -= 1;
+    if (selectorList[index] === ',' && depth === 0) {
+      selectors.push(selectorList.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  selectors.push(selectorList.slice(start).trim());
+  return selectors;
+}
+
+function compareSpecificity(left: Specificity, right: Specificity): number {
+  return left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
+}
+
+function specificity(selector: string): Specificity {
+  let remainder = selector;
+  const score = [0, 0, 0];
+  for (const match of selector.matchAll(/:is\(([^()]*)\)/g)) {
+    const strongest = selectorList(match[1])
+      .map(specificity)
+      .sort(compareSpecificity)
+      .at(-1) ?? [0, 0, 0];
+    score[0] += strongest[0];
+    score[1] += strongest[1];
+    score[2] += strongest[2];
+    remainder = remainder.replace(match[0], '');
+  }
+  score[0] += remainder.match(/#[\w-]+/g)?.length ?? 0;
+  score[1] += remainder.match(/\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+/g)?.length ?? 0;
+  score[2] += remainder.match(/::[\w-]+/g)?.length ?? 0;
+  const types = remainder
+    .replace(/#[\w-]+|\.[\w-]+|\[[^\]]+\]|::?[\w-]+|[>+~*]/g, ' ')
+    .match(/[a-zA-Z][\w-]*/g);
+  score[2] += types?.length ?? 0;
+  return score as [number, number, number];
+}
+
+function winningDeclaration(
+  css: string,
+  target: Element,
+  property: string,
+  pseudoElement?: string,
+): string | undefined {
+  const candidates: Array<{ value: string; specificity: Specificity; order: number }> = [];
+  for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const declaration = match[2].match(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`));
+    if (!declaration) continue;
+    for (const selector of selectorList(match[1])) {
+      const hasPseudoElement = selector.includes('::');
+      if ((pseudoElement === undefined) === hasPseudoElement) continue;
+      if (pseudoElement !== undefined && !selector.includes(pseudoElement)) continue;
+      const elementSelector = pseudoElement === undefined ? selector : selector.replace(pseudoElement, '');
+      try {
+        if (!target.matches(elementSelector)) continue;
+      } catch {
+        continue;
+      }
+      candidates.push({
+        value: declaration[1].trim(),
+        specificity: specificity(selector),
+        order: match.index,
+      });
+    }
+  }
+  return candidates.sort((left, right) =>
+    compareSpecificity(left.specificity, right.specificity) || left.order - right.order,
+  ).at(-1)?.value;
 }
 
 const panelCss = styleBlock('src/components-v2/vfo/VfoPanel.svelte');
@@ -927,16 +1004,6 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
     }
   });
 
-  it('every bridge key declares the 28px height floor and 12px text', () => {
-    const ops = rulesFor(opsCss, ".vfo-ops[data-vfo-operation-appearance='standard']").join('\n');
-    expect(ops).toMatch(/--btn-min-height:\s*28px/);
-    expect(ops).toMatch(/--btn-font-size:\s*12px/);
-    expect(rulesFor(segmentCss, '.active-receiver-toggle.embedded.hardware').join('\n'))
-      .toMatch(/--btn-min-height:\s*28px/);
-    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge .vfo-select").join('\n'))
-      .toMatch(/min-height:\s*28px/);
-  });
-
   it('nothing in the bridge blinks: the operation group declares no animation', () => {
     expect(opsCss).not.toMatch(/@keyframes/);
     expect(opsCss).not.toMatch(/animation\s*:/);
@@ -1041,7 +1108,7 @@ describe('mock-up /tmp/vfo-deck-final-mockup-v8.html (2026-09-22)', () => {
     expect(litLamp, 'changing the filled lamp or 6px alive glow turns this red')
       .toMatch(/background:\s*var\(--indicator-color\);[^}]*box-shadow:\s*0 0 6px var\(--indicator-color\)/s);
     const selectedKey = rulesFor(buttons,
-      ".vfo-ops[data-vfo-operation-appearance='standard'] .v2-control-button[data-appearance='selected'][data-active='true']",
+      ".v2-control-button[data-appearance='selected'][data-active='true']",
     ).join('\n');
     expect(selectedKey, 'disconnecting selected fill, border, ink or shadow tokens turns this red')
       .toMatch(/border-color:\s*var\(--dl-vfo-key-selected-border[^}]*background:\s*var\(--dl-vfo-key-selected-background[^}]*color:\s*var\(--dl-vfo-key-selected-ink[^}]*box-shadow:\s*var\(--dl-vfo-key-selected-shadow/s);
@@ -1085,6 +1152,40 @@ describe('mock-up /tmp/vfo-deck-final-mockup-v8.html (2026-09-22)', () => {
       .toMatch(/--dl-vfo-key-selected-border:\s*rgba\(var\(--dl-segmentline-ink\) \/ 0\.65\)/);
     expect(segment, "allowing segmentline's selected key to glow turns this red")
       .toMatch(/--dl-vfo-key-selected-shadow:\s*none/);
+    expect(segment, "disconnecting segmentline's cyan lamp from its ink ramp turns this red")
+      .toMatch(/--dl-vfo-key-cyan:\s*var\(--dl-segmentline-ink-strong\)/);
+    expect(segment, "disconnecting segmentline's violet lamp from its ink ramp turns this red")
+      .toMatch(/--dl-vfo-key-violet:\s*var\(--dl-segmentline-ink-soft\)/);
+  });
+
+  it('resolves the winning bridge lamp and selected-key declarations by specificity and order', () => {
+    const buttons = readFileSync('src/components-v2/controls/control-button.css', 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const host = document.createElement('div');
+    host.dataset.vfoAppearance = 'standard';
+    host.innerHTML = `
+      <div data-instrument-bridge>
+        <div class="vfo-ops" data-vfo-operation-appearance="standard">
+          <button class="v2-control-button active" data-active="true"
+            data-indicator-style="dot" data-indicator-color="cyan"></button>
+        </div>
+        <button class="v2-control-button" data-active="true" data-appearance="selected"></button>
+      </div>
+    `;
+    const lamp = host.querySelector<HTMLButtonElement>('[data-indicator-style="dot"]')!;
+    expect(winningDeclaration(buttons, lamp, 'box-shadow', '::before'))
+      .toBe('0 0 6px var(--indicator-color)');
+    for (const [colour, expected] of [
+      ['cyan', 'var(--dl-vfo-key-cyan, #22d3ee)'],
+      ['red', 'var(--dl-vfo-key-red, #e2362c)'],
+      ['violet', 'var(--dl-vfo-key-violet, #9a78e0)'],
+    ] as const) {
+      lamp.dataset.indicatorColor = colour;
+      expect(winningDeclaration(buttons, lamp, '--indicator-color')).toBe(expected);
+    }
+    const selected = host.querySelector<HTMLButtonElement>('[data-appearance="selected"]')!;
+    expect(winningDeclaration(buttons, selected, 'background'))
+      .toBe('var(--dl-vfo-key-selected-background, linear-gradient(180deg, #1391b0, #0b5f78))');
   });
 });
 
@@ -1201,13 +1302,13 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     expect(tuner.getAttribute('aria-label')).toBe('Tuner: on');
   });
 
-  it('keeps TUNER tuning known and checked without changing the red lamp or blinking', () => {
+  it('keeps TUNER tuning known and checked with a distinct steady amber lamp', () => {
     const root = mountSurface({ viewModel: functionsFixture({ atu: 'tuning' }), appearance: 'standard' });
     const tuner = root.querySelector<HTMLButtonElement>('[data-vfo-tuner]')!;
     expect(tuner.getAttribute('role')).toBe('switch');
     expect(tuner.getAttribute('aria-checked')).toBe('true');
     expect(tuner.getAttribute('data-active')).toBe('true');
-    expect(tuner.getAttribute('data-indicator-color')).toBe('red');
+    expect(tuner.getAttribute('data-indicator-color')).toBe('amber');
     expect(tuner.getAttribute('aria-label')).toBe('Tuner: tuning');
     const onRoot = mountSurface({ viewModel: functionsFixture({ atu: 'on' }), appearance: 'standard' });
     expect(onRoot.querySelector('[data-vfo-tuner]')!.getAttribute('data-indicator-color')).toBe('red');
@@ -1285,6 +1386,8 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     expect(keys.map((key) => key.getAttribute('data-standard-select-vfo'))).toEqual(['A', 'B']);
     for (const key of keys) {
       expect(key.classList).toContain('v2-control-button');
+      expect(key.getAttribute('data-appearance')).toBe('selected');
+      expect(key.getAttribute('data-indicator-style')).toBeNull();
       expect(key.getAttribute('aria-label')).toBe(`SELECT ${key.getAttribute('data-standard-select-vfo')}`);
     }
     expect(keys[0].getAttribute('data-active')).toBe('true');

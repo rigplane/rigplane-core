@@ -254,7 +254,7 @@ describe('VfoHeader visual regression', () => {
           {
             "active": "false",
             "color": "muted",
-            "label": "M↔S",
+            "label": "M⇄S",
           },
         ],
         "panels": [
@@ -316,7 +316,7 @@ describe('VfoHeader visual regression', () => {
           {
             "active": "false",
             "color": "muted",
-            "label": "M↔S",
+            "label": "M⇄S",
           },
         ],
         "panels": [

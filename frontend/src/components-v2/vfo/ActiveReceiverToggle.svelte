@@ -295,16 +295,9 @@
     background: transparent;
   }
 
-  /* MOR-2509 hardware bridge: the keys' family tokens — 28px key height
-     and 12px labels, the same numbers `VfoOperationGroup`'s ops column
-     scopes. Pinned by `semantic/__tests__/VfoSurface.panel-rows.test.ts`. */
   .active-receiver-toggle.embedded.hardware {
     grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 6px;
-    --btn-min-height: 28px;
-    --btn-font-size: 12px;
-    --indicator-dot-offset: 4px;
-    --indicator-dot-gap: 4px;
   }
 
   .active-receiver-toggle.embedded.hardware > :global(button) {

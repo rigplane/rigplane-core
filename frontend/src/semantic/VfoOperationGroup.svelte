@@ -147,13 +147,6 @@
   {#if controls}
     {@render controls()}
   {:else if appearance === 'standard'}
-    <!--
-      MOR-2509 package C — the bridge between the receiver panels is the
-      radio's front-panel HARDWARE, rendered through the shared Button
-      family: dot-lamp latching keys, reserved-slot momentary keys, and the
-      flat fill selector keys. The semantic/sdr branch below keeps the raw
-      controls those appearances always rendered.
-    -->
     {#if hasStandardBridge}
       <div
         class="vfo-ops"
@@ -260,7 +253,7 @@
               <ControlButton
                 surface="hardware"
                 indicatorStyle="dot"
-                indicatorColor="red"
+                indicatorColor={atuValue(functions.tuner) === 'tuning' ? 'amber' : 'red'}
                 role={tunerRole(functions.tuner)}
                 ariaChecked={tunerChecked(functions.tuner)}
                 active={atuValue(functions.tuner) === 'on' || atuValue(functions.tuner) === 'tuning'}
@@ -484,10 +477,6 @@
   .vfo-ops[data-vfo-operation-appearance='standard'] {
     display: flex; flex-direction: column; flex-wrap: nowrap;
     gap: 0;
-    --btn-min-height: 28px;
-    --btn-font-size: 12px;
-    --indicator-dot-offset: 4px;
-    --indicator-dot-gap: 4px;
   }
   .ops-row {
     display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));

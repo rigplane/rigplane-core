@@ -666,8 +666,7 @@
   transform: none;
 }
 
-.vfo-ops[data-vfo-operation-appearance='standard']
-  .v2-control-button[data-appearance='selected'][data-active='true'] {
+.v2-control-button[data-appearance='selected'][data-active='true'] {
   border-color: var(--dl-vfo-key-selected-border, #67e8f9);
   background: var(--dl-vfo-key-selected-background, linear-gradient(180deg, #1391b0, #0b5f78));
   color: var(--dl-vfo-key-selected-ink, #fff);
@@ -697,11 +696,6 @@
 ):focus-visible {
   outline: none;
   filter: var(--v2-focus-ring-lit-filter);
-}
-
-[data-vfo-appearance='standard'] [data-instrument-bridge]
-  .v2-control-button[data-indicator-style='dot']:is(.active, [data-active='true'])::before {
-  box-shadow: var(--dl-vfo-bridge-lamp-glow, none);
 }
 
 /* === StatusIndicator (display-only, non-interactive) ===

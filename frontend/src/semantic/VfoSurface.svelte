@@ -919,8 +919,7 @@
       {#each [pair.left, pair.right] as vfo (slotKey(vfo.slot))}
         {@const slot = vfo.slot.kind === 'slotted' ? vfo.slot.id : '—'}
         <ControlButton
-          indicatorStyle="fill"
-          indicatorColor="cyan"
+          appearance="selected"
           reserveIndicator
           active={vfo.isActiveSlot}
           ariaLabel={`SELECT ${slot}`}
@@ -1223,18 +1222,6 @@
     padding: 4px;
     gap: 3px;
     --vfo-ops-gap: 3px;
-    /* MOR-2509: the bridge keys' family tokens — 28px key height,
-       12px labels, dot packed tighter than panel keys. */
-    --btn-min-height: 28px;
-    --btn-font-size: 12px;
-    --indicator-dot-offset: 4px;
-    --indicator-dot-gap: 4px;
-  }
-  [data-vfo-appearance='standard'] .bridge:not(.standard-pair-bridge) {
-    --btn-min-height: 28px;
-    --btn-font-size: 12px;
-    --indicator-dot-offset: 4px;
-    --indicator-dot-gap: 4px;
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .facts) {
     display: grid;

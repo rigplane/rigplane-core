@@ -398,7 +398,7 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
       ['main', 'MAIN', 'onSelectMainReceiver'],
       ['sub', 'SUB', 'onSelectSubReceiver'],
       ['equalize', 'M=S', 'onEqualizeVfos'],
-      ['swap', 'M↔S', 'onSwapVfos'],
+      ['swap', 'M⇄S', 'onSwapVfos'],
       ['quick-split', 'Quick split', 'onQuickSplit'],
       ['quick-dual-watch', 'Quick dual watch', 'onQuickDualWatch'],
       ['speak', 'SPEAK', 'onSpeak'],
