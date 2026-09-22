@@ -2,13 +2,15 @@
  * Control Button Types
  */
 
-export type IndicatorColor = 'cyan' | 'green' | 'amber' | 'red' | 'orange' | 'white' | 'yellow' | 'muted' | 'gray';
+export type IndicatorColor = 'cyan' | 'green' | 'amber' | 'red' | 'orange' | 'violet' | 'white' | 'yellow' | 'muted' | 'gray';
 
 export type IndicatorStyle = 'ring' | 'dot' | 'edge-bottom' | 'edge-left' | 'fill';
 
 export type GlowVariant = 'color' | 'white' | 'warm';
 
 export type ButtonSurface = 'flat' | 'hardware';
+
+export type ButtonAppearance = 'selected';
 
 export interface BaseButtonProps {
   /** Button label */

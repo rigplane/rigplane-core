@@ -20,6 +20,7 @@ export type {
   IndicatorStyle,
   GlowVariant,
   ButtonSurface,
+  ButtonAppearance,
   BaseButtonProps,
   DotButtonProps,
   FillButtonProps,
