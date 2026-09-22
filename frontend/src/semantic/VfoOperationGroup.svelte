@@ -24,7 +24,7 @@
 
 <script lang="ts">
   import '../components-v2/controls/control-button.css';
-  import { ControlButton } from '$lib/Button';
+  import { HardwareButton } from '$lib/Button';
   import { t } from '$lib/i18n';
   import ActiveReceiverToggle from '../components-v2/vfo/ActiveReceiverToggle.svelte';
   import { vfoEqualLabel, vfoSwapLabel } from '../components-v2/vfo/vfo-ops-utils';
@@ -172,31 +172,31 @@
           <div class="ops-row">
             {#if projection.swap.availability.structural}
               {@const id = reasonId('swap', projection.swap.availability.reason)}
-              <ControlButton
-                surface="hardware"
-                reserveIndicator
+              <HardwareButton
+                indicator="edge-left"
+                color="cyan"
                 ariaLabel={vfoSwapLabel(scheme)}
                 describedBy={id}
                 title={projection.swap.availability.reason}
                 disabled={!projection.swap.availability.operational}
                 data={{ 'vfo-swap': true, 'dual-action': 'swap', op: 'swap', color: 'muted' }}
                 onclick={() => emit({ kind: 'swap' })}
-              >{vfoSwapLabel(scheme)}</ControlButton>
+              >{vfoSwapLabel(scheme)}</HardwareButton>
               {#if id}<span {id} class="sr-only">{projection.swap.availability.reason}</span>{/if}
             {/if}
 
             {#if projection.equalize.availability.structural}
               {@const id = reasonId('equalize', projection.equalize.availability.reason)}
-              <ControlButton
-                surface="hardware"
-                reserveIndicator
+              <HardwareButton
+                indicator="edge-left"
+                color="cyan"
                 ariaLabel={vfoEqualLabel(scheme)}
                 describedBy={id}
                 title={projection.equalize.availability.reason}
                 disabled={!projection.equalize.availability.operational}
                 data={{ 'vfo-equalize': true, 'dual-action': 'equalize', op: 'copy', color: 'muted' }}
                 onclick={() => emit({ kind: 'equalize' })}
-              >{vfoEqualLabel(scheme)}</ControlButton>
+              >{vfoEqualLabel(scheme)}</HardwareButton>
               {#if id}<span {id} class="sr-only">{projection.equalize.availability.reason}</span>{/if}
             {/if}
 
@@ -207,10 +207,9 @@
           <div class="ops-row">
             {#if projection.split.availability.structural}
               {@const splitReasonId = reasonId('split', projection.split.availability.reason)}
-              <ControlButton
-                surface="hardware"
-                indicatorStyle="dot"
-                indicatorColor="cyan"
+              <HardwareButton
+                indicator="edge-left"
+                color="cyan"
                 role={switchRole(projection.split.reading)}
                 ariaChecked={checkedState(projection.split.reading)}
                 active={projection.split.reading.status === 'known' && projection.split.reading.value}
@@ -220,16 +219,15 @@
                 disabled={!projection.split.availability.operational}
                 data={{ 'vfo-split': true, op: 'split', color: 'cyan' }}
                 onclick={() => emit({ kind: 'toggle-split' })}
-              >SPLIT</ControlButton>
+              >SPLIT</HardwareButton>
               {#if splitReasonId}<span id={splitReasonId} class="sr-only">{projection.split.availability.reason}</span>{/if}
             {/if}
 
             {#if projection.dualWatch.availability.structural}
               {@const dualWatchReasonId = reasonId('dual-watch', projection.dualWatch.availability.reason)}
-              <ControlButton
-                surface="hardware"
-                indicatorStyle="dot"
-                indicatorColor="cyan"
+              <HardwareButton
+                indicator="edge-left"
+                color="cyan"
                 role={switchRole(projection.dualWatch.reading)}
                 ariaChecked={checkedState(projection.dualWatch.reading)}
                 active={projection.dualWatch.reading.status === 'known' && projection.dualWatch.reading.value}
@@ -239,7 +237,7 @@
                 disabled={!projection.dualWatch.availability.operational}
                 data={{ 'vfo-dual-watch': true, op: 'dw', color: 'green' }}
                 onclick={() => emit({ kind: 'toggle-dual-watch' })}
-              >DW</ControlButton>
+              >DW</HardwareButton>
               {#if dualWatchReasonId}<span id={dualWatchReasonId} class="sr-only">{projection.dualWatch.availability.reason}</span>{/if}
             {/if}
           </div>
@@ -250,10 +248,9 @@
           <div class="ops-row functions-row">
             {#if functions.tuner.availability.structural}
               {@const id = reasonId('tuner', functionReason(functions.tuner))}
-              <ControlButton
-                surface="hardware"
-                indicatorStyle="dot"
-                indicatorColor={atuValue(functions.tuner) === 'tuning' ? 'amber' : 'red'}
+              <HardwareButton
+                indicator="edge-left"
+                color={atuValue(functions.tuner) === 'tuning' ? 'amber' : 'red'}
                 role={tunerRole(functions.tuner)}
                 ariaChecked={tunerChecked(functions.tuner)}
                 active={atuValue(functions.tuner) === 'on' || atuValue(functions.tuner) === 'tuning'}
@@ -265,17 +262,16 @@
                 disabled={!functions.tuner.availability.operational}
                 data={{ 'vfo-tuner': true }}
                 onclick={() => emit({ kind: 'toggle-tuner' })}
-              >TUNER</ControlButton>
+              >TUNER</HardwareButton>
               {#if id}<span {id} class="sr-only">{functionReason(functions.tuner)}</span>{/if}
             {/if}
 
             {#if functions.vox.availability.structural}
               {@const id = reasonId('vox', functionReason(functions.vox))}
               {@const vox = boolFact(functions.vox)}
-              <ControlButton
-                surface="hardware"
-                indicatorStyle="dot"
-                indicatorColor="violet"
+              <HardwareButton
+                indicator="edge-left"
+                color="violet"
                 role={switchRole(vox)}
                 ariaChecked={checkedState(vox)}
                 active={vox.status === 'known' && vox.value}
@@ -285,17 +281,16 @@
                 disabled={!functions.vox.availability.operational}
                 data={{ 'vfo-vox': true }}
                 onclick={() => emit({ kind: 'toggle-vox' })}
-              >VOX</ControlButton>
+              >VOX</HardwareButton>
               {#if id}<span {id} class="sr-only">{functionReason(functions.vox)}</span>{/if}
             {/if}
 
             {#if functions.dialLock.availability.structural}
               {@const id = reasonId('dial-lock', functionReason(functions.dialLock))}
               {@const lock = boolFact(functions.dialLock)}
-              <ControlButton
-                surface="hardware"
-                indicatorStyle="dot"
-                indicatorColor="cyan"
+              <HardwareButton
+                indicator="edge-left"
+                color="cyan"
                 role={switchRole(lock)}
                 ariaChecked={checkedState(lock)}
                 active={lock.status === 'known' && lock.value}
@@ -305,7 +300,7 @@
                 disabled={!functions.dialLock.availability.operational}
                 data={{ 'vfo-lock': true }}
                 onclick={() => emit({ kind: 'toggle-dial-lock' })}
-              >LOCK</ControlButton>
+              >LOCK</HardwareButton>
               {#if id}<span {id} class="sr-only">{functionReason(functions.dialLock)}</span>{/if}
             {/if}
           </div>

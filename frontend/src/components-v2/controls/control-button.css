@@ -233,7 +233,7 @@
 }
 
 .v2-control-button[data-indicator-color='violet'] {
-  --indicator-color: var(--dl-vfo-key-violet, #9a78e0);
+  --indicator-color: var(--indicator-violet);
 }
 
 .v2-control-button[data-indicator-color='white'] {
@@ -293,11 +293,7 @@
   opacity: 0.9;
 }
 
-/* A lampless key can reserve the dot's label slot (data-reserve-indicator)
- * so lamp and lampless keys in one row keep the same label axis — the same
- * paddings the dot rule below reserves, without painting the dot itself. */
-.v2-control-button[data-indicator-style='dot'],
-.v2-control-button[data-reserve-indicator='true'] {
+.v2-control-button[data-indicator-style='dot'] {
   padding-left: calc(var(--indicator-dot-reserve) + 2px);
   padding-right: 10px;
 }
@@ -582,95 +578,13 @@
 }
 
 .vfo-ops[data-vfo-operation-appearance='standard'] .v2-control-button {
-  display: grid;
-  grid-template-columns: 8px minmax(0, auto) 8px;
-  column-gap: 6px;
-  align-items: center;
-  justify-content: center;
+  width: 100%;
   height: 100%;
   min-height: 28px;
   padding: 0;
-  border: 1px solid var(--dl-vfo-key-border, #242d38);
-  border-radius: 4px;
-  background: var(--dl-vfo-key-background, linear-gradient(180deg, #1a222c, #10161d));
-  color: var(--dl-vfo-key-ink, #9fb0c0);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.06em;
-  box-shadow: var(--dl-vfo-key-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.6));
-}
-
-.vfo-ops[data-vfo-operation-appearance='standard'] .functions-row > .v2-control-button {
-  column-gap: 4px;
-}
-
-.vfo-ops[data-vfo-operation-appearance='standard'] .v2-control-button::after {
-  content: '';
-  width: 8px;
-}
-
-.vfo-ops[data-vfo-operation-appearance='standard'] .v2-control-button[data-indicator-style='dot']::before {
-  position: static;
-  width: 7px;
-  height: 7px;
-  justify-self: center;
-  border-radius: 50%;
-  border: 1px solid var(--dl-vfo-key-lamp-border, #3b4653);
-  background: transparent;
-  box-shadow: none;
-  box-sizing: border-box;
-  opacity: 1;
-  transform: none;
-}
-
-.vfo-ops[data-vfo-operation-appearance='standard']
-  .v2-control-button[data-reserve-indicator='true']:not([data-indicator-style='dot'])::before {
-  content: '';
-  position: static;
-  width: 7px;
-  height: 7px;
-  visibility: hidden;
-}
-
-.vfo-ops[data-vfo-operation-appearance='standard']
-  .v2-control-button[data-indicator-style='dot'][data-indicator-color='cyan'] {
-  --indicator-color: var(--dl-vfo-key-cyan, #22d3ee);
-}
-
-.vfo-ops[data-vfo-operation-appearance='standard']
-  .v2-control-button[data-indicator-style='dot'][data-indicator-color='red'] {
-  --indicator-color: var(--dl-vfo-key-red, #e2362c);
-}
-
-.vfo-ops[data-vfo-operation-appearance='standard']
-  .v2-control-button[data-indicator-style='dot'][data-indicator-color='amber'] {
-  --indicator-color: var(--dl-vfo-key-amber, #ffd47a);
-}
-
-.vfo-ops[data-vfo-operation-appearance='standard']
-  .v2-control-button[data-indicator-style='dot']::before {
-  border-color: var(--indicator-color);
-}
-
-.vfo-ops[data-vfo-operation-appearance='standard'] .v2-control-button[data-indicator-style='dot'][data-active='true'] {
-  border-color: var(--dl-vfo-key-lit-border, #3a4a5a);
-  background: var(--dl-vfo-key-background, linear-gradient(180deg, #1a222c, #10161d));
-  color: var(--dl-vfo-key-lit-ink, #e8f1f8);
-  box-shadow: var(--dl-vfo-key-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.6));
-}
-
-.vfo-ops[data-vfo-operation-appearance='standard'] .v2-control-button[data-indicator-style='dot'][data-active='true']::before {
-  background: var(--indicator-color);
-  border-color: var(--indicator-color);
-  box-shadow: 0 0 6px var(--indicator-color);
-  transform: none;
-}
-
-.v2-control-button[data-appearance='selected'][data-active='true'] {
-  border-color: var(--dl-vfo-key-selected-border, #67e8f9);
-  background: var(--dl-vfo-key-selected-background, linear-gradient(180deg, #1391b0, #0b5f78));
-  color: var(--dl-vfo-key-selected-ink, #fff);
-  box-shadow: var(--dl-vfo-key-selected-shadow, 0 0 10px rgba(34, 211, 238, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.25));
 }
 
 [data-vfo-appearance='standard'] :is(

@@ -26,7 +26,7 @@
 </script>
 
 <script lang="ts">
-  import { ControlButton } from '$lib/Button';
+  import { HardwareButton } from '$lib/Button';
   import { hasCommandModifier } from '../layout/keyboard-map';
 
   type Receiver = 'MAIN' | 'SUB';
@@ -40,8 +40,7 @@
     allowReselect?: boolean;
     /** Render only the segments when the caller already owns the operation group. */
     embedded?: boolean;
-    /** MOR-2509 bridge only: render the segments through the shared Button
-     *  family's fill look. Every other mount keeps the raw segment markup. */
+    /** MOR-2509 bridge only: render the segments through HardwareButton. */
     hardware?: boolean;
     /** Optional label for screen readers. */
     label?: string;
@@ -162,17 +161,13 @@
       {@const reasonId = availability.reason ? `${reasonIdPrefix}-${receiver.toLowerCase()}` : undefined}
       {#if embedded && hardware}
         <!--
-          MOR-2509 bridge: the segment renders through the shared Button
-          family's selected appearance — the filled key IS the "which receiver is
-          active" announcement the old text caption carried. Radio
-          semantics (roving tabindex, arrows) ride the family's
-          passthrough props unchanged.
+          MOR-2509 bridge: the segment renders through HardwareButton with
+          the same edge-left indicator as MODE keys. Radio semantics
+          (roving tabindex, arrows) ride the family's passthrough props.
         -->
-        <ControlButton
-          appearance="selected"
-          surface="hardware"
-          indicatorColor="cyan"
-          reserveIndicator
+        <HardwareButton
+          indicator="edge-left"
+          color="cyan"
           role="radio"
           ariaChecked={isActive}
           active={isActive}
@@ -187,7 +182,7 @@
             'dual-action': receiver.toLowerCase(),
           }}
           onclick={() => select(receiver)}
-        >{segmentLabels?.[receiver] ?? receiver}</ControlButton>
+        >{segmentLabels?.[receiver] ?? receiver}</HardwareButton>
       {:else}
       <!-- The raw segment below is the pre-bridge markup, kept verbatim:
            every non-standard mount renders exactly what it rendered

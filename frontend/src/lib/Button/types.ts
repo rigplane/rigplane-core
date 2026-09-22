@@ -10,8 +10,6 @@ export type GlowVariant = 'color' | 'white' | 'warm';
 
 export type ButtonSurface = 'flat' | 'hardware';
 
-export type ButtonAppearance = 'selected';
-
 export interface BaseButtonProps {
   /** Button label */
   label?: string;
@@ -39,6 +37,13 @@ export interface BaseButtonProps {
   ariaLabel?: string;
   ariaExpanded?: boolean;
   ariaControls?: string;
+  /** Widget semantics forwarded to the native button. */
+  role?: string;
+  ariaChecked?: boolean | 'true' | 'false' | 'mixed';
+  tabindex?: number;
+  onkeydown?: (event: KeyboardEvent) => void;
+  /** Data attributes forwarded to the native button. */
+  data?: Record<string, string | number | boolean | undefined | null>;
   /** Click handler */
   onclick?: (event: MouseEvent) => void;
   /** Pointer event handlers */
