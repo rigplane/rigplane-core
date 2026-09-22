@@ -651,7 +651,7 @@ codes = [
 ]
 
 [filters]
-list = ["FIL1", "FIL2", "FIL3"]
+list = []
 encoding = "table_index"
 # SH WIDTH codes (2508-C Table 5) count from 01; code 00 is the
 # mode-dependent "(Default)" with no Hz value. Pinned by

@@ -1682,6 +1682,16 @@ class TestToProfile:
         profile = load_rig(ftx1_path).to_profile()
         assert profile.transceiver_count == 2
 
+    def test_ftx1_empty_filter_selector_preserves_width_tables(self):
+        profile = load_rig(RIGS_DIR / "ftx1.toml").to_profile()
+
+        assert profile.filters == ()
+        assert profile.filter_config is not None
+        assert profile.filter_config["SSB"].table[0] == 300
+        assert profile.filter_config["SSB"].table[-1] == 4000
+        assert profile.filter_width_encoding == "table_index"
+        assert profile.filter_width_first_code == 1
+
     def test_ic7300_antenna_topology_without_control_capability(self):
         """MOR-2118: topology metadata must not imply antenna selection."""
         rig = load_rig(RIGS_DIR / "ic7300.toml")
