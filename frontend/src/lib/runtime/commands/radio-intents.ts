@@ -37,6 +37,8 @@ const intentSpecs = [
   { names: ['set_filter'], params: { filter: 'integer', receiver: 'receiver?' } },
   { names: ['set_filter_shape'], params: { shape: 'integer', receiver: 'receiver' } },
   { names: ['set_filter_width'], params: { width: 'integer', receiver: 'receiver?' } },
+  // MOR-2535 follow-up: no `width` — the radio resolves its own default.
+  { names: ['reset_filter_width'], params: { receiver: 'receiver?' } },
   { names: ['set_freq'], params: { freq: 'integer', receiver: 'receiver?' } },
   { names: ['set_vfo_freq'], params: {
     freq: 'integer', receiver: 'receiver', slot: 'vfo-slot',

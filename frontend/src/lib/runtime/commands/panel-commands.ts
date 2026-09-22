@@ -934,6 +934,25 @@ export function makeFilterHandlers() {
       if (!validResolvedFilterWidth(width, rule)) return;
       dispatchRadioIntent({ name: 'set_filter_width', params: { width, receiver } });
     },
+    // MOR-2535 follow-up (owner ruling 2026-09-22): on a radio whose profile
+    // declares a radio-default width code (the `filter_width_radio_default`
+    // capability), the width row's double-click resets to the RADIO's own
+    // mode-dependent default, not to a profile table entry — only the radio
+    // can resolve it (FTX-1 `SH` code 00). This is deliberately NOT a
+    // state-backed optimistic command: no draft, no pending target, no
+    // lifecycle wait for a value (MOR-2533 — never confirm on time after
+    // the ACK); the slider moves when the post-write readback arrives. The
+    // wiring seam passes this handler to the surface ONLY when the
+    // capability is present, so the gate below is the fail-closed backstop,
+    // and without the capability the double-click keeps its lease-reset
+    // behaviour untouched.
+    onFilterWidthReset: () => {
+      const caps = getCapabilities();
+      if (!caps || !caps.capabilities.includes('filter_width_radio_default')) return;
+      const receiver = knownActiveReceiver();
+      if (receiver === null) return;
+      dispatchRadioIntent({ name: 'reset_filter_width', params: { receiver } });
+    },
     onFilterShapeChange: (shape: number) => {
       const receiver = knownActiveReceiver('filterShape');
       if (receiver === null) return;

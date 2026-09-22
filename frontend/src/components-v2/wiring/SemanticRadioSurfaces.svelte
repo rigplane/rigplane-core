@@ -654,6 +654,12 @@
    * with no capability check (see that surface's own file header). Same
    * "caps-echo display metadata" seam as `hasDualReceiver` below. */
   let scanCapable = $derived(hasCapability('scan'));
+  /** MOR-2535 follow-up: the width row's double-click takes the
+   * radio-default reset path (`reset_filter_width`) only when the connected
+   * radio's profile declares a writeable radio-default width code — the
+   * derived `filter_width_radio_default` tag. Prop presence is the gate the
+   * surface reads; the handler gates again on the same tag. */
+  let filterWidthRadioDefault = $derived(hasCapability('filter_width_radio_default'));
   let scanTypeValues = $derived(runtime.caps?.scanTypeValues);
   let scanResumeValues = $derived(runtime.caps?.scanResumeValues);
   /** MOR-1731: consume the shared validated tri-state boundary. `undefined`
@@ -2347,6 +2353,7 @@
         {view} handles={filterInstruments} {finiteLayout}
         {filterWidthFeedback} {ifShiftFeedback} {pbtInnerFeedback} {pbtOuterFeedback}
         onFilterWidthChange={filterIntents.onFilterWidthChange}
+        onWidthReset={filterWidthRadioDefault ? filterIntents.onFilterWidthReset : undefined}
         onIfShiftChange={filterIntents.onIfShiftChange}
         onPbtInnerChange={filterIntents.onPbtInnerChange}
         onPbtOuterChange={filterIntents.onPbtOuterChange}
@@ -2713,6 +2720,7 @@
             {view} handles={filterInstruments} finiteLayout={filterLayout} part="filter"
             {filterWidthFeedback} {ifShiftFeedback} {pbtInnerFeedback} {pbtOuterFeedback}
             onFilterWidthChange={filterIntents.onFilterWidthChange}
+            onWidthReset={filterWidthRadioDefault ? filterIntents.onFilterWidthReset : undefined}
             onIfShiftChange={filterIntents.onIfShiftChange}
             onPbtInnerChange={filterIntents.onPbtInnerChange}
             onPbtOuterChange={filterIntents.onPbtOuterChange}
