@@ -164,6 +164,10 @@ function stateWithUnreadAgc(): ServerState {
 }
 
 const X6200_AGC_LABELS = { '0': 'OFF', '1': 'FAST', '2': 'SLOW', '3': 'AUTO' };
+const X6200_AGC_CAPS = {
+  agcModes: [0, 1, 2, 3],
+  agcLabels: X6200_AGC_LABELS,
+} as unknown as Capabilities;
 
 // `projects every FTX-1 AUTO read-back to the settable AUTO label` consumes
 // this exact mirror of `rigs/ftx1.toml`; read-back-only 5/6 stay absent here.
@@ -202,15 +206,13 @@ afterEach(() => {
 
 describe('AmberScope AGC label sourcing (MOR-1529)', () => {
   it('labels X6200 AGC=3 as AUTO (profile data), not the hardcoded SLOW', () => {
-    const caps = { agcLabels: X6200_AGC_LABELS } as unknown as Capabilities;
-    const target = mountScope(stateWithAgc(3), caps);
+    const target = mountScope(stateWithAgc(3), X6200_AGC_CAPS);
     const chip = agcChip(target);
     expect(chip?.textContent?.trim()).toBe('AGC AUTO');
   });
 
   it('labels X6200 AGC=2 as SLOW (profile data), not the hardcoded MID', () => {
-    const caps = { agcLabels: X6200_AGC_LABELS } as unknown as Capabilities;
-    const target = mountScope(stateWithAgc(2), caps);
+    const target = mountScope(stateWithAgc(2), X6200_AGC_CAPS);
     const chip = agcChip(target);
     expect(chip?.textContent?.trim()).toBe('AGC SLOW');
   });

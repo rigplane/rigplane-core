@@ -95,6 +95,7 @@ afterEach(() => {
 describe('AmberCockpit AGC/preamp label sourcing (MOR-1529)', () => {
   it('labels X6200 AGC=3 as AUTO from profile data, not the hardcoded SLOW', () => {
     const caps = {
+      agcModes: [0, 1, 2, 3],
       agcLabels: { '0': 'OFF', '1': 'FAST', '2': 'SLOW', '3': 'AUTO' },
     } as unknown as Capabilities;
     mountCockpit(caps);
