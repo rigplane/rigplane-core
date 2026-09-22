@@ -113,7 +113,7 @@
   --dl-vfo-rhythm: 1;
   --dl-vfo-rhythm-narrow: calc(var(--dl-vfo-rhythm) * 0.78);
   --dl-vfo-frequency-weight: 800;
-  --dl-vfo-panel-background: linear-gradient(180deg, #10161d 0%, #0a0e13 38%, #070a0e 100%);
+  --dl-vfo-panel-background: linear-gradient(180deg, #0b0f14 0%, #0a0e13 38%, #070a0e 100%);
   --dl-vfo-panel-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 -18px 30px rgba(0, 0, 0, 0.45), 0 6px 18px rgba(0, 0, 0, 0.5);
   --dl-vfo-panel-sheen: linear-gradient(115deg, rgba(255, 255, 255, 0.055) 0%, rgba(255, 255, 255, 0.018) 22%, transparent 38%);
   --dl-vfo-panel-sheen-blend: screen;

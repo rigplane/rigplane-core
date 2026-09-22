@@ -371,7 +371,7 @@
     min-width: 0;
     container-type: inline-size;
     position: relative;
-    background: var(--dl-vfo-panel-background, linear-gradient(180deg, #10161d 0%, #0a0e13 38%, #070a0e 100%));
+    background: var(--dl-vfo-panel-background, linear-gradient(180deg, #0b0f14 0%, #0a0e13 38%, #070a0e 100%));
     border: 1px solid var(--v2-border-darker);
     border-radius: var(--vfo-panel-radius, 10px);
     box-shadow: var(--dl-vfo-panel-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 -18px 30px rgba(0, 0, 0, 0.45), 0 6px 18px rgba(0, 0, 0, 0.5));
