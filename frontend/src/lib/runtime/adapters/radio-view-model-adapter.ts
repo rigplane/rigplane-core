@@ -214,7 +214,7 @@ const atuStatus = (v: unknown): AtuStatus | undefined =>
 
 type AgcReadbackProjection = {
   mode?: number;
-  label?: string;
+  indicatorValue?: number | string;
   autoMode?: number;
   autoSpeed?: string;
 };
@@ -237,6 +237,22 @@ function projectAgcReadback(
   if (rawMode === undefined) return { autoMode };
 
   const directLabel = caps.agcLabels?.[String(rawMode)];
+  const indicatorValue = typeof directLabel === 'string' && directLabel.trim()
+    ? directLabel
+    : rawMode;
+  const rawSettableModes = caps.agcModes as unknown;
+  const settableModes = Array.isArray(rawSettableModes)
+    && rawSettableModes.every(mode => Number.isSafeInteger(mode))
+    ? rawSettableModes as number[]
+    : null;
+  const noSettableCatalog = rawSettableModes === undefined || rawSettableModes === null;
+  const directMode = noSettableCatalog || settableModes?.includes(rawMode)
+    ? rawMode
+    : undefined;
+  if (contract === null) {
+    return directMode === undefined ? {} : { mode: directMode, indicatorValue };
+  }
+
   const rawSpeedLabels = contract?.autoSpeedLabels;
   const speedLabels = rawSpeedLabels !== null
     && typeof rawSpeedLabels === 'object' && !Array.isArray(rawSpeedLabels)
@@ -249,12 +265,12 @@ function projectAgcReadback(
   const autoLabel = autoMode === undefined ? undefined : caps.agcLabels?.[String(autoMode)];
   if (autoMode !== undefined && autoSpeed !== undefined
     && typeof autoLabel === 'string' && autoLabel.trim()) {
-    return { mode: autoMode, label: autoLabel, autoMode, autoSpeed };
+    return { mode: autoMode, indicatorValue: autoLabel, autoMode, autoSpeed };
   }
-  if (typeof directLabel === 'string' && directLabel.trim()) {
+  if (directMode !== undefined) {
     return {
-      ...((caps.agcModes ?? []).includes(rawMode) ? { mode: rawMode } : {}),
-      label: directLabel,
+      mode: directMode,
+      indicatorValue,
       autoMode,
     };
   }
@@ -1066,7 +1082,7 @@ function deriveReceiverIndicators(
       : undefined;
     const notchOperational = hasNotch && autoNotchKnown && manualNotchKnown;
     const agcOrdinal = numOrUndef(rx?.agc);
-    const agcMode = projectAgcReadback(caps, agcOrdinal).label;
+    const agcMode = projectAgcReadback(caps, agcOrdinal).indicatorValue;
     const sMeterObservation = qualifyDisplayObservation({
       state, caps, receiver, path: path('sMeter'), structural: true,
       value: numOrUndef(rx?.sMeter),

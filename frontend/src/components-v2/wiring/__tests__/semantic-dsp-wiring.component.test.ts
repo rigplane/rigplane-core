@@ -648,6 +648,8 @@ describe('AGC choice group', () => {
 
     expect(agcButtons().map(button => button.textContent?.trim())).toEqual(['FAST', 'MID', 'SLOW']);
     expect(agcButtons().map(button => button.dataset.active)).toEqual(['false', 'true', 'false']);
+    expect(q('[data-indicator-receiver="MAIN"] [data-indicator-fact="agc"]')
+      ?.textContent?.trim()).toBe('AGC MID');
   });
 
   it('routes every FTX-1 key as its settable code', () => {

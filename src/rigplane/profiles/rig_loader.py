@@ -2416,6 +2416,22 @@ def load_rig(path: Path) -> RigConfig:
             raise RigLoadError(
                 f"{filename}: [agc].auto_speed_labels values must be non-empty strings"
             )
+    if agc_modes is not None:
+        missing_agc_labels = sorted(
+            str(mode) for mode in agc_modes if str(mode) not in (agc_labels or {})
+        )
+        if missing_agc_labels:
+            raise RigLoadError(
+                f"{filename}: [agc].labels missing settable mode "
+                f"{missing_agc_labels[0]!r}"
+            )
+        if any(
+            not isinstance(label, str) or not label.strip()
+            for label in (agc_labels or {}).values()
+        ):
+            raise RigLoadError(
+                f"{filename}: [agc].labels values must be non-empty strings"
+            )
 
     # Parse break_in/notch-width/ssb_tx_bw/filter_shape enumerated domains
     # (MOR-1534). Each was declared in TOML (or, for filter_shape, nowhere

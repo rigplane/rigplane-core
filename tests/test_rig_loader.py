@@ -620,6 +620,22 @@ labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW", "9" = "PHANTOM" }
         with pytest.raises(RigLoadError, match=r"\[agc\]\.labels.*9"):
             load_rig(p)
 
+    def test_agc_labels_require_every_settable_mode(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[agc]
+modes = [1, 2, 3]
+labels = { "1" = "FAST", "2" = "MID" }
+""",
+        )
+        with pytest.raises(
+            RigLoadError, match=r"\[agc\]\.labels missing settable mode '3'"
+        ):
+            load_rig(p)
+
     def test_agc_labels_rejects_declared_without_modes(self, tmp_path):
         """MOR-1522 R1 (B2): [agc].labels with no [agc].modes must not load
         silently — that would yield a capability-present radio with an
