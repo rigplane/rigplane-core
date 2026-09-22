@@ -318,6 +318,28 @@ const liveCaps = (withDsp: boolean): Capabilities => ({
   } } : {}),
 } as unknown as Capabilities);
 
+const ftxAgcCaps = (): Capabilities => ({
+  ...liveCaps(true),
+  agcModes: [0, 1, 2, 3, 4],
+  agcLabels: { '0': 'OFF', '1': 'FAST', '2': 'MID', '3': 'SLOW', '4': 'AUTO' },
+  agcReadback: {
+    modes: [0, 1, 2, 3, 4, 5, 6], autoMode: 4,
+    autoSpeedLabels: { '4': 'FAST', '5': 'MID', '6': 'SLOW' },
+  },
+} as unknown as Capabilities);
+
+function stateWithAgc(value: number, observed = true): ServerState {
+  const state = liveState(true);
+  return {
+    ...state,
+    main: { ...state.main, agc: value },
+    fieldStatus: {
+      ...state.fieldStatus,
+      'main.agc': observed ? fresh : { ...fresh, observed: false, availability: 'missing' },
+    },
+  } as unknown as ServerState;
+}
+
 const finiteAppearance = {
   action: FiniteControlRendererFixture as FiniteControlAppearance['action'],
   toggle: FiniteControlRendererFixture as FiniteControlAppearance['toggle'],
@@ -551,6 +573,154 @@ describe('every dsp intent reaches its own command-bus handler', () => {
   });
 });
 
+describe('AGC choice group', () => {
+  const agcGroup = () => q<HTMLElement>('[data-testid="dsp-agcMode"]');
+  const agcButtons = () => [...agcGroup()!.querySelectorAll<HTMLButtonElement>('button')];
+
+  it('lights only the confirmed known key and reserves an empty AUTO speed line', () => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(2);
+    render();
+
+    expect(agcButtons().map(button => button.textContent?.trim())).toEqual([
+      'OFF', 'FAST', 'MID', 'SLOW', 'AUTO',
+    ]);
+    expect(agcButtons().map(button => button.dataset.active)).toEqual([
+      'false', 'false', 'true', 'false', 'false',
+    ]);
+    expect(q<HTMLElement>('[data-testid="dsp-agcMode-4"] .agc-auto-speed')!.textContent).toBe('');
+  });
+
+  it('pins both FTX-1 and IC direct AGC catalogs to three columns', () => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(2);
+    render();
+
+    // jsdom has no layout, so pin the emitted custom property.
+    expect(q<HTMLElement>('[data-testid="dsp-agcMode"]')!.style.getPropertyValue('--agc-columns')).toBe('3');
+
+    unmount(component!);
+    component = null;
+    h.caps = liveCaps(true);
+    h.state = stateWithAgc(2);
+    render();
+
+    expect(q<HTMLElement>('[data-testid="dsp-agcMode"]')!.style.getPropertyValue('--agc-columns')).toBe('3');
+  });
+
+  /* MOR-2537: the AUTO key must carry its label and speed line inside ONE
+   * column wrapper — the button lays bare children out as a flex row, which
+   * clipped the two side by side. jsdom has no layout, so this asserts the
+   * structure only; the stand probe owns the geometry. */
+  it.each([[2, ''], [6, 'SLOW']] as const)(
+    'stacks the AUTO label and reserved speed line inside one wrapper in the key (read-back %i)',
+    (readback, speed) => {
+      h.caps = ftxAgcCaps();
+      h.state = stateWithAgc(readback);
+      render();
+
+      const key = q<HTMLButtonElement>('[data-testid="dsp-agcMode-4"]')!;
+      const stack = key.querySelector<HTMLElement>('.agc-key-stack')!;
+      expect(stack.parentElement).toBe(key);
+      /* classList, not className: Svelte appends its own scope class to every
+       * element this component styles. */
+      expect([...stack.children].map(child => [
+        child.classList.contains('agc-key-label'),
+        child.classList.contains('agc-auto-speed'),
+      ])).toEqual([[true, false], [false, true]]);
+      expect(stack.querySelector('.agc-key-label')!.textContent).toBe('AUTO');
+      expect(stack.querySelector('.agc-auto-speed')!.textContent).toBe(speed);
+    });
+
+  it('keeps declared labels unlit and disabled when AGC is present but unread', () => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(6, false);
+    render();
+
+    expect(agcButtons()).toHaveLength(5);
+    expect(agcButtons().every(button => button.disabled && button.dataset.active === 'false')).toBe(true);
+    expect(q<HTMLElement>('[data-testid="dsp-agcMode-4"] .agc-auto-speed')!.textContent).toBe('');
+    expect(agcGroup()!.textContent).not.toMatch(/[—?]|UNKNOWN/i);
+    expect(agcButtons().map(button => button.getAttribute('aria-label')).join(' '))
+      .not.toMatch(/[—?]|UNKNOWN/i);
+  });
+
+  it('omits the choice group when AGC is structurally absent', () => {
+    h.caps = {
+      ...liveCaps(true), capabilities: liveCaps(true).capabilities.filter(capability => capability !== 'agc'),
+    } as Capabilities;
+    render();
+
+    expect(agcGroup()).toBeNull();
+  });
+
+  it.each([
+    [4, 'FAST'], [5, 'MID'], [6, 'SLOW'],
+  ] as const)('projects readback %i to AUTO with %s', (readback, speed) => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(readback);
+    render();
+
+    expect(q<HTMLButtonElement>('[data-testid="dsp-agcMode-4"]')!.dataset.active).toBe('true');
+    expect(q<HTMLElement>('[data-testid="dsp-agcMode-4"] .agc-auto-speed')!.textContent).toBe(speed);
+  });
+
+  it('prefers a direct settable mode over conflicting AUTO-speed metadata', () => {
+    const caps = ftxAgcCaps();
+    h.caps = {
+      ...caps,
+      agcReadback: {
+        ...(caps.agcReadback as object),
+        autoSpeedLabels: { '2': 'FAST', '4': 'FAST', '5': 'MID', '6': 'SLOW' },
+      },
+    } as Capabilities;
+    h.state = stateWithAgc(2);
+    render();
+
+    expect(q<HTMLButtonElement>('[data-testid="dsp-agcMode-2"]')!.dataset.active).toBe('true');
+    expect(q<HTMLButtonElement>('[data-testid="dsp-agcMode-4"]')!.dataset.active).toBe('false');
+    expect(q('[data-indicator-receiver="MAIN"] [data-indicator-fact="agc"]')
+      ?.textContent?.trim()).toBe('AGC MID');
+  });
+
+  it('projects FTX-1 readback 5 to the receiver indicator label', () => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(5);
+    render();
+
+    expect(q('[data-indicator-receiver="MAIN"] [data-indicator-fact="agc"]')
+      ?.textContent?.trim()).toBe('AGC AUTO');
+  });
+
+  it('renders no receiver indicator value for an unprojectable readback code', () => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(9);
+    render();
+
+    const indicator = q('[data-indicator-receiver="MAIN"] [data-indicator-fact="agc"]');
+    expect(indicator?.textContent?.trim()).toBe('AGC —');
+    expect(indicator?.textContent).not.toContain('9');
+  });
+
+  it('keeps IC-7300-shaped direct modes unchanged', () => {
+    render();
+
+    expect(agcButtons().map(button => button.textContent?.trim())).toEqual(['FAST', 'MID', 'SLOW']);
+    expect(agcButtons().map(button => button.dataset.active)).toEqual(['false', 'true', 'false']);
+    expect(q('[data-indicator-receiver="MAIN"] [data-indicator-fact="agc"]')
+      ?.textContent?.trim()).toBe('AGC MID');
+  });
+
+  it('routes every FTX-1 key as its settable code', () => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(2);
+    render();
+
+    for (const button of agcButtons()) button.click();
+    expect(h.agcMode.mock.calls).toEqual([[0], [1], [2], [3], [4]]);
+  });
+});
+
 describe('mounted exact NR projection (MOR-1737)', () => {
   function exactState(raw: number): ServerState {
     const state = liveState(true);
@@ -602,10 +772,10 @@ describe('mounted exact NR projection (MOR-1737)', () => {
   });
 });
 
-describe('carry-forward (1): caps-echo display metadata is read at this seam', () => {
-  it('passes agcLabels/nbLevelMax/nbLevelPercent from runtime.caps down as props', () => {
+describe('carry-forward (1): declared display metadata is read at this seam', () => {
+  it('renders declared AGC labels and the declared NB range', () => {
     render();
-    expect(q('[data-testid="dsp-agcMode-1"]')!.textContent).toBe('FAST');
+    expect(q('[data-testid="dsp-agcMode-1"]')!.textContent?.trim()).toBe('FAST');
     expect(slider('nbLevel').getAttribute('aria-valuemax')).toBe('200');
   });
 
@@ -615,16 +785,10 @@ describe('carry-forward (1): caps-echo display metadata is read at this seam', (
     expect(slider('nbLevel').getAttribute('aria-valuemax')).toBe('10');
   });
 
-  it('does not fabricate FAST/MID/SLOW labels when caps declares no agcLabels (MOR-1547 follow-up)', () => {
-    // Mirror of the toAgcProps fix in lib/runtime/props/panel-props.ts
-    // (MOR-1547): this seam carried the same hardcoded IC-7610-shaped
-    // `{ '1': 'FAST', '2': 'MID', '3': 'SLOW' }` fallback, fabricating
-    // plausible-looking labels for radios whose numeric AGC modes mean
-    // something different. With no declared `agcLabels`, `buildAgcOptions`
-    // (agc-utils.ts) must fall back to the honest raw mode number instead.
+  it('keeps declared AGC keys honest with raw codes when caps declares no labels', () => {
     h.caps = { ...liveCaps(true), agcLabels: undefined } as unknown as Capabilities;
     render();
-    expect(q('[data-testid="dsp-agcMode-1"]')!.textContent).toBe('1');
+    expect(q('[data-testid="dsp-agcMode-1"]')!.textContent?.trim()).toBe('1');
   });
 });
 

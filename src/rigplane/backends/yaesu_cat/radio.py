@@ -2712,9 +2712,7 @@ class YaesuCatRadio:
         The FTX-1 read side reports 0–6 (4/5/6 = the auto-selected
         A-FAST/A-MID/A-SLOW for the current mode), but the SET side only
         accepts 0–4 where ``4`` means AUTO; writing ``GT05;``/``GT06;`` is
-        rejected and the value sticks at the prior setting. Manual modes
-        (0–3) are sent verbatim; any AUTO request (4, 5, or 6) is collapsed
-        to AUTO, letting the radio re-derive the auto speed.
+        rejected and the value sticks at the prior setting.
 
         ``mode`` must be one of the profile's declared ``[agc] modes``
         (MOR-1522) — an out-of-domain value raises instead of being sent
@@ -2726,9 +2724,8 @@ class YaesuCatRadio:
                 f"AGC mode must be one of {sorted(agc_modes)} for "
                 f"{self._config.model!r}, got {mode}"
             )
-        wire_mode = 4 if mode >= 4 else mode
         key = self._receiver_level_write_key("set_agc", receiver)
-        await self._write(key, mode=str(wire_mode))
+        await self._write(key, mode=str(mode))
 
     # -- Key speed (KS) -------------------------------------------------------
 

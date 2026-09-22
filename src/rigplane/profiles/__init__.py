@@ -388,6 +388,9 @@ class RadioProfile:
     pre_labels: dict[str, str] | None = None
     agc_modes: tuple[int, ...] | None = None
     agc_labels: dict[str, str] | None = None
+    agc_readback_modes: tuple[int, ...] | None = None
+    agc_auto_mode: int | None = None
+    agc_auto_speed_labels: dict[str, str] | None = None
     # MOR-1534: enumerated-domain controls that were declared in TOML but
     # never parsed/validated (break_in, notch width) or hardcoded via an
     # IC-7610-specific enum with no profile domain to check against

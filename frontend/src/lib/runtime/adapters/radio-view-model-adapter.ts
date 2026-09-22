@@ -212,6 +212,71 @@ const boolOrUndef = (v: unknown): boolean | undefined => (typeof v === 'boolean'
 const atuStatus = (v: unknown): AtuStatus | undefined =>
   v === 0 ? 'off' : v === 1 ? 'on' : v === 2 ? 'tuning' : undefined;
 
+export type AgcReadbackProjection = {
+  mode?: number;
+  indicatorValue?: number | string;
+  autoMode?: number;
+  autoSpeed?: string;
+};
+
+export function projectAgcReadback(
+  caps: Capabilities | null | undefined, rawMode: number | undefined,
+): AgcReadbackProjection {
+  const rawContract = caps?.agcReadback;
+  const contract = rawContract !== null && typeof rawContract === 'object'
+    ? rawContract as Record<string, unknown>
+    : null;
+  const readbackModes = Array.isArray(contract?.modes)
+    && contract.modes.every(mode => Number.isSafeInteger(mode))
+    ? contract.modes as number[]
+    : null;
+  const autoMode = Number.isSafeInteger(contract?.autoMode)
+    && (caps?.agcModes ?? []).includes(contract!.autoMode as number)
+    ? contract!.autoMode as number
+    : undefined;
+  if (rawMode === undefined) return { autoMode };
+
+  const directLabel = caps?.agcLabels?.[String(rawMode)];
+  const indicatorValue = typeof directLabel === 'string' && directLabel.trim()
+    ? directLabel
+    : rawMode;
+  const rawSettableModes = caps?.agcModes as unknown;
+  const settableModes = Array.isArray(rawSettableModes)
+    && rawSettableModes.every(mode => Number.isSafeInteger(mode))
+    ? rawSettableModes as number[]
+    : null;
+  const directMode = settableModes?.includes(rawMode)
+    ? rawMode
+    : undefined;
+  if (contract === null) {
+    return directMode === undefined ? {} : { mode: directMode, indicatorValue };
+  }
+
+  const rawSpeedLabels = contract?.autoSpeedLabels;
+  const speedLabels = rawSpeedLabels !== null
+    && typeof rawSpeedLabels === 'object' && !Array.isArray(rawSpeedLabels)
+    ? rawSpeedLabels as Record<string, unknown>
+    : null;
+  const rawSpeed = readbackModes?.includes(rawMode)
+    ? speedLabels?.[String(rawMode)]
+    : undefined;
+  const autoSpeed = typeof rawSpeed === 'string' && rawSpeed.trim() ? rawSpeed : undefined;
+  const autoLabel = autoMode === undefined ? undefined : caps?.agcLabels?.[String(autoMode)];
+  if (directMode !== undefined) {
+    return {
+      mode: directMode,
+      indicatorValue,
+      autoMode,
+      ...(directMode === autoMode && autoSpeed !== undefined ? { autoSpeed } : {}),
+    };
+  }
+  if (autoMode !== undefined && autoSpeed !== undefined
+    && typeof autoLabel === 'string' && autoLabel.trim()) {
+    return { mode: autoMode, indicatorValue: autoLabel, autoMode, autoSpeed };
+  }
+  return { autoMode };
+}
+
 /**
  * N3: emits the group ONLY on positive evidence — "capability/observed
  * fields", verbatim. `caps.tx` alone is NOT sufficient: a radio can declare
@@ -865,6 +930,9 @@ function deriveDsp(
     ? manualNotchFreqContract.rawToDisplay(manualNotchFreqRaw) ?? undefined
     : numOrUndef(rx?.notchFilter);
   const notchFreqDomain = manualNotchFreqContract.displayDomain;
+  const rawAgcMode = numOrUndef(rx?.agc);
+  const agcReadable = topFieldAvailable(state, `${base}agc`);
+  const agcProjection = projectAgcReadback(caps, agcReadable ? rawAgcMode : undefined);
 
   return {
     nrActive: txAuxField(hasNrCap, topFieldAvailable(state, `${base}nr`), boolOrUndef(rx?.nr)),
@@ -883,7 +951,11 @@ function deriveDsp(
     manualNotchWidth: txAuxField(
       hasNotchCap, topFieldAvailable(state, `${base}manualNotchWidth`), numOrUndef(rx?.manualNotchWidth),
     ),
-    agcMode: txAuxField(hasAgcCap, topFieldAvailable(state, `${base}agc`), numOrUndef(rx?.agc)),
+    agcMode: {
+      ...txAuxField(hasAgcCap, agcReadable, agcProjection.mode),
+      ...(agcProjection.autoMode === undefined ? {} : { autoMode: agcProjection.autoMode }),
+      ...(agcProjection.autoSpeed === undefined ? {} : { autoSelectedSpeed: agcProjection.autoSpeed }),
+    },
     agcModes: caps.agcModes ?? [],
     agcTimeConstant: txAuxField(
       hasAgcCap, topFieldAvailable(state, `${base}agcTimeConstant`), numOrUndef(rx?.agcTimeConstant),
@@ -1010,9 +1082,7 @@ function deriveReceiverIndicators(
       : undefined;
     const notchOperational = hasNotch && autoNotchKnown && manualNotchKnown;
     const agcOrdinal = numOrUndef(rx?.agc);
-    const agcMode = agcOrdinal === undefined
-      ? undefined
-      : (caps.agcLabels?.[String(agcOrdinal)] ?? agcOrdinal);
+    const agcMode = projectAgcReadback(caps, agcOrdinal).indicatorValue;
     const sMeterObservation = qualifyDisplayObservation({
       state, caps, receiver, path: path('sMeter'), structural: true,
       value: numOrUndef(rx?.sMeter),
