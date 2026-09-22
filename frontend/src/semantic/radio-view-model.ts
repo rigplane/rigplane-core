@@ -1170,12 +1170,9 @@ export interface RadioWideIndicatorsViewModel {
   antenna: AntennaField<number>;
   atu: TxAuxField<AtuStatus>;
   /**
-   * Dial lock ON/OFF (state leaf `dialLock`, capability `dial_lock`),
-   * radio-wide like its state leaf — it is not a per-receiver fact. The
-   * reading is `unknown`, never `false`, while the leaf was never observed
-   * (after MOR-2513 the leaf itself is `null` then), and `structural`
-   * mirrors the capability tag, so a radio without dial lock draws no
-   * lock element at all (MOR-2509).
+   * Dial lock ON/OFF from the radio-wide state leaf `dialLock`; `structural`
+   * mirrors the `dial_lock` capability, and a never-observed leaf reads
+   * `unknown`, never `false`.
    */
   dialLock: TxAuxField<boolean>;
   ritActive: RitXitField<boolean>;
