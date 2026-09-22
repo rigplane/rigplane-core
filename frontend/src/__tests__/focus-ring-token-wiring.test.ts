@@ -664,12 +664,25 @@ describe('MOR-2522: the value-control ring clears 3:1 on the studioline surfaces
     return merged;
   }
 
-  it('value-control.css re-points --vc-focus-ring at the studioline focus colour under the language', () => {
+  it('the per-skin colour knob stays the ONLY declaration of --vc-focus-ring', () => {
+    const css = read('components-v2/controls/value-control/value-control.css');
+    // The section-5 matrix resolves --vc-focus-ring from this file with a
+    // selector-blind token parse: any second declaration — a scoped
+    // override later in the file — silently replaces the per-skin default
+    // for EVERY skin (the cb052c2e failure). Scoped colours ride the shadow
+    // token instead, which the matrix never resolves.
+    const declarations = css.match(/--vc-focus-ring:/g) ?? [];
+    expect(declarations, 'value-control.css must declare --vc-focus-ring exactly once').toHaveLength(1);
+  });
+
+  it('value-control.css carries the studioline ring colour only inside the language scope', () => {
     // Non-vacuous link: without this override the ring keeps the v2 cyan
     // knob, which reaches only ~1.66:1 on the light studioline surface —
     // the matrix below would be testing a colour the control never paints.
+    // Scoped to --vc-focus-ring-shadow (the token the five renderers and the
+    // armed rule actually consume), never to the per-skin knob itself.
     expect(stripComments(read('components-v2/controls/value-control/value-control.css'))).toMatch(
-      /\[data-design-language='studioline'\]\s*\{[^}]*--vc-focus-ring:\s*var\(--dl-studioline-focus,\s*#00819f\)\s*;/,
+      /\[data-design-language='studioline'\]\s*\{[^}]*--vc-focus-ring-shadow:\s*0 0 0 var\(--vc-focus-ring-width,\s*2px\)\s*var\(--dl-studioline-focus,\s*#00819f\)\s*;/,
     );
   });
 
