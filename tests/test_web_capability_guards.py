@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import astuple, replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -20,6 +21,9 @@ from rigplane.web.handlers.audio import browser_tx_audio_facts
 from rigplane.web.handlers import ControlHandler
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.websocket import WebSocketConnection
+
+
+_RIGS_DIR = Path(__file__).parents[1] / "rigs"
 
 
 class _FakeWriter:
@@ -311,7 +315,7 @@ class TestInfoEndpoint:
             ("IC-7300", {"vfo_swap", "vfo_equalize"}),
             ("IC-7610", {"vfo_swap", "vfo_equalize"}),
             ("IC-9700", {"vfo_swap", "vfo_equalize"}),
-            ("FTX-1", set()),
+            ("FTX-1", {"vfo_swap", "vfo_equalize"}),
             ("TX-500", set()),
             ("X6100", set()),
             ("X6200", set()),
@@ -592,7 +596,7 @@ class TestCapabilitiesEndpoint:
             ("IC-7300", {"vfo_swap", "vfo_equalize"}),
             ("IC-7610", {"vfo_swap", "vfo_equalize"}),
             ("IC-9700", {"vfo_swap", "vfo_equalize"}),
-            ("FTX-1", set()),
+            ("FTX-1", {"vfo_swap", "vfo_equalize"}),
             ("TX-500", set()),
             ("X6100", set()),
             ("X6200", set()),
@@ -785,8 +789,10 @@ class TestProfileDeclaredSecondReceiver:
     Owner ruling, 2026-09-08: structural existence of the second receiver
     follows the rig profile, not the swap-and-equalize protocol. The swap
     and equalize *actions* keep their own gates, so a backend that declares
-    ``dual_rx`` without implementing the MAIN/SUB primitives serves the
-    receiver and refuses the actions.
+    ``dual_rx`` without declaring the MAIN/SUB primitives serves the
+    receiver and refuses the actions; the FTX-1 declares them natively
+    (``vfo_swap`` = ``SV;``, ``vfo_equalize`` = ``AB;``, OM 2508-C,
+    MOR-2531), so for it the row is served and the commands are admitted.
 
     The radio here is a real :class:`YaesuCatRadio` on the bundled ``ftx1``
     profile — a ``MagicMock`` would satisfy every Protocol check trivially
@@ -823,19 +829,42 @@ class TestProfileDeclaredSecondReceiver:
         assert "dual_rx" in data["capabilities"]
         assert data["receivers"] == 2
 
-    def test_swap_and_equalize_tags_absent_without_the_primitives(self) -> None:
+    def test_swap_and_equalize_tags_project_from_the_declared_commands(self) -> None:
         from rigplane.web.runtime_helpers import projected_vfo_capability_tags
 
         radio = _yaesu()
-        assert not hasattr(radio, "swap_main_sub")
-        assert not hasattr(radio, "equalize_main_sub")
-        assert projected_vfo_capability_tags(radio, None) == frozenset()
+        assert radio.profile.supports_command("vfo_swap")
+        assert radio.profile.supports_command("vfo_equalize")
+        assert projected_vfo_capability_tags(radio, None) == frozenset(
+            {"vfo_swap", "vfo_equalize"}
+        )
 
     @pytest.mark.parametrize("name", ["vfo_swap", "vfo_equalize"])
-    def test_swap_and_equalize_commands_are_refused(self, name: str) -> None:
+    def test_swap_and_equalize_commands_enqueue_on_the_ftx1(self, name: str) -> None:
         from rigplane.web.handlers import ControlHandler
 
         radio = _yaesu()
+        handler = ControlHandler.__new__(ControlHandler)
+        handler._radio = radio
+        queue: list[object] = []
+
+        result = handler._enqueue_rc_frequency(  # noqa: SLF001
+            name, {}, SimpleNamespace(put=queue.append), radio
+        )
+        assert result == {}
+        assert len(queue) == 1
+
+    @pytest.mark.parametrize("name", ["vfo_swap", "vfo_equalize"])
+    def test_swap_and_equalize_refused_when_the_profile_omits_the_command(
+        self, name: str
+    ) -> None:
+        from rigplane.rig_loader import load_rig
+        from rigplane.web.handlers import ControlHandler
+
+        config = load_rig(_RIGS_DIR / "ftx1.toml")
+        del config.commands["vfo_swap"]
+        del config.commands["vfo_equalize"]
+        radio = YaesuCatRadio("/dev/null", profile=config)
         handler = ControlHandler.__new__(ControlHandler)
         handler._radio = radio
         queue: list[object] = []

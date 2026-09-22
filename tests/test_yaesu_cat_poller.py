@@ -3401,7 +3401,7 @@ async def test_drain_commands_sets_future_exception_on_execution_failure() -> No
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("profile_name", ["FTX-1", "TX-500", "X6100", "X6200"])
+@pytest.mark.parametrize("profile_name", ["TX-500", "X6100", "X6200"])
 @pytest.mark.parametrize(
     ("command", "profile_primitive", "radio_method"),
     [
@@ -3435,7 +3435,7 @@ async def test_undeclared_vfo_commands_reject_before_radio_mutation(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("profile_name", ["FTX-1", "TX-500", "X6100", "X6200"])
+@pytest.mark.parametrize("profile_name", ["TX-500", "X6100", "X6200"])
 @pytest.mark.parametrize(
     ("command", "profile_primitive", "radio_method"),
     [
@@ -3472,6 +3472,56 @@ async def test_undeclared_queued_vfo_commands_set_future_exception_before_mutati
     ) and profile_primitive in str(error)
     radio.vfo_a_to_b.assert_not_awaited()
     getattr(radio, radio_method).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "radio_method"),
+    [
+        (VfoSwap, "swap_vfo_ab"),
+        (VfoEqualize, "equalize_vfo_ab"),
+    ],
+)
+async def test_ftx1_declared_vfo_primitives_dispatch_and_reread_freq_mode(
+    command: type[VfoSwap] | type[VfoEqualize],
+    radio_method: str,
+) -> None:
+    """FTX-1 declares the swap/equalize CAT commands (MOR-2531): the write
+    dispatches to the radio method, then one post-write re-read of both
+    receivers' frequency and mode runs through the medium poll lane."""
+    radio = make_radio()
+    radio.profile = get_radio_profile("FTX-1")
+    radio.swap_vfo_ab = AsyncMock()
+    radio.equalize_vfo_ab = AsyncMock()
+    poller = YaesuCatPoller(radio, callback=lambda s: None)
+
+    assert radio.profile.supports_command(
+        "vfo_swap" if command is VfoSwap else "vfo_equalize"
+    )
+    await poller._execute_command(command())  # noqa: SLF001
+
+    getattr(radio, radio_method).assert_awaited_once_with(0)
+    other = "equalize_vfo_ab" if radio_method == "swap_vfo_ab" else "swap_vfo_ab"
+    getattr(radio, other).assert_not_awaited()
+    freq_receivers = {c.args[0] for c in radio.get_freq.await_args_list}
+    mode_receivers = {c.args[0] for c in radio.get_mode.await_args_list}
+    assert freq_receivers == {0, 1}
+    assert mode_receivers == {0, 1}
+
+
+@pytest.mark.asyncio
+async def test_ftx1_vfo_primitive_reread_failure_does_not_fail_the_write() -> None:
+    """The write has succeeded when the re-read runs, so a read failure is
+    logged and left to the next cadence poll instead of failing the command."""
+    radio = make_radio()
+    radio.profile = get_radio_profile("FTX-1")
+    radio.swap_vfo_ab = AsyncMock()
+    radio.get_freq = AsyncMock(side_effect=RuntimeError("read dropped"))
+    poller = YaesuCatPoller(radio, callback=lambda s: None)
+
+    await poller._execute_command(VfoSwap())  # noqa: SLF001
+
+    radio.swap_vfo_ab.assert_awaited_once_with(0)
 
 
 @pytest.mark.asyncio
