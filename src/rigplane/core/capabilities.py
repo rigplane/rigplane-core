@@ -28,6 +28,7 @@ __all__ = [
     "CAP_TWIN_PEAK",
     "CAP_PBT",
     "CAP_FILTER_WIDTH",
+    "CAP_FILTER_WIDTH_RADIO_DEFAULT",
     "CAP_FILTER_SHAPE",
     "CAP_IF_SHIFT",
     "CAP_CONTOUR",
@@ -118,6 +119,12 @@ CAP_TWIN_PEAK = "twin_peak"
 # Filter
 CAP_PBT = "pbt"
 CAP_FILTER_WIDTH = "filter_width"
+# The radio can return the filter width to its OWN mode-dependent default
+# (FTX-1 CAT ``SH`` code 00, 2508-C Table 5 "(Default)"). Not declared in any
+# TOML ``features`` list: ``rig_loader`` derives it from the profile's
+# ``[filters].radio_default_code`` field, so the tag exists exactly when a
+# writeable default code exists. Gates ``reset_filter_width``.
+CAP_FILTER_WIDTH_RADIO_DEFAULT = "filter_width_radio_default"
 CAP_FILTER_SHAPE = "filter_shape"
 CAP_IF_SHIFT = "if_shift"
 CAP_CONTOUR = "contour"
@@ -227,6 +234,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         # Filter
         CAP_PBT,
         CAP_FILTER_WIDTH,
+        CAP_FILTER_WIDTH_RADIO_DEFAULT,
         CAP_FILTER_SHAPE,
         CAP_IF_SHIFT,
         CAP_CONTOUR,

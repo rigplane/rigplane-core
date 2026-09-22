@@ -380,6 +380,13 @@ class RadioProfile:
     # 01). Pinned for ftx1 by
     # tests/test_dsp_filter_family.py::TestFtx1Table5LoaderPins.
     filter_width_first_code: int = 0
+    # The writeable code that returns the width to the radio's OWN
+    # mode-dependent default (FTX-1 Table 5 code 00, "(Default)"), declared
+    # as ``[filters].radio_default_code`` and validated below
+    # ``filter_width_first_code`` by the loader. ``None`` = the radio has no
+    # such code and ``reset_filter_width`` refuses. The loader derives the
+    # ``filter_width_radio_default`` capability tag from this field.
+    filter_width_radio_default_code: int | None = None
     filter_config: dict[str, FilterWidthRule] | None = None
     max_watts: int | None = None
     att_values: tuple[int, ...] | None = None
