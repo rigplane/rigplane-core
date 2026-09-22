@@ -705,7 +705,9 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
         .toMatch(/width:\s*var\(--vfo-large-chip-width\)/);
     }
     const compact = panelCss.slice(panelCss.indexOf('@container (max-width: 520px)'));
-    expect(compact).toMatch(/--vfo-large-chip-width:\s*62px/);
+    expect(compact).toMatch(/--vfo-large-chip-width:\s*60px/);
+    expect(compact).toMatch(/\.lamp\[data-chip='att'\]\s*\{\s*width:\s*46px/);
+    expect(compact).toMatch(/\.lamp\[data-chip='rfg'\]\s*\{\s*width:\s*64px/);
   });
 
   it('chip colours consume the --dl-vfo-* language tokens', () => {
@@ -964,6 +966,12 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
       .toMatch(/--vfo-bridge-width:\s*168px/);
     expect(rulesFor(surfaceCss, '.bridge').join('\n'))
       .toMatch(/--vfo-bridge-width:\s*150px/);
+  });
+
+  it('stacks an absolute Standard pair at the 1024-class breakpoint', () => {
+    const compact = surfaceCss.slice(surfaceCss.indexOf('@media (max-width: 1050px)'));
+    expect(compact.slice(0, compact.indexOf('@media (max-width: 950px)'))
+      .toMatch(/\.standard-receiver\[data-standard-vfo-slot\][^{]*\{[^}]*flex-basis:\s*calc\(100% - 192px\)/s);
   });
 });
 

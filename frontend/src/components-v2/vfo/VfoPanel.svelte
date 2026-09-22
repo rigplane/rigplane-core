@@ -768,22 +768,27 @@
   }
 
   @container (max-width: 520px) {
-    .chip-slot, .chip-lg { --vfo-large-chip-width: 62px; }
+    .chip-slot, .chip-lg { --vfo-large-chip-width: 60px; }
     .tray { margin-block-end: calc(17px * var(--vfo-deck-rhythm-narrow)); }
     .receiver-row {
       margin-block-end: calc(16px * var(--vfo-deck-rhythm-narrow));
-      gap: 4px;
+      gap: 3px;
     }
     .under-row { margin-block-start: calc(14px * var(--vfo-deck-rhythm-narrow)); }
     .dsp { gap: calc(9px * var(--vfo-deck-rhythm-narrow)); }
     .display-row { row-gap: calc(10px * var(--vfo-deck-rhythm-narrow)); }
     .vfo-label { letter-spacing: 0.06em; }
-    .lamp { width: 58px; }
-    .lamp[data-chip='agc'] { width: 62px; }
-    .lamp[data-chip='preamp'] { width: 62px; }
-    .lamp[data-chip='digi-sel'] { width: 66px; }
+    .annunciators { gap: 3px; }
+    .ann-sep { margin-inline: 1px; }
+    .lamp { width: 52px; font-size: 12px; }
+    .lamp[data-chip='agc'] { width: 58px; }
+    .lamp[data-chip='preamp'] { width: 60px; }
+    .lamp[data-chip='att'] { width: 46px; }
+    .lamp[data-chip='ip-plus'] { width: 40px; }
+    .lamp[data-chip='digi-sel'] { width: 62px; }
+    .lamp[data-chip='rfg'] { width: 64px; }
     .chip-lg { font-size: 13px; }
-    .chip-tx { width: 44px; }
+    .chip-tx { width: 42px; }
   }
 
   @container (max-width: 470px) {
