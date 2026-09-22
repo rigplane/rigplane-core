@@ -394,11 +394,20 @@ describe('badge rendering', () => {
     expect(t.querySelector('.lamp')?.textContent?.trim()).toBe('P1');
   });
 
-  it('carries a legacy badge colour through to the lamp', () => {
+  it('carries a legacy badge colour NAME through to the badge token', () => {
     // The suite's getComputedStyle mock maps --v2-badge-atu-color to 'green'.
     const t = mountPanel({ ...baseProps, badges: { atu: true } });
     const lamp = t.querySelector<HTMLElement>('.lamp');
     expect(lamp?.getAttribute('style')).toContain('--vfo-lamp-color: var(--v2-badge-green-text)');
+  });
+
+  it('carries a resolved colour LITERAL through unchanged (custom themes)', () => {
+    const mockGetPropertyValue = vi.fn((prop: string) =>
+      prop === '--v2-badge-sub-digi-sel-color' ? '#00D4FF' : '');
+    globalThis.getComputedStyle = vi.fn(() => ({ getPropertyValue: mockGetPropertyValue })) as any;
+    const t = mountPanel({ ...baseProps, receiver: 'sub', badges: { 'digi-sel': true } });
+    const lamp = t.querySelector<HTMLElement>('.lamp');
+    expect(lamp?.getAttribute('style')).toContain('--vfo-lamp-color: #00D4FF');
   });
 });
 

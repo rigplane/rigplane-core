@@ -1099,7 +1099,7 @@ describe('MOR-2513 — the live FTX-1 payload mounts the default desktop composi
     }
   });
 
-  it('still mounts all six fixed VFO rows with every nullable leaf null', () => {
+  it('still mounts all ten fixed VFO rows with every nullable leaf null', () => {
     const t = mountFtx1(FTX1_STATE_FULLY_UNOBSERVED);
     expect(t.querySelectorAll('[data-vfo-row]')).toHaveLength(10);
     const text = t.textContent ?? '';

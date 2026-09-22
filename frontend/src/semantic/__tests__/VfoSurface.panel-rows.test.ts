@@ -313,6 +313,63 @@ describe('standard annunciator lamps (2/main_sub)', () => {
   });
 });
 
+describe('MODE/FIL three-way presence (2/main_sub)', () => {
+  const absent = { reading: { status: 'unknown' as const }, availability: { structural: false, operational: false } };
+  const modeFilterFixture = () => validateRadioViewModel({
+    ...standardFixture('2/main_sub'),
+    modeFilter: {
+      activeFilterConfiguration: null,
+      currentMode: indicatorField('USB'),
+      modeChoices: ['USB'],
+      currentFilter: absent,
+      filterChoices: ['FIL1'],
+      filterWidth: absent,
+      filterWidthMin: absent,
+      filterWidthMax: absent,
+    },
+  });
+
+  it('a structurally absent filter draws no FIL chip; MODE keeps its chip', () => {
+    const root = mountSurface({ viewModel: modeFilterFixture(), appearance: 'standard' });
+    expect(root.querySelectorAll('[data-chip="filter"]')).toHaveLength(0);
+    const mainPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
+    expect(mainPanel.querySelector('[data-chip="mode"]')?.textContent?.trim()).toBe('USB');
+  });
+
+  it('an unsupported display observation draws no chip either (same mechanism)', () => {
+    const base = standardFixture('2/main_sub');
+    const viewModel = validateRadioViewModel({
+      ...base,
+      vfos: base.vfos.map((vfo) => ({
+        ...vfo,
+        display: {
+          frequencyHz: { state: 'current' as const, value: vfo.frequencyHz },
+          mode: { state: 'unsupported' as const },
+          filter: { state: 'current' as const, value: vfo.filter },
+        },
+      })),
+    });
+    const root = mountSurface({ viewModel, appearance: 'standard' });
+    expect(root.querySelectorAll('[data-chip="mode"]')).toHaveLength(0);
+    expect(root.querySelectorAll('[data-chip="filter"]')[0]?.textContent?.trim()).toBe('WIDE');
+  });
+
+  it('an unread filter keeps its chip unlit with the dim FIL label', () => {
+    const base = standardFixture('2/main_sub');
+    const viewModel = validateRadioViewModel({
+      ...base,
+      vfos: base.vfos.map((vfo) => ({ ...vfo, filter: null })),
+    });
+    const root = mountSurface({ viewModel, appearance: 'standard' });
+    const chips = root.querySelectorAll('[data-chip="filter"]');
+    expect(chips.length).toBeGreaterThan(0);
+    for (const chip of Array.from(chips)) {
+      expect(chip.getAttribute('data-lit')).toBe('false');
+      expect(chip.textContent?.trim()).toBe('FIL');
+    }
+  });
+});
+
 describe('standard notch chip (one chip per notchMode value)', () => {
   const chipFor = (value: 'off' | 'auto' | 'manual') => {
     const base = standardFixture('2/main_sub');
