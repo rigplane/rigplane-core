@@ -1462,6 +1462,13 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
     expect(RADIO_LAYOUT_SOURCE).toContain('overflow-y: auto; min-height: 0');
     expect(narrow).toContain('contain: inline-size');
   });
+
+  it('lets the 900px Standard scope floor size its stacked center row', () => {
+    const stacked = RADIO_LAYOUT_SOURCE.slice(RADIO_LAYOUT_SOURCE.indexOf('@media (max-width: 950px)'));
+    expect(stacked).toContain('.desktop-control-face.standard-face .content-row { contain: inline-size; }');
+    expect(RADIO_LAYOUT_SOURCE.slice(0, RADIO_LAYOUT_SOURCE.indexOf('@media (max-width: 950px)')))
+      .toContain('.desktop-control-face .content-row { display: flex; flex: 1; min-height: 280px; contain: size; }');
+  });
 });
 
 /**

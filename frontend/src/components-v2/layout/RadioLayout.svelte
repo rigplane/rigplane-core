@@ -1434,6 +1434,10 @@
     }
   }
 
+  @media (max-width: 950px) {
+    .desktop-control-face.standard-face .content-row { contain: inline-size; }
+  }
+
   /* Mobile layout is now in MobileRadioLayout.svelte */
 
   /* ── Settings Modal ── */

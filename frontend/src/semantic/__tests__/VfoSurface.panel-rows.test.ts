@@ -877,22 +877,24 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(compact).toMatch(/\.lamp\[data-chip='rfg'\]\s*\{\s*width:\s*64px/);
   });
 
-  it('the narrow under-row trims fixed chip boxes only inside the meter-under-frequency query', () => {
+  it('the narrow under-row sets fixed chip widths only inside the meter-under-frequency query', () => {
     const prelude = '@container (max-width: 470px)';
     const narrow = atRuleBlock(panelCss, prelude);
     const narrowStart = panelCss.indexOf(prelude);
     const narrowEnd = panelCss.indexOf('{', narrowStart) + narrow.length + 2;
     const outsideNarrow = panelCss.slice(0, narrowStart) + panelCss.slice(narrowEnd);
-    const trim = '--dl-vfo-amber-chip-narrow-width-trim';
 
-    expect(narrow.match(new RegExp(trim, 'g'))).toHaveLength(3);
-    expect(narrow).toMatch(/\.chip-amber\[data-chip='split'\]\s*\{[^}]*width:\s*calc\(76px - var\(--dl-vfo-amber-chip-narrow-width-trim,\s*4px\)\)/);
-    expect(narrow).toMatch(/\.chip-amber\[data-chip='rit'\]\s*\{[^}]*width:\s*calc\(92px - var\(--dl-vfo-amber-chip-narrow-width-trim,\s*4px\)\)/);
-    expect(narrow).toMatch(/\.chip-amber\[data-chip='xit'\]\s*\{[^}]*width:\s*calc\(64px - var\(--dl-vfo-amber-chip-narrow-width-trim,\s*4px\)\)/);
+    for (const [chip, width] of [['split', 72], ['rit', 88], ['xit', 60]] as const) {
+      const declaration = new RegExp(
+        `\\.chip-amber\\[data-chip='${chip}'\\]\\s*\\{[^}]*width:\\s*${width}px`,
+      );
+      expect(narrow, `${chip} uses its fixed narrow width`).toMatch(declaration);
+      expect(outsideNarrow, `${chip} narrow width stays inside the 470px query`)
+        .not.toMatch(declaration);
+    }
+    expect(panelCss).not.toContain('--dl-vfo-amber-chip-narrow-width-trim');
     expect(narrow).not.toMatch(/flex-wrap:\s*wrap/);
-    expect(outsideNarrow).not.toContain(trim);
     expect(rulesFor(panelCss, '.under-row').some((body) => /gap:\s*6px/.test(body))).toBe(true);
-    expect(92 + 64 + 76 - (3 * 4) + (2 * 6)).toBe(232);
   });
 
   it('chip colours consume the --dl-vfo-* language tokens', () => {
@@ -1354,20 +1356,22 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
       .toMatch(/--vfo-bridge-width:\s*212px/);
     expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .standard-pair-bridge").join('\n'))
       .toMatch(/flex:\s*0 0 var\(--vfo-bridge-width\)/);
-    // Below 1280 px the Standard bridge narrows to its earlier 150 px column
-    // so the 1200 px panels keep >= 470 px — the e2e "standard 1200px VFO
-    // panel does not use narrow mode" in desktop-geometry.spec.ts. The rule
-    // must keep the attribute qualifier: the unqualified `.bridge` form loses
-    // on specificity to the desktop 212 px rule, which is why the 1050 px
-    // block's declaration was dead and is removed.
+    // The qualified assertion pins the Standard 150 px rule below 1280 px;
+    // the compact assertion pins the shared 150 px rule used by SDR at 1050 px.
     const narrowBlock = surfaceCss.slice(
       surfaceCss.indexOf('@media (max-width: 1279px)'),
       surfaceCss.indexOf('@media (max-width: 1050px)'),
     );
     expect(narrowBlock, 'the narrow bridge rule keeps the attribute-qualified selector')
       .toMatch(/\[data-vfo-appearance='standard'\] \.bridge\s*\{[^}]*--vfo-bridge-width:\s*150px/s);
-    expect(narrowBlock, 'the losing unqualified .bridge form does not return')
+    expect(narrowBlock, 'the Standard 1279px block keeps its attribute-qualified selector')
       .not.toMatch(/(?:^|[{}])\s*\.bridge\s*\{[^}]*--vfo-bridge-width/s);
+    const compactBlock = surfaceCss.slice(
+      surfaceCss.indexOf('@media (max-width: 1050px)'),
+      surfaceCss.indexOf('@media (max-width: 760px)'),
+    );
+    expect(compactBlock, 'the SDR appearance keeps the shared 150px bridge at 1050px')
+      .toMatch(/(?:^|[{}])\s*\.bridge\s*\{[^}]*--vfo-bridge-width:\s*150px/s);
     expect(surfaceCss.indexOf('@media (max-width: 1279px)'),
       'equal specificity with the desktop rule: the narrow rule wins by source order')
       .toBeGreaterThan(surfaceCss.indexOf('--vfo-bridge-width: 212px'));

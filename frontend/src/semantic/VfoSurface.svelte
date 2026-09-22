@@ -1301,25 +1301,20 @@
   [data-vfo-appearance='standard'] .receiver-instrument .secondary-slot .vfo-select {
     grid-column: 4; grid-row: 1;
   }
-  /* MOR-2509 round 5, owner ruling 2026-09-22 15:00 EDT ("Б"): below 1280 px
-     the Standard bridge returns to its earlier 150 px column so the receiver
-     panels keep >= 470 px and the deck stays out of narrow mode at 1200 px,
-     pinned by "standard 1200px VFO panel does not use narrow mode" in
-     frontend/tests/e2e/i18n/desktop-geometry.spec.ts. The attribute qualifier
-     is required: the unqualified `.bridge` 150 px declaration that lived in
-     the 1050 px block always lost on specificity to the desktop 212 px rule
-     above, and "the bridge width is one custom property and the standard deck
-     uses the mock-up column" in VfoSurface.panel-rows.test.ts now fails if the
-     losing form returns. The inline padding narrows to 6 px with the column
-     because at 10 px the span-2 TUNER key's client box is 36.67 px against
-     38.88 px of label at 12 px/700/.06em, the fit that "keeps the longest
-     function label inside the 150px column below 1280px" computes. */
+  /* The e2e test "standard 1200px VFO panel does not use narrow mode" pins
+     the qualified Standard bridge at 150 px below 1280 px. The unit test "the
+     bridge width is one custom property and the standard deck uses the mock-up
+     column" pins both that qualified rule and the shared 150 px rule used by
+     the SDR appearance at or below 1050 px. The unit test "keeps the longest
+     function label inside the 150px column below 1280px" pins the 6 px inline
+     padding that fits its measured TUNER label. */
   @media (max-width: 1279px) {
     [data-vfo-appearance='standard'] .bridge { --vfo-bridge-width: 150px; padding: 12px 6px; }
   }
   @media (max-width: 1050px) {
     .instrument-panel { flex-wrap: wrap; }
     .receiver-instrument { flex-basis: calc(50% - 90px); }
+    .bridge { --vfo-bridge-width: 150px; }
     [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
       flex-basis: calc(100% - 192px);
     }

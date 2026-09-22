@@ -821,7 +821,9 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     });
     const tab = page.locator('.standard-face .receiver-instrument .panel .tray .tab').first();
     await expect(tab).toBeVisible();
-    // Mirrors the unit pins in VfoSurface.panel-rows.test.ts (light --dl-vfo-panel-sheen: none with the under-sheen gradient, ~1055-1056 and ~1084-1088).
+    // Mirrors "keeps filled chip ink mode-independent while light mode owns a
+    // light panel" and "the alive layer is token-owned, standard-only and
+    // non-interactive" in VfoSurface.panel-rows.test.ts.
     expect(await tab.evaluate((element) => {
       const panel = element.closest('.panel');
       if (!panel) return { hitIsContent: false, sheenIsBeforeUnderContent: false, rowsPositioned: false, afterCarriesNoSheen: false };

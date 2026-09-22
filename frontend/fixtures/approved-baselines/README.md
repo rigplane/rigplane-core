@@ -34,17 +34,20 @@ A subsequent exact-head `visual` run must confirm these comparisons pass.
 
 ## Linux re-pin provenance — 2026-09-22 MOR-2509 round-2 deck (superseded)
 
-MOR-2509 round 2 (on `codex/mor-2509-r2-batch`): the bridge rows now fill the
-deck block and the inactive receiver is dimmed; the `panadapter-first` and
-`unified-instrument` LCD faces pick up one 12-px strip inside the deck (the
+Superseded by the 26c67982 pin above for `panadapter-first`/`unified-instrument`;
+the other eleven rows still describe the committed files.
+
+MOR-2509 round 2 (on `codex/mor-2509-r2-batch`): the bridge rows filled the
+deck block and the inactive receiver was dimmed; the `panadapter-first` and
+`unified-instrument` LCD faces picked up one 12-px strip inside the deck (the
 S-meter label row).
 
-The committed PNGs and `manifest.json` come from the Linux regeneration run
+The committed PNGs and `manifest.json` came from the Linux regeneration run
 [35764235628](https://github.com/rigplane/rigplane-core/actions/runs/35764235628)
 (`visual.yml` with `regenerate=true`) at source head
 `22e670519cd223a61711b5208a87c0a74680ae6b` (`manifest.json` `commit`); the
 artifact `regenerated-baselines` was downloaded with `gh run download`. Of the
-30 PNGs in the artifact, 15 were copied over this directory — each differs by
+30 PNGs in the artifact, 15 were copied over this directory — each differed by
 more than 8/255 in some pixel from the previously committed file — 13 were
 byte-identical, and 2 (`peer-split-chassis--1100x800.png`,
 `peer-split-chassis--desktop.png`) differed in bytes only with no pixel above
@@ -71,10 +74,10 @@ prefix of the committed file:
 | `unified-instrument--1100x800.png` | 48 | 0.01% | `a3db6f72b7954375` |
 | `unified-instrument--desktop.png` | 56 | 0.01% | `c6b4b4b7921afb54` |
 
-The four `panadapter-first`/`unified-instrument` rows (≤ 0.01 %) are the LCD
-faces: the 12-px S-meter label strip inside the deck is the only change.
-`topology-1-single--desktop` and `dual-main-sub--phone-portrait` change the
-most because the deck spans their full width.
+The four `panadapter-first`/`unified-instrument` rows (≤ 0.01 %) were the LCD
+faces: the 12-px S-meter label strip inside the deck was the only change.
+`topology-1-single--desktop` and `dual-main-sub--phone-portrait` changed the
+most because the deck spanned their full width.
 
 ## Linux re-pin provenance — 2026-09-22 MOR-2509 VFO deck batch (superseded)
 
