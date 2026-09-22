@@ -50,6 +50,12 @@ export type VfoRadioFunctionsInput = Readonly<{
 
 export type VfoOperationProjectionInput = Readonly<{
   hasVfoPair: boolean; hasDualReceiver: boolean; relativeIdentityUnknown: boolean;
+  /** Capability gates (MOR-2509 review): a radio without the `split`
+   *  (resp. `dual_watch`) capability renders no SPLIT (resp. DW) key at
+   *  all — the caller reads them off the caps, the same one mechanism
+   *  `hasDualReceiver` uses; defaults exist only on the capability-blind
+   *  surface's own props. */
+  hasSplit: boolean; hasDualWatch: boolean;
   activeReceiver: ActiveRx;
   split: BooleanFact; dualWatch: BooleanFact;
   actions: DualActionBlockViewModel | undefined;
@@ -174,14 +180,18 @@ export function projectVfoOperations(
     split: {
       kind: 'toggle',
       reading: input.split,
-      availability: availability(true, !splitUnknown, splitUnknown ? input.reasons.splitUnknown : undefined),
+      availability: availability(
+        input.hasSplit,
+        input.hasSplit && !splitUnknown,
+        splitUnknown ? input.reasons.splitUnknown : undefined,
+      ),
     },
     dualWatch: {
       kind: 'toggle',
       reading: input.dualWatch,
       availability: availability(
-        input.hasDualReceiver,
-        !dualWatchUnknown,
+        input.hasDualWatch && input.hasDualReceiver,
+        input.hasDualWatch && input.hasDualReceiver && !dualWatchUnknown,
         dualWatchUnknown ? input.reasons.dualWatchUnknown : undefined,
       ),
     },

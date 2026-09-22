@@ -116,6 +116,15 @@
      */
     disabled?: boolean;
     /**
+     * MOR-2509 review — capability gates for the SPLIT / dual-watch keys,
+     * read off the radio caps BY THE CALLER (this surface stays
+     * capability-blind, the `hasDualReceiver` precedent). `false` renders
+     * no key at all, never a disabled one. Defaults keep every existing
+     * caller rendering exactly as before.
+     */
+    hasSplit?: boolean;
+    hasDualWatch?: boolean;
+    /**
      * MOR-1421 — a PLAIN boolean, not a capability lookup: this surface stays
      * capability-blind by ADR (v3, MOR-1063), so the caller (`SemanticRadioSurfaces`,
      * which already holds `runtime.caps` for the AGC/NB display-metadata
@@ -216,6 +225,8 @@
     showVfoList = true,
     groupLabel,
     disabled = false,
+    hasSplit = true,
+    hasDualWatch = true,
     hasDualReceiver = true,
     onTuneFrequency,
     pendingFrequencyHz,
@@ -295,6 +306,8 @@
     return {
       hasVfoPair,
       hasDualReceiver,
+      hasSplit,
+      hasDualWatch,
       relativeIdentityUnknown,
       activeReceiver: viewModel.activeReceiver,
       split: viewModel.split,
@@ -1019,6 +1032,10 @@
   .instrument-panel {
     display: flex; align-items: stretch; width: 100%; min-width: 0;
     --vfo-instrument-inset-block: 6px;
+    /* MOR-2509: the deck's bridge-width token — the standard bridge
+       narrows it to fit the function keys; the 1050px breakpoint
+       override below sets the same property. */
+    --vfo-bridge-width: 180px;
     background: linear-gradient(180deg, var(--v2-bg-gradient-start, #0a0e14) 0%, var(--v2-bg-panel, #05080c) 100%);
     border: 1px solid var(--v2-border-panel, #18222d); border-radius: 4px;
   }
@@ -1033,7 +1050,7 @@
   .receiver-instrument > :global(.indicator-row) { flex: 1 1 auto; min-height: 0; }
   .receiver-instrument + .receiver-instrument { border-left: 1px solid var(--v2-border-panel, #18222d); }
   .bridge {
-    flex: 0 0 180px; min-width: 0; display: flex; flex-direction: column;
+    flex: 0 0 var(--vfo-bridge-width); min-width: 0; display: flex; flex-direction: column;
     justify-content: center; gap: 10px; padding: 10px;
     margin-block: var(--vfo-instrument-inset-block);
     border-inline: 1px solid var(--v2-border-panel, #18222d);
@@ -1075,7 +1092,7 @@
     border: 1px solid var(--v2-accent-cyan, #00d4ff); border-radius: 4px;
     box-shadow: 0 0 6px rgba(0,212,255,.3), inset 0 0 16px rgba(0,212,255,.06);
   }
-  [data-vfo-appearance='standard'] .bridge { flex-basis: 168px; }
+  [data-vfo-appearance='standard'] .bridge { --vfo-bridge-width: 168px; }
   [data-vfo-appearance='standard'] .bridge .vfo-select { min-height: 28px; }
   [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
     flex: 1 1 0;
@@ -1100,7 +1117,7 @@
     padding: 4px;
     gap: 3px;
     --vfo-ops-gap: 3px;
-    /* MOR-2509: the bridge keys' family tokens — 28px hit-target floor,
+    /* MOR-2509: the bridge keys' family tokens — 28px key height,
        12px labels, dot packed tighter than panel keys. */
     --btn-min-height: 28px;
     --btn-font-size: 12px;
@@ -1181,7 +1198,7 @@
   @media (max-width: 1050px) {
     .instrument-panel { flex-wrap: wrap; }
     .receiver-instrument { flex-basis: calc(50% - 90px); }
-    .bridge { flex-basis: 150px; }
+    .bridge { --vfo-bridge-width: 150px; }
     .receiver-instrument .vfo-freq { font-size: 26px; }
   }
   @media (max-width: 950px) {

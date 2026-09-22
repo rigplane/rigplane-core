@@ -53,6 +53,8 @@ function input(
   return {
     hasVfoPair: true,
     hasDualReceiver: true,
+    hasSplit: true,
+    hasDualWatch: true,
     relativeIdentityUnknown: false,
     activeReceiver: { status: 'known', receiver: 'MAIN' },
     split: { status: 'known', value: false },
@@ -109,6 +111,17 @@ describe('projectVfoOperations', () => {
     expect(projected.groupReason).toBe(REASONS.identityUnknown);
     expect(projected.activeReceiver.reading).toEqual({ status: 'unknown' });
     expect(projected.activeReceiver.availability.operational).toBe(true);
+  });
+
+  it.each([
+    ['split capability absent', { hasSplit: false }, 'split', 'onToggleSplit', { kind: 'toggle-split' }],
+    ['dual_watch capability absent', { hasDualWatch: false }, 'dualWatch', 'onToggleDualWatch', { kind: 'toggle-dual-watch' }],
+  ] as const)('renders no key and rejects invocation when the %s', (_name, change, field, callbackName, intent) => {
+    const callbacks = spyCallbacks();
+    const projected = projectVfoOperations(input({ ...change, callbacks }));
+    expect(projected[field].availability).toMatchObject({ structural: false, operational: false });
+    invokeVfoOperation(() => input({ ...change, callbacks }), intent);
+    expect(callbacks[callbackName]).not.toHaveBeenCalled();
   });
 
   it('keeps option reasons source-owned and callback absence reasonless', () => {
