@@ -1435,6 +1435,9 @@
   }
 
   @media (max-width: 950px) {
+    .radio-layout.desktop-control-face.standard-face {
+      grid-template-rows: auto 28px auto auto minmax(min-content, 1fr) auto auto;
+    }
     .desktop-control-face.standard-face .content-row { contain: inline-size; }
   }
 

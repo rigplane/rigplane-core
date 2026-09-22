@@ -1463,8 +1463,12 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
     expect(narrow).toContain('contain: inline-size');
   });
 
-  it('lets the 900px Standard scope floor size its stacked center row', () => {
+  it('pins the 900px Standard stacked center row to its intrinsic minimum', () => {
     const stacked = RADIO_LAYOUT_SOURCE.slice(RADIO_LAYOUT_SOURCE.indexOf('@media (max-width: 950px)'));
+    const standardRule = stacked.match(/\.radio-layout\.desktop-control-face\.standard-face\s*\{([^}]*)\}/);
+    expect(standardRule).not.toBeNull();
+    const rows = standardRule![1].match(/grid-template-rows:\s*([^;]+);/)?.[1];
+    expect(rows).toBe('auto 28px auto auto minmax(min-content, 1fr) auto auto');
     expect(stacked).toContain('.desktop-control-face.standard-face .content-row { contain: inline-size; }');
     expect(RADIO_LAYOUT_SOURCE.slice(0, RADIO_LAYOUT_SOURCE.indexOf('@media (max-width: 950px)')))
       .toContain('.desktop-control-face .content-row { display: flex; flex: 1; min-height: 280px; contain: size; }');
