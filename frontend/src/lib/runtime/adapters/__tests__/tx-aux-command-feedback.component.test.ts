@@ -113,10 +113,12 @@ describe('mounted raw TX/VOX feedback recovery', () => {
       phase: 'awaiting-confirmation', confirmed: '120', target: '128', outcome: '',
     });
 
+    // Mirrors the store pin 'keeps an acknowledged IF-shift command awaiting when
+    // the first post-ACK readback is the pre-command value' (stores/__tests__/commands.test.ts).
     expect(setRadioState(radioState(3, 2, 127, 2))).toBe(true);
     flushSync();
     expect(probe.dataset).toMatchObject({
-      phase: 'confirmed', confirmed: '127', target: '', outcome: 'confirmed',
+      phase: 'awaiting-confirmation', confirmed: '127', target: '128', outcome: '',
     });
     expect(setRadioState(radioState(3, 3, 128, 3))).toBe(true);
     flushSync();

@@ -110,7 +110,7 @@ onCommandDelivery((event) => {
   if (event.cancelled) cancelPendingCommands(event.originalEpoch, event.error);
   else if (event.kind === 'ack') acknowledgeCommand(event.commandId, event.originalEpoch, event.eventEpoch);
   else if (event.kind === 'response-ok') {
-    acknowledgeCommand(event.commandId, event.originalEpoch, event.eventEpoch, event.admittedLevel);
+    acknowledgeCommand(event.commandId, event.originalEpoch, event.eventEpoch, event.admittedLevel, event.admittedWidth);
   } else failCommand(event.commandId, event.originalEpoch, event.eventEpoch, event.error);
 });
 if (Object.prototype.hasOwnProperty.call(controlTransport, 'onCommandLifecycleDelivery')) {

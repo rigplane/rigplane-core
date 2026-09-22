@@ -1272,7 +1272,7 @@ describe('the composed TX/VOX controls consume the real feedback lifecycle', () 
     },
   );
 
-  it('confirms ACK on the first same-field readback past the boundary, whatever value it carries', () => {
+  it('confirms ACK when a stale same-field readback past the boundary equals the target', () => {
     const descriptor = TX_AUX_COMMAND_DESCRIPTORS.micGain;
     const command = beginCommand({
       id: 'mic-feedback', name: descriptor.intentName, params: { level: 200 }, originalEpoch: 7,
@@ -1293,9 +1293,12 @@ describe('the composed TX/VOX controls consume the real feedback lifecycle', () 
         micGain: { ...fresh, freshness, lastObservedMonotonic: revision },
       },
     } as unknown as ServerState);
+    // Mirrors the store pins 'keeps an acknowledged IF-shift command awaiting when
+    // the first post-ACK readback is the pre-command value' and 'confirms micGain
+    // only on a newer raw observation equal to the target' (stores/__tests__/commands.test.ts).
     pushRadioState(observed(1, 199, 'fresh'));
     pushSession({ state: 'connected', epoch: 7 });
-    expect(input().dataset.commandPhase).toBe('confirmed');
+    expect(input().dataset.commandPhase).toBe('awaiting-confirmation');
     expect(input().getAttribute('aria-valuenow')).toBe('199');
     pushRadioState(observed(2, 200, 'stale'));
     pushSession({ state: 'connected', epoch: 7 });
