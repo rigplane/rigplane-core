@@ -1143,6 +1143,9 @@ export function toScanProps(state: ServerState | null): ScanProps {
 export interface AudioSpectrumProps {
   filterWidth: number;
   filterWidthMax: number;
+  /** Native IF-shift in Hz when the active profile exposes that control.
+   *  Non-finite means the structural fact has not been observed. */
+  ifShift: number;
   pbtInner: number;
   pbtOuter: number;
   /** The radio's published PBT raw↔Hz range (`controls.pbt_inner` through
@@ -1189,6 +1192,7 @@ export function toAudioSpectrumProps(
     // string-formatted.
     filterWidth: rx?.filterWidth ?? Number.NaN,
     filterWidthMax,
+    ifShift: hasCap(caps, 'if_shift') ? (rx?.ifShift ?? Number.NaN) : 0,
     pbtInner: rx?.pbtInner ?? 128,
     pbtOuter: rx?.pbtOuter ?? 128,
     ...(pbtRange !== undefined ? { pbtRange } : {}),

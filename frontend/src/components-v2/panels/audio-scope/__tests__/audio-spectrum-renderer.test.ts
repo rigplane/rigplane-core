@@ -6,6 +6,11 @@ import {
   type SpectrumState,
 } from '../audio-spectrum-renderer';
 import type { PbtRange } from '$lib/radio/filter-controls';
+import { toAudioSpectrumProps } from '$lib/runtime/props/panel-props';
+import {
+  FTX1_CAPABILITIES,
+  FTX1_STATE,
+} from '$lib/runtime/adapters/__tests__/fixtures/ftx1-profile';
 
 /** The range every PBT-publishing profile declares (ic705/ic7300/ic7610/
  *  ic9700: raw_center 128, display ±1200). The renderer consumes it only as
@@ -59,6 +64,7 @@ describe('renderAudioSpectrum', () => {
     bandwidth: 3600,
     filterWidth: 2400,
     filterWidthMax: 3600,
+    ifShift: 0,
     pbtInner: 128,
     pbtOuter: 128,
     manualNotch: false,
@@ -397,6 +403,46 @@ describe('renderAudioSpectrum', () => {
       }, new AudioSpectrumRendererState());
       expect(centerXOf(strokes, INNER_PBT_STROKE)).toBeCloseTo(200, 9);
       expect(centerXOf(strokes, OUTER_PBT_STROKE)).toBeCloseTo(200, 9);
+    });
+
+    describe('FTX-1 native IF-shift passband placement (MOR-2534)', () => {
+      function ftx1Props(filterWidth: number | null, ifShift: number | null) {
+        return toAudioSpectrumProps({
+          ...FTX1_STATE,
+          main: { ...FTX1_STATE.main, filterWidth, ifShift },
+        }, FTX1_CAPABILITIES);
+      }
+
+      function plainTop(filterWidth: number | null, ifShift: number | null) {
+        const props = ftx1Props(filterWidth, ifShift);
+        const { ctx, strokes } = mockCtxWithStrokes();
+        renderAudioSpectrum(ctx, 400, 160, {
+          ...baseState,
+          ...props,
+          pixels: null,
+          bandwidth: 48_000,
+        }, new AudioSpectrumRendererState());
+        return strokes.find((stroke) => stroke.style === PLAIN_STROKE)
+          ?.points.filter(([, y]) => y === TRAP_TOP).map(([x]) => x);
+      }
+
+      it('places width 3000 edges around the live +200 Hz IF-shift centre', () => {
+        const top = plainTop(3000, 200);
+        expect(top?.[0]).toBeCloseTo(130.75625, 9);
+        expect(top?.[1]).toBeCloseTo(283.64375, 9);
+        expect((top![0] + top![1]) / 2).toBeCloseTo(207.2, 9);
+      });
+
+      it('centres the same passband when the live IF shift is zero', () => {
+        const top = plainTop(3000, 0);
+        expect(top?.[0]).toBeCloseTo(123.55625, 9);
+        expect(top?.[1]).toBeCloseTo(276.44375, 9);
+        expect((top![0] + top![1]) / 2).toBeCloseTo(200, 9);
+      });
+
+      it('draws no passband overlay when the live width is unknown', () => {
+        expect(plainTop(null, 200)).toBeUndefined();
+      });
     });
   });
 });
