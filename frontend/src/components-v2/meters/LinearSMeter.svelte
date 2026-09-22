@@ -482,15 +482,16 @@
   /** The lit extent at a fractional fill position: whole segments only —
    *  a segment lights when the fill covers at least half of it, and the
    *  extent is that segment's right edge, so every rendered dash is a
-   *  whole 2px dash. */
+   *  whole 2px dash. The cap is the last dash that FITS the track: the
+   *  greatest 3n+2 ≤ trackW (548 itself on a 548px track), never a
+   *  truncated terminal dash. */
   function vfoLitExtentX(fraction: number): number {
     const fillPx = fraction * vfoTrackW;
     const segment = Math.floor((fillPx - VFO_SEG_LIT / 2) / VFO_SEG_PITCH);
     if (segment < 0) return vfoTrackX;
-    return vfoTrackX + Math.min(
-      vfoTrackW - (VFO_SEG_PITCH - VFO_SEG_LIT),
-      segment * VFO_SEG_PITCH + VFO_SEG_LIT,
-    );
+    const lastSegment = Math.floor((vfoTrackW - VFO_SEG_LIT) / VFO_SEG_PITCH);
+    if (lastSegment < 0) return vfoTrackX;
+    return vfoTrackX + Math.min(lastSegment, segment) * VFO_SEG_PITCH + VFO_SEG_LIT;
   }
 
   const vfoFillFraction = $derived(signalProjection.motionFraction === null ? 0
