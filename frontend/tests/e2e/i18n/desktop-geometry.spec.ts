@@ -949,6 +949,20 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
   }
 }
 
+// MOR-2509: at 1100×800 the unstacked Standard grid leaves the center row
+// less than its 320px floor, so the row keeps its min-content minimum and the
+// page scrolls instead of the scope overlapping the station meters dock.
+for (const known of [true, false]) {
+  test(`standard 1100 ${known ? 'observed IC' : 'unknown'} scope ends before station meters`, async ({ page }) => {
+    const errors: string[] = []; page.on('pageerror', e => errors.push(String(e)));
+    await boot(page, 'standard', 1100, known, 'studioline', false, undefined, { height: 800 });
+    const center = await page.locator('.desktop-controls-center .content-row').boundingBox();
+    const meters = await page.locator('[data-panel-id="semantic-meters"]').boundingBox();
+    expect.soft(center!.y + center!.height, 'scope ends before station meters').toBeLessThanOrEqual(meters!.y + 1);
+    expect(errors).toEqual([]);
+  });
+}
+
 // MOR-2425/R41: the freshness cue is gone, so the claim is now the stronger
 // one it used to approximate — the instrument's geometry does not move at all
 // through a current → stale → current recovery, and no cue comes back.

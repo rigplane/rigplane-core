@@ -1463,6 +1463,18 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
     expect(narrow).toContain('contain: inline-size');
   });
 
+  it('pins the Standard base center row to min-content above the station meters (MOR-2509)', () => {
+    // The unstacked rule must keep the row's real minimum: with minmax(0, 1fr)
+    // the row minimum is 0, so the 320px-min center column overflows its track
+    // onto the meters dock on short viewports instead of scrolling the page.
+    const wide = RADIO_LAYOUT_SOURCE.slice(0, RADIO_LAYOUT_SOURCE.indexOf('@media (max-width: 1024px)'));
+    const standardRule = wide.match(/\.radio-layout\.desktop-control-face\.standard-face\s*\{([^}]*)\}/);
+    expect(standardRule).not.toBeNull();
+    const rows = standardRule![1].match(/grid-template-rows:\s*([^;]+);/)?.[1];
+    expect(rows).toBe('auto 28px minmax(200px, auto) minmax(min-content, 1fr) auto');
+    expect(rows).not.toContain('minmax(0, 1fr)');
+  });
+
   it('pins the Standard stacked center row to its intrinsic minimum across the whole stacked band', () => {
     const bandStart = RADIO_LAYOUT_SOURCE.indexOf('@media (max-width: 1024px)');
     const bandEnd = RADIO_LAYOUT_SOURCE.indexOf('@media', bandStart + 1);
