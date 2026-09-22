@@ -273,10 +273,6 @@
   const passbandPolicy = createBipolarContinuousScalarPolicy({
     debounceMs: 50, describeTarget: (value) => `${value} Hz`,
   });
-  // The bipolar policy does not retain a gesture draft once the command's
-  // own lifecycle id appears, so the panel shows the in-flight target the
-  // same way the table-mode width row does — a PENDING chip beside the
-  // canonical readout (MOR-1691), never as the confirmed value.
   function passbandPendingTarget(feedback: Readonly<CommandScalarFeedback>): number | null {
     return feedback.busy && feedback.target !== null ? feedback.target : null;
   }
