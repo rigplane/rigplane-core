@@ -160,6 +160,7 @@ from ..radio_poller import (  # noqa: TID251
 )
 from ..runtime_helpers import (  # noqa: TID251
     VFO_CAPABILITY_TAGS,
+    primary_receiver_snapshot_ids,
     projected_vfo_capability_tags,
     radio_ready,
     runtime_capabilities,
@@ -413,26 +414,32 @@ def _with_admitted_level(
 
 
 def _observed_receiver_mode(server: Any, receiver: int) -> str | None:
-    """The state store's latest observed mode for *receiver*, if any.
+    """The state store's fresh observed mode for *receiver*, if any.
 
     Snapshots key the primary receiver under "0" (legacy Icom poller) or
     "main" (Yaesu CAT, rigctld) — see
     ``web/runtime_helpers._SNAPSHOT_RECEIVER_IDS`` — so both spellings are
     probed, "0" first to preserve the historical Icom-first lookup order
-    documented on ``primary_receiver_snapshot_ids``. Pinned by
-    tests/test_filter_width_admitted_width.py (the no-store, table-less,
-    and receiver-1 cases).
+    documented on ``primary_receiver_snapshot_ids``. A stale mode is omitted
+    rather than used to admit against the wrong table. Pinned by
+    ``test_set_filter_width_omits_admitted_width_when_observed_mode_is_stale``
+    and the receiver-1 case in tests/test_filter_width_admitted_width.py.
     """
     state_store = getattr(server, "command_state_store", None)
     if not isinstance(state_store, StateStore):
         return None
     snapshot = state_store.snapshot()
-    for receiver_id in ("0", "main") if receiver == 0 else ("1", "sub"):
+    receiver_ids = primary_receiver_snapshot_ids() if receiver == 0 else ("1", "sub")
+    for receiver_id in receiver_ids:
         try:
             field = snapshot.field(FieldPath.active(receiver_id, "freq_mode", "mode"))
         except KeyError:
             continue
-        if isinstance(field.value, str) and field.value:
+        if (
+            field.freshness is FreshnessState.FRESH
+            and isinstance(field.value, str)
+            and field.value
+        ):
             return field.value
     return None
 
@@ -464,7 +471,7 @@ def _with_admitted_width(
     ):
         return details
     admitted = profile.admitted_filter_width(mode, width)
-    if admitted is None:
+    if not isinstance(admitted, int):
         return details
     return {**details, "admitted_width": admitted}
 

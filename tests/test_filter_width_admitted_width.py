@@ -35,7 +35,9 @@ class _Ws:
         self.frames.append(json.loads(payload))
 
 
-def _store_with_mode(mode: str, receiver_id: str = "main") -> StateStore:
+def _store_with_mode(
+    mode: str, receiver_id: str = "main", *, stale: bool = False
+) -> StateStore:
     store = StateStore()
     store.apply(
         Observation(
@@ -43,8 +45,11 @@ def _store_with_mode(mode: str, receiver_id: str = "main") -> StateStore:
             value=mode,
             source=SourceMetadata(source="yaesu_poll_response", provider="yaesu_cat"),
             timestamp_monotonic=0.0,
+            max_age=5.0,
         )
     )
+    if stale:
+        store.mark_stale_due(now=5.1)
     return store
 
 
@@ -106,6 +111,27 @@ async def test_set_filter_width_omits_admitted_width_without_an_observed_mode() 
     assert frame["result"] == {"width": 2350, "receiver": 0}
 
 
+async def test_set_filter_width_omits_admitted_width_when_observed_mode_is_stale() -> (
+    None
+):
+    handler, _ws, _queue = _handler(state_store=_store_with_mode("CW-L", stale=True))
+
+    frame = await _dispatch_width(handler, 1950)
+
+    assert frame["result"] == {"width": 1950, "receiver": 0}
+
+
+async def test_set_filter_width_omits_non_integer_profile_admission() -> None:
+    handler, _ws, _queue = _handler(state_store=_store_with_mode("USB"))
+    profile = MagicMock()
+    profile.admitted_filter_width.return_value = "2400"
+    handler._radio.profile = profile  # type: ignore[union-attr]  # noqa: SLF001
+
+    frame = await _dispatch_width(handler, 2350)
+
+    assert frame["result"] == {"width": 2350, "receiver": 0}
+
+
 async def test_set_filter_width_omits_admitted_width_for_a_table_less_mode() -> None:
     # C4FM-DN is a live FTX-1 mode with no [filters.width] entry, so
     # RadioProfile.resolve_filter_rule returns None for it.
@@ -128,8 +154,8 @@ async def test_set_filter_width_omits_admitted_width_for_a_fixed_width_mode() ->
 
 async def test_set_filter_width_admission_uses_the_requested_receiver_mode() -> None:
     # SUB observed in CW-L (table tops out at 4000 with 2400 present, but the
-    # nearest entry to 2350 is 2400 with a 50 Hz gap either way on the CW-L
-    # lattice: 2000 is 350 Hz away); receiver=1 must read the sub-mode row.
+    # nearest entry to 2350 is 2400 (50 Hz away; 2000 is 350 Hz away);
+    # receiver=1 must read the sub-mode row.
     handler, _ws, _queue = _handler(state_store=_store_with_mode("CW-L", "sub"))
     await handler._dispatch_command(  # noqa: SLF001
         "c1", "set_filter_width", {"width": 2350, "receiver": 1}
