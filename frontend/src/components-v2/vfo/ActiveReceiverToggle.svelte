@@ -40,6 +40,9 @@
     allowReselect?: boolean;
     /** Render only the segments when the caller already owns the operation group. */
     embedded?: boolean;
+    /** MOR-2509 bridge only: render the segments through the shared Button
+     *  family's fill look. Every other mount keeps the raw segment markup. */
+    hardware?: boolean;
     /** Optional label for screen readers. */
     label?: string;
   }
@@ -51,11 +54,25 @@
     segmentLabels,
     allowReselect = false,
     embedded = false,
+    hardware = false,
     label = 'Active receiver',
   }: Props = $props();
 
   const RECEIVERS: readonly Receiver[] = ['MAIN', 'SUB'];
   const reasonIdPrefix = `active-receiver-reason-${++sequence}`;
+  const segmentElements: Partial<Record<Receiver, HTMLButtonElement>> = {};
+
+  function registerSegment(node: HTMLButtonElement, receiver: Receiver) {
+    segmentElements[receiver] = node;
+    return {
+      destroy: () => {
+        if (segmentElements[receiver] === node) delete segmentElements[receiver];
+      },
+    };
+  }
+
+  /** The hardware path's segments are family buttons an action cannot
+   *  register, so they are found through the group element instead. */
   let groupElement: HTMLElement | null = null;
 
   function state(receiver: Receiver): ReceiverSegmentAvailability {
@@ -119,9 +136,12 @@
   function focusSegment(target: Receiver): void {
     // Defer to next tick so Svelte can update tabindex attrs first.
     queueMicrotask(() => {
-      groupElement?.querySelector<HTMLButtonElement>(
-        `[data-active-receiver-segment="${target}"]`,
-      )?.focus();
+      segmentElements[target]?.focus();
+      if (segmentElements[target] === undefined) {
+        groupElement?.querySelector<HTMLButtonElement>(
+          `[data-active-receiver-segment="${target}"]`,
+        )?.focus();
+      }
     });
   }
 
@@ -140,7 +160,7 @@
     {@const isActive = receiver === active}
     {#if availability.structural}
       {@const reasonId = availability.reason ? `${reasonIdPrefix}-${receiver.toLowerCase()}` : undefined}
-      {#if embedded}
+      {#if embedded && hardware}
         <!--
           MOR-2509 bridge: the segment renders through the shared Button
           family's fill look — the filled key IS the "which receiver is
@@ -168,24 +188,29 @@
           onclick={() => select(receiver)}
         >{segmentLabels?.[receiver] ?? receiver}</ControlButton>
       {:else}
-        <button
-          type="button"
-          role="radio"
-          class="segment"
-          class:is-active={isActive}
-          data-active-receiver-segment={receiver}
-          data-dual-action={receiver.toLowerCase()}
-          aria-checked={isActive}
-          aria-label={segmentLabels?.[receiver] ?? longLabel(receiver)}
-          aria-describedby={reasonId}
-          title={availability.reason}
-          disabled={!availability.operational}
-          tabindex={availability.operational ? receiver === focusableReceiver ? 0 : -1 : undefined}
-          onclick={() => select(receiver)}
-          onkeydown={(e) => handleKeydown(e, receiver)}
-        >
-          {shortLabel(receiver)}
-        </button>
+      <!-- The raw segment below is the pre-bridge markup, kept verbatim:
+           every non-standard mount renders exactly what it rendered
+           before the bridge keys existed. -->
+      <button
+        type="button"
+        role="radio"
+        class="segment"
+        class:embedded
+        class:is-active={isActive}
+        data-active-receiver-segment={receiver}
+        data-dual-action={receiver.toLowerCase()}
+        aria-checked={isActive}
+        aria-label={segmentLabels?.[receiver] ?? longLabel(receiver)}
+        aria-describedby={reasonId}
+        title={availability.reason}
+        disabled={!availability.operational}
+        tabindex={availability.operational ? receiver === focusableReceiver ? 0 : -1 : undefined}
+        use:registerSegment={receiver}
+        onclick={() => select(receiver)}
+        onkeydown={(e) => handleKeydown(e, receiver)}
+      >
+        {shortLabel(receiver)}
+      </button>
       {/if}
       {#if reasonId}
         <span id={reasonId} class="sr-only">{availability.reason}</span>
@@ -194,7 +219,7 @@
   {/each}
 {/snippet}
 
-<div class="active-receiver-toggle" class:embedded role="radiogroup" data-owns-arrows="both" aria-label={label} bind:this={groupElement}>
+<div class="active-receiver-toggle" class:embedded class:hardware role="radiogroup" data-owns-arrows="both" aria-label={label} bind:this={groupElement}>
   {@render segments()}
 </div>
 
@@ -252,6 +277,14 @@
     cursor: not-allowed;
   }
 
+  .segment.embedded {
+    /* MOR-2509: 24px WCAG 2.5.8 hit-target floor for bridge segments —
+       pinned by `semantic/__tests__/VfoSurface.panel-rows.test.ts`. */
+    min-height: max(24px, var(--vfo-ops-badge-height, 18px));
+    border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12));
+    border-radius: var(--vfo-ops-badge-radius, 4px);
+  }
+
   .active-receiver-toggle.embedded {
     grid-column: 1 / -1;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -261,22 +294,25 @@
     padding: 0;
     border: 0;
     background: transparent;
-    /* MOR-2509: the bridge keys' family tokens — 28px WCAG hit-target
-       floor and 12px labels, same numbers `VfoOperationGroup`'s ops column
-       scopes. Pinned by `semantic/__tests__/VfoSurface.panel-rows.test.ts`. */
+  }
+
+  /* MOR-2509 hardware bridge: the keys' family tokens — 28px key height
+     and 12px labels, the same numbers `VfoOperationGroup`'s ops column
+     scopes. Pinned by `semantic/__tests__/VfoSurface.panel-rows.test.ts`. */
+  .active-receiver-toggle.embedded.hardware {
     --btn-min-height: 28px;
     --btn-font-size: 12px;
     --indicator-dot-offset: 4px;
     --indicator-dot-gap: 4px;
   }
 
-  .active-receiver-toggle.embedded > :global(button) {
+  .active-receiver-toggle.embedded.hardware > :global(button) {
     width: 100%;
     min-width: 0;
   }
 
   @media (pointer: coarse) {
-    .active-receiver-toggle.embedded > :global(button) {
+    .segment.embedded {
       min-width: var(--tap-target, 44px);
       min-height: var(--tap-target, 44px);
     }

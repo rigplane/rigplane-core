@@ -38,10 +38,11 @@
     ariaChecked?: boolean | 'true' | 'false' | 'mixed';
     tabindex?: number;
     onkeydown?: (event: KeyboardEvent) => void;
-    /** Data attributes rendered on the `<button>` as `data-*` (entries are
-     *  the short names — `{ 'vfo-split': true }` renders
-     *  `data-vfo-split="true"`; undefined and null members are omitted), so
-     *  pinned data hooks stay on the interactive element itself. */
+    /** Data attributes rendered on the `<button>` as `data-*`: an entry
+     *  `{ 'vfo-split': true }` renders `data-vfo-split="true"`, and a key
+     *  already carrying the `data-` prefix passes through verbatim;
+     *  undefined and null members are omitted. Pinned data hooks stay on
+     *  the interactive element itself. */
     data?: Record<string, string | number | boolean | undefined | null>;
     /** Reserves the dot indicator's padding slot without painting a dot,
      *  so lamp and lampless keys in one row keep the same label axis. */
@@ -148,7 +149,7 @@
   onpointerleave={handlePointerLeave}
   {...Object.fromEntries(Object.entries(data ?? {})
     .filter(([, value]) => value !== undefined && value !== null)
-    .map(([name, value]) => [`data-${name}`, value]))}
+    .map(([name, value]) => [name.startsWith('data-') ? name : `data-${name}`, value]))}
 >
   {@render children?.()}
 </button>

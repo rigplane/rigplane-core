@@ -70,9 +70,19 @@
     return fact.status === 'known' ? String(fact.value) as 'true' | 'false' : 'mixed';
   }
 
-  function stateWord(fact: BooleanFact): string {
-    if (fact.status === 'unknown') return t('core.vfo.state.unknown');
+  function stateWord(fact: { status: 'known'; value: boolean }): string {
     return t(fact.value ? 'core.vfo.state.on' : 'core.vfo.state.off');
+  }
+
+  /** A switch over an unread fact carries no state claim: aria-checked is
+   *  omitted (a bare role="switch" reads as false) — never the word
+   *  "unknown" in the accessible name. */
+  function checkedState(fact: BooleanFact): 'true' | 'false' | undefined {
+    return fact.status === 'known' ? String(fact.value) as 'true' | 'false' : undefined;
+  }
+
+  function switchLabel(label: string, fact: BooleanFact): string {
+    return fact.status === 'known' ? `${label}: ${stateWord(fact)}` : label;
   }
 
   function boolFact(operation: VfoRadioFunctionOperation): BooleanFact {
@@ -92,8 +102,13 @@
    *  (VfoSurface's TUNE badge); on/off reuse the catalog state words. */
   function tunerStateWord(operation: VfoRadioFunctionOperation): string {
     const value = atuValue(operation);
-    if (value === null) return t('core.vfo.state.unknown');
     return value === 'tuning' ? value : t(value === 'on' ? 'core.vfo.state.on' : 'core.vfo.state.off');
+  }
+
+  function tunerChecked(operation: VfoRadioFunctionOperation): 'true' | 'false' | 'mixed' | undefined {
+    const value = atuValue(operation);
+    if (value === null) return undefined;
+    return value === 'tuning' ? 'mixed' : value === 'on' ? 'true' : 'false';
   }
 
   /** Present but unoperational is unobserved — the same wording family the
@@ -138,6 +153,7 @@
             segmentLabels={{ MAIN: 'MAIN', SUB: 'SUB' }}
             allowReselect
             embedded
+            hardware
             onChange={(receiver) => emit({ kind: 'select-receiver', receiver })}
           />
         {/if}
@@ -232,9 +248,9 @@
                 indicatorStyle="dot"
                 indicatorColor="cyan"
                 role="switch"
-                ariaChecked={triState(projection.split.reading)}
+                ariaChecked={checkedState(projection.split.reading)}
                 active={projection.split.reading.status === 'known' && projection.split.reading.value}
-                ariaLabel={`${t('core.vfo.split.label')}: ${stateWord(projection.split.reading)}`}
+                ariaLabel={switchLabel(t('core.vfo.split.label'), projection.split.reading)}
                 describedBy={splitReasonId}
                 title={projection.split.availability.reason}
                 disabled={!projection.split.availability.operational}
@@ -251,9 +267,9 @@
                 indicatorStyle="dot"
                 indicatorColor="green"
                 role="switch"
-                ariaChecked={triState(projection.dualWatch.reading)}
+                ariaChecked={checkedState(projection.dualWatch.reading)}
                 active={projection.dualWatch.reading.status === 'known' && projection.dualWatch.reading.value}
-                ariaLabel={`${t('core.vfo.dualWatch.label')}: ${stateWord(projection.dualWatch.reading)}`}
+                ariaLabel={switchLabel(t('core.vfo.dualWatch.label'), projection.dualWatch.reading)}
                 describedBy={dualWatchReasonId}
                 title={projection.dualWatch.availability.reason}
                 disabled={!projection.dualWatch.availability.operational}
@@ -270,15 +286,16 @@
           <div class="ops-row">
             {#if functions.tuner.availability.structural}
               {@const id = reasonId('tuner', functionReason(functions.tuner))}
-              {@const lamp = atuValue(functions.tuner)}
               <ControlButton
                 surface="hardware"
                 indicatorStyle="dot"
-                indicatorColor={lamp === 'tuning' ? 'orange' : 'red'}
+                indicatorColor={atuValue(functions.tuner) === 'tuning' ? 'orange' : 'red'}
                 role="switch"
-                ariaChecked={lamp === null || lamp === 'tuning' ? 'mixed' : lamp === 'on' ? 'true' : 'false'}
-                active={lamp === 'on' || lamp === 'tuning'}
-                ariaLabel={`Tuner: ${tunerStateWord(functions.tuner)}`}
+                ariaChecked={tunerChecked(functions.tuner)}
+                active={atuValue(functions.tuner) === 'on' || atuValue(functions.tuner) === 'tuning'}
+                ariaLabel={atuValue(functions.tuner) === null
+                  ? 'Tuner'
+                  : `Tuner: ${tunerStateWord(functions.tuner)}`}
                 describedBy={id}
                 title={functionReason(functions.tuner)}
                 disabled={!functions.tuner.availability.operational}
@@ -296,9 +313,9 @@
                 indicatorStyle="dot"
                 indicatorColor="amber"
                 role="switch"
-                ariaChecked={triState(vox)}
+                ariaChecked={checkedState(vox)}
                 active={vox.status === 'known' && vox.value}
-                ariaLabel={`VOX: ${stateWord(vox)}`}
+                ariaLabel={switchLabel('VOX', vox)}
                 describedBy={id}
                 title={functionReason(functions.vox)}
                 disabled={!functions.vox.availability.operational}
@@ -316,9 +333,9 @@
                 indicatorStyle="dot"
                 indicatorColor="cyan"
                 role="switch"
-                ariaChecked={triState(lock)}
+                ariaChecked={checkedState(lock)}
                 active={lock.status === 'known' && lock.value}
-                ariaLabel={`Lock: ${stateWord(lock)}`}
+                ariaLabel={switchLabel('Lock', lock)}
                 describedBy={id}
                 title={functionReason(functions.dialLock)}
                 disabled={!functions.dialLock.availability.operational}
@@ -344,8 +361,8 @@
         data-active={triState(projection.split.reading)}
         data-color="cyan"
         role="switch"
-        aria-checked={triState(projection.split.reading)}
-        aria-label={`${t('core.vfo.split.label')}: ${stateWord(projection.split.reading)}`}
+        aria-checked={checkedState(projection.split.reading)}
+        aria-label={switchLabel(t('core.vfo.split.label'), projection.split.reading)}
         aria-describedby={splitReasonId}
         title={projection.split.availability.reason}
         disabled={!projection.split.availability.operational}
@@ -365,8 +382,8 @@
         data-active={triState(projection.dualWatch.reading)}
         data-color="green"
         role="switch"
-        aria-checked={triState(projection.dualWatch.reading)}
-        aria-label={`${t('core.vfo.dualWatch.label')}: ${stateWord(projection.dualWatch.reading)}`}
+        aria-checked={checkedState(projection.dualWatch.reading)}
+        aria-label={switchLabel(t('core.vfo.dualWatch.label'), projection.dualWatch.reading)}
         aria-describedby={dualWatchReasonId}
         title={projection.dualWatch.availability.reason}
         disabled={!projection.dualWatch.availability.operational}
@@ -492,7 +509,7 @@
   }
   /* MOR-2509 bridge: one fixed column of group rows; every key renders
    * through the shared Button family, so height and text size read the
-   * family tokens scoped here (28px floor, 12px labels). The dot sits
+   * family tokens scoped here (28px key height, 12px labels). The dot sits
    * tighter than the family default because a bridge key is narrower than
    * a panel key. */
   .vfo-ops[data-vfo-operation-appearance='standard'] {

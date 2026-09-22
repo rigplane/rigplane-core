@@ -752,13 +752,12 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     });
   });
 
-  it('unknown dualWatch renders an explicit "unknown" tri-state, never "off"', () => {
+  it('unknown dualWatch carries no state claim: bare name, no aria-checked', () => {
     // 1/ab fixture carries dualWatch: { status: 'unknown' } verbatim.
     const target = mountSurface({ viewModel: topologyFixtures['1/ab'] });
     const toggle = target.querySelector<HTMLButtonElement>('[data-vfo-dual-watch]')!;
-    expect(toggle.getAttribute('aria-checked')).toBe('mixed');
-    expect(toggle.getAttribute('aria-label')).toContain('unknown');
-    expect(toggle.getAttribute('aria-label')).not.toContain('off');
+    expect(toggle.getAttribute('aria-checked')).toBeNull();
+    expect(toggle.getAttribute('aria-label')).toBe('Dual watch');
     expect(toggle.textContent).toBe('DW');
   });
 
@@ -784,16 +783,16 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     expect(target.querySelectorAll('[role="radiogroup"]')).toHaveLength(1);
   });
 
-  it('unknown split renders an explicit "unknown" tri-state', () => {
+  it('unknown split carries no state claim: bare name, no aria-checked', () => {
     const base = topologyFixtures['1/ab'];
     const model: RadioViewModel = validateRadioViewModel({ ...base, split: { status: 'unknown' } });
     const target = mountSurface({ viewModel: model });
     const toggle = target.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
-    expect(toggle.getAttribute('aria-checked')).toBe('mixed');
-    expect(toggle.getAttribute('aria-label')).toContain('unknown');
+    expect(toggle.getAttribute('aria-checked')).toBeNull();
+    expect(toggle.getAttribute('aria-label')).toBe('Split');
     expect(toggle.textContent).toBe('SPLIT');
     // R1 (review cycle 1): pin the disabled attribute itself, not just the
-    // aria-checked/text-content facts above — mutation M14 deleted
+    // aria-checked/label facts above — mutation M14 deleted
     // `disabled={viewModel.split.status === 'unknown'}` and every other
     // assertion in this file still passed (dualWatch's equivalent was
     // pinned; split's was not).

@@ -317,7 +317,7 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
     const ops = rulesFor(opsCss, ".vfo-ops[data-vfo-operation-appearance='standard']").join('\n');
     expect(ops).toMatch(/--btn-min-height:\s*28px/);
     expect(ops).toMatch(/--btn-font-size:\s*12px/);
-    expect(rulesFor(segmentCss, '.active-receiver-toggle.embedded').join('\n'))
+    expect(rulesFor(segmentCss, '.active-receiver-toggle.embedded.hardware').join('\n'))
       .toMatch(/--btn-min-height:\s*28px/);
     expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge .vfo-select").join('\n'))
       .toMatch(/min-height:\s*28px/);
@@ -346,6 +346,15 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
       expect(value![1], `${label} reads the inset without a fallback literal`)
         .toMatch(FALLBACK_FREE);
     }
+  });
+
+  it('the bridge width is one custom property the standard deck narrows', () => {
+    expect(rulesFor(surfaceCss, '.instrument-panel').join('\n'))
+      .toMatch(/--vfo-bridge-width:\s*180px/);
+    expect(rulesFor(surfaceCss, '.bridge').join('\n'))
+      .toMatch(/flex:\s*0 0 var\(--vfo-bridge-width\)/);
+    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge").join('\n'))
+      .toMatch(/--vfo-bridge-width:\s*168px/);
   });
 });
 
@@ -463,18 +472,27 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     expect(onRoot.querySelector('[data-vfo-tuner]')!.getAttribute('data-indicator-color')).toBe('red');
   });
 
-  it('unknown function readings stay unlit and disabled, never fabricated', () => {
+  it('unknown function readings stay unlit and disabled with bare names', () => {
     const root = mountSurface({ viewModel: functionsFixture({
       atu: 'unknown', vox: 'unknown', dialLock: 'unknown',
     }), appearance: 'standard' });
-    for (const selector of ['[data-vfo-tuner]', '[data-vfo-vox]', '[data-vfo-lock]']) {
+    const bareNames: Record<string, string> = {
+      '[data-vfo-tuner]': 'Tuner', '[data-vfo-vox]': 'VOX', '[data-vfo-lock]': 'Lock',
+    };
+    for (const [selector, name] of Object.entries(bareNames)) {
       const button = root.querySelector<HTMLButtonElement>(selector)!;
       expect(button.getAttribute('data-active')).toBe('false');
-      expect(button.getAttribute('aria-checked')).toBe('mixed');
+      expect(button.getAttribute('aria-checked')).toBeNull();
+      expect(button.getAttribute('aria-label')).toBe(name);
       expect(button.disabled).toBe(true);
       expect(button.getAttribute('aria-describedby')).toBeTruthy();
       expect(root.querySelector(`#${button.getAttribute('aria-describedby')}`)?.textContent)
         .toBe('Not yet observed');
+    }
+    const bridge = root.querySelector('[data-instrument-bridge]')!;
+    for (const button of Array.from(bridge.querySelectorAll<HTMLButtonElement>('button'))) {
+      const name = button.getAttribute('aria-label') ?? button.textContent ?? '';
+      expect(name, name).not.toContain('unknown');
     }
   });
 
@@ -513,6 +531,18 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     expect(keys[0].disabled).toBe(true);
     expect(keys[1].getAttribute('data-active')).toBe('false');
     expect(keys[1].disabled).toBe(false);
+  });
+
+  it('renders no SPLIT key when the split capability is absent', () => {
+    const root = mountSurface({ viewModel: functionsFixture(), appearance: 'standard', hasSplit: false });
+    expect(root.querySelector('[data-vfo-split]')).toBeNull();
+    expect(root.querySelector('[data-vfo-dual-watch]')).not.toBeNull();
+  });
+
+  it('renders no DW key when the dual_watch capability is absent', () => {
+    const root = mountSurface({ viewModel: functionsFixture(), appearance: 'standard', hasDualWatch: false });
+    expect(root.querySelector('[data-vfo-dual-watch]')).toBeNull();
+    expect(root.querySelector('[data-vfo-split]')).not.toBeNull();
   });
 
   it('reserves the lamp slot on lampless keys: the shared sheet aligns both paddings', () => {
