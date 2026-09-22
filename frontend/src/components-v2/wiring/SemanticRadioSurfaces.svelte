@@ -2811,6 +2811,7 @@
       receiverInstruments,
       rxAudioInstruments,
       rfFrontEndInstruments,
+      dspInstruments,
       meters: hostedMeters,
       rxAudio: hostedRxAudio,
       rfFrontEnd: hostedRfFrontEnd,

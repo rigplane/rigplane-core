@@ -139,8 +139,8 @@
   const standardFaceAtMount = untrack(() => skinId === 'desktop-v2');
   const STANDARD_PANEL_ID_REPLACEMENTS: Readonly<Record<string, readonly string[]>> = {
     'semantic-rit-xit-scan': ['semantic-rit-xit', 'semantic-scan'],
-    'rit-xit': ['semantic-rit-xit'], scan: ['semantic-scan'], agc: ['semantic-agc'],
-    'semantic-band': [],
+    'rit-xit': ['semantic-rit-xit'], scan: ['semantic-scan'], agc: [],
+    'semantic-agc': [], 'semantic-band': [],
   };
   function migrateStandardPanelPreferences(): void {
     if (!standardFaceAtMount || typeof localStorage === 'undefined') return;
@@ -198,7 +198,7 @@
   const standardLeftDrag: PanelDragOwner | null = standardFaceAtMount ? createDragReorder({
     storageKey: 'rigplane:panel-order',
     defaults: [
-      'semantic-rf-front-end', 'semantic-filter', 'semantic-agc',
+      'semantic-rf-front-end', 'semantic-filter',
       'semantic-rit-xit', 'semantic-antenna', 'semantic-scan', 'band',
     ],
     containerSelector: '.standard-panel-owner-left',
@@ -572,18 +572,13 @@
   </div>
 {/snippet}
 
-{#snippet agcFiniteLayout(dspInstruments: DspFiniteHandles)}
-  <div class="dsp-finite-grid agc-finite-grid">
-    <div class="dsp-finite-seat" data-field="agcMode">{@render dspInstruments.agcMode()}</div>
-  </div>
-{/snippet}
-
 {#snippet rfFrontEndFiniteLayout(rfFrontEndInstruments: RfFrontEndFiniteHandles)}
   <div class="rf-front-end-finite-grid">
     <div class="rf-front-end-finite-seat" data-field="attenuator">{@render rfFrontEndInstruments.attenuator(true)}</div>
     <div class="rf-front-end-finite-seat" data-field="preamp">{@render rfFrontEndInstruments.preamp()}</div>
     <div class="rf-front-end-finite-seat" data-field="digiSel">{@render rfFrontEndInstruments.digiSel()}</div>
     <div class="rf-front-end-finite-seat" data-field="ipPlus">{@render rfFrontEndInstruments.ipPlus()}</div>
+    <div class="rf-front-end-finite-seat" data-field="agcMode">{@render instruments.dspInstruments.agcMode(true)}</div>
   </div>
 {/snippet}
 
@@ -678,11 +673,6 @@
   {#if owner.order.includes('semantic-antenna')}
     {@render instruments.antenna(
       undefined, antennaControlLayout, panelChrome(owner, 'semantic-antenna'),
-    )}
-  {/if}
-  {#if owner.order.includes('semantic-agc')}
-    {@render instruments.dsp(
-      undefined, agcFiniteLayout, undefined, panelChrome(owner, 'semantic-agc', 'AGC'), 'agc',
     )}
   {/if}
   {#if owner.order.includes('semantic-rit-xit')}
@@ -1214,11 +1204,6 @@
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
   }
   .dsp-finite-seat { display: contents; }
-  .agc-finite-grid { display: block; width: 100%; }
-  .agc-finite-grid .dsp-finite-seat { display: contents; }
-  .agc-finite-grid :global([role='radiogroup']) {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); width: 100%;
-  }
   .rf-front-end-finite-grid { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
   .rf-front-end-finite-seat { display: contents; }
   /* The `.filter-finite-*` shape, not the siblings' wrap row: a wrap row let

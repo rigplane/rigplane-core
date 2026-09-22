@@ -267,32 +267,45 @@
     {/if}
   {/if}
 {/snippet}
-{#snippet agcMode()}
+{#snippet agcKeys()}
+  {#each agcOptions as option (option.value)}
+    {@const isAuto = option.value === dsp?.agcMode.autoMode}
+    <div class="agc-key">
+      <ControlButton surface="hardware" indicatorStyle="edge-left" indicatorColor="cyan"
+        active={agcBehavior.isSelected(option.value)} disabled={!agcBehavior.available}
+        data={{ testid: `dsp-agcMode-${option.value}` }}
+        ariaLabel={isAuto && dsp?.agcMode.autoSelectedSpeed
+          ? `${option.label} ${dsp.agcMode.autoSelectedSpeed}` : option.label}
+        onclick={() => agcBehavior.invoke(option.value)}>
+        <span class="agc-key-stack">
+          <span class="agc-key-label">{option.label}</span>
+          {#if isAuto}<span class="agc-auto-speed">{dsp?.agcMode.autoSelectedSpeed ?? ''}</span>{/if}
+        </span>
+      </ControlButton>
+    </div>
+  {/each}
+{/snippet}
+{#snippet agcMode(rfFrontEndRow = false)}
   {#if dsp?.agcMode.availability.structural}
     {#if finiteAppearance}
       {#key rendererContext}{#key finiteAppearance.choice}<ControlInstrumentRendererHost
         seat={agcSeat} renderer={finiteAppearance.choice}
       />{/key}{/key}
+    {:else if rfFrontEndRow}
+      <div class="rf-front-end-row" role="radiogroup" aria-label="AGC"
+        data-testid="dsp-agcMode"
+        style={`--agc-columns: ${Math.min(3, agcOptions.length)}`}
+        data-disabled-reason={agcBehavior.available ? undefined : 'field-not-observed'}>
+        <span class="rf-front-end-row-label">AGC</span>
+        <div class="dsp-agc-grid">
+          {@render agcKeys()}
+        </div>
+      </div>
     {:else}
       <div class="dsp-agc-grid" data-testid="dsp-agcMode"
         style={`--agc-columns: ${Math.min(3, agcOptions.length)}`}
         data-disabled-reason={agcBehavior.available ? undefined : 'field-not-observed'}>
-        {#each agcOptions as option (option.value)}
-          {@const isAuto = option.value === dsp.agcMode.autoMode}
-          <div class="agc-key">
-            <ControlButton surface="hardware" indicatorStyle="edge-left" indicatorColor="cyan"
-              active={agcBehavior.isSelected(option.value)} disabled={!agcBehavior.available}
-              data={{ testid: `dsp-agcMode-${option.value}` }}
-              ariaLabel={isAuto && dsp.agcMode.autoSelectedSpeed
-                ? `${option.label} ${dsp.agcMode.autoSelectedSpeed}` : option.label}
-              onclick={() => agcBehavior.invoke(option.value)}>
-              <span class="agc-key-stack">
-                <span class="agc-key-label">{option.label}</span>
-                {#if isAuto}<span class="agc-auto-speed">{dsp.agcMode.autoSelectedSpeed ?? ''}</span>{/if}
-              </span>
-            </ControlButton>
-          </div>
-        {/each}
+        {@render agcKeys()}
       </div>
     {/if}
   {/if}
@@ -313,7 +326,7 @@
   }
   .agc-key { display: flex; min-width: 0; }
   .agc-key :global(button) {
-    flex: 1 1 auto; min-width: 28px; min-height: 28px;
+    flex: 1 1 auto; min-height: 28px;
   }
   /* The button lays its children out as a flex row, so the label and the
    * AUTO speed line only stack vertically inside this single wrapper. */

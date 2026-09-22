@@ -9,7 +9,7 @@ import type {
 import type {
   RfFrontEndFiniteLayout, RfFrontEndLevelHandles,
 } from '../../semantic/rf-front-end-instruments';
-import type { DspFiniteLayout } from '../../semantic/dsp-instruments';
+import type { DspFiniteHandles, DspFiniteLayout } from '../../semantic/dsp-instruments';
 import type { DspScalarLayout } from '../../semantic/dsp-scalars';
 import type { DspSurfacePart } from '../../semantic/DspSurface.svelte';
 import type { VfoOperationHandles } from '../../semantic/VfoOperationSeatHost.svelte';
@@ -62,6 +62,7 @@ export interface InstrumentComposition {
   readonly receiverInstruments: ReceiverInstrumentHandles;
   readonly rxAudioInstruments: RxAudioInstrumentHandles;
   readonly rfFrontEndInstruments: RfFrontEndLevelHandles;
+  readonly dspInstruments: DspFiniteHandles;
   readonly meters: Snippet<[allowBare?: boolean, chrome?: PanelChrome]>;
   readonly rxAudio: Snippet<[
     allowBare?: boolean, finiteLayout?: RxAudioFiniteLayout, chrome?: PanelChrome,
