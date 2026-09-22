@@ -891,7 +891,7 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(narrow).toMatch(/\.chip-amber\[data-chip='xit'\]\s*\{[^}]*width:\s*calc\(64px - var\(--dl-vfo-amber-chip-narrow-width-trim,\s*4px\)\)/);
     expect(narrow).not.toMatch(/flex-wrap:\s*wrap/);
     expect(outsideNarrow).not.toContain(trim);
-    expect(rule(panelCss, '.under-row')).toMatch(/gap:\s*6px/);
+    expect(rulesFor(panelCss, '.under-row').some((body) => /gap:\s*6px/.test(body))).toBe(true);
     expect(92 + 64 + 76 - (3 * 4) + (2 * 6)).toBe(232);
   });
 
