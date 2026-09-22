@@ -33,6 +33,10 @@ import {
 import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
 import { createTuningAccumulator } from '$lib/runtime/commands/tuning-accumulator';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
+import {
+  FTX1_CAPABILITIES,
+  FTX1_STATE,
+} from '$lib/runtime/adapters/__tests__/fixtures/ftx1-profile';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import { setLocale, _resetLocale } from '$lib/i18n/store.svelte';
@@ -186,6 +190,26 @@ beforeEach(() => {
 afterEach(() => {
   components.forEach((c) => unmount(c));
   while (document.body.firstChild) document.body.removeChild(document.body.firstChild);
+});
+
+describe('FTX-1 filter selector absence (MOR-2530)', () => {
+  it('keeps the reserved filter slot without drawing or naming a FIL chip', () => {
+    const viewModel = validateRadioViewModel(
+      toRadioViewModel(FTX1_STATE, {
+        ...FTX1_CAPABILITIES,
+        providerGeneration: FTX1_STATE.providerGeneration,
+      })!,
+    );
+    const target = mountSurface({ viewModel, appearance: 'standard' });
+    const rows = [...target.querySelectorAll('.receiver-row')];
+
+    expect(rows).toHaveLength(viewModel.vfos.length);
+    for (const row of rows) {
+      expect(row.querySelector('[data-chip="filter"]')).toBeNull();
+      expect(row.querySelectorAll('.chip-slot')).toHaveLength(1);
+      expect(row.textContent).not.toContain('FIL');
+    }
+  });
 });
 
 function expectedSlotKey(slot: VfoSlot): string {

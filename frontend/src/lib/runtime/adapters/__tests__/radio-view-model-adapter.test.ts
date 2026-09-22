@@ -714,6 +714,35 @@ describe('dialLock over the live-captured profiles (MOR-2509)', () => {
   });
 });
 
+describe('filter selector and width capability split (MOR-2530)', () => {
+  it('FTX-1 omits the selector while retaining width facts and bounds', () => {
+    const { state, caps } = PROFILES.ftx1;
+    const view = validateRadioViewModel(toRadioViewModel(state, caps)!);
+
+    expect(caps.filters).toEqual([]);
+    expect(caps.capabilities).toContain('filter_width');
+    expect(view.modeFilter!.filterChoices).toEqual([]);
+    expect(view.modeFilter!.currentFilter.availability.structural).toBe(false);
+    expect(view.modeFilter!.filterWidth.availability.structural).toBe(true);
+    expect(view.modeFilter!.filterWidthMin.reading).toEqual({ status: 'known', value: 300 });
+    expect(view.modeFilter!.filterWidthMax.reading).toEqual({ status: 'known', value: 4000 });
+    expect(view.filterPassband!.filterShape.availability.structural).toBe(true);
+    expect(view.receiverIndicators!.every((item) => item.bandwidthHz.availability.structural)).toBe(true);
+  });
+
+  it('IC-7300 retains both selector and width facts', () => {
+    const { state, caps } = PROFILES.ic7300;
+    const view = validateRadioViewModel(toRadioViewModel(state, caps)!);
+
+    expect(caps.filters).toEqual(['FIL1', 'FIL2', 'FIL3']);
+    expect(caps.capabilities).toContain('filter_width');
+    expect(view.modeFilter!.filterChoices).toEqual(['FIL1', 'FIL2', 'FIL3']);
+    expect(view.modeFilter!.currentFilter.availability.structural).toBe(true);
+    expect(view.modeFilter!.filterWidth.availability.structural).toBe(true);
+    expect(view.filterPassband!.filterShape.availability.structural).toBe(true);
+  });
+});
+
 describe('topology is derived from real capabilities', () => {
   it.each(Object.keys(TOPOLOGY_CAPS))('%s is reachable and validator-clean', (id) => {
     const view = model(observedState(), TOPOLOGY_CAPS[id]);
