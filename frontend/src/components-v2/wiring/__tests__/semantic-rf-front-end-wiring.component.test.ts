@@ -881,7 +881,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     expect(target.textContent).toContain('denied');
   });
 
-  it('retires an RF draft after real raw-command confirmation and follows later truth while SQL is pending', () => {
+  it('follows confirmed RF truth and keeps an SQL draft until its lifecycle completes', () => {
     render();
     const rfInput = level('rfGain');
     const sqlInput = level('squelch');
@@ -918,12 +918,18 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     expect(level('rfGain').value()).toBe(0.8);
     expect(el('rfGain')!.querySelector('output')!.textContent).toBe('80%');
     expect(el('squelch')!.dataset.commandPhase).toBe('awaiting-confirmation');
-    expect(level('squelch').value()).toBe(0.1);
+    expect(level('squelch').value()).toBe(0.6);
     expect(el('squelch')!.querySelector('output')!.textContent).toBe('60%');
+    expect(target.querySelector('[data-control-feedback-status][data-feedback-lane="sql"]')?.textContent)
+      .toBe('Awaiting confirmation: 0.6');
 
-    observedMainLevels(state, { squelch: 153 / 255 }, 8);
+    confirmCommand(sqlCommand.id, 7, 7);
     flushSync();
     expect(el('squelch')!.dataset.commandPhase).toBe('confirmed');
+    expect(level('squelch').value()).toBe(0.1);
+    expect(el('squelch')!.querySelector('output')!.textContent).toBe('10%');
+    expect(target.querySelector('[data-control-feedback-status][data-feedback-lane="sql"]')?.textContent)
+      .toBe('Confirmed: 0.1');
     expect(h.rfGain).toHaveBeenCalledTimes(1);
     expect(h.squelch).toHaveBeenCalledTimes(1);
   });

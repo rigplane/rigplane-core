@@ -391,7 +391,11 @@ const nativeRangePolicy: ContinuousScalarPolicy = {
     ? value : snap(value, domain, domain.step),
   wheel: () => null,
   key: () => null,
-  reset: (domain) => domain.defaultValue ?? domain.min,
+  // MOR-2535 review round: a missing `defaultValue` means NO reset candidate
+  // — `applyCandidate` refuses a null, so `lease.reset()` dispatches nothing.
+  // Falling back to `domain.min` would invent a default the domain never
+  // declared (its renderer would jump to the end stop and send it).
+  reset: (domain) => domain.defaultValue,
   dispatch: () => 'immediate',
   dispatchesCanonical: () => true,
   wheelIdleMs: 0,
@@ -422,7 +426,6 @@ export function createRenderedNativeRangeContinuousScalarPolicy(): Readonly<Cont
 
 type AuthorityIdentity = readonly (string | number | boolean | null | undefined)[];
 type LocalCommandRequest = Readonly<{
-  source: ScalarSource;
   observedLifecycleId: string | null;
   dispatched: boolean;
   representedLifecycleId: string | null;
@@ -573,11 +576,6 @@ export function createContinuousScalar(
     const representedRequest = localCommandRequest;
     const representedLifecycle = representedRequest?.representedLifecycleId ?? null;
     const feedback = input.evidence === 'command-feedback' ? input.feedback : null;
-    const retainsOptimisticPending = representedRequest !== null
-      && policy.name === 'hbar-optimistic'
-      && (representedRequest.source === 'pointer'
-        || representedRequest.source === 'keyboard'
-        || representedRequest.source === 'reset');
     const representedLifecycleIsComplete = representedLifecycle !== null
       && feedback !== null
       && feedback.lifecycleId === representedLifecycle
@@ -589,13 +587,10 @@ export function createContinuousScalar(
           && feedback.lifecycleId !== representedLifecycle
           && feedback.lifecycleId !== representedRequest?.observedLifecycleId));
     if (representedLifecycleIsGone) lastDispatch = null;
-    const representationRetiresDraft = representedRequest !== null
+    const representedLifecycleRetiresDraft = representedRequest !== null
       && representedRequest.representedLifecycleId !== null
-      && (representedRequest.source === 'native-input'
-        || !retainsOptimisticPending
-        || representedLifecycleIsComplete
-        || representedLifecycleIsGone);
-    if (representationRetiresDraft
+      && (representedLifecycleIsComplete || representedLifecycleIsGone);
+    if (representedLifecycleRetiresDraft
       && activeGesture === null && interaction !== 'wheel' && debounceTimer === null) {
       draft = null;
       draftCanonical = null;
@@ -612,7 +607,6 @@ export function createContinuousScalar(
       handledTerminal = terminal;
     } else if (input.evidence === 'command-feedback') {
       if (draft !== null && !belongsToObservedOlderLifecycle
-        && !(retainsOptimisticPending && feedback?.busy)
         && Object.is(canonicalOf(input), draft)) {
         draft = null;
         draftCanonical = null;
@@ -650,7 +644,6 @@ export function createContinuousScalar(
 
   function dispatch(
     candidate: number,
-    source: ScalarSource,
     authority: AuthorityIdentity,
     generation: number,
     renderer: number,
@@ -663,7 +656,6 @@ export function createContinuousScalar(
       && sameAuthority(authority, authorityOf(input)) && editable(input)) {
       localCommandRequest = input.evidence === 'command-feedback'
         ? {
-          source,
           observedLifecycleId: input.feedback.lifecycleId,
           dispatched: true,
           representedLifecycleId: null,
@@ -711,7 +703,6 @@ export function createContinuousScalar(
       && Object.is(normalized, lastDispatch.value)) return true;
     localCommandRequest = input.evidence === 'command-feedback'
       ? {
-        source,
         observedLifecycleId: input.feedback.lifecycleId,
         dispatched: false,
         representedLifecycleId: null,
@@ -719,11 +710,11 @@ export function createContinuousScalar(
       : null;
     const mode = policy.dispatch(source);
     if (mode === 'immediate') {
-      dispatch(normalized, source, authority, generation, renderer, isCurrent);
+      dispatch(normalized, authority, generation, renderer, isCurrent);
     } else {
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        dispatch(normalized, source, authority, generation, renderer, isCurrent);
+        dispatch(normalized, authority, generation, renderer, isCurrent);
       }, mode.debounceMs);
     }
     return true;

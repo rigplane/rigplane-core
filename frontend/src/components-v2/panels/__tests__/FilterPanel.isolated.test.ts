@@ -1081,15 +1081,14 @@ describe('PBT and IF-shift scalar feedback (MOR-1687 part 1)', () => {
     vi.advanceTimersByTime(60);
     flushSync();
     expect(mockHandlers.onPbtInnerChange).toHaveBeenCalledExactlyOnceWith(50);
-    // Production mints a NEW command id per dispatch, so the pending
-    // lifecycle never shares the id the gesture observed — the draft
-    // retires and the requested value survives as the PENDING target.
+    // Production mints a new command id per dispatch. The represented
+    // pending lifecycle must preserve the newer operator draft.
     setPassbandFeedback('inner', {
       phase: 'submitted', busy: true, target: 50, requestedTarget: 50,
       lifecycleId: 'fresh-1', transitionId: 'fresh-1:submitted',
     });
     flushSync();
-    expect(valueText(slider)).toBe('0\u00a0Hz');
+    expect(valueText(slider)).toBe('+50\u00a0Hz');
     expect(slider.getAttribute('aria-valuenow')).toBe('0');
     expect(slider.getAttribute('data-command-phase')).toBe('submitted');
     expect(pendingChip(t)).toBe('PENDING 50 Hz');
