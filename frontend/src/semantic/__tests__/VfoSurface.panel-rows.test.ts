@@ -688,8 +688,11 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
       .match(/--vfo-panel-compact-breakpoint:\s*(\d+)px/)?.[1]);
     expect(compactThreshold).toBe(520);
     expect(panelCss).toMatch(/@container \(min-width:\s*760px\)/);
-    expect(panelCss).toMatch(/@container \(max-width:\s*520px\)/);
-    expect(panelCss).toMatch(/@container \(max-width:\s*470px\)/);
+    // The container queries must hard-code the literal (custom properties are
+    // not allowed there), so pin the literal EQUAL to its token.
+    expect(panelCss).toMatch(new RegExp(`@container \\(max-width:\\s*${compactThreshold}px\\)`));
+    expect(panelCss).toMatch(new RegExp(`@container \\(max-width:\\s*${threshold}px\\)`));
+    expect(panelCss).not.toMatch(/@container \(max-width:\s*(?!520px|470px)\d+px\)/);
     const wide = panelCss.slice(panelCss.indexOf('@container (min-width: 760px)'));
     expect(wide.slice(0, wide.indexOf('@container (max-width')))
       .toMatch(/grid-template-columns:\s*1fr 1fr/);

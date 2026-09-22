@@ -484,7 +484,7 @@
   /* ── Receiver row: name once, large mode/filter chips, lamps, TX ───── */
   .receiver-row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 5px;
     margin-block-end: calc(16px * var(--vfo-deck-rhythm));
     padding: 0 var(--vfo-panel-body-pad-x, 10px);
@@ -571,8 +571,10 @@
 
   .annunciators {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 4px;
+    row-gap: 3px;
     min-width: 0;
   }
 

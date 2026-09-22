@@ -588,8 +588,10 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       });
       await info.attach('compact-vfo-pair', { body: JSON.stringify(geometry), contentType: 'application/json' });
       if (width > 1050) {
-        // The normal panel measures 196px with the approved +15% rhythm;
-        // two 6px wrapper insets and the row border make the 210px ceiling.
+        // Ceiling = the tallest normal-mode panel this fixture (every structural
+        // capability, six annunciators) produced on the build host, rounded up:
+        // see the `compact-vfo-pair` attachment of this test for the measured
+        // `panel.height` per width.
         expect.soft(geometry.panel.height, 'the full Standard VFO row stays compact').toBeLessThanOrEqual(210);
         expect.soft(geometry.cards[0].top, 'A and B cards start together').toBeCloseTo(geometry.cards[1].top, 0);
         expect.soft(geometry.cards[0].bottom, 'A and B cards end together').toBeCloseTo(geometry.cards[1].bottom, 0);
@@ -790,6 +792,9 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
         expect(panel.meterColumn).toBe(expectedNarrow ? '1' : '3');
         if (expectedNarrow) expect(panel.panelWidth).toBeLessThanOrEqual(470);
         else expect(panel.panelWidth - 470).toBeGreaterThanOrEqual(8);
+        // The compact boundary (520 px) decides the lamp widths: no probed
+        // viewport may sit within 8 px of it either.
+        expect(Math.abs(panel.panelWidth - 520)).toBeGreaterThanOrEqual(8);
       }
     });
   }

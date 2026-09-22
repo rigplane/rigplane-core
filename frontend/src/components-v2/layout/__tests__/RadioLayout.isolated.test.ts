@@ -1084,8 +1084,8 @@ describe('MOR-2513 — the live FTX-1 payload mounts the default desktop composi
     expect(ftx1StateJson.sub.att).toBeNull();
     expect(t.querySelectorAll('[data-receiver-instrument="MAIN"]')).toHaveLength(1);
     expect(t.querySelectorAll('[data-receiver-instrument="SUB"]')).toHaveLength(1);
-    // MOR-2509 slice 2: every panel owns five fixed rows — tray, receiver,
-    // main, under and (ftx1 has DSP) the DSP chip group.
+    // MOR-2509: tray, receiver, main, under, and the DSP row that the ftx1
+    // fixture backs — five per receiver here; a radio without DSP facts draws four.
     expect(t.querySelectorAll('[data-vfo-row]')).toHaveLength(10);
   });
 
