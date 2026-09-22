@@ -581,7 +581,7 @@ describe('explicit presentation contract', () => {
     const frequency = createRawSnippet(() => ({
       render: () => '<span data-hosted-frequency>host frequency</span>',
     }));
-    const t = mountPanel({ ...explicit, frequency, frequencyState, freq: null, displayHz: null });
+    const t = mountPanel({ ...explicit, frequency, frequencyState, freq: null, displayHz: null, pendingDisplayHz: null });
     expect(t.querySelector('[data-hosted-frequency]')).toBeNull();
     expect(t.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('');
   });
