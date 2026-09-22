@@ -757,8 +757,11 @@
     grid-column: 3;
     flex: 1 1 auto;
     min-width: 0;
-    padding: 0 var(--vfo-panel-meter-pad-x, 6px);
-    border-radius: 4px;
+    /* MOR-2509 R2-2: the v8 mock-up's `.meter` well — padding 4px 8px 7px,
+       radius 6px. The horizontal padding stays routable through the layout
+       token so scaled top-row faces can compress it. */
+    padding: 4px var(--vfo-panel-meter-pad-x, 8px) 7px;
+    border-radius: 6px;
     background: var(--dl-vfo-meter-well-background, #05070a);
     box-shadow: var(--dl-vfo-meter-well-shadow, inset 0 2px 6px rgba(0, 0, 0, 0.9), inset 0 0 0 1px #1a222b, 0 1px 0 rgba(255, 255, 255, 0.05));
   }

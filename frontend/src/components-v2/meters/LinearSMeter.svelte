@@ -386,52 +386,66 @@
       : (aboveS9 ? '#2a1618' : '#1a2230');
   }
 
-  // ── MOR-2509 v7 face (variants 'vfo' / 'vfo-wide') ─────────────────────────
-  // Pixel-locked geometry: this SVG carries no viewBox, so one user unit is
-  // one CSS pixel and the 2px-lit / 1px-gap dash pattern renders in whole
-  // device-independent pixels at every rendered width. The segment count
-  // follows from the measured track length, the lit extent snaps to whole
-  // segments, and the fill — one dash-patterned line per tone zone — is a
-  // permanent node whose length or visibility is the only thing a reading
-  // changes.
+  // ── MOR-2509 v8 face (variants 'vfo' / 'vfo-wide') ─────────────────────────
+  // Pixel-locked geometry re-measured from the owner's mock-up
+  // `tmp/vfo-deck-final-mockup-v8.html` (2026-09-22, MOR-2509 R2-2): this SVG
+  // carries no viewBox, so one user unit is one CSS pixel and the 2px-lit /
+  // 1px-gap dash pattern renders in whole device-independent pixels at every
+  // rendered width. The well around the SVG (padding 4px 8px 7px, radius 6px)
+  // is VfoPanel's `.panel-meter`; every number below is the mock-up's own
+  // content-box geometry: ticks row 20px, value row 16px (track 12px centred
+  // in it) at margin-top 3, Po tick row 14px at margin-top 7, Po bar 7px at
+  // margin-top 1, and the 58px value column (10px gap + 48px cell) the ticks
+  // row, Po ticks, Po bar and value cell all reserve on the right.
   const VFO_SEG_PITCH = 3;
   const VFO_SEG_LIT = 2;
   const VFO_SEG_DASH = `${VFO_SEG_LIT} ${VFO_SEG_PITCH - VFO_SEG_LIT}`;
   const S9_UNIFORM_FRACTION = 4 / 7;
-  const VFO_PAD_X = 8;
-  const VFO_READOUT_GAP = 8;
-  // Roboto Mono advances 0.6em per glyph; the slot holds the longest
-  // secondary reading ("−127 dBm", 8 glyphs) at its 12px size, which also
-  // covers the 5-glyph primary at 14px.
-  const VFO_MONO_ADVANCE_EM = 0.6;
-  const VFO_READOUT_CHARS = 8;
-  const VFO_READOUT_PRIMARY_FS = 14;
-  const VFO_READOUT_SECONDARY_FS = 12;
-  const VFO_READOUT_W = Math.ceil(
-    VFO_READOUT_CHARS * VFO_MONO_ADVANCE_EM * VFO_READOUT_SECONDARY_FS,
-  );
-  const VFO_LABEL_FS = 8;
-  const VFO_LABEL_Y = 8;
-  const VFO_TICK_Y1 = 11;
-  const VFO_TICK_Y2 = 15;
-  const VFO_BAR_Y = 17;
-  const VFO_BAR_H = 11;
-  const VFO_PRIMARY_Y = 15;
-  const VFO_SECONDARY_Y = 24;
-  const VFO_PO_LABEL_FS = 7;
-  const VFO_PO_LABEL_Y = 38;
-  const VFO_PO_TICK_Y1 = 40;
-  const VFO_PO_TICK_Y2 = 43;
-  const VFO_PO_Y = 44;
-  const VFO_PO_H = 6;
-  const VFO_TOTAL_H = 52;
-  // Segment tones live on the theme token layer (`tokens.css` defines each
-  // exactly once); this component consumes the tokens without re-stating
-  // their values.
+  const VFO_VALUE_GAP = 10;
+  const VFO_VALUE_CELL_W = 48;
+  const VFO_VALUE_COLUMN_W = VFO_VALUE_GAP + VFO_VALUE_CELL_W;
+  // The S-scale tick row (.ticks): 12px numerals at the top edge, a 1x4px
+  // tick under each numeral starting 15px down, first numeral left-anchored
+  // at its slot, the rest centred; '+' numerals tighten by -.05em = -0.6px
+  // at 12px. Font weight 400: the mock-up restyles no meter text bold.
+  const VFO_LABEL_FS = 12;
+  const VFO_LABEL_Y = 0;
+  const VFO_LABEL_WEIGHT = 400;
+  const VFO_PLUS_LETTER_SPACING = -0.05 * VFO_LABEL_FS;
+  const VFO_TICKS_ROW_H = 20;
+  const VFO_TICK_MARK_Y1 = 15;
+  const VFO_TICK_MARK_Y2 = 19;
+  // The value row (.mrow): 16px tall, 3px below the tick row; the 12px track
+  // centres inside it. The single 13px reading line replaces the v7 two-line
+  // S-unit/dBm block — the mock-up carries no dBm line.
+  const VFO_VALUE_ROW_H = 16;
+  const VFO_VALUE_FS = 13;
+  const VFO_TRACK_H = 12;
+  const VFO_MROW_TOP = VFO_TICKS_ROW_H + 3;
+  const VFO_BAR_Y = VFO_MROW_TOP + (VFO_VALUE_ROW_H - VFO_TRACK_H) / 2;
+  const VFO_BAR_H = VFO_TRACK_H;
+  // The Po rows (.poticks/.po): 14px label row 7px below the value row, then
+  // the 7px bar 1px below that. Labels only — the mock-up draws no tick marks
+  // under the Po numerals. The `Po` row label hangs 2px past the content box
+  // (bottom:5px of the 79px well), so the root SVG must not clip.
+  const VFO_PO_TICKS_TOP = VFO_MROW_TOP + VFO_VALUE_ROW_H + 7;
+  const VFO_PO_TICKS_H = 14;
+  const VFO_PO_LABEL_FS = 12;
+  const VFO_PO_Y = VFO_PO_TICKS_TOP + VFO_PO_TICKS_H + 1;
+  const VFO_PO_H = 7;
+  const VFO_PO_ROW_LABEL_BASELINE = VFO_PO_Y + VFO_PO_H + 2;
+  const VFO_TOTAL_H = VFO_PO_Y + VFO_PO_H;
+  // Ink tones the design language may vary: the mock-up's values are
+  // studioline's; segment fills stay on the shared theme tokens below.
   const VFO_TONE_BLUE = 'var(--v2-meter-blue)';
   const VFO_TONE_RED = 'var(--v2-meter-red)';
   const VFO_TONE_UNLIT = 'var(--v2-meter-unlit)';
-  const VFO_TONE_LIGHT = 'var(--v2-text-lighter)';
+  const VFO_TONE_TICK_LABEL = 'var(--dl-vfo-meter-tick-label, #e6edf4)';
+  const VFO_TONE_VALUE = 'var(--dl-vfo-meter-value, #f4f8fc)';
+  const VFO_TONE_PEAK = 'var(--dl-vfo-meter-peak, #e8f1ff)';
+  const VFO_TONE_PO_LABEL = 'var(--dl-vfo-meter-po-label, #c3ced9)';
+  // Afterglow carries the bar's own tone at the mock-up's .after opacity.
+  const VFO_AFTERGLOW_OPACITY = 0.38;
 
   let vfoWidth = $state(0);
   let vfoSvgElement = $state.raw<SVGSVGElement | null>(null);
@@ -446,11 +460,11 @@
     vfoWidth = element.clientWidth;
     return () => observer.disconnect();
   });
-  const vfoTrackX = VFO_PAD_X;
+  const vfoTrackX = 0;
   const vfoTrackW = $derived(Math.max(0, Math.floor(
-    (vfoWidth - VFO_PAD_X - VFO_READOUT_GAP - VFO_READOUT_W - VFO_PAD_X) / VFO_SEG_PITCH,
+    (vfoWidth - VFO_VALUE_COLUMN_W) / VFO_SEG_PITCH,
   ) * VFO_SEG_PITCH));
-  const vfoReadoutX = $derived(vfoTrackX + vfoTrackW + VFO_READOUT_GAP);
+  const vfoReadoutX = $derived(vfoTrackX + vfoTrackW + VFO_VALUE_GAP);
   // The blue→red handover snaps to the segment grid so no segment renders
   // half blue and half red; the offset from the exact 4/7 label position
   // stays under one pitch.
@@ -493,17 +507,13 @@
   const vfoReadingKnown = $derived(signalProjection.motionFraction !== null);
 
   // Peak marker: rises with the bar, holds ~1 s, then falls. Under
-  // prefers-reduced-motion the v7 face shows the stepped bar only. Below
-  // S9 the marker keeps the face's light accent; past S9 one red family.
+  // prefers-reduced-motion the v8 face shows the stepped bar only. The
+  // mock-up's marker is one constant light tone at every zone — no red
+  // variant past S9 (`.peak { background: #e8f1ff }`).
   const vfoShowPeak = $derived(
     signalProjection.scaleMode !== 'none' && vfoReadingKnown
       && mainPresent && !meterFrame.reducedMotion
       && (meterFrame.peakFraction ?? 0) - meterFrame.smoothedFraction > 0.3,
-  );
-  const vfoPeakColor = $derived(
-    signalProjection.crossoverFraction !== null
-      && (meterFrame.peakFraction ?? 0) > signalProjection.crossoverFraction
-      ? VFO_TONE_RED : 'var(--v2-accent-cyan-bright)',
   );
 
   const vfoLowerFraction = $derived(
@@ -516,6 +526,15 @@
   const vfoTotalH = VFO_TOTAL_H;
 
   const vfoScaleMarks = $derived(signalProjection.uniformScaleMarks);
+  // The v8 face shows one reading line — the S-unit only. The accessible
+  // name mirrors that cell: the v7 dBm second line is gone from the visible
+  // DOM and from the screen-reader text alike.
+  const vfoAccessibleLabel = $derived.by(() => {
+    if (signalProjection.motionFraction === null) return 'S meter reading unknown';
+    return signalProjection.scaleMode === 'raw'
+      ? `S meter ${displaySUnit}, uncalibrated`
+      : `S meter ${displaySUnit}`;
+  });
 </script>
 
 {#if variant === 'sdr-screen'}
@@ -546,7 +565,7 @@
     {/if}
   </svg>
 {:else if isVfoVariant}
-  <!-- MOR-2509 v7 face: pixel-locked (no viewBox) so the 2/1 dash pattern is
+  <!-- MOR-2509 v8 face: pixel-locked (no viewBox) so the 2/1 dash pattern is
        in whole device pixels; every element below is a permanent node whose
        geometry or visibility — never its presence — follows the reading. -->
   <svg
@@ -555,7 +574,7 @@
     height={vfoTotalH}
     data-variant={variant}
     role="img"
-    aria-label={signalProjection.accessibleDescription}
+    aria-label={vfoAccessibleLabel}
     data-lower-fault={lowerScale ? (lowerScale.fault ? 'true' : 'false') : undefined}
   >
     {#if mainPresent}
@@ -568,18 +587,18 @@
             x={x} y={VFO_LABEL_Y}
             font-family="'Roboto Mono', monospace"
             font-size={VFO_LABEL_FS}
-            font-weight="700"
-            fill={mark.overS9 ? VFO_TONE_RED : VFO_TONE_LIGHT}
-            text-anchor="middle"
+            font-weight={VFO_LABEL_WEIGHT}
+            letter-spacing={mark.overS9 ? VFO_PLUS_LETTER_SPACING : undefined}
+            fill={mark.overS9 ? VFO_TONE_RED : VFO_TONE_TICK_LABEL}
+            text-anchor={index === 0 ? 'start' : 'middle'}
             dominant-baseline="text-before-edge"
           >{mark.text}</text>
           <line
             data-scale-tick={index}
-            x1={x} y1={VFO_TICK_Y1}
-            x2={x} y2={VFO_TICK_Y2}
-            stroke={mark.overS9 ? VFO_TONE_RED : VFO_TONE_LIGHT}
+            x1={x} y1={VFO_TICK_MARK_Y1}
+            x2={x} y2={VFO_TICK_MARK_Y2}
+            stroke={mark.overS9 ? VFO_TONE_RED : VFO_TONE_TICK_LABEL}
             stroke-width="1"
-            opacity="0.7"
           />
         {/each}
       {/if}
@@ -599,7 +618,7 @@
         stroke={VFO_TONE_BLUE}
         stroke-width={VFO_BAR_H}
         stroke-dasharray={VFO_SEG_DASH}
-        stroke-opacity="0.35"
+        stroke-opacity={VFO_AFTERGLOW_OPACITY}
         visibility={vfoGlowEndX > vfoFillEndX ? 'visible' : 'hidden'}
       />
       <line
@@ -609,7 +628,7 @@
         stroke={VFO_TONE_RED}
         stroke-width={VFO_BAR_H}
         stroke-dasharray={VFO_SEG_DASH}
-        stroke-opacity="0.35"
+        stroke-opacity={VFO_AFTERGLOW_OPACITY}
         visibility={vfoGlowEndX > Math.max(vfoFillEndX, vfoS9X) ? 'visible' : 'hidden'}
       />
       <line
@@ -634,32 +653,21 @@
         data-meter-peak
         x1={vfoPeakX} y1={VFO_BAR_Y}
         x2={vfoPeakX} y2={VFO_BAR_Y + VFO_BAR_H}
-        stroke={vfoPeakColor}
+        stroke={VFO_TONE_PEAK}
         stroke-width="2"
-        opacity="0.9"
         visibility={vfoShowPeak ? 'visible' : 'hidden'}
       />
       <text
         data-meter-reading
         x={vfoReadoutX}
-        y={VFO_PRIMARY_Y}
+        y={VFO_MROW_TOP + VFO_VALUE_ROW_H / 2}
         font-family="'Roboto Mono', monospace"
-        font-size={VFO_READOUT_PRIMARY_FS}
-        font-weight="700"
-        fill={VFO_TONE_LIGHT}
-        text-anchor="start"
-        dominant-baseline="text-after-edge"
-      >{vfoReadingKnown ? displaySUnit : ''}</text>
-      <text
-        data-meter-reading-secondary
-        x={vfoReadoutX}
-        y={VFO_SECONDARY_Y}
-        font-family="'Roboto Mono', monospace"
-        font-size={VFO_READOUT_SECONDARY_FS}
-        fill="var(--v2-text-secondary)"
+        font-size={VFO_VALUE_FS}
+        font-weight={VFO_LABEL_WEIGHT}
+        fill={VFO_TONE_VALUE}
         text-anchor="start"
         dominant-baseline="central"
-      >{vfoReadingKnown ? displayDbm : ''}</text>
+      >{vfoReadingKnown ? displaySUnit : ''}</text>
     </g>
     {/if}
 
@@ -673,22 +681,14 @@
           {@const x = vfoTrackX + t.value * vfoTrackW}
           <text
             data-lower-tick-label={t.value}
-            x={x} y={VFO_PO_LABEL_Y}
+            x={x} y={VFO_PO_TICKS_TOP}
             font-family="'Roboto Mono', monospace"
             font-size={VFO_PO_LABEL_FS}
-            font-weight="700"
-            fill="var(--v2-text-dim)"
-            text-anchor="middle"
+            font-weight={VFO_LABEL_WEIGHT}
+            fill={VFO_TONE_PO_LABEL}
+            text-anchor={t.value === 0 ? 'start' : 'middle'}
             dominant-baseline="text-before-edge"
           >{t.label}</text>
-          <line
-            data-lower-tick-mark={t.value}
-            x1={x} y1={VFO_PO_TICK_Y1}
-            x2={x} y2={VFO_PO_TICK_Y2}
-            stroke="var(--v2-text-dim)"
-            stroke-width="1"
-            opacity="0.7"
-          />
         {/each}
         <line
           data-lower-track
@@ -710,13 +710,13 @@
         <text
           data-lower-row-label
           x={vfoReadoutX}
-          y={VFO_PO_LABEL_Y}
+          y={VFO_PO_ROW_LABEL_BASELINE}
           font-family="'Roboto Mono', monospace"
           font-size={VFO_PO_LABEL_FS}
-          font-weight="700"
-          fill="var(--v2-text-dim)"
+          font-weight={VFO_LABEL_WEIGHT}
+          fill={VFO_TONE_PO_LABEL}
           text-anchor="start"
-          dominant-baseline="text-before-edge"
+          dominant-baseline="text-after-edge"
         >{lowerScale.label}</text>
       </g>
     {/if}
@@ -967,6 +967,13 @@
   .sdr-meter { width: 100%; height: 40px; overflow: visible; }
   svg {
     display: block;
+  }
+  svg[data-variant='vfo'],
+  svg[data-variant='vfo-wide'] {
+    /* The Po row label hangs 2px past the content box — the mock-up's
+       `.polab` is bottom:5px of the 79px well, 6px under the Po bar's
+       bottom edge — so the root SVG must not clip it. */
+    overflow: visible;
   }
   [data-meter-fill],
   [data-meter-fill-red],
