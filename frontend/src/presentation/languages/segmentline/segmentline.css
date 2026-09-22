@@ -40,6 +40,21 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ── MOR-2509: the VFO panel screen's surface-relative tones ──────
+   `VfoPanel.svelte` consumes `--dl-vfo-*` with the approved MOR-2509
+   palette as its fallback, so segmentline restyles here only what reads
+   against ITS gold glass, using the ink ramp that ramp's own contrast
+   proof covers. Fill/text chip pairs keep the shared design values. */
+[data-design-language='segmentline'][data-design-language] {
+  --dl-vfo-unlit-text: var(--dl-segmentline-ink-soft);
+  --dl-vfo-unlit-border: rgba(var(--dl-segmentline-ink) / 0.28);
+  --dl-vfo-frame: var(--dl-segmentline-ink-strong);
+  --dl-vfo-frame-dim: rgba(var(--dl-segmentline-ink) / 0.55);
+  --dl-vfo-tab-frame: var(--dl-segmentline-ink-strong);
+  --dl-vfo-tab-frame-dim: rgba(var(--dl-segmentline-ink) / 0.55);
+  --dl-vfo-dim-text: var(--dl-segmentline-ink-strong);
+}
+
 /* ── Glass ───────────────────────────────────────────────────────────── */
 
 [data-design-language='segmentline'][data-design-language] .rx-tx-surface {

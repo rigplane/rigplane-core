@@ -2598,9 +2598,9 @@ describe('MOR-2342 historical instrument presentations', () => {
   });
 
   it.each([
-    ['off', false, 0, true, 'RIT OFF 0 Hz', 'known'],
-    ['on', true, 120, true, 'RIT ON 120 Hz', 'known'],
-    ['unknown', null, null, true, 'RIT — — Hz', 'unknown'],
+    ['off', false, 0, true, 'RIT', 'off'],
+    ['on', true, 120, true, 'RIT +120', 'on'],
+    ['unknown', null, null, true, 'RIT', 'unknown'],
     ['unsupported', null, null, false, null, null],
   ] as const)(
     'renders the Standard active-VFO RIT %s state once with structural gating',
@@ -2757,7 +2757,10 @@ describe('MOR-2342 preserved instrument intents', () => {
     const tune = vi.fn(); const split = vi.fn();
     const root = mountSurface({ viewModel: model, appearance, onTuneFrequency: tune, onToggleSplit: split });
     expect(root.querySelector('.digit')).toBeNull();
-    expect(root.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('—');
+    // MOR-2509: the Standard panel paints no glyph for an unobserved
+    // frequency; the semantic/sdr tile keeps its dash fallback.
+    expect(root.querySelector('[data-vfo-freq]')?.textContent?.trim())
+      .toBe(appearance === 'standard' ? '' : '—');
     const toggle = root.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
     expect(toggle.disabled).toBe(true); toggle.click();
     expect(split).not.toHaveBeenCalled(); expect(tune).not.toHaveBeenCalled();
