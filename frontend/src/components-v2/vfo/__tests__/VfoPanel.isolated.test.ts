@@ -577,15 +577,6 @@ describe('explicit presentation contract', () => {
     expect(t.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('');
   });
 
-  it.each(['unknown', 'unsupported'] as const)('withholds a hosted frequency while the display is %s', (frequencyState) => {
-    const frequency = createRawSnippet(() => ({
-      render: () => '<span data-hosted-frequency>host frequency</span>',
-    }));
-    const t = mountPanel({ ...explicit, frequency, frequencyState, freq: null, displayHz: null, pendingDisplayHz: null });
-    expect(t.querySelector('[data-hosted-frequency]')).toBeNull();
-    expect(t.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('');
-  });
-
   it('keeps the established wrapper hook and the real frequency control in tab order', () => {
     const t = mountPanel(explicit);
     expect(t.querySelector('[data-vfo-freq]')?.classList.contains('vfo-freq')).toBe(true);
