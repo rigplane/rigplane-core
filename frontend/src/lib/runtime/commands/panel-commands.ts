@@ -968,10 +968,8 @@ export function makeFilterHandlers() {
         }, 200);
       };
     })(),
-    // MOR-1576: gates on `knownActiveReceiver('filter')` — same relaxation
-    // as `onFilterWidthChange` above, for the same reason (receiver identity
-    // + mode/dataMode resolve the quantization rule; no confirmed prior
-    // `filterWidth` reading is needed).
+    // MOR-1576: defaults require the observed active filter slot but not a
+    // confirmed prior `filterWidth` reading.
     //
     // MOR-1576 review (B1): `quantizeFilterWidthToRule` passes non-finite
     // input straight through when no usable rule/segment covers it

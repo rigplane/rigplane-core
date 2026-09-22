@@ -20,13 +20,11 @@
  * `main.filter` IS observed, so the two gates disagreed: the slider and
  * "restore defaults" paths silently refused while the settings-modal preset
  * path dispatched fine for the identical write. MOR-1576 (verifier analysis,
- * PR #2481) relaxed the three strict sites to the preset path's gating —
- * receiver identity via `knownActiveReceiver('filter')` plus mode/dataMode
- * to resolve the quantization rule, not a confirmed prior `filterWidth`
- * reading — so all three now dispatch identically on this fixture (see the
- * "unified call-site gating" cases below, plus the discrimination case
- * proving they still correctly refuse when `main.filter` itself is
- * unobserved too). `set_filter_shape`/`set_if_shift`/`set_pbt_inner`/
+ * PR #2481) replaced the `filterWidth` proxy with `filter`. MOR-2529 removes
+ * that selected-filter gate from `onFilterWidthChange`, whose width write
+ * needs only receiver identity plus mode/dataMode for quantization; defaults
+ * and preset changes still require the active filter slot. The cases below
+ * pin both gates independently. `set_filter_shape`/`set_if_shift`/`set_pbt_inner`/
  * `set_pbt_outer` have no such split — each refuses through its own single
  * gate, named per case below and verified against the fixture's own
  * `fieldStatus`/`capabilities.controls` data (never invented).
@@ -84,11 +82,25 @@ describe('IC-7300 fixture — filter/PBT family conformance (MOR-1561)', () => {
     resetCommandLifecycle();
   });
 
-  describe('set_filter_width — unified call-site gating on this profile (MOR-1576, see file header)', () => {
-    it('onFilterWidthChange: DISPATCHES — relaxed to knownActiveReceiver(\'filter\') like onFilterPresetChange; main.filterWidth stays unobserved on this fixture but is no longer the gate', () => {
+  describe('set_filter_width — call-site-specific gating on this profile', () => {
+    it('onFilterWidthChange: DISPATCHES with main.filter unobserved because only receiver identity gates the write', () => {
       expect(IC7300_CAPABILITIES.capabilities).toContain('filter_width');
       expect(IC7300_STATE.fieldStatus?.['main.filterWidth']?.observed).toBe(false);
       expect(IC7300_STATE.fieldStatus?.['main.filter']?.observed).toBe(true);
+      h.state = {
+        ...fixtureState(profile),
+        fieldStatus: {
+          ...IC7300_STATE.fieldStatus,
+          'main.filter': {
+            ...IC7300_STATE.fieldStatus!['main.filter'],
+            observed: false,
+            availability: 'missing',
+            freshness: 'unknown',
+          },
+        },
+      };
+      expect(h.caps?.receivers).toBe(1);
+      expect(h.state.fieldStatus?.['main.filter']?.observed).toBe(false);
       // Fixture's own USB filter-width rule (rigs/ic7300.toml via
       // filterConfig.USB): 1800 Hz already sits on the declared 100 Hz-step
       // segment grid (600-3600), so quantizeFilterWidthToRule is a no-op.
@@ -103,7 +115,7 @@ describe('IC-7300 fixture — filter/PBT family conformance (MOR-1561)', () => {
       }
     });
 
-    it('onFilterDefaults: DISPATCHES — same relaxed knownActiveReceiver(\'filter\') gate as onFilterWidthChange', () => {
+    it('onFilterDefaults: DISPATCHES when its knownActiveReceiver(\'filter\') gate is observed', () => {
       expect(IC7300_STATE.fieldStatus?.['main.filterWidth']?.observed).toBe(false);
       expect(IC7300_STATE.fieldStatus?.['main.filter']?.observed).toBe(true);
       expect(IC7300_STATE.main!.filter).toBe(1);
@@ -140,7 +152,7 @@ describe('IC-7300 fixture — filter/PBT family conformance (MOR-1561)', () => {
       }
     });
 
-    it('discrimination: with main.filter ALSO unobserved, onFilterWidthChange/onFilterDefaults/onFilterPresetChange all still refuse — receiver identity is genuinely unknown, not just filterWidth', () => {
+    it('onFilterDefaults/onFilterPresetChange: REFUSE when their main.filter gate is unobserved', () => {
       expect(IC7300_STATE.fieldStatus?.['main.filter']?.observed).toBe(true);
       h.state = {
         ...fixtureState(profile),
@@ -155,12 +167,23 @@ describe('IC-7300 fixture — filter/PBT family conformance (MOR-1561)', () => {
         },
       };
 
-      expectRefusal(() => makeFilterHandlers().onFilterWidthChange(1800));
       expectRefusal(() => makeFilterHandlers().onFilterDefaults([3000, 2400, 1800]));
-      // Both onFilterWidthChange and onFilterPresetChange re-check receiver
-      // identity BEFORE scheduling their 200ms debounce, so the refusal is
-      // synchronous — no fake timers needed to observe it.
       expectRefusal(() => makeFilterHandlers().onFilterPresetChange(1, 3000));
+    });
+
+    it('onFilterWidthChange: REFUSES when active is unobserved on a two-receiver topology', () => {
+      expect(IC7300_STATE.fieldStatus?.active?.observed).toBe(false);
+      h.caps = { ...fixtureCaps(profile), receivers: 2, vfoScheme: 'main_sub' };
+      expect(h.caps.receivers).toBe(2);
+      vi.useFakeTimers();
+      try {
+        expectRefusal(() => {
+          makeFilterHandlers().onFilterWidthChange(1800);
+          vi.advanceTimersByTime(200);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
