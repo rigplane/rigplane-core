@@ -789,6 +789,7 @@
       ? receiverInstruments?.mainSMeter : receiverInstruments?.subSMeter}
     {#snippet hostedMeterFrame(frame: SignalMeterFrame)}
       <LinearSMeter {frame} compact
+        lowerScale={receiverInstruments?.powerLowerScaleFor?.(receiver)}
         variant={appearance === 'sdr' ? 'sdr-screen' : 'vfo-wide'} />
     {/snippet}
     {#snippet hostedMeter()}
@@ -824,6 +825,7 @@
     {#snippet hostedMeterFrame(frame: SignalMeterFrame)}
       <LinearSMeter {frame} compact
         label={dominant ? (dominant.slot.kind === 'slotted' ? dominant.slot.id : roleLabel(dominant)) : '—'}
+        lowerScale={receiverInstruments?.powerLowerScaleFor?.(receiver)}
         variant="vfo" />
     {/snippet}
     {#snippet hostedMeter()}
@@ -942,7 +944,8 @@
             {@const meterHandle = indicator.receiver === 'MAIN'
               ? receiverInstruments?.mainSMeter : receiverInstruments?.subSMeter}
             {#snippet hostedMeterFrame(frame: SignalMeterFrame)}
-              <LinearSMeter {frame} compact variant="vfo-wide" />
+              <LinearSMeter {frame} compact variant="vfo-wide"
+                lowerScale={receiverInstruments?.powerLowerScaleFor?.(indicator.receiver)} />
             {/snippet}
             {#snippet hostedMeter()}
               {#if meterHandle}{@render meterHandle(hostedMeterFrame)}{/if}

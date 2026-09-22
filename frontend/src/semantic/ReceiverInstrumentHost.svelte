@@ -1,6 +1,12 @@
 <script module lang="ts">
   import type { Snippet } from 'svelte';
   import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
+  import type { LowerScaleDescriptor } from '../components-v2/meters/LinearSMeter.svelte';
+  import { normalizePower } from '../components-v2/panels/meter-utils';
+  import { projectTxMeterPresentation } from './bar-meter-projector';
+  import type {
+    MeterRfState, MetersViewModel, ReceiverId, TxTargetViewModel,
+  } from './radio-view-model';
 
   export type ReceiverFrequencyMount = Readonly<{ compact?: boolean; vfoFreqHook?: boolean }>;
   export type ReceiverSMeterRenderer = Snippet<[frame: SignalMeterFrame]>;
@@ -13,6 +19,50 @@
     readonly subSMeter?: Snippet<[renderer?: ReceiverSMeterRenderer]>;
     readonly frequencyTunable: (receiver: 'MAIN' | 'SUB') => boolean;
     readonly vfoOperations: Snippet<[appearance: ReceiverVfoAppearance]>;
+    /**
+     * MOR-2509: the Po (transmit power) lower-scale descriptor for a VFO
+     * panel's S-meter, or undefined when the radio has no power meter. The
+     * row is structural per radio; the FRACTION is fed only to the
+     * TX-target receiver's panel — every other mount gets the row unlit,
+     * never a zero-as-a-value.
+     */
+    readonly powerLowerScaleFor?: (receiver: ReceiverId) => LowerScaleDescriptor | undefined;
+  }
+
+  // The Po row's 0/25/50/75/100 labels are face geometry over the radio's
+  // own watt scale — the same treatment `MetersSurface.svelte` gives its
+  // SWR row and `LinearSMeter` gives its S-unit marks.
+  const POWER_LOWER_SCALE_TICKS = [
+    { value: 0, label: '0' },
+    { value: 0.25, label: '25' },
+    { value: 0.5, label: '50' },
+    { value: 0.75, label: '75' },
+    { value: 1, label: '100' },
+  ] as const;
+
+  export function buildPowerLowerScale(
+    meters: MetersViewModel | undefined,
+    txTarget: TxTargetViewModel,
+    rfState: MeterRfState,
+    receiver: ReceiverId,
+  ): LowerScaleDescriptor | undefined {
+    const field = meters?.power;
+    if (!field?.availability.structural) return undefined;
+    const presentation = projectTxMeterPresentation(field, rfState);
+    const watts = presentation.value;
+    const fraction = watts !== null && txTarget.status === 'known' && txTarget.receiver === receiver
+      ? (field.domain === undefined
+        ? normalizePower(watts) : normalizePower(watts, field.domain))
+      : null;
+    return {
+      label: 'Po',
+      ticks: POWER_LOWER_SCALE_TICKS,
+      valueFraction: fraction === null ? 0 : Math.min(1, Math.max(0, fraction)),
+      fault: false,
+      relevant: true,
+      accessibleDescription: txTarget.status === 'known' && txTarget.receiver === receiver
+        ? 'Transmit power' : 'Transmit power, not this receiver\'s scale',
+    };
   }
 </script>
 
@@ -36,7 +86,7 @@
   } from '../components-v2/meters/signal-meter-motion.svelte';
   import { projectSignalMeter } from '../components-v2/meters/smeter-scale';
   import type {
-    MeterReading, RadioViewModel, ReceiverId, ReceiverSMeterField, VfoViewModel,
+    MeterReading, RadioViewModel, ReceiverSMeterField, VfoViewModel,
   } from './radio-view-model';
 
   type ReceiverAuthorityPublication = Readonly<{
@@ -262,6 +312,15 @@
     return owner?.tunable ?? false;
   }
 
+  function powerLowerScaleFor(receiver: ReceiverId) {
+    const owner = receiver === 'MAIN' ? mainOwner : subOwner;
+    const model = owner?.model ?? null;
+    if (model === null) return undefined;
+    return buildPowerLowerScale(
+      model.meters, model.txTarget, model.meters?.rfState ?? 'unknown', receiver,
+    );
+  }
+
   function installOwner(
     receiver: ReceiverId, model: RadioViewModel, authority: ReceiverFrequencyAuthority | null,
   ): ReceiverOwner {
@@ -366,9 +425,9 @@
 {/snippet}
 
 {#if subOwner === null}
-  {@render children({ mainFrequency, mainSMeter, frequencyTunable, vfoOperations })}
+  {@render children({ mainFrequency, mainSMeter, frequencyTunable, powerLowerScaleFor, vfoOperations })}
 {:else}
   {@render children({
-    mainFrequency, subFrequency, mainSMeter, subSMeter, frequencyTunable, vfoOperations,
+    mainFrequency, subFrequency, mainSMeter, subSMeter, frequencyTunable, powerLowerScaleFor, vfoOperations,
   })}
 {/if}

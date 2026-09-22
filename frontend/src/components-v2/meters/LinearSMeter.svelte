@@ -55,6 +55,7 @@
   } from './signal-meter-motion.svelte';
   import {
     projectSignalMeter,
+    lerpScaleKnots,
     type SignalMeterProjection,
   } from './smeter-scale';
 
@@ -163,7 +164,6 @@
   });
 
   const isVfoVariant = $derived(variant === 'vfo' || variant === 'vfo-wide');
-  const isWideVfoVariant = $derived(variant === 'vfo-wide');
 
   // ── Segment geometry ────────────────────────────────────────────────────────
   // Projected fractions are independent of how many visual segments this
@@ -171,11 +171,11 @@
   const RAW_SEGMENT_DOMAIN = 20;
   const SEG_COUNT = $derived(display.segmentCount);
   const SEG_GAP = $derived(display.segmentGapPx);
-  const BAR_X = $derived(compact && isVfoVariant ? (isWideVfoVariant ? 14 : 12) : 8);
-  const BAR_WIDTH = $derived(compact && isVfoVariant ? (isWideVfoVariant ? 498 : 492) : 484);
+  const BAR_X = 8;
+  const BAR_WIDTH = 484;
   const SEG_W = $derived((BAR_WIDTH - (SEG_COUNT - 1) * SEG_GAP) / SEG_COUNT);
 
-  const READOUT_CX = $derived(BAR_X + BAR_WIDTH + (compact && isVfoVariant ? 36 : 54));
+  const READOUT_CX = $derived(BAR_X + BAR_WIDTH + 54);
 
   function segX(i: number): number {
     return BAR_X + i * (SEG_W + SEG_GAP);
@@ -288,24 +288,24 @@
   // ── Layout (switches between full / compact) ────────────────────────────────
   //   When label is present: label at top → meter shifted down
   //   Vertical stacking: [label] → scale labels → ticks → bar
-  const LABEL_OFFSET  = $derived(label ? (compact ? (isVfoVariant ? 8 : 10) : 14) : 0);
-  const TAG_Y         = $derived(compact ? (isVfoVariant ? 1 : 2) : 3);   // label "MAIN"/"SUB" Y
+  const LABEL_OFFSET  = $derived(label ? (compact ? 10 : 14) : 0);
+  const TAG_Y         = $derived(compact ? 2 : 3);   // label "MAIN"/"SUB" Y
   const TAG_FS        = $derived(compact ? 7  : 8);
-  const SCALE_LABEL_Y = $derived((compact ? (isVfoVariant ? 1 : 2) : 3) + LABEL_OFFSET);
-  const SCALE_LABEL_FS = $derived(compact ? (isVfoVariant ? 9 : 8) : 9);
-  const TICK_MAJOR_Y1 = $derived((compact ? (isVfoVariant ? 12 : 14) : 18) + LABEL_OFFSET);
-  const TICK_MAJOR_Y2 = $derived((compact ? (isVfoVariant ? 27 : 26) : 38) + LABEL_OFFSET);
-  const TICK_MID_Y1   = $derived((compact ? (isVfoVariant ? 16 : 17) : 22) + LABEL_OFFSET);
-  const TICK_MID_Y2   = $derived((compact ? (isVfoVariant ? 27 : 26) : 38) + LABEL_OFFSET);
-  const TICK_MINOR_Y1 = $derived((compact ? (isVfoVariant ? 20 : 20) : 28) + LABEL_OFFSET);
-  const TICK_MINOR_Y2 = $derived((compact ? (isVfoVariant ? 27 : 26) : 38) + LABEL_OFFSET);
-  const TRACK_Y       = $derived((compact ? (isVfoVariant ? 29 : 28) : 40) + LABEL_OFFSET);
-  const TRACK_H       = $derived(compact ? (isVfoVariant ? (isWideVfoVariant ? 11 : 10) : 8) : 14);
+  const SCALE_LABEL_Y = $derived((compact ? 2 : 3) + LABEL_OFFSET);
+  const SCALE_LABEL_FS = $derived(compact ? 8 : 9);
+  const TICK_MAJOR_Y1 = $derived((compact ? 14 : 18) + LABEL_OFFSET);
+  const TICK_MAJOR_Y2 = $derived((compact ? 26 : 38) + LABEL_OFFSET);
+  const TICK_MID_Y1   = $derived((compact ? 17 : 22) + LABEL_OFFSET);
+  const TICK_MID_Y2   = $derived((compact ? 26 : 38) + LABEL_OFFSET);
+  const TICK_MINOR_Y1 = $derived((compact ? 20 : 28) + LABEL_OFFSET);
+  const TICK_MINOR_Y2 = $derived((compact ? 26 : 38) + LABEL_OFFSET);
+  const TRACK_Y       = $derived((compact ? 28 : 40) + LABEL_OFFSET);
+  const TRACK_H       = $derived(compact ? 8 : 14);
   // Readout aligned to bar: S-unit centered on bar, dBm just below
-  const S_UNIT_Y      = $derived(TRACK_Y - (compact ? (isVfoVariant ? 2 : 1) : 2));
-  const S_UNIT_FS     = $derived(compact ? (isVfoVariant ? (isWideVfoVariant ? 15 : 14) : 12) : 15);
-  const DBM_Y         = $derived(TRACK_Y + TRACK_H + (compact ? (isVfoVariant ? 0 : 1) : 2));
-  const DBM_FS        = $derived(compact ? (isVfoVariant ? 9 : 8) : 9);
+  const S_UNIT_Y      = $derived(TRACK_Y - (compact ? 1 : 2));
+  const S_UNIT_FS     = $derived(compact ? 12 : 15);
+  const DBM_Y         = $derived(TRACK_Y + TRACK_H + (compact ? 1 : 2));
+  const DBM_FS        = $derived(compact ? 8 : 9);
 
   // Lower scale row (MOR-2250): stacked below the main bar, in the bar's own
   // x-range — it sits below TRACK_Y + TRACK_H the same way the S-unit/dBm
@@ -313,7 +313,7 @@
   // the two never overlap.
   const LOWER_GAP      = $derived(compact ? 4 : 6);
   const LOWER_LABEL_Y  = $derived(TRACK_Y + TRACK_H + LOWER_GAP);
-  const LOWER_LABEL_FS = $derived(compact ? (isVfoVariant ? 9 : 8) : 9);
+  const LOWER_LABEL_FS = $derived(compact ? 8 : 9);
   const LOWER_TICK_Y1  = $derived(LOWER_LABEL_Y + (compact ? 8 : 10));
   const LOWER_TICK_Y2  = $derived(LOWER_TICK_Y1 + (compact ? 5 : 7));
   const LOWER_TRACK_Y  = $derived(LOWER_TICK_Y2 + 2);
@@ -419,6 +419,118 @@
     return index < sdrFill ? (aboveS9 ? '#FF3030' : '#4FB9EC')
       : (aboveS9 ? '#2a1618' : '#1a2230');
   }
+
+  // ── MOR-2509 v7 face (variants 'vfo' / 'vfo-wide') ─────────────────────────
+  // Pixel-locked geometry: this SVG carries no viewBox, so one user unit is
+  // one CSS pixel and the 2px-lit / 1px-gap dash pattern renders in whole
+  // device-independent pixels at every rendered width. The segment count
+  // follows from the measured track length, and the fill — one dash-patterned
+  // line per tone zone — is a permanent node whose length is the only thing a
+  // reading changes.
+  const VFO_SEG_PITCH = 3;
+  const VFO_SEG_LIT = 2;
+  const VFO_SEG_DASH = `${VFO_SEG_LIT} ${VFO_SEG_PITCH - VFO_SEG_LIT}`;
+  const S9_UNIFORM_FRACTION = 4 / 7;
+  const VFO_PAD_X = 8;
+  const VFO_READOUT_GAP = 8;
+  // Roboto Mono advances 0.6em per glyph; the slot holds the longest
+  // secondary reading ("−127 dBm", 8 glyphs) at its 12px size, which also
+  // covers the 5-glyph primary at 14px.
+  const VFO_MONO_ADVANCE_EM = 0.6;
+  const VFO_READOUT_CHARS = 8;
+  const VFO_READOUT_PRIMARY_FS = 14;
+  const VFO_READOUT_SECONDARY_FS = 12;
+  const VFO_READOUT_W = Math.ceil(
+    VFO_READOUT_CHARS * VFO_MONO_ADVANCE_EM * VFO_READOUT_SECONDARY_FS,
+  );
+  const VFO_LABEL_FS = 8;
+  const VFO_LABEL_Y = 8;
+  const VFO_TICK_Y1 = 11;
+  const VFO_TICK_Y2 = 15;
+  const VFO_BAR_Y = 17;
+  const VFO_BAR_H = 11;
+  const VFO_PRIMARY_Y = 15;
+  const VFO_SECONDARY_Y = 24;
+  const VFO_PO_LABEL_FS = 7;
+  const VFO_PO_LABEL_Y = 38;
+  const VFO_PO_TICK_Y1 = 40;
+  const VFO_PO_TICK_Y2 = 43;
+  const VFO_PO_Y = 44;
+  const VFO_PO_H = 6;
+  const VFO_TOTAL_H = 52;
+  // The evenly spaced 1..9 / +20..+60 scale is face geometry, not radio
+  // data; the fill reaches a labelled position through the projection's
+  // calibration-derived transfer knots, so the reading stays truthful.
+  const VFO_SCALE_LABELS = ['1', '3', '5', '7', '9', '+20', '+40', '+60'] as const;
+  const VFO_TONE_BLUE = 'var(--v2-meter-blue, #58a0ff)';
+  const VFO_TONE_RED = 'var(--v2-meter-red, #e2362c)';
+  const VFO_TONE_UNLIT = 'var(--v2-meter-unlit, #18212a)';
+  const VFO_TONE_LIGHT = 'var(--v2-text-lighter, #EAF1F8)';
+
+  let vfoWidth = $state(0);
+  let vfoSvgElement = $state.raw<SVGSVGElement | null>(null);
+  // Measured through a hand-rolled observer rather than bind:clientWidth so
+  // environments without ResizeObserver (jsdom) render a degenerate but
+  // error-free 0-width face instead of throwing at bind time.
+  $effect(() => {
+    const element = vfoSvgElement;
+    if (element === null || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => { vfoWidth = element.clientWidth; });
+    observer.observe(element);
+    vfoWidth = element.clientWidth;
+    return () => observer.disconnect();
+  });
+  const vfoTrackX = VFO_PAD_X;
+  const vfoTrackW = $derived(Math.max(0, Math.floor(
+    (vfoWidth - VFO_PAD_X - VFO_READOUT_GAP - VFO_READOUT_W - VFO_PAD_X) / VFO_SEG_PITCH,
+  ) * VFO_SEG_PITCH));
+  const vfoReadoutX = $derived(vfoTrackX + vfoTrackW + VFO_READOUT_GAP);
+  // The blue→red handover snaps to the segment grid so no segment renders
+  // half blue and half red; the offset from the exact 4/7 label position
+  // stays under one pitch.
+  const vfoS9X = $derived(signalProjection.crossoverFraction === null
+    ? vfoTrackX + vfoTrackW
+    : vfoTrackX + Math.round((S9_UNIFORM_FRACTION * vfoTrackW) / VFO_SEG_PITCH) * VFO_SEG_PITCH);
+
+  const vfoFillFraction = $derived(signalProjection.motionFraction === null ? 0
+    : lerpScaleKnots(signalProjection.uniformScaleKnots, meterFrame.smoothedFraction));
+  const vfoPeakFraction = $derived(signalProjection.motionFraction === null ? 0
+    : lerpScaleKnots(signalProjection.uniformScaleKnots, meterFrame.peakFraction ?? 0));
+  // The glow is never allowed behind the bar: the max re-asserts the source
+  // invariant for host-frame callers that build the frame themselves.
+  const vfoGlowFraction = $derived(Math.max(vfoFillFraction,
+    meterFrame.afterglowFraction === null ? 0
+      : lerpScaleKnots(signalProjection.uniformScaleKnots, meterFrame.afterglowFraction)));
+  const vfoFillX = $derived(vfoTrackX + vfoFillFraction * vfoTrackW);
+  const vfoPeakX = $derived(vfoTrackX + vfoPeakFraction * vfoTrackW);
+  const vfoGlowX = $derived(vfoTrackX + vfoGlowFraction * vfoTrackW);
+  const vfoBarMidY = VFO_BAR_Y + VFO_BAR_H / 2;
+
+  // Peak marker: rises with the bar, holds ~1 s, then falls. Under
+  // prefers-reduced-motion the v7 face shows the stepped bar only.
+  const vfoShowPeak = $derived(
+    signalProjection.scaleMode !== 'none' && signalProjection.motionFraction !== null
+      && mainPresent && !meterFrame.reducedMotion
+      && (meterFrame.peakFraction ?? 0) - meterFrame.smoothedFraction > 0.3,
+  );
+  const vfoPeakColor = $derived.by(() => {
+    const peak = meterFrame.peakFraction ?? 0;
+    if (signalProjection.crossoverFraction === null || peak <= signalProjection.crossoverFraction) {
+      return 'var(--v2-accent-cyan-bright)';
+    }
+    return peak <= 15 / 20 ? 'var(--v2-accent-yellow)'
+      : peak <= 18 / 20 ? 'var(--v2-accent-orange-alt)' : 'var(--v2-accent-red-alt)';
+  });
+
+  const vfoLowerFraction = $derived(
+    lowerScale ? Math.min(1, Math.max(0, lowerScale.valueFraction)) : 0,
+  );
+  const vfoLowerFillX = $derived(vfoTrackX + vfoLowerFraction * vfoTrackW);
+  const vfoTotalH = $derived(lowerScale ? VFO_TOTAL_H : VFO_BAR_Y + VFO_BAR_H + 4);
+
+  function vfoLabelTone(index: number): string {
+    return index < 5 ? VFO_TONE_LIGHT : VFO_TONE_RED;
+  }
 </script>
 
 {#if variant === 'sdr-screen'}
@@ -446,6 +558,170 @@
         <text x="412" y="46" text-anchor="end" fill="var(--v2-text-secondary, #A0B4C8)" font-size="10">uncalibrated</text>
       {/if}
     </g>
+    {/if}
+  </svg>
+{:else if isVfoVariant}
+  <!-- MOR-2509 v7 face: pixel-locked (no viewBox) so the 2/1 dash pattern is
+       in whole device pixels; every element below is a permanent node whose
+       geometry or visibility — never its presence — follows the reading. -->
+  <svg
+    bind:this={vfoSvgElement}
+    width="100%"
+    height={vfoTotalH}
+    data-variant={variant}
+    role="img"
+    aria-label={signalProjection.accessibleDescription}
+    data-lower-fault={lowerScale ? (lowerScale.fault ? 'true' : 'false') : undefined}
+  >
+    {#if mainPresent}
+    <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
+      {#if signalProjection.scaleMode === 's'}
+        {#each VFO_SCALE_LABELS as label, index (label)}
+          {@const x = vfoTrackX + (index / 7) * vfoTrackW}
+          <text
+            data-scale-label={index}
+            x={x} y={VFO_LABEL_Y}
+            font-family="'Roboto Mono', monospace"
+            font-size={VFO_LABEL_FS}
+            font-weight="700"
+            fill={vfoLabelTone(index)}
+            text-anchor="middle"
+            dominant-baseline="text-before-edge"
+          >{label}</text>
+          <line
+            data-scale-tick={index}
+            x1={x} y1={VFO_TICK_Y1}
+            x2={x} y2={VFO_TICK_Y2}
+            stroke={vfoLabelTone(index)}
+            stroke-width="1"
+            opacity="0.7"
+          />
+        {/each}
+      {/if}
+
+      <line
+        data-meter-track
+        x1={vfoTrackX} y1={vfoBarMidY}
+        x2={vfoTrackX + vfoTrackW} y2={vfoBarMidY}
+        stroke={VFO_TONE_UNLIT}
+        stroke-width={VFO_BAR_H}
+        stroke-dasharray={VFO_SEG_DASH}
+      />
+      <line
+        data-meter-glow
+        x1={Math.min(vfoFillX, vfoS9X)} y1={vfoBarMidY}
+        x2={Math.min(vfoGlowX, vfoS9X)} y2={vfoBarMidY}
+        stroke={VFO_TONE_BLUE}
+        stroke-width={VFO_BAR_H}
+        stroke-dasharray={VFO_SEG_DASH}
+        stroke-opacity="0.35"
+        visibility={vfoGlowX > vfoFillX + 0.5 ? 'visible' : 'hidden'}
+      />
+      <line
+        data-meter-glow-red
+        x1={Math.max(vfoFillX, vfoS9X)} y1={vfoBarMidY}
+        x2={Math.max(vfoGlowX, vfoS9X)} y2={vfoBarMidY}
+        stroke={VFO_TONE_RED}
+        stroke-width={VFO_BAR_H}
+        stroke-dasharray={VFO_SEG_DASH}
+        stroke-opacity="0.35"
+        visibility={vfoGlowX > Math.max(vfoFillX, vfoS9X) + 0.5 ? 'visible' : 'hidden'}
+      />
+      <line
+        data-meter-fill
+        x1={vfoTrackX} y1={vfoBarMidY}
+        x2={Math.min(vfoFillX, vfoS9X)} y2={vfoBarMidY}
+        stroke={VFO_TONE_BLUE}
+        stroke-width={VFO_BAR_H}
+        stroke-dasharray={VFO_SEG_DASH}
+      />
+      <line
+        data-meter-fill-red
+        x1={vfoS9X} y1={vfoBarMidY}
+        x2={Math.max(vfoFillX, vfoS9X)} y2={vfoBarMidY}
+        stroke={VFO_TONE_RED}
+        stroke-width={VFO_BAR_H}
+        stroke-dasharray={VFO_SEG_DASH}
+        visibility={vfoFillX > vfoS9X + 0.5 ? 'visible' : 'hidden'}
+      />
+      <line
+        data-meter-peak
+        x1={vfoPeakX} y1={VFO_BAR_Y}
+        x2={vfoPeakX} y2={VFO_BAR_Y + VFO_BAR_H}
+        stroke={vfoPeakColor}
+        stroke-width="2"
+        opacity="0.9"
+        visibility={vfoShowPeak ? 'visible' : 'hidden'}
+      />
+      <text
+        data-meter-reading
+        x={vfoReadoutX}
+        y={VFO_PRIMARY_Y}
+        font-family="'Roboto Mono', monospace"
+        font-size={VFO_READOUT_PRIMARY_FS}
+        font-weight="700"
+        fill={VFO_TONE_LIGHT}
+        text-anchor="start"
+        dominant-baseline="text-after-edge"
+      >{displaySUnit}</text>
+      <text
+        data-meter-reading-secondary
+        x={vfoReadoutX}
+        y={VFO_SECONDARY_Y}
+        font-family="'Roboto Mono', monospace"
+        font-size={VFO_READOUT_SECONDARY_FS}
+        fill="var(--v2-text-secondary, #A0B4C8)"
+        text-anchor="start"
+        dominant-baseline="central"
+      >{displayDbm}</text>
+    </g>
+    {/if}
+
+    {#if lowerScale}
+      <g
+        role="group" aria-label={lowerScale.accessibleDescription}
+        data-lower-relevant={lowerScale.relevant ? 'true' : 'false'}
+        opacity={lowerScale.relevant ? 1 : DIM_OPACITY}
+      >
+        {#each lowerScale.ticks as t (t.value)}
+          {@const x = vfoTrackX + t.value * vfoTrackW}
+          <text
+            data-lower-tick-label={t.value}
+            x={x} y={VFO_PO_LABEL_Y}
+            font-family="'Roboto Mono', monospace"
+            font-size={VFO_PO_LABEL_FS}
+            font-weight="700"
+            fill="var(--v2-text-dim, #6F8196)"
+            text-anchor="middle"
+            dominant-baseline="text-before-edge"
+          >{t.label}</text>
+          <line
+            data-lower-tick-mark={t.value}
+            x1={x} y1={VFO_PO_TICK_Y1}
+            x2={x} y2={VFO_PO_TICK_Y2}
+            stroke="var(--v2-text-dim, #6F8196)"
+            stroke-width="1"
+            opacity="0.7"
+          />
+        {/each}
+        <line
+          data-lower-track
+          x1={vfoTrackX} y1={VFO_PO_Y + VFO_PO_H / 2}
+          x2={vfoTrackX + vfoTrackW} y2={VFO_PO_Y + VFO_PO_H / 2}
+          stroke={VFO_TONE_UNLIT}
+          stroke-width={VFO_PO_H}
+          stroke-dasharray={VFO_SEG_DASH}
+        />
+        <line
+          data-lower-fill
+          x1={vfoTrackX} y1={VFO_PO_Y + VFO_PO_H / 2}
+          x2={vfoLowerFillX} y2={VFO_PO_Y + VFO_PO_H / 2}
+          stroke={VFO_TONE_BLUE}
+          stroke-width={VFO_PO_H}
+          stroke-dasharray={VFO_SEG_DASH}
+          visibility={vfoLowerFillX > vfoTrackX + 0.5 ? 'visible' : 'hidden'}
+        />
+      </g>
     {/if}
   </svg>
 {:else}

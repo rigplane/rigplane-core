@@ -23,8 +23,10 @@ import {
   formatDbm as formatDbmForCalibration,
   getS9Raw as getS9RawForCalibration,
   getScaleMaxRaw as getScaleMaxRawForCalibration,
+  interpolateRaw,
   isSmeterCalibrated as isSmeterCalibratedForCalibration,
   rawToDbm as rawToDbmForCalibration,
+  rawToSFloat,
   rawToSegments as rawToSegmentsForCalibration,
   rawToSUnit as rawToSUnitForCalibration,
   type SmeterCalibrationPoint,
@@ -36,6 +38,18 @@ export interface SmeterMark {
   actual: number;
   text: string;
   color: string;
+}
+
+/**
+ * One knot of the piecewise-linear transfer from the calibrated motion
+ * fraction (the `motionFraction` ballistics run on) to the evenly spaced
+ * 1..9 / +20..+60 display scale (MOR-2509 mock-up v7): `at` is a position
+ * on the calibrated fraction axis, `to` the matching position on the
+ * evenly spaced axis. Knots are monotone in both columns.
+ */
+export interface SignalScaleKnot {
+  readonly at: number;
+  readonly to: number;
 }
 
 export interface SignalMeterProjectionMark {
@@ -59,11 +73,19 @@ export interface SignalMeterProjection {
   readonly accessibleDescription: string;
   /** S9 crossover for calibrated S or omitted-domain compatibility only. */
   readonly crossoverFraction: number | null;
+  /** MOR-2509: calibrated-fraction → evenly-spaced-scale transfer knots. */
+  readonly uniformScaleKnots: readonly SignalScaleKnot[];
   readonly marks: readonly SignalMeterProjectionMark[];
   readonly ticks: readonly SignalMeterProjectionTick[];
 }
 
 const SEGMENT_DOMAIN = 20;
+const S9_UNIFORM_FRACTION = 4 / 7;
+const OVER_S9_SPAN_FRACTION = 3 / 7;
+const IDENTITY_SCALE_KNOTS: readonly SignalScaleKnot[] = [
+  { at: 0, to: 0 },
+  { at: 1, to: 1 },
+];
 
 function getCal(): SmeterCalibrationPoint[] {
   return getSmeterCalibration() ?? [];
@@ -223,6 +245,88 @@ export function getScaleMarks(): SmeterMark[] {
   return scaleMarks(getCal());
 }
 
+/** The dB-rel-S9 level at which the table's own S-unit interpolation
+ *  reaches `unit`, or null when the table cannot bracket it. */
+function sUnitLevel(unit: number, calibration: readonly SmeterCalibrationPoint[]): number | null {
+  const sPoints = calibration.filter((point) => /^S\d$/.test(point.label));
+  for (let index = 0; index < sPoints.length - 1; index += 1) {
+    const startUnit = Number.parseInt(sPoints[index].label.slice(1), 10);
+    const endUnit = Number.parseInt(sPoints[index + 1].label.slice(1), 10);
+    if (unit >= startUnit && unit <= endUnit) {
+      const t = (unit - startUnit) / (endUnit - startUnit);
+      const raw = sPoints[index].raw + t * (sPoints[index + 1].raw - sPoints[index].raw);
+      return interpolateRaw(raw, calibration);
+    }
+  }
+  return null;
+}
+
+/** A level's position on the evenly spaced 1..9 / +20..+60 scale: S-units
+ *  linear between S1 and S9 over 0..4/7 (the S-unit number comes from the
+ *  radio's own table, so non-uniform tables stay truthful), dB-over-S9
+ *  linear over 4/7..1, clamped at both ends. */
+function uniformFraction(level: number, calibration: readonly SmeterCalibrationPoint[]): number {
+  if (level > 0) {
+    return S9_UNIFORM_FRACTION
+      + Math.min(1, Math.max(0, level / 60)) * OVER_S9_SPAN_FRACTION;
+  }
+  const sFloat = rawToSFloat(
+    calibratedToRawForCalibration(level, calibration), calibration,
+  );
+  return Math.min(1, Math.max(0, (sFloat - 1) / 8)) * S9_UNIFORM_FRACTION;
+}
+
+/**
+ * MOR-2509: the knots of the piecewise-linear transfer from the calibrated
+ * motion fraction to the evenly spaced display scale, over the same table
+ * every other position in the projection uses. The knot levels are the
+ * table's own kinks (its knot levels above S9, the S1 level, the domain
+ * ends) plus the v7 scale's own kinks (S9 at 0 dB, the +60 dB clamp).
+ */
+function uniformScaleKnotsFor(
+  calibration: readonly SmeterCalibrationPoint[],
+): readonly SignalScaleKnot[] {
+  if (!isSmeterCalibratedForCalibration(calibration)) return IDENTITY_SCALE_KNOTS;
+  const calMin = calibration[0].actual;
+  const calMax = calibration[calibration.length - 1].actual;
+  const s1Level = sUnitLevel(1, calibration);
+  const levels = new Set<number>([calMin, 0, Math.min(calMax, 60)]);
+  if (calMax > 60) levels.add(calMax);
+  if (s1Level !== null && s1Level > calMin) levels.add(s1Level);
+  for (const point of calibration) {
+    if (point.actual > 0 && point.actual < calMax) levels.add(point.actual);
+  }
+  const knots: SignalScaleKnot[] = [];
+  for (const level of [...levels].sort((left, right) => left - right)) {
+    const at = calibratedToSegmentsForCalibration(level, calibration) / SEGMENT_DOMAIN;
+    const to = uniformFraction(level, calibration);
+    const previous = knots[knots.length - 1];
+    if (previous && at <= previous.at) continue;
+    knots.push({ at, to });
+  }
+  return knots.length >= 2 ? knots : IDENTITY_SCALE_KNOTS;
+}
+
+/** Map a calibrated motion fraction onto the evenly spaced scale through
+ *  the projection's knots; monotone, so ballistics over the calibrated
+ *  fraction transfer without overshoot. */
+export function lerpScaleKnots(
+  knots: readonly SignalScaleKnot[], fraction: number,
+): number {
+  const value = Math.min(1, Math.max(0, fraction));
+  if (knots.length === 0) return value;
+  if (value <= knots[0].at) return knots[0].to;
+  for (let index = 0; index < knots.length - 1; index += 1) {
+    const start = knots[index];
+    const end = knots[index + 1];
+    if (value <= end.at) {
+      const span = end.at - start.at;
+      return span <= 0 ? end.to : start.to + ((value - start.at) / span) * (end.to - start.to);
+    }
+  }
+  return knots[knots.length - 1].to;
+}
+
 /**
  * Resolve every display-facing S-meter value from one capability snapshot.
  * The facade remains the only store reader; the pure primitives above own all
@@ -253,6 +357,8 @@ export function projectSignalMeter(
         getS9RawForCalibration(projectionCalibration), projectionCalibration,
       ) / SEGMENT_DOMAIN
     : null;
+  const uniformScaleKnots = scaleMode === 's'
+    ? uniformScaleKnotsFor(projectionCalibration) : IDENTITY_SCALE_KNOTS;
 
   if (value === null) {
     const legacy = domain === undefined;
@@ -268,6 +374,7 @@ export function projectSignalMeter(
       secondaryText,
       accessibleDescription: `S meter reading unknown${secondaryText ? `, ${secondaryText}` : ''}`,
       crossoverFraction,
+      uniformScaleKnots,
       marks,
       ticks,
     };
@@ -282,6 +389,7 @@ export function projectSignalMeter(
       secondaryText: 'uncalibrated',
       accessibleDescription: `S meter ${primaryText} raw, uncalibrated`,
       crossoverFraction,
+      uniformScaleKnots,
       marks,
       ticks,
     };
@@ -303,6 +411,7 @@ export function projectSignalMeter(
         ? `S meter ${signedValue} decibels relative to S9, ${stateText}`
         : `S meter ${valueText}, ${stateText}`,
       crossoverFraction,
+      uniformScaleKnots,
       marks,
       ticks,
     };
@@ -319,6 +428,7 @@ export function projectSignalMeter(
     secondaryText,
     accessibleDescription: `S meter ${primaryText}, ${secondaryText}`,
     crossoverFraction,
+    uniformScaleKnots,
     marks,
     ticks,
   };

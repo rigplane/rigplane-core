@@ -144,15 +144,22 @@ function mountReactiveMeter(props: ComponentProps<typeof LinearSMeter>) {
 const svgOf = (target: HTMLElement): SVGSVGElement =>
   target.querySelector('svg[data-variant="vfo"]')!;
 
+// The zone past S9 is a separate line; a hidden zone line carries its
+// boundary coordinates regardless, so only visible ones count as fill.
+function litLineEnd(root: ParentNode, selector: string): number | null {
+  const line = root.querySelector(selector)!;
+  if (line.getAttribute('visibility') === 'hidden') return null;
+  return Number(line.getAttribute('x2'));
+}
+
 function fillFraction(root: ParentNode): number {
   const track = root.querySelector('[data-meter-track]')!;
-  const fill = root.querySelector('[data-meter-fill]')!;
   const x1 = Number(track.getAttribute('x1'));
   const trackW = Number(track.getAttribute('x2')) - x1;
-  const blueEnd = Number(fill.getAttribute('x2'));
-  const red = root.querySelector('[data-meter-fill-red]')!;
-  const redEnd = Number(red.getAttribute('x2'));
-  const end = Math.max(blueEnd, redEnd);
+  const end = Math.max(
+    litLineEnd(root, '[data-meter-fill]') ?? x1,
+    litLineEnd(root, '[data-meter-fill-red]') ?? x1,
+  );
   return (end - x1) / trackW;
 }
 
@@ -160,9 +167,10 @@ function glowFraction(root: ParentNode): number {
   const track = root.querySelector('[data-meter-track]')!;
   const x1 = Number(track.getAttribute('x1'));
   const trackW = Number(track.getAttribute('x2')) - x1;
-  const blue = root.querySelector('[data-meter-glow]')!;
-  const red = root.querySelector('[data-meter-glow-red]')!;
-  const end = Math.max(Number(blue.getAttribute('x2')), Number(red.getAttribute('x2')));
+  const end = Math.max(
+    litLineEnd(root, '[data-meter-glow]') ?? x1,
+    litLineEnd(root, '[data-meter-glow-red]') ?? x1,
+  );
   return (end - x1) / trackW;
 }
 
@@ -532,9 +540,9 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
       if (glow > fill + 0.02) sawTrailingGlow = true;
     }
     expect(sawTrailingGlow).toBe(true);
-    // The afterglow fades over ~250 ms: well before a second has passed it
-    // has collapsed back onto the bar.
-    for (let i = 0; i < 30; i += 1) step(16.7);
+    // The trail is the bar one fade window back, so once the bar has
+    // settled the glow has collapsed onto it.
+    for (let i = 0; i < 90; i += 1) step(16.7);
     expect(glowFraction(svgOf(target)) - fillFraction(svgOf(target))).toBeLessThanOrEqual(0.02);
   });
 
