@@ -286,8 +286,10 @@
               ariaLabel={isAuto && dsp.agcMode.autoSelectedSpeed
                 ? `${option.label} ${dsp.agcMode.autoSelectedSpeed}` : option.label}
               onclick={() => agcBehavior.invoke(option.value)}>
-              <span class="agc-key-label">{option.label}</span>
-              {#if isAuto}<span class="agc-auto-speed">{dsp.agcMode.autoSelectedSpeed ?? ''}</span>{/if}
+              <span class="agc-key-stack">
+                <span class="agc-key-label">{option.label}</span>
+                {#if isAuto}<span class="agc-auto-speed">{dsp.agcMode.autoSelectedSpeed ?? ''}</span>{/if}
+              </span>
             </ControlButton>
           </div>
         {/each}
@@ -310,8 +312,19 @@
     width: 100%;
   }
   .agc-key { display: flex; min-width: 0; }
-  .agc-key :global(button) { flex: 1 1 auto; min-width: 28px; min-height: 28px; }
-  .agc-key-label, .agc-auto-speed { display: block; }
+  /* The button's default 10 px inline padding leaves 14 px of content width
+   * at the 36 px column width, clipping a 25 px "AUTO" label; 2 px keeps the
+   * whole key face for the label column. */
+  .agc-key :global(button) {
+    flex: 1 1 auto; min-width: 28px; min-height: 28px; padding-inline: 2px;
+  }
+  /* The button lays its children out as a flex row, so the label and the
+   * AUTO speed line only stack vertically inside this single wrapper. */
+  .agc-key-stack {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; min-width: 0; max-width: 100%;
+  }
+  .agc-key-label, .agc-auto-speed { display: block; max-width: 100%; }
   .agc-auto-speed {
     min-height: 1em;
     color: var(--dl-studioline-muted, var(--dl-fieldline-muted, var(--dl-segmentline-ink-soft, currentcolor)));

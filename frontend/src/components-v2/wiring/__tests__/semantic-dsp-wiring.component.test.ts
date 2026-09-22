@@ -591,6 +591,30 @@ describe('AGC choice group', () => {
     expect(q<HTMLElement>('[data-testid="dsp-agcMode-4"] .agc-auto-speed')!.textContent).toBe('');
   });
 
+  /* MOR-2537: the AUTO key must carry its label and speed line inside ONE
+   * column wrapper — the button lays bare children out as a flex row, which
+   * clipped the two side by side. jsdom has no layout, so this asserts the
+   * structure only; the stand probe owns the geometry. */
+  it('stacks the AUTO label and reserved speed line inside one wrapper in the key', () => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(2);
+    render();
+
+    const key = q<HTMLButtonElement>('[data-testid="dsp-agcMode-4"]')!;
+    const stack = key.querySelector<HTMLElement>('.agc-key-stack')!;
+    expect(stack.parentElement).toBe(key);
+    expect([...stack.children].map(child => child.className)).toEqual([
+      'agc-key-label', 'agc-auto-speed',
+    ]);
+    expect(stack.querySelector('.agc-key-label')!.textContent).toBe('AUTO');
+    expect(stack.querySelector('.agc-auto-speed')!.textContent).toBe('');
+
+    publishAuthority(stateWithAgc(6));
+    flushSync();
+    expect(q<HTMLElement>('[data-testid="dsp-agcMode-4"] .agc-key-stack .agc-auto-speed')!
+      .textContent).toBe('SLOW');
+  });
+
   it('keeps declared labels unlit and disabled when AGC is present but unread', () => {
     h.caps = ftxAgcCaps();
     h.state = stateWithAgc(6, false);
