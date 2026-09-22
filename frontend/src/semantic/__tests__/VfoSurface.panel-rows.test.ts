@@ -607,6 +607,9 @@ function rule(css: string, selector: string): string {
 const panelCss = styleBlock('src/components-v2/vfo/VfoPanel.svelte');
 const surfaceCss = styleBlock('src/semantic/VfoSurface.svelte');
 const layoutCss = styleBlock('src/components-v2/layout/RadioLayout.svelte');
+const surfaceSource = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
+const studiolineCss = readFileSync('src/presentation/languages/studioline/studioline.css', 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, '');
 
 describe('source pins: fixed slot widths (MOR-2509 slice 2)', () => {
   it('every tray tab, lamp and large chip declares a fixed width and never wraps', () => {
@@ -718,7 +721,7 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(freq).toMatch(/font-variant-numeric:\s*tabular-nums/);
   });
 
-  it('the inactive panel is quiet through token variants, never a filter, and the meter is never dimmed', () => {
+  it('the panel state owns the meter filter and the inactive state cancels it', () => {
     for (const [, selector, body] of panelCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
       expect(body, `${selector.trim()} must not dim with a saturation filter`)
         .not.toMatch(/filter:\s*saturate/);
@@ -727,6 +730,34 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(inactive).toMatch(/--vfo-neon-fill:\s*var\(--dl-vfo-primary-neon-dim/);
     expect(inactive).not.toMatch(/(?:^|[;\s])(?:filter|opacity)\s*:/);
     expect(inactive).not.toMatch(/panel-meter/);
+    expect(rule(panelCss, '.panel'))
+      .toMatch(/--v2-meter-lit-filter:\s*var\(--dl-vfo-meter-lit-filter,\s*none\)/);
+    expect(inactive).toMatch(/--v2-meter-lit-filter:\s*none/);
+    const filterOwners = [...panelCss.matchAll(/([^{}]+)\{([^{}]*--v2-meter-lit-filter:\s*[^;}]+;[^{}]*)\}/g)]
+      .map(([, selector]) => selector.trim());
+    expect(filterOwners).toEqual(['.panel', '.panel:not(.active)']);
+  });
+
+  it('keeps filled chip ink mode-independent while light mode owns a light panel', () => {
+    const base = [...studiolineCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .find(([, selectors, body]) => selectors.trim() === "[data-design-language='studioline'][data-design-language]"
+        && body.includes('--dl-vfo-primary-neon:'))?.[2] ?? '';
+    const light = rulesFor(
+      studiolineCss,
+      "[data-design-language='studioline'][data-design-language][data-language-mode='light']",
+    ).join('\n');
+    for (const token of ['frame', 'frame-dim', 'tab-frame', 'tab-frame-dim', 'dim-text']) {
+      expect(base, `--dl-vfo-${token} stays white`).toMatch(new RegExp(`--dl-vfo-${token}:\\s*#ffffff`));
+      expect(light, `light mode does not replace --dl-vfo-${token}`).not.toContain(`--dl-vfo-${token}:`);
+    }
+    expect(base).toMatch(/--dl-vfo-amber-chip-text:\s*#ffd47a/);
+    expect(base).toMatch(/--dl-vfo-amber-chip-text-dim:\s*#b89a5e/);
+    expect(light).toMatch(/--dl-vfo-red-text:\s*#a33228/);
+    expect(light).toMatch(/--dl-vfo-amber-text:\s*#7a6220/);
+    expect(light).toMatch(/--dl-vfo-brown-text:\s*#7a5210/);
+    expect(light).toMatch(/--dl-vfo-panel-background:\s*linear-gradient\([^;]*#f9f6f0[^;]*#e9e4db/);
+    expect(light).toMatch(/--dl-vfo-meter-well-background:\s*#151b22/);
+    expect(light).toMatch(/--dl-vfo-panel-sheen:\s*var\(--v2-vfo-panel-sheen-override,/);
   });
 
   it('every readout rule that sets a digit weight resolves it from the deck token', () => {
@@ -792,6 +823,7 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     const theme = readFileSync('src/components-v2/theme/tokens.css', 'utf8');
     expect(theme).toMatch(/@media \(prefers-contrast:\s*more\)[\s\S]*--v2-vfo-glow-override:\s*none/);
     expect(theme).toMatch(/--v2-vfo-meter-lit-filter-override:\s*none/);
+    expect(theme).toMatch(/--v2-vfo-panel-sheen-override:\s*none/);
 
     for (const [path, language] of [
       ['src/presentation/languages/studioline/studioline.css', 'studioline'],
@@ -816,10 +848,25 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(rulesFor(panelCss, '.panel-meter').join('\n'))
       .toMatch(/background:\s*var\(--dl-vfo-meter-well-background/);
     expect(rulesFor(panelCss, '.panel-meter').join('\n'))
-      .toMatch(/--v2-meter-lit-filter:\s*var\(--dl-vfo-meter-lit-filter/);
+      .not.toMatch(/--v2-meter-lit-filter\s*:/);
     expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge").join('\n'))
       .toMatch(/background:\s*var\(--dl-vfo-bridge-background/);
     expect(surfaceCss).not.toMatch(/\[data-vfo-appearance='(?:semantic|sdr)'\][^{}]*--dl-vfo-/);
+  });
+
+  it('imports and mounts VfoPanel only inside the Standard instrument branch', () => {
+    expect(surfaceSource.match(/import VfoPanel\b/g)).toHaveLength(1);
+    expect(surfaceSource.match(/<VfoPanel\b/g)).toHaveLength(1);
+    const start = surfaceSource.indexOf('{#snippet standardInstrument');
+    const end = surfaceSource.indexOf('\n  {#if appearance', start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const standardInstrument = surfaceSource.slice(start, end);
+    expect(standardInstrument).toContain('<VfoPanel');
+    expect(standardInstrument).not.toContain('slotTag=');
+    expect(surfaceSource.slice(0, start) + surfaceSource.slice(end)).not.toContain('<VfoPanel');
+    expect(surfaceSource).toMatch(/if \(appearance !== 'standard' \|\| instrumentReceivers\.length !== 1\) return null/);
+    expect(surfaceSource.match(/\{#if appearance === 'standard'}\{@render standardInstrument/g)).toHaveLength(2);
   });
 
   it('glow belongs only to lit large elements and the inactive panel cancels it', () => {

@@ -416,7 +416,6 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasCapability: vi.fn(() => false),
   vfoLabel: vi.fn((slot: 'A' | 'B') => (slot === 'A' ? 'MAIN' : 'SUB')),
   receiverLabel: vi.fn((id: 'MAIN' | 'SUB') => id),
-  vfoSlotLabel: vi.fn((slot: 'A' | 'B') => (slot === 'A' ? 'VFO A' : 'VFO B')),
   getCapabilities: vi.fn(() => rt.caps ?? ({ freqRanges: [], modes: [], filters: [] })),
   setCapabilities: vi.fn(),
   getAgcModes: vi.fn(() => [0, 1, 2, 3]),

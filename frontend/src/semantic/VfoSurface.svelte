@@ -1006,7 +1006,6 @@
         data-vfo-tx-target={dominant?.isTxTarget}>
         <VfoPanel
           receiver={receiver === 'SUB' ? 'sub' : 'main'} receiverLabel={fixed ? roleLabel(fixed) : receiver}
-          slotTag={dominant ? (dominant.slot.kind === 'slotted' ? dominant.slot.id : roleLabel(dominant)) : '—'}
           frequency={receiverInstruments !== undefined && dominant && frequencyHandle
             && (fixed === undefined || fixed.isActiveSlot)
             ? hostedFrequency : undefined}

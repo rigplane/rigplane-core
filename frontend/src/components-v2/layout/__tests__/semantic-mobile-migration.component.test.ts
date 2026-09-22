@@ -115,9 +115,9 @@ vi.mock('$lib/utils/tx-permit', () => ({ getTxPermit: vi.fn(() => 'allowed') }))
 vi.mock('$lib/stores/tuning.svelte', () => ({ applyModeDefault: vi.fn() }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasTx: vi.fn(() => true), hasDualReceiver: vi.fn(() => false), hasAnyScope: vi.fn(() => false),
-  hasSpectrum: vi.fn(() => true), getCapabilities: vi.fn(() => ({ freqRanges: [], modes: [], filters: [] })),
+  hasSpectrum: vi.fn(() => true), getCapabilities: vi.fn(() => ({ capabilities: [], freqRanges: [], modes: [], filters: [] })),
   subscribeCapabilities: vi.fn((handler: (caps: unknown) => void) => {
-    handler({ freqRanges: [], modes: [], filters: [] });
+    handler({ capabilities: [], freqRanges: [], modes: [], filters: [] });
     return () => {};
   }),
   getKeyboardConfig: vi.fn(() => null), setCapabilities: vi.fn(), hasCapability: vi.fn(() => false),

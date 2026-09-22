@@ -59,7 +59,7 @@
   interface Props {
     receiver: 'main' | 'sub';
     receiverLabel: string;
-    slotTag: string;
+    slotTag?: string;
     frequency?: Snippet;
     freq?: number | null;
     displayHz?: number | null;
@@ -337,13 +337,14 @@
     --vfo-ant-fill: var(--dl-vfo-red, #e2362c);
     --vfo-ant-frame: var(--dl-vfo-tab-frame, #ffffff);
     --vfo-ant-text: var(--dl-vfo-frame, #ffffff);
-    --vfo-front-red: var(--dl-vfo-red, #e2362c);
+    --vfo-front-red: var(--dl-vfo-red-text, var(--dl-vfo-red, #e2362c));
     --vfo-tx-fill: var(--dl-vfo-red, #e2362c);
     --vfo-tx-frame: var(--dl-vfo-frame, #ffffff);
-    --vfo-amber-text: var(--dl-vfo-amber, #ffd47a);
+    --vfo-amber-text: var(--dl-vfo-amber-text, var(--dl-vfo-amber, #ffd47a));
+    --vfo-amber-chip-text: var(--dl-vfo-amber-chip-text, var(--dl-vfo-amber, #ffd47a));
     --vfo-amber-chip-border: var(--dl-vfo-amber-border, #e0a030);
     --vfo-amber-chip-fill: var(--dl-vfo-amber-fill, #3a2a0c);
-    --vfo-brown-text: var(--dl-vfo-brown, #e09a4a);
+    --vfo-brown-text: var(--dl-vfo-brown-text, var(--dl-vfo-brown, #e09a4a));
     --vfo-slate-fill: var(--dl-vfo-slate, #5b6a79);
     --vfo-slate-frame: var(--dl-vfo-tab-frame, #ffffff);
     --vfo-slate-text: var(--dl-vfo-frame, #ffffff);
@@ -360,6 +361,7 @@
     --vfo-brown-glow: var(--dl-vfo-brown-glow, none);
     --vfo-dsp-glow: var(--dl-vfo-dsp-glow, none);
     --vfo-slate-glow: var(--dl-vfo-slate-glow, none);
+    --v2-meter-lit-filter: var(--dl-vfo-meter-lit-filter, none);
     --vfo-large-chip-width: 70px;
     --vfo-panel-narrow-breakpoint: 520px;
 
@@ -410,6 +412,7 @@
     --vfo-ant-text: var(--dl-vfo-dim-text, #e3eaf2);
     --vfo-front-red: var(--dl-vfo-red-text-dim, #c85e56);
     --vfo-amber-text: var(--dl-vfo-amber-dim, #b89a5e);
+    --vfo-amber-chip-text: var(--dl-vfo-amber-chip-text-dim, var(--dl-vfo-amber-dim, #b89a5e));
     --vfo-amber-chip-border: var(--dl-vfo-amber-border-dim, #7a6232);
     --vfo-amber-chip-fill: var(--dl-vfo-amber-fill-dim, #241b0c);
     --vfo-brown-text: var(--dl-vfo-brown-dim, #a5763f);
@@ -688,7 +691,7 @@
     border: 1px solid var(--vfo-amber-chip-border);
     border-radius: 4px;
     background: var(--vfo-amber-chip-fill);
-    color: var(--vfo-amber-text);
+    color: var(--vfo-amber-chip-text);
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.03em;
@@ -752,7 +755,6 @@
     border-radius: 4px;
     background: var(--dl-vfo-meter-well-background, #05070a);
     box-shadow: var(--dl-vfo-meter-well-shadow, inset 0 2px 6px rgba(0, 0, 0, 0.9), inset 0 0 0 1px #1a222b, 0 1px 0 rgba(255, 255, 255, 0.05));
-    --v2-meter-lit-filter: var(--dl-vfo-meter-lit-filter, none);
   }
 
   .panel-meter > div { width: 100%; }

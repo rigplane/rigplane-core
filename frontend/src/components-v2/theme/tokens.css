@@ -325,6 +325,7 @@
   :root {
     --v2-vfo-glow-override: none;
     --v2-vfo-meter-lit-filter-override: none;
+    --v2-vfo-panel-sheen-override: none;
   }
 
   :root:not([data-theme]) {
