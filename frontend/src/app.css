@@ -8,15 +8,21 @@
 }
 
 :focus-visible {
-  /* MOR-1232: `outline`, never `box-shadow`. This is the app-wide default that
-   * every component without a focus rule of its own relies on, and a global
-   * box-shadow (0,1,0) loses to any Svelte-scoped component box-shadow
-   * (0,2,0+) — see the note on --focus-ring in styles/tokens.css.
-   * --v2-focus-ring carries the per-skin, contrast-checked ring colour once the
-   * components-v2 theme layer is loaded; skins are code-split, so the legacy
-   * --focus-ring fallback stays live until a v2 layout mounts. */
-  outline: var(--v2-focus-ring, var(--focus-ring));
-  outline-offset: 2px;
+  /* MOR-2522: focus is illumination, never a frame (owner rulings
+   * 2026-09-21/22) — the VFO deck's "lit, not framed" treatment, app-wide.
+   * The focused control lights up in the per-skin focus colour; no outline
+   * is drawn anywhere and no element changes size or position (shadow and
+   * filter paint outside the box). `filter`, not `box-shadow`: this rule
+   * scores (0,1,0), and any Svelte-scoped component box-shadow (0,2,0+) —
+   * e.g. TxPanel's PTT transmit glow — would erase a global shadow, the
+   * MOR-1232 defect; scoped `filter` exists only in the VFO deck, which
+   * overrides this rule at (0,3,0) with its own brightness steps. The
+   * legacy literal keeps the pre-v2 window (skins are code-split) lit in
+   * the legacy accent, mirroring the old --focus-ring fallback. */
+  outline: none;
+  filter: var(--v2-focus-illum-filter,
+    drop-shadow(0 0 1px var(--accent))
+    drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 55%, transparent)));
 }
 
 body {

@@ -199,9 +199,15 @@ describe('the CSS half honours the same constraints as the token half', () => {
     expect(css).not.toMatch(/content:\s*'/);
   });
 
-  it('never re-suppresses the focus ring, and applies it as `outline` (MOR-977 §1.2.5)', () => {
-    expect(css).not.toMatch(/outline:\s*none/);
-    expect(css).toMatch(/outline:\s*2px solid var\(--dl-studioline-focus\)/);
+  it('never re-suppresses focus, and paints it as illumination, never a frame (MOR-977 §1.2.5, MOR-2522)', () => {
+    // app.css removes the UA focus frame globally; this language feeds the
+    // contract knob its own colour and adds light — it declares no outline
+    // property of its own at all.
+    expect(css).not.toMatch(/outline\s*:/);
+    expect(css).toMatch(/--v2-focus-ring-color:\s*var\(--dl-studioline-focus\)/);
+    expect(css).toMatch(
+      /filter:\s*var\(\s*--v2-focus-illum-filter,\s*drop-shadow\(0 0 1px var\(--dl-studioline-focus\)\)/,
+    );
   });
 
   it('wins on specificity rather than on `!important`', () => {

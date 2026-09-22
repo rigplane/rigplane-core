@@ -16,20 +16,40 @@
 
   /* ── Colors: Accents ─────────────────────────────────────────────────────── */
   --v2-accent-cyan: #00D4FF;
-  /* MOR-1232 focus ring. DEVIATION RECORD (MOR-1231 ruling, "decide in-slice and
-   * record"): this is a theme-layer pair, not `--dl-*`, because the MOR-1072
-   * design-language custom properties do not exist as CSS — `--dl-focus-ring`
-   * would resolve to nothing and re-create the dead-token defect this ticket
-   * fixes. Interim home for the DL `focusRing` token group; migrate the pair to
-   * `--dl-*` when those properties actually land.
-   * --v2-focus-ring-color is the single per-skin knob: a skin whose accent
-   * misses the WCAG 1.4.11 3:1 non-text minimum against its own surfaces
-   * overrides only this one property (see nord-light, solarized-light). Both
-   * shapes are contrast-pinned per skin by
-   * src/__tests__/focus-ring-token-wiring.test.ts. */
+  /* Focus. MOR-1232 built the ring pair; MOR-2522 (owner rulings 2026-09-21
+   * and 2026-09-22, "no focus frame anywhere") repaints it as light: the
+   * focused control lights up, the way the VFO deck already does (PR #3562).
+   * DEVIATION RECORD (MOR-1231 ruling, "decide in-slice and record"):
+   * theme-layer names, not `--dl-*`, because the MOR-1072 design-language
+   * custom properties do not exist as CSS — `--dl-focus-*` would resolve to
+   * nothing and re-create the dead-token defect MOR-1232 fixed. A design
+   * language feeds the same knob instead (studioline.css repoints
+   * --v2-focus-ring-color).
+   * --v2-focus-ring-color is still the single per-skin knob: a skin whose
+   * accent misses the WCAG 1.4.11 3:1 non-text minimum against its own
+   * surfaces overrides only this one property (see nord-light,
+   * solarized-light). Every treatment below is contrast-pinned per skin by
+   * src/__tests__/focus-ring-token-wiring.test.ts.
+   * Two carriers, one mechanism, because of the cascade: the global
+   * :focus-visible rule (app.css, (0,1,0)) must carry `filter` — a global
+   * box-shadow loses to any Svelte-scoped component shadow (0,2,0+), the
+   * MOR-1232 TxPanel-PTT defect — while scoped sites carry the shadow
+   * form, which nothing competes with at their specificity. Neither
+   * carrier changes geometry: shadow and filter paint outside the box. */
   --v2-focus-ring-color: var(--v2-accent-cyan);
-  --v2-focus-ring: 2px solid var(--v2-focus-ring-color);
-  --v2-focus-ring-shadow: 0 0 0 2px var(--v2-focus-ring-color);
+  --v2-focus-illum-core: 0 0 4px 1px var(--v2-focus-ring-color);
+  --v2-focus-illum-halo:
+    0 0 14px 2px color-mix(in srgb, var(--v2-focus-ring-color) 55%, transparent);
+  --v2-focus-illum-shadow: var(--v2-focus-illum-core), var(--v2-focus-illum-halo);
+  --v2-focus-illum-filter:
+    drop-shadow(0 0 1px var(--v2-focus-ring-color))
+    drop-shadow(0 0 6px color-mix(in srgb, var(--v2-focus-ring-color) 55%, transparent));
+  /* Retired frame shapes, kept resolving so the not-yet-migrated rules (the
+   * PR-2 list in MOR-2522) stay valid CSS that paints light, never a
+   * border. The deck's brightness steps stay the deck's two focused
+   * steps (control-button.css). */
+  --v2-focus-ring: none;
+  --v2-focus-ring-shadow: var(--v2-focus-illum-shadow);
   --v2-focus-ring-lit-filter: brightness(1.18) saturate(1.08);
   --v2-focus-ring-dim-filter: brightness(1.32) saturate(1.12);
   --v2-accent-orange: #FF6A00;
@@ -326,6 +346,14 @@
     --v2-vfo-glow-override: none;
     --v2-vfo-meter-lit-filter-override: none;
     --v2-vfo-panel-sheen-override: none;
+    /* MOR-2522: under more-contrast the illumination gets the high-contrast
+     * pair — a wider full-strength core and halo; still light, never an
+     * outline. */
+    --v2-focus-illum-core: 0 0 5px 2px var(--v2-focus-ring-color);
+    --v2-focus-illum-halo: 0 0 16px 3px var(--v2-focus-ring-color);
+    --v2-focus-illum-filter:
+      drop-shadow(0 0 2px var(--v2-focus-ring-color))
+      drop-shadow(0 0 8px var(--v2-focus-ring-color));
   }
 
   :root:not([data-theme]) {
@@ -338,6 +366,14 @@
 }
 
 @media (forced-colors: active) {
+  /* MOR-2522: forced-colors mode drops filter and box-shadow painting, so
+   * the illumination contract would leave focus invisible. Restore the
+   * system indication; `!important` is the only way to beat the scoped
+   * `outline: none` suppressions in author styles. */
+  :focus-visible {
+    outline: 2px solid Highlight !important;
+  }
+
   :root:not([data-theme]) {
     --v2-border: CanvasText;
     --v2-border-subtle: CanvasText;

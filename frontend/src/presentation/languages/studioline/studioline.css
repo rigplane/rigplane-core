@@ -38,6 +38,12 @@
   --dl-studioline-tx-active: #d63a30;
   --dl-studioline-tx-tuning: #a97400;
 
+  /* MOR-2522: the app-wide focus contract (app.css, theme tokens.css) reads
+   * one knob; this language repoints it. #00819f clears 3:1 on both
+   * language surfaces (dark #0e1113 = 4.19:1, light #faf7f2 = 4.23:1 —
+   * recomputed in src/__tests__/focus-ring-token-wiring.test.ts). */
+  --v2-focus-ring-color: var(--dl-studioline-focus);
+
   --dl-studioline-surface: #0e1113;
   --dl-studioline-text: #eef1f2;
   --dl-studioline-muted: #748086;
@@ -170,10 +176,14 @@
 
 /* ── One focus contract, never re-suppressed (MOR-977 §1.2.5) ───────────── */
 [data-design-language='studioline'][data-design-language] :focus-visible {
-  /* Outline shorthand, matching the token literal exactly (MOR-1232 D5). */
-  outline: 2px solid var(--dl-studioline-focus);
-  /* No box edge to hug in a borderless grammar — the ring stands off instead. */
-  outline-offset: 3px;
+  /* MOR-2522: illumination, never a frame. app.css removes the UA focus
+   * frame for every focusable element; this lights the focused control in
+   * the language colour (fed through --v2-focus-ring-color above). The
+   * literal fallback keeps the language self-sufficient when the v2 theme
+   * layer — the home of --v2-focus-illum-filter — is not mounted. */
+  filter: var(--v2-focus-illum-filter,
+    drop-shadow(0 0 1px var(--dl-studioline-focus))
+    drop-shadow(0 0 6px color-mix(in srgb, var(--dl-studioline-focus) 55%, transparent)));
 }
 
 /* ── The channel strip: no boxes, one optical left margin ───────────────── */

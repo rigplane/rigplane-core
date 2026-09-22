@@ -179,7 +179,11 @@ describe('deliberate wheel interaction', () => {
     action.update({ view, lease });
     node.dispatchEvent(new PointerEvent('pointerdown', { button: 0, isPrimary: true }));
     expect(node.dataset.wheelArmed).toBe('true');
-    expect(node.style.outline).toContain('2px');
+    // MOR-2522: arming must not paint an inline outline frame (the 2 px cyan
+    // rectangle the owner saw on click); the armed marker is the CSS
+    // illumination keyed on data-wheel-armed in value-control.css.
+    expect(node.style.outline).toBe('');
+    expect(node.style.outlineOffset).toBe('');
     expect(wheel(3000, -120).defaultPrevented).toBe(true);
     window.dispatchEvent(new Event('blur'));
     expect(node.dataset.wheelArmed).toBe('false');

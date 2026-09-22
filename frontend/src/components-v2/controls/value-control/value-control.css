@@ -20,13 +20,16 @@
   --vc-glow-opacity: 0.14;
   --vc-glow-strong: 0.25;
 
-  /* Focus. MOR-1254: proxies the same contrast-pinned per-skin knob MOR-1232
-   * introduced (--v2-focus-ring-color, components-v2/theme/tokens.css),
-   * instead of the raw --v2-accent-cyan, which fails WCAG 1.4.11 3:1 on
-   * nord-light/solarized-light. Matrix-checked in
-   * src/__tests__/focus-ring-token-wiring.test.ts (section 5's extended loop). */
+  /* Focus. MOR-2522: focus is illumination, never a frame. The renderer
+   * outline rules are retired through --vc-focus-ring-width (they paint
+   * nothing; PR 2 deletes the rules); the focused or wheel-armed track and
+   * thumb light up through --vc-illum-focus-glow, fed from the app-wide
+   * --v2-focus-* contract — the same contrast-pinned per-skin knob
+   * MOR-1232/MOR-1254 introduced, recomputed per skin (>= 3:1 on every
+   * surface) in src/__tests__/focus-ring-token-wiring.test.ts. */
   --vc-focus-ring: var(--v2-focus-ring-color);
-  --vc-focus-ring-width: 2px;
+  --vc-focus-ring-width: 0px;
+  --vc-illum-focus-glow: var(--v2-focus-illum-shadow);
 
   /* Spacing */
   --vc-gap: 3px;
@@ -186,4 +189,18 @@
   
   /* Slit */
   --vc-illum-slit-width: 2px;
+}
+
+/* MOR-2522: the control-level focus indication for every value-control
+ * renderer, declared once here instead of five per-component copies. The
+ * focused track or knob lights up (box-shadow paints no geometry); the
+ * global filter glow in app.css adds the same knob colour, so the two read
+ * as one lamp, and no block-level highlight exists to double it.
+ * [data-wheel-armed] is set by wheel-control.ts on pointer/Enter arming,
+ * where the pointer modality keeps :focus-visible from matching — the
+ * armed marker must not depend on that heuristic. */
+.vc-track-container:focus-visible,
+.vc-knob-container:focus-visible,
+[data-wheel-armed='true'] {
+  box-shadow: var(--vc-illum-focus-glow);
 }
