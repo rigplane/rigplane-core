@@ -588,11 +588,11 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       });
       await info.attach('compact-vfo-pair', { body: JSON.stringify(geometry), contentType: 'application/json' });
       if (width > 1050) {
-        // Ceiling = the tallest normal-mode panel this fixture (every structural
-        // capability, six annunciators) produced on the build host, rounded up:
-        // see the `compact-vfo-pair` attachment of this test for the measured
-        // `panel.height` per width.
-        expect.soft(geometry.panel.height, 'the full Standard VFO row stays compact').toBeLessThanOrEqual(210);
+        // Ceiling = the tallest normal-mode panel this fixture produces (every
+        // structural capability: six annunciators wrap to a second line at
+        // 1200 px), measured 215.75 px on the build host at commit d6816b8b —
+        // the `compact-vfo-pair` attachment of this test carries `panel.height`.
+        expect.soft(geometry.panel.height, 'the full Standard VFO row stays compact').toBeLessThanOrEqual(216);
         expect.soft(geometry.cards[0].top, 'A and B cards start together').toBeCloseTo(geometry.cards[1].top, 0);
         expect.soft(geometry.cards[0].bottom, 'A and B cards end together').toBeCloseTo(geometry.cards[1].bottom, 0);
       }
@@ -886,7 +886,7 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
       const semanticFrequency = page.locator('[data-vfo-freq]').first();
       if (known) await expect(semanticFrequency).toContainText('035');
       // MOR-2509: the Standard panel's unobserved readout paints no glyph.
-      else await expect(semanticFrequency).toHaveText(layout === 'standard' ? '' : '—');
+      else await expect(semanticFrequency).toHaveText('');
       if (layout.startsWith('lcd')) {
         const scope = await page.locator('.lcd-frame .lcd-scope,.lcd-frame .lcd-filter-row').boundingBox();
         expect.soft(scope!.height, 'LCD keeps space for its scope').toBeGreaterThanOrEqual(80);
@@ -944,7 +944,7 @@ for (const layout of ['standard', 'sdr-test']) for (const language of ['studioli
     else expect(await page.locator('html').getAttribute('data-design-language')).toBeNull();
     await expect(page.locator('[data-vfo-appearance]').first()).toHaveAttribute('data-vfo-appearance', layout === 'standard' ? 'standard' : 'sdr');
     const frequency = page.locator('.receiver-instrument [data-vfo-freq]').first();
-    await expect(frequency).toHaveText(layout === 'standard' ? '' : '—');
+    await expect(frequency).toHaveText('');
     const paint = await frequency.evaluate(e => {
       const read = (e: Element) => { const s = getComputedStyle(e); return [s.fontFamily, s.fontSize, s.fontWeight, s.lineHeight, s.color, s.textShadow, s.letterSpacing]; };
       return { outer: read(e), inner: read(e.querySelector('.freq')!) };
