@@ -147,9 +147,9 @@ function stateWithAgc(agc: number, preamp = 0): ServerState {
   } as unknown as ServerState;
 }
 
-function stateWithUnreadAgc(): ServerState {
+function stateWithUnreadAgc(agc: undefined | null = undefined): ServerState {
   const state = stateWithAgc(2);
-  const main = { ...state.main, agc: undefined };
+  const main = { ...state.main, agc };
   return {
     ...state,
     main,
@@ -246,9 +246,13 @@ describe('AmberScope AGC label sourcing (MOR-1529)', () => {
     ['AmberScope', mountScope],
     ['AmberCockpit', mountCockpit],
   ] as const)('renders unread AGC as a bare unlit chip on %s', (_name, mountFace) => {
-    const chip = agcChip(mountFace(stateWithUnreadAgc(), IC7300_AGC_CAPS));
-    expect(chip?.textContent?.trim()).toBe('AGC');
-    expect(chip?.classList.contains('active')).toBe(false);
+    // An unread field arrives as `null` on the wire; `undefined` is the
+    // absent-from-state form. Both must render the bare unlit chip.
+    for (const unread of [undefined, null] as const) {
+      const chip = agcChip(mountFace(stateWithUnreadAgc(unread), IC7300_AGC_CAPS));
+      expect(chip?.textContent?.trim()).toBe('AGC');
+      expect(chip?.classList.contains('active')).toBe(false);
+    }
   });
 });
 

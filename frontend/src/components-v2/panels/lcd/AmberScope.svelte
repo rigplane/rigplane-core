@@ -50,8 +50,8 @@
   // MOR-2537: `projects FTX-1 read-back 5 to AGC AUTO on %s`, `renders no
   // numeric text for an unprojectable code on %s`, and `renders unread AGC as
   // a bare unlit chip on %s` pin this shared projection and unread convention.
-  function agcLabelFor(agcMode: number | undefined): string {
-    if (agcMode === undefined) return 'AGC';
+  function agcLabelFor(agcMode: number | null | undefined): string {
+    if (agcMode == null) return 'AGC';
     const value = projectAgcReadback(caps, agcMode).indicatorValue;
     return value === undefined ? 'AGC' : `AGC ${value}`;
   }
@@ -176,7 +176,7 @@
       ? [{
         id: 'agc' as const,
         label: agcLabelFor(rx?.agc),
-        active: rx?.agc !== undefined,
+        active: rx?.agc != null,
       }]
       : []),
     ...(hasCap('squelch') && rxAvailable('squelch') ? [{
