@@ -63,6 +63,7 @@ export interface InstrumentComposition {
   readonly rxAudioInstruments: RxAudioInstrumentHandles;
   readonly rfFrontEndInstruments: RfFrontEndLevelHandles;
   readonly dspInstruments: DspFiniteHandles;
+  readonly agcModePresent: boolean;
   readonly meters: Snippet<[allowBare?: boolean, chrome?: PanelChrome]>;
   readonly rxAudio: Snippet<[
     allowBare?: boolean, finiteLayout?: RxAudioFiniteLayout, chrome?: PanelChrome,

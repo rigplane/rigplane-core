@@ -83,7 +83,7 @@
     vfo, vfoOperations, rxTx: empty, txAuxControls: txAux,
     txAuxScalars: scalars, txAuxInstruments,
     receiverInstruments,
-    rxAudioInstruments, rfFrontEndInstruments, dspInstruments,
+    rxAudioInstruments, rfFrontEndInstruments, dspInstruments, agcModePresent: false,
     meters: empty, rxAudio: empty, rfFrontEnd: empty, filter: empty, dsp: empty,
     band, antenna, antennaInstruments, antennaLayout,
     ritXitScan: empty, ritXitInstruments, cwKeyerInstruments, cwKeyer, memory: empty,

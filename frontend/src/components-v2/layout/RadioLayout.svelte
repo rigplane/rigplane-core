@@ -226,6 +226,13 @@
       ...(title === undefined ? {} : { title }),
     };
   }
+  const fallbackAgcChrome: PanelChrome = {
+    panelId: 'semantic-agc', title: 'AGC', draggable: false,
+    onDragStart: () => undefined, style: '',
+  };
+  const standardRfFrontEndOrdered = (): boolean => [
+    standardLeftDrag, standardRightDrag, standardBottomDrag,
+  ].some(owner => owner?.order.includes('semantic-rf-front-end'));
 
   // MOR-2425 C-R3 — the link-fault veil. It carries no words of its own: the
   // status bar already states both arms, and the veil's own selectors exempt
@@ -572,6 +579,12 @@
   </div>
 {/snippet}
 
+{#snippet agcFiniteLayout(dspInstruments: DspFiniteHandles)}
+  <div class="dsp-finite-grid agc-finite-grid">
+    <div class="dsp-finite-seat" data-field="agcMode">{@render dspInstruments.agcMode()}</div>
+  </div>
+{/snippet}
+
 {#snippet rfFrontEndFiniteLayout(rfFrontEndInstruments: RfFrontEndFiniteHandles)}
   <div class="rf-front-end-finite-grid">
     <div class="rf-front-end-finite-seat" data-field="attenuator">{@render rfFrontEndInstruments.attenuator(true)}</div>
@@ -659,6 +672,11 @@
   {#if owner.order.includes('semantic-rf-front-end')}
     {@render instruments.rfFrontEnd(
       undefined, rfFrontEndFiniteLayout, panelChrome(owner, 'semantic-rf-front-end'),
+    )}
+  {/if}
+  {#if showReset && instruments.agcModePresent && !standardRfFrontEndOrdered()}
+    {@render instruments.dsp(
+      undefined, agcFiniteLayout, undefined, fallbackAgcChrome, 'agc',
     )}
   {/if}
   {#if owner.order.includes('semantic-filter')}

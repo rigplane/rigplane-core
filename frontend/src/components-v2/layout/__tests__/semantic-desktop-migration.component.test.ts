@@ -1381,15 +1381,14 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
     ] as const) {
       for (const surface of surfaces) {
         const selector = `[data-testid="${surface}"]`;
-        const splitCount = skinId === 'desktop-v2'
-          && (surface === 'ritxit-scan-surface' || surface === 'dsp-surface') ? 2 : 1;
+        const splitCount = skinId === 'desktop-v2' && surface === 'ritxit-scan-surface' ? 2 : 1;
         expect(root.querySelectorAll(selector), surface).toHaveLength(splitCount);
         expect(root.querySelector(`.desktop-controls-${region} ${selector}`), surface).not.toBeNull();
       }
     }
     if (skinId === 'desktop-v2') {
       expect(root.querySelector('.desktop-controls-left [data-testid="dsp-surface"][data-part="agc"]'))
-        .not.toBeNull();
+        .toBeNull();
       expect(root.querySelector('.desktop-controls-left [data-testid="ritxit-scan-surface"] [data-testid="ritxit"]'))
         .not.toBeNull();
       expect(root.querySelector('.desktop-controls-left [data-testid="ritxit-scan-surface"] [data-testid="scan"]'))
@@ -2020,7 +2019,9 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     // The AGC half of the same family — the row that makes this a pairing.
     expect(t.querySelector('.left-sidebar [data-panel-id="agc"]')).toBeNull();
     expect(t.querySelector('[data-panel-id="desktop-agc"]')).toBeNull();
-    expect(t.querySelectorAll('[data-testid="dsp-surface"][data-part="agc"]').length).toBe(1);
+    expect(t.querySelectorAll('[data-testid="dsp-agcMode"]').length).toBe(1);
+    expect(t.querySelector('[data-panel-id="semantic-rf-front-end"] [data-testid="dsp-agcMode"]'))
+      .not.toBeNull();
     expect(t.querySelectorAll('[data-testid="dsp-surface"][data-part="dsp"]').length).toBe(1);
   });
 
@@ -2045,7 +2046,7 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     h.caps = S9_CAPS();
     const t = renderAll('desktop-v2');
     expect(t.querySelectorAll('[data-testid="rx-audio-surface"]').length).toBe(1);
-    expect(t.querySelectorAll('[data-testid="dsp-surface"][data-part="agc"]').length).toBe(1);
+    expect(t.querySelectorAll('[data-testid="dsp-agcMode"]').length).toBe(1);
     expect(t.querySelectorAll('[data-testid="dsp-surface"][data-part="dsp"]').length).toBe(1);
     expect(t.querySelectorAll('[data-testid="cw-keyer-surface"]').length).toBe(1);
     for (const [, host, selector] of S9_RETIRED) {
@@ -2657,6 +2658,23 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
       expect(rfPanel.querySelector('.rf-front-end-finite-grid')?.lastElementChild?.getAttribute('data-field'))
         .toBe('agcMode');
     });
+
+  it('keeps one AGC control when saved panel orders contain no RF FRONT END host', () => {
+    enableAllServiceSurfaces();
+    localStorage.setItem('rigplane:panel-order', JSON.stringify([
+      'semantic-filter', 'semantic-rit-xit', 'semantic-antenna', 'semantic-scan', 'band',
+    ]));
+    localStorage.setItem('rigplane:panel-order:known-defaults', JSON.stringify([
+      'semantic-rf-front-end', 'semantic-filter', 'semantic-rit-xit',
+      'semantic-antenna', 'semantic-scan', 'band',
+    ]));
+
+    const t = renderAll('desktop-v2');
+
+    expect(t.querySelector('[data-panel-id="semantic-rf-front-end"]')).toBeNull();
+    expect(t.querySelectorAll('[data-panel-id="semantic-agc"]')).toHaveLength(1);
+    expect(t.querySelectorAll('[data-testid="dsp-agcMode"]')).toHaveLength(1);
+  });
 
   it('migrates combined and legacy panel preferences without appending duplicates', () => {
     localStorage.setItem('rigplane:panel-order', JSON.stringify([
