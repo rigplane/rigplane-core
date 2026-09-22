@@ -323,7 +323,7 @@ const audioOnlyScopeCaps = (): Capabilities => ({
  */
 const dualRxUnavailableCaps = (): Capabilities => ({
   ...mainSubCaps(), scope: false,
-  capabilities: mainSubCaps().capabilities.filter((t) => t !== 'scope'),
+  capabilities: mainSubCaps().capabilities.filter((t) => t !== 'scope' && t !== 'dual_rx'),
 } as unknown as Capabilities);
 
 let target: HTMLDivElement;
