@@ -24,6 +24,8 @@
   export interface VfoPanelAnnunciator extends VfoPanelSlot {
     family: 'amber' | 'red' | 'brown';
     group: 'agc' | 'front' | 'rfg';
+    /** Optional legacy-path colour token name; overrides the family tone. */
+    color?: string;
   }
 
   export interface VfoPanelDspChip extends VfoPanelSlot {
@@ -118,10 +120,18 @@
   });
 
   function formatFrequency(hz: number | null | undefined): string {
-    if (hz === null || hz === undefined || !Number.isFinite(hz)) return '—';
+    if (hz === null || hz === undefined || !Number.isFinite(hz)) return '';
     const groups = groupDigitsForDisplay(splitFrequencyToDigits(hz));
     return [groups.mhz, groups.khz, groups.hz]
       .map((group) => group.map((digit) => digit.char).join('')).join('.');
+  }
+
+  /** Legacy badge colour names → the theme's badge text tokens; anything
+   *  unknown keeps the family tone. */
+  function legacyLampColor(color: string): string {
+    if (color === 'white') return 'var(--v2-text-primary, #ffffff)';
+    if (color === 'muted') return 'var(--v2-badge-inactive-text, inherit)';
+    return `var(--v2-badge-${color}-text, inherit)`;
   }
 
   function handleFrequencyClick(event: MouseEvent): void {
@@ -190,15 +200,16 @@
       }}
       title={!controlsDisabled && onModeClick ? `Change mode (current: ${mode})` : undefined}
     >
-      <span class="chip-lg" data-family="primary-neon" data-chip="mode" data-lit={mode !== null}>{mode}</span>
+      <span class="chip-lg" data-family="primary-neon" data-chip="mode" data-lit={mode !== null}>{mode ?? 'MODE'}</span>
     </div>
 
-    <span class="chip-lg" data-family="primary-neon" data-chip="filter" data-lit={filter !== null}>{filter}</span>
+    <span class="chip-lg" data-family="primary-neon" data-chip="filter" data-lit={filter !== null}>{filter ?? 'FIL'}</span>
 
     <div class="annunciators">
       {#each sections.annunciators as ann, i (ann.key)}
         {#if i > 0 && ann.group !== sections.annunciators[i - 1].group}<i class="ann-sep"></i>{/if}
         <span class="lamp" data-family={ann.family} data-chip={ann.key} data-lit={ann.lit}
+          style={ann.color ? `--vfo-lamp-color: ${legacyLampColor(ann.color)}` : undefined}
           {...(ann.key === 'rfg' ? { 'data-indicator-fact': 'rfg' } : {})}>{ann.text}</span>
       {/each}
     </div>
@@ -516,14 +527,15 @@
     letter-spacing: 0.03em;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
+    color: var(--vfo-lamp-color, var(--vfo-front-red));
   }
 
-  .lamp[data-chip='agc'] { width: 76px; color: var(--vfo-amber-text); }
-  .lamp[data-chip='preamp'] { width: 78px; color: var(--vfo-front-red); }
-  .lamp[data-chip='att'] { width: 56px; color: var(--vfo-front-red); }
-  .lamp[data-chip='ip-plus'] { width: 44px; color: var(--vfo-front-red); }
-  .lamp[data-chip='digi-sel'] { width: 82px; color: var(--vfo-front-red); }
-  .lamp[data-chip='rfg'] { width: 78px; color: var(--vfo-brown-text); }
+  .lamp[data-chip='agc'] { width: 76px; --vfo-lamp-color: var(--vfo-amber-text); }
+  .lamp[data-chip='preamp'] { width: 78px; --vfo-lamp-color: var(--vfo-front-red); }
+  .lamp[data-chip='att'] { width: 56px; --vfo-lamp-color: var(--vfo-front-red); }
+  .lamp[data-chip='ip-plus'] { width: 44px; --vfo-lamp-color: var(--vfo-front-red); }
+  .lamp[data-chip='digi-sel'] { width: 82px; --vfo-lamp-color: var(--vfo-front-red); }
+  .lamp[data-chip='rfg'] { width: 78px; --vfo-lamp-color: var(--vfo-brown-text); }
 
   .lamp[data-lit='false'] {
     color: var(--vfo-unlit-text);
@@ -570,6 +582,9 @@
   }
 
   .frequency-readout-content { display: contents; }
+
+  .vfo-freq.display-unknown { color: var(--vfo-unlit-text); }
+  .vfo-freq.display-unknown :global(.freq) { text-shadow: none; }
 
   .vfo-freq[role='button'], .vfo-freq[role='button'] :global(.digit) { cursor: pointer; }
   .vfo-freq[role='button']:focus-visible {

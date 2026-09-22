@@ -795,7 +795,8 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
       await info.attach('bounds', { contentType: 'application/json', path: boundsPath });
       const semanticFrequency = page.locator('[data-vfo-freq]').first();
       if (known) await expect(semanticFrequency).toContainText('035');
-      else await expect(semanticFrequency).toHaveText('—');
+      // MOR-2509: the Standard panel's unobserved readout paints no glyph.
+      else await expect(semanticFrequency).toHaveText(layout === 'standard' ? '' : '—');
       if (layout.startsWith('lcd')) {
         const scope = await page.locator('.lcd-frame .lcd-scope,.lcd-frame .lcd-filter-row').boundingBox();
         expect.soft(scope!.height, 'LCD keeps space for its scope').toBeGreaterThanOrEqual(80);
@@ -853,7 +854,7 @@ for (const layout of ['standard', 'sdr-test']) for (const language of ['studioli
     else expect(await page.locator('html').getAttribute('data-design-language')).toBeNull();
     await expect(page.locator('[data-vfo-appearance]').first()).toHaveAttribute('data-vfo-appearance', layout === 'standard' ? 'standard' : 'sdr');
     const frequency = page.locator('.receiver-instrument [data-vfo-freq]').first();
-    await expect(frequency).toHaveText('—');
+    await expect(frequency).toHaveText(layout === 'standard' ? '' : '—');
     const paint = await frequency.evaluate(e => {
       const read = (e: Element) => { const s = getComputedStyle(e); return [s.fontFamily, s.fontSize, s.fontWeight, s.lineHeight, s.color, s.textShadow, s.letterSpacing]; };
       return { outer: read(e), inner: read(e.querySelector('.freq')!) };

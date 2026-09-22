@@ -69,10 +69,12 @@
       } else if (key === 'pre' || key === 'att' || key === 'atu') {
         built.annunciators.push({
           key, group: 'front', family: key === 'atu' ? 'amber' : 'red',
-          text: item.label, lit,
+          text: item.label, lit, color: item.color,
         });
       } else {
-        built.annunciators.push({ key, group: 'front', family: 'amber', text: item.label, lit });
+        built.annunciators.push({
+          key, group: 'front', family: 'amber', text: item.label, lit, color: item.color,
+        });
       }
     });
     return built;

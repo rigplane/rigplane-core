@@ -509,7 +509,11 @@
         state: reading.status,
       };
     }
-    if (wide?.antenna.availability.structural && viewModel.activeReceiver.status === 'known'
+    // Owner ruling 2026-09-21: single-port radios draw no ANT tab at all —
+    // the antenna group's port count (absent group = one port or fewer) is
+    // the one existing count.
+    if (wide?.antenna.availability.structural && (viewModel.antenna?.antennaCount ?? 0) > 1
+      && viewModel.activeReceiver.status === 'known'
       && viewModel.activeReceiver.receiver === receiver && vfo?.isActiveSlot) {
       const reading = wide.antenna.reading;
       sections.tray.ant = {
@@ -577,8 +581,9 @@
         });
       }
 
-      // DSP levels come from the radio-wide dsp group, so their text belongs
-      // to the active receiver's panel only; every other panel stays lit/unlit.
+      // DSP levels come from the radio-wide dsp group and follow the gate
+      // below: their text shows on the panel whose VFO is its receiver's
+      // active slot; every other panel stays lit/unlit without a number.
       const levelSuffix = (field: DspField<number> | undefined): string =>
         vfo?.isActiveSlot && field?.availability.structural && field.reading.status === 'known'
           ? ` ${field.reading.value}` : '';
@@ -603,7 +608,8 @@
       }
     }
 
-    if (vfo?.isActiveSlot && wide) {
+    if (viewModel.activeReceiver.status === 'known'
+      && viewModel.activeReceiver.receiver === receiver && vfo?.isActiveSlot && wide) {
       const offsetChip = (key: 'rit' | 'xit') => {
         const activeField = key === 'rit' ? wide.ritActive : wide.xitActive;
         const offsetField = key === 'rit' ? wide.ritOffset : wide.xitOffset;
@@ -621,7 +627,8 @@
       offsetChip('rit');
       offsetChip('xit');
     }
-    if (vfo?.isActiveSlot && hasVfoPair) {
+    if (viewModel.activeReceiver.status === 'known'
+      && viewModel.activeReceiver.receiver === receiver && vfo?.isActiveSlot && hasVfoPair) {
       sections.under.split = {
         key: 'split',
         text: 'SPLIT',
@@ -1124,16 +1131,12 @@
     --btn-compact-padding-block: 1px;
     --btn-compact-padding-inline: 4px;
     --btn-compact-font-size: 9px;
-    --vfo-control-strip-gap: 2px;
   }
   @media (min-width: 951px) and (max-width: 1280px) {
     [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
       --btn-compact-min-height: 14px;
       --btn-compact-padding-block: 0;
       --btn-compact-padding-inline: 3px;
-    }
-    [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] :global(.control-strip) {
-      line-height: 14px;
     }
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge {
@@ -1223,9 +1226,6 @@
     [data-vfo-appearance='standard'] .standard-pair-bridge {
       padding: 2px;
       gap: 1px;
-    }
-    [data-vfo-appearance='standard'] .standard-receiver {
-      --vfo-control-strip-gap: 2px;
     }
     [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
       flex-basis: calc(100% - 192px);

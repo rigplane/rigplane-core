@@ -83,11 +83,7 @@
 /* ── MOR-2509: the VFO panel screen's chip palette ─────────────────────────────────
    One definition point for the `--dl-vfo-*` tokens `VfoPanel.svelte`
    consumes (its fallbacks restate these values). Studioline is the default
-   workspace language, so this block IS the approved MOR-2509 palette.
-   Measured on the panel ground #0a0e13: lit text ≥ 4.5:1 except the single
-   red, which reads ≈4.4:1 as text and ≈4.4:1 under white text — accepted
-   by the owner (MOR-2509, 2026-09-21); do not fork a second red. Unlit
-   text sits at 3.38:1 on purpose. */
+   workspace language, so this block IS the approved MOR-2509 palette. */
 [data-design-language='studioline'][data-design-language] {
   --dl-vfo-primary-neon: #1a63e0;
   --dl-vfo-primary-neon-dim: #16396f;
@@ -117,7 +113,15 @@
   --dl-vfo-unlit-text: #5a6875;
   --dl-vfo-unlit-border: #1f2832;
   --dl-vfo-rhythm: 1;
+  --dl-vfo-rhythm-narrow: calc(var(--dl-vfo-rhythm) * 0.78);
+  --dl-vfo-frequency-weight: 800;
   --dl-vfo-glow: none;
+  /* The readout primitive reads the skin variable below for its digit
+     weight; re-pointing it here (the --bg precedent) is what makes the
+     language own the VFO readout's numerals. Without a definition the
+     primitive's var() chain resolves invalid-at-computed-value and the
+     digits fall back to inheritance. */
+  --v2-vfo-font-weight: var(--dl-vfo-frequency-weight);
 }
 
 /* The light surface flips only the tones that read against the panel

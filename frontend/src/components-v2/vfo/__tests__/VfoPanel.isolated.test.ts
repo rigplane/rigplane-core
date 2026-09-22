@@ -575,7 +575,9 @@ describe('explicit presentation contract', () => {
   it('does not mount an arithmetic frequency control when confirmed truth is unknown', () => {
     const t = mountPanel({ ...explicit, freq: null, displayHz: null, pendingDisplayHz: null });
     expect(t.querySelector('.digit')).toBeNull();
-    expect(t.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('—');
+    // MOR-2509: the unobserved readout paints no glyph at all — the fixed
+    // slot keeps its width and the dim unknown paint.
+    expect(t.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('');
   });
 
   it('keeps the established wrapper hook and the real frequency control in tab order', () => {
