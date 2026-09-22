@@ -1369,6 +1369,10 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "freq_mode", "filter_num")
     if name == "set_filter_width":
         return FieldPath.receiver(receiver, "freq_mode", "filter_width")
+    if name == "reset_filter_width":
+        # MOR-2535: the radio-default reset moves the same field; the
+        # readback answers the radio-resolved default width in Hz.
+        return FieldPath.receiver(receiver, "freq_mode", "filter_width")
     if name in ("set_ptt", "ptt", "ptt_on", "ptt_off"):
         return FieldPath.global_("tx_state", "ptt")
     if name in ("set_att", "set_attenuator", "set_attenuator_level"):

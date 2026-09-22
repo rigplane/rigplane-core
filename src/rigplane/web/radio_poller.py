@@ -55,6 +55,7 @@ from ..capabilities import (
     CAP_DUAL_WATCH,
     CAP_FILTER_SHAPE,
     CAP_FILTER_WIDTH,
+    CAP_FILTER_WIDTH_RADIO_DEFAULT,
     CAP_IP_PLUS,
     CAP_MAIN_SUB_TRACKING,
     CAP_NB,
@@ -99,6 +100,7 @@ from ..core.state_pipeline_contracts import (
 )
 from ..core.radio_protocol import (
     CivCommandCapable,
+    FilterWidthRadioDefaultCapable,
     ManagedTxApi,
     RelativeVfoReadbackCapable,
 )
@@ -142,6 +144,7 @@ __all__ = [
     "SetAgcTimeConstant",
     "SetDataMode",
     "SetFilterWidth",
+    "ResetFilterWidth",
     "SetFilterShape",
     "SetPbtInner",
     "SetPbtOuter",
@@ -357,6 +360,7 @@ from .._poller_types import (  # noqa: E402
     QuickDwTrigger,
     QuickSplit,
     QuickSplitTrigger,
+    ResetFilterWidth,
     ScanSetDfSpan,
     ScanSetResume,
     ScanStart,
@@ -2387,6 +2391,22 @@ class RadioPoller:
                     self._on_state_event(
                         "filter_width_changed", {"width": width, "receiver": rx}
                     )
+            case ResetFilterWidth(receiver=rx):
+                # MOR-2535: no width target to validate — the radio resolves
+                # its own default. The capability tag exists exactly when the
+                # profile declares a writeable radio-default code; the
+                # protocol check keeps a tag-without-backend combination a
+                # loud CommandError instead of an AttributeError.
+                self._ensure_receiver_supported(rx, operation="reset_filter_width")
+                if CAP_FILTER_WIDTH_RADIO_DEFAULT not in self._caps:
+                    raise CommandError(
+                        "reset_filter_width is not supported by this backend"
+                    )
+                if not isinstance(radio, FilterWidthRadioDefaultCapable):
+                    raise CommandError(
+                        "reset_filter_width is not implemented by this backend"
+                    )
+                await radio.reset_filter_width(receiver=rx)
             case SetFilterShape(shape=shape, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_filter_shape")
                 if CAP_FILTER_SHAPE not in self._caps:
