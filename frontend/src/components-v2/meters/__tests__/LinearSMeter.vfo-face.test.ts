@@ -398,6 +398,39 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
     });
     expect(fillFraction(svgOf(target))).toBeCloseTo(litExtentFraction(VFO_FRACTIONS.s7), 6);
   });
+
+  it('a reduced frame draws the stepped fill, hides the peak marker, lights no glow', () => {
+    // The frame input owns the stepped value, so this pins the FACE
+    // contract under prefers-reduced-motion: the fraction is drawn
+    // unchanged, the peak marker is not shown, the glow never trails.
+    const s7 = projectSignalMeter(-12);
+    const target = mountMeter({
+      frame: {
+        projection: s7,
+        smoothedFraction: s7.motionFraction!,
+        peakFraction: s7.motionFraction!,
+        afterglowFraction: null,
+        reducedMotion: true,
+      },
+      variant: 'vfo', compact: true,
+    });
+    expect(fillFraction(svgOf(target))).toBeCloseTo(litExtentFraction(VFO_FRACTIONS.s7), 6);
+    expect(peakVisible(svgOf(target))).toBe(false);
+    expect(glowFraction(svgOf(target))).toBeCloseTo(fillFraction(svgOf(target)), 5);
+
+    const stepped = mountMeter({
+      frame: {
+        projection: projectSignalMeter(-48),
+        smoothedFraction: projectSignalMeter(-48).motionFraction!,
+        peakFraction: projectSignalMeter(-48).motionFraction!,
+        afterglowFraction: null,
+        reducedMotion: true,
+      },
+      variant: 'vfo', compact: true,
+    });
+    expect(fillFraction(svgOf(stepped))).toBeCloseTo(0, 5);
+    expect(peakVisible(svgOf(stepped))).toBe(false);
+  });
 });
 
 // ── 3. The Po lower scale row ────────────────────────────────────────────────
@@ -671,46 +704,5 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
       }
     }
     expect(new Set(counts).size).toBe(1);
-  });
-});
-
-// ── 6. Reduced motion, pinned in a clean environment ───────────────────────
-// The frame input owns the stepped value directly, so this pins the FACE
-// contract — a reduced frame draws its fraction unchanged, hides the peak
-// marker, and never lights a glow tail.
-describe('MOR-2509 v7 VFO face — reduced motion', () => {
-  beforeEach(() => {
-    stubReducedMotion();
-    setCapabilities(makeCaps(IC7610_LIKE_CAL));
-  });
-
-  it('draws the stepped fill with the peak marker hidden and no glow', () => {
-    const s7 = projectSignalMeter(-12);
-    const target = mountMeter({
-      frame: {
-        projection: s7,
-        smoothedFraction: s7.motionFraction!,
-        peakFraction: s7.motionFraction!,
-        afterglowFraction: null,
-        reducedMotion: true,
-      },
-      variant: 'vfo', compact: true,
-    });
-    expect(fillFraction(svgOf(target))).toBeCloseTo(litExtentFraction(VFO_FRACTIONS.s7), 6);
-    expect(peakVisible(svgOf(target))).toBe(false);
-    expect(glowFraction(svgOf(target))).toBeCloseTo(fillFraction(svgOf(target)), 5);
-
-    const stepped = mountMeter({
-      frame: {
-        projection: projectSignalMeter(-48),
-        smoothedFraction: projectSignalMeter(-48).motionFraction!,
-        peakFraction: projectSignalMeter(-48).motionFraction!,
-        afterglowFraction: null,
-        reducedMotion: true,
-      },
-      variant: 'vfo', compact: true,
-    });
-    expect(fillFraction(svgOf(stepped))).toBeCloseTo(0, 5);
-    expect(peakVisible(svgOf(stepped))).toBe(false);
   });
 });
