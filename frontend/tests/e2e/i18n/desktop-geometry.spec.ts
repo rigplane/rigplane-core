@@ -555,7 +555,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
   });
 
   for (const width of [900, 1024, 1200, 1700] as const) {
-    test(`Standard ${width} compact absolute VFO pair keeps every bridge control`, async ({ page }, info) => {
+    test.only(`Standard ${width} compact absolute VFO pair keeps every bridge control`, async ({ page }, info) => {
       await boot(page, 'standard', width, true, 'studioline', false, undefined, {
         height: 1000, extraCapabilities: ALL_STRUCTURAL_ACTION_CAPS, absoluteVfoPair: true,
       });

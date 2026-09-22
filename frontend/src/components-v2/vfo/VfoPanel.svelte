@@ -265,7 +265,7 @@
           onkeydowncapture={handleFrequencyKeydown}
           >
           <span class="frequency-readout-content" aria-hidden={frequencyEntryButton ? 'true' : undefined}>
-            {#if frequency}
+            {#if frequency && frequencyState !== 'unknown' && frequencyState !== 'unsupported'}
               {@render frequency()}
             {:else if freq !== null && freq !== undefined && Number.isFinite(freq)}
               <FrequencyDisplayInteractive
