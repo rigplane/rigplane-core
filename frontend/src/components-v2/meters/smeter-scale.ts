@@ -351,6 +351,7 @@ export function lerpScaleKnots(
 const MIN_TRACK_WIDTH_PX = 160;
 const PLUS_NUMERAL_INK_PX = 21.6;
 const MIN_PLUS_MARK_SLOT_GAP = PLUS_NUMERAL_INK_PX / MIN_TRACK_WIDTH_PX;
+export const MIN_SIGNAL_SCALE_LABEL_GAP_PX = 1;
 
 /**
  * MOR-2509: the numerals the evenly spaced face draws for this
@@ -388,6 +389,51 @@ function uniformScaleMarksFor(
     lastKeptSlot = slot;
   }
   return marks;
+}
+
+/**
+ * Thin the calibration-derived numeral ladder for the rendered track while
+ * preserving the mock-up's label priorities. The named tests "keeps the
+ * FTX-1 548px label array unchanged", "keeps the dense 548px label array
+ * unchanged", "keeps the sparse 548px label array unchanged", "keeps every
+ * 140px FTX-1 label at least its rendered width plus the fixed gap apart",
+ * and "never shows fewer FTX-1 labels when the track becomes wider" pin it.
+ */
+export function thinUniformScaleMarksForWidth(
+  marks: readonly SignalScaleMark[],
+  trackWidthPx: number,
+  labelWidthPx: (mark: SignalScaleMark) => number,
+): readonly SignalScaleMark[] {
+  if (!Number.isFinite(trackWidthPx) || trackWidthPx <= 0 || marks.length < 2) return marks;
+
+  function fits(candidates: readonly SignalScaleMark[]): boolean {
+    for (let index = 1; index < candidates.length; index += 1) {
+      const previous = candidates[index - 1];
+      const current = candidates[index];
+      const distancePx = (current.slot - previous.slot) * trackWidthPx;
+      if (distancePx < Math.max(0, labelWidthPx(current)) + MIN_SIGNAL_SCALE_LABEL_GAP_PX) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (fits(marks)) return marks;
+
+  const plusMarks = marks.filter((mark) => mark.overS9);
+  const topPlusMark = plusMarks.at(-1);
+  const removalOrder = [
+    marks.find((mark) => mark.text === '7'),
+    marks.find((mark) => mark.text === '3'),
+    ...plusMarks.filter((mark) => mark !== topPlusMark),
+  ].filter((mark): mark is SignalScaleMark => mark !== undefined);
+
+  let kept = [...marks];
+  for (const removable of removalOrder) {
+    kept = kept.filter((mark) => mark !== removable);
+    if (fits(kept)) return kept;
+  }
+  return kept;
 }
 
 /**

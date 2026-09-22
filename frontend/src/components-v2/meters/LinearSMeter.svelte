@@ -22,6 +22,8 @@
   import {
     projectSignalMeter,
     lerpScaleKnots,
+    thinUniformScaleMarksForWidth,
+    type SignalScaleMark,
     type SignalMeterProjection,
   } from './smeter-scale';
 
@@ -414,6 +416,7 @@
   const VFO_LABEL_Y = 0;
   const VFO_LABEL_WEIGHT = 400;
   const VFO_PLUS_LETTER_SPACING = Math.round(-0.05 * VFO_LABEL_FS * 100) / 100;
+  const VFO_LABEL_GLYPH_ADVANCE = VFO_LABEL_FS * 0.6;
   const VFO_TICKS_ROW_H = 20;
   const VFO_TICK_MARK_Y1 = 15;
   const VFO_TICK_MARK_Y2 = 19;
@@ -534,7 +537,15 @@
   // when the TX target (and with it the Po row) flips MAIN↔SUB.
   const vfoTotalH = VFO_TOTAL_H;
 
-  const vfoScaleMarks = $derived(signalProjection.uniformScaleMarks);
+  function vfoScaleLabelWidth(mark: SignalScaleMark): number {
+    const interGlyphSpacing = Math.max(0, mark.text.length - 1)
+      * (mark.overS9 ? VFO_PLUS_LETTER_SPACING : 0);
+    return mark.text.length * VFO_LABEL_GLYPH_ADVANCE + interGlyphSpacing;
+  }
+
+  const vfoScaleMarks = $derived(thinUniformScaleMarksForWidth(
+    signalProjection.uniformScaleMarks, vfoTrackW, vfoScaleLabelWidth,
+  ));
   // The v8 face reads one line — the S-unit — so the CALIBRATED case alone
   // drops its second field (the dBm) from the projection's accessible name.
   // Every other wording ('raw, uncalibrated', the value itself with

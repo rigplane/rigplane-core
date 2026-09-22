@@ -4,7 +4,7 @@ import type { ComponentProps } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import LinearSMeter from '../LinearSMeter.svelte';
-import { projectSignalMeter } from '../smeter-scale';
+import { MIN_SIGNAL_SCALE_LABEL_GAP_PX, projectSignalMeter } from '../smeter-scale';
 import { readFileSync } from 'node:fs';
 
 // MOR-2509 R2-2: every number below is re-measured from the owner's mock-up
@@ -41,6 +41,11 @@ const DENSE_PLUS_CAL = [
   { raw: 192, actual: 30, label: 'S9+30' },
   { raw: 216, actual: 40, label: 'S9+40' },
   { raw: 240, actual: 50, label: 'S9+50' },
+  { raw: 255, actual: 60, label: 'S9+60' },
+];
+const SPARSE_PLUS_CAL = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 120, actual: 0, label: 'S9' },
   { raw: 255, actual: 60, label: 'S9+60' },
 ];
 
@@ -96,14 +101,16 @@ let originalResizeObserver: unknown;
 let originalClientWidth: PropertyDescriptor | undefined;
 let components: ReturnType<typeof mount>[] = [];
 let roots: HTMLElement[] = [];
+let fixtureWidth = FIXTURE_WIDTH;
 
 beforeEach(() => {
+  fixtureWidth = FIXTURE_WIDTH;
   originalResizeObserver = globalThis.ResizeObserver;
   globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
   originalClientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth');
   Object.defineProperty(Element.prototype, 'clientWidth', {
     configurable: true,
-    get: () => FIXTURE_WIDTH,
+    get: () => fixtureWidth,
   });
 });
 
@@ -353,7 +360,7 @@ describe('MOR-2509 R2-2 — mock-up v8 S-meter geometry', () => {
 describe('MOR-2509 R2-2 — the mock-up v8 numeral rule', () => {
   beforeEach(() => { stubReducedMotion(); setCapabilities(makeCaps(FTX1_CAL)); });
 
-  it('FTX-1 draws 1 3 5 7 9 +20 +40 — the declared +10 collides and is dropped', () => {
+  it('keeps the FTX-1 548px label array unchanged', () => {
     const svg = mountMeter(withPo());
     const labels = [...svg.querySelectorAll('[data-scale-label]')];
     // The FTX-1 table declares EVERY S-unit plus +10/+20/+40. The mock-up
@@ -369,7 +376,7 @@ describe('MOR-2509 R2-2 — the mock-up v8 numeral rule', () => {
     });
   });
 
-  it('a dense +10..+60 ladder thins to the mock-up +20/+40/+60 set', () => {
+  it('keeps the dense 548px label array unchanged', () => {
     setCapabilities(makeCaps(DENSE_PLUS_CAL));
     const svg = mountMeter(withPo());
     const labels = [...svg.querySelectorAll('[data-scale-label]')];
@@ -381,6 +388,44 @@ describe('MOR-2509 R2-2 — the mock-up v8 numeral rule', () => {
     // is '9' at slot 4/7 and still centres — only a numeral at share 0
     // (FTX-1's '1' above) left-anchors.
     expect(labels[0]!.getAttribute('text-anchor')).toBe('middle');
+  });
+
+  it('keeps the sparse 548px label array unchanged', () => {
+    setCapabilities(makeCaps(SPARSE_PLUS_CAL));
+    const svg = mountMeter(withPo());
+    const labels = [...svg.querySelectorAll('[data-scale-label]')];
+    expect(labels.map((label) => label.textContent)).toEqual(['9', '+60']);
+  });
+
+  it('keeps every 140px FTX-1 label at least its rendered width plus the fixed gap apart', () => {
+    fixtureWidth = 140 + 58;
+    const svg = mountMeter(withPo());
+    const labels = [...svg.querySelectorAll<SVGTextElement>('[data-scale-label]')];
+    const texts = labels.map((label) => label.textContent);
+    const track = svg.querySelector('[data-meter-track]')!;
+    expect(Number(track.getAttribute('x2')) - Number(track.getAttribute('x1'))).toBe(140);
+    expect(texts).toEqual(expect.arrayContaining(['1', '5', '9', '+40']));
+    for (const dropped of ['3', '7', '+20']) expect(texts).not.toContain(dropped);
+
+    for (let index = 1; index < labels.length; index += 1) {
+      const previous = labels[index - 1];
+      const current = labels[index];
+      const textLength = current.textContent?.length ?? 0;
+      const fontSize = Number(current.getAttribute('font-size'));
+      const letterSpacing = Number(current.getAttribute('letter-spacing') ?? 0);
+      const renderedWidth = textLength * fontSize * 0.6
+        + Math.max(0, textLength - 1) * letterSpacing;
+      expect(Number(current.getAttribute('x')) - Number(previous.getAttribute('x')))
+        .toBeGreaterThanOrEqual(renderedWidth + MIN_SIGNAL_SCALE_LABEL_GAP_PX);
+    }
+  });
+
+  it('never shows fewer FTX-1 labels when the track becomes wider', () => {
+    const counts = [140, 145, 150, 160, 240, 548].map((trackWidth) => {
+      fixtureWidth = trackWidth + 58;
+      return mountMeter(withPo()).querySelectorAll('[data-scale-label]').length;
+    });
+    counts.slice(1).forEach((count, index) => expect(count).toBeGreaterThanOrEqual(counts[index]));
   });
 });
 
