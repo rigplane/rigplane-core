@@ -1039,6 +1039,9 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     expect(functionKeys).toMatch(/--btn-font-size:\s*11px/);
     expect(functionKeys).toMatch(/padding-left:\s*calc\(var\(--indicator-dot-reserve\) \+ 1px\)/);
     expect(functionKeys).toMatch(/padding-right:\s*4px/);
+    expect(rulesFor(opsCss, '.ops-row > :global(.v2-control-button)').join('\n'))
+      .toMatch(/min-width:\s*0;\s*width:\s*100%/);
+    expect(opsCss).not.toContain('.ops-row > :global(*)');
   });
 
   it('keeps the SPLIT and DW latching keys as dot-lamp switches with unchanged semantics', () => {

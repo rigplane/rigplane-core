@@ -543,7 +543,7 @@
     padding-left: calc(var(--indicator-dot-reserve) + 1px);
     padding-right: 4px;
   }
-  .ops-row > :global(*) { min-width: 0; width: 100%; }
+  .ops-row > :global(.v2-control-button) { min-width: 0; width: 100%; }
   .ops-row > :global([data-ops-wide]) { grid-column: 1 / -1; }
   .bridge-divider {
     height: 1px; margin-block: calc(var(--vfo-ops-gap, 4px) / 2);
