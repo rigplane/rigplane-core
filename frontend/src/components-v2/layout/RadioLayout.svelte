@@ -760,7 +760,6 @@
 {:else if (skinId === 'sdr-test' || skinId === 'desktop-v2') && semanticDeck}
   <div class="radio-layout desktop-control-face semantic-deck"
     class:standard-face={skinId === 'desktop-v2'} class:sdr-test={skinId === 'sdr-test'}
-    data-debug-skin-id={skinId}
     data-link-fault={linkFaultAttribute}>
     <StatusBar onSettings={() => (settingsOpen = true)} {declared} showManagedTotControl={true} />
     <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
@@ -830,7 +829,6 @@
   </div>
 {:else}
 <div class="radio-layout" class:sdr-test={skinId === 'sdr-test'} class:semantic-deck={semanticDeck}
-  data-debug-skin-id={skinId}
   data-link-fault={linkFaultAttribute}>
   <StatusBar onSettings={() => (settingsOpen = true)} {declared} showManagedTotControl={true} />
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
