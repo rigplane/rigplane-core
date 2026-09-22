@@ -367,7 +367,7 @@ describe('the migrated LCD entrypoints own VFO/TX through the semantic surfaces'
   it('drops the VFO facts the semantic surface now owns, keeping the rest of the soft-button panel', () => {
     // Every gate the panel can open — so an unsuppressed panel would render
     // DW and SPLIT here, and their absence is a decision, not a missing cap.
-    h.caps = capsFor('2/main_sub', ['split', 'rit', 'tuner']);
+    h.caps = capsFor('2/main_sub', ['split', 'dual_watch', 'rit', 'tuner']);
     const t = render();
     const panel = t.querySelector('.vfo-ctrl-panel')!;
     const labels = [...panel.querySelectorAll('button')].map((b) => b.textContent?.trim());

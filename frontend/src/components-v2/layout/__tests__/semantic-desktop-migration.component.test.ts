@@ -257,7 +257,11 @@ function capsFor(id: TopologyFixtureId): Capabilities {
   const dual = scheme === 'ab_shared' || scheme === 'main_sub';
   return {
     model: 'fixture', scope: true, audio: true, tx: true,
-    capabilities: dual ? ['scope', 'audio', 'tx', 'dual_rx'] : ['scope', 'audio', 'tx'],
+    // MOR-2509: the SPLIT/DW keys are capability-gated; the dual fixture
+    // declares what the real dual rigs (IC-7610/FTX-1) declare.
+    capabilities: dual
+      ? ['scope', 'audio', 'tx', 'dual_rx', 'split', 'dual_watch']
+      : ['scope', 'audio', 'tx'],
     receivers: dual ? 2 : 1, vfoScheme: scheme, freqRanges: [], modes: [], filters: [],
     audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
     webrtc: { available: false, enabled: false },

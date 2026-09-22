@@ -342,12 +342,16 @@ describe('production receiver-indicator partitioning', () => {
   });
 
   it.each([
-    ['grouped Standard', { strips: 'single', vfoAppearance: 'standard' }, 1, 'standard'],
-    ['independent dual SDR', { strips: 'dual', vfoAppearance: 'sdr' }, 3, 'sdr'],
-  ] as const)('renders one operation group and status in %s', (_name, props, surfaces, appearance) => {
+    ['grouped Standard', { strips: 'single', vfoAppearance: 'standard' }, 1, 'standard',
+      '[data-instrument-bridge] [role="radiogroup"][aria-label="Active receiver"]'],
+    ['independent dual SDR', { strips: 'dual', vfoAppearance: 'sdr' }, 3, 'sdr',
+      '[data-testid="vfo-active-receiver"]'],
+  ] as const)('renders one operation group and status in %s', (_name, props, surfaces, appearance, activeReceiverMarker) => {
     render(caps('main_sub', 2), state(), {}, props);
     expect(target.querySelectorAll('[data-testid="vfo-surface"]')).toHaveLength(surfaces);
-    expect(target.querySelectorAll('[data-testid="vfo-active-receiver"]')).toHaveLength(1);
+    // MOR-2509: the standard bridge's filled selector key announces the
+    // active receiver; the text caption survives only outside that bridge.
+    expect(target.querySelectorAll(activeReceiverMarker)).toHaveLength(1);
     expect(target.querySelectorAll('[data-testid="vfo-ops"]')).toHaveLength(1);
     expect(target.querySelector('[data-vfo-operation-appearance]')?.getAttribute('data-vfo-operation-appearance')).toBe(appearance);
   });

@@ -293,7 +293,10 @@ function singleReceiverState(): ServerState {
 }
 /** 1/single caps: no `dual_rx` tag, or the topology derivation contradicts itself. */
 const singleReceiverCaps = (): Capabilities => ({
-  ...mainSubCaps(), receivers: 1, vfoScheme: 'single', scope: false, capabilities: ['audio', 'tx'],
+  // A genuine receivers:1 rig still declares split (IC-7300 shape); only
+  // dual_watch is structurally absent with one receiver.
+  ...mainSubCaps(), receivers: 1, vfoScheme: 'single', scope: false,
+  capabilities: mainSubCaps().capabilities.filter((t) => t !== 'dual_watch'),
 } as unknown as Capabilities);
 
 /** The ticket's operational audio-scope condition: scope=false + audioFft=true. */
@@ -321,7 +324,10 @@ const audioOnlyScopeCaps = (): Capabilities => ({
  * independent of what state.sub happens to report.
  */
 const dualRxUnavailableCaps = (): Capabilities => ({
-  ...mainSubCaps(), scope: false, capabilities: ['audio', 'tx'],
+  // Operationally degraded, not structurally: the rig's feature tags
+  // (split, dual_watch included) stay declared — only the scope drops.
+  ...mainSubCaps(), scope: false,
+  capabilities: mainSubCaps().capabilities.filter((t) => t !== 'scope'),
 } as unknown as Capabilities);
 
 let target: HTMLDivElement;
