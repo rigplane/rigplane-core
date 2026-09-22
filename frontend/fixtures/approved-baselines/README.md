@@ -2,7 +2,37 @@
 
 Tracked, reviewed screenshots compared by `npm run test:e2e:visual` (`playwright.visual.config.ts`, whose `testDir` runs every `*.spec.ts` under `tests/e2e/visual/`): `visual-baselines.spec.ts` for a representative slice of the MOR-1070/1085 fixture matrix, `gallery-baselines.spec.ts` (MOR-2219) for the `gallery-*` rows below, which preserve individual instrument looks rendered on the `?demo=control-buttons` page, and `spectrum-baselines.spec.ts` for the `spectrum-panel--managed-frame` row. Distinct from `frontend/fixtures-baselines/` (gitignored capture OUTPUT from `capture.mjs`/`capture-ptt.mjs`) — this directory is the APPROVED, committed comparison target.
 
-## Linux re-pin provenance — 2026-09-22 MOR-2509 round-2 deck (current)
+## Linux re-pin provenance — 2026-09-22 MOR-2509 round-2 deck, bridge < 1280 px and S-meter thinning (current)
+
+MOR-2509 round 2, later commits (owner ruling 15:00 EDT: the bridge narrows to
+150 px below a 1280 px window; the S-meter thins its tick labels to what the
+track width can hold; the narrow under-frequency row trims its amber chips).
+Only the LCD faces that embed the deck's S-meter strip move, by a few dozen
+pixels in the label row.
+
+The committed PNGs and `manifest.json` come from the Linux regeneration run
+[35776203135](https://github.com/rigplane/rigplane-core/actions/runs/35776203135)
+(`visual.yml` with `regenerate=true`) at source head
+`26c6798237f614e91f3d6b438b6be1d27d43a13a` (`manifest.json` `commit`); the
+artifact `regenerated-baselines` was downloaded with `gh run download`. Of the
+30 PNGs in the artifact, 4 were copied over this directory — each differs by
+more than 8/255 in some pixel from the previously committed file — 24 were
+byte-identical, and 2 (`peer-split-chassis--1100x800.png`, `peer-split-chassis--desktop.png`) differed in bytes only with no pixel above the
+threshold and were intentionally left as committed. Per copied scene: pixels
+differing by more than 8/255 in any channel against the previously committed
+PNG (Pillow `ImageChops.difference`, whole image), and the SHA-256 prefix of
+the committed file:
+
+| Scene | changed px | share | new SHA-256 (16) |
+|---|---:|---:|---|
+| `panadapter-first--1100x800.png` | 60 | 0.01% | `be6d6e3cf89153e8` |
+| `panadapter-first--desktop.png` | 14 | 0.00% | `41541df3567133d1` |
+| `unified-instrument--1100x800.png` | 60 | 0.01% | `3b886c9beb1c35cc` |
+| `unified-instrument--desktop.png` | 56 | 0.01% | `36e12477fb4c4236` |
+
+A subsequent exact-head `visual` run must confirm these comparisons pass.
+
+## Linux re-pin provenance — 2026-09-22 MOR-2509 round-2 deck (superseded)
 
 MOR-2509 round 2 (on `codex/mor-2509-r2-batch`): the bridge rows now fill the
 deck block and the inactive receiver is dimmed; the `panadapter-first` and
