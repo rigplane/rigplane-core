@@ -567,6 +567,15 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
         const cardRects = [...element.querySelectorAll('[data-standard-vfo-slot]')].map(rect);
         return {
           panel: rect(element), cards: cardRects,
+          panelScroll: { width: element.scrollWidth, clientWidth: element.clientWidth,
+            height: element.scrollHeight, clientHeight: element.clientHeight },
+          cardModes: [...element.querySelectorAll<HTMLElement>('[data-standard-vfo-slot]')].map(card => ({
+            width: card.getBoundingClientRect().width,
+            rows: [...card.querySelectorAll<HTMLElement>('[data-vfo-row]')].map(row => ({
+              name: row.dataset.vfoRow, rect: rect(row), grid: getComputedStyle(row).gridTemplateColumns,
+            })),
+            meterColumn: getComputedStyle(card.querySelector<HTMLElement>('.smeter-row')!).gridColumnStart,
+          })),
           overflow: element.scrollWidth > element.clientWidth + 1,
           cardOverflow: [...element.querySelectorAll<HTMLElement>('[data-standard-vfo-slot]')]
             .map(card => {
@@ -603,9 +612,15 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
             }),
           bridgeOverflow: [...element.querySelectorAll<HTMLElement>('[data-instrument-bridge] *')]
             .filter(target => target.scrollWidth > target.clientWidth + 1)
-            .map(target => target.getAttribute('data-dual-action') ?? target.className ?? target.tagName),
+            .map(target => ({
+              action: target.getAttribute('data-dual-action'), text: target.textContent?.trim(),
+              className: target.className, scrollWidth: target.scrollWidth,
+              clientWidth: target.clientWidth, rect: rect(target),
+              minWidth: getComputedStyle(target).minWidth,
+            })),
         };
       });
+      console.log(`MOR2509_GEOMETRY_${width} ${JSON.stringify(geometry)}`);
       await info.attach('compact-vfo-pair', { body: JSON.stringify(geometry), contentType: 'application/json' });
       if (width > 1050) {
         // MOR-2509: the approved airy panel is ~189px tall plus the wrapper
