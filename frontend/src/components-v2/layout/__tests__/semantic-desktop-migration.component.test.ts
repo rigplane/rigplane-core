@@ -2653,11 +2653,40 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
       expect(t.querySelector('[data-panel-id="semantic-agc"]')).toBeNull();
       expect(t.querySelectorAll('[data-testid="dsp-agcMode"]')).toHaveLength(1);
       expect(agc.querySelector('.rf-front-end-row-label')?.textContent).toBe('AGC');
-      expect(agc.querySelectorAll('[data-testid^="dsp-agcMode-"]')).toHaveLength(agcModes.length);
+      expect(agc.getAttribute('role')).toBe('radiogroup');
+      const keys = [...agc.querySelectorAll<HTMLButtonElement>('[data-testid^="dsp-agcMode-"]')];
+      expect(keys).toHaveLength(agcModes.length);
+      expect(keys.map(key => key.getAttribute('role'))).toEqual(agcModes.map(() => 'radio'));
+      expect(keys.map(key => key.getAttribute('aria-checked')))
+        .toEqual(agcModes.map(mode => String(mode === 2)));
       expect(agc.style.getPropertyValue('--agc-columns')).toBe('3');
       expect(rfPanel.querySelector('.rf-front-end-finite-grid')?.lastElementChild?.getAttribute('data-field'))
         .toBe('agcMode');
     });
+
+  it('keeps the unread RF FRONT END AGC radiogroup disabled with every radio unchecked', () => {
+    enableAllServiceSurfaces();
+    const state = h.state as { fieldStatus: Record<string, unknown> };
+    h.state = {
+      ...(h.state as object),
+      fieldStatus: {
+        ...state.fieldStatus,
+        'main.agc': { ...fresh, observed: false, availability: 'missing' },
+      },
+    };
+
+    const t = renderAll('desktop-v2');
+    const agc = t.querySelector<HTMLElement>(
+      '[data-panel-id="semantic-rf-front-end"] [data-testid="dsp-agcMode"]',
+    )!;
+    const keys = [...agc.querySelectorAll<HTMLButtonElement>('[data-testid^="dsp-agcMode-"]')];
+
+    expect(agc.getAttribute('role')).toBe('radiogroup');
+    expect(keys).toHaveLength(3);
+    expect(keys.every(key => key.getAttribute('role') === 'radio')).toBe(true);
+    expect(keys.every(key => key.getAttribute('aria-checked') === 'false')).toBe(true);
+    expect(keys.every(key => key.disabled)).toBe(true);
+  });
 
   it('keeps one AGC control when saved panel orders contain no RF FRONT END host', () => {
     enableAllServiceSurfaces();
@@ -2672,8 +2701,14 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     const t = renderAll('desktop-v2');
 
     expect(t.querySelector('[data-panel-id="semantic-rf-front-end"]')).toBeNull();
+    const fallback = t.querySelector('[data-panel-id="semantic-agc"]')!;
     expect(t.querySelectorAll('[data-panel-id="semantic-agc"]')).toHaveLength(1);
     expect(t.querySelectorAll('[data-testid="dsp-agcMode"]')).toHaveLength(1);
+    const grid = fallback.querySelector('.agc-finite-grid')!;
+    expect(grid).not.toBeNull();
+    expect(grid.classList.contains('dsp-finite-grid')).toBe(false);
+    expect(grid.querySelector('[data-field="agcMode"] > [data-testid="dsp-agcMode"]'))
+      .not.toBeNull();
   });
 
   it('migrates combined and legacy panel preferences without appending duplicates', () => {

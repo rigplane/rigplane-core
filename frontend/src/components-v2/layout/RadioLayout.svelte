@@ -580,7 +580,7 @@
 {/snippet}
 
 {#snippet agcFiniteLayout(dspInstruments: DspFiniteHandles)}
-  <div class="dsp-finite-grid agc-finite-grid">
+  <div class="agc-finite-grid">
     <div class="dsp-finite-seat" data-field="agcMode">{@render dspInstruments.agcMode()}</div>
   </div>
 {/snippet}

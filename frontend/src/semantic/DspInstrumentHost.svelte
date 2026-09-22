@@ -274,6 +274,7 @@
       <ControlButton surface="hardware" indicatorStyle="edge-left" indicatorColor="cyan"
         active={agcBehavior.isSelected(option.value)} disabled={!agcBehavior.available}
         data={{ testid: `dsp-agcMode-${option.value}` }}
+        role="radio" ariaChecked={agcBehavior.isSelected(option.value)}
         ariaLabel={isAuto && dsp?.agcMode.autoSelectedSpeed
           ? `${option.label} ${dsp.agcMode.autoSelectedSpeed}` : option.label}
         onclick={() => agcBehavior.invoke(option.value)}>
