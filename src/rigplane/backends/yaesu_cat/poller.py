@@ -498,6 +498,25 @@ class YaesuCatPoller:
         )
         return True
 
+    async def _post_write_freq_mode_readback(self) -> None:
+        """Re-read both receivers' frequency and mode after a VFO exchange.
+
+        Uses the existing medium poll lane (:meth:`_poll_medium`) — in
+        observation mode that publishes through
+        :meth:`_emit_medium_observations`, in legacy mode it refreshes
+        ``radio_state`` — so there is no second readback path.  The write
+        has already succeeded when this runs, so a failed re-read is
+        logged and left to the next cadence poll rather than raised into
+        the command's result.
+        """
+        try:
+            await self._poll_medium()
+        except Exception:
+            logger.debug(
+                "YaesuCatPoller: post-write freq/mode re-read failed",
+                exc_info=True,
+            )
+
     def _track_receiver_select_readback(self, entry: CommandQueueEntry) -> None:
         if (
             entry.command_service is None
@@ -1151,26 +1170,39 @@ class YaesuCatPoller:
                 await radio.set_vfo_select(code)
             case VfoSwap():
                 profile = getattr(radio, "profile", None)
-                if profile is None or profile.swap_ab_code is None:
+                # ``swap_ab_code`` is the CI-V opcode declaration; a Yaesu
+                # CAT profile declares the swap as a native CAT command
+                # instead (FTX-1 ``vfo_swap`` = SV;, OM 2508-C).
+                if profile is None or (
+                    profile.swap_ab_code is None
+                    and not profile.supports_command("vfo_swap")
+                ):
                     model = getattr(
                         profile, "model", getattr(radio, "model", "unknown")
                     )
                     raise NotImplementedError(
                         f"VfoSwap unsupported on {model}: "
-                        "profile declares no swap_ab_code"
+                        "profile declares no swap_ab_code or vfo_swap command"
                     )
                 await radio.swap_vfo_ab(0)
+                await self._post_write_freq_mode_readback()
             case VfoEqualize():
                 profile = getattr(radio, "profile", None)
-                if profile is None or profile.equal_ab_code is None:
+                # Same split as VfoSwap: ``equal_ab_code`` is the CI-V
+                # opcode, ``vfo_equalize`` the CAT command (FTX-1 AB;).
+                if profile is None or (
+                    profile.equal_ab_code is None
+                    and not profile.supports_command("vfo_equalize")
+                ):
                     model = getattr(
                         profile, "model", getattr(radio, "model", "unknown")
                     )
                     raise NotImplementedError(
                         f"VfoEqualize unsupported on {model}: "
-                        "profile declares no equal_ab_code"
+                        "profile declares no equal_ab_code or vfo_equalize command"
                     )
                 await radio.equalize_vfo_ab(0)
+                await self._post_write_freq_mode_readback()
 
             # ── PTT ──
             case PttOn():

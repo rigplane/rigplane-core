@@ -67,6 +67,13 @@ features = [
     "filter_width",
     "tx",
     "split",
+    # M⇄S / M=S (MOR-2531): native CAT commands — SV; (SWAP VFO) and AB;
+    # (MAIN-side to SUB-side), OM 2508-C. The web layer re-derives the
+    # served tags from the `vfo_swap`/`vfo_equalize` [commands] entries
+    # below (web/runtime_helpers.py: projected_vfo_capability_tags), so
+    # removing those entries removes the drawn row even with the tags here.
+    "vfo_swap",
+    "vfo_equalize",
     "vox",
     "compressor",
     # "monitor",  # ML; rejected by FTX-1 (not supported via CAT)
@@ -1147,6 +1154,14 @@ get_vfo_select = { cat = { read = "VS;", parse = "VS{vfo};" } }
 set_vfo_select = { cat = { write = "VS{vfo};" } }
 vfo_a_to_b     = { cat = { write = "AB;" } }
 vfo_b_to_a     = { cat = { write = "BA;" } }
+# SV; SWAP VFO "Changes the MAIN-side and SUB-side" (OM 2508-C, set only) —
+# the FTX-1's M⇄S, written by YaesuCatRadio.swap_vfo_ab.
+vfo_swap       = { cat = { write = "SV;" } }
+# AB; MAIN-side to SUB-side is the FTX-1's M=S equalize — the same opcode
+# vfo_a_to_b carries above, declared under the primitive name so capability
+# projection and dispatch gate on one key. Written by
+# YaesuCatRadio.equalize_vfo_ab.
+vfo_equalize   = { cat = { write = "AB;" } }
 # BS: FTX-1 does NOT support BS read (returns ?;)
 # Band select is write-only. BD/BU are fire-and-forget (no response).
 # BS format: BS + P1(rx 0/1) + P2P2(band 00-14)

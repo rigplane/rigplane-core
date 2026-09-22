@@ -2087,33 +2087,42 @@ class YaesuCatRadio:
         await self._write("set_vfo_select", vfo=str(index))
 
     async def swap_vfo_ab(self, receiver: int = 0) -> None:
-        """Swap VFO A and VFO B state on ``receiver``.
+        """Swap the rig's VFO pair (``receiver`` must be 0).
 
-        Yaesu CAT has no symmetric A↔B swap primitive: FTX-1 ``AB;``/
-        ``BA;`` are MAIN→SUB / SUB→MAIN copies (one-way), and Lab599-style
-        single-RX profiles do not expose a swap command at all.  This
-        method therefore raises :class:`NotImplementedError` on every
-        currently supported Yaesu CAT rig.
+        Profile-driven (MOR-2531): a profile that declares the ``vfo_swap``
+        CAT command performs the swap natively.  On the FTX-1 that command
+        is ``SV;`` (OM 2508-C — "Changes the MAIN-side and SUB-side"), so
+        the swap exchanges the MAIN/SUB pair — the only VFO pair the
+        ``ab_shared`` scheme has; there is no per-receiver A↔B pair to
+        swap.  Profiles without the command raise
+        :class:`NotImplementedError`: single-RX Yaesu CAT rigs expose no
+        swap command at all.
         """
         self._check_single_receiver(receiver, operation="swap_vfo_ab")
-        raise NotImplementedError(
-            f"swap_vfo_ab not supported on {self.model}: "
-            "Yaesu CAT has no symmetric A↔B swap primitive"
-        )
+        if not self._has_write_command("vfo_swap"):
+            raise NotImplementedError(
+                f"swap_vfo_ab not supported on {self.model}: "
+                "Yaesu CAT has no symmetric A↔B swap primitive"
+            )
+        await self._write("vfo_swap")
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
-        """Copy the active VFO's state to the inactive VFO on ``receiver``.
+        """Copy the MAIN-side state onto the SUB-side (``receiver`` must be 0).
 
-        Not supported by Yaesu CAT: FTX-1 ``AB;``/``BA;`` copy between
-        receivers (MAIN↔SUB), not between A/B within a receiver, and
-        single-RX Yaesu profiles do not expose an equalize command.
-        Raises :class:`NotImplementedError`.
+        Profile-driven (MOR-2531): a profile that declares the
+        ``vfo_equalize`` CAT command performs the copy natively.  On the
+        FTX-1 that command is ``AB;`` (OM 2508-C — MAIN-side to SUB-side),
+        the M=S equalize across the MAIN/SUB pair.  Profiles without the
+        command raise :class:`NotImplementedError`: Yaesu CAT has no
+        per-receiver A→B copy primitive.
         """
         self._check_single_receiver(receiver, operation="equalize_vfo_ab")
-        raise NotImplementedError(
-            f"equalize_vfo_ab not supported on {self.model}: "
-            "Yaesu CAT has no per-receiver A→B copy primitive"
-        )
+        if not self._has_write_command("vfo_equalize"):
+            raise NotImplementedError(
+                f"equalize_vfo_ab not supported on {self.model}: "
+                "Yaesu CAT has no per-receiver A→B copy primitive"
+            )
+        await self._write("vfo_equalize")
 
     # -- D6: TX Stack -------------------------------------------------------
 
