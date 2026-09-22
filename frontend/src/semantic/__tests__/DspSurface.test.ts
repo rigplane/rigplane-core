@@ -582,9 +582,9 @@ describe('notchMode renders as a three-way choice', () => {
   });
 });
 
-// ── 7. agcMode: dynamic choice set with declared settable labels ────────────
+// ── 7. agcMode: capability-derived settable choice set ──────────────────
 
-describe('agcMode renders the capability-derived choice set with declared labels', () => {
+describe('agcMode renders the capability-derived settable choice set', () => {
   it('renders exactly the declared agcModes entries, labelled from agcLabels — no invented OFF', () => {
     // MOR-1522: withDsp()'s agcModes [1, 2, 3] is the IC-7300/IC-7610 domain
     // (FAST/MID/SLOW, no OFF at all) — the surface must not synthesize one.
@@ -598,9 +598,9 @@ describe('agcMode renders the capability-derived choice set with declared labels
     }, { agcLabels: { '1': 'FAST', '2': 'MID', '3': 'SLOW' } });
   });
 
-  it('omits a key when no label is supplied', () => {
+  it('keeps a declared key honest with its raw code when no label is supplied', () => {
     withSurface(base(), (s) => {
-      expect(s.agcButton(1)).toBeNull();
+      expect(s.agcButton(1)!.textContent?.trim()).toBe('1');
     }, { agcLabels: {} });
   });
 

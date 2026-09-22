@@ -36,13 +36,7 @@
   }: Props = $props();
 
   let dsp = $derived(view?.dsp);
-  let agcOptions = $derived(dsp ? buildAgcOptions(
-    [...dsp.agcModes].filter((mode) => {
-      const label = agcLabels[String(mode)];
-      return typeof label === 'string' && label.trim().length > 0;
-    }),
-    agcLabels,
-  ) : []);
+  let agcOptions = $derived(dsp ? buildAgcOptions([...dsp.agcModes], agcLabels) : []);
   const pendingId = $props.id();
   const pendingOf = (field: DspToggleField): boolean | null =>
     field === 'nrActive' ? pendingNr : pendingNb;

@@ -744,10 +744,10 @@ describe('carry-forward (1): declared display metadata is read at this seam', ()
     expect(slider('nbLevel').getAttribute('aria-valuemax')).toBe('10');
   });
 
-  it('does not fabricate AGC keys when caps declares no labels', () => {
+  it('keeps declared AGC keys honest with raw codes when caps declares no labels', () => {
     h.caps = { ...liveCaps(true), agcLabels: undefined } as unknown as Capabilities;
     render();
-    expect(q('[data-testid="dsp-agcMode-1"]')).toBeNull();
+    expect(q('[data-testid="dsp-agcMode-1"]')!.textContent?.trim()).toBe('1');
   });
 });
 
