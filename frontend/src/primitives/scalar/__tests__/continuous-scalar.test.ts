@@ -1115,7 +1115,7 @@ describe('continuous scalar authority and feedback reconciliation', () => {
     expect(scalar.view).toMatchObject({ canonical: 2_700, draft: null, displayed: 2_700, interaction: 'idle' });
   });
 
-  it('hands a rendered-range draft to its represented lifecycle while confirmation is pending', () => {
+  it('keeps a rendered-range draft while awaiting confirmation and retires it on completion', () => {
     const { scalar, update } = commandSetup(
       createRenderedNativeRangeContinuousScalarPolicy(), {
         domain: NORMALIZED_DOMAIN,
@@ -1136,8 +1136,21 @@ describe('continuous scalar authority and feedback reconciliation', () => {
     }) });
 
     expect(scalar.view).toMatchObject({
-      canonical: 0.1, draft: null, displayed: 0.1, target: 0.6,
+      canonical: 0.1, draft: 0.6, displayed: 0.6, target: 0.6,
       phase: 'awaiting-confirmation', interaction: 'idle',
+    });
+
+    update({ feedback: feedback('confirmed', {
+      confirmed: 0.1,
+      requestedTarget: 0.6,
+      lifecycleId: 'sql-153',
+      transitionId: 'sql-153-confirmed',
+      outcome: { phase: 'confirmed' },
+    }) });
+
+    expect(scalar.view).toMatchObject({
+      canonical: 0.1, draft: null, displayed: 0.1, target: null,
+      phase: 'confirmed', interaction: 'idle',
     });
   });
 
@@ -1182,7 +1195,7 @@ describe('continuous scalar authority and feedback reconciliation', () => {
   });
 
   it.each(['failed', 'timed-out'] as const)(
-    'shows the radio value after the last native command is %s', (phase) => {
+    'clears the last native draft through the %s terminal branch before completion', (phase) => {
       const shiftDomain: ScalarDomain = {
         min: -1_200, max: 1_200, step: 20, defaultValue: null, fineStepDivisor: 1,
       };
@@ -1212,10 +1225,12 @@ describe('continuous scalar authority and feedback reconciliation', () => {
         requestedTarget: 200,
         lifecycleId: 'if-shift-200',
         transitionId: `if-shift-200-${phase}`,
-        outcome: { phase },
+        busy: true,
         scope: { control: 'if-shift', receiver: 0, slot: 'main' },
       }) });
-      expect(scalar.view).toMatchObject({ canonical: 160, draft: null, displayed: 160 });
+      expect(scalar.view).toMatchObject({
+        canonical: 160, draft: null, displayed: 160, phase, busy: true,
+      });
     },
   );
 

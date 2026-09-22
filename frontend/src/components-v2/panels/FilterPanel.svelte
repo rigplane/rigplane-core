@@ -273,9 +273,6 @@
   const passbandPolicy = createBipolarContinuousScalarPolicy({
     debounceMs: 50, describeTarget: (value) => `${value} Hz`,
   });
-  // The panel keeps the in-flight target explicit while the scalar preserves
-  // the operator's newer draft: a PENDING chip stays beside the canonical
-  // readout (MOR-1691), never presenting either value as confirmed.
   function passbandPendingTarget(feedback: Readonly<CommandScalarFeedback>): number | null {
     return feedback.busy && feedback.target !== null ? feedback.target : null;
   }

@@ -1068,9 +1068,6 @@ describe('passband scalar feedback (MOR-1687 part 1)', () => {
 
   it.each(ROWS)('%s: keeps the operator\'s requested value through the command\'s OWN lifecycle — no snap-back to the stale readback', (field, handler, control, feedbackKey) => {
     const spy = vi.fn();
-    // Production mints a new command id per dispatch (radio-intents.ts
-    // makeCommandId). The fresh pending lifecycle must preserve the newer
-    // operator draft when a stale readback push moves the canonical view.
     const viewState = new SvelteMap<string, RadioViewModel>([['view', base()]]);
     const feedbackState = new SvelteMap<string, Readonly<CommandScalarFeedback>>([
       ['feedback', passbandFeedback(control)],
