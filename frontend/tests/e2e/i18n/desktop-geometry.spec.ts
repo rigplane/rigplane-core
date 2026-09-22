@@ -552,36 +552,29 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
           overflow: element.scrollWidth > element.clientWidth + 1,
           cardOverflow: [...element.querySelectorAll<HTMLElement>('[data-standard-vfo-slot]')]
             .map(card => {
-              const clippedOverflow = /(hidden|clip|auto|scroll)/;
+              const cardBox = card.getBoundingClientRect();
               return [...card.querySelectorAll<HTMLElement>('[data-vfo-row], [data-vfo-row] *')]
-              .flatMap(target => {
+              .filter(target => {
                 // A `display: contents` wrapper (e.g. .frequency-readout-content)
                 // generates no box: its rect is 0/0/0/0 and it cannot be clipped.
                 // getClientRects() stays empty for it (and for display: none)
                 // while a real zero-width box still reports one rect.
-                if (target.getClientRects().length === 0) return [];
+                if (target.getClientRects().length === 0) return false;
+                // Screen-reader-only text is 1px by contract; its scrollWidth is
+                // not ink (the same exclusion bridgeOverflow applies).
+                if (target.closest('.sr-only')) return false;
                 const style = getComputedStyle(target);
                 const box = target.getBoundingClientRect();
-                if (style.display === 'none' || style.visibility === 'hidden') return [];
-                for (let ancestor: HTMLElement | null = target; ancestor && card.contains(ancestor);
-                  ancestor = ancestor.parentElement) {
-                  const ancestorStyle = getComputedStyle(ancestor);
-                  const ancestorBox = ancestor.getBoundingClientRect();
-                  const clippedX = clippedOverflow.test(ancestorStyle.overflowX)
-                    && (ancestor === target ? target.scrollWidth > target.clientWidth + 1
-                      : box.left < ancestorBox.left - 1 || box.right > ancestorBox.right + 1);
-                  const clippedY = clippedOverflow.test(ancestorStyle.overflowY)
-                    && (ancestor === target ? target.scrollHeight > target.clientHeight + 1
-                      : box.top < ancestorBox.top - 1 || box.bottom > ancestorBox.bottom + 1);
-                  if (clippedX || clippedY) return [{
-                    target: target.className ?? target.tagName,
-                    ancestor: ancestor.className ?? ancestor.tagName,
-                    axis: `${clippedX ? 'x' : ''}${clippedY ? 'y' : ''}`,
-                    rect: box.toJSON(), ancestorRect: ancestorBox.toJSON(),
-                  }];
-                }
-                return [];
-              });
+                // The tray tabs hang from the panel's top edge by design
+                // (MOR-2509): the top edge is exempt for the tray row only.
+                const tray = target.closest('[data-vfo-row="tray"]') !== null;
+                return style.display !== 'none' && style.visibility !== 'hidden'
+                  && (target.scrollWidth > target.clientWidth + 1
+                    || box.left < cardBox.left - 1 || box.right > cardBox.right + 1
+                    || (!tray && box.top < cardBox.top - 1) || box.bottom > cardBox.bottom + 1);
+              }).map(target => ({ target: target.className ?? target.tagName,
+                scrollWidth: target.scrollWidth, clientWidth: target.clientWidth,
+                rect: target.getBoundingClientRect().toJSON(), card: cardBox.toJSON() }));
             }),
           bridgeOverflow: [...element.querySelectorAll<HTMLElement>('[data-instrument-bridge] *')]
             .filter(target => !target.closest('.sr-only') && target.scrollWidth > target.clientWidth + 1)
