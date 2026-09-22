@@ -57,6 +57,7 @@
     bandwidth={fftBandwidth}
     filterWidth={p.filterWidth}
     filterWidthMax={p.filterWidthMax}
+    ifShift={p.ifShift}
     pbtInner={p.pbtInner}
     pbtOuter={p.pbtOuter}
     pbtRange={p.pbtRange}

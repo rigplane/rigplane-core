@@ -21,6 +21,8 @@ export interface SpectrumState {
   filterWidth: number;
   /** Max filter width in Hz (for normalization) */
   filterWidthMax: number;
+  /** Native IF-shift in Hz, or non-finite while unread */
+  ifShift: number;
   /** PBT inner raw value (0-255, center=128) */
   pbtInner: number;
   /** PBT outer raw value (0-255, center=128) */
@@ -121,7 +123,7 @@ export function renderAudioSpectrum(
   if (!rs) {
     rs = _defaultState;
   }
-  const { pixels, bandwidth, filterWidth, filterWidthMax, pbtInner, pbtOuter,
+  const { pixels, bandwidth, filterWidth, filterWidthMax, ifShift, pbtInner, pbtOuter,
           pbtRange, pbtStepHz, manualNotch, notchFreq, notchFreqDomain, contour, contourFreq } = state;
 
   // Clear
@@ -158,8 +160,6 @@ export function renderAudioSpectrum(
   // non-finite; the background clear/fill and the bottom frequency grid
   // (computed from `bandwidth`, independent of the filter passband) still
   // render normally either way.
-  const showFilterOverlay = Number.isFinite(rs.animFilterWidth);
-
   // ── Trapezoid geometry ──
   const totalHalfW = width * 0.45;
   const whiskerLeft = width / 2 - totalHalfW;
@@ -186,8 +186,15 @@ export function renderAudioSpectrum(
   const avgPbtHz = innerPbtHz !== null && outerPbtHz !== null
     ? (innerPbtHz + outerPbtHz) / 2
     : 0;
+  // PBT profiles keep their existing measured-lattice centre. A profile
+  // without PBT supplies the radio's signed native IF-shift instead; zero
+  // keeps the established baseband-centred geometry.
+  const centerOffsetHz = pbtRange ? avgPbtHz : ifShift;
+  const showFilterOverlay = Number.isFinite(rs.animFilterWidth) && Number.isFinite(centerOffsetHz);
   const shiftRef = Math.max(rs.animFilterWidth, filterWidthMax * 0.5);
-  const cx = width / 2 + (avgPbtHz / shiftRef) * totalHalfW * 0.6;
+  const cx = showFilterOverlay
+    ? width / 2 + (centerOffsetHz / shiftRef) * totalHalfW * 0.6
+    : width / 2;
 
   const slopeExtra = trapH * 0.35;
   const filterRatio = Math.max(0.05, Math.min(1, rs.animFilterWidth / Math.max(1, filterWidthMax))) * 0.75;

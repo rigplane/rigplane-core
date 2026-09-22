@@ -14,6 +14,8 @@
     filterWidth: number;
     /** Max filter width in Hz */
     filterWidthMax: number;
+    /** Native IF-shift in Hz, or non-finite while unread */
+    ifShift: number;
     /** PBT inner raw value (0-255, center=128) */
     pbtInner?: number;
     /** PBT outer raw value (0-255, center=128) */
@@ -40,6 +42,7 @@
     bandwidth = 48000,
     filterWidth = 2400,
     filterWidthMax = 4000,
+    ifShift,
     pbtInner = 128,
     pbtOuter = 128,
     pbtRange,
@@ -78,6 +81,7 @@
           bandwidth,
           filterWidth,
           filterWidthMax,
+          ifShift,
           pbtInner,
           pbtOuter,
           pbtRange,
@@ -101,7 +105,7 @@
 
   // A control/readout change must repaint even between FFT frames.
   $effect(() => {
-    data; bandwidth; filterWidth; filterWidthMax; pbtInner; pbtOuter;
+    data; bandwidth; filterWidth; filterWidthMax; ifShift; pbtInner; pbtOuter;
     pbtRange; pbtStepHz; manualNotch; notchFreq; notchFreqDomain; contour; contourFreq;
     scheduleDraw();
   });

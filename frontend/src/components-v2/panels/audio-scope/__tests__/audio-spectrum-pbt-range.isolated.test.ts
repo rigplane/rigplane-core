@@ -102,6 +102,7 @@ function baseState(overrides: Partial<SpectrumState> = {}): SpectrumState {
     bandwidth: 3600,
     filterWidth: 2400,
     filterWidthMax: 3600,
+    ifShift: 0,
     pbtInner: 128,
     pbtOuter: 128,
     manualNotch: false,
