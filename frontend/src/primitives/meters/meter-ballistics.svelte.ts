@@ -20,6 +20,10 @@ export type MeterBehaviorInput = Readonly<{
 export interface MeterBallisticsView {
   readonly smoothedValue: number;
   readonly peakValue: number | null;
+  /** Live reduced-motion state of the peak ticker (MOR-2509): faces that
+   *  suppress motion-driven markers under the preference read this instead
+   *  of subscribing to matchMedia a second time. */
+  readonly reducedMotion: boolean;
 }
 
 export interface MeterSmoother {
@@ -287,7 +291,11 @@ export function createMeterBallistics<State>(
       const peakValue = peakEnabled
         ? channel.project(peakCurrent(), projectionNow, lifecycle.reducedMotion)
         : null;
-      return { smoothedValue: smoother.value, peakValue };
+      return {
+        smoothedValue: smoother.value,
+        peakValue,
+        reducedMotion: lifecycle.reducedMotion,
+      };
     },
     sync(input) {
       peakEnabled = input.peakEnabled;

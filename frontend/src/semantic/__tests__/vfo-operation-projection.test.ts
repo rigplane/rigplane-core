@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { DualActionBlockViewModel } from '../radio-view-model';
+import type { AtuStatus, DualActionBlockViewModel, TxAuxField } from '../radio-view-model';
 import {
   invokeVfoOperation,
   projectVfoOperations,
   type VfoOperationCallbacks,
   type VfoOperationIntent,
   type VfoOperationProjectionInput,
+  type VfoRadioFunctionsInput,
 } from '../vfo-operation-projection';
 
 const REASONS = {
@@ -52,6 +53,8 @@ function input(
   return {
     hasVfoPair: true,
     hasDualReceiver: true,
+    hasSplit: true,
+    hasDualWatch: true,
     relativeIdentityUnknown: false,
     activeReceiver: { status: 'known', receiver: 'MAIN' },
     split: { status: 'known', value: false },
@@ -68,7 +71,7 @@ describe('projectVfoOperations', () => {
     const projected = projectVfoOperations(input());
     expect(Object.keys(projected)).toEqual([
       'split', 'dualWatch', 'activeReceiver', 'equalize', 'swap',
-      'quickSplit', 'quickDualWatch', 'speak', 'groupReason',
+      'quickSplit', 'quickDualWatch', 'speak', 'radioFunctions', 'groupReason',
     ]);
     for (const key of ['digest', 'frequency', 'slot', 'ptt', 'tune', 'context', 'lease', 'feedback']) {
       expect(projected).not.toHaveProperty(key);
@@ -108,6 +111,17 @@ describe('projectVfoOperations', () => {
     expect(projected.groupReason).toBe(REASONS.identityUnknown);
     expect(projected.activeReceiver.reading).toEqual({ status: 'unknown' });
     expect(projected.activeReceiver.availability.operational).toBe(true);
+  });
+
+  it.each([
+    ['split capability absent', { hasSplit: false }, 'split', 'onToggleSplit', { kind: 'toggle-split' }],
+    ['dual_watch capability absent', { hasDualWatch: false }, 'dualWatch', 'onToggleDualWatch', { kind: 'toggle-dual-watch' }],
+  ] as const)('renders no key and rejects invocation when the %s', (_name, change, field, callbackName, intent) => {
+    const callbacks = spyCallbacks();
+    const projected = projectVfoOperations(input({ ...change, callbacks }));
+    expect(projected[field].availability).toMatchObject({ structural: false, operational: false });
+    invokeVfoOperation(() => input({ ...change, callbacks }), intent);
+    expect(callbacks[callbackName]).not.toHaveBeenCalled();
   });
 
   it('keeps option reasons source-owned and callback absence reasonless', () => {
@@ -212,5 +226,119 @@ describe('invokeVfoOperation', () => {
     current = input({ callbacks: { onEqualizeVfos: undefined } });
     invokeVfoOperation(() => current, { kind: 'equalize' });
     expect(replacement).toHaveBeenCalledOnce();
+  });
+});
+
+/** MOR-2509 bridge radio functions — the facts are the same view-model
+ * fields the TX aux surface reads; availability mirrors the MOR-977 gate. */
+const knownField = <T>(value: T): TxAuxField<T> => ({
+  reading: { status: 'known', value },
+  availability: { structural: true, operational: true },
+});
+const unknownField = <T>(): TxAuxField<T> => ({
+  reading: { status: 'unknown' },
+  availability: { structural: true, operational: true },
+});
+const structuralOnlyField = <T>(value: T): TxAuxField<T> => ({
+  reading: { status: 'known', value },
+  availability: { structural: true, operational: false },
+});
+
+const functionSpies = () => ({
+  onToggleTuner: vi.fn(), onToggleVox: vi.fn(), onToggleDialLock: vi.fn(),
+});
+type FunctionSpies = ReturnType<typeof functionSpies>;
+
+const functionsInput = (
+  facts: Partial<VfoRadioFunctionsInput>,
+  callbacks: FunctionSpies,
+): VfoRadioFunctionsInput => ({
+  tuner: undefined, vox: undefined, dialLock: undefined,
+  ...facts,
+  onToggleTuner: callbacks.onToggleTuner,
+  onToggleVox: callbacks.onToggleVox,
+  onToggleDialLock: callbacks.onToggleDialLock,
+});
+
+describe('radioFunctions projection (MOR-2509 bridge)', () => {
+  it('without the group every function is structurally absent and inert', () => {
+    const projected = projectVfoOperations(input());
+    expect(projected.radioFunctions.tuner.availability).toMatchObject({ structural: false });
+    expect(projected.radioFunctions.vox.availability).toMatchObject({ structural: false });
+    expect(projected.radioFunctions.dialLock.availability).toMatchObject({ structural: false });
+  });
+
+  it('a known reading with a callback is structural and operational', () => {
+    const spies = functionSpies();
+    const projected = projectVfoOperations(input({
+      radioFunctions: functionsInput({
+        tuner: knownField('on'), vox: knownField(true), dialLock: knownField(false),
+      }, spies),
+    }));
+    expect(projected.radioFunctions.tuner).toMatchObject({
+      availability: { structural: true, operational: true },
+      reading: { status: 'known', value: 'on' },
+    });
+    expect(projected.radioFunctions.vox.availability).toMatchObject({
+      structural: true, operational: true,
+    });
+    expect(projected.radioFunctions.dialLock.availability).toMatchObject({
+      structural: true, operational: true,
+    });
+  });
+
+  it.each([
+    ['tuner', 'onToggleTuner'],
+    ['vox', 'onToggleVox'],
+    ['dialLock', 'onToggleDialLock'],
+  ] as const)('an unknown %s reading is present but not operational', (field, callbackName) => {
+    const spies = functionSpies();
+    const unknown = { tuner: unknownField<'on'>(), vox: unknownField<boolean>(), dialLock: unknownField<boolean>() };
+    const projected = projectVfoOperations(input({
+      radioFunctions: functionsInput(unknown, spies),
+    }));
+    expect(projected.radioFunctions[field].availability).toMatchObject({
+      structural: true, operational: false,
+    });
+    invokeVfoOperation(() => input({ radioFunctions: functionsInput(unknown, spies) }), {
+      kind: `toggle-${field === 'tuner' ? 'tuner' : field === 'vox' ? 'vox' : 'dial-lock'}`,
+    } as VfoOperationIntent);
+    expect(spies[callbackName]).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['tuner', 'onToggleTuner', { kind: 'toggle-tuner' }],
+    ['vox', 'onToggleVox', { kind: 'toggle-vox' }],
+    ['dialLock', 'onToggleDialLock', { kind: 'toggle-dial-lock' }],
+  ] as const)('invoking toggle on a known %s fires exactly its callback', (field, callbackName, intent) => {
+    const spies = functionSpies();
+    const known: VfoRadioFunctionsInput = {
+      tuner: knownField<AtuStatus>('off'),
+      vox: knownField<boolean>(false),
+      dialLock: knownField<boolean>(false),
+      onToggleTuner: spies.onToggleTuner,
+      onToggleVox: spies.onToggleVox,
+      onToggleDialLock: spies.onToggleDialLock,
+    };
+    const current = input({ radioFunctions: known });
+    invokeVfoOperation(() => current, intent);
+    expect(spies[callbackName]).toHaveBeenCalledOnce();
+    for (const [name, callback] of Object.entries(spies)) {
+      if (name !== callbackName) expect(callback).not.toHaveBeenCalled();
+    }
+    void field;
+  });
+
+  it('a structurally absent field is not operational even with a callback', () => {
+    const spies = functionSpies();
+    const projected = projectVfoOperations(input({
+      radioFunctions: functionsInput({
+        tuner: structuralOnlyField('off'), vox: knownField(true), dialLock: undefined,
+      }, spies),
+    }));
+    expect(projected.radioFunctions.tuner.availability).toMatchObject({
+      structural: true, operational: false,
+    });
+    expect(projected.radioFunctions.dialLock.availability).toMatchObject({ structural: false });
   });
 });

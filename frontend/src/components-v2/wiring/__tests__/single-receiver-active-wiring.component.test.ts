@@ -155,7 +155,7 @@ function singleRxLiveState(over: Partial<ServerState> = {}): ServerState {
 const singleRxCaps = (freqRanges: unknown[]): Capabilities => ({
   providerGeneration: 1,
   model: 'IC-7300', scope: false, audio: true, tx: true,
-  capabilities: ['audio', 'tx'],
+  capabilities: ['audio', 'tx', 'split'],
   receivers: 1, vfoScheme: 'ab', vfoReadback: 'selected_unselected',
   freqRanges, modes: [], filters: [],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
@@ -185,7 +185,7 @@ function dualRxLiveState(over: Partial<ServerState> = {}): ServerState {
 
 const dualRxCaps = (freqRanges: unknown[]): Capabilities => ({
   model: 'IC-7610', scope: false, audio: true, tx: true,
-  capabilities: ['audio', 'tx', 'dual_rx'],
+  capabilities: ['audio', 'tx', 'dual_rx', 'split', 'dual_watch'],
   receivers: 2, vfoScheme: 'main_sub', freqRanges, modes: [], filters: [],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },

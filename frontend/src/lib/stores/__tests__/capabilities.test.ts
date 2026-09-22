@@ -230,22 +230,6 @@ describe('capabilities store', () => {
     });
   });
 
-  describe('vfoSlotLabel', () => {
-    it('returns "VFO A" for slot A', () => {
-      expect(store.vfoSlotLabel('A')).toBe('VFO A');
-    });
-
-    it('returns "VFO B" for slot B', () => {
-      expect(store.vfoSlotLabel('B')).toBe('VFO B');
-    });
-
-    it('is independent of vfoScheme', () => {
-      store.setCapabilities(makeCaps({ vfoScheme: 'main_sub' }));
-      expect(store.vfoSlotLabel('A')).toBe('VFO A');
-      expect(store.vfoSlotLabel('B')).toBe('VFO B');
-    });
-  });
-
   describe('vfoLabel (deprecated shim)', () => {
     it('preserves legacy main_sub behaviour', () => {
       store.setCapabilities(makeCaps({ vfoScheme: 'main_sub' }));
@@ -267,7 +251,7 @@ describe('capabilities store', () => {
         store.vfoLabel('A');
         expect(warn).toHaveBeenCalledTimes(1);
         expect(warn).toHaveBeenCalledWith(
-          '[deprecated] vfoLabel(...) — use receiverLabel/vfoSlotLabel',
+          '[deprecated] vfoLabel(...)',
         );
       } finally {
         warn.mockRestore();

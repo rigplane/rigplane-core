@@ -397,8 +397,9 @@ describe('display-only frequency and disabled arithmetic', () => {
     expect(primitive.querySelector('.selected')).toBeNull();
     expect(onFreqChange).not.toHaveBeenCalled();
   });
-  it('shows null as unknown and preserves valid zero', () => {
-    expect(mountDisplay({ freq: null }).querySelector('.freq')!.textContent?.trim()).toBe('—');
+  it('shows null as nothing and preserves valid zero', () => {
+    // MOR-2509: an unread interactive readout paints nothing (the node stays).
+    expect(mountDisplay({ freq: null }).querySelector('.freq')!.textContent?.trim()).toBe('');
     expect(mountDisplay({ freq: 0 }).querySelector('.freq')!.textContent?.replace(/\s/g, '')).toBe('.000.000');
   });
   it('clears the armed digit on disable or context change and uses strict input after rearming', () => {

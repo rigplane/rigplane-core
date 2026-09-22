@@ -169,6 +169,25 @@ function caps(vfoScheme: Capabilities['vfoScheme'], receivers: number, dual = re
     meterCalibrations: { s_meter: meterCalibration } } as unknown as Capabilities;
 }
 
+// MOR-2509: the semantic meter face measures its track through
+// ResizeObserver + clientWidth; jsdom supplies neither. The component reads
+// clientWidth at observe time, so a no-op observer plus a fixed prototype
+// width is enough for geometry assertions.
+class NoopResizeObserver {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+let originalClientWidth: PropertyDescriptor | undefined;
+function installMeterGeometry(width = 606): void {
+  vi.stubGlobal('ResizeObserver', NoopResizeObserver);
+  originalClientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth');
+  Object.defineProperty(Element.prototype, 'clientWidth', {
+    configurable: true,
+    get: () => width,
+  });
+}
+
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 let txHarness: ManagedAppTxHarness;
@@ -264,6 +283,10 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  if (originalClientWidth) {
+    Object.defineProperty(Element.prototype, 'clientWidth', originalClientWidth);
+    originalClientWidth = undefined;
+  }
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
   expect(h.sessionSubscriber).toBeNull();
@@ -319,14 +342,23 @@ describe('production receiver-indicator partitioning', () => {
   });
 
   it.each([
-    ['grouped Standard', { strips: 'single', vfoAppearance: 'standard' }, 1, 'standard'],
-    ['independent dual SDR', { strips: 'dual', vfoAppearance: 'sdr' }, 3, 'sdr'],
-  ] as const)('renders one operation group and status in %s', (_name, props, surfaces, appearance) => {
+    ['grouped Standard', { strips: 'single', vfoAppearance: 'standard' }, 1, 'standard', 0],
+    ['independent dual SDR', { strips: 'dual', vfoAppearance: 'sdr' }, 3, 'sdr', 1],
+  ] as const)('renders one operation group and status in %s', (
+    _name, props, surfaces, appearance, statusBlocks,
+  ) => {
     render(caps('main_sub', 2), state(), {}, props);
     expect(target.querySelectorAll('[data-testid="vfo-surface"]')).toHaveLength(surfaces);
-    expect(target.querySelectorAll('[data-testid="vfo-active-receiver"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="vfo-active-receiver"]')).toHaveLength(statusBlocks);
     expect(target.querySelectorAll('[data-testid="vfo-ops"]')).toHaveLength(1);
     expect(target.querySelector('[data-vfo-operation-appearance]')?.getAttribute('data-vfo-operation-appearance')).toBe(appearance);
+  });
+
+  it('renders the Standard active-receiver radiogroup in the instrument bridge', () => {
+    render(caps('main_sub', 2), state(), {}, { strips: 'single', vfoAppearance: 'standard' });
+    expect(target.querySelectorAll(
+      '[data-instrument-bridge] [role="radiogroup"][aria-label="Active receiver"]',
+    )).toHaveLength(1);
   });
 
   it.each([
@@ -381,36 +413,130 @@ describe('production receiver-indicator partitioning', () => {
       addEventListener: vi.fn(), removeEventListener: vi.fn(),
       addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
     }));
+    installMeterGeometry();
     render(caps('main_sub', 2), state(), {}, props);
     const meter = () => target.querySelector('[data-indicator-receiver="MAIN"] [data-testid="receiver-s-meter"] svg')!;
-    // MOR-2521: fill rects are permanent nodes (count the lit ones) and
-    // the peak line is too (shown = visible).
-    const fillCount = () => [...meter().querySelectorAll<SVGRectElement>('[data-meter-fill]')]
-      .filter((rect) => rect.getAttribute('visibility') !== 'hidden').length;
-    const hasPeak = () => meter().querySelector('[data-meter-peak]')?.getAttribute('visibility') === 'visible';
+    // MOR-2509: the semantic face draws the fill as dash-patterned lines,
+    // so the lit extent is the fill end's position on the drawn track.
+    // Under reduced motion the face hides the peak marker (MOR-2509 v7),
+    // so the peak channel's re-seed is no longer observable from this
+    // face's DOM — the fill's re-seed still is.
+    const fillFraction = () => {
+      const svg = meter();
+      const track = svg.querySelector('[data-meter-track]')!;
+      const x1 = Number(track.getAttribute('x1'));
+      const trackW = Number(track.getAttribute('x2')) - x1;
+      expect(trackW).toBeGreaterThan(0);
+      // A hidden zone line still carries its boundary coordinates, so only
+      // visible ones count as fill.
+      const end = Math.max(
+        ...(['[data-meter-fill]', '[data-meter-fill-red]'].map((selector) => {
+          const line = svg.querySelector(selector)!;
+          return line.getAttribute('visibility') === 'hidden'
+            ? x1 : Number(line.getAttribute('x2'));
+        })),
+      );
+      return (end - x1) / trackW;
+    };
     const arm = (generation = 1) => {
       pushMeter(40, generation); pushMeter(-36, generation);
-      expect(hasPeak()).toBe(true);
-      return fillCount();
+      return fillFraction();
     };
 
     const epochFill = arm();
     pushSession({ state: 'connected', epoch: 2 });
-    expect(fillCount()).toBe(epochFill);
-    expect(hasPeak()).toBe(false);
+    expect(fillFraction()).toBeCloseTo(epochFill, 9);
 
     const generationFill = arm();
     pushMeter(-36, 2);
-    expect(fillCount()).toBe(generationFill);
-    expect(hasPeak()).toBe(false);
+    expect(fillFraction()).toBeCloseTo(generationFill, 9);
 
     const reconnectFill = arm(2);
     pushSession({ state: 'disconnected', epoch: 3 });
-    expect(fillCount()).toBe(0);
-    expect(hasPeak()).toBe(false);
+    expect(fillFraction()).toBe(0);
     pushSession({ state: 'connected', epoch: 4 });
-    expect(fillCount()).toBe(reconnectFill);
-    expect(hasPeak()).toBe(false);
+    expect(fillFraction()).toBeCloseTo(reconnectFill, 9);
+  });
+
+  // MOR-2509 owner rule: a radio-wide VALUE is shown on the TX-target panel
+  // only; a scale that is not this receiver's is not drawn at all, and an
+  // unknown TX target draws it nowhere. The face still reserves the row's
+  // height on every panel, so nothing moves when the target flips.
+  it('draws the Po row on the TX-target panel only, with reserved geometry', () => {
+    vi.stubGlobal('matchMedia', (query: string): MediaQueryList => ({
+      matches: query === '(prefers-reduced-motion: reduce)', media: query, onchange: null,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
+    }));
+    installMeterGeometry();
+    const powerCal = {
+      s_meter: meterCalibration,
+      power: [
+        { raw: 0, actual: 0, label: 'P0' },
+        { raw: 255, actual: 100, label: 'P100' },
+      ],
+    };
+    const powerStatuses = {
+      powerMeter: { ...fresh, quality: ['calibrated'] },
+      txTarget: { ...fresh },
+    };
+    const withTarget = (receiver: 'MAIN' | 'SUB') => {
+      const next = state({
+        powerMeter: 100,
+        txTarget: { status: 'known', receiver, slot: 'A', frequencyHz: 14_200_000 },
+      });
+      next.fieldStatus = { ...next.fieldStatus, ...powerStatuses } as typeof next.fieldStatus;
+      return next;
+    };
+    const powerCaps = {
+      ...caps('main_sub', 2),
+      txBands: null,
+      meterCalibrations: powerCal,
+    } as Capabilities;
+    render(powerCaps, withTarget('MAIN'), { intent: 'transmit', observedPtt: 'on' }, { strips: 'dual' });
+
+    const meterSvg = (receiver: 'MAIN' | 'SUB'): SVGSVGElement => target.querySelector(
+      `[data-indicator-receiver="${receiver}"] [data-testid="receiver-s-meter"] svg`,
+    )!;
+    const rowLabels = () => [...target.querySelectorAll('[data-lower-row-label]')];
+
+    // MAIN is the TX target: exactly one row in the deck, lit by 100 W on a
+    // 100 W scale (the last lit dash ends one pitch-gap short of the right
+    // edge). SUB draws no Po geometry at all.
+    expect(rowLabels()).toHaveLength(1);
+    expect(meterSvg('MAIN').querySelector('[data-lower-row-label]')).not.toBeNull();
+    expect(meterSvg('SUB').querySelector('[data-lower-track]')).toBeNull();
+    const mainTrack = meterSvg('MAIN').querySelector('[data-lower-track]')!;
+    const mainFill = meterSvg('MAIN').querySelector('[data-lower-fill]')!;
+    expect((Number(mainFill.getAttribute('x2')) - Number(mainTrack.getAttribute('x1')))
+      / (Number(mainTrack.getAttribute('x2')) - Number(mainTrack.getAttribute('x1'))))
+      .toBeCloseTo(1, 2);
+
+    const reservedHeight = meterSvg('MAIN').getAttribute('height');
+    expect(meterSvg('SUB').getAttribute('height')).toBe(reservedHeight);
+
+    // Flip the TX target to SUB: the row moves, both faces keep their
+    // height, and MAIN's row disappears rather than reading as zero.
+    h.state = withTarget('SUB');
+    publishAuthority();
+    flushSync();
+    expect(rowLabels()).toHaveLength(1);
+    expect(meterSvg('SUB').querySelector('[data-lower-row-label]')).not.toBeNull();
+    expect(meterSvg('MAIN').querySelector('[data-lower-track]')).toBeNull();
+    expect(meterSvg('MAIN').getAttribute('height')).toBe(reservedHeight);
+    expect(meterSvg('SUB').getAttribute('height')).toBe(reservedHeight);
+
+    // Unknown TX target: no panel draws the row.
+    const unknownTarget = state({ powerMeter: 100 });
+    unknownTarget.fieldStatus = {
+      ...unknownTarget.fieldStatus,
+      powerMeter: powerStatuses.powerMeter,
+    } as typeof unknownTarget.fieldStatus;
+    h.state = unknownTarget;
+    publishAuthority();
+    flushSync();
+    expect(rowLabels()).toHaveLength(0);
+    expect(meterSvg('MAIN').getAttribute('height')).toBe(reservedHeight);
   });
 
   it.each([

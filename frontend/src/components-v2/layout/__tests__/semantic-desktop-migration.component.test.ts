@@ -124,7 +124,6 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasCapability: vi.fn(() => false),
   vfoLabel: vi.fn((slot: 'A' | 'B') => (slot === 'A' ? 'MAIN' : 'SUB')),
   receiverLabel: vi.fn((id: 'MAIN' | 'SUB') => id),
-  vfoSlotLabel: vi.fn((slot: 'A' | 'B') => (slot === 'A' ? 'VFO A' : 'VFO B')),
   getCapabilities: vi.fn(() => ({ freqRanges: [], modes: [], filters: [] })),
   setCapabilities: vi.fn(),
   getAgcModes: vi.fn(() => [0, 1, 2, 3]),
@@ -257,7 +256,9 @@ function capsFor(id: TopologyFixtureId): Capabilities {
   const dual = scheme === 'ab_shared' || scheme === 'main_sub';
   return {
     model: 'fixture', scope: true, audio: true, tx: true,
-    capabilities: dual ? ['scope', 'audio', 'tx', 'dual_rx'] : ['scope', 'audio', 'tx'],
+    capabilities: dual
+      ? ['scope', 'audio', 'tx', 'dual_rx', 'split', 'dual_watch']
+      : ['scope', 'audio', 'tx'],
     receivers: dual ? 2 : 1, vfoScheme: scheme, freqRanges: [], modes: [], filters: [],
     audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
     webrtc: { available: false, enabled: false },
@@ -1459,6 +1460,7 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
     const narrow = RADIO_LAYOUT_SOURCE.slice(RADIO_LAYOUT_SOURCE.indexOf('@media (max-width: 1024px)'));
     expect(narrow).toContain('grid-template-columns: 190px minmax(0, 1fr) 190px');
     expect(RADIO_LAYOUT_SOURCE).toContain('overflow-y: auto; min-height: 0');
+    expect(narrow).toContain('contain: inline-size');
   });
 });
 

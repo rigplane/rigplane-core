@@ -416,7 +416,6 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasCapability: vi.fn(() => false),
   vfoLabel: vi.fn((slot: 'A' | 'B') => (slot === 'A' ? 'MAIN' : 'SUB')),
   receiverLabel: vi.fn((id: 'MAIN' | 'SUB') => id),
-  vfoSlotLabel: vi.fn((slot: 'A' | 'B') => (slot === 'A' ? 'VFO A' : 'VFO B')),
   getCapabilities: vi.fn(() => rt.caps ?? ({ freqRanges: [], modes: [], filters: [] })),
   setCapabilities: vi.fn(),
   getAgcModes: vi.fn(() => [0, 1, 2, 3]),
@@ -1079,13 +1078,15 @@ describe('MOR-2513 — the live FTX-1 payload mounts the default desktop composi
     return mountLayout('desktop-v2');
   };
 
-  it('renders six VFO rows across MAIN and SUB instrument sections', () => {
+  it('renders ten fixed VFO rows across MAIN and SUB instrument sections', () => {
     const t = mountFtx1(FTX1_STATE);
     expect(ftx1StateJson.main.dataMode).toBeNull();
     expect(ftx1StateJson.sub.att).toBeNull();
     expect(t.querySelectorAll('[data-receiver-instrument="MAIN"]')).toHaveLength(1);
     expect(t.querySelectorAll('[data-receiver-instrument="SUB"]')).toHaveLength(1);
-    expect(t.querySelectorAll('[data-vfo-row]')).toHaveLength(6);
+    // MOR-2509: tray, receiver, main, under, and the DSP row that the ftx1
+    // fixture backs — five per receiver here; a radio without DSP facts draws four.
+    expect(t.querySelectorAll('[data-vfo-row]')).toHaveLength(10);
   });
 
   it('prints no null/NaN/undefined text from the null leaves', () => {
@@ -1097,9 +1098,9 @@ describe('MOR-2513 — the live FTX-1 payload mounts the default desktop composi
     }
   });
 
-  it('still mounts all six VFO rows with every nullable leaf null', () => {
+  it('still mounts all ten fixed VFO rows with every nullable leaf null', () => {
     const t = mountFtx1(FTX1_STATE_FULLY_UNOBSERVED);
-    expect(t.querySelectorAll('[data-vfo-row]')).toHaveLength(6);
+    expect(t.querySelectorAll('[data-vfo-row]')).toHaveLength(10);
     const text = t.textContent ?? '';
     for (const forbidden of ['null', 'NaN', 'undefined']) {
       expect(text, `rendered text must not contain ${forbidden}`).not.toContain(forbidden);

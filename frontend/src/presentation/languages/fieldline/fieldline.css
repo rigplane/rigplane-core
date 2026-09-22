@@ -87,6 +87,39 @@
    MANUAL `[data-theme]` choice and nothing in it responds to the OS signal, so
    a language that flipped its own text to black on an OS preference would put
    black text on the app's still-dark surface. */
+/* ── MOR-2509: the VFO panel screen's surface-relative tones ──────
+   `VfoPanel.svelte` consumes `--dl-vfo-*` with the approved MOR-2509
+   palette as its fallback, so fieldline restyles here only what reads
+   against ITS ground: unlit/label tones and frames. Fill/text chip pairs
+   carry their own contrast and keep the shared design values. */
+[data-design-language='fieldline'][data-design-language] {
+  --dl-vfo-unlit-text: var(--dl-fieldline-inert);
+  --dl-vfo-unlit-border: rgba(242, 245, 247, 0.22);
+  --dl-vfo-frame: var(--dl-fieldline-text);
+  --dl-vfo-frame-dim: var(--dl-fieldline-muted);
+  --dl-vfo-tab-frame: var(--dl-fieldline-text);
+  --dl-vfo-tab-frame-dim: var(--dl-fieldline-muted);
+  --dl-vfo-dim-text: var(--dl-fieldline-text);
+  --dl-vfo-unlit-fill: transparent;
+  --dl-vfo-panel-background: var(--dl-fieldline-surface);
+  --dl-vfo-panel-shadow: 0 0 0 transparent;
+  --dl-vfo-panel-sheen: none;
+  --dl-vfo-panel-sheen-blend: normal;
+  --dl-vfo-bridge-background: var(--dl-fieldline-surface);
+  --dl-vfo-bridge-shadow: 0 0 0 transparent;
+  --dl-vfo-meter-well-background: var(--dl-fieldline-surface);
+  --dl-vfo-meter-well-shadow: 0 0 0 transparent;
+  --dl-vfo-meter-lit-filter: none;
+  --dl-vfo-frequency-glow: none;
+  --dl-vfo-primary-glow: none;
+  --dl-vfo-red-glow: none;
+  --dl-vfo-amber-glow: none;
+  --dl-vfo-brown-glow: none;
+  --dl-vfo-dsp-glow: none;
+  --dl-vfo-slate-glow: none;
+  --dl-vfo-bridge-lamp-glow: none;
+}
+
 [data-design-language='fieldline'][data-design-language][data-language-mode='light'] {
   --dl-fieldline-surface: #ffffff;
   --dl-fieldline-text: #000000;

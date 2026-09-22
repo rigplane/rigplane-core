@@ -58,6 +58,7 @@ function view(): RadioViewModel {
       rfState: 'receiving',
       antenna: known(1),
       atu: known('off'),
+      dialLock: known(false),
       ritActive: known(true),
       ritOffset: known(250),
       xitActive: known(false),

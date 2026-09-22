@@ -138,7 +138,7 @@ describe('StandardFrequencyReadout', () => {
 
   it('renders the presentation-specific unknown text', () => {
     const unknown = projectFrequencyReadout({ confirmedHz: null });
-    expect(mountReadout({ model: unknown, presentation: 'interactive' }).textContent?.trim()).toBe('—');
+    expect(mountReadout({ model: unknown, presentation: 'interactive' }).textContent?.trim()).toBe('');
     expect(mountReadout({ model: unknown, presentation: 'passive' }).textContent?.replace(/\s/g, '')).toBe('--.---.---');
   });
 });

@@ -1169,6 +1169,12 @@ export interface RadioWideIndicatorsViewModel {
   rfState: MeterRfState;
   antenna: AntennaField<number>;
   atu: TxAuxField<AtuStatus>;
+  /**
+   * Dial lock ON/OFF from the radio-wide state leaf `dialLock`; `structural`
+   * mirrors the `dial_lock` capability, and a never-observed leaf reads
+   * `unknown`, never `false`.
+   */
+  dialLock: TxAuxField<boolean>;
   ritActive: RitXitField<boolean>;
   ritOffset: RitXitField<number>;
   xitActive: RitXitField<boolean>;
@@ -1729,13 +1735,14 @@ function validateDualActionBlock(value: unknown, path: string): DualActionBlockV
 function validateRadioWideIndicators(value: unknown, path: string): RadioWideIndicatorsViewModel {
   const v = record(value, path);
   exactKeys(v, [
-    'rfState', 'antenna', 'atu', 'ritActive', 'ritOffset', 'xitActive', 'xitOffset', 'actions',
+    'rfState', 'antenna', 'atu', 'dialLock', 'ritActive', 'ritOffset', 'xitActive', 'xitOffset', 'actions',
   ], path);
   return {
     rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`),
     antenna: validateTxAuxField(v.antenna, `${path}.antenna`, num),
     atu: validateTxAuxField(v.atu, `${path}.atu`, (candidate, candidatePath) =>
       oneOf(candidate, ATU_STATUSES, candidatePath)),
+    dialLock: validateTxAuxField(v.dialLock, `${path}.dialLock`, bool),
     ritActive: validateTxAuxField(v.ritActive, `${path}.ritActive`, bool),
     ritOffset: validateTxAuxField(v.ritOffset, `${path}.ritOffset`, num),
     xitActive: validateTxAuxField(v.xitActive, `${path}.xitActive`, bool),

@@ -2,6 +2,68 @@
 
 Tracked, reviewed screenshots compared by `npm run test:e2e:visual` (`playwright.visual.config.ts`, whose `testDir` runs every `*.spec.ts` under `tests/e2e/visual/`): `visual-baselines.spec.ts` for a representative slice of the MOR-1070/1085 fixture matrix, `gallery-baselines.spec.ts` (MOR-2219) for the `gallery-*` rows below, which preserve individual instrument looks rendered on the `?demo=control-buttons` page, and `spectrum-baselines.spec.ts` for the `spectrum-panel--managed-frame` row. Distinct from `frontend/fixtures-baselines/` (gitignored capture OUTPUT from `capture.mjs`/`capture-ptt.mjs`) — this directory is the APPROVED, committed comparison target.
 
+## Linux re-pin provenance — 2026-09-22 MOR-2509 VFO deck batch
+
+MOR-2509 (packages A–E on `codex/mor-2509-vfo-batch`): the v7 S-meter face
+(`LinearSMeter` `vfo` variant — dash segments, declared-only scale numerals,
+Po lower row on the TX-target receiver only, ballistics), the bridge as
+hardware keys, the receiver-panel screen, the alive finish. The scenes here
+render the `semantic` appearance, so what changes in them is the meter face
+and the retired `'—'` slot-tag placeholder; the standard deck itself is
+covered by the production-root scenes
+(`frontend/tests/e2e/i18n/__screenshots__/production-design-language/`).
+
+The committed PNGs and `manifest.json` come from the Linux regeneration run
+[35688566728](https://github.com/rigplane/rigplane-core/actions/runs/35688566728)
+(`visual.yml` with `regenerate=true`) at source head
+`f1b0cedc60a47a516a934f7a64c50556c4c44d39` (`manifest.json` `commit`); the
+artifact `regenerated-baselines` was downloaded with `gh run download` and
+copied over this directory unchanged. Seventeen captures changed, thirteen are
+byte-identical. Per scene: pixels differing by more than 8/255 in any channel
+against the previously committed PNG (Pillow `ImageChops.difference`, whole
+image), and the SHA-256 prefix of the committed file:
+
+| Scene | changed px | share | new SHA-256 (16) |
+|---|---:|---:|---|
+| `dual-main-sub--desktop--fieldline.png` | 153870 | 15.03% | `1c6f769fcaf0538f` |
+| `dual-main-sub--desktop--studioline--light.png` | 161086 | 15.73% | `f00d375e83d35919` |
+| `dual-main-sub--desktop--studioline.png` | 136060 | 13.29% | `12cc36bcbd7a9cd7` |
+| `dual-main-sub--desktop.png` | 146129 | 14.27% | `2d2de1ec45a767a4` |
+| `dual-main-sub--phone-portrait.png` | 86026 | 28.25% | `218de5d136102663` |
+| `gallery-dotbutton.png` | 0 | 0.00% | `664ed6653e960660` |
+| `gallery-fillbutton.png` | 0 | 0.00% | `fb75c1a89a8e292f` |
+| `gallery-hardwarebutton.png` | 0 | 0.00% | `082ba0b5c18af61b` |
+| `gallery-hardwareplainbutton.png` | 0 | 0.00% | `b72a13bc46490b36` |
+| `gallery-professionalknob.png` | 0 | 0.00% | `1f92224adc656e5f` |
+| `gallery-statusindicator.png` | 0 | 0.00% | `0029a895e3f51376` |
+| `gallery-valuecontrol-bipolar.png` | 0 | 0.00% | `1f753829abf6e546` |
+| `gallery-valuecontrol-hbar.png` | 0 | 0.00% | `3c4755ada7de5e8e` |
+| `gallery-valuecontrol-knob.png` | 0 | 0.00% | `66cee896832437c5` |
+| `panadapter-first--1100x800.png` | 60 | 0.01% | `5164310e180a06a7` |
+| `panadapter-first--desktop.png` | 98 | 0.01% | `a8d9a0d9270ddf9a` |
+| `peer-split-chassis--1100x800.png` | 593 | 0.07% | `292250e39bcb077c` |
+| `peer-split-chassis--desktop.png` | 684 | 0.07% | `8d3d38818a90ae97` |
+| `ptt-held--mobile.png` | 0 | 0.00% | `7fd1098d8b45b0b8` |
+| `ptt-idle--mobile.png` | 0 | 0.00% | `83d1d3d84e978352` |
+| `spectrum-panel--managed-frame.png` | 0 | 0.00% | `5558f65f56b31619` |
+| `topology-1-single--desktop.png` | 261983 | 25.58% | `ad9f8a6448324f7f` |
+| `topology-2-ab-shared--desktop.png` | 0 | 0.00% | `9369dbe4dd50f46c` |
+| `tx-phase-fault--desktop--fieldline.png` | 200474 | 19.58% | `451265fd641899bd` |
+| `tx-phase-fault--desktop.png` | 130060 | 12.70% | `04f3d36c128d6807` |
+| `tx-phase-rx--desktop.png` | 146129 | 14.27% | `2d2de1ec45a767a4` |
+| `tx-phase-tx--desktop--studioline.png` | 134212 | 13.11% | `560c058a2203dfc6` |
+| `tx-phase-tx--desktop.png` | 129451 | 12.64% | `e9ed4e138e78f0eb` |
+| `unified-instrument--1100x800.png` | 84 | 0.01% | `3ae439e860c2659c` |
+| `unified-instrument--desktop.png` | 98 | 0.01% | `f6611c9c887afd16` |
+
+The six `panadapter-first`/`peer-split-chassis`/`unified-instrument` rows
+(≤ 0.07 %) are the LCD faces: a one-segment difference in the classic S-meter
+band (the same band differed by 84–168 px between the two regeneration runs
+of 2026-09-21, before this batch existed — capture noise the comparator's
+threshold already tolerates) and, in `peer-split-chassis`, the removed `'—'`
+slot-tag chip. `topology-1-single--desktop` and `dual-main-sub--phone-portrait`
+change the most because the meter face spans their full width.
+
 ## Linux re-pin provenance — 2026-09-21 MOR-2509 VFO panel skeleton
 
 MOR-2509 rebuilds the VFO panel as three rows: identity, frequency beside the

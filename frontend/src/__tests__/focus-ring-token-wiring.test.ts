@@ -81,9 +81,9 @@ function read(relPath: string): string {
 // like `--vc-illum-thumb-outline: 0 0 0 1px ...` — that "0" is a box-shadow
 // offset, not an `outline: 0` suppression.
 const OUTLINE_NONE = /(?<![\w-])outline:\s*(none|0)\b/;
-// A real, visible focus treatment: an outline set to a non-none value, or a
-// var()-driven box-shadow.
-const HAS_REPLACEMENT = /(?<![\w-])outline:\s*(?!none\b|0\b)\S|box-shadow:\s*(?!none\b)[^;]*var\(/;
+// A real, visible focus treatment: an outline set to a non-none value, a
+// var()-driven box-shadow, or one of the Standard deck's two focus steps.
+const HAS_REPLACEMENT = /(?<![\w-])outline:\s*(?!none\b|0\b)\S|box-shadow:\s*(?!none\b)[^;]*var\(|filter:\s*var\(--v2-focus-ring-(?:dim|lit)-filter\)/;
 
 function styleText(path: string, text: string): string {
   if (extname(path) !== '.svelte') return text;
@@ -182,6 +182,41 @@ describe('MOR-1232: --focus-ring token wiring', () => {
     expect(css).toMatch(/--v2-focus-ring-color:\s*var\(--v2-accent-cyan\)/);
     expect(css).toMatch(/--v2-focus-ring:\s*2px solid var\(--v2-focus-ring-color\)/);
     expect(css).toMatch(/--v2-focus-ring-shadow:\s*0 0 0 2px var\(--v2-focus-ring-color\)/);
+  });
+});
+
+describe('MOR-2509: the Standard deck uses the shared three-step focus treatment', () => {
+  it('does not accept an unrelated filter as a replacement for outline suppression', () => {
+    expect(HAS_REPLACEMENT.test('outline: none; filter: var(--unrelated-effect);')).toBe(false);
+    expect(HAS_REPLACEMENT.test('outline: none; filter: var(--v2-focus-ring-dim-filter);')).toBe(true);
+    expect(HAS_REPLACEMENT.test('outline: none; filter: var(--v2-focus-ring-lit-filter);')).toBe(true);
+  });
+
+  it('declares the two brightness steps beside the existing focus-ring trio', () => {
+    const css = read('components-v2/theme/tokens.css');
+    expect(css).toMatch(/--v2-focus-ring-lit-filter:\s*brightness\([^;]+;/);
+    expect(css).toMatch(/--v2-focus-ring-dim-filter:\s*brightness\([^;]+;/);
+  });
+
+  it('the deck rule brightens controls without a second frame or a size-affecting declaration', () => {
+    const css = stripComments(read('components-v2/controls/control-button.css'));
+    const deckRules = ruleBlocks(css).filter((block) =>
+      block.selector.trim().startsWith("[data-vfo-appearance='standard']")
+      && block.selector.includes(':focus-visible'));
+    expect(deckRules.length).toBeGreaterThanOrEqual(2);
+    expect(deckRules.some((block) => /filter:\s*var\(--v2-focus-ring-dim-filter\)/.test(block.body))).toBe(true);
+    expect(deckRules.some((block) => /filter:\s*var\(--v2-focus-ring-lit-filter\)/.test(block.body))).toBe(true);
+    for (const { selector, body } of deckRules) {
+      expect(body, `${selector} removes the inherited browser frame`).toMatch(/outline:\s*none/);
+      expect(body, `${selector} paints no second frame`).not.toMatch(/box-shadow|border(?:-width)?\s*:/);
+      expect(body, `${selector} changes no box geometry`).not.toMatch(/(?:width|height|padding|margin)\s*:/);
+    }
+  });
+
+  it('deck components declare no private outline treatment', () => {
+    for (const file of ['components-v2/vfo/VfoPanel.svelte', 'semantic/VfoSurface.svelte']) {
+      expect(stripComments(styleText(file, read(file))), file).not.toMatch(/outline\s*:/);
+    }
   });
 });
 

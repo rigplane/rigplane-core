@@ -332,9 +332,15 @@ export function runAssertions(
   // (`capsLoaded` below). Split stays radio-wide regardless — it is
   // meaningful with one receiver.
   const hasDualReceiverFacts = (harness.caps?.receivers ?? 1) > 1;
-  const wide = hasDualReceiverFacts
-    ? ['[data-vfo-split]', '[data-vfo-dual-watch]', '[data-testid="vfo-active-receiver"]']
-    : ['[data-vfo-split]'];
+  // MOR-2509: the split and dual-watch switches exist only where the profile
+  // declares the capability (`SemanticRadioSurfaces.svelte`'s gate reads the
+  // same list); the active-receiver readout follows the receiver count.
+  const declared = harness.caps?.capabilities ?? [];
+  const wide = [
+    ...(declared.includes('split') ? ['[data-vfo-split]'] : []),
+    ...(hasDualReceiverFacts && declared.includes('dual_watch') ? ['[data-vfo-dual-watch]'] : []),
+    ...(hasDualReceiverFacts ? ['[data-testid="vfo-active-receiver"]'] : []),
+  ];
   const hasGlobalZone = expected.zones.includes('global');
   // MOR-1085: the reference/single composition renders the SAME radio-wide
   // switches (one `<VfoSurface viewModel={view}>` call, `showRadioWideFacts`
@@ -371,7 +377,7 @@ export function runAssertions(
         'a zone holding live switches must not present as dead');
     }
     const switches = qa<HTMLButtonElement>('[data-vfo-split], [data-vfo-dual-watch]');
-    const expectedSwitchCount = hasDualReceiverFacts ? 2 : 1;
+    const expectedSwitchCount = wide.filter((sel) => sel !== '[data-testid="vfo-active-receiver"]').length;
     check('radio-wide-switch-gate',
       switches.length === expectedSwitchCount
       && switches.every((b) => b.disabled === expected.radioWideSwitchesDisabled),

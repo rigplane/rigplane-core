@@ -479,7 +479,29 @@ CI run must compare successfully against these replacements.
 | FieldLine dark | compared-fail (6,867 px); inspected and accepted | `960cb61d8b5e9b5a00a3f8611043603df7723aa70aa4e387ce52036d02b1a7c7` |
 | FieldLine light | compared-fail (13,366 px); inspected and accepted | `2d972c5647ea99eef22ac4bffa99f3e32683427af2ebbb98aab0111142b296d5` |
 
-## Linux re-pin provenance (current — 2026-09-21 MOR-2509 VFO panel skeleton)
+## Linux re-pin provenance (current — 2026-09-22 MOR-2509 VFO deck batch)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `e4474ba6b8486a2d4a7e97f84fd32ece18c8207d` |
+| CI run / job | [Tests (quick) #35699527345](https://github.com/rigplane/rigplane-core/actions/runs/35699527345) / job `106654026064` |
+| Command | `npm run test:e2e:i18n` (`playwright test -c ./playwright.i18n.config.ts`) |
+| Source | the `actual` image attachments of the four MOR-1400 production-root cases in that run's `mor-1400-production-visual-diagnostics` artifact (`playwright-report/data/*.png`, 1280×800; the `.output/` directory is not uploaded because `actions/upload-artifact@v4` skips hidden paths), each matched to its scene as the attachment nearest to the previously committed PNG, copied byte-for-byte. |
+| Reason | MOR-2509 rebuilds the Standard VFO deck (packages A–E on `codex/mor-2509-vfo-batch`): tray tabs, MODE/FIL chips with a three-way presence, frameless annunciators that wrap on compact panels, the v7 S-meter face, the bridge as hardware keys, the alive finish, bold (800) tabular digits, studioline light-mode ground. |
+
+The source run reported 96 passed and 4 failed; the four failures are the
+production-root comparisons below (pixel counts as Playwright reported them).
+
+| Scene | Disposition | SHA-256 |
+| --- | --- | --- |
+| StudioLine dark | compared-fail (2,462 px); inspected and accepted | `21360c6fd797c556850849db2f35f85d7aaa1a5770baf95a009c776d36c80a02` |
+| StudioLine light | compared-fail (52,832 px); inspected and accepted | `1423af0d14624c203bb175281280d622d036647e109aeacad7f38892e6bc96b7` |
+| FieldLine dark | compared-fail (13,965 px); inspected and accepted | `b964712f344da345c9e2e6d57b28286b674179edf4a4c1bfac6a697c3bb882b0` |
+| FieldLine light | compared-fail (28,563 px); inspected and accepted | `5874204a8f64ffec91a0c9adc0898e828d210150121cb1b34df2eb716749fbe3` |
+
+A subsequent exact-head quick run must confirm these four comparisons pass.
+
+## Linux re-pin provenance (superseded — 2026-09-21 MOR-2509 VFO panel skeleton)
 
 | Field | Value |
 | --- | --- |

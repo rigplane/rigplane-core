@@ -163,29 +163,17 @@ export function receiverLabel(id: 'MAIN' | 'SUB'): string {
   return id;
 }
 
-/**
- * Label for a VFO slot (VFO A / VFO B).
- *
- * Use when the UI wants the *VFO slot* name — e.g. split indicators,
- * A/B swap buttons. Independent of receiver: MAIN receiver has both
- * VFO A and VFO B on radios like IC-7610 / IC-9700.
- */
-export function vfoSlotLabel(slot: 'A' | 'B'): string {
-  return slot === 'A' ? 'VFO A' : 'VFO B';
-}
-
 let _vfoLabelWarned = false;
 
 /**
- * @deprecated Conflates receiver identity with VFO slot. Use
- *   {@link receiverLabel} for MAIN/SUB or {@link vfoSlotLabel} for VFO A/B.
+ * @deprecated Conflates receiver identity with VFO slot.
  *   Scheduled for removal one minor version after 0.16.
  */
 export function vfoLabel(slot: 'A' | 'B'): string {
   if (!_vfoLabelWarned) {
     _vfoLabelWarned = true;
     // eslint-disable-next-line no-console
-    console.warn('[deprecated] vfoLabel(...) — use receiverLabel/vfoSlotLabel');
+    console.warn('[deprecated] vfoLabel(...)');
   }
   const scheme = capabilities?.vfoScheme ?? 'main_sub';
   if (scheme === 'ab') return slot === 'A' ? 'VFO A' : 'VFO B';

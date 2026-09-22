@@ -40,6 +40,39 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ── MOR-2509: the VFO panel screen's surface-relative tones ──────
+   `VfoPanel.svelte` consumes `--dl-vfo-*` with the approved MOR-2509
+   palette as its fallback, so segmentline restyles here only what reads
+   against ITS gold glass, using the ink ramp that ramp's own contrast
+   proof covers. Fill/text chip pairs keep the shared design values. */
+[data-design-language='segmentline'][data-design-language] {
+  --dl-vfo-unlit-text: var(--dl-segmentline-ink-soft);
+  --dl-vfo-unlit-border: rgba(var(--dl-segmentline-ink) / 0.28);
+  --dl-vfo-frame: var(--dl-segmentline-ink-strong);
+  --dl-vfo-frame-dim: rgba(var(--dl-segmentline-ink) / 0.55);
+  --dl-vfo-tab-frame: var(--dl-segmentline-ink-strong);
+  --dl-vfo-tab-frame-dim: rgba(var(--dl-segmentline-ink) / 0.55);
+  --dl-vfo-dim-text: var(--dl-segmentline-ink-strong);
+  --dl-vfo-unlit-fill: transparent;
+  --dl-vfo-panel-background: var(--dl-segmentline-glass);
+  --dl-vfo-panel-shadow: 0 0 0 transparent;
+  --dl-vfo-panel-sheen: none;
+  --dl-vfo-panel-sheen-blend: normal;
+  --dl-vfo-bridge-background: var(--dl-segmentline-glass);
+  --dl-vfo-bridge-shadow: 0 0 0 transparent;
+  --dl-vfo-meter-well-background: var(--dl-segmentline-glass);
+  --dl-vfo-meter-well-shadow: 0 0 0 transparent;
+  --dl-vfo-meter-lit-filter: none;
+  --dl-vfo-frequency-glow: none;
+  --dl-vfo-primary-glow: none;
+  --dl-vfo-red-glow: none;
+  --dl-vfo-amber-glow: none;
+  --dl-vfo-brown-glow: none;
+  --dl-vfo-dsp-glow: none;
+  --dl-vfo-slate-glow: none;
+  --dl-vfo-bridge-lamp-glow: none;
+}
+
 /* ── Glass ───────────────────────────────────────────────────────────── */
 
 [data-design-language='segmentline'][data-design-language] .rx-tx-surface {

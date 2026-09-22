@@ -289,7 +289,11 @@
   opacity: 0.9;
 }
 
-.v2-control-button[data-indicator-style='dot'] {
+/* A lampless key can reserve the dot's label slot (data-reserve-indicator)
+ * so lamp and lampless keys in one row keep the same label axis — the same
+ * paddings the dot rule below reserves, without painting the dot itself. */
+.v2-control-button[data-indicator-style='dot'],
+.v2-control-button[data-reserve-indicator='true'] {
   padding-left: calc(var(--indicator-dot-reserve) + 2px);
   padding-right: 10px;
 }
@@ -571,6 +575,36 @@
 
 .v2-control-button--pill {
   border-radius: 9999px;
+}
+
+[data-vfo-appearance='standard'] :is(
+  .panel-header,
+  .slot-choice,
+  .vfo-freq[role='button'],
+  [data-instrument-bridge] .v2-control-button
+):focus-visible {
+  outline: none;
+  filter: var(--v2-focus-ring-dim-filter);
+}
+
+[data-vfo-appearance='standard'] :is(
+  .panel.active .panel-header,
+  .panel.active .vfo-freq[role='button'],
+  .slot-choice[data-vfo-active='true'],
+  [data-instrument-bridge] .v2-control-button:is(
+    .active,
+    [data-active='true'],
+    [aria-pressed='true'],
+    [aria-checked='true']
+  )
+):focus-visible {
+  outline: none;
+  filter: var(--v2-focus-ring-lit-filter);
+}
+
+[data-vfo-appearance='standard'] [data-instrument-bridge]
+  .v2-control-button[data-indicator-style='dot']:is(.active, [data-active='true'])::before {
+  box-shadow: var(--dl-vfo-bridge-lamp-glow, none);
 }
 
 /* === StatusIndicator (display-only, non-interactive) ===

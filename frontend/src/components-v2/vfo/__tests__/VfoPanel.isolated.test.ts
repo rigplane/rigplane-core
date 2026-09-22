@@ -89,20 +89,20 @@ describe('formatBadges', () => {
 // ---------------------------------------------------------------------------
 
 describe('formatRitOffset', () => {
-  it('positive offset shows + sign in kHz', () => {
-    expect(formatRitOffset(120)).toBe('+0.12 kHz');
+  it('positive offset shows + sign in Hz', () => {
+    expect(formatRitOffset(120)).toBe('+120');
   });
 
-  it('negative offset shows − sign in kHz', () => {
-    expect(formatRitOffset(-250)).toBe('−0.25 kHz');
+  it('negative offset shows − sign in Hz', () => {
+    expect(formatRitOffset(-250)).toBe('−250');
   });
 
-  it('zero offset shows + sign in kHz', () => {
-    expect(formatRitOffset(0)).toBe('+0.00 kHz');
+  it('zero offset shows + sign in Hz', () => {
+    expect(formatRitOffset(0)).toBe('+0');
   });
 
-  it('formats a multi-kHz offset with 2 decimals', () => {
-    expect(formatRitOffset(5000)).toBe('+5.00 kHz');
+  it('rounds a fractional offset to whole Hz', () => {
+    expect(formatRitOffset(5000)).toBe('+5000');
   });
 });
 
@@ -112,7 +112,6 @@ describe('formatRitOffset', () => {
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   receiverLabel: vi.fn((id: 'MAIN' | 'SUB') => id),
-  vfoSlotLabel: vi.fn((slot: 'A' | 'B') => (slot === 'A' ? 'VFO A' : 'VFO B')),
   getCapabilities: vi.fn(() => ({
     freqRanges: [
       {
@@ -132,7 +131,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getSmeterRedline: vi.fn(() => null),
 }));
 
-import { getCapabilities, receiverLabel, vfoSlotLabel } from '$lib/stores/capabilities.svelte';
+import { getCapabilities, receiverLabel } from '$lib/stores/capabilities.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 
@@ -158,7 +157,6 @@ function mountLegacyPanel(props: ComponentProps<typeof LegacyVfoPanelAdapter>) {
 beforeEach(() => {
   components = [];
   vi.mocked(receiverLabel).mockImplementation((id: 'MAIN' | 'SUB') => id);
-  vi.mocked(vfoSlotLabel).mockImplementation((slot: 'A' | 'B') => (slot === 'A' ? 'VFO A' : 'VFO B'));
 });
 
 afterEach(() => {
@@ -178,6 +176,14 @@ const baseProps: ComponentProps<typeof LegacyVfoPanelAdapter> = {
   onVfoClick: vi.fn(),
 };
 
+const emptySections = {
+  tray: {},
+  annunciators: [],
+  dsp: [],
+  under: {},
+  tx: { lit: false, state: 'unknown' },
+} satisfies ComponentProps<typeof VfoPanel>['sections'];
+
 describe('panel structure', () => {
   it('renders the VFO label MAIN for receiver=main', () => {
     const t = mountPanel(baseProps);
@@ -189,18 +195,18 @@ describe('panel structure', () => {
     expect(t.querySelector('.vfo-label')?.textContent?.trim()).toBe('SUB');
   });
 
-  it('renders mode badge with correct mode text', () => {
+  it('renders mode chip with correct mode text', () => {
     const t = mountPanel(baseProps);
-    expect(t.querySelector('.mode-badge-wrapper .v2-status-indicator')?.textContent?.trim()).toBe('USB');
+    expect(t.querySelector('.mode-badge-wrapper [data-chip="mode"]')?.textContent?.trim()).toBe('USB');
   });
 
-  it('renders filter badge with correct filter text', () => {
+  it('renders filter chip with correct filter text', () => {
     const t = mountPanel(baseProps);
-    // MOR-2509: the filter chip moved from the control strip to the identity
-    // row (name + mode + filter on one line); the control strip keeps the
-    // slot/band/badges/choices chips.
-    const indicators = Array.from(t.querySelectorAll('.panel-identity .v2-status-indicator'));
-    expect(indicators.some((el) => el.textContent?.trim() === '2.4k')).toBe(true);
+    // MOR-2509: the filter chip is a large receiver-row chip beside the mode
+    // chip; the tray and DSP group carry the remaining facts.
+    const receiverRow = t.querySelector('[data-vfo-row="receiver"]');
+    expect(Array.from(receiverRow?.querySelectorAll('[data-chip]') ?? [])
+      .some((el) => el.textContent?.trim() === '2.4k')).toBe(true);
   });
 
   it('renders a .freq element (FrequencyDisplay)', () => {
@@ -227,29 +233,23 @@ describe('panel structure', () => {
     expect(text).toContain('53');
   });
 
-  it('renders the active band label from capabilities', () => {
+  it('renders the active band tab from capabilities', () => {
     const t = mountPanel(baseProps);
-    const indicators = Array.from(t.querySelectorAll('.control-strip .v2-status-indicator'));
-    expect(indicators.some((el) => el.textContent?.trim() === '20m')).toBe(true);
+    expect(t.querySelector('[data-tray-tab="band"]')?.textContent?.trim()).toBe('20M');
   });
 
-  it('renders BAR and slot tags in the header', () => {
+  it('renders no tag chips in the receiver row (no BAR, no slot tag)', () => {
     const t = mountPanel(baseProps);
-    const tags = Array.from(t.querySelectorAll('.header-tag')).map((node) => node.textContent?.trim());
-    expect(tags).toContain('BAR');
-    expect(tags).toContain('A');
+    expect(t.querySelector('.header-tag')).toBeNull();
+    const names = t.querySelectorAll('.vfo-label');
+    expect(names.length).toBe(1);
   });
 
-  it('renders the control strip even when badges are empty', () => {
+  it('renders the fixed rows even when badges are empty', () => {
     const t = mountPanel(baseProps);
-    expect(t.querySelector('.control-strip')).not.toBeNull();
-  });
-
-  it('renders slot tag inside the control strip', () => {
-    const t = mountPanel(baseProps);
-    const indicators = Array.from(t.querySelectorAll('.control-strip .v2-status-indicator'));
-    const slotIndicator = indicators.find((el) => el.getAttribute('data-color') === 'muted');
-    expect(slotIndicator?.textContent?.trim()).toBe('A');
+    expect(t.querySelector('[data-vfo-row="tray"]')).not.toBeNull();
+    expect(t.querySelector('[data-vfo-row="receiver"]')).not.toBeNull();
+    expect(t.querySelector('[data-vfo-row="under"]')).not.toBeNull();
   });
 });
 
@@ -259,7 +259,7 @@ describe('active/inactive state', () => {
     const t = mountPanel({
       receiver: 'main', receiverLabel: 'VFO B', slotTag: 'B', freq: 7150000,
       mode: 'LSB', filter: 'NARROW', sValue: null, meterPresent: false,
-      isActive: false, badgeItems: [], onSelectHeader,
+      isActive: false, sections: emptySections, onSelectHeader,
     });
 
     t.querySelector<HTMLButtonElement>('.panel-header')?.click();
@@ -275,7 +275,7 @@ describe('active/inactive state', () => {
     const t = mountPanel({
       receiver: 'main', receiverLabel: 'VFO B', slotTag: 'B', freq: 7150000,
       mode: 'LSB', filter: 'NARROW', sValue: null, meterPresent: false,
-      isActive: false, badgeItems: [], frequencyDisabled: true, controlsDisabled: true,
+      isActive: false, sections: emptySections, frequencyDisabled: true, controlsDisabled: true,
       onModeClick, onSelectHeader: vi.fn(),
     });
     const mode = t.querySelector<HTMLElement>('.mode-badge-wrapper')!;
@@ -291,12 +291,12 @@ describe('active/inactive state', () => {
     const t = mountPanel({
       receiver: 'main', receiverLabel: 'VFO B', slotTag: 'B', freq: 7150000,
       mode: 'LSB', filter: 'NARROW', sValue: null, meterPresent: false,
-      isActive: false, badgeItems: [], reserveMeterSpace: true,
+      isActive: false, sections: emptySections, reserveMeterSpace: true,
     });
 
     expect(t.querySelector('[data-meter-space="reserved"]')).not.toBeNull();
     expect(t.querySelector('[data-testid="receiver-s-meter"]')).toBeNull();
-    expect(Array.from(t.querySelectorAll('.header-tag')).some((tag) => tag.textContent === 'BAR')).toBe(false);
+    expect(t.querySelector('.header-tag')).toBeNull();
   });
 
   it('panel has active class when isActive=true', () => {
@@ -335,64 +335,77 @@ describe('active/inactive state', () => {
 });
 
 describe('RIT display', () => {
-  it('does not show rit-row when rit is undefined', () => {
+  it('keeps the under row without a RIT chip when rit is undefined', () => {
     const t = mountPanel(baseProps);
-    expect(t.querySelector('.rit-row')).toBeNull();
+    expect(t.querySelector('[data-chip="rit"]')).toBeNull();
+    expect(t.querySelector('[data-vfo-row="under"]')).not.toBeNull();
   });
 
-  it('does not show rit-row when rit.active=false', () => {
+  it('renders the RIT chip unlit in place when rit.active=false', () => {
     const t = mountPanel({ ...baseProps, rit: { active: false, offset: 120 } });
-    expect(t.querySelector('.rit-row')).toBeNull();
+    const rit = t.querySelector('[data-chip="rit"]');
+    expect(rit).not.toBeNull();
+    expect(rit?.getAttribute('data-lit')).toBe('false');
+    expect(rit?.textContent?.trim()).toBe('RIT');
   });
 
-  it('shows rit-row when rit.active=true', () => {
+  it('renders the RIT chip lit with its signed Hz offset when active', () => {
     const t = mountPanel({ ...baseProps, rit: { active: true, offset: 120 } });
-    expect(t.querySelector('.rit-row')).not.toBeNull();
+    expect(t.querySelector('[data-chip="rit"]')?.textContent?.trim()).toBe('RIT +120');
+    expect(t.querySelector('[data-chip="rit"]')?.getAttribute('data-lit')).toBe('true');
   });
 
-  it('shows formatted RIT offset in kHz when active', () => {
-    const t = mountPanel({ ...baseProps, rit: { active: true, offset: 120 } });
-    expect(t.querySelector('.rit-offset')?.textContent?.trim()).toBe('+0.12 kHz');
-  });
-
-  it('shows negative RIT offset in kHz correctly', () => {
+  it('shows negative RIT offset in Hz correctly', () => {
     const t = mountPanel({ ...baseProps, rit: { active: true, offset: -250 } });
-    expect(t.querySelector('.rit-offset')?.textContent?.trim()).toBe('−0.25 kHz');
+    expect(t.querySelector('[data-chip="rit"]')?.textContent?.trim()).toBe('RIT −250');
   });
 });
 
 describe('badge rendering', () => {
-  it('does not render extra badge indicators when badges is empty', () => {
+  it('does not render lamp or DSP chips when badges is empty', () => {
     const t = mountPanel(baseProps);
-    // With empty badges, the control strip only has fixed indicators: mode, slot, band, filter
-    // The badge items loop ({#each badgeItems}) renders nothing when badges prop is {}
-    const indicators = t.querySelectorAll('.v2-status-indicator');
-    // mode (USB) + slot (MAIN, muted) + activeBand (20m) + filter (2.4k) = 4
-    expect(indicators.length).toBe(4);
+    expect(t.querySelectorAll('.lamp').length).toBe(0);
+    expect(t.querySelectorAll('[data-vfo-row="dsp"]').length).toBe(0);
   });
 
-  it('renders badge-row when badges has entries', () => {
+  it('renders DSP chips when badges has nb/nr/notch entries', () => {
     const t = mountPanel({ ...baseProps, badges: { nr: true } });
-    expect(t.querySelector('.control-strip')).not.toBeNull();
-    expect(t.querySelectorAll('.v2-status-indicator').length).toBeGreaterThan(0);
+    expect(t.querySelector('[data-vfo-row="dsp"]')).not.toBeNull();
+    expect(t.querySelector('[data-chip="nr"]')?.getAttribute('data-lit')).toBe('true');
   });
 
-  it('renders ATU badge when atu=true in badges', () => {
+  it('renders ATU lamp when atu=true in badges', () => {
     const t = mountPanel({ ...baseProps, badges: { atu: true } });
-    const badges = Array.from(t.querySelectorAll('.v2-status-indicator'));
-    expect(badges.some((el) => el.textContent?.trim() === 'ATU')).toBe(true);
+    expect(t.querySelector('.lamp')?.textContent?.trim()).toBe('ATU');
+    expect(t.querySelector('.lamp')?.getAttribute('data-lit')).toBe('true');
   });
 
-  it('renders NB badge as inactive when nb=false', () => {
+  it('renders NB chip as unlit when nb=false', () => {
     const t = mountPanel({ ...baseProps, badges: { nb: false } });
-    const badge = t.querySelector('.v2-status-indicator[data-active="false"]');
+    const badge = t.querySelector('[data-chip="nb"]');
     expect(badge).not.toBeNull();
+    expect(badge?.getAttribute('data-lit')).toBe('false');
   });
 
-  it('renders string badge value as label (pre="P1")', () => {
+  it('renders string badge value as lamp text (pre="P1")', () => {
     const t = mountPanel({ ...baseProps, badges: { pre: 'P1' } });
-    const badges = Array.from(t.querySelectorAll('.v2-status-indicator'));
-    expect(badges.some((el) => el.textContent?.trim() === 'P1')).toBe(true);
+    expect(t.querySelector('.lamp')?.textContent?.trim()).toBe('P1');
+  });
+
+  it('carries a legacy badge colour NAME through to the badge token', () => {
+    // The suite's getComputedStyle mock maps --v2-badge-atu-color to 'green'.
+    const t = mountPanel({ ...baseProps, badges: { atu: true } });
+    const lamp = t.querySelector<HTMLElement>('.lamp');
+    expect(lamp?.getAttribute('style')).toContain('--vfo-lamp-color: var(--v2-badge-green-text)');
+  });
+
+  it('carries a resolved colour LITERAL through unchanged (custom themes)', () => {
+    const mockGetPropertyValue = vi.fn((prop: string) =>
+      prop === '--v2-badge-sub-digi-sel-color' ? '#00D4FF' : '');
+    globalThis.getComputedStyle = vi.fn(() => ({ getPropertyValue: mockGetPropertyValue })) as any;
+    const t = mountPanel({ ...baseProps, receiver: 'sub', badges: { 'digi-sel': true } });
+    const lamp = t.querySelector<HTMLElement>('.lamp');
+    expect(lamp?.getAttribute('style')).toContain('--vfo-lamp-color: #00D4FF');
   });
 });
 
@@ -412,7 +425,7 @@ describe('callbacks', () => {
   });
 });
 
-describe('receiverLabel / vfoSlotLabel integration', () => {
+describe('receiverLabel integration', () => {
   it('uses receiverLabel("MAIN") for receiver=main', () => {
     mountLegacyPanel({ ...baseProps, receiver: 'main' });
     expect(vi.mocked(receiverLabel)).toHaveBeenCalledWith('MAIN');
@@ -421,16 +434,6 @@ describe('receiverLabel / vfoSlotLabel integration', () => {
   it('uses receiverLabel("SUB") for receiver=sub', () => {
     mountLegacyPanel({ ...baseProps, receiver: 'sub' });
     expect(vi.mocked(receiverLabel)).toHaveBeenCalledWith('SUB');
-  });
-
-  it('uses vfoSlotLabel("A") for receiver=main', () => {
-    mountLegacyPanel({ ...baseProps, receiver: 'main' });
-    expect(vi.mocked(vfoSlotLabel)).toHaveBeenCalledWith('A');
-  });
-
-  it('uses vfoSlotLabel("B") for receiver=sub', () => {
-    mountLegacyPanel({ ...baseProps, receiver: 'sub' });
-    expect(vi.mocked(vfoSlotLabel)).toHaveBeenCalledWith('B');
   });
 
   it('renders the receiver label in the header', () => {
@@ -461,7 +464,7 @@ describe('explicit presentation contract', () => {
     meterPresent: true,
     meterOperational: true,
     isActive: true,
-    badgeItems: [],
+    sections: emptySections,
   } satisfies ComponentProps<typeof VfoPanel>;
 
   it('uses confirmed truth as the tuning base while display and pending remain presentation-only', () => {
@@ -569,7 +572,9 @@ describe('explicit presentation contract', () => {
   it('does not mount an arithmetic frequency control when confirmed truth is unknown', () => {
     const t = mountPanel({ ...explicit, freq: null, displayHz: null, pendingDisplayHz: null });
     expect(t.querySelector('.digit')).toBeNull();
-    expect(t.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('—');
+    // MOR-2509: the unobserved readout paints no glyph at all — the fixed
+    // slot keeps its width and the dim unknown paint.
+    expect(t.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('');
   });
 
   it('keeps the established wrapper hook and the real frequency control in tab order', () => {

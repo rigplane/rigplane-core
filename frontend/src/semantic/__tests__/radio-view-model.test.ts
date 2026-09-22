@@ -190,6 +190,7 @@ describe('validateRadioViewModel', () => {
   const radioWideIndicators = () => ({
     rfState: 'receiving' as const, antenna: fact(1),
     atu: fact<'off' | 'on' | 'tuning'>('off'),
+    dialLock: fact(false),
     ritActive: fact(false), ritOffset: fact(0),
     xitActive: fact(true), xitOffset: fact(0),
     actions: {
@@ -208,6 +209,7 @@ describe('validateRadioViewModel', () => {
       ...valid(), radioWideIndicators: radioWideIndicators(),
     });
     expect(model.radioWideIndicators?.antenna.reading).toEqual({ status: 'known', value: 1 });
+    expect(model.radioWideIndicators?.dialLock.reading).toEqual({ status: 'known', value: false });
     expect(model.radioWideIndicators?.ritActive.reading).toEqual({ status: 'known', value: false });
     expect(model.radioWideIndicators?.ritOffset.reading).toEqual({ status: 'known', value: 0 });
     expect(model.radioWideIndicators?.actions.sub).toEqual({ structural: true, operational: false });
@@ -216,6 +218,13 @@ describe('validateRadioViewModel', () => {
   it('rejects undeclared radio-wide fields and malformed action availability', () => {
     expect(() => validateRadioViewModel({
       ...valid(), radioWideIndicators: { ...radioWideIndicators(), rawState: {} },
+    })).toThrow(TypeError);
+    expect(() => validateRadioViewModel({
+      ...valid(),
+      radioWideIndicators: {
+        ...radioWideIndicators(),
+        dialLock: fact('yes'),
+      },
     })).toThrow(TypeError);
     expect(() => validateRadioViewModel({
       ...valid(),

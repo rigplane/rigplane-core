@@ -78,7 +78,10 @@
 >
   {#if !model.known}
     {#if interactive}
-      <span>—</span>
+      <!-- An unread frequency paints nothing (MOR-2509: the operator never sees a
+           placeholder); the node stays and a no-break space keeps the line box, so
+           the focusable readout keeps its height and slot. -->
+      <span class="digits">&nbsp;</span>
     {:else}
       <span class="digits">{model.textGroups.mhz}</span><span class="sep">.</span><span
         class="digits">{model.textGroups.khz}</span><span class="sep">.</span><span

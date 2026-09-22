@@ -30,6 +30,8 @@
   --v2-focus-ring-color: var(--v2-accent-cyan);
   --v2-focus-ring: 2px solid var(--v2-focus-ring-color);
   --v2-focus-ring-shadow: 0 0 0 2px var(--v2-focus-ring-color);
+  --v2-focus-ring-lit-filter: brightness(1.18) saturate(1.08);
+  --v2-focus-ring-dim-filter: brightness(1.32) saturate(1.12);
   --v2-accent-orange: #FF6A00;
   --v2-accent-red: #FF2020;
   --v2-accent-green: #00CC66;
@@ -48,6 +50,14 @@
   --v2-accent-cyan-bright: #7CFCE5;
   --v2-accent-cyan-teal: #228899;
   --v2-accent-cyan-alt: #00FFFF;
+
+  /* ── MOR-2509 (mock-up v7): the VFO S-meter face's segment tones. Lit
+   * below S9, lit at/above S9, and the unlit track. Per-theme overrides
+   * belong with the theme files; these defaults are the owner-approved
+   * values. */
+  --v2-meter-blue: #58a0ff;
+  --v2-meter-red: #e2362c;
+  --v2-meter-unlit: #18212a;
 
   /* ── Colors: Text (~10% brighter) ────────────────────────────────────── */
   --v2-text-primary: #F5F8FC;
@@ -312,6 +322,12 @@
  * (styles/tokens.css, MOR-1232).
  */
 @media (prefers-contrast: more) {
+  :root {
+    --v2-vfo-glow-override: none;
+    --v2-vfo-meter-lit-filter-override: none;
+    --v2-vfo-panel-sheen-override: none;
+  }
+
   :root:not([data-theme]) {
     --v2-border: #7a95b5;
     --v2-border-subtle: #5f7a9a;
