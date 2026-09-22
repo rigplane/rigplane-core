@@ -1115,6 +1115,32 @@ describe('continuous scalar authority and feedback reconciliation', () => {
     expect(scalar.view).toMatchObject({ canonical: 2_700, draft: null, displayed: 2_700, interaction: 'idle' });
   });
 
+  it('hands a rendered-range draft to its represented lifecycle while confirmation is pending', () => {
+    const { scalar, update } = commandSetup(
+      createRenderedNativeRangeContinuousScalarPolicy(), {
+        domain: NORMALIZED_DOMAIN,
+        feedback: feedback('idle', { confirmed: 0.1 }),
+      },
+    );
+    const lease = scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+    lease.pointer(token, 0.6);
+    lease.endPointer(token);
+
+    update({ feedback: feedback('awaiting-confirmation', {
+      confirmed: 0.1,
+      target: 0.6,
+      requestedTarget: 0.6,
+      lifecycleId: 'sql-153',
+      transitionId: 'sql-153-awaiting',
+    }) });
+
+    expect(scalar.view).toMatchObject({
+      canonical: 0.1, draft: null, displayed: 0.1, target: 0.6,
+      phase: 'awaiting-confirmation', interaction: 'idle',
+    });
+  });
+
   it('holds the last native draft through stale pending readbacks until exact confirmation', () => {
     const shiftDomain: ScalarDomain = {
       min: -1_200, max: 1_200, step: 20, defaultValue: null, fineStepDivisor: 1,

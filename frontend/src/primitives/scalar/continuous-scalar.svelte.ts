@@ -585,7 +585,8 @@ export function createContinuousScalar(
     if (representedLifecycleIsGone) lastDispatch = null;
     const representedLifecycleRetiresDraft = representedRequest !== null
       && representedRequest.representedLifecycleId !== null
-      && (representedLifecycleIsComplete || representedLifecycleIsGone);
+      && (policy.name === 'rendered-native-range'
+        || representedLifecycleIsComplete || representedLifecycleIsGone);
     if (representedLifecycleRetiresDraft
       && activeGesture === null && interaction !== 'wheel' && debounceTimer === null) {
       draft = null;
