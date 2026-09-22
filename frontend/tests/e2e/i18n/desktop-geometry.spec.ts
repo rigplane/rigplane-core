@@ -559,7 +559,6 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       await boot(page, 'standard', width, true, 'studioline', false, undefined, {
         height: 1000, extraCapabilities: ALL_STRUCTURAL_ACTION_CAPS, absoluteVfoPair: true,
       });
-      console.log(`MOR2509_COMPACT_${width} ${JSON.stringify(geometry)}`);
       const panel = page.getByTestId('vfo-instrument-panel');
       const cards = page.locator('[data-standard-vfo-slot]');
       await expect(cards).toHaveCount(2);
@@ -612,6 +611,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
             })),
         };
       });
+      console.log(`MOR2509_COMPACT_${width} ${JSON.stringify(geometry)}`);
       await info.attach('compact-vfo-pair', { body: JSON.stringify(geometry), contentType: 'application/json' });
       if (width > 1050) {
         // The normal panel measures 196px with the approved +15% rhythm;
