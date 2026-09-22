@@ -257,7 +257,9 @@ function capsFor(id: TopologyFixtureId): Capabilities {
   const dual = scheme === 'ab_shared' || scheme === 'main_sub';
   return {
     model: 'fixture', scope: true, audio: true, tx: true,
-    capabilities: dual ? ['scope', 'audio', 'tx', 'dual_rx'] : ['scope', 'audio', 'tx'],
+    capabilities: dual
+      ? ['scope', 'audio', 'tx', 'dual_rx', 'split', 'dual_watch']
+      : ['scope', 'audio', 'tx'],
     receivers: dual ? 2 : 1, vfoScheme: scheme, freqRanges: [], modes: [], filters: [],
     audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
     webrtc: { available: false, enabled: false },

@@ -510,7 +510,10 @@
     lowerScale ? Math.min(1, Math.max(0, lowerScale.valueFraction)) : 0,
   );
   const vfoLowerFillEndX = $derived(vfoLitExtentX(vfoLowerFraction));
-  const vfoTotalH = $derived(lowerScale ? VFO_TOTAL_H : VFO_BAR_Y + VFO_BAR_H + 4);
+  // The lower row's height is part of the face's rhythm, reserved whether
+  // or not a descriptor is present: the frequency row above must not move
+  // when the TX target (and with it the Po row) flips MAIN↔SUB.
+  const vfoTotalH = VFO_TOTAL_H;
 
   const vfoScaleMarks = $derived(signalProjection.uniformScaleMarks);
 </script>

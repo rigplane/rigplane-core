@@ -495,6 +495,17 @@ describe('MOR-2509 v7 VFO face — the Po lower scale', () => {
     const emptyFill = svgOf(none).querySelector('[data-lower-fill]')!;
     expect(Number(emptyFill.getAttribute('x2'))).toBeCloseTo(Number(emptyFill.getAttribute('x1')), 5);
   });
+
+  it('reserves the lower-row height whether or not a descriptor is present', () => {
+    // The row's height is part of the face's rhythm: without the reserve,
+    // the frequency row above would jump when the TX target (and with it
+    // the Po row) flips MAIN↔SUB.
+    const withRow = mountPo(0.5).querySelector('svg[data-variant="vfo"]')!;
+    const withoutRow = mountMeter({ value: 0, variant: 'vfo', compact: true })
+      .querySelector('svg[data-variant="vfo"]')!;
+    expect(withoutRow.getAttribute('height')).toBe(withRow.getAttribute('height'));
+    expect(Number(withoutRow.getAttribute('height'))).toBeGreaterThanOrEqual(52);
+  });
 });
 
 // ── 4. MOR-2521 structure: one constant node set across a full sweep ────────
