@@ -396,7 +396,12 @@ describe('ReceiverInstrumentHost', () => {
     publisher.emit(publication({ mainS: -48, generation: 3, epoch: -1, sessionState: 'disconnected' })); flushSync();
     expect(fills()).toBe(0); expect(meter().textContent).toContain('S1');
     publisher.emit(publication({ meterKnown: false, generation: 3 })); flushSync();
-    expect(fills()).toBe(0); expect(meter().textContent).toContain('unit unknown');
+    // MOR-2509: the unknown reading renders the empty unlit face — the
+    // state lives in the accessible label, not in a placeholder glyph.
+    expect(fills()).toBe(0);
+    expect(meter().querySelector('svg')!.getAttribute('aria-label')).toContain('unknown');
+    expect(meter().textContent).not.toContain('unknown');
+    expect(meter().textContent).not.toContain('?');
     motion.reduced(true); expect(motion.frames).toBe(0);
     motion.reduced(false); expect(motion.frames).toBe(4);
   });
@@ -506,6 +511,7 @@ describe('ReceiverInstrumentHost', () => {
   });
 
   it('admits only the receiver field domain to S geometry and calibrated motion', () => {
+    installMeterGeometry();
     const publisher = new Publisher(publication({ mainS: 53, meterQuality: ['uncalibrated'] }));
     const root = mountFixture(publisher);
     const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
@@ -528,15 +534,22 @@ describe('ReceiverInstrumentHost', () => {
     motion.reduced(true);
     publisher.emit(publication({ mainS: -12, meterQuality: ['calibrated'] })); flushSync();
     expect(svg().getAttribute('aria-label')).toMatch(/S meter S[0-9]/);
-    expect([...svg().querySelectorAll<SVGLineElement>('line')]
+    expect([...svg().querySelectorAll('line')]
       .filter((line) => line.getAttribute('visibility') !== 'hidden').length).toBeGreaterThan(0);
-    expect(svg().querySelectorAll<SVGRectElement>('[data-meter-fill]:not([visibility="hidden"])').length).toBeGreaterThan(0);
+    // The stepped fill is the visible dash line past the track's left end.
+    const track = svg().querySelector('[data-meter-track]')!;
+    const fill = svg().querySelector('[data-meter-fill]')!;
+    expect(fill.getAttribute('visibility')).not.toBe('hidden');
+    expect(Number(fill.getAttribute('x2'))).toBeGreaterThan(Number(track.getAttribute('x1')));
 
     motion.reduced(false);
     publisher.emit(publication({ mainS: 20, meterQuality: ['calibrated'], epoch: 2 })); flushSync();
-    const resetFill = svg().querySelectorAll<SVGRectElement>('[data-meter-fill]:not([visibility="hidden"])').length;
+    const retainedFill = Number(svg().querySelector('[data-meter-fill]')!.getAttribute('x2'));
     publisher.emit(publication({ mainS: -48, meterQuality: ['calibrated'], epoch: 2 })); flushSync();
-    expect(svg().querySelectorAll<SVGRectElement>('[data-meter-fill]:not([visibility="hidden"])')).toHaveLength(resetFill);
+    // A sample-only update inside one continuity window retains the
+    // displayed history — the extent does not step down with the reading.
+    expect(Number(svg().querySelector('[data-meter-fill]')!.getAttribute('x2')))
+      .toBeCloseTo(retainedFill, 6);
   });
 
   it('requires the synchronous publisher and owns no fallback clocks or continuity comparison', () => {

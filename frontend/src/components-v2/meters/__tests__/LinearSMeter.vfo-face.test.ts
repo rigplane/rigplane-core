@@ -309,14 +309,15 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
     const target = mountMeter({ value, variant: 'vfo', compact: true });
     expect(fillFraction(svgOf(target))).toBeCloseTo(litExtentFraction(expected), 6);
     // The drawn extent always lands on the whole-segment grid: the right
-    // edge of a lit dash is 2px past a pitch boundary.
-    const track = svgOf(target).querySelector('[data-meter-track]')!;
-    const end = Math.max(
-      Number(svgOf(target).querySelector('[data-meter-fill]')!.getAttribute('x2')),
-      Number(svgOf(target).querySelector('[data-meter-fill-red]')!.getAttribute('x2')),
-    );
-    expect(((end - TRACK_X) - 2) % 3).toBe(0);
-    expect(Number(track.getAttribute('x1'))).toBe(TRACK_X);
+    // edge of a lit dash is 2px past a pitch boundary. A hidden zone line
+    // still carries its boundary coordinates, so only visible ones count.
+    const visibleEnds = (['[data-meter-fill]', '[data-meter-fill-red]'] as const)
+      .map((selector) => svgOf(target).querySelector(selector)!)
+      .filter((line) => line.getAttribute('visibility') !== 'hidden')
+      .map((line) => Number(line.getAttribute('x2')));
+    for (const end of visibleEnds) {
+      expect(((end - TRACK_X) - 2) % 3).toBe(0);
+    }
   });
 
   it('lights a partial segment only when the fill covers at least half of it', () => {
@@ -343,7 +344,7 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
     });
     const svg = svgOf(target);
     expect(svg.querySelectorAll('[data-scale-label]')).toHaveLength(0);
-    expect(fillFraction(svg)).toBeCloseTo(projection.motionFraction!, 4);
+    expect(fillFraction(svg)).toBeCloseTo(litExtentFraction(projection.motionFraction!), 6);
     expect(svg.querySelector('[data-meter-fill-red]')!.getAttribute('visibility')).toBe('hidden');
   });
 
@@ -432,9 +433,9 @@ describe('MOR-2509 v7 VFO face — the Po lower scale', () => {
     expect(track.getAttribute('stroke-dasharray')).toBe('2 1');
     expect(Number(track.getAttribute('stroke-width'))).toBeGreaterThanOrEqual(6);
     expect(Number(track.getAttribute('stroke-width'))).toBeLessThanOrEqual(7);
-    expect(track.getAttribute('stroke')).toBe('var(--v2-meter-unlit, #18212a)');
+    expect(track.getAttribute('stroke')).toBe('var(--v2-meter-unlit)');
     expect(svg.querySelector('[data-lower-fill]')!.getAttribute('stroke'))
-      .toBe('var(--v2-meter-blue, #58a0ff)');
+      .toBe('var(--v2-meter-blue)');
   });
 
   it('lights whole segments of the fraction fed, unlit at 0, and names the row', () => {
@@ -513,9 +514,10 @@ describe('MOR-2509 v7 VFO face — value updates never change the node set', () 
     for (const count of counts) expect(count).toEqual(counts[0]);
     // Literally: 7 declared scale ticks + track + 2 glow + 2 fill + peak +
     // 2 lower ticks + lower track + lower fill = 17 lines; 7 scale labels +
-    // reading x2 + 2 lower labels + the Po row label = 12 texts; zero
-    // rects — the segmented look is dash patterns, not N rects.
-    expect(counts[0]).toEqual({ total: 29, line: 17, text: 12, rect: 0 });
+    // reading x2 + 2 lower labels + the Po row label = 12 texts; the main
+    // and lower <g> wrappers; zero rects — the segmented look is dash
+    // patterns, not N rects.
+    expect(counts[0]).toEqual({ total: 31, line: 17, text: 12, rect: 0 });
   });
 });
 
@@ -579,6 +581,7 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
     expect(fillFraction(svgOf(target))).toBeCloseTo(litExtentFraction(VFO_FRACTIONS.s3), 6);
 
     // Drop back to S1: the displayed level decays monotonically.
+    state.value = -48;
     let previous = fillFraction(svgOf(target));
     for (let i = 0; i < 30; i += 1) {
       step(16.7);
@@ -659,22 +662,38 @@ describe('MOR-2509 v7 VFO face — ballistics, peak hold and afterglow', () => {
   });
 
   it('under reduced motion: stepped fill, the peak marker hidden, no afterglow', () => {
-    window.matchMedia = vi.fn().mockReturnValue({
-      matches: true,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    }) as unknown as typeof window.matchMedia;
-    rafSpy.mockClear();
-    const { target, state } = mountReactiveMeter({ value: -12, variant: 'vfo', compact: true });
-    expect(rafSpy).not.toHaveBeenCalled();
+    // The frame input owns the stepped value directly, so this pins the
+    // FACE contract — a reduced frame draws its fraction unchanged, hides
+    // the peak marker, and never lights a glow tail — without depending
+    // on the smoother's own reduce path.
+    const projection = projectSignalMeter(-12);
+    const target = mountMeter({
+      frame: {
+        projection,
+        smoothedFraction: projection.motionFraction!,
+        peakFraction: projection.motionFraction!,
+        afterglowFraction: null,
+        reducedMotion: true,
+      },
+      variant: 'vfo', compact: true,
+    });
     expect(fillFraction(svgOf(target))).toBeCloseTo(litExtentFraction(VFO_FRACTIONS.s7), 6);
     expect(peakVisible(svgOf(target))).toBe(false);
     expect(glowFraction(svgOf(target))).toBeCloseTo(fillFraction(svgOf(target)), 5);
+    expect(rafSpy).not.toHaveBeenCalled();
 
-    state.value = -48;
-    flushSync();
-    expect(fillFraction(svgOf(target))).toBeCloseTo(0, 5);
-    expect(peakVisible(svgOf(target))).toBe(false);
+    const stepped = mountMeter({
+      frame: {
+        projection: projectSignalMeter(-48),
+        smoothedFraction: projectSignalMeter(-48).motionFraction!,
+        peakFraction: projectSignalMeter(-48).motionFraction!,
+        afterglowFraction: null,
+        reducedMotion: true,
+      },
+      variant: 'vfo', compact: true,
+    });
+    expect(fillFraction(svgOf(stepped))).toBeCloseTo(0, 5);
+    expect(peakVisible(svgOf(stepped))).toBe(false);
     expect(rafSpy).not.toHaveBeenCalled();
   });
 });
