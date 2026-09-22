@@ -102,6 +102,11 @@ interface BootOptions {
 }
 
 async function boot(page: Page, layout: string, width: number, known: boolean, language = 'studioline', productionUnknown = false, topology?: TopologyId, options: BootOptions = {}) {
+  const bootErrors: string[] = [];
+  page.on('console', message => {
+    if (message.type() === 'error') bootErrors.push(`console: ${message.text()}`);
+  });
+  page.on('pageerror', error => bootErrors.push(`page: ${error.message}`));
   const { state, caps } = topology ? catalogFixture(topology, known) : productionUnknown
     ? { state: structuredClone(mockState), caps: structuredClone(mockCapabilities) } : fixture(known);
   if (options.absoluteVfoPair) {
@@ -194,7 +199,11 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
   const shell = qaLayout ? '[data-testid="flagship-geometry-probe"]'
     : width <= 640 ? '.m-layout, .m-landscape'
     : layout.startsWith('lcd') ? '.lcd-layout' : '.desktop-control-face';
-  await expect(page.locator(shell).first()).toBeVisible();
+  await expect(page.locator(shell).first()).toBeVisible().catch(async error => {
+    const body = await page.locator('body').innerText().catch(() => '<body unavailable>');
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\n`
+      + `URL: ${page.url()}\nBody: ${body.slice(0, 2000)}\nErrors: ${JSON.stringify(bootErrors)}`);
+  });
   await page.evaluate(() => document.fonts.ready);
 }
 
