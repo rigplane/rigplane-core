@@ -42,6 +42,7 @@
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
   import VfoPanel from '../components-v2/vfo/VfoPanel.svelte';
+  import { ControlButton } from '$lib/Button';
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import VfoOperationGroup from './VfoOperationGroup.svelte';
   import { formatKnownLevel } from './format-level';
@@ -189,6 +190,17 @@
     onSelectMainReceiver?: () => void;
     onSelectSubReceiver?: () => void;
     onSpeak?: () => void;
+    /**
+     * MOR-2509 bridge radio functions — the same intents the TX panel's
+     * TUNER/VOX controls and the dial-lock key dispatch (`set_tuner_status`,
+     * `set_vox`, `set_dial_lock`); the facts themselves always come from the
+     * view model (`radioWideIndicators.atu`/`dialLock`, `txAux.vox`), so
+     * both control points read one state. Optional: absent callbacks leave
+     * the keys present but not operational.
+     */
+    onToggleTuner?: () => void;
+    onToggleVox?: () => void;
+    onToggleDialLock?: () => void;
     operationInput?: VfoOperationProjectionInput;
     operationControls?: Snippet;
   }
@@ -219,6 +231,9 @@
     onSelectMainReceiver,
     onSelectSubReceiver,
     onSpeak,
+    onToggleTuner,
+    onToggleVox,
+    onToggleDialLock,
     operationInput,
     operationControls,
   }: Props = $props();
@@ -285,6 +300,14 @@
       split: viewModel.split,
       dualWatch: viewModel.dualWatch,
       actions: viewModel.radioWideIndicators?.actions,
+      radioFunctions: {
+        tuner: viewModel.radioWideIndicators?.atu,
+        vox: viewModel.txAux?.vox,
+        dialLock: viewModel.radioWideIndicators?.dialLock,
+        onToggleTuner,
+        onToggleVox,
+        onToggleDialLock,
+      },
       callbacks: {
         onToggleSplit,
         onToggleDualWatch,
@@ -771,12 +794,24 @@
 
   {#snippet standardPairSelectors(pair: { receiver: ReceiverId; left: VfoViewModel; right: VfoViewModel; absolute: boolean })}
     {#if pair.absolute}
+    <!--
+      MOR-2509 bridge: the A/B selector keys render through the shared
+      Button family's fill look; the filled key says which slot is active
+      (`data-standard-select-vfo` keeps the pinned e2e hook).
+    -->
     <div class="standard-vfo-selectors" aria-label="Select VFO">
       {#each [pair.left, pair.right] as vfo (slotKey(vfo.slot))}
         {@const slot = vfo.slot.kind === 'slotted' ? vfo.slot.id : '—'}
-        <button type="button" class="vfo-select" data-standard-select-vfo={slot}
-          data-active={vfo.isActiveSlot} disabled={disabled || vfo.isActiveSlot}
-          onclick={() => selectVfo(vfo)}>SELECT {slot}</button>
+        <ControlButton
+          indicatorStyle="fill"
+          indicatorColor="cyan"
+          reserveIndicator
+          active={vfo.isActiveSlot}
+          ariaLabel={`SELECT ${slot}`}
+          disabled={disabled || vfo.isActiveSlot}
+          data={{ 'standard-select-vfo': slot }}
+          onclick={() => selectVfo(vfo)}
+        >{slot}</ControlButton>
       {/each}
     </div>
     {:else}
@@ -917,7 +952,7 @@
       {/if}
       {#if showRadioWideFacts}
         <div class="bridge" data-instrument-bridge>
-          {@render activeReceiverStatus()}
+          {#if appearance !== 'standard'}{@render activeReceiverStatus()}{/if}
           {@render identitySelectors()}
           {#if appearance === 'standard'}{@render standardOperationContent()}
           {:else}{@render radioWideContent()}{/if}
@@ -1040,8 +1075,8 @@
     border: 1px solid var(--v2-accent-cyan, #00d4ff); border-radius: 4px;
     box-shadow: 0 0 6px rgba(0,212,255,.3), inset 0 0 16px rgba(0,212,255,.06);
   }
-  [data-vfo-appearance='standard'] .bridge { flex-basis: 136px; }
-  [data-vfo-appearance='standard'] .bridge .vfo-select { min-height: 24px; }
+  [data-vfo-appearance='standard'] .bridge { flex-basis: 168px; }
+  [data-vfo-appearance='standard'] .bridge .vfo-select { min-height: 28px; }
   [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
     flex: 1 1 0;
     --btn-compact-min-height: 18px;
@@ -1065,8 +1100,18 @@
     padding: 4px;
     gap: 3px;
     --vfo-ops-gap: 3px;
-    --vfo-ops-badge-padding-x: 3px;
-    --vfo-ops-badge-font-size: 9px;
+    /* MOR-2509: the bridge keys' family tokens — 28px hit-target floor,
+       12px labels, dot packed tighter than panel keys. */
+    --btn-min-height: 28px;
+    --btn-font-size: 12px;
+    --indicator-dot-offset: 4px;
+    --indicator-dot-gap: 4px;
+  }
+  [data-vfo-appearance='standard'] .bridge:not(.standard-pair-bridge) {
+    --btn-min-height: 28px;
+    --btn-font-size: 12px;
+    --indicator-dot-offset: 4px;
+    --indicator-dot-gap: 4px;
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .facts) {
     display: grid;
@@ -1090,12 +1135,7 @@
     text-align: center;
   }
   .standard-vfo-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
-  .standard-vfo-selectors .vfo-select {
-    min-width: 0; padding: 4px 3px; font-size: 9px; font-weight: 700;
-  }
-  .standard-vfo-selectors .vfo-select[data-active='true'] {
-    border-color: var(--v2-accent-cyan, #00d4ff); color: var(--v2-accent-cyan, #00d4ff);
-  }
+  .standard-vfo-selectors > :global(button) { min-width: 0; width: 100%; }
   .standard-tx-target {
     display: block; padding: 3px 5px; border: 1px solid var(--v2-accent-red, #ff2020);
     border-radius: 3px; color: var(--v2-accent-red, #ff2020); font-size: 9px;

@@ -1816,6 +1816,18 @@
   function toggleDualWatch(): void {
     if (view?.dualWatch.status === 'known') vfo.onDualWatchToggle(!view.dualWatch.value);
   }
+  /**
+   * MOR-2509 bridge radio functions: the SAME handler facades the TX panel
+   * keys use (`makeTxHandlers().onAtuToggle`, `makeVoxHandlers` composed in
+   * `txAuxIntents.onVoxToggle`) and the SAME dial-lock intent the LCD
+   * cockpits fire, so one function has one command path across both control
+   * points. The dial lock flips the value the radio-wide fact already
+   * carries; an unobserved leaf stays inert rather than guessing.
+   */
+  function toggleDialLock(): void {
+    const lock = view?.radioWideIndicators?.dialLock.reading;
+    if (lock?.status === 'known') systemIntents.onDialLock(!lock.value);
+  }
 
   const vfoOperationCallbacks = Object.freeze({
     onToggleSplit: vfo.onSplitToggle,
@@ -1836,6 +1848,14 @@
     split: view.split,
     dualWatch: view.dualWatch,
     actions: view.radioWideIndicators?.actions,
+    radioFunctions: {
+      tuner: view.radioWideIndicators?.atu,
+      vox: view.txAux?.vox,
+      dialLock: view.radioWideIndicators?.dialLock,
+      onToggleTuner: txAuxIntents.onAtuToggle,
+      onToggleVox: txAuxIntents.onVoxToggle,
+      onToggleDialLock: toggleDialLock,
+    },
     callbacks: vfoOperationCallbacks,
     reasons: {
       receiverUnavailable: t('core.vfo.select.receiverUnavailableReason'),

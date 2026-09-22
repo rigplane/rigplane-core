@@ -1,11 +1,19 @@
-import type { ActiveRx, BooleanFact, DualActionBlockViewModel, ReceiverId } from './radio-view-model';
+import type {
+  ActiveRx,
+  AtuStatus,
+  BooleanFact,
+  DualActionBlockViewModel,
+  ReceiverId,
+  TxAuxField,
+} from './radio-view-model';
 export type VfoOperationReceiver = Extract<ReceiverId, 'MAIN' | 'SUB'>;
 export type VfoOperationIntent =
   | Readonly<{ kind: 'select-receiver'; receiver: VfoOperationReceiver }>
   | Readonly<{ kind: 'toggle-split' | 'toggle-dual-watch' }>
   | Readonly<{
       kind: 'equalize' | 'swap' | 'quick-split' | 'quick-dual-watch' | 'speak';
-    }>;
+    }>
+  | Readonly<{ kind: 'toggle-tuner' | 'toggle-vox' | 'toggle-dial-lock' }>;
 
 export type VfoOperationAvailability = Readonly<{
   structural: boolean;
@@ -26,6 +34,20 @@ export type VfoOperationReasonText = Readonly<{
   splitUnknown: string; dualWatchUnknown: string;
 }>;
 
+/** Radio-function facts for the MOR-2509 bridge keys: the SAME view-model
+ *  fields the TX panel reads (`radioWideIndicators.atu`/`dialLock`,
+ *  `txAux.vox`), so two control points can never disagree. `undefined`
+ *  means the profile does not carry the fact at all — the key is not
+ *  drawn, never rendered disabled. */
+export type VfoRadioFunctionsInput = Readonly<{
+  tuner: TxAuxField<AtuStatus> | undefined;
+  vox: TxAuxField<boolean> | undefined;
+  dialLock: TxAuxField<boolean> | undefined;
+  onToggleTuner: (() => void) | undefined;
+  onToggleVox: (() => void) | undefined;
+  onToggleDialLock: (() => void) | undefined;
+}>;
+
 export type VfoOperationProjectionInput = Readonly<{
   hasVfoPair: boolean; hasDualReceiver: boolean; relativeIdentityUnknown: boolean;
   activeReceiver: ActiveRx;
@@ -33,6 +55,7 @@ export type VfoOperationProjectionInput = Readonly<{
   actions: DualActionBlockViewModel | undefined;
   callbacks: VfoOperationCallbacks;
   reasons: VfoOperationReasonText;
+  radioFunctions?: VfoRadioFunctionsInput;
 }>;
 
 export type VfoToggleOperation = Readonly<{
@@ -58,12 +81,24 @@ export type VfoReceiverChoiceOperation = Readonly<{
   options: readonly [VfoReceiverOption, VfoReceiverOption];
 }>;
 
+export type VfoRadioFunctionOperation = Readonly<{
+  availability: VfoOperationAvailability;
+  reading: BooleanFact | { status: 'known'; value: AtuStatus } | { status: 'unknown' };
+}>;
+
+export type VfoRadioFunctionsProjection = Readonly<{
+  tuner: VfoRadioFunctionOperation;
+  vox: VfoRadioFunctionOperation;
+  dialLock: VfoRadioFunctionOperation;
+}>;
+
 export type VfoOperationProjection = Readonly<{
   split: VfoToggleOperation; dualWatch: VfoToggleOperation;
   activeReceiver: VfoReceiverChoiceOperation;
   equalize: VfoActionOperation; swap: VfoActionOperation;
   quickSplit: VfoActionOperation; quickDualWatch: VfoActionOperation;
   speak: VfoActionOperation;
+  radioFunctions: VfoRadioFunctionsProjection;
   groupReason: string | undefined;
 }>;
 
@@ -110,6 +145,22 @@ export function projectVfoOperations(
   });
   const main = receiverOption('MAIN', 'main', input.callbacks.onSelectMainReceiver);
   const sub = receiverOption('SUB', 'sub', input.callbacks.onSelectSubReceiver);
+  const functionOperation = (
+    field: TxAuxField<AtuStatus> | TxAuxField<boolean> | undefined,
+    callback: (() => void) | undefined,
+  ): VfoRadioFunctionOperation => {
+    const structural = field !== undefined && field.availability.structural;
+    return {
+      availability: availability(
+        structural,
+        structural && field!.availability.operational
+          && field!.reading.status === 'known' && callback !== undefined,
+        undefined,
+      ),
+      reading: field === undefined ? { status: 'unknown' } : field.reading,
+    };
+  };
+  const functions = input.radioFunctions;
   const splitUnknown = input.split.status === 'unknown';
   const dualWatchUnknown = input.dualWatch.status === 'unknown';
   const quickSplitReason = input.relativeIdentityUnknown
@@ -158,6 +209,11 @@ export function projectVfoOperations(
       quickDualWatchReason,
     ),
     speak: admitted('speak', input.callbacks.onSpeak),
+    radioFunctions: {
+      tuner: functionOperation(functions?.tuner, functions?.onToggleTuner),
+      vox: functionOperation(functions?.vox, functions?.onToggleVox),
+      dialLock: functionOperation(functions?.dialLock, functions?.onToggleDialLock),
+    },
     groupReason: input.relativeIdentityUnknown ? input.reasons.identityUnknown : undefined,
   };
 }
@@ -207,6 +263,18 @@ export function invokeVfoOperation(
     case 'speak':
       current = projected.speak.availability;
       callback = input.callbacks.onSpeak;
+      break;
+    case 'toggle-tuner':
+      current = projected.radioFunctions.tuner.availability;
+      callback = input.radioFunctions?.onToggleTuner;
+      break;
+    case 'toggle-vox':
+      current = projected.radioFunctions.vox.availability;
+      callback = input.radioFunctions?.onToggleVox;
+      break;
+    case 'toggle-dial-lock':
+      current = projected.radioFunctions.dialLock.availability;
+      callback = input.radioFunctions?.onToggleDialLock;
       break;
   }
 

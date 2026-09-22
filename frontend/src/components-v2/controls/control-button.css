@@ -289,7 +289,11 @@
   opacity: 0.9;
 }
 
-.v2-control-button[data-indicator-style='dot'] {
+/* A lampless key can reserve the dot's label slot (data-reserve-indicator)
+ * so lamp and lampless keys in one row keep the same label axis — the same
+ * paddings the dot rule below reserves, without painting the dot itself. */
+.v2-control-button[data-indicator-style='dot'],
+.v2-control-button[data-reserve-indicator='true'] {
   padding-left: calc(var(--indicator-dot-reserve) + 2px);
   padding-right: 10px;
 }

@@ -1664,9 +1664,9 @@ describe('MOR-2509 bridge radio-function keys share state with the TX panel', ()
     const base = liveState(true);
     return {
       ...base,
-      ...(tunerStatus === 0 ? {} : { tunerStatus }),
-      ...(voxOn ? { voxOn } : {}),
-      ...(dialLock ? { dialLock } : {}),
+      tunerStatus,
+      voxOn,
+      dialLock,
       fieldStatus: {
         ...base.fieldStatus,
         dialLock: fresh,

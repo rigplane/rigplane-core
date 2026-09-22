@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { DualActionBlockViewModel, TxAuxField } from '../radio-view-model';
+import type { AtuStatus, DualActionBlockViewModel, TxAuxField } from '../radio-view-model';
 import {
   invokeVfoOperation,
   projectVfoOperations,
@@ -299,8 +299,15 @@ describe('radioFunctions projection (MOR-2509 bridge)', () => {
     ['dialLock', 'onToggleDialLock', { kind: 'toggle-dial-lock' }],
   ] as const)('invoking toggle on a known %s fires exactly its callback', (field, callbackName, intent) => {
     const spies = functionSpies();
-    const known = { tuner: knownField('off'), vox: knownField(false), dialLock: knownField(false) };
-    const current = input({ radioFunctions: functionsInput(known, spies) });
+    const known: VfoRadioFunctionsInput = {
+      tuner: knownField<AtuStatus>('off'),
+      vox: knownField<boolean>(false),
+      dialLock: knownField<boolean>(false),
+      onToggleTuner: spies.onToggleTuner,
+      onToggleVox: spies.onToggleVox,
+      onToggleDialLock: spies.onToggleDialLock,
+    };
+    const current = input({ radioFunctions: known });
     invokeVfoOperation(() => current, intent);
     expect(spies[callbackName]).toHaveBeenCalledOnce();
     for (const [name, callback] of Object.entries(spies)) {
