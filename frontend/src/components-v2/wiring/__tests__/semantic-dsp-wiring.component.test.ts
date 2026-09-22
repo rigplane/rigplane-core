@@ -620,8 +620,27 @@ describe('AGC choice group', () => {
     h.state = stateWithAgc(readback);
     render();
 
-    expect(q<HTMLButtonElement>('[data-testid="dsp-agcMode-4"] button')!.dataset.active).toBe('true');
+    expect(q<HTMLButtonElement>('[data-testid="dsp-agcMode-4"]')!.dataset.active).toBe('true');
     expect(q<HTMLElement>('[data-testid="dsp-agcMode-4"] .agc-auto-speed')!.textContent).toBe(speed);
+  });
+
+  it('projects FTX-1 readback 5 to the receiver indicator label', () => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(5);
+    render();
+
+    expect(q('[data-indicator-receiver="MAIN"] [data-indicator-fact="agc"]')
+      ?.textContent?.trim()).toBe('AGC AUTO');
+  });
+
+  it('renders no receiver indicator value for an unprojectable readback code', () => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(9);
+    render();
+
+    const indicator = q('[data-indicator-receiver="MAIN"] [data-indicator-fact="agc"]');
+    expect(indicator?.textContent?.trim()).toBe('AGC —');
+    expect(indicator?.textContent).not.toContain('9');
   });
 
   it('keeps IC-7300-shaped direct modes unchanged', () => {
@@ -692,10 +711,10 @@ describe('mounted exact NR projection (MOR-1737)', () => {
   });
 });
 
-describe('carry-forward (1): caps-echo display metadata is read at this seam', () => {
-  it('passes agcLabels/nbLevelMax/nbLevelPercent from runtime.caps down as props', () => {
+describe('carry-forward (1): declared display metadata is read at this seam', () => {
+  it('renders declared AGC labels and the declared NB range', () => {
     render();
-    expect(q('[data-testid="dsp-agcMode-1"]')!.textContent).toBe('FAST');
+    expect(q('[data-testid="dsp-agcMode-1"]')!.textContent?.trim()).toBe('FAST');
     expect(slider('nbLevel').getAttribute('aria-valuemax')).toBe('200');
   });
 
@@ -705,16 +724,10 @@ describe('carry-forward (1): caps-echo display metadata is read at this seam', (
     expect(slider('nbLevel').getAttribute('aria-valuemax')).toBe('10');
   });
 
-  it('does not fabricate FAST/MID/SLOW labels when caps declares no agcLabels (MOR-1547 follow-up)', () => {
-    // Mirror of the toAgcProps fix in lib/runtime/props/panel-props.ts
-    // (MOR-1547): this seam carried the same hardcoded IC-7610-shaped
-    // `{ '1': 'FAST', '2': 'MID', '3': 'SLOW' }` fallback, fabricating
-    // plausible-looking labels for radios whose numeric AGC modes mean
-    // something different. With no declared `agcLabels`, `buildAgcOptions`
-    // (agc-utils.ts) must fall back to the honest raw mode number instead.
+  it('does not fabricate AGC keys when caps declares no labels', () => {
     h.caps = { ...liveCaps(true), agcLabels: undefined } as unknown as Capabilities;
     render();
-    expect(q('[data-testid="dsp-agcMode-1"]')!.textContent).toBe('1');
+    expect(q('[data-testid="dsp-agcMode-1"]')).toBeNull();
   });
 });
 

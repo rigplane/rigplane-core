@@ -500,7 +500,11 @@ labels = { "0" = "OFF", "1" = "FAST", "2" = "MID", "3" = "SLOW", "4" = "AUTO" }
     @pytest.mark.parametrize(
         ("declaration", "error"),
         [
-            ("readback_modes = [0, 1, 2, 3]", r"readback_modes.*agc\.modes"),
+            (
+                "readback_modes = [0, 1, 2, 3]",
+                r"\[agc\]\.readback_modes must include every settable mode from "
+                r"\[agc\]\.modes",
+            ),
             (
                 "readback_modes = [0, 1, 2, 3, 4, 5, 6]\n"
                 "auto_mode = 4\n"
@@ -523,6 +527,44 @@ modes = [0, 1, 2, 3, 4]
 """,
         )
         with pytest.raises(RigLoadError, match=error):
+            load_rig(p)
+
+    def test_agc_auto_speed_labels_reject_settable_non_auto_code(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[agc]
+modes = [0, 1, 2, 3, 4]
+readback_modes = [0, 1, 2, 3, 4, 5, 6]
+auto_mode = 4
+auto_speed_labels = { "1" = "FAST", "4" = "FAST", "5" = "MID", "6" = "SLOW" }
+""",
+        )
+        with pytest.raises(
+            RigLoadError,
+            match=r"\[agc\]\.auto_speed_labels key '1'.*settable non-auto mode",
+        ):
+            load_rig(p)
+
+    def test_agc_auto_speed_labels_require_every_readback_only_code(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[agc]
+modes = [0, 1, 2, 3, 4]
+readback_modes = [0, 1, 2, 3, 4, 5, 6]
+auto_mode = 4
+auto_speed_labels = { "4" = "FAST", "5" = "MID" }
+""",
+        )
+        with pytest.raises(
+            RigLoadError,
+            match=r"\[agc\]\.auto_speed_labels missing readback-only code '6'",
+        ):
             load_rig(p)
 
     def test_agc_section_rejects_unknown_key(self, tmp_path):
@@ -2922,6 +2964,7 @@ class TestAgcDomainDeclaredOrCapabilityAbsent:
         assert rig.agc_readback_modes == (0, 1, 2, 3, 4, 5, 6)
         assert rig.agc_auto_mode == 4
         assert rig.agc_auto_speed_labels == {"4": "FAST", "5": "MID", "6": "SLOW"}
+        assert max(len(label) for label in rig.agc_labels.values()) <= 4
 
     def test_x6100_and_tx500_declare_no_agc_capability(self):
         """Neither has AGC wired at all today (X6100: no confirmed hardware
