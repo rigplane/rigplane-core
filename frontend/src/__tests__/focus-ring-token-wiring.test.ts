@@ -914,14 +914,9 @@ describe('MOR-2522: native range sliders light on keyboard focus instead of draw
   // app.css, the only stylesheet loaded unconditionally in every context that
   // mounts them; value-control.css is not (nothing in those six files imports
   // it), so the rule consumes --vc-focus-ring-shadow only as a preference over
-  // its theme twin — and the chain ends there. Every context that mounts a
-  // native range loads one of the two token owners first (production reaches
-  // value-control.css through the SemanticRadioSurfaces → DspScalarHost →
-  // ValueControl import chain; the harness statically imports
-  // DualReceiverCockpit and ReferenceLayout, which pull in the v2 theme and
-  // the same value-control chain), so a terminal --accent fallback could
-  // never paint — and if it could, #4db6ff is the sub-3:1 light-language
-  // ring this file's header rules out.
+  // its theme twin — and the chain ends there: the two-level
+  // `var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow))` pinned below,
+  // with nothing declared past the theme twin.
   //
   // Round 2 (stand probe at 224ff7e3): the shared rule wins the language
   // contracts but LOSES box-shadow on the desktop-v2/sdr-test skins, where
@@ -956,10 +951,8 @@ describe('MOR-2522: native range sliders light on keyboard focus instead of draw
     // The value-control token where value-control.css is loaded (studioline
     // colour override included), its theme twin where that file is absent —
     // never a colour literal, so every colour the chain can paint is a
-    // declared token (the section-5 matrix governs both levels). The chain
-    // ends at the theme twin: every render context loads one of the two token
-    // owners before any native range mounts, so a terminal fallback would be
-    // unreachable decoration.
+    // declared token (the section-5 matrix governs both levels). The chain is
+    // exactly these two levels — nothing is declared past the theme twin.
     expect(declarations).toContain(
       'box-shadow: var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow))',
     );
@@ -1032,7 +1025,8 @@ describe('MOR-2522: native range sliders light on keyboard focus instead of draw
   // recomputed from their live selectors: the pin fails if the track rule
   // gains specificity (a tie is a loss — the chrome would eat the ring again)
   // or if the focus variant loses it.
-  const skinBlocks = ruleBlocks(stripComments(read(SKIN_CSS)));
+  const skinCss = stripComments(read(SKIN_CSS));
+  const skinBlocks = ruleBlocks(skinCss);
   // The track chrome: the unfocused rule that owns box-shadow on the INPUT
   // element itself (the ::-webkit-slider-thumb / ::-moz-range-thumb rules
   // style a different element and never collide with the ring).
@@ -1085,17 +1079,23 @@ describe('MOR-2522: native range sliders light on keyboard focus instead of draw
       expect(value, 'expected a box-shadow declaration').toBeTruthy();
       return shadowLayers(value!);
     };
-    // ONE owner of the chrome: the track rule declares the three-layer inset
-    // stack exactly once, as a custom property on its own selector scope, and
-    // the focus variant (the same element one state later) inherits it. This
-    // is the discriminating check on the stack itself — a dropped, reordered
-    // or retyped layer fails here, at the only place the literals live.
-    const chrome = trackChrome!.body.match(/--range-track-chrome:\s*([^;]*)/)?.[1].trim();
+    // ONE owner of the chrome, file-wide: EVERY --range-track-chrome
+    // declaration in semantic-controls.css is collected (comments stripped
+    // above), not just the first match in the track rule's body — a second
+    // declaration later in the same rule (a dropped or reordered stack) would
+    // override the first in the browser while a first-match read stays green,
+    // so uniqueness is asserted before the sole value is validated. The layer
+    // check is then the discriminating check on the stack itself — a dropped,
+    // reordered or retyped layer fails here, at the only place the literals
+    // live.
+    const chromeDeclarations = [...skinCss.matchAll(/--range-track-chrome:\s*([^;]*)/g)].map(
+      (m) => m[1].trim(),
+    );
     expect(
-      chrome,
-      'expected the ONE --range-track-chrome declaration on the track rule',
-    ).toBeTruthy();
-    expect(shadowLayers(chrome!)).toEqual([
+      chromeDeclarations.length,
+      'expected exactly ONE --range-track-chrome declaration in semantic-controls.css',
+    ).toBe(1);
+    expect(shadowLayers(chromeDeclarations[0])).toEqual([
       'inset 0 2px 4px var(--vc-hw-channel-shadow-1, #000f)',
       'inset 0 -1px 2px var(--vc-hw-channel-shadow-2, #0009)',
       'inset 0 0 0 1px var(--vc-hw-channel-border, #0008)',
