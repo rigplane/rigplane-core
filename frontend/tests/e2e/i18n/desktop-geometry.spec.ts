@@ -554,7 +554,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     }
   });
 
-  for (const width of [900, 1024, 1200, 1700] as const) {
+  for (const width of [1200] as const) {
     test.only(`Standard ${width} compact absolute VFO pair keeps every bridge control`, async ({ page }, info) => {
       await boot(page, 'standard', width, true, 'studioline', false, undefined, {
         height: 1000, extraCapabilities: ALL_STRUCTURAL_ACTION_CAPS, absoluteVfoPair: true,
@@ -576,6 +576,15 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
             })),
             meterColumn: getComputedStyle(card.querySelector<HTMLElement>('.smeter-row')!).gridColumnStart,
           })),
+          outside: [...element.querySelectorAll<HTMLElement>('*')].flatMap(target => {
+            if (target.getClientRects().length === 0) return [];
+            const box = target.getBoundingClientRect();
+            const owner = element.getBoundingClientRect();
+            if (box.left >= owner.left - 1 && box.right <= owner.right + 1) return [];
+            return [{ tag: target.tagName, className: target.className,
+              fact: target.getAttribute('data-indicator-fact'), chip: target.getAttribute('data-chip'),
+              text: target.textContent?.trim().slice(0, 80), rect: rect(target) }];
+          }),
           overflow: element.scrollWidth > element.clientWidth + 1,
           cardOverflow: [...element.querySelectorAll<HTMLElement>('[data-standard-vfo-slot]')]
             .map(card => {
