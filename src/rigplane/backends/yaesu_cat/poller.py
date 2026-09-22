@@ -1170,38 +1170,54 @@ class YaesuCatPoller:
                 await radio.set_vfo_select(code)
             case VfoSwap():
                 profile = getattr(radio, "profile", None)
-                # ``swap_ab_code`` is the CI-V opcode declaration; a Yaesu
-                # CAT profile declares the swap as a native CAT command
-                # instead (FTX-1 ``vfo_swap`` = SV;, OM 2508-C).
-                if profile is None or (
-                    profile.swap_ab_code is None
-                    and not profile.supports_command("vfo_swap")
+                if (
+                    profile is not None
+                    and getattr(profile, "vfo_scheme", None) == "ab_shared"
                 ):
-                    model = getattr(
-                        profile, "model", getattr(radio, "model", "unknown")
-                    )
-                    raise NotImplementedError(
-                        f"VfoSwap unsupported on {model}: "
-                        "profile declares no swap_ab_code or vfo_swap command"
-                    )
-                await radio.swap_vfo_ab(0)
+                    # ab_shared rigs (FTX-1) have one VFO slot per receiver,
+                    # so the swap is the receiver-level MAIN↔SUB operation:
+                    # the native CAT command (SV;, OM 2508-C).
+                    if not profile.supports_command("vfo_swap"):
+                        raise NotImplementedError(
+                            f"VfoSwap unsupported on {profile.model}: "
+                            "profile declares no vfo_swap command"
+                        )
+                    await radio.swap_main_sub()
+                else:
+                    if profile is None or profile.swap_ab_code is None:
+                        model = getattr(
+                            profile, "model", getattr(radio, "model", "unknown")
+                        )
+                        raise NotImplementedError(
+                            f"VfoSwap unsupported on {model}: "
+                            "profile declares no swap_ab_code"
+                        )
+                    await radio.swap_vfo_ab(0)
                 await self._post_write_freq_mode_readback()
             case VfoEqualize():
                 profile = getattr(radio, "profile", None)
-                # Same split as VfoSwap: ``equal_ab_code`` is the CI-V
-                # opcode, ``vfo_equalize`` the CAT command (FTX-1 AB;).
-                if profile is None or (
-                    profile.equal_ab_code is None
-                    and not profile.supports_command("vfo_equalize")
+                if (
+                    profile is not None
+                    and getattr(profile, "vfo_scheme", None) == "ab_shared"
                 ):
-                    model = getattr(
-                        profile, "model", getattr(radio, "model", "unknown")
-                    )
-                    raise NotImplementedError(
-                        f"VfoEqualize unsupported on {model}: "
-                        "profile declares no equal_ab_code or vfo_equalize command"
-                    )
-                await radio.equalize_vfo_ab(0)
+                    # Same split as VfoSwap: M=S is the receiver-level
+                    # MAIN→SUB copy (AB;, OM 2508-C).
+                    if not profile.supports_command("vfo_equalize"):
+                        raise NotImplementedError(
+                            f"VfoEqualize unsupported on {profile.model}: "
+                            "profile declares no vfo_equalize command"
+                        )
+                    await radio.equalize_main_sub()
+                else:
+                    if profile is None or profile.equal_ab_code is None:
+                        model = getattr(
+                            profile, "model", getattr(radio, "model", "unknown")
+                        )
+                        raise NotImplementedError(
+                            f"VfoEqualize unsupported on {model}: "
+                            "profile declares no equal_ab_code"
+                        )
+                    await radio.equalize_vfo_ab(0)
                 await self._post_write_freq_mode_readback()
 
             # ── PTT ──

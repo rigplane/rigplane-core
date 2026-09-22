@@ -17,6 +17,10 @@ describe('vfoSwapLabel', () => {
     expect(vfoSwapLabel('main_sub')).toBe('M↔S');
   });
 
+  it('returns M↔S for ab_shared scheme (FTX-1: receiver-level MAIN/SUB swap)', () => {
+    expect(vfoSwapLabel('ab_shared')).toBe('M↔S');
+  });
+
   it('defaults to A↔B for unknown scheme', () => {
     expect(vfoSwapLabel('unknown')).toBe('A↔B');
   });
@@ -30,6 +34,10 @@ describe('vfoCopyLabel', () => {
   it('returns M→S for main_sub scheme', () => {
     expect(vfoCopyLabel('main_sub')).toBe('M→S');
   });
+
+  it('returns M→S for ab_shared scheme', () => {
+    expect(vfoCopyLabel('ab_shared')).toBe('M→S');
+  });
 });
 
 describe('vfoEqualLabel', () => {
@@ -41,6 +49,10 @@ describe('vfoEqualLabel', () => {
 
   it('returns M=S for main_sub scheme', () => {
     expect(vfoEqualLabel('main_sub')).toBe('M=S');
+  });
+
+  it('returns M=S for ab_shared scheme', () => {
+    expect(vfoEqualLabel('ab_shared')).toBe('M=S');
   });
 });
 

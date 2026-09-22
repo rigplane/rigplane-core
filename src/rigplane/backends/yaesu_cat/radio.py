@@ -2087,52 +2087,33 @@ class YaesuCatRadio:
         await self._write("set_vfo_select", vfo=str(index))
 
     async def swap_vfo_ab(self, receiver: int = 0) -> None:
-        """Swap the rig's VFO pair (``receiver`` must be 0).
+        """Swap VFO A and VFO B state on ``receiver``.
 
-        Profile-driven (MOR-2531): only an ``ab_shared`` profile that
-        declares the ``vfo_swap`` CAT command performs the swap natively.
-        On the FTX-1 that command is ``SV;`` (OM 2508-C — "Changes the
-        MAIN-side and SUB-side"), so the swap exchanges the MAIN/SUB pair —
-        the only VFO pair the ``ab_shared`` scheme has; there is no
-        per-receiver A↔B pair to swap.  Every other profile raises
-        :class:`NotImplementedError` before anything is written: single-RX
-        Yaesu CAT rigs (``ab`` scheme) expose no swap command at all —
-        pinned by
-        ``tests/test_ftx1_radio.py::test_swap_vfo_ab_raises_on_single_rx``,
-        whose single-RX clone still carries the FTX-1's command entries.
+        Yaesu CAT has no symmetric A↔B swap primitive: FTX-1 ``AB;``/
+        ``BA;`` are MAIN→SUB / SUB→MAIN copies (one-way), and Lab599-style
+        single-RX profiles do not expose a swap command at all.  This
+        method therefore raises :class:`NotImplementedError` on every
+        currently supported Yaesu CAT rig.
         """
         self._check_single_receiver(receiver, operation="swap_vfo_ab")
-        if self._config.vfo_scheme != "ab_shared" or not self._has_write_command(
-            "vfo_swap"
-        ):
-            raise NotImplementedError(
-                f"swap_vfo_ab not supported on {self.model}: "
-                "Yaesu CAT has no symmetric A↔B swap primitive"
-            )
-        await self._write("vfo_swap")
+        raise NotImplementedError(
+            f"swap_vfo_ab not supported on {self.model}: "
+            "Yaesu CAT has no symmetric A↔B swap primitive"
+        )
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
-        """Copy the MAIN-side state onto the SUB-side (``receiver`` must be 0).
+        """Copy the active VFO's state to the inactive VFO on ``receiver``.
 
-        Profile-driven (MOR-2531): only an ``ab_shared`` profile that
-        declares the ``vfo_equalize`` CAT command performs the copy
-        natively.  On the FTX-1 that command is ``AB;`` (OM 2508-C —
-        MAIN-side to SUB-side), the M=S equalize across the MAIN/SUB pair.
-        Every other profile raises :class:`NotImplementedError` before
-        anything is written: Yaesu CAT has no per-receiver A→B copy
-        primitive — pinned by
-        ``tests/test_ftx1_radio.py::test_equalize_vfo_ab_raises_on_single_rx``,
-        whose single-RX clone still carries the FTX-1's command entries.
+        Not supported by Yaesu CAT: FTX-1 ``AB;``/``BA;`` copy between
+        receivers (MAIN↔SUB), not between A/B within a receiver, and
+        single-RX Yaesu profiles do not expose an equalize command.
+        Raises :class:`NotImplementedError`.
         """
         self._check_single_receiver(receiver, operation="equalize_vfo_ab")
-        if self._config.vfo_scheme != "ab_shared" or not self._has_write_command(
-            "vfo_equalize"
-        ):
-            raise NotImplementedError(
-                f"equalize_vfo_ab not supported on {self.model}: "
-                "Yaesu CAT has no per-receiver A→B copy primitive"
-            )
-        await self._write("vfo_equalize")
+        raise NotImplementedError(
+            f"equalize_vfo_ab not supported on {self.model}: "
+            "Yaesu CAT has no per-receiver A→B copy primitive"
+        )
 
     # -- D6: TX Stack -------------------------------------------------------
 
@@ -3161,6 +3142,29 @@ class YaesuCatRadio:
 
     async def get_main_sub_tracking(self) -> bool:
         raise NotImplementedError("Main/Sub tracking not supported on this radio")
+
+    # -- MAIN/SUB receiver operations (dual-RX, ab_shared scheme) -------------
+
+    async def swap_main_sub(self) -> None:
+        """Swap the MAIN-side and SUB-side receiver state (FTX-1 ``SV;``).
+
+        Radio-level operation with no receiver parameter: OM 2508-C ``SV;``
+        SWAP VFO "Changes the MAIN-side and SUB-side" of the whole rig, so
+        a receiver index would be meaningless.  A profile without the
+        ``vfo_swap`` command raises :class:`~rigplane.exceptions.CommandError`
+        from :meth:`_get_spec` before anything is written.
+        """
+        await self._write("vfo_swap")
+
+    async def equalize_main_sub(self) -> None:
+        """Copy the MAIN-side state onto the SUB-side (FTX-1 ``AB;``).
+
+        Radio-level M=S equalize: OM 2508-C ``AB;`` is MAIN-side to
+        SUB-side.  A profile without the ``vfo_equalize`` command raises
+        :class:`~rigplane.exceptions.CommandError` from :meth:`_get_spec`
+        before anything is written.
+        """
+        await self._write("vfo_equalize")
 
     # -- Memory (not supported on Yaesu) ----------------------------------------
 

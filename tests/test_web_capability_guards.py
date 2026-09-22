@@ -799,13 +799,17 @@ class TestProfileDeclaredSecondReceiver:
     and could not distinguish the two behaviours.
     """
 
-    def test_runtime_capabilities_keeps_dual_rx_without_the_protocol(self) -> None:
+    def test_runtime_capabilities_serves_dual_rx_from_the_profile(self) -> None:
         from rigplane.radio_protocol import DualReceiverCapable
         from rigplane.web.runtime_helpers import runtime_capabilities
 
         radio = _yaesu()
         assert "dual_rx" in radio.capabilities
-        assert not isinstance(radio, DualReceiverCapable)
+        # MOR-2531 gave YaesuCatRadio real swap_main_sub/equalize_main_sub
+        # methods, so it now satisfies DualReceiverCapable structurally; the
+        # tag is still read from the profile's capabilities list, not
+        # derived from the protocol check.
+        assert isinstance(radio, DualReceiverCapable)
         assert "dual_rx" in runtime_capabilities(radio)
 
     @pytest.mark.asyncio
