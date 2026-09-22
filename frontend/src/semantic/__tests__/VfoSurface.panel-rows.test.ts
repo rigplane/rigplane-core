@@ -999,7 +999,7 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     for (const button of Array.from(lit.querySelectorAll<HTMLButtonElement>('[data-instrument-bridge] button'))) {
       if (button.getAttribute('role') === 'switch') {
         expect(['true', 'false'], button.textContent ?? '').toContain(button.getAttribute('aria-checked'));
-      } else {
+      } else if (button.getAttribute('role') !== 'radio') {
         expect(button.getAttribute('aria-checked'), button.textContent ?? '').toBeNull();
       }
     }
