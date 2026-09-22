@@ -676,15 +676,30 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(rule(panelCss, '.panel')).toMatch(/--vfo-deck-rhythm:\s*var\(--dl-vfo-rhythm,\s*1\)/);
   });
 
-  it('the panel is an inline-size container with wide and narrow modes at 760/530 px', () => {
+  it('the panel is an inline-size container with wide and narrow modes at 760/520 px', () => {
     expect(rule(panelCss, '.panel')).toMatch(/container-type:\s*inline-size/);
+    const threshold = Number(rule(panelCss, '.panel')
+      .match(/--vfo-panel-narrow-breakpoint:\s*(\d+)px/)?.[1]);
+    expect(threshold).toBe(520);
     expect(panelCss).toMatch(/@container \(min-width:\s*760px\)/);
-    expect(panelCss).toMatch(/@container \(max-width:\s*530px\)/);
+    const query = Number(panelCss.match(/@container \(max-width:\s*(\d+)px\)/)?.[1]);
+    expect(query).toBe(threshold);
     const wide = panelCss.slice(panelCss.indexOf('@container (min-width: 760px)'));
     expect(wide.slice(0, wide.indexOf('@container (max-width')))
       .toMatch(/grid-template-columns:\s*1fr 1fr/);
-    const narrow = panelCss.slice(panelCss.indexOf('@container (max-width: 530px)'));
+    const narrow = panelCss.slice(panelCss.indexOf('@container (max-width: 520px)'));
     expect(narrow).toMatch(/grid-column:\s*1\s*\/\s*-1/);
+  });
+
+  it('the unsupported MODE/FIL slot and its chip read one width token in narrow mode', () => {
+    const panel = rule(panelCss, '.panel');
+    expect(panel).toMatch(/--vfo-large-chip-width:\s*70px/);
+    for (const selector of ['.chip-slot', '.chip-lg']) {
+      expect(rulesFor(panelCss, selector).join('\n'))
+        .toMatch(/width:\s*var\(--vfo-large-chip-width\)/);
+    }
+    const narrow = panelCss.slice(panelCss.indexOf('@container (max-width: 520px)'));
+    expect(narrow).toMatch(/--vfo-large-chip-width:\s*62px/);
   });
 
   it('chip colours consume the --dl-vfo-* language tokens', () => {
@@ -771,6 +786,55 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
         }
       }
     }
+  });
+
+  it('the alive layer is token-owned, standard-only and non-interactive', () => {
+    const theme = readFileSync('src/components-v2/theme/tokens.css', 'utf8');
+    expect(theme).toMatch(/@media \(prefers-contrast:\s*more\)[\s\S]*--v2-vfo-glow-override:\s*none/);
+    expect(theme).toMatch(/--v2-vfo-meter-lit-filter-override:\s*none/);
+
+    for (const [path, language] of [
+      ['src/presentation/languages/studioline/studioline.css', 'studioline'],
+      ['src/presentation/languages/fieldline/fieldline.css', 'fieldline'],
+      ['src/presentation/languages/segmentline/segmentline.css', 'segmentline'],
+    ] as const) {
+      const css = readFileSync(path, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+      const root = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .find(([, selectors, body]) => selectors.trim() === `[data-design-language='${language}'][data-design-language]`
+          && body.includes('--dl-vfo-'))?.[2] ?? '';
+      for (const token of ['panel-background', 'panel-shadow', 'panel-sheen', 'bridge-background',
+        'bridge-shadow', 'meter-well-background', 'meter-well-shadow', 'meter-lit-filter',
+        'frequency-glow', 'primary-glow', 'red-glow', 'amber-glow', 'dsp-glow']) {
+        expect(root, `${language} owns --dl-vfo-${token}`).toContain(`--dl-vfo-${token}:`);
+      }
+    }
+
+    expect(rule(panelCss, '.panel')).toMatch(/background:\s*var\(--dl-vfo-panel-background/);
+    const sheen = rule(panelCss, '.panel::before');
+    expect(sheen).toMatch(/pointer-events:\s*none/);
+    expect(sheen).toMatch(/mix-blend-mode:\s*var\(--dl-vfo-panel-sheen-blend/);
+    expect(rulesFor(panelCss, '.panel-meter').join('\n'))
+      .toMatch(/background:\s*var\(--dl-vfo-meter-well-background/);
+    expect(rulesFor(panelCss, '.panel-meter').join('\n'))
+      .toMatch(/--v2-meter-lit-filter:\s*var\(--dl-vfo-meter-lit-filter/);
+    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge").join('\n'))
+      .toMatch(/background:\s*var\(--dl-vfo-bridge-background/);
+    expect(surfaceCss).not.toMatch(/\[data-vfo-appearance='(?:semantic|sdr)'\][^{}]*--dl-vfo-/);
+  });
+
+  it('glow belongs only to lit large elements and the inactive panel cancels it', () => {
+    for (const selector of [
+      ".chip-lg[data-lit='true']", ".tab[data-lit='true']", ".lamp[data-lit='true']",
+      ".chip-amber[data-lit='true']", ".chip-dsp[data-lit='true']", ".chip-tx[data-lit='true']",
+    ]) {
+      expect(rulesFor(panelCss, selector).join('\n'), `${selector} consumes a glow token`)
+        .toMatch(/(?:box-shadow|text-shadow):\s*var\(--vfo-/);
+    }
+    const inactive = rulesFor(panelCss, '.panel:not(.active)').join('\n');
+    expect(inactive).toMatch(/--vfo-frequency-glow:\s*none/);
+    expect(inactive).toMatch(/--vfo-(?:primary|red|amber|dsp)-glow:\s*none/);
+    expect(inactive).toMatch(/--v2-meter-lit-filter:\s*none/);
+    expect(panelCss).not.toMatch(/@keyframes|animation\s*:/);
   });
 });
 

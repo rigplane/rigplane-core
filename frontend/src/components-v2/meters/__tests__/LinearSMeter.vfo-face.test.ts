@@ -8,6 +8,7 @@ import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.sve
 import LinearSMeter from '../LinearSMeter.svelte';
 import { projectSignalMeter } from '../smeter-scale';
 import type { SignalMeterFrame } from '../signal-meter-motion.svelte';
+import { readFileSync } from 'node:fs';
 
 // MOR-2509 (mock-up v7): the VFO-panel S-meter face. The fixture curves are
 // the two calibration shapes the rest of this directory already exercises —
@@ -204,6 +205,13 @@ function peakVisible(root: ParentNode): boolean {
 const VFO_FRACTIONS = {
   s1: 0, s3: 1 / 7, s5: 2 / 7, s7: 3 / 7, s9: 4 / 7, over20: 5 / 7, over40: 6 / 7,
 } as const;
+
+it('routes every VFO lit segment through one inherited saturation hook', () => {
+  const source = readFileSync('src/components-v2/meters/LinearSMeter.svelte', 'utf8');
+  const style = source.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? '';
+  expect(style).toMatch(/\[data-meter-fill\][\s\S]*\[data-meter-fill-red\][\s\S]*\[data-lower-fill\][^{]*\{[^}]*filter:\s*var\(--v2-meter-lit-filter,\s*none\)/);
+  expect((style.match(/--v2-meter-lit-filter/g) ?? [])).toHaveLength(1);
+});
 
 /** The lit extent the face draws for a fill fraction, mirroring the
  *  half-covered rule: a segment lights when the fill covers at least half

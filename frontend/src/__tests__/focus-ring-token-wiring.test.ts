@@ -185,6 +185,34 @@ describe('MOR-1232: --focus-ring token wiring', () => {
   });
 });
 
+describe('MOR-2509: the Standard deck uses the shared three-step focus treatment', () => {
+  it('declares the two brightness steps beside the existing focus-ring trio', () => {
+    const css = read('components-v2/theme/tokens.css');
+    expect(css).toMatch(/--v2-focus-ring-lit-filter:\s*brightness\([^;]+;/);
+    expect(css).toMatch(/--v2-focus-ring-dim-filter:\s*brightness\([^;]+;/);
+  });
+
+  it('the deck rule brightens controls without a second frame or a size-affecting declaration', () => {
+    const css = stripComments(read('components-v2/controls/control-button.css'));
+    const deckRules = ruleBlocks(css).filter((block) =>
+      block.selector.includes("[data-vfo-appearance='standard']") && block.selector.includes(':focus-visible'));
+    expect(deckRules.length).toBeGreaterThanOrEqual(2);
+    expect(deckRules.some((block) => /filter:\s*var\(--v2-focus-ring-dim-filter\)/.test(block.body))).toBe(true);
+    expect(deckRules.some((block) => /filter:\s*var\(--v2-focus-ring-lit-filter\)/.test(block.body))).toBe(true);
+    for (const { selector, body } of deckRules) {
+      expect(body, `${selector} removes the inherited browser frame`).toMatch(/outline:\s*none/);
+      expect(body, `${selector} paints no second frame`).not.toMatch(/box-shadow|border(?:-width)?\s*:/);
+      expect(body, `${selector} changes no box geometry`).not.toMatch(/(?:width|height|padding|margin)\s*:/);
+    }
+  });
+
+  it('deck components declare no private outline treatment', () => {
+    for (const file of ['components-v2/vfo/VfoPanel.svelte', 'semantic/VfoSurface.svelte']) {
+      expect(stripComments(styleText(file, read(file))), file).not.toMatch(/outline\s*:/);
+    }
+  });
+});
+
 /* ── 2. the global default must survive scoped box-shadows (F1) ──────────── */
 
 describe('MOR-1232: the global focus default cannot be masked by a component box-shadow', () => {

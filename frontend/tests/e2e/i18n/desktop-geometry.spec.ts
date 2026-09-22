@@ -755,6 +755,28 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     });
   }
 
+  for (const [width, expectedNarrow] of [[1280, false], [1024, true]] as const) {
+    test(`standard ${width}px VFO panel ${expectedNarrow ? 'uses' : 'does not use'} narrow mode`, async ({ page }) => {
+      await boot(page, 'standard', width, true, 'studioline', false, 'topology-2-main-sub', {
+        height: 800, extraCapabilities: ALL_STRUCTURAL_ACTION_CAPS,
+      });
+      const panels = page.locator('.standard-face .receiver-instrument .panel');
+      await expect(panels).toHaveCount(2);
+      const geometry = await panels.evaluateAll(elements => elements.map(panel => {
+        const meter = panel.querySelector<HTMLElement>('.smeter-row')!;
+        return {
+          panelWidth: panel.getBoundingClientRect().width,
+          meterColumn: getComputedStyle(meter).gridColumnStart,
+        };
+      }));
+      for (const panel of geometry) {
+        expect(panel.meterColumn).toBe(expectedNarrow ? '1' : '3');
+        if (width === 1280) expect(panel.panelWidth - 520).toBeGreaterThanOrEqual(8);
+        else expect(panel.panelWidth).toBeLessThanOrEqual(520);
+      }
+    });
+  }
+
   for (const width of [1440, 1024] as const) {
     test(`SDR ${width} keeps its current desktop grid`, async ({ page }) => {
       await boot(page, 'sdr-test', width, true, 'studioline', false, 'topology-2-main-sub');
