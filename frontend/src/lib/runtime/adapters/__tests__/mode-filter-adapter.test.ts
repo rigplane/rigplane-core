@@ -10,8 +10,8 @@
  * `ReceiverStatePublic`, so they are never actually absent), `modeFilter`
  * would appear on every model that file builds. `deriveModeFilter`'s
  * evidence gate requires a capability-declared mode/filter choice set or the
- * `filter_width` tag instead — this file separately pins those signals and
- * that the empty-choice-set, width-absent baseline still gets no group.
+ * `filter_width` tag instead — this file pins the mode and filter choice-set
+ * signals and that the empty-choice-set, width-absent baseline gets no group.
  */
 import { describe, expect, it } from 'vitest';
 import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';

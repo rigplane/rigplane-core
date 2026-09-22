@@ -242,7 +242,7 @@ except RigLoadError as e:
 | `[[rules]].kind` valid (if present) | `rule kind must be one of {'mutex', 'disables', 'requires', 'value_limit'}` |
 | `[capabilities].rf_sql_control_model` valid (if present) | `[capabilities].rf_sql_control_model must be one of ['combined', 'separate']` |
 | `[modes].list` non-empty | `[modes].list must not be empty` |
-| `[filters].list` non-empty | `[filters].list must not be empty` |
+| `[filters].list` present (may be empty: a radio without a selectable IF filter) | `missing required [filters].list` |
 
 Unknown sections or extra fields are silently ignored (forward-compatible).
 
