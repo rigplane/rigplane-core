@@ -1323,8 +1323,23 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
       .toMatch(/--vfo-bridge-width:\s*212px/);
     expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .standard-pair-bridge").join('\n'))
       .toMatch(/flex:\s*0 0 var\(--vfo-bridge-width\)/);
-    expect(rulesFor(surfaceCss, '.bridge').join('\n'))
-      .toMatch(/--vfo-bridge-width:\s*150px/);
+    // Below 1280 px the Standard bridge narrows to its earlier 150 px column
+    // so the 1200 px panels keep >= 470 px — the e2e "standard 1200px VFO
+    // panel does not use narrow mode" in desktop-geometry.spec.ts. The rule
+    // must keep the attribute qualifier: the unqualified `.bridge` form loses
+    // on specificity to the desktop 212 px rule, which is why the 1050 px
+    // block's declaration was dead and is removed.
+    const narrowBlock = surfaceCss.slice(
+      surfaceCss.indexOf('@media (max-width: 1279px)'),
+      surfaceCss.indexOf('@media (max-width: 1050px)'),
+    );
+    expect(narrowBlock, 'the narrow bridge rule keeps the attribute-qualified selector')
+      .toMatch(/\[data-vfo-appearance='standard'\] \.bridge\s*\{[^}]*--vfo-bridge-width:\s*150px/s);
+    expect(narrowBlock, 'the losing unqualified .bridge form does not return')
+      .not.toMatch(/(?:^|[{}])\s*\.bridge\s*\{[^}]*--vfo-bridge-width/s);
+    expect(surfaceCss.indexOf('@media (max-width: 1279px)'),
+      'equal specificity with the desktop rule: the narrow rule wins by source order')
+      .toBeGreaterThan(surfaceCss.indexOf('--vfo-bridge-width: 212px'));
   });
 
   it('stacks an absolute Standard pair at the 1024-class breakpoint', () => {
@@ -1427,6 +1442,31 @@ describe('mock-up v8 geometry with the owner 13:28 EDT bridge-key override', () 
       expect(key.scrollWidth, key.textContent?.trim()).toBeLessThanOrEqual(key.clientWidth);
     }
     expect(labelWidth).toBeLessThanOrEqual(keyClientWidth);
+  });
+
+  it('keeps the longest function label inside the 150px column below 1280px', () => {
+    const narrowBlock = surfaceCss.slice(
+      surfaceCss.indexOf('@media (max-width: 1279px)'),
+      surfaceCss.indexOf('@media (max-width: 1050px)'),
+    );
+    const narrowRule = narrowBlock.match(
+      /\[data-vfo-appearance='standard'\] \.bridge\s*\{([^}]*)\}/s);
+    expect(narrowRule, 'the narrow bridge rule keeps the attribute-qualified selector').toBeTruthy();
+    const bridgeWidth = Number(narrowRule![1].match(/--vfo-bridge-width:\s*(\d+)px/)?.[1]);
+    expect(bridgeWidth).toBe(150);
+    const paddingInline = Number(narrowRule![1].match(/padding:\s*12px\s+(\d+)px/)?.[1]);
+    expect(Number.isFinite(paddingInline), 'the narrow rule keeps the 12px block padding').toBe(true);
+
+    // Same measure as "keeps the longest function label inside the 212px
+    // column": TUNER is the longest function label, Roboto Mono advances are
+    // 0.6em, and the tracking adds 0.06em between glyphs.
+    const trackGap = 6;
+    const trackWidth = (bridgeWidth - 2 - (2 * paddingInline) - (5 * trackGap)) / 6;
+    const keyClientWidth = (2 * trackWidth) + trackGap - 2;
+    const labelWidth = (5 * 12 * 0.6) + (4 * 12 * 0.06);
+    expect(keyClientWidth,
+      `TUNER (${labelWidth}px) fits the narrow span-2 key client box (${keyClientWidth}px)`)
+      .toBeGreaterThanOrEqual(labelWidth);
   });
 
   it('pins full-height row alignment for a 196px bridge through shared layout tokens', () => {
