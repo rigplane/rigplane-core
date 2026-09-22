@@ -1460,6 +1460,7 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
     const narrow = RADIO_LAYOUT_SOURCE.slice(RADIO_LAYOUT_SOURCE.indexOf('@media (max-width: 1024px)'));
     expect(narrow).toContain('grid-template-columns: 190px minmax(0, 1fr) 190px');
     expect(RADIO_LAYOUT_SOURCE).toContain('overflow-y: auto; min-height: 0');
+    expect(narrow).toContain('contain: inline-size');
   });
 });
 

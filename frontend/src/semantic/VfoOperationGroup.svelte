@@ -294,7 +294,7 @@
 
         {#if hasFunctions}
           <div class="bridge-divider" aria-hidden="true"></div>
-          <div class="ops-row">
+          <div class="ops-row functions-row">
             {#if functions.tuner.availability.structural}
               {@const id = reasonId('tuner', functionReason(functions.tuner))}
               <ControlButton
@@ -537,7 +537,13 @@
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--vfo-ops-gap, 4px);
   }
-  .ops-row > :global(*) { min-width: 0; width: 100%; }
+  .functions-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .functions-row > :global(.v2-control-button[data-indicator-style='dot']) {
+    --btn-font-size: 11px;
+    padding-left: calc(var(--indicator-dot-reserve) + 1px);
+    padding-right: 4px;
+  }
+  .ops-row > :global(.v2-control-button) { min-width: 0; width: 100%; }
   .ops-row > :global([data-ops-wide]) { grid-column: 1 / -1; }
   .bridge-divider {
     height: 1px; margin-block: calc(var(--vfo-ops-gap, 4px) / 2);

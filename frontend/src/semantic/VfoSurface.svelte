@@ -1303,6 +1303,9 @@
   @media (max-width: 1050px) {
     .instrument-panel { flex-wrap: wrap; }
     .receiver-instrument { flex-basis: calc(50% - 90px); }
+    [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
+      flex-basis: calc(100% - 192px);
+    }
     .bridge { --vfo-bridge-width: 150px; }
     .receiver-instrument .vfo-freq { font-size: 26px; }
   }
@@ -1310,9 +1313,6 @@
     [data-vfo-appearance='standard'] .standard-pair-bridge {
       padding: 2px;
       gap: 1px;
-    }
-    [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
-      flex-basis: calc(100% - 192px);
     }
   }
   @media (max-width: 760px) {
