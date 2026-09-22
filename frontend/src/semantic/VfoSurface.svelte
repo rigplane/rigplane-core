@@ -43,6 +43,7 @@
   import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
   import VfoPanel, { type VfoPanelSections } from '../components-v2/vfo/VfoPanel.svelte';
   import { formatRitOffset } from '../components-v2/vfo/vfo-utils';
+  import { ControlButton } from '$lib/Button';
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import VfoOperationGroup from './VfoOperationGroup.svelte';
   import { formatKnownLevel } from './format-level';
@@ -119,6 +120,15 @@
      */
     disabled?: boolean;
     /**
+     * MOR-2509 review — capability gates for the SPLIT / dual-watch keys,
+     * read off the radio caps BY THE CALLER (this surface stays
+     * capability-blind, the `hasDualReceiver` precedent). `false` renders
+     * no key at all, never a disabled one. Defaults keep every existing
+     * caller rendering exactly as before.
+     */
+    hasSplit?: boolean;
+    hasDualWatch?: boolean;
+    /**
      * MOR-1421 — a PLAIN boolean, not a capability lookup: this surface stays
      * capability-blind by ADR (v3, MOR-1063), so the caller (`SemanticRadioSurfaces`,
      * which already holds `runtime.caps` for the AGC/NB display-metadata
@@ -193,6 +203,17 @@
     onSelectMainReceiver?: () => void;
     onSelectSubReceiver?: () => void;
     onSpeak?: () => void;
+    /**
+     * MOR-2509 bridge radio functions — the same intents the TX panel's
+     * TUNER/VOX controls and the dial-lock key dispatch (`set_tuner_status`,
+     * `set_vox`, `set_dial_lock`); the facts themselves always come from the
+     * view model (`radioWideIndicators.atu`/`dialLock`, `txAux.vox`), so
+     * both control points read one state. Optional: absent callbacks leave
+     * the keys present but not operational.
+     */
+    onToggleTuner?: () => void;
+    onToggleVox?: () => void;
+    onToggleDialLock?: () => void;
     operationInput?: VfoOperationProjectionInput;
     operationControls?: Snippet;
   }
@@ -208,6 +229,8 @@
     showVfoList = true,
     groupLabel,
     disabled = false,
+    hasSplit = true,
+    hasDualWatch = true,
     hasDualReceiver = true,
     onTuneFrequency,
     pendingFrequencyHz,
@@ -223,6 +246,9 @@
     onSelectMainReceiver,
     onSelectSubReceiver,
     onSpeak,
+    onToggleTuner,
+    onToggleVox,
+    onToggleDialLock,
     operationInput,
     operationControls,
   }: Props = $props();
@@ -284,11 +310,21 @@
     return {
       hasVfoPair,
       hasDualReceiver,
+      hasSplit,
+      hasDualWatch,
       relativeIdentityUnknown,
       activeReceiver: viewModel.activeReceiver,
       split: viewModel.split,
       dualWatch: viewModel.dualWatch,
       actions: viewModel.radioWideIndicators?.actions,
+      radioFunctions: {
+        tuner: viewModel.radioWideIndicators?.atu,
+        vox: viewModel.txAux?.vox,
+        dialLock: viewModel.radioWideIndicators?.dialLock,
+        onToggleTuner,
+        onToggleVox,
+        onToggleDialLock,
+      },
       callbacks: {
         onToggleSplit,
         onToggleDualWatch,
@@ -874,12 +910,24 @@
 
   {#snippet standardPairSelectors(pair: { receiver: ReceiverId; left: VfoViewModel; right: VfoViewModel; absolute: boolean })}
     {#if pair.absolute}
+    <!--
+      MOR-2509 bridge: the A/B selector keys render through the shared
+      Button family's fill look; the filled key says which slot is active
+      (`data-standard-select-vfo` keeps the pinned e2e hook).
+    -->
     <div class="standard-vfo-selectors" aria-label="Select VFO">
       {#each [pair.left, pair.right] as vfo (slotKey(vfo.slot))}
         {@const slot = vfo.slot.kind === 'slotted' ? vfo.slot.id : '—'}
-        <button type="button" class="vfo-select" data-standard-select-vfo={slot}
-          data-active={vfo.isActiveSlot} disabled={disabled || vfo.isActiveSlot}
-          onclick={() => selectVfo(vfo)}>SELECT {slot}</button>
+        <ControlButton
+          indicatorStyle="fill"
+          indicatorColor="cyan"
+          reserveIndicator
+          active={vfo.isActiveSlot}
+          ariaLabel={`SELECT ${slot}`}
+          disabled={disabled || vfo.isActiveSlot}
+          data={{ 'standard-select-vfo': slot }}
+          onclick={() => selectVfo(vfo)}
+        >{slot}</ControlButton>
       {/each}
     </div>
     {:else}
@@ -1023,7 +1071,7 @@
       {/if}
       {#if showRadioWideFacts}
         <div class="bridge" data-instrument-bridge>
-          {@render activeReceiverStatus()}
+          {#if appearance !== 'standard'}{@render activeReceiverStatus()}{/if}
           {@render identitySelectors()}
           {#if appearance === 'standard'}{@render standardOperationContent()}
           {:else}{@render radioWideContent()}{/if}
@@ -1091,6 +1139,10 @@
   .instrument-panel {
     display: flex; align-items: stretch; width: 100%; min-width: 0;
     --vfo-instrument-inset-block: 6px;
+    /* MOR-2509: the deck's bridge-width token — the standard bridge
+       narrows it to fit the function keys; the 1050px breakpoint
+       override below sets the same property. */
+    --vfo-bridge-width: 180px;
     background: linear-gradient(180deg, var(--v2-bg-gradient-start, #0a0e14) 0%, var(--v2-bg-panel, #05080c) 100%);
     border: 1px solid var(--v2-border-panel, #18222d); border-radius: 4px;
   }
@@ -1105,7 +1157,7 @@
   .receiver-instrument > :global(.indicator-row) { flex: 1 1 auto; min-height: 0; }
   .receiver-instrument + .receiver-instrument { border-left: 1px solid var(--v2-border-panel, #18222d); }
   .bridge {
-    flex: 0 0 180px; min-width: 0; display: flex; flex-direction: column;
+    flex: 0 0 var(--vfo-bridge-width); min-width: 0; display: flex; flex-direction: column;
     justify-content: center; gap: 10px; padding: 10px;
     margin-block: var(--vfo-instrument-inset-block);
     border-inline: 1px solid var(--v2-border-panel, #18222d);
@@ -1147,8 +1199,8 @@
     border: 1px solid var(--v2-accent-cyan, #00d4ff); border-radius: 4px;
     box-shadow: 0 0 6px rgba(0,212,255,.3), inset 0 0 16px rgba(0,212,255,.06);
   }
-  [data-vfo-appearance='standard'] .bridge { flex-basis: 136px; }
-  [data-vfo-appearance='standard'] .bridge .vfo-select { min-height: 24px; }
+  [data-vfo-appearance='standard'] .bridge { --vfo-bridge-width: 168px; }
+  [data-vfo-appearance='standard'] .bridge .vfo-select { min-height: 28px; }
   [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
     flex: 1 1 0;
     --btn-compact-min-height: 18px;
@@ -1168,8 +1220,18 @@
     padding: 4px;
     gap: 3px;
     --vfo-ops-gap: 3px;
-    --vfo-ops-badge-padding-x: 3px;
-    --vfo-ops-badge-font-size: 9px;
+    /* MOR-2509: the bridge keys' family tokens — 28px key height,
+       12px labels, dot packed tighter than panel keys. */
+    --btn-min-height: 28px;
+    --btn-font-size: 12px;
+    --indicator-dot-offset: 4px;
+    --indicator-dot-gap: 4px;
+  }
+  [data-vfo-appearance='standard'] .bridge:not(.standard-pair-bridge) {
+    --btn-min-height: 28px;
+    --btn-font-size: 12px;
+    --indicator-dot-offset: 4px;
+    --indicator-dot-gap: 4px;
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .facts) {
     display: grid;
@@ -1193,12 +1255,7 @@
     text-align: center;
   }
   .standard-vfo-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
-  .standard-vfo-selectors .vfo-select {
-    min-width: 0; padding: 4px 3px; font-size: 9px; font-weight: 700;
-  }
-  .standard-vfo-selectors .vfo-select[data-active='true'] {
-    border-color: var(--v2-accent-cyan, #00d4ff); color: var(--v2-accent-cyan, #00d4ff);
-  }
+  .standard-vfo-selectors > :global(button) { min-width: 0; width: 100%; }
   .standard-tx-target {
     display: block; padding: 3px 5px; border: 1px solid var(--v2-accent-red, #ff2020);
     border-radius: 3px; color: var(--v2-accent-red, #ff2020); font-size: 9px;
@@ -1243,7 +1300,7 @@
   @media (max-width: 1050px) {
     .instrument-panel { flex-wrap: wrap; }
     .receiver-instrument { flex-basis: calc(50% - 90px); }
-    .bridge { flex-basis: 150px; }
+    .bridge { --vfo-bridge-width: 150px; }
     .receiver-instrument .vfo-freq { font-size: 26px; }
   }
   @media (max-width: 950px) {

@@ -59,6 +59,36 @@ describe('ActiveReceiverToggle', () => {
     });
   });
 
+  describe('embedded without hardware keeps the raw segment markup (semantic/SDR path)', () => {
+    it('renders class="segment embedded" short-label buttons, not family buttons', () => {
+      const t = mountToggle({ active: 'MAIN', onChange: vi.fn(), embedded: true });
+      const segments = Array.from(t.querySelectorAll<HTMLButtonElement>('[data-active-receiver-segment]'));
+      expect(segments).toHaveLength(2);
+      for (const segment of segments) {
+        expect(segment.classList).toContain('segment');
+        expect(segment.classList).toContain('embedded');
+        expect(segment.classList).not.toContain('v2-control-button');
+        expect(segment.getAttribute('data-active-receiver-segment')).toBeTruthy();
+        expect(segment.getAttribute('data-dual-action')).toBeTruthy();
+      }
+      expect(segments.map((segment) => segment.textContent?.trim())).toEqual(['M', 'S']);
+    });
+
+    it('hardware renders the Button-family fill key with full labels', () => {
+      const t = mountToggle({
+        active: 'MAIN', onChange: vi.fn(), embedded: true, hardware: true,
+        segmentLabels: { MAIN: 'MAIN', SUB: 'SUB' },
+      });
+      const segments = Array.from(t.querySelectorAll<HTMLButtonElement>('[data-active-receiver-segment]'));
+      expect(segments).toHaveLength(2);
+      for (const segment of segments) {
+        expect(segment.classList).toContain('v2-control-button');
+        expect(segment.className).not.toContain('segment');
+      }
+      expect(segments.map((segment) => segment.textContent?.trim())).toEqual(['MAIN', 'SUB']);
+    });
+  });
+
   describe('aria-checked / tabindex', () => {
     it('active=MAIN: MAIN segment is checked and focusable', () => {
       const t = mountToggle({ active: 'MAIN', onChange: vi.fn() });
