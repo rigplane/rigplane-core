@@ -201,8 +201,16 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
     : layout.startsWith('lcd') ? '.lcd-layout' : '.desktop-control-face';
   await expect(page.locator(shell).first()).toBeVisible().catch(async error => {
     const body = await page.locator('body').innerText().catch(() => '<body unavailable>');
+    const roots = await page.locator('.radio-layout, [data-testid="flagship-geometry-probe"]')
+      .evaluateAll(elements => elements.map(element => ({
+        tag: element.tagName, className: element.className,
+        testId: element.getAttribute('data-testid'),
+      }))).catch(() => []);
+    const workspace = await page.evaluate(() => localStorage.getItem('rigplane:workspace'))
+      .catch(() => '<workspace unavailable>');
     throw new Error(`${error instanceof Error ? error.message : String(error)}\n`
-      + `URL: ${page.url()}\nBody: ${body.slice(0, 2000)}\nErrors: ${JSON.stringify(bootErrors)}`);
+      + `URL: ${page.url()}\nBody: ${body.slice(0, 2000)}\nErrors: ${JSON.stringify(bootErrors)}\n`
+      + `Roots: ${JSON.stringify(roots)}\nWorkspace: ${workspace}`);
   });
   await page.evaluate(() => document.fonts.ready);
 }
