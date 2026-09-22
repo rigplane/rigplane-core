@@ -374,7 +374,7 @@
     min-width: 0;
     container-type: inline-size;
     position: relative;
-    background: var(--dl-vfo-panel-background, linear-gradient(180deg, #0b0f14 0%, #0a0e13 38%, #070a0e 100%));
+    background: var(--dl-vfo-panel-background, linear-gradient(180deg, #10161d 0%, #0a0e13 38%, #070a0e 100%));
     border: 1px solid var(--v2-border-darker);
     border-radius: var(--vfo-panel-radius, 10px);
     box-shadow: var(--dl-vfo-panel-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 -18px 30px rgba(0, 0, 0, 0.45), 0 6px 18px rgba(0, 0, 0, 0.5));
@@ -391,11 +391,14 @@
       0 0 12px 1px var(--receiver-panel-glow-outer);
   }
 
-  .panel::before {
+  /* The glass OVER the content — dark mode only (the mock-up is dark-only,
+     and there a screen blend of faint white cannot darken a glyph). Light
+     mode nulls this token and glosses from under the content instead.
+     prefers-contrast: more zeroes it via --v2-vfo-panel-sheen-override. */
+  .panel::after {
     content: '';
     position: absolute;
     inset: 0;
-    z-index: -1;
     pointer-events: none;
     border-radius: inherit;
     clip-path: inset(0 round var(--vfo-panel-radius, 10px));
@@ -403,8 +406,27 @@
     mix-blend-mode: var(--dl-vfo-panel-sheen-blend, normal);
   }
 
-  /* The inactive receiver is quieter through explicit colour variants; a lit
-     TX alarm keeps the full red, and the meter keeps its own paint. */
+  /* The glass UNDER the content — the light mode gloss, read from a token
+     only a light block sets. It needs no negative z-index: the three rows
+     below carry position: relative, and among equal-z positioned boxes tree
+     order decides, so this first box paints above the panel's own
+     background yet below every row — it can lighten the ground, never a
+     glyph. */
+  .panel::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    clip-path: inset(0 round var(--vfo-panel-radius, 10px));
+    background: var(--dl-vfo-panel-sheen-under, none);
+  }
+
+  /* The inactive receiver is quieter through explicit colour variants —
+     chips, tabs, the frequency numeral and the receiver name; the glass
+     itself stays on the dim panel, while the glows and the meter's lit
+     filter drop (v8 mock-up). A lit TX alarm keeps the full red, and the
+     meter keeps its own paint. */
   .panel:not(.active) {
     --vfo-neon-fill: var(--dl-vfo-primary-neon-dim, #16396f);
     --vfo-neon-frame: var(--dl-vfo-frame-dim, #9fb0c4);
@@ -423,6 +445,8 @@
     --vfo-slate-text: var(--dl-vfo-dim-text, #e3eaf2);
     --vfo-dsp-text: var(--dl-vfo-dsp-dim, #aab4bf);
     --vfo-dsp-border: var(--dl-vfo-dsp-border-dim, #6f7b87);
+    --vfo-frequency-ink: var(--dl-vfo-frequency-ink-dim, #a9b5c1);
+    --vfo-name-ink: var(--dl-vfo-name-ink-dim, #7f8d9b);
     --vfo-frequency-glow: none;
     --vfo-primary-glow: none;
     --vfo-red-glow: none;
@@ -435,6 +459,8 @@
 
   /* ── Tray: tabs hanging from the panel's top edge ─────────────────── */
   .tray {
+    /* Positioned so this row paints above the ::before under-glass. */
+    position: relative;
     display: flex;
     justify-content: center;
     gap: 3px;
@@ -483,6 +509,8 @@
 
   /* ── Receiver row: name once, large mode/filter chips, lamps, TX ───── */
   .receiver-row {
+    /* Positioned so this row paints above the ::before under-glass. */
+    position: relative;
     display: flex;
     align-items: flex-start;
     gap: 5px;
@@ -507,7 +535,7 @@
   .panel-header:disabled { cursor: default; }
 
   .vfo-label {
-    color: var(--v2-text-secondary);
+    color: var(--vfo-name-ink, var(--v2-text-secondary));
     font-size: 14px;
     font-weight: 700;
     letter-spacing: 0.1em;
@@ -622,6 +650,8 @@
 
   /* ── Main row: readout + under chips, DSP column, meter slot ──────── */
   .display-row {
+    /* Positioned so this row paints above the ::before under-glass. */
+    position: relative;
     display: grid;
     grid-template-columns: auto 66px minmax(0, 1fr);
     gap: 12px;
@@ -649,6 +679,11 @@
     font-weight: var(--dl-vfo-frequency-weight, 800);
     font-variant-numeric: tabular-nums;
     letter-spacing: var(--vfo-frequency-letter-spacing, 0.02em);
+    /* currentcolor holds the active readout on the inherited ink: only the
+       dim panel defines --vfo-frequency-ink. The (0,2,0) display-unknown
+       rule below still wins on dim panels — an unread frequency stays an
+       unlit label, never dimmed ink. */
+    color: var(--vfo-frequency-ink, currentcolor);
   }
 
   .freq-row > .vfo-freq { text-shadow: var(--vfo-frequency-glow); }

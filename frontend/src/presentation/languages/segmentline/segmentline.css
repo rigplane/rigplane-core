@@ -53,6 +53,10 @@
   --dl-vfo-tab-frame: var(--dl-segmentline-ink-strong);
   --dl-vfo-tab-frame-dim: rgba(var(--dl-segmentline-ink) / 0.55);
   --dl-vfo-dim-text: var(--dl-segmentline-ink-strong);
+  /* The inactive readout quiets along the ink ramp: the numeral holds more
+     ink than the name, both stay above the unlit ghost. */
+  --dl-vfo-frequency-ink-dim: rgba(var(--dl-segmentline-ink) / 0.75);
+  --dl-vfo-name-ink-dim: rgba(var(--dl-segmentline-ink) / 0.6);
   --dl-vfo-unlit-fill: transparent;
   --dl-vfo-panel-background: var(--dl-segmentline-glass);
   --dl-vfo-panel-shadow: 0 0 0 transparent;

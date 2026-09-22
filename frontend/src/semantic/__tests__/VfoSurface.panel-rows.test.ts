@@ -748,6 +748,128 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(filterOwners).toEqual(['.panel', '.panel:not(.active)']);
   });
 
+  it('the inactive readout ink differs from the active ink in every mode that dims (R2-4)', () => {
+    const inactive = rulesFor(panelCss, '.panel:not(.active)').join('\n');
+    const base = rule(panelCss, '.panel');
+    // The dim inks exist only on the inactive panel: the base wiring never
+    // defines them, so the active readout keeps the inherited ink and the
+    // secondary label tone.
+    expect(inactive).toMatch(/--vfo-frequency-ink:\s*var\(--dl-vfo-frequency-ink-dim,\s*#a9b5c1\)/);
+    expect(inactive).toMatch(/--vfo-name-ink:\s*var\(--dl-vfo-name-ink-dim,\s*#7f8d9b\)/);
+    expect(base).not.toContain('--vfo-frequency-ink:');
+    expect(base).not.toContain('--vfo-name-ink:');
+    expect(rulesFor(panelCss, '.vfo-freq').join('\n'))
+      .toMatch(/color:\s*var\(--vfo-frequency-ink,\s*currentcolor\)/);
+    expect(rulesFor(panelCss, '.vfo-label').join('\n'))
+      .toMatch(/color:\s*var\(--vfo-name-ink,\s*var\(--v2-text-secondary\)\)/);
+    // An unread frequency stays an unlit label even on the inactive panel:
+    // the (0,2,0) display-unknown rule outranks the (0,1,0) base rule.
+    expect(rulesFor(panelCss, '.vfo-freq.display-unknown').join('\n'))
+      .toMatch(/color:\s*var\(--vfo-unlit-text\)/);
+
+    // jsdom in this harness substitutes no custom properties (the digit-
+    // weight pin below records the same limit), so computed-style equality
+    // cannot be asserted here. Instead each language's dim tokens are
+    // resolved by hand along their var() chains, per mode, and compared
+    // with the active ink each readout ACTUALLY renders:
+    // - frequency: the language's root `color:` on the surface the panel
+    //   inherits from (each language declares one — asserted below);
+    // - name: --v2-text-secondary from .vfo-label's fallback. No language
+    //   stylesheet sets that token (asserted below), so the single
+    //   declaration in theme/tokens.css applies; a theme that overrides
+    //   --v2-text-secondary to a language's dim value would render the two
+    //   names alike — that variation is theme-owned and not covered here.
+    const bodyOf = (css: string, selector: string, marker: string): string => {
+      const found = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .find(([, selectors, body]) => selectors.trim() === selector && body.includes(marker))?.[2];
+      expect(found, `${selector} declares ${marker}`).toBeTruthy();
+      return found ?? '';
+    };
+    const hex = (body: string, token: string): string => {
+      const m = body.match(new RegExp(`--${token}:\\s*(#[0-9a-fA-F]{6})`));
+      expect(m, `token --${token} is a hex literal`).toBeTruthy();
+      return (m?.[1] ?? '').toLowerCase();
+    };
+
+    const theme = readFileSync('src/components-v2/theme/tokens.css', 'utf8');
+    const nameInk = hex(theme, 'v2-text-secondary');
+
+    // studioline, dark and light. The active frequency ink is the language
+    // root's `color: var(--dl-studioline-text)`, resolved from the palette
+    // block per mode; the active name ink is the theme secondary.
+    const stud = readFileSync('src/presentation/languages/studioline/studioline.css', 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const studRoot = "[data-design-language='studioline'][data-design-language]";
+    const studLightSel = "[data-design-language='studioline'][data-design-language][data-language-mode='light']";
+    expect(bodyOf(stud, studRoot, '--dl-studioline-text:'), 'studioline root paints the inherited surface ink')
+      .toMatch(/color:\s*var\(--dl-studioline-text\)/);
+    const studBase = bodyOf(stud, studRoot, '--dl-vfo-frequency-ink-dim:');
+    const studLight = bodyOf(stud, studLightSel, '--dl-vfo-frequency-ink-dim:');
+    const studDarkInk = hex(bodyOf(stud, studRoot, '--dl-studioline-text:'), 'dl-studioline-text');
+    const studLightInk = hex(bodyOf(stud, studLightSel, '--dl-studioline-text:'), 'dl-studioline-text');
+    for (const [mode, block, activeFreqInk] of [
+      ['dark', studBase, studDarkInk],
+      ['light', studLight, studLightInk],
+    ] as const) {
+      expect(hex(block, 'dl-vfo-frequency-ink-dim'), `studioline ${mode}: dim frequency ink differs from the inherited surface ink`)
+        .not.toBe(activeFreqInk);
+      expect(hex(block, 'dl-vfo-name-ink-dim'), `studioline ${mode}: dim name ink differs from the theme label tone`)
+        .not.toBe(nameInk);
+    }
+
+    // fieldline. The dim inks are var(--dl-fieldline-muted) per mode. The
+    // active frequency ink is the language root's `color:
+    // var(--dl-fieldline-text)`; the active name ink is the theme
+    // secondary, NOT the fieldline text token.
+    const field = readFileSync('src/presentation/languages/fieldline/fieldline.css', 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const fieldRoot = "[data-design-language='fieldline'][data-design-language]";
+    const fieldLightSel = "[data-design-language='fieldline'][data-design-language][data-language-mode='light']";
+    expect(bodyOf(field, fieldRoot, '--dl-fieldline-text:'), 'fieldline root paints the inherited surface ink')
+      .toMatch(/color:\s*var\(--dl-fieldline-text\)/);
+    const fieldBase = bodyOf(field, fieldRoot, '--dl-fieldline-text:');
+    const fieldLight = bodyOf(field, fieldLightSel, '--dl-fieldline-text:');
+    const fieldHighContrast = bodyOf(field,
+      "[data-design-language='fieldline'][data-design-language][data-theme='high-contrast']", '--dl-fieldline-text:');
+    for (const [mode, block] of [['default', fieldBase], ['light', fieldLight]] as const) {
+      expect(hex(block, 'dl-fieldline-muted'), `fieldline ${mode}: dim frequency ink differs from the inherited surface ink`)
+        .not.toBe(hex(block, 'dl-fieldline-text'));
+      expect(hex(block, 'dl-fieldline-muted'), `fieldline ${mode}: dim name ink differs from the theme label tone`)
+        .not.toBe(nameInk);
+    }
+    // High contrast pins both palette tones to the same white, and the
+    // high-contrast THEME pins --v2-text-secondary to that white too: the
+    // inactive readout deliberately does not dim there — quieting yields
+    // to legibility at the contrast rail (rule stated in fieldline.css).
+    expect(hex(fieldHighContrast, 'dl-fieldline-muted'), 'fieldline high-contrast keeps the frequency undimmed')
+      .toBe(hex(fieldHighContrast, 'dl-fieldline-text'));
+    const highContrastTheme = readFileSync('src/components-v2/theme/themes/high-contrast.css', 'utf8');
+    expect(highContrastTheme).toMatch(/--v2-text-secondary:\s*#ffffff/);
+
+    // segmentline. The active frequency ink is the language root's
+    // `color: var(--dl-segmentline-ink-strong)`; the dim inks are that ink
+    // at lower alpha, so the numeral's paint differs structurally. The dim
+    // name ink is a translucent ramp value — a different paint from any
+    // opaque theme token, including the default compared here.
+    const seg = readFileSync('src/presentation/languages/segmentline/segmentline.css', 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const segRoot = "[data-design-language='segmentline'][data-design-language]";
+    expect(bodyOf(seg, segRoot, '--dl-segmentline-ink-strong:'), 'segmentline root paints the inherited surface ink')
+      .toMatch(/color:\s*var\(--dl-segmentline-ink-strong\)/);
+    const segBase = bodyOf(seg, segRoot, '--dl-vfo-frequency-ink-dim:');
+    const segInk = bodyOf(seg, segRoot, '--dl-segmentline-ink-strong:');
+    expect(segBase).toMatch(/--dl-vfo-frequency-ink-dim:\s*rgba\(var\(--dl-segmentline-ink\) \/ 0\.75\)/);
+    expect(segBase).toMatch(/--dl-vfo-name-ink-dim:\s*rgba\(var\(--dl-segmentline-ink\) \/ 0\.6\)/);
+    expect(segInk).toMatch(/--dl-segmentline-ink-strong:\s*rgba\(var\(--dl-segmentline-ink\) \/ 1\)/);
+
+    // The name's active ink stays theme-owned: no language stylesheet may
+    // set --v2-text-secondary, or the resolution above would be stale.
+    for (const [language, css] of [['studioline', stud], ['fieldline', field], ['segmentline', seg]] as const) {
+      expect(css, `${language} does not set the theme-owned --v2-text-secondary`)
+        .not.toContain('--v2-text-secondary:');
+    }
+  });
+
   it('keeps filled chip ink mode-independent while light mode owns a light panel', () => {
     const base = [...studiolineCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
       .find(([, selectors, body]) => selectors.trim() === "[data-design-language='studioline'][data-design-language]"
@@ -756,10 +878,24 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
       studiolineCss,
       "[data-design-language='studioline'][data-design-language][data-language-mode='light']",
     ).join('\n');
-    for (const token of ['frame', 'frame-dim', 'tab-frame', 'tab-frame-dim', 'dim-text']) {
+    // Only the ACTIVE frames and ink stay white and mode-independent.
+    for (const token of ['frame', 'tab-frame']) {
       expect(base, `--dl-vfo-${token} stays white`).toMatch(new RegExp(`--dl-vfo-${token}:\\s*#ffffff`));
       expect(light, `light mode does not replace --dl-vfo-${token}`).not.toContain(`--dl-vfo-${token}:`);
     }
+    // The dim chrome follows the v8 mock-up: greyed frames, softened chip
+    // ink, and the grey inactive readout of R2-4.
+    expect(base).toMatch(/--dl-vfo-frame-dim:\s*#9fb0c4/);
+    expect(base).toMatch(/--dl-vfo-tab-frame-dim:\s*#b9c4cf/);
+    expect(base).toMatch(/--dl-vfo-dim-text:\s*#e3eaf2/);
+    expect(base).toMatch(/--dl-vfo-frequency-ink-dim:\s*#a9b5c1/);
+    expect(base).toMatch(/--dl-vfo-name-ink-dim:\s*#7f8d9b/);
+    // Light mode owns its own quiet dim values — except the chip ink, which
+    // sits on the dim fills and those stay dark in both modes.
+    for (const token of ['frame-dim', 'tab-frame-dim', 'frequency-ink-dim', 'name-ink-dim']) {
+      expect(light, `light mode owns --dl-vfo-${token}`).toContain(`--dl-vfo-${token}:`);
+    }
+    expect(light).not.toContain('--dl-vfo-dim-text:');
     expect(base).toMatch(/--dl-vfo-amber-chip-text:\s*#ffd47a/);
     expect(base).toMatch(/--dl-vfo-amber-chip-text-dim:\s*#b89a5e/);
     expect(light).toMatch(/--dl-vfo-red-text:\s*#a33228/);
@@ -767,7 +903,40 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(light).toMatch(/--dl-vfo-brown-text:\s*#7a5210/);
     expect(light).toMatch(/--dl-vfo-panel-background:\s*linear-gradient\([^;]*#f9f6f0[^;]*#e9e4db/);
     expect(light).toMatch(/--dl-vfo-meter-well-background:\s*#151b22/);
-    expect(light).toMatch(/--dl-vfo-panel-sheen:\s*var\(--v2-vfo-panel-sheen-override,/);
+    expect(light).toMatch(/--dl-vfo-panel-sheen:\s*none/);
+    expect(light).toMatch(/--dl-vfo-panel-sheen-under:\s*var\(--v2-vfo-panel-sheen-override,/);
+  });
+
+  it('the dark ground and glass match the v8 mock-up: #10161d top stop, scanlines in the sheen', () => {
+    const base = [...studiolineCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .find(([, selectors, body]) => selectors.trim() === "[data-design-language='studioline'][data-design-language]"
+        && body.includes('--dl-vfo-primary-neon:'))?.[2] ?? '';
+    const light = rulesFor(
+      studiolineCss,
+      "[data-design-language='studioline'][data-design-language][data-language-mode='light']",
+    ).join('\n');
+    expect(base).toMatch(
+      /--dl-vfo-panel-background:\s*linear-gradient\(180deg,\s*#10161d 0%,\s*#0a0e13 38%,\s*#070a0e 100%\)/,
+    );
+    // One token, two layers: the 115° sheen over the 3px scanline raster,
+    // exactly the mock-up's .glass background. Both die together under
+    // prefers-contrast: more through the override.
+    expect(base).toMatch(/--dl-vfo-panel-sheen:\s*var\(--v2-vfo-panel-sheen-override,/);
+    expect(base).toMatch(
+      /--dl-vfo-panel-sheen:[^;]*rgba\(255, 255, 255, 0\.055\)[^;]*rgba\(255, 255, 255, 0\.018\)[^;]*transparent 38%/,
+    );
+    expect(base).toMatch(
+      /--dl-vfo-panel-sheen:[^;]*repeating-linear-gradient\(180deg,\s*rgba\(255, 255, 255, 0\.022\) 0 1px,\s*transparent 1px 3px\)/,
+    );
+    expect(base).toMatch(/--dl-vfo-panel-sheen-blend:\s*screen/);
+    // Light mode owns no glass over content (block N1): the over token is
+    // nulled there and the gloss lives UNDER the content via the under
+    // token — no scanline raster on paper.
+    expect(light).toMatch(/--dl-vfo-panel-sheen:\s*none/);
+    expect(light).toMatch(
+      /--dl-vfo-panel-sheen-under:\s*var\(--v2-vfo-panel-sheen-override,\s*linear-gradient\(115deg,\s*rgba\(255, 255, 255, 0\.72\)[^;]*rgba\(255, 255, 255, 0\.2\)[^;]*transparent 38%\)/,
+    );
+    expect(light).not.toMatch(/--dl-vfo-panel-sheen-under:[^;]*repeating-linear-gradient/);
   });
 
   it('every readout rule that sets a digit weight resolves it from the deck token', () => {
@@ -846,16 +1015,32 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
           && body.includes('--dl-vfo-'))?.[2] ?? '';
       for (const token of ['panel-background', 'panel-shadow', 'panel-sheen', 'bridge-background',
         'bridge-shadow', 'meter-well-background', 'meter-well-shadow', 'meter-lit-filter',
-        'frequency-glow', 'primary-glow', 'red-glow', 'amber-glow', 'dsp-glow']) {
+        'frequency-glow', 'primary-glow', 'red-glow', 'amber-glow', 'dsp-glow',
+        'frequency-ink-dim', 'name-ink-dim']) {
         expect(root, `${language} owns --dl-vfo-${token}`).toContain(`--dl-vfo-${token}:`);
       }
     }
 
     expect(rule(panelCss, '.panel')).toMatch(/background:\s*var\(--dl-vfo-panel-background/);
-    const sheen = rule(panelCss, '.panel::before');
+    // The glass is the panel's last box, ABOVE the content (the v8 mock-up's
+    // .glass), never the old z-index: -1 under-content placement whose
+    // contribution the pixel probe measured as zero.
+    const sheen = rule(panelCss, '.panel::after');
     expect(sheen).toMatch(/pointer-events:\s*none/);
-    expect(sheen).toMatch(/z-index:\s*-1/);
+    expect(sheen).toMatch(/position:\s*absolute/);
+    expect(sheen).not.toMatch(/z-index:\s*-/);
     expect(sheen).toMatch(/mix-blend-mode:\s*var\(--dl-vfo-panel-sheen-blend/);
+    // Light mode's gloss is a separate UNDER layer: ::before, still no
+    // negative z-index — the rows are positioned, so tree order paints them
+    // above the first box.
+    const underGlass = rule(panelCss, '.panel::before');
+    expect(underGlass).toMatch(/pointer-events:\s*none/);
+    expect(underGlass).not.toMatch(/z-index:\s*-/);
+    expect(underGlass).toMatch(/background:\s*var\(--dl-vfo-panel-sheen-under,\s*none\)/);
+    for (const row of ['.tray', '.receiver-row', '.display-row']) {
+      expect(rulesFor(panelCss, row).join('\n'), `${row} paints above the under-glass`)
+        .toMatch(/position:\s*relative/);
+    }
     expect(rulesFor(panelCss, '.panel-meter').join('\n'))
       .toMatch(/background:\s*var\(--dl-vfo-meter-well-background/);
     expect(rulesFor(panelCss, '.panel-meter').join('\n'))
