@@ -679,18 +679,21 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(rule(panelCss, '.panel')).toMatch(/--vfo-deck-rhythm:\s*var\(--dl-vfo-rhythm,\s*1\)/);
   });
 
-  it('the panel is an inline-size container with wide and narrow modes at 760/480 px', () => {
+  it('the panel is an inline-size container with wide, compact, and narrow modes at 760/520/470 px', () => {
     expect(rule(panelCss, '.panel')).toMatch(/container-type:\s*inline-size/);
     const threshold = Number(rule(panelCss, '.panel')
       .match(/--vfo-panel-narrow-breakpoint:\s*(\d+)px/)?.[1]);
-    expect(threshold).toBe(480);
+    expect(threshold).toBe(470);
+    const compactThreshold = Number(rule(panelCss, '.panel')
+      .match(/--vfo-panel-compact-breakpoint:\s*(\d+)px/)?.[1]);
+    expect(compactThreshold).toBe(520);
     expect(panelCss).toMatch(/@container \(min-width:\s*760px\)/);
-    const query = Number(panelCss.match(/@container \(max-width:\s*(\d+)px\)/)?.[1]);
-    expect(query).toBe(threshold);
+    expect(panelCss).toMatch(/@container \(max-width:\s*520px\)/);
+    expect(panelCss).toMatch(/@container \(max-width:\s*470px\)/);
     const wide = panelCss.slice(panelCss.indexOf('@container (min-width: 760px)'));
     expect(wide.slice(0, wide.indexOf('@container (max-width')))
       .toMatch(/grid-template-columns:\s*1fr 1fr/);
-    const narrow = panelCss.slice(panelCss.indexOf('@container (max-width: 480px)'));
+    const narrow = panelCss.slice(panelCss.indexOf('@container (max-width: 470px)'));
     expect(narrow).toMatch(/grid-column:\s*1\s*\/\s*-1/);
   });
 
@@ -701,8 +704,8 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
       expect(rulesFor(panelCss, selector).join('\n'))
         .toMatch(/width:\s*var\(--vfo-large-chip-width\)/);
     }
-    const narrow = panelCss.slice(panelCss.indexOf('@container (max-width: 480px)'));
-    expect(narrow).toMatch(/--vfo-large-chip-width:\s*62px/);
+    const compact = panelCss.slice(panelCss.indexOf('@container (max-width: 520px)'));
+    expect(compact).toMatch(/--vfo-large-chip-width:\s*62px/);
   });
 
   it('chip colours consume the --dl-vfo-* language tokens', () => {
@@ -1030,6 +1033,11 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     expect(root.querySelector('[data-vfo-tuner]')?.closest('.functions-row')).not.toBeNull();
     expect(rulesFor(opsCss, '.functions-row').join('\n'))
       .toMatch(/grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+    const functionKeys = rulesFor(
+      opsCss, ".functions-row > :global(.v2-control-button[data-indicator-style='dot'])",
+    ).join('\n');
+    expect(functionKeys).toMatch(/padding-left:\s*calc\(var\(--indicator-dot-reserve\) \+ 1px\)/);
+    expect(functionKeys).toMatch(/padding-right:\s*4px/);
   });
 
   it('keeps the SPLIT and DW latching keys as dot-lamp switches with unchanged semantics', () => {

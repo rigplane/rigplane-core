@@ -538,6 +538,10 @@
     gap: var(--vfo-ops-gap, 4px);
   }
   .functions-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .functions-row > :global(.v2-control-button[data-indicator-style='dot']) {
+    padding-left: calc(var(--indicator-dot-reserve) + 1px);
+    padding-right: 4px;
+  }
   .ops-row > :global(*) { min-width: 0; width: 100%; }
   .ops-row > :global([data-ops-wide]) { grid-column: 1 / -1; }
   .bridge-divider {

@@ -363,7 +363,8 @@
     --vfo-slate-glow: var(--dl-vfo-slate-glow, none);
     --v2-meter-lit-filter: var(--dl-vfo-meter-lit-filter, none);
     --vfo-large-chip-width: 70px;
-    --vfo-panel-narrow-breakpoint: 480px;
+    --vfo-panel-narrow-breakpoint: 470px;
+    --vfo-panel-compact-breakpoint: 520px;
 
     display: grid;
     grid-template-rows: auto auto auto;
@@ -766,7 +767,7 @@
     .dsp { grid-template-columns: 1fr 1fr; }
   }
 
-  @container (max-width: 480px) {
+  @container (max-width: 520px) {
     .chip-slot, .chip-lg { --vfo-large-chip-width: 62px; }
     .tray { margin-block-end: calc(17px * var(--vfo-deck-rhythm-narrow)); }
     .receiver-row {
@@ -776,7 +777,6 @@
     .under-row { margin-block-start: calc(14px * var(--vfo-deck-rhythm-narrow)); }
     .dsp { gap: calc(9px * var(--vfo-deck-rhythm-narrow)); }
     .display-row { row-gap: calc(10px * var(--vfo-deck-rhythm-narrow)); }
-    .smeter-row { grid-column: 1 / -1; }
     .vfo-label { letter-spacing: 0.06em; }
     .lamp { width: 58px; }
     .lamp[data-chip='agc'] { width: 62px; }
@@ -784,6 +784,10 @@
     .lamp[data-chip='digi-sel'] { width: 66px; }
     .chip-lg { font-size: 13px; }
     .chip-tx { width: 44px; }
+  }
+
+  @container (max-width: 470px) {
+    .smeter-row { grid-column: 1 / -1; }
   }
 
   .sr-only {

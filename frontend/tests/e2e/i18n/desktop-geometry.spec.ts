@@ -554,8 +554,8 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     }
   });
 
-  for (const width of [1200] as const) {
-    test.only(`Standard ${width} compact absolute VFO pair keeps every bridge control`, async ({ page }, info) => {
+  for (const width of [900, 1024, 1200, 1700] as const) {
+    test(`Standard ${width} compact absolute VFO pair keeps every bridge control`, async ({ page }, info) => {
       await boot(page, 'standard', width, true, 'studioline', false, undefined, {
         height: 1000, extraCapabilities: ALL_STRUCTURAL_ACTION_CAPS, absoluteVfoPair: true,
       });
@@ -567,24 +567,6 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
         const cardRects = [...element.querySelectorAll('[data-standard-vfo-slot]')].map(rect);
         return {
           panel: rect(element), cards: cardRects,
-          panelScroll: { width: element.scrollWidth, clientWidth: element.clientWidth,
-            height: element.scrollHeight, clientHeight: element.clientHeight },
-          cardModes: [...element.querySelectorAll<HTMLElement>('[data-standard-vfo-slot]')].map(card => ({
-            width: card.getBoundingClientRect().width,
-            rows: [...card.querySelectorAll<HTMLElement>('[data-vfo-row]')].map(row => ({
-              name: row.dataset.vfoRow, rect: rect(row), grid: getComputedStyle(row).gridTemplateColumns,
-            })),
-            meterColumn: getComputedStyle(card.querySelector<HTMLElement>('.smeter-row')!).gridColumnStart,
-          })),
-          outside: [...element.querySelectorAll<HTMLElement>('*')].flatMap(target => {
-            if (target.getClientRects().length === 0) return [];
-            const box = target.getBoundingClientRect();
-            const owner = element.getBoundingClientRect();
-            if (box.left >= owner.left - 1 && box.right <= owner.right + 1) return [];
-            return [{ tag: target.tagName, className: target.className,
-              fact: target.getAttribute('data-indicator-fact'), chip: target.getAttribute('data-chip'),
-              text: target.textContent?.trim().slice(0, 80), rect: rect(target) }];
-          }),
           overflow: element.scrollWidth > element.clientWidth + 1,
           cardOverflow: [...element.querySelectorAll<HTMLElement>('[data-standard-vfo-slot]')]
             .map(card => {
@@ -629,12 +611,11 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
             })),
         };
       });
-      console.log(`MOR2509_GEOMETRY_${width} ${JSON.stringify(geometry)}`);
       await info.attach('compact-vfo-pair', { body: JSON.stringify(geometry), contentType: 'application/json' });
       if (width > 1050) {
-        // MOR-2509: the approved airy panel is ~189px tall plus the wrapper
-        // inset on both sides; 205 keeps that ceiling without the old 190.
-        expect.soft(geometry.panel.height, 'the full Standard VFO row stays compact').toBeLessThanOrEqual(205);
+        // The normal panel measures 196px with the approved +15% rhythm;
+        // two 6px wrapper insets and the row border make the 210px ceiling.
+        expect.soft(geometry.panel.height, 'the full Standard VFO row stays compact').toBeLessThanOrEqual(210);
         expect.soft(geometry.cards[0].top, 'A and B cards start together').toBeCloseTo(geometry.cards[1].top, 0);
         expect.soft(geometry.cards[0].bottom, 'A and B cards end together').toBeCloseTo(geometry.cards[1].bottom, 0);
       }
@@ -832,8 +813,8 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       }));
       for (const panel of geometry) {
         expect(panel.meterColumn).toBe(expectedNarrow ? '1' : '3');
-        if (expectedNarrow) expect(panel.panelWidth).toBeLessThanOrEqual(480);
-        else expect(panel.panelWidth - 480).toBeGreaterThanOrEqual(8);
+        if (expectedNarrow) expect(panel.panelWidth).toBeLessThanOrEqual(470);
+        else expect(panel.panelWidth - 470).toBeGreaterThanOrEqual(8);
       }
     });
   }
