@@ -116,7 +116,11 @@ function ruleBlocks(css: string): Array<{ selector: string; body: string }> {
  *  `.a.a:focus-visible` is the MOR-2522 specificity raise over the studioline
  *  focus contract — so compounds are deduplicated before comparison; raw
  *  string equality would misread the doubled class as a different element
- *  and report the base rule as unpaired. */
+ *  and report the base rule as unpaired. The simple-selector split is
+ *  escape-aware: a `.` or `#` preceded by a backslash belongs to the
+ *  preceding simple selector (`.a\.a` is ONE class whose name contains a
+ *  dot), so `.a\.a.a` keeps its second, distinct class and does not pair
+ *  with a lone `.a\.a`. */
 function selectorTargets(selector: string): string[] {
   return selector
     .split(',')
@@ -126,7 +130,7 @@ function selectorTargets(selector: string): string[] {
         .split(/(\s|[>+~])/)
         .map((compound) =>
           compound.includes('.') || compound.includes('#')
-            ? [...new Set(compound.split(/(?=[.#])/))].join('')
+            ? [...new Set(compound.split(/(?<!\\)(?=[.#])/))].join('')
             : compound,
         )
         .join('')
@@ -594,6 +598,27 @@ describe('MOR-1232: regression guard — no new unpaired outline:none suppressio
       `<style>.x { outline: none; } .y.y:focus-visible { box-shadow: var(--r); }</style>`,
     );
     expect(unpaired).toEqual(['.x']);
+  });
+
+  // Round-5 edge of the same normalisation: `.a\.a` is ONE class whose name
+  // contains a dot. Before the split recognised CSS escapes, `.a\.a.a`
+  // collapsed to `.a\.a` and the false pair hid a real suppression — the
+  // treatment additionally requires the distinct class `a`, so elements
+  // with only `a.a` stayed treated by nothing. Both halves pin through the
+  // real suppressionOffenders; `.a\.a` pairs only with a treatment that
+  // demands no extra class.
+  it('an escaped dot stays inside the class name: only escape-free repetition collapses', () => {
+    const escapedPaired = suppressionOffenders(
+      'guard-compound-normalisation.fixture.svelte',
+      `<style>.a\\.a { outline: none; } .a\\.a:focus-visible { box-shadow: var(--r); }</style>`,
+    );
+    expect(escapedPaired).toEqual([]);
+
+    const escapedFalsePair = suppressionOffenders(
+      'guard-compound-normalisation.fixture.svelte',
+      `<style>.a\\.a { outline: none; } .a\\.a.a:focus-visible { box-shadow: var(--r); }</style>`,
+    );
+    expect(escapedFalsePair).toEqual(['.a\\.a']);
   });
 
   it('LEGACY_DEBT entries still need their exemption (update the list, not silence it, once fixed)', () => {
