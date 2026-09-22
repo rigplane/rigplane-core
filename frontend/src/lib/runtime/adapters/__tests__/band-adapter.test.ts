@@ -586,17 +586,30 @@ describe('per-receiver band readings (MOR-2526)', () => {
   });
 
   it('currentBand IS the active receiver\'s entry — one source, not two (identity pin)', () => {
-    // One model invocation per comparison: `currentBand` and the map entry
-    // must be the SAME object within ONE `toRadioViewModel` call. Two calls
-    // build two models — value-equal, never reference-equal — so the pin
-    // would compare across derivations and prove nothing.
+    // Reference identity is assertable only on the RAW adapter output:
+    // `validateRadioViewModel` rebuilds every group from its validated
+    // fields (`validateBand` returns fresh `currentBand`/`receiverBands`
+    // objects), so identity cannot survive validation. One invocation per
+    // comparison — two `toRadioViewModel` calls build two models,
+    // value-equal but never reference-equal.
+    const raw = toRadioViewModel(bareState(), hfCaps);
+    expect(raw).not.toBeNull();
+    expect(raw!.band!.currentBand).toBe(raw!.band!.receiverBands.main);
+    const rawSub = toRadioViewModel(bareState({
+      active: 'SUB',
+      fieldStatus: { ...bareState().fieldStatus, 'sub.freqHz': fresh },
+    }), hfCaps);
+    expect(rawSub).not.toBeNull();
+    expect(rawSub!.band!.currentBand).toBe(rawSub!.band!.receiverBands.sub);
+    // The validated model still carries the same value shape end to end.
     const view = model(bareState(), hfCaps);
-    expect(view.band!.currentBand).toBe(view.band!.receiverBands.main);
+    expect(view.band!.currentBand).toEqual(view.band!.receiverBands.main);
+    expect(view.band!.currentBand.reading).toEqual({ status: 'known', value: '20m' });
     const onSub = model(bareState({
       active: 'SUB',
       fieldStatus: { ...bareState().fieldStatus, 'sub.freqHz': fresh },
     }), hfCaps);
-    expect(onSub.band!.currentBand).toBe(onSub.band!.receiverBands.sub);
+    expect(onSub.band!.currentBand).toEqual(onSub.band!.receiverBands.sub);
     expect(onSub.band!.currentBand.reading).toEqual({ status: 'known', value: '40m' });
     // MAIN keeps its own reading — the inactive entry is not overwritten.
     expect(onSub.band!.receiverBands.main.reading).toEqual({ status: 'known', value: '20m' });
