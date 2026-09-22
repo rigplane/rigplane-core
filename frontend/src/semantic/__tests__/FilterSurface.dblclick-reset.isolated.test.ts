@@ -17,13 +17,21 @@
  *     current filter selection → exactly ONE `set_filter_width` with it.
  *  3. Width label double-click on a radio WITHOUT a filter selector (the
  *     post-MOR-2530 FTX-1 shape: no `activeFilterConfiguration`, no
- *     `currentFilter`) is a DOCUMENTED no-op — the owner has not ruled
- *     which `defaults[]` element is the singular no-selector default, so
- *     no default is invented and no command is sent.
+ *     `currentFilter`) and WITHOUT the radio-default path wired is a
+ *     DOCUMENTED no-op — the owner has not ruled which `defaults[]`
+ *     element is the singular no-selector default, so no default is
+ *     invented and no command is sent.
  *  4. PBT label double-click → the ATOMIC `onPbtReset` dispatch site:
  *     exactly `set_pbt_inner` then `set_pbt_outer`, both with the lattice
  *     centre raw, in that order.
  *  5. The PBT reset button rides the same dispatch site.
+ *  6. MOR-2535 follow-up: with the `onWidthReset` prop wired (the wiring
+ *     seam passes it only when the profile carries the derived
+ *     `filter_width_radio_default` capability), the width double-click —
+ *     label AND value cell — calls that ONE dispatch site and sends
+ *     exactly `reset_filter_width {receiver}`, even when a mode-keyed
+ *     factory default exists: the radio's own default wins over the
+ *     profile table entry (owner ruling 2026-09-22).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
@@ -249,6 +257,65 @@ describe('MOR-2535 double-click on a filter row label resets it to its default',
     // announcement element appears.
     expect(row.querySelector<HTMLOutputElement>('output')!.textContent).toBe('3000');
     expect(target.querySelector('[data-control-feedback-status]')).toBeNull();
+  });
+
+  /** MOR-2535 follow-up harness: mount the width row with the radio-default
+   *  path wired — the capability tag in caps (what the wiring seam reads)
+   *  plus the `onWidthReset` prop backed by the REAL handler. Returns the
+   *  row element and the spies. */
+  function mountWidthRowWithRadioDefault() {
+    h.caps = {
+      ...FTX1_CAPABILITIES,
+      capabilities: [...FTX1_CAPABILITIES.capabilities, 'filter_width_radio_default'],
+      providerGeneration: 31,
+    };
+    h.state = {
+      ...structuredClone(FTX1_STATE), active: 'MAIN', fieldStatus: {},
+    } as unknown as ServerState;
+    const fixture = withModeFilter(topologyFixtures['1/single']);
+    const view = {
+      ...fixture,
+      modeFilter: {
+        ...fixture.modeFilter!,
+        // A mode-keyed factory default IS published here on purpose: the
+        // radio-default path must win over it.
+        activeFilterConfiguration: SSB_FACTORY_CONFIGURATION,
+        filterWidth: { reading: { status: 'known' as const, value: 3000 }, availability: AVAILABILITY },
+      },
+    };
+    const onWidthReset = vi.fn(makeFilterHandlers().onFilterWidthReset);
+    const onFilterWidthChange = vi.fn(makeFilterHandlers().onFilterWidthChange);
+    component = mount(FilterSurface, {
+      target,
+      props: { view, handles, part: 'filter', onFilterWidthChange, onWidthReset },
+    });
+    flushSync();
+    return {
+      row: target.querySelector<HTMLElement>('[data-testid="filter-width"]')!,
+      onWidthReset,
+      onFilterWidthChange,
+    };
+  }
+
+  it('width: with onWidthReset wired, the label double-click sends reset_filter_width — never the table default', () => {
+    const { row, onWidthReset, onFilterWidthChange } = mountWidthRowWithRadioDefault();
+
+    dblclick(row.querySelector<HTMLElement>('.filter-level-name')!);
+
+    expect(onWidthReset).toHaveBeenCalledTimes(1);
+    expect(onWidthReset).toHaveBeenCalledWith();
+    expect(onFilterWidthChange).not.toHaveBeenCalled();
+    expect(sentCommands()).toEqual([['reset_filter_width', { receiver: 0 }]]);
+  });
+
+  it('width: the value cell rides the same onWidthReset dispatch site', () => {
+    const { row, onWidthReset } = mountWidthRowWithRadioDefault();
+
+    dblclick(row.querySelector<HTMLOutputElement>('output')!);
+
+    expect(onWidthReset).toHaveBeenCalledTimes(1);
+    expect(onWidthReset).toHaveBeenCalledWith();
+    expect(sentCommands()).toEqual([['reset_filter_width', { receiver: 0 }]]);
   });
 
   it('PBT: double-click on a row label dispatches the atomic inner+outer centre reset, in order', () => {

@@ -56,6 +56,7 @@ from rigplane.runtime.managed_tx_state import (
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import (
     CommandQueue,
+    ResetFilterWidth,
     SelectVfo,
     SetBand,
     SetCwPitch,
@@ -3886,6 +3887,20 @@ async def test_execute_command_forwards_the_receiver_to_the_radio(
 
         value = next(iter(kwargs.values()))
         getattr(radio, radio_method).assert_awaited_once_with(value, receiver=receiver)
+
+
+@pytest.mark.asyncio
+async def test_execute_command_reset_filter_width_forwards_the_receiver() -> None:
+    """MOR-2535: ResetFilterWidth carries no value — only the receiver must
+    reach the radio's reset_filter_width, for SUB and MAIN alike."""
+    for receiver in (1, 0):
+        radio = make_radio()
+        radio.reset_filter_width = AsyncMock()
+        poller = YaesuCatPoller(radio, callback=lambda s: None, fast_interval=10.0)
+
+        await poller._execute_command(ResetFilterWidth(receiver=receiver))  # noqa: SLF001
+
+        radio.reset_filter_width.assert_awaited_once_with(receiver=receiver)
 
 
 def test_slow_group_interval_matches_the_profile_slow_control_cadence() -> None:

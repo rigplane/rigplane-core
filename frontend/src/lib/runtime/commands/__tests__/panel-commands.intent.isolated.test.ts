@@ -2996,3 +2996,66 @@ describe('MOR-1679 FTX-1 Table 5 filter-width write path', () => {
     expectIntentTransport();
   });
 });
+
+
+/**
+ * MOR-2535 follow-up — `onFilterWidthReset`, the width row's radio-default
+ * reset dispatch site (the `onPbtReset` shape): it emits `reset_filter_width`
+ * {receiver} ONLY when the connected profile carries the derived
+ * `filter_width_radio_default` capability, and it is NOT state-backed — no
+ * draft, no pending target, no lifecycle waiting for a value; the slider
+ * moves when the post-write readback arrives.
+ */
+describe('MOR-2535 onFilterWidthReset radio-default reset intent', () => {
+  const RADIO_DEFAULT_CAPS = () => ({
+    ...a06Caps(),
+    capabilities: ['filter_width', 'data_mode', 'dual_rx', 'filter_width_radio_default'],
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    h.state = a06State();
+    h.caps = RADIO_DEFAULT_CAPS() as unknown as Record<string, unknown>;
+    h.unavailable.clear();
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+  });
+
+  afterEach(() => {
+    resetCommandLifecycle();
+    vi.useRealTimers();
+  });
+
+  it('dispatches reset_filter_width {receiver: 0} when the capability is present', () => {
+    makeFilterHandlers().onFilterWidthReset();
+
+    expect(exactCalls()).toEqual([['reset_filter_width', { receiver: 0 }]]);
+    expectIntentTransport();
+    // Synchronous and timer-free: no debounce, no pending-target machinery.
+    expect(vi.getTimerCount()).toBe(1); // the command-lifecycle timeout only
+  });
+
+  it('forwards the SUB receiver when SUB is active', () => {
+    h.state = a06State('SUB');
+    makeFilterHandlers().onFilterWidthReset();
+
+    expect(exactCalls()).toEqual([['reset_filter_width', { receiver: 1 }]]);
+    expectIntentTransport();
+  });
+
+  it('dispatches nothing without the capability — the lease-reset path keeps the gesture', () => {
+    h.caps = a06Caps() as unknown as Record<string, unknown>;
+    makeFilterHandlers().onFilterWidthReset();
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('dispatches nothing when the active receiver is unobserved on a dual-RX radio', () => {
+    h.unavailable.add('active');
+    makeFilterHandlers().onFilterWidthReset();
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+});

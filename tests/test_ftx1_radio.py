@@ -1208,6 +1208,41 @@ async def test_set_filter_width_refuses_live_mode_without_table(connected_radio)
 
 
 @pytest.mark.asyncio
+async def test_reset_filter_width_main_sends_the_radio_default_code(connected_radio):
+    """MOR-2535: MAIN reset writes Table 5 code 00 (``SH0000;``) — the
+    radio's own mode-dependent "(Default)". The radio resolves the default
+    itself, so unlike ``set_filter_width`` no mode query precedes the
+    write."""
+    connected_radio._transport.query = AsyncMock()
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.reset_filter_width()
+    connected_radio._transport.write.assert_called_once_with("SH0000;")
+    connected_radio._transport.query.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reset_filter_width_sub_sends_sh1000(connected_radio):
+    """MOR-2535: SUB reset serializes with P1=1 (``SH1000;``)."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.reset_filter_width(receiver=1)
+    connected_radio._transport.write.assert_called_once_with("SH1000;")
+
+
+@pytest.mark.asyncio
+async def test_reset_filter_width_refuses_without_profile_code(config):
+    """MOR-2535: a profile with no ``[filters].radio_default_code`` gets the
+    same ``CommandError`` refusal style as ``set_filter_width``'s
+    unsupported paths — nothing reaches the wire."""
+    stripped = replace(config, filter_width_radio_default_code=None)
+    radio = YaesuCatRadio("/dev/null", profile=stripped)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    with pytest.raises(CommandError, match="reset_filter_width"):
+        await radio.reset_filter_width()
+    radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_set_filter_width_raw_index_keeps_non_table_encoding(config):
     """Encodings other than table_index keep sending width_hz as the raw
     code (no shipped Yaesu profile uses one; pinned for the compat path)."""

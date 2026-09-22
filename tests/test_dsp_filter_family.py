@@ -197,6 +197,43 @@ class TestFtx1Table5LoaderPins:
         profile = load_rig(_RIGS_DIR / "ftx1.toml").to_profile()
         assert profile.filter_width_first_code == 1
 
+    def test_radio_default_code_is_loaded_and_derives_the_capability(self) -> None:
+        """MOR-2535: code 00 is the writeable radio-default reset target; the
+        capability tag is derived from the field, never hand-listed."""
+        config = load_rig(_RIGS_DIR / "ftx1.toml")
+        assert config.filter_width_radio_default_code == 0
+        assert "filter_width_radio_default" in config.capabilities
+        profile = config.to_profile()
+        assert profile.filter_width_radio_default_code == 0
+        assert "filter_width_radio_default" in profile.capabilities
+
+    def test_radio_default_code_absent_means_no_capability(self) -> None:
+        """A profile without the field (IC-7300) exposes neither the code
+        nor the derived tag, on the config and the built profile alike."""
+        config = load_rig(_RIGS_DIR / "ic7300.toml")
+        assert config.filter_width_radio_default_code is None
+        assert "filter_width_radio_default" not in config.capabilities
+        assert "filter_width_radio_default" not in config.to_profile().capabilities
+
+    def test_radio_default_code_at_or_above_first_code_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """Codes from ``first_code`` up carry real Hz values; a "default"
+        among them would be a table entry, so the loader refuses it."""
+        from rigplane.rig_loader import RigLoadError
+
+        source = (_RIGS_DIR / "ftx1.toml").read_text()
+        mutated = source.replace("radio_default_code = 0", "radio_default_code = 1", 1)
+        assert mutated != source
+        target = tmp_path / "ftx1-bad-radio-default.toml"
+        target.write_text(mutated)
+        # load_rig resolves the shared CTCSS catalog beside the rig file.
+        (tmp_path / "_ctcss_tables_v1.toml").write_text(
+            (_RIGS_DIR / "_ctcss_tables_v1.toml").read_text()
+        )
+        with pytest.raises(RigLoadError, match=r"\[filters\]\.radio_default_code"):
+            load_rig(target)
+
 
 # ---------------------------------------------------------------------------
 # Protocol satisfaction
