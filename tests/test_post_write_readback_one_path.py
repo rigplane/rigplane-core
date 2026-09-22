@@ -28,6 +28,7 @@ from rigplane.capabilities import (
     CAP_COMPRESSOR,
     CAP_CW,
     CAP_FILTER_SHAPE,
+    CAP_FILTER_WIDTH_RADIO_DEFAULT,
     CAP_NOTCH,
     CAP_SCOPE,
     CAP_TUNER,
@@ -42,6 +43,7 @@ from rigplane.core.command_service import (
     CommandService,
     expected_observations_for_command,
 )
+from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     FieldPath,
@@ -55,6 +57,7 @@ from rigplane.web.handlers import ControlHandler
 from rigplane.web.radio_poller import (
     CommandQueue,
     RadioPoller,
+    ResetFilterWidth,
     SetAgc,
     SetAgcTimeConstant,
     SetAntiVoxGain,
@@ -246,7 +249,10 @@ _PENDING_LATER_PR: frozenset[str] = frozenset(
 
 
 def _set_command_arms() -> frozenset[str]:
-    """Every ``case Set*`` arm in ``RadioPoller._execute``'s ``match cmd:``."""
+    """Every ``case Set*``/``case Reset*`` arm in ``RadioPoller._execute``'s
+    ``match cmd:`` (``ResetFilterWidth``, MOR-2535, is the one non-``Set``
+    write command; counting only ``Set`` prefixes would exempt it from the
+    readback classification every other write arm gets)."""
     source = (_SRC / "web" / "radio_poller.py").read_text()
     tree = ast.parse(source)
     arms: set[str] = set()
@@ -260,7 +266,7 @@ def _set_command_arms() -> frozenset[str]:
                 pattern.cls, ast.Name
             ):
                 cls = pattern.cls.id
-            if cls is not None and cls.startswith("Set"):
+            if cls is not None and cls.startswith(("Set", "Reset")):
                 arms.add(cls)
     return frozenset(arms)
 
@@ -624,6 +630,39 @@ async def test_sub_receiver_write_reads_back_the_sub_path() -> None:
     assert _readback_paths(scheduler) == {
         FieldPath.parse("receiver.sub.operator_controls.nr_level")
     }
+
+
+@pytest.mark.asyncio
+async def test_reset_filter_width_dispatch_requests_the_width_readback() -> None:
+    """MOR-2535: the radio-default reset rides the ONE post-write readback
+    path — a USER-priority re-read of the receiver's width field, the same
+    field ``set_filter_width`` reads back."""
+    poller, scheduler = _poller(
+        setters=("reset_filter_width",),
+        capabilities=frozenset({CAP_FILTER_WIDTH_RADIO_DEFAULT}),
+    )
+
+    await poller._execute(ResetFilterWidth(receiver=0))  # noqa: SLF001
+
+    poller._radio.reset_filter_width.assert_awaited_once_with(receiver=0)  # noqa: SLF001
+    assert _readback_paths(scheduler) == {
+        FieldPath.parse("receiver.main.active.freq_mode.filter_width")
+    }
+    assert _readback_priorities(scheduler) == {AcquisitionPriority.USER}
+
+
+@pytest.mark.asyncio
+async def test_reset_filter_width_without_the_capability_refuses() -> None:
+    """The tag exists exactly when the profile declares a writeable
+    radio-default code; without it the dispatch refuses before any backend
+    call and requests no readback."""
+    poller, scheduler = _poller(setters=("reset_filter_width",))
+
+    with pytest.raises(CommandError, match="reset_filter_width"):
+        await poller._execute(ResetFilterWidth(receiver=0))  # noqa: SLF001
+
+    poller._radio.reset_filter_width.assert_not_awaited()  # noqa: SLF001
+    assert not _readback_paths(scheduler)
 
 
 # ---------------------------------------------------------------------------

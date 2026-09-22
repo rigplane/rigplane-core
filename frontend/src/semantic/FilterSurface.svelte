@@ -40,12 +40,21 @@
   and VALUE cell, never on the range track — a track double-click would fire
   native `input` events (position commands) before the reset, so the track
   keeps its untouched single-gesture behaviour. Two mechanisms, by row:
-  - IF shift and width reset through the scalar lease's `reset()`: the
-    IF-shift row carries `defaultValue: 0` (zero offset); the width row
-    carries the profile's factory default for the CURRENT filter selection
-    where the mode-keyed configuration declares one — and none where it
-    does not, in which case the policy's `reset` returns null, no candidate
-    forms, and nothing is dispatched (no invented default, nothing shown).
+  - IF shift resets through the scalar lease's `reset()`: the row carries
+    `defaultValue: 0` (zero offset).
+  - Width has two reset paths, chosen by prop presence. When the wiring
+    seam passes `onWidthReset` (the connected profile declares a writeable
+    radio-default width code — the `filter_width_radio_default`
+    capability), the double-click takes that ONE atomic dispatch site:
+    `reset_filter_width` returns the width to the RADIO's own
+    mode-dependent default (owner ruling 2026-09-22), and the slider moves
+    when the post-write readback arrives — no draft, no pending target, no
+    lifecycle wait. Without the prop the width row keeps its lease
+    `reset()`: the profile's factory default for the CURRENT filter
+    selection where the mode-keyed configuration declares one — and none
+    where it does not, in which case the policy's `reset` returns null, no
+    candidate forms, and nothing is dispatched (no invented default,
+    nothing shown).
   - PBT resets stay ATOMIC through the `onPbtReset` prop: the button AND a
     row double-click call that ONE handler, which gates the combined
     operation and emits inner+outer in its established order. The PBT rows
@@ -117,6 +126,14 @@
     pbtInnerFeedback?: Readonly<CommandScalarFeedback>;
     pbtOuterFeedback?: Readonly<CommandScalarFeedback>;
     onFilterWidthChange?: (width: number) => void;
+    /** MOR-2535 follow-up: the width row's radio-default reset dispatch
+     *  site, passed by the wiring seam ONLY when the connected profile
+     *  carries the `filter_width_radio_default` capability. Prop presence
+     *  selects the double-click path: present → this ONE call (the radio
+     *  resolves its own default); absent → the lease `reset()` to the
+     *  profile-declared factory width, exactly as before. Same
+     *  atomic-prop shape as `onPbtReset`. */
+    onWidthReset?: () => void;
     onIfShiftChange?: (value: number) => void;
     onPbtInnerChange?: (value: number) => void;
     onPbtOuterChange?: (value: number) => void;
@@ -129,7 +146,7 @@
   let {
     view, handles, finiteLayout, part = 'all', filterWidthFeedback,
     ifShiftFeedback, pbtInnerFeedback, pbtOuterFeedback,
-    onFilterWidthChange, onIfShiftChange, onPbtInnerChange, onPbtOuterChange,
+    onFilterWidthChange, onWidthReset, onIfShiftChange, onPbtInnerChange, onPbtOuterChange,
     onPbtReset,
   }: Props = $props();
 
@@ -147,7 +164,9 @@
    *  joins the two published facts, it never re-derives the config). `null`
    *  when there is no configuration, no observed filter selection, or no
    *  declared default for that slot — the double-click is then a no-op and
-   *  nothing is shown, never a fallback to an invented value. */
+   *  nothing is shown, never a fallback to an invented value. This lease
+   *  path runs only when the wiring seam passes NO `onWidthReset`; with the
+   *  radio-default capability the gesture routes there instead. */
   function filterWidthDefaultHz(): number | null {
     const config = modeFilter?.activeFilterConfiguration;
     const current = modeFilter?.currentFilter;
@@ -239,6 +258,22 @@
     );
   });
   onDestroy(() => filterWidthScalar.destroy());
+  /** MOR-2535 follow-up: the ONE width-row double-click routing decision.
+   *  A fixed-width mode has no width to set (the track is not drawn
+   *  either), so the gesture stays gated off there on both paths. With the
+   *  radio-default prop wired, the reset is that single atomic dispatch —
+   *  the lease `reset()` (and its profile-table default) is bypassed, per
+   *  the owner ruling that the target is the RADIO's own default, not a
+   *  profile entry. */
+  function resetWidthRow(): void {
+    if (fixedWidth) return;
+    if (onWidthReset !== undefined) {
+      onWidthReset();
+      return;
+    }
+    filterWidthLease?.reset();
+  }
+
   /** One guarded entry point for all three passband sliders — each still
    *  reads and disables on its OWN field's availability (see the file
    *  header, rule 3), this only routes the already-checked value onward. */
@@ -443,18 +478,18 @@
           <!-- MOR-2535: the reset gesture lives on the label and the value
                cell, NOT on the track — a track double-click fires native
                `input` events (position commands) before `dblclick` would
-               run. With no declared factory default the policy's `reset`
-               returns null and the gesture dispatches nothing, so the hint
-               appears only when a default exists. A FIXED-width radio has
-               no width to set (the track is not drawn either), so the
+               run. `resetWidthRow()` picks the path: the atomic
+               `onWidthReset` dispatch when the radio-default capability is
+               wired, else the lease reset — which dispatches nothing when
+               no declared factory default exists, so the hint appears only
+               when a reset would actually do something. A FIXED-width radio
+               has no width to set (the track is not drawn either), so the
                gesture is gated off there too. -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <span
             class="filter-level-name"
-            title={!fixedWidth && filterWidthDefaultHz() !== null ? 'Double-click: default' : undefined}
-            ondblclick={() => {
-              if (!fixedWidth) filterWidthLease?.reset();
-            }}
+            title={!fixedWidth && (onWidthReset !== undefined || filterWidthDefaultHz() !== null) ? 'Double-click: default' : undefined}
+            ondblclick={resetWidthRow}
           >Width</span>
           {#if !fixedWidth}
             <input
@@ -469,9 +504,7 @@
             />
           {/if}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <output ondblclick={() => {
-            if (!fixedWidth) filterWidthLease?.reset();
-          }}>{textOf(modeFilter.filterWidth)}</output>
+          <output ondblclick={resetWidthRow}>{textOf(modeFilter.filterWidth)}</output>
           {#if filterWidthAnnouncement !== null}
             {#key filterWidthAnnouncement.eventKey}
               <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"

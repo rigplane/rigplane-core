@@ -582,7 +582,12 @@ class YaesuCatPoller:
             )
             matches = (
                 expectation in expectations
-                and _exact_readback_value_matches(observation.value, expectation.value)
+                and (
+                    expectation.matches_any_value
+                    or _exact_readback_value_matches(
+                        observation.value, expectation.value
+                    )
+                )
                 and observation.timestamp_monotonic >= dispatched_at
                 and generation[0] == self._current_tx_target_generation()
                 and generation[1] == self._captured_provider_generation()
@@ -1072,6 +1077,7 @@ class YaesuCatPoller:
 
         from ..._poller_types import (
             PttOff,
+            ResetFilterWidth,
             SelectVfo,
             SetAgc,
             SetApf,
@@ -1226,6 +1232,12 @@ class YaesuCatPoller:
                 )
             case SetFilterWidth(width=width, receiver=rx):
                 await radio.set_filter_width(width, receiver=rx)
+            case ResetFilterWidth(receiver=rx):
+                # MOR-2535: the radio resolves its own mode-dependent
+                # default; the width field's post-write readback (the
+                # command-service expectation tracked after dispatch plus
+                # the ordinary poll) delivers the resolved Hz value.
+                await radio.reset_filter_width(receiver=rx)
             case SetFilterShape(shape=_shape):
                 raise NotImplementedError(
                     "SetFilterShape unsupported by Yaesu CAT dispatcher"

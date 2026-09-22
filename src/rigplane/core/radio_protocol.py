@@ -93,6 +93,7 @@ __all__ = [
     "RecoverableConnection",
     "AdvancedControlCapable",
     "DspControlCapable",
+    "FilterWidthRadioDefaultCapable",
     "AntennaControlCapable",
     "AttenuatorObservationProjectable",
     "AttenuatorStepsCapable",
@@ -1693,6 +1694,29 @@ class DspControlCapable(Protocol):
 
     async def get_nb_width(self, receiver: int = 0) -> int:
         """Get NB width (0-255)."""
+        ...
+
+
+@runtime_checkable
+class FilterWidthRadioDefaultCapable(Protocol):
+    """Reset the DSP IF filter width to the radio's OWN default (MOR-2535).
+
+    Kept out of ``DspControlCapable`` on purpose: only radios whose CAT
+    dialect has a writeable "(Default)" width code (the FTX-1's ``SH`` code
+    00, declared as ``[filters].radio_default_code``) implement it, and
+    ``isinstance`` must answer False for the rest — Icom backends do not
+    implement it. The derived ``filter_width_radio_default`` capability tag
+    is the web-layer gate; this protocol is the runtime one.
+    """
+
+    async def reset_filter_width(self, receiver: int = 0) -> None:
+        """Write the profile's radio-default width code for ``receiver``.
+
+        The radio resolves the code to the current mode's default width, so
+        the width in Hz arrives through the ordinary post-write readback —
+        this method returns nothing. Raises ``CommandError`` when the active
+        profile declares no radio-default code.
+        """
         ...
 
 

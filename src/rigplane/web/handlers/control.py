@@ -42,6 +42,7 @@ from ..radio_poller import (  # noqa: TID251
     CommandQueue,
     PttOff,
     PttOn,
+    ResetFilterWidth,
     ScanSetDfSpan,
     ScanSetResume,
     ScanStart,
@@ -181,6 +182,7 @@ from ...capabilities import (
     CAP_CW,
     CAP_DATA_MODE,
     CAP_DUAL_WATCH,
+    CAP_FILTER_WIDTH_RADIO_DEFAULT,
     CAP_POWER_CONTROL,
     CAP_SYSTEM_SETTINGS,
     CAP_TUNER,
@@ -521,6 +523,7 @@ class ControlHandler:
             "send_civ",
             "set_filter",
             "set_filter_width",
+            "reset_filter_width",
             "set_filter_shape",
             "set_if_shift",
             "ptt",
@@ -2537,6 +2540,22 @@ class ControlHandler:
                 self._ensure_receiver_supported(rx)
                 q.put(SetFilterWidth(width, receiver=rx))
                 return {"width": width, "receiver": rx}
+            case "reset_filter_width":
+                # MOR-2535: no width parameter — the radio resolves its own
+                # mode-dependent default, so the response carries no
+                # ``admitted_width`` either. Capability-gated: the tag exists
+                # exactly when the profile declares a writeable
+                # radio-default code.
+                receiver = params.get("receiver", 0)
+                if type(receiver) is not int or receiver not in (0, 1):
+                    raise ValueError("receiver must be the integer 0 or 1")
+                rx = receiver
+                self._ensure_capability(
+                    CAP_FILTER_WIDTH_RADIO_DEFAULT, "reset_filter_width"
+                )
+                self._ensure_receiver_supported(rx)
+                q.put(ResetFilterWidth(receiver=rx))
+                return {"receiver": rx}
             case "set_filter_shape":
                 shape = int(params["shape"])
                 rx = int(params.get("receiver", 0))

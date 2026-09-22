@@ -14,7 +14,10 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Any, cast
 
-from rigplane.core.capabilities import KNOWN_CAPABILITIES
+from rigplane.core.capabilities import (
+    CAP_FILTER_WIDTH_RADIO_DEFAULT,
+    KNOWN_CAPABILITIES,
+)
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     AdaptiveDecayPolicy,
@@ -608,6 +611,11 @@ class RigConfig:
     filter_width_max: int = 9999
     filter_width_encoding: str = "segmented_bcd_index"
     filter_width_first_code: int = 0
+    # ``[filters].radio_default_code``: the writeable code for the radio's
+    # own mode-dependent width default (MOR-2535). ``None`` when the TOML
+    # declares none; ``load_rig`` then also withholds the derived
+    # ``filter_width_radio_default`` capability tag.
+    filter_width_radio_default_code: int | None = None
     filter_config: dict[str, FilterWidthRule] | None = None
     max_watts: int | None = None
     data_mode_count: int = 0
@@ -805,6 +813,7 @@ class RigConfig:
             filter_width_max=self.filter_width_max,
             filter_width_encoding=self.filter_width_encoding,
             filter_width_first_code=self.filter_width_first_code,
+            filter_width_radio_default_code=self.filter_width_radio_default_code,
             filter_config=self.filter_config,
             max_watts=self.max_watts,
             att_values=self.att_values,
@@ -2045,6 +2054,12 @@ def load_rig(path: Path) -> RigConfig:
                 f"{filename}: unknown capability {cap!r}. "
                 f"Known: {sorted(KNOWN_CAPABILITIES)}"
             )
+    if CAP_FILTER_WIDTH_RADIO_DEFAULT in features:
+        raise RigLoadError(
+            f"{filename}: capability {CAP_FILTER_WIDTH_RADIO_DEFAULT!r} is derived "
+            "from [filters].radio_default_code and must not be listed in "
+            "[capabilities].features"
+        )
     rf_sql_control_model = data["capabilities"].get("rf_sql_control_model", "separate")
     if rf_sql_control_model not in VALID_RF_SQL_CONTROL_MODELS:
         raise RigLoadError(
@@ -2155,6 +2170,27 @@ def load_rig(path: Path) -> RigConfig:
     filter_width_max = int(filter_section.get("width_max_hz", 9999))
     filter_width_encoding = str(filter_section.get("encoding", "segmented_bcd_index"))
     filter_width_first_code = int(filter_section.get("first_code", 0))
+    # MOR-2535: optional ``radio_default_code`` — the writeable code that
+    # returns the width to the radio's own mode-dependent default (FTX-1
+    # Table 5 code 00). It must sit BELOW ``first_code``: codes from
+    # ``first_code`` up carry real Hz values, so a "default" among them
+    # would be a table entry, not the radio's default.
+    radio_default_code_raw = filter_section.get("radio_default_code")
+    filter_width_radio_default_code: int | None = None
+    if radio_default_code_raw is not None:
+        if isinstance(radio_default_code_raw, bool) or not isinstance(
+            radio_default_code_raw, int
+        ):
+            raise RigLoadError(
+                f"{filename}: [filters].radio_default_code must be an integer"
+            )
+        if not 0 <= radio_default_code_raw < filter_width_first_code:
+            raise RigLoadError(
+                f"{filename}: [filters].radio_default_code "
+                f"{radio_default_code_raw} must be >= 0 and below first_code "
+                f"{filter_width_first_code}"
+            )
+        filter_width_radio_default_code = radio_default_code_raw
     filter_config_raw = filter_section.get("width", {})
     filter_config: dict[str, FilterWidthRule] | None = None
     if isinstance(filter_config_raw, dict) and filter_config_raw:
@@ -2713,6 +2749,22 @@ def load_rig(path: Path) -> RigConfig:
     )
     tx_policy = _parse_tx_policy(filename, data.get("tx_policy"))
 
+    # The reset-to-radio-default capability is DERIVED from the parsed
+    # ``[filters].radio_default_code`` field (MOR-2535), never hand-listed in
+    # a TOML ``features`` array: the tag and the writeable code cannot drift
+    # apart. Everything downstream (``RigConfig.capabilities``,
+    # ``RadioProfile.capabilities``, ``/api/v1/capabilities``) reads this
+    # one tuple.
+    capability_features = tuple(features)
+    if (
+        filter_width_radio_default_code is not None
+        and CAP_FILTER_WIDTH_RADIO_DEFAULT not in capability_features
+    ):
+        capability_features = (
+            *capability_features,
+            CAP_FILTER_WIDTH_RADIO_DEFAULT,
+        )
+
     return RigConfig(
         id=radio["id"],
         model=radio["model"],
@@ -2723,7 +2775,7 @@ def load_rig(path: Path) -> RigConfig:
         has_lan=radio["has_lan"],
         has_wifi=radio["has_wifi"],
         default_baud=radio.get("default_baud", 19200),
-        capabilities=tuple(features),
+        capabilities=capability_features,
         modes=tuple(modes),
         mode_codes=mode_codes,
         filters=tuple(filters),
@@ -2731,6 +2783,7 @@ def load_rig(path: Path) -> RigConfig:
         filter_width_max=filter_width_max,
         filter_width_encoding=filter_width_encoding,
         filter_width_first_code=filter_width_first_code,
+        filter_width_radio_default_code=filter_width_radio_default_code,
         filter_config=filter_config,
         max_watts=max_watts,
         vfo_scheme=scheme,

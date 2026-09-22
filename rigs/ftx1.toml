@@ -657,6 +657,13 @@ encoding = "table_index"
 # mode-dependent "(Default)" with no Hz value. Pinned by
 # tests/test_dsp_filter_family.py::TestFtx1Table5LoaderPins.
 first_code = 1
+# Code 00 is also the WRITE-side reset target (MOR-2535): ``SH P1 00``
+# returns the width to the radio's own mode-dependent default, and the
+# post-write ``SH P1;`` read answers the RESOLVED code, never 00 (bench
+# probe 2026-09-22: SH0000; on MAIN USB from 2400 Hz → SH0020; = 3000 Hz).
+# The loader validates it sits below first_code and derives the
+# ``filter_width_radio_default`` capability from its presence.
+radio_default_code = 0
 width_min_hz = 50
 width_max_hz = 4000
 

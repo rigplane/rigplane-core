@@ -1772,6 +1772,28 @@ class YaesuCatRadio:
         )
         await self._write(cmd, code=index)
 
+    async def reset_filter_width(self, receiver: int = 0) -> None:
+        """Return filter width to the radio's own default (SH, MOR-2535).
+
+        Writes the profile-declared ``filter_width_radio_default_code``
+        (FTX-1 2508-C Table 5 code 00, the mode-dependent "(Default)")
+        through the same ``set_filter_width``/``set_filter_width_sub`` CAT
+        command a Hz write uses — no mode query, no Hz translation: the
+        radio itself resolves the code to the current mode's default width,
+        and the next ``read_filter_width`` answers the RESOLVED code's Hz
+        value (a post-write read never answers 00; bench probe 2026-09-22).
+        Profiles without the field refuse with the same ``CommandError``
+        style as ``set_filter_width``'s unsupported paths.
+        """
+        code = self.profile.filter_width_radio_default_code
+        if code is None:
+            raise CommandError(
+                "reset_filter_width is unsupported: the active profile "
+                "declares no radio-default width code"
+            )
+        cmd = "set_filter_width" if receiver == 0 else "set_filter_width_sub"
+        await self._write(cmd, code=code)
+
     async def read_if_shift(self, receiver: int = 0) -> int:
         """Read IF shift offset in Hz without mutating legacy state.
 

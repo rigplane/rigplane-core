@@ -85,6 +85,7 @@ Maximum batch size: 128 steps. Per-step timeout: 10 seconds.
 | `set_mode` | `mode: str`, `receiver?: int=0` | — | Yes | Mode strings from profile `modes[]`, e.g. `"USB"`, `"FM"`, `"CW"`. |
 | `set_filter` | `filter?: str="FIL1"`, `receiver?: int=0` | — | Yes | Accepted: `"FIL1"`, `"FIL2"`, `"FIL3"`. |
 | `set_filter_width` | `width: int` (Hz), `receiver?: int=0` | — | Yes | Passband width; radio-specific valid range. |
+| `reset_filter_width` | `receiver?: int=0` (0=MAIN, 1=SUB) | `filter_width_radio_default` | Yes | Returns the FTX-1 width to the radio's own default via its profile-declared code; no `admitted_width`. |
 | `set_filter_shape` | `shape: int`, `receiver?: int=0` | `filter_shape` | Yes | |
 | `set_if_shift` | `offset: int`, `receiver?: int=0` | `if_shift` | Yes | Offset relative to center in Hz. |
 | `set_rit_status` | `on?: bool=false` | `rit` | Yes | |

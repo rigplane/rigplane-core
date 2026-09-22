@@ -52,6 +52,7 @@ from rigplane.web.protocol import (
 from rigplane.web.radio_poller import (
     QuickDwTrigger,
     QuickSplitTrigger,
+    ResetFilterWidth,
     SelectVfo,
     SetAgc,
     SetAgcTimeConstant,
@@ -907,6 +908,98 @@ async def test_enqueue_command_variants(
     assert isinstance(cmd, expected_type)
     for key, value in expected_attrs.items():
         assert getattr(cmd, key) == value
+
+
+def _ftx1_width_default_radio() -> SimpleNamespace:
+    """Radio double whose profile declares the radio-default width code."""
+    radio = _capable_radio()
+    radio.profile = resolve_radio_profile(model="FTX-1")
+    radio.capabilities = set(radio.profile.capabilities)
+    return radio
+
+
+@pytest.mark.asyncio
+async def test_enqueue_reset_filter_width_enqueues_for_declared_profile() -> None:
+    """MOR-2535: ``reset_filter_width {receiver}`` queues a ResetFilterWidth
+    and answers with the receiver only — no ``admitted_width`` (the radio
+    resolves its own default; there is no target to admit)."""
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        radio=_ftx1_width_default_radio(),
+        server=SimpleNamespace(command_queue=queue),
+    )
+
+    result = await handler._enqueue_command("reset_filter_width", {"receiver": 1})
+
+    assert result == {"receiver": 1}
+    assert len(queue.items) == 1
+    cmd = queue.items[0]
+    assert isinstance(cmd, ResetFilterWidth)
+    assert cmd.receiver == 1
+
+
+@pytest.mark.asyncio
+async def test_enqueue_reset_filter_width_defaults_to_main_receiver() -> None:
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        radio=_ftx1_width_default_radio(),
+        server=SimpleNamespace(command_queue=queue),
+    )
+
+    result = await handler._enqueue_command("reset_filter_width", {})
+
+    assert result == {"receiver": 0}
+    assert isinstance(queue.items[0], ResetFilterWidth)
+
+
+@pytest.mark.asyncio
+async def test_enqueue_reset_filter_width_requires_the_derived_capability() -> None:
+    """Without the profile-declared radio-default code there is no reset —
+    the IC-7610 double refuses before anything is queued."""
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        radio=_capable_radio(), server=SimpleNamespace(command_queue=queue)
+    )
+
+    with pytest.raises(
+        ValueError, match="missing capability: filter_width_radio_default"
+    ):
+        await handler._enqueue_command("reset_filter_width", {})
+
+    assert queue.items == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"receiver": "bogus"},
+        {"receiver": True},
+        {"receiver": 0.5},
+        {"receiver": "1"},
+        {"receiver": 5},
+    ],
+    ids=[
+        "non-integer receiver",
+        "boolean receiver",
+        "float receiver",
+        "numeric-string receiver",
+        "receiver out of range",
+    ],
+)
+async def test_enqueue_reset_filter_width_rejects_junk_params(
+    params: dict[str, object],
+) -> None:
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        radio=_ftx1_width_default_radio(),
+        server=SimpleNamespace(command_queue=queue),
+    )
+
+    with pytest.raises((ValueError, TypeError)):
+        await handler._enqueue_command("reset_filter_width", params)
+
+    assert queue.items == []
 
 
 @pytest.mark.asyncio

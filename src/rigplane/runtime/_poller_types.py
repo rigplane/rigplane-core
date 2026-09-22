@@ -41,6 +41,7 @@ __all__ = [
     "QuickDwTrigger",
     "QuickSplit",
     "QuickSplitTrigger",
+    "ResetFilterWidth",
     "ScanSetDfSpan",
     "ScanSetResume",
     "ScanStart",
@@ -211,6 +212,19 @@ class SetFilter:
 @dataclass(frozen=True, slots=True)
 class SetFilterWidth:
     width: int
+    receiver: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ResetFilterWidth:
+    """Return the width to the radio's own default (MOR-2535).
+
+    Carries no target value: the radio resolves its mode-dependent default
+    itself, so there is nothing to coalesce or confirm against — the width
+    arrives through the ordinary post-write readback of the
+    ``freq_mode.filter_width`` field.
+    """
+
     receiver: int = 0
 
 
@@ -881,6 +895,7 @@ Command: TypeAlias = (
     | SetFilter
     | SetFilterShape
     | SetFilterWidth
+    | ResetFilterWidth
     | SetPower
     | SetRfGain
     | SetAfLevel
@@ -1044,6 +1059,7 @@ LEGACY_COMMAND_NAMES: dict[type, str] = {
     SetMode: "set_mode",
     SetFilter: "set_filter",
     SetFilterWidth: "set_filter_width",
+    ResetFilterWidth: "reset_filter_width",
     SetFilterShape: "set_filter_shape",
     SetDataMode: "set_data_mode",
     SetAttenuator: "set_att",

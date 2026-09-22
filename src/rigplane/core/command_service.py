@@ -115,7 +115,12 @@ class CommandExecutor(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class PendingOverlay:
-    """Read-your-writes projection scoped to one command ingress context."""
+    """A scoped pending value or an internal post-write readback expectation.
+
+    ``matches_any_value`` is only for value-less operations whose result is
+    chosen by the radio. Such expectations are retained for correlation but
+    are never added to the client-visible pending-overlay collection.
+    """
 
     source: CommandSource
     session_id: str | None
@@ -123,6 +128,7 @@ class PendingOverlay:
     path: FieldPath
     value: Any
     expires_at_monotonic: float
+    matches_any_value: bool = False
 
     def is_expired(self, now: float) -> bool:
         return now >= self.expires_at_monotonic
@@ -689,6 +695,20 @@ class CommandService:
             try:
                 value = _expected_value_for_path(intent, path)
             except KeyError:
+                if intent.name == "reset_filter_width":
+                    self._record_readback_expectation(
+                        PendingOverlay(
+                            source=intent.source,
+                            session_id=session_id,
+                            command_id=intent.id,
+                            path=path,
+                            value=None,
+                            expires_at_monotonic=(
+                                now + timeout + _READBACK_EXPECTATION_GRACE_SECONDS
+                            ),
+                            matches_any_value=True,
+                        )
+                    )
                 continue
             self.record_pending_overlay(
                 PendingOverlay(
@@ -1064,7 +1084,8 @@ def _observation_reconciles_overlay(
       equal the overlay's ``command_id`` (MOR-435 — value-equality alone is a
       weak signal for low-cardinality fields);
     - a reconcilable path (exact, or the external-rigctld main alias);
-    - value equality.
+    - value equality, unless the operation explicitly expects the radio to
+      choose the resulting value.
 
     Because correlation is mandatory, an unsolicited update or poll response
     that merely happens to carry the same value with no (or a different)
@@ -1081,7 +1102,7 @@ def _observation_reconciles_overlay(
         observation.correlation_id is not None
         and observation.correlation_id == overlay.command_id
         and _paths_reconcile(observation, overlay.path)
-        and overlay.value == observation.value
+        and (overlay.matches_any_value or overlay.value == observation.value)
     )
 
 
@@ -1368,6 +1389,10 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
     if name == "set_filter":
         return FieldPath.receiver(receiver, "freq_mode", "filter_num")
     if name == "set_filter_width":
+        return FieldPath.receiver(receiver, "freq_mode", "filter_width")
+    if name == "reset_filter_width":
+        # MOR-2535: the radio-default reset moves the same field; the
+        # readback answers the radio-resolved default width in Hz.
         return FieldPath.receiver(receiver, "freq_mode", "filter_width")
     if name in ("set_ptt", "ptt", "ptt_on", "ptt_off"):
         return FieldPath.global_("tx_state", "ptt")
