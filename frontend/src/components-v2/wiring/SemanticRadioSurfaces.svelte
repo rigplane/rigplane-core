@@ -1843,11 +1843,8 @@
   let vfoOperationInput: VfoOperationProjectionInput | null = $derived(view === null ? null : {
     hasVfoPair: view.vfos.length > 1,
     hasDualReceiver,
-    /** MOR-2509 review: the SPLIT/DW keys exist only where the radio
-     *  declares the capability — read off the same `runtime.caps` the
-     *  `hasDualReceiver` flag above uses, one mechanism, no second path. */
-    hasSplit: runtime.caps?.capabilities.includes('split') ?? false,
-    hasDualWatch: runtime.caps?.capabilities.includes('dual_watch') ?? false,
+    hasSplit: runtime.caps?.capabilities?.includes('split') ?? false,
+    hasDualWatch: runtime.caps?.capabilities?.includes('dual_watch') ?? false,
     relativeIdentityUnknown: view.vfos.some((candidate) => candidate.slot.kind === 'relative'),
     activeReceiver: view.activeReceiver,
     split: view.split,

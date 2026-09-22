@@ -46,22 +46,25 @@
     rfState: MeterRfState,
     receiver: ReceiverId,
   ): LowerScaleDescriptor | undefined {
+    // MOR-2509 owner rule: a radio-wide value is shown on the TX-target
+    // panel only. A scale that is not this receiver's is not drawn at all —
+    // an unlit row on the non-target panel would read as "measured, zero",
+    // which the radio never reported; an unknown TX target draws it nowhere.
+    if (txTarget.status !== 'known' || txTarget.receiver !== receiver) return undefined;
     const field = meters?.power;
     if (!field?.availability.structural) return undefined;
     const presentation = projectTxMeterPresentation(field, rfState);
     const watts = presentation.value;
-    const fraction = watts !== null && txTarget.status === 'known' && txTarget.receiver === receiver
-      ? (field.domain === undefined
-        ? normalizePower(watts) : normalizePower(watts, field.domain))
-      : null;
+    const fraction = watts === null ? null
+      : (field.domain === undefined
+        ? normalizePower(watts) : normalizePower(watts, field.domain));
     return {
       label: 'Po',
       ticks: POWER_LOWER_SCALE_TICKS,
       valueFraction: fraction === null ? 0 : Math.min(1, Math.max(0, fraction)),
       fault: false,
       relevant: true,
-      accessibleDescription: txTarget.status === 'known' && txTarget.receiver === receiver
-        ? 'Transmit power' : 'Transmit power, not this receiver\'s scale',
+      accessibleDescription: 'Transmit power',
     };
   }
 </script>

@@ -293,7 +293,8 @@ function singleReceiverState(): ServerState {
 }
 /** 1/single caps: no `dual_rx` tag, or the topology derivation contradicts itself. */
 const singleReceiverCaps = (): Capabilities => ({
-  ...mainSubCaps(), receivers: 1, vfoScheme: 'single', scope: false, capabilities: ['audio', 'tx'],
+  ...mainSubCaps(), receivers: 1, vfoScheme: 'single', scope: false,
+  capabilities: ['audio', 'tx', 'split'],
 } as unknown as Capabilities);
 
 /** The ticket's operational audio-scope condition: scope=false + audioFft=true. */
@@ -321,7 +322,8 @@ const audioOnlyScopeCaps = (): Capabilities => ({
  * independent of what state.sub happens to report.
  */
 const dualRxUnavailableCaps = (): Capabilities => ({
-  ...mainSubCaps(), scope: false, capabilities: ['audio', 'tx'],
+  ...mainSubCaps(), scope: false,
+  capabilities: mainSubCaps().capabilities.filter((t) => t !== 'scope' && t !== 'dual_rx'),
 } as unknown as Capabilities);
 
 let target: HTMLDivElement;
