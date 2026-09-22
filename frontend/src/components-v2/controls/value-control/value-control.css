@@ -194,7 +194,7 @@
 /* MOR-2522: the control-level focus indication for every value-control
  * renderer, declared once here instead of five per-component copies. The
  * focused track or knob lights up (box-shadow paints no geometry); the
- * global filter glow in app.css adds the same knob colour, so the two read
+ * global ring+halo in app.css paints the same knob colour, so the two read
  * as one lamp, and no block-level highlight exists to double it.
  * [data-wheel-armed] is set by wheel-control.ts on pointer/Enter arming,
  * where the pointer modality keeps :focus-visible from matching — the

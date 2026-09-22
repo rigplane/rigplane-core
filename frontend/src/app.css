@@ -8,21 +8,24 @@
 }
 
 :focus-visible {
-  /* MOR-2522: focus is illumination, never a frame (owner rulings
-   * 2026-09-21/22) — the VFO deck's "lit, not framed" treatment, app-wide.
-   * The focused control lights up in the per-skin focus colour; no outline
-   * is drawn anywhere and no element changes size or position (shadow and
-   * filter paint outside the box). `filter`, not `box-shadow`: this rule
-   * scores (0,1,0), and any Svelte-scoped component box-shadow (0,2,0+) —
-   * e.g. TxPanel's PTT transmit glow — would erase a global shadow, the
-   * MOR-1232 defect; scoped `filter` exists only in the VFO deck, which
-   * overrides this rule at (0,3,0) with its own brightness steps. The
-   * legacy literal keeps the pre-v2 window (skins are code-split) lit in
-   * the legacy accent, mirroring the old --focus-ring fallback. */
+  /* MOR-2522 (correction round): focus is a box-shadow-carried ring+halo
+   * in the per-skin focus colour — never a `filter`, which on the focused
+   * element makes it the containing block for fixed/absolute descendants
+   * (re-anchoring open popovers), forces offscreen compositing, and paints
+   * nothing on a transparent backdrop. Claim of this change: the
+   * value-control sliders, the VFO deck (its own owner-approved brightness
+   * steps, control-button.css) and this app-level default. Sites whose
+   * scoped box-shadow beats this (0,1,0) rule carry their own scoped
+   * illumination (value-control.css, TxPanel PTT, PttFab, the shared v2
+   * button in control-button.css); the remaining literal outline sites
+   * (BandSelector, fieldline.css, semantic-controls.css, …) keep their
+   * existing visible outlines and move onto this contract in PR 2. No
+   * geometry changes: box-shadow paints outside the box. The legacy
+   * literal keeps the code-split pre-v2 window lit in the legacy accent. */
   outline: none;
-  filter: var(--v2-focus-illum-filter,
-    drop-shadow(0 0 1px var(--accent))
-    drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 55%, transparent)));
+  box-shadow: var(--v2-focus-illum-shadow,
+    0 0 0 2px var(--accent),
+    0 0 14px 2px color-mix(in srgb, var(--accent) 55%, transparent));
 }
 
 body {

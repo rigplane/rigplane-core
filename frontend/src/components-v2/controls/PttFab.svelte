@@ -224,6 +224,20 @@
     50%      { box-shadow: 0 0 22px rgba(239, 68, 68, 0.9), 0 4px 12px rgba(0, 0, 0, 0.4); }
   }
 
+  /* MOR-2522: the FAB paints a scoped box-shadow in every state, and the
+   * latch pulse ANIMATES the element shadow — each of which replaces the
+   * box-shadow-carried global focus light (app.css). The rim ring rides a
+   * pseudo-element that no state rule or animation touches; the FAB itself
+   * is position: fixed, so the overlay anchors to it. */
+  .ptt-fab:focus-visible::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    pointer-events: none;
+    box-shadow: var(--v2-focus-illum-rim);
+  }
+
   /* Advisory permit styling never gates the server-admitted intent. */
   .ptt-fab-permit-denied {
     border-color: rgba(239, 68, 68, 0.35);

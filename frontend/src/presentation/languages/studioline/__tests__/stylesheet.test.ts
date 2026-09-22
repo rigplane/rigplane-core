@@ -201,12 +201,13 @@ describe('the CSS half honours the same constraints as the token half', () => {
 
   it('never re-suppresses focus, and paints it as illumination, never a frame (MOR-977 §1.2.5, MOR-2522)', () => {
     // app.css removes the UA focus frame globally; this language feeds the
-    // contract knob its own colour and adds light — it declares no outline
-    // property of its own at all.
+    // contract knob its own colour and paints the box-shadow-carried
+    // ring+halo — it declares no outline property of its own at all.
     expect(css).not.toMatch(/outline\s*:/);
+    expect(css).not.toMatch(/(?<![\w-])filter\s*:/);
     expect(css).toMatch(/--v2-focus-ring-color:\s*var\(--dl-studioline-focus\)/);
     expect(css).toMatch(
-      /filter:\s*var\(\s*--v2-focus-illum-filter,\s*drop-shadow\(0 0 1px var\(--dl-studioline-focus\)\)/,
+      /box-shadow:\s*var\(\s*--v2-focus-illum-shadow,\s*0 0 0 2px var\(--dl-studioline-focus\)/,
     );
   });
 

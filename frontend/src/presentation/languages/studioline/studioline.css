@@ -176,14 +176,15 @@
 
 /* ── One focus contract, never re-suppressed (MOR-977 §1.2.5) ───────────── */
 [data-design-language='studioline'][data-design-language] :focus-visible {
-  /* MOR-2522: illumination, never a frame. app.css removes the UA focus
-   * frame for every focusable element; this lights the focused control in
-   * the language colour (fed through --v2-focus-ring-color above). The
-   * literal fallback keeps the language self-sufficient when the v2 theme
-   * layer — the home of --v2-focus-illum-filter — is not mounted. */
-  filter: var(--v2-focus-illum-filter,
-    drop-shadow(0 0 1px var(--dl-studioline-focus))
-    drop-shadow(0 0 6px color-mix(in srgb, var(--dl-studioline-focus) 55%, transparent)));
+  /* MOR-2522: illumination, never a frame, carried by box-shadow (never a
+   * filter). app.css removes the UA focus frame for every focusable
+   * element; this paints the contract's ring+halo in the language colour
+   * (fed through --v2-focus-ring-color above). The literal fallback keeps
+   * the language self-sufficient when the v2 theme layer — the home of
+   * --v2-focus-illum-shadow — is not mounted. */
+  box-shadow: var(--v2-focus-illum-shadow,
+    0 0 0 2px var(--dl-studioline-focus),
+    0 0 14px 2px color-mix(in srgb, var(--dl-studioline-focus) 55%, transparent));
 }
 
 /* ── The channel strip: no boxes, one optical left margin ───────────────── */

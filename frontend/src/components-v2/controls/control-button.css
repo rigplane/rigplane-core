@@ -132,6 +132,27 @@
   outline-offset: 2px;
 }
 
+/* MOR-2522: the shared button paints scoped box-shadows — the base inset
+ * highlight above plus the active/indicator variants below — and every one
+ * of them replaces the box-shadow-carried global focus light (app.css,
+ * (0,1,0)). The rim ring therefore rides a dedicated pseudo-element: no
+ * rule in this file shadows ::after, no state list has to be extended, and
+ * an inset ring is not clipped by the button's overflow: hidden. The deck
+ * keeps its own owner-approved brightness steps, so the bridge scope under
+ * the standard deck appearance suppresses the rim there. */
+.v2-control-button:focus-visible::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: var(--v2-focus-illum-rim);
+}
+
+[data-vfo-appearance='standard'] [data-instrument-bridge] .v2-control-button:focus-visible::after {
+  content: none;
+}
+
 /* Truly disabled state — must be visually distinct from idle.
  * Issue #804: idle was being confused with disabled because both looked
  * muted. Disabled now gets reduced opacity + not-allowed cursor and

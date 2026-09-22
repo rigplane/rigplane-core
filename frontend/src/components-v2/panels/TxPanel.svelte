@@ -434,6 +434,15 @@
     box-shadow: 0 0 12px rgba(239, 68, 68, 0.4);
   }
 
+  /* MOR-2522: the held/latched state shadow replaces the box-shadow-carried
+   * global focus light (app.css); the focused transmit state paints the same
+   * glow WITH the contract ring. The plain focused button sets no shadow of
+   * its own and takes the global ring+halo directly. */
+  .ptt-button.ptt-held:focus-visible,
+  .ptt-button.ptt-latched:focus-visible {
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.4), var(--v2-focus-illum-ring);
+  }
+
   .tx-error {
     color: var(--v2-accent-red, #ef4444);
     font-size: 11px;
