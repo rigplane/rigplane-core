@@ -2142,9 +2142,9 @@ def load_rig(path: Path) -> RigConfig:
 
     # Validate [filters]
     filter_section = data["filters"]
+    if "list" not in filter_section:
+        raise RigLoadError(f"{filename}: missing required [filters].list")
     filters = filter_section.get("list", [])
-    if not filters:
-        raise RigLoadError(f"{filename}: [filters].list must not be empty")
     filter_width_min = int(filter_section.get("width_min_hz", 50))
     filter_width_max = int(filter_section.get("width_max_hz", 9999))
     filter_width_encoding = str(filter_section.get("encoding", "segmented_bcd_index"))

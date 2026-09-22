@@ -347,7 +347,10 @@ function filterState(): ServerState {
 
 const filterCaps = (): Capabilities => ({
   ...liveCaps(true),
-  capabilities: [...liveCaps(true).capabilities, 'filter_shape', 'if_shift', 'pbt', 'data_mode'],
+  capabilities: [
+    ...liveCaps(true).capabilities,
+    'filter_width', 'filter_shape', 'if_shift', 'pbt', 'data_mode',
+  ],
   modes: ['USB', 'CW', 'FM'], filters: ['FIL1', 'FIL2', 'FIL3'],
   dataModeCount: 2,
   controls: {

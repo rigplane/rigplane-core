@@ -100,7 +100,7 @@ function observedAgain(base: ServerState, path: string, marker: number): ServerS
 function liveCaps(): Capabilities {
   return {
     model: 'fixture', scope: false, audio: true, tx: true,
-    capabilities: ['audio', 'tx', 'preamp', 'nb', 'nr'],
+    capabilities: ['audio', 'tx', 'filter_width', 'preamp', 'nb', 'nr'],
     preValues: [0, 1, 2], attValues: [0, 6, 12, 18],
     receivers: 1, vfoScheme: 'single',
     freqRanges: [], modes: ['USB', 'LSB'], filters: ['FIL1', 'FIL2', 'FIL3'],

@@ -1,5 +1,5 @@
 /**
- * FTX-1 capabilities fixture (MOR-1679) — GENERATED, never hand-written.
+ * FTX-1 capabilities fixture (MOR-1679, MOR-2530).
  *
  * Produced offline by running the real `WebServer._serve_capabilities`
  * handler (no sockets, no radio I/O — the same construction
@@ -14,7 +14,9 @@
  * txBands, audioConfig/webrtc required by `validateCapabilities`), laid
  * out compactly (sorted keys; filterConfig one mode per line). The full
  * byte-faithful payload does not fit this change's line ceiling; the
- * values are the serializer's own output, unedited.
+ * values are the serializer's own output. MOR-2530 updates the selector
+ * projection to match the empty `rigs/ftx1.toml` `[filters].list`; the
+ * endpoint contract is pinned in `tests/test_web_capability_guards.py`.
  */
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
