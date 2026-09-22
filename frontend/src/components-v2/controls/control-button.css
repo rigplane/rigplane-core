@@ -643,8 +643,8 @@
 }
 
 .vfo-ops[data-vfo-operation-appearance='standard']
-  .v2-control-button[data-indicator-style='dot'][data-indicator-color='violet'] {
-  --indicator-color: var(--dl-vfo-key-violet, #9a78e0);
+  .v2-control-button[data-indicator-style='dot'][data-indicator-color='amber'] {
+  --indicator-color: var(--dl-vfo-key-amber, #ffd47a);
 }
 
 .vfo-ops[data-vfo-operation-appearance='standard']

@@ -1222,6 +1222,14 @@
     padding: 4px;
     gap: 3px;
     --vfo-ops-gap: 3px;
+    --btn-font-size: 12px;
+    --indicator-dot-offset: 4px;
+    --indicator-dot-gap: 4px;
+  }
+  [data-vfo-appearance='standard'] .bridge:not(.standard-pair-bridge) {
+    --btn-font-size: 12px;
+    --indicator-dot-offset: 4px;
+    --indicator-dot-gap: 4px;
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .facts) {
     display: grid;

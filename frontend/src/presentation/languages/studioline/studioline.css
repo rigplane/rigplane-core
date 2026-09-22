@@ -127,6 +127,7 @@
   --dl-vfo-key-lamp-border: #3b4653;
   --dl-vfo-key-cyan: #22d3ee;
   --dl-vfo-key-red: #e2362c;
+  --dl-vfo-key-amber: #ffd47a;
   --dl-vfo-key-violet: #9a78e0;
   --dl-vfo-key-selected-background: linear-gradient(180deg, #1391b0, #0b5f78);
   --dl-vfo-key-selected-border: #67e8f9;
@@ -145,7 +146,6 @@
   --dl-vfo-brown-glow: var(--v2-vfo-glow-override, 0 0 7px rgba(190, 110, 40, 0.45));
   --dl-vfo-dsp-glow: var(--v2-vfo-glow-override, 0 0 8px rgba(200, 220, 240, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12));
   --dl-vfo-slate-glow: var(--v2-vfo-glow-override, 0 0 7px rgba(140, 165, 190, 0.3));
-  --dl-vfo-bridge-lamp-glow: var(--v2-vfo-glow-override, 0 0 0 1px color-mix(in srgb, var(--indicator-color) 20%, transparent), 0 0 6px color-mix(in srgb, var(--indicator-color) 30%, transparent), 0 0 12px color-mix(in srgb, var(--indicator-color) 18%, transparent));
   /* The readout primitive reads the skin variable below for its digit
      weight; re-pointing it here (the --bg precedent) is what makes the
      language own the VFO readout's numerals. Without a definition the

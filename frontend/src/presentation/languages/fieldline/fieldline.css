@@ -114,6 +114,7 @@
   --dl-vfo-key-lamp-border: rgba(242, 245, 247, 0.32);
   --dl-vfo-key-cyan: #1eaabd;
   --dl-vfo-key-red: #c34740;
+  --dl-vfo-key-amber: var(--dl-fieldline-tx-tuning);
   --dl-vfo-key-violet: #8068ad;
   --dl-vfo-key-selected-background: #165466;
   --dl-vfo-key-selected-border: #72aeba;
@@ -132,7 +133,6 @@
   --dl-vfo-brown-glow: none;
   --dl-vfo-dsp-glow: none;
   --dl-vfo-slate-glow: none;
-  --dl-vfo-bridge-lamp-glow: none;
 }
 
 [data-design-language='fieldline'][data-design-language][data-language-mode='light'] {

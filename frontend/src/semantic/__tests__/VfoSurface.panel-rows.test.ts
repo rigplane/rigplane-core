@@ -683,6 +683,18 @@ function winningDeclaration(
   ).at(-1)?.value;
 }
 
+function winningInheritedDeclaration(
+  css: string,
+  target: Element,
+  property: string,
+): string | undefined {
+  for (let current: Element | null = target; current !== null; current = current.parentElement) {
+    const value = winningDeclaration(css, current, property);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
 const panelCss = styleBlock('src/components-v2/vfo/VfoPanel.svelte');
 const surfaceCss = styleBlock('src/semantic/VfoSurface.svelte');
 const layoutCss = styleBlock('src/components-v2/layout/RadioLayout.svelte');
@@ -1107,12 +1119,6 @@ describe('mock-up /tmp/vfo-deck-final-mockup-v8.html (2026-09-22)', () => {
     ).join('\n');
     expect(litLamp, 'changing the filled lamp or 6px alive glow turns this red')
       .toMatch(/background:\s*var\(--indicator-color\);[^}]*box-shadow:\s*0 0 6px var\(--indicator-color\)/s);
-    const selectedKey = rulesFor(buttons,
-      ".v2-control-button[data-appearance='selected'][data-active='true']",
-    ).join('\n');
-    expect(selectedKey, 'disconnecting selected fill, border, ink or shadow tokens turns this red')
-      .toMatch(/border-color:\s*var\(--dl-vfo-key-selected-border[^}]*background:\s*var\(--dl-vfo-key-selected-background[^}]*color:\s*var\(--dl-vfo-key-selected-ink[^}]*box-shadow:\s*var\(--dl-vfo-key-selected-shadow/s);
-
     const divider = rulesFor(ops, '.bridge-divider').join('\n');
     expect(divider, 'changing the one-pixel separator turns this red').toMatch(/height:\s*1px/);
     expect(divider, 'changing the separator 8px vertical margin turns this red')
@@ -1127,6 +1133,7 @@ describe('mock-up /tmp/vfo-deck-final-mockup-v8.html (2026-09-22)', () => {
       ['lamp frame', /--dl-vfo-key-lamp-border:\s*#3b4653/],
       ['cyan lamp', /--dl-vfo-key-cyan:\s*#22d3ee/],
       ['red lamp', /--dl-vfo-key-red:\s*#e2362c/],
+      ['amber lamp', /--dl-vfo-key-amber:\s*#ffd47a/],
       ['violet lamp', /--dl-vfo-key-violet:\s*#9a78e0/],
       ['selected gradient', /--dl-vfo-key-selected-background:\s*linear-gradient\(180deg,\s*#1391b0,\s*#0b5f78\)/],
       ['selected border', /--dl-vfo-key-selected-border:\s*#67e8f9/],
@@ -1143,6 +1150,8 @@ describe('mock-up /tmp/vfo-deck-final-mockup-v8.html (2026-09-22)', () => {
       .toMatch(/--dl-vfo-key-selected-background:\s*#165466/);
     expect(field, "changing fieldline's quieter #72aeba border turns this red")
       .toMatch(/--dl-vfo-key-selected-border:\s*#72aeba/);
+    expect(field, "disconnecting fieldline's amber lamp from its tuning ramp turns this red")
+      .toMatch(/--dl-vfo-key-amber:\s*var\(--dl-fieldline-tx-tuning\)/);
     expect(field, "allowing fieldline's selected key to glow turns this red")
       .toMatch(/--dl-vfo-key-selected-shadow:\s*none/);
     const segment = language('segmentline');
@@ -1154,8 +1163,13 @@ describe('mock-up /tmp/vfo-deck-final-mockup-v8.html (2026-09-22)', () => {
       .toMatch(/--dl-vfo-key-selected-shadow:\s*none/);
     expect(segment, "disconnecting segmentline's cyan lamp from its ink ramp turns this red")
       .toMatch(/--dl-vfo-key-cyan:\s*var\(--dl-segmentline-ink-strong\)/);
+    expect(segment, "disconnecting segmentline's amber lamp from its ink ramp turns this red")
+      .toMatch(/--dl-vfo-key-amber:\s*rgba\(var\(--dl-segmentline-ink\) \/ 0\.68\)/);
     expect(segment, "disconnecting segmentline's violet lamp from its ink ramp turns this red")
       .toMatch(/--dl-vfo-key-violet:\s*var\(--dl-segmentline-ink-soft\)/);
+    for (const css of [studio, field, segment]) {
+      expect(css).not.toContain('--dl-vfo-bridge-lamp-glow');
+    }
   });
 
   it('resolves the winning bridge lamp and selected-key declarations by specificity and order', () => {
@@ -1169,7 +1183,13 @@ describe('mock-up /tmp/vfo-deck-final-mockup-v8.html (2026-09-22)', () => {
           <button class="v2-control-button active" data-active="true"
             data-indicator-style="dot" data-indicator-color="cyan"></button>
         </div>
-        <button class="v2-control-button" data-active="true" data-appearance="selected"></button>
+      </div>
+      <div class="bridge standard-pair-bridge" data-instrument-bridge>
+        <button class="v2-control-button" data-standard-select-vfo="A"
+          data-active="true" data-appearance="selected"></button>
+      </div>
+      <div class="bridge" data-instrument-bridge>
+        <button class="vfo-select" data-vfo-select-absolute="A"></button>
       </div>
     `;
     const lamp = host.querySelector<HTMLButtonElement>('[data-indicator-style="dot"]')!;
@@ -1178,14 +1198,22 @@ describe('mock-up /tmp/vfo-deck-final-mockup-v8.html (2026-09-22)', () => {
     for (const [colour, expected] of [
       ['cyan', 'var(--dl-vfo-key-cyan, #22d3ee)'],
       ['red', 'var(--dl-vfo-key-red, #e2362c)'],
+      ['amber', 'var(--dl-vfo-key-amber, #ffd47a)'],
       ['violet', 'var(--dl-vfo-key-violet, #9a78e0)'],
     ] as const) {
       lamp.dataset.indicatorColor = colour;
       expect(winningDeclaration(buttons, lamp, '--indicator-color')).toBe(expected);
     }
-    const selected = host.querySelector<HTMLButtonElement>('[data-appearance="selected"]')!;
+    const selected = host.querySelector<HTMLButtonElement>('[data-standard-select-vfo]')!;
     expect(winningDeclaration(buttons, selected, 'background'))
       .toBe('var(--dl-vfo-key-selected-background, linear-gradient(180deg, #1391b0, #0b5f78))');
+    const identity = host.querySelector<HTMLButtonElement>('[data-vfo-select-absolute]')!;
+    for (const key of [selected, identity]) {
+      expect(winningInheritedDeclaration(surfaceCss, key, '--btn-font-size')).toBe('12px');
+      expect(winningInheritedDeclaration(surfaceCss, key, '--indicator-dot-offset')).toBe('4px');
+      expect(winningInheritedDeclaration(surfaceCss, key, '--indicator-dot-gap')).toBe('4px');
+      expect(winningInheritedDeclaration(surfaceCss, key, '--btn-min-height')).toBeUndefined();
+    }
   });
 });
 
