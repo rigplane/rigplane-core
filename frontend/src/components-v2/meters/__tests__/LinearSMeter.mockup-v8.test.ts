@@ -4,6 +4,7 @@ import type { ComponentProps } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import LinearSMeter from '../LinearSMeter.svelte';
+import { projectSignalMeter } from '../smeter-scale';
 import { readFileSync } from 'node:fs';
 
 // MOR-2509 R2-2: every number below is re-measured from the owner's mock-up
@@ -65,12 +66,16 @@ function makeCaps(cal: typeof FTX1_CAL): Capabilities {
 }
 
 const FIXTURE_WIDTH = 606;
-// The 58px value column (10px gap + 48px cell) and the whole-pixel track:
-// floor((606 - 58) / 3) * 3 = 546.
-const TRACK_W = 546;
-const READOUT_X = TRACK_W + 10;
-// The S9 share 4/7 of 546 = 312 exactly — on the 3px segment grid.
-const S9_X = 312;
+// The mock-up's flex model, verbatim: the track is the exact width minus
+// the 58px value column (10px gap + 48px cell) — 548px here, NOT floored
+// to the dash pitch. The reading cell's left edge (and the Po label's) is
+// the width minus the 48px cell = 558. The S9 numeral sits at the exact
+// 4/7 share of 548 = 313.142857px; the blue→red fill split is the one
+// number on the dash RASTER, snapped to the whole-dash grid at 312px.
+const TRACK_W = FIXTURE_WIDTH - 58;
+const READOUT_X = FIXTURE_WIDTH - 48;
+const S9_LABEL_X = (4 / 7) * TRACK_W;
+const S9_RASTER_X = 312;
 
 class FakeResizeObserver {
   private static callback?: (entries: { target: Element }[]) => void;
@@ -204,7 +209,7 @@ describe('MOR-2509 R2-2 — mock-up v8 S-meter geometry', () => {
     expect(odd.getAttribute('fill')).toBe('var(--dl-vfo-meter-tick-label, #e6edf4)');
   });
 
-  it('gives the track 12px of height in the 16px value row, 58px value column', () => {
+  it('gives the track 12px of height in the 16px value row, exact flex remainder', () => {
     const svg = mountMeter(withPo());
     const track = svg.querySelector('[data-meter-track]')!;
     expect(Number(track.getAttribute('stroke-width'))).toBe(12);
@@ -212,13 +217,17 @@ describe('MOR-2509 R2-2 — mock-up v8 S-meter geometry', () => {
     // 12px track centres at y = 20 + 3 + 8 = 31. Red if the row rhythm drifts.
     expect(Number(track.getAttribute('y1'))).toBe(31);
     expect(Number(track.getAttribute('x1'))).toBe(0);
-    expect(Number(track.getAttribute('x2'))).toBe(TRACK_W);
+    // The track is the flex:1 remainder after the 58px column — the exact
+    // width minus 58, no dash-pitch floor. Red if the v7 floor returns.
+    expect(Number(track.getAttribute('x2'))).toBe(FIXTURE_WIDTH - 58);
     expect(track.getAttribute('stroke-dasharray')).toBe('2 1');
     expect(track.getAttribute('stroke')).toBe('var(--v2-meter-unlit)');
-    // 10px gap + 48px cell: the reading column starts exactly 10px past the
-    // track's right edge. Red if the v7 8px gap or 58px-wide cell returns.
+    // The reading cell's left edge is the width minus the 48px CELL (not
+    // the floored fixture): a 49px or 50px cell moves it to 557/556 and
+    // this pin goes red. The 10px gap is the cell edge minus the track end.
     const reading = svg.querySelector('[data-meter-reading]')!;
-    expect(Number(reading.getAttribute('x'))).toBe(READOUT_X);
+    expect(Number(reading.getAttribute('x'))).toBe(FIXTURE_WIDTH - 48);
+    expect(Number(reading.getAttribute('x')) - Number(track.getAttribute('x2'))).toBe(10);
     expect(Number(reading.getAttribute('y'))).toBe(31);
     expect(Number(reading.getAttribute('font-size'))).toBe(13);
     expect(Number(reading.getAttribute('font-weight'))).toBe(400);
@@ -229,23 +238,46 @@ describe('MOR-2509 R2-2 — mock-up v8 S-meter geometry', () => {
     expect(svg.querySelectorAll('[data-meter-reading]')).toHaveLength(1);
   });
 
-  it('splits lit colour at the S9 share (4/7 = 57.14%) on the segment grid', () => {
+  it('splits lit colour at the S9 share, numeral exact and fill on the raster', () => {
     const svg = mountMeter(withPo());
-    // 4/7 of the 546px track is exactly 312px and lands on the 3px grid; red
-    // if the blue→red handover moves off the mock-up's 57.14% share.
+    // The S9 numeral is LAYOUT: the exact 4/7 share of the 548px track,
+    // 313.142857px. Red if the share moves or inherits a raster floor.
+    const s9 = [...svg.querySelectorAll('[data-scale-label]')]
+      .find((label) => label.textContent === '9')!;
+    expect(Number(s9.getAttribute('x'))).toBeCloseTo(S9_LABEL_X, 5);
+    // The blue→red fill split is the RASTER: snapped to the whole-dash grid
+    // (104 × 3 = 312) so no dash renders half blue and half red — within
+    // one pitch of the numeral's exact share.
     expect(Number(svg.querySelector('[data-meter-fill-red]')!.getAttribute('x1')))
-      .toBe(S9_X);
+      .toBe(S9_RASTER_X);
   });
 
-  it('peaks with a constant 2px light marker and .38 afterglow, at every zone', () => {
-    const svg = mountMeter(withPo());
-    const peak = svg.querySelector('[data-meter-peak]')!;
-    expect(Number(peak.getAttribute('stroke-width'))).toBe(2);
-    expect(peak.getAttribute('stroke')).toBe('var(--dl-vfo-meter-peak, #e8f1ff)');
-    expect(peak.getAttribute('opacity')).toBeNull();
+  it('peaks with a constant 2px light marker and .38 afterglow, in each zone', () => {
+    // Two frames, one reading below S9 and one past it, each with the peak
+    // armed ahead of the bar: the marker keeps the mock-up's one constant
+    // tone at every zone — the v7 cyan/red zone colours would go red here.
+    const frameAt = (value: number) => {
+      const projection = projectSignalMeter(value);
+      return {
+        projection,
+        smoothedFraction: projection.motionFraction!,
+        peakFraction: Math.min(1, projection.motionFraction! + 0.4),
+        afterglowFraction: null,
+        reducedMotion: false,
+      };
+    };
+    for (const value of [-36, 20]) {
+      const svg = mountMeter({ frame: frameAt(value), variant: 'vfo', compact: true });
+      const peak = svg.querySelector('[data-meter-peak]')!;
+      expect(peak.getAttribute('visibility')).toBe('visible');
+      expect(Number(peak.getAttribute('stroke-width'))).toBe(2);
+      expect(peak.getAttribute('stroke')).toBe('var(--dl-vfo-meter-peak, #e8f1ff)');
+      expect(peak.getAttribute('opacity')).toBeNull();
+    }
     // .after { opacity: .38 } — red if the v7 0.35 afterglow returns.
-    expect(svg.querySelector('[data-meter-glow]')!.getAttribute('stroke-opacity')).toBe('0.38');
-    expect(svg.querySelector('[data-meter-glow-red]')!.getAttribute('stroke-opacity')).toBe('0.38');
+    const settled = mountMeter(withPo());
+    expect(settled.querySelector('[data-meter-glow]')!.getAttribute('stroke-opacity')).toBe('0.38');
+    expect(settled.querySelector('[data-meter-glow-red]')!.getAttribute('stroke-opacity')).toBe('0.38');
   });
 
   it('draws the Po stack: 12px numerals at y 46, 7px bar at y 61, Po label in the column', () => {
@@ -285,6 +317,22 @@ describe('MOR-2509 R2-2 — mock-up v8 S-meter geometry', () => {
     expect(unknown.getAttribute('aria-label')).toBe('S meter reading unknown');
     expect(unknown.textContent).not.toContain('?');
   });
+
+  it('never changes the SVG size with the reading', () => {
+    // "Ничего не меняет размер и не сдвигается": two readings at the bottom
+    // and top of the scale render the identical root box — same width, same
+    // fixed height, no viewBox that could re-scale geometry under a value.
+    // Red if any value-driven path resizes the face.
+    const bottom = mountMeter(withPo(-54));
+    const top = mountMeter(withPo(40));
+    for (const svg of [bottom, top]) {
+      expect(svg.getAttribute('width')).toBe('100%');
+      expect(svg.getAttribute('height')).toBe('68');
+      expect(svg.getAttribute('viewBox')).toBeNull();
+    }
+    expect(top.getAttribute('height')).toBe(bottom.getAttribute('height'));
+    expect(top.getAttribute('width')).toBe(bottom.getAttribute('width'));
+  });
 });
 
 // ── 2. The numeral rule: odd S-units + declared + knots, collision-thinned ──
@@ -296,10 +344,10 @@ describe('MOR-2509 R2-2 — the mock-up v8 numeral rule', () => {
     const svg = mountMeter(withPo());
     const labels = [...svg.querySelectorAll('[data-scale-label]')];
     // The FTX-1 table declares EVERY S-unit plus +10/+20/+40. The mock-up
-    // ladder is the odd units and the non-colliding + knots: +10 sits 1/3 of
-    // a rung from +20 (7.6px at the 160px minimum track, under a "+NN"
-    // numeral's 21.6px of ink), so only +20/+40 draw. Red if even units,
-    // +10, or an invented +60 appear.
+    // ladder is the odd units and the non-colliding + knots: +10 sits 1/14
+    // of the track from the S9 numeral (11.43px at the 160px minimum track,
+    // under a "+NN" numeral's 21.6px of ink), so only +20/+40 draw. Red if
+    // even units, +10, or an invented +60 appear.
     expect(labels.map((label) => label.textContent))
       .toEqual(['1', '3', '5', '7', '9', '+20', '+40']);
     const slots = [0, 1 / 7, 2 / 7, 3 / 7, 4 / 7, 5 / 7, 6 / 7];
@@ -311,10 +359,15 @@ describe('MOR-2509 R2-2 — the mock-up v8 numeral rule', () => {
   it('a dense +10..+60 ladder thins to the mock-up +20/+40/+60 set', () => {
     setCapabilities(makeCaps(DENSE_PLUS_CAL));
     const svg = mountMeter(withPo());
+    const labels = [...svg.querySelectorAll('[data-scale-label]')];
     // Only S9 and every +10 knot declared: the rule keeps one numeral per
     // mock-up rung. Red if the thinning stops dropping intermediate knots.
-    expect([...svg.querySelectorAll('[data-scale-label]')].map((label) => label.textContent))
+    expect(labels.map((label) => label.textContent))
       .toEqual(['9', '+20', '+40', '+60']);
+    // Slot-zero anchoring, not first-index: this table's first DRAWN numeral
+    // is '9' at slot 4/7 and still centres — only a numeral at share 0
+    // (FTX-1's '1' above) left-anchors.
+    expect(labels[0]!.getAttribute('text-anchor')).toBe('middle');
   });
 });
 
@@ -349,8 +402,15 @@ describe('MOR-2509 R2-2 — mock-up v8 source pins', () => {
     expect(studiolineSource).toMatch(/--dl-vfo-meter-po-label:\s*#c3ced9;/);
   });
 
-  it('carries no keyframes and no value-driven size change', () => {
-    // The v7 rules stay: no CSS animation may sneak the bar into motion.
+  it('carries no keyframes and filters no Po fill', () => {
+    // The v7 rules stay: no CSS animation may sneak the bar into motion,
+    // and the lit filter belongs to the S track's `.lit` alone — the
+    // mock-up leaves `.polit` the plain meter blue.
     expect(componentSource).not.toMatch(/@keyframes/);
+    const style = componentSource.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? '';
+    expect(style).not.toMatch(/\[data-lower-fill\][^{]*\{[^}]*filter:/);
+    expect(style).toMatch(
+      /\[data-meter-fill\],[^{]*\n?\s*\[data-meter-fill-red\][^{]*\{[^}]*filter:\s*var\(--v2-meter-lit-filter,\s*none\)/,
+    );
   });
 });

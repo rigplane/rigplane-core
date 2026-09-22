@@ -63,12 +63,11 @@ function makeCaps(cal: typeof IC7610_LIKE_CAL): Capabilities {
 // observed element reports the same fixture width.
 const FIXTURE_WIDTH = 606;
 // mock-up v8 value column: 10px gap + 48px cell = 58px (the ticks row, Po
-// ticks and Po bar all reserve margin-right: 58px in the mock-up). trackW =
-// floor((width - 58) / 3) * 3: the segment grid must end on the whole-pixel
-// pitch, and the track starts at the SVG's left edge — the well's 8px padding
-// lives in VfoPanel's `.panel-meter`, not here.
+// ticks and Po bar all reserve margin-right: 58px in the mock-up). The track
+// is the flex:1 remainder — the exact width minus 58, not floored to the
+// dash pitch; only the lit extent and the S9 split snap to the 3px raster.
 const TRACK_X = 0;
-const TRACK_W = Math.floor((FIXTURE_WIDTH - 58) / 3) * 3;
+const TRACK_W = FIXTURE_WIDTH - 58;
 const READOUT_X = TRACK_X + TRACK_W + 10;
 
 class FakeResizeObserver {
@@ -206,17 +205,21 @@ const VFO_FRACTIONS = {
   s1: 0, s3: 1 / 7, s5: 2 / 7, s7: 3 / 7, s9: 4 / 7, over20: 5 / 7, over40: 6 / 7,
 } as const;
 
-it('routes every VFO lit segment through one inherited saturation hook', () => {
+it('routes the S track lit fill through one inherited saturation hook', () => {
   const source = readFileSync('src/components-v2/meters/LinearSMeter.svelte', 'utf8');
   const style = source.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? '';
-  expect(style).toMatch(/\[data-meter-fill\][\s\S]*\[data-meter-fill-red\][\s\S]*\[data-lower-fill\][^{]*\{[^}]*filter:\s*var\(--v2-meter-lit-filter,\s*none\)/);
+  // The filter rule covers the S track's lit lines and NOTHING else: the
+  // mock-up filters `.lit` only; `.polit` stays the plain meter blue.
+  expect(style).toMatch(/\[data-meter-fill\][\s\S]*\[data-meter-fill-red\][^{]*\{[^}]*filter:\s*var\(--v2-meter-lit-filter,\s*none\)/);
+  expect(style).not.toMatch(/\[data-lower-fill\][^{]*\{[^}]*filter:/);
+  expect(style).not.toMatch(/filter:[^;]*\[[^\]]*data-lower-fill/);
   expect((style.match(/--v2-meter-lit-filter/g) ?? [])).toHaveLength(1);
 });
 
 /** The lit extent the face draws for a fill fraction, mirroring the
  *  half-covered rule: a segment lights when the fill covers at least half
  *  of it, and the extent is that segment's right edge (in track fraction).
- *  TRACK_W is 546 at the fixture width. */
+ *  TRACK_W is 548 at the fixture width. */
 function litExtentFraction(fillFraction: number): number {
   const fillPx = fillFraction * TRACK_W;
   const segment = Math.floor((fillPx - 1) / 3);
@@ -229,16 +232,19 @@ function litExtentFraction(fillFraction: number): number {
 describe('MOR-2509 v7 VFO face — segment geometry', () => {
   beforeEach(() => { stubReducedMotion(); setCapabilities(makeCaps(IC7610_LIKE_CAL)); });
 
-  it('draws a 2px lit / 1px gap dash pattern on a whole-pixel track length', () => {
+  it('draws a 2px lit / 1px gap dash pattern over the exact flex remainder', () => {
     const target = mountMeter({ value: 0, variant: 'vfo', compact: true });
     const track = svgOf(target).querySelector('[data-meter-track]')!;
     expect(track.getAttribute('stroke-dasharray')).toBe('2 1');
     const x1 = Number(track.getAttribute('x1'));
     const trackW = Number(track.getAttribute('x2')) - x1;
-    expect(trackW).toBeGreaterThan(0);
-    expect(trackW % 3).toBe(0);
+    // The mock-up's `.track { flex: 1 }` next to the 58px column leaves the
+    // exact width minus 58 — NOT a 3px-floored length. Red if the v7 floor
+    // returns. clientWidth is integral, so dash edges stay whole-pixel.
     expect(x1).toBe(TRACK_X);
     expect(trackW).toBe(TRACK_W);
+    expect(trackW).toBe(FIXTURE_WIDTH - 58);
+    expect(Number.isInteger(trackW)).toBe(true);
   });
 
   it('reserves a fixed start-anchored slot for the reading; text never moves', () => {
@@ -333,17 +339,17 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
   it('lights a partial segment only when the fill covers at least half of it', () => {
     // Segment N lights when the fill reaches 3N+1px (half of its 2px dash
     // inside the 3px pitch), so segment 25 — cell [75, 77) — flips at 76px.
-    // How the literals were computed for the 546px fixture track: the
+    // How the literals were computed for the 548px fixture track: the
     // uniform fill fraction is the knots lerp of the reading's motion
     // fraction (S1 knot at 0.0611 → S9 knot at 0.55 spans to 0..4/7); S3
-    // exact (-36) sits at 1/7 = 78px, past the 76px half, so segment 25
+    // exact (-36) sits at 1/7 = 78.29px, past the 76px half, so segment 25
     // lights and the extent is its right edge, 77px. -36.5 dB maps through
-    // the same knots to 74.75px — past segment 24's half at 73px, short of
+    // the same knots to 75.02px — past segment 24's half at 73px, short of
     // segment 25's at 76px — so the extent is segment 24's right edge, 74px.
     const s3 = mountMeter({ value: -36, variant: 'vfo', compact: true });
-    expect(fillFraction(svgOf(s3))).toBeCloseTo(77 / 546, 6);
+    expect(fillFraction(svgOf(s3))).toBeCloseTo(77 / 548, 6);
     const belowHalf = mountMeter({ value: -36.5, variant: 'vfo', compact: true });
-    expect(fillFraction(svgOf(belowHalf))).toBeCloseTo(74 / 546, 6);
+    expect(fillFraction(svgOf(belowHalf))).toBeCloseTo(74 / 548, 6);
   });
 
   it('a raw domain keeps a linear bar with no S labels and no red split', () => {
@@ -374,6 +380,10 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
     labels.forEach((label, index) => {
       expect(Number(label.getAttribute('x'))).toBeCloseTo(TRACK_X + slots[index] * TRACK_W, 1);
     });
+    // Left-anchoring belongs to the slot-ZERO numeral (mock-up
+    // `.ticks span:first-child` on the 1..+60 ladder); a sparse table's
+    // first drawn numeral still centres on its slot.
+    expect(labels[0]!.getAttribute('text-anchor')).toBe('middle');
   });
 
   it('the three-knot table maps S9+60 to the last lit segment and S1 to the left end', () => {
@@ -486,9 +496,9 @@ describe('MOR-2509 v7 VFO face — the Po lower scale', () => {
     const x1 = Number(track.getAttribute('x1'));
     const trackW = Number(track.getAttribute('x2')) - x1;
     expect(Number(fill.getAttribute('x1'))).toBe(x1);
-    // 0.5 of 546px is 273px: segment 90 covers [270, 272], half-covered at
-    // 271px, so the extent snaps to that segment's right edge, 272px.
-    expect(Number(fill.getAttribute('x2')) - x1).toBeCloseTo(272, 3);
+    // 0.5 of 548px is 274px: segment 91 covers [273, 275], half-covered at
+    // exactly 274px, so the extent snaps to that segment's right edge, 275px.
+    expect(Number(fill.getAttribute('x2')) - x1).toBeCloseTo(275, 3);
     // The row's name sits in its own fixed slot in the readout column.
     expect(svgOf(half).querySelector('[data-lower-row-label]')?.textContent).toBe('Po');
     expect(Number(svgOf(half).querySelector('[data-lower-row-label]')!.getAttribute('x')))
