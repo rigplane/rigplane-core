@@ -603,9 +603,12 @@ describe('AGC choice group', () => {
     const key = q<HTMLButtonElement>('[data-testid="dsp-agcMode-4"]')!;
     const stack = key.querySelector<HTMLElement>('.agc-key-stack')!;
     expect(stack.parentElement).toBe(key);
-    expect([...stack.children].map(child => child.className)).toEqual([
-      'agc-key-label', 'agc-auto-speed',
-    ]);
+    /* classList, not className: Svelte appends its own scope class to every
+     * element this component styles. */
+    expect([...stack.children].map(child => [
+      child.classList.contains('agc-key-label'),
+      child.classList.contains('agc-auto-speed'),
+    ])).toEqual([[true, false], [false, true]]);
     expect(stack.querySelector('.agc-key-label')!.textContent).toBe('AUTO');
     expect(stack.querySelector('.agc-auto-speed')!.textContent).toBe('');
 
