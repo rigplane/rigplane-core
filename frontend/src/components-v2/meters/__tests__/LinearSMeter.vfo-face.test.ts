@@ -62,14 +62,13 @@ function makeCaps(cal: typeof IC7610_LIKE_CAL): Capabilities {
 // the callback, and clientWidth is overridden on the prototype so every
 // observed element reports the same fixture width.
 const FIXTURE_WIDTH = 606;
-const PAD_X = 8;
-const READOUT_GAP = 8;
-const READOUT_W = 58;
-// trackW = floor((width - PAD_X - READOUT_GAP - READOUT_W - PAD_X) / 3) * 3:
-// the segment grid must end on the whole-pixel pitch.
-const TRACK_X = PAD_X;
-const TRACK_W = Math.floor((FIXTURE_WIDTH - PAD_X - READOUT_GAP - READOUT_W - PAD_X) / 3) * 3;
-const READOUT_X = TRACK_X + TRACK_W + READOUT_GAP;
+// mock-up v8 value column: 10px gap + 48px cell = 58px (the ticks row, Po
+// ticks and Po bar all reserve margin-right: 58px in the mock-up). The track
+// is the flex:1 remainder — the exact width minus 58, not floored to the
+// dash pitch; only the lit extent and the S9 split snap to the 3px raster.
+const TRACK_X = 0;
+const TRACK_W = FIXTURE_WIDTH - 58;
+const READOUT_X = TRACK_X + TRACK_W + 10;
 
 class FakeResizeObserver {
   private static callback?: (entries: { target: Element }[]) => void;
@@ -206,22 +205,28 @@ const VFO_FRACTIONS = {
   s1: 0, s3: 1 / 7, s5: 2 / 7, s7: 3 / 7, s9: 4 / 7, over20: 5 / 7, over40: 6 / 7,
 } as const;
 
-it('routes every VFO lit segment through one inherited saturation hook', () => {
+it('routes the S track lit fill through one inherited saturation hook', () => {
   const source = readFileSync('src/components-v2/meters/LinearSMeter.svelte', 'utf8');
   const style = source.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? '';
-  expect(style).toMatch(/\[data-meter-fill\][\s\S]*\[data-meter-fill-red\][\s\S]*\[data-lower-fill\][^{]*\{[^}]*filter:\s*var\(--v2-meter-lit-filter,\s*none\)/);
+  // The filter rule covers the S track's lit lines and NOTHING else: the
+  // mock-up filters `.lit` only; `.polit` stays the plain meter blue.
+  expect(style).toMatch(/\[data-meter-fill\][\s\S]*\[data-meter-fill-red\][^{]*\{[^}]*filter:\s*var\(--v2-meter-lit-filter,\s*none\)/);
+  expect(style).not.toMatch(/\[data-lower-fill\][^{]*\{[^}]*filter:/);
+  expect(style).not.toMatch(/filter:[^;]*\[[^\]]*data-lower-fill/);
   expect((style.match(/--v2-meter-lit-filter/g) ?? [])).toHaveLength(1);
 });
 
 /** The lit extent the face draws for a fill fraction, mirroring the
  *  half-covered rule: a segment lights when the fill covers at least half
- *  of it, and the extent is that segment's right edge (in track fraction).
- *  TRACK_W is 522 at the fixture width. */
+ *  of it, and the extent is that segment's right edge — capped at the
+ *  last whole dash that FITS the track, the greatest 3n+2 ≤ 548, which is
+ *  548 itself (n=182), so a full-scale reading lights the complete final
+ *  dash flush with the track end. */
 function litExtentFraction(fillFraction: number): number {
   const fillPx = fillFraction * TRACK_W;
   const segment = Math.floor((fillPx - 1) / 3);
   if (segment < 0) return 0;
-  return Math.min(TRACK_W - 1, segment * 3 + 2) / TRACK_W;
+  return (Math.min(Math.floor((TRACK_W - 2) / 3), segment) * 3 + 2) / TRACK_W;
 }
 
 // ── 1. Geometry: whole-pixel segments, fixed reading slot ───────────────────
@@ -229,31 +234,33 @@ function litExtentFraction(fillFraction: number): number {
 describe('MOR-2509 v7 VFO face — segment geometry', () => {
   beforeEach(() => { stubReducedMotion(); setCapabilities(makeCaps(IC7610_LIKE_CAL)); });
 
-  it('draws a 2px lit / 1px gap dash pattern on a whole-pixel track length', () => {
+  it('draws a 2px lit / 1px gap dash pattern over the exact flex remainder', () => {
     const target = mountMeter({ value: 0, variant: 'vfo', compact: true });
     const track = svgOf(target).querySelector('[data-meter-track]')!;
     expect(track.getAttribute('stroke-dasharray')).toBe('2 1');
     const x1 = Number(track.getAttribute('x1'));
     const trackW = Number(track.getAttribute('x2')) - x1;
-    expect(trackW).toBeGreaterThan(0);
-    expect(trackW % 3).toBe(0);
+    // The mock-up's `.track { flex: 1 }` next to the 58px column leaves the
+    // exact width minus 58 — NOT a 3px-floored length. Red if the v7 floor
+    // returns. clientWidth is integral, so dash edges stay whole-pixel.
     expect(x1).toBe(TRACK_X);
     expect(trackW).toBe(TRACK_W);
+    expect(trackW).toBe(FIXTURE_WIDTH - 58);
+    expect(Number.isInteger(trackW)).toBe(true);
   });
 
   it('reserves a fixed start-anchored slot for the reading; text never moves', () => {
     const s1 = mountMeter({ value: -48, variant: 'vfo', compact: true });
     const s960 = mountMeter({ value: 20, variant: 'vfo', compact: true });
     for (const target of [s1, s960]) {
-      const primary = svgOf(target).querySelector('[data-meter-reading]')!;
-      const secondary = svgOf(target).querySelector('[data-meter-reading-secondary]')!;
+      const readings = svgOf(target).querySelectorAll('[data-meter-reading]');
+      // mock-up v8 `.sval`: ONE 13px line — the v7 dBm second line is gone.
+      expect(readings).toHaveLength(1);
+      const primary = readings[0]!;
       expect(primary.getAttribute('text-anchor')).toBe('start');
-      expect(secondary.getAttribute('text-anchor')).toBe('start');
       expect(Number(primary.getAttribute('x'))).toBe(READOUT_X);
-      expect(Number(secondary.getAttribute('x'))).toBe(READOUT_X);
-      // Minimum text size 12px: both readings render at or above it.
-      expect(Number(primary.getAttribute('font-size'))).toBeGreaterThanOrEqual(12);
-      expect(Number(secondary.getAttribute('font-size'))).toBeGreaterThanOrEqual(12);
+      expect(Number(primary.getAttribute('font-size'))).toBe(13);
+      expect(svgOf(target).querySelector('[data-meter-reading-secondary]')).toBeNull();
     }
     expect(svgOf(s1).querySelector('[data-meter-reading]')!.getAttribute('x'))
       .toBe(svgOf(s960).querySelector('[data-meter-reading]')!.getAttribute('x'));
@@ -290,12 +297,12 @@ describe('MOR-2509 v7 VFO face — segment geometry', () => {
       expect(label.getAttribute('fill')).toBe('var(--v2-meter-red)');
     }
     for (const label of labels.slice(0, 5)) {
-      expect(label.getAttribute('fill')).toBe('var(--v2-text-lighter)');
+      expect(label.getAttribute('fill')).toBe('var(--dl-vfo-meter-tick-label, #e6edf4)');
     }
-    // The peak marker past S9 is the same single red family — no yellow,
-    // no orange.
+    // The peak marker is the mock-up's one constant light tone at every
+    // zone — no yellow, no orange, no red variant past S9.
     const peak = svgOf(target).querySelector('[data-meter-peak]')!;
-    expect(peak.getAttribute('stroke')).toBe('var(--v2-meter-red)');
+    expect(peak.getAttribute('stroke')).toBe('var(--dl-vfo-meter-peak, #e8f1ff)');
   });
 });
 
@@ -332,15 +339,19 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
   });
 
   it('lights a partial segment only when the fill covers at least half of it', () => {
-    // S3's exact position (74.571px) sits inside segment 24 ([72, 74],
-    // half-covered at 73px): covered past half, so the segment lights and
-    // the extent is its right edge, 74px.
+    // Segment N lights when the fill reaches 3N+1px (half of its 2px dash
+    // inside the 3px pitch), so segment 25 — cell [75, 77) — flips at 76px.
+    // How the literals were computed for the 548px fixture track: the
+    // uniform fill fraction is the knots lerp of the reading's motion
+    // fraction (S1 knot at 0.0611 → S9 knot at 0.55 spans to 0..4/7); S3
+    // exact (-36) sits at 1/7 = 78.29px, past the 76px half, so segment 25
+    // lights and the extent is its right edge, 77px. -36.5 dB maps through
+    // the same knots to 75.02px — past segment 24's half at 73px, short of
+    // segment 25's at 76px — so the extent is segment 24's right edge, 74px.
     const s3 = mountMeter({ value: -36, variant: 'vfo', compact: true });
-    expect(fillFraction(svgOf(s3))).toBeCloseTo(74 / 522, 6);
-    // -36.3 dB maps to 72.707px — just short of segment 24's half point —
-    // so segment 24 stays unlit and the extent is segment 23's right edge.
-    const belowHalf = mountMeter({ value: -36.3, variant: 'vfo', compact: true });
-    expect(fillFraction(svgOf(belowHalf))).toBeCloseTo(71 / 522, 6);
+    expect(fillFraction(svgOf(s3))).toBeCloseTo(77 / 548, 6);
+    const belowHalf = mountMeter({ value: -36.5, variant: 'vfo', compact: true });
+    expect(fillFraction(svgOf(belowHalf))).toBeCloseTo(74 / 548, 6);
   });
 
   it('a raw domain keeps a linear bar with no S labels and no red split', () => {
@@ -363,19 +374,29 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
     setCapabilities(makeCaps(IC7300_LIKE_CAL));
     const target = mountMeter({ value: -12, variant: 'vfo', compact: true });
     const labels = [...svgOf(target).querySelectorAll('[data-scale-label]')];
-    // Only the S9 knot is declared (S0 carries no numeral on this scale),
-    // and the table tops at +60, so all three over-marks are reachable.
-    expect(labels.map((label) => label.textContent)).toEqual(['9', '+20', '+40', '+60']);
-    const slots = [4 / 7, 5 / 7, 6 / 7, 1];
+    // Only the S9 knot is declared (S0 carries no numeral on this scale) and
+    // the table's only declared + knot is +60 — the v7 fixed +20/+40 set is
+    // gone; a numeral the table does not declare is not drawn.
+    expect(labels.map((label) => label.textContent)).toEqual(['9', '+60']);
+    const slots = [4 / 7, 1];
     labels.forEach((label, index) => {
       expect(Number(label.getAttribute('x'))).toBeCloseTo(TRACK_X + slots[index] * TRACK_W, 1);
     });
+    // Left-anchoring belongs to the slot-ZERO numeral (mock-up
+    // `.ticks span:first-child` on the 1..+60 ladder); a sparse table's
+    // first drawn numeral still centres on its slot.
+    expect(labels[0]!.getAttribute('text-anchor')).toBe('middle');
   });
 
-  it('the three-knot table maps S9+60 to the last lit segment and S1 to the left end', () => {
+  it('the three-knot table maps S9+60 onto the full final dash and S1 to the left end', () => {
     setCapabilities(makeCaps(IC7300_LIKE_CAL));
     const over60 = mountMeter({ value: 60, variant: 'vfo', compact: true });
-    expect(fillFraction(svgOf(over60))).toBeCloseTo((TRACK_W - 1) / TRACK_W, 6);
+    // A full-scale reading lights the complete terminal dash: the greatest
+    // 3n+2 ≤ 548 is 548 itself, flush with the track end — the old
+    // trackW-1 cap rendered a truncated 1px dash here.
+    expect(fillFraction(svgOf(over60))).toBeCloseTo(1, 6);
+    expect(Number(svgOf(over60).querySelector('[data-meter-fill-red]')!.getAttribute('x2')))
+      .toBe(TRACK_W);
     const s1 = mountMeter({ value: -48, variant: 'vfo', compact: true });
     expect(fillFraction(svgOf(s1))).toBeCloseTo(0, 4);
   });
@@ -388,9 +409,10 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
     // …the fill never leaves the left end, the peak is hidden…
     expect(fillFraction(svg)).toBe(0);
     expect(peakVisible(svg)).toBe(false);
-    // …and neither readout carries a glyph: no "?", no status text.
+    // …and the reading cell carries no glyph — the v8 face has one line
+    // and no secondary node at all: no "?", no status text.
     expect(svg.querySelector('[data-meter-reading]')!.textContent).toBe('');
-    expect(svg.querySelector('[data-meter-reading-secondary]')!.textContent).toBe('');
+    expect(svg.querySelector('[data-meter-reading-secondary]')).toBeNull();
     expect(svg.textContent).not.toContain('?');
     expect(svg.textContent).not.toContain('unknown');
   });
@@ -458,19 +480,17 @@ describe('MOR-2509 v7 VFO face — the Po lower scale', () => {
     });
   }
 
-  it('draws labels 0/25/50/75/100 with ticks and the same 2/1 segment pattern', () => {
+  it('draws labels 0/25/50/75/100 with no tick marks and the same 2/1 segment pattern', () => {
     const target = mountPo(0);
     const svg = svgOf(target);
     const labels = [...svg.querySelectorAll('[data-lower-tick-label]')];
     expect(labels.map((label) => label.textContent)).toEqual(['0', '25', '50', '75', '100']);
-    labels.forEach((label) => {
-      const key = label.getAttribute('data-lower-tick-label');
-      expect(svg.querySelector(`[data-lower-tick-mark="${key}"]`)).not.toBeNull();
-    });
+    // mock-up v8 `.poticks`: numerals only — no tick marks are drawn under
+    // the Po labels (the S-scale row above keeps its 1x4px marks).
+    expect(svg.querySelector('[data-lower-tick-mark]')).toBeNull();
     const track = svg.querySelector('[data-lower-track]')!;
     expect(track.getAttribute('stroke-dasharray')).toBe('2 1');
-    expect(Number(track.getAttribute('stroke-width'))).toBeGreaterThanOrEqual(6);
-    expect(Number(track.getAttribute('stroke-width'))).toBeLessThanOrEqual(7);
+    expect(Number(track.getAttribute('stroke-width'))).toBe(7);
     expect(track.getAttribute('stroke')).toBe('var(--v2-meter-unlit)');
     expect(svg.querySelector('[data-lower-fill]')!.getAttribute('stroke'))
       .toBe('var(--v2-meter-blue)');
@@ -483,9 +503,9 @@ describe('MOR-2509 v7 VFO face — the Po lower scale', () => {
     const x1 = Number(track.getAttribute('x1'));
     const trackW = Number(track.getAttribute('x2')) - x1;
     expect(Number(fill.getAttribute('x1'))).toBe(x1);
-    // 0.5 of 522px is 261px: segment 86 covers [258, 260], half-covered at
-    // 259px, so the extent snaps to that segment's right edge, 260px.
-    expect(Number(fill.getAttribute('x2')) - x1).toBeCloseTo(260, 3);
+    // 0.5 of 548px is 274px: segment 91 covers [273, 275], half-covered at
+    // exactly 274px, so the extent snaps to that segment's right edge, 275px.
+    expect(Number(fill.getAttribute('x2')) - x1).toBeCloseTo(275, 3);
     // The row's name sits in its own fixed slot in the readout column.
     expect(svgOf(half).querySelector('[data-lower-row-label]')?.textContent).toBe('Po');
     expect(Number(svgOf(half).querySelector('[data-lower-row-label]')!.getAttribute('x')))
@@ -494,6 +514,14 @@ describe('MOR-2509 v7 VFO face — the Po lower scale', () => {
     const none = mountPo(0);
     const emptyFill = svgOf(none).querySelector('[data-lower-fill]')!;
     expect(Number(emptyFill.getAttribute('x2'))).toBeCloseTo(Number(emptyFill.getAttribute('x1')), 5);
+
+    // A full Po reading lights the complete final dash flush with the
+    // track end — the same greatest-3n+2 cap as the S track (548 at this
+    // width), not the truncated trackW-1.
+    const full = mountPo(1);
+    const fullFill = svgOf(full).querySelector('[data-lower-fill]')!;
+    expect(Number(fullFill.getAttribute('x2')) - Number(fullFill.getAttribute('x1')))
+      .toBe(TRACK_W);
   });
 
   it('reserves the lower-row height whether or not a descriptor is present', () => {
@@ -504,7 +532,9 @@ describe('MOR-2509 v7 VFO face — the Po lower scale', () => {
     const withoutRow = mountMeter({ value: 0, variant: 'vfo', compact: true })
       .querySelector('svg[data-variant="vfo"]')!;
     expect(withoutRow.getAttribute('height')).toBe(withRow.getAttribute('height'));
-    expect(Number(withoutRow.getAttribute('height'))).toBeGreaterThanOrEqual(52);
+    // mock-up v8 content box: 20px ticks row + 3+16 value row + 7+14 Po
+    // ticks + 1+7 Po bar = 68px, reserved whole.
+    expect(Number(withoutRow.getAttribute('height'))).toBe(68);
   });
 });
 
@@ -562,11 +592,12 @@ describe('MOR-2509 v7 VFO face — value updates never change the node set', () 
     });
     for (const count of counts) expect(count).toEqual(counts[0]);
     // Literally: 7 declared scale ticks + track + 2 glow + 2 fill + peak +
-    // 2 lower ticks + lower track + lower fill = 17 lines; 7 scale labels +
-    // reading x2 + 2 lower labels + the Po row label = 12 texts; the main
+    // lower track + lower fill = 15 lines; 7 scale labels + the one reading
+    // line + 2 lower labels + the Po row label = 11 texts (the Po numerals
+    // carry no tick marks, and the v7 dBm second line is gone); the main
     // and lower <g> wrappers; zero rects — the segmented look is dash
     // patterns, not N rects.
-    expect(counts[0]).toEqual({ total: 31, line: 17, text: 12, rect: 0 });
+    expect(counts[0]).toEqual({ total: 28, line: 15, text: 11, rect: 0 });
   });
 });
 

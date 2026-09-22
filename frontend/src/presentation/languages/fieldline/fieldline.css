@@ -113,6 +113,12 @@
   --dl-vfo-meter-well-background: var(--dl-fieldline-surface);
   --dl-vfo-meter-well-shadow: 0 0 0 transparent;
   --dl-vfo-meter-lit-filter: none;
+  /* MOR-2509 R2-2: the v8 meter ink restyled for fieldline's light
+     ground — dark numerals on the same surface the well uses. */
+  --dl-vfo-meter-tick-label: var(--dl-fieldline-text);
+  --dl-vfo-meter-value: var(--dl-fieldline-text);
+  --dl-vfo-meter-peak: var(--dl-fieldline-text);
+  --dl-vfo-meter-po-label: var(--dl-fieldline-muted);
   --dl-vfo-frequency-glow: none;
   --dl-vfo-primary-glow: none;
   --dl-vfo-red-glow: none;

@@ -67,6 +67,12 @@
   --dl-vfo-meter-well-background: var(--dl-segmentline-glass);
   --dl-vfo-meter-well-shadow: 0 0 0 transparent;
   --dl-vfo-meter-lit-filter: none;
+  /* MOR-2509 R2-2: the v8 meter ink restyled for segmentline's gold
+     glass — the ink ramp its own contrast proof covers. */
+  --dl-vfo-meter-tick-label: var(--dl-segmentline-ink-strong);
+  --dl-vfo-meter-value: var(--dl-segmentline-ink-strong);
+  --dl-vfo-meter-peak: var(--dl-segmentline-ink-strong);
+  --dl-vfo-meter-po-label: rgba(var(--dl-segmentline-ink) / 0.55);
   --dl-vfo-frequency-glow: none;
   --dl-vfo-primary-glow: none;
   --dl-vfo-red-glow: none;
