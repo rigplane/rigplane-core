@@ -1,7 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import type {
-    ButtonAppearance,
     ButtonSurface,
     GlowVariant,
     IndicatorColor,
@@ -20,7 +19,6 @@
     active?: boolean;
     disabled?: boolean;
     compact?: boolean;
-    appearance?: ButtonAppearance;
     surface?: ButtonSurface;
     indicatorStyle?: IndicatorStyle;
     indicatorColor?: IndicatorColor;
@@ -37,10 +35,7 @@
     ariaLabel?: string;
     ariaExpanded?: boolean;
     ariaControls?: string;
-    /** Widget semantics the presets never needed (MOR-2509): a bridge key
-     *  renders as `role="switch"`/`role="radio"` with a tri-state
-     *  `aria-checked`, none of which the flat `aria-pressed`-style props
-     *  above can express. */
+    /** Widget semantics forwarded to the native button. */
     role?: string;
     ariaChecked?: boolean | 'true' | 'false' | 'mixed';
     tabindex?: number;
@@ -51,9 +46,6 @@
      *  undefined and null members are omitted. Pinned data hooks stay on
      *  the interactive element itself. */
     data?: Record<string, string | number | boolean | undefined | null>;
-    /** Reserves the dot indicator's padding slot without painting a dot,
-     *  so lamp and lampless keys in one row keep the same label axis. */
-    reserveIndicator?: boolean;
     onclick?: (event: MouseEvent) => void;
     onpointerdown?: (event: PointerEvent) => void;
     onpointerup?: (event: PointerEvent) => void;
@@ -66,7 +58,6 @@
     active = false,
     disabled = false,
     compact = false,
-    appearance,
     surface = 'flat',
     indicatorStyle,
     indicatorColor,
@@ -83,7 +74,6 @@
     tabindex,
     onkeydown,
     data,
-    reserveIndicator = false,
     onclick,
     onpointerdown,
     onpointerup,
@@ -132,14 +122,12 @@
   type="button"
   class="v2-control-button"
   class:v2-control-button--compact={compact}
-  data-appearance={appearance}
   data-active={localActive}
   data-surface={surface !== 'flat' ? surface : undefined}
   data-indicator-style={indicatorStyle}
   data-indicator-color={indicatorColor}
   data-glow={glowAttr}
   data-armed={armed || undefined}
-  data-reserve-indicator={reserveIndicator || undefined}
   role={role}
   aria-checked={ariaChecked}
   tabindex={tabindex}

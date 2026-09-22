@@ -43,7 +43,7 @@
   import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
   import VfoPanel, { type VfoPanelSections } from '../components-v2/vfo/VfoPanel.svelte';
   import { formatRitOffset } from '../components-v2/vfo/vfo-utils';
-  import { ControlButton } from '$lib/Button';
+  import { HardwareButton } from '$lib/Button';
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import VfoOperationGroup from './VfoOperationGroup.svelte';
   import { formatKnownLevel } from './format-level';
@@ -915,22 +915,22 @@
   {#snippet standardPairSelectors(pair: { receiver: ReceiverId; left: VfoViewModel; right: VfoViewModel; absolute: boolean })}
     {#if pair.absolute}
     <!--
-      MOR-2509 bridge: the A/B selector keys render through the shared
-      Button family's fill look; the filled key says which slot is active
+      MOR-2509 bridge: the A/B selector keys render through HardwareButton;
+      the edge-left indicator says which slot is active
       (`data-standard-select-vfo` keeps the pinned e2e hook).
     -->
     <div class="standard-vfo-selectors" aria-label="Select VFO">
       {#each [pair.left, pair.right] as vfo (slotKey(vfo.slot))}
         {@const slot = vfo.slot.kind === 'slotted' ? vfo.slot.id : '—'}
-        <ControlButton
-          appearance="selected"
-          reserveIndicator
+        <HardwareButton
+          indicator="edge-left"
+          color="cyan"
           active={vfo.isActiveSlot}
           ariaLabel={`SELECT ${slot}`}
           disabled={disabled || vfo.isActiveSlot}
           data={{ 'standard-select-vfo': slot }}
           onclick={() => selectVfo(vfo)}
-        >{slot}</ControlButton>
+        >{slot}</HardwareButton>
       {/each}
     </div>
     {:else}
