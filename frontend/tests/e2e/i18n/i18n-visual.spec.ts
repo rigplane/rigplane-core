@@ -478,14 +478,14 @@ const PRODUCTION_LANGUAGE_CASES: readonly ProductionLanguageCase[] = [
     workspace: {},
     language: 'studioline',
     mode: 'dark',
-    expected: { surface: '#0e1113', text: '#eef1f2', vfoBorderTop: '0px', vfoNumeralWeight: '200' },
+    expected: { surface: '#0e1113', text: '#eef1f2', vfoBorderTop: '0px', vfoNumeralWeight: '800' },
   },
   {
     label: 'persisted StudioLine × light',
     workspace: { version: 1, designLanguage: 'studioline', theme: 'github-light' },
     language: 'studioline',
     mode: 'light',
-    expected: { surface: '#faf7f2', text: '#14181a', vfoBorderTop: '0px', vfoNumeralWeight: '300' },
+    expected: { surface: '#faf7f2', text: '#14181a', vfoBorderTop: '0px', vfoNumeralWeight: '800' },
   },
   {
     label: 'persisted FieldLine × dark',
