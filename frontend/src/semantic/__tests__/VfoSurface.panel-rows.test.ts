@@ -769,8 +769,14 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     // weight pin below records the same limit), so computed-style equality
     // cannot be asserted here. Instead each language's dim tokens are
     // resolved by hand along their var() chains, per mode, and compared
-    // with the active ink the readout otherwise renders: the inherited
-    // surface ink for the frequency, --v2-text-secondary for the name.
+    // with the active ink each readout ACTUALLY renders:
+    // - frequency: the language's root `color:` on the surface the panel
+    //   inherits from (each language declares one — asserted below);
+    // - name: --v2-text-secondary from .vfo-label's fallback. No language
+    //   stylesheet sets that token (asserted below), so the single
+    //   declaration in theme/tokens.css applies; a theme that overrides
+    //   --v2-text-secondary to a language's dim value would render the two
+    //   names alike — that variation is theme-owned and not covered here.
     const bodyOf = (css: string, selector: string, marker: string): string => {
       const found = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
         .find(([, selectors, body]) => selectors.trim() === selector && body.includes(marker))?.[2];
@@ -786,58 +792,80 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     const theme = readFileSync('src/components-v2/theme/tokens.css', 'utf8');
     const nameInk = hex(theme, 'v2-text-secondary');
 
-    // studioline, dark and light: the dim hexes differ from the active ink.
-    // The surface text lives in the language's palette blocks, not in the
-    // vfo block, so it is resolved from there per mode.
+    // studioline, dark and light. The active frequency ink is the language
+    // root's `color: var(--dl-studioline-text)`, resolved from the palette
+    // block per mode; the active name ink is the theme secondary.
     const stud = readFileSync('src/presentation/languages/studioline/studioline.css', 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '');
-    const studBase = bodyOf(stud, "[data-design-language='studioline'][data-design-language]", '--dl-vfo-frequency-ink-dim:');
-    const studLight = bodyOf(stud,
-      "[data-design-language='studioline'][data-design-language][data-language-mode='light']", '--dl-vfo-frequency-ink-dim:');
-    const studDarkText = bodyOf(stud, "[data-design-language='studioline'][data-design-language]", '--dl-studioline-text:');
-    const studLightText = bodyOf(stud,
-      "[data-design-language='studioline'][data-design-language][data-language-mode='light']", '--dl-studioline-text:');
-    const studDarkInk = hex(studDarkText, 'dl-studioline-text');
-    const studLightInk = hex(studLightText, 'dl-studioline-text');
-    for (const [mode, block, activeText] of [
+    const studRoot = "[data-design-language='studioline'][data-design-language]";
+    const studLightSel = "[data-design-language='studioline'][data-design-language][data-language-mode='light']";
+    expect(bodyOf(stud, studRoot, '--dl-studioline-text:'), 'studioline root paints the inherited surface ink')
+      .toMatch(/color:\s*var\(--dl-studioline-text\)/);
+    const studBase = bodyOf(stud, studRoot, '--dl-vfo-frequency-ink-dim:');
+    const studLight = bodyOf(stud, studLightSel, '--dl-vfo-frequency-ink-dim:');
+    const studDarkInk = hex(bodyOf(stud, studRoot, '--dl-studioline-text:'), 'dl-studioline-text');
+    const studLightInk = hex(bodyOf(stud, studLightSel, '--dl-studioline-text:'), 'dl-studioline-text');
+    for (const [mode, block, activeFreqInk] of [
       ['dark', studBase, studDarkInk],
       ['light', studLight, studLightInk],
     ] as const) {
-      expect(hex(block, 'dl-vfo-frequency-ink-dim'), `studioline ${mode}: dim frequency ink differs from the active surface ink`)
-        .not.toBe(activeText);
-      expect(hex(block, 'dl-vfo-name-ink-dim'), `studioline ${mode}: dim name ink differs from the active label tone`)
+      expect(hex(block, 'dl-vfo-frequency-ink-dim'), `studioline ${mode}: dim frequency ink differs from the inherited surface ink`)
+        .not.toBe(activeFreqInk);
+      expect(hex(block, 'dl-vfo-name-ink-dim'), `studioline ${mode}: dim name ink differs from the theme label tone`)
         .not.toBe(nameInk);
     }
 
-    // fieldline: dim ink is var(--dl-fieldline-muted), active ink is
-    // var(--dl-fieldline-text) — resolve both per mode. High contrast pins
-    // the two tones to the same white, and the inactive readout
-    // deliberately does NOT dim there: the rule stated in fieldline.css
-    // (quieting yields to legibility at the contrast rail).
+    // fieldline. The dim inks are var(--dl-fieldline-muted) per mode. The
+    // active frequency ink is the language root's `color:
+    // var(--dl-fieldline-text)`; the active name ink is the theme
+    // secondary, NOT the fieldline text token.
     const field = readFileSync('src/presentation/languages/fieldline/fieldline.css', 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '');
-    const fieldBase = bodyOf(field, "[data-design-language='fieldline'][data-design-language]", '--dl-fieldline-text:');
-    const fieldLight = bodyOf(field,
-      "[data-design-language='fieldline'][data-design-language][data-language-mode='light']", '--dl-fieldline-text:');
+    const fieldRoot = "[data-design-language='fieldline'][data-design-language]";
+    const fieldLightSel = "[data-design-language='fieldline'][data-design-language][data-language-mode='light']";
+    expect(bodyOf(field, fieldRoot, '--dl-fieldline-text:'), 'fieldline root paints the inherited surface ink')
+      .toMatch(/color:\s*var\(--dl-fieldline-text\)/);
+    const fieldBase = bodyOf(field, fieldRoot, '--dl-fieldline-text:');
+    const fieldLight = bodyOf(field, fieldLightSel, '--dl-fieldline-text:');
     const fieldHighContrast = bodyOf(field,
       "[data-design-language='fieldline'][data-design-language][data-theme='high-contrast']", '--dl-fieldline-text:');
     for (const [mode, block] of [['default', fieldBase], ['light', fieldLight]] as const) {
-      expect(hex(block, 'dl-fieldline-muted'), `fieldline ${mode}: dim ink differs from active`)
+      expect(hex(block, 'dl-fieldline-muted'), `fieldline ${mode}: dim frequency ink differs from the inherited surface ink`)
         .not.toBe(hex(block, 'dl-fieldline-text'));
+      expect(hex(block, 'dl-fieldline-muted'), `fieldline ${mode}: dim name ink differs from the theme label tone`)
+        .not.toBe(nameInk);
     }
-    expect(hex(fieldHighContrast, 'dl-fieldline-muted'), 'fieldline high-contrast keeps the readout undimmed (legibility over quieting)')
+    // High contrast pins both palette tones to the same white, and the
+    // high-contrast THEME pins --v2-text-secondary to that white too: the
+    // inactive readout deliberately does not dim there — quieting yields
+    // to legibility at the contrast rail (rule stated in fieldline.css).
+    expect(hex(fieldHighContrast, 'dl-fieldline-muted'), 'fieldline high-contrast keeps the frequency undimmed')
       .toBe(hex(fieldHighContrast, 'dl-fieldline-text'));
+    const highContrastTheme = readFileSync('src/components-v2/theme/themes/high-contrast.css', 'utf8');
+    expect(highContrastTheme).toMatch(/--v2-text-secondary:\s*#ffffff/);
 
-    // segmentline: the dim inks are the strong ink at lower alpha, so they
-    // resolve distinct from the full-ink readout in the only mode it has.
-    // The ink ramp lives in the language's palette block.
+    // segmentline. The active frequency ink is the language root's
+    // `color: var(--dl-segmentline-ink-strong)`; the dim inks are that ink
+    // at lower alpha, so the numeral's paint differs structurally. The dim
+    // name ink is a translucent ramp value — a different paint from any
+    // opaque theme token, including the default compared here.
     const seg = readFileSync('src/presentation/languages/segmentline/segmentline.css', 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '');
-    const segBase = bodyOf(seg, "[data-design-language='segmentline'][data-design-language]", '--dl-vfo-frequency-ink-dim:');
-    const segInk = bodyOf(seg, "[data-design-language='segmentline'][data-design-language]", '--dl-segmentline-ink-strong:');
+    const segRoot = "[data-design-language='segmentline'][data-design-language]";
+    expect(bodyOf(seg, segRoot, '--dl-segmentline-ink-strong:'), 'segmentline root paints the inherited surface ink')
+      .toMatch(/color:\s*var\(--dl-segmentline-ink-strong\)/);
+    const segBase = bodyOf(seg, segRoot, '--dl-vfo-frequency-ink-dim:');
+    const segInk = bodyOf(seg, segRoot, '--dl-segmentline-ink-strong:');
     expect(segBase).toMatch(/--dl-vfo-frequency-ink-dim:\s*rgba\(var\(--dl-segmentline-ink\) \/ 0\.75\)/);
     expect(segBase).toMatch(/--dl-vfo-name-ink-dim:\s*rgba\(var\(--dl-segmentline-ink\) \/ 0\.6\)/);
     expect(segInk).toMatch(/--dl-segmentline-ink-strong:\s*rgba\(var\(--dl-segmentline-ink\) \/ 1\)/);
+
+    // The name's active ink stays theme-owned: no language stylesheet may
+    // set --v2-text-secondary, or the resolution above would be stale.
+    for (const [language, css] of [['studioline', stud], ['fieldline', field], ['segmentline', seg]] as const) {
+      expect(css, `${language} does not set the theme-owned --v2-text-secondary`)
+        .not.toContain('--v2-text-secondary:');
+    }
   });
 
   it('keeps filled chip ink mode-independent while light mode owns a light panel', () => {
