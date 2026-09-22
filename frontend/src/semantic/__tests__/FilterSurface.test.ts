@@ -1515,25 +1515,24 @@ describe('explicit PBT display (MOR-1692)', () => {
 });
 
 /**
- * MOR-2425 restore — PBT reset; MOR-2535 — ONE mechanism. Mounted directly
- * (no `modeFilter`, so `handles.mode()/filter()` are never invoked) rather
- * than through `FilterInstrumentHostFixture`, whose fixed prop list does
- * not forward the PBT change callbacks and no other test in this file
- * needs widening for them.
+ * MOR-2425 restore — PBT reset; MOR-2535 correction round 1 — the button and
+ * the PBT rows' double-click gesture share ONE dispatch site: the
+ * `onPbtReset` prop. Its handler (`makeFilterHandlers().onPbtReset`) gates
+ * the combined operation, converts 0 Hz to the lattice centre raw, and
+ * dispatches `set_pbt_inner` + `set_pbt_outer` in that order — pinned end to
+ * end against the REAL factory and a spied `sendCommand` in
+ * `panel-commands.intent.isolated.test.ts` (`resets both edges to the
+ * lattice centre`: `['set_pbt_inner', { value: 128, receiver: 0 }]`,
+ * `['set_pbt_outer', { value: 128, receiver: 0 }]`) and, from a mounted
+ * surface via a real button click, in
+ * `FilterSurface.dblclick-reset.isolated.test.ts`.
  *
- * The exact caps-derived CENTRE value a PBT reset sends over
- * `set_pbt_inner`/`set_pbt_outer` is pinned end to end, against the REAL
- * `makeFilterHandlers()` factory and a spied `sendCommand`, in
- * `lib/runtime/commands/__tests__/panel-commands.intent.isolated.test.ts`
- * (its `onPbtReset` case: `['set_pbt_inner', { value: 128, receiver: 0 }]`,
- * `['set_pbt_outer', { value: 128, receiver: 0 }]`) — unmodified by this
- * PR: MOR-2535 rerouted the button through the two rows' scalar-lease
- * `reset()` path (the same path the double-click gesture uses), whose
- * 0 Hz centre target reaches `onPbtInnerChange`/`onPbtOuterChange` and
- * from there the same conversion that factory's `onPbtReset` performs.
- * This describe block proves the surface's OWN half of that chain: the
- * button renders only when PBT is structural, and a click resets EACH row
- * through its own lease, exactly once.
+ * This block proves the surface's OWN half: the button renders only when
+ * BOTH PBT fields are structural, and a real DOM click on it calls the prop
+ * exactly once — never the per-row change callbacks. Mounted directly (no
+ * `modeFilter`, so `handles.mode()/filter()` are never invoked) rather than
+ * through `FilterInstrumentHostFixture`, whose fixed prop list does not
+ * forward `onPbtReset`.
  */
 const pbtStubHandles: FilterInstrumentHandles = {
   mode: createRawSnippet(() => ({ render: () => '<span></span>' })),
@@ -1544,6 +1543,7 @@ const pbtStubHandles: FilterInstrumentHandles = {
 function renderPbtOnly(
   view: RadioViewModel,
   handlers: {
+    onPbtReset?: () => void;
     onPbtInnerChange?: (value: number) => void;
     onPbtOuterChange?: (value: number) => void;
   } = {},
@@ -1585,17 +1585,20 @@ describe('PBT reset (MOR-2425 restore)', () => {
     r.dispose();
   });
 
-  it('click resets EACH PBT row through its own scalar lease, exactly once (MOR-2535)', () => {
+  it('click calls the onPbtReset prop exactly once — never the per-row change callbacks (MOR-2535)', () => {
+    const onPbtReset = vi.fn();
     const onPbtInnerChange = vi.fn();
     const onPbtOuterChange = vi.fn();
     const r = renderPbtOnly(
       withFilterPassband(topologyFixtures['1/single']),
-      { onPbtInnerChange, onPbtOuterChange },
+      { onPbtReset, onPbtInnerChange, onPbtOuterChange },
     );
     r.button()!.click();
     flushSync();
-    expect(onPbtInnerChange).toHaveBeenCalledExactlyOnceWith(0);
-    expect(onPbtOuterChange).toHaveBeenCalledExactlyOnceWith(0);
+    expect(onPbtReset).toHaveBeenCalledTimes(1);
+    expect(onPbtReset).toHaveBeenCalledWith();
+    expect(onPbtInnerChange).not.toHaveBeenCalled();
+    expect(onPbtOuterChange).not.toHaveBeenCalled();
     r.dispose();
   });
 });

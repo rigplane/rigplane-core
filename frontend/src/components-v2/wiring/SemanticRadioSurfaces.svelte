@@ -2350,6 +2350,7 @@
         onIfShiftChange={filterIntents.onIfShiftChange}
         onPbtInnerChange={filterIntents.onPbtInnerChange}
         onPbtOuterChange={filterIntents.onPbtOuterChange}
+        onPbtReset={filterIntents.onPbtReset}
       />
     {/if}
   {/snippet}
@@ -2715,6 +2716,7 @@
             onIfShiftChange={filterIntents.onIfShiftChange}
             onPbtInnerChange={filterIntents.onPbtInnerChange}
             onPbtOuterChange={filterIntents.onPbtOuterChange}
+            onPbtReset={filterIntents.onPbtReset}
           />{/if}
         </SemanticControlPanel>
       {/snippet}

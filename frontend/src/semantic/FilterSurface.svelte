@@ -36,13 +36,21 @@
   PENDING AFFORDANCE (MOR-1441 leg 2). The host-owned Filter handle carries
   the pending target separately from confirmed truth.
 
-  DOUBLE-CLICK RESET (MOR-2535). Every range row resets through its scalar
-  lease's `reset()`: the IF-shift and PBT rows carry `defaultValue: 0`
-  (zero offset / passband centre), the width row carries the profile's
-  factory default for the CURRENT filter selection where the mode-keyed
-  configuration declares one — and the gesture is a no-op where it does
-  not (no invented default, nothing shown). The PBT reset button rides
-  the same two leases, so one mechanism serves both gestures.
+  DOUBLE-CLICK RESET (MOR-2535). The reset gesture lives on the row's LABEL
+  and VALUE cell, never on the range track — a track double-click would fire
+  native `input` events (position commands) before the reset, so the track
+  keeps its untouched single-gesture behaviour. Two mechanisms, by row:
+  - IF shift and width reset through the scalar lease's `reset()`: the
+    IF-shift row carries `defaultValue: 0` (zero offset); the width row
+    carries the profile's factory default for the CURRENT filter selection
+    where the mode-keyed configuration declares one — and none where it
+    does not, in which case the policy's `reset` returns null, no candidate
+    forms, and nothing is dispatched (no invented default, nothing shown).
+  - PBT resets stay ATOMIC through the `onPbtReset` prop: the button AND a
+    row double-click call that ONE handler, which gates the combined
+    operation and emits inner+outer in its established order. The PBT rows
+    carry no lease-level default, because a per-row lease reset is not the
+    PBT mechanism.
 -->
 <script module lang="ts">
   import type { DisplayObservedField, TxAuxField } from './radio-view-model';
@@ -112,11 +120,17 @@
     onIfShiftChange?: (value: number) => void;
     onPbtInnerChange?: (value: number) => void;
     onPbtOuterChange?: (value: number) => void;
+    /** MOR-2535: the ONE PBT reset dispatch site — the reset button and a
+     *  double-click on either PBT row's label/value cell both call this, so
+     *  the atomic inner+outer reset (and its gating) stays in the wiring
+     *  seam's handler, not split across two lease resets. */
+    onPbtReset?: () => void;
   }
   let {
     view, handles, finiteLayout, part = 'all', filterWidthFeedback,
     ifShiftFeedback, pbtInnerFeedback, pbtOuterFeedback,
     onFilterWidthChange, onIfShiftChange, onPbtInnerChange, onPbtOuterChange,
+    onPbtReset,
   }: Props = $props();
 
   const pendingFilterId = $props.id();
@@ -139,7 +153,10 @@
     const current = modeFilter?.currentFilter;
     if (config === null || config === undefined
       || current === undefined || current.reading.status !== 'known') return null;
-    return config.slots.find((slot) => slot.filter === current.reading.value)?.factoryWidthHz ?? null;
+    // Bound once: property-chain narrowing does not survive into the `find`
+    // callback below.
+    const selected = current.reading.value;
+    return config.slots.find((slot) => slot.filter === selected)?.factoryWidthHz ?? null;
   }
 
   function filterWidthInput(): Readonly<ContinuousScalarInput> {
@@ -275,12 +292,14 @@
       : f !== undefined && pbtUsable(f);
     const domain = {
       min: limits.min, max: limits.max, step: limits.step,
-      // MOR-2535: every passband row's reset target is the 0 Hz centre —
-      // the IF shift's zero offset and the PBT rows' passband centre (the
-      // value the PBT reset button has always sent). Zero sits on every
-      // lattice these rows use (the fallback rows and the measured twin-PBT
-      // lattice are both centred on it), so the target is never invented.
-      defaultValue: 0, fineStepDivisor: 1,
+      // MOR-2535: the IF-shift row's lease reset target is the 0 Hz zero
+      // offset — it sits on every lattice this row uses (the fallback rows
+      // and the measured twin-PBT lattice are both centred on it), so the
+      // target is never invented. The PBT rows declare NO lease-level
+      // default: their reset is the atomic `onPbtReset` prop call (see the
+      // file header), so a null here also keeps `lease.reset()` a no-op on
+      // them.
+      defaultValue: field === 'ifShift' ? 0 : null, fineStepDivisor: 1,
     };
     const request = (value: number): void => changePassband(field, value);
     const feedback = passbandFeedbackOf(field);
@@ -421,7 +440,22 @@
     {#if modeFilter}
       {#if modeFilter.filterWidth.availability.structural}
         <label class="filter-level" data-testid="filter-width" data-disabled-reason={reasonOf(modeFilter.filterWidth)}>
-          <span class="filter-level-name">Width</span>
+          <!-- MOR-2535: the reset gesture lives on the label and the value
+               cell, NOT on the track — a track double-click fires native
+               `input` events (position commands) before `dblclick` would
+               run. With no declared factory default the policy's `reset`
+               returns null and the gesture dispatches nothing, so the hint
+               appears only when a default exists. A FIXED-width radio has
+               no width to set (the track is not drawn either), so the
+               gesture is gated off there too. -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <span
+            class="filter-level-name"
+            title={!fixedWidth && filterWidthDefaultHz() !== null ? 'Double-click: default' : undefined}
+            ondblclick={() => {
+              if (!fixedWidth) filterWidthLease?.reset();
+            }}
+          >Width</span>
           {#if !fixedWidth}
             <input
               type="range"
@@ -432,15 +466,12 @@
               data-command-phase={filterWidthView.phase ?? undefined}
               aria-busy={filterWidthView.busy}
               oninput={(event) => filterWidthLease?.nativeInput(event.currentTarget.valueAsNumber)}
-              ondblclick={() => {
-                // MOR-2535: no declared factory default → no-op (the lease's
-                // policy would otherwise fall back to the domain minimum,
-                // an invented default this surface never sends).
-                if (filterWidthDefaultHz() !== null) filterWidthLease?.reset();
-              }}
             />
           {/if}
-          <output>{textOf(modeFilter.filterWidth)}</output>
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <output ondblclick={() => {
+            if (!fixedWidth) filterWidthLease?.reset();
+          }}>{textOf(modeFilter.filterWidth)}</output>
           {#if filterWidthAnnouncement !== null}
             {#key filterWidthAnnouncement.eventKey}
               <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
@@ -471,7 +502,6 @@
             data-command-phase={row.view.phase ?? undefined}
             aria-busy={row.view.busy}
             oninput={(event) => row.lease?.nativeInput(event.currentTarget.valueAsNumber)}
-            ondblclick={() => row.lease?.reset()}
           />
           {/key}
       {/snippet}
@@ -498,7 +528,16 @@
               data-disabled-reason={reasonOf(filterPassband[field])}
               data-presentation={display.state === 'current' ? 'confirmed' : display.state === 'stale' ? 'retained' : 'unknown'}
             >
-              <label class="filter-level-name" for={`${pendingFilterId}-${field}-input`}>{label}</label>
+              <!-- MOR-2535: double-click on a PBT row calls the SAME atomic
+                   `onPbtReset` prop the reset button uses — one dispatch
+                   site, never two independent lease resets. The gesture
+                   targets the label/value cell, not the track. -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <label
+                class="filter-level-name" for={`${pendingFilterId}-${field}-input`}
+                title="Double-click: default"
+                ondblclick={() => onPbtReset?.()}
+              >{label}</label>
               <span class="pbt-slot" data-pbt-slot>
                 {#if display.state === 'current' || display.state === 'stale'}
                   {@render passbandRange(field, limits.min, limits.max, limits.step)}
@@ -506,7 +545,8 @@
                   <span class="pbt-unknown">{t('core.vfo.state.unknown')}</span>
                 {/if}
               </span>
-              <output class="pbt-value" aria-live="off">{measured && 'value' in display ? display.value : '—'}</output>
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <output class="pbt-value" aria-live="off" ondblclick={() => onPbtReset?.()}>{measured && 'value' in display ? display.value : '—'}</output>
               {@render passbandStatus(field)}
             </div>
           {:else}
@@ -515,25 +555,28 @@
               data-disabled-reason={reasonOf(filterPassband[field])}
               data-presentation={presentationOf(filterPassband[field])}
             >
-              <span class="filter-level-name">{label}</span>
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <span
+                class="filter-level-name"
+                title="Double-click: default"
+                ondblclick={() => passbandRows.ifShift.lease?.reset()}
+              >{label}</span>
               {@render passbandRange(field, limits.min, limits.max, limits.step)}
-              <output>{textOf(filterPassband[field])}</output>
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <output ondblclick={() => passbandRows.ifShift.lease?.reset()}>{textOf(filterPassband[field])}</output>
               {@render passbandStatus(field)}
             </label>
           {/if}
         {/if}
       {/each}
       {#if filterPassband.pbtInner.availability.structural && filterPassband.pbtOuter.availability.structural}
-        <!-- MOR-2535: one mechanism — the button rides the SAME lease
-             `reset()` path the double-click gesture uses, so both gestures
-             dispatch the passband centre through `onPbtInnerChange`/
-             `onPbtOuterChange` and the wiring seam's usual conversion. -->
+        <!-- MOR-2535: the button and the PBT rows' double-click share ONE
+             dispatch site — the `onPbtReset` prop — whose handler gates the
+             combined operation, converts 0 Hz to the lattice centre raw, and
+             emits inner then outer in its established order. -->
         <button
           type="button" class="pbt-reset-button" data-testid="filter-pbt-reset"
-          onclick={() => {
-            passbandRows.pbtInner.lease?.reset();
-            passbandRows.pbtOuter.lease?.reset();
-          }}
+          onclick={() => onPbtReset?.()}
         >Reset</button>
       {/if}
       {#if !finiteLayout && part !== 'filter'}

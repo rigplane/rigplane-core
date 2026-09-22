@@ -391,7 +391,11 @@ const nativeRangePolicy: ContinuousScalarPolicy = {
     ? value : snap(value, domain, domain.step),
   wheel: () => null,
   key: () => null,
-  reset: (domain) => domain.defaultValue ?? domain.min,
+  // MOR-2535 review round: a missing `defaultValue` means NO reset candidate
+  // — `applyCandidate` refuses a null, so `lease.reset()` dispatches nothing.
+  // Falling back to `domain.min` would invent a default the domain never
+  // declared (its renderer would jump to the end stop and send it).
+  reset: (domain) => domain.defaultValue,
   dispatch: () => 'immediate',
   dispatchesCanonical: () => true,
   wheelIdleMs: 0,
