@@ -591,6 +591,23 @@ describe('AGC choice group', () => {
     expect(q<HTMLElement>('[data-testid="dsp-agcMode-4"] .agc-auto-speed')!.textContent).toBe('');
   });
 
+  it('pins both FTX-1 and IC direct AGC catalogs to three columns', () => {
+    h.caps = ftxAgcCaps();
+    h.state = stateWithAgc(2);
+    render();
+
+    // jsdom has no layout, so pin the emitted custom property.
+    expect(q<HTMLElement>('[data-testid="dsp-agcMode"]')!.style.getPropertyValue('--agc-columns')).toBe('3');
+
+    unmount(component!);
+    component = null;
+    h.caps = liveCaps(true);
+    h.state = stateWithAgc(2);
+    render();
+
+    expect(q<HTMLElement>('[data-testid="dsp-agcMode"]')!.style.getPropertyValue('--agc-columns')).toBe('3');
+  });
+
   /* MOR-2537: the AUTO key must carry its label and speed line inside ONE
    * column wrapper — the button lays bare children out as a flex row, which
    * clipped the two side by side. jsdom has no layout, so this asserts the

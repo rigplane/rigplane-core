@@ -275,7 +275,7 @@
       />{/key}{/key}
     {:else}
       <div class="dsp-agc-grid" data-testid="dsp-agcMode"
-        style={`--agc-columns: ${Math.min(5, agcOptions.length)}`}
+        style={`--agc-columns: ${Math.min(3, agcOptions.length)}`}
         data-disabled-reason={agcBehavior.available ? undefined : 'field-not-observed'}>
         {#each agcOptions as option (option.value)}
           {@const isAuto = option.value === dsp.agcMode.autoMode}
@@ -312,11 +312,8 @@
     width: 100%;
   }
   .agc-key { display: flex; min-width: 0; }
-  /* The button's default 10 px inline padding leaves 14 px of content width
-   * at the 36 px column width, clipping a 25 px "AUTO" label; 2 px keeps the
-   * whole key face for the label column. */
   .agc-key :global(button) {
-    flex: 1 1 auto; min-width: 28px; min-height: 28px; padding-inline: 2px;
+    flex: 1 1 auto; min-width: 28px; min-height: 28px;
   }
   /* The button lays its children out as a flex row, so the label and the
    * AUTO speed line only stack vertically inside this single wrapper. */
