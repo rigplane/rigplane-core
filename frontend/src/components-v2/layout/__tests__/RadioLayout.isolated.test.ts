@@ -1085,7 +1085,9 @@ describe('MOR-2513 — the live FTX-1 payload mounts the default desktop composi
     expect(ftx1StateJson.sub.att).toBeNull();
     expect(t.querySelectorAll('[data-receiver-instrument="MAIN"]')).toHaveLength(1);
     expect(t.querySelectorAll('[data-receiver-instrument="SUB"]')).toHaveLength(1);
-    expect(t.querySelectorAll('[data-vfo-row]')).toHaveLength(6);
+    // MOR-2509 slice 2: every panel owns five fixed rows — tray, receiver,
+    // main, under and (ftx1 has DSP) the DSP chip group.
+    expect(t.querySelectorAll('[data-vfo-row]')).toHaveLength(10);
   });
 
   it('prints no null/NaN/undefined text from the null leaves', () => {
@@ -1097,9 +1099,9 @@ describe('MOR-2513 — the live FTX-1 payload mounts the default desktop composi
     }
   });
 
-  it('still mounts all six VFO rows with every nullable leaf null', () => {
+  it('still mounts all six fixed VFO rows with every nullable leaf null', () => {
     const t = mountFtx1(FTX1_STATE_FULLY_UNOBSERVED);
-    expect(t.querySelectorAll('[data-vfo-row]')).toHaveLength(6);
+    expect(t.querySelectorAll('[data-vfo-row]')).toHaveLength(10);
     const text = t.textContent ?? '';
     for (const forbidden of ['null', 'NaN', 'undefined']) {
       expect(text, `rendered text must not contain ${forbidden}`).not.toContain(forbidden);

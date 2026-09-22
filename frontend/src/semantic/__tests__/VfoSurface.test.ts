@@ -2599,9 +2599,9 @@ describe('MOR-2342 historical instrument presentations', () => {
   });
 
   it.each([
-    ['off', false, 0, true, 'RIT OFF 0 Hz', 'known'],
-    ['on', true, 120, true, 'RIT ON 120 Hz', 'known'],
-    ['unknown', null, null, true, 'RIT — — Hz', 'unknown'],
+    ['off', false, 0, true, 'RIT', 'off'],
+    ['on', true, 120, true, 'RIT +120', 'on'],
+    ['unknown', null, null, true, 'RIT', 'unknown'],
     ['unsupported', null, null, false, null, null],
   ] as const)(
     'renders the Standard active-VFO RIT %s state once with structural gating',
