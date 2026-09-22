@@ -391,7 +391,7 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     const root = mountSurface({ viewModel: functionsFixture(), appearance: 'standard' });
     const bridge = root.querySelector('[data-instrument-bridge]')!;
     const buttons = Array.from(bridge.querySelectorAll<HTMLButtonElement>('button'));
-    expect(buttons.length).toBeGreaterThan(0);
+    expect(buttons.length, `BRIDGE DOM: ${bridge.innerHTML}`).toBeGreaterThan(0);
     for (const button of buttons) {
       expect(button.classList, button.textContent ?? '').toContain('v2-control-button');
       // Selector keys are the family's flat fill look; every hardware key
