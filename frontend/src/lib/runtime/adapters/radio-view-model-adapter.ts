@@ -245,8 +245,7 @@ export function projectAgcReadback(
     && rawSettableModes.every(mode => Number.isSafeInteger(mode))
     ? rawSettableModes as number[]
     : null;
-  const noSettableCatalog = rawSettableModes === undefined || rawSettableModes === null;
-  const directMode = noSettableCatalog || settableModes?.includes(rawMode)
+  const directMode = settableModes?.includes(rawMode)
     ? rawMode
     : undefined;
   if (contract === null) {

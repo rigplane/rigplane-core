@@ -272,6 +272,7 @@ const INDICATOR_CAPS = caps({
   stateContractVersion: 1,
   providerGeneration: 1,
   filters: ['FIL1'],
+  agcModes: [0, 2],
   agcLabels: { '2': 'SLOW' },
   capabilities: [
     ...DUAL, 'filter_width', 'agc', 'nb', 'nr', 'notch', 'attenuator', 'preamp',
@@ -1400,7 +1401,10 @@ describe('RF gain additive display observation', () => {
     // including the mixed-version normalization of the legacy `slot: 'A'`
     // default target to slot null.
     // MOR-2509: re-read after the radio-wide group gained `dialLock`.
-    expect(digest).toBe('5a7326937f50675898f69f109edc4053c6e01fdefb986d4e8dcc2fb40a6a5ebe');
+    // MOR-2537: In "preserves legacy strict model members", the digest moved because the fixture now carries the `agcModes` catalog the server always emits; the readings it guards are asserted unchanged alongside.
+    expect(view.dsp?.agcMode.reading).toEqual({ status: 'known', value: 0 });
+    expect(view.receiverIndicators?.[0].agcMode.reading).toEqual({ status: 'known', value: 0 });
+    expect(digest).toBe('ab3833b0f2752e2540040ffa7d0a368e2f30cb35f4c5a001e6230af0f8366cf3');
   });
   it.each([false, true])('projects the explicit display and HOLDS RF gain, stale=%s', (stale) => {
     const view = model(displayState(stale), displayCaps, RECEIVING);
