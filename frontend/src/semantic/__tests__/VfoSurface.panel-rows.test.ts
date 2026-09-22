@@ -976,6 +976,7 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
 });
 
 describe('bridge hardware keys (MOR-2509 package C)', () => {
+  const opsCss = styleBlock('src/semantic/VfoOperationGroup.svelte');
   /** 2/main_sub with every radio function present and observed. */
   function functionsFixture(changes?: {
     atu?: 'off' | 'on' | 'tuning' | 'unknown';
