@@ -463,13 +463,18 @@
     return () => observer.disconnect();
   });
   const vfoTrackX = 0;
-  const vfoTrackW = $derived(Math.max(0, Math.floor(
-    (vfoWidth - VFO_VALUE_COLUMN_W) / VFO_SEG_PITCH,
-  ) * VFO_SEG_PITCH));
+  // The mock-up's flex model, verbatim: the track is `.mrow`'s flex:1
+  // remainder after the 58px value column (10px gap + 48px cell) — the
+  // exact width minus 58, NOT floored to the dash pitch. Only the dash
+  // raster snaps: the lit extent and the S9 colour split land on the 3px
+  // whole-dash grid (see vfoLitExtentX/vfoS9X), so the unlit track itself
+  // may end on the same partial dash the mock-up's repeating gradient ends
+  // on. clientWidth is an integer, so dash edges stay whole-pixel.
+  const vfoTrackW = $derived(Math.max(0, vfoWidth - VFO_VALUE_COLUMN_W));
   const vfoReadoutX = $derived(vfoTrackX + vfoTrackW + VFO_VALUE_GAP);
-  // The blue→red handover snaps to the segment grid so no segment renders
-  // half blue and half red; the offset from the exact 4/7 label position
-  // stays under one pitch.
+  // The blue→red handover is part of the dash RASTER, not the layout: it
+  // snaps to the whole-dash grid so no dash renders half blue and half red,
+  // staying within one pitch of the exact 4/7 share the S9 numeral sits at.
   const vfoS9X = $derived(signalProjection.crossoverFraction === null
     ? vfoTrackX + vfoTrackW
     : vfoTrackX + Math.round((S9_UNIFORM_FRACTION * vfoTrackW) / VFO_SEG_PITCH) * VFO_SEG_PITCH);
@@ -595,7 +600,7 @@
             font-weight={VFO_LABEL_WEIGHT}
             letter-spacing={mark.overS9 ? VFO_PLUS_LETTER_SPACING : undefined}
             fill={mark.overS9 ? VFO_TONE_RED : VFO_TONE_TICK_LABEL}
-            text-anchor={index === 0 ? 'start' : 'middle'}
+            text-anchor={mark.slot === 0 ? 'start' : 'middle'}
             dominant-baseline="text-before-edge"
           >{mark.text}</text>
           <line
@@ -980,9 +985,11 @@
        bottom edge — so the root SVG must not clip it. */
     overflow: visible;
   }
+  /* The lit filter is the S track's alone: mock-up v8 filters `.lit`
+     (#mAlive line 122) and leaves `.polit` the plain meter blue — the Po
+     row shares the geometry, not the glow. */
   [data-meter-fill],
-  [data-meter-fill-red],
-  [data-lower-fill] {
+  [data-meter-fill-red] {
     filter: var(--v2-meter-lit-filter, none);
   }
 </style>
