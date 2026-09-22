@@ -32,12 +32,16 @@ function frame(overrides: Partial<SignalMeterProjection> = {}): SignalMeterFrame
       scaleMode: 's', motionFraction: 0.4,
       primaryText: 'S7', secondaryText: '−85 dBm',
       accessibleDescription: 'S meter S7, −85 dBm', crossoverFraction: 0.55,
+      uniformScaleKnots: [{ at: 0, to: 0 }, { at: 1, to: 1 }],
+      uniformScaleMarks: [],
       marks: [{ actual: 0, fraction: 0.55, text: '9', color: 'red' }],
       ticks: [{ fraction: 0.1, kind: 'mid', color: 'white' }],
       ...overrides,
     },
     smoothedFraction: 0.35,
     peakFraction: 0.6,
+    afterglowFraction: null,
+    reducedMotion: false,
   };
 }
 

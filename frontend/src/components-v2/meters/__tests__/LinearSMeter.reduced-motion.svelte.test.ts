@@ -384,13 +384,14 @@ describe('LinearSMeter — runtime prefers-reduced-motion flips (MOR-1233 fix cy
     }
   });
 
-  it('detaches both reduced-motion change listeners on unmount — no leak', () => {
+  it('detaches all reduced-motion change listeners on unmount — no leak', () => {
     const { listenerCount, restore } = mockReducedMotion(false);
     try {
       const { component } = mountReactive({ value: 20 });
       flushSync();
-      // Ballistics smoother + peak-hold each register their own listener.
-      expect(listenerCount()).toBe(2);
+      // Ballistics smoother + peak-hold + the MOR-2509 afterglow envelope
+      // each register their own listener.
+      expect(listenerCount()).toBe(3);
 
       unmount(component);
       components = components.filter((c) => c !== component);
