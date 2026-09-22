@@ -107,11 +107,11 @@ describe('VFO qualified display continuity', () => {
     expect(root.querySelector('.vfo-freq')!.textContent?.trim()).toBe('14.250.000');
     expect(root.querySelector('.digit')).toBeNull();
     const unknown = mountSurface({ viewModel: view('unknown'), onTuneFrequency: vi.fn() });
-    expect(unknown.querySelector('.freq')!.textContent?.trim()).toBe('—');
+    expect(unknown.querySelector('.freq')!.textContent?.trim()).toBe('');
     expect(unknown.querySelector('.digit')).toBeNull();
     const unsupported = view('current');
     unsupported.vfos = unsupported.vfos.map((vfo) => ({ ...vfo, display: { frequencyHz: { state: 'unsupported' }, mode: { state: 'unsupported' }, filter: { state: 'unsupported' } } }));
-    expect(mountSurface({ viewModel: unsupported }).querySelector('.vfo-freq')!.textContent?.trim()).toBe('—');
+    expect(mountSurface({ viewModel: unsupported }).querySelector('.vfo-freq')!.textContent?.trim()).toBe('');
   });
   // MOR-2425/R41 replaces the MOR-1692-era marker/sentence pin, in any locale.
   it.each(['en-US', 'ru-RU'] as const)('paints no freshness marker, sentence or description for a held reading in %s', (locale) => {
