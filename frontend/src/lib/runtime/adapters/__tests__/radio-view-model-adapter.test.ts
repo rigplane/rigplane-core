@@ -274,7 +274,7 @@ const INDICATOR_CAPS = caps({
   filters: ['FIL1'],
   agcLabels: { '2': 'SLOW' },
   capabilities: [
-    ...DUAL, 'agc', 'nb', 'nr', 'notch', 'attenuator', 'preamp',
+    ...DUAL, 'filter_width', 'agc', 'nb', 'nr', 'notch', 'attenuator', 'preamp',
     'rf_gain', 'digisel', 'ip_plus',
   ],
 });
@@ -1427,7 +1427,8 @@ describe('MOR-2374 shared DATA and filter configuration', () => {
     segments: [{ hzMin: 50, hzMax: 500, stepHz: 50, indexMin: 0 }], table: [50, 100, 500],
   };
   const dataCaps = (extra: Partial<Capabilities> = {}) => caps({
-    capabilities: [...DUAL, 'data_mode'], modes: ['USB'], filters: ['FIL1', 'FIL2'],
+    capabilities: [...DUAL, 'data_mode', 'filter_width'],
+    modes: ['USB'], filters: ['FIL1', 'FIL2'],
     dataModeCount: 3, filterConfig: { USB: config }, ...extra,
   });
   function state() {
@@ -1486,7 +1487,9 @@ describe('MOR-2374 shared DATA and filter configuration', () => {
   it('leaves fallback presentation to the component and does not infer DATA support', () => {
     expect(toRadioViewModel(state(), dataCaps({ dataModeLabels: undefined }))!.filterPassband!.dataModeChoices)
       .toEqual([0, 1, 2, 3].map(value => ({ value, label: null })));
-    const fp = toRadioViewModel(state(), dataCaps({ capabilities: DUAL }))!.filterPassband!;
+    const fp = toRadioViewModel(state(), dataCaps({
+      capabilities: [...DUAL, 'filter_width'],
+    }))!.filterPassband!;
     expect(fp.dataModeChoices).toEqual([]);
     expect(fp.dataMode.availability.structural).toBe(false);
   });
