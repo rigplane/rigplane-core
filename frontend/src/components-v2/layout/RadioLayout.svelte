@@ -1426,6 +1426,7 @@
     .content-row {
       grid-template-columns: 1fr;
       overflow-y: auto;
+      contain: inline-size;
     }
 
     .bottom-dock {

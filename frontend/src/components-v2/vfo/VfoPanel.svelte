@@ -363,7 +363,7 @@
     --vfo-slate-glow: var(--dl-vfo-slate-glow, none);
     --v2-meter-lit-filter: var(--dl-vfo-meter-lit-filter, none);
     --vfo-large-chip-width: 70px;
-    --vfo-panel-narrow-breakpoint: 520px;
+    --vfo-panel-narrow-breakpoint: 480px;
 
     display: grid;
     grid-template-rows: auto auto auto;
@@ -766,7 +766,7 @@
     .dsp { grid-template-columns: 1fr 1fr; }
   }
 
-  @container (max-width: 520px) {
+  @container (max-width: 480px) {
     .chip-slot, .chip-lg { --vfo-large-chip-width: 62px; }
     .tray { margin-block-end: calc(17px * var(--vfo-deck-rhythm-narrow)); }
     .receiver-row {

@@ -507,11 +507,12 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     expect(unknown.targetBadges).toEqual([]);
     for (const result of [rx, tx]) {
       expect(result.vfoFacts).toEqual(expect.arrayContaining([
-        { fact: 'ant', slot: 'A' },
         { fact: 'rit', slot: 'A' }, { fact: 'xit', slot: 'A' },
-        { fact: 'tx', slot: 'B' },
       ]));
+      expect(result.vfoFacts.some(({ fact }) => fact === 'ant')).toBe(false);
     }
+    expect(rx.vfoFacts.some(({ fact }) => fact === 'tx')).toBe(false);
+    expect(tx.vfoFacts).toEqual(expect.arrayContaining([{ fact: 'tx', slot: 'B' }]));
     expect(unknown.vfoFacts.some(({ fact }) => fact === 'tx')).toBe(false);
     expect(tx.txPanelFeedback).toMatchObject({
       stateSrOnly: true,
@@ -551,23 +552,36 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
           overflow: element.scrollWidth > element.clientWidth + 1,
           cardOverflow: [...element.querySelectorAll<HTMLElement>('[data-standard-vfo-slot]')]
             .map(card => {
-              const cardBox = card.getBoundingClientRect();
+              const clippedOverflow = /(hidden|clip|auto|scroll)/;
               return [...card.querySelectorAll<HTMLElement>('[data-vfo-row], [data-vfo-row] *')]
-              .filter(target => {
+              .flatMap(target => {
                 // A `display: contents` wrapper (e.g. .frequency-readout-content)
                 // generates no box: its rect is 0/0/0/0 and it cannot be clipped.
                 // getClientRects() stays empty for it (and for display: none)
                 // while a real zero-width box still reports one rect.
-                if (target.getClientRects().length === 0) return false;
+                if (target.getClientRects().length === 0) return [];
                 const style = getComputedStyle(target);
                 const box = target.getBoundingClientRect();
-                return style.display !== 'none' && style.visibility !== 'hidden'
-                  && (target.scrollWidth > target.clientWidth + 1
-                    || box.left < cardBox.left - 1 || box.right > cardBox.right + 1
-                    || box.top < cardBox.top - 1 || box.bottom > cardBox.bottom + 1);
-              }).map(target => ({ target: target.className ?? target.tagName,
-                scrollWidth: target.scrollWidth, clientWidth: target.clientWidth,
-                rect: target.getBoundingClientRect().toJSON(), card: cardBox.toJSON() }));
+                if (style.display === 'none' || style.visibility === 'hidden') return [];
+                for (let ancestor: HTMLElement | null = target; ancestor && card.contains(ancestor);
+                  ancestor = ancestor.parentElement) {
+                  const ancestorStyle = getComputedStyle(ancestor);
+                  const ancestorBox = ancestor.getBoundingClientRect();
+                  const clippedX = clippedOverflow.test(ancestorStyle.overflowX)
+                    && (ancestor === target ? target.scrollWidth > target.clientWidth + 1
+                      : box.left < ancestorBox.left - 1 || box.right > ancestorBox.right + 1);
+                  const clippedY = clippedOverflow.test(ancestorStyle.overflowY)
+                    && (ancestor === target ? target.scrollHeight > target.clientHeight + 1
+                      : box.top < ancestorBox.top - 1 || box.bottom > ancestorBox.bottom + 1);
+                  if (clippedX || clippedY) return [{
+                    target: target.className ?? target.tagName,
+                    ancestor: ancestor.className ?? ancestor.tagName,
+                    axis: `${clippedX ? 'x' : ''}${clippedY ? 'y' : ''}`,
+                    rect: box.toJSON(), ancestorRect: ancestorBox.toJSON(),
+                  }];
+                }
+                return [];
+              });
             }),
           bridgeOverflow: [...element.querySelectorAll<HTMLElement>('[data-instrument-bridge] *')]
             .filter(target => target.scrollWidth > target.clientWidth + 1)
@@ -601,7 +615,8 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       await expect(receiverRows.nth(1).locator('.mode-badge-wrapper')).toHaveAttribute('data-vfo-controls-disabled', 'true');
       await expect(receiverRows.nth(0)).toContainText(/CW.*FIL3/);
       await expect(receiverRows.nth(1)).toContainText(/USB.*FIL1/);
-      for (const fact of ['ant', 'rit', 'xit']) {
+      await expect(cards.locator('[data-indicator-fact="ant"]')).toHaveCount(0);
+      for (const fact of ['rit', 'xit']) {
         await expect(cards.nth(0).locator(`[data-indicator-fact="${fact}"]`)).toBeVisible();
         await expect(cards.nth(1).locator(`[data-indicator-fact="${fact}"]`)).toHaveCount(0);
       }
@@ -621,9 +636,13 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       await expect(root).not.toHaveClass(/sdr-test/);
       await expect(page.locator('[data-vfo-appearance]').first()).toHaveAttribute('data-vfo-appearance', 'standard');
       await expect(page.locator('[data-vfo-tile]')).toHaveCount(topology === 'topology-1-single' ? 1 : 2);
-      // MOR-2509: every panel owns five fixed rows — tray, receiver, main,
-      // under and the DSP group.
-      await expect(page.locator('[data-vfo-row]')).toHaveCount(topology === 'topology-1-single' ? 5 : 10);
+      const expectedRows = topology === 'topology-1-single'
+        ? ['tray', 'receiver', 'main', 'under']
+        : ['tray', 'receiver', 'main', 'under', 'dsp'];
+      expect(await page.locator('.receiver-instrument').evaluateAll(instruments => instruments.map(instrument =>
+        [...instrument.querySelectorAll<HTMLElement>('[data-vfo-row]')]
+          .map(row => row.dataset.vfoRow),
+      ))).toEqual(topology === 'topology-1-single' ? [expectedRows] : [expectedRows, expectedRows]);
       const geometry = await standardGeometry(page);
       const boxes = geometry.boxes as Record<string, DOMRect>;
       expect.soft(boxes.receiver.y, 'receiver deck follows status').toBeGreaterThanOrEqual(boxes.status.y + boxes.status.height - 1);
@@ -755,7 +774,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     });
   }
 
-  for (const [width, expectedNarrow] of [[1280, false], [1024, true]] as const) {
+  for (const [width, expectedNarrow] of [[1280, false], [1200, false], [1024, true]] as const) {
     test(`standard ${width}px VFO panel ${expectedNarrow ? 'uses' : 'does not use'} narrow mode`, async ({ page }) => {
       await boot(page, 'standard', width, true, 'studioline', false, 'topology-2-main-sub', {
         height: 800, extraCapabilities: ALL_STRUCTURAL_ACTION_CAPS,
@@ -771,8 +790,8 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       }));
       for (const panel of geometry) {
         expect(panel.meterColumn).toBe(expectedNarrow ? '1' : '3');
-        if (width === 1280) expect(panel.panelWidth - 520).toBeGreaterThanOrEqual(8);
-        else expect(panel.panelWidth).toBeLessThanOrEqual(520);
+        if (expectedNarrow) expect(panel.panelWidth).toBeLessThanOrEqual(480);
+        else expect(panel.panelWidth - 480).toBeGreaterThanOrEqual(8);
       }
     });
   }
