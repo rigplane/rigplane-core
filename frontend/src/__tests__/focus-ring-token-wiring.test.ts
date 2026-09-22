@@ -206,9 +206,14 @@ function contrast(a: string, b: string): number {
 }
 
 /** (ids, class-level, types) specificity of one complex selector: ids → a;
- * classes, attributes and pseudo-classes → b. String values and
- * parenthesised arguments are dropped first; pseudo-elements and element
- * types are not counted — no selector ranked here uses them. */
+ * classes, attributes and pseudo-classes → b; element types → c. String
+ * values and parenthesised arguments are dropped first. A type is counted
+ * once per compound, as a leading identifier — MOR-2522's native-range rule
+ * (`input[type='range'][type='range']:focus-visible`, section 9) is the first
+ * ranked selector whose win lives in the c column; the section-9 pin 'the
+ * doubled attribute and the element type are both load-bearing' fails if the
+ * count is dropped. Pseudo-elements keep their historical c count; no ranked
+ * selector uses one. */
 function specificity(selector: string): [number, number, number] {
   const stripped = selector.replace(/'[^']*'/g, "''").replace(/\([^()]*\)/g, '');
   let a = 0;
@@ -219,6 +224,10 @@ function specificity(selector: string): [number, number, number] {
     else if (token.startsWith('.') || token.startsWith('[')) b += 1;
     else if (token.startsWith('::')) c += 1;
     else b += 1; // single-colon pseudo-class
+  }
+  // `*` and compounds opening with a class/attribute/pseudo contribute no type.
+  for (const compound of stripped.split(/[\s>+~]+/)) {
+    if (/^[a-zA-Z][\w-]*/.test(compound)) c += 1;
   }
   return [a, b, c];
 }
@@ -233,6 +242,28 @@ function outranks(
     (winner[0] === loser[0] && winner[1] > loser[1]) ||
     (winner[0] === loser[0] && winner[1] === loser[1] && winner[2] > loser[2])
   );
+}
+
+/** Comma-split a box-shadow list at paren depth zero — the desktop-v2 track
+ * chrome's `var(--vc-hw-channel-shadow-1, #000f)` fallbacks contain commas,
+ * so a naive `value.split(',')` would shred every layer that carries one.
+ * MOR-2522's compose pin (section 9) uses it to verify the layers of the ONE
+ * --range-track-chrome declaration and both rules' references to it. */
+function shadowLayers(value: string): string[] {
+  const layers: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    else if (ch === ',' && depth === 0) {
+      layers.push(value.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  layers.push(value.slice(start).trim());
+  return layers;
 }
 
 /** Svelte compiles a scoped rule by appending one scope class to its
@@ -871,4 +902,226 @@ describe('MOR-2522: renderer focus suppression outranks the studioline focus con
       ).toBe(true);
     });
   }
+});
+
+/* ── 9. MOR-2522: native range sliders share one lighting rule ───────────── */
+
+describe('MOR-2522: native range sliders light on keyboard focus instead of drawing a frame', () => {
+  // Six call sites — semantic/FilterSurface.svelte (WIDTH / IF SHIFT, the
+  // stand defect), DspSurface.svelte, CwKeyerSurface.svelte,
+  // RitXitScanSurface.svelte, components-v2/panels/AudioRoutingControl.svelte,
+  // CwPanel.svelte — justify ONE shared rule, not six copies. Its home is
+  // app.css, the only stylesheet loaded unconditionally in every context that
+  // mounts them; value-control.css is not (nothing in those six files imports
+  // it), so the rule consumes --vc-focus-ring-shadow only as a preference over
+  // its theme twin — and the chain ends there: the two-level
+  // `var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow))` pinned below,
+  // with nothing declared past the theme twin.
+  //
+  // Round 2 (stand probe at 224ff7e3): the shared rule wins the language
+  // contracts but LOSES box-shadow on the desktop-v2/sdr-test skins, where
+  // semantic-controls.css's track chrome is (0,3,2) — box-shadow does not
+  // merge across rules, so the focused slider showed track-only with no ring
+  // at all. The illumination there is carried by a :focus-visible variant of
+  // the track rule's own selector, pinned below from the real stylesheet.
+  const RANGE_RULE_SELECTOR = "input[type='range'][type='range']:focus-visible";
+  const RANGE_ONLY = /^(?:outline|box-shadow)$/;
+  const SKIN_CSS = 'skins/desktop-v2/semantic-controls.css';
+  const RING_TOKEN_CHAIN = 'var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow))';
+  const NATIVE_RANGE_SURFACES = [
+    'semantic/FilterSurface.svelte',
+    'semantic/DspSurface.svelte',
+    'semantic/CwKeyerSurface.svelte',
+    'semantic/RitXitScanSurface.svelte',
+    'components-v2/panels/AudioRoutingControl.svelte',
+    'components-v2/panels/CwPanel.svelte',
+  ];
+
+  const rangeRule = ruleBlocks(stripComments(read('app.css'))).find(
+    (b) => b.selector === RANGE_RULE_SELECTOR,
+  );
+
+  it('app.css carries the ONE shared focus rule for native range sliders, ring-only', () => {
+    expect(rangeRule, 'expected the shared native-range focus rule in app.css').toBeTruthy();
+    const declarations = rangeRule!.body
+      .split(';')
+      .map((d) => d.trim())
+      .filter(Boolean);
+    expect(declarations).toContain('outline: none');
+    // The value-control token where value-control.css is loaded (studioline
+    // colour override included), its theme twin where that file is absent —
+    // never a colour literal, so every colour the chain can paint is a
+    // declared token (the section-5 matrix governs both levels). The chain is
+    // exactly these two levels — nothing is declared past the theme twin.
+    expect(declarations).toContain(
+      'box-shadow: var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow))',
+    );
+    // No-shift pin, the same declared-property-set contract section 7 holds
+    // the renderers to: beyond outline/box-shadow this rule cannot move,
+    // resize or reshape the slider.
+    const properties = declarations.map((d) => d.split(':')[0].trim());
+    expect(properties).toEqual(properties.filter((p) => RANGE_ONLY.test(p)));
+  });
+
+  it('app.css is the unconditional shared load in both the app and the harness', () => {
+    // The premise of "one shared home": both entry points import app.css
+    // statically. The harness then loads the language stylesheet dynamically
+    // (section 8's pin), which is exactly why the rule must win on
+    // specificity, not order.
+    expect(read('App.svelte')).toMatch(/import '\.\/app\.css';/);
+    expect(read('../fixtures/main.ts')).toMatch(/import '\.\.\/src\/app\.css';/);
+  });
+
+  it('the shared rule outranks both language focus contracts on specificity alone', () => {
+    for (const lang of ['studioline', 'fieldline']) {
+      const file = `presentation/languages/${lang}/${lang}.css`;
+      const contract = ruleBlocks(stripComments(read(file))).find(
+        (b) => /:focus-visible/.test(b.selector) && /outline/.test(b.body),
+      );
+      expect(contract, `expected a :focus-visible outline rule in ${lang}.css`).toBeTruthy();
+      const rival = specificity(contract!.selector);
+      expect(
+        outranks(specificity(RANGE_RULE_SELECTOR), rival),
+        `${RANGE_RULE_SELECTOR} = ${specificity(RANGE_RULE_SELECTOR)} must outrank ` +
+          `${contract!.selector} = ${rival}: the language stylesheet loads after app.css ` +
+          '(fixtures/main.ts), so a tie would be lost on source order.',
+      ).toBe(true);
+    }
+  });
+
+  it('the doubled attribute and the element type are both load-bearing: weaker selectors tie or lose', () => {
+    // Discriminating halves of the cascade pin. Drop one attribute and the
+    // rule falls to (0,2,1), which the (0,3,0) studioline contract beats on
+    // b — the exact regression shape 17b7c794 fixed for the renderers. Drop
+    // the element type instead and (0,3,0) only TIES the contract, so the
+    // later-loading language stylesheet wins on source order; the real rule's
+    // victory lives in the c column, which is why specificity() counts types.
+    const studioline = ruleBlocks(
+      stripComments(read('presentation/languages/studioline/studioline.css')),
+    ).find((b) => /:focus-visible/.test(b.selector) && /outline/.test(b.body))!;
+    const rival = specificity(studioline.selector);
+    expect(outranks(specificity("input[type='range']:focus-visible"), rival)).toBe(false);
+    expect(outranks(specificity("[type='range'][type='range']:focus-visible"), rival)).toBe(false);
+  });
+
+  it('the desktop-v2 generic frame rule no longer matches range inputs', () => {
+    // semantic-controls.css's `section :is(button, input:not([type='range']),
+    // select):focus-visible` outranks even the doubled-attribute rule, so
+    // excluding range inputs from that selector is what frees them from the
+    // FRAME on the desktop-v2/sdr-test skins (the stand's filter panel is one:
+    // `.desktop-control-face .semantic-control-panel`). The ILLUMINATION there
+    // is not app.css's, though — the same file's track chrome owns box-shadow
+    // at (0,3,2) — but the composing variant pinned directly below.
+    const frame = ruleBlocks(stripComments(read(SKIN_CSS))).find(
+      (b) => /:is\(button/.test(b.selector) && /:focus-visible/.test(b.selector),
+    );
+    expect(frame, 'expected the desktop-v2 generic :focus-visible frame rule').toBeTruthy();
+    expect(frame!.selector).toContain("input:not([type='range'])");
+    expect(frame!.body).toMatch(/outline:\s*2px solid/);
+  });
+
+  // The round-2 cascade pins. The track chrome rule and its :focus-visible
+  // variant are both located in the REAL stylesheet, and the ranking is
+  // recomputed from their live selectors: the pin fails if the track rule
+  // gains specificity (a tie is a loss — the chrome would eat the ring again)
+  // or if the focus variant loses it.
+  const skinCss = stripComments(read(SKIN_CSS));
+  const skinBlocks = ruleBlocks(skinCss);
+  // The track chrome: the unfocused rule that owns box-shadow on the INPUT
+  // element itself (the ::-webkit-slider-thumb / ::-moz-range-thumb rules
+  // style a different element and never collide with the ring).
+  const trackChrome = skinBlocks.find(
+    (b) =>
+      /input\[type='range'\]/.test(b.selector) &&
+      !/:focus/.test(b.selector) &&
+      !/::/.test(b.selector) &&
+      /box-shadow/.test(b.body),
+  );
+  const skinFocus = skinBlocks.find((b) =>
+    /input\[type='range'\]:focus-visible/.test(b.selector),
+  );
+
+  it('the desktop-v2 focus variant is the track rule’s own selector plus :focus-visible', () => {
+    expect(trackChrome, 'expected the desktop-v2 track chrome rule').toBeTruthy();
+    expect(skinFocus, 'expected a :focus-visible variant of the track rule').toBeTruthy();
+    // Not a parallel selector that could drift: exactly the track compound
+    // with the focus pseudo appended — same element, one state later.
+    expect(skinFocus!.selector).toBe(`${trackChrome!.selector}:focus-visible`);
+  });
+
+  it('the focus variant outranks the track chrome on specificity alone', () => {
+    const focus = specificity(skinFocus!.selector);
+    const track = specificity(trackChrome!.selector);
+    expect(
+      outranks(focus, track),
+      `${skinFocus!.selector} = ${focus} must outrank the track chrome ` +
+        `${trackChrome!.selector} = ${track}: box-shadow does not merge across ` +
+        'rules, so a tie or a loss means the focused slider paints track-only ' +
+        'with no ring — the 224ff7e3 stand defect.',
+    ).toBe(true);
+  });
+
+  it('app.css’s shared rule cannot win this collision — the skin variant is load-bearing', () => {
+    // Discriminating half: (0,3,1) loses the c column to the track rule's two
+    // type selectors (`section`, `input`). If the track rule ever DROPS below
+    // the shared rule this pin fails too, because the variant would then be
+    // redundant duplication rather than the only carrier of the ring.
+    const track = specificity(trackChrome!.selector);
+    expect(outranks(specificity(RANGE_RULE_SELECTOR), track)).toBe(false);
+  });
+
+  it('the focus variant composes: ring token chain prepended to the track chrome, layer-for-layer', () => {
+    const shadowOf = (body: string) => {
+      // A box-shadow value never contains `;` (its commas sit inside var()),
+      // so cutting at the first semicolon isolates the one declaration even
+      // in the track rule's multi-declaration body.
+      const value = body.match(/box-shadow:\s*([^;]*)/)?.[1].trim();
+      expect(value, 'expected a box-shadow declaration').toBeTruthy();
+      return shadowLayers(value!);
+    };
+    // ONE owner of the chrome, file-wide: EVERY --range-track-chrome
+    // declaration in semantic-controls.css is collected (comments stripped
+    // above), not just the first match in the track rule's body — a second
+    // declaration later in the same rule (a dropped or reordered stack) would
+    // override the first in the browser while a first-match read stays green,
+    // so uniqueness is asserted before the sole value is validated. The layer
+    // check is then the discriminating check on the stack itself — a dropped,
+    // reordered or retyped layer fails here, at the only place the literals
+    // live.
+    const chromeDeclarations = [...skinCss.matchAll(/--range-track-chrome:\s*([^;]*)/g)].map(
+      (m) => m[1].trim(),
+    );
+    expect(
+      chromeDeclarations.length,
+      'expected exactly ONE --range-track-chrome declaration in semantic-controls.css',
+    ).toBe(1);
+    expect(shadowLayers(chromeDeclarations[0])).toEqual([
+      'inset 0 2px 4px var(--vc-hw-channel-shadow-1, #000f)',
+      'inset 0 -1px 2px var(--vc-hw-channel-shadow-2, #0009)',
+      'inset 0 0 0 1px var(--vc-hw-channel-border, #0008)',
+    ]);
+    // Both rules REFERENCE the one owner — a second literal copy of the stack
+    // in either rule is the drift hazard this factoring removes, and it fails
+    // here even if the copies happen to agree today.
+    expect(shadowOf(trackChrome!.body)).toEqual(['var(--range-track-chrome)']);
+    // The variant paints the ring token chain — never a colour literal — in
+    // front of the same chrome, by reference, so the composition cannot
+    // silently drop the channel shading when either rule is edited.
+    expect(shadowOf(skinFocus!.body)).toEqual([RING_TOKEN_CHAIN, 'var(--range-track-chrome)']);
+    // No-geometry pin: the variant declares the ring and nothing else.
+    const properties = skinFocus!.body
+      .split(';')
+      .map((d) => d.split(':')[0].trim())
+      .filter(Boolean);
+    expect(properties).toEqual(['box-shadow']);
+  });
+
+  it('the six native-range surfaces declare no private outline treatment of their own', () => {
+    // Same shape as MOR-2509's deck pin above: the shared rule in app.css is
+    // the ONLY focus treatment these files get — a per-file copy is the
+    // six-copies defect this ticket refuses.
+    for (const file of NATIVE_RANGE_SURFACES) {
+      expect(stripComments(styleText(file, read(file))), file).not.toMatch(/outline\s*:/);
+    }
+  });
 });
