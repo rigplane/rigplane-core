@@ -3903,6 +3903,60 @@ async def test_execute_command_reset_filter_width_forwards_the_receiver() -> Non
         radio.reset_filter_width.assert_awaited_once_with(receiver=receiver)
 
 
+@pytest.mark.asyncio
+async def test_reset_filter_width_uses_yaesu_post_write_readback_without_pending() -> (
+    None
+):
+    """The value-less reset gets one correlated width read in the next Yaesu
+    medium cycle without exposing an optimistic client target."""
+    radio, handler, poller, store, _accept = _real_ftx1_control_path()
+    service = handler._command_service  # noqa: SLF001
+    command_id = "reset-width-main"
+    width_path = FieldPath.active("main", "freq_mode", "filter_width")
+
+    radio.read_freq = AsyncMock(side_effect=lambda receiver: 14_074_000)
+    radio.read_mode = AsyncMock(side_effect=lambda receiver: ("USB", None))
+    radio.get_tx_func = AsyncMock(return_value=0)
+    radio.read_transmit_state = AsyncMock(
+        return_value=TxStateReading(False, "rx", "yaesu_poll_response", True)
+    )
+    radio.read_filter_width = AsyncMock(
+        side_effect=lambda receiver, *, mode: 2400 if receiver == 0 else 1800
+    )
+
+    await handler._enqueue_command(  # noqa: SLF001
+        "reset_filter_width",
+        {"receiver": 0},
+        command_id=command_id,
+    )
+
+    assert (
+        service.pending_overlays(
+            source="websocket", session_id="ws-ftx1", command_id=command_id
+        )
+        == ()
+    )
+    [expectation] = service.readback_expectations(
+        source="websocket", session_id="ws-ftx1", command_id=command_id
+    )
+    assert expectation.matches_any_value
+
+    await poller._drain_commands()  # noqa: SLF001
+    assert width_path in poller._pending_readbacks  # noqa: SLF001
+
+    await poller._emit_medium_observations()  # noqa: SLF001
+
+    assert radio.read_filter_width.await_args_list.count(mock_call(0, mode="USB")) == 1
+    assert store.snapshot().field(width_path).value == 2400
+    assert (
+        service.readback_expectations(
+            source="websocket", session_id="ws-ftx1", command_id=command_id
+        )
+        == ()
+    )
+    assert service.lifecycle_events()[-1].state == "reconciled"
+
+
 def test_slow_group_interval_matches_the_profile_slow_control_cadence() -> None:
     """The FTX-1 profile's slow tier must name the interval that re-reads it.
 

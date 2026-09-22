@@ -582,7 +582,12 @@ class YaesuCatPoller:
             )
             matches = (
                 expectation in expectations
-                and _exact_readback_value_matches(observation.value, expectation.value)
+                and (
+                    expectation.matches_any_value
+                    or _exact_readback_value_matches(
+                        observation.value, expectation.value
+                    )
+                )
                 and observation.timestamp_monotonic >= dispatched_at
                 and generation[0] == self._current_tx_target_generation()
                 and generation[1] == self._captured_provider_generation()

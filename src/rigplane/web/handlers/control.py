@@ -2546,7 +2546,10 @@ class ControlHandler:
                 # ``admitted_width`` either. Capability-gated: the tag exists
                 # exactly when the profile declares a writeable
                 # radio-default code.
-                rx = int(params.get("receiver", 0))
+                receiver = params.get("receiver", 0)
+                if type(receiver) is not int or receiver not in (0, 1):
+                    raise ValueError("receiver must be the integer 0 or 1")
+                rx = receiver
                 self._ensure_capability(
                     CAP_FILTER_WIDTH_RADIO_DEFAULT, "reset_filter_width"
                 )

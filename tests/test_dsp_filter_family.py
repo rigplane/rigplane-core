@@ -215,6 +215,31 @@ class TestFtx1Table5LoaderPins:
         assert "filter_width_radio_default" not in config.capabilities
         assert "filter_width_radio_default" not in config.to_profile().capabilities
 
+    def test_radio_default_capability_cannot_be_hand_listed(
+        self, tmp_path: Path
+    ) -> None:
+        """The tag is loader-derived; TOML cannot advertise it without its code."""
+        from rigplane.rig_loader import RigLoadError
+
+        source = (_RIGS_DIR / "ftx1.toml").read_text()
+        mutated = source.replace("radio_default_code = 0\n", "", 1).replace(
+            "features = [",
+            'features = ["filter_width_radio_default", ',
+            1,
+        )
+        assert mutated != source
+        target = tmp_path / "ftx1-hand-listed-radio-default.toml"
+        target.write_text(mutated)
+        (tmp_path / "_ctcss_tables_v1.toml").write_text(
+            (_RIGS_DIR / "_ctcss_tables_v1.toml").read_text()
+        )
+
+        with pytest.raises(
+            RigLoadError,
+            match="filter_width_radio_default.*derived",
+        ):
+            load_rig(target)
+
     def test_radio_default_code_at_or_above_first_code_is_rejected(
         self, tmp_path: Path
     ) -> None:

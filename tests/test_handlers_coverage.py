@@ -974,9 +974,18 @@ async def test_enqueue_reset_filter_width_requires_the_derived_capability() -> N
     "params",
     [
         {"receiver": "bogus"},
+        {"receiver": True},
+        {"receiver": 0.5},
+        {"receiver": "1"},
         {"receiver": 5},
     ],
-    ids=["non-integer receiver", "receiver out of range"],
+    ids=[
+        "non-integer receiver",
+        "boolean receiver",
+        "float receiver",
+        "numeric-string receiver",
+        "receiver out of range",
+    ],
 )
 async def test_enqueue_reset_filter_width_rejects_junk_params(
     params: dict[str, object],

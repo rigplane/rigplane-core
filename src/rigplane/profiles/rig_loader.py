@@ -2048,6 +2048,12 @@ def load_rig(path: Path) -> RigConfig:
                 f"{filename}: unknown capability {cap!r}. "
                 f"Known: {sorted(KNOWN_CAPABILITIES)}"
             )
+    if CAP_FILTER_WIDTH_RADIO_DEFAULT in features:
+        raise RigLoadError(
+            f"{filename}: capability {CAP_FILTER_WIDTH_RADIO_DEFAULT!r} is derived "
+            "from [filters].radio_default_code and must not be listed in "
+            "[capabilities].features"
+        )
     rf_sql_control_model = data["capabilities"].get("rf_sql_control_model", "separate")
     if rf_sql_control_model not in VALID_RF_SQL_CONTROL_MODELS:
         raise RigLoadError(
