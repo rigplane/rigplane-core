@@ -331,14 +331,18 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
   });
 
   it('lights a partial segment only when the fill covers at least half of it', () => {
-    // S3's exact position (78px at the 546px track) sits inside segment 25
-    // ([75, 77], half-covered at 76px): covered past half, so the segment
-    // lights and the extent is its right edge, 77px.
+    // Segment N lights when the fill reaches 3N+1px (half of its 2px dash
+    // inside the 3px pitch), so segment 25 — cell [75, 77) — flips at 76px.
+    // How the literals were computed for the 546px fixture track: the
+    // uniform fill fraction is the knots lerp of the reading's motion
+    // fraction (S1 knot at 0.0611 → S9 knot at 0.55 spans to 0..4/7); S3
+    // exact (-36) sits at 1/7 = 78px, past the 76px half, so segment 25
+    // lights and the extent is its right edge, 77px. -36.5 dB maps through
+    // the same knots to 74.75px — past segment 24's half at 73px, short of
+    // segment 25's at 76px — so the extent is segment 24's right edge, 74px.
     const s3 = mountMeter({ value: -36, variant: 'vfo', compact: true });
     expect(fillFraction(svgOf(s3))).toBeCloseTo(77 / 546, 6);
-    // -36.3 dB maps to 75.85px — just short of segment 25's half point —
-    // so segment 25 stays unlit and the extent is segment 24's right edge.
-    const belowHalf = mountMeter({ value: -36.3, variant: 'vfo', compact: true });
+    const belowHalf = mountMeter({ value: -36.5, variant: 'vfo', compact: true });
     expect(fillFraction(svgOf(belowHalf))).toBeCloseTo(74 / 546, 6);
   });
 
@@ -388,9 +392,10 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
     // …the fill never leaves the left end, the peak is hidden…
     expect(fillFraction(svg)).toBe(0);
     expect(peakVisible(svg)).toBe(false);
-    // …and neither readout carries a glyph: no "?", no status text.
+    // …and the reading cell carries no glyph — the v8 face has one line
+    // and no secondary node at all: no "?", no status text.
     expect(svg.querySelector('[data-meter-reading]')!.textContent).toBe('');
-    expect(svg.querySelector('[data-meter-reading-secondary]')!.textContent).toBe('');
+    expect(svg.querySelector('[data-meter-reading-secondary]')).toBeNull();
     expect(svg.textContent).not.toContain('?');
     expect(svg.textContent).not.toContain('unknown');
   });
