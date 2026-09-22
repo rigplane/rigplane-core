@@ -66,7 +66,11 @@
   cursor: not-allowed;
 }
 
-.desktop-control-face .semantic-control-panel section :is(button, input, select):focus-visible {
+/* Range inputs are excluded: app.css owns their focus treatment (MOR-2522 —
+ * an illumination ring, never this frame); pinned by 'the desktop-v2 generic
+ * frame rule no longer matches range inputs' in
+ * src/__tests__/focus-ring-token-wiring.test.ts. */
+.desktop-control-face .semantic-control-panel section :is(button, input:not([type='range']), select):focus-visible {
   outline: 2px solid var(--v2-accent-cyan);
   outline-offset: 2px;
 }
