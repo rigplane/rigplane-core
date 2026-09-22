@@ -792,9 +792,11 @@
     grid-column: 3;
     flex: 1 1 auto;
     min-width: 0;
-    /* MOR-2509 R2-2: the v8 mock-up's `.meter` well — padding 4px 8px 7px,
-       radius 6px. The horizontal padding stays routable through the layout
-       token so scaled top-row faces can compress it. */
+    /* MOR-2509 R2-2: the `.meter` well — padding 4px 8px 7px, radius 6px,
+       pinned by
+       src/components-v2/meters/__tests__/LinearSMeter.mockup-v8.test.ts.
+       The horizontal padding stays routable through the layout token so
+       scaled top-row faces can compress it. */
     padding: 4px var(--vfo-panel-meter-pad-x, 8px) 7px;
     border-radius: 6px;
     background: var(--dl-vfo-meter-well-background, #05070a);

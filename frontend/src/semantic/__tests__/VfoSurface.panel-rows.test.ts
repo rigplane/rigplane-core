@@ -14,7 +14,7 @@
  * measured separately by `tests/e2e/i18n/desktop-geometry.spec.ts`.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { mount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import type { ReceiverId } from '../radio-view-model';
@@ -1147,6 +1147,35 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     }
   });
 
+  it('every --dl-vfo-key-* token the language bundles declare has a var() reader under src', () => {
+    const declared = new Set<string>();
+    for (const path of [
+      'src/presentation/languages/studioline/studioline.css',
+      'src/presentation/languages/fieldline/fieldline.css',
+      'src/presentation/languages/segmentline/segmentline.css',
+    ]) {
+      const css = readFileSync(path, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+      for (const match of css.matchAll(/--dl-vfo-key-[a-z0-9-]+(?=\s*:)/g)) {
+        declared.add(match[0]);
+      }
+    }
+    // A declared token with no var() reader anywhere under src is an orphan:
+    // re-adding one of the round-5 bridge key tokens turns this red. Today
+    // only --dl-vfo-key-separator survives, read by VfoOperationGroup.svelte.
+    const sourceFiles = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const path = `${dir}/${entry.name}`;
+        if (entry.isDirectory()) return sourceFiles(path);
+        return /\.(?:svelte|css|ts)$/.test(entry.name) ? [path] : [];
+      });
+    const contents = sourceFiles('src').map((path) => readFileSync(path, 'utf8'));
+    const orphans = [...declared].filter((name) => {
+      const reader = new RegExp(`var\\(\\s*${name}[\\s),]`);
+      return !contents.some((content) => reader.test(content));
+    });
+    expect(orphans, 'declared --dl-vfo-key-* tokens with no var() reader under src').toEqual([]);
+  });
+
   it('the alive layer is token-owned, standard-only and non-interactive', () => {
     const theme = readFileSync('src/components-v2/theme/tokens.css', 'utf8');
     expect(theme).toMatch(/@media \(prefers-contrast:\s*more\)[\s\S]*--v2-vfo-glow-override:\s*none/);
@@ -1171,9 +1200,8 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     }
 
     expect(rule(panelCss, '.panel')).toMatch(/background:\s*var\(--dl-vfo-panel-background/);
-    // The glass is the panel's last box, ABOVE the content (the v8 mock-up's
-    // .glass), never the old z-index: -1 under-content placement whose
-    // contribution the pixel probe measured as zero.
+    // The glass is the panel's last box, ABOVE the content, never the old
+    // z-index: -1 under-content placement.
     const sheen = rule(panelCss, '.panel::after');
     expect(sheen).toMatch(/pointer-events:\s*none/);
     expect(sheen).toMatch(/position:\s*absolute/);

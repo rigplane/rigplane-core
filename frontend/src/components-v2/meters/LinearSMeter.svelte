@@ -387,16 +387,15 @@
   }
 
   // ── MOR-2509 v8 face (variants 'vfo' / 'vfo-wide') ─────────────────────────
-  // Pixel-locked geometry re-measured from the owner's mock-up
-  // `tmp/vfo-deck-final-mockup-v8.html` (2026-09-22, MOR-2509 R2-2): this SVG
+  // Geometry pinned by `__tests__/LinearSMeter.mockup-v8.test.ts`: this SVG
   // carries no viewBox, so one user unit is one CSS pixel and the 2px-lit /
   // 1px-gap dash pattern renders in whole device-independent pixels at every
   // rendered width. The well around the SVG (padding 4px 8px 7px, radius 6px)
-  // is VfoPanel's `.panel-meter`; every number below is the mock-up's own
-  // content-box geometry: ticks row 20px, value row 16px (track 12px centred
-  // in it) at margin-top 3, Po tick row 14px at margin-top 7, Po bar 7px at
-  // margin-top 1, and the 58px value column (10px gap + 48px cell) the ticks
-  // row, Po ticks, Po bar and value cell all reserve on the right.
+  // is VfoPanel's `.panel-meter`; the constants below are the content-box
+  // geometry the test pins: ticks row 20px, value row 16px (track 12px
+  // centred in it) at margin-top 3, Po tick row 14px at margin-top 7, Po bar
+  // 7px at margin-top 1, and the 58px value column (10px gap + 48px cell)
+  // the ticks row, Po ticks, Po bar and value cell all reserve on the right.
   const VFO_SEG_PITCH = 3;
   const VFO_SEG_LIT = 2;
   const VFO_SEG_DASH = `${VFO_SEG_LIT} ${VFO_SEG_PITCH - VFO_SEG_LIT}`;
@@ -404,10 +403,11 @@
   const VFO_VALUE_GAP = 10;
   const VFO_VALUE_CELL_W = 48;
   const VFO_VALUE_COLUMN_W = VFO_VALUE_GAP + VFO_VALUE_CELL_W;
-  // The S-scale tick row (.ticks): 12px numerals at the top edge, a 1x4px
-  // tick under each numeral starting 15px down, first numeral left-anchored
-  // at its slot, the rest centred; '+' numerals tighten by -.05em = -0.6px
-  // at 12px. Font weight 400: the mock-up restyles no meter text bold.
+  // The S-scale tick row: 12px numerals at the top edge, a 1x4px tick under
+  // each numeral starting 15px down, first numeral left-anchored at its
+  // slot, the rest centred; '+' numerals tighten by -.05em = -0.6px at
+  // 12px; font weight 400 — all pinned by
+  // `__tests__/LinearSMeter.mockup-v8.test.ts`.
   // Rounded to 2 decimals so the attribute serialises exactly '-0.6' —
   // the raw product is -0.6000000000000001 in IEEE doubles.
   const VFO_LABEL_FS = 12;
@@ -417,9 +417,10 @@
   const VFO_TICKS_ROW_H = 20;
   const VFO_TICK_MARK_Y1 = 15;
   const VFO_TICK_MARK_Y2 = 19;
-  // The value row (.mrow): 16px tall, 3px below the tick row; the 12px track
-  // centres inside it. The single 13px reading line replaces the v7 two-line
-  // S-unit/dBm block — the mock-up carries no dBm line.
+  // The value row: 16px tall, 3px below the tick row; the 12px track
+  // centres inside it. The single 13px reading line replaces the v7
+  // two-line S-unit/dBm block — no dBm line, pinned by
+  // `__tests__/LinearSMeter.mockup-v8.test.ts`.
   const VFO_VALUE_ROW_H = 16;
   const VFO_VALUE_FS = 13;
   const VFO_TRACK_H = 12;
@@ -463,13 +464,13 @@
     return () => observer.disconnect();
   });
   const vfoTrackX = 0;
-  // The mock-up's flex model, verbatim: the track is `.mrow`'s flex:1
-  // remainder after the 58px value column (10px gap + 48px cell) — the
-  // exact width minus 58, NOT floored to the dash pitch. Only the dash
-  // raster snaps: the lit extent and the S9 colour split land on the 3px
-  // whole-dash grid (see vfoLitExtentX/vfoS9X), so the unlit track itself
-  // may end on the same partial dash the mock-up's repeating gradient ends
-  // on. clientWidth is an integer, so dash edges stay whole-pixel.
+  // The flex model pinned by `__tests__/LinearSMeter.mockup-v8.test.ts`:
+  // the track is the exact width minus the 58px value column (10px gap +
+  // 48px cell), NOT floored to the dash pitch. Only the dash raster snaps:
+  // the lit extent and the S9 colour split land on the 3px whole-dash grid
+  // (see vfoLitExtentX/vfoS9X), so the unlit track itself may end on a
+  // partial dash. clientWidth is an integer, so dash edges stay
+  // whole-pixel.
   const vfoTrackW = $derived(Math.max(0, vfoWidth - VFO_VALUE_COLUMN_W));
   const vfoReadoutX = $derived(vfoTrackX + vfoTrackW + VFO_VALUE_GAP);
   // The blue→red handover is part of the dash RASTER, not the layout: it
@@ -986,9 +987,10 @@
        bottom edge — so the root SVG must not clip it. */
     overflow: visible;
   }
-  /* The lit filter is the S track's alone: mock-up v8 filters `.lit`
-     (#mAlive line 122) and leaves `.polit` the plain meter blue — the Po
-     row shares the geometry, not the glow. */
+  /* The lit filter is the S track's alone — the Po row shares the
+     geometry, not the glow; pinned by
+     `__tests__/LinearSMeter.mockup-v8.test.ts` ("carries no keyframes and
+     filters no Po fill"). */
   [data-meter-fill],
   [data-meter-fill-red] {
     filter: var(--v2-meter-lit-filter, none);

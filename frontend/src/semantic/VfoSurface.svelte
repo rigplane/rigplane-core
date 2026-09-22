@@ -1226,18 +1226,13 @@
     justify-content: stretch;
     padding: 12px 10px;
     gap: 0;
-    --vfo-ops-gap: 3px;
     --btn-font-size: 12px;
-    --indicator-dot-offset: 4px;
-    --indicator-dot-gap: 4px;
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge :global(.vfo-ops[data-vfo-operation-appearance='standard']) {
     display: contents;
   }
   [data-vfo-appearance='standard'] .bridge:not(.standard-pair-bridge) {
     --btn-font-size: 12px;
-    --indicator-dot-offset: 4px;
-    --indicator-dot-gap: 4px;
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge :global(.shared-indicators .facts) {
     display: grid;
@@ -1314,12 +1309,6 @@
     }
     .bridge { --vfo-bridge-width: 150px; }
     .receiver-instrument .vfo-freq { font-size: 26px; }
-  }
-  @media (max-width: 950px) {
-    [data-vfo-appearance='standard'] .standard-pair-bridge {
-      padding: 2px;
-      gap: 1px;
-    }
   }
   @media (max-width: 760px) {
     .instrument-panel { flex-direction: column; }
