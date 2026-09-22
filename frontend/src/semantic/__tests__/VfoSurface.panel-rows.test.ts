@@ -432,7 +432,9 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
   it('renders TUNER, VOX and LOCK as dot-lamp switches with lamps lit only when on', () => {
     const root = mountSurface({ viewModel: functionsFixture({
       atu: 'on', vox: true, dialLock: true,
-    }), appearance: 'standard' });
+    }), appearance: 'standard',
+      onToggleTuner: () => {}, onToggleVox: () => {}, onToggleDialLock: () => {},
+    });
     const tuner = root.querySelector<HTMLButtonElement>('[data-vfo-tuner]')!;
     const vox = root.querySelector<HTMLButtonElement>('[data-vfo-vox]')!;
     const lock = root.querySelector<HTMLButtonElement>('[data-vfo-lock]')!;
