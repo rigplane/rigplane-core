@@ -476,10 +476,13 @@ const layoutCss = styleBlock('src/components-v2/layout/RadioLayout.svelte');
 
 describe('source pins: fixed slot widths (MOR-2509 slice 2)', () => {
   it('every tray tab, lamp and large chip declares a fixed width and never wraps', () => {
-    for (const selector of ['.tab', '.lamp', '.chip-lg', '.chip-amber', '.chip-dsp']) {
+    for (const selector of ['.tab', '.lamp', '.chip-lg', '.chip-amber']) {
       const bodies = rulesFor(panelCss, selector).join('\n');
       expect(bodies, `${selector} reserves a fixed slot width`).toMatch(/width:\s*\d+px/);
     }
+    // The DSP chip's fixed slot is its grid column; the chip fills it.
+    expect(rulesFor(panelCss, '.chip-dsp').join('\n'))
+      .toMatch(/width:\s*100%/);
     for (const selector of ['.tray', '.receiver-row', '.under-row', '.dsp']) {
       expect(rulesFor(panelCss, selector).join('\n'), `${selector} never wraps`)
         .not.toMatch(/flex-wrap:\s*wrap/);
@@ -567,7 +570,7 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
         .not.toMatch(/filter:\s*saturate|opacity:\s*0\./);
     }
     const inactive = rulesFor(panelCss, '.panel:not(.active)').join('\n');
-    expect(inactive).toMatch(/--vfo-chip-neon:\s*var\(--dl-vfo-primary-neon-dim/);
+    expect(inactive).toMatch(/--vfo-neon-fill:\s*var\(--dl-vfo-primary-neon-dim/);
     expect(inactive).not.toMatch(/panel-meter/);
   });
 
@@ -578,12 +581,16 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
       ['src/presentation/languages/segmentline/segmentline.css', 'segmentline'],
     ] as const) {
       const css = readFileSync(path, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-      const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
-        .filter(([, selectors, body]) => selectors.includes(`[data-design-language='${language}']`)
+      const rootBlocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .filter(([, selectors, body]) => selectors.trim() === `[data-design-language='${language}'][data-design-language]`
           && body.includes('--dl-vfo-'));
-      expect(blocks.length, `${language} defines the panel tokens in exactly one block`).toBe(1);
-      expect(blocks[0][1].trim(), `${language}'s token block is a root block`)
-        .toBe(`[data-design-language='${language}'][data-design-language]`);
+      expect(rootBlocks.length, `${language} defines the panel tokens in exactly one root block`).toBe(1);
+      for (const [, selectors, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        if (body.includes('--dl-vfo-')) {
+          expect(selectors.trim(), `${language} touches the panel tokens only from its own scope`)
+            .toContain(`[data-design-language='${language}']`);
+        }
+      }
     }
   });
 });

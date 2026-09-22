@@ -41,7 +41,8 @@
   import FrequencyDisplayInteractive from '../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
-  import VfoPanel from '../components-v2/vfo/VfoPanel.svelte';
+  import VfoPanel, { type VfoPanelSections } from '../components-v2/vfo/VfoPanel.svelte';
+  import { formatRitOffset } from '../components-v2/vfo/vfo-utils';
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import VfoOperationGroup from './VfoOperationGroup.svelte';
   import { formatKnownLevel } from './format-level';
@@ -56,7 +57,10 @@
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
   import { renderSlot } from './design-language-renderers';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
-  import type { BooleanFact, DisplayObservation, RadioViewModel, ReceiverIndicatorViewModel, VfoViewModel } from './radio-view-model';
+  import type {
+    BooleanFact, DisplayObservation, DspField, RadioViewModel,
+    ReceiverIndicatorViewModel, VfoViewModel,
+  } from './radio-view-model';
 
   interface Props {
     viewModel: RadioViewModel;
@@ -468,91 +472,164 @@
     ),
   );
 
-  function standardBadges(indicator: ReceiverIndicatorViewModel | undefined, vfo?: VfoViewModel) {
-    const badges: { label: string; active: boolean; color: 'cyan' | 'orange' | 'muted' | 'red' | 'amber'; state: string }[] = [];
+  /**
+   * MOR-2509 slice 2 — the panel screen's chips, projected from the same
+   * facts the old flat badge list read. Every slot keeps its place unlit
+   * with its own label when a reading is unknown, and a structurally absent
+   * field contributes no element at all. Radio-wide facts follow the rule
+   * the flat badges already had: ANT on the active receiver's panel (the
+   * view model's antenna is radio-wide), RIT/XIT/SPLIT on the active-slot
+   * panel.
+   */
+  function standardPanelSections(
+    indicator: ReceiverIndicatorViewModel | undefined,
+    vfo: VfoViewModel | undefined,
+    receiver: ReceiverId,
+  ): VfoPanelSections {
+    const sections: VfoPanelSections = {
+      tray: {}, annunciators: [], dsp: [], under: {},
+      tx: { lit: false, state: 'unknown' },
+    };
     const wide = viewModel.radioWideIndicators;
-    const rfState = viewModel.radioWideIndicators?.rfState;
-    if (vfo?.isActiveSlot) {
-      const rxHz = displayValue(vfo.display?.frequencyHz, vfo.frequencyHz);
-      badges.push({ label: `RX ${formatFrequency(rxHz)}`, active: rxHz !== null,
-        color: rxHz === null ? 'muted' : 'cyan', state: vfo.display?.frequencyHz.state ?? (rxHz === null ? 'unknown' : 'current') });
-      if (wide?.antenna.availability.structural) {
-        const value = wide.antenna.reading.status === 'known' ? wide.antenna.reading.value : null;
-        badges.push({ label: `ANT ${value ?? '—'}`, active: value !== null,
-          color: value === null ? 'muted' : 'cyan', state: wide.antenna.reading.status });
-      }
-      if (wide?.atu.availability.structural) {
-        const value = wide.atu.reading.status === 'known' ? wide.atu.reading.value.toUpperCase() : null;
-        badges.push({ label: `TUNE ${value ?? '—'}`, active: value === 'ON' || value === 'TUNING',
-          color: value === null ? 'muted' : value === 'OFF' ? 'cyan' : 'orange', state: wide.atu.reading.status });
-      }
-      if (wide && (wide.ritActive.availability.structural || wide.ritOffset.availability.structural)) {
-        const active = wide.ritActive.reading.status === 'known' ? wide.ritActive.reading.value : null;
-        const offset = wide.ritOffset.reading.status === 'known' ? wide.ritOffset.reading.value : null;
-        badges.push({ label: `RIT ${active === null ? '—' : active ? 'ON' : 'OFF'} ${offset ?? '—'} Hz`,
-          active: active === true, color: active === null || offset === null ? 'muted' : active ? 'orange' : 'cyan',
-          state: active === null || offset === null ? 'unknown' : 'known' });
-      }
-      if (wide && (wide.xitActive.availability.structural || wide.xitOffset.availability.structural)) {
-        const active = wide.xitActive.reading.status === 'known' ? wide.xitActive.reading.value : null;
-        const offset = wide.xitOffset.reading.status === 'known' ? wide.xitOffset.reading.value : null;
-        badges.push({ label: `XIT ${active === null ? '—' : active ? 'ON' : 'OFF'} ${offset ?? '—'} Hz`,
-          active: active === true, color: active === null || offset === null ? 'muted' : active ? 'orange' : 'cyan',
-          state: active === null || offset === null ? 'unknown' : 'known' });
-      }
-    }
-    if (vfo?.isTxTarget && viewModel.txTarget.status === 'known') {
-      const transmitting = rfState === 'transmitting';
-      const uncertain = rfState === 'uncertain';
-      badges.push({
-        label: `${uncertain ? 'TX?' : 'TX'} ${formatFrequency(viewModel.txTarget.frequencyHz)}`,
-        active: true,
-        color: transmitting ? 'red' : uncertain ? 'amber' : 'orange',
-        state: rfState ?? 'unknown',
-      });
-    }
-    // A split TX target may be the inactive slot. It receives only RF truth;
-    // receiver-local badges still belong exclusively to the active VFO.
-    if (!indicator || (vfo !== undefined && !vfo.isActiveSlot)) return badges;
-    const numeric = (name: string, field: ReceiverIndicatorViewModel['bandwidthHz'], unit = '') => {
-      if (!field.availability.structural) return;
-      const reading = field.reading;
-      const value = reading.status === 'known' && Number.isFinite(reading.value) ? reading.value : null;
-      badges.push({ label: `${name} ${value ?? '—'}${value !== null ? unit : ''}`, active: value !== null, color: value !== null ? 'cyan' : 'muted', state: reading.status });
+    const rfState = wide?.rfState;
+    sections.tx = {
+      lit: vfo?.isTxTarget === true && viewModel.txTarget.status === 'known' && rfState === 'transmitting',
+      state: rfState ?? 'unknown',
     };
-    const toggle = (name: string, field: ReceiverIndicatorViewModel['nbActive']) => {
-      if (!field.availability.structural) return;
-      const value = field.reading.status === 'known' ? field.reading.value : null;
-      badges.push({ label: `${name} ${value === null ? '—' : value ? 'ON' : 'OFF'}`, active: value === true, color: value === null ? 'muted' : 'cyan', state: value === null ? 'unknown' : value ? 'on' : 'off' });
-    };
-    numeric('BW', indicator.bandwidthHz, ' Hz');
-    if (indicator.agcMode.availability.structural) {
-      const reading = indicator.agcMode.reading;
-      const value = reading.status === 'known' ? reading.value : null;
-      badges.push({ label: `AGC ${value ?? '—'}`, active: value !== null, color: value === null ? 'muted' : 'cyan', state: reading.status });
-    }
-    toggle('NB', indicator.nbActive); toggle('NR', indicator.nrActive);
-    if (indicator.notchMode.availability.structural) {
-      const reading = indicator.notchMode.reading;
-      const value = reading.status === 'known' ? reading.value : null;
-      badges.push({ label: `NOTCH ${value?.toUpperCase() ?? '—'}`, active: value !== null && value !== 'off', color: value === null ? 'muted' : 'orange', state: reading.status });
-    }
-    numeric('ATT', indicator.attenuator, ' dB'); numeric('P.AMP', indicator.preamp);
-    toggle('IP+', indicator.ipPlus); toggle('DIGI-SEL', indicator.digiSel);
-    if (indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported') {
-      const shown = displayValue(indicator.rfGain.display, indicator.rfGain.reading.status === 'known' ? indicator.rfGain.reading.value : null);
-      const text = shown === null
-        ? '—'
-        : formatKnownLevel(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3]);
-      badges.push({ label: `RFG ${text}`, active: shown !== null, color: shown === null ? 'muted' : 'cyan', state: indicator.rfGain.display?.state ?? indicator.rfGain.reading.status });
-    }
-    return badges;
-  }
 
-  function standardBand(vfo: VfoViewModel): string | null {
-    const band = viewModel.band?.currentBand;
-    return vfo.isActive && band?.availability.structural && band.availability.operational
-      && band.reading.status === 'known' ? band.reading.value : null;
+    const bandField = viewModel.band?.currentBand;
+    if (bandField?.availability.structural) {
+      const reading = bandField.reading;
+      const known = vfo?.isActive === true && bandField.availability.operational
+        && reading.status === 'known';
+      sections.tray.band = {
+        key: 'band',
+        text: known && reading.status === 'known' ? reading.value.toUpperCase() : 'BAND',
+        lit: known,
+        state: reading.status,
+      };
+    }
+    if (wide?.antenna.availability.structural && viewModel.activeReceiver.status === 'known'
+      && viewModel.activeReceiver.receiver === receiver && vfo?.isActiveSlot) {
+      const reading = wide.antenna.reading;
+      sections.tray.ant = {
+        key: 'ant',
+        text: reading.status === 'known' ? `ANT ${reading.value}` : 'ANT',
+        lit: reading.status === 'known',
+        state: reading.status,
+      };
+    }
+    if (indicator?.bandwidthHz.availability.structural) {
+      const reading = indicator.bandwidthHz.reading;
+      const known = reading.status === 'known' && Number.isFinite(reading.value);
+      sections.tray.bw = {
+        key: 'bw',
+        text: known && reading.status === 'known' ? `BW ${reading.value}` : 'BW',
+        lit: known,
+        state: reading.status,
+      };
+    }
+
+    if (indicator) {
+      if (indicator.agcMode.availability.structural) {
+        const reading = indicator.agcMode.reading;
+        sections.annunciators.push({
+          key: 'agc', group: 'agc', family: 'amber',
+          text: reading.status === 'known' ? `AGC ${String(reading.value)}` : 'AGC',
+          lit: reading.status === 'known',
+        });
+      }
+      const frontLamp = (key: string, text: string, lit: boolean) => {
+        sections.annunciators.push({ key, group: 'front', family: 'red', text, lit });
+      };
+      const levelLamp = (key: string, label: string, field: ReceiverIndicatorViewModel['preamp']) => {
+        if (!field.availability.structural) return;
+        const reading = field.reading;
+        if (reading.status === 'known' && reading.value > 0) {
+          frontLamp(key, `${label} ${reading.value}`, true);
+        } else {
+          frontLamp(key, label, false);
+        }
+      };
+      levelLamp('preamp', 'P.AMP', indicator.preamp);
+      levelLamp('att', 'ATT', indicator.attenuator);
+      const frontToggle = (key: string, field: ReceiverIndicatorViewModel['ipPlus']) => {
+        if (!field.availability.structural) return;
+        const value = field.reading.status === 'known' ? field.reading.value : null;
+        sections.annunciators.push({
+          key, group: 'front', family: 'red',
+          text: key === 'ip-plus' ? 'IP+' : 'DIGI-SEL', lit: value === true,
+        });
+      };
+      frontToggle('ip-plus', indicator.ipPlus);
+      frontToggle('digi-sel', indicator.digiSel);
+      if (indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported') {
+        const shown = displayValue(
+          indicator.rfGain.display,
+          indicator.rfGain.reading.status === 'known' ? indicator.rfGain.reading.value : null,
+        );
+        sections.annunciators.push({
+          key: 'rfg', group: 'rfg', family: 'brown',
+          text: shown === null
+            ? 'RFG'
+            : `RFG ${formatKnownLevel(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3])}`,
+          lit: shown !== null,
+        });
+      }
+
+      // DSP levels come from the radio-wide dsp group, so their text belongs
+      // to the active receiver's panel only; every other panel stays lit/unlit.
+      const levelSuffix = (field: DspField<number> | undefined): string =>
+        vfo?.isActiveSlot && field?.availability.structural && field.reading.status === 'known'
+          ? ` ${field.reading.value}` : '';
+      const dspToggle = (
+        key: 'nb' | 'nr',
+        field: ReceiverIndicatorViewModel['nbActive'],
+        level: DspField<number> | undefined,
+      ) => {
+        if (!field.availability.structural) return;
+        const value = field.reading.status === 'known' ? field.reading.value : null;
+        sections.dsp.push({
+          key, text: value === true ? `${key.toUpperCase()}${levelSuffix(level)}` : key.toUpperCase(),
+          lit: value === true,
+        });
+      };
+      dspToggle('nb', indicator.nbActive, viewModel.dsp?.nbLevel);
+      dspToggle('nr', indicator.nrActive, viewModel.dsp?.nrLevel);
+      if (indicator.notchMode.availability.structural) {
+        const value = indicator.notchMode.reading.status === 'known' ? indicator.notchMode.reading.value : null;
+        const text = value === 'auto' ? 'NOTCH A' : value === 'manual' ? 'NOTCH M' : 'NOTCH';
+        sections.dsp.push({ key: 'notch', text, lit: value === 'auto' || value === 'manual' });
+      }
+    }
+
+    if (vfo?.isActiveSlot && wide) {
+      const offsetChip = (key: 'rit' | 'xit') => {
+        const activeField = key === 'rit' ? wide.ritActive : wide.xitActive;
+        const offsetField = key === 'rit' ? wide.ritOffset : wide.xitOffset;
+        if (!activeField.availability.structural && !offsetField.availability.structural) return;
+        const active = activeField.reading.status === 'known' ? activeField.reading.value : null;
+        const offset = offsetField.reading.status === 'known' ? offsetField.reading.value : null;
+        const lit = active === true && offset !== null;
+        sections.under[key] = {
+          key,
+          text: lit ? `${key.toUpperCase()} ${formatRitOffset(offset)}` : key.toUpperCase(),
+          lit,
+          state: active === null || (active === true && offset === null) ? 'unknown' : active ? 'on' : 'off',
+        };
+      };
+      offsetChip('rit');
+      offsetChip('xit');
+    }
+    if (vfo?.isActiveSlot && hasVfoPair) {
+      sections.under.split = {
+        key: 'split',
+        text: 'SPLIT',
+        lit: viewModel.split.status === 'known' && viewModel.split.value,
+        state: viewModel.split.status === 'known' ? (viewModel.split.value ? 'on' : 'off') : 'unknown',
+      };
+    }
+    return sections;
   }
 
 </script>
@@ -878,8 +955,7 @@
           meterSource={indicator?.sMeter.source}
           {continuitySession}
           isActive={dominant?.isActive ?? false}
-          badgeItems={standardBadges(indicator, dominant)}
-          bandText={dominant ? standardBand(dominant) : null}
+          sections={standardPanelSections(indicator, dominant, receiver)}
           slotChoices={choices}
           reserveMeterSpace={fixed !== undefined && !fixed.isActiveSlot}
           onFreqChange={receiverInstruments === undefined && dominant
@@ -1117,7 +1193,6 @@
   }
   [data-vfo-appearance='standard'] .vfo-freq {
     grid-column: 1 / -1; grid-row: 2;
-    font-size: clamp(34px, 3vw, 44px); margin: 4px 0; text-align: left;
   }
   [data-vfo-appearance='standard'] .receiver-instrument .vfo-select {
     grid-column: 3; grid-row: 1 / 3;

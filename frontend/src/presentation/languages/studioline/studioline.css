@@ -80,6 +80,64 @@
    surface: unreadable, and caught exactly that way in the MOR-1073 capture
    run. Dark stays primary (MOR-977 §5); a host that goes light flips this
    attribute and the app theme together. */
+/* ── MOR-2509: the VFO panel screen's chip palette ─────────────────────────────────
+   One definition point for the `--dl-vfo-*` tokens `VfoPanel.svelte`
+   consumes (its fallbacks restate these values). Studioline is the default
+   workspace language, so this block IS the approved MOR-2509 palette.
+   Measured on the panel ground #0a0e13: lit text ≥ 4.5:1 except the single
+   red, which reads ≈4.4:1 as text and ≈4.4:1 under white text — accepted
+   by the owner (MOR-2509, 2026-09-21); do not fork a second red. Unlit
+   text sits at 3.38:1 on purpose. */
+[data-design-language='studioline'][data-design-language] {
+  --dl-vfo-primary-neon: #1a63e0;
+  --dl-vfo-primary-neon-dim: #16396f;
+  --dl-vfo-red: #e2362c;
+  --dl-vfo-red-dim: #8e2a24;
+  --dl-vfo-red-text-dim: #c85e56;
+  --dl-vfo-amber: #ffd47a;
+  --dl-vfo-amber-border: #e0a030;
+  --dl-vfo-amber-fill: #3a2a0c;
+  --dl-vfo-amber-dim: #b89a5e;
+  --dl-vfo-amber-border-dim: #7a6232;
+  --dl-vfo-amber-fill-dim: #241b0c;
+  --dl-vfo-brown: #e09a4a;
+  --dl-vfo-brown-dim: #a5763f;
+  --dl-vfo-dsp: #dbe3ea;
+  --dl-vfo-dsp-border: #aab6c2;
+  --dl-vfo-dsp-fill: #141a21;
+  --dl-vfo-dsp-dim: #aab4bf;
+  --dl-vfo-dsp-border-dim: #6f7b87;
+  --dl-vfo-slate: #5b6a79;
+  --dl-vfo-slate-dim: #46525e;
+  --dl-vfo-frame: #ffffff;
+  --dl-vfo-frame-dim: #9fb0c4;
+  --dl-vfo-tab-frame: #ffffff;
+  --dl-vfo-tab-frame-dim: #b9c4cf;
+  --dl-vfo-dim-text: #e3eaf2;
+  --dl-vfo-unlit-text: #5a6875;
+  --dl-vfo-unlit-border: #1f2832;
+  --dl-vfo-rhythm: 1;
+  --dl-vfo-glow: none;
+}
+
+/* The light surface flips only the tones that read against the panel
+   ground; fill/text chip pairs keep their own contrast in both modes. */
+[data-design-language='studioline'][data-design-language][data-language-mode='light'] {
+  --dl-vfo-unlit-text: #6b6459;
+  --dl-vfo-unlit-border: #d8d2c7;
+  --dl-vfo-frame: #14181a;
+  --dl-vfo-frame-dim: #5a5f66;
+  --dl-vfo-tab-frame: #14181a;
+  --dl-vfo-tab-frame-dim: #5a5f66;
+  --dl-vfo-dim-text: #14181a;
+  --dl-vfo-red-text-dim: #a33228;
+  --dl-vfo-amber-dim: #7a6220;
+  --dl-vfo-amber-border-dim: #b09a60;
+  --dl-vfo-brown-dim: #7a5210;
+  --dl-vfo-dsp-dim: #4a5560;
+  --dl-vfo-dsp-border-dim: #8a94a0;
+}
+
 [data-design-language='studioline'][data-design-language][data-language-mode='light'] {
   --dl-studioline-surface: #faf7f2;
   --dl-studioline-text: #14181a;
