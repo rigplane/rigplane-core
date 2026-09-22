@@ -81,9 +81,11 @@
   --dl-vfo-primary-neon: #1a63e0;
   --dl-vfo-primary-neon-dim: #16396f;
   --dl-vfo-red: #e2362c;
+  --dl-vfo-red-text: #e2362c;
   --dl-vfo-red-dim: #8e2a24;
   --dl-vfo-red-text-dim: #c85e56;
   --dl-vfo-amber: #ffd47a;
+  --dl-vfo-amber-text: #ffd47a;
   --dl-vfo-amber-chip-text: #ffd47a;
   --dl-vfo-amber-border: #e0a030;
   --dl-vfo-amber-fill: #3a2a0c;
@@ -92,6 +94,7 @@
   --dl-vfo-amber-border-dim: #7a6232;
   --dl-vfo-amber-fill-dim: #241b0c;
   --dl-vfo-brown: #e09a4a;
+  --dl-vfo-brown-text: #e09a4a;
   --dl-vfo-brown-dim: #a5763f;
   --dl-vfo-dsp: #dbe3ea;
   --dl-vfo-dsp-border: #aab6c2;
@@ -146,9 +149,12 @@
   --dl-vfo-unlit-text: #6b6459;
   --dl-vfo-unlit-border: #d8d2c7;
   --dl-vfo-unlit-fill: rgba(20, 24, 26, 0.025);
+  --dl-vfo-red-text: #a33228;
   --dl-vfo-red-text-dim: #a33228;
+  --dl-vfo-amber-text: #7a6220;
   --dl-vfo-amber-dim: #7a6220;
   --dl-vfo-amber-border-dim: #b09a60;
+  --dl-vfo-brown-text: #7a5210;
   --dl-vfo-brown-dim: #7a5210;
 }
 

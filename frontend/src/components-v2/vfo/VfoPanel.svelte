@@ -337,14 +337,14 @@
     --vfo-ant-fill: var(--dl-vfo-red, #e2362c);
     --vfo-ant-frame: var(--dl-vfo-tab-frame, #ffffff);
     --vfo-ant-text: var(--dl-vfo-frame, #ffffff);
-    --vfo-front-red: var(--dl-vfo-red, #e2362c);
+    --vfo-front-red: var(--dl-vfo-red-text, var(--dl-vfo-red, #e2362c));
     --vfo-tx-fill: var(--dl-vfo-red, #e2362c);
     --vfo-tx-frame: var(--dl-vfo-frame, #ffffff);
-    --vfo-amber-text: var(--dl-vfo-amber, #ffd47a);
+    --vfo-amber-text: var(--dl-vfo-amber-text, var(--dl-vfo-amber, #ffd47a));
     --vfo-amber-chip-text: var(--dl-vfo-amber-chip-text, var(--dl-vfo-amber, #ffd47a));
     --vfo-amber-chip-border: var(--dl-vfo-amber-border, #e0a030);
     --vfo-amber-chip-fill: var(--dl-vfo-amber-fill, #3a2a0c);
-    --vfo-brown-text: var(--dl-vfo-brown, #e09a4a);
+    --vfo-brown-text: var(--dl-vfo-brown-text, var(--dl-vfo-brown, #e09a4a));
     --vfo-slate-fill: var(--dl-vfo-slate, #5b6a79);
     --vfo-slate-frame: var(--dl-vfo-tab-frame, #ffffff);
     --vfo-slate-text: var(--dl-vfo-frame, #ffffff);

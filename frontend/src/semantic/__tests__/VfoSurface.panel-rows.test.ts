@@ -752,6 +752,9 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     }
     expect(base).toMatch(/--dl-vfo-amber-chip-text:\s*#ffd47a/);
     expect(base).toMatch(/--dl-vfo-amber-chip-text-dim:\s*#b89a5e/);
+    expect(light).toMatch(/--dl-vfo-red-text:\s*#a33228/);
+    expect(light).toMatch(/--dl-vfo-amber-text:\s*#7a6220/);
+    expect(light).toMatch(/--dl-vfo-brown-text:\s*#7a5210/);
     expect(light).toMatch(/--dl-vfo-panel-background:\s*linear-gradient\([^;]*#f9f6f0[^;]*#e9e4db/);
     expect(light).toMatch(/--dl-vfo-meter-well-background:\s*#151b22/);
     expect(light).toMatch(/--dl-vfo-panel-sheen:\s*var\(--v2-vfo-panel-sheen-override,/);
