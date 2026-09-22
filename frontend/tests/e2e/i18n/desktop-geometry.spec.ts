@@ -666,6 +666,15 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
         if (instrument.secondary) expect.soft(instrument.primary!.fontSize).toBeGreaterThan(instrument.secondary.fontSize);
       }
       if (topology === 'topology-2-main-sub') await expect(page.locator('.standard-face .spectrum-panel')).toBeVisible();
+      if (width === 1440) {
+        // MOR-2509: the digits themselves must compute a bold weight — the
+        // language's hero-numeral 200 must lose to the deck's token.
+        const digits = page.locator('[data-vfo-row="main"] .digit');
+        await expect(digits.first()).toBeVisible();
+        const digitWeight = await digits.first()
+          .evaluate((digit) => Number.parseInt(getComputedStyle(digit).fontWeight, 10));
+        expect.soft(digitWeight, 'the readout digits compute >= 700 weight').toBeGreaterThanOrEqual(700);
+      }
       const unkey = page.getByTestId('rx-tx-unkey');
       await expect(unkey).toHaveCount(1);
       await focusWithoutActivation(page, unkey);
@@ -734,6 +743,13 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       const bodyTop = Math.min(boxes.left.y, boxes.center.y, boxes.right.y);
       expectStandardReceiverIntegrity(geometry, bodyTop);
       expect(geometry.receiverIntegrity.actionNames).toEqual(['main', 'sub', 'equalize', 'swap', 'speak']);
+      if (known) {
+        const digits = page.locator('[data-vfo-row="main"] .digit');
+        await expect(digits.first()).toBeVisible();
+        const digitWeight = await digits.first()
+          .evaluate((digit) => Number.parseInt(getComputedStyle(digit).fontWeight, 10));
+        expect.soft(digitWeight, 'the readout digits compute >= 700 weight').toBeGreaterThanOrEqual(700);
+      }
       expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
         .geometryCommands.filter(c => c.type === 'cmd'))).toEqual([]);
     });

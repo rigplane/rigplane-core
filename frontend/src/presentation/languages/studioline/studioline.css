@@ -186,7 +186,9 @@
 [data-design-language='studioline'][data-design-language] .vfo-freq {
   font-family: var(--dl-studioline-font);
   font-size: 34px;
-  font-weight: var(--dl-studioline-numerals);
+  /* The VFO readout's weight is the deck's own token (MOR-2509), not the
+     language's hero-numeral weight: the owner wants bold digits here. */
+  font-weight: var(--dl-vfo-frequency-weight);
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }

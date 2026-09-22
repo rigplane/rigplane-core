@@ -652,19 +652,41 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(inactive).not.toMatch(/panel-meter/);
   });
 
-  it('the readout digits reach a bold weight through one chain (studioline owns it)', () => {
+  it('every readout rule that sets a digit weight resolves it from the deck token', () => {
     const strip = (path: string) =>
       readFileSync(path, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    // Rules that can set the weight of a `.vfo-freq` wrapper or a `.freq`
+    // readout. A source pin is the honest form here: jsdom substitutes no
+    // custom properties, so a cascade loss (the language's 200 beating the
+    // panel's token) is invisible to computed-style assertions.
+    const weightDeclarations = (css: string): [string, string][] =>
+      [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .flatMap(([selector, body]) => [...body.matchAll(/font-weight:\s*([^;]+);/g)]
+          .map((match): [string, string] => [selector.trim(), match[1].trim()]));
+    const resolvesFromDeckToken = (value: string): boolean =>
+      /var\(--dl-vfo-frequency-weight/.test(value)
+      || /var\(--v2-vfo-font-weight/.test(value)
+      || /var\(--freq-font-weight/.test(value);
+    for (const [path, css] of [
+      ['src/presentation/languages/studioline/studioline.css', strip('src/presentation/languages/studioline/studioline.css')],
+      ['src/components-v2/vfo/VfoPanel.svelte', styleBlock('src/components-v2/vfo/VfoPanel.svelte')],
+      ['src/primitives/frequency/StandardFrequencyReadout.svelte',
+        styleBlock('src/primitives/frequency/StandardFrequencyReadout.svelte')],
+    ] as const) {
+      for (const [selector, value] of weightDeclarations(css)) {
+        // The interactive compound is the digits' own rule; the primitive's
+        // passive `.freq` base (a literal 700 for non-interactive mounts) is
+        // out of this package's lease and never wins against `.freq.interactive`.
+        if (!/(^|[ ,])\.vfo-freq([ ,:.[]|$)/.test(selector)
+          && !/(^|[ ,])\.freq\.interactive([ ,:.[]|$)/.test(selector)) continue;
+        expect(value, `${path}: ${selector} must resolve font-weight from --dl-vfo-frequency-weight (directly or via --v2-vfo-font-weight/--freq-font-weight)`)
+          .satisfies(resolvesFromDeckToken);
+      }
+    }
+    // The language defines the token and routes the skin variable in one block.
     const studioline = strip('src/presentation/languages/studioline/studioline.css');
-    // The language defines the panel numeral weight and routes the skin
-    // variable the readout primitive reads; without both, the primitive's
-    // var() chain resolves invalid-at-computed-value and the digits inherit.
     expect(studioline).toMatch(/--dl-vfo-frequency-weight:\s*800/);
     expect(studioline).toMatch(/--v2-vfo-font-weight:\s*var\(--dl-vfo-frequency-weight\)/);
-    const routing = [...studioline.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
-      .filter(([, , body]) => body.includes('--v2-vfo-font-weight'));
-    expect(routing.length, 'the skin variable is re-pointed in exactly one block').toBe(1);
-    expect(routing[0][1].trim()).toBe("[data-design-language='studioline'][data-design-language]");
     const readout = readFileSync('src/primitives/frequency/StandardFrequencyReadout.svelte', 'utf8');
     expect(readout).toMatch(/'--freq-font-weight':\s*'var\(--v2-vfo-font-weight\)'/);
   });

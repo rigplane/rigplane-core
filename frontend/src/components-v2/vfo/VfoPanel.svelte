@@ -593,8 +593,14 @@
     border-radius: 4px;
   }
 
+  /* No font-weight here on purpose: the interactive primitive resolves its
+     own weight through --freq-font-weight -> --v2-vfo-font-weight ->
+     --dl-vfo-frequency-weight, and an inherited shorthand would shadow that
+     chain with the wrapper's value. */
   .vfo-freq :global(.freq.interactive) {
-    font: inherit;
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
     font-variant-numeric: inherit;
     letter-spacing: inherit;
     color: inherit;
