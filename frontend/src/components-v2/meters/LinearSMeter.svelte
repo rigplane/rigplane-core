@@ -408,10 +408,12 @@
   // tick under each numeral starting 15px down, first numeral left-anchored
   // at its slot, the rest centred; '+' numerals tighten by -.05em = -0.6px
   // at 12px. Font weight 400: the mock-up restyles no meter text bold.
+  // Rounded to 2 decimals so the attribute serialises exactly '-0.6' —
+  // the raw product is -0.6000000000000001 in IEEE doubles.
   const VFO_LABEL_FS = 12;
   const VFO_LABEL_Y = 0;
   const VFO_LABEL_WEIGHT = 400;
-  const VFO_PLUS_LETTER_SPACING = -0.05 * VFO_LABEL_FS;
+  const VFO_PLUS_LETTER_SPACING = Math.round(-0.05 * VFO_LABEL_FS * 100) / 100;
   const VFO_TICKS_ROW_H = 20;
   const VFO_TICK_MARK_Y1 = 15;
   const VFO_TICK_MARK_Y2 = 19;
@@ -531,8 +533,11 @@
   // DOM and from the screen-reader text alike.
   const vfoAccessibleLabel = $derived.by(() => {
     if (signalProjection.motionFraction === null) return 'S meter reading unknown';
+    // The raw domain keeps the projection's own 'raw, uncalibrated' wording:
+    // both are facts about the reading, not placeholders (pinned by
+    // ReceiverInstrumentHost.isolated.test.ts).
     return signalProjection.scaleMode === 'raw'
-      ? `S meter ${displaySUnit}, uncalibrated`
+      ? `S meter ${displaySUnit} raw, uncalibrated`
       : `S meter ${displaySUnit}`;
   });
 </script>
