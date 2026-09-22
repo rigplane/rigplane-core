@@ -2354,7 +2354,8 @@ def load_rig(path: Path) -> RigConfig:
         and not set(agc_modes).issubset(agc_readback_modes)
     ):
         raise RigLoadError(
-            f"{filename}: [agc].readback_modes must include every [agc].modes entry"
+            f"{filename}: [agc].readback_modes must include every settable mode "
+            "from [agc].modes"
         )
     agc_auto_mode = agc_section.get("auto_mode")
     if agc_auto_mode is not None and (
@@ -2388,6 +2389,25 @@ def load_rig(path: Path) -> RigConfig:
             raise RigLoadError(
                 f"{filename}: [agc].auto_speed_labels key {orphan_speed_labels[0]!r} "
                 "has no matching entry in [agc].readback_modes"
+            )
+        settable_non_auto_labels = sorted(
+            str(mode)
+            for mode in agc_modes or ()
+            if mode != agc_auto_mode and str(mode) in agc_auto_speed_labels
+        )
+        if settable_non_auto_labels:
+            raise RigLoadError(
+                f"{filename}: [agc].auto_speed_labels key "
+                f"{settable_non_auto_labels[0]!r} targets a settable non-auto mode"
+            )
+        readback_only_codes = {
+            str(mode) for mode in agc_readback_modes if mode not in (agc_modes or ())
+        }
+        missing_speed_labels = sorted(readback_only_codes - set(agc_auto_speed_labels))
+        if missing_speed_labels:
+            raise RigLoadError(
+                f"{filename}: [agc].auto_speed_labels missing readback-only code "
+                f"{missing_speed_labels[0]!r}"
             )
         if any(
             not isinstance(label, str) or not label.strip()

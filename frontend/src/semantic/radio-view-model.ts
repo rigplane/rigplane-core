@@ -1143,7 +1143,6 @@ export interface ReceiverIndicatorViewModel {
   rfState?: MeterRfState;
   sMeter: ReceiverSMeterField;
   bandwidthHz: ReceiverIndicatorField<number>;
-  /** Capability label when declared for the ordinal; raw ordinal otherwise. */
   agcMode: ReceiverIndicatorField<number | string>;
   nbActive: ReceiverIndicatorField<boolean>;
   nrActive: ReceiverIndicatorField<boolean>;

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, type Snippet } from 'svelte';
-  import { HardwareButton } from '$lib/Button';
+  import { ControlButton, HardwareButton } from '$lib/Button';
   import { t } from '$lib/i18n';
   import { buildAgcOptions } from '../components-v2/panels/agc-utils';
   import { bindChoiceInstrument, bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
@@ -275,20 +275,20 @@
       />{/key}{/key}
     {:else}
       <div class="dsp-agc-grid" data-testid="dsp-agcMode"
-        data-columns={Math.min(5, agcOptions.length)}
         style={`--agc-columns: ${Math.min(5, agcOptions.length)}`}
         data-disabled-reason={agcBehavior.available ? undefined : 'field-not-observed'}>
         {#each agcOptions as option (option.value)}
           {@const isAuto = option.value === dsp.agcMode.autoMode}
-          <div class="agc-key" data-testid={`dsp-agcMode-${option.value}`}>
-            <HardwareButton indicator="edge-left" color="cyan"
+          <div class="agc-key">
+            <ControlButton surface="hardware" indicatorStyle="edge-left" indicatorColor="cyan"
               active={agcBehavior.isSelected(option.value)} disabled={!agcBehavior.available}
+              data={{ testid: `dsp-agcMode-${option.value}` }}
               ariaLabel={isAuto && dsp.agcMode.autoSelectedSpeed
                 ? `${option.label} ${dsp.agcMode.autoSelectedSpeed}` : option.label}
               onclick={() => agcBehavior.invoke(option.value)}>
               <span class="agc-key-label">{option.label}</span>
               {#if isAuto}<span class="agc-auto-speed">{dsp.agcMode.autoSelectedSpeed ?? ''}</span>{/if}
-            </HardwareButton>
+            </ControlButton>
           </div>
         {/each}
       </div>

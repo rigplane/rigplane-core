@@ -2235,14 +2235,10 @@ def _agc_probe_value(radio: Radio, *, avoid: int | None) -> int:
     (an RMVR flip); ``None`` means there is no current reading to avoid (a
     write-only probe with no read-first).
 
-    R1: prefers a non-OFF (0) candidate over ``avoid`` regardless. The live
-    FTX-1 declares ``[agc] modes = [0..6]`` — picking the first declared
-    value != current would land on 0 (AGC OFF) for every current value
-    except 0 itself. This probe is documented non-destructive/RX-safe
-    (MOR-659): momentarily disabling AGC on a bench radio is audible and
-    operator-affecting, unlike flipping between two settable AGC speeds (the
-    old hardcoded SLOW/FAST probe never did this). Landing on FAST instead
-    keeps the probe inside "change AGC speed", never "turn AGC off".
+    R1: prefers a non-OFF (0) candidate over ``avoid`` regardless. The
+    ``test_agc_set_probe_never_lands_on_off_for_a_domain_that_declares_it``
+    test pins this RX-safe choice for a declared domain whose first value is
+    OFF.
     """
     modes = _declared_agc_modes(radio)
     if modes:
