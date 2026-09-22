@@ -821,16 +821,26 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     });
     const tab = page.locator('.standard-face .receiver-instrument .panel .tray .tab').first();
     await expect(tab).toBeVisible();
+    // Mirrors the unit pins in VfoSurface.panel-rows.test.ts (light --dl-vfo-panel-sheen: none with the under-sheen gradient, ~1055-1056 and ~1084-1088).
     expect(await tab.evaluate((element) => {
       const panel = element.closest('.panel');
-      if (!panel) return { hitIsContent: false, sheenZIndex: null };
+      if (!panel) return { hitIsContent: false, sheenIsBeforeUnderContent: false, rowsPositioned: false, afterCarriesNoSheen: false };
       const box = element.getBoundingClientRect();
       const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      const before = getComputedStyle(panel, '::before');
+      const after = getComputedStyle(panel, '::after');
       return {
         hitIsContent: hit === element || element.contains(hit),
-        sheenZIndex: getComputedStyle(panel, '::before').zIndex,
+        // The light sheen is the ::before under-glass: a real background and
+        // no z-index — paint order, not a negative z, puts it beneath the rows.
+        sheenIsBeforeUnderContent: before.backgroundImage !== 'none' && before.zIndex === 'auto',
+        // Every direct element child of the panel is positioned, which is
+        // what lifts the content above the ::before under-glass.
+        rowsPositioned: [...panel.children].every((child) => getComputedStyle(child).position !== 'static'),
+        // Light mode nulls --dl-vfo-panel-sheen, so the ::after over-glass paints nothing.
+        afterCarriesNoSheen: after.backgroundImage === 'none',
       };
-    })).toEqual({ hitIsContent: true, sheenZIndex: '-1' });
+    })).toEqual({ hitIsContent: true, sheenIsBeforeUnderContent: true, rowsPositioned: true, afterCarriesNoSheen: true });
   });
 
   for (const width of [1440, 1024] as const) {
