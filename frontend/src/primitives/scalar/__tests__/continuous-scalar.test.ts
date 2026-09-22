@@ -858,9 +858,7 @@ describe('continuous scalar authority and feedback reconciliation', () => {
         transitionId: `rf-b-awaiting-${source}`,
         scope: { control: 'rf-gain', receiver: 0 },
       }) });
-      expect(scalar.view).toMatchObject({
-        target: candidate, draft: source === 'native-input' ? null : candidate,
-      });
+      expect(scalar.view).toMatchObject({ target: candidate, draft: candidate });
 
       update({ feedback: feedback('confirmed', {
         confirmed: candidate,
@@ -1117,7 +1115,85 @@ describe('continuous scalar authority and feedback reconciliation', () => {
     expect(scalar.view).toMatchObject({ canonical: 2_700, draft: null, displayed: 2_700, interaction: 'idle' });
   });
 
-  it('hands a native draft to newly represented quantized command evidence and follows later truth', () => {
+  it('holds the last native draft through stale pending readbacks until exact confirmation', () => {
+    const shiftDomain: ScalarDomain = {
+      min: -1_200, max: 1_200, step: 20, defaultValue: null, fineStepDivisor: 1,
+    };
+    const initial = feedback('idle', {
+      confirmed: 80,
+      scope: { control: 'if-shift', receiver: 0, slot: 'main' },
+    });
+    const { scalar, request, update } = commandSetup(nativeRangeContinuousScalarPolicy, {
+      domain: shiftDomain,
+      command: 'set_if_shift',
+      feedback: initial,
+    });
+    const lease = scalar.attachRenderer();
+
+    for (const candidate of [100, 120, 140, 160, 180, 200]) lease.nativeInput(candidate);
+    expect(request.mock.calls.map(([value]) => value)).toEqual([100, 120, 140, 160, 180, 200]);
+    expect(scalar.view).toMatchObject({ canonical: 80, draft: 200, displayed: 200 });
+
+    update({ feedback: feedback('awaiting-confirmation', {
+      confirmed: 160,
+      target: 200,
+      requestedTarget: 200,
+      lifecycleId: 'if-shift-200',
+      transitionId: 'if-shift-200-awaiting',
+      scope: { control: 'if-shift', receiver: 0, slot: 'main' },
+    }) });
+    expect(scalar.view).toMatchObject({ canonical: 160, draft: 200, displayed: 200 });
+
+    update({ feedback: feedback('confirmed', {
+      confirmed: 200,
+      requestedTarget: 200,
+      lifecycleId: 'if-shift-200',
+      transitionId: 'if-shift-200-confirmed',
+      outcome: { phase: 'confirmed' },
+      scope: { control: 'if-shift', receiver: 0, slot: 'main' },
+    }) });
+    expect(scalar.view).toMatchObject({ canonical: 200, draft: null, displayed: 200 });
+  });
+
+  it.each(['failed', 'timed-out'] as const)(
+    'shows the radio value after the last native command is %s', (phase) => {
+      const shiftDomain: ScalarDomain = {
+        min: -1_200, max: 1_200, step: 20, defaultValue: null, fineStepDivisor: 1,
+      };
+      const { scalar, update } = commandSetup(nativeRangeContinuousScalarPolicy, {
+        domain: shiftDomain,
+        command: 'set_if_shift',
+        feedback: feedback('idle', {
+          confirmed: 80,
+          scope: { control: 'if-shift', receiver: 0, slot: 'main' },
+        }),
+      });
+      const lease = scalar.attachRenderer();
+      lease.nativeInput(200);
+
+      update({ feedback: feedback('awaiting-confirmation', {
+        confirmed: 160,
+        target: 200,
+        requestedTarget: 200,
+        lifecycleId: 'if-shift-200',
+        transitionId: 'if-shift-200-awaiting',
+        scope: { control: 'if-shift', receiver: 0, slot: 'main' },
+      }) });
+      expect(scalar.view).toMatchObject({ canonical: 160, draft: 200, displayed: 200 });
+
+      update({ feedback: feedback(phase, {
+        confirmed: 160,
+        requestedTarget: 200,
+        lifecycleId: 'if-shift-200',
+        transitionId: `if-shift-200-${phase}`,
+        outcome: { phase },
+        scope: { control: 'if-shift', receiver: 0, slot: 'main' },
+      }) });
+      expect(scalar.view).toMatchObject({ canonical: 160, draft: null, displayed: 160 });
+    },
+  );
+
+  it('keeps a native draft through newly represented quantized command evidence and follows later truth', () => {
     const initial = feedback('idle', {
       confirmed: 0.5,
       scope: { control: 'rf-gain', receiver: 0 },
@@ -1144,11 +1220,12 @@ describe('continuous scalar authority and feedback reconciliation', () => {
       scope: { control: 'rf-gain', receiver: 0 },
     }) });
     expect(scalar.view).toMatchObject({
-      draft: null,
+      draft: localDraft,
+      displayed: localDraft,
       target: 179 / 255,
       canonical: 0.5,
       phase: 'awaiting-confirmation',
-      interaction: 'idle',
+      interaction: 'native-input',
     });
 
     update({ feedback: feedback('confirmed', {
@@ -1198,10 +1275,11 @@ describe('continuous scalar authority and feedback reconciliation', () => {
       scope: { control: 'rf-gain', receiver: 0 },
     }) });
     expect(scalar.view).toMatchObject({
-      draft: null,
+      draft: 0.8,
+      displayed: 0.8,
       target: 0.8,
       phase: 'submitted',
-      interaction: 'idle',
+      interaction: 'native-input',
     });
   });
 
@@ -1241,7 +1319,9 @@ describe('continuous scalar authority and feedback reconciliation', () => {
       transitionId: 'rf-b-submitted',
       scope: { control: 'rf-gain', receiver: 0 },
     }) });
-    expect(scalar.view).toMatchObject({ draft: null, target: 0.8, phase: 'submitted' });
+    expect(scalar.view).toMatchObject({
+      draft: 0.8, displayed: 0.8, target: 0.8, phase: 'submitted',
+    });
   });
 
   it('reconciles reading updates as canonical values, not invented authority sessions', () => {
