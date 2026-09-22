@@ -405,7 +405,16 @@
     cursor: grabbing;
   }
 
-  .vc-knob-container:focus-visible {
+  /* The class is doubled on purpose. Compiled, Svelte appends one scope
+   * class — whatever hash it is — making this rule (0,4,0) against
+   * studioline's `:focus-visible` rule (0,3,0), which loads dynamically
+   * AFTER the component styles (fixtures/main.ts): a single class would
+   * tie, the language stylesheet would win on source order, and the frame
+   * would return on the studioline page. The MOR-2522 cascade pin in
+   * focus-ring-token-wiring.test.ts re-derives this ranking and fails a
+   * selector that drops back to a tie.
+   */
+  .vc-knob-container.vc-knob-container:focus-visible {
     /* MOR-2522: keyboard focus lights the control (owner ruling: no frame).
      * This block declares no geometry — the size/position pin in
      * focus-ring-token-wiring.test.ts fails any property beyond the ring. */

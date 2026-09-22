@@ -189,6 +189,47 @@ function contrast(a: string, b: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+/** (ids, class-level, types) specificity of one complex selector: ids → a;
+ * classes, attributes and pseudo-classes → b. String values and
+ * parenthesised arguments are dropped first; pseudo-elements and element
+ * types are not counted — no selector ranked here uses them. */
+function specificity(selector: string): [number, number, number] {
+  const stripped = selector.replace(/'[^']*'/g, "''").replace(/\([^()]*\)/g, '');
+  let a = 0;
+  let b = 0;
+  let c = 0;
+  for (const token of stripped.match(/\[[^\]]*\]|[#.][\w-]+|::?[\w-]+/g) ?? []) {
+    if (token.startsWith('#')) a += 1;
+    else if (token.startsWith('.') || token.startsWith('[')) b += 1;
+    else if (token.startsWith('::')) c += 1;
+    else b += 1; // single-colon pseudo-class
+  }
+  return [a, b, c];
+}
+
+/** Compare two specificity tuples the way the cascade does. */
+function outranks(
+  winner: [number, number, number],
+  loser: [number, number, number],
+): boolean {
+  return (
+    winner[0] > loser[0] ||
+    (winner[0] === loser[0] && winner[1] > loser[1]) ||
+    (winner[0] === loser[0] && winner[1] === loser[1] && winner[2] > loser[2])
+  );
+}
+
+/** Svelte compiles a scoped rule by appending one scope class to its
+ * selector. The hash VALUE is irrelevant — whatever it is, it contributes
+ * exactly one class-level token — so the compiled specificity is the source
+ * specificity with b + 1. This models Svelte's append-a-class scoping; a
+ * compiler that switched to zero-specificity :where() scoping would need
+ * this model (and the doubled classes) re-derived. */
+function svelteCompiled(selector: string): [number, number, number] {
+  const [a, b, c] = specificity(selector);
+  return [a, b + 1, c];
+}
+
 function globalFocusRule(): string {
   // Comments are stripped so prose about box-shadow/outline in the rule's own
   // explanatory comment cannot satisfy or defeat the assertions below.
@@ -708,4 +749,66 @@ describe('MOR-2522: the value-control ring clears 3:1 on the studioline surfaces
       ).toBeGreaterThanOrEqual(3);
     }
   });
+});
+
+/* ── 8. MOR-2522: the suppression outranks the studioline focus contract ──── */
+
+describe('MOR-2522: renderer focus suppression outranks the studioline focus contract', () => {
+  // How the frame came back on the studioline page (review of bf14409b):
+  // Svelte compiles `.vc-track-container:focus-visible` to
+  // `.vc-track-container.svelte-xxxx:focus-visible` = (0,3,0); studioline's
+  // `:focus-visible` rule is also (0,3,0) and loads dynamically AFTER the
+  // component styles (fixtures/main.ts), so it won the tie on source order
+  // and its literal outline framed the slider again. The fix doubles the
+  // class — the same one-step raise studioline.css itself uses — so the
+  // compiled rule is (0,4,0) and wins on specificity alone, whatever the
+  // load order. These pins re-derive that ranking from both stylesheets:
+  // a selector that drops back to a tie fails here, and so does a raise of
+  // the studioline rule's own specificity.
+  const STUDIOLINE = 'presentation/languages/studioline/studioline.css';
+  const RENDERER_CONTAINERS: Array<{ file: string; container: string }> = [
+    { file: 'components-v2/controls/value-control/HBarRenderer.svelte', container: '.vc-track-container' },
+    { file: 'components-v2/controls/value-control/DiscreteRenderer.svelte', container: '.vc-track-container' },
+    { file: 'components-v2/controls/value-control/BipolarRenderer.svelte', container: '.vc-track-container' },
+    { file: 'components-v2/controls/value-control/KnobRenderer.svelte', container: '.vc-knob-container' },
+    { file: 'components-v2/controls/value-control/DualParamRenderer.svelte', container: '.vc-track-container' },
+  ];
+
+  const studiolineFocus = ruleBlocks(stripComments(read(STUDIOLINE))).find(
+    (b) => /:focus-visible/.test(b.selector) && /outline/.test(b.body),
+  );
+
+  it('the studioline focus contract is still the (0,3,0) literal-outline rule this ranking assumes', () => {
+    expect(studiolineFocus, 'expected a :focus-visible outline rule in studioline.css').toBeTruthy();
+    expect(`${studiolineFocus!.selector} = ${specificity(studiolineFocus!.selector)}`).toBe(
+      `[data-design-language='studioline'][data-design-language] :focus-visible = 0,3,0`,
+    );
+  });
+
+  it('the language stylesheet still loads dynamically, i.e. after the component styles', () => {
+    // The premise of "wins on specificity alone, never on order": the
+    // language CSS must stay a dynamic import in the harness. A static
+    // import would flip the source order this pin deliberately ignores.
+    expect(read('../fixtures/main.ts')).toMatch(
+      /import\('\.\.\/src\/presentation\/languages\/studioline\/studioline\.css'\)/,
+    );
+  });
+
+  for (const { file, container } of RENDERER_CONTAINERS) {
+    it(`${file}: compiled :focus-visible rule outranks the studioline rule on specificity alone`, () => {
+      const css = stripComments(styleText(file, read(file)));
+      const rule = ruleBlocks(css).find(
+        (b) => b.selector.includes(`${container}:focus-visible`) && b.body.includes('outline: none'),
+      );
+      expect(rule, `${file}: expected the ${container} :focus-visible suppression rule`).toBeTruthy();
+      const compiled = svelteCompiled(rule!.selector);
+      const rival = specificity(studiolineFocus!.selector);
+      expect(
+        outranks(compiled, rival),
+        `${file}: compiled ${rule!.selector} → ${compiled} must outrank studioline ` +
+          `${studiolineFocus!.selector} → ${rival} by specificity, because the language ` +
+          'stylesheet loads later and would win any tie on source order.',
+      ).toBe(true);
+    });
+  }
 });
