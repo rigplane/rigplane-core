@@ -1036,6 +1036,7 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     const functionKeys = rulesFor(
       opsCss, ".functions-row > :global(.v2-control-button[data-indicator-style='dot'])",
     ).join('\n');
+    expect(functionKeys).toMatch(/--btn-font-size:\s*11px/);
     expect(functionKeys).toMatch(/padding-left:\s*calc\(var\(--indicator-dot-reserve\) \+ 1px\)/);
     expect(functionKeys).toMatch(/padding-right:\s*4px/);
   });

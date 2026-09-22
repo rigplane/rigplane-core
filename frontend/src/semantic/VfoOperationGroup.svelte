@@ -539,6 +539,7 @@
   }
   .functions-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .functions-row > :global(.v2-control-button[data-indicator-style='dot']) {
+    --btn-font-size: 11px;
     padding-left: calc(var(--indicator-dot-reserve) + 1px);
     padding-right: 4px;
   }
