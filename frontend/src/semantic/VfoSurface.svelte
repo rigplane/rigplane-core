@@ -1141,9 +1141,7 @@
   .instrument-panel {
     display: flex; align-items: stretch; width: 100%; min-width: 0;
     --vfo-instrument-inset-block: 6px;
-    /* MOR-2509: the deck's bridge-width token — the standard bridge
-       narrows it to fit the function keys; the 1050px breakpoint
-       override below sets the same property. */
+    /* MOR-2509: the deck's bridge-width token. */
     --vfo-bridge-width: 180px;
     background: linear-gradient(180deg, var(--v2-bg-gradient-start, #0a0e14) 0%, var(--v2-bg-panel, #05080c) 100%);
     border: 1px solid var(--v2-border-panel, #18222d); border-radius: 4px;
@@ -1202,7 +1200,9 @@
     box-shadow: 0 0 6px rgba(0,212,255,.3), inset 0 0 16px rgba(0,212,255,.06);
   }
   [data-vfo-appearance='standard'] .bridge {
-    --vfo-bridge-width: 168px;
+    --vfo-bridge-width: 212px;
+    justify-content: stretch;
+    padding: 12px 10px;
     background: var(--dl-vfo-bridge-background, linear-gradient(180deg, #161c23, #0f141a));
     box-shadow: var(--dl-vfo-bridge-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 6px 18px rgba(0, 0, 0, 0.5));
   }
@@ -1222,13 +1222,17 @@
     }
   }
   [data-vfo-appearance='standard'] .standard-pair-bridge {
-    flex: 0 0 clamp(190px, 14vw, 220px);
-    padding: 4px;
-    gap: 3px;
+    flex: 0 0 var(--vfo-bridge-width);
+    justify-content: stretch;
+    padding: 12px 10px;
+    gap: 0;
     --vfo-ops-gap: 3px;
     --btn-font-size: 12px;
     --indicator-dot-offset: 4px;
     --indicator-dot-gap: 4px;
+  }
+  [data-vfo-appearance='standard'] .standard-pair-bridge :global(.vfo-ops[data-vfo-operation-appearance='standard']) {
+    display: contents;
   }
   [data-vfo-appearance='standard'] .bridge:not(.standard-pair-bridge) {
     --btn-font-size: 12px;
@@ -1256,8 +1260,11 @@
     min-width: 0;
     text-align: center;
   }
-  .standard-vfo-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
-  .standard-vfo-selectors > :global(button) { min-width: 0; width: 100%; }
+  .standard-vfo-selectors {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px;
+    flex: 1 1 0; min-height: 28px; margin-block-end: 6px;
+  }
+  .standard-vfo-selectors > :global(button) { min-width: 0; width: 100%; height: 100%; }
   .standard-tx-target {
     display: block; padding: 3px 5px; border: 1px solid var(--v2-accent-red, #ff2020);
     border-radius: 3px; color: var(--v2-accent-red, #ff2020); font-size: 9px;

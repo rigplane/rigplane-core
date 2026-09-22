@@ -476,11 +476,11 @@
   /* MOR-2509 bridge: one fixed column of mock-up v8 group rows. */
   .vfo-ops[data-vfo-operation-appearance='standard'] {
     display: flex; flex-direction: column; flex-wrap: nowrap;
-    gap: 0;
+    flex: 1 1 auto; min-height: 0; gap: 0;
   }
   .ops-row {
     display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
-    gap: 6px;
+    flex: 1 1 0; min-height: 28px; gap: 6px;
   }
   :global(.active-receiver-toggle + .ops-row),
   .ops-row + .ops-row {
@@ -488,6 +488,12 @@
   }
   .ops-row > :global(.v2-control-button) {
     grid-column: span 3; min-width: 0; width: 100%;
+  }
+  .vfo-ops[data-vfo-operation-appearance='standard'] .ops-row > :global(.v2-control-button) {
+    height: 100%;
+  }
+  .vfo-ops[data-vfo-operation-appearance='standard'] > :global(.active-receiver-toggle) {
+    flex: 1 1 0; min-height: 28px;
   }
   .functions-row > :global(.v2-control-button) { grid-column: span 2; }
   .bridge-divider {
