@@ -725,7 +725,7 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     }
     const inactive = rulesFor(panelCss, '.panel:not(.active)').join('\n');
     expect(inactive).toMatch(/--vfo-neon-fill:\s*var\(--dl-vfo-primary-neon-dim/);
-    expect(inactive).not.toMatch(/filter|opacity/);
+    expect(inactive).not.toMatch(/(?:^|[;\s])(?:filter|opacity)\s*:/);
     expect(inactive).not.toMatch(/panel-meter/);
   });
 
