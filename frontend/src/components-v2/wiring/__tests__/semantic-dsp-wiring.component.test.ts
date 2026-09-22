@@ -829,7 +829,8 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     const staleStandardNr = retainedInvocations.get('NR')!;
 
     expect(seatFields('.dsp-finite-seat'))
-      .toEqual(['agcMode', 'nbActive', 'nrActive', 'manualNotch', 'autoNotch']);
+      .toEqual(['nbActive', 'nrActive', 'manualNotch', 'autoNotch']);
+    expect(seatFields('.rf-front-end-finite-seat')).toContain('agcMode');
     expect(seatFields('.dsp-scalar-seat')).toEqual([]);
     for (const label of standardExternal) {
       expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);

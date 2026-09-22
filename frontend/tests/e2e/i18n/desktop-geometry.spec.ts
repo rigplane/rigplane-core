@@ -435,8 +435,8 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
             keyShadow: keyStyle.boxShadow,
           };
         }),
-        agcNbWidth: await page.locator(
-          '[data-panel-id="semantic-agc"] [data-testid="dsp-nbWidth"]',
+        rfFrontEndNbWidth: await page.locator(
+          '[data-panel-id="semantic-rf-front-end"] [data-testid="dsp-nbWidth"]',
         ).count(),
         browserErrors,
         commands: await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
@@ -530,7 +530,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       expect(result.centerFacts).toBe(0);
       expect(result.ordinaryReasons).toBe(0);
       expect(result.meterClips).toEqual({ panel: false, children: [] });
-      expect(result.agcNbWidth).toBe(0);
+      expect(result.rfFrontEndNbWidth).toBe(0);
       expect(result.browserErrors).toEqual([]);
       expect(result.commands).toEqual([]);
     }

@@ -17,6 +17,7 @@
   } from '../../../../semantic/AntennaInstrumentHost.svelte';
   import type { RitXitScanInstrumentHandles } from '../../../../semantic/RitXitScanInstrumentHost.svelte';
   import type { RxAudioInstrumentHandles } from '../../../../semantic/rx-audio-instruments';
+  import type { DspFiniteHandles } from '../../../../semantic/dsp-instruments';
 
   const empty = createRawSnippet(() => ({ render: () => '' }));
   const vfo = createRawSnippet<[
@@ -70,6 +71,9 @@
     kind: 'separate', rfGain: empty, squelch: empty,
     preamp: empty, attenuator: empty, digiSel: empty, ipPlus: empty,
   } as const;
+  const dspInstruments = {
+    nrActive: empty, nbActive: empty, notchMode: empty, agcMode: empty,
+  } satisfies DspFiniteHandles;
   const scalars = {
     rfPower: empty, micGain: empty, driveGain: empty, voxGain: empty,
     antiVoxGain: empty, voxDelay: empty, compressorLevel: empty, monitorLevel: empty,
@@ -79,7 +83,7 @@
     vfo, vfoOperations, rxTx: empty, txAuxControls: txAux,
     txAuxScalars: scalars, txAuxInstruments,
     receiverInstruments,
-    rxAudioInstruments, rfFrontEndInstruments,
+    rxAudioInstruments, rfFrontEndInstruments, dspInstruments, agcModePresent: false,
     meters: empty, rxAudio: empty, rfFrontEnd: empty, filter: empty, dsp: empty,
     band, antenna, antennaInstruments, antennaLayout,
     ritXitScan: empty, ritXitInstruments, cwKeyerInstruments, cwKeyer, memory: empty,

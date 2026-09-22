@@ -18,6 +18,11 @@
   renders present-and-disabled. RF gain/squelch are gated here so a
   structurally absent field never even reaches its handle; the other four
   fields self-gate inside their own host-owned handle.
+
+  A supplied finite layout may extend this frame with controls from another
+  persistent host. Standard uses that seam for AGC, so the frame may exist
+  without an `rfFrontEnd` group while the finite layout renders its own
+  structurally gated row.
 -->
 <script module lang="ts">
   export {
@@ -47,16 +52,19 @@
   let rf = $derived(view.rfFrontEnd);
 </script>
 
-{#if rf}
+{#if rf || finiteLayout}
   <section class="rf-front-end-surface" data-testid="rf-front-end-surface" aria-label="RF front end">
     <!-- `finiteLayout !== undefined` is the same Standard-seat signal AF
          LEVEL's row rides on (`RxAudioSurface` renders `handles.afLevel()`
-         bare on this same no-layout path). -->
-    {#if levelHandles.kind === 'combined'}
-      {@render levelHandles.rfSql(finiteLayout !== undefined)}
-    {:else}
-      {#if rf.rfGain.availability.structural}{@render levelHandles.rfGain(finiteLayout !== undefined)}{/if}
-      {#if rf.squelch.availability.structural}{@render levelHandles.squelch(finiteLayout !== undefined)}{/if}
+         bare on this same no-layout path). The outer gate also lets this
+         layout supply Standard's AGC-only row when `rf` is absent. -->
+    {#if rf}
+      {#if levelHandles.kind === 'combined'}
+        {@render levelHandles.rfSql(finiteLayout !== undefined)}
+      {:else}
+        {#if rf.rfGain.availability.structural}{@render levelHandles.rfGain(finiteLayout !== undefined)}{/if}
+        {#if rf.squelch.availability.structural}{@render levelHandles.squelch(finiteLayout !== undefined)}{/if}
+      {/if}
     {/if}
 
     {#if finiteLayout}

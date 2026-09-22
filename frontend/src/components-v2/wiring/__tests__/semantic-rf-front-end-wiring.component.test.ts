@@ -640,18 +640,20 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
 });
 
 /**
- * MOR-2425 RF-B. Each of the four finite controls has exactly ONE owner
+ * MOR-2425 RF-B. Each of the four RF finite controls has exactly ONE owner
  * (`RfFrontEndInstrumentHost`) and must render exactly once in the composed
  * tree — a double owner (grouped surface AND a named seat both rendering the
- * same field) would show two `[data-testid]` matches here.
+ * same field) would show two `[data-testid]` matches here. Standard also owns
+ * the named placement of AGC's persistent DSP-host handle as its fifth seat.
  *
  * Cycle 2 landed the second layout shape this NOTE previously said did not
- * exist: `RadioLayout.svelte`'s `desktop-v2` branch now places the four in
- * NAMED Standard seats (`rfFrontEndFiniteLayout`, `.rf-front-end-finite-seat`)
- * instead of the grouped surface's own default order. `sdr-test` still gets
- * the grouped shape unchanged. Both are proven "exactly once" below, through
- * the real `RadioLayout.svelte` (`renderHostedFace`) rather than the bare
- * `SemanticRadioSurfaces` mount `render()` uses for the first case.
+ * exist: `RadioLayout.svelte`'s `desktop-v2` branch now places the four RF
+ * handles plus AGC in NAMED Standard seats (`rfFrontEndFiniteLayout`,
+ * `.rf-front-end-finite-seat`) instead of the grouped surface's own default
+ * order. `sdr-test` still gets the grouped shape unchanged. Both are proven
+ * "exactly once" below, through the real `RadioLayout.svelte`
+ * (`renderHostedFace`) rather than the bare `SemanticRadioSurfaces` mount
+ * `render()` uses for the first case.
  */
 describe('each finite control has exactly one owner in the composed tree', () => {
   it('renders preamp, attenuator, DIGI-SEL and IP+ exactly once (bare SemanticRadioSurfaces mount)', () => {
@@ -671,11 +673,11 @@ describe('each finite control has exactly one owner in the composed tree', () =>
     },
   );
 
-  it('places the four in the NAMED Standard seat grid on desktop-v2', () => {
+  it('places the four RF controls and AGC last in the NAMED Standard seat grid on desktop-v2', () => {
     renderHostedFace('desktop-v2');
     const seats = [...target.querySelectorAll<HTMLElement>('.rf-front-end-finite-seat')]
       .map((seat) => seat.dataset.field);
-    expect(seats).toEqual(['attenuator', 'preamp', 'digiSel', 'ipPlus']);
+    expect(seats).toEqual(['attenuator', 'preamp', 'digiSel', 'ipPlus', 'agcMode']);
   });
 
   it('has no Standard seat grid on sdr-test — the grouped surface owns placement there', () => {

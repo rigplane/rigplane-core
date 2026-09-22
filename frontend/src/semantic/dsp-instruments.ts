@@ -18,7 +18,7 @@ export interface DspFiniteHandles {
   readonly compactNr?: Snippet;
   readonly compactManualNotch?: Snippet;
   readonly compactAutoNotch?: Snippet;
-  readonly agcMode: Snippet;
+  readonly agcMode: Snippet<[rfFrontEndRow?: boolean]>;
 }
 
 export type DspFiniteLayout = Snippet<[DspFiniteHandles]>;

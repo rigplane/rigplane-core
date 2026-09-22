@@ -2438,11 +2438,11 @@
   {#snippet groupedDspSurface()}{@render dspSurface()}{/snippet}
 
   <!--
-    MOR-1306 (vocabulary slice 6B). Same structural gate and same reasoning as
-    `rxAudioSurface` above: the surface mounts only when the view model
-    actually carries the MOR-1292/MOR-1293 `rfFrontEnd` group, so a radio with
-    no preamp/attenuator/RF-gain/squelch/DIGI-SEL/IP+ capability renders the
-    pre-1306 element shape exactly.
+    MOR-1306 (vocabulary slice 6B). The grouped surface uses the same
+    structural gate as `rxAudioSurface` above: it mounts only when the view
+    model carries the MOR-1292/MOR-1293 `rfFrontEnd` group. The hosted Standard
+    path below has one explicit extension: a supplied finite layout may carry
+    structurally available AGC even when the RF group itself is absent.
 
     CONTROL-BEARING — the MOR-1304 mounting canon (`RfFrontEndSurface.svelte`'s
     file header): this surface carries focusable controls (preamp and
@@ -2457,7 +2457,7 @@
     as `rxAudio` left it — it still renders nothing there today.
   -->
   {#snippet rfFrontEndSurface(finiteLayout?: RfFrontEndFiniteLayout)}
-    {#if view?.rfFrontEnd}
+    {#if view && (view.rfFrontEnd || finiteLayout)}
       <RfFrontEndSurface {view} levelHandles={rfFrontEndInstruments} {finiteLayout} />
     {/if}
   {/snippet}
@@ -2704,7 +2704,15 @@
     allowBare = allowBareSurfaces, finiteLayout?: RfFrontEndFiniteLayout, chrome?: PanelChrome,
   )}
     {#snippet body()}{@render rfFrontEndSurface(finiteLayout)}{/snippet}
-    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, body, allowBare, chrome)}
+    <!-- Standard's finite layout includes AGC. Its DSP fact therefore extends
+         this hosted frame's presence without making grouped RF surfaces claim
+         an RF-front-end group the radio does not have. -->
+    {@render zoned(
+      'rfFrontEnd',
+      view?.rfFrontEnd !== undefined
+        || (finiteLayout !== undefined && view?.dsp?.agcMode.availability.structural === true),
+      body, allowBare, chrome,
+    )}
   {/snippet}
   {#snippet hostedFilter(
     allowBare = allowBareSurfaces, finiteLayout?: FilterFiniteLayout, chrome?: PanelChrome,
@@ -2819,6 +2827,8 @@
       receiverInstruments,
       rxAudioInstruments,
       rfFrontEndInstruments,
+      dspInstruments,
+      agcModePresent: view?.dsp?.agcMode.availability.structural === true,
       meters: hostedMeters,
       rxAudio: hostedRxAudio,
       rfFrontEnd: hostedRfFrontEnd,

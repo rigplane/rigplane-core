@@ -665,8 +665,8 @@
   .rf-front-end-slider { grid-column: 1 / -1; width: 100%; min-width: 0; }
   .rf-front-end-level :global(.vc-hbar),
   .rf-front-end-level :global(.vc-dual) { width: 100%; min-width: 0; }
-  .rf-front-end-row { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 0.5rem; margin: 0; min-width: 0; }
-  .rf-front-end-row-label { color: var(--v2-text-dim); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; }
+  :global(.rf-front-end-row) { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 0.5rem; margin: 0; min-width: 0; }
+  :global(.rf-front-end-row-label) { color: var(--v2-text-dim); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; }
   .rf-front-end-choices { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
   .rf-front-end-choices > button { flex: 1 1 4.5ch; }
   .rf-front-end-att-control { min-width: 0; margin: 0; padding: 0; border: 0; }
