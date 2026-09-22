@@ -1000,7 +1000,10 @@ describe('the txAux surface mounts only when the view model carries the group', 
   // (unslotted active-slot: its own digit control plus the one select button).
   const DEFAULT_PATH_OUTLINE = 'div p div div span span div span span span span span span span span span span span span span div '
     + 'span span div span span span span span span span span span span span button div section header strong div div div section header strong div '
-    + 'div div section div span div button button div div button button p span span section p span span '
+    // MOR-2509: this fixture's caps declare neither split nor dual_watch,
+    // so the capability gates render no SPLIT/DW keys and the fact-toggle
+    // container stays empty in the default path.
+    + 'div div section div span div div div button button p span span section p span span '
     // MOR-2438: the idle READY session span is absent; the hidden status row
     // retains only its RF mark/label contract and occupies no layout space.
     + 'p div button button ul section div button button button label span div div div div div div '

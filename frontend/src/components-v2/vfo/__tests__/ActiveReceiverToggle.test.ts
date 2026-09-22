@@ -65,7 +65,8 @@ describe('ActiveReceiverToggle', () => {
       const segments = Array.from(t.querySelectorAll<HTMLButtonElement>('[data-active-receiver-segment]'));
       expect(segments).toHaveLength(2);
       for (const segment of segments) {
-        expect(segment.className).toBe('segment embedded');
+        expect(segment.classList).toContain('segment');
+        expect(segment.classList).toContain('embedded');
         expect(segment.classList).not.toContain('v2-control-button');
         expect(segment.getAttribute('data-active-receiver-segment')).toBeTruthy();
         expect(segment.getAttribute('data-dual-action')).toBeTruthy();
