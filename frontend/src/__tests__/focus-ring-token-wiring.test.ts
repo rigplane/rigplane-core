@@ -82,8 +82,8 @@ function read(relPath: string): string {
 // offset, not an `outline: 0` suppression.
 const OUTLINE_NONE = /(?<![\w-])outline:\s*(none|0)\b/;
 // A real, visible focus treatment: an outline set to a non-none value, or a
-// var()-driven box-shadow.
-const HAS_REPLACEMENT = /(?<![\w-])outline:\s*(?!none\b|0\b)\S|box-shadow:\s*(?!none\b)[^;]*var\(/;
+// var()-driven box-shadow/filter.
+const HAS_REPLACEMENT = /(?<![\w-])outline:\s*(?!none\b|0\b)\S|box-shadow:\s*(?!none\b)[^;]*var\(|filter:\s*(?!none\b)[^;]*var\(/;
 
 function styleText(path: string, text: string): string {
   if (extname(path) !== '.svelte') return text;
@@ -195,7 +195,8 @@ describe('MOR-2509: the Standard deck uses the shared three-step focus treatment
   it('the deck rule brightens controls without a second frame or a size-affecting declaration', () => {
     const css = stripComments(read('components-v2/controls/control-button.css'));
     const deckRules = ruleBlocks(css).filter((block) =>
-      block.selector.includes("[data-vfo-appearance='standard']") && block.selector.includes(':focus-visible'));
+      block.selector.trim().startsWith("[data-vfo-appearance='standard']")
+      && block.selector.includes(':focus-visible'));
     expect(deckRules.length).toBeGreaterThanOrEqual(2);
     expect(deckRules.some((block) => /filter:\s*var\(--v2-focus-ring-dim-filter\)/.test(block.body))).toBe(true);
     expect(deckRules.some((block) => /filter:\s*var\(--v2-focus-ring-lit-filter\)/.test(block.body))).toBe(true);

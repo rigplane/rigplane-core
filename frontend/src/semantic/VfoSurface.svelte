@@ -1199,7 +1199,11 @@
     border: 1px solid var(--v2-accent-cyan, #00d4ff); border-radius: 4px;
     box-shadow: 0 0 6px rgba(0,212,255,.3), inset 0 0 16px rgba(0,212,255,.06);
   }
-  [data-vfo-appearance='standard'] .bridge { --vfo-bridge-width: 168px; }
+  [data-vfo-appearance='standard'] .bridge {
+    --vfo-bridge-width: 168px;
+    background: var(--dl-vfo-bridge-background, linear-gradient(180deg, #161c23, #0f141a));
+    box-shadow: var(--dl-vfo-bridge-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 6px 18px rgba(0, 0, 0, 0.5));
+  }
   [data-vfo-appearance='standard'] .bridge .vfo-select { min-height: 28px; }
   [data-vfo-appearance='standard'] .standard-receiver[data-standard-vfo-slot] {
     flex: 1 1 0;

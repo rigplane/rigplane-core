@@ -352,7 +352,16 @@
     --vfo-dsp-fill: var(--dl-vfo-dsp-fill, #141a21);
     --vfo-unlit-text: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875));
     --vfo-unlit-border: var(--dl-vfo-unlit-border, #1f2832);
-    --vfo-glow: var(--dl-vfo-glow, none);
+    --vfo-unlit-fill: var(--dl-vfo-unlit-fill, rgba(255, 255, 255, 0.012));
+    --vfo-frequency-glow: var(--dl-vfo-frequency-glow, none);
+    --vfo-primary-glow: var(--dl-vfo-primary-glow, none);
+    --vfo-red-glow: var(--dl-vfo-red-glow, none);
+    --vfo-amber-glow: var(--dl-vfo-amber-glow, none);
+    --vfo-brown-glow: var(--dl-vfo-brown-glow, none);
+    --vfo-dsp-glow: var(--dl-vfo-dsp-glow, none);
+    --vfo-slate-glow: var(--dl-vfo-slate-glow, none);
+    --vfo-large-chip-width: 70px;
+    --vfo-panel-narrow-breakpoint: 520px;
 
     display: grid;
     grid-template-rows: auto auto auto;
@@ -361,9 +370,11 @@
     min-height: 100%;
     min-width: 0;
     container-type: inline-size;
-    background: linear-gradient(180deg, var(--v2-bg-gradient-start) 0%, var(--v2-bg-darkest) 100%);
+    position: relative;
+    background: var(--dl-vfo-panel-background, linear-gradient(180deg, #10161d 0%, #0a0e13 38%, #070a0e 100%));
     border: 1px solid var(--v2-border-darker);
     border-radius: var(--vfo-panel-radius, 10px);
+    box-shadow: var(--dl-vfo-panel-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 -18px 30px rgba(0, 0, 0, 0.45), 0 6px 18px rgba(0, 0, 0, 0.5));
     padding-block-end: calc(19px * var(--vfo-deck-rhythm));
     font-family: 'Roboto Mono', monospace;
     transition: border-color 150ms ease, box-shadow 150ms ease;
@@ -372,8 +383,20 @@
   .panel.active {
     border-color: var(--receiver-control-border);
     box-shadow:
+      var(--dl-vfo-panel-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 -18px 30px rgba(0, 0, 0, 0.45), 0 6px 18px rgba(0, 0, 0, 0.5)),
       inset 0 0 0 1px var(--receiver-control-glow),
       0 0 12px 1px var(--receiver-panel-glow-outer);
+  }
+
+  .panel::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    clip-path: inset(0 round var(--vfo-panel-radius, 10px));
+    background: var(--dl-vfo-panel-sheen, none);
+    mix-blend-mode: var(--dl-vfo-panel-sheen-blend, normal);
   }
 
   /* The inactive receiver is quieter through explicit colour variants; a lit
@@ -395,6 +418,14 @@
     --vfo-slate-text: var(--dl-vfo-dim-text, #e3eaf2);
     --vfo-dsp-text: var(--dl-vfo-dsp-dim, #aab4bf);
     --vfo-dsp-border: var(--dl-vfo-dsp-border-dim, #6f7b87);
+    --vfo-frequency-glow: none;
+    --vfo-primary-glow: none;
+    --vfo-red-glow: none;
+    --vfo-amber-glow: none;
+    --vfo-brown-glow: none;
+    --vfo-dsp-glow: none;
+    --vfo-slate-glow: none;
+    --v2-meter-lit-filter: none;
   }
 
   /* ── Tray: tabs hanging from the panel's top edge ─────────────────── */
@@ -438,9 +469,12 @@
   .tab[data-lit='false'] {
     border-color: var(--vfo-unlit-border);
     color: var(--vfo-unlit-text);
-    background: transparent;
+    background: var(--vfo-unlit-fill);
     font-weight: 400;
   }
+
+  .tab[data-lit='true'] { box-shadow: var(--vfo-slate-glow); }
+  .tab-ant[data-lit='true'] { box-shadow: var(--vfo-red-glow); }
 
   /* ── Receiver row: name once, large mode/filter chips, lamps, TX ───── */
   .receiver-row {
@@ -489,7 +523,7 @@
   .chip-slot {
     display: inline-flex;
     flex: none;
-    width: 70px;
+    width: var(--vfo-large-chip-width);
     height: 30px;
   }
 
@@ -499,7 +533,7 @@
     justify-content: center;
     box-sizing: border-box;
     flex: none;
-    width: 70px;
+    width: var(--vfo-large-chip-width);
     height: 30px;
     border: 1px solid var(--vfo-neon-frame);
     border-radius: 4px;
@@ -515,8 +549,10 @@
   .chip-lg[data-lit='false'] {
     border-color: var(--vfo-unlit-border);
     color: var(--vfo-unlit-text);
-    background: transparent;
+    background: var(--vfo-unlit-fill);
   }
+
+  .chip-lg[data-lit='true'] { box-shadow: var(--vfo-primary-glow); }
 
   .chip-tx { width: 50px; }
 
@@ -525,7 +561,7 @@
     border-color: var(--vfo-tx-frame);
     color: var(--vfo-tx-frame);
     font-weight: 700;
-    box-shadow: var(--vfo-glow);
+    box-shadow: var(--vfo-red-glow);
   }
 
   .annunciators {
@@ -562,6 +598,10 @@
     color: var(--vfo-unlit-text);
     font-weight: 400;
   }
+
+  .lamp[data-lit='true'] { text-shadow: var(--vfo-red-glow); }
+  .lamp[data-chip='agc'][data-lit='true'] { text-shadow: var(--vfo-amber-glow); }
+  .lamp[data-chip='rfg'][data-lit='true'] { text-shadow: var(--vfo-brown-glow); }
 
   .ann-sep {
     flex: none;
@@ -602,18 +642,14 @@
     letter-spacing: var(--vfo-frequency-letter-spacing, 0.02em);
   }
 
+  .freq-row > .vfo-freq { text-shadow: var(--vfo-frequency-glow); }
+
   .frequency-readout-content { display: contents; }
 
   .vfo-freq.display-unknown { color: var(--vfo-unlit-text); }
   .vfo-freq.display-unknown :global(.freq) { text-shadow: none; }
 
   .vfo-freq[role='button'], .vfo-freq[role='button'] :global(.digit) { cursor: pointer; }
-  .vfo-freq[role='button']:focus-visible {
-    outline: 2px solid var(--v2-accent-cyan-bright);
-    outline-offset: 3px;
-    border-radius: 4px;
-  }
-
   /* No font-weight here on purpose: the interactive primitive resolves its
      own weight through --freq-font-weight -> --v2-vfo-font-weight ->
      --dl-vfo-frequency-weight, and an inherited shorthand would shadow that
@@ -667,9 +703,11 @@
   .chip-amber[data-lit='false'] {
     border-color: var(--vfo-unlit-border);
     color: var(--vfo-unlit-text);
-    background: transparent;
+    background: var(--vfo-unlit-fill);
     font-weight: 400;
   }
+
+  .chip-amber[data-lit='true'] { box-shadow: var(--vfo-amber-glow); }
 
   .dsp {
     display: grid;
@@ -699,16 +737,22 @@
 
   .chip-dsp[data-lit='false'] {
     border-color: var(--vfo-dsp-border);
-    background: transparent;
+    background: var(--vfo-unlit-fill);
     color: var(--vfo-unlit-text);
     opacity: 1;
   }
+
+  .chip-dsp[data-lit='true'] { box-shadow: var(--vfo-dsp-glow); }
 
   .panel-meter {
     grid-column: 3;
     flex: 1 1 auto;
     min-width: 0;
     padding: 0 var(--vfo-panel-meter-pad-x, 6px);
+    border-radius: 4px;
+    background: var(--dl-vfo-meter-well-background, #05070a);
+    box-shadow: var(--dl-vfo-meter-well-shadow, inset 0 2px 6px rgba(0, 0, 0, 0.9), inset 0 0 0 1px #1a222b, 0 1px 0 rgba(255, 255, 255, 0.05));
+    --v2-meter-lit-filter: var(--dl-vfo-meter-lit-filter, none);
   }
 
   .panel-meter > div { width: 100%; }
@@ -719,7 +763,8 @@
     .dsp { grid-template-columns: 1fr 1fr; }
   }
 
-  @container (max-width: 530px) {
+  @container (max-width: 520px) {
+    .chip-slot, .chip-lg { --vfo-large-chip-width: 62px; }
     .tray { margin-block-end: calc(17px * var(--vfo-deck-rhythm-narrow)); }
     .receiver-row {
       margin-block-end: calc(16px * var(--vfo-deck-rhythm-narrow));
@@ -734,14 +779,7 @@
     .lamp[data-chip='agc'] { width: 62px; }
     .lamp[data-chip='preamp'] { width: 62px; }
     .lamp[data-chip='digi-sel'] { width: 66px; }
-    .chip-slot {
-    display: inline-flex;
-    flex: none;
-    width: 70px;
-    height: 30px;
-  }
-
-  .chip-lg { width: 62px; font-size: 13px; }
+    .chip-lg { font-size: 13px; }
     .chip-tx { width: 44px; }
   }
 
