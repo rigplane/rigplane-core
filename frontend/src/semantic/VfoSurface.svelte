@@ -1306,8 +1306,8 @@
      bridge width is one custom property and the standard deck uses the mock-up
      column" pins both that qualified rule and the shared 150 px rule used by
      the SDR appearance at or below 1050 px. The unit test "keeps the longest
-     function label inside the 150px column below 1280px" pins the 6 px inline
-     padding that fits its measured TUNER label. */
+     function label inside the 150px column below 1280px" pins the inline-padding
+     upper bound that still fits its measured TUNER label. */
   @media (max-width: 1279px) {
     [data-vfo-appearance='standard'] .bridge { --vfo-bridge-width: 150px; padding: 12px 6px; }
   }
