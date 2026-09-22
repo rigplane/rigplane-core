@@ -58,8 +58,8 @@
   import { renderSlot } from './design-language-renderers';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
   import type {
-    BooleanFact, DisplayObservation, DspField, RadioViewModel,
-    ReceiverIndicatorViewModel, VfoViewModel,
+    BooleanFact, DisplayObservation, DspField, TxAuxField,
+    RadioViewModel, ReceiverIndicatorViewModel, VfoViewModel,
   } from './radio-view-model';
 
   interface Props {
@@ -374,6 +374,25 @@
   function displayValue<T>(display: DisplayObservation<T> | undefined, strict: T | null): T | null {
     if (display === undefined) return strict;
     return display.state === 'current' || display.state === 'stale' ? display.value : null;
+  }
+
+  /**
+   * MOR-2509 — the panel's MODE/FIL tri-state: known text, null for unread
+   * (the panel draws the dim label), undefined for structurally unsupported
+   * (the panel keeps the slot and draws no chip). Both carriers of
+   * "unsupported" — the observation's own state and the modeFilter group's
+   * structural flag — collapse into the one undefined answer here.
+   */
+  function displayModeOrFilter(
+    vfo: VfoViewModel | undefined,
+    observation: DisplayObservation<string> | undefined,
+    strict: string | null,
+    structural: TxAuxField<unknown> | undefined,
+  ): string | null | undefined {
+    if (vfo === undefined) return null;
+    if (observation?.state === 'unsupported') return undefined;
+    if (structural !== undefined && !structural.availability.structural) return undefined;
+    return displayValue(observation, strict);
   }
 
   function hasDigitReadout(vfo: VfoViewModel): boolean {
@@ -952,8 +971,10 @@
             : undefined}
           frequencyDisabled={!dominant || (fixed !== undefined && !fixed.isActiveSlot) || readoutDisabled(dominant)}
           controlsDisabled={fixed !== undefined && !fixed.isActiveSlot}
-          mode={dominant ? displayValue(dominant.display?.mode, dominant.mode) : null}
-          filter={dominant ? displayValue(dominant.display?.filter, dominant.filter) : null}
+          mode={displayModeOrFilter(dominant, dominant?.display?.mode, dominant?.mode ?? null,
+            viewModel.modeFilter?.currentMode)}
+          filter={displayModeOrFilter(dominant, dominant?.display?.filter, dominant?.filter ?? null,
+            viewModel.modeFilter?.currentFilter)}
           sValue={indicator?.sMeter.availability.operational && indicator.sMeter.reading.status === 'known'
             && Number.isFinite(indicator.sMeter.reading.value) ? indicator.sMeter.reading.value : null}
           sMeter={receiverInstruments === undefined || (fixed && !fixed.isActiveSlot) ? undefined : hostedMeter}

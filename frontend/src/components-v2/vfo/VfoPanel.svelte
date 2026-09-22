@@ -68,8 +68,10 @@
     contextKey?: string;
     frequencyDisabled?: boolean;
     controlsDisabled?: boolean;
-    mode: string | null;
-    filter: string | null;
+    /** Tri-state: a string is known text, null is unread (dim label),
+     *  undefined is structurally unsupported (slot kept, chip not drawn). */
+    mode: string | null | undefined;
+    filter: string | null | undefined;
     sMeter?: Snippet;
     sValue?: number | null;
     meterPresent?: boolean;
@@ -126,11 +128,15 @@
       .map((group) => group.map((digit) => digit.char).join('')).join('.');
   }
 
-  /** Legacy badge colour names → the theme's badge text tokens; anything
-   *  unknown keeps the family tone. */
+  /** A legacy badge colour is either a token NAME (mapped to the theme's
+   *  badge text token) or an already-resolved colour literal from a custom
+   *  theme (hex/rgb/hsl/var(...)), passed through unchanged. */
   function legacyLampColor(color: string): string {
     if (color === 'white') return 'var(--v2-text-primary, #ffffff)';
     if (color === 'muted') return 'var(--v2-badge-inactive-text)';
+    if (/^(#[0-9a-f]{3,8}|rgba?\(|hsla?\(|var\(|oklch\(|lab\(|color-mix\(|currentcolor$)/i.test(color.trim())) {
+      return color.trim();
+    }
     return `var(--v2-badge-${color}-text)`;
   }
 
@@ -200,10 +206,18 @@
       }}
       title={!controlsDisabled && onModeClick ? `Change mode (current: ${mode})` : undefined}
     >
-      <span class="chip-lg" data-family="primary-neon" data-chip="mode" data-lit={mode !== null}>{mode ?? 'MODE'}</span>
+      {#if mode === undefined}
+        <span class="chip-slot" aria-hidden="true"></span>
+      {:else}
+        <span class="chip-lg" data-family="primary-neon" data-chip="mode" data-lit={mode !== null}>{mode ?? 'MODE'}</span>
+      {/if}
     </div>
 
-    <span class="chip-lg" data-family="primary-neon" data-chip="filter" data-lit={filter !== null}>{filter ?? 'FIL'}</span>
+    {#if filter === undefined}
+      <span class="chip-slot" aria-hidden="true"></span>
+    {:else}
+      <span class="chip-lg" data-family="primary-neon" data-chip="filter" data-lit={filter !== null}>{filter ?? 'FIL'}</span>
+    {/if}
 
     <div class="annunciators">
       {#each sections.annunciators as ann, i (ann.key)}
@@ -472,6 +486,13 @@
     filter: brightness(1.15);
   }
 
+  .chip-slot {
+    display: inline-flex;
+    flex: none;
+    width: 70px;
+    height: 30px;
+  }
+
   .chip-lg {
     display: inline-flex;
     align-items: center;
@@ -713,7 +734,14 @@
     .lamp[data-chip='agc'] { width: 62px; }
     .lamp[data-chip='preamp'] { width: 62px; }
     .lamp[data-chip='digi-sel'] { width: 66px; }
-    .chip-lg { width: 62px; font-size: 13px; }
+    .chip-slot {
+    display: inline-flex;
+    flex: none;
+    width: 70px;
+    height: 30px;
+  }
+
+  .chip-lg { width: 62px; font-size: 13px; }
     .chip-tx { width: 44px; }
   }
 

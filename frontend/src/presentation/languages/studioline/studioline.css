@@ -44,7 +44,6 @@
   /* 6px rhythm with a 4:1 macro/micro gap ratio (MOR-977 §2.3 geometry). */
   --dl-studioline-gap-micro: 6px;
   --dl-studioline-gap-macro: 24px;
-  --dl-studioline-numerals: 200;
   --dl-studioline-font: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', 'Inter', system-ui, sans-serif;
 
   /* `app.css` paints `body { background-color: var(--bg) }`, so a background
@@ -69,9 +68,7 @@
 }
 
 /* True dual-mode: with no chrome there is nothing to re-tune — the surface
-   goes warm off-white and the numerals step 200 → 300, because thin
-   dark-on-light glyphs read thinner than thin light-on-dark ones
-   (MOR-977 §5). The state palette is unchanged: it is proven on both.
+   goes warm off-white. The state palette is unchanged: it is proven on both.
    
    EXPLICIT OPT-IN, not `prefers-color-scheme`. This app's light/dark is a
    MANUAL choice — `[data-theme="github-light"]` and friends — and nothing in
@@ -145,15 +142,11 @@
 [data-design-language='studioline'][data-design-language][data-language-mode='light'] {
   --dl-studioline-surface: #faf7f2;
   --dl-studioline-text: #14181a;
-  --dl-studioline-numerals: 300;
 }
 
-/* Weight, not only colour — 200-weight glyphs read thinner than their
-   contrast ratio implies (MOR-977 §3.2 studioline weak point). */
 [data-design-language='studioline'][data-design-language][data-theme='high-contrast'] {
   --dl-studioline-text: #ffffff;
   --dl-studioline-muted: #d5dbde;
-  --dl-studioline-numerals: 600;
 }
 
 /* ── One focus contract, never re-suppressed (MOR-977 §1.2.5) ───────────── */
