@@ -218,13 +218,15 @@ it('routes the S track lit fill through one inherited saturation hook', () => {
 
 /** The lit extent the face draws for a fill fraction, mirroring the
  *  half-covered rule: a segment lights when the fill covers at least half
- *  of it, and the extent is that segment's right edge (in track fraction).
- *  TRACK_W is 548 at the fixture width. */
+ *  of it, and the extent is that segment's right edge — capped at the
+ *  last whole dash that FITS the track, the greatest 3n+2 ≤ 548, which is
+ *  548 itself (n=182), so a full-scale reading lights the complete final
+ *  dash flush with the track end. */
 function litExtentFraction(fillFraction: number): number {
   const fillPx = fillFraction * TRACK_W;
   const segment = Math.floor((fillPx - 1) / 3);
   if (segment < 0) return 0;
-  return Math.min(TRACK_W - 1, segment * 3 + 2) / TRACK_W;
+  return (Math.min(Math.floor((TRACK_W - 2) / 3), segment) * 3 + 2) / TRACK_W;
 }
 
 // ── 1. Geometry: whole-pixel segments, fixed reading slot ───────────────────
@@ -386,10 +388,15 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
     expect(labels[0]!.getAttribute('text-anchor')).toBe('middle');
   });
 
-  it('the three-knot table maps S9+60 to the last lit segment and S1 to the left end', () => {
+  it('the three-knot table maps S9+60 onto the full final dash and S1 to the left end', () => {
     setCapabilities(makeCaps(IC7300_LIKE_CAL));
     const over60 = mountMeter({ value: 60, variant: 'vfo', compact: true });
-    expect(fillFraction(svgOf(over60))).toBeCloseTo((TRACK_W - 1) / TRACK_W, 6);
+    // A full-scale reading lights the complete terminal dash: the greatest
+    // 3n+2 ≤ 548 is 548 itself, flush with the track end — the old
+    // trackW-1 cap rendered a truncated 1px dash here.
+    expect(fillFraction(svgOf(over60))).toBeCloseTo(1, 6);
+    expect(Number(svgOf(over60).querySelector('[data-meter-fill-red]')!.getAttribute('x2')))
+      .toBe(TRACK_W);
     const s1 = mountMeter({ value: -48, variant: 'vfo', compact: true });
     expect(fillFraction(svgOf(s1))).toBeCloseTo(0, 4);
   });
@@ -507,6 +514,14 @@ describe('MOR-2509 v7 VFO face — the Po lower scale', () => {
     const none = mountPo(0);
     const emptyFill = svgOf(none).querySelector('[data-lower-fill]')!;
     expect(Number(emptyFill.getAttribute('x2'))).toBeCloseTo(Number(emptyFill.getAttribute('x1')), 5);
+
+    // A full Po reading lights the complete final dash flush with the
+    // track end — the same greatest-3n+2 cap as the S track (548 at this
+    // width), not the truncated trackW-1.
+    const full = mountPo(1);
+    const fullFill = svgOf(full).querySelector('[data-lower-fill]')!;
+    expect(Number(fullFill.getAttribute('x2')) - Number(fullFill.getAttribute('x1')))
+      .toBe(TRACK_W);
   });
 
   it('reserves the lower-row height whether or not a descriptor is present', () => {
