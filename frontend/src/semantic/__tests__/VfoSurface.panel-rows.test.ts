@@ -78,12 +78,16 @@ function standardFixture(id: TopologyFixtureId, readings: 'known' | 'unknown' = 
   const banded = id === '2/main_sub' ? withBand(base) : base;
   const band = banded.band
     ? {
-      band: {
-        ...banded.band,
-        currentBand: readings === 'known'
-          ? banded.band.currentBand
-          : { reading: { status: 'unknown' as const }, availability: banded.band.currentBand.availability },
-      },
+      band: readings === 'known'
+        ? banded.band
+        : {
+          ...banded.band,
+          currentBand: {
+            reading: { status: 'unknown' as const },
+            availability: banded.band.currentBand.availability,
+          },
+          currentBandTx: 'denied' as const,
+        },
     }
     : {};
   return validateRadioViewModel({
@@ -419,10 +423,20 @@ describe('the live FTX-1 payload (many null leaves) prints no placeholder', () =
     return mountSurface({ viewModel: model!, appearance: 'standard' });
   };
 
-  it('absent capabilities draw no element, present ones stay: no BAND or ANT tab, BW present', () => {
+  it('absent capabilities draw no element; present groups keep their tabs (ftx1)', () => {
     const root = mountFtx1();
-    expect(root.querySelector('[data-tray-tab="band"]')).toBeNull();
+    // No antenna capability and no IP+ / DIGI-SEL: nothing drawn for them.
     expect(root.querySelector('[data-tray-tab="ant"]')).toBeNull();
+    expect(root.querySelector('[data-chip="ip-plus"]')).toBeNull();
+    expect(root.querySelector('[data-chip="digi-sel"]')).toBeNull();
+    // The band group follows freqRanges and BW the filters group: both stay,
+    // band lit only on the active receiver's panel.
+    const bandTabs = root.querySelectorAll('[data-tray-tab="band"]');
+    expect(bandTabs.length).toBe(2);
+    expect(bandTabs[0].textContent?.trim()).toMatch(/^\d+[A-Z]$/);
+    expect(bandTabs[0].getAttribute('data-lit')).toBe('true');
+    expect(bandTabs[1].textContent?.trim()).toBe('BAND');
+    expect(bandTabs[1].getAttribute('data-lit')).toBe('false');
     const bwTabs = root.querySelectorAll('[data-tray-tab="bw"]');
     expect(bwTabs.length).toBe(2);
     for (const tab of Array.from(bwTabs)) {
