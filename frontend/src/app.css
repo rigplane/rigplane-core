@@ -37,10 +37,15 @@
  * doubled attribute and the element type are both load-bearing' proves the
  * weaker selector forms tie or lose. The ring is the value-control
  * token where value-control.css is loaded (its studioline-scoped colour
- * override included), its theme twin where that file is absent, and the
- * legacy --accent ring when no theme layer loads at all (the harness's
- * theme=none capture mode) — never a colour literal, so every colour the
- * chain can paint comes from a declared token. No geometry property: nothing
+ * override included), its theme twin where that file is absent — and the
+ * chain ends there: production reaches value-control.css through the
+ * SemanticRadioSurfaces → DspScalarHost → ValueControl import chain, and the
+ * fixtures harness statically imports DualReceiverCockpit and ReferenceLayout
+ * (which pull in the v2 theme and the same value-control chain), so every
+ * context that mounts a native range has one of the two token owners loaded
+ * first and a deeper fallback could never paint. Never a colour literal, so
+ * every colour the chain can paint comes from a declared token. No geometry
+ * property: nothing
  * shifts (the no-shift pin in the same describe). One collision this rule
  * cannot win: on the desktop-v2/sdr-test skins the (0,3,2) track chrome in
  * skins/desktop-v2/semantic-controls.css owns box-shadow even on focus, so
@@ -48,7 +53,7 @@
  * rule — this rule is the illumination everywhere that skin is not loaded. */
 input[type='range'][type='range']:focus-visible {
   outline: none;
-  box-shadow: var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow, 0 0 0 2px var(--accent)));
+  box-shadow: var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow));
 }
 
 body {

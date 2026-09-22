@@ -247,8 +247,8 @@ function outranks(
 /** Comma-split a box-shadow list at paren depth zero — the desktop-v2 track
  * chrome's `var(--vc-hw-channel-shadow-1, #000f)` fallbacks contain commas,
  * so a naive `value.split(',')` would shred every layer that carries one.
- * MOR-2522's compose pin (section 9) compares the focus variant's shadow list
- * against the track rule's layer-for-layer. */
+ * MOR-2522's compose pin (section 9) uses it to verify the layers of the ONE
+ * --range-track-chrome declaration and both rules' references to it. */
 function shadowLayers(value: string): string[] {
   const layers: string[] = [];
   let depth = 0;
@@ -914,8 +914,14 @@ describe('MOR-2522: native range sliders light on keyboard focus instead of draw
   // app.css, the only stylesheet loaded unconditionally in every context that
   // mounts them; value-control.css is not (nothing in those six files imports
   // it), so the rule consumes --vc-focus-ring-shadow only as a preference over
-  // its theme twin, with the legacy --accent ring as the terminal token when
-  // no theme layer loads at all (the harness's theme=none capture mode).
+  // its theme twin — and the chain ends there. Every context that mounts a
+  // native range loads one of the two token owners first (production reaches
+  // value-control.css through the SemanticRadioSurfaces → DspScalarHost →
+  // ValueControl import chain; the harness statically imports
+  // DualReceiverCockpit and ReferenceLayout, which pull in the v2 theme and
+  // the same value-control chain), so a terminal --accent fallback could
+  // never paint — and if it could, #4db6ff is the sub-3:1 light-language
+  // ring this file's header rules out.
   //
   // Round 2 (stand probe at 224ff7e3): the shared rule wins the language
   // contracts but LOSES box-shadow on the desktop-v2/sdr-test skins, where
@@ -926,8 +932,7 @@ describe('MOR-2522: native range sliders light on keyboard focus instead of draw
   const RANGE_RULE_SELECTOR = "input[type='range'][type='range']:focus-visible";
   const RANGE_ONLY = /^(?:outline|box-shadow)$/;
   const SKIN_CSS = 'skins/desktop-v2/semantic-controls.css';
-  const RING_TOKEN_CHAIN =
-    'var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow, 0 0 0 2px var(--accent)))';
+  const RING_TOKEN_CHAIN = 'var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow))';
   const NATIVE_RANGE_SURFACES = [
     'semantic/FilterSurface.svelte',
     'semantic/DspSurface.svelte',
@@ -949,12 +954,14 @@ describe('MOR-2522: native range sliders light on keyboard focus instead of draw
       .filter(Boolean);
     expect(declarations).toContain('outline: none');
     // The value-control token where value-control.css is loaded (studioline
-    // colour override included), its theme twin where that file is absent, the
-    // legacy --accent ring when no theme layer loads at all — never a colour
-    // literal, so every colour the chain can paint is a declared token (the
-    // section-5 matrix governs the first two).
+    // colour override included), its theme twin where that file is absent —
+    // never a colour literal, so every colour the chain can paint is a
+    // declared token (the section-5 matrix governs both levels). The chain
+    // ends at the theme twin: every render context loads one of the two token
+    // owners before any native range mounts, so a terminal fallback would be
+    // unreachable decoration.
     expect(declarations).toContain(
-      'box-shadow: var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow, 0 0 0 2px var(--accent)))',
+      'box-shadow: var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow))',
     );
     // No-shift pin, the same declared-property-set contract section 7 holds
     // the renderers to: beyond outline/box-shadow this rule cannot move,
@@ -1078,14 +1085,29 @@ describe('MOR-2522: native range sliders light on keyboard focus instead of draw
       expect(value, 'expected a box-shadow declaration').toBeTruthy();
       return shadowLayers(value!);
     };
-    const focusLayers = shadowOf(skinFocus!.body);
-    const trackLayers = shadowOf(trackChrome!.body);
-    // The ring is the shared token chain — never a colour literal — …
-    expect(focusLayers[0]).toBe(RING_TOKEN_CHAIN);
-    // … and every chrome layer survives, in order, behind it: the track rule
-    // is restated, not overridden, so the composition cannot silently drop the
-    // channel shading when one of the two rules is edited.
-    expect(focusLayers.slice(1)).toEqual(trackLayers);
+    // ONE owner of the chrome: the track rule declares the three-layer inset
+    // stack exactly once, as a custom property on its own selector scope, and
+    // the focus variant (the same element one state later) inherits it. This
+    // is the discriminating check on the stack itself — a dropped, reordered
+    // or retyped layer fails here, at the only place the literals live.
+    const chrome = trackChrome!.body.match(/--range-track-chrome:\s*([^;]*)/)?.[1].trim();
+    expect(
+      chrome,
+      'expected the ONE --range-track-chrome declaration on the track rule',
+    ).toBeTruthy();
+    expect(shadowLayers(chrome!)).toEqual([
+      'inset 0 2px 4px var(--vc-hw-channel-shadow-1, #000f)',
+      'inset 0 -1px 2px var(--vc-hw-channel-shadow-2, #0009)',
+      'inset 0 0 0 1px var(--vc-hw-channel-border, #0008)',
+    ]);
+    // Both rules REFERENCE the one owner — a second literal copy of the stack
+    // in either rule is the drift hazard this factoring removes, and it fails
+    // here even if the copies happen to agree today.
+    expect(shadowOf(trackChrome!.body)).toEqual(['var(--range-track-chrome)']);
+    // The variant paints the ring token chain — never a colour literal — in
+    // front of the same chrome, by reference, so the composition cannot
+    // silently drop the channel shading when either rule is edited.
+    expect(shadowOf(skinFocus!.body)).toEqual([RING_TOKEN_CHAIN, 'var(--range-track-chrome)']);
     // No-geometry pin: the variant declares the ring and nothing else.
     const properties = skinFocus!.body
       .split(';')
