@@ -88,6 +88,20 @@ function standardFixture(
             reading: { status: 'unknown' as const },
             availability: banded.band.currentBand.availability,
           },
+          // MOR-2526: the unknown axis flips EVERY band reading. In a real
+          // payload `currentBand` IS the active receiver's map entry (one
+          // object), so a variant flipping one and not the other models a
+          // shape the adapter cannot emit.
+          receiverBands: {
+            main: {
+              reading: { status: 'unknown' as const },
+              availability: banded.band.receiverBands.main.availability,
+            },
+            sub: {
+              reading: { status: 'unknown' as const },
+              availability: banded.band.receiverBands.sub.availability,
+            },
+          },
           currentBandTx: 'denied' as const,
         },
     }

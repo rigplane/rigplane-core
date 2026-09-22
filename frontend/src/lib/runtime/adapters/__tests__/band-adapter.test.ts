@@ -586,8 +586,12 @@ describe('per-receiver band readings (MOR-2526)', () => {
   });
 
   it('currentBand IS the active receiver\'s entry — one source, not two (identity pin)', () => {
-    expect(model(bareState(), hfCaps).band!.currentBand)
-      .toBe(model(bareState(), hfCaps).band!.receiverBands.main);
+    // One model invocation per comparison: `currentBand` and the map entry
+    // must be the SAME object within ONE `toRadioViewModel` call. Two calls
+    // build two models — value-equal, never reference-equal — so the pin
+    // would compare across derivations and prove nothing.
+    const view = model(bareState(), hfCaps);
+    expect(view.band!.currentBand).toBe(view.band!.receiverBands.main);
     const onSub = model(bareState({
       active: 'SUB',
       fieldStatus: { ...bareState().fieldStatus, 'sub.freqHz': fresh },
