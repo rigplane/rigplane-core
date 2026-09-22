@@ -394,6 +394,7 @@
     content: '';
     position: absolute;
     inset: 0;
+    z-index: -1;
     pointer-events: none;
     border-radius: inherit;
     clip-path: inset(0 round var(--vfo-panel-radius, 10px));

@@ -789,6 +789,24 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     expect(await inactiveFill.evaluate((element) => getComputedStyle(element).filter)).toBe('none');
   });
 
+  test('studioline light panel sheen stays below the tray content', async ({ page }) => {
+    await boot(page, 'standard', 1280, true, 'studioline', false, 'topology-2-main-sub', {
+      height: 800, theme: 'github-light', extraCapabilities: ALL_STRUCTURAL_ACTION_CAPS,
+    });
+    const tab = page.locator('.standard-face .receiver-instrument .panel .tray .tab').first();
+    await expect(tab).toBeVisible();
+    expect(await tab.evaluate((element) => {
+      const panel = element.closest('.panel');
+      if (!panel) return { hitIsContent: false, sheenZIndex: null };
+      const box = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      return {
+        hitIsContent: hit === element || element.contains(hit),
+        sheenZIndex: getComputedStyle(panel, '::before').zIndex,
+      };
+    })).toEqual({ hitIsContent: true, sheenZIndex: '-1' });
+  });
+
   for (const width of [1440, 1024] as const) {
     test(`SDR ${width} keeps its current desktop grid`, async ({ page }) => {
       await boot(page, 'sdr-test', width, true, 'studioline', false, 'topology-2-main-sub');

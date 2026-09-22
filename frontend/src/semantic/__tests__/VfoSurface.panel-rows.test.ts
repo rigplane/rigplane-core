@@ -844,6 +844,7 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
     expect(rule(panelCss, '.panel')).toMatch(/background:\s*var\(--dl-vfo-panel-background/);
     const sheen = rule(panelCss, '.panel::before');
     expect(sheen).toMatch(/pointer-events:\s*none/);
+    expect(sheen).toMatch(/z-index:\s*-1/);
     expect(sheen).toMatch(/mix-blend-mode:\s*var\(--dl-vfo-panel-sheen-blend/);
     expect(rulesFor(panelCss, '.panel-meter').join('\n'))
       .toMatch(/background:\s*var\(--dl-vfo-meter-well-background/);
