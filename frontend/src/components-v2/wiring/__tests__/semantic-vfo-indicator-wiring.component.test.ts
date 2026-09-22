@@ -342,14 +342,17 @@ describe('production receiver-indicator partitioning', () => {
   });
 
   it.each([
-    ['grouped Standard', { strips: 'single', vfoAppearance: 'standard' }, 1, 'standard', 0],
-    ['independent dual SDR', { strips: 'dual', vfoAppearance: 'sdr' }, 3, 'sdr', 1],
-  ] as const)('renders one operation group and status in %s', (_name, props, surfaces, appearance, statusBlocks) => {
+    ['grouped Standard', { strips: 'single', vfoAppearance: 'standard' }, 1, 'standard', 0, 1],
+    ['independent dual SDR', { strips: 'dual', vfoAppearance: 'sdr' }, 3, 'sdr', 1, 0],
+  ] as const)('renders one operation group and receiver indicator contract in %s', (
+    _name, props, surfaces, appearance, statusBlocks, bridgeGroups,
+  ) => {
     render(caps('main_sub', 2), state(), {}, props);
     expect(target.querySelectorAll('[data-testid="vfo-surface"]')).toHaveLength(surfaces);
-    // MOR-2509 package A: the Standard face no longer renders the
-    // active-receiver status block — semantic and SDR faces keep it.
     expect(target.querySelectorAll('[data-testid="vfo-active-receiver"]')).toHaveLength(statusBlocks);
+    expect(target.querySelectorAll(
+      '[data-instrument-bridge] [role="radiogroup"][aria-label="Active receiver"]',
+    )).toHaveLength(bridgeGroups);
     expect(target.querySelectorAll('[data-testid="vfo-ops"]')).toHaveLength(1);
     expect(target.querySelector('[data-vfo-operation-appearance]')?.getAttribute('data-vfo-operation-appearance')).toBe(appearance);
   });
