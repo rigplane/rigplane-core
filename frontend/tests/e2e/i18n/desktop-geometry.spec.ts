@@ -777,6 +777,18 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     });
   }
 
+  test('inactive Standard VFO meter cancels the lit filter', async ({ page }) => {
+    await boot(page, 'standard', 1280, true, 'studioline', false, 'topology-2-main-sub', {
+      height: 800, extraCapabilities: ALL_STRUCTURAL_ACTION_CAPS,
+    });
+    const activeFill = page.locator('.standard-face .receiver-instrument .panel.active [data-meter-fill]').first();
+    const inactiveFill = page.locator('.standard-face .receiver-instrument .panel:not(.active) [data-meter-fill]').first();
+    await expect(activeFill).toBeAttached();
+    await expect(inactiveFill).toBeAttached();
+    expect(await activeFill.evaluate((element) => getComputedStyle(element).filter)).not.toBe('none');
+    expect(await inactiveFill.evaluate((element) => getComputedStyle(element).filter)).toBe('none');
+  });
+
   for (const width of [1440, 1024] as const) {
     test(`SDR ${width} keeps its current desktop grid`, async ({ page }) => {
       await boot(page, 'sdr-test', width, true, 'studioline', false, 'topology-2-main-sub');

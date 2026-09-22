@@ -81,9 +81,9 @@ function read(relPath: string): string {
 // like `--vc-illum-thumb-outline: 0 0 0 1px ...` — that "0" is a box-shadow
 // offset, not an `outline: 0` suppression.
 const OUTLINE_NONE = /(?<![\w-])outline:\s*(none|0)\b/;
-// A real, visible focus treatment: an outline set to a non-none value, or a
-// var()-driven box-shadow/filter.
-const HAS_REPLACEMENT = /(?<![\w-])outline:\s*(?!none\b|0\b)\S|box-shadow:\s*(?!none\b)[^;]*var\(|filter:\s*(?!none\b)[^;]*var\(/;
+// A real, visible focus treatment: an outline set to a non-none value, a
+// var()-driven box-shadow, or one of the Standard deck's two focus steps.
+const HAS_REPLACEMENT = /(?<![\w-])outline:\s*(?!none\b|0\b)\S|box-shadow:\s*(?!none\b)[^;]*var\(|filter:\s*var\(--v2-focus-ring-(?:dim|lit)-filter\)/;
 
 function styleText(path: string, text: string): string {
   if (extname(path) !== '.svelte') return text;
@@ -186,6 +186,12 @@ describe('MOR-1232: --focus-ring token wiring', () => {
 });
 
 describe('MOR-2509: the Standard deck uses the shared three-step focus treatment', () => {
+  it('does not accept an unrelated filter as a replacement for outline suppression', () => {
+    expect(HAS_REPLACEMENT.test('outline: none; filter: var(--unrelated-effect);')).toBe(false);
+    expect(HAS_REPLACEMENT.test('outline: none; filter: var(--v2-focus-ring-dim-filter);')).toBe(true);
+    expect(HAS_REPLACEMENT.test('outline: none; filter: var(--v2-focus-ring-lit-filter);')).toBe(true);
+  });
+
   it('declares the two brightness steps beside the existing focus-ring trio', () => {
     const css = read('components-v2/theme/tokens.css');
     expect(css).toMatch(/--v2-focus-ring-lit-filter:\s*brightness\([^;]+;/);

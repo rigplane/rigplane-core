@@ -1843,8 +1843,8 @@
   let vfoOperationInput: VfoOperationProjectionInput | null = $derived(view === null ? null : {
     hasVfoPair: view.vfos.length > 1,
     hasDualReceiver,
-    hasSplit: runtime.caps?.capabilities?.includes('split') ?? false,
-    hasDualWatch: runtime.caps?.capabilities?.includes('dual_watch') ?? false,
+    hasSplit: runtime.caps?.capabilities.includes('split') ?? false,
+    hasDualWatch: runtime.caps?.capabilities.includes('dual_watch') ?? false,
     relativeIdentityUnknown: view.vfos.some((candidate) => candidate.slot.kind === 'relative'),
     activeReceiver: view.activeReceiver,
     split: view.split,
