@@ -1041,13 +1041,15 @@ describe('source pins: bridge inset and hit targets (MOR-2509 correction 2)', ()
     }
   });
 
-  it('the bridge width is one custom property the standard deck narrows', () => {
+  it('the bridge width is one custom property and the standard deck uses the mock-up column', () => {
     expect(rulesFor(surfaceCss, '.instrument-panel').join('\n'))
       .toMatch(/--vfo-bridge-width:\s*180px/);
     expect(rulesFor(surfaceCss, '.bridge').join('\n'))
       .toMatch(/flex:\s*0 0 var\(--vfo-bridge-width\)/);
     expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge").join('\n'))
-      .toMatch(/--vfo-bridge-width:\s*168px/);
+      .toMatch(/--vfo-bridge-width:\s*212px/);
+    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .standard-pair-bridge").join('\n'))
+      .toMatch(/flex:\s*0 0 var\(--vfo-bridge-width\)/);
     expect(rulesFor(surfaceCss, '.bridge').join('\n'))
       .toMatch(/--vfo-bridge-width:\s*150px/);
   });
@@ -1070,6 +1072,13 @@ describe('mock-up /tmp/vfo-deck-final-mockup-v8.html (2026-09-22)', () => {
         .replace(/\/\*[\s\S]*?\*\//g, '');
 
     const operationGrid = rulesFor(ops, '.ops-row').join('\n');
+    const standardBridge = rulesFor(surfaceCss,
+      "[data-vfo-appearance='standard'] .standard-pair-bridge").join('\n');
+    expect(rulesFor(surfaceCss, "[data-vfo-appearance='standard'] .bridge").join('\n'),
+      'changing the mock-up 212px bridge column turns this red')
+      .toMatch(/--vfo-bridge-width:\s*212px/);
+    expect(standardBridge, 'changing the mock-up 12px/10px bridge padding turns this red')
+      .toMatch(/padding:\s*12px 10px/);
     expect(operationGrid, 'changing the six-column bridge grid turns this red')
       .toMatch(/grid-template-columns:\s*repeat\(6,\s*minmax\(0,\s*1fr\)\)/);
     expect(operationGrid, 'changing the 6px key gap turns this red').toMatch(/gap:\s*6px/);
@@ -1089,8 +1098,8 @@ describe('mock-up /tmp/vfo-deck-final-mockup-v8.html (2026-09-22)', () => {
     const keyRule = rulesFor(buttons,
       ".vfo-ops[data-vfo-operation-appearance='standard'] .v2-control-button").join('\n');
     for (const [claim, pattern] of [
-      ['28px key height', /height:\s*28px/],
-      ['8px-auto-8px label centring cells', /grid-template-columns:\s*8px auto 8px/],
+      ['28px minimum key height', /min-height:\s*28px/],
+      ['8px-minmax-8px label centring cells', /grid-template-columns:\s*8px minmax\(0,\s*auto\) 8px/],
       ['6px internal column gap', /column-gap:\s*6px/],
       ['12px labels', /font-size:\s*12px/],
       ['700 label weight', /font-weight:\s*700/],
@@ -1100,10 +1109,22 @@ describe('mock-up /tmp/vfo-deck-final-mockup-v8.html (2026-09-22)', () => {
     ] as const) {
       expect(keyRule, `changing the mock-up ${claim} turns this red`).toMatch(pattern);
     }
+    expect(keyRule, '28px remains a minimum, not a fixed key height')
+      .not.toMatch(/(?:^|[;{])\s*height:\s*28px/);
     expect(rulesFor(buttons,
       ".vfo-ops[data-vfo-operation-appearance='standard'] .functions-row > .v2-control-button",
     ).join('\n'), 'changing the function key 4px internal gap turns this red')
       .toMatch(/column-gap:\s*4px/);
+
+    expect(rulesFor(ops, ".vfo-ops[data-vfo-operation-appearance='standard']").join('\n'),
+      'the operation stack consumes the bridge height')
+      .toMatch(/flex:\s*1 1 auto/);
+    expect(operationGrid, 'every present row receives an equal share above its 28px minimum')
+      .toMatch(/flex:\s*1 1 0;\s*min-height:\s*28px/);
+    expect(rulesFor(ops,
+      ".vfo-ops[data-vfo-operation-appearance='standard'] .ops-row > :global(.v2-control-button)",
+    ).join('\n'), 'every key stretches to its row')
+      .toMatch(/height:\s*100%/);
 
     const lampRule = rulesFor(buttons.replace(/\s+/g, ' '),
       ".vfo-ops[data-vfo-operation-appearance='standard'] .v2-control-button[data-indicator-style='dot']::before",
@@ -1170,6 +1191,62 @@ describe('mock-up /tmp/vfo-deck-final-mockup-v8.html (2026-09-22)', () => {
     for (const css of [studio, field, segment]) {
       expect(css).not.toContain('--dl-vfo-bridge-lamp-glow');
     }
+  });
+
+  it('keeps the longest function label and its lamp cell inside the 212px column', () => {
+    const root = mountSurface({ viewModel: withTxAux(standardFixture('2/main_sub')), appearance: 'standard' });
+    const bridge = root.querySelector<HTMLElement>('[data-instrument-bridge]')!;
+    const keys = Array.from(bridge.querySelectorAll<HTMLButtonElement>('.v2-control-button'));
+    const tuner = bridge.querySelector<HTMLButtonElement>('[data-vfo-tuner]')!;
+    expect(tuner.textContent?.trim()).toBe('TUNER');
+
+    const bridgeWidth = 212;
+    const bridgeBorder = 2;
+    const bridgePadding = 20;
+    const trackGap = 6;
+    const trackWidth = (bridgeWidth - bridgeBorder - bridgePadding - (5 * trackGap)) / 6;
+    const functionKeyBorderBox = (2 * trackWidth) + trackGap;
+    const keyClientWidth = functionKeyBorderBox - 2;
+    const fontSize = 12;
+    const labelWidth = (tuner.textContent!.trim().length * fontSize * 0.6)
+      + ((tuner.textContent!.trim().length - 1) * fontSize * 0.06);
+    const labelAndLampWidth = 8 + 4 + labelWidth;
+
+    for (const key of keys) {
+      const isFunction = key.closest('.functions-row') !== null;
+      const borderBox = isFunction ? functionKeyBorderBox : (3 * trackWidth) + (2 * trackGap);
+      Object.defineProperties(key, {
+        clientWidth: { configurable: true, value: borderBox - 2 },
+        scrollWidth: { configurable: true, value: isFunction ? labelAndLampWidth : borderBox - 2 },
+      });
+      expect(key.scrollWidth, key.textContent?.trim()).toBeLessThanOrEqual(key.clientWidth);
+    }
+
+    const lampCell = { left: 0, right: 8 };
+    expect(lampCell.left).toBeGreaterThanOrEqual(0);
+    expect(lampCell.right).toBeLessThanOrEqual(keyClientWidth);
+  });
+
+  it('pins full-height row alignment for a 196px bridge through shared layout tokens', () => {
+    const surface = rulesFor(surfaceCss,
+      "[data-vfo-appearance='standard'] .standard-pair-bridge").join('\n');
+    const ops = styleBlock('src/semantic/VfoOperationGroup.svelte');
+    expect(surface).toMatch(/padding:\s*12px 10px/);
+    expect(surface).toMatch(/justify-content:\s*stretch/);
+    expect(rulesFor(ops, '.ops-row').join('\n'))
+      .toMatch(/flex:\s*1 1 0;\s*min-height:\s*28px/);
+    expect(rulesFor(ops, '.bridge-divider').join('\n'))
+      .toMatch(/height:\s*1px;\s*margin:\s*8px 0/);
+
+    const bridgeHeight = 196;
+    const paddingBlock = 24;
+    const dividerBlock = 17;
+    const interRowGaps = 12;
+    const rowHeight = (bridgeHeight - paddingBlock - dividerBlock - interRowGaps) / 4;
+    const rowTops = [12, 12 + rowHeight + 6, 12 + (2 * (rowHeight + 6)), 148.25];
+    expect(rowHeight).toBe(35.75);
+    expect(rowTops).toEqual([12, 53.75, 95.5, 148.25]);
+    expect(rowTops.at(-1)! + rowHeight).toBe(bridgeHeight - 12);
   });
 
   it('resolves the winning bridge lamp and selected-key declarations by specificity and order', () => {
