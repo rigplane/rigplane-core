@@ -22,6 +22,8 @@ import AlternateFrequencyReadoutHarness, {
 } from '../../primitives/frequency/__tests__/AlternateFrequencyReadoutHarness.svelte';
 import { projectFrequencyReadout } from '../../primitives/frequency/frequency-readout';
 import type { SubscribeReceiverAuthority } from '../ReceiverInstrumentHost.svelte';
+import { buildPowerLowerScale } from '../ReceiverInstrumentHost.svelte';
+import type { MetersViewModel } from '../radio-view-model';
 type Publication = Parameters<Parameters<SubscribeReceiverAuthority>[0]>[0];
 function capabilities(receivers = 2, generation = 1, scheme?: VfoScheme): Capabilities {
   return {
@@ -569,5 +571,35 @@ describe('ReceiverInstrumentHost', () => {
     expect(addedSources).not.toMatch(
       /calibrat|normaliz|MeterSourceIdentity|MeterContinuitySession|FrequencyInstrumentBinding/i,
     );
+  });
+
+  // MOR-2509 owner rule: the Po row exists only where the TX target says —
+  // the descriptor is undefined for every other receiver and for an
+  // unknown target, so nothing ever renders a scale that is not this
+  // receiver's (and no unlit row can read as a measured zero).
+  it('builds the Po lower-scale descriptor for the TX-target receiver only', () => {
+    const structuralPower = {
+      presence: 'present',
+      reading: { status: 'known', value: 100 },
+      display: { state: 'current', value: 100 },
+      availability: { structural: true, operational: true },
+      relevant: true,
+      domain: { kind: 'engineering', unit: 'w' },
+      source: null,
+    } as unknown as MetersViewModel['power'];
+    const meters = {
+      power: structuralPower, rfState: 'transmitting',
+    } as unknown as MetersViewModel;
+    const knownMain = {
+      status: 'known', receiver: 'MAIN',
+      slot: { kind: 'slotted', id: 'A' }, frequencyHz: 1,
+    } as const;
+
+    expect(buildPowerLowerScale(meters, knownMain, 'transmitting', 'MAIN')).toBeDefined();
+    expect(buildPowerLowerScale(meters, knownMain, 'transmitting', 'SUB')).toBeUndefined();
+    expect(buildPowerLowerScale(
+      meters, { status: 'unknown', reason: 'not-observed' }, 'transmitting', 'MAIN',
+    )).toBeUndefined();
+    expect(buildPowerLowerScale(undefined, knownMain, 'transmitting', 'MAIN')).toBeUndefined();
   });
 });
