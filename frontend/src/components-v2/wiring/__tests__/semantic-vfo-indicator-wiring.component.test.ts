@@ -342,19 +342,23 @@ describe('production receiver-indicator partitioning', () => {
   });
 
   it.each([
-    ['grouped Standard', { strips: 'single', vfoAppearance: 'standard' }, 1, 'standard', 0, 1],
-    ['independent dual SDR', { strips: 'dual', vfoAppearance: 'sdr' }, 3, 'sdr', 1, 0],
-  ] as const)('renders one operation group and receiver indicator contract in %s', (
-    _name, props, surfaces, appearance, statusBlocks, bridgeGroups,
+    ['grouped Standard', { strips: 'single', vfoAppearance: 'standard' }, 1, 'standard', 0],
+    ['independent dual SDR', { strips: 'dual', vfoAppearance: 'sdr' }, 3, 'sdr', 1],
+  ] as const)('renders one operation group and status in %s', (
+    _name, props, surfaces, appearance, statusBlocks,
   ) => {
     render(caps('main_sub', 2), state(), {}, props);
     expect(target.querySelectorAll('[data-testid="vfo-surface"]')).toHaveLength(surfaces);
     expect(target.querySelectorAll('[data-testid="vfo-active-receiver"]')).toHaveLength(statusBlocks);
-    expect(target.querySelectorAll(
-      '[data-instrument-bridge] [role="radiogroup"][aria-label="Active receiver"]',
-    )).toHaveLength(bridgeGroups);
     expect(target.querySelectorAll('[data-testid="vfo-ops"]')).toHaveLength(1);
     expect(target.querySelector('[data-vfo-operation-appearance]')?.getAttribute('data-vfo-operation-appearance')).toBe(appearance);
+  });
+
+  it('renders the Standard active-receiver radiogroup in the instrument bridge', () => {
+    render(caps('main_sub', 2), state(), {}, { strips: 'single', vfoAppearance: 'standard' });
+    expect(target.querySelectorAll(
+      '[data-instrument-bridge] [role="radiogroup"][aria-label="Active receiver"]',
+    )).toHaveLength(1);
   });
 
   it.each([
