@@ -399,37 +399,31 @@ describe('MOR-2509 v7 VFO face — the fill maps the reading onto the drawn scal
     expect(fillFraction(svgOf(target))).toBeCloseTo(litExtentFraction(VFO_FRACTIONS.s7), 6);
   });
 
-  it('a reduced frame draws the stepped fill, hides the peak marker, lights no glow', () => {
-    // The frame input owns the stepped value, so this pins the FACE
-    // contract under prefers-reduced-motion: the fraction is drawn
-    // unchanged, the peak marker is not shown, the glow never trails.
-    const s7 = projectSignalMeter(-12);
-    const target = mountMeter({
-      frame: {
-        projection: s7,
-        smoothedFraction: s7.motionFraction!,
-        peakFraction: s7.motionFraction!,
-        afterglowFraction: null,
-        reducedMotion: true,
-      },
-      variant: 'vfo', compact: true,
+  it('a reduced frame hides an armed peak marker and lights no glow tail', () => {
+    // The stepped value itself is pinned by the settled tests above (they
+    // mount under the same reduce preference and the smoother snaps). Here
+    // the contract is the face's own: the SAME frame — a peak far ahead of
+    // the bar, a null afterglow — arms the marker when motion is allowed
+    // and hides it when the frame reports reduced motion; the glow never
+    // lights without an afterglow fraction either way.
+    const projection = projectSignalMeter(-12);
+    const frame = (reducedMotion: boolean) => ({
+      projection,
+      smoothedFraction: projection.motionFraction!,
+      peakFraction: Math.min(1, projection.motionFraction! + 0.4),
+      afterglowFraction: null,
+      reducedMotion,
     });
-    expect(fillFraction(svgOf(target))).toBeCloseTo(litExtentFraction(VFO_FRACTIONS.s7), 6);
-    expect(peakVisible(svgOf(target))).toBe(false);
-    expect(glowFraction(svgOf(target))).toBeCloseTo(fillFraction(svgOf(target)), 5);
 
-    const stepped = mountMeter({
-      frame: {
-        projection: projectSignalMeter(-48),
-        smoothedFraction: projectSignalMeter(-48).motionFraction!,
-        peakFraction: projectSignalMeter(-48).motionFraction!,
-        afterglowFraction: null,
-        reducedMotion: true,
-      },
-      variant: 'vfo', compact: true,
-    });
-    expect(fillFraction(svgOf(stepped))).toBeCloseTo(0, 5);
-    expect(peakVisible(svgOf(stepped))).toBe(false);
+    const live = mountMeter({ frame: frame(false), variant: 'vfo', compact: true });
+    expect(peakVisible(svgOf(live))).toBe(true);
+
+    const reduced = mountMeter({ frame: frame(true), variant: 'vfo', compact: true });
+    expect(peakVisible(svgOf(reduced))).toBe(false);
+    expect(svgOf(reduced).querySelector('[data-meter-glow]')!.getAttribute('visibility'))
+      .toBe('hidden');
+    expect(svgOf(reduced).querySelector('[data-meter-glow-red]')!.getAttribute('visibility'))
+      .toBe('hidden');
   });
 });
 
