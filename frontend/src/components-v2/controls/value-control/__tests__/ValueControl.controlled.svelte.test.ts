@@ -179,7 +179,12 @@ describe('deliberate wheel interaction', () => {
     action.update({ view, lease });
     node.dispatchEvent(new PointerEvent('pointerdown', { button: 0, isPrimary: true }));
     expect(node.dataset.wheelArmed).toBe('true');
-    expect(node.style.outline).toContain('2px');
+    // MOR-2522: arming must not paint an inline outline — an inline style
+    // beats every stylesheet rule, so the 2px rectangle it drew could not be
+    // restyled. The attribute plus the value-control.css illumination rule
+    // are the whole arming treatment now.
+    expect(node.style.outline).toBe('');
+    expect(node.style.outlineOffset).toBe('');
     expect(wheel(3000, -120).defaultPrevented).toBe(true);
     window.dispatchEvent(new Event('blur'));
     expect(node.dataset.wheelArmed).toBe('false');

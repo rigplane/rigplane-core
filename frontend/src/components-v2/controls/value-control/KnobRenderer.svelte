@@ -395,6 +395,10 @@
     cursor: grab;
     outline: none;
     touch-action: none;
+    /* MOR-2522: the focus/arming ring is a box-shadow, which follows this
+     * radius — it lives on the unfocused rule so the control's shape never
+     * changes between states. */
+    border-radius: 50%;
   }
 
   .vc-knob-container:active {
@@ -402,9 +406,11 @@
   }
 
   .vc-knob-container:focus-visible {
-    outline: var(--vc-focus-ring-width, 2px) solid var(--vc-focus-ring);
-    outline-offset: 4px;
-    border-radius: 50%;
+    /* MOR-2522: keyboard focus lights the control (owner ruling: no frame).
+     * This block declares no geometry — the size/position pin in
+     * focus-ring-token-wiring.test.ts fails any property beyond the ring. */
+    outline: none;
+    box-shadow: var(--vc-focus-ring-shadow);
   }
 
   .vc-knob-svg {

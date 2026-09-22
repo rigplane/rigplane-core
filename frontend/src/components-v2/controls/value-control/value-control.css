@@ -27,6 +27,14 @@
    * src/__tests__/focus-ring-token-wiring.test.ts (section 5's extended loop). */
   --vc-focus-ring: var(--v2-focus-ring-color);
   --vc-focus-ring-width: 2px;
+  /* MOR-2522: shadow-shaped twin of --vc-focus-ring, the same pairing
+   * --v2-focus-ring-shadow gives the v2 token (components-v2/theme/tokens.css).
+   * Keyboard focus and wheel arming light the control with this ring instead
+   * of an outline frame (owner ruling: no rectangle around a slider). The
+   * per-skin contrast matrix in src/__tests__/focus-ring-token-wiring.test.ts
+   * recomputes --vc-focus-ring, so the ring painted from this token inherits
+   * that matrix — a colour change here that drops below 3:1 fails it. */
+  --vc-focus-ring-shadow: 0 0 0 var(--vc-focus-ring-width, 2px) var(--vc-focus-ring);
 
   /* Spacing */
   --vc-gap: 3px;
@@ -186,4 +194,30 @@
   
   /* Slit */
   --vc-illum-slit-width: 2px;
+}
+
+/* ── Focus / arming illumination (MOR-2522) ──────────────────────────────── */
+
+/* Wheel arming lights the control instead of painting an inline outline:
+ * wheel-control.ts used to set node.style.outline, and an inline style beats
+ * every stylesheet rule, so the 2px rectangle it drew around a clicked slider
+ * could not be styled away. The data-wheel-armed attribute is the only arming
+ * signal now; this rule is its only illumination and paints the same ring the
+ * renderer :focus-visible rules paint, following the container border-radius.
+ */
+.vc-track-container[data-wheel-armed='true'],
+.vc-knob-container[data-wheel-armed='true'] {
+  outline: none;
+  box-shadow: var(--vc-focus-ring-shadow);
+}
+
+/* Under the studioline language the ring must clear WCAG 1.4.11 3:1 against
+ * BOTH studioline surfaces (studioline.css: #0e1113 dark, #faf7f2 light). The
+ * inherited v2 knob --v2-accent-cyan reaches ~1.66:1 on the light surface, so
+ * the language's own contrast-proven focus colour carries the ring instead.
+ * Declared after the :root block above so the same-specificity tie resolves
+ * to this override wherever the language attribute is active.
+ */
+[data-design-language='studioline'] {
+  --vc-focus-ring: var(--dl-studioline-focus, #00819f);
 }

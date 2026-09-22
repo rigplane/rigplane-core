@@ -63,6 +63,12 @@
  * a second instance of this ticket's dead-token defect. `--vc-focus-ring` now
  * resolves to `--v2-focus-ring-color` (the same contrast-pinned per-skin
  * knob), and all five renderers, including DualParamRenderer, consume it.
+ *
+ * MOR-2522 changed the CARRIER, not the colour: the renderers' outline frame
+ * and wheel-control.ts's inline `node.style.outline` are gone; focus and
+ * arming light the control with the full-opacity `--vc-focus-ring-shadow`
+ * spread ring instead. Section 7 pins that shape contract, and the studioline
+ * pins below hold the ring to 3:1 on both studioline surfaces.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { extname, join } from 'node:path';
@@ -150,6 +156,37 @@ function walk(dir: string, out: string[] = []): string[] {
     else if (extname(entry) === '.svelte' || extname(entry) === '.css') out.push(full);
   }
   return out;
+}
+
+/* WCAG relative-luminance contrast from hex literals (section 5 and the
+ * MOR-2522 studioline pins compute, never assume, the ratios). */
+function parseTokens(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const re = /(--[\w-]+):\s*([^;]+);/g;
+  let m: RegExpExecArray | null;
+  while (m = re.exec(text)) out[m[1]] = m[2].trim();
+  return out;
+}
+
+function luminance(hex: string): number {
+  let h = hex.trim().replace('#', '');
+  if (h.length === 3)
+    h = h
+      .split('')
+      .map((c) => c + c)
+      .join('');
+  const chan = (i: number) => {
+    const s = parseInt(h.slice(i * 2, i * 2 + 2), 16) / 255;
+    return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * chan(0) + 0.7152 * chan(1) + 0.0722 * chan(2);
+}
+
+function contrast(a: string, b: string): number {
+  const la = luminance(a);
+  const lb = luminance(b);
+  const [hi, lo] = la > lb ? [la, lb] : [lb, la];
+  return (hi + 0.05) / (lo + 0.05);
 }
 
 function globalFocusRule(): string {
@@ -347,14 +384,6 @@ describe('MOR-1232: the focus ring clears WCAG 1.4.11 (3:1) on every skin', () =
   ];
   const MIN_RATIO = 3;
 
-  function parseTokens(text: string): Record<string, string> {
-    const out: Record<string, string> = {};
-    const re = /(--[\w-]+):\s*([^;]+);/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text))) out[m[1]] = m[2].trim();
-    return out;
-  }
-
   /** Resolve a custom property through `var()` indirection, theme over base. */
   function resolve(
     name: string,
@@ -368,27 +397,6 @@ describe('MOR-1232: the focus ring clears WCAG 1.4.11 (3:1) on every skin', () =
     const ref = value.match(/^var\(\s*(--[\w-]+)\s*(?:,\s*([\s\S]+))?\)$/);
     if (!ref) return value;
     return resolve(ref[1], theme, base, depth + 1) ?? (ref[2]?.trim() || null);
-  }
-
-  function luminance(hex: string): number {
-    let h = hex.trim().replace('#', '');
-    if (h.length === 3)
-      h = h
-        .split('')
-        .map((c) => c + c)
-        .join('');
-    const chan = (i: number) => {
-      const s = parseInt(h.slice(i * 2, i * 2 + 2), 16) / 255;
-      return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
-    };
-    return 0.2126 * chan(0) + 0.7152 * chan(1) + 0.0722 * chan(2);
-  }
-
-  function contrast(a: string, b: string): number {
-    const la = luminance(a);
-    const lb = luminance(b);
-    const [hi, lo] = la > lb ? [la, lb] : [lb, la];
-    return (hi + 0.05) / (lo + 0.05);
   }
 
   const base = parseTokens(readFileSync(join(THEME_DIR, 'tokens.css'), 'utf-8'));
@@ -540,43 +548,151 @@ describe('MOR-1232: regression guard — no new unpaired outline:none suppressio
   });
 });
 
-/* ── 7. MOR-1254: value-control renderers wired off the live token ───────── */
+/* ── 7. MOR-2522: value-control focus lights the control, never a frame ───── */
 
-describe('MOR-1254: --vc-focus-ring is live and drives value-control renderer focus colour', () => {
+describe('MOR-2522: value-control focus is an illumination, not an outline frame', () => {
   const VC_CSS = 'components-v2/controls/value-control/value-control.css';
+  // jsdom cannot measure geometry from these stylesheets, so the no-shift pin
+  // is the declared property set: a focus/arming rule that could move, resize
+  // or reshape the control needs a property outside this list to do it.
+  const RING_ONLY = /^(?:outline|box-shadow)$/;
 
-  it('value-control.css no longer declares the dead --v2-accent-cyan value', () => {
-    const css = read(VC_CSS);
-    // The original defect: declared, but resolving to the raw (contrast-failing)
-    // accent, with zero consumers.
-    expect(css).not.toMatch(/--vc-focus-ring:\s*var\(--v2-accent-cyan\)/);
-    // It now proxies the same contrast-pinned per-skin knob MOR-1232 introduced,
-    // recomputed for these renderers in section 5 above.
-    expect(css).toMatch(/--vc-focus-ring:\s*var\(--v2-focus-ring-color\)\s*;/);
-  });
-
-  const RENDERERS = [
-    'components-v2/controls/value-control/HBarRenderer.svelte',
-    'components-v2/controls/value-control/DiscreteRenderer.svelte',
-    'components-v2/controls/value-control/BipolarRenderer.svelte',
-    'components-v2/controls/value-control/KnobRenderer.svelte',
-    'components-v2/controls/value-control/DualParamRenderer.svelte',
+  const RENDERERS: Array<{ file: string; container: string }> = [
+    { file: 'components-v2/controls/value-control/HBarRenderer.svelte', container: '.vc-track-container' },
+    { file: 'components-v2/controls/value-control/DiscreteRenderer.svelte', container: '.vc-track-container' },
+    { file: 'components-v2/controls/value-control/BipolarRenderer.svelte', container: '.vc-track-container' },
+    { file: 'components-v2/controls/value-control/KnobRenderer.svelte', container: '.vc-knob-container' },
+    { file: 'components-v2/controls/value-control/DualParamRenderer.svelte', container: '.vc-track-container' },
   ];
 
-  for (const file of RENDERERS) {
-    it(`${file}: the :focus-visible outline consumes var(--vc-focus-ring), not the raw per-instance accent`, () => {
+  it('value-control.css wires the shadow twin off the contrast-pinned knob', () => {
+    const css = read(VC_CSS);
+    // MOR-1254 wiring unchanged: the colour still proxies --v2-focus-ring-color,
+    // recomputed per skin by section 5's loop above.
+    expect(css).toMatch(/--vc-focus-ring:\s*var\(--v2-focus-ring-color\)\s*;/);
+    expect(css).not.toMatch(/--vc-focus-ring:\s*var\(--v2-accent-cyan\)/);
+    // MOR-2522: the painted ring composes that same colour and the shared
+    // width knob, so the section-5 matrix governs what reaches the screen.
+    expect(css).toMatch(
+      /--vc-focus-ring-shadow:\s*0 0 0 var\(--vc-focus-ring-width,\s*2px\)\s*var\(--vc-focus-ring\)\s*;/,
+    );
+  });
+
+  it('wheel-control.ts no longer writes an inline outline (the defect mechanism this ticket removes)', () => {
+    expect(read('components-v2/controls/value-control/wheel-control.ts')).not.toMatch(/style\.outline/);
+  });
+
+  it('arming is lit from the data-wheel-armed attribute with the same ring', () => {
+    const css = stripComments(read(VC_CSS));
+    const armed = ruleBlocks(css).find((b) => /\[data-wheel-armed='true'\]/.test(b.selector));
+    expect(armed, 'expected a data-wheel-armed illumination rule in value-control.css').toBeTruthy();
+    expect(armed!.selector).toContain('.vc-track-container');
+    expect(armed!.selector).toContain('.vc-knob-container');
+    expect(OUTLINE_NONE.test(armed!.body)).toBe(true);
+    expect(armed!.body).toMatch(/box-shadow:\s*var\(--vc-focus-ring-shadow\)/);
+  });
+
+  for (const { file, container } of RENDERERS) {
+    it(`${file}: :focus-visible draws no outline, declares only the ring`, () => {
       const css = stripComments(styleText(file, read(file)));
       const rule = css.match(/:focus-visible\s*\{[^}]*\}/);
       expect(rule, `${file}: expected a :focus-visible rule`).not.toBeNull();
-      expect(rule![0]).toMatch(
-        /outline:\s*var\(--vc-focus-ring-width,\s*2px\)\s*solid\s*var\(--vc-focus-ring\)/,
+      const body = rule![0];
+      // The illumination is the shared full-opacity spread ring, and no
+      // outline declaration in the focus rule survives other than `none`
+      // (owner ruling: no frame). Declaration-level, because a negative
+      // lookahead on the raw body backtracks past the whitespace and
+      // "matches" `outline: none`.
+      const declarations = body
+        .slice(body.indexOf('{') + 1, -1)
+        .split(';')
+        .map((d) => d.trim())
+        .filter(Boolean);
+      const outlines = declarations.filter((d) => d.startsWith('outline:'));
+      expect(outlines, `${file}: :focus-visible still declares an outline`).toEqual(['outline: none']);
+      expect(declarations).toContain('box-shadow: var(--vc-focus-ring-shadow)');
+      // No-shift pin: beyond outline/box-shadow a focus rule cannot change
+      // what the operator sees of the control's geometry.
+      const properties = declarations.map((d) => d.split(':')[0].trim());
+      expect(properties, `${file}: :focus-visible declares more than the ring`).toEqual(
+        properties.filter((p) => RING_ONLY.test(p)),
       );
-      // Regression guard: `--vc-accent` / `--vc-rf-accent` are the general,
-      // per-instance colour props (unchecked for contrast) that caused the
-      // 1.48-1.74 nord-light ratios this ticket fixes — they must not come
-      // back as the OUTLINE colour. (They remain legitimate for fills/ticks;
-      // this only pins the focus-visible rule.)
-      expect(rule![0]).not.toMatch(/outline:[^;]*solid\s*var\(--vc-(accent|rf-accent)\)/);
+      // Shape-following: a box-shadow ring follows the container's own
+      // radius, so the radius must live on the unfocused base rule.
+      const base = ruleBlocks(css).find((b) => b.selector === container);
+      expect(base, `${file}: expected a base ${container} rule`).toBeTruthy();
+      expect(base!.body, `${file}: base ${container} lost its border-radius`).toMatch(/border-radius:/);
     });
   }
+
+  it('no value-control focus rule colours itself with the unchecked per-instance accent', () => {
+    for (const { file } of RENDERERS) {
+      const css = stripComments(styleText(file, read(file)));
+      for (const block of ruleBlocks(css)) {
+        if (!/:focus/.test(block.selector)) continue;
+        // MOR-1254 regression guard, restated for the shadow carrier:
+        // `--vc-accent` / `--vc-rf-accent` caused the 1.48-1.74 nord-light
+        // ratios that ticket fixes. They remain legitimate for fills/ticks.
+        expect(
+          block.body,
+          `${file}: ${block.selector} colours focus with the per-instance accent`,
+        ).not.toMatch(/(?:outline|box-shadow):\s*[^;]*var\(--vc-(?:accent|rf-accent)\)/);
+      }
+    }
+  });
+});
+
+describe('MOR-2522: the value-control ring clears 3:1 on the studioline surfaces', () => {
+  const STUDIOLINE = 'presentation/languages/studioline/studioline.css';
+
+  /** Effective tokens of one studioline selector. Comments are stripped
+   * first (the root block's prose holds literal braces, which would end the
+   * `[^{}]*` body early), and when the selector repeats — the light-mode
+   * selector appears twice, lines ~142 and ~161 — the blocks merge in order,
+   * because the cascade makes the later block's declarations win. */
+  function studiolineTokens(selector: string): Record<string, string> {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`${escaped}\\s*\\{([^{}]*)\\}`, 'g');
+    const merged: Record<string, string> = {};
+    let m: RegExpExecArray | null;
+    let matched = false;
+    while ((m = re.exec(stripComments(read(STUDIOLINE))))) {
+      matched = true;
+      Object.assign(merged, parseTokens(m[1]));
+    }
+    expect(matched, `expected a studioline block for ${selector}`).toBeTruthy();
+    return merged;
+  }
+
+  it('value-control.css re-points --vc-focus-ring at the studioline focus colour under the language', () => {
+    // Non-vacuous link: without this override the ring keeps the v2 cyan
+    // knob, which reaches only ~1.66:1 on the light studioline surface —
+    // the matrix below would be testing a colour the control never paints.
+    expect(stripComments(read('components-v2/controls/value-control/value-control.css'))).toMatch(
+      /\[data-design-language='studioline'\]\s*\{[^}]*--vc-focus-ring:\s*var\(--dl-studioline-focus,\s*#00819f\)\s*;/,
+    );
+  });
+
+  it('the studioline ring colour clears 3:1 against BOTH studioline surfaces', () => {
+    const dark = studiolineTokens("[data-design-language='studioline'][data-design-language]");
+    const light = studiolineTokens(
+      "[data-design-language='studioline'][data-design-language][data-language-mode='light']",
+    );
+
+    const ring = dark['--dl-studioline-focus'];
+    expect(ring, 'studioline no longer declares --dl-studioline-focus').toMatch(/^#[0-9a-fA-F]{3,6}$/);
+    for (const [mode, tokens] of [
+      ['dark', dark],
+      ['light', light],
+    ] as const) {
+      const surface = tokens['--dl-studioline-surface'];
+      expect(surface, `studioline ${mode} surface literal is unreadable`).toMatch(/^#[0-9a-fA-F]{3,6}$/);
+      const ratio = contrast(ring!, surface!);
+      expect(
+        ratio,
+        `studioline ${mode}: value-control ring ${ring} on ${surface} = ${ratio.toFixed(2)}:1 ` +
+          '(WCAG 1.4.11 non-text minimum is 3:1).',
+      ).toBeGreaterThanOrEqual(3);
+    }
+  });
 });

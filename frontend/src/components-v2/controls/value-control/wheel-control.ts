@@ -22,16 +22,12 @@ export function wheelControl(node: HTMLElement, initial: WheelControl) {
   let lastTime = 0;
   let lastDirection = 0;
   const originalTitle = node.getAttribute('title');
-  const outline = node.style.outline;
-  const offset = node.style.outlineOffset;
 
   function disarm() {
     armed = false;
     lastTime = 0;
     lastDirection = 0;
     node.dataset.wheelArmed = 'false';
-    node.style.outline = outline;
-    node.style.outlineOffset = offset;
     node.title = [originalTitle, 'Click or press Enter to adjust with the wheel'].filter(Boolean).join(' · ');
   }
   function current() {
@@ -44,9 +40,11 @@ export function wheelControl(node: HTMLElement, initial: WheelControl) {
     if (!current()) return;
     armed = true;
     node.focus({ preventScroll: true });
+    // MOR-2522: arming must not paint an inline outline frame — inline style
+    // beats every stylesheet rule, so the owner could not override the
+    // rectangle it drew. The dataset attribute is the only arming signal;
+    // value-control.css lights the control from it.
     node.dataset.wheelArmed = 'true';
-    node.style.outline = '2px solid var(--vc-accent, #00e5ff)';
-    node.style.outlineOffset = '2px';
     node.title = 'Wheel adjustment active · Esc to finish';
   }
   function pointer(event: PointerEvent) {
