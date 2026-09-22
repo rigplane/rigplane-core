@@ -111,13 +111,25 @@ function ruleBlocks(css: string): Array<{ selector: string; body: string }> {
 }
 
 /** The element(s) a selector list targets, with pseudo-classes/elements
- *  stripped: `.a:focus, .b input:focus-visible` → ['.a', '.b input']. */
+ *  stripped: `.a:focus, .b input:focus-visible` → ['.a', '.b input'].
+ *  A repeated simple selector in one compound names the same element —
+ *  `.a.a:focus-visible` is the MOR-2522 specificity raise over the studioline
+ *  focus contract — so compounds are deduplicated before comparison; raw
+ *  string equality would misread the doubled class as a different element
+ *  and report the base rule as unpaired. */
 function selectorTargets(selector: string): string[] {
   return selector
     .split(',')
     .map((s) =>
       s
         .replace(/::?[\w-]+(\([^()]*\))?/g, '')
+        .split(/(\s|[>+~])/)
+        .map((compound) =>
+          compound.includes('.') || compound.includes('#')
+            ? [...new Set(compound.split(/(?=[.#])/))].join('')
+            : compound,
+        )
+        .join('')
         .replace(/\s+/g, ' ')
         .trim(),
     )
@@ -560,6 +572,29 @@ describe('MOR-1232: regression guard — no new unpaired outline:none suppressio
       ).toEqual([]);
     });
   }
+
+  // MOR-2522: the renderer focus rules double the container class to outrank
+  // the studioline focus contract (cascade pins in section 8). A repeated
+  // simple selector names the SAME element, so the pairing must read
+  // `.x.x:focus-visible` as treating `.x`; before selectorTargets
+  // normalised compounds, the raw string failed the equality and every
+  // renderer's base `outline: none` counted as unpaired (round-4 RED).
+  // The two halves prove the normalisation discriminates: pairing works
+  // through the doubled class, and an unrelated doubled selector still
+  // leaves the suppression unpaired.
+  it('a doubled class in a :focus rule pairs with the single-class base rule (selectorTargets normalises compounds)', () => {
+    const paired = suppressionOffenders(
+      'guard-compound-normalisation.fixture.svelte',
+      `<style>.x { outline: none; } .x.x:focus-visible { box-shadow: var(--r); }</style>`,
+    );
+    expect(paired).toEqual([]);
+
+    const unpaired = suppressionOffenders(
+      'guard-compound-normalisation.fixture.svelte',
+      `<style>.x { outline: none; } .y.y:focus-visible { box-shadow: var(--r); }</style>`,
+    );
+    expect(unpaired).toEqual(['.x']);
+  });
 
   it('LEGACY_DEBT entries still need their exemption (update the list, not silence it, once fixed)', () => {
     for (const rel of LEGACY_DEBT) {
