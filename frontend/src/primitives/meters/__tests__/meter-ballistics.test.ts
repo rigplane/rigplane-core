@@ -200,13 +200,13 @@ describe('createMeterBallistics frame-step strategy', () => {
     const { meter, smoother } = frameSetup();
     meter.sync({ sample: 8, smoothTarget: 12, peakEnabled: true });
     expect(smoother.update).toHaveBeenCalledExactlyOnceWith(12);
-    expect(meter.view).toEqual({ smoothedValue: 12, peakValue: 12 });
+    expect(meter.view).toEqual({ smoothedValue: 12, peakValue: 12, reducedMotion: false });
 
     meter.sync({ sample: null, smoothTarget: 12, peakEnabled: true });
     expect(smoother.reset).toHaveBeenLastCalledWith(0);
-    expect(meter.view).toEqual({ smoothedValue: 0, peakValue: null });
+    expect(meter.view).toEqual({ smoothedValue: 0, peakValue: null, reducedMotion: false });
     meter.sync({ sample: 8, smoothTarget: null, peakEnabled: true });
-    expect(meter.view).toEqual({ smoothedValue: 0, peakValue: null });
+    expect(meter.view).toEqual({ smoothedValue: 0, peakValue: null, reducedMotion: false });
   });
 
   it('relatches equality, holds after separation, then decrements once per delivered frame', () => {
@@ -265,12 +265,12 @@ describe('createMeterBallistics frame-step strategy', () => {
     });
     meter.sync({ sample: 10, smoothTarget: 10, peakEnabled: true });
     meter.start();
-    expect(meter.view).toEqual({ smoothedValue: 0, peakValue: 0 });
+    expect(meter.view).toEqual({ smoothedValue: 0, peakValue: 0, reducedMotion: false });
 
     host.setReduced(true);
-    expect(meter.view).toEqual({ smoothedValue: 10, peakValue: 10 });
+    expect(meter.view).toEqual({ smoothedValue: 10, peakValue: 10, reducedMotion: true });
     meter.sync({ sample: 2, smoothTarget: 2, peakEnabled: true });
-    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 10 });
+    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 10, reducedMotion: true });
     expect(host.activeFrames).toBe(0);
     meter.stop();
     expect(host.listenerCount).toBe(0);
@@ -284,7 +284,7 @@ describe('createMeterBallistics continuity boundaries (MOR-2400)', () => {
     meter.sync({ sample: 2, smoothTarget: 2, peakEnabled: true });
     expect(smoother.reset).not.toHaveBeenCalled();
     expect(smoother.update).toHaveBeenCalledTimes(2);
-    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 10 });
+    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 10, reducedMotion: false });
   });
 
   it('always observes repeated samples from the same qualified source', () => {
@@ -304,7 +304,7 @@ describe('createMeterBallistics continuity boundaries (MOR-2400)', () => {
     expect(smoother.update).toHaveBeenCalledTimes(2);
     expect(smoother.update).toHaveBeenLastCalledWith(3);
     expect(smoother.reset).not.toHaveBeenCalled();
-    expect(meter.view).toEqual({ smoothedValue: 3, peakValue: 10 });
+    expect(meter.view).toEqual({ smoothedValue: 3, peakValue: 10, reducedMotion: false });
   });
 
   it.each([
@@ -330,7 +330,7 @@ describe('createMeterBallistics continuity boundaries (MOR-2400)', () => {
     });
     expect(smoother.reset).toHaveBeenCalledExactlyOnceWith(2);
     expect(smoother.update).not.toHaveBeenCalled();
-    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 2 });
+    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 2, reducedMotion: false });
   });
 
   it.each([
@@ -350,7 +350,7 @@ describe('createMeterBallistics continuity boundaries (MOR-2400)', () => {
       sample: 2, smoothTarget: 2, peakEnabled: true, source: SUB_SOURCE, session: SESSION_1,
     });
     expect(smoother.reset).toHaveBeenCalledExactlyOnceWith(2);
-    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 2 });
+    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 2, reducedMotion: false });
   });
 
   it.each([
@@ -377,14 +377,14 @@ describe('createMeterBallistics continuity boundaries (MOR-2400)', () => {
     });
     meter.sync({ sample: 8, smoothTarget: 8, peakEnabled: true, source: null });
     expect(smoother.reset).toHaveBeenLastCalledWith(0);
-    expect(meter.view).toEqual({ smoothedValue: 0, peakValue: null });
+    expect(meter.view).toEqual({ smoothedValue: 0, peakValue: null, reducedMotion: false });
 
     meter.sync({
       sample: 10, smoothTarget: 10, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
     });
     meter.sync({ sample: 8, smoothTarget: 8, peakEnabled: true, session: null });
     expect(smoother.reset).toHaveBeenLastCalledWith(0);
-    expect(meter.view).toEqual({ smoothedValue: 0, peakValue: null });
+    expect(meter.view).toEqual({ smoothedValue: 0, peakValue: null, reducedMotion: false });
   });
 
   it('clears prior history when entering or leaving qualified mode', () => {
@@ -393,14 +393,14 @@ describe('createMeterBallistics continuity boundaries (MOR-2400)', () => {
     meter.sync({
       sample: 2, smoothTarget: 2, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
     });
-    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 2 });
+    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 2, reducedMotion: false });
     meter.sync({
       sample: 9, smoothTarget: 9, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
     });
     vi.mocked(smoother.reset).mockClear();
     meter.sync({ sample: 3, smoothTarget: 3, peakEnabled: true });
     expect(smoother.reset).toHaveBeenCalledExactlyOnceWith(3);
-    expect(meter.view).toEqual({ smoothedValue: 3, peakValue: 3 });
+    expect(meter.view).toEqual({ smoothedValue: 3, peakValue: 3, reducedMotion: false });
   });
 });
 
@@ -409,7 +409,7 @@ describe('createMeterBallistics elapsed-envelope strategy', () => {
     const { meter, update, display } = elapsedSetup();
     meter.sync({ sample: 0.8, smoothTarget: 6, peakEnabled: true });
     expect(update).toHaveBeenCalledExactlyOnceWith(undefined, 0.8, 0, 1500);
-    expect(meter.view).toEqual({ smoothedValue: 6, peakValue: 0.8 });
+    expect(meter.view).toEqual({ smoothedValue: 6, peakValue: 0.8, reducedMotion: false });
     expect(display).toHaveBeenCalledExactlyOnceWith({ latchedPeak: 0.8, latchedAt: 0 }, 0.8, 0, 1500);
   });
 
