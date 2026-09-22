@@ -12,7 +12,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Never, NotRequired, Required, TypedDict
 
-from rigplane.commands._codec import bcd_encode_value, filter_hz_to_index
+from rigplane.commands._codec import (
+    bcd_encode_value,
+    filter_hz_to_index,
+    hz_to_table_index,
+)
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
@@ -598,6 +602,24 @@ class RadioProfile:
             raise CommandError(str(exc)) from exc
 
         return bcd_encode_value(payload_value, byte_count=1)
+
+    def admitted_filter_width(self, mode: str | None, width_hz: int) -> int | None:
+        """The on-table width a ``set_filter_width`` write will land on.
+
+        Only ``table_index`` profiles quantize a requested width through
+        the live mode's Hz table — the same ``hz_to_table_index`` nearest-
+        entry mapping the Yaesu CAT backend applies in
+        ``YaesuCatRadio.set_filter_width`` — so every other encoding has
+        no admission to report. ``None`` when the mode resolves to no
+        rule, a fixed-width rule (the backend refuses the write there), or
+        an empty table. Pinned by tests/test_filter_width_admitted_width.py.
+        """
+        if self.filter_width_encoding != "table_index":
+            return None
+        rule = self.resolve_filter_rule(mode)
+        if rule is None or rule.fixed or not rule.table:
+            return None
+        return rule.table[hz_to_table_index(width_hz, table=rule.table)]
 
 
 # ── TOML-driven profile registry ──────────────────────────────────

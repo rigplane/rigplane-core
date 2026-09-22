@@ -412,6 +412,63 @@ def _with_admitted_level(
     return {**details, "admitted_level": admitted}
 
 
+def _observed_receiver_mode(server: Any, receiver: int) -> str | None:
+    """The state store's latest observed mode for *receiver*, if any.
+
+    Snapshots key the primary receiver under "0" (legacy Icom poller) or
+    "main" (Yaesu CAT, rigctld) — see
+    ``web/runtime_helpers._SNAPSHOT_RECEIVER_IDS`` — so both spellings are
+    probed, "0" first to preserve the historical Icom-first lookup order
+    documented on ``primary_receiver_snapshot_ids``. Pinned by
+    tests/test_filter_width_admitted_width.py (the no-store, table-less,
+    and receiver-1 cases).
+    """
+    state_store = getattr(server, "command_state_store", None)
+    if not isinstance(state_store, StateStore):
+        return None
+    snapshot = state_store.snapshot()
+    for receiver_id in ("0", "main") if receiver == 0 else ("1", "sub"):
+        try:
+            field = snapshot.field(FieldPath.active(receiver_id, "freq_mode", "mode"))
+        except KeyError:
+            continue
+        if isinstance(field.value, str) and field.value:
+            return field.value
+    return None
+
+
+def _with_admitted_width(
+    intent: CommandIntent,
+    details: dict[str, Any],
+    *,
+    profile: RadioProfile | None,
+    mode: str | None,
+) -> dict[str, Any]:
+    """Attach the profile-admitted width to a ``set_filter_width`` response.
+
+    Additive optional ``admitted_width`` (integer Hz) for
+    ``set_filter_width`` only — a sibling of ``admitted_level``, which
+    stays normalized 0..1 for AF/RF. ``None`` admission (unknown mode, no
+    table, non-table profile) leaves *details* untouched; the client then
+    confirms on plain equality with the requested width. Pinned by
+    tests/test_filter_width_admitted_width.py.
+    """
+    if intent.name != "set_filter_width":
+        return details
+    width = intent.params.get("width")
+    if (
+        profile is None
+        or isinstance(width, bool)
+        or not isinstance(width, int)
+        or "admitted_width" in details
+    ):
+        return details
+    admitted = profile.admitted_filter_width(mode, width)
+    if admitted is None:
+        return details
+    return {**details, "admitted_width": admitted}
+
+
 def _consume_normalized_level_unit(name: str, params: dict[str, Any]) -> dict[str, Any]:
     if "level_unit" not in params:
         return dict(params)
@@ -1850,7 +1907,17 @@ class ControlHandler:
             source=intent.source,
             command_service=self._command_service,
         )
-        return CommandExecutionResult(details=_with_admitted_level(intent, result))
+        details = _with_admitted_level(intent, result)
+        if intent.name == "set_filter_width":
+            details = _with_admitted_width(
+                intent,
+                details,
+                profile=getattr(self._radio, "profile", None),
+                mode=_observed_receiver_mode(
+                    self._server, int(params.get("receiver", 0))
+                ),
+            )
+        return CommandExecutionResult(details=details)
 
     async def _enqueue_legacy_command(
         self,

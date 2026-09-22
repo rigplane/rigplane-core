@@ -21,6 +21,8 @@ export interface CommandDeliveryEvent {
   cancelled?: boolean;
   /** Sanitized finite 0..1 `result.admitted_level`, only on a response-ok frame. */
   admittedLevel?: number;
+  /** Sanitized non-negative safe-integer `result.admitted_width` (Hz), only on a response-ok frame. */
+  admittedWidth?: number;
 }
 export type CommandLifecycleDeliveryKind = 'held' | 'superseded' | 'timed-out' | 'failed';
 export interface CommandLifecycleDeliveryEvent {
@@ -116,6 +118,14 @@ function admittedLevelOf(raw: Record<string, unknown>): number | undefined {
   if (raw.type !== 'response' || raw.ok === false || !isPlainRecord(raw.result)) return undefined;
   const value = raw.result['admitted_level'];
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value : undefined;
+}
+
+/** Only a non-negative safe-integer `result.admitted_width` on an ok response frame is evidence. */
+function admittedWidthOf(raw: Record<string, unknown>): number | undefined {
+  if (raw.type !== 'response' || raw.ok === false || !isPlainRecord(raw.result)) return undefined;
+  const value = raw.result['admitted_width'];
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
     ? value : undefined;
 }
 
@@ -554,6 +564,7 @@ export class WsChannel {
         generic.eventEpoch,
         raw.ok === false ? String(raw.message ?? raw.error ?? 'Command failed') : undefined,
         raw.ok === false ? undefined : admittedLevelOf(raw),
+        raw.ok === false ? undefined : admittedWidthOf(raw),
       );
       this.trackedNonPttCommands.delete(id);
     } else if (raw.type === 'error' || raw.status === 'error') {
@@ -646,6 +657,7 @@ export class WsChannel {
     eventEpoch: number,
     error?: string,
     admittedLevel?: number,
+    admittedWidth?: number,
   ): void {
     if (tracked.seen.has(kind)) return;
     tracked.seen.add(kind);
@@ -656,6 +668,7 @@ export class WsChannel {
       eventEpoch,
       ...(error ? { error } : {}),
       ...(admittedLevel !== undefined ? { admittedLevel } : {}),
+      ...(admittedWidth !== undefined ? { admittedWidth } : {}),
     });
   }
 

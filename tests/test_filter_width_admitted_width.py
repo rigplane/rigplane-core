@@ -65,9 +65,7 @@ def _handler(
     return handler, ws, queue
 
 
-async def _dispatch_width(
-    handler: ControlHandler, width: int
-) -> dict[str, object]:
+async def _dispatch_width(handler: ControlHandler, width: int) -> dict[str, object]:
     await handler._dispatch_command(  # noqa: SLF001
         "c1", "set_filter_width", {"width": width, "receiver": 0}
     )

@@ -437,7 +437,9 @@ describe('command lifecycle store', () => {
       expect(store.isCommandLifecycleSuperseded(sqlMain)).toBe(false);
     });
 
-    it('confirms on the first same-field observation past the ACK marker, whatever value it carries', () => {
+    it('confirms only on a same-field readback equal to the target past the ACK marker', () => {
+      // Mirrors the store pin 'keeps an acknowledged IF-shift command awaiting
+      // when the first post-ACK readback is the pre-command value'.
       const snapshot = (
         rfGain: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh',
       ): ServerState => ({
@@ -461,12 +463,16 @@ describe('command lifecycle store', () => {
       emitState(snapshot(128 / 255, 4));
       expect(current().status).toBe('acknowledged');
       emitState(snapshot(0.5, 5));
+      expect(current().status).toBe('acknowledged');
+      emitState(snapshot(128 / 255, 6));
       expect(current().status).toBe('confirmed');
-      emitState(snapshot(128 / 255, 6, 'stale'));
+      emitState(snapshot(128 / 255, 7, 'stale'));
       expect(current().status).toBe('confirmed');
     });
 
-    it('keeps a clamped read-back confirmed instead of letting the deadline expire', () => {
+    it('never confirms on a clamped read-back — the deadline expires instead', () => {
+      // Mirrors the store pin 'keeps an acknowledged IF-shift command awaiting
+      // when the first post-ACK readback is the pre-command value'.
       const snapshot = (rfGain: number, marker: number): ServerState => ({
         providerGeneration: 3, main: { rfGain }, sub: {},
         fieldStatus: { 'main.rfGain': {
@@ -484,9 +490,9 @@ describe('command lifecycle store', () => {
       expect(status()).toBe('acknowledged');
 
       emitState(snapshot(0.5, 5));
-      expect(status()).toBe('confirmed');
+      expect(status()).toBe('acknowledged');
       vi.advanceTimersByTime(25);
-      expect(status()).toBe('confirmed');
+      expect(status()).toBe('timed-out');
     });
   });
 
@@ -539,9 +545,11 @@ describe('command lifecycle store', () => {
     it.each([
       ['set_cw_pitch', 'cwPitch', 'value', 640, 650],
       ['set_key_speed', 'keySpeed', 'speed', 27, 28],
-    ] as const)('confirms %s from the first newer exact field observation, whatever value it carries', (
+    ] as const)('confirms %s only on a newer field observation equal to the target', (
       name, field, param, target, mismatch,
     ) => {
+      // Mirrors the store pin 'keeps an acknowledged IF-shift command awaiting
+      // when the first post-ACK readback is the pre-command value'.
       const observed = (value: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh') => ({
         stateContractVersion: 1, providerGeneration: 3, [field]: value,
         fieldStatus: { [field]: {
@@ -556,9 +564,12 @@ describe('command lifecycle store', () => {
       const status = () => store.getCommandLifecycle(name, 7)?.status;
       expect(status()).toBe('acknowledged');
       emitState(observed(target, 4));
+      expect(status()).toBe('acknowledged');
       emitState(observed(mismatch, 5));
+      expect(status()).toBe('acknowledged');
+      emitState(observed(target, 6));
       expect(status()).toBe('confirmed');
-      emitState(observed(target, 6, 'stale'));
+      emitState(observed(target, 7, 'stale'));
       expect(status()).toBe('confirmed');
     });
   });
@@ -626,9 +637,11 @@ describe('command lifecycle store', () => {
       expect(store.isCommandLifecycleSuperseded(drive)).toBe(false);
     });
 
-    it.each(registrations)('confirms %s from the first newer exact raw observation, whatever value it carries', (
+    it.each(registrations)('confirms %s only on a newer raw observation equal to the target', (
       field, intentName, _control, target,
     ) => {
+      // Mirrors the store pin 'keeps an acknowledged IF-shift command awaiting
+      // when the first post-ACK readback is the pre-command value'.
       const observed = (
         value: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh',
       ): ServerState => ({
@@ -645,9 +658,12 @@ describe('command lifecycle store', () => {
       const status = () => store.getCommandLifecycle(command.id, 7)?.status;
       expect(status()).toBe('acknowledged');
       emitState(observed(target, 4));
+      expect(status()).toBe('acknowledged');
       emitState(observed(target - 1, 5));
+      expect(status()).toBe('acknowledged');
+      emitState(observed(target, 6));
       expect(status()).toBe('confirmed');
-      emitState(observed(target, 6, 'stale'));
+      emitState(observed(target, 7, 'stale'));
       expect(status()).toBe('confirmed');
     });
   });
@@ -736,9 +752,11 @@ describe('command lifecycle store', () => {
       ['set_agc_time_constant', 'sub.agcTimeConstant', 'value', 900, 899, 1],
       ['set_nb_width', 'nbWidth', 'level', 64, 63, null],
       ['set_nb_depth', 'nbDepth', 'level', 9, 8, null],
-    ] as const)('confirms %s from the first newer exact field observation, whatever value it carries', (
+    ] as const)('confirms %s only on a newer field observation equal to the target', (
       name, path, param, target, mismatch, receiver,
     ) => {
+      // Mirrors the store pin 'keeps an acknowledged IF-shift command awaiting
+      // when the first post-ACK readback is the pre-command value'.
       const observed = (value: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh') => ({
         stateContractVersion: 1, providerGeneration: 3, active: receiver === 1 ? 'SUB' : 'MAIN',
         main: receiver === 0 ? { [path.split('.')[1]]: value } : {},
@@ -755,9 +773,12 @@ describe('command lifecycle store', () => {
       const status = () => store.getCommandLifecycle(command.id, 7)?.status;
       expect(status()).toBe('acknowledged');
       emitState(observed(target, 4));
+      expect(status()).toBe('acknowledged');
       emitState(observed(mismatch, 5));
+      expect(status()).toBe('acknowledged');
+      emitState(observed(target, 6));
       expect(status()).toBe('confirmed');
-      emitState(observed(target, 6, 'stale'));
+      emitState(observed(target, 7, 'stale'));
       expect(status()).toBe('confirmed');
     });
 
@@ -872,9 +893,11 @@ describe('command lifecycle store', () => {
       ['pbtInner', 'set_pbt_inner', 'value', 131, 130],
       ['pbtOuter', 'set_pbt_outer', 'value', 131, 130],
       ['ifShift', 'set_if_shift', 'offset', 500, 480],
-    ] as const)('confirms %s from the first newer exact raw field observation, whatever value it carries', (
+    ] as const)('confirms %s only on a newer raw field observation equal to the target', (
       field, name, param, target, mismatch,
     ) => {
+      // Mirrors the store pin 'keeps an acknowledged IF-shift command awaiting
+      // when the first post-ACK readback is the pre-command value'.
       const observed = (value: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh') => ({
         stateContractVersion: 1, providerGeneration: 3, active: 'MAIN',
         main: { [field]: value }, sub: {},
@@ -890,9 +913,12 @@ describe('command lifecycle store', () => {
       const status = () => store.getCommandLifecycle(command.id, 7)?.status;
       expect(status()).toBe('acknowledged');
       emitState(observed(target, 4));
+      expect(status()).toBe('acknowledged');
       emitState(observed(mismatch, 5));
+      expect(status()).toBe('acknowledged');
+      emitState(observed(target, 6));
       expect(status()).toBe('confirmed');
-      emitState(observed(target, 6, 'stale'));
+      emitState(observed(target, 7, 'stale'));
       expect(status()).toBe('confirmed');
     });
 
@@ -1073,15 +1099,6 @@ describe('command lifecycle store', () => {
       fieldStatus: { 'main.filterWidth': marker(m) },
     } as unknown as ServerState);
     const statusOf = (id: string) => store.getCommandLifecycle(id, 7)?.status;
-    // The pre-fix acknowledgeCommand has no admitted-width parameter; the
-    // cast keeps this pin compiling against both shapes.
-    const acknowledgeWithWidth = (id: string, admittedWidth: number): void =>
-      (store.acknowledgeCommand as unknown as (
-        id: string, epoch: number, eventEpoch: number,
-        admittedLevel: undefined, admittedWidth: number,
-      ) => void)(id, 7, 7, undefined, admittedWidth);
-    const admittedWidthOf = (id: string): number | undefined =>
-      (store.getCommandLifecycle(id, 7) as { admittedWidth?: number } | undefined)?.admittedWidth;
 
     it('keeps an acknowledged IF-shift command awaiting when the first post-ACK readback is the pre-command value', () => {
       emitState(ifShiftSnapshot(200, 4));
@@ -1125,8 +1142,8 @@ describe('command lifecycle store', () => {
       store.beginCommand({
         id: 'width-2350', name: 'set_filter_width', params: { width: 2350, receiver: 0 }, originalEpoch: 7,
       });
-      acknowledgeWithWidth('width-2350', 2400);
-      expect(admittedWidthOf('width-2350')).toBe(2400);
+      store.acknowledgeCommand('width-2350', 7, 7, undefined, 2400);
+      expect(store.getCommandLifecycle('width-2350', 7)?.admittedWidth).toBe(2400);
 
       emitState(widthSnapshot(2200, 5));
       expect(statusOf('width-2350')).toBe('acknowledged');
