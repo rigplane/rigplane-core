@@ -500,6 +500,44 @@ describe('WsChannel', () => {
     expect(af8.every((event) => event.admittedLevel === undefined)).toBe(true);
   });
 
+  it('captures a sanitized admitted width only from a response-ok result', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const events: CommandDeliveryEvent[] = [];
+    ch.onCommandDelivery((event) => events.push(event));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+
+    const send = (id: string) =>
+      ch.send({ type: 'cmd', name: 'set_filter_width', id, params: { width: 2350 } });
+    const responseOk = (id: string, result: Record<string, unknown>) =>
+      instances[0].simulateMessage(JSON.stringify({ type: 'response', id, ok: true, result }));
+
+    expect(send('w-1')).toBe(true);
+    responseOk('w-1', { width: 2350, receiver: 0, admitted_width: 2400 });
+    // Only a non-negative safe integer is evidence; anything else must leave
+    // the delivery without the field (dropped, never thrown).
+    for (const [id, bad] of [
+      ['w-2', '2400'], ['w-3', -400], ['w-4', Number.NaN], ['w-5', 2400.5], ['w-6', null],
+    ] as const) {
+      expect(send(id)).toBe(true);
+      responseOk(id, bad === null ? { width: 2350 } : { width: 2350, admitted_width: bad });
+    }
+    expect(send('w-7')).toBe(true);
+    instances[0].simulateMessage(JSON.stringify({
+      type: 'response', id: 'w-7', ok: false, error: 'command_failed',
+      result: { admitted_width: 2400 },
+    }));
+
+    const oks = events.filter((event) => event.kind === 'response-ok');
+    expect(oks).toHaveLength(6);
+    expect(oks.filter((event) => event.admittedWidth !== undefined)).toEqual([
+      { commandId: 'w-1', kind: 'response-ok', originalEpoch: 1, eventEpoch: 1, admittedWidth: 2400 },
+    ]);
+    expect(events.filter((event) => event.commandId === 'w-7').map((event) => event.kind))
+      .toEqual(['transport-sent', 'response-error']);
+  });
+
   it('strictly decodes correlated private command lifecycle frames', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
