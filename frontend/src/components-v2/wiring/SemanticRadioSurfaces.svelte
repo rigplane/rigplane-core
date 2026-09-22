@@ -2450,7 +2450,7 @@
     as `rxAudio` left it — it still renders nothing there today.
   -->
   {#snippet rfFrontEndSurface(finiteLayout?: RfFrontEndFiniteLayout)}
-    {#if view?.rfFrontEnd}
+    {#if view && (view.rfFrontEnd || finiteLayout)}
       <RfFrontEndSurface {view} levelHandles={rfFrontEndInstruments} {finiteLayout} />
     {/if}
   {/snippet}
