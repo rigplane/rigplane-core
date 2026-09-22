@@ -212,17 +212,17 @@ const boolOrUndef = (v: unknown): boolean | undefined => (typeof v === 'boolean'
 const atuStatus = (v: unknown): AtuStatus | undefined =>
   v === 0 ? 'off' : v === 1 ? 'on' : v === 2 ? 'tuning' : undefined;
 
-type AgcReadbackProjection = {
+export type AgcReadbackProjection = {
   mode?: number;
   indicatorValue?: number | string;
   autoMode?: number;
   autoSpeed?: string;
 };
 
-function projectAgcReadback(
-  caps: Capabilities, rawMode: number | undefined,
+export function projectAgcReadback(
+  caps: Capabilities | null | undefined, rawMode: number | undefined,
 ): AgcReadbackProjection {
-  const rawContract = caps.agcReadback;
+  const rawContract = caps?.agcReadback;
   const contract = rawContract !== null && typeof rawContract === 'object'
     ? rawContract as Record<string, unknown>
     : null;
@@ -231,16 +231,16 @@ function projectAgcReadback(
     ? contract.modes as number[]
     : null;
   const autoMode = Number.isSafeInteger(contract?.autoMode)
-    && (caps.agcModes ?? []).includes(contract!.autoMode as number)
+    && (caps?.agcModes ?? []).includes(contract!.autoMode as number)
     ? contract!.autoMode as number
     : undefined;
   if (rawMode === undefined) return { autoMode };
 
-  const directLabel = caps.agcLabels?.[String(rawMode)];
+  const directLabel = caps?.agcLabels?.[String(rawMode)];
   const indicatorValue = typeof directLabel === 'string' && directLabel.trim()
     ? directLabel
     : rawMode;
-  const rawSettableModes = caps.agcModes as unknown;
+  const rawSettableModes = caps?.agcModes as unknown;
   const settableModes = Array.isArray(rawSettableModes)
     && rawSettableModes.every(mode => Number.isSafeInteger(mode))
     ? rawSettableModes as number[]
@@ -262,17 +262,18 @@ function projectAgcReadback(
     ? speedLabels?.[String(rawMode)]
     : undefined;
   const autoSpeed = typeof rawSpeed === 'string' && rawSpeed.trim() ? rawSpeed : undefined;
-  const autoLabel = autoMode === undefined ? undefined : caps.agcLabels?.[String(autoMode)];
-  if (autoMode !== undefined && autoSpeed !== undefined
-    && typeof autoLabel === 'string' && autoLabel.trim()) {
-    return { mode: autoMode, indicatorValue: autoLabel, autoMode, autoSpeed };
-  }
+  const autoLabel = autoMode === undefined ? undefined : caps?.agcLabels?.[String(autoMode)];
   if (directMode !== undefined) {
     return {
       mode: directMode,
       indicatorValue,
       autoMode,
+      ...(directMode === autoMode && autoSpeed !== undefined ? { autoSpeed } : {}),
     };
+  }
+  if (autoMode !== undefined && autoSpeed !== undefined
+    && typeof autoLabel === 'string' && autoLabel.trim()) {
+    return { mode: autoMode, indicatorValue: autoLabel, autoMode, autoSpeed };
   }
   return { autoMode };
 }

@@ -567,6 +567,25 @@ auto_speed_labels = { "4" = "FAST", "5" = "MID" }
         ):
             load_rig(p)
 
+    def test_agc_readback_auto_mode_requires_auto_speed_labels(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML
+            + """
+
+[agc]
+modes = [0, 1, 2, 3, 4]
+readback_modes = [0, 1, 2, 3, 4, 5, 6]
+auto_mode = 4
+labels = { "0" = "OFF", "1" = "FAST", "2" = "MID", "3" = "SLOW", "4" = "AUTO" }
+""",
+        )
+        with pytest.raises(
+            RigLoadError,
+            match=r"\[agc\]\.readback_modes with auto_mode requires auto_speed_labels",
+        ):
+            load_rig(p)
+
     def test_agc_section_rejects_unknown_key(self, tmp_path):
         p = _write_toml(
             tmp_path,

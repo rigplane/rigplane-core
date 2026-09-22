@@ -228,11 +228,11 @@ describe('operational availability decides whether a control is USABLE', () => {
     });
   });
 
-  it('omits pressed state for unobserved DSP choices', () => {
+  it('does not light unobserved DSP choices', () => {
     const view = withField(withField(base(), 'notchMode', { unknown: true }), 'agcMode', { unknown: true });
     withSurface(view, (s) => {
       expect(s.notchButton('off')!.getAttribute('aria-pressed')).toBeNull();
-      expect(s.agcButton(1)!.getAttribute('aria-pressed')).toBeNull();
+      expect(s.agcButton(1)!.dataset.active).toBe('false');
     });
   });
 });

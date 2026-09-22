@@ -2,19 +2,16 @@
  * AGC / preamp indicator label sourcing (MOR-1529).
  *
  * `AmberCockpit`/`AmberScope` (amber-lcd skin) previously hardcoded an
- * FTX-1-shaped AGC_LABELS dict (0=OFF/1=FAST/2=MID/3=SLOW/4-6=A-F/A-M/A-S)
+ * FTX-1-shaped AGC_LABELS dict
  * and an IPO/AMP1/AMP2 preamp ternary, applied to every radio regardless of
  * its declared domain. A live X6200 (whose real AGC domain is
  * OFF/FAST/SLOW/AUTO — index 2 = SLOW not MID, index 3 = AUTO not SLOW,
  * per `rigs/x6200.toml`) would show a mislabeled AGC status token.
  *
- * The fix resolves both labels from the profile-declared capabilities
- * payload (`caps.agcLabels` / `caps.preLabels`, already threaded per
- * MOR-1522/#2437 and MOR-1523/#2441) instead of a hardcoded vendor dict.
- * `AmberScope` is mounted with the real `$lib/state/field-status` resolver
- * and the real `AmberIndStrip` renderer; only the runtime/adapter seams and
- * the state-dependent slice of `panel-props` are mocked (`formatPreLabel`,
- * the function under test for preamp, is left as the real implementation).
+ * Both faces are mounted with the real `$lib/state/field-status` resolver,
+ * shared AGC read-back projection, and `AmberIndStrip` renderer. Only the
+ * runtime/adapter seams and state-dependent `panel-props` slice are mocked;
+ * `formatPreLabel`, the preamp-label function under test, remains real.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
@@ -23,7 +20,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 
 // ── Controlled adapter output ───────────────────────────────────────────────
 
-const scopeProps = vi.hoisted(() => ({
+const panelProps = vi.hoisted(() => ({
   value: {
     radioState: null as ServerState | null,
     caps: null as Capabilities | null,
@@ -34,7 +31,16 @@ const scopeProps = vi.hoisted(() => ({
 }));
 
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
-  deriveAmberScopeProps: () => scopeProps.value,
+  deriveAmberScopeProps: () => panelProps.value,
+  deriveAmberCockpitProps: () => panelProps.value,
+  deriveAmberTelemetryProps: () => ({ vdRaw: null, idRaw: null }),
+  getAmberCockpitHandlers: () => ({ onTuningChange: vi.fn() }),
+  getVfoHandlers: () => ({ onFreqChange: vi.fn(), onModeChange: vi.fn() }),
+  bindVfoTunerContext: () => ({ read: () => ({ view: null }) }),
+}));
+
+vi.mock('$lib/runtime/adapters/qsy-history-adapter', () => ({
+  deriveQsyRecent: () => [],
 }));
 
 vi.mock('$lib/runtime', () => ({
@@ -70,6 +76,7 @@ vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => {
 });
 
 import AmberScope from '../AmberScope.svelte';
+import AmberCockpit from '../AmberCockpit.svelte';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -83,8 +90,12 @@ function baseReceiver() {
   };
 }
 
-function mountScope(state: ServerState | null, caps: Capabilities | null = null) {
-  scopeProps.value = {
+function mountFace(
+  face: typeof AmberScope | typeof AmberCockpit,
+  state: ServerState | null,
+  caps: Capabilities | null = null,
+) {
+  panelProps.value = {
     radioState: state,
     caps,
     hasCapability: () => true,
@@ -93,11 +104,16 @@ function mountScope(state: ServerState | null, caps: Capabilities | null = null)
   };
   const target = document.createElement('div');
   document.body.appendChild(target);
-  const component = mount(AmberScope, { target });
+  const component = mount(face, { target });
   flushSync();
   components.push(component);
   return target;
 }
+
+const mountScope = (state: ServerState | null, caps: Capabilities | null = null) =>
+  mountFace(AmberScope, state, caps);
+const mountCockpit = (state: ServerState | null, caps: Capabilities | null = null) =>
+  mountFace(AmberCockpit, state, caps);
 
 function agcChip(target: HTMLElement): HTMLElement | undefined {
   return Array.from(target.querySelectorAll<HTMLElement>('.lcd-ind'))
@@ -133,27 +149,28 @@ function stateWithAgc(agc: number, preamp = 0): ServerState {
 
 const X6200_AGC_LABELS = { '0': 'OFF', '1': 'FAST', '2': 'SLOW', '3': 'AUTO' };
 
-// MOR-1547 — mirrors `rigs/ftx1.toml`'s `[agc.labels]`. Modes 4/5/6 (the
-// auto-selected speeds) were shortened from "A-FAST"/"A-MID"/"A-SLOW" to
-// "A-F"/"A-M"/"A-S": the 6-character body pushed the "AGC "-prefixed
-// `AmberIndStrip` chip to 10 characters — wider than any other chip sharing
-// the strip (the next-widest, "DIGI-SEL", has no "AGC "-style prefix and
-// tops out at 8) — which wrapped the DSP zone to a second row that the
-// strip's `overflow: hidden` then clipped. "A-F"/"A-M"/"A-S" keeps the
-// "Auto-" disambiguator (avoids colliding with the overloaded ham-radio
-// abbreviations AM = Amplitude Modulation / AF = Audio Frequency that a bare
-// "AF"/"AM"/"AS" would invite) while landing the widest FTX-1 label body at
-// 3 characters — inside the existing FAST/SLOW (4-character body) budget
-// every other shipped `[agc.labels]` table already fits within.
+// `projects every FTX-1 AUTO read-back to the settable AUTO label` consumes
+// this exact mirror of `rigs/ftx1.toml`; read-back-only 5/6 stay absent here.
 const FTX1_AGC_LABELS = {
   '0': 'OFF',
   '1': 'FAST',
   '2': 'MID',
   '3': 'SLOW',
-  '4': 'A-F',
-  '5': 'A-M',
-  '6': 'A-S',
+  '4': 'AUTO',
 };
+const FTX1_AGC_CAPS = {
+  agcModes: [0, 1, 2, 3, 4],
+  agcLabels: FTX1_AGC_LABELS,
+  agcReadback: {
+    modes: [0, 1, 2, 3, 4, 5, 6],
+    autoMode: 4,
+    autoSpeedLabels: { '4': 'FAST', '5': 'MID', '6': 'SLOW' },
+  },
+} as unknown as Capabilities;
+const IC7300_AGC_CAPS = {
+  agcModes: [1, 2, 3],
+  agcLabels: { '1': 'FAST', '2': 'MID', '3': 'SLOW' },
+} as unknown as Capabilities;
 
 beforeEach(() => {
   components = [];
@@ -182,11 +199,29 @@ describe('AmberScope AGC label sourcing (MOR-1529)', () => {
     expect(chip?.textContent?.trim()).toBe('AGC SLOW');
   });
 
-  it('falls back to the plain numeric value when no label is declared', () => {
-    const caps = { agcLabels: {} } as unknown as Capabilities;
-    const target = mountScope(stateWithAgc(9), caps);
-    const chip = agcChip(target);
-    expect(chip?.textContent?.trim()).toBe('AGC 9');
+  it.each([
+    ['AmberScope', mountScope],
+    ['AmberCockpit', mountCockpit],
+  ] as const)('projects FTX-1 read-back 5 to AGC AUTO on %s', (_name, mountFace) => {
+    const chip = agcChip(mountFace(stateWithAgc(5), FTX1_AGC_CAPS));
+    expect(chip?.textContent?.trim()).toBe('AGC AUTO');
+  });
+
+  it.each([
+    ['AmberScope', mountScope],
+    ['AmberCockpit', mountCockpit],
+  ] as const)('renders no numeric text for an unprojectable code on %s', (_name, mountFace) => {
+    const chip = agcChip(mountFace(stateWithAgc(9), FTX1_AGC_CAPS));
+    expect(chip?.textContent?.trim()).toBe('AGC');
+    expect(chip?.textContent).not.toContain('9');
+  });
+
+  it.each([
+    ['AmberScope', mountScope],
+    ['AmberCockpit', mountCockpit],
+  ] as const)('keeps IC-7300 read-back 2 as AGC MID on %s', (_name, mountFace) => {
+    const chip = agcChip(mountFace(stateWithAgc(2), IC7300_AGC_CAPS));
+    expect(chip?.textContent?.trim()).toBe('AGC MID');
   });
 });
 
@@ -202,19 +237,17 @@ describe('AmberScope AGC chip width budget (MOR-1547)', () => {
   it.each([0, 1, 2, 3, 4, 5, 6])(
     'keeps the AGC chip for FTX-1 mode %i within the single-row width budget',
     (mode) => {
-      const caps = { agcLabels: FTX1_AGC_LABELS } as unknown as Capabilities;
-      const target = mountScope(stateWithAgc(mode), caps);
+      const target = mountScope(stateWithAgc(mode), FTX1_AGC_CAPS);
       const chip = agcChip(target);
       const text = chip?.textContent?.trim() ?? '';
       expect(text.length).toBeLessThanOrEqual('AGC FAST'.length);
     },
   );
 
-  it('renders the exact shortened auto-mode labels (A-F/A-M/A-S), not the old A-FAST/A-MID/A-SLOW', () => {
-    const caps = { agcLabels: FTX1_AGC_LABELS } as unknown as Capabilities;
-    expect(agcChip(mountScope(stateWithAgc(4), caps))?.textContent?.trim()).toBe('AGC A-F');
-    expect(agcChip(mountScope(stateWithAgc(5), caps))?.textContent?.trim()).toBe('AGC A-M');
-    expect(agcChip(mountScope(stateWithAgc(6), caps))?.textContent?.trim()).toBe('AGC A-S');
+  it('projects every FTX-1 AUTO read-back to the settable AUTO label', () => {
+    expect(agcChip(mountScope(stateWithAgc(4), FTX1_AGC_CAPS))?.textContent?.trim()).toBe('AGC AUTO');
+    expect(agcChip(mountScope(stateWithAgc(5), FTX1_AGC_CAPS))?.textContent?.trim()).toBe('AGC AUTO');
+    expect(agcChip(mountScope(stateWithAgc(6), FTX1_AGC_CAPS))?.textContent?.trim()).toBe('AGC AUTO');
   });
 });
 

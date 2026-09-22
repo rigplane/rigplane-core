@@ -16,6 +16,7 @@
   import AmberMemoryStrip from './AmberMemoryStrip.svelte';
   import type { IndToken } from './AmberIndStrip.svelte';
   import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
+  import { projectAgcReadback } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { isFieldAvailable } from '$lib/state/field-status';
   import { formatOffsetKHz } from '../rit-utils';
 
@@ -193,13 +194,11 @@
     }] : []),
   ]);
 
-  // MOR-1529: AGC mode labels come from the profile-declared capabilities
-  // payload (`[agc].labels` per radio, e.g. ic7300/ic7610 FAST/MID/SLOW vs
-  // X6200 OFF/FAST/SLOW/AUTO — index 2/3 differ from the IC-7610 shape this
-  // file used to hardcode unconditionally, mirrors AmberScope). Falls back
-  // to the plain numeric value when the profile declares no label for it.
+  // MOR-2537: `projects FTX-1 read-back 5 to AGC AUTO on %s` and `renders no
+  // numeric text for an unprojectable code on %s` pin this shared projection.
   function agcLabelFor(agcMode: number): string {
-    return caps?.agcLabels?.[String(agcMode)] ?? `${agcMode}`;
+    const value = projectAgcReadback(caps, agcMode).indicatorValue;
+    return value === undefined ? 'AGC' : `AGC ${value}`;
   }
 
   // Per-receiver token builder — gates every indicator on fieldStatus
@@ -250,7 +249,7 @@
           : []),
       ] : []),
       ...(rxAvailable(rxKey, 'agc')
-        ? [{ id: 'agc' as const, label: `AGC ${agcLabelFor(rxState?.agc ?? 2)}`, active: true }]
+        ? [{ id: 'agc' as const, label: agcLabelFor(rxState?.agc ?? 2), active: true }]
         : []),
       ...(hasCap('rf_gain') && rxAvailable(rxKey, 'rfGain') ? [{
         id: 'rfg' as const, label: 'RFG', active: (rxState?.rfGain ?? 1) < 1,

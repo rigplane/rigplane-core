@@ -624,6 +624,24 @@ describe('AGC choice group', () => {
     expect(q<HTMLElement>('[data-testid="dsp-agcMode-4"] .agc-auto-speed')!.textContent).toBe(speed);
   });
 
+  it('prefers a direct settable mode over conflicting AUTO-speed metadata', () => {
+    const caps = ftxAgcCaps();
+    h.caps = {
+      ...caps,
+      agcReadback: {
+        ...(caps.agcReadback as object),
+        autoSpeedLabels: { '2': 'FAST', '4': 'FAST', '5': 'MID', '6': 'SLOW' },
+      },
+    } as Capabilities;
+    h.state = stateWithAgc(2);
+    render();
+
+    expect(q<HTMLButtonElement>('[data-testid="dsp-agcMode-2"]')!.dataset.active).toBe('true');
+    expect(q<HTMLButtonElement>('[data-testid="dsp-agcMode-4"]')!.dataset.active).toBe('false');
+    expect(q('[data-indicator-receiver="MAIN"] [data-indicator-fact="agc"]')
+      ?.textContent?.trim()).toBe('AGC MID');
+  });
+
   it('projects FTX-1 readback 5 to the receiver indicator label', () => {
     h.caps = ftxAgcCaps();
     h.state = stateWithAgc(5);

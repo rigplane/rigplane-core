@@ -2378,6 +2378,15 @@ def load_rig(path: Path) -> RigConfig:
         if raw_agc_auto_speed_labels is not None
         else None
     )
+    if (
+        agc_readback_modes is not None
+        and agc_auto_mode is not None
+        and agc_auto_speed_labels is None
+    ):
+        raise RigLoadError(
+            f"{filename}: [agc].readback_modes with auto_mode requires "
+            "auto_speed_labels"
+        )
     if agc_auto_speed_labels is not None:
         if agc_readback_modes is None or agc_auto_mode is None:
             raise RigLoadError(

@@ -171,9 +171,11 @@ async def test_agc_set_probe_never_lands_on_off_for_a_domain_that_declares_it():
     """MOR-1529 R1: the domain-derived probe must never pick 0 (AGC OFF)
     just because it's the first declared mode != current.
 
-    The live FTX-1 declares ``[agc] modes = [0..6]`` — picking the first
-    declared value != current would land on 0 for every current value
-    except 0 itself. This RMVR probe is documented non-destructive/RX-safe
+    The live FTX-1 declares settable ``[agc] modes = [0..4]``
+    (OFF/FAST/MID/SLOW/AUTO), with read-back values 0..6 projected through
+    ``auto_mode`` and ``auto_speed_labels`` — picking the first declared
+    value != current would land on 0 for every current value except 0 itself.
+    This RMVR probe is documented non-destructive/RX-safe
     (MOR-659): momentarily disabling AGC on a bench radio is audible and
     operator-affecting, unlike flipping between two settable AGC speeds.
     The probe must prefer a non-OFF candidate (landing FTX-1 on 1=FAST).
