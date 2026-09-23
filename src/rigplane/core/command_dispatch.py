@@ -19,6 +19,7 @@ from functools import partial
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
+from rigplane.core.capabilities import CAP_REPEATER_TONE, CAP_TSQL
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
@@ -113,6 +114,7 @@ class CommandDescriptor:
     timeout: float = 10.0
     queue_policy: Literal["ordered", "coalesced"] = "ordered"
     receiver_aware: bool = False
+    required_capability: str | None = None
     project_expectation: ExpectationProjector | None = None
 
     def resolve_method_name(self, params: Mapping[str, Any]) -> str:
@@ -342,7 +344,10 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
         # receiver rides the Radio call itself and every backend refuses an
         # unsupported receiver before wire traffic. The freq pair keeps the
         # published ``freq`` key in its result while the Radio kwarg is the
-        # protocol name ``freq_hz``.
+        # protocol name ``freq_hz``. The capability tags gate web reach:
+        # FTX-1 carries them only after PR-B2 turns the tags on in its
+        # profile, so until then the family is refused here, before any
+        # radio call, with the legacy ``unsupported_command`` error class.
         "set_repeater_tone": CommandDescriptor(
             name="set_repeater_tone",
             method_name="set_repeater_tone",
@@ -351,6 +356,7 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             argument_names=("on", "receiver"),
             tx_policy=DescriptorTxPolicy.TX_SAFE,
             public_names=("set_repeater_tone",),
+            required_capability=CAP_REPEATER_TONE,
         ),
         "set_repeater_tsql": CommandDescriptor(
             name="set_repeater_tsql",
@@ -360,6 +366,7 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             argument_names=("on", "receiver"),
             tx_policy=DescriptorTxPolicy.TX_SAFE,
             public_names=("set_repeater_tsql",),
+            required_capability=CAP_TSQL,
         ),
         "set_tone_freq": CommandDescriptor(
             name="set_tone_freq",
@@ -370,6 +377,7 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             result_names=("freq", "receiver"),
             tx_policy=DescriptorTxPolicy.TX_SAFE,
             public_names=("set_tone_freq",),
+            required_capability=CAP_REPEATER_TONE,
         ),
         "set_tsql_freq": CommandDescriptor(
             name="set_tsql_freq",
@@ -380,6 +388,7 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             result_names=("freq", "receiver"),
             tx_policy=DescriptorTxPolicy.TX_SAFE,
             public_names=("set_tsql_freq",),
+            required_capability=CAP_TSQL,
         ),
         "set_af_level": CommandDescriptor(
             name="set_af_level",
@@ -651,6 +660,13 @@ def bind_command_intent(
     )
 
 
+def _radio_has_capability(radio: DispatchRadio, capability: str) -> bool:
+    """Read the radio's capability-tag set; a radio that declares none
+    (non-production doubles) is not gated here."""
+    capabilities = getattr(radio, "capabilities", None)
+    return isinstance(capabilities, (set, frozenset)) and capability in capabilities
+
+
 def prepare_command_intent(
     radio: DispatchRadio,
     name: str,
@@ -672,6 +688,13 @@ def prepare_command_intent(
         timeout=descriptor.timeout,
     )
     method_name = descriptor.resolve_method_name(intent.params)
+    if descriptor.required_capability is not None and not _radio_has_capability(
+        radio, descriptor.required_capability
+    ):
+        raise CommandUnsupportedError(
+            f"command {method_name!r} is not supported by active profile "
+            f"(missing capability: {descriptor.required_capability})"
+        )
     supported = (
         radio.supports_command(method_name, receiver=intent.params["receiver"])
         if descriptor.receiver_aware

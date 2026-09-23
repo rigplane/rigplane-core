@@ -61,23 +61,6 @@ __all__ = ["YaesuCatRadio"]
 
 logger = logging.getLogger(__name__)
 
-# Tone-family protocol names whose profile commands are one receiver-routed
-# template (``CT{receiver}…``/``CN{receiver}…`` — no ``_sub`` twin keys), so
-# the receiver form of ``supports_command`` admits any receiver the profile
-# supports on the same single template.
-_TONE_RECEIVER_TEMPLATE_COMMANDS = frozenset(
-    {
-        "get_repeater_tone",
-        "set_repeater_tone",
-        "get_repeater_tsql",
-        "set_repeater_tsql",
-        "get_tone_freq",
-        "set_tone_freq",
-        "get_tsql_freq",
-        "set_tsql_freq",
-    }
-)
-
 # Path to rigs/ directory: src/rigplane/backends/yaesu_cat/radio.py → 4 levels up
 _RIGS_DIR = Path(__file__).parents[4] / "rigs"
 
@@ -755,14 +738,6 @@ class YaesuCatRadio:
             )
         supported = profile_supported and callable(getattr(self, command, None))
         if receiver is None:
-            return supported
-        if command in _TONE_RECEIVER_TEMPLATE_COMMANDS:
-            if isinstance(receiver, bool) or not isinstance(receiver, int):
-                return False
-            try:
-                self._validate_receiver(receiver)
-            except (TypeError, ValueError):
-                return False
             return supported
         if not supported or command not in {
             "set_af_level",

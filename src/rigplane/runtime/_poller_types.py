@@ -716,8 +716,7 @@ class SetRepeaterTone:
     """TX-policy classification token for ``set_func TONE`` (rigctld).
 
     No dispatch arm executes it: the rigctld TX-policy seat builds it to
-    classify the intent, and the write itself is descriptor-backed
-    (``core/command_dispatch.py: set_repeater_tone``).
+    classify the intent.
     """
 
     on: bool
@@ -729,8 +728,7 @@ class SetRepeaterTsql:
     """TX-policy classification token for ``set_func TSQL`` (rigctld).
 
     No dispatch arm executes it: the rigctld TX-policy seat builds it to
-    classify the intent, and the write itself is descriptor-backed
-    (``core/command_dispatch.py: set_repeater_tsql``).
+    classify the intent.
     """
 
     on: bool
