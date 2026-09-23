@@ -474,12 +474,14 @@
      the row's DIRECT child (`>` — the More panel sits inside the row's ⋯
      anchor) with that hook hides and its More copy shows. Hide-first:
      MAIN/SUB, HOLD, REF, SPAN; CTR/FIX and ⋯ always stay. Bands measured in
-     Chromium at the widest case (dual receiver, CTR). */
+     Chromium at the widest case (dual receiver, CTR). The REF band is 372:
+     the no-HOLD row fits at 371.3 px, and a 390 px phone's content width is
+     exactly 374 — 372 keeps REF on the row there. */
   .scope-more-overflow { display: contents; }
   .scope-more-overflow > [data-overflow] { display: none; }
   @container scope-controls (max-width: 529px) { .scope-controls-row > [data-overflow='receiver'] { display: none; } .scope-more-overflow > [data-overflow='receiver'] { display: flex; } }
   @container scope-controls (max-width: 429px) { .scope-controls-row > [data-overflow='hold'] { display: none; } .scope-more-overflow > [data-overflow='hold'] { display: flex; } }
-  @container scope-controls (max-width: 374px) { .scope-controls-row > [data-overflow='ref'] { display: none; } .scope-more-overflow > [data-overflow='ref'] { display: flex; } }
+  @container scope-controls (max-width: 372px) { .scope-controls-row > [data-overflow='ref'] { display: none; } .scope-more-overflow > [data-overflow='ref'] { display: flex; } }
   @container scope-controls (max-width: 299px) { .scope-controls-row > [data-overflow='span'] { display: none; } .scope-more-overflow > [data-overflow='span'] { display: flex; } }
 
   .scope-key-group { display: inline-flex; flex: none; align-items: center; }

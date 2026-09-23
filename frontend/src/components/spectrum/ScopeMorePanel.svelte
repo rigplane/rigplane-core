@@ -2,14 +2,11 @@
   "More" panel for the scope row (MOR-2545 PR1) — an anchored group panel
   that opens under the ⋯ key, over the panorama.
 
-  Positioning (review round 3, coordinator decision): `position: fixed` from
-  the ⋯ key's rect — computed on open and on window `resize` while open,
-  clamped to the viewport with an 8 px margin: leftward from the key's right
-  edge, shifted right at the left margin; any scroll while open closes it
-  (one capture-phase listener — no polling). Panel and backdrop also promote
-  to the TOP LAYER (popover=manual): the surface's container-type containment
-  and the LCD sidebar's overflow clip would otherwise capture and clip a
-  fixed child; the DOM is unchanged, so the container queries still work.
+  Positioning (review rounds 3–4): plain `position: fixed` from the ⋯ key's
+  rect, recomputed on window `resize` while open and clamped to the viewport
+  with an 8 px margin; any scroll while open closes it (one capture-phase
+  listener). Round 4, measured in Chromium: inside the container-type surface
+  and the LCD column, `fixed` places in viewport coordinates — no top layer.
 
   Close semantics, per the ticket: outside click lands on a fixed transparent
   backdrop (z-index 999, the existing popover scheme —
@@ -33,7 +30,6 @@
   let { onClose, anchor, radioHeld }: Props = $props();
 
   let panel: HTMLElement | undefined = $state();
-  let backdrop: HTMLElement | undefined = $state();
 
   /** Leftward from the key's right edge, shifted right at the left margin, never past the right one. */
   function place() {
@@ -46,9 +42,6 @@
   }
 
   onMount(() => {
-    // Top layer where supported; jsdom has no popover API — the panel stays in place there.
-    backdrop?.showPopover?.();
-    panel?.showPopover?.();
     place();
     panel?.focus();
     const onKeydown = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -65,13 +58,12 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="scope-more-backdrop" data-testid="scope-more-backdrop" role="presentation" popover="manual" bind:this={backdrop} onclick={onClose}></div>
+<div class="scope-more-backdrop" data-testid="scope-more-backdrop" role="presentation" onclick={onClose}></div>
 <div
   class="scope-more-panel"
   role="dialog"
   aria-label="More scope controls"
   tabindex="-1"
-  popover="manual"
   bind:this={panel}
   data-testid="scope-more-panel"
 >
