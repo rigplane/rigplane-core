@@ -35,6 +35,7 @@ import dataclasses
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -64,6 +65,7 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
+from rigplane.core.command_service import CommandService, command_intent_from_request
 from rigplane.core.tx_target import KnownTxTarget
 from rigplane.core.tx_observation import (
     OBSERVED_PTT_PATH,
@@ -76,7 +78,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.exceptions import ConnectionError
+from rigplane.exceptions import CommandError, ConnectionError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
@@ -89,6 +91,8 @@ from rigplane.core.state_store import (
 )
 from rigplane.types import CivFrame, Mode, ScopeFixedEdge, bcd_encode
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
+from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+from rigplane.web.server import _HttpCommandExecutor
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -5534,24 +5538,204 @@ async def test_power_on_inferred_true_and_kept_fresh_while_civ_answers_arrive(
 
 
 @pytest.mark.asyncio
-async def test_power_off_ack_observed_false_then_answers_restore_true(
+async def test_power_on_inference_accepted_after_connect_advances_generation(
     radio: IcomRadio,
 ) -> None:
-    """MOR-2544 (b): 0x18 00 ack → False; resumed answers → True again.
+    """MOR-2544 (review finding 1): the inferred observation must carry the
+    store's live provider generation, or ``StateStore.apply`` rejects it
+    after any connect — on a connected radio ``powerOn`` would stay null.
 
-    The liveness inference must not clobber the explicit 0x18 truth on the
-    same frame. RED at 302b96e1 on the second half: without the inference no
-    meter frame re-observes ``power_on``, so it stays ``False``.
+    RED at 3b4473cc: the inference was appended after the generation-stamping
+    loop with ``provider_generation=0``, so at generation ≥ 1 the store
+    rejects it and ``snapshot().field`` raises ``KeyError``.
     """
-    await _route_frame_at(radio, _make_frame(cmd=0x18, data=b"\x00"), 100.0)
-    field = radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
-    assert field.value is False
-    assert field.freshness is FreshnessState.FRESH
+    radio._civ_runtime.advance_generation("connect")  # noqa: SLF001
+    assert radio._state_store.provider_generation >= 1  # noqa: SLF001
 
-    await _route_frame_at(radio, _make_frame(cmd=0x15, sub=0x02, data=_bcd2(42)), 105.0)
+    await _route_frame_at(radio, _make_frame(cmd=0x15, sub=0x02, data=_bcd2(42)), 100.0)
+
     field = radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
     assert field.value is True
-    assert field.freshness is FreshnessState.FRESH
+    assert (
+        field.provider_generation == radio._state_store.provider_generation  # noqa: SLF001
+    )
+
+
+@pytest.mark.asyncio
+async def test_powerstat_ack_records_last_commanded_and_answers_clear_it(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2544 (review findings 2–3): the power command's acknowledgement is
+    ``0xFB`` (parsed by ``set_powerstat``; never a ``0x18 00`` frame), and the
+    ACKed state is retained on the radio — outside the store, so it survives
+    ``advance_generation``. A NAK records nothing; the next decoded answer
+    overrides the retained command.
+
+    RED at 3b4473cc: ``_last_commanded_powerstat`` does not exist
+    (``AttributeError``) and nothing records the ACK.
+    """
+    ack = _make_frame(cmd=0xFB)
+    nak = _make_frame(cmd=0xFA)
+
+    with patch.object(radio, "_send_civ_expect", AsyncMock(return_value=ack)):
+        await radio.set_powerstat(False)
+    assert radio._last_commanded_powerstat is False  # noqa: SLF001
+
+    # A rejected power-off (0xFA) raises and does not touch the retained state.
+    with patch.object(radio, "_send_civ_expect", AsyncMock(return_value=nak)):
+        with pytest.raises(CommandError):
+            await radio.set_powerstat(False)
+    assert radio._last_commanded_powerstat is False  # noqa: SLF001
+
+    # A swallowed boot-time power-on NAK is not evidence either.
+    with patch.object(radio, "_send_civ_expect", AsyncMock(return_value=nak)):
+        await radio.set_powerstat(True)
+    assert radio._last_commanded_powerstat is False  # noqa: SLF001
+
+    # The retained command survives every store-clearing generation advance.
+    for reason in ("watchdog-timeout", "reconnect-attempt", "serial-soft-reconnect"):
+        radio._civ_runtime.advance_generation(reason)  # noqa: SLF001
+    assert radio._last_commanded_powerstat is False  # noqa: SLF001
+
+    # The next decoded frame from the radio is fresh ON evidence: it clears
+    # the retained command and re-observes power_on=True through the store.
+    await _route_frame_at(radio, _make_frame(cmd=0x15, sub=0x02, data=_bcd2(42)), 100.0)
+    assert radio._last_commanded_powerstat is None  # noqa: SLF001
+    assert (
+        radio._state_store.snapshot().field(_POWER_ON_PATH).value  # noqa: SLF001
+        is True
+    )
+
+
+def _public_power_payload(radio: IcomRadio, *, receiver_count: int) -> dict[str, Any]:
+    """The exact public payload the frontend consumes for ``powerOn``."""
+    return build_public_state_payload_from_snapshot(
+        radio._state_store.snapshot(),  # noqa: SLF001
+        radio=radio,
+        receiver_count=receiver_count,
+    )
+
+
+async def _http_power_command(radio: IcomRadio, on: bool) -> None:
+    """Drive the real HTTP power seam against a radio that answers 0xFB.
+
+    Goes through ``CommandService.execute`` + ``_HttpCommandExecutor`` (the
+    ``/api/v1/radio/power`` path), so the ACKed power state lands in the
+    store as a generation-stamped command-response observation.
+    """
+    service = CommandService(
+        executor=_HttpCommandExecutor(server=SimpleNamespace(_radio=radio)),
+        state_store=radio._state_store,  # noqa: SLF001
+    )
+    with patch.object(
+        radio, "_send_civ_expect", AsyncMock(return_value=_make_frame(cmd=0xFB))
+    ):
+        await service.execute(
+            command_intent_from_request(
+                "set_powerstat",
+                {"on": on},
+                source="http",
+                command_id=f"test-power-{'on' if on else 'off'}",
+            )
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("model", "receiver_count"),
+    [("IC-7610", 2), ("IC-7300", 1)],
+    ids=["lan-ic7610", "serial-ic7300"],
+)
+async def test_power_cycle_through_public_payload_and_field_status(
+    radio: IcomRadio,
+    model: str,
+    receiver_count: int,
+) -> None:
+    """MOR-2544 full cycle, LAN-shaped (IC-7610) and serial-shaped (IC-7300):
+
+    answers → ``powerOn: true``; ACKed power-off → ``false``; repeated
+    ``advance_generation`` (watchdog / soft reconnect) with no answers →
+    still ``false`` with a frontend-accepted ``fieldStatus.powerOn``; the
+    retained True is never published (a boot-time generation clear reads
+    unknown); ACKed power-on + first answer → ``true``.
+
+    RED at 3b4473cc: the executor returned a bare result and the runtime had
+    no ``_last_commanded_powerstat`` (``AttributeError``), so the ACKed
+    power-off left the stale observed True in the payload and every
+    generation clear dropped ``powerOn`` back to ``None``.
+    """
+    radio._profile = resolve_radio_profile(model=model)  # noqa: SLF001
+    meter = _make_frame(cmd=0x15, sub=0x02, data=_bcd2(42))
+
+    # A connect advances the store generation; nothing observed yet → unknown.
+    radio._civ_runtime.advance_generation("connect")  # noqa: SLF001
+    assert radio._state_store.provider_generation >= 1  # noqa: SLF001
+    payload = _public_power_payload(radio, receiver_count=receiver_count)
+    assert payload["powerOn"] is None
+    assert payload["fieldStatus"]["powerOn"]["observed"] is False
+
+    # Answers arrive → liveness inference observes power_on=True at the live
+    # generation; the payload publishes it as an available field.
+    await _route_frame_at(radio, meter, 100.0)
+    payload = _public_power_payload(radio, receiver_count=receiver_count)
+    assert payload["powerOn"] is True
+    assert payload["fieldStatus"]["powerOn"]["observed"] is True
+
+    # ACKed power-off → the command response observes False; the payload
+    # flips immediately.
+    await _http_power_command(radio, False)
+    assert radio._last_commanded_powerstat is False  # noqa: SLF001
+    payload = _public_power_payload(radio, receiver_count=receiver_count)
+    assert payload["powerOn"] is False
+    assert payload["fieldStatus"]["powerOn"]["observed"] is True
+
+    # Watchdog timeouts / soft reconnects clear the store, but the retained
+    # ACKed OFF keeps publishing an available False.
+    for reason in ("watchdog-timeout", "reconnect-attempt", "serial-soft-reconnect"):
+        radio._civ_runtime.advance_generation(reason)  # noqa: SLF001
+        payload = _public_power_payload(radio, receiver_count=receiver_count)
+        assert payload["powerOn"] is False
+        status = payload["fieldStatus"]["powerOn"]
+        assert status["availability"] == "available"
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
+
+    # ACKed power-on → the command response observes True…
+    await _http_power_command(radio, True)
+    assert radio._last_commanded_powerstat is True  # noqa: SLF001
+    payload = _public_power_payload(radio, receiver_count=receiver_count)
+    assert payload["powerOn"] is True
+
+    # …but the retained True is never published: a generation clear while the
+    # radio is still booting reads as an honest unknown again…
+    radio._civ_runtime.advance_generation("watchdog-timeout")  # noqa: SLF001
+    payload = _public_power_payload(radio, receiver_count=receiver_count)
+    assert payload["powerOn"] is None
+
+    # …and the first fresh answer clears the retained command and re-observes
+    # True through the rx path.
+    await _route_frame_at(radio, meter, 105.0)
+    assert radio._last_commanded_powerstat is None  # noqa: SLF001
+    payload = _public_power_payload(radio, receiver_count=receiver_count)
+    assert payload["powerOn"] is True
+    assert payload["fieldStatus"]["powerOn"]["observed"] is True
+
+
+def test_restart_is_honest_unknown() -> None:
+    """MOR-2544: the retained last-commanded power is a runtime attribute — a
+    process restart (a fresh radio object) loses it and reads unknown.
+
+    RED at 3b4473cc: ``_last_commanded_powerstat`` does not exist
+    (``AttributeError``).
+    """
+    fresh = IcomRadio("192.168.1.100", model="IC-7610")
+    try:
+        assert fresh._last_commanded_powerstat is None  # noqa: SLF001
+        payload = _public_power_payload(fresh, receiver_count=2)
+        assert payload["powerOn"] is None
+        assert payload["fieldStatus"]["powerOn"]["observed"] is False
+    finally:
+        fresh._connected = False  # noqa: SLF001
 
 
 @pytest.mark.asyncio

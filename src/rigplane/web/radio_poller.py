@@ -78,6 +78,8 @@ from ..commands.command_map import CommandMap
 from ..commands.commander import Priority
 from ..core.command_service import (
     CommandService,
+    command_intent_from_request,
+    command_response_observation,
     expected_observations_for_command,
     observable_field_path,
 )
@@ -3229,6 +3231,36 @@ class RadioPoller:
             case SetPowerstat(on=on):
                 if CAP_POWER_CONTROL in self._caps:
                     await radio.set_powerstat(on)
+                    # MOR-2544: the radio's 0xFB ACK (parsed inside
+                    # ``set_powerstat`` — a rejected power-off raises before
+                    # this point) is real evidence of the new power state.
+                    # Publish it as a command-response observation through
+                    # the store, generation-stamped after the await so a
+                    # mid-command ``advance_generation`` rejects it instead
+                    # of mis-filing it. The HTTP path gets the same
+                    # observation from ``_HttpCommandExecutor`` via
+                    # ``CommandService.execute`` (web/server.py). The legacy
+                    # mirror write below stays for the pre-store delivery
+                    # surfaces.
+                    powerstat_observation = dataclasses.replace(
+                        command_response_observation(
+                            command_intent_from_request(
+                                "set_powerstat",
+                                {"on": on},
+                                source=command_source,
+                                command_id=command_id,
+                                session_id=session_id,
+                            ),
+                            timestamp_monotonic=time.monotonic(),
+                            provider="icom_civ",
+                            transport="civ",
+                        ),
+                        provider_generation=self._provider_generation(),
+                    )
+                    if command_service is not None:
+                        command_service.apply_observation(powerstat_observation)
+                    else:
+                        self._state_store.apply(powerstat_observation)
                     # Optimistic update: radio won't respond to polls when off
                     if self._radio_state is not None:
                         self._radio_state.power_on = on

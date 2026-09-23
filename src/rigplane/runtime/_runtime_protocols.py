@@ -80,6 +80,7 @@ class CivRuntimeHost(Protocol):
     # State cache / last-known values
     _state_cache: "StateCache"
     _state_store: "StateStore"
+    _last_commanded_powerstat: "bool | None"
     _last_freq_hz: "int | None"
     _last_mode: "Mode | None"
     _filter_width: "int | None"

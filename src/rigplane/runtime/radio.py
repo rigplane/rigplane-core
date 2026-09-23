@@ -557,6 +557,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # startup. Used headless without a server, this store never ages
         # fields to STALE.
         self._state_store: StateStore = StateStore()
+        # MOR-2544: last power command the radio ACKed (0xFB), retained
+        # OUTSIDE the StateStore so it survives ``advance_generation``
+        # (watchdog timeout, reconnect attempts, soft reconnects — all clear
+        # the store). Set in ``set_powerstat`` on an accepted command only;
+        # cleared when the radio answers again or a 0x18 readback arrives
+        # (``runtime/_civ_rx.py``). Never published as ``True`` — only fresh
+        # answers prove power on. A process restart loses it, which reads as
+        # an honest unknown.
+        self._last_commanded_powerstat: bool | None = None
         self._state_model_service: RadioStateModelService | None = None
         self._state_diagnostics: StateDiagnosticsRecorder | None = None
         self._on_state_change: Callable[[str, dict[str, Any]], None] | None = (
@@ -5179,6 +5188,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 )
             else:
                 raise CommandError("Radio rejected power off")
+        if ack is True:
+            # MOR-2544: the 0xFB ACK is the radio's own confirmation of the
+            # new power state. A swallowed boot NAK (ack is False) or an
+            # ambiguous reply (ack is None) is not evidence and leaves the
+            # retained state untouched.
+            self._last_commanded_powerstat = on
 
     # --- Memory Commands ---
 

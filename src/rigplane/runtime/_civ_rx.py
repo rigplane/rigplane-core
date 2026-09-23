@@ -1984,22 +1984,39 @@ class CivRuntime:
             self._notify_state_store_changed(changeset)
             return
 
-        if frame.command != 0x18 and self._host._profile.infers_power_on_from_liveness:
+        if frame.command == 0x18 and len(frame.data) == 1:
+            # Explicit power truth (a get_powerstat readback — the only 0x18
+            # frame ever routed here; the power command's acknowledgement is
+            # 0xFB, claimed by the request tracker before state routing):
+            # it overrides the retained last-commanded power state.
+            self._host._last_commanded_powerstat = None
+        elif self._host._profile.infers_power_on_from_liveness:
             # MOR-2544: the profile declares power control but no power-status
             # query, so a decoded frame from the radio is itself the power
             # evidence — a powered-off radio answers nothing. Re-stamp
             # ``power_on=True`` on every routed response so the 30 s fallback
-            # TTL never decays it while answers keep arriving. 0x18 frames are
-            # excluded: they carry the explicit truth (including the 0x18 00
-            # power-off acknowledgement) and must not be clobbered. Placed
-            # after the relative-VFO early return because
-            # ``apply_relative_vfo_observations`` stages only its retention
-            # paths and would silently drop this global observation.
+            # TTL never decays it while answers keep arriving. 0x18 readbacks
+            # are excluded: they carry the explicit truth and must not be
+            # clobbered. 0xFA/0xFB and our own echo never reach this
+            # function: ``_route_civ_frame`` turns them into ACK/NAK events
+            # and drops frames not sent by this radio. A fresh answer also
+            # overrides the retained last-commanded power state. The
+            # observation is appended after the generation-stamping loop
+            # above, so it is stamped explicitly with the same
+            # ``store_provider_generation`` — it cannot join that tuple
+            # because the relative-VFO early return routes it through
+            # ``apply_relative_vfo_observations``, which stages only its
+            # retention paths and would silently drop this global
+            # observation.
+            self._host._last_commanded_powerstat = None
             observations = observations + (
-                self._observation(
-                    FieldPath.global_("tx_state", "power_on"),
-                    True,
-                    frame=frame,
+                _replace_dataclass(
+                    self._observation(
+                        FieldPath.global_("tx_state", "power_on"),
+                        True,
+                        frame=frame,
+                    ),
+                    provider_generation=store_provider_generation,
                 ),
             )
 

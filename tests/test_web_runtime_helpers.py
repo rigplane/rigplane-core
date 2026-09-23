@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from collections.abc import Callable
 from dataclasses import replace
 from itertools import permutations
@@ -1779,58 +1778,50 @@ def test_observed_values_match_the_prewire_contract_byte_for_byte() -> None:
     assert payload["main"]["pbtInner"] is None
 
 
-def _powered_off_likely_radio(model: str) -> _FakeRadio:
-    """Fake radio whose health classifies ``radio_powered_off_likely``."""
+def _liveness_radio(model: str, *, last_commanded: bool | None) -> _FakeRadio:
+    """Fake radio carrying the MOR-2544 retained last-commanded power state."""
     from rigplane.profiles import resolve_radio_profile
 
     radio = _FakeRadio(connected=True, radio_ready_flag=False)
     radio._profile = resolve_radio_profile(model=model)
-    radio._last_civ_data_received = time.monotonic() - 20.0
-    radio._civ_ready_idle_timeout = 2.0
-    radio._has_connected_once = True
-    radio.civ_stats = lambda: {"timeouts": 3, "active_waiters": 0}
+    radio._last_commanded_powerstat = last_commanded
     return radio
 
 
-def test_powered_off_likely_publishes_power_on_false_for_liveness_inferred_profile() -> (
-    None
-):
-    """MOR-2544: health ``radio_powered_off_likely`` → observed False.
+def test_last_commanded_power_off_publishes_false_while_store_unobserved() -> None:
+    """MOR-2544 (Option B): an ACKed power-off survives store generation clears.
 
-    The profile declares power control but no power-status query, so the
-    liveness inference holds ``powerOn=True`` until its TTL; the existing
-    health classification (no second timeout) flips it to False. RED at
-    302b96e1: no override exists, so the observed True is published as-is.
+    The store's ``power_on`` is unobserved (a watchdog/soft-reconnect
+    ``advance_generation`` cleared it), but the radio retains the power-off
+    command the radio ACKed (0xFB) — the payload publishes ``powerOn:
+    false`` with a ``fieldStatus.powerOn`` entry the frontend accepts
+    (``isFieldAvailable`` resolves ``available``), so the powered-off
+    overlay and the Power-ON button stay live for the whole outage. RED at
+    3b4473cc: nothing reads ``_last_commanded_powerstat``, so ``powerOn``
+    stays ``None``.
     """
-    store = StateStore()
-    store.apply(
-        _observation(
-            FieldPath.global_("tx_state", "power_on"),
-            True,
-            at=time.monotonic(),
-            max_age=30.0,
-        )
-    )
-    radio = _powered_off_likely_radio("IC-7610")
+    radio = _liveness_radio("IC-7610", last_commanded=False)
 
     payload = build_public_state_payload_from_snapshot(
-        store.snapshot(), radio=radio, receiver_count=2
+        StateStore().snapshot(), radio=radio, receiver_count=2
     )
 
-    assert payload["radioHealth"]["likelyCause"] == "radio_powered_off_likely"
     assert payload["powerOn"] is False
+    status = payload["fieldStatus"]["powerOn"]
+    assert status["observed"] is True
+    assert status["availability"] == "available"
 
 
-def test_powered_off_likely_does_not_fabricate_power_on_for_ftx1() -> None:
-    """MOR-2544: FTX-1 (no ``power_control``) stays unobserved → null, never
-    a fabricated value in either direction. RED at 302b96e1:
-    ``infers_power_on_from_liveness`` does not exist yet."""
-    radio = _powered_off_likely_radio("FTX-1")
+def test_last_commanded_power_off_is_never_published_for_ftx1() -> None:
+    """MOR-2544: FTX-1 (no ``power_control``) gets nothing fabricated, even
+    with a retained command present — the profile-data predicate gates the
+    publish. RED at origin/main: ``infers_power_on_from_liveness`` does not
+    exist yet (AttributeError)."""
+    radio = _liveness_radio("FTX-1", last_commanded=False)
     assert radio._profile.infers_power_on_from_liveness is False
 
     payload = build_public_state_payload_from_snapshot(
         StateStore().snapshot(), radio=radio, receiver_count=2
     )
 
-    assert payload["radioHealth"]["likelyCause"] == "radio_powered_off_likely"
     assert payload["powerOn"] is None

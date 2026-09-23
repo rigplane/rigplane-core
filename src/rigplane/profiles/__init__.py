@@ -561,8 +561,10 @@ class RadioProfile:
         that declares the ``power_control`` capability but no power-status
         query (``get_powerstat`` — e.g. IC-7610/IC-7300, whose CI-V guides
         document cmd 0x18 as SET-only) can still report an honest power
-        state: the radio answering reads is powered on, a confirmed
-        power-off is off, and before the first answer the state is unknown.
+        state: the radio answering reads is powered on; a power command the
+        radio acknowledged (0xFB, parsed by ``set_powerstat`` — a 0x18 frame
+        is never the acknowledgement) is the commanded state until the radio
+        answers again; and before the first answer the state is unknown.
         A profile with a declared query keeps using it instead, and a radio
         without ``power_control`` (FTX-1) gets nothing fabricated. Decided
         purely from profile data — never from a model name.
