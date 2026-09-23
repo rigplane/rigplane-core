@@ -787,8 +787,9 @@ describe('source and enforcement boundary', () => {
     // PR2 adds the hosted container query, the STEP overflow copy pair and
     // the scope-status seat. PR2 review repin: the status slot stops
     // shrinking, the host hides the surface's readout text span, and the
-    // STEP band moves to 424px (reviewer-measured on PR #3598).
-    expect(cssHash).toBe('e59545e73d43bd51ec4b4d039b72aebc03e03c3e9929e1548a660c6465dd055c');
+    // STEP band moves to 424px (reviewer-measured on PR #3598). Round-3
+    // repin: the STEP-band comment is marked as measured on desktop-v2.
+    expect(cssHash).toBe('1ef3820e3d28b8f824c424d34e4cb3be5f882aba57476ef02ad2f37fb5e556cd');
   });
 });
 
