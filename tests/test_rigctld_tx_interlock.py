@@ -275,7 +275,7 @@ async def test_structural_exemptions_never_resolve_rf_truth(
         assert (await handler.execute(parse_line(wire))).ok
     resolver.assert_not_called()
     radio.set_ptt.assert_awaited_once_with(False)
-    routing.set_func.assert_awaited_once_with("TUNER", False, vfo=None)
+    routing.set_func.assert_awaited_once_with("TUNER", False, vfo=None, receiver=0)
 
 
 # ── MOR-1881 (owner ruling 2026-08-17, superseding the deferred-TX-lane ─────
