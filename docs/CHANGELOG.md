@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b4] — 2026-09-23
+
+### Fixed
+
+- **The IC-7610, IC-705 and IC-9700 no longer poll the Po, SWR, ALC and
+  COMP meters while receiving (MOR-2540).** Their profiles gate these four
+  meters on PTT, as the IC-7300 and FTX-1 profiles already did; on a live
+  IC-7610 over LAN the polling had crowded the other fields and the
+  station meters blinked.
+- **A transmit-only station meter stays in its place, unlit, while
+  receiving (MOR-2540).** It lights up on transmit, so the meter row does
+  not shift. Bar meters and the segment-line display no longer show a `?`
+  in place of or after a reading.
+
 ## [3.0.0b3] — 2026-09-22
 
 ### Breaking changes
@@ -2617,7 +2631,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b3...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b4...HEAD
+[3.0.0b4]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b3...v3.0.0b4
 [3.0.0b3]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b2...v3.0.0b3
 [3.0.0b2]: https://github.com/rigplane/rigplane-core/compare/v2.11.1...v3.0.0b2
 [3.0.0b1]: https://github.com/rigplane/rigplane-core/compare/v2.11.1...v3.0.0b1
