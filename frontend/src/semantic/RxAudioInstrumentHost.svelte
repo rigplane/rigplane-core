@@ -42,14 +42,11 @@
    *  own `usable`). */
   const usable = (f: RxAudioField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
-  /** Honest text: an unread fact reads as unknown, never as a default. */
-  const textOf = (f: RxAudioField<unknown>): string =>
-    f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
-  /** MOR-2527 (owner rule 2026-09-21): the focus VALUE renders no text at all
-   *  while the reading is unknown — an unlit slot, never a `—` placeholder.
-   *  The `<output>` stays mounted with a reserved min-width so the row does
-   *  not shift when the reading arrives. */
-  const focusTextOf = (f: RxAudioField<unknown>): string =>
+  /** MOR-2527 (owner rule 2026-09-21): a routing VALUE renders no text at
+   *  all while the reading is unknown — an unlit slot, never a `—`
+   *  placeholder. The `<output>` stays mounted with a reserved min-width so
+   *  the row does not shift when the reading arrives. */
+  const unlitTextOf = (f: RxAudioField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : '';
 
   interface ExistingProps {
@@ -457,7 +454,7 @@
             onclick={() => focusBehavior.invoke(focus)}
           >{focus}</button>
         {/each}
-        <output data-testid="rx-audio-focus-value">{focusTextOf(rx.routingFocus)}</output>
+        <output data-testid="rx-audio-focus-value">{unlitTextOf(rx.routingFocus)}</output>
       {/if}
     </div>
   {/if}
@@ -505,7 +502,7 @@
             onclick={() => splitBehavior.invoke(value)}
           >split {label}</button>
         {/each}
-        <output data-testid="rx-audio-split-value">{textOf(rx.routingSplit)}</output>
+        <output data-testid="rx-audio-split-value">{unlitTextOf(rx.routingSplit)}</output>
       {/if}
     </div>
   {/if}
@@ -575,9 +572,9 @@
 
 <style>
   .rx-audio-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
-  /* MOR-2527: the focus value slot keeps its width while the reading is
-     unknown — the row must not shift when the value arrives ("both" is the
-     widest focus label at 4ch). */
+  /* MOR-2527: the focus/split value slot keeps its width while the reading
+     is unknown — the row must not shift when the value arrives (4ch covers
+     every value these rows render: main/sub/both, true/false). */
   .rx-audio-row > output { min-width: 4ch; }
   .rx-audio-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .rx-audio-level :global(.vc-hbar) { flex: 1 1 auto; min-width: 0; }

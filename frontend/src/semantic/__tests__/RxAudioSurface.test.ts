@@ -348,10 +348,12 @@ describe('every unread fact renders honestly, never as the v2 default', () => {
     r.dispose();
   });
 
-  // Kills: `?? false` — the third v2 fabrication.
-  it('renders an unrestored stereo split as unknown, with nothing checked', () => {
+  // Kills: `?? false` — the third v2 fabrication. MOR-2527: the split value
+  // is UNLIT (no text) while unread — never `—` — matching the focus slot.
+  it('renders an unrestored stereo split unlit — no value text, nothing checked', () => {
     const r = render(withRx({ routingSplit: unread<boolean>(DEGRADED) }));
-    expect(r.text('split-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('split-value')).toBe('');
+    expect(r.el('split')!.textContent).not.toMatch(/[?—–]|UNKNOWN|N\/A/);
     expect(r.el('split')!.dataset.observed).toBe('false');
     for (const [, label] of SPLIT_CHOICES) {
       expect(r.el(`split-${label}`)!.getAttribute('aria-checked')).toBe('false');

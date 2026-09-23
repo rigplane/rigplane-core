@@ -964,6 +964,33 @@ describe('DIGI-SEL and IP+ render as toggles and emit the FLIPPED value', () => 
     r.dispose();
   });
 
+  // MOR-2527 owner rule: a toggle is a KEY, not a `NAME: value` row. Known
+  // or not, the key shows its label only — the light (aria-pressed + the
+  // bold CSS on it) IS the state, never `IP+: on` / `DIGI-SEL: ?` text.
+  it.each(RF_FRONT_END_TOGGLES)(
+    'renders the observed %s key as its bare label, no value text',
+    (field, label) => {
+      const r = render(withRf({ [field]: known(true) } as Partial<RfFrontEndViewModel>));
+      expect(r.el(field)!.textContent).toBe(label);
+      r.dispose();
+    },
+  );
+
+  // Unread: the key stays in place, unlit — no aria-pressed at all (nothing
+  // claims ON or OFF about a reading the radio never reported), no `: ?`.
+  it.each(RF_FRONT_END_TOGGLES)(
+    'renders an unobserved %s as the bare unlit label with no aria-pressed',
+    (field, label) => {
+      const r = render(withRf({ [field]: unread<boolean>(DEGRADED) } as Partial<RfFrontEndViewModel>));
+      const key = r.el(field)!;
+      expect(key.textContent).toBe(label);
+      expect(key.textContent).not.toMatch(/[?—–]|UNKNOWN|N\/A/);
+      expect(key.hasAttribute('aria-pressed')).toBe(false);
+      expect(key.dataset.observed).toBe('false');
+      r.dispose();
+    },
+  );
+
   it('emits the flipped value on click, computed from the observed reading', () => {
     const onToggle = vi.fn();
     const r = render(withRf({ digiSel: known(false) }), { onToggle });

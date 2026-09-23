@@ -151,8 +151,10 @@
     retire(placement);
     return { update: retire };
   }
+  /** MOR-2527: an unread value renders NO text — an unlit slot with its
+   *  reserved width, never a `?` stand-in. */
   function formatValue(field: DspScalarField, value: number | null): string {
-    if (value === null || !Number.isFinite(value)) return '?';
+    if (value === null || !Number.isFinite(value)) return '';
     if (field === 'manualNotchWidth') return NOTCH_WIDTH_LABELS[value] ?? String(value);
     if (field === 'agcTimeConstant') return `${formatAgcTime(value)}s`;
     return field === 'nbLevel' && nbLevelPercent
@@ -257,6 +259,10 @@
   .dsp-scalar { display: grid; grid-template-columns: 9ch 8rem auto; align-items: center; gap: 0.5rem; }
   .dsp-scalar--presented { display: flex; width: 100%; min-width: 0; max-width: 100%; }
   .dsp-scalar-name { white-space: nowrap; }
+  /* MOR-2527: the canonical value slot keeps its width while the reading is
+     unknown — the row must not shift when the value arrives (6ch covers
+     'NARROW', the widest declared value label). */
+  .dsp-scalar > output { min-width: 6ch; font-variant-numeric: tabular-nums; }
   .dsp-scalar :global(.vc-hbar) { width: 100%; min-width: 0; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 </style>

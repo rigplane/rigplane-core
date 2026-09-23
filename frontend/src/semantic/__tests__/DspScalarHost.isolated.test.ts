@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
 import { proxy } from 'svelte/internal/client';
@@ -223,7 +224,8 @@ describe('two-scalar DSP family host', () => {
     });
     const nr = r.scalar('nrLevel')!;
     expect(nr.getAttribute('aria-disabled')).toBe('true');
-    expect(nr.dataset.display).toBe('?');
+    // MOR-2527: an unread value renders no text — never a `?`.
+    expect(nr.dataset.display).toBe('');
     nr.click();
     expect(r.onLevelChange).not.toHaveBeenCalled();
     r.dispose();
@@ -257,7 +259,8 @@ describe('two-scalar DSP family host', () => {
     }) });
     flushSync();
     expect(r.scalar('nbWidth')?.getAttribute('aria-disabled')).toBe('true');
-    expect(r.scalar('nbWidth')?.dataset.display).toBe('?');
+    // MOR-2527: an unread value renders no text — never a `?`.
+    expect(r.scalar('nbWidth')?.dataset.display).toBe('');
     expect(capture.bindings[1]).toBe(binding);
     r.dispose();
   });
@@ -276,7 +279,9 @@ describe('two-scalar DSP family host', () => {
     expect(r.row('nbLevel')).toBeNull();
     expect(r.row('nbWidth')).not.toBeNull();
     expect(r.scalar('nbWidth')?.getAttribute('aria-disabled')).toBe('true');
-    expect(r.scalar('nbWidth')?.dataset.accessibilityValueText).toContain('?');
+    // MOR-2527: an unread value carries no placeholder anywhere, including
+    // the accessible value text — never a `?`.
+    expect(r.scalar('nbWidth')?.dataset.accessibilityValueText).not.toContain('?');
     r.dispose();
   });
 
@@ -354,5 +359,14 @@ describe('two-scalar DSP family host', () => {
     expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(false);
     expect(r.onLevelChange).not.toHaveBeenCalled();
     r.dispose();
+  });
+});
+
+describe('the scalar host CSS keeps the value slot width floor (MOR-2527)', () => {
+  // jsdom computes no layout; this checks the declaration is written, not
+  // that it guarantees no shift.
+  it('reserves the canonical value slot width in the host CSS', () => {
+    const source = readFileSync('src/semantic/DspScalarHost.svelte', 'utf8');
+    expect(source).toMatch(/\.dsp-scalar > output \{[^}]*min-width: 6ch/);
   });
 });

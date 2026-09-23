@@ -124,8 +124,6 @@
     field?.availability.structural === true
     && field.availability.operational
     && field.reading.status === 'known';
-  const finiteText = (field: RfFrontEndField<unknown> | undefined): string =>
-    field?.reading.status === 'known' ? String(field.reading.value) : '?';
   function formOf(view: RadioViewModel, requested: RfSqlControlModel): RfSqlControlModel {
     return requested === 'combined'
       && view.rfFrontEnd?.rfGain.availability.structural === true
@@ -631,13 +629,18 @@
         seat={seat} renderer={finiteAppearance.toggle}
       />{/key}{/key}
     {:else}
+      <!-- MOR-2527 owner rule: a toggle is a KEY, not a `NAME: value` row.
+           The label only, lit by `aria-pressed` (bold, like the preamp
+           choices): an unread reading draws the unlit label with no `: ?`
+           text and no `aria-pressed` at all, so nothing claims ON or OFF
+           about a reading the radio never reported. -->
       <button
         type="button" class="rf-front-end-toggle"
         data-testid={`rf-front-end-${field}`} data-observed={usable(current)}
         aria-pressed={behavior.confirmed}
         disabled={!behavior.available}
         onclick={() => behavior.invoke()}
-      >{label}: {finiteText(current)}</button>
+      >{label}</button>
     {/if}
   {/if}
 {/snippet}
@@ -672,6 +675,9 @@
   .rf-front-end-att-control { min-width: 0; margin: 0; padding: 0; border: 0; }
   .rf-front-end-unknown { grid-column: 2; color: var(--v2-text-primary); }
   .rf-front-end-choice[aria-checked='true'] { font-weight: 700; }
+  /* MOR-2527: the toggle key's light — the same structural (forced-colors
+     safe) weight the preamp choices use, on the state attribute itself. */
+  .rf-front-end-toggle[aria-pressed='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }
   button:disabled { cursor: not-allowed; }
   /* MOR-1441 leg 2 — same pending doctrine as `FilterSurface`'s

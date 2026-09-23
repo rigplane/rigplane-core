@@ -502,6 +502,12 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
     expect(RX_AUDIO_HOST_SOURCE).toMatch(/\.rx-audio-gain > output \{[^}]*tabular-nums/);
   });
 
+  // MOR-2527: the focus/split value slot keeps its width floor while the
+  // reading is unknown so the row does not shift when the value arrives.
+  it('keeps the focus/split value slot width floor in the host CSS', () => {
+    expect(RX_AUDIO_HOST_SOURCE).toMatch(/\.rx-audio-row > output \{[^}]*min-width: 4ch/);
+  });
+
   it('does not render dual controls for a single-receiver radio', () => {
     h.caps = {
       ...liveCaps(AUDIO_TAGS.filter(tag => tag !== 'dual_rx' && tag !== 'lan_dual_rx_audio_routing')),
@@ -640,10 +646,12 @@ describe('routing prefs stay unowned by this layer (MOR-1274 carry-forward 2)', 
   // they had been observed, which is exactly the fabrication slice 3A removed.
   it('reports focus and split as unknown until someone else restores them', () => {
     render();
-    // MOR-2527: the focus value is UNLIT (no text) while unread — never `—`.
+    // MOR-2527: the focus AND split values are UNLIT (no text) while
+    // unread — never a `—` placeholder.
     expect(text('focus-value')).toBe('');
     expect(el('focus')!.textContent).not.toContain('—');
-    expect(text('split-value')).toBe('—');
+    expect(text('split-value')).toBe('');
+    expect(el('split')!.textContent).not.toMatch(/[?—–]|UNKNOWN|N\/A/);
     expect(el('focus')!.dataset.observed).toBe('false');
     expect(el('split')!.dataset.observed).toBe('false');
   });
