@@ -120,6 +120,17 @@
     modInputReadingValue !== undefined
       && modInputChoices.some(option => option.value === modInputReadingValue),
   );
+  /** MOR-2527 owner rule: the MOD readout label is the constant `MOD`; the
+   *  source value renders in its OWN span, empty while unread. The span's
+   *  reserved width is computed from the labels the select offers — never a
+   *  hardcoded model-specific width — so neither it nor the readiness span
+   *  after it moves when the reading arrives. */
+  let modSourceValue = $derived(modInputReadingValue === undefined ? ''
+    : modInputChoices.find(option => option.value === modInputReadingValue)?.label
+      ?? String(modInputReadingValue));
+  let modSourceWidthCh = $derived(
+    Math.max(0, ...modInputChoices.map((option) => option.label.length)),
+  );
 
   const monitorBehavior = bindAbsoluteChoiceInstrument<MonitorMode>(() => ({
     choices: MONITOR_MODES.filter((mode) => mode !== 'live' || liveOffered),
@@ -529,8 +540,6 @@
           seat={modInputSeat} renderer={finiteAppearance.choice}
         />{/key}{/key}
       {:else}
-        {@const modSourceText = modInputReadingValue === undefined ? 'MOD'
-          : `MOD: ${modInputChoices.find(option => option.value === modInputReadingValue)?.label ?? modInputReadingValue}`}
         <label class="rx-audio-mod-selector">
           <span>{t('core.modePanel.modInputLabel')}</span>
           <select
@@ -545,10 +554,17 @@
             {/each}
           </select>
         </label>
-        <!-- MOR-2527: an unread source renders the LABEL only — no `MOD: —`
-             form; a known-but-unrecognized source shows its true raw code,
-             never a fabricated choice name. -->
-        <span data-testid="rx-audio-mod-source">{modSourceText}</span>
+        <!-- MOR-2527 owner rule: the readout label stays the constant `MOD`;
+             the source value lives in its own span, empty while unread —
+             its width reserved for the widest label the select offers, so
+             neither it nor the readiness span after it moves when the
+             reading arrives. A known-but-unrecognized source shows its true
+             raw code in that span, never a fabricated choice name. -->
+        <span data-testid="rx-audio-mod-source">MOD</span>
+        <span
+          data-testid="rx-audio-mod-source-value" class="rx-audio-mod-source-value"
+          style={`--rx-audio-mod-source-width: ${modSourceWidthCh}ch`}
+        >{modSourceValue}</span>
         <span data-testid="rx-audio-mod-readiness"
         >{READINESS_LABEL[rx.modInputReadiness.status]}</span>
       {/if}
@@ -599,6 +615,11 @@
   .rx-audio-status { margin: 0; color: var(--v2-text-dim, #8ca0b8); font-size: 10px; }
   .rx-audio-mod-selector { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; max-width: 100%; }
   .rx-audio-mod-selector select { min-width: 0; max-width: 100%; }
+  /* MOR-2527: the MOD value span is a flex item of `.rx-audio-row`, so its
+     min-width applies directly — the custom property is computed from the
+     widest label the select offers, and the reservation keeps both this span
+     and the readiness span after it from moving when the reading arrives. */
+  .rx-audio-mod-source-value { min-width: var(--rx-audio-mod-source-width, 0ch); }
   .rx-audio-choice[aria-checked='true'] { font-weight: 700; }
   /* Second channel beside `data-observed`, never the only one. MOR-2527: an
      unobserved slot carries NO value text, so italics mark it without

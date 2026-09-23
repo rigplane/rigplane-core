@@ -438,6 +438,26 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
     expect(afSlider()?.closest('.vc-hbar')?.classList.contains('hw-illum')).toBe(true);
   });
 
+  // MOR-2527 owner rule, round 4: the DESKTOP face draws the AF row through
+  // `RxAudioInstrumentHost`'s own `afLevelRow` output — not `RxAudioSurface`'s
+  // grouped one — so the unread half is pinned HERE. An unread AF level
+  // renders the literal empty string, never a `—` placeholder.
+  // MUTATION KILLED: putting placeholder text back in `afLevelRow`'s output.
+  it('renders the unread AF level as the literal empty string in the desktop AF row', () => {
+    h.audio = { muted: false, rxEnabled: false, volume: 42 };
+    const state = liveState();
+    state.fieldStatus = {
+      ...state.fieldStatus,
+      'main.afLevel': {
+        storePath: 'main.afLevel', observed: false, freshness: 'unknown', availability: 'missing',
+      },
+    };
+    h.state = state;
+    renderHostedFace('desktop-v2');
+    expect(text('af-value')).toBe('');
+    expect(q('[data-testid="rx-audio-af"]')?.getAttribute('data-observed')).toBe('false');
+  });
+
   it('dispatches dual channel gain through the existing audio-routing handler', () => {
     h.audioRouting = { focus: 'both', split_stereo: false, main_gain_db: -6, sub_gain_db: 2 };
     renderHostedFace('desktop-v2');
@@ -687,7 +707,8 @@ describe('common MOD-input selector reaches the existing mode handler (MOR-2366)
     render();
     expect(selectSource(value).disabled).toBe(false);
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_data_off_mod_input', { source: value });
-    expect(text('mod-source')).toBe('MOD: LAN');
+    expect(text('mod-source')).toBe('MOD');
+    expect(text('mod-source-value')).toBe('LAN');
     expect(el('mod-input')!.dataset.readiness).toBe('ready');
   });
 
@@ -723,6 +744,7 @@ describe('common MOD-input selector reaches the existing mode handler (MOR-2366)
     expect(selectSource(0).disabled).toBe(true);
     // MOR-2527: an unread source renders the LABEL only — no `MOD: —`.
     expect(text('mod-source')).toBe('MOD');
+    expect(text('mod-source-value')).toBe('');
     expect(sendCommand).not.toHaveBeenCalled();
   });
 
@@ -751,7 +773,8 @@ describe('a MOD-input mismatch keeps exactly one one-click remedy', () => {
     mismatched();
     render();
     expect(el('mod-input')!.dataset.readiness).toBe('mismatch');
-    expect(text('mod-source')).toBe('MOD: MIC');
+    expect(text('mod-source')).toBe('MOD');
+    expect(text('mod-source-value')).toBe('MIC');
   });
 
   // MUTATION KILLED: a remedy button that fires a different command, or none.

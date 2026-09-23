@@ -33,9 +33,6 @@
     type RfFrontEndToggleField,
     DISABLED_REASON_LABEL,
   } from './rf-front-end-instruments';
-
-  /** The one rendering of "not read". Never 0, never the last value. */
-  export const UNKNOWN_TEXT = '?';
 </script>
 
 <script lang="ts">

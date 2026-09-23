@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
@@ -782,6 +783,53 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
       .map((node) => node.dataset.testid)
       .filter((id): id is string => documented.includes(id ?? ''));
     expect(order).toEqual(documented);
+  });
+
+  /* ── MOR-2527 round 4: reserved readouts never shift on arrival ─── */
+
+  // jsdom cannot lay out, so the width reservation is pinned on the CSS
+  // itself — the VfoIndicatorRow.test.ts precedent (readFileSync of the
+  // component plus a regex scoped to the rule block). Reverting either
+  // declaration inside `.rf-front-end-reading output` makes this red.
+  it('reserves the RF/SQL heading output width in CSS', () => {
+    const source = readFileSync('src/semantic/RfFrontEndInstrumentHost.svelte', 'utf8');
+    const rule = /\.rf-front-end-reading output\s*\{([^}]*)\}/.exec(source)?.[1] ?? '';
+    expect(rule, 'the rule block exists').not.toBe('');
+    expect(rule).toMatch(/display:\s*inline-block/);
+    expect(rule).toMatch(/min-width:\s*4ch/);
+  });
+
+  it.each(['preamp', 'attenuator'] as const)(
+    'renders %s through the SAME sr-only output element unread and known',
+    (field) => {
+      const knownText = field === 'preamp' ? 'P1' : '6 dB';
+      const signature = (row: Element) => [...row.querySelectorAll('output')]
+        .map((node) => `${node.getAttribute('class')}[${node.getAttribute('data-testid')}]`);
+      const r = renderFinite(finiteBase());
+      const row = r.el(field)!;
+      expect(signature(row)).toEqual([`sr-only[rf-front-end-${field}-value]`]);
+      expect(r.el(`${field}-value`)!.textContent).toBe(knownText);
+
+      r.props.view = rfReading(r.props.view, field, { status: 'unknown' });
+      flushSync();
+      const unreadRow = r.el(field)!;
+      // Same DOM node and same element signature — only the text empties, so
+      // the row's grid tracks (and its height) cannot change between states.
+      expect(unreadRow).toBe(row);
+      expect(signature(unreadRow)).toEqual([`sr-only[rf-front-end-${field}-value]`]);
+      expect(r.el(`${field}-value`)!.textContent).toBe('');
+      expect(unreadRow.querySelector('.rf-front-end-unknown')).toBeNull();
+    },
+  );
+
+  // The one legitimate `.rf-front-end-unknown` user left: a KNOWN level the
+  // model does not list shows its true code visibly — pinning it keeps the
+  // class owned and the unread/known symmetry above honest.
+  it('keeps a known-but-unlisted level visible as its true code', () => {
+    const r = renderFinite(rfReading(finiteBase(), 'preamp', { status: 'known', value: 9 }));
+    const value = r.el('preamp-value')!;
+    expect(value.getAttribute('class')).toBe('rf-front-end-unknown');
+    expect(value.textContent).toBe('P9');
   });
 });
 

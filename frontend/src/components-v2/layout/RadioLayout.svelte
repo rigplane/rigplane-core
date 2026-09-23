@@ -1208,6 +1208,7 @@
   .desktop-control-face.standard-face :global([data-testid='rf-front-end-preamp-mutex-reason']),
   .desktop-control-face.standard-face :global([data-testid='rx-audio-focus-value']),
   .desktop-control-face.standard-face :global([data-testid='rx-audio-mod-source']),
+  .desktop-control-face.standard-face :global([data-testid='rx-audio-mod-source-value']),
   .desktop-control-face.standard-face :global([data-testid='rx-audio-mod-readiness']) {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;

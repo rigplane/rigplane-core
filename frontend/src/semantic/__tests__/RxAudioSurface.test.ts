@@ -363,13 +363,15 @@ describe('every unread fact renders honestly, never as the v2 default', () => {
   });
 
   // Kills: presenting an unread MOD source as any concrete source. MOR-2527:
-  // the `NAME: value` form collapses to the LABEL only while unread, and an
-  // unknown readiness renders no text — never `MOD: —`, never a bare `—`.
+  // the label span stays the constant `MOD` and the value span renders NO
+  // text while unread, and an unknown readiness renders no text — never
+  // `MOD: —`, never a bare `—`.
   it('renders an unread MOD-input source as the label only, never as a source name', () => {
     const r = render(withRx({
       modInputSource: unread<number>(DEGRADED), modInputReadiness: { status: 'unknown' },
     }));
     expect(r.text('mod-source')).toBe('MOD');
+    expect(r.text('mod-source-value')).toBe('');
     expect(r.text('mod-readiness')).toBe('');
     expect(r.el('mod-input')!.dataset.observed).toBe('false');
     r.dispose();
@@ -521,7 +523,8 @@ describe('MOD-input selection uses observed facts and absolute intents (MOR-2366
     flushSync();
     expect(onModInputChange).toHaveBeenCalledExactlyOnceWith(value);
     expect(select.value).toBe('5');
-    expect(r.text('mod-source')).toBe('MOD: LAN');
+    expect(r.text('mod-source')).toBe('MOD');
+    expect(r.text('mod-source-value')).toBe('LAN');
     r.dispose();
   });
 
@@ -614,12 +617,54 @@ describe('MOD-input selection uses observed facts and absolute intents (MOR-2366
     expect(select.value).toBe('1');
     unmount(component);
   });
+
+  // MOR-2527 round 4: the label span is the CONSTANT `MOD` and the source
+  // value lives in its own width-reserved span, so the row (and the readiness
+  // span after the value) cannot shift when the reading arrives. jsdom cannot
+  // lay out, so the reservation is pinned on the rendered structure AND on
+  // the CSS itself — the VfoIndicatorRow.test.ts precedent (readFileSync of
+  // the component plus a regex scoped to the rule block).
+  it('keeps the MOD label constant with the source value in its own reserved span', () => {
+    const widest = Math.max(...MOD_INPUT_SOURCES.map((option) => option.label.length));
+    const structure = (row: HTMLElement) => [...row.querySelectorAll('[data-testid]')]
+      .map((node) => node.getAttribute('data-testid'));
+    const reserved = (el: HTMLElement | null) => el?.getAttribute('style') ?? null;
+
+    const unlitRow = render(withRx({
+      modInputSource: unread<number>(DEGRADED), modInputReadiness: { status: 'unknown' },
+    }));
+    const unlit = unlitRow.el('mod-input')!;
+    expect(structure(unlit)).toEqual([
+      'rx-audio-mod-select', 'rx-audio-mod-source',
+      'rx-audio-mod-source-value', 'rx-audio-mod-readiness',
+    ]);
+    expect(unlitRow.text('mod-source')).toBe('MOD');
+    expect(unlitRow.text('mod-source-value')).toBe('');
+    expect(reserved(unlitRow.el('mod-source-value'))).toBe(`--rx-audio-mod-source-width: ${widest}ch`);
+    unlitRow.dispose();
+
+    const litRow = render(withRx({ modInputSource: known(3) }));
+    expect(structure(litRow.el('mod-input')!)).toEqual(structure(unlit));
+    expect(litRow.text('mod-source')).toBe('MOD');
+    expect(litRow.text('mod-source-value')).toBe('USB');
+    expect(reserved(litRow.el('mod-source-value'))).toBe(`--rx-audio-mod-source-width: ${widest}ch`);
+    litRow.dispose();
+
+    const host = readFileSync('src/semantic/RxAudioInstrumentHost.svelte', 'utf8');
+    const rule = /\.rx-audio-mod-source-value\s*\{([^}]*)\}/.exec(host)?.[1] ?? '';
+    expect(rule, 'the rule block exists').not.toBe('');
+    expect(rule).toMatch(/min-width:\s*var\(--rx-audio-mod-source-width/);
+    // The reserved width is COMPUTED from the offered labels, never a
+    // hardcoded model-specific value.
+    expect(host).toMatch(/--rx-audio-mod-source-width: \$\{modSourceWidthCh\}ch/);
+  });
 });
 
 describe('MOD-input readiness is stated, and a mismatch is never a dead end', () => {
   it('names the observed source and reports LAN readiness', () => {
     const r = render(base());
-    expect(r.text('mod-source')).toBe('MOD: LAN');
+    expect(r.text('mod-source')).toBe('MOD');
+    expect(r.text('mod-source-value')).toBe('LAN');
     expect(r.text('mod-readiness')).toBe('LAN');
     expect(r.el('mod-input')!.dataset.readiness).toBe('ready');
     r.dispose();
@@ -633,7 +678,8 @@ describe('MOD-input readiness is stated, and a mismatch is never a dead end', ()
       withRx({ modInputSource: known(0), modInputReadiness: { status: 'mismatch', source: 0 } }),
       { onSetModInputLan },
     );
-    expect(r.text('mod-source')).toBe('MOD: MIC');
+    expect(r.text('mod-source')).toBe('MOD');
+    expect(r.text('mod-source-value')).toBe('MIC');
     expect(r.el('mod-input')!.dataset.readiness).toBe('mismatch');
     const fix = r.el('mod-set-lan');
     expect(fix).not.toBeNull();

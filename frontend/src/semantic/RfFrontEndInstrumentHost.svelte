@@ -328,7 +328,10 @@
     ? 'compatibility-reading'
     : presentation.rfSqlFeedback === null ? 'authority-unresolved' : 'command-feedback';
   /** MOR-2527: an unread level renders NO value text — an unlit slot, never
-   *  a `?` stand-in (the heading label and the reserved output stay). */
+   *  a `?` stand-in. The heading labels stay, and each `<output>` keeps its
+   *  box reserved (`display: inline-block; min-width: 4ch` on
+   *  `.rf-front-end-reading output` below — the widest value is `100%`), so
+   *  the SQL label cannot move when a value arrives. */
   const valueText = (value: number | null): string => value === null
     ? '' : formatKnownLevel(value, domain.min, domain.max);
   function pairLaneValue(view: Readonly<ContinuousPairView>, lane: DualParamLane): number | null {
@@ -554,12 +557,19 @@
             >{preampChoiceText(value)}</button>
           {/each}
         </div>
-        {#if rf.preamp.reading.status === 'known' && rf.preValues.includes(rf.preamp.reading.value)}
-          <output class="sr-only" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{preampChoiceText(rf.preamp.reading.value)}</output>
-        {:else if preampDisabledReason() === undefined || preampDisabledReason()?.code !== 'receiver-lacks-control'}
-          <!-- MOR-2527: unread renders no value text — the slot stays
-               mounted for its space, never a `?`. -->
-          <output class="rf-front-end-unknown" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{rf.preamp.reading.status === 'known' ? preampChoiceText(rf.preamp.reading.value) : ''}</output>
+        {#if preampDisabledReason()?.code !== 'receiver-lacks-control'}
+          {#if rf.preamp.reading.status === 'known' && !rf.preValues.includes(rf.preamp.reading.value)}
+            <!-- MOR-2527: a KNOWN level the model does not list shows its
+                 true code in the visible slot — never a fabricated choice
+                 name, never a `?`. -->
+            <output class="rf-front-end-unknown" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{preampChoiceText(rf.preamp.reading.value)}</output>
+          {:else}
+            <!-- MOR-2527: an unread reading renders the SAME sr-only output
+                 a known reading renders, EMPTY — no value text and no extra
+                 grid row, so the row's element set, row count and height are
+                 identical unread vs known. -->
+            <output class="sr-only" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{rf.preamp.reading.status === 'known' ? preampChoiceText(rf.preamp.reading.value) : ''}</output>
+          {/if}
         {/if}
         {#if preampDisabledReason()}
           <p id={preampMutexId} data-testid="rf-front-end-preamp-mutex-reason">{reasonLabel(preampDisabledReason()!.code)}</p>
@@ -610,12 +620,19 @@
             {/each}
           </div>
         {/if}
-        {#if rf.attenuator.reading.status === 'known' && rf.attValues.includes(rf.attenuator.reading.value)}
-          <output class="sr-only" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{attenuatorChoiceText(rf.attenuator.reading.value)}</output>
-        {:else if attenuatorDisabledReason() === undefined || attenuatorDisabledReason()?.code !== 'receiver-lacks-control'}
-          <!-- MOR-2527: unread renders no value text — the slot stays
-               mounted for its space, never a `?`. -->
-          <output class="rf-front-end-unknown" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{rf.attenuator.reading.status === 'known' ? attenuatorChoiceText(rf.attenuator.reading.value) : ''}</output>
+        {#if attenuatorDisabledReason()?.code !== 'receiver-lacks-control'}
+          {#if rf.attenuator.reading.status === 'known' && !rf.attValues.includes(rf.attenuator.reading.value)}
+            <!-- MOR-2527: a KNOWN level the model does not list shows its
+                 true code in the visible slot — never a fabricated choice
+                 name, never a `?`. -->
+            <output class="rf-front-end-unknown" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{attenuatorChoiceText(rf.attenuator.reading.value)}</output>
+          {:else}
+            <!-- MOR-2527: an unread reading renders the SAME sr-only output
+                 a known reading renders, EMPTY — no value text and no extra
+                 grid row, so the row's element set, row count and height are
+                 identical unread vs known. -->
+            <output class="sr-only" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{rf.attenuator.reading.status === 'known' ? attenuatorChoiceText(rf.attenuator.reading.value) : ''}</output>
+          {/if}
         {/if}
         {#if attenuatorDisabledReason()}
           <p id={attenuatorMutexId} data-testid="rf-front-end-attenuator-mutex-reason">{reasonLabel(attenuatorDisabledReason()!.code)}</p>
@@ -670,7 +687,11 @@
   .rf-front-end-level { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.25rem; min-width: 0; }
   .rf-front-end-heading { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 1rem; min-width: 0; }
   .rf-front-end-reading { color: var(--v2-text-dim); font-size: 9px; text-transform: uppercase; }
-  .rf-front-end-reading output { color: var(--v2-text-primary); font-size: 10px; }
+  /* MOR-2527: the value box stays reserved — `min-width: 4ch` covers the
+     widest rendered value (`100%`), and `inline-block` is what makes the
+     min-width apply to the inline <output>, so the heading's other label
+     cannot shift when a value arrives. */
+  .rf-front-end-reading output { display: inline-block; min-width: 4ch; color: var(--v2-text-primary); font-size: 10px; }
   .rf-front-end-slider { grid-column: 1 / -1; width: 100%; min-width: 0; }
   .rf-front-end-level :global(.vc-hbar),
   .rf-front-end-level :global(.vc-dual) { width: 100%; min-width: 0; }
