@@ -195,16 +195,16 @@ def _receiver_for_vfo(vfo: str | None) -> int:
     """Backend receiver index for a TONE/TSQL request, from the VFO label.
 
     The public :class:`~rigplane.core.radio_protocol.RigctldRoutingStrategy`
-    carries only ``vfo`` for per-receiver routing, so the SUB-targeted
-    labels (``VFOB`` / a Main-Sub scheme's SUB names) map to receiver 1 on
-    the dual-RX FTX-1, while ``VFOA`` / MAIN names / ``currVFO`` / ``None``
-    stay on receiver 0 (MAIN) — the same routing NB/NR/levels already use.
+    carries only ``vfo`` for per-receiver routing, and the rigctld parser
+    forwards only the labels it validates (``VFOA`` / ``VFOB`` /
+    ``currVFO``, :data:`~rigplane.rigctld.protocol.VFO_LABELS`) or ``None``.
+    ``VFOB`` maps to receiver 1 on the dual-RX FTX-1; everything else stays
+    on receiver 0 (MAIN) — the same routing NB/NR/levels already use.
     """
 
     if vfo is None:
         return 0
-    label = vfo.upper()
-    return 1 if label == "VFOB" or "SUB" in label else 0
+    return 1 if vfo.upper() == "VFOB" else 0
 
 
 # ---------------------------------------------------------------------------
