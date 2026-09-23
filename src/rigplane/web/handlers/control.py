@@ -117,8 +117,6 @@ from ..radio_poller import (  # noqa: TID251
     SwitchScopeReceiver,
     VfoEqualize,
     VfoSwap,
-    SetToneFreq,
-    SetTsqlFreq,
     SetMainSubTracking,
     SetSsbTxBandwidth,
     SetManualNotchWidth,
@@ -129,8 +127,6 @@ from ..radio_poller import (  # noqa: TID251
     SetNbDepth,
     SetNbWidth,
     SetDashRatio,
-    SetRepeaterTone,
-    SetRepeaterTsql,
     SetRxAntenna,
     SetMemoryMode,
     MemoryWrite,
@@ -3190,34 +3186,6 @@ class ControlHandler:
                     )
                 q.put(ScanSetResume(mode=resume_mode))
                 return {"mode": resume_mode}
-            case "set_repeater_tone":
-                on = bool(params.get("on", False))
-                rx = int(params.get("receiver", 0))
-                self._ensure_capability("repeater_tone", "set_repeater_tone")
-                self._ensure_receiver_supported(rx)
-                q.put(SetRepeaterTone(on, receiver=rx))
-                return {"on": on, "receiver": rx}
-            case "set_tone_freq":
-                freq = int(params["freq"])
-                rx = int(params.get("receiver", 0))
-                self._ensure_capability("repeater_tone", "set_tone_freq")
-                self._ensure_receiver_supported(rx)
-                q.put(SetToneFreq(freq, receiver=rx))
-                return {"freq": freq, "receiver": rx}
-            case "set_repeater_tsql":
-                on = bool(params.get("on", False))
-                rx = int(params.get("receiver", 0))
-                self._ensure_capability("tsql", "set_repeater_tsql")
-                self._ensure_receiver_supported(rx)
-                q.put(SetRepeaterTsql(on, receiver=rx))
-                return {"on": on, "receiver": rx}
-            case "set_tsql_freq":
-                freq = int(params["freq"])
-                rx = int(params.get("receiver", 0))
-                self._ensure_capability("tsql", "set_tsql_freq")
-                self._ensure_receiver_supported(rx)
-                q.put(SetTsqlFreq(freq, receiver=rx))
-                return {"freq": freq, "receiver": rx}
             case "set_ref_adjust":
                 value = int(params["value"])
                 q.put(SetRefAdjust(value))

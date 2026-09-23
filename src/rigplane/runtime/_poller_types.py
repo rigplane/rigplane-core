@@ -138,8 +138,6 @@ __all__ = [
     "SetSsbTxBandwidth",
     "SetSystemDate",
     "SetSystemTime",
-    "SetToneFreq",
-    "SetTsqlFreq",
     "SetTunerStatus",
     "SetTuningStep",
     "SetTwinPeak",
@@ -661,18 +659,6 @@ class SetCompressor:
 
 
 @dataclass(frozen=True, slots=True)
-class SetToneFreq:
-    freq_hz: int
-    receiver: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class SetTsqlFreq:
-    freq_hz: int
-    receiver: int = 0
-
-
-@dataclass(frozen=True, slots=True)
 class SetMainSubTracking:
     on: bool
 
@@ -727,12 +713,26 @@ class SetDashRatio:
 
 @dataclass(frozen=True, slots=True)
 class SetRepeaterTone:
+    """TX-policy classification token for ``set_func TONE`` (rigctld).
+
+    No dispatch arm executes it: the rigctld TX-policy seat builds it to
+    classify the intent, and the write itself is descriptor-backed
+    (``core/command_dispatch.py: set_repeater_tone``).
+    """
+
     on: bool
     receiver: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class SetRepeaterTsql:
+    """TX-policy classification token for ``set_func TSQL`` (rigctld).
+
+    No dispatch arm executes it: the rigctld TX-policy seat builds it to
+    classify the intent, and the write itself is descriptor-backed
+    (``core/command_dispatch.py: set_repeater_tsql``).
+    """
+
     on: bool
     receiver: int = 0
 
@@ -970,8 +970,6 @@ Command: TypeAlias = (
     | SetLanModLevel
     | SetDualWatch
     | SetCompressor
-    | SetToneFreq
-    | SetTsqlFreq
     | SetMainSubTracking
     | SetSsbTxBandwidth
     | SetManualNotchWidth
@@ -1078,8 +1076,6 @@ LEGACY_COMMAND_NAMES: dict[type, str] = {
     SetIpPlus: "set_ip_plus",
     SetPbtInner: "set_pbt_inner",
     SetPbtOuter: "set_pbt_outer",
-    SetToneFreq: "set_tone_freq",
-    SetTsqlFreq: "set_tsql_freq",
     SetRitFrequency: "set_rit_frequency",
     SetRitStatus: "set_rit_status",
     SetRitTxStatus: "set_rit_tx_status",
