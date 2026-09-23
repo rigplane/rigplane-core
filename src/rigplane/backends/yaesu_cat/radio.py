@@ -7,7 +7,6 @@ using :class:`YaesuCatTransport` for serial I/O and
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from collections.abc import Mapping
 from pathlib import Path
@@ -257,13 +256,6 @@ class YaesuCatRadio:
         """Close the serial port."""
         await self._audio_driver.stop_rx()
         await self._audio_driver.stop_tx()
-        # MOR-546: an armed exclusive duplex stream is closed by neither
-        # stop_rx nor stop_tx alone — close it explicitly. Read with
-        # getattr (the additive duck-typed pattern audio_duplex_mode
-        # already uses): older test doubles predate the duplex surface.
-        stop_duplex = getattr(self._audio_driver, "stop_duplex", None)
-        if stop_duplex is not None:
-            await stop_duplex()
         await self._transport.close()
 
     async def __aenter__(self) -> "YaesuCatRadio":
@@ -427,55 +419,27 @@ class YaesuCatRadio:
         :class:`AudioPacket` marked with ``SYNTHETIC_RX_IDENT`` and a
         locally counted wrapping uint16 ``send_seq`` — there is no LAN
         wire header on this path.
-
-        MOR-546: while the exclusive same-device duplex stream carries the
-        TX leg it already delivers RX to :meth:`_deliver_rx_pcm`, so joining
-        (or re-arming) RX demand only re-points the user callback — no
-        second input stream is opened on the device.
         """
         if not callable(callback):
             raise TypeError("callback must be callable and accept AudioPacket | None.")
         self._require_connected()
 
         self._opus_rx_user_callback = callback
-        if self._tx_duplex_active():
-            return
-        await self._audio_driver.start_rx(self._deliver_rx_pcm)
 
-    def _deliver_rx_pcm(self, pcm_frame: bytes) -> None:
-        """Stable driver-facing RX callback (MOR-546).
+        def _on_pcm_frame(pcm_frame: bytes) -> None:
+            packet = AudioPacket(
+                ident=SYNTHETIC_RX_IDENT,
+                send_seq=self._audio_seq,
+                data=pcm_frame,
+            )
+            self._audio_seq = (self._audio_seq + 1) & 0xFFFF
+            callback(packet)
 
-        Registered with whichever stream currently carries RX — the plain
-        input stream or the exclusive duplex stream — so the RX → duplex →
-        RX handoff never re-wires the driver side. Reads the CURRENT user
-        callback each frame: while none is wired (a duplex stream armed
-        before its RX leg joined) frames are drained and dropped.
-        """
-        callback = self._opus_rx_user_callback
-        if callback is None:
-            return
-        packet = AudioPacket(
-            ident=SYNTHETIC_RX_IDENT,
-            send_seq=self._audio_seq,
-            data=pcm_frame,
-        )
-        self._audio_seq = (self._audio_seq + 1) & 0xFFFF
-        callback(packet)
-
-    def _tx_duplex_active(self) -> bool:
-        """True while the TX leg runs through the exclusive duplex stream."""
-        return self.audio_duplex_mode == "exclusive" and self._audio_driver.tx_running
+        await self._audio_driver.start_rx(_on_pcm_frame)
 
     async def stop_rx(self) -> None:
-        """Stop RX capture (``AudioTransport.stop_rx``).
-
-        MOR-546: while the exclusive duplex stream is armed the RX leg
-        rides it — closing RX here would kill the TX leg, so only the user
-        callback is unwired; :meth:`stop_tx` owns the duplex teardown.
-        """
+        """Stop RX capture (``AudioTransport.stop_rx``)."""
         self._opus_rx_user_callback = None
-        if self._tx_duplex_active():
-            return
         await self._audio_driver.stop_rx()
 
     async def start_tx(self) -> None:
@@ -486,58 +450,13 @@ class YaesuCatRadio:
         ``start_audio_tx_pcm()`` defaults open today. On double start the
         driver raises ``AudioDriverLifecycleError`` (a ``RuntimeError``
         subclass), the same exception the legacy PCM path raises.
-
-        MOR-546: on an ``exclusive`` duplex radio (macOS, RX and TX on the
-        same physical USB CODEC) this moves RX+TX to ONE duplex stream
-        instead of opening a second OutputStream on that device. Audio
-        only — no CAT PTT/TX command is sent here.
         """
         self._require_connected()
-        await self._arm_tx(
+        await self._audio_driver.start_tx(
             sample_rate=self._audio_sample_rate,
             channels=1,
             frame_ms=20,
         )
-
-    async def _arm_tx(self, *, sample_rate: int, channels: int, frame_ms: int) -> None:
-        """Arm the TX leg; exclusive radios go through ONE duplex stream (MOR-546).
-
-        When the driver's duplex policy is ``exclusive``, a second
-        OutputStream on the same USB CODEC kills the running capture
-        (macOS AUHAL -50 — the live MOR-546 FTX-1 defect), so RX+TX move
-        to one :meth:`UsbAudioDriver.start_duplex` stream. A live plain RX
-        stream yields the device first; RX delivery resumes on the SAME
-        :meth:`_deliver_rx_pcm` callback, so the bus keeps its wiring and
-        frames keep flowing. Separate-device (``full``) radios keep the
-        two-stream path unchanged.
-        """
-        if self.audio_duplex_mode != "exclusive":
-            await self._audio_driver.start_tx(
-                sample_rate=sample_rate,
-                channels=channels,
-                frame_ms=frame_ms,
-            )
-            return
-        from ...audio.usb_driver import AudioAlreadyStartedError
-
-        driver = self._audio_driver
-        if driver.tx_running:
-            raise AudioAlreadyStartedError("TX stream already started.")
-        rx_was_live = driver.rx_running
-        if rx_was_live:
-            await driver.stop_rx()
-        try:
-            await driver.start_duplex(
-                self._deliver_rx_pcm,
-                sample_rate=sample_rate,
-                channels=channels,
-                frame_ms=frame_ms,
-            )
-        except BaseException:
-            if rx_was_live:
-                with contextlib.suppress(Exception):
-                    await driver.start_rx(self._deliver_rx_pcm)
-            raise
 
     async def push_tx(self, data: bytes) -> None:
         """Push one TX frame (``AudioTransport.push_tx``).
@@ -548,17 +467,7 @@ class YaesuCatRadio:
         await self._push_pcm_tx(data)
 
     async def stop_tx(self) -> None:
-        """Close the TX path (``AudioTransport.stop_tx``).
-
-        MOR-546: on an exclusive same-device radio the TX leg IS the
-        duplex stream — closing it returns the device to plain RX capture
-        on the preserved bus callback when RX demand is still wired.
-        """
-        if self._tx_duplex_active():
-            await self._audio_driver.stop_duplex()
-            if self._opus_rx_user_callback is not None:
-                await self._audio_driver.start_rx(self._deliver_rx_pcm)
-            return
+        """Close the TX path (``AudioTransport.stop_tx``)."""
         await self._audio_driver.stop_tx()
 
     # -- AudioCapable methods (legacy shims -> neutral AudioTransport) -------
@@ -647,10 +556,7 @@ class YaesuCatRadio:
             )
 
         self._require_connected()
-        # MOR-546: route through the same arming helper as start_tx so the
-        # legacy PCM path also honours the exclusive single-duplex-stream
-        # topology instead of opening a second stream on the device.
-        await self._arm_tx(
+        await self._audio_driver.start_tx(
             sample_rate=sample_rate,
             channels=channels,
             frame_ms=frame_ms,
