@@ -38,8 +38,10 @@
     hideAutoStepToggle?: boolean;
     scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet]>;
     /** MOR-2545 PR2 — the compact scope-display indicator, mounted at the
-     *  row's right end (the standalone status line row is gone). */
-    scopeStatus?: Snippet;
+     *  row's right end (the standalone status line row is gone). Named
+     * `scopeStatusIndicator` so no source pin can confuse it with the dead
+     * VfoHeader `scopeStatus` bridge (MOR-1409 A13b keeps that name dead). */
+    scopeStatusIndicator?: Snippet;
   }
 
   let {
@@ -113,7 +115,7 @@
      */
     hideAutoStepToggle = false,
     scopeControls,
-    scopeStatus,
+    scopeStatusIndicator,
   }: Props = $props();
 
   const scopeHandlers = bindSemanticSurfaceHandlers().scopeControls;
@@ -641,10 +643,10 @@
     </div>
   {/if}
   <div class="toolbar-spacer"></div>
-  {#if scopeStatus}
+  {#if scopeStatusIndicator}
     <!-- MOR-2545 PR2: the compact scope status indicator (tooltip carries
          the old status line's text, unread parts omitted). -->
-    <span class="scope-status-host" data-testid="toolbar-scope-status">{@render scopeStatus()}</span>
+    <span class="scope-status-host" data-testid="toolbar-scope-status">{@render scopeStatusIndicator()}</span>
   {/if}
   <!-- Group F: Actions (no wash) -->
   <button class="toolbar-btn icon-btn" onclick={() => (fullscreen = !fullscreen)} title="Toggle fullscreen">

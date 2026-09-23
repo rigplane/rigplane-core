@@ -8,11 +8,20 @@
   // MOR-1486 ruling B — same idiom for `hideAutoStepToggle`, so layout
   // tests can assert which layouts gate the AUTO toggle without a full
   // SpectrumPanel mount.
+  //
+  // MOR-2545 PR2 — renders the `scopeStatusIndicator` snippet RadioLayout
+  // now passes in (the compact scope-display indicator the real toolbar
+  // mounts in its row), so the composed tree keeps proving where the
+  // status surface lives.
   let {
     hideScopeControls = false,
     hideAutoStepToggle = false,
     scopeControls,
-  }: { hideScopeControls?: boolean; hideAutoStepToggle?: boolean; scopeControls?: Snippet } = $props();
+    scopeStatusIndicator,
+  }: {
+    hideScopeControls?: boolean; hideAutoStepToggle?: boolean; scopeControls?: Snippet;
+    scopeStatusIndicator?: Snippet;
+  } = $props();
 </script>
 
 <div
@@ -23,4 +32,5 @@
 >
   Spectrum Stub
   {#if scopeControls}{@render scopeControls()}{/if}
+  {#if scopeStatusIndicator}{@render scopeStatusIndicator()}{/if}
 </div>

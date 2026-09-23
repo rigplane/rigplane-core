@@ -783,8 +783,10 @@ describe('source and enforcement boundary', () => {
     const cssHash = createHash('sha256').update(source.slice(source.indexOf('<style>'))).digest('hex');
     // MOR-2358 adds host-scoped wrapping for the semantic scope surface.
     // MOR-2522 repin: the `.toolbar-select:focus` border frame is gone.
-    // MOR-2545 repin: the host wraps the ONE nowrap `.scope-controls-row`.
-    expect(cssHash).toBe('51d6fe1f23e9455e3253a320921e5baca73d7f89e34e08d858374ae807cf33f1');
+    // MOR-2545 repin: the host wraps the ONE nowrap `.scope-controls-row`;
+    // PR2 adds the hosted container query, the STEP overflow copy pair and
+    // the scope-status seat.
+    expect(cssHash).toBe('3a0f0d3364c3a3a6f271ed106268e8245486defc726f38a999e76323b9088de3');
   });
 });
 
@@ -852,9 +854,12 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
   it('hands the screen group to the semantic row as the snippet payload — it is not in the closed DOM', () => {
     capturedPayload = [];
     const target = mountToolbar({ hideScopeControls: true, scopeControls: payloadProbe });
+    // Svelte passes snippet arguments as getters: two slots, the first
+    // reading back `undefined` (the untouched allowBare slot), the second
+    // the renderable screen group.
     expect(capturedPayload.length).toBe(2);
-    expect(capturedPayload[0]).toBeUndefined();
-    expect(capturedPayload[1]).toBeDefined();
+    expect((capturedPayload[0] as () => unknown)()).toBeUndefined();
+    expect(typeof (capturedPayload[1] as () => unknown)()).toBe('function');
     // The closed row itself carries none of the screen-only controls.
     for (const label of ['AUTO', 'AVG', 'PEAK', 'BRT']) expect(button(target, label)).toBeUndefined();
   });
@@ -875,7 +880,7 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
       ['onclick={() => (brtLevel = clampBrt(brtLevel, -5))}', 3],
       ['onclick={() => (brtLevel = clampBrt(brtLevel, 5))}', 3],
       ['onclick={toggleAutoStep}', 2],
-      ['onclick={cycleStep}', 2],
+      ['onclick={cycleStep}', 4],
       ['onclick={cycleStepDown}', 2],
       ['onchange={() => toggleLayer(layer.layer)}', 2],
     ] as const) {
@@ -900,7 +905,7 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
 
   it('mounts the compact scope status indicator inside the row, before fullscreen', () => {
     const statusProbe = createRawSnippet(() => ({ render: () => '<span data-testid="status-probe"></span>' }));
-    const target = mountToolbar({ hideScopeControls: true, scopeControls: payloadProbe, scopeStatus: statusProbe });
+    const target = mountToolbar({ hideScopeControls: true, scopeControls: payloadProbe, scopeStatusIndicator: statusProbe });
     const seat = target.querySelector('[data-testid="toolbar-scope-status"]')!;
     expect(seat).not.toBeNull();
     expect(seat.querySelector('[data-testid="status-probe"]')).not.toBeNull();

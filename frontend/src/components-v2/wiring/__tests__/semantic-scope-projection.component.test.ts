@@ -135,7 +135,15 @@ async function render(layout = true, skinId: 'desktop-v2' | 'sdr-test' = 'deskto
     : mount(SemanticRadioSurfaces, { target, props: { regions: true, displayFrameSource: 'hardware', regionContent: snippet, scopeControlsInRegionContent: true } });
   flushSync(); await Promise.resolve(); flushSync(); wire.connected(); wire.frame();
 }
-function toggle() { target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click(); flushSync(); }
+function toggle() {
+  // MOR-2545 PR2: on a hosted toolbar (desktop-v2 / sdr-test with a hardware
+  // scope) VIEW lives in the More payload, not the closed row — open the
+  // panel first. Unhosted and non-layout mounts keep VIEW in the row.
+  const inRow = target.querySelector<HTMLButtonElement>('.scope-demand-toggle');
+  if (inRow) { inRow.click(); flushSync(); return; }
+  target.querySelector<HTMLButtonElement>('[data-testid="scope-more"]')!.click(); flushSync();
+  target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click(); flushSync();
+}
 const overlay = () => target.querySelector<HTMLElement>('.passband-overlay');
 function clear() {
   for (const selector of ['.spectrum-area canvas', '.freq-axis', '.passband-overlay', '.passband-resize-zone']) {

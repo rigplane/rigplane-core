@@ -996,10 +996,10 @@ describe('RadioLayout with radioState', () => {
 });
 
 
-describe('SDR hardware scope snippet routing (MOR-2358)', () => {
+describe('SDR hardware scope snippet routing (MOR-2358; MOR-2545 PR2 extends hosting to desktop-v2)', () => {
   it.each([
     ['sdr-test', 'hardware', true, true],
-    ['desktop-v2', 'hardware', true, false],
+    ['desktop-v2', 'hardware', true, true],
     ['sdr-test', 'audio_fft', true, false],
     ['sdr-test', null, true, false],
     ['sdr-test', 'hardware', false, false],

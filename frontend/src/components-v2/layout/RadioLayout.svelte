@@ -470,14 +470,14 @@
 {#snippet scopeRegion(
   scopeControls: Snippet | undefined,
   managedScope: ManagedScopeRegion | undefined,
-  scopeStatus: Snippet | undefined,
+  scopeStatusIndicator: Snippet | undefined,
 )}
   <section class="content-row">
     <main class="content-center center-column">
       {#if hasAnyScope()}
         <div class="spectrum-slot">
           <div class="spectrum-frame">
-            <SpectrumPanel hideSourceControls={true} hideScopeControls={declared.has('scopeControls')} {scopeControls} {scopeStatus}
+            <SpectrumPanel hideSourceControls={true} hideScopeControls={declared.has('scopeControls')} {scopeControls} {scopeStatusIndicator}
               scopeProjection={managedScope?.projection} scopeDemanded={managedScope?.demanded}
               onScopeDemandChange={managedScope?.setDemand} />
           </div>
