@@ -494,3 +494,164 @@ class TestBridgeDuplexSelection:
             assert bridge.metrics.tx_overruns == 0
         finally:
             await bridge.stop()
+
+
+# ---------------------------------------------------------------------------
+# MOR-546 — YaesuCatRadio exclusive duplex: TX arm over live RX = ONE stream
+# ---------------------------------------------------------------------------
+
+
+def _patch_yaesu_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """YaesuCatRadio without a serial port: the transport reads connected."""
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.connected", True
+    )
+
+
+def _forbid_cat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail if TX-audio arm/disarm sends ANY CAT command (PTT stays separate)."""
+
+    async def _no_cat(*args: object, **kwargs: object) -> None:
+        raise AssertionError("TX audio arm/disarm must not send CAT commands")
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.write", _no_cat
+    )
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.query", _no_cat
+    )
+
+
+class TestYaesuExclusiveDuplexTx:
+    """MOR-546: on an exclusive radio (RX and TX on the SAME physical USB
+    device, macOS) arming TX audio over a live RX must move BOTH legs to ONE
+    duplex stream — a second OutputStream on that device kills the capture
+    (AUHAL -50, the live FTX-1 defect)."""
+
+    @pytest.mark.asyncio()
+    async def test_tx_arm_uses_one_duplex_stream_and_rx_keeps_flowing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from rigplane.audio.session import AudioSessionState
+        from rigplane.audio.usb_driver import UsbAudioDriver
+        from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+
+        _patch_yaesu_offline(monkeypatch)
+        _forbid_cat(monkeypatch)
+        # Simulate the macOS same-device duplex policy on any test host.
+        monkeypatch.setattr(
+            "rigplane.audio.usb_driver.resolve_usb_duplex_mode",
+            lambda _rx, _tx: "exclusive",
+        )
+        backend = FakeAudioBackend(
+            devices=[DUPLEX_DEVICE], strict_device_exclusive=True
+        )
+        driver = UsbAudioDriver(
+            rx_device="USB Audio CODEC",
+            tx_device="USB Audio CODEC",
+            backend=backend,
+            rx_audio_channel="left",
+        )
+        radio = YaesuCatRadio(device="/dev/cu.fake", audio_driver=driver)
+        assert radio.audio_duplex_mode == "exclusive"
+        assert radio.audio_setup_order == "atomic"
+        session = radio.audio_session
+
+        sub = await session.subscribe_rx("web-audio")
+        try:
+            assert session.state is AudioSessionState.RX_ONLY
+            assert len(backend.rx_streams) == 1
+            assert backend.duplex_streams == [] and backend.tx_streams == []
+            # RX frames reach the bus BEFORE the TX arm.
+            backend.rx_streams[0].inject_frame(b"\x01\x02")
+            pkt = await sub.get(timeout=1.0)
+            assert pkt is not None and pkt.data == b"\x01\x02"
+
+            lease = await session.acquire_tx("web-tx")
+            try:
+                assert session.state is AudioSessionState.RX_TX
+                # ONE duplex stream; NO separate output stream on the device.
+                assert len(backend.duplex_streams) == 1
+                assert backend.tx_streams == []
+                assert backend.duplex_streams[0].running
+                # RX frames keep flowing DURING the TX arm — the bus
+                # callback survived the RX → duplex handoff.
+                backend.duplex_streams[0].inject_frame(b"\x03\x04")
+                pkt = await sub.get(timeout=1.0)
+                assert pkt is not None and pkt.data == b"\x03\x04"
+                # TX frames ride the duplex stream's TX queue.
+                await lease.push(b"\x05\x06")
+                assert backend.duplex_streams[0].written_frames == [b"\x05\x06"]
+            finally:
+                await lease.release()
+
+            # Disarm returns to plain RX with the bus callback preserved.
+            assert session.state is AudioSessionState.RX_ONLY
+            assert not backend.duplex_streams[0].running
+            running_rx = [s for s in backend.rx_streams if s.running]
+            assert len(running_rx) == 1
+            running_rx[0].inject_frame(b"\x07\x08")
+            pkt = await sub.get(timeout=1.0)
+            assert pkt is not None and pkt.data == b"\x07\x08"
+        finally:
+            await sub.release()
+
+        # Teardown closes the duplex stream — nothing left running.
+        assert session.state is AudioSessionState.IDLE
+        all_streams = backend.rx_streams + backend.tx_streams + backend.duplex_streams
+        assert not any(s.running for s in all_streams)
+
+    @pytest.mark.asyncio()
+    async def test_separate_devices_keep_the_two_stream_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pin: full-duplex (separate RX/TX devices) behaviour is unchanged."""
+        from rigplane.audio.session import AudioSessionState
+        from rigplane.audio.usb_driver import UsbAudioDriver
+        from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+
+        _patch_yaesu_offline(monkeypatch)
+        _forbid_cat(monkeypatch)
+        backend = FakeAudioBackend(
+            devices=[DUPLEX_DEVICE, SEPARATE_RX_DEVICE],
+            strict_device_exclusive=True,
+        )
+        driver = UsbAudioDriver(
+            rx_device="USB Audio CODEC",
+            tx_device="BlackHole 2ch",
+            backend=backend,
+        )
+        radio = YaesuCatRadio(device="/dev/cu.fake", audio_driver=driver)
+        assert radio.audio_duplex_mode == "full"
+        assert radio.audio_setup_order == "rx_first"
+        session = radio.audio_session
+
+        sub = await session.subscribe_rx("web-audio")
+        try:
+            assert len(backend.rx_streams) == 1
+            lease = await session.acquire_tx("web-tx")
+            try:
+                assert session.state is AudioSessionState.RX_TX
+                # Two separate streams, as before; no duplex stream; the RX
+                # stream is never torn down for the TX arm.
+                assert len(backend.tx_streams) == 1
+                assert backend.duplex_streams == []
+                assert len(backend.rx_streams) == 1
+                assert backend.rx_streams[0].running
+                backend.rx_streams[0].inject_frame(b"\x09\x0a")
+                pkt = await sub.get(timeout=1.0)
+                assert pkt is not None and pkt.data == b"\x09\x0a"
+                await lease.push(b"\x0b\x0c")
+                assert backend.tx_streams[0].written_frames == [b"\x0b\x0c"]
+            finally:
+                await lease.release()
+            assert session.state is AudioSessionState.RX_ONLY
+            # No RX re-open churn on the rx_first path (the redundant bus
+            # re-arm is a typed no-op).
+            assert len(backend.rx_streams) == 1
+            assert backend.rx_streams[0].running
+        finally:
+            await sub.release()
+        assert session.state is AudioSessionState.IDLE
+        assert not backend.rx_streams[0].running
+        assert not backend.tx_streams[0].running
