@@ -36,7 +36,7 @@ census	profile_builder_map_gaps	0
 census	profiles	8
 census	public_builders	241
 census	sites_compared	0
-cat-only	FTX-1	127
+cat-only	FTX-1	128
 requires-map	antenna.py:get_antenna_1
 requires-map	antenna.py:get_antenna_2
 requires-map	antenna.py:get_rx_antenna_ant1

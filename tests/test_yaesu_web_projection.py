@@ -262,8 +262,8 @@ def _make_radio() -> MagicMock:
     radio.read_cw_spot = AsyncMock(return_value=True)
     # Tone / CTCSS squelch-type observation read (MOR-457). ``read_sql_type``
     # returns the CAT ``CT`` P2 code; code 2 ("TSQL": ENC ON / DEC ON) derives
-    # repeater_tone=True, repeater_tsql=True (MOR-2130). Per-receiver,
-    # slow-control lane (SUB read MOR-2111).
+    # repeater_tone=True, repeater_tsql=True (MOR-2130). MAIN-only, slow-control
+    # lane.
     radio.read_sql_type = AsyncMock(return_value=2)
     # CTCSS tone frequency observation read (MOR-458). ``read_ctcss_tone_index``
     # returns the CAT ``CN`` P3 tone-chart index; index 8 (88.5 Hz) maps to 8850

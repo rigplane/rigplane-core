@@ -2344,19 +2344,19 @@ async def test_repeater_tone_tsql_derivation_matrix(
 
 
 @pytest.mark.parametrize(
-    ("current_code", "on", "written_frame"),
+    ("current_code", "on", "target_code"),
     [
         # (tone, tsql) target: (F,F)->0, (T,F)->1, (T,T)->2 (MOR-2130).
-        (0, True, "CT01;"),  # off -> TONE
-        (1, False, "CT00;"),  # TONE -> off (both axes drop together)
-        (1, True, "CT01;"),  # TONE -> TONE (idempotent write)
-        (2, True, "CT02;"),  # TSQL keeps decode while tone stays on
+        (0, True, 1),  # off -> TONE
+        (1, False, 0),  # TONE -> off (both axes drop together)
+        (1, True, 1),  # TONE -> TONE (idempotent write)
+        (2, True, 2),  # TSQL keeps decode while tone stays on
     ],
 )
 @pytest.mark.parametrize("receiver", [0, 1])
 @pytest.mark.asyncio
 async def test_set_repeater_tone_read_modify_write(
-    connected_radio, current_code: int, on: bool, written_frame: str, receiver: int
+    connected_radio, current_code: int, on: bool, target_code: int, receiver: int
 ):
     """The setter reads CT first (RMW), then writes the mapped code."""
     connected_radio._transport.query = AsyncMock(
@@ -2365,22 +2365,24 @@ async def test_set_repeater_tone_read_modify_write(
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_repeater_tone(on, receiver=receiver)
     connected_radio._transport.query.assert_awaited_once_with(f"CT{receiver};")
-    connected_radio._transport.write.assert_called_once_with(written_frame)
+    connected_radio._transport.write.assert_called_once_with(
+        f"CT{receiver}{target_code};"
+    )
 
 
 @pytest.mark.parametrize(
-    ("current_code", "on", "written_frame"),
+    ("current_code", "on", "target_code"),
     [
-        (1, True, "CT02;"),  # TONE -> TSQL (decode joins encode)
-        (2, True, "CT02;"),  # TSQL -> TSQL (idempotent write)
-        (2, False, "CT01;"),  # TSQL -> TONE (decode drops, encode stays)
-        (0, False, "CT00;"),  # off -> off (idempotent write)
+        (1, True, 2),  # TONE -> TSQL (decode joins encode)
+        (2, True, 2),  # TSQL -> TSQL (idempotent write)
+        (2, False, 1),  # TSQL -> TONE (decode drops, encode stays)
+        (0, False, 0),  # off -> off (idempotent write)
     ],
 )
 @pytest.mark.parametrize("receiver", [0, 1])
 @pytest.mark.asyncio
 async def test_set_repeater_tsql_read_modify_write(
-    connected_radio, current_code: int, on: bool, written_frame: str, receiver: int
+    connected_radio, current_code: int, on: bool, target_code: int, receiver: int
 ):
     connected_radio._transport.query = AsyncMock(
         return_value=f"CT{receiver}{current_code}"
@@ -2388,7 +2390,9 @@ async def test_set_repeater_tsql_read_modify_write(
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_repeater_tsql(on, receiver=receiver)
     connected_radio._transport.query.assert_awaited_once_with(f"CT{receiver};")
-    connected_radio._transport.write.assert_called_once_with(written_frame)
+    connected_radio._transport.write.assert_called_once_with(
+        f"CT{receiver}{target_code};"
+    )
 
 
 @pytest.mark.parametrize("setter", ["set_repeater_tone", "set_repeater_tsql"])

@@ -1538,16 +1538,21 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         ("receiver.main.operator_toggles.narrow", True),
         ("receiver.sub.operator_toggles.narrow", True),
         # Tone / CTCSS squelch-type (MOR-457): gated on the ``sql_type`` cap
-        # (present here); a single ``read_sql_type`` (code 1 = "TONE") derives
-        # both booleans and does not mutate legacy state.
+        # (present here); each receiver's ``read_sql_type`` (code 1 = "TONE")
+        # derives both booleans and does not mutate legacy state (SUB read
+        # MOR-2111).
         ("receiver.main.operator_toggles.repeater_tone", True),
         ("receiver.main.operator_toggles.repeater_tsql", False),
+        ("receiver.sub.operator_toggles.repeater_tone", True),
+        ("receiver.sub.operator_toggles.repeater_tsql", False),
         # CTCSS tone freq (MOR-458): gated on the ``sql_type`` cap (present
-        # here); a single ``read_ctcss_tone_index`` (index 8 = 88.5 Hz) maps to
-        # 8850 centiHz, emitted to BOTH tone_freq and tsql_freq, and does not
-        # mutate legacy state.
+        # here); each receiver's ``read_ctcss_tone_index`` (index 8 = 88.5 Hz)
+        # maps to 8850 centiHz, emitted to BOTH tone_freq and tsql_freq, and
+        # does not mutate legacy state (SUB read MOR-2111).
         ("receiver.main.operator_controls.tone_freq", 8850),
         ("receiver.main.operator_controls.tsql_freq", 8850),
+        ("receiver.sub.operator_controls.tone_freq", 8850),
+        ("receiver.sub.operator_controls.tsql_freq", 8850),
         # active-slot (MOR-446); unconditional like AGC/narrow, the SUB index
         # coerces to the neutral "SUB" str.
         ("global.slow_state.active", "SUB"),
@@ -2115,8 +2120,10 @@ async def test_ctcss_tone_freq_emits_both_paths_in_centihz(
 
     assert by_path["receiver.main.operator_controls.tone_freq"] == expected_centihz
     assert by_path["receiver.main.operator_controls.tsql_freq"] == expected_centihz
-    # A SINGLE CN read feeds both emissions.
-    assert radio.read_ctcss_tone_index.await_count == 1
+    assert by_path["receiver.sub.operator_controls.tone_freq"] == expected_centihz
+    assert by_path["receiver.sub.operator_controls.tsql_freq"] == expected_centihz
+    # A single CN read per receiver feeds both emissions on that side.
+    assert radio.read_ctcss_tone_index.await_args_list == [call(0), call(1)]
 
 
 @pytest.mark.asyncio
@@ -2166,7 +2173,9 @@ async def test_ctcss_tone_freq_invalid_profile_domain_emits_nothing(
 
     assert "receiver.main.operator_controls.tone_freq" not in paths
     assert "receiver.main.operator_controls.tsql_freq" not in paths
-    assert radio.read_ctcss_tone_index.await_count == 1
+    assert "receiver.sub.operator_controls.tone_freq" not in paths
+    assert "receiver.sub.operator_controls.tsql_freq" not in paths
+    assert radio.read_ctcss_tone_index.await_args_list == [call(0), call(1)]
 
 
 @pytest.mark.asyncio
@@ -2411,8 +2420,12 @@ async def test_happy_path_slow_poll_unchanged_when_all_reads_succeed() -> None:
         ("receiver.sub.operator_controls.manual_notch_freq", 120),
         ("receiver.main.operator_toggles.repeater_tone", True),
         ("receiver.main.operator_toggles.repeater_tsql", False),
+        ("receiver.sub.operator_toggles.repeater_tone", True),
+        ("receiver.sub.operator_toggles.repeater_tsql", False),
         ("receiver.main.operator_controls.tone_freq", 8850),
         ("receiver.main.operator_controls.tsql_freq", 8850),
+        ("receiver.sub.operator_controls.tone_freq", 8850),
+        ("receiver.sub.operator_controls.tsql_freq", 8850),
         ("global.slow_state.active", "SUB"),
         ("global.slow_state.cw_spot", True),
         ("global.meters.vd", 13.8),
