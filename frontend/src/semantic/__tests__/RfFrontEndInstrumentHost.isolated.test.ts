@@ -803,8 +803,14 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
     'renders %s through the SAME sr-only output element unread and known',
     (field) => {
       const knownText = field === 'preamp' ? 'P1' : '6 dB';
+      // Svelte's scoping class (`svelte-<hash>`) is stripped so the
+      // signature says what the template declares, not what the compiler
+      // added — and the hash is identical across both states anyway.
       const signature = (row: Element) => [...row.querySelectorAll('output')]
-        .map((node) => `${node.getAttribute('class')}[${node.getAttribute('data-testid')}]`);
+        .map((node) => [
+          [...node.classList].filter((name) => !name.startsWith('svelte-')).join('.'),
+          node.getAttribute('data-testid'),
+        ].join('[') + ']');
       const r = renderFinite(finiteBase());
       const row = r.el(field)!;
       expect(signature(row)).toEqual([`sr-only[rf-front-end-${field}-value]`]);
@@ -828,7 +834,7 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
   it('keeps a known-but-unlisted level visible as its true code', () => {
     const r = renderFinite(rfReading(finiteBase(), 'preamp', { status: 'known', value: 9 }));
     const value = r.el('preamp-value')!;
-    expect(value.getAttribute('class')).toBe('rf-front-end-unknown');
+    expect(value.classList.contains('rf-front-end-unknown')).toBe(true);
     expect(value.textContent).toBe('P9');
   });
 });

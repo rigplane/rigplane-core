@@ -628,7 +628,10 @@ describe('MOD-input selection uses observed facts and absolute intents (MOR-2366
     const widest = Math.max(...MOD_INPUT_SOURCES.map((option) => option.label.length));
     const structure = (row: HTMLElement) => [...row.querySelectorAll('[data-testid]')]
       .map((node) => node.getAttribute('data-testid'));
-    const reserved = (el: HTMLElement | null) => el?.getAttribute('style') ?? null;
+    // Svelte normalizes the style attribute with a trailing `;` — strip it
+    // so the pin states the reservation exactly as the template computes it.
+    const reserved = (el: HTMLElement | null) =>
+      (el?.getAttribute('style') ?? '').replace(/;\s*$/, '');
 
     const unlitRow = render(withRx({
       modInputSource: unread<number>(DEGRADED), modInputReadiness: { status: 'unknown' },
