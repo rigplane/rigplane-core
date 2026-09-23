@@ -546,11 +546,6 @@
     border: 1px solid var(--v2-border, #2a2a3e);
     border-radius: 4px;
     color: var(--v2-text-primary, #e0e0e0);
-    outline: none;
-  }
-
-  .eibi-search:focus {
-    border-color: rgba(0, 212, 255, 0.4);
   }
 
   .eibi-toggle {
@@ -575,7 +570,6 @@
     border: 1px solid var(--v2-border, #2a2a3e);
     border-radius: 4px;
     color: var(--v2-text-primary, #e0e0e0);
-    outline: none;
   }
 
   .eibi-table-wrap {

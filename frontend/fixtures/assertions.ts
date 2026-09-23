@@ -39,9 +39,6 @@ export interface AssertionOptions {
    * site).
    */
   rootTestId?: string;
-  /** MOR-1087 — true when `Tab` reached a real control (`focusTabs`), so
-   *  `:focus-visible` is live and the focus-ring contrast check applies. */
-  focusVisible?: boolean;
 }
 
 // MOR-1085: which mounted root the selectors below read from for the
@@ -650,9 +647,9 @@ export function runAssertions(
   }
 
   // ── MOR-1087 item 5: rendered contrast, real computed colours ───────────
-  // Thresholds mirror the tokens.test.ts precedent (4.5:1 text / WCAG 1.4.3,
-  // 3:1 focus ring / WCAG 1.4.11) but measure what the browser PAINTS, under
-  // whichever language `main.ts` activated. Default v2 theme has no such pin.
+  // Thresholds mirror the tokens.test.ts precedent (4.5:1 text / WCAG 1.4.3)
+  // but measure what the browser PAINTS, under whichever language `main.ts`
+  // activated. Default v2 theme has no such pin.
   const activeLanguage = document.documentElement.dataset.designLanguage ?? 'default';
   const TEXT_TARGETS: readonly [string, string][] = [
     ['rx-tx-key', '[data-testid="rx-tx-key"]'],
@@ -671,18 +668,6 @@ export function runAssertions(
       + `expected >= ${floor}:1${belowIdealText
         ? ' (MOR-1087 finding: below the 4.5:1 WCAG 1.4.3 text floor — see comment above)' : ''}`);
   }
-  // Non-text: the focus ring, only where `Tab` actually reached
-  // `:focus-visible` (`options.focusVisible`) — else there's nothing to measure.
-  if (options.focusVisible) {
-    const el = document.activeElement as HTMLElement | null;
-    if (el && el !== document.body) {
-      const ratio = contrastRatio(getComputedStyle(el).outlineColor, effectiveBackground(el));
-      check('contrast-focus-ring', ratio !== null && ratio >= 3,
-        `${ratio === null ? 'unparseable' : ratio.toFixed(2)}:1 on "${activeLanguage}" · `
-        + 'expected >= 3:1 (WCAG 1.4.11)');
-    }
-  }
-
   // ── viewport-dependent: the reflow itself ──────────────────────────────
   if (options.arrangement !== undefined && strips.length === 2) {
     const [a, b] = strips.map((el) => el.getBoundingClientRect());
@@ -770,7 +755,6 @@ export function styleProbe(rootTestId: string): Record<string, Record<string, st
       backgroundColor: cs.backgroundColor,
       borderColor: cs.borderTopColor,
       borderLeftColor: cs.borderLeftColor,
-      outlineColor: cs.outlineColor,
       forcedColorAdjust: cs.forcedColorAdjust,
     };
   }
@@ -782,6 +766,6 @@ export function tokenSnapshot(): Record<string, string> {
   const cs = getComputedStyle(document.documentElement);
   const names = ['--v2-text-primary', '--v2-text-secondary', '--v2-text-disabled',
     '--v2-border-panel', '--v2-bg-panel', '--v2-accent-cyan', '--v2-accent-red',
-    '--v2-focus-ring', '--focus-ring', '--bg', '--text', '--accent'];
+    '--bg', '--text', '--accent'];
   return Object.fromEntries(names.map((n) => [n, cs.getPropertyValue(n).trim()]));
 }

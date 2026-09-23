@@ -134,15 +134,8 @@
     background-repeat: no-repeat;
   }
 
-  .lang-select:hover,
-  .lang-select:focus {
+  .lang-select:hover {
     border-color: var(--v2-accent-cyan, #06b6d4);
-    outline: none;
-  }
-
-  .lang-select:focus-visible {
-    outline: var(--v2-focus-ring);
-    outline-offset: 2px;
   }
 
   .lang-select option {

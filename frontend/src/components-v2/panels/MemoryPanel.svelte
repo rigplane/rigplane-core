@@ -415,13 +415,8 @@
     color: var(--v2-text-primary, #eee);
     font-family: 'Roboto Mono', monospace;
     font-size: 10px;
-    outline: none;
   }
 
-  .ch-name-input:focus-visible {
-    outline: var(--v2-focus-ring);
-    outline-offset: 1px;
-  }
 
   .ch-empty-label {
     color: var(--v2-text-dim, #555);

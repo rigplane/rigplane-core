@@ -619,8 +619,7 @@
     cursor: pointer;
   }
 
-  .skin-switcher:hover,
-  .skin-switcher:focus-within {
+  .skin-switcher:hover {
     background: var(--v2-bg-card, #252540);
     border-color: var(--v2-accent-cyan, #06b6d4);
   }
@@ -647,14 +646,6 @@
     background-repeat: no-repeat;
   }
 
-  .skin-select:focus {
-    outline: none;
-  }
-
-  .skin-select:focus-visible {
-    outline: var(--v2-focus-ring);
-    outline-offset: 2px;
-  }
 
   .skin-select option {
     background: var(--v2-bg-input, #1a1a2e);

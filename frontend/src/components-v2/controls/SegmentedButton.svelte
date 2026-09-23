@@ -101,21 +101,11 @@
     display: inline-flex;
     flex-direction: row;
     gap: 1px;
-    outline: none;
     user-select: none;
-  }
-
-  .segmented-button:focus-visible {
-    box-shadow: var(--v2-focus-ring-shadow);
-    border-radius: 4px;
   }
 
   .segment {
     border-radius: 0;
-  }
-
-  .segment:focus {
-    outline: none;
   }
 
   .segment.first {

@@ -236,8 +236,4 @@
     padding: 3px 4px;
   }
 
-  .mod-input-select:focus-visible {
-    outline: 1px solid var(--v2-accent-cyan, #0ff);
-    outline-offset: 1px;
-  }
   </style>

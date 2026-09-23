@@ -80,8 +80,7 @@
     white-space: nowrap;
   }
 
-  .managed-tot-trigger:hover,
-  .managed-tot-trigger:focus-visible {
+  .managed-tot-trigger:hover {
     border-color: var(--v2-accent-cyan, #06b6d4);
   }
 

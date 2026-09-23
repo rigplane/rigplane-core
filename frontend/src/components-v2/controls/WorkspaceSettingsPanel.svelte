@@ -185,11 +185,6 @@
     font-family: inherit;
     font-size: 12px;
   }
-  .ws-row select:focus-visible,
-  button:focus-visible {
-    outline: var(--v2-focus-ring);
-    outline-offset: 2px;
-  }
   .ws-notice {
     border: 1px solid var(--v2-accent-yellow, #eab308);
     border-radius: 4px;

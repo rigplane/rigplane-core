@@ -1183,10 +1183,6 @@
   .standard-tx-disclosure[aria-expanded='true'] {
     border-color: var(--v2-accent, #4af); color: var(--v2-accent, #4af);
   }
-  .standard-tx-settings-trigger:focus-visible,
-  .standard-tx-disclosure:focus-visible {
-    outline: 2px solid var(--v2-accent, #4af); outline-offset: 1px;
-  }
   .standard-tx-settings-popover {
     position: fixed; z-index: 1200; box-sizing: border-box;
     display: flex; flex-direction: column; gap: 8px;

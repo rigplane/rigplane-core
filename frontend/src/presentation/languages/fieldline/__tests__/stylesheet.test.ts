@@ -249,9 +249,8 @@ describe('the CSS half honours the same constraints as the token half', () => {
     expect(css).not.toMatch(/content:\s*'/);
   });
 
-  it('never re-suppresses the focus ring, and applies it as `outline` (MOR-977 §1.2.5)', () => {
-    expect(css).not.toMatch(/outline:\s*none/);
-    expect(css).toMatch(/outline:\s*3px solid var\(--dl-fieldline-focus\)/);
+  it('does not own a focus frame (MOR-2522)', () => {
+    expect(css).not.toMatch(/:focus-visible/);
   });
 
   it('wins on specificity rather than on `!important`', () => {

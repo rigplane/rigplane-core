@@ -1205,11 +1205,6 @@
     );
   }
 
-  .spectrum-split-separator:focus-visible {
-    outline: 2px solid var(--accent, var(--panel-border));
-    outline-offset: -2px;
-  }
-
   .freq-axis .tick {
     position: absolute;
     transform: translateX(-50%);
@@ -1309,14 +1304,9 @@
   }
 
   .passband-resize-zone:hover::before,
-  .passband-resize-zone:focus-visible::before,
   .passband-resize-zone.active::before {
     width: 5px;
     filter: brightness(1.3);
-  }
-
-  .passband-resize-zone:focus-visible {
-    outline: none;
   }
 
   .scope-disconnected-overlay {

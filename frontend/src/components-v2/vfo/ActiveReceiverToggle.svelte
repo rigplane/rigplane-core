@@ -258,10 +258,6 @@
     background: rgba(255, 255, 255, 0.05);
   }
 
-  .segment:focus-visible {
-    outline: none;
-    box-shadow: var(--v2-focus-ring-shadow);
-  }
 
   .segment.is-active {
     background: var(--v2-accent-cyan, #00d4ff);
