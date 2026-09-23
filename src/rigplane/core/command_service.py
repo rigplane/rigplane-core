@@ -1318,7 +1318,11 @@ def command_intent_from_request(
     elif command_name == "set_func":
         func = str(normalized["func"]).lower()
         normalized["func"] = func.upper()
-        normalized[func] = bool(normalized["on"])
+        # The pending value keys under the StateStore field name, which
+        # differs from the hamlib token for TONE/TSQL.
+        normalized[_SET_FUNC_TOGGLE_FIELDS.get(func.upper(), func)] = bool(
+            normalized["on"]
+        )
     elif command_name == "set_split_vfo":
         normalized["split"] = bool(normalized["on"])
 
@@ -1367,6 +1371,10 @@ def command_response_observation(
         timestamp_monotonic=timestamp_monotonic,
         correlation_id=intent.id,
     )
+
+
+# hamlib func token -> StateStore operator_toggles field, where they differ.
+_SET_FUNC_TOGGLE_FIELDS = {"TONE": "repeater_tone", "TSQL": "repeater_tsql"}
 
 
 def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
@@ -1542,10 +1550,7 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         # TONE/TSQL project from the radio-concept fields the state
         # pipeline publishes; the pending value must land there too.
         func_name = str(params["func"]).upper()
-        toggle = {
-            "TONE": "repeater_tone",
-            "TSQL": "repeater_tsql",
-        }.get(func_name, func_name.lower())
+        toggle = _SET_FUNC_TOGGLE_FIELDS.get(func_name, func_name.lower())
         return FieldPath.receiver(
             receiver,
             "operator_toggles",
