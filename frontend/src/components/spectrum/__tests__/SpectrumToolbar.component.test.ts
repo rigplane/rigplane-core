@@ -789,7 +789,11 @@ describe('source and enforcement boundary', () => {
     // shrinking, the host hides the surface's readout text span, and the
     // STEP band moves to 424px (reviewer-measured on PR #3598). Round-3
     // repin: the STEP-band comment is marked as measured on desktop-v2.
-    expect(cssHash).toBe('1ef3820e3d28b8f824c424d34e4cb3be5f882aba57476ef02ad2f37fb5e556cd');
+    // MOR-2545 PR3 repin: the toolbar's own container query dies (the
+    // surface container owns every band); the hosted strip ground becomes
+    // the --v2-bg-panel token; the host grows so the row's own spacer
+    // pushes its right end; STEP's More copy shows at the derived 335px.
+    expect(cssHash).toBe('0de6bc67fdf4fa13de07f28cf86cffa868ef93dd8802e3193ea4e07c8b466248');
   });
 });
 
@@ -806,26 +810,24 @@ describe('semantic scope host (MOR-2358)', () => {
     expect(target.querySelector('.semantic-scope-controls-host') !== null).toBe(hosted);
   });
 
-  // MOR-2545 PR2 retarget: in the HOSTED one-row mode the row keeps only
-  // STEP, BANDS and fullscreen beside the semantic host — every screen-only
-  // control (VIEW/AUTO/AVG/PEAK/BRT/palette/layers) lives in the More
-  // payload until the panel opens, and the legacy radio subtree stays
+  // MOR-2545 PR2 retarget / PR3 re-retarget: the HOSTED toolbar renders
+  // ONLY the semantic host, the status seat and fullscreen — every other
+  // control lives in the row tail or the More payload, both handed to the
+  // semantic row through the snippet; the legacy radio subtree stays
   // suppressed exactly as before.
-  it('keeps the hosted row to STEP · BANDS · fullscreen and suppresses the legacy radio subtree', () => {
+  it('keeps the hosted toolbar to the semantic host · status · fullscreen and suppresses the legacy radio subtree', () => {
     const target = mountToolbar({ hideScopeControls: true, scopeControls });
     expect(target.querySelectorAll('.semantic-scope-controls-host')).toHaveLength(1);
-    for (const label of ['CTR', 'FIX', 'S-C', 'S-F', 'HOLD', 'DUAL', 'MAIN']) expect(button(target, label)).toBeUndefined();
+    for (const label of ['CTR', 'FIX', 'S-C', 'S-F', 'HOLD', 'DUAL', 'MAIN', 'BANDS', 'STEP']) expect(button(target, label)).toBeUndefined();
     expect(target.querySelector('.settings-group')).toBeNull();
     expect(target.querySelector('.toolbar-group-d')).toBeNull();
+    expect(target.querySelector('.toolbar-separator')).toBeNull();
     for (const label of ['AUTO', 'AVG', 'PEAK', 'BRT']) expect(button(target, label)).toBeUndefined();
     expect(buttons(target).some((item) => item.textContent?.trim().startsWith('VIEW'))).toBe(false);
     expect(target.querySelector('.toolbar-select')).toBeNull();
-    expect(button(target, 'BANDS')).toBeDefined();
     expect(target.querySelector('.icon-btn')).not.toBeNull();
-    const step = buttons(target).find((item) => item.title === 'Increase tuning step')!;
-    step.click(); flushSync();
-    expect(tuningHarness.adjustTuningStep).toHaveBeenCalledExactlyOnceWith('up');
-    for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+    const step = buttons(target).find((item) => item.title === 'Increase tuning step');
+    expect(step).toBeUndefined(); // STEP moved into the row-tail payload
     expect(sendCommandAlarm).not.toHaveBeenCalled();
   });
 });
@@ -840,63 +842,73 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
     render: () => { capturedPayload = args; return '<div data-testid="semantic-scope-probe"></div>'; },
   }));
 
-  it('renders the radio-held host, STEP and BANDS in ONE row container', () => {
+  it('renders the radio-held host, the status seat and fullscreen in ONE row container', () => {
     const target = mountToolbar({ hideScopeControls: true, scopeControls: payloadProbe });
     const row = target.querySelector<HTMLElement>('.spectrum-toolbar')!;
     expect(row).not.toBeNull();
     expect(row.classList.contains('hosted')).toBe(true);
     expect(row.querySelector('.semantic-scope-controls-host [data-testid="semantic-scope-probe"]')).not.toBeNull();
-    expect(row.querySelector('.step-group[data-overflow="step"]')).not.toBeNull();
-    expect(buttons(row).some((item) => item.textContent?.trim() === 'BANDS')).toBe(true);
     expect(row.querySelector('.icon-btn')).not.toBeNull();
     // The radio-held keys and the toolbar keys share the one container: no
     // second row element splits them.
     expect(target.querySelectorAll('.spectrum-toolbar')).toHaveLength(1);
   });
 
-  it('hands the screen group to the semantic row as the snippet payload — it is not in the closed DOM', () => {
+  it('hands the screen group AND the row tail to the semantic row as the snippet payload — neither is in the closed DOM', () => {
     capturedPayload = [];
     const target = mountToolbar({ hideScopeControls: true, scopeControls: payloadProbe });
-    // Svelte passes snippet arguments as getters: two slots, the first
-    // reading back `undefined` (the untouched allowBare slot), the second
-    // the renderable screen group.
-    expect(capturedPayload.length).toBe(2);
+    // Svelte passes snippet arguments as getters: three slots, the first
+    // reading back `undefined` (the untouched allowBare slot), then the
+    // renderable screen group and the renderable row tail.
+    expect(capturedPayload.length).toBe(3);
     expect((capturedPayload[0] as () => unknown)()).toBeUndefined();
     expect(typeof (capturedPayload[1] as () => unknown)()).toBe('function');
+    expect(typeof (capturedPayload[2] as () => unknown)()).toBe('function');
     // The closed row itself carries none of the screen-only controls.
-    for (const label of ['AUTO', 'AVG', 'PEAK', 'BRT']) expect(button(target, label)).toBeUndefined();
+    for (const label of ['AUTO', 'AVG', 'PEAK', 'BRT', 'BANDS']) expect(button(target, label)).toBeUndefined();
   });
 
-  // The payload's content is the toolbar's own `screenGroup` snippet —
-  // source-pinned here (the same instrument this file's "source and
-  // enforcement boundary" block uses), because a raw stub cannot render a
-  // real snippet. PR3's e2e spec opens the real panel end-to-end.
-  it('builds the screen group from the SAME handlers and state as the unhosted row', () => {
+  // The payload's content is the toolbar's own `screenGroup`/`rowTail`
+  // snippets — source-pinned here (the same instrument this file's "source
+  // and enforcement boundary" block uses), because a raw stub cannot render
+  // a real snippet. PR3's e2e spec opens the real panel end-to-end.
+  it('builds the screen group and the row tail from the SAME handlers and state as the unhosted row', () => {
     expect(TOOLBAR_SOURCE).toMatch(/\{#snippet screenGroup\(closeMore\?: \(\) => void\)\}/);
-    // [binding, expected template occurrences]: the unhosted row (or the one
-    // shared STEP row) plus the More copy — the BRT steppers also serve the
-    // mobile display-gear popover (issue #812), hence their third site.
+    expect(TOOLBAR_SOURCE).toMatch(/\{#snippet rowTail\(\)\}/);
+    // [binding, expected template occurrences]: AVG/PEAK have ONE capsule
+    // definition (the shared `avgPeakKeys` snippet) rendered at TWO sites
+    // (the row's quick keys + the More screen group) plus the UNHOSTED
+    // group-D copy — the shared snippet is what makes the row's quick keys
+    // and More's AVG/PEAK the same control, not a fork; the BRT steppers
+    // also serve the mobile display-gear popover (issue #812) and the
+    // unhosted row; STEP has three sites (unhosted, row tail, More copy).
     for (const [expr, count] of [
       ['onclick={() => (enableAvg = !enableAvg)}', 2],
       ['onclick={() => (enablePeakHold = !enablePeakHold)}', 2],
+      ['{@render avgPeakKeys()}', 2],
       ['onclick={() => onScopeDemandChange(!scopeDemandOn)}', 2],
       ['onclick={() => (brtLevel = clampBrt(brtLevel, -5))}', 3],
       ['onclick={() => (brtLevel = clampBrt(brtLevel, 5))}', 3],
       ['onclick={toggleAutoStep}', 2],
-      ['onclick={cycleStep}', 4],
-      ['onclick={cycleStepDown}', 2],
-      ['onchange={() => toggleLayer(layer.layer)}', 2],
+      ['onclick={cycleStep}', 6],
+      ['onclick={cycleStepDown}', 3],
+      ['onchange={() => toggleLayer(layer.layer)}', 1],
+      ['onclick={() => toggleLayer(layer.layer)}', 1],
     ] as const) {
       expect(TOOLBAR_SOURCE.split(expr).length - 1, expr).toBe(count);
     }
     expect(TOOLBAR_SOURCE).toMatch(/data-testid="scope-more-step"/);
     expect(TOOLBAR_SOURCE).toMatch(/data-testid="scope-more-layers"/);
+    expect(TOOLBAR_SOURCE).toMatch(/data-testid="toolbar-row-step"/);
+    expect(TOOLBAR_SOURCE).toMatch(/data-testid="toolbar-quick-keys"/);
   });
 
   it('keeps the MOR-1486 AUTO gate inside the screen group', () => {
-    expect(TOOLBAR_SOURCE).toMatch(/\{#if !hosted && !hideAutoStepToggle\}/);
-    // The More copy keeps its own gate, not the hosted-mode condition.
+    // MOR-2545 PR3: the unhosted step group now lives in the toolbar's
+    // `{:else}` branch, where `hosted` is false by construction — the gate
+    // no longer needs (and no longer carries) the `!hosted` term.
     expect(TOOLBAR_SOURCE).toMatch(/\{#if !hideAutoStepToggle\}/);
+    expect(TOOLBAR_SOURCE.split('{#if !hideAutoStepToggle}').length - 1).toBe(2);
   });
 
   // PR #3598 report item 7: opening EiBi from the More panel must close the
@@ -908,14 +920,51 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
     expect(TOOLBAR_SOURCE).toMatch(/onclick=\{\(\) => \{ showEiBi = true; closeMore\?\.\(\); \}\}/);
   });
 
-  // The literal only — the band is a reviewer measurement (PR #3598: with
-  // the status slot unshrinkable, the row overflows at a 440 px toolbar =
-  // 424 px content box); this test claims nothing about SPAN.
-  it('moves STEP into More at the toolbar container query\'s 424px band', () => {
-    expect(TOOLBAR_SOURCE).toMatch(/container-name: spectrum-toolbar-row/);
-    expect(TOOLBAR_SOURCE).toMatch(/@container spectrum-toolbar-row \(max-width: 424px\)/);
-    // BANDS, ⋯ and fullscreen never join the overflow set.
-    expect(TOOLBAR_SOURCE).not.toMatch(/data-overflow="(?!step)[a-z]+"/);
+  // MOR-2545 PR3: STEP hides LAST; the 335px band is DERIVED from the
+  // capsule CSS geometry (scope-capsule.css), not measured — the
+  // coordinator re-measures in a browser.
+  it('moves STEP into More at the surface container query\'s derived 335px band', () => {
+    expect(TOOLBAR_SOURCE).toMatch(/@container scope-controls \(max-width: 335px\)/);
+    expect(TOOLBAR_SOURCE).toMatch(/\.toolbar-step-copy \{ display: flex; \}/);
+    expect(TOOLBAR_SOURCE).not.toMatch(/spectrum-toolbar-row/);
+    // BANDS, MORE and fullscreen never join the overflow set; only the
+    // quick keys and STEP do (both from the row tail).
+    expect(TOOLBAR_SOURCE).not.toMatch(/data-overflow="(?!step|quick)[a-z]+"/);
+  });
+
+  // MOR-2545 PR3: one visual family — no bezel `toolbar-btn` class in the
+  // row tail / More screen group; the shared capsule sheet carries no
+  // bezel chrome and no literal colour (MOR-977).
+  it('the row tail and the More screen group use only capsule classes, never toolbar-btn', () => {
+    const snippetBody = (name: string) => {
+      const open = TOOLBAR_SOURCE.indexOf(`{#snippet ${name}(`);
+      expect(open, name).toBeGreaterThanOrEqual(0);
+      const close = TOOLBAR_SOURCE.indexOf('{/snippet}', open);
+      expect(close, name).toBeGreaterThan(open);
+      return TOOLBAR_SOURCE.slice(open, close);
+    };
+    for (const name of ['rowTail', 'screenGroup']) {
+      expect(snippetBody(name)).not.toContain('toolbar-btn');
+      expect(snippetBody(name)).not.toContain('toolbar-label');
+      expect(snippetBody(name)).not.toContain('toolbar-value');
+    }
+  });
+
+  it('the shared capsule stylesheet is chrome-free and token-only', () => {
+    const css = readFileSync('src/components/spectrum/scope-capsule.css', 'utf8');
+    expect(css).not.toContain('box-shadow');
+    expect(css).not.toContain('text-shadow');
+    expect(css).not.toContain('linear-gradient');
+    // MOR-977: no literal colours — only var() token references.
+    expect(css.match(/#[0-9a-fA-F]{3,8}\b/)).toBeNull();
+    // The bezel family is scoped out: the capsule key/step-key names sit in
+    // control-button.css's :not() exclusion lists.
+    const bezel = readFileSync('src/components-v2/controls/control-button.css', 'utf8');
+    expect(bezel).toContain('.scope-flat-key, .scope-step-key');
+    // One family everywhere: the STEP band and the quick-keys band live in
+    // the capsule sheet with the derivation comment.
+    expect(css).toMatch(/THE BANDS ARE DERIVED, NOT MEASURED/);
+    expect(css).toMatch(/@container scope-controls \(max-width: 823px\)/);
   });
 
   // PR #3598 findings 2/3 + the coordinator decision on the status text:

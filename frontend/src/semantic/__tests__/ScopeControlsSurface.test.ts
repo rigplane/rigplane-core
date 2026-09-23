@@ -17,15 +17,22 @@
  *       callback, not a neighbour's (the copy-paste-loop mutation class).
  *   MOR-2545 owner rules — one row; no `NAME: true/false` text; no `—`/`?`
  *       placeholders; unread = drawn unlit in place with its label; MAIN/SUB
- *       absent without the structural receiver fact; More opens on ⋯, closes
- *       on Esc and outside click, and returns focus.
+ *       absent without the structural receiver fact; More opens on the
+ *       [MORE ▾] key, closes on Esc and outside click, and returns focus.
+ *   MOR-2545 PR3 — the capsule family: CTR|FIX and MAIN|SUB are ONE
+ *       segmented capsule each (a `.scope-capsule` radiogroup); a lit
+ *       segment carries `data-lit='true'` and an unlit one does not; the
+ *       More key's visible label comes from the i18n system; the host's
+ *       rowTail renders between the receiver capsule and More, and the
+ *       row's overflow hooks cover the full hide order
+ *       quick → receiver → hold → ref → span → step.
  *
- * The More panel is opened through the ⋯ key exactly as the operator opens
- * it — `openMore()` below is the ONLY helper that reaches into More-hosted
- * controls. Literal text assertions everywhere, never `t(key)`.
+ * The More panel is opened through the [MORE ▾] key exactly as the operator
+ * opens it — `openMore()` below is the ONLY helper that reaches into
+ * More-hosted controls. Literal text assertions everywhere, never `t(key)`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, unmount } from 'svelte';
+import { flushSync, mount, unmount, createRawSnippet } from 'svelte';
 import ScopeControlsSurface, {
   CHOICES, TOGGLES, type ScopeChoiceField, type ScopeToggleField,
 } from '../ScopeControlsSurface.svelte';
@@ -63,8 +70,16 @@ type Handlers = {
   onRefChange?: (ref: number) => void;
 };
 
-function render(view: RadioViewModel, handlers: Handlers = {}) {
-  const component = mount(ScopeControlsSurface, { target, props: { view, ...handlers } });
+function render(view: RadioViewModel, handlers: Handlers = {}, props: { rowTail?: boolean } = {}) {
+  // MOR-2545 PR3: a tail probe standing in for the toolbar's rowTail.
+  const rowTail = props.rowTail
+    ? createRawSnippet(() => ({
+        render: () =>
+          '<span data-overflow="step" data-testid="row-tail-step"></span>'
+          + '<button data-overflow="quick" data-testid="row-tail-quick">AVG</button>',
+      }))
+    : undefined;
+  const component = mount(ScopeControlsSurface, { target, props: { view, ...handlers, rowTail } });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   const el = (id: string) => q<HTMLElement>(`[data-testid="${id}"]`);
@@ -72,7 +87,7 @@ function render(view: RadioViewModel, handlers: Handlers = {}) {
     dispose: () => unmount(component),
     root: () => q('[data-testid="scope-controls-surface"]'),
     el,
-    /** Opens the More panel through the ⋯ key, like the operator does. */
+    /** Opens the More panel through the [MORE ▾] key, like the operator does. */
     openMore: () => { el('scope-more')!.click(); flushSync(); },
   };
 }
@@ -253,12 +268,82 @@ describe('the ONE always-visible row (MOR-2545)', () => {
   });
 });
 
+describe('the capsule family (MOR-2545 PR3, owner style C)', () => {
+  it('CTR|FIX is ONE segmented capsule: both keys are its only children', () => {
+    const r = render(withSc({ mode: known(0) }));
+    const modeRow = r.el('scope-mode-row')!;
+    expect(modeRow.classList.contains('scope-capsule')).toBe(true);
+    expect(modeRow.getAttribute('role')).toBe('radiogroup');
+    const keys = modeRow.querySelectorAll('button');
+    expect(keys).toHaveLength(2);
+    expect(keys[0]!.textContent).toBe('CTR');
+    expect(keys[1]!.textContent).toBe('FIX');
+    // Inner divider duty is the CSS sibling rule's; the structure it keys on
+    // (adjacent segment children of one capsule) is pinned here.
+    expect(keys[1]!.previousElementSibling).toBe(keys[0]);
+    r.dispose();
+  });
+
+  it('MAIN|SUB is ONE segmented capsule with exactly the two receiver keys', () => {
+    const r = render(base());
+    const receiver = r.el('scope-receiver')!;
+    expect(receiver.classList.contains('scope-capsule')).toBe(true);
+    const keys = receiver.querySelectorAll('button');
+    expect(keys).toHaveLength(2);
+    expect(keys[0]!.textContent).toBe('MAIN');
+    expect(keys[1]!.textContent).toBe('SUB');
+    r.dispose();
+  });
+
+  it('a lit segment carries data-lit=true; an unlit one does not', () => {
+    const r = render(withSc({ mode: known(0), receiver: known(1) }));
+    expect(r.el('scope-mode-row-0')!.getAttribute('data-lit')).toBe('true');
+    expect(r.el('scope-mode-row-1')!.getAttribute('data-lit')).toBe('false');
+    expect(r.el('scope-receiver-1')!.getAttribute('data-lit')).toBe('true');
+    expect(r.el('scope-receiver-0')!.getAttribute('data-lit')).toBe('false');
+    r.dispose();
+  });
+
+  it('[MORE ▾] exists with the i18n label, a title, and opens the More panel', () => {
+    const r = render(base());
+    const more = r.el('scope-more')!;
+    expect(more.textContent).toBe('More ▾'); // en catalog: core.spectrum.more
+    expect(more.getAttribute('title')).toBe('More ▾');
+    expect(more.getAttribute('aria-label')).toBe('More scope controls');
+    expect(r.el('scope-more-panel')).toBeNull();
+    r.openMore();
+    expect(r.el('scope-more-panel')).not.toBeNull();
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    r.dispose();
+  });
+
+  it('the host rowTail renders between the receiver capsule and More', () => {
+    const r = render(withSc({ mode: known(0) }), {}, { rowTail: true });
+    const order = [r.el('scope-receiver')!, r.el('row-tail-step')!, r.el('row-tail-quick')!, r.el('scope-more')!];
+    for (let i = 1; i < order.length; i++) {
+      expect(order[i]!.compareDocumentPosition(order[i - 1]!) & Node.DOCUMENT_POSITION_PRECEDING,
+        `item ${i} follows item ${i - 1}`).toBeTruthy();
+    }
+    r.dispose();
+  });
+
+  it('renders the host rowTail bare when the scope fact group is absent', () => {
+    // topologyFixtures['1/single'] carries no scopeControls — exactly the
+    // absent-group case the bare-tail fallback exists for.
+    const r = render(topologyFixtures['1/single'], {}, { rowTail: true });
+    expect(r.el('scope-hold')).toBeNull();
+    expect(r.el('row-tail-step')).not.toBeNull();
+    expect(r.el('row-tail-quick')).not.toBeNull();
+    r.dispose();
+  });
+});
+
 describe('narrow widths: lower-priority keys overflow into More (MOR-2545)', () => {
   // jsdom cannot lay out — this pins the STRUCTURE/hooks the container queries key on.
   it('row hooks mark the overflow groups and More renders their copies', () => {
     const r = render(withSc({ mode: known(0) }));
     const row = r.el('scope-controls-row')!;
-    // Display order; hide-first is the reverse; mode row and ⋯ stay unhooked (filtered out).
+    // Display order; hide-first is the reverse; mode row and More stay unhooked (filtered out).
     const hooked = [...row.children].map((c) => c.getAttribute('data-overflow')).filter(Boolean);
     expect(hooked).toEqual(['span', 'ref', 'hold', 'receiver']);
     r.openMore();
@@ -266,10 +351,20 @@ describe('narrow widths: lower-priority keys overflow into More (MOR-2545)', () 
     for (const hook of ['receiver', 'hold', 'ref', 'span']) expect(overflow.querySelector(`[data-overflow="${hook}"]`), hook).not.toBeNull();
     r.dispose();
   });
+
+  // MOR-2545 PR3: with the host's rowTail present, the hooked order is the
+  // FULL hide order — the quick keys (AVG/PEAK) hide FIRST, STEP hides LAST.
+  it('the full hide order with the rowTail present: quick → receiver → hold → ref → span → step', () => {
+    const r = render(withSc({ mode: known(0) }), {}, { rowTail: true });
+    const row = r.el('scope-controls-row')!;
+    const hooked = [...row.children].map((c) => c.getAttribute('data-overflow')).filter(Boolean);
+    expect(hooked).toEqual(['span', 'ref', 'hold', 'receiver', 'step', 'quick']);
+    r.dispose();
+  });
 });
 
-describe('the More panel (⋯)', () => {
-  it('opens on ⋯, lights the key, and moves focus into the panel', () => {
+describe('the More panel ([MORE ▾])', () => {
+  it('opens on MORE, lights the key, and moves focus into the panel', () => {
     const r = render(base());
     expect(r.el('scope-more-panel')).toBeNull();
     r.openMore();
@@ -281,7 +376,7 @@ describe('the More panel (⋯)', () => {
     r.dispose();
   });
 
-  it('closes on a window-level Escape and returns focus to the ⋯ key', () => {
+  it('closes on a window-level Escape and returns focus to the More key', () => {
     const r = render(base());
     r.openMore();
     pressEscape();
@@ -290,7 +385,7 @@ describe('the More panel (⋯)', () => {
     r.dispose();
   });
 
-  it('closes on an outside click (backdrop) and returns focus to the ⋯ key', () => {
+  it('closes on an outside click (backdrop) and returns focus to the More key', () => {
     const r = render(base());
     r.openMore();
     r.el('scope-more-backdrop')!.click();
