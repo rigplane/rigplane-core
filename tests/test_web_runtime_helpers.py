@@ -1776,3 +1776,52 @@ def test_observed_values_match_the_prewire_contract_byte_for_byte() -> None:
     # The same store's base projection showed the ``pbtInner`` dataclass
     # default (128); the unobserved leaf now publishes null instead.
     assert payload["main"]["pbtInner"] is None
+
+
+def _liveness_radio(model: str, *, last_commanded: bool | None) -> _FakeRadio:
+    """Fake radio carrying the MOR-2544 retained last-commanded power state."""
+    from rigplane.profiles import resolve_radio_profile
+
+    radio = _FakeRadio(connected=True, radio_ready_flag=False)
+    radio._profile = resolve_radio_profile(model=model)
+    radio._last_commanded_powerstat = last_commanded
+    return radio
+
+
+def test_last_commanded_power_off_publishes_false_while_store_unobserved() -> None:
+    """MOR-2544 (Option B): an ACKed power-off survives store generation clears.
+
+    The store's ``power_on`` is unobserved (a watchdog/soft-reconnect
+    ``advance_generation`` cleared it), but the radio retains the power-off
+    command the radio ACKed (0xFB) — the payload publishes ``powerOn:
+    false`` with a ``fieldStatus.powerOn`` entry the frontend accepts
+    (``isFieldAvailable`` resolves ``available``), so the powered-off
+    overlay and the Power-ON button stay live for the whole outage. RED at
+    3b4473cc: nothing reads ``_last_commanded_powerstat``, so ``powerOn``
+    stays ``None``.
+    """
+    radio = _liveness_radio("IC-7610", last_commanded=False)
+
+    payload = build_public_state_payload_from_snapshot(
+        StateStore().snapshot(), radio=radio, receiver_count=2
+    )
+
+    assert payload["powerOn"] is False
+    status = payload["fieldStatus"]["powerOn"]
+    assert status["observed"] is True
+    assert status["availability"] == "available"
+
+
+def test_last_commanded_power_off_is_never_published_for_ftx1() -> None:
+    """MOR-2544: FTX-1 (no ``power_control``) gets nothing fabricated, even
+    with a retained command present — the profile-data predicate gates the
+    publish. RED at origin/main: ``infers_power_on_from_liveness`` does not
+    exist yet (AttributeError)."""
+    radio = _liveness_radio("FTX-1", last_commanded=False)
+    assert radio._profile.infers_power_on_from_liveness is False
+
+    payload = build_public_state_payload_from_snapshot(
+        StateStore().snapshot(), radio=radio, receiver_count=2
+    )
+
+    assert payload["powerOn"] is None

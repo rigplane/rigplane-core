@@ -922,6 +922,18 @@ def classify_radio_health(
     }
 
 
+def _radio_infers_power_on_from_liveness(radio: "Radio | None") -> bool:
+    """Whether the radio's profile infers power state from liveness (MOR-2544).
+
+    Reads the profile-data predicate
+    (:attr:`rigplane.profiles.RadioProfile.infers_power_on_from_liveness`);
+    anything without a real profile (``None``, fakes) answers False so no
+    power value is ever fabricated for it.
+    """
+    profile = getattr(radio, "_profile", None) if radio is not None else None
+    return getattr(profile, "infers_power_on_from_liveness", False) is True
+
+
 def _to_camel(s: str) -> str:
     parts = s.split("_")
     return parts[0] + "".join(p.capitalize() for p in parts[1:])
@@ -1378,7 +1390,55 @@ def _build_public_state_payload_from_dict(
 
     public = _camel_case_state(state)
     _null_unobserved_public_leaves(public)
+    _publish_last_commanded_power_off(public, radio)
     return public
+
+
+def _publish_last_commanded_power_off(
+    public: dict[str, Any], radio: "Radio | None"
+) -> None:
+    """Publish the retained last-commanded power-off when the store is silent.
+
+    MOR-2544 (Option B): ``IcomRadio._last_commanded_powerstat`` records the
+    power command the radio ACKed (0xFB) and lives outside the StateStore, so
+    it survives ``advance_generation`` (watchdog timeout, reconnect attempts,
+    soft reconnects — all clear the store). While the store's ``power_on``
+    field is unobserved and the last command was OFF, publish
+    ``powerOn: false`` with a ``fieldStatus.powerOn`` entry the frontend
+    accepts (``isFieldAvailable`` resolves ``availability: "available"``),
+    so the powered-off overlay and the Power-ON button survive every
+    generation clear for as long as the radio stays off. The evidence is the
+    radio's own ACK, so the entry reads observed — but ``True`` is never
+    published from the attribute: only fresh answers prove power on, and any
+    observed store field wins over the retained command. Applied after
+    ``_null_unobserved_public_leaves`` so the value is never nulled back.
+    """
+    last_commanded = (
+        getattr(radio, "_last_commanded_powerstat", None) if radio is not None else None
+    )
+    if last_commanded is not False or not _radio_infers_power_on_from_liveness(radio):
+        return
+    field_status = public.get("fieldStatus")
+    existing = field_status.get("powerOn") if isinstance(field_status, dict) else None
+    if isinstance(existing, dict) and existing.get("observed") is True:
+        return  # fresh store truth (including a stale last value) wins
+    public["powerOn"] = False
+    if isinstance(field_status, dict):
+        field_status["powerOn"] = {
+            "storePath": "global.tx_state.power_on",
+            "observed": True,
+            "freshness": "fresh",
+            "availability": "available",
+            "source": {
+                "source": "command_response",
+                "provider": "icom_civ",
+                "transport": "civ",
+                "nativeId": "last_commanded_powerstat",
+                "capabilityId": "global.tx_state.power_on",
+                "commandSource": None,
+                "sessionId": None,
+            },
+        }
 
 
 def build_public_state_payload(

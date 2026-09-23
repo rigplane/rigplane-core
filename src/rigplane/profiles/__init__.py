@@ -553,6 +553,40 @@ class RadioProfile:
         """
         return command_name in self.command_names
 
+    @property
+    def infers_power_on_from_liveness(self) -> bool:
+        """Whether power state is inferred from link liveness evidence.
+
+        True exactly when all three hold: the profile declares the
+        ``power_control`` capability, binds a ``power_off`` command, and
+        declares no ``get_powerstat`` query. Decided purely from profile
+        data — never from a model name.
+
+        MOR-2544 (owner rule: no fabricated values, evidence only): on a
+        profile that binds the CI-V 0x18 power command pair but has no
+        power-status query (``get_powerstat`` undeclared — e.g.
+        IC-7610/IC-7300, whose CI-V guides document cmd 0x18 as SET-only)
+        an honest power state still exists: the radio answering reads is
+        powered on; a power command the radio acknowledged (0xFB, parsed
+        by ``set_powerstat`` — a 0x18 frame is never the acknowledgement)
+        is the commanded state until the radio answers again; and before
+        the first answer the state is unknown. The ``power_off`` binding
+        is the gate that keeps level-only profiles out: Xiegu
+        X6100/X6200 and Lab599 TX-500 declare ``power_control`` for the
+        RF-power level alone (X6100/X6200: 0x14 0x0A, binding no
+        ``power_on``/``power_off`` and declaring
+        ``global.tx_state.power_on`` unsupported; TX-500: the CAT
+        PC/TP pair), so liveness there must not publish ``powerOn: true``
+        behind a power button whose command refuses. A profile with a
+        declared query keeps using it instead, and a radio without
+        ``power_control`` (FTX-1) gets nothing fabricated.
+        """
+        return (
+            self.supports_capability("power_control")
+            and self.supports_command("power_off")
+            and not self.supports_command("get_powerstat")
+        )
+
     def resolve_filter_rule(
         self, mode: str | None, *, data_mode: int = 0
     ) -> FilterWidthRule | None:
