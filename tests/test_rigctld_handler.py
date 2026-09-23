@@ -3483,6 +3483,7 @@ async def test_send_raw_no_send_civ_raw_returns_enimpl(config: RigctldConfig) ->
 # ---------------------------------------------------------------------------
 
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio  # noqa: E402
+from rigplane.rigctld.routing import YaesuRouting  # noqa: E402
 
 
 class _FakeYaesuRadio(YaesuCatRadio):  # type: ignore[misc]
@@ -3502,8 +3503,6 @@ def yaesu_radio() -> AsyncMock:
     end-to-end (``AsyncMock(spec=…)`` would otherwise return a bare
     MagicMock with non-awaitable ``get_level``/``get_func`` methods).
     """
-    from rigplane.rigctld.routing import YaesuRouting
-
     mock = AsyncMock(spec=_FakeYaesuRadio)
     mock.backend_id = "yaesu_cat"
     mock.rigctld_routing = lambda max_power_w=100.0: YaesuRouting(mock, max_power_w)
@@ -4549,6 +4548,85 @@ async def test_yaesu_get_func_tsql_vfob_uses_sub_state_path() -> None:
     field = store_live.snapshot().field("receiver.sub.operator_toggles.repeater_tsql")
     assert field.value is True
     assert field.source.source == "hamlib_response"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("active", "frame"), [("SUB", "CT11;"), ("MAIN", "CT01;")])
+async def test_yaesu_tone_no_vfo_arg_follows_active_receiver(
+    active: str, frame: str
+) -> None:
+    """With no VFO token, ``U TONE 1`` writes the ACTIVE receiver's CT
+    select (CT11; on SUB, CT01; on MAIN) and the read-back answers the
+    pending value on that same receiver — never split (MOR-2111 R4)."""
+    radio, _ct, writes = _real_ftx1_ct_radio()
+    store = StateStore()
+    _seed_store_current(store, "global.slow_state.active", active)
+    _seed_store_current(
+        store, f"receiver.{active.lower()}.operator_toggles.repeater_tone", False
+    )
+    handler = RigctldHandler(radio, RigctldConfig(), state_store=store)
+
+    assert (await handler.execute(_vfo_func_cmd("set_func", None, "TONE", "1"))).ok
+    assert writes == [frame], active
+
+    resp = await handler.execute(_vfo_func_cmd("get_func", None, "TONE"))
+    assert resp.ok
+    assert resp.values == ["1"]
+
+
+@pytest.mark.asyncio
+async def test_yaesu_tsql_no_vfo_arg_sub_active_names_sub_stored_or_live() -> None:
+    """SUB active, no VFO token: ``u TSQL`` answers SUB whether the value
+    comes from stored state (no live read) or from a live CT read — with
+    MAIN and SUB holding different CT codes (MOR-2111 R4)."""
+    radio, ct, _writes = _real_ftx1_ct_radio()
+    ct[0], ct[1] = 0, 0  # live: both off — only the stored SUB value says on
+    store = StateStore()
+    _seed_store_current(store, "global.slow_state.active", "SUB")
+    _seed_store_current(store, "receiver.sub.operator_toggles.repeater_tsql", True)
+    handler = RigctldHandler(radio, RigctldConfig(), state_store=store)
+    resp = await handler.execute(_vfo_func_cmd("get_func", None, "TSQL"))
+    assert resp.ok
+    assert resp.values == ["1"]
+    radio._transport.query.assert_not_awaited()  # noqa: SLF001
+
+    radio_live, ct_live, _writes_live = _real_ftx1_ct_radio()
+    ct_live[0], ct_live[1] = 0, 2  # live: MAIN off, SUB in TSQL
+    store_live = StateStore()
+    _seed_store_current(store_live, "global.slow_state.active", "SUB")
+    handler_live = RigctldHandler(radio_live, RigctldConfig(), state_store=store_live)
+    resp_live = await handler_live.execute(_vfo_func_cmd("get_func", None, "TSQL"))
+    assert resp_live.ok
+    assert resp_live.values == ["1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "name", "getter", "raw", "expected"),
+    [
+        ("func", "NB", "get_nb_level", 5, ["1"]),
+        ("func", "NR", "get_nr_level", 3, ["1"]),
+        ("level", "SQL", "get_squelch", 128, ["0.501961"]),
+    ],
+)
+async def test_yaesu_routing_ignores_vfo_for_nb_nr_and_levels(
+    yaesu_radio: AsyncMock,
+    kind: str,
+    name: str,
+    getter: str,
+    raw: int,
+    expected: list[str],
+) -> None:
+    """YaesuRouting ignores ``vfo`` for NB, NR and levels: a VFOB label
+    reads the radio-global value with no receiver kwarg (MOR-2111 R4)."""
+
+    live_getter = getattr(yaesu_radio, getter)
+    live_getter.return_value = raw
+    routing = YaesuRouting(yaesu_radio, 100.0)
+    resp = await getattr(routing, f"get_{kind}")(name, vfo="VFOB")
+    assert resp.ok
+    assert resp.values == expected
+    live_getter.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
