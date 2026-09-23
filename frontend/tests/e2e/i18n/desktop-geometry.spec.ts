@@ -733,6 +733,49 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     }
   });
 
+  // The side columns are scroll containers, but while they stayed
+  // `position: static` their absolutely positioned descendants (sr-only
+  // text, meter fills, control internals) took `.radio-layout` as their
+  // containing block, bypassed the columns' scroll boxes and extended the
+  // grid's scrollable overflow: on the live stand the layout scrolled by
+  // 291px at 2000×1157 (scrollHeight 1448 vs 1157) and 570px at 1440×900
+  // (1470 vs 900) with empty space below the station meters. Positioning
+  // the columns anchors those descendants to the column, so only the
+  // columns scroll. 1280×720 is deliberately not asserted: the grid's own
+  // row floors (28px status + 200px receiver + 320px center floor + 160px
+  // meters + 30px gap/padding ≈ 738px) exceed a 720px viewport, and the
+  // Standard template documents that short viewports scroll instead of
+  // overlapping the meters dock.
+  for (const [width, height] of [[2000, 1157], [1440, 900]] as const) {
+    test(`standard ${width}x${height} contains its side columns; the layout does not scroll`, async ({ page }) => {
+      await boot(page, 'standard', width, true, 'studioline', false, undefined, { height });
+      const overflow = await page.evaluate(() => {
+        const layout = document.querySelector('.radio-layout.desktop-control-face.standard-face')!;
+        return {
+          layout: layout.scrollHeight - layout.clientHeight,
+          document: document.documentElement.scrollHeight - window.innerHeight,
+        };
+      });
+      expect(overflow.layout, `${width}x${height}: the layout grid fits without scrolling`)
+        .toBeLessThanOrEqual(1);
+      expect(overflow.document, `${width}x${height}: the document does not scroll`)
+        .toBeLessThanOrEqual(1);
+    });
+  }
+
+  // The containment half of the fix: a positioned column must still scroll
+  // its own taller content. Only the right column is asserted, and only at
+  // 1440×900 — the fixture composition whose tall right rail MOR-2458
+  // already scrolls by 80px at this viewport. The left column's content
+  // height under this fixture (and the right column's at 2000×1157, where
+  // the box is ~730px tall) is not pinned by existing evidence.
+  test('standard 1440x900 side column still scrolls its own content', async ({ page }) => {
+    await boot(page, 'standard', 1440, true, 'studioline', false, undefined, { height: 900 });
+    const rail = page.locator('.desktop-control-face.standard-face .desktop-controls-right');
+    const overflow = await rail.evaluate(element => element.scrollHeight - element.clientHeight);
+    expect(overflow, 'the right column keeps its internal scroll').toBeGreaterThan(0);
+  });
+
   test('crosses the 1200 and 1024 Standard thresholds without changing routes', async ({ page }) => {
     await boot(page, 'standard', 1201, true, 'studioline', false, 'topology-1-single');
     const root = page.locator('.desktop-control-face.standard-face');
