@@ -353,14 +353,11 @@
     min-height: 14px;
   }
 
-  /* The class is doubled on purpose. Compiled, Svelte appends one scope
-   * class — whatever hash it is — making this rule (0,4,0) against
-   * studioline's `:focus-visible` rule (0,3,0), which loads dynamically
-   * AFTER the component styles (fixtures/main.ts): a single class would
-   * tie, the language stylesheet would win on source order, and the frame
-   * would return on the studioline page. The MOR-2522 cascade pin in
-   * focus-ring-token-wiring.test.ts re-derives this ranking and fails a
-   * selector that drops back to a tie.
+  /* The class is doubled on purpose — a one-step specificity raise kept
+   * from when a language-level :focus-visible contract could tie this rule
+   * and bring the frame back (that contract no longer exists; MOR-2522).
+   * The guard in focus-ring-token-wiring.test.ts accepts the renderer ring
+   * shadow on exactly this doubled selector shape and no other.
    */
   .vc-track-container.vc-track-container:focus-visible {
     /* MOR-2522: keyboard focus lights the control (owner ruling: no frame).

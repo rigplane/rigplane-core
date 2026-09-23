@@ -726,10 +726,6 @@
     color: var(--text);
   }
 
-  .toolbar-select:focus {
-    border-color: var(--accent);
-  }
-
   .icon-btn {
     font-size: 14px;
     width: 22px;

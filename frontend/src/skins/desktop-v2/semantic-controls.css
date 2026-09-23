@@ -151,8 +151,7 @@
  * the ring); app.css remains the fallback on surfaces where this skin is not
  * loaded. Pinned, from this file, by 'the focus variant composes: ring token
  * chain prepended to the track chrome, layer-for-layer' and its cascade
- * companions in section 9 of
- * src/__tests__/focus-ring-token-wiring.test.ts. */
+ * companions in src/__tests__/focus-ring-token-wiring.test.ts. */
 .desktop-control-face .semantic-control-panel section input[type='range']:focus-visible {
   box-shadow: var(--vc-focus-ring-shadow, var(--v2-focus-ring-shadow)), var(--range-track-chrome);
 }

@@ -104,14 +104,9 @@
     user-select: none;
   }
 
-  .segmented-button:focus-visible {
-    border-radius: 4px;
-  }
-
   .segment {
     border-radius: 0;
   }
-
 
   .segment.first {
     border-radius: 3px 0 0 3px;

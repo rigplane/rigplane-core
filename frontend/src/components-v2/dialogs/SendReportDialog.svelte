@@ -569,11 +569,6 @@
     resize: vertical;
   }
 
-  .field input:focus,
-  .field textarea:focus {
-    border-color: var(--v2-accent-cyan, #06b6d4);
-  }
-
   .field-row {
     display: grid;
     grid-template-columns: 1fr 1fr;

@@ -548,10 +548,6 @@
     color: var(--v2-text-primary, #e0e0e0);
   }
 
-  .eibi-search:focus {
-    border-color: rgba(0, 212, 255, 0.4);
-  }
-
   .eibi-toggle {
     display: flex;
     align-items: center;

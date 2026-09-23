@@ -39,9 +39,6 @@ export interface AssertionOptions {
    * site).
    */
   rootTestId?: string;
-  /** MOR-1087 — true when `Tab` reached a real control (`focusTabs`), so
-   *  `:focus-visible` is live and the focus-ring contrast check applies. */
-  focusVisible?: boolean;
 }
 
 // MOR-1085: which mounted root the selectors below read from for the
@@ -650,9 +647,9 @@ export function runAssertions(
   }
 
   // ── MOR-1087 item 5: rendered contrast, real computed colours ───────────
-  // Thresholds mirror the tokens.test.ts precedent (4.5:1 text / WCAG 1.4.3,
-  // 3:1 focus ring / WCAG 1.4.11) but measure what the browser PAINTS, under
-  // whichever language `main.ts` activated. Default v2 theme has no such pin.
+  // Thresholds mirror the tokens.test.ts precedent (4.5:1 text / WCAG 1.4.3)
+  // but measure what the browser PAINTS, under whichever language `main.ts`
+  // activated. Default v2 theme has no such pin.
   const activeLanguage = document.documentElement.dataset.designLanguage ?? 'default';
   const TEXT_TARGETS: readonly [string, string][] = [
     ['rx-tx-key', '[data-testid="rx-tx-key"]'],

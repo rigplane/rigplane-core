@@ -471,7 +471,6 @@ try {
       arrangement: resizedVp.arrangement,
       touchTargets: Boolean(spec.touch),
       reducedMotion: spec.media?.reducedMotion === 'reduce',
-      focusVisible: Boolean(spec.focusTabs),
     };
     const assertions = await page.evaluate((o) => window.__harness.assert(o), options);
     const tokens = await page.evaluate(() => window.__harness.tokens());
