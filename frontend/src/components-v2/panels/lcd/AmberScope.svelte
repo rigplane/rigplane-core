@@ -13,6 +13,8 @@
   import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
   import { projectAgcReadback } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { isFieldAvailable } from '$lib/state/field-status';
+  import { levelFormatsBelowMax } from '../../../semantic/format-level';
+  import { RF_FRONT_END_LEVELS } from '../../../semantic/rf-front-end-instruments';
 
   // Band lookup by frequency (LCD-specific, mirrors AmberCockpit)
   const BANDS: [string, number, number][] = [
@@ -56,6 +58,19 @@
     return value === undefined ? 'AGC' : `AGC ${value}`;
   }
 
+  // Owner ruling 2026-09-23 (MOR-2546, extends #3591 to the LCD faces): the
+  // RFG annunciator lights only while RF gain is REDUCED, decided on the
+  // displayed percentage — the same `levelFormatsBelowMax` rounding the VFO
+  // deck applies, over the same 0..1 fraction domain (`RF_FRONT_END_LEVELS[0]`;
+  // the snapshot path normalizes `rfGain` to [0, 1]). At a displayed 100%,
+  // and while the reading is unknown, the chip prints no text, keeps its
+  // reserved slot (`reserveSlot` → AmberIndStrip), and is aria-hidden.
+  function rfgLabelFor(rfGain: number | null | undefined): string {
+    return rfGain != null
+      && levelFormatsBelowMax(rfGain, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3])
+      ? 'RFG' : '';
+  }
+
   let tx = $derived(toTxProps(radioState, caps));
   let ritXit = $derived(toRitXitProps(radioState, caps));
   let vfoOps = $derived(toVfoOpsProps(radioState, caps));
@@ -77,6 +92,7 @@
   // Active receiver for indicator zone data (unchanged from pre-#897)
   let rx = $derived(radioState?.active === 'SUB' ? radioState?.sub : radioState?.main);
   let activeRxKey = $derived<'main' | 'sub'>(radioState?.active === 'SUB' ? 'sub' : 'main');
+  let rfgLabel = $derived(rfgLabelFor(rx?.rfGain));
 
   // MOR-429: gate active-receiver indicators on fieldStatus availability so an
   // unobserved/default value is never presented as a confirmed reading (a stale
@@ -166,7 +182,10 @@
         : []),
     ] : []),
     ...(hasCap('rf_gain') && rxAvailable('rfGain') ? [{
-      id: 'rfg' as const, label: 'RFG', active: (rx?.rfGain ?? 1) < 1,
+      id: 'rfg' as const,
+      label: rfgLabel,
+      active: rfgLabel !== '',
+      reserveSlot: true,
     }] : []),
   ]);
 

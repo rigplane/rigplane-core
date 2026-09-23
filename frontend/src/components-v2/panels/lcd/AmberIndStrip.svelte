@@ -28,6 +28,10 @@
     capability?: string;
     /** 'tx' → red TX styling; 'tuning' → blinking animation */
     variant?: 'tx' | 'tuning';
+    /** Owner ruling 2026-09-23 (MOR-2546): reserve this chip's slot width so
+     *  an emptied label never shifts neighbouring chips; the emptied chip
+     *  prints no text and is aria-hidden. */
+    reserveSlot?: boolean;
   }
 
   interface Props {
@@ -60,6 +64,9 @@
       class:active={token.active}
       class:ind-tx={token.variant === 'tx'}
       class:ind-tuning={token.variant === 'tuning'}
+      class:slot-reserved={token.reserveSlot === true}
+      class:ind-empty={token.label === ''}
+      aria-hidden={token.label === '' ? 'true' : undefined}
     >{token.label}</span>
   {/each}
 </div>
@@ -131,6 +138,23 @@
   .lcd-ind.active {
     color: rgba(26, 16, 0, var(--lcd-alpha-active));
     border-color: rgba(26, 16, 0, calc(var(--lcd-alpha-active) * 0.4));
+  }
+
+  /* Owner ruling 2026-09-23 (MOR-2546, extends #3591): a reserving token
+     (RFG) keeps one fixed slot width whether lit, unlit, or emptied — the
+     4ch reservation is wider than the widest text it prints ('RFG'), so a
+     gain change between reduced / full / unread never moves a neighbour.
+     Emptied: nothing is drawn — no text, transparent border, hidden from
+     assistive tech — mirroring the VFO deck (`VfoIndicatorRow`'s
+     min-inline-size reservation, `VfoPanel`'s fixed [data-chip='rfg'] lamp). */
+  .lcd-ind.slot-reserved {
+    min-inline-size: 4ch;
+    box-sizing: content-box;
+    text-align: center;
+  }
+
+  .lcd-ind.ind-empty {
+    border-color: transparent;
   }
 
   /* TX indicator: red accent */

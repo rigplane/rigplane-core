@@ -18,6 +18,8 @@
   import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
   import { projectAgcReadback } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { isFieldAvailable } from '$lib/state/field-status';
+  import { levelFormatsBelowMax } from '../../../semantic/format-level';
+  import { RF_FRONT_END_LEVELS } from '../../../semantic/rf-front-end-instruments';
   import { formatOffsetKHz } from '../rit-utils';
 
   const handlers = getAmberCockpitHandlers();
@@ -203,12 +205,26 @@
     return value === undefined ? 'AGC' : `AGC ${value}`;
   }
 
+  // Owner ruling 2026-09-23 (MOR-2546, extends #3591 to the LCD faces): the
+  // RFG annunciator lights only while RF gain is REDUCED, decided on the
+  // displayed percentage — the same `levelFormatsBelowMax` rounding the VFO
+  // deck applies, over the same 0..1 fraction domain (`RF_FRONT_END_LEVELS[0]`;
+  // the snapshot path normalizes `rfGain` to [0, 1]). At a displayed 100%,
+  // and while the reading is unknown, the chip prints no text, keeps its
+  // reserved slot (`reserveSlot` → AmberIndStrip), and is aria-hidden.
+  function rfgLabelFor(rfGain: number | null | undefined): string {
+    return rfGain != null
+      && levelFormatsBelowMax(rfGain, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3])
+      ? 'RFG' : '';
+  }
+
   // Per-receiver token builder — gates every indicator on fieldStatus
   // availability (MOR-429). Unavailable fields are suppressed entirely rather
   // than shown as confirmed defaults; AGC in particular no longer emits
   // `active: true` when `${rxKey}.agc` is missing.
   function vfoTokens(rxKey: 'main' | 'sub'): IndToken[] {
     const rxState = radioState?.[rxKey];
+    const rfgLabel = rfgLabelFor(rxState?.rfGain);
     return [
       ...(hasCap('attenuator') && rxAvailable(rxKey, 'att') ? [{
         id: 'att' as const, label: 'ATT', active: (rxState?.att ?? 0) > 0,
@@ -258,7 +274,10 @@
         }]
         : []),
       ...(hasCap('rf_gain') && rxAvailable(rxKey, 'rfGain') ? [{
-        id: 'rfg' as const, label: 'RFG', active: (rxState?.rfGain ?? 1) < 1,
+        id: 'rfg' as const,
+        label: rfgLabel,
+        active: rfgLabel !== '',
+        reserveSlot: true,
       }] : []),
       ...(hasCap('squelch') && rxAvailable(rxKey, 'squelch') ? [{
         id: 'sql' as const, label: 'SQL', active: (rxState?.squelch ?? 0) > 0,
