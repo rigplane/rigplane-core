@@ -1017,6 +1017,11 @@ export interface RxAudioProps {
   isAudioConnected: boolean;
   /** Capability flag — gates the dual-receiver routing sub-control. */
   hasDualReceiver: boolean;
+  /** Dual-receiver audio ROUTING is its own capability
+   *  (`lan_dual_rx_audio_routing`, IC-7610 only today) — `dual_rx` alone
+   *  (e.g. the FTX-1) must not mount a routing control whose values the
+   *  server will never accept or report (MOR-2527). */
+  hasAudioRouting: boolean;
 }
 
 export interface AudioUiState {
@@ -1047,6 +1052,7 @@ export function toRxAudioProps(
       ? audioState.volume / 100
       : (rx?.afLevel ?? Number.NaN);
   const hasDualReceiver = caps?.capabilities?.includes('dual_rx') ?? false;
+  const hasAudioRouting = hasCap(caps, 'lan_dual_rx_audio_routing');
   return {
     monitorMode,
     afLevel,
@@ -1054,6 +1060,7 @@ export function toRxAudioProps(
     hasLiveAudio,
     isAudioConnected: audioConnected,
     hasDualReceiver,
+    hasAudioRouting,
   };
 }
 

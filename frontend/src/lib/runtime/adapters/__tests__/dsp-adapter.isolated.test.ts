@@ -159,6 +159,33 @@ describe('dsp per-field structural gates (MOR-1290)', () => {
     expect(view.dsp!.agcTimeConstant.availability.structural).toBe(false);
   });
 
+  // MOR-2527: `agc` alone is not proof of an AGC-time control — the FTX-1
+  // has AGC but no time constant, and the server says so with
+  // `availability: "undeclared"` on the receiver's agcTimeConstant field. An
+  // undeclared field is structurally ABSENT (not drawn), not
+  // present-and-unread. The first assertion fails on origin/main, where the
+  // gate was `agc` alone.
+  it('agcTimeConstant is structurally absent when the receiver marks it undeclared, even with the agc capability (FTX-1 shape)', () => {
+    const undeclared: FieldStatus = {
+      storePath: 'x', observed: false, freshness: 'unknown', availability: 'undeclared',
+    };
+    const view = model(bareState({
+      fieldStatus: { ...bareState().fieldStatus, 'main.agcTimeConstant': undeclared },
+    }), caps({ capabilities: ['agc'] }));
+    expect(view.dsp!.agcMode.availability.structural).toBe(true);
+    expect(view.dsp!.agcTimeConstant.availability).toEqual({ structural: false, operational: false });
+    expect(view.dsp!.agcTimeConstant.reading).toEqual({ status: 'unknown' });
+  });
+
+  it('agcTimeConstant stays structural when the field is declared, and reports the reading once observed', () => {
+    const view = model(bareState({
+      main: { ...bareState().main, agcTimeConstant: 3 },
+      fieldStatus: { ...bareState().fieldStatus, 'main.agcTimeConstant': fresh },
+    }), caps({ capabilities: ['agc'] }));
+    expect(view.dsp!.agcTimeConstant.availability).toEqual({ structural: true, operational: true });
+    expect(view.dsp!.agcTimeConstant.reading).toEqual({ status: 'known', value: 3 });
+  });
+
   it('follows the SUB receiver once it is the active one', () => {
     const view = model(bareState({
       active: 'SUB',

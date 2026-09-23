@@ -14,7 +14,16 @@ const mockProps = {
   hasLiveAudio: false,
   isAudioConnected: true,
   hasDualReceiver: false,
+  hasAudioRouting: false,
 };
+
+// MOR-2527: the routing sub-control is stubbed so the mount gate is pinned on
+// the PANEL's own prop, not on the control's internals (same function-stub
+// pattern as LcdLayout.command-bus-migration.isolated.test.ts).
+const routingMounts = vi.hoisted(() => ({ count: 0 }));
+vi.mock('../AudioRoutingControl.svelte', () => ({
+  default: () => { routingMounts.count += 1; },
+}));
 
 const mockHandlers = {
   onMonitorModeChange: vi.fn(),
@@ -130,6 +139,8 @@ beforeEach(() => {
   mockProps.hasLiveAudio = false;
   mockProps.isAudioConnected = true;
   mockProps.hasDualReceiver = false;
+  mockProps.hasAudioRouting = false;
+  routingMounts.count = 0;
   mockHandlers.onMonitorModeChange = vi.fn();
   mockHandlers.onAfLevelChange = vi.fn();
 });
@@ -153,6 +164,23 @@ describe('panel visibility', () => {
   it('does not render the panel when neither AF level nor live audio is available', () => {
     const t = mountPanel({ hasAfLevel: false, hasLiveAudio: false });
     expect(t.querySelector('.panel-body')).toBeNull();
+  });
+});
+
+// MOR-2527: dual-receiver audio ROUTING is gated on its own capability
+// (`lan_dual_rx_audio_routing`), not on `dual_rx` — the FTX-1 declares
+// `dual_rx` but no routing, and must not mount a control whose values the
+// server refuses. The second case fails on origin/main, where the gate was
+// `hasDualReceiver`.
+describe('AudioRoutingControl mount gate (MOR-2527)', () => {
+  it('mounts the routing control when the routing capability is present', () => {
+    mountPanel({ hasAudioRouting: true });
+    expect(routingMounts.count).toBe(1);
+  });
+
+  it('does not mount it for dual_rx without the routing capability (FTX-1 shape)', () => {
+    mountPanel({ hasDualReceiver: true, hasAudioRouting: false });
+    expect(routingMounts.count).toBe(0);
   });
 });
 

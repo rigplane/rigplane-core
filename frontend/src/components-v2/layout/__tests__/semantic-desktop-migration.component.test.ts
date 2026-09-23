@@ -2333,7 +2333,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
         'scope', 'audio', 'tx', 'dual_rx', 'rit', 'xit', 'preamp', 'attenuator',
         'rf_gain', 'af_level', 'nr', 'nb', 'notch', 'agc', 'cw', 'break_in',
         'apf', 'tuner', 'vox', 'compressor', 'monitor', 'drive_gain', 'digisel',
-        'rx_antenna',
+        'rx_antenna', 'lan_dual_rx_audio_routing',
       ],
       preValues: [0, 1, 2],
       attValues: [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45],
@@ -2365,7 +2365,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     h.caps = {
       ...(capsFor('2/main_sub') as object),
       antennas: 2,
-      capabilities: ['scope', 'audio', 'tx', 'dual_rx', 'rit', 'xit'],
+      capabilities: ['scope', 'audio', 'tx', 'dual_rx', 'rit', 'xit', 'lan_dual_rx_audio_routing'],
       freqRanges: HAM_RANGES,
     } as Capabilities;
     h.state = {

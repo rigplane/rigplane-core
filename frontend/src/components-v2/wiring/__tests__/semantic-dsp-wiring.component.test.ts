@@ -305,7 +305,9 @@ function liveState(withDsp: boolean): ServerState {
 const liveCaps = (withDsp: boolean): Capabilities => ({
   stateContractVersion: 1, providerGeneration: 1,
   model: 'fixture', scope: false, audio: true, tx: true,
-  capabilities: withDsp ? ['audio', 'tx', 'dual_rx', 'nr', 'nb', 'notch', 'agc'] : ['audio', 'tx', 'dual_rx'],
+  capabilities: withDsp
+    ? ['audio', 'tx', 'dual_rx', 'nr', 'nb', 'notch', 'agc', 'lan_dual_rx_audio_routing']
+    : ['audio', 'tx', 'dual_rx', 'lan_dual_rx_audio_routing'],
   receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: [], filters: [],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
@@ -975,6 +977,35 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     expect(target.querySelectorAll('[data-testid="dsp-agcTimeConstant"]')).toHaveLength(1);
     expect(q('[data-testid="dsp-agcTimeConstant"]')!.closest('[data-part="dsp"]')).not.toBeNull();
     expect(q('[data-testid="dsp-agcTimeConstant"]')!.closest('[data-part="agc"]')).toBeNull();
+  });
+
+  // MOR-2527: the FTX-1 has AGC but NO AGC time constant — the server marks
+  // `main.agcTimeConstant` availability "undeclared", and an undeclared
+  // function is NOT DRAWN (owner rule 2026-09-21). Fails on origin/main,
+  // where any `agc` capability lit the key.
+  it('draws NO AGC-T key when the receiver marks agcTimeConstant undeclared (FTX-1 shape)', () => {
+    h.state = proxy(liveState(true) as object);
+    (h.state as unknown as { fieldStatus: Record<string, unknown> })
+      .fieldStatus['main.agcTimeConstant'] = {
+        storePath: 'x', observed: false, freshness: 'unknown', availability: 'undeclared',
+      };
+    renderHosted();
+    const agcButtons = [...target.querySelectorAll<HTMLButtonElement>('button')]
+      .filter(button => button.textContent?.trim().startsWith('AGC-T'));
+    expect(agcButtons).toHaveLength(0);
+  });
+
+  // MOR-2527: a DECLARED-but-unread AGC time keeps the key in place with its
+  // label and NO value text — never a `?` placeholder — and the ▾ affordance.
+  it('renders AGC-T with no value and no "?" while the reading is unknown', () => {
+    h.state = proxy(liveState(true) as object);
+    (h.state as unknown as { main: Record<string, unknown> }).main.agcTimeConstant = null;
+    renderHosted();
+    const agcButton = [...target.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim().startsWith('AGC-T'))!;
+    expect(agcButton.textContent).toContain('AGC-T');
+    expect(agcButton.textContent).not.toContain('?');
+    expect(agcButton.textContent).toContain('▾');
   });
 
   it('opens and closes NB settings from its chevron without sending an NB command', () => {

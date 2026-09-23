@@ -67,7 +67,7 @@
       <div class="output-indicator" class:audio-disconnected={showDisconnected}>
         {#if showDisconnected}{t('core.overlay.audioLinkLost')}{:else}{statusText}{/if}
       </div>
-      {#if props.hasDualReceiver}
+      {#if props.hasAudioRouting}
         <AudioRoutingControl />
       {/if}
     </div>

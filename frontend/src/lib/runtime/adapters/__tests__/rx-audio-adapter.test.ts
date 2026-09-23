@@ -267,7 +267,7 @@ describe('rxAudio degrades honestly rather than to the shipped panel defaults', 
   });
 
   it('reports routing unknown when the App never restored the prefs — not \'both\'/false', () => {
-    const dualRx = caps({ capabilities: [...caps().capabilities, 'dual_rx'] });
+    const dualRx = caps({ capabilities: [...caps().capabilities, 'dual_rx', 'lan_dual_rx_audio_routing'] });
     const noRouting: RxAudioSnapshot = { ...SNAP, routing: null };
     const rxAudio = model(audioState(), dualRx, noRouting).rxAudio!;
     expect(rxAudio.routingFocus.reading).toEqual({ status: 'unknown' });
@@ -281,8 +281,23 @@ describe('rxAudio degrades honestly rather than to the shipped panel defaults', 
     expect(rxAudio.routingSplit.reading).toEqual({ status: 'unknown' });
   });
 
-  it('reports the restored routing prefs on a dual-receiver radio', () => {
-    const dualRx = caps({ capabilities: [...caps().capabilities, 'dual_rx'] });
+  // MOR-2527: `dual_rx` alone (the FTX-1 shape) is NOT proof of dual-receiver
+  // audio routing — the server refuses routing without the separate
+  // `lan_dual_rx_audio_routing` capability, so the rows are structurally
+  // ABSENT, never present-and-unreadable. Fails on origin/main, where the
+  // gate was `dual_rx` itself.
+  it('marks routing structurally absent with dual_rx but no lan_dual_rx_audio_routing (FTX-1 shape)', () => {
+    const dualOnly = caps({ capabilities: [...caps().capabilities, 'dual_rx'] });
+    const snapshot: RxAudioSnapshot = { ...SNAP, routing: { focus: 'sub', splitStereo: true } };
+    const rxAudio = model(audioState(), dualOnly, snapshot).rxAudio!;
+    expect(rxAudio.routingFocus.availability).toEqual({ structural: false, operational: false });
+    expect(rxAudio.routingSplit.availability).toEqual({ structural: false, operational: false });
+    expect(rxAudio.routingFocus.reading).toEqual({ status: 'unknown' });
+    expect(rxAudio.routingSplit.reading).toEqual({ status: 'unknown' });
+  });
+
+  it('reports the restored routing prefs on a dual-receiver radio with the routing capability', () => {
+    const dualRx = caps({ capabilities: [...caps().capabilities, 'dual_rx', 'lan_dual_rx_audio_routing'] });
     const snapshot: RxAudioSnapshot = { ...SNAP, routing: { focus: 'sub', splitStereo: true } };
     const rxAudio = model(audioState(), dualRx, snapshot).rxAudio!;
     expect(rxAudio.routingFocus.reading).toEqual({ status: 'known', value: 'sub' });

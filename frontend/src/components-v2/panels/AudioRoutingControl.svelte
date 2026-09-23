@@ -68,7 +68,7 @@
       value={mainGainDb}
       oninput={(e) => updateGain('main', Number((e.target as HTMLInputElement).value))}
     />
-    <span class="gain-value">{routing?.main_gain_db === undefined ? '—' : `${mainGainDb} dB`}</span>
+    <span class="gain-value">{routing?.main_gain_db === undefined ? '' : `${mainGainDb} dB`}</span>
   </label>
 
   <label class="gain-row">
@@ -82,7 +82,7 @@
       value={subGainDb}
       oninput={(e) => updateGain('sub', Number((e.target as HTMLInputElement).value))}
     />
-    <span class="gain-value">{routing?.sub_gain_db === undefined ? '—' : `${subGainDb} dB`}</span>
+    <span class="gain-value">{routing?.sub_gain_db === undefined ? '' : `${subGainDb} dB`}</span>
   </label>
 </div>
 
@@ -142,6 +142,9 @@
     flex: 1 1 0;
   }
   .gain-value {
+    /* MOR-2527: an unread gain renders NO text (unlit), never `—`; the fixed
+       42px slot reserves the readout's width so the row does not shift when
+       the first reading arrives (reachable on the IC-7610 pre-restore). */
     flex: 0 0 42px;
     text-align: right;
     font-family: 'Roboto Mono', monospace;

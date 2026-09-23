@@ -215,8 +215,8 @@ const liveCaps = (withMeters: boolean): Capabilities => ({
   model: 'fixture', scope: false, audio: true, tx: true,
   stateContractVersion: 1, providerGeneration: 1,
   capabilities: withMeters
-    ? ['audio', 'tx', 'dual_rx', 'compressor']
-    : ['audio', 'tx', 'dual_rx'],
+    ? ['audio', 'tx', 'dual_rx', 'compressor', 'lan_dual_rx_audio_routing']
+    : ['audio', 'tx', 'dual_rx', 'lan_dual_rx_audio_routing'],
   receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: [], filters: [],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },

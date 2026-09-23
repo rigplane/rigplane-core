@@ -205,7 +205,7 @@ function liveState(): ServerState {
  *  against, so that literal stays valid as a cross-file invariant. */
 const liveCaps = (withScope: boolean): Capabilities => ({
   model: 'fixture', scope: withScope, audio: true, tx: true,
-  capabilities: ['audio', 'tx', 'dual_rx'],
+  capabilities: ['audio', 'tx', 'dual_rx', 'lan_dual_rx_audio_routing'],
   receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: [], filters: [],
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
