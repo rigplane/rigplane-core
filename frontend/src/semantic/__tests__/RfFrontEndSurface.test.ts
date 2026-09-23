@@ -18,7 +18,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { t } from '$lib/i18n';
 import {
-  DISABLED_REASON_LABEL, RF_FRONT_END_LEVELS, RF_FRONT_END_TOGGLES, UNKNOWN_TEXT,
+  DISABLED_REASON_LABEL, RF_FRONT_END_LEVELS, RF_FRONT_END_TOGGLES,
 } from '../RfFrontEndSurface.svelte';
 import Fixture, {
   rfTestAuthorityPublication,
@@ -160,20 +160,21 @@ describe('carry-forward 1: a stale/unread reading renders unknown, never its las
   it('renders a DEGRADED preamp as unknown text, not the last-known level', () => {
     const r = render(withRf({ preamp: unread<number>(DEGRADED) }));
     expect(r.el('preamp')!.dataset.observed).toBe('false');
-    expect(r.text('preamp-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('preamp-value')).toBe('');
     r.dispose();
   });
 
   it('renders a DEGRADED attenuator as unknown text, not the last-known step', () => {
     const r = render(withRf({ attenuator: unread<number>(DEGRADED) }));
     expect(r.el('attenuator')!.dataset.observed).toBe('false');
-    expect(r.text('attenuator-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('attenuator-value')).toBe('');
     r.dispose();
   });
 
-  it('renders a stale RF-gain reading as "?", never 0.5 or any prior level', () => {
+  it('renders a stale RF-gain reading unlit — no value text, never 0.5 or any prior level', () => {
     const r = render(withRf({ rfGain: unread<number>(DEGRADED) }));
-    expect(r.text('rfGain')).toContain(UNKNOWN_TEXT);
+    expect(r.el('rfGain')!.querySelector('output')!.textContent).toBe('');
+    expect(r.el('rfGain')!.textContent).not.toMatch(/[—–?]|UNKNOWN/);
     r.dispose();
   });
 
@@ -214,8 +215,8 @@ describe('carry-forward 1: a stale/unread reading renders unknown, never its las
     );
     for (const value of [0, 1, 2]) expect(r.el(`preamp-${value}`)!.getAttribute('aria-checked')).toBe('false');
     for (const value of [0, 6, 12, 18]) expect(r.el(`attenuator-${value}`)!.getAttribute('aria-checked')).toBe('false');
-    expect(r.text('preamp-value')).toBe(UNKNOWN_TEXT);
-    expect(r.text('attenuator-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('preamp-value')).toBe('');
+    expect(r.text('attenuator-value')).toBe('');
     r.dispose();
   });
 });
@@ -423,7 +424,7 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
       expect(group.dataset.feedbackIntegration).toBe('authority-unresolved');
       expect(group.dataset.observed).toBe('false');
       expect(input.disabled()).toBe(true);
-      expect(group.querySelector('output')?.textContent).toBe(UNKNOWN_TEXT);
+      expect(group.querySelector('output')?.textContent).toBe('');
       input.input(0.5);
     }
     flushSync();
@@ -460,7 +461,7 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     expect(rfInput.disabled()).toBe(false);
     expect(sqlGroup.dataset.commandPhase).toBe('unavailable');
     expect(sqlGroup.dataset.observed).toBe('false');
-    expect(sqlGroup.querySelector('output')?.textContent).toBe(UNKNOWN_TEXT);
+    expect(sqlGroup.querySelector('output')?.textContent).toBe('');
     expect(sqlInput.disabled()).toBe(true);
     rfInput.input(0.55);
     sqlInput.input(0.4);
@@ -510,7 +511,7 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     feedback.delete('current');
     flushSync();
     expect(input.disabled()).toBe(true);
-    expect(target.querySelector('[data-testid="rf-front-end-rfGain"] output')?.textContent).toBe(UNKNOWN_TEXT);
+    expect(target.querySelector('[data-testid="rf-front-end-rfGain"] output')?.textContent).toBe('');
     unmount(component);
     target.remove();
   });
@@ -633,8 +634,8 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     expect(group.dataset.feedbackIntegration).toBe('authority-unresolved');
     expect(group.dataset.observed).toBe('false');
     expect(input.disabled()).toBe(true);
-    expect(r.text('rf-sql-rf-value')).toBe(UNKNOWN_TEXT);
-    expect(r.text('rf-sql-sql-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('rf-sql-rf-value')).toBe('');
+    expect(r.text('rf-sql-sql-value')).toBe('');
     input.input(1);
     flushSync();
     expect(onLevelChange).not.toHaveBeenCalled();

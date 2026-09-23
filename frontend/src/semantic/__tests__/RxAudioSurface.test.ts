@@ -28,7 +28,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
 import { t } from '$lib/i18n';
 import {
-  FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES, UNKNOWN_TEXT,
+  FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES,
 } from '../RxAudioSurface.svelte';
 import Fixture from './fixtures/RxAudioInstrumentHostFixture.svelte';
 import { topologyFixtures, withRxAudio } from '../fixtures/topologies';
@@ -312,12 +312,13 @@ describe('an ENGAGED live link that is down is stated in words', () => {
 /* ── (b) unknown is rendered as unknown, per field ─────────────── */
 
 describe('every unread fact renders honestly, never as the v2 default', () => {
-  // Kills: `?? 0.5` — the shipped `toRxAudioProps` fabrication.
-  it('renders an unread AF level as unknown, never as a level', () => {
+  // Kills: `?? 0.5` — the shipped `toRxAudioProps` fabrication. MOR-2527: the
+  // unread level is UNLIT — no value text at all, never a `—` placeholder.
+  it('renders an unread AF level unlit — no value text, never a level', () => {
     const r = render(withRx({ afLevel: unread<number>() }));
-    expect(r.text('af-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('af-value')).toBe('');
+    expect(r.text('af-value')).not.toMatch(/[—–?]|UNKNOWN|N\/A|\d/);
     expect(r.el('af')!.dataset.observed).toBe('false');
-    expect(r.text('af-value')).not.toContain('0.5');
     r.dispose();
   });
 
@@ -361,13 +362,15 @@ describe('every unread fact renders honestly, never as the v2 default', () => {
     r.dispose();
   });
 
-  // Kills: presenting an unread MOD source as any concrete source.
-  it('renders an unread MOD-input source as unknown, never as a source name', () => {
+  // Kills: presenting an unread MOD source as any concrete source. MOR-2527:
+  // the `NAME: value` form collapses to the LABEL only while unread, and an
+  // unknown readiness renders no text — never `MOD: —`, never a bare `—`.
+  it('renders an unread MOD-input source as the label only, never as a source name', () => {
     const r = render(withRx({
       modInputSource: unread<number>(DEGRADED), modInputReadiness: { status: 'unknown' },
     }));
-    expect(r.text('mod-source')).toBe(`MOD: ${UNKNOWN_TEXT}`);
-    expect(r.text('mod-readiness')).toBe(UNKNOWN_TEXT);
+    expect(r.text('mod-source')).toBe('MOD');
+    expect(r.text('mod-readiness')).toBe('');
     expect(r.el('mod-input')!.dataset.observed).toBe('false');
     r.dispose();
   });
@@ -382,13 +385,19 @@ describe('every unread fact renders honestly, never as the v2 default', () => {
     r.dispose();
   });
 
-  // Kills: an unknown state that is only a colour (forced-colors, MOR-977).
-  it('keeps every unknown distinguishable as TEXT, not only as an attribute', () => {
+  // MOR-977 (forced-colors), restated under the MOR-2527 owner rule: an
+  // unobserved slot carries NO value text at all — the mark is the reserved
+  // empty slot plus `data-observed="false"` (and italics), and NO
+  // placeholder text is invented anywhere in the surface.
+  it('renders no placeholder text anywhere while every reading is unread', () => {
     const r = render(withRx({
       afLevel: unread<number>(), routingFocus: unread<AudioFocus>(),
       routingSplit: unread<boolean>(),
     }));
-    expect(r.root()!.textContent).toContain(UNKNOWN_TEXT);
+    expect(r.root()!.textContent).not.toMatch(/[—–?]|UNKNOWN|N\/A|:\s*(true|false)/i);
+    for (const id of ['af', 'focus', 'split']) {
+      expect(r.el(id)!.dataset.observed).toBe('false');
+    }
     r.dispose();
   });
 });
@@ -470,10 +479,14 @@ describe('routing focus and split are rendered from the facts and emitted absolu
     r.dispose();
   });
 
+  // Round-2 coordinator ruling: a KNOWN split renders NO value text either —
+  // the lit key already states on/off; echoing the boolean would read
+  // `true`/`false` next to the SPLIT keys.
   it.each(SPLIT_CHOICES)('checks exactly the observed split %s', (value, label) => {
     const r = render(withRx({ routingSplit: known(value) }));
     expect(r.el(`split-${label}`)!.getAttribute('aria-checked')).toBe('true');
-    expect(r.text('split-value')).toBe(String(value));
+    expect(r.text('split-value')).toBe('');
+    expect(r.el('split')!.textContent).not.toMatch(/[—–?]|UNKNOWN|\b(true|false)\b/i);
     r.dispose();
   });
 
@@ -523,7 +536,12 @@ describe('MOD-input selection uses observed facts and absolute intents (MOR-2366
     expect(select).not.toBeNull();
     expect(select.disabled).toBe(true);
     expect(select.value).toBe(field.reading.status === 'known' && field.reading.value === 3 ? '3' : '');
-    if (select.value === '') expect(select.selectedOptions[0].text).toBe(UNKNOWN_TEXT);
+    // MOR-2527: an unread/unrecognized selection renders NO placeholder
+    // option — the select shows no option at all, never a `—` entry.
+    if (select.value === '') {
+      expect(select.selectedOptions).toHaveLength(0);
+      expect([...select.options].map((option) => option.text).join('\n')).not.toMatch(/[—–?]/);
+    }
     select.value = '0';
     select.dispatchEvent(new Event('change', { bubbles: true }));
     expect(onModInputChange).not.toHaveBeenCalled();
@@ -602,7 +620,7 @@ describe('MOD-input readiness is stated, and a mismatch is never a dead end', ()
   it('names the observed source and reports LAN readiness', () => {
     const r = render(base());
     expect(r.text('mod-source')).toBe('MOD: LAN');
-    expect(r.text('mod-readiness')).toBe(READINESS_LABEL.ready);
+    expect(r.text('mod-readiness')).toBe('LAN');
     expect(r.el('mod-input')!.dataset.readiness).toBe('ready');
     r.dispose();
   });

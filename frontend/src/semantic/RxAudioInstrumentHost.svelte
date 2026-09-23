@@ -24,7 +24,7 @@
   } from '../primitives/scalar/continuous-scalar.svelte';
   import type { AudioFocus, MonitorMode, RxAudioField } from './radio-view-model';
   import {
-    FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES, UNKNOWN_TEXT,
+    FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES,
   } from './rx-audio-instruments';
   import type {
     RxAudioAuthorityPublication,
@@ -45,7 +45,10 @@
   /** MOR-2527 (owner rule 2026-09-21): a routing VALUE renders no text at
    *  all while the reading is unknown — an unlit slot, never a `—`
    *  placeholder. The `<output>` stays mounted with a reserved min-width so
-   *  the row does not shift when the reading arrives. */
+   *  the row does not shift when the reading arrives. The split row's slot
+   *  NEVER carries text, known or not: its lit key already states on/off,
+   *  and the boolean would only echo as raw `true`/`false` (round-2
+   *  coordinator ruling). */
   const unlitTextOf = (f: RxAudioField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : '';
 
@@ -384,8 +387,11 @@
       data-observed={usable(rx.afLevel)}>
       <span class="rx-audio-name">AF LEVEL</span>
       {@render afLevelControl(true)}
+      <!-- MOR-2527: the unread AF level renders NO value text — an unlit
+           slot, never a `—`; the reserved min-width keeps the row from
+           shifting when the reading arrives. -->
       <output data-testid="rx-audio-af-value">{rx.afLevel.reading.status === 'known'
-        ? `${Math.round(rx.afLevel.reading.value * 100)}%` : UNKNOWN_TEXT}</output>
+        ? `${Math.round(rx.afLevel.reading.value * 100)}%` : ''}</output>
     </label>
   {/if}
 {/snippet}
@@ -502,7 +508,10 @@
             onclick={() => splitBehavior.invoke(value)}
           >split {label}</button>
         {/each}
-        <output data-testid="rx-audio-split-value">{unlitTextOf(rx.routingSplit)}</output>
+        <!-- Round-2 ruling: the split slot NEVER carries text — the lit key
+             above already states on/off, and the boolean would only echo as
+             raw `true`/`false`. Kept mounted to reserve the row's shape. -->
+        <output data-testid="rx-audio-split-value"></output>
       {/if}
     </div>
   {/if}
@@ -520,6 +529,8 @@
           seat={modInputSeat} renderer={finiteAppearance.choice}
         />{/key}{/key}
       {:else}
+        {@const modSourceText = modInputReadingValue === undefined ? 'MOD'
+          : `MOD: ${modInputChoices.find(option => option.value === modInputReadingValue)?.label ?? modInputReadingValue}`}
         <label class="rx-audio-mod-selector">
           <span>{t('core.modePanel.modInputLabel')}</span>
           <select
@@ -529,17 +540,15 @@
             disabled={!modInputBehavior.available}
             onchange={(event) => changeModInput(event.currentTarget)}
           >
-            {#if modInputValue === ''}
-              <option value="" disabled>{UNKNOWN_TEXT}</option>
-            {/if}
             {#each modInputChoices as option (option.value)}
               <option value={String(option.value)}>{option.label}</option>
             {/each}
           </select>
         </label>
-        <span data-testid="rx-audio-mod-source">MOD: {rx.modInputSource.reading.status === 'known'
-          ? modInputChoices.find(option => option.value === modInputReadingValue)?.label ?? UNKNOWN_TEXT
-          : UNKNOWN_TEXT}</span>
+        <!-- MOR-2527: an unread source renders the LABEL only — no `MOD: —`
+             form; a known-but-unrecognized source shows its true raw code,
+             never a fabricated choice name. -->
+        <span data-testid="rx-audio-mod-source">{modSourceText}</span>
         <span data-testid="rx-audio-mod-readiness"
         >{READINESS_LABEL[rx.modInputReadiness.status]}</span>
       {/if}
@@ -572,11 +581,14 @@
 
 <style>
   .rx-audio-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
-  /* MOR-2527: the focus/split value slot keeps its width while the reading
-     is unknown — the row must not shift when the value arrives (4ch covers
-     every value these rows render: main/sub/both, true/false). */
+  /* MOR-2527: the focus and split value slots keep their width while the
+     reading is unknown — the row must not shift when the value arrives.
+     4ch covers every value the focus slot renders: main/sub/both (all
+     ≤ 4 characters); the split slot never carries text at all. */
   .rx-audio-row > output { min-width: 4ch; }
   .rx-audio-level { display: flex; align-items: baseline; gap: 0.5rem; }
+  /* Same reservation for the AF readout ("42%".."100%" — 4ch at most). */
+  .rx-audio-level > output { min-width: 4ch; }
   .rx-audio-level :global(.vc-hbar) { flex: 1 1 auto; min-width: 0; }
   .rx-audio-gain > output {
     min-width: 7ch;
@@ -588,8 +600,9 @@
   .rx-audio-mod-selector { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; max-width: 100%; }
   .rx-audio-mod-selector select { min-width: 0; max-width: 100%; }
   .rx-audio-choice[aria-checked='true'] { font-weight: 700; }
-  /* Second channel beside `data-observed`, never the only one: the unknown
-     text itself is the primary one and survives forced-colors. */
+  /* Second channel beside `data-observed`, never the only one. MOR-2527: an
+     unobserved slot carries NO value text, so italics mark it without
+     inventing a placeholder; both survive forced-colors. */
   [data-observed='false'] { font-style: italic; }
   button:disabled, select:disabled { cursor: not-allowed; }
 </style>

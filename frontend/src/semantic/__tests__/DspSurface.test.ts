@@ -200,17 +200,18 @@ describe('operational availability decides whether a control is USABLE', () => {
     },
   );
 
-  // MOR-2527 remainder, deliberately out of this slice: the DSP finite
-  // toggles (NR/NB) still render the `NAME: ?` form from
-  // `DspInstrumentHost.svelte`. Pinned as-is so the slice boundary is
-  // explicit; the owner rule retires this pin with that site.
+  // MOR-2527 remainder, retired in this slice: the DSP finite toggles
+  // (NR/NB) are KEYS like the RF front-end's — label only, lit by
+  // `aria-pressed`; an unobserved toggle draws the unlit label with no
+  // `: ?`/`: on`/`: off` text at all.
   it.each(DSP_TOGGLES.map(([f]) => f))(
-    'still renders "?" and disables the unobserved toggle "%s"',
+    'renders the unobserved toggle "%s" as the unlit key — no value text',
     (field) => {
       const view = withField(base(), field, { unknown: true });
       withSurface(view, (s) => {
         expect(isDisabled(s, field)).toBe(true);
-        expect(s.control(field)!.textContent).toContain('?');
+        expect(s.control(field)!.textContent).toBe(field === 'nrActive' ? 'NR' : 'NB');
+        expect(s.control(field)!.textContent).not.toMatch(/[—–?]|UNKNOWN|:\s*(on|off)/i);
       });
     },
   );

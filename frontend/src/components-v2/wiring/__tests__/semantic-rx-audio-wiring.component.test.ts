@@ -182,7 +182,7 @@ import {
   acknowledgeCommand, beginCommand, getCommandLifecycles, resetCommandLifecycle,
 } from '$lib/stores/commands.svelte';
 import { MOD_INPUT_SOURCES, modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
-import { FOCUS_CHOICES, SPLIT_CHOICES, UNKNOWN_TEXT } from '../../../semantic/rx-audio-instruments';
+import { FOCUS_CHOICES, SPLIT_CHOICES } from '../../../semantic/rx-audio-instruments';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import HostedRadioLayoutFixture from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
@@ -490,7 +490,7 @@ describe('v2.11.1 monitor and dual-routing behavior in the Standard composition'
       expect(output).not.toBeNull();
       expect(output!.textContent).toBe('');
       const rowText = row.textContent ?? '';
-      expect(rowText).not.toContain(UNKNOWN_TEXT);
+      expect(rowText).not.toMatch(/[—–?]|UNKNOWN|N\/A/);
       expect(rowText).not.toMatch(/\d/);
     }
   });

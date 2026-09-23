@@ -169,6 +169,12 @@
         seat={field === 'nrActive' ? nrSeat : nbSeat} renderer={finiteAppearance.toggle}
       />{/key}{/key}
     {:else}
+      <!-- MOR-2527 owner rule (round 2): a toggle is a KEY, not a
+           `NAME: value` row — the same doctrine as
+           `RfFrontEndInstrumentHost`'s toggle keys and this file's own
+           compact/notch keys. The label only, lit by `aria-pressed`; an
+           unread reading draws the unlit label with no `: ?`/`: on`/
+           `: off` text at all. -->
       <button
         type="button" class="dsp-toggle" data-testid={`dsp-${field}`} data-field={field}
         data-disabled-reason={usable(field) ? undefined : 'field-not-observed'}
@@ -176,7 +182,7 @@
         data-pending-status={pending !== null ? 'pending' : 'confirmed'}
         aria-describedby={pending !== null ? id : undefined}
         disabled={!behavior.available} onclick={() => behavior.invoke()}
-      >{label}: {current.reading.status === 'known' ? (current.reading.value ? 'on' : 'off') : '?'}</button>
+      >{label}</button>
       {#if pending !== null}<span {id} class="sr-only">{t('core.dsp.pendingAnnouncement')}</span>{/if}
     {/if}
   {/if}

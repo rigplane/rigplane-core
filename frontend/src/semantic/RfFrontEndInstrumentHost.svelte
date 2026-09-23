@@ -327,8 +327,10 @@
   const feedbackIntegration = (): string => presentation.rfSqlFeedback === undefined
     ? 'compatibility-reading'
     : presentation.rfSqlFeedback === null ? 'authority-unresolved' : 'command-feedback';
+  /** MOR-2527: an unread level renders NO value text — an unlit slot, never
+   *  a `?` stand-in (the heading label and the reserved output stay). */
   const valueText = (value: number | null): string => value === null
-    ? '?' : formatKnownLevel(value, domain.min, domain.max);
+    ? '' : formatKnownLevel(value, domain.min, domain.max);
   function pairLaneValue(view: Readonly<ContinuousPairView>, lane: DualParamLane): number | null {
     const laneView = view.lanes[lane];
     return view.draft?.[lane]
@@ -555,7 +557,9 @@
         {#if rf.preamp.reading.status === 'known' && rf.preValues.includes(rf.preamp.reading.value)}
           <output class="sr-only" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{preampChoiceText(rf.preamp.reading.value)}</output>
         {:else if preampDisabledReason() === undefined || preampDisabledReason()?.code !== 'receiver-lacks-control'}
-          <output class="rf-front-end-unknown" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{rf.preamp.reading.status === 'known' ? preampChoiceText(rf.preamp.reading.value) : '?'}</output>
+          <!-- MOR-2527: unread renders no value text — the slot stays
+               mounted for its space, never a `?`. -->
+          <output class="rf-front-end-unknown" aria-label="PRE value" data-testid="rf-front-end-preamp-value">{rf.preamp.reading.status === 'known' ? preampChoiceText(rf.preamp.reading.value) : ''}</output>
         {/if}
         {#if preampDisabledReason()}
           <p id={preampMutexId} data-testid="rf-front-end-preamp-mutex-reason">{reasonLabel(preampDisabledReason()!.code)}</p>
@@ -609,7 +613,9 @@
         {#if rf.attenuator.reading.status === 'known' && rf.attValues.includes(rf.attenuator.reading.value)}
           <output class="sr-only" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{attenuatorChoiceText(rf.attenuator.reading.value)}</output>
         {:else if attenuatorDisabledReason() === undefined || attenuatorDisabledReason()?.code !== 'receiver-lacks-control'}
-          <output class="rf-front-end-unknown" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{rf.attenuator.reading.status === 'known' ? attenuatorChoiceText(rf.attenuator.reading.value) : '?'}</output>
+          <!-- MOR-2527: unread renders no value text — the slot stays
+               mounted for its space, never a `?`. -->
+          <output class="rf-front-end-unknown" aria-label="ATT value" data-testid="rf-front-end-attenuator-value">{rf.attenuator.reading.status === 'known' ? attenuatorChoiceText(rf.attenuator.reading.value) : ''}</output>
         {/if}
         {#if attenuatorDisabledReason()}
           <p id={attenuatorMutexId} data-testid="rf-front-end-attenuator-mutex-reason">{reasonLabel(attenuatorDisabledReason()!.code)}</p>
@@ -630,10 +636,10 @@
       />{/key}{/key}
     {:else}
       <!-- MOR-2527 owner rule: a toggle is a KEY, not a `NAME: value` row.
-           The label only, lit by `aria-pressed` (bold, like the preamp
-           choices): an unread reading draws the unlit label with no `: ?`
-           text and no `aria-pressed` at all, so nothing claims ON or OFF
-           about a reading the radio never reported. -->
+           The label only, lit by `aria-pressed`: an unread reading draws the
+           unlit label with no `: ?` text and no `aria-pressed` at all, so
+           nothing claims ON or OFF about a reading the radio never
+           reported. -->
       <button
         type="button" class="rf-front-end-toggle"
         data-testid={`rf-front-end-${field}`} data-observed={usable(current)}
