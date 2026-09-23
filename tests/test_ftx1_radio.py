@@ -3491,7 +3491,10 @@ async def test_select_receiver_roundtrip_dual_rx(connected_radio):
     assert await connected_radio.get_active_receiver() == 1
 
 
-# -- VfoSlotCapable on FTX-1 (ab_shared scheme — raises) -------------------
+# -- VfoSlotCapable on FTX-1 (ab_shared scheme — A/B raises) -----------------
+#
+# The FTX-1 has no per-receiver A/B pair; the MAIN/SUB receiver operations
+# (MOR-2531) are tested in their own section below.
 
 
 @pytest.mark.asyncio
@@ -3508,16 +3511,78 @@ async def test_set_vfo_slot_raises_on_ftx1(connected_radio):
 
 
 @pytest.mark.asyncio
-async def test_swap_vfo_ab_raises_on_ftx1(connected_radio):
-    """FTX-1 AB;/BA; copy MAIN↔SUB, not A↔B; swap_vfo_ab raises."""
+@pytest.mark.parametrize("receiver", [0, 1])
+async def test_swap_vfo_ab_raises_on_ftx1(connected_radio, receiver):
+    """FTX-1 AB;/BA; copy MAIN↔SUB, not A↔B; swap_vfo_ab raises for either
+    receiver index and never writes."""
+    connected_radio._transport.write = AsyncMock()
     with pytest.raises(NotImplementedError, match="no symmetric"):
-        await connected_radio.swap_vfo_ab()
+        await connected_radio.swap_vfo_ab(receiver)
+    connected_radio._transport.write.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_equalize_vfo_ab_raises_on_ftx1(connected_radio):
+@pytest.mark.parametrize("receiver", [0, 1])
+async def test_equalize_vfo_ab_raises_on_ftx1(connected_radio, receiver):
+    connected_radio._transport.write = AsyncMock()
     with pytest.raises(NotImplementedError, match="no per-receiver"):
-        await connected_radio.equalize_vfo_ab()
+        await connected_radio.equalize_vfo_ab(receiver)
+    connected_radio._transport.write.assert_not_called()
+
+
+# -- MAIN/SUB receiver operations on FTX-1 (MOR-2531) ------------------------
+#
+# SV;/AB; are radio-global (no receiver parameter): swap_main_sub exchanges
+# the MAIN/SUB sides, equalize_main_sub copies MAIN into SUB.
+
+
+@pytest.mark.asyncio
+async def test_swap_main_sub_writes_sv_on_ftx1(connected_radio):
+    """FTX-1 M⇄S is the native SV; command (OM 2508-C), swapping MAIN/SUB."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.swap_main_sub()
+    connected_radio._transport.write.assert_called_once_with("SV;")
+
+
+@pytest.mark.asyncio
+async def test_equalize_main_sub_writes_ab_on_ftx1(connected_radio):
+    """FTX-1 M=S copies MAIN into SUB with the native AB; command (OM 2508-C)."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.equalize_main_sub()
+    connected_radio._transport.write.assert_called_once_with("AB;")
+
+
+@pytest.mark.asyncio
+async def test_swap_main_sub_raises_command_error_without_the_command(config):
+    """A profile with no vfo_swap command refuses before any write."""
+    del config.commands["vfo_swap"]
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    with pytest.raises(CommandError, match="vfo_swap"):
+        await radio.swap_main_sub()
+    radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_equalize_main_sub_raises_command_error_without_the_command(config):
+    """A profile with no vfo_equalize command refuses before any write."""
+    del config.commands["vfo_equalize"]
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    with pytest.raises(CommandError, match="vfo_equalize"):
+        await radio.equalize_main_sub()
+    radio._transport.write.assert_not_called()
+
+
+def test_ftx1_profile_declares_the_vfo_primitive_capabilities(config):
+    """The loaded FTX-1 profile carries the vfo_swap/vfo_equalize tags."""
+    profile = config.to_profile()
+    assert "vfo_swap" in profile.capabilities
+    assert "vfo_equalize" in profile.capabilities
+    assert profile.supports_command("vfo_swap")
+    assert profile.supports_command("vfo_equalize")
 
 
 # -- VfoSlotCapable on single-RX (FR; scheme — works) ----------------------

@@ -66,6 +66,8 @@ __all__ = [
     "CAP_BAND_EDGE",
     "CAP_XFC",
     "CAP_SYSTEM_SETTINGS",
+    "CAP_VFO_SWAP",
+    "CAP_VFO_EQUALIZE",
     "CAP_WEBRTC",
 ]
 
@@ -199,6 +201,14 @@ CAP_BAND_EDGE = "band_edge"
 CAP_XFC = "xfc"
 CAP_SYSTEM_SETTINGS = "system_settings"
 
+# VFO primitives — M⇄S / M=S. The web layer never trusts these tags from
+# ``radio.capabilities`` directly (``web/runtime_helpers.py:
+# VFO_CAPABILITY_TAGS`` strips and re-projects them from the profile's swap
+# declarations); the TOML feature tag is the rig's declaration that the
+# primitive exists.
+CAP_VFO_SWAP = "vfo_swap"
+CAP_VFO_EQUALIZE = "vfo_equalize"
+
 # WebRTC — low-latency audio delivery via browser peer connection (issue #104)
 CAP_WEBRTC = "webrtc"
 
@@ -284,6 +294,9 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         CAP_BAND_EDGE,
         CAP_XFC,
         CAP_SYSTEM_SETTINGS,
+        # VFO primitives
+        CAP_VFO_SWAP,
+        CAP_VFO_EQUALIZE,
         # WebRTC
         CAP_WEBRTC,
     }
