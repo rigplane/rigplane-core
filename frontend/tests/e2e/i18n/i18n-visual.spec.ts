@@ -614,9 +614,10 @@ async function assertProductionLanguageAccessibility(
 async function stabilizeProductionCapture(page: Page): Promise<void> {
   await page.waitForLoadState('networkidle');
   await page.evaluate(() => document.fonts.ready);
-  await expect(page.getByTestId('scope-display-source')).toHaveText('SRC hardware');
-  await expect(page.getByTestId('scope-display-health')).toHaveText('inactive');
-  await expect(page.getByTestId('scope-display-hardware')).toHaveText('HW off');
+  // MOR-2545 PR2: the status line is one compact indicator; its accessible
+  // name carries the old three-span text (unread parts omitted).
+  await expect(page.getByTestId('scope-display-surface'))
+    .toHaveAttribute('aria-label', 'SRC hardware · inactive · HW off');
 }
 
 test.describe('MOR-1400 production design-language contract', () => {

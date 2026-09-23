@@ -270,11 +270,12 @@
   font-size: 9px;
 }
 
+/* MOR-2545 PR2 review: `font-size`/`color` were dropped — both the chip and
+   the readout span set their own. `flex-wrap` stays: with the readout span
+   beside the chip it lets a narrow dock wrap the text under the chip. */
 .desktop-control-face .desktop-scope-status .scope-display-surface {
   flex-wrap: wrap;
   padding: 4px 8px;
-  font-size: 9px;
-  color: var(--v2-text-secondary);
 }
 
 .desktop-control-face .desktop-station-meters .meters-surface {

@@ -783,8 +783,13 @@ describe('source and enforcement boundary', () => {
     const cssHash = createHash('sha256').update(source.slice(source.indexOf('<style>'))).digest('hex');
     // MOR-2358 adds host-scoped wrapping for the semantic scope surface.
     // MOR-2522 repin: the `.toolbar-select:focus` border frame is gone.
-    // MOR-2545 repin: the host wraps the ONE nowrap `.scope-controls-row`.
-    expect(cssHash).toBe('51d6fe1f23e9455e3253a320921e5baca73d7f89e34e08d858374ae807cf33f1');
+    // MOR-2545 repin: the host wraps the ONE nowrap `.scope-controls-row`;
+    // PR2 adds the hosted container query, the STEP overflow copy pair and
+    // the scope-status seat. PR2 review repin: the status slot stops
+    // shrinking, the host hides the surface's readout text span, and the
+    // STEP band moves to 424px (reviewer-measured on PR #3598). Round-3
+    // repin: the STEP-band comment is marked as measured on desktop-v2.
+    expect(cssHash).toBe('1ef3820e3d28b8f824c424d34e4cb3be5f882aba57476ef02ad2f37fb5e556cd');
   });
 });
 
@@ -801,18 +806,141 @@ describe('semantic scope host (MOR-2358)', () => {
     expect(target.querySelector('.semantic-scope-controls-host') !== null).toBe(hosted);
   });
 
-  it('preserves local controls and suppresses the legacy radio subtree with the host', () => {
+  // MOR-2545 PR2 retarget: in the HOSTED one-row mode the row keeps only
+  // STEP, BANDS and fullscreen beside the semantic host — every screen-only
+  // control (VIEW/AUTO/AVG/PEAK/BRT/palette/layers) lives in the More
+  // payload until the panel opens, and the legacy radio subtree stays
+  // suppressed exactly as before.
+  it('keeps the hosted row to STEP · BANDS · fullscreen and suppresses the legacy radio subtree', () => {
     const target = mountToolbar({ hideScopeControls: true, scopeControls });
     expect(target.querySelectorAll('.semantic-scope-controls-host')).toHaveLength(1);
     for (const label of ['CTR', 'FIX', 'S-C', 'S-F', 'HOLD', 'DUAL', 'MAIN']) expect(button(target, label)).toBeUndefined();
     expect(target.querySelector('.settings-group')).toBeNull();
-    for (const label of ['AUTO', 'AVG', 'PEAK', 'BANDS']) expect(button(target, label)).toBeDefined();
-    for (const label of ['STEP', 'VIEW', 'BRT']) expect(target.textContent).toContain(label);
-    expect(target.querySelector('.toolbar-select')).not.toBeNull(); expect(target.querySelector('.icon-btn')).not.toBeNull();
-    const step = buttons(target).find((item) => item.title === 'Increase tuning step')!; step.click();
-    button(target, 'AVG')!.click(); button(target, 'PEAK')!.click(); flushSync();
+    expect(target.querySelector('.toolbar-group-d')).toBeNull();
+    for (const label of ['AUTO', 'AVG', 'PEAK', 'BRT']) expect(button(target, label)).toBeUndefined();
+    expect(buttons(target).some((item) => item.textContent?.trim().startsWith('VIEW'))).toBe(false);
+    expect(target.querySelector('.toolbar-select')).toBeNull();
+    expect(button(target, 'BANDS')).toBeDefined();
+    expect(target.querySelector('.icon-btn')).not.toBeNull();
+    const step = buttons(target).find((item) => item.title === 'Increase tuning step')!;
+    step.click(); flushSync();
     expect(tuningHarness.adjustTuningStep).toHaveBeenCalledExactlyOnceWith('up');
     for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
     expect(sendCommandAlarm).not.toHaveBeenCalled();
+  });
+});
+
+describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
+  const TOOLBAR_SOURCE = readFileSync('src/components/spectrum/SpectrumToolbar.svelte', 'utf8')
+    .replace(/<!--[\s\S]*?-->/g, '');
+
+  /** Captures the payload the toolbar hands to the hosted snippet. */
+  let capturedPayload: unknown[] = [];
+  const payloadProbe = createRawSnippet((...args: unknown[]) => ({
+    render: () => { capturedPayload = args; return '<div data-testid="semantic-scope-probe"></div>'; },
+  }));
+
+  it('renders the radio-held host, STEP and BANDS in ONE row container', () => {
+    const target = mountToolbar({ hideScopeControls: true, scopeControls: payloadProbe });
+    const row = target.querySelector<HTMLElement>('.spectrum-toolbar')!;
+    expect(row).not.toBeNull();
+    expect(row.classList.contains('hosted')).toBe(true);
+    expect(row.querySelector('.semantic-scope-controls-host [data-testid="semantic-scope-probe"]')).not.toBeNull();
+    expect(row.querySelector('.step-group[data-overflow="step"]')).not.toBeNull();
+    expect(buttons(row).some((item) => item.textContent?.trim() === 'BANDS')).toBe(true);
+    expect(row.querySelector('.icon-btn')).not.toBeNull();
+    // The radio-held keys and the toolbar keys share the one container: no
+    // second row element splits them.
+    expect(target.querySelectorAll('.spectrum-toolbar')).toHaveLength(1);
+  });
+
+  it('hands the screen group to the semantic row as the snippet payload — it is not in the closed DOM', () => {
+    capturedPayload = [];
+    const target = mountToolbar({ hideScopeControls: true, scopeControls: payloadProbe });
+    // Svelte passes snippet arguments as getters: two slots, the first
+    // reading back `undefined` (the untouched allowBare slot), the second
+    // the renderable screen group.
+    expect(capturedPayload.length).toBe(2);
+    expect((capturedPayload[0] as () => unknown)()).toBeUndefined();
+    expect(typeof (capturedPayload[1] as () => unknown)()).toBe('function');
+    // The closed row itself carries none of the screen-only controls.
+    for (const label of ['AUTO', 'AVG', 'PEAK', 'BRT']) expect(button(target, label)).toBeUndefined();
+  });
+
+  // The payload's content is the toolbar's own `screenGroup` snippet —
+  // source-pinned here (the same instrument this file's "source and
+  // enforcement boundary" block uses), because a raw stub cannot render a
+  // real snippet. PR3's e2e spec opens the real panel end-to-end.
+  it('builds the screen group from the SAME handlers and state as the unhosted row', () => {
+    expect(TOOLBAR_SOURCE).toMatch(/\{#snippet screenGroup\(closeMore\?: \(\) => void\)\}/);
+    // [binding, expected template occurrences]: the unhosted row (or the one
+    // shared STEP row) plus the More copy — the BRT steppers also serve the
+    // mobile display-gear popover (issue #812), hence their third site.
+    for (const [expr, count] of [
+      ['onclick={() => (enableAvg = !enableAvg)}', 2],
+      ['onclick={() => (enablePeakHold = !enablePeakHold)}', 2],
+      ['onclick={() => onScopeDemandChange(!scopeDemandOn)}', 2],
+      ['onclick={() => (brtLevel = clampBrt(brtLevel, -5))}', 3],
+      ['onclick={() => (brtLevel = clampBrt(brtLevel, 5))}', 3],
+      ['onclick={toggleAutoStep}', 2],
+      ['onclick={cycleStep}', 4],
+      ['onclick={cycleStepDown}', 2],
+      ['onchange={() => toggleLayer(layer.layer)}', 2],
+    ] as const) {
+      expect(TOOLBAR_SOURCE.split(expr).length - 1, expr).toBe(count);
+    }
+    expect(TOOLBAR_SOURCE).toMatch(/data-testid="scope-more-step"/);
+    expect(TOOLBAR_SOURCE).toMatch(/data-testid="scope-more-layers"/);
+  });
+
+  it('keeps the MOR-1486 AUTO gate inside the screen group', () => {
+    expect(TOOLBAR_SOURCE).toMatch(/\{#if !hosted && !hideAutoStepToggle\}/);
+    // The More copy keeps its own gate, not the hosted-mode condition.
+    expect(TOOLBAR_SOURCE).toMatch(/\{#if !hideAutoStepToggle\}/);
+  });
+
+  // PR #3598 report item 7: opening EiBi from the More panel must close the
+  // panel, as the old layer dropdown closed itself. Source-pinned here (a
+  // raw stub cannot render the real snippet); the composed click-through
+  // lives in RadioLayout.audio-fft.component.test.ts.
+  it('hands the screen group a close callback and the EiBi entry calls it', () => {
+    expect(TOOLBAR_SOURCE).toMatch(/\{#snippet screenGroup\(closeMore\?: \(\) => void\)\}/);
+    expect(TOOLBAR_SOURCE).toMatch(/onclick=\{\(\) => \{ showEiBi = true; closeMore\?\.\(\); \}\}/);
+  });
+
+  // The literal only — the band is a reviewer measurement (PR #3598: with
+  // the status slot unshrinkable, the row overflows at a 440 px toolbar =
+  // 424 px content box); this test claims nothing about SPAN.
+  it('moves STEP into More at the toolbar container query\'s 424px band', () => {
+    expect(TOOLBAR_SOURCE).toMatch(/container-name: spectrum-toolbar-row/);
+    expect(TOOLBAR_SOURCE).toMatch(/@container spectrum-toolbar-row \(max-width: 424px\)/);
+    // BANDS, ⋯ and fullscreen never join the overflow set.
+    expect(TOOLBAR_SOURCE).not.toMatch(/data-overflow="(?!step)[a-z]+"/);
+  });
+
+  // PR #3598 findings 2/3 + the coordinator decision on the status text:
+  // jsdom cannot compute the cascade, so pin the host rules themselves —
+  // the seat hides the surface's visible readout span (compact form) and
+  // keeps the status slot from shrinking.
+  it('keeps the status seat compact and unshrinkable inside the row', () => {
+    expect(TOOLBAR_SOURCE).toMatch(/\.scope-status-host :global\(\.scope-display-text\) \{ display: none; \}/);
+    expect(TOOLBAR_SOURCE).toMatch(/\.scope-status-host :global\(\.semantic-control-panel\) \{ flex-shrink: 0; \}/);
+  });
+
+  it('mounts the compact scope status indicator inside the row, before fullscreen', () => {
+    const statusProbe = createRawSnippet(() => ({ render: () => '<span data-testid="status-probe"></span>' }));
+    const target = mountToolbar({ hideScopeControls: true, scopeControls: payloadProbe, scopeStatusIndicator: statusProbe });
+    const seat = target.querySelector('[data-testid="toolbar-scope-status"]')!;
+    expect(seat).not.toBeNull();
+    expect(seat.querySelector('[data-testid="status-probe"]')).not.toBeNull();
+    expect(seat.closest('.spectrum-toolbar')).not.toBeNull();
+    const fullscreenBtn = target.querySelector<HTMLButtonElement>('.icon-btn')!;
+    expect(fullscreenBtn.title).toBe('Toggle fullscreen');
+    expect(fullscreenBtn.compareDocumentPosition(seat) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+  });
+
+  it('renders no scope status seat when no snippet is provided', () => {
+    const target = mountToolbar({ hideScopeControls: true, scopeControls: payloadProbe });
+    expect(target.querySelector('[data-testid="toolbar-scope-status"]')).toBeNull();
   });
 });

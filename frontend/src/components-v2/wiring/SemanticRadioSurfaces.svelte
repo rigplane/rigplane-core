@@ -2623,11 +2623,12 @@
     vocabulary to graduate. `sdr-test` also declares this zone; the remaining
     single-composition layouts (`mobile`/`lcd-*`) keep their existing bare path.
   -->
-  {#snippet scopeControlsSurface()}
+  {#snippet scopeControlsSurface(screenGroup?: Snippet)}
     {#if view?.scopeControls}
       <ScopeControlsSurface
         {...scopeFiniteRendererSelection}
         {view}
+        moreScreen={screenGroup}
         onToggleChange={(field, next) => SCOPE_TOGGLE_INTENT[field](next)}
         onChoiceChange={(field, value) => SCOPE_CHOICE_INTENT[field](value)}
         onSpanChange={scopeIntents.onSpanChange}
@@ -2794,8 +2795,14 @@
   {#snippet hostedScopeDisplay(allowBare = allowBareSurfaces)}
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBare)}
   {/snippet}
-  {#snippet hostedScopeControls(allowBare = allowBareSurfaces)}
-    {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, allowBare)}
+  {#snippet hostedScopeControls(allowBare = allowBareSurfaces, screenGroup?: Snippet)}
+    <!-- MOR-2545 PR2: the toolbar-hosted row hands its screen-only group in
+         through the SECOND parameter, so `zoned()` (which renders its body
+         argument-less) gets a closing snippet. -->
+    {#snippet zonedBody()}
+      {@render scopeControlsSurface(screenGroup)}
+    {/snippet}
+    {@render zoned('scopeControls', view?.scopeControls !== undefined, zonedBody, allowBare)}
   {/snippet}
 
   {#if externalPresentation}

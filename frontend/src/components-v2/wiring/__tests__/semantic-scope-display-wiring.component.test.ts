@@ -228,6 +228,9 @@ function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan):
 }
 
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
+/** MOR-2545 PR2: the surface is ONE compact indicator; the old status
+ * line's text lives in the section's accessible name / tooltip. */
+const text = () => q('[data-testid="scope-display-surface"]')?.getAttribute('aria-label') ?? null;
 
 beforeEach(() => {
   txHarness = new ManagedAppTxHarness();
@@ -299,7 +302,7 @@ describe('the scope-display surface mounts only when the view model carries the 
       h.scopeStatus = { ...LIVE_SCOPE_STATUS };
       render({ strips });
       expect(target.querySelectorAll('[data-testid="scope-display-surface"]')).toHaveLength(1);
-      expect(q('[data-testid="scope-display-source"]')!.textContent).toContain('hardware');
+      expect(text()).toContain('SRC hardware');
     },
   );
 
@@ -334,8 +337,17 @@ describe('the scope-display snapshot comes from runtime.defaultScopeStatus / rad
   it('reflects a live snapshot honestly', () => {
     h.caps = liveCaps(true);
     h.scopeStatus = { ...LIVE_SCOPE_STATUS };
+    // beforeEach (line ~243) resets this to false, so setting it here is
+    // scoped to this test — same shape as the neighbouring MOR-1352 tests.
+    h.hardwareScopeConnected = true;
     render();
-    expect(q('[data-testid="scope-display-health"]')!.textContent).toContain('connected');
+    expect(text()).toContain('connected');
+    // MOR-2545 PR2 review fix: the bare mount (the mobile/LCD composition
+    // shape) keeps the status text VISIBLE beside the chip — only the
+    // toolbar host hides it.
+    const readout = q('[data-testid="scope-display-surface"] .scope-display-text');
+    expect(readout).not.toBeNull();
+    expect(readout!.textContent).toBe('hardware · connected · HW on');
   });
 
   // MOR-1352 finding, wiring-level proof (carry-forward from the 12A
@@ -349,9 +361,9 @@ describe('the scope-display snapshot comes from runtime.defaultScopeStatus / rad
     // ...while the hardware channel is explicitly reported down.
     h.hardwareScopeConnected = false;
     render();
-    expect(q('[data-testid="scope-display-source"]')!.textContent).toContain('audio_fft');
-    expect(q('[data-testid="scope-display-health"]')!.textContent).toContain('connected');
-    expect(q('[data-testid="scope-display-hardware"]')!.textContent).toContain('off');
+    expect(text()).toContain('SRC audio_fft');
+    expect(text()).toContain('connected');
+    expect(text()).toContain('HW off');
   });
 
   it('renders hardwareConnected "on" when the hardware channel is up, independent of source', () => {
@@ -359,7 +371,7 @@ describe('the scope-display snapshot comes from runtime.defaultScopeStatus / rad
     h.scopeStatus = { ...LIVE_SCOPE_STATUS, source: 'audio_fft' };
     h.hardwareScopeConnected = true;
     render();
-    expect(q('[data-testid="scope-display-hardware"]')!.textContent).toContain('on');
+    expect(text()).toContain('HW on');
   });
 
   // `isPoweredOff` — the status bar's own override input — must reach the
@@ -370,7 +382,7 @@ describe('the scope-display snapshot comes from runtime.defaultScopeStatus / rad
     h.scopeStatus = { ...LIVE_SCOPE_STATUS };
     h.radioPowerOn = false;
     render();
-    expect(q('[data-testid="scope-display-health"]')!.textContent).toContain('disconnected');
+    expect(text()).toContain('disconnected');
   });
 
   it('never reads scope facts off `state` — only the runtime facade', () => {
@@ -380,7 +392,7 @@ describe('the scope-display snapshot comes from runtime.defaultScopeStatus / rad
     h.state = { ...liveState(), scopeControls: { mode: 99 } } as unknown as ServerState;
     render();
     expect(q('[data-testid="scope-display-surface"]')).not.toBeNull();
-    expect(q('[data-testid="scope-display-source"]')!.textContent).toContain('hardware');
+    expect(text()).toContain('SRC hardware');
   });
 });
 
@@ -466,7 +478,7 @@ describe('desktop-v2 declares a REAL scope-display zone; the cockpit does not (M
       visibleSurfaces: { 'scope-display': [] },
     }));
     expect(q('[data-testid="scope-display-surface"]')).not.toBeNull();
-    expect(q('[data-testid="scope-display-source"]')!.textContent).toContain('hardware');
+    expect(text()).toContain('SRC hardware');
     expect(q('[data-testid="scope-display-surface"]')!.closest('[data-zone-id]')).toBeNull();
   });
 

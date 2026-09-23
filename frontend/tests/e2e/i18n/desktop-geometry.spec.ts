@@ -973,8 +973,23 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
           ? page.locator('[data-panel-id="semantic-meters"]')
           : page.locator('[data-zone-id="meters"]');
         const meters = await metersLocator.boundingBox();
-        expect.soft(center!.height, 'scope uses available space or its existing 280px floor')
-          .toBeLessThanOrEqual(Math.max(280, page.viewportSize()!.height - center!.y - meters!.height));
+        // Mirrors `.desktop-controls-center { min-height: 320px }` in frontend/src/components-v2/layout/RadioLayout.svelte.
+        const STANDARD_CENTER_COLUMN_FLOOR_PX = 320;
+        // MOR-2545 PR2: the controls row and the status moved inside the
+        // scope's toolbar, so the scope area now fills the center column's
+        // own minimum. The floor is the larger of 280px and the column's
+        // 320px floor minus the heights of the column's other children,
+        // measured on the page.
+        const scopeFloor = await page.locator('.desktop-controls-center').evaluate((column, columnFloorPx) => {
+          let hosted: Element | null = column.querySelector('.content-row');
+          while (hosted && hosted.parentElement !== column) hosted = hosted.parentElement;
+          const othersHeight = [...column.children]
+            .filter(child => child !== hosted)
+            .reduce((sum, child) => sum + child.getBoundingClientRect().height, 0);
+          return Math.max(280, columnFloorPx - othersHeight);
+        }, STANDARD_CENTER_COLUMN_FLOOR_PX);
+        expect.soft(center!.height, 'scope uses available space or its column floor (the column min-height left after its other children, at least 280px)')
+          .toBeLessThanOrEqual(Math.max(scopeFloor, page.viewportSize()!.height - center!.y - meters!.height));
         expect.soft(center!.y + center!.height, 'scope ends before station meters').toBeLessThanOrEqual(meters!.y + 1);
         await metersLocator.scrollIntoViewIfNeeded();
         await expect(metersLocator).toBeInViewport();
