@@ -2385,6 +2385,20 @@ async def _repeater_toggle_rmvr(
     if gate is not None:
         return gate
     repeater = cast(RepeaterControlCapable, radio)
+    if not all(
+        callable(op)
+        for op in (
+            repeater.get_repeater_tone,
+            repeater.set_repeater_tone,
+            repeater.get_repeater_tsql,
+            repeater.set_repeater_tsql,
+        )
+    ):
+        return _base_result(
+            entry,
+            CheckStatus.UNSUPPORTED,
+            evidence={"reason": f"radio is missing get/set op for {entry.check_id}"},
+        )
     start_tone, fail = await _guard(
         repeater.get_repeater_tone(0), entry, per_check_timeout=per_check_timeout
     )
