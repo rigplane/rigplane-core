@@ -32,6 +32,7 @@ from rigplane.audio.backend import (
     PortAudioBackend,
     RxStreamHealth,
 )
+from rigplane.audio.usb_driver import UsbAudioDriver
 from rigplane.audio_bridge import AudioBridge
 
 DUPLEX_DEVICE = AudioDeviceInfo(
@@ -655,3 +656,225 @@ class TestYaesuExclusiveDuplexTx:
         assert session.state is AudioSessionState.IDLE
         assert not backend.rx_streams[0].running
         assert not backend.tx_streams[0].running
+
+
+# ---------------------------------------------------------------------------
+# MOR-546 — driver-owned exclusive handoff (inside UsbAudioDriver)
+# ---------------------------------------------------------------------------
+
+
+def _patch_exclusive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Simulate the macOS same-device duplex policy on any test host."""
+    monkeypatch.setattr(
+        "rigplane.audio.usb_driver.resolve_usb_duplex_mode",
+        lambda _rx, _tx: "exclusive",
+    )
+
+
+def _exclusive_driver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[UsbAudioDriver, FakeAudioBackend]:
+    """Shipping driver on a strict same-device fake, policy = exclusive."""
+    _patch_exclusive(monkeypatch)
+    backend = FakeAudioBackend(devices=[DUPLEX_DEVICE], strict_device_exclusive=True)
+    driver = UsbAudioDriver(
+        rx_device="USB Audio CODEC",
+        tx_device="USB Audio CODEC",
+        backend=backend,
+        rx_audio_channel="left",
+    )
+    return driver, backend
+
+
+class TestUsbDriverExclusiveHandoff:
+    """MOR-546: the same-device handoff lives INSIDE UsbAudioDriver, reached
+    through the plain start_rx / start_tx / stop_tx / stop_rx calls — so both
+    USB backends (YaesuCatRadio, _IcomSerialRadioBase) get it unchanged. The
+    strict fake raises the -50-shaped error on any second stream on the
+    device, so these tests fail on origin/main where start_tx opens a
+    separate OutputStream and start_rx on a running duplex raises."""
+
+    @pytest.mark.asyncio()
+    async def test_start_tx_over_live_rx_moves_to_one_duplex_stream(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        driver, backend = _exclusive_driver(monkeypatch)
+        received: list[bytes] = []
+        await driver.start_rx(received.append)
+        backend.rx_streams[0].inject_frame(b"\x01\x02")
+        assert received == [b"\x01\x02"]
+
+        await driver.start_tx()
+
+        # ONE duplex stream; the plain RX stream yielded the device; NO
+        # separate output stream was opened (strict backend would -50).
+        assert len(backend.duplex_streams) == 1
+        assert backend.tx_streams == []
+        assert not backend.rx_streams[0].running
+        assert backend.duplex_streams[0].running
+        assert driver.rx_running and driver.tx_running
+        # RX frames keep flowing through the SAME callback.
+        backend.duplex_streams[0].inject_frame(b"\x03\x04")
+        assert received == [b"\x01\x02", b"\x03\x04"]
+        # TX frames ride the duplex stream's TX queue.
+        await driver._push_tx_pcm(b"\x05\x06")
+        assert backend.duplex_streams[0].written_frames == [b"\x05\x06"]
+
+    @pytest.mark.asyncio()
+    async def test_start_rx_joins_the_running_duplex_stream(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from rigplane.audio.usb_driver import AudioAlreadyStartedError
+
+        driver, backend = _exclusive_driver(monkeypatch)
+        await driver.start_tx()
+        assert len(backend.duplex_streams) == 1
+        # TX armed without RX demand: RX frames drain, nothing delivered.
+        backend.duplex_streams[0].inject_frame(b"\x01\x02")
+
+        received: list[bytes] = []
+        await driver.start_rx(received.append)
+
+        # No second stream on the device — RX joined the duplex stream.
+        assert backend.rx_streams == []
+        assert len(backend.duplex_streams) == 1
+        backend.duplex_streams[0].inject_frame(b"\x03\x04")
+        assert received == [b"\x03\x04"]
+        # A second RX start while joined is the typed double-start error.
+        with pytest.raises(AudioAlreadyStartedError):
+            await driver.start_rx(received.append)
+
+    @pytest.mark.asyncio()
+    async def test_stop_tx_returns_to_plain_rx(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        driver, backend = _exclusive_driver(monkeypatch)
+        received: list[bytes] = []
+        await driver.start_rx(received.append)
+        await driver.start_tx()
+
+        await driver.stop_tx()
+
+        assert not backend.duplex_streams[0].running
+        assert not driver.tx_running
+        # Plain RX resumed on the SAME driver-owned callback.
+        running_rx = [s for s in backend.rx_streams if s.running]
+        assert len(running_rx) == 1
+        assert driver.rx_running
+        running_rx[0].inject_frame(b"\x07\x08")
+        assert received == [b"\x07\x08"]
+
+    @pytest.mark.asyncio()
+    async def test_stop_rx_during_duplex_only_drops_the_callback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        driver, backend = _exclusive_driver(monkeypatch)
+        received: list[bytes] = []
+        await driver.start_rx(received.append)
+        await driver.start_tx()
+
+        await driver.stop_rx()
+
+        # The duplex stream keeps running for the TX leg; RX frames drain.
+        assert backend.duplex_streams[0].running
+        assert driver.tx_running
+        backend.duplex_streams[0].inject_frame(b"\x01\x02")
+        assert received == []
+        # RX demand can re-join the same duplex stream.
+        await driver.start_rx(received.append)
+        backend.duplex_streams[0].inject_frame(b"\x03\x04")
+        assert received == [b"\x03\x04"]
+        # Unwire RX again, then stop TX: no plain-RX re-open, all closed.
+        await driver.stop_rx()
+        await driver.stop_tx()
+        assert not backend.duplex_streams[0].running
+        assert not any(s.running for s in backend.rx_streams)
+        assert not driver.rx_running and not driver.tx_running
+
+    @pytest.mark.asyncio()
+    async def test_teardown_order_closes_an_armed_duplex_stream(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The backends' plain teardown (stop_rx + stop_tx) closes an armed
+        duplex stream — no separate stop_duplex call is needed anywhere."""
+        driver, backend = _exclusive_driver(monkeypatch)
+        await driver.start_rx(lambda _pcm: None)
+        await driver.start_tx()
+        assert driver.rx_running and driver.tx_running
+
+        await driver.stop_rx()  # drops the callback; duplex stays for TX
+        assert backend.duplex_streams[0].running
+        await driver.stop_tx()  # no RX demand left → closes, no re-open
+        all_streams = backend.rx_streams + backend.tx_streams + backend.duplex_streams
+        assert not any(s.running for s in all_streams)
+        assert not driver.rx_running and not driver.tx_running
+        assert len(backend.rx_streams) == 1  # no RX re-open churn
+
+
+class TestIcomSerialExclusiveDuplexTx:
+    """MOR-546: _IcomSerialRadioBase (IC-7300 here) is a plain pass-through
+    to the SAME driver, so the exclusive handoff covers the Icom serial USB
+    radios (and the X6200 via the IC-705 class) with no backend change."""
+
+    @pytest.mark.asyncio()
+    async def test_ic7300_exclusive_tx_arm_uses_one_duplex_stream(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from test_icom7610_serial_radio import _FakeSerialCivLink, _wait_until
+
+        from rigplane.audio.usb_driver import UsbAudioDriver
+        from rigplane.backends.ic7300 import Ic7300SerialRadio
+        from rigplane.types import AudioCodec
+
+        _patch_exclusive(monkeypatch)
+        backend = FakeAudioBackend(
+            devices=[DUPLEX_DEVICE], strict_device_exclusive=True
+        )
+        driver = UsbAudioDriver(
+            rx_device="USB Audio CODEC",
+            tx_device="USB Audio CODEC",
+            backend=backend,
+            rx_audio_channel="left",
+        )
+        radio = Ic7300SerialRadio(
+            device="/dev/ttyUSB-fake",
+            civ_link=_FakeSerialCivLink(),
+            audio_driver=driver,
+            audio_codec=AudioCodec.PCM_1CH_16BIT,
+        )
+        await radio.connect()
+        # RX delivery is marshalled onto the owner loop (MOR-2465), so
+        # injected frames land after a loop turn.
+        received: list[bytes] = []
+        try:
+            await radio.start_rx(
+                lambda pkt: received.append(b"" if pkt is None else pkt.data)
+            )
+            assert len(backend.rx_streams) == 1
+            backend.rx_streams[0].inject_frame(b"\x01\x02")
+            assert await _wait_until(lambda: len(received) >= 1)
+            assert received == [b"\x01\x02"]
+
+            await radio.start_tx()
+            # ONE duplex stream; NO separate output stream on the device.
+            assert len(backend.duplex_streams) == 1
+            assert backend.tx_streams == []
+            # RX frames keep flowing DURING the TX arm.
+            backend.duplex_streams[0].inject_frame(b"\x03\x04")
+            assert await _wait_until(lambda: len(received) >= 2)
+            assert received[-1] == b"\x03\x04"
+            await radio.push_tx(b"\x05\x06")
+            assert backend.duplex_streams[0].written_frames == [b"\x05\x06"]
+
+            await radio.stop_tx()
+            # Disarm returns to plain RX with delivery preserved.
+            running_rx = [s for s in backend.rx_streams if s.running]
+            assert len(running_rx) == 1
+            running_rx[0].inject_frame(b"\x07\x08")
+            assert await _wait_until(lambda: len(received) >= 3)
+            assert received[-1] == b"\x07\x08"
+        finally:
+            await radio.disconnect()
+        # Teardown closes everything — nothing left running.
+        all_streams = backend.rx_streams + backend.tx_streams + backend.duplex_streams
+        assert not any(s.running for s in all_streams)

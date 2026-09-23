@@ -17,16 +17,24 @@ Backend rows (all hardware-free):
   on every host platform, deterministic).
 - ``yaesu-ftx1``      — :class:`YaesuCatRadio` with the same real
   driver/backend pair and a patched CAT transport.
+- ``yaesu-ftx1-exclusive`` — :class:`YaesuCatRadio` with the SHIPPING
+  :class:`UsbAudioDriver` on a strict-exclusive same-device
+  :class:`FakeAudioBackend` and the duplex policy pinned to
+  ``"exclusive"`` (the macOS FTX-1 topology, MOR-546): the driver owns
+  the RX ↔ duplex handoff, so a second stream on the device is never
+  attempted and the strict fake's symmetric -50 rejection is never hit.
 - ``lan-graph-stub`` / ``exclusive-graph-stub`` — the shared
   order-sensitive stubs (MOR-566) with declared transition graphs;
   bridge round-trip rows only.
 
-Documented gap: the FTX-1 *same-device* exclusive path cannot run
-against the strict fake — live CoreAudio kills asymmetrically (RX onto
-running TX is clean, TX onto running RX dies with AUHAL -50) while
-``strict_device_exclusive`` rejects any second stream symmetrically.
-That graph is therefore exercised via ``ExclusiveUsbRadio`` (declared
-from the MOR-531 live de-risk), not a real backend row.
+Historical gap, closed in MOR-546: the FTX-1 *same-device* exclusive path
+previously could not run against the strict fake — live CoreAudio kills
+asymmetrically (RX onto running TX is clean, TX onto running RX dies with
+AUHAL -50) while ``strict_device_exclusive`` rejects any second stream
+symmetrically. With the handoff inside the shipping driver there IS no
+second stream, so the exclusive row above runs the real driver; the
+declared-graph row below (``ExclusiveUsbRadio``, from the MOR-531 live
+de-risk) still pins the raw-hardware failure shape.
 
 Shipping bug surfaced by this suite and fixed in MOR-574 (was a strict
 xfail): ``AudioBridge.stop()`` dropped the RX demand BEFORE stopping
@@ -66,6 +74,10 @@ _LOOPBACK = AudioDeviceInfo(
 )
 _RX_DEV = AudioDeviceInfo(id=AudioDeviceId(11), name="Rig CODEC In", input_channels=2)
 _TX_DEV = AudioDeviceInfo(id=AudioDeviceId(12), name="Rig CODEC Out", output_channels=2)
+# MOR-546: one physical CODEC for BOTH directions — the exclusive topology.
+_EXCLUSIVE_DEV = AudioDeviceInfo(
+    id=AudioDeviceId(13), name="Rig CODEC", input_channels=2, output_channels=2
+)
 
 
 class _FakeLanAudioTransport:
@@ -158,12 +170,40 @@ _SERIAL_CLASSES: dict[str, type] = {
     "ic9700-serial": Ic9700SerialRadio,
 }
 
-BACKENDS = ["lan-icom", *_SERIAL_CLASSES, "yaesu-ftx1"]
+BACKENDS = ["lan-icom", *_SERIAL_CLASSES, "yaesu-ftx1", "yaesu-ftx1-exclusive"]
 
 
 async def _make_harness(case: str, monkeypatch: pytest.MonkeyPatch) -> _Harness:
     if case == "lan-icom":
         return _lan_harness()
+    if case == "yaesu-ftx1-exclusive":
+        # MOR-546: the SHIPPING driver on ONE strict-exclusive device with
+        # the duplex policy pinned to "exclusive" (the macOS FTX-1
+        # topology) — the handoff lives in the driver, so this row needs
+        # no backend cooperation.
+        monkeypatch.setattr(
+            "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.connected", True
+        )
+        monkeypatch.setattr(
+            "rigplane.audio.usb_driver.resolve_usb_duplex_mode",
+            lambda _rx, _tx: "exclusive",
+        )
+        backend = FakeAudioBackend([_EXCLUSIVE_DEV], strict_device_exclusive=True)
+        driver = UsbAudioDriver(
+            rx_device="Rig CODEC", tx_device="Rig CODEC", backend=backend
+        )
+        return _Harness(
+            radio=YaesuCatRadio(device="/dev/cu.fake", audio_driver=driver),
+            rx_live=lambda: driver.rx_running,
+            tx_live=lambda: driver.tx_running,
+            break_rx=backend.remove_devices,
+            open_streams=lambda: sum(
+                s.running
+                for s in backend.rx_streams
+                + backend.tx_streams
+                + backend.duplex_streams
+            ),
+        )
     if case == "yaesu-ftx1":
         monkeypatch.setattr(
             "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.connected", True
