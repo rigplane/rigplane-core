@@ -25,11 +25,11 @@
     // The push fires synchronously from the frame handler while the options
     // $effect runs later — prefer the caller's fresh snapshot.
     const effective = frameOptions ?? options;
-    if (renderer && effective) renderer.updateOptions(effective);
     if (renderer) {
       const started = UI_TELEMETRY_ENABLED ? performance.now() : 0;
+      if (effective) renderer.updateOptions(effective);
       renderer.pushRow(pixels);
-      if (UI_TELEMETRY_ENABLED) recordUiMetric('waterfallDraw', 0, performance.now() - started);
+      if (UI_TELEMETRY_ENABLED) recordUiMetric('waterfallFrameWork', 0, performance.now() - started);
     }
   }
 
