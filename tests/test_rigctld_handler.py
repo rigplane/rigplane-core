@@ -4424,7 +4424,7 @@ async def test_yaesu_set_func_tone(
 ) -> None:
     resp = await yaesu_handler.execute(set_cmd("set_func", "TONE", "1"))
     assert resp.ok
-    yaesu_radio.set_repeater_tone.assert_awaited_once_with(True)
+    yaesu_radio.set_repeater_tone.assert_awaited_once_with(True, receiver=0)
 
 
 @pytest.mark.asyncio
@@ -4433,7 +4433,7 @@ async def test_yaesu_set_func_tsql(
 ) -> None:
     resp = await yaesu_handler.execute(set_cmd("set_func", "TSQL", "0"))
     assert resp.ok
-    yaesu_radio.set_repeater_tsql.assert_awaited_once_with(False)
+    yaesu_radio.set_repeater_tsql.assert_awaited_once_with(False, receiver=0)
 
 
 @pytest.mark.asyncio
@@ -4463,6 +4463,111 @@ async def test_yaesu_set_func_tone_refused_over_dcs_answers_rprt_minus_9(
     )
     resp = await yaesu_handler.execute(set_cmd("set_func", "TONE", "1"))
     assert resp.error == HamlibError.ERJCTED
+
+
+# -- Yaesu TONE/TSQL receiver routing + read-after-write (MOR-2111 round 2) ----
+
+
+def _real_ftx1_ct_radio():
+    """A real YaesuCatRadio (shipping ftx1.toml) over a scripted CT register."""
+    radio = YaesuCatRadio("/dev/null", profile="ftx1")
+    radio._transport._connected = True  # noqa: SLF001
+    ct = {0: 0, 1: 0}
+    writes: list[str] = []
+
+    async def query(cmd, *args, **kwargs):
+        return f"CT{cmd[2]}{ct[int(cmd[2])]}"
+
+    async def write(cmd, *args, **kwargs):
+        writes.append(cmd)
+        ct[int(cmd[2])] = int(cmd[3])
+
+    radio._transport.query = AsyncMock(side_effect=query)  # noqa: SLF001
+    radio._transport.write = AsyncMock(side_effect=write)  # noqa: SLF001
+    return radio, ct, writes
+
+
+def _vfo_func_cmd(long_cmd: str, vfo_arg: str | None, *args: str) -> RigctldCommand:
+    return RigctldCommand(
+        short_cmd="",
+        long_cmd=long_cmd,
+        args=tuple(args),
+        is_set=long_cmd.startswith("set"),
+        vfo_arg=vfo_arg,
+    )
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_func_tone_vfob_writes_sub_receiver() -> None:
+    """U VFOB TONE 1 writes the SUB receiver's CT select, not MAIN's."""
+    radio, _ct, writes = _real_ftx1_ct_radio()
+    handler = RigctldHandler(radio, RigctldConfig())
+    resp = await handler.execute(_vfo_func_cmd("set_func", "VFOB", "TONE", "1"))
+    assert resp.ok
+    assert writes == ["CT11;"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("vfo_arg", [None, "VFOA"])
+async def test_yaesu_set_func_tone_main_receiver(vfo_arg) -> None:
+    """No VFO label / VFOA keep TONE on MAIN (CT01;)."""
+    radio, _ct, writes = _real_ftx1_ct_radio()
+    handler = RigctldHandler(radio, RigctldConfig())
+    resp = await handler.execute(_vfo_func_cmd("set_func", vfo_arg, "TONE", "1"))
+    assert resp.ok
+    assert writes == ["CT01;"]
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_func_tsql_vfob_reads_sub_receiver() -> None:
+    """u VFOB TSQL answers the SUB receiver's CT select, not MAIN's."""
+    radio, ct, _writes = _real_ftx1_ct_radio()
+    ct[1] = 2  # SUB in TSQL; MAIN off
+    handler = RigctldHandler(radio, RigctldConfig())
+    resp = await handler.execute(_vfo_func_cmd("get_func", "VFOB", "TSQL"))
+    assert resp.ok
+    assert resp.values == ["1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("func", "path"),
+    [
+        ("TONE", "receiver.main.operator_toggles.repeater_tone"),
+        ("TSQL", "receiver.main.operator_toggles.repeater_tsql"),
+    ],
+)
+async def test_yaesu_func_read_after_write_uses_pending_value(
+    yaesu_radio: AsyncMock, func: str, path: str
+) -> None:
+    """A read straight after a TONE/TSQL write answers the pending value:
+    the write records it on the same repeater_* path the read projects."""
+    store = StateStore()
+    _seed_store_current(store, path, False)
+    yaesu_radio.get_repeater_tone.return_value = True
+    yaesu_radio.get_repeater_tsql.return_value = True
+    handler = RigctldHandler(yaesu_radio, RigctldConfig(), state_store=store)
+    assert (await handler.execute(set_cmd("set_func", func, "1"))).ok
+    resp = await handler.execute(get_cmd("get_func", func))
+    assert resp.ok
+    assert resp.values == ["1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("func", ["TONE", "TSQL"])
+async def test_icom_func_read_after_write_uses_pending_value(
+    mock_radio: AsyncMock, func: str
+) -> None:
+    """The non-routed (Icom) path keeps write target and read projection on
+    the same operator_toggles.repeater_* path too."""
+    store = StateStore()
+    name = "repeater_tone" if func == "TONE" else "repeater_tsql"
+    _seed_store_current(store, f"receiver.main.operator_toggles.{name}", False)
+    handler = RigctldHandler(mock_radio, RigctldConfig(), state_store=store)
+    assert (await handler.execute(set_cmd("set_func", func, "1"))).ok
+    resp = await handler.execute(get_cmd("get_func", func))
+    assert resp.ok
+    assert resp.values == ["1"]
 
 
 @pytest.mark.asyncio
