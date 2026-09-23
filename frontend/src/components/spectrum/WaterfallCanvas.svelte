@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { UI_TELEMETRY_ENABLED, recordUiMetric } from '../../lib/diagnostics/ui-telemetry';
   import {
     WaterfallRenderer,
     defaultWaterfallOptions,
@@ -25,7 +26,11 @@
     // $effect runs later — prefer the caller's fresh snapshot.
     const effective = frameOptions ?? options;
     if (renderer && effective) renderer.updateOptions(effective);
-    renderer?.pushRow(pixels);
+    if (renderer) {
+      const started = UI_TELEMETRY_ENABLED ? performance.now() : 0;
+      renderer.pushRow(pixels);
+      if (UI_TELEMETRY_ENABLED) recordUiMetric('waterfallDraw', 0, performance.now() - started);
+    }
   }
 
   $effect(() => {

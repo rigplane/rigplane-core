@@ -13,6 +13,7 @@
  */
 
 import { getChannel } from '$lib/transport/ws-client';
+import { UI_TELEMETRY_ENABLED, recordUiMetric } from '$lib/diagnostics/ui-telemetry';
 import { markScopeFrame } from '$lib/stores/connection.svelte';
 import {
   parseScopeFrame,
@@ -283,6 +284,7 @@ export class ScopeController {
     this._setHealth(source, { demanded: true, transport: channel.state, frameSeen: false });
     try {
       binding.unsubscribeBinary = channel.onBinary((buf) => {
+        if (UI_TELEMETRY_ENABLED) recordUiMetric(source === 'hardware' ? 'hardwareArrival' : 'audioFftArrival', buf.byteLength);
         if (!current() || this._readHealth(source).transport !== 'connected') return;
         const frame = parseScopeFrame(buf);
         if (!frame) {
@@ -424,6 +426,7 @@ export class ScopeController {
     this._arrivals[source] = arrival;
     if (source === 'hardware') this.scopeFrame = frame;
     else this.audioScopeFrame = frame;
+    if (UI_TELEMETRY_ENABLED) recordUiMetric(source === 'hardware' ? 'hardwareAccepted' : 'audioFftAccepted');
     markScopeFrame();
     this._setHealth(source, { ...this._readHealth(source), frameSeen: true });
     this._armExpiry(source, arrival);

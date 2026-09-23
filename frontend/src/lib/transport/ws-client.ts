@@ -1,4 +1,5 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
+import { UI_TELEMETRY_ENABLED, controlTextBytes, recordUiMetric } from '../diagnostics/ui-telemetry';
 import { makeCommandId } from '../types/protocol';
 import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
 import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, setRadioState } from '../stores/radio.svelte';
@@ -277,6 +278,9 @@ export class WsChannel {
     };
 
     ws.onmessage = (event: MessageEvent) => {
+      if (UI_TELEMETRY_ENABLED && typeof event.data === 'string') {
+        recordUiMetric('controlText', controlTextBytes(event.data));
+      }
       if (this.ws === ws) this._resetHeartbeat();
       if (event.data instanceof ArrayBuffer) {
         if (this.ws !== ws) return;

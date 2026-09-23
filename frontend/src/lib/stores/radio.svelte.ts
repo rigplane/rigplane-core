@@ -1,4 +1,5 @@
 import type { ServerState, ReceiverState } from '../types/state';
+import { UI_TELEMETRY_ENABLED, recordUiMetric } from '../diagnostics/ui-telemetry';
 import { setRadioPowerOn, setRigConnected, setRadioReady, setControlConnected, setRadioHealth } from './connection.svelte';
 import { getFieldStatus, isFieldAvailable } from '../state/field-status';
 import { capabilitiesMatchGeneration, getCapabilities } from './capabilities.svelte';
@@ -293,6 +294,7 @@ export function setRadioState(state: ServerState): boolean {
     lastObservationSeq = nextObservationSeq;
     lastHealthRevision = nextHealthRevision;
     radio.current = nextState;
+    if (UI_TELEMETRY_ENABLED) recordUiMetric('radioCommit');
     notifyRadioStateSubscribers();
     // Sync power status to connection store. MOR-1439: the IC-7300's serial
     // CI-V link never confirms powerstat (structural, like `active` before
