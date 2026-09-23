@@ -5,11 +5,10 @@
   when on, fixed width, tabular digits. The lamp is a display-only span; this
   is its `<button type="button">` counterpart with native Enter/Space.
 
-  PLACEMENT (v3 ADR): `semantic/` may not import `components-v2/*`, so the
-  key cannot live next to the lamp it quotes. It lives here, in
+  PLACEMENT: the key lives here, in
   `components/spectrum/`, because `semantic/ScopeControlsSurface.svelte`
   already imports `components/spectrum/spectrum-toolbar-logic` — a proven
-  allowed path (the eslint semantic lockdown bans skins/runtime only) — and
+  allowed path (the eslint `FORBIDDEN_SEMANTIC_IMPORTS` lockdown bans skins/runtime only) — and
   because it shares the scope surface with `ScopeMorePanel.svelte`.
   `primitives/` would also be legal (Svelte-only atom) but is reserved for
   theme-level building blocks; this key is scope-surface furniture.
@@ -111,6 +110,9 @@
   .scope-flat-key[data-lit='true'] {
     text-shadow: var(--dl-vfo-red-glow, none);
   }
+
+  /* Hover brightens the text only — lamp grammar, never chrome. */
+  .scope-flat-key:hover:not(:disabled) { filter: brightness(1.3); }
 
   .scope-flat-key:disabled {
     cursor: not-allowed;

@@ -25,12 +25,12 @@
   box-sizing: border-box;
 }
 
-.desktop-control-face .semantic-control-panel section :is(button, input, select) {
+.desktop-control-face .semantic-control-panel section :is(button, input, select):not(.scope-flat-key, .scope-step-key) {
   font: inherit;
   box-sizing: border-box;
 }
 
-.desktop-control-face .semantic-control-panel section button {
+.desktop-control-face .semantic-control-panel section button:not(.scope-flat-key, .scope-step-key) {
   position: relative;
   min-height: 28px;
   min-width: 0;
@@ -261,9 +261,9 @@
 }
 
 /* MOR-2545: the flat keys and step keys carry the VFO-lamp grammar — flat,
-   no chrome, fixed width. The generic section-button chrome (padding,
-   min-height, 9px) would break the lamp look, so they are excluded here and
-   keep their component styles. */
+   no chrome, fixed width. They are excluded from the Standard-face family
+   (control-button.css) and the section rules above; this sizes only the
+   host's OTHER buttons. */
 .desktop-control-face .desktop-scope-controls section button:not(.scope-flat-key):not(.scope-step-key) {
   min-height: 22px;
   padding: 3px 5px;

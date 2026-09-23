@@ -23,9 +23,8 @@
   — never `NAME: true/false` text. Unread stepper values are EMPTY with
   reserved width — never `—`/`?` placeholders. When an external finite
   appearance is selected (`finiteAppearance`), the surface delegates to the
-  renderer hosts exactly as before MOR-2545 (the stacked layout below) — the
-  row/More split is the NATIVE appearance; a kit's renderer owns its own
-  layout.
+  renderer hosts (the stacked layout below) — the
+  row/More split is the NATIVE appearance; a kit's renderer owns its own layout.
 
   BINDING CARRY-FORWARDS (11A/11A′/11A″ verify reports):
   (1) Renders ONLY from `view.scopeControls`. It never reaches into raw
@@ -308,7 +307,7 @@
         {#if spanApplicable && sc.span.availability.structural}
           {@const spanDown = spanInstrument(-1)}
           {@const spanUp = spanInstrument(1)}
-          <span class="scope-stepper" data-testid="scope-span">
+          <span class="scope-stepper" data-overflow="span" data-testid="scope-span">
             <span class="scope-name">SPAN</span>
             <button type="button" class="scope-step-key" aria-label="Decrease scope span"
               disabled={!spanDown.available} onclick={() => spanDown.invoke()}>&#8249;</button>
@@ -321,7 +320,7 @@
         {#if sc.refDb.availability.structural}
           {@const refDown = refInstrument(-5)}
           {@const refUp = refInstrument(5)}
-          <span class="scope-stepper" data-testid="scope-ref">
+          <span class="scope-stepper" data-overflow="ref" data-testid="scope-ref">
             <span class="scope-name">REF</span>
             <button type="button" class="scope-step-key" aria-label="Decrease scope reference"
               disabled={!refDown.available} onclick={() => refDown.invoke()}>&#8249;</button>
@@ -333,14 +332,16 @@
 
         {#if sc.hold.availability.structural}
           {@const hold = toggleInstrument('hold')}
-          <ScopeFlatKey label="HOLD" testid="scope-hold" width="52px"
-            lit={hold.confirmed ?? null} disabled={!hold.available} onclick={() => hold.invoke()} />
+          <span class="scope-key-group" data-overflow="hold">
+            <ScopeFlatKey label="HOLD" testid="scope-hold" width="52px"
+              lit={hold.confirmed ?? null} disabled={!hold.available} onclick={() => hold.invoke()} />
+          </span>
         {/if}
 
         {#if sc.receiver.availability.structural}
           {@const receiverChoice = choiceInstrument('receiver', [0, 1])}
           {@const receiverValue = valueOf(sc.receiver)}
-          <span class="scope-key-group" role="radiogroup" aria-label="Scope receiver" data-testid="scope-receiver">
+          <span class="scope-key-group" role="radiogroup" aria-label="Scope receiver" data-overflow="receiver" data-testid="scope-receiver">
             {#each [[0, 'MAIN'], [1, 'SUB']] as const as [v, label] (v)}
               <ScopeFlatKey kind="choice" {label} testid="scope-receiver-{v}" width="48px"
                 lit={receiverValue === undefined ? null : receiverValue === v}
@@ -356,6 +357,46 @@
           {#if moreOpen}
             <ScopeMorePanel onClose={() => { moreOpen = false; }} returnFocusTo={moreKeyEl}>
               {#snippet radioHeld()}
+                <!-- Narrow-width overflow copies, shown by the container queries below. -->
+                <div class="scope-more-overflow" data-testid="scope-more-overflow">
+                  {#if sc.receiver.availability.structural}
+                    {@const overflowReceiver = choiceInstrument('receiver', [0, 1])}{@const overflowReceiverValue = valueOf(sc.receiver)}
+                    <div class="scope-more-row" role="radiogroup" aria-label="Scope receiver" data-overflow="receiver" data-testid="scope-overflow-receiver">
+                      <span class="scope-name">MAIN/SUB</span>
+                      {#each [[0, 'MAIN'], [1, 'SUB']] as const as [v, label] (v)}
+                        <ScopeFlatKey kind="choice" {label} testid={`scope-overflow-receiver-${v}`} width="48px"
+                          lit={overflowReceiverValue === undefined ? null : overflowReceiverValue === v}
+                          disabled={!overflowReceiver.available} onclick={() => overflowReceiver.invoke(v)} />
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if sc.hold.availability.structural}
+                    {@const overflowHold = toggleInstrument('hold')}
+                    <div class="scope-more-row" data-overflow="hold" data-testid="scope-overflow-hold">
+                      <ScopeFlatKey label="HOLD" testid="scope-overflow-hold-key" width="52px"
+                        lit={overflowHold.confirmed ?? null} disabled={!overflowHold.available} onclick={() => overflowHold.invoke()} />
+                    </div>
+                  {/if}
+                  {#if sc.refDb.availability.structural}
+                    {@const overflowRefDown = refInstrument(-5)}{@const overflowRefUp = refInstrument(5)}
+                    <div class="scope-more-row scope-stepper" data-overflow="ref" data-testid="scope-overflow-ref">
+                      <span class="scope-name">REF</span>
+                      <button type="button" class="scope-step-key" aria-label="Decrease scope reference" disabled={!overflowRefDown.available} onclick={() => overflowRefDown.invoke()}>&#8249;</button>
+                      <output class="scope-step-value" data-testid="scope-overflow-ref-value">{sc.refDb.reading.status === 'known' ? String(sc.refDb.reading.value) : ''}</output>
+                      <button type="button" class="scope-step-key" aria-label="Increase scope reference" disabled={!overflowRefUp.available} onclick={() => overflowRefUp.invoke()}>&#8250;</button>
+                    </div>
+                  {/if}
+                  {#if spanApplicable && sc.span.availability.structural}
+                    {@const overflowSpanDown = spanInstrument(-1)}{@const overflowSpanUp = spanInstrument(1)}
+                    <div class="scope-more-row scope-stepper" data-overflow="span" data-testid="scope-overflow-span">
+                      <span class="scope-name">SPAN</span>
+                      <button type="button" class="scope-step-key" aria-label="Decrease scope span" disabled={!overflowSpanDown.available} onclick={() => overflowSpanDown.invoke()}>&#8249;</button>
+                      <output class="scope-step-value" data-testid="scope-overflow-span-value">{usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? '') : ''}</output>
+                      <button type="button" class="scope-step-key" aria-label="Increase scope span" disabled={!overflowSpanUp.available} onclick={() => overflowSpanUp.invoke()}>&#8250;</button>
+                    </div>
+                  {/if}
+                </div>
+
                 {#if sc.mode.availability.structural}
                   {@const modeChoice = choiceInstrument('mode', MODE_BUTTONS.map(([v]) => v))}
                   <div class="scope-more-row" role="radiogroup" aria-label="Scope mode" data-testid="scope-mode">
@@ -416,7 +457,9 @@
 
 <style>
   /* Structure only — a design language owns colour (MOR-977, forced-colors). */
-  .scope-controls-surface { display: block; min-width: 0; }
+  /* Query container for the row's overflow below; contain-intrinsic-inline-size
+     keeps shrink-to-fit hosts (the sdr-test toolbar) from collapsing to 0. */
+  .scope-controls-surface { display: block; min-width: 0; container-type: inline-size; container-name: scope-controls; contain-intrinsic-inline-size: 500px; }
 
   /* The ONE always-visible row: never wraps, never reflows a key's box. */
   .scope-controls-row {
@@ -426,6 +469,18 @@
     gap: 2px;
     min-width: 0;
   }
+
+  /* Narrow-width overflow (MOR-2545, coordinator decision): below each band
+     the row's DIRECT child (`>` — the More panel sits inside the row's ⋯
+     anchor) with that hook hides and its More copy shows. Hide-first:
+     MAIN/SUB, HOLD, REF, SPAN; CTR/FIX and ⋯ always stay. Bands derive from
+     the fixed widths: row ≈ 508; −MAIN/SUB ≈ 410; −HOLD ≈ 356; −REF ≈ 239. */
+  .scope-more-overflow { display: contents; }
+  .scope-more-overflow > [data-overflow] { display: none; }
+  @container scope-controls (max-width: 499px) { .scope-controls-row > [data-overflow='receiver'] { display: none; } .scope-more-overflow > [data-overflow='receiver'] { display: flex; } }
+  @container scope-controls (max-width: 419px) { .scope-controls-row > [data-overflow='hold'] { display: none; } .scope-more-overflow > [data-overflow='hold'] { display: flex; } }
+  @container scope-controls (max-width: 359px) { .scope-controls-row > [data-overflow='ref'] { display: none; } .scope-more-overflow > [data-overflow='ref'] { display: flex; } }
+  @container scope-controls (max-width: 299px) { .scope-controls-row > [data-overflow='span'] { display: none; } .scope-more-overflow > [data-overflow='span'] { display: flex; } }
 
   .scope-key-group { display: inline-flex; flex: none; align-items: center; }
 

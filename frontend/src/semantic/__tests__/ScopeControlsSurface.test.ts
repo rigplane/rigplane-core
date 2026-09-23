@@ -53,7 +53,7 @@ const withSc = (over: Partial<ScopeControlsViewModel>): RadioViewModel => {
 
 let target: HTMLDivElement;
 beforeEach(() => { target = document.createElement('div'); document.body.appendChild(target); });
-afterEach(() => { resetRetainedInvocations(); target.remove(); });
+afterEach(() => { resetRetainedInvocations(); vi.restoreAllMocks(); target.remove(); });
 
 type Handlers = {
   onToggleChange?: (field: ScopeToggleField, next: boolean) => void;
@@ -200,6 +200,18 @@ describe('unread leaves render honestly, never fabricated (MOR-2545 owner rules)
     r.dispose();
   });
 
+  // Same honesty bar in CTR with EVERY value unread: steppers EMPTY, toggles label-only.
+  it('in CTR with every value unread prints no placeholder and no true/false text', () => {
+    const r = render(withSc({
+      mode: known(0), span: unread(), refDb: unread(), speed: unread(),
+      hold: unread(), dual: unread(), duringTx: unread(), vbwNarrow: unread(),
+    }));
+    r.openMore();
+    const text = r.root()!.textContent ?? '';
+    expect(text).not.toMatch(/[—?–]|UNKNOWN|:\s*(true|false)/i);
+    r.dispose();
+  });
+
   it('does not coerce an observed out-of-list choice into a selected option', () => {
     const r = render(withSc({ centerType: known(99) }));
     r.openMore();
@@ -240,6 +252,21 @@ describe('the ONE always-visible row (MOR-2545)', () => {
   });
 });
 
+describe('narrow widths: lower-priority keys overflow into More (MOR-2545)', () => {
+  // jsdom cannot lay out — this pins the STRUCTURE/hooks the container queries key on.
+  it('row hooks mark the overflow groups and More renders their copies', () => {
+    const r = render(withSc({ mode: known(0) }));
+    const row = r.el('scope-controls-row')!;
+    // Display order; hide-first is the reverse; mode row and ⋯ stay unhooked (filtered out).
+    const hooked = [...row.children].map((c) => c.getAttribute('data-overflow')).filter(Boolean);
+    expect(hooked).toEqual(['span', 'ref', 'hold', 'receiver']);
+    r.openMore();
+    const overflow = r.el('scope-more-overflow')!;
+    for (const hook of ['receiver', 'hold', 'ref', 'span']) expect(overflow.querySelector(`[data-overflow="${hook}"]`), hook).not.toBeNull();
+    r.dispose();
+  });
+});
+
 describe('the More panel (⋯)', () => {
   it('opens on ⋯, lights the key, and moves focus into the panel', () => {
     const r = render(base());
@@ -270,11 +297,17 @@ describe('the More panel (⋯)', () => {
     r.dispose();
   });
 
-  it('has no Escape handler while closed (MOR-2514 keeps its Esc)', () => {
+  it('registers its window keydown listener only while open (MOR-2514 keeps its Esc)', () => {
+    const add = vi.spyOn(window, 'addEventListener');
+    const remove = vi.spyOn(window, 'removeEventListener');
+    const keydown = (spy: typeof add) => spy.mock.calls.filter(([type]) => type === 'keydown').length;
     const r = render(base());
+    expect(keydown(add)).toBe(0); // closed: no listener at all — Esc belongs to MOR-2514
+    r.openMore();
+    expect(keydown(add)).toBe(1);
     pressEscape();
     expect(r.el('scope-more-panel')).toBeNull();
-    expect(document.activeElement).not.toBe(r.el('scope-more'));
+    expect(keydown(remove)).toBe(1);
     r.dispose();
   });
 });

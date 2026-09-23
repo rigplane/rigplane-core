@@ -11,11 +11,7 @@
     and it never steals Esc from the MOR-2514 frequency-digit release while
     closed, because closed means no handler at all.
   - Focus moves INTO the panel on open (the panel root takes it) and back to
-    `returnFocusTo` (the ⋯ key) on close.
-
-  Two groups are planned; PR1 mounts only the RADIO-HELD group. The panel
-  already takes the screen-only group as a second snippet/slot so PR2 is a
-  content-only change at the call site.
+    `returnFocusTo` (the ⋯ key) on close. PR1 mounts only the RADIO-HELD group.
 -->
 <script lang="ts">
   import { onMount, type Snippet } from 'svelte';
@@ -26,10 +22,8 @@
     returnFocusTo?: HTMLElement | null;
     /** Radio-held controls group (PR1). */
     radioHeld?: Snippet;
-    /** Screen-only controls group (PR2 — slot reserved, not yet rendered). */
-    screenOnly?: Snippet;
   }
-  let { onClose, returnFocusTo, radioHeld, screenOnly }: Props = $props();
+  let { onClose, returnFocusTo, radioHeld }: Props = $props();
 
   let panel: HTMLElement | undefined = $state();
 
@@ -59,11 +53,6 @@
   <div class="scope-more-group" data-testid="scope-more-radio-held">
     {@render radioHeld?.()}
   </div>
-  {#if screenOnly}
-    <div class="scope-more-group" data-testid="scope-more-screen-only">
-      {@render screenOnly()}
-    </div>
-  {/if}
 </div>
 
 <style>
