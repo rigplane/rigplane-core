@@ -158,6 +158,10 @@ polling_only = [
     "receiver.main.operator_toggles.repeater_tsql",
     "receiver.main.operator_controls.tone_freq",
     "receiver.main.operator_controls.tsql_freq",
+    "receiver.sub.operator_toggles.repeater_tone",
+    "receiver.sub.operator_toggles.repeater_tsql",
+    "receiver.sub.operator_controls.tone_freq",
+    "receiver.sub.operator_controls.tsql_freq",
     "receiver.main.operator_controls.repeater_shift",
     "receiver.sub.operator_controls.repeater_shift",
     "global.tx_state.dual_watch",
@@ -596,11 +600,12 @@ freshness_ttl_seconds = 2.0
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
-# Tone / CTCSS squelch-type (MOR-457, corrected MOR-2130). The MAIN-only CAT
-# ``CT`` "SQL TYPE" read (FTX-1_CAT_OM_ENG_2508-C) is mapped onto the neutral
-# CTCSS booleans repeater_tone (CTCSS ENC, "TONE") and repeater_tsql (CTCSS
-# ENC+DEC, "TSQL"). Slow-changing per-receiver operator toggles, so they use
-# the slow-control cadence, matching the other receiver DSP toggles above.
+# Tone / CTCSS squelch-type (MOR-457, corrected MOR-2130). The CAT ``CT``
+# "SQL TYPE" read (FTX-1_CAT_OM_ENG_2508-C) is receiver-routed (P1=0 MAIN,
+# P1=1 SUB) and is mapped onto the neutral CTCSS booleans repeater_tone
+# (CTCSS ENC, "TONE") and repeater_tsql (CTCSS ENC+DEC, "TSQL"). Slow-changing
+# per-receiver operator toggles, so they use the slow-control cadence,
+# matching the other receiver DSP toggles above.
 [state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tone"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
@@ -609,18 +614,34 @@ freshness_ttl_seconds = 2.0
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
-# CTCSS tone frequency (MOR-458). The MAIN-only CAT ``CN`` "CTCSS TONE
-# FREQUENCY" read (FTX-1_CAT_OM_ENG_2508-C) maps a 0-49 tone-chart index → Hz →
-# centiHz onto the neutral tone_freq/tsql_freq paths. The FTX-1 has a single
-# CTCSS tone shared by TONE (encode) and TSQL (decode), so both paths receive
-# the same centiHz value from one read. Slow-changing per-receiver operator
-# controls, so they use the slow-control cadence like the other receiver DSP
-# controls above.
+[state_acquisition.field_policies."receiver.sub.operator_toggles.repeater_tone"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.sub.operator_toggles.repeater_tsql"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+# CTCSS tone frequency (MOR-458). The CAT ``CN`` "CTCSS TONE FREQUENCY" read
+# (FTX-1_CAT_OM_ENG_2508-C) is receiver-routed (P1=0 MAIN, P1=1 SUB) and maps
+# a 0-49 tone-chart index → Hz → centiHz onto the neutral tone_freq/tsql_freq
+# paths. The FTX-1 has a single CTCSS tone shared by TONE (encode) and TSQL
+# (decode), so both paths receive the same centiHz value from one read.
+# Slow-changing per-receiver operator controls, so they use the slow-control
+# cadence like the other receiver DSP controls above.
 [state_acquisition.field_policies."receiver.main.operator_controls.tone_freq"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
 [state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.tone_freq"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.sub.operator_controls.tsql_freq"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
@@ -1296,13 +1317,17 @@ set_clarifier_freq = { cat = { write = "CF001{sign}{offset:04d};" } }
 # ── Tone / CTCSS ──
 # MOR-473: the live FTX-1 answers ``CT0;`` with a SINGLE-digit P2 ("CT00;"),
 # so the READ parse takes one digit.
-get_sql_type   = { cat = { read = "CT0;", parse = "CT0{type};" } }
-# FTX-1_CAT_OM_ENG_2508-C, CT SQL TYPE: P2 is a single digit.
-set_sql_type   = { cat = { write = "CT0{type};" } }
-# CTCSS TONE FREQUENCY (MOR-458). CN P1=0 MAIN, P2=0 CTCSS; the answer's P3
-# (000-049) is the standard 50-tone EIA tone-chart index. Read-only here (the
-# observation pipeline maps the index → centiHz onto tone_freq/tsql_freq).
-get_ctcss_tone = { cat = { read = "CN00;", parse = "CN00{code:03d};" } }
+# FTX-1_CAT_OM_ENG_2508-C, CT SQL TYPE: P1=0 MAIN/1 SUB; P2 is a single
+# digit (0 OFF, 1 ENC ON/DEC OFF "TONE", 2 ENC ON/DEC ON "TSQL", 3 DCS,
+# 4 PR FREQ, 5 REV TONE). ``receiver`` names the manual's P1 selector.
+get_sql_type   = { cat = { read = "CT{receiver};", parse = "CT{receiver}{type};" } }
+set_sql_type   = { cat = { write = "CT{receiver}{type};" } }
+# FTX-1_CAT_OM_ENG_2508-C, CN CTCSS TONE FREQUENCY / DCS CODE (MOR-458 read,
+# MOR-2111 write): P1=0 MAIN/1 SUB, P2=0 CTCSS, P3 (000-049) is the standard
+# 50-tone EIA tone-chart index; the observation pipeline maps the index →
+# centiHz onto tone_freq/tsql_freq. DCS (P2=1) is out of scope (MOR-2129).
+get_ctcss_tone = { cat = { read = "CN{receiver}0;", parse = "CN{receiver}0{code:03d};" } }
+set_ctcss_tone = { cat = { write = "CN{receiver}0{code:03d};" } }
 
 # ── Repeater Shift (MOR-2111) ──
 # FTX-1_CAT_OM_ENG_2508-C, OS OFFSET (REPEATER SHIFT): P1=0 MAIN/1 SUB;

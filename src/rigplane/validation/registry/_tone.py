@@ -4,16 +4,16 @@ Command-coverage family T7 (MOR-642). The Icom-shaped checks drive ops that
 exist on ``RepeaterControlCapable`` (``runtime/radio.py``):
 ``get/set_repeater_tone``, ``get/set_repeater_tsql``, ``get/set_tone_freq``,
 ``get/set_tsql_freq``. They are gated on the Icom-spelled ``repeater_tone`` /
-``tsql`` capabilities (declared by IC-7610/X6200, NOT by the FTX-1).
+``tsql`` capabilities (declared by IC-7300/IC-705/IC-9700; IC-7610 declares
+the family absent; the FTX-1 does not declare them).
 
-The Yaesu FTX-1 exposes the same physical surface through a different CAT
-abstraction (MOR-672): a single ``CT`` "SQL TYPE" select (0=off / 1=TONE /
-2=TSQL) read/written by ``get/set_sql_type`` plus a read-only ``CN`` "CTCSS
-TONE FREQUENCY" via ``get_ctcss_tone``. The Icom-spelled ``*_repeater_tone`` /
-``*_tone_freq`` methods do NOT exist on the Yaesu backend, so the two
-``sql_type``-gated checks below resolve there instead. ``ctcss_tone.read`` is a
-READ_ONLY presence check: the FTX-1 ``CN`` tone-frequency surface has no setter
-(``get_ctcss_tone`` is read-only) so no RMVR is possible.
+The Yaesu FTX-1 implements the same ``RepeaterControlCapable`` ops over its
+own CAT abstraction (MOR-672, write side MOR-2111): a single ``CT`` "SQL
+TYPE" select (0=off / 1=TONE / 2=TSQL) read/written by ``get/set_sql_type``
+plus the ``CN`` "CTCSS TONE FREQUENCY" register via
+``get/set_tone_freq``. The two ``sql_type``-gated checks below resolve to
+those. ``ctcss_tone.read`` is a READ_ONLY presence check over ``CN``
+resolving ``get_tone_freq``.
 
 DTCS/DCS code select is deliberately absent: the Radio protocol has no
 ``get_dtcs_code``/``set_dtcs_code`` yet (capability tag ``dtcs`` exists but is
@@ -111,17 +111,17 @@ CHECKS: tuple[CheckSpec, ...] = (
         tx_adjacent=False,
     ),
     # ctcss_tone.read — READ_ONLY presence check over the ``CN`` CTCSS tone
-    # frequency. ``get_ctcss_tone`` is read-only (no setter), so this is a
-    # read/presence check, NOT an RMVR. Gated on the ``sql_type`` capability.
+    # frequency, resolving the protocol-spelled ``get_tone_freq``. Gated on
+    # the ``sql_type`` capability.
     CheckSpec(
         check_id="ctcss_tone.read",
         capability="sql_type",
         kind=CheckKind.READ_ONLY,
         level=ValidationLevel.CAPABILITY_MATRIX,
         failure_domain=FailureDomain.READBACK,
-        summary="Read the CTCSS tone frequency (CN); read-only surface, no setter.",
+        summary="Read the CTCSS tone frequency (CN).",
         protocol="sql_type",
-        get_op="get_ctcss_tone",
+        get_op="get_tone_freq",
         set_op=None,
         value_rule=ValueRule.TOGGLE_BOOL,
         tolerance=0,

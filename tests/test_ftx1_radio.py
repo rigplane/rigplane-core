@@ -2146,6 +2146,48 @@ async def test_set_sql_type(connected_radio):
     connected_radio._transport.write.assert_called_once_with("CT02;")
 
 
+# -- CT receiver routing (MOR-2111 tone half) --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_read_sql_type_sub_routes_ct1(connected_radio):
+    """``receiver=1`` sends ``CT1;`` and parses the SUB answer (P1=1)."""
+    connected_radio._transport.query = AsyncMock(return_value="CT12")
+    assert await connected_radio.read_sql_type(1) == 2
+    connected_radio._transport.query.assert_called_once_with("CT1;")
+
+
+@pytest.mark.asyncio
+async def test_read_sql_type_rejects_answer_for_other_receiver(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="CT11")
+    with pytest.raises(CommandError, match="sql type receiver.*mismatch"):
+        await connected_radio.read_sql_type(0)
+
+
+@pytest.mark.asyncio
+async def test_set_sql_type_sub_writes_ct1(connected_radio):
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_sql_type(2, receiver=1)
+    connected_radio._transport.write.assert_called_once_with("CT12;")
+
+
+@pytest.mark.asyncio
+async def test_read_ctcss_tone_index_sub_routes_cn10(connected_radio):
+    """``receiver=1`` sends ``CN10;`` and parses the SUB answer (P1=1)."""
+    connected_radio._transport.query = AsyncMock(return_value="CN10008")
+    assert await connected_radio.read_ctcss_tone_index(1) == 8
+    connected_radio._transport.query.assert_called_once_with("CN10;")
+
+
+@pytest.mark.asyncio
+async def test_read_ctcss_tone_index_rejects_answer_for_other_receiver(
+    connected_radio,
+):
+    connected_radio._transport.query = AsyncMock(return_value="CN10008")
+    with pytest.raises(CommandError, match="ctcss tone receiver.*mismatch"):
+        await connected_radio.read_ctcss_tone_index(0)
+
+
 # -- CTCSS tone frequency (CN command, MOR-458) -----------------------------
 
 
@@ -2180,13 +2222,249 @@ async def test_read_ctcss_tone_index_is_a_pure_read(connected_radio):
 
 
 @pytest.mark.asyncio
-async def test_get_ctcss_tone_returns_centihz(connected_radio):
-    """``get_ctcss_tone`` delegates to the index read and maps to centiHz.
+async def test_get_tone_freq_returns_centihz(connected_radio):
+    """``get_tone_freq`` delegates to the index read and maps to centiHz.
 
     Index 8 -> 88.5 Hz -> 8850 centiHz (Icom MOR-451 convention).
     """
     connected_radio._transport.query = AsyncMock(return_value="CN00008")
-    assert await connected_radio.get_ctcss_tone() == 8850
+    assert await connected_radio.get_tone_freq() == 8850
+
+
+@pytest.mark.asyncio
+async def test_get_tone_freq_sub_reads_cn10(connected_radio):
+    """``receiver=1`` routes the CN read to the SUB side (P1=1)."""
+    connected_radio._transport.query = AsyncMock(return_value="CN10015")
+    assert await connected_radio.get_tone_freq(1) == 11090
+    connected_radio._transport.query.assert_called_once_with("CN10;")
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected_centihz"),
+    [("CN00000", 6700), ("CN00049", 25410)],
+)
+@pytest.mark.asyncio
+async def test_get_tone_freq_boundary_tones_map_exactly(
+    connected_radio, answer: str, expected_centihz: int
+):
+    """The lowest (67.0 Hz) and highest (254.1 Hz) table members map exactly."""
+    connected_radio._transport.query = AsyncMock(return_value=answer)
+    assert await connected_radio.get_tone_freq() == expected_centihz
+
+
+# -- RepeaterControlCapable: tone/TSQL frequency (CN write, MOR-2111) --------
+
+
+@pytest.mark.parametrize(
+    ("freq_centihz", "receiver", "frame"),
+    [
+        (8850, 0, "CN00008;"),
+        (6700, 0, "CN00000;"),
+        (25410, 0, "CN00049;"),
+        (8850, 1, "CN10008;"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_set_tone_freq_writes_cn_frame(
+    connected_radio, freq_centihz: int, receiver: int, frame: str
+):
+    """An exact profile-domain member maps to its own table index and frame."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_tone_freq(freq_centihz, receiver=receiver)
+    connected_radio._transport.write.assert_called_once_with(frame)
+
+
+@pytest.mark.asyncio
+async def test_set_tone_freq_refuses_non_member_before_wire(connected_radio):
+    """8800 is absent from ``standard_50``: ValueError before any transport call."""
+    connected_radio._transport.query = AsyncMock()
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="not an exact member"):
+        await connected_radio.set_tone_freq(8800)
+    connected_radio._transport.query.assert_not_awaited()
+    connected_radio._transport.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_tone_freq_refuses_non_int_before_wire(connected_radio):
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(TypeError, match="centiHz"):
+        await connected_radio.set_tone_freq(88.5)  # type: ignore[arg-type]
+    connected_radio._transport.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tsql_freq_is_an_honest_alias_of_tone_freq(connected_radio):
+    """One CN register serves both names: same read frame, same write frame."""
+    connected_radio._transport.query = AsyncMock(return_value="CN10012")
+    connected_radio._transport.write = AsyncMock()
+    assert await connected_radio.get_tsql_freq(
+        1
+    ) == await connected_radio.get_tone_freq(1)
+    await connected_radio.set_tsql_freq(10000, receiver=1)
+    connected_radio._transport.write.assert_called_once_with("CN10012;")
+
+
+@pytest.mark.asyncio
+async def test_get_tone_freq_uses_active_profile_domain(connected_radio):
+    """A provider/model-independent profile tuple controls CN index mapping."""
+    connected_radio._profile_cache = replace(
+        connected_radio.profile,
+        ctcss_tones_centihz=(1234, 5678),
+    )
+    connected_radio._transport.query = AsyncMock(return_value="CN00001")
+
+    assert await connected_radio.get_tone_freq() == 5678
+
+
+# -- RepeaterControlCapable: CT toggle mapping (MOR-2130, write MOR-2111) ----
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_tone", "expected_tsql"),
+    [
+        (0, False, False),
+        (1, True, False),
+        (2, True, True),
+        (3, False, False),  # DCS — no two-boolean representation (MOR-2130)
+        (4, False, False),  # PR FREQ
+        (5, False, False),  # REV TONE
+    ],
+)
+@pytest.mark.parametrize("receiver", [0, 1])
+@pytest.mark.asyncio
+async def test_repeater_tone_tsql_derivation_matrix(
+    connected_radio, code: int, expected_tone: bool, expected_tsql: bool, receiver: int
+):
+    """Both getters derive from that receiver's CT read (MOR-2130 mapping)."""
+    connected_radio._transport.query = AsyncMock(return_value=f"CT{receiver}{code}")
+    assert await connected_radio.get_repeater_tone(receiver) is expected_tone
+    assert await connected_radio.get_repeater_tsql(receiver) is expected_tsql
+    connected_radio._transport.query.assert_any_call(f"CT{receiver};")
+
+
+@pytest.mark.parametrize(
+    ("current_code", "on", "written_frame"),
+    [
+        # (tone, tsql) target: (F,F)->0, (T,F)->1, (T,T)->2 (MOR-2130).
+        (0, True, "CT01;"),  # off -> TONE
+        (1, False, "CT00;"),  # TONE -> off (both axes drop together)
+        (1, True, "CT01;"),  # TONE -> TONE (idempotent write)
+        (2, True, "CT02;"),  # TSQL keeps decode while tone stays on
+    ],
+)
+@pytest.mark.parametrize("receiver", [0, 1])
+@pytest.mark.asyncio
+async def test_set_repeater_tone_read_modify_write(
+    connected_radio, current_code: int, on: bool, written_frame: str, receiver: int
+):
+    """The setter reads CT first (RMW), then writes the mapped code."""
+    connected_radio._transport.query = AsyncMock(
+        return_value=f"CT{receiver}{current_code}"
+    )
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_repeater_tone(on, receiver=receiver)
+    connected_radio._transport.query.assert_awaited_once_with(f"CT{receiver};")
+    connected_radio._transport.write.assert_called_once_with(written_frame)
+
+
+@pytest.mark.parametrize(
+    ("current_code", "on", "written_frame"),
+    [
+        (1, True, "CT02;"),  # TONE -> TSQL (decode joins encode)
+        (2, True, "CT02;"),  # TSQL -> TSQL (idempotent write)
+        (2, False, "CT01;"),  # TSQL -> TONE (decode drops, encode stays)
+        (0, False, "CT00;"),  # off -> off (idempotent write)
+    ],
+)
+@pytest.mark.parametrize("receiver", [0, 1])
+@pytest.mark.asyncio
+async def test_set_repeater_tsql_read_modify_write(
+    connected_radio, current_code: int, on: bool, written_frame: str, receiver: int
+):
+    connected_radio._transport.query = AsyncMock(
+        return_value=f"CT{receiver}{current_code}"
+    )
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_repeater_tsql(on, receiver=receiver)
+    connected_radio._transport.query.assert_awaited_once_with(f"CT{receiver};")
+    connected_radio._transport.write.assert_called_once_with(written_frame)
+
+
+@pytest.mark.parametrize("setter", ["set_repeater_tone", "set_repeater_tsql"])
+@pytest.mark.parametrize("code", [3, 4, 5])
+@pytest.mark.asyncio
+async def test_ct_toggles_refuse_dcs_pr_rev_states(
+    connected_radio, setter: str, code: int
+):
+    """DCS / PR FREQ / REV TONE are refused loudly; nothing is written."""
+    connected_radio._transport.query = AsyncMock(return_value=f"CT0{code}")
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="refusing to overwrite"):
+        await getattr(connected_radio, setter)(True)
+    connected_radio._transport.query.assert_awaited_once_with("CT0;")
+    connected_radio._transport.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_repeater_tone_false_with_tsql_refuses(connected_radio):
+    """(tone=False, tsql=True) has no CT code — refused, nothing written."""
+    connected_radio._transport.query = AsyncMock(return_value="CT02")
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="encode-off/decode-on"):
+        await connected_radio.set_repeater_tone(False)
+    connected_radio._transport.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_repeater_tsql_true_without_tone_refuses(connected_radio):
+    """Decode cannot be on while encode is off — refused, nothing written."""
+    connected_radio._transport.query = AsyncMock(return_value="CT00")
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="encode-off/decode-on"):
+        await connected_radio.set_repeater_tsql(True)
+    connected_radio._transport.write.assert_not_awaited()
+
+
+@pytest.mark.parametrize("receiver", [-1, 2, True, False, 0.0, "1"])
+@pytest.mark.asyncio
+async def test_tone_family_rejects_invalid_receiver_before_io(
+    connected_radio, receiver: object
+):
+    """The receiver gate fires before any CT/CN frame is sent (OS precedent)."""
+    connected_radio._transport.query = AsyncMock()
+    connected_radio._transport.write = AsyncMock()
+
+    with pytest.raises((TypeError, ValueError), match="receiver"):
+        await connected_radio.get_tone_freq(receiver)  # type: ignore[arg-type]
+    with pytest.raises((TypeError, ValueError), match="receiver"):
+        await connected_radio.set_tone_freq(8850, receiver=receiver)  # type: ignore[arg-type]
+    with pytest.raises((TypeError, ValueError), match="receiver"):
+        await connected_radio.read_sql_type(receiver)  # type: ignore[arg-type]
+    with pytest.raises((TypeError, ValueError), match="receiver"):
+        await connected_radio.set_repeater_tone(True, receiver=receiver)  # type: ignore[arg-type]
+
+    connected_radio._transport.query.assert_not_awaited()
+    connected_radio._transport.write.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "get_repeater_tone",
+        "set_repeater_tone",
+        "get_repeater_tsql",
+        "set_repeater_tsql",
+        "get_tone_freq",
+        "set_tone_freq",
+        "get_tsql_freq",
+        "set_tsql_freq",
+    ],
+)
+def test_supports_command_tone_family_follows_profile(radio, command: str):
+    """Each protocol name is exactly as supported as the CT/CN profile
+    commands it is composed from (dependency map, tuner precedent)."""
+    assert radio.supports_command(command) is True
 
 
 # -- Repeater shift (OS command, MOR-2111) ----------------------------------
@@ -2302,18 +2580,6 @@ def test_ctcss_index_to_centihz_matches_chart(index, expected_centihz):
         _ctcss_index_to_centihz(index, domain=profile.ctcss_tones_centihz)
         == expected_centihz
     )
-
-
-@pytest.mark.asyncio
-async def test_get_ctcss_tone_uses_active_profile_domain(connected_radio):
-    """A provider/model-independent profile tuple controls CN index mapping."""
-    connected_radio._profile_cache = replace(
-        connected_radio.profile,
-        ctcss_tones_centihz=(1234, 5678),
-    )
-    connected_radio._transport.query = AsyncMock(return_value="CN00001")
-
-    assert await connected_radio.get_ctcss_tone() == 5678
 
 
 # ---------------------------------------------------------------------------

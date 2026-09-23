@@ -614,27 +614,27 @@ async def test_sql_type_from_off_reacts():
 
 
 async def test_ctcss_tone_read_resolves_read_only():
-    """ctcss_tone.read is a READ_ONLY check via get_ctcss_tone — no setter used."""
+    """ctcss_tone.read is a READ_ONLY check via get_tone_freq — no setter used."""
     radio = MagicMock(spec=Radio)
     radio.connected = True
     radio.model = "FTX-1"
     radio.capabilities = {"sql_type"}
-    radio.get_ctcss_tone = AsyncMock(return_value=8850)  # 88.5 Hz in centiHz
-    # No set_ctcss_tone exists on the backend; the read check must not need it.
+    radio.get_tone_freq = AsyncMock(return_value=8850)  # 88.5 Hz in centiHz
+    # The read check must not need any setter.
     check = await _run(radio, check_id="ctcss_tone.read", capability="sql_type")
     assert check.status is CheckStatus.PASS
     assert check.evidence["value"] == 8850
-    assert check.evidence["op"] == "get_ctcss_tone"
-    radio.get_ctcss_tone.assert_awaited_once()
+    assert check.evidence["op"] == "get_tone_freq"
+    radio.get_tone_freq.assert_awaited_once()
 
 
 async def test_ctcss_tone_read_unsupported_without_getter():
-    """Absent get_ctcss_tone -> UNSUPPORTED (honest), not a crash."""
+    """Absent get_tone_freq -> UNSUPPORTED (honest), not a crash."""
     radio = MagicMock(spec=Radio)
     radio.connected = True
     radio.model = "FTX-1"
     radio.capabilities = {"sql_type"}
-    del radio.get_ctcss_tone
+    del radio.get_tone_freq
     check = await _run(radio, check_id="ctcss_tone.read", capability="sql_type")
     assert check.status is CheckStatus.UNSUPPORTED
 

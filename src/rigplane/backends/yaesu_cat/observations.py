@@ -173,8 +173,8 @@ _BREAK_IN = FieldPath.global_("operator_controls", "break_in")
 _BREAK_IN_DELAY = FieldPath.global_("operator_controls", "break_in_delay")
 _CW_SPOT = FieldPath.global_("slow_state", "cw_spot")
 # Tone / CTCSS squelch-type (MOR-457, corrected MOR-2130). The FTX-1 CAT ``CT``
-# "SQL TYPE" command (FTX-1_CAT_OM_ENG_2508-C) is a single MAIN-only read
-# (CT0); its P2 code is mapped onto ``RepeaterControlCapable``'s two
+# "SQL TYPE" command (FTX-1_CAT_OM_ENG_2508-C) is receiver-routed (P1=0 MAIN,
+# P1=1 SUB); its P2 code is mapped onto ``RepeaterControlCapable``'s two
 # independent axes: ``repeater_tone`` = CTCSS tone TX ENCODE, ``repeater_tsql``
 # = CTCSS tone RX SQUELCH (decode):
 #   P2 code 0 (OFF)                      -> repeater_tone=False, repeater_tsql=False
@@ -185,29 +185,31 @@ _CW_SPOT = FieldPath.global_("slow_state", "cw_spot")
 #       representation, not of this derivation).
 # Both paths are emitted every cycle (including the False derivations) so the
 # store always reflects current state. Per-receiver ``operator_toggles`` like
-# nb/nr/auto_notch, emitted in the slow-control lane. MAIN only (CT0): the SUB
-# receiver would need CT1, which is out of scope here. The CTCSS tone FREQUENCY
-# (CAT ``CN`` by index → ``tone_freq``/``tsql_freq``) is intentionally NOT
-# emitted here: that is a deferred follow-up (wiring ``CN``), NOT a hardware
-# limitation. Raw device code (cross-vendor calibration is MOR-453).
+# nb/nr/auto_notch, emitted in the slow-control lane; CT0 and CT1 are read
+# independently so one side's failure never hides the other. Raw device code
+# (cross-vendor calibration is MOR-453).
 _MAIN_REPEATER_TONE = FieldPath.receiver("main", "operator_toggles", "repeater_tone")
 _MAIN_REPEATER_TSQL = FieldPath.receiver("main", "operator_toggles", "repeater_tsql")
+_SUB_REPEATER_TONE = FieldPath.receiver("sub", "operator_toggles", "repeater_tone")
+_SUB_REPEATER_TSQL = FieldPath.receiver("sub", "operator_toggles", "repeater_tsql")
 # CTCSS tone FREQUENCY (MOR-458). The FTX-1 CAT ``CN`` "CTCSS TONE FREQUENCY"
-# command (FTX-1_CAT_OM_ENG_2508-C) reports the MAIN tone as a 0-49 INDEX into
-# the standard 50-tone EIA chart (NOT an absolute frequency; cf. Icom 0x1B
-# BCD-Hz). The radio maps that index → Hz → centiHz (the index→Hz Tone Chart
-# is resolved by the active ``RadioProfile`` catalog). The neutral
-# value is centiHz = round(Hz * 100), matching the Icom MOR-451 convention
-# (``round(_decode_tone_freq(...) * 100)``) so consumers see one unit.
-# SINGLE-YAESU-TONE: unlike Icom (which can carry distinct TONE/TSQL freqs),
-# the FTX-1 has ONE CTCSS tone frequency (CN P2=0) used for BOTH encode (TONE)
-# and decode (TSQL). So the SAME centiHz value is emitted to BOTH tone_freq and
-# tsql_freq from a SINGLE CN read. Emitted ALWAYS (the configured setpoint,
-# like Icom's tone_freq readback) — independent of whether CTCSS is currently
-# active. MAIN only (CN P1=0): the SUB receiver would need CN10, out of scope.
-# DCS (CN P2=1) is a documented limitation — NO neutral DCS path is emitted.
+# command (FTX-1_CAT_OM_ENG_2508-C) reports each receiver's tone (P1=0 MAIN,
+# P1=1 SUB, P2=0 CTCSS) as a 0-49 INDEX into the standard 50-tone EIA chart
+# (NOT an absolute frequency; cf. Icom 0x1B BCD-Hz). The radio maps that
+# index → Hz → centiHz (the index→Hz Tone Chart is resolved by the active
+# ``RadioProfile`` catalog). The neutral value is centiHz = round(Hz * 100),
+# matching the Icom MOR-451 convention (``round(_decode_tone_freq(...) *
+# 100)``) so consumers see one unit. SINGLE-YAESU-TONE: unlike Icom (which can
+# carry distinct TONE/TSQL freqs), the FTX-1 has ONE CTCSS tone frequency (CN
+# P2=0) used for BOTH encode (TONE) and decode (TSQL). So the SAME centiHz
+# value is emitted to BOTH tone_freq and tsql_freq from a SINGLE CN read per
+# receiver. Emitted ALWAYS (the configured setpoint, like Icom's tone_freq
+# readback) — independent of whether CTCSS is currently active. DCS (CN P2=1)
+# is a documented limitation — NO neutral DCS path is emitted.
 _MAIN_TONE_FREQ = FieldPath.receiver("main", "operator_controls", "tone_freq")
 _MAIN_TSQL_FREQ = FieldPath.receiver("main", "operator_controls", "tsql_freq")
+_SUB_TONE_FREQ = FieldPath.receiver("sub", "operator_controls", "tone_freq")
+_SUB_TSQL_FREQ = FieldPath.receiver("sub", "operator_controls", "tsql_freq")
 # Repeater shift DIRECTION (MOR-2111/MOR-2160). The FTX-1 CAT ``OS`` "OFFSET
 # (REPEATER SHIFT)" command (FTX-1_CAT_OM_ENG_2508-C) reports the P2 code
 # directly for P1=0 MAIN and P1=1 SUB
@@ -1145,100 +1147,107 @@ class YaesuObservationAdapter:
                         native_id="read_manual_notch_freq",
                     )
                 )
-        # Tone / CTCSS squelch-type (MOR-457, corrected MOR-2130) — MAIN-only
+        # Tone / CTCSS squelch-type (MOR-457, corrected MOR-2130) —
         # per-receiver ``operator_toggles``, grouped with the other receiver
-        # toggles (nb/nr/auto_notch/manual_notch) above. A SINGLE
-        # ``read_sql_type(0)`` CAT ``CT`` read (FTX-1_CAT_OM_ENG_2508-C) yields
-        # the P2 "SQL TYPE" code, from which the two independent neutral CTCSS
-        # booleans are DERIVED per ``RepeaterControlCapable``'s own docstrings
-        # (see the module-level mapping comment): code 1 -> encode only, code 2
-        # -> encode AND decode (both True), codes 0/3/4/5 -> both False.
-        # Both paths are emitted every cycle (incl. the False derivations) so
-        # the store always reflects current state. Gated on the ``sql_type``
-        # runtime capability (``CAP_SQL_TYPE``), a dedicated readback capability:
-        # ``"ctcss"`` is not a known capability tag (rejected by the rig loader),
-        # and the Icom-style ``"repeater_tone"``/``"tsql"`` SET capabilities are
-        # intentionally OFF on the FTX-1 because ``set_repeater_tone``/
-        # ``set_repeater_tsql`` are not implemented (no false advertising, bug
-        # #550). Each emission is gated independently by per-field policy. The
-        # CTCSS tone FREQUENCY (CAT ``CN``) is a deferred follow-up, not emitted
-        # here.
+        # toggles (nb/nr/auto_notch/manual_notch) above. Each receiver's
+        # ``read_sql_type(receiver)`` CAT ``CT`` read (FTX-1_CAT_OM_ENG_2508-C,
+        # P1=0 MAIN / P1=1 SUB) yields that side's P2 "SQL TYPE" code, from
+        # which the two independent neutral CTCSS booleans are DERIVED per
+        # ``RepeaterControlCapable``'s own docstrings (see the module-level
+        # mapping comment): code 1 -> encode only, code 2 -> encode AND decode
+        # (both True), codes 0/3/4/5 -> both False. Both paths are emitted
+        # every cycle (incl. the False derivations) so the store always
+        # reflects current state. Gated on the ``sql_type`` runtime capability
+        # (``CAP_SQL_TYPE``), a dedicated readback capability: ``"ctcss"`` is
+        # not a known capability tag (rejected by the rig loader). CT0 and CT1
+        # are read independently so one side's malformed/rejected answer never
+        # hides or relabels the other side, mirroring the ``OS`` routes below;
+        # the SUB read rides the ``dual_rx`` capability. Each emission is
+        # gated independently by per-field policy.
         if self._has_runtime_capability("sql_type"):
-            ok, sql_type = await self._safe_read(
-                "main.sql_type",
-                self.radio.read_sql_type(0),
-                paths=(_MAIN_REPEATER_TONE, _MAIN_REPEATER_TSQL),
-            )
-            if ok and sql_type is not None:
-                if self._can_poll(_MAIN_REPEATER_TONE):
-                    observations.append(
-                        adapter.observation(
-                            _MAIN_REPEATER_TONE,
-                            sql_type in (1, 2),
-                            native_id="read_sql_type",
-                        )
-                    )
-                if self._can_poll(_MAIN_REPEATER_TSQL):
-                    observations.append(
-                        adapter.observation(
-                            _MAIN_REPEATER_TSQL,
-                            sql_type == 2,
-                            native_id="read_sql_type",
-                        )
-                    )
-        # CTCSS tone FREQUENCY (MOR-458) — MAIN-only per-receiver
-        # ``operator_controls``, grouped with the CTCSS squelch-type toggles
-        # above. A SINGLE ``read_ctcss_tone_index(0)`` CAT ``CN`` read
-        # (FTX-1_CAT_OM_ENG_2508-C) yields the 0-49 standard-EIA tone-chart index,
-        # which ``_ctcss_index_to_centihz`` maps through the active profile's
-        # resolved catalog domain. The neutral unit is
-        # centiHz = round(Hz * 100), matching the Icom MOR-451 convention so
-        # consumers see one unit. SINGLE-YAESU-TONE: the FTX-1 has ONE CTCSS
-        # tone frequency (CN P2=0) used for BOTH encode (TONE) and decode
-        # (TSQL) — Icom can carry distinct freqs, Yaesu cannot — so the SAME
-        # centiHz value is emitted to BOTH tone_freq and tsql_freq from one
-        # read. Emitted ALWAYS (the configured setpoint, like Icom's tone_freq
-        # readback), independent of whether CTCSS is currently active. Gated on
-        # the same ``sql_type`` readback capability as the CTCSS toggles (the
-        # FTX-1 CTCSS readback surface; the Icom-style ``tone_freq``/``tsql``
-        # SET capabilities are intentionally off — no false advertising, bug
-        # #550). MAIN only (CN P1=0). DCS (CN P2=1) is a documented limitation:
-        # NO neutral DCS path is emitted.
-        if self._has_runtime_capability("sql_type"):
-            ok, tone_index = await self._safe_read(
-                "main.ctcss_tone_index",
-                self.radio.read_ctcss_tone_index(0),
-                paths=(_MAIN_TONE_FREQ, _MAIN_TSQL_FREQ),
-            )
-            if ok and tone_index is not None:
-                try:
-                    tone_centihz = _ctcss_index_to_centihz(
-                        tone_index,
-                        domain=self.radio.profile.ctcss_tones_centihz,
-                    )
-                except ValueError as exc:
-                    logger.warning(
-                        "Skipping CTCSS observations for invalid profile domain: %s",
-                        exc,
-                    )
-                    tone_centihz = None
-                if tone_centihz is not None:
-                    if self._can_poll(_MAIN_TONE_FREQ):
+            ct_routes = ((0, "main", _MAIN_REPEATER_TONE, _MAIN_REPEATER_TSQL),)
+            if self._has_runtime_capability("dual_rx"):
+                ct_routes += ((1, "sub", _SUB_REPEATER_TONE, _SUB_REPEATER_TSQL),)
+            for receiver, label, tone_path, tsql_path in ct_routes:
+                ok, sql_type = await self._safe_read(
+                    f"{label}.sql_type",
+                    self.radio.read_sql_type(receiver),
+                    paths=(tone_path, tsql_path),
+                )
+                if ok and sql_type is not None:
+                    if self._can_poll(tone_path):
                         observations.append(
                             adapter.observation(
-                                _MAIN_TONE_FREQ,
-                                tone_centihz,
-                                native_id="read_ctcss_tone_index",
+                                tone_path,
+                                sql_type in (1, 2),
+                                native_id="read_sql_type",
                             )
                         )
-                    if self._can_poll(_MAIN_TSQL_FREQ):
+                    if self._can_poll(tsql_path):
                         observations.append(
                             adapter.observation(
-                                _MAIN_TSQL_FREQ,
-                                tone_centihz,
-                                native_id="read_ctcss_tone_index",
+                                tsql_path,
+                                sql_type == 2,
+                                native_id="read_sql_type",
                             )
                         )
+        # CTCSS tone FREQUENCY (MOR-458) — per-receiver ``operator_controls``,
+        # grouped with the CTCSS squelch-type toggles above. Each receiver's
+        # ``read_ctcss_tone_index(receiver)`` CAT ``CN`` read
+        # (FTX-1_CAT_OM_ENG_2508-C, P1=0 MAIN / P1=1 SUB) yields that side's
+        # 0-49 standard-EIA tone-chart index, which ``_ctcss_index_to_centihz``
+        # maps through the active profile's resolved catalog domain. The
+        # neutral unit is centiHz = round(Hz * 100), matching the Icom MOR-451
+        # convention so consumers see one unit. SINGLE-YAESU-TONE: the FTX-1
+        # has ONE CTCSS tone frequency (CN P2=0) used for BOTH encode (TONE)
+        # and decode (TSQL) — Icom can carry distinct freqs, Yaesu cannot — so
+        # the SAME centiHz value is emitted to BOTH tone_freq and tsql_freq
+        # from one read per receiver. Emitted ALWAYS (the configured setpoint,
+        # like Icom's tone_freq readback), independent of whether CTCSS is
+        # currently active. Gated on the same ``sql_type`` readback capability
+        # as the CTCSS toggles (the FTX-1 CTCSS readback surface); CN00 and
+        # CN10 are read independently, mirroring the ``OS`` routes below, and
+        # the SUB read rides the ``dual_rx`` capability. DCS (CN P2=1) is a
+        # documented limitation: NO neutral DCS path is emitted.
+        if self._has_runtime_capability("sql_type"):
+            cn_routes = ((_MAIN_TONE_FREQ, _MAIN_TSQL_FREQ, 0, "main"),)
+            if self._has_runtime_capability("dual_rx"):
+                cn_routes += ((_SUB_TONE_FREQ, _SUB_TSQL_FREQ, 1, "sub"),)
+            for tone_path, tsql_path, receiver, label in cn_routes:
+                ok, tone_index = await self._safe_read(
+                    f"{label}.ctcss_tone_index",
+                    self.radio.read_ctcss_tone_index(receiver),
+                    paths=(tone_path, tsql_path),
+                )
+                if ok and tone_index is not None:
+                    try:
+                        tone_centihz = _ctcss_index_to_centihz(
+                            tone_index,
+                            domain=self.radio.profile.ctcss_tones_centihz,
+                        )
+                    except ValueError as exc:
+                        logger.warning(
+                            "Skipping CTCSS observations for invalid profile domain: %s",
+                            exc,
+                        )
+                        tone_centihz = None
+                    if tone_centihz is not None:
+                        if self._can_poll(tone_path):
+                            observations.append(
+                                adapter.observation(
+                                    tone_path,
+                                    tone_centihz,
+                                    native_id="read_ctcss_tone_index",
+                                )
+                            )
+                        if self._can_poll(tsql_path):
+                            observations.append(
+                                adapter.observation(
+                                    tsql_path,
+                                    tone_centihz,
+                                    native_id="read_ctcss_tone_index",
+                                )
+                            )
         # Repeater shift direction (MOR-2111/MOR-2160). OS0 and OS1 are read
         # independently so one side's malformed/rejected answer never hides
         # or relabels the other side. P2 is already the neutral 0-3 value.

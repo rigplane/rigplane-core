@@ -114,6 +114,12 @@ _CAT_ANSWERS = {
     "BP11;": "BP11120",
     "CT0;": "CT00",
     "CN00;": "CN00008",
+    # Tone SUB pairs (MOR-2111): SUB answers its own state — CT1 reports
+    # TSQL (2) where MAIN CT0 reports OFF, CN10 reports tone index 15
+    # (110.9 Hz) where MAIN CN00 reports index 8 (88.5 Hz) — so an assertion
+    # on a SUB tone path cannot pass on a MAIN echo.
+    "CT1;": "CT12",
+    "CN10;": "CN10015",
     "VS;": "VS0",
     "CS;": "CS0",
     "RM8;": "RM8080020",
