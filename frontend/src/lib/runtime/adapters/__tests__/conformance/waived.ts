@@ -35,7 +35,7 @@
  * walked-family intents. Its 4-value domain is pinned
  * separately by `$lib/radio/mod-input.test.ts`. MOR-1567's prose calls out
  * "the mod-input command" as in its scope, so add a case for it there — do
- * not fold it into this map, which would perturb the current 84/64/20
+ * not fold it into this map, which would perturb the current 85/64/21
  * inventory (reduced from MOR-1426's 87/67/20 baseline).
  */
 

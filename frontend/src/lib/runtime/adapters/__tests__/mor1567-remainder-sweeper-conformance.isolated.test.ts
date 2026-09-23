@@ -4,7 +4,7 @@
  * (`./conformance/harness.ts`, `./conformance/profiles.ts`). This is the
  * FINAL Tier-2 family walk of the MOR-1426 conformance program — its own
  * acceptance criterion is `WAIVED_INTENTS` in `./conformance/waived.ts`
- * going to zero (16 → 0; `CLAIMED_INTENTS_COUNT` 69 → 85).
+ * going to zero (16 → 0).
  *
  * FAMILY (per `waived.ts`'s SWEEPER tag, 16 intents, spanning 5 factories):
  * `scan_start`/`scan_stop`/`scan_set_df_span`/`scan_set_resume`
@@ -84,7 +84,7 @@
  * restoring the green state before this file was committed.
  *
  * DYNAMIC MOD-INPUT DISPATCH (per this ticket's explicit instruction, NOT
- * one of the 84-name literal universe — `onModInputChange` builds its
+ * one of the 85-name literal universe — `onModInputChange` builds its
  * intent via `modInputCommand(dataMode)`; see `waived.ts`'s header and
  * `panel-commands-completeness.test.ts`'s "dynamic mod-input call site"
  * block, which already asserts exactly one such call exists and is this
@@ -101,7 +101,7 @@
  * observed because this radio does not expose those DATA groups. This
  * coverage is ADDITIVE — it claims no new name in
  * `claimed.ts` and changes no count, since these 4 names live outside the
- * 84-name universe by design (see header cited above).
+ * 85-name universe by design (see header cited above).
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {

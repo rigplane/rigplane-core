@@ -124,9 +124,8 @@ export function projectVfoOperations(
   const admitted = (
     action: keyof DualActionBlockViewModel,
     callback: (() => void) | undefined,
-    reason?: string,
   ): VfoActionOperation => ({ kind: 'action', availability: availability(
-    actions[action].structural, actions[action].operational && callback !== undefined, reason,
+    actions[action].structural, actions[action].operational && callback !== undefined, undefined,
   ) });
   const receiverOption = (
     value: VfoOperationReceiver,

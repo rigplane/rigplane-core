@@ -726,7 +726,7 @@ export type PrivateRootMustStayUnavailable = [
 ];
 void [wrongHostMode, privateFrequencyHook, discreteTxControl, invocationAppearance, missingHostMode];
 void [receiverWithRawValue, receiverWithoutSub, propsWithoutOperations, undefinedReceiver, missingStationFamily, undefinedStationFamily];
-void [operationsWithoutSpeak, undefinedOperation, operationsWithAggregate, publicOperation, txWithoutMonitor];
+void [operationsWithoutSwap, undefinedOperation, operationsWithAggregate, publicOperation, txWithoutMonitor];
 void [stationWithoutCompression, undefinedStationSignal, stationWithAggregate, publicStationHandle, publicResetStationHandle];
 void [missingLayout, missingResources, missingScalarAppearance, missingFrequencyAppearance];
 void [missingFiniteAppearance, missingMeterAppearance, missingLoader];

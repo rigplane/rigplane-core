@@ -177,7 +177,7 @@ export function makeAntennaHandlers() {
 }
 
 export function makeSystemHandlers() {
-  return recorders('system', ['onDialLock', 'onPowerOff', 'onSpeak'] as const);
+  return recorders('system', ['onDialLock', 'onPowerOff'] as const);
 }
 
 export function makeScanHandlers() {

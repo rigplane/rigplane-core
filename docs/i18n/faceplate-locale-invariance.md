@@ -169,10 +169,6 @@ confirmed the intended policy rather than a judgment call).
 Independent review found two more direct violations round 1 missed, plus
 one regression round 1's own revert had introduced:
 
-- Added `Split`/`split`/`Dual watch`/`dual watch` to `i18n-check.mjs`'s
-  `GLOSSARY_TOKENS` so a future transliteration regression fails the substring
-  lint (these four entries are core-local additions, not sourced from the
-  strategy glossary — see the comment at their definition).
 - `core.overlay.poweredOff.hint` (ru-RU) still read "кнопку ВКЛ" after the
   power button was relabeled to `ON` — a regression the round-1 revert
   itself created by changing the button's own label without updating a

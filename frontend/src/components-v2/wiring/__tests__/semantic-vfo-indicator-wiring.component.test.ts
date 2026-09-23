@@ -13,8 +13,7 @@ import type { FrequencyRenderer } from '../../../../component-kit-api/src/index'
 const h = vi.hoisted(() => ({
   state: null as ServerState | null, caps: null as Capabilities | null, noop: vi.fn(),
   txController: null as ManagedAppTxController | null,
-  main: vi.fn(), sub: vi.fn(), equalize: vi.fn(), swap: vi.fn(), split: vi.fn(),
-  dualWatch: vi.fn(), speak: vi.fn(),
+  main: vi.fn(), sub: vi.fn(), equalize: vi.fn(), swap: vi.fn(),
   filterWidthFeedback: vi.fn(), cwPitchFeedback: vi.fn(), keySpeedFeedback: vi.fn(),
   txAuxFeedback: vi.fn(),
   session: { state: 'connected', epoch: 1 } as ControlSessionSnapshot,
@@ -74,7 +73,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
       onMainVfoClick: h.main, onSubVfoClick: h.sub, onEqual: h.equalize, onSwap: h.swap,
     } as Record<PropertyKey, unknown>)[handler] ?? h.noop })
     : group }),
-  getSystemHandlers: () => ({ onSpeak: h.speak }),
+  getSystemHandlers: () => ({}),
   getDataModeArmed: () => ({ armed: false, value: null }),
   getModInputArmed: () => ({ armed: false, value: null }),
   getBreakInDelayControlFeedback: () => null,
@@ -276,7 +275,7 @@ beforeEach(() => {
     repeatPolicy: 'latest-target-wins',
   }));
   for (const mock of [
-    h.noop, h.main, h.sub, h.equalize, h.swap, h.split, h.dualWatch, h.speak,
+    h.noop, h.main, h.sub, h.equalize, h.swap,
   ]) mock.mockReset();
 });
 afterEach(() => {
@@ -663,11 +662,11 @@ describe('production receiver-indicator partitioning', () => {
     expect([...target.querySelectorAll<HTMLElement>('[data-dual-action]')]
       .map((button) => button.dataset.dualAction)).toEqual(cases.map(([id]) => id));
     for (const [action, selected] of cases) {
-      for (const mock of [h.main, h.sub, h.equalize, h.swap, h.split, h.dualWatch]) {
+      for (const mock of [h.main, h.sub, h.equalize, h.swap]) {
         mock.mockClear();
       }
       target.querySelector<HTMLButtonElement>(`[data-dual-action="${action}"]`)!.click();
-      for (const mock of [h.main, h.sub, h.equalize, h.swap, h.split, h.dualWatch]) {
+      for (const mock of [h.main, h.sub, h.equalize, h.swap]) {
         expect(mock).toHaveBeenCalledTimes(mock === selected ? 1 : 0);
       }
     }
