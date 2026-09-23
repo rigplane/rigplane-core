@@ -305,8 +305,8 @@
   the row's quick keys use.
 -->
 {#snippet avgPeakKeys()}
-  <!-- MOR-2545 PR3: ONE definition, TWO mounts (row quick keys + More) —
-       same handlers, same bindable state, no fork. -->
+  <!-- MOR-2545 PR3: ONE definition, TWO mounts (row quick keys + More); same
+       handlers, same bindable state — not a fork. -->
   <button type="button" class="scope-flat-key" data-lit={enableAvg} aria-pressed={enableAvg}
     onclick={() => (enableAvg = !enableAvg)}>AVG</button>
   <button type="button" class="scope-flat-key" data-lit={enablePeakHold} aria-pressed={enablePeakHold}
@@ -405,9 +405,8 @@
 <div class="spectrum-toolbar" class:hosted={hosted}>
   {#if hasCapability('scope') && hideScopeControls && scopeControls}
     <!-- MOR-2545 PR3: the semantic row IS the one row — the toolbar hands it
-         the screen group (2nd arg, into the More panel) and the row tail
-         (3rd arg, placed before [MORE ▾]). No separators, no cyan wash;
-         the host strip carries the token panel ground. -->
+         the screen group (2nd arg, into More) and the row tail (3rd arg,
+         before [MORE ▾]). No separators, no cyan wash; token ground. -->
     <div class="semantic-scope-controls-host">
       {@render scopeControls(undefined, screenGroup, rowTail)}
     </div>
@@ -728,19 +727,15 @@
   }
 
   /* MOR-2545 PR3 — hosted one-row layout: the semantic row spans the strip
-      (flex growth above) and its own `scope-controls` query container owns
-      EVERY overflow band, including STEP's and the AVG/PEAK quick keys'
-      (bands and their derivation live in `scope-capsule.css`). The strip's
-      ground becomes the theme panel token — the literal grey gradient dies
-      here so the capsule family's theme text tokens keep their contrast in
-      every theme (MOR-977: token, not literal). The unhosted faces keep
-      today's gradient below. */
+      (flex growth above) and its `scope-controls` query container owns
+      EVERY overflow band (see scope-capsule.css). The strip's ground becomes
+      the theme panel token so the family's text tokens keep contrast in
+      every theme (MOR-977); the unhosted faces keep today's gradient. */
   .spectrum-toolbar.hosted { background: var(--v2-bg-panel); }
 
-  /* The More panel's STEP copy shows only while the row's own STEP is
-     hidden by the surface container's `step` band (335px, derived — see
-     scope-capsule.css; container queries resolve on DOM ancestry, so the
-     fixed-position panel still sees the surface container). */
+  /* The More STEP copy shows only while the row's STEP is hidden by the
+     surface container's 335px band (container queries resolve on DOM
+     ancestry, so the fixed-position panel still sees the container). */
   .toolbar-step-copy { display: none; }
 
   @container scope-controls (max-width: 335px) {

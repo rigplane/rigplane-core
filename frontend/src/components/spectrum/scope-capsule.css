@@ -1,29 +1,23 @@
 /*
  * Scope capsule key family — MOR-2545 PR3, owner style C "capsule groups"
  * (ticket comment "PR3 design decision, owner, 2026-09-23 18:55 EDT").
- *
- * ONE visual family for every control in the hosted panorama row and in the
- * More panel, both groups: a capsule is a 1 px border, ~5 px radius, no fill
- * at rest, at least 24 px tall, one font family and size (the host panel's
- * Roboto Mono); a segmented capsule has 1 px inner dividers; no bezel
- * gradient, no box-shadow, no text-shadow (these class names sit in
- * control-button.css's `:not()` exclusion lists, so the hardware-bezel
- * family never reaches them).
- *
- * Token-only colours (MOR-977), measured at the default theme:
- *   unlit text / arrows / labels  --v2-text-secondary  (7.27:1 on the
- *     hosted row ground --v2-bg-panel; >= 4.5:1 in every theme);
- *   values                       --v2-text-primary    (14.5:1);
- *   capsule border + dividers    --v2-text-muted      (3.38:1 non-text);
- *   lit = FILLED with the badge active PAIR --v2-badge-cyan-bg +
- *     --v2-badge-cyan-text (11.45:1 default, 9.43:1 github-light; NOT
- *     --v2-accent-cyan-bright over the badge bg — that mix is not a
- *     theme-tuned pair and measures 2.98:1 on github-light).
- *
- * Loaded via `import './scope-capsule.css'` from ScopeFlatKey.svelte and
- * SpectrumToolbar.svelte. The class names `scope-flat-key`/`scope-step-key`
- * are historical (PR1's flat keys) and kept: the Standard-face override
- * sheets exclude exactly those names from the bezel family.
+ * ONE visual family for every control in the hosted panorama row and the
+ * More panel: a capsule is a 1 px border, ~5 px radius, no fill at rest,
+ * at least 24 px tall, one font family and size (the host panel's Roboto
+ * Mono); a segmented capsule has 1 px inner dividers; no bezel gradient,
+ * box-shadow or text-shadow (these class names sit in control-button.css's
+ * `:not()` exclusion lists, so the bezel family never reaches them).
+ * Token-only colours (MOR-977), default-theme ratios: unlit text, arrows
+ * and labels --v2-text-secondary (7.27:1 on the hosted row ground
+ * --v2-bg-panel; >= 4.5:1 in every theme); values --v2-text-primary
+ * (14.5:1); capsule border and dividers --v2-text-muted (3.38:1
+ * non-text); lit = FILLED with the badge active PAIR --v2-badge-cyan-bg +
+ * --v2-badge-cyan-text (11.45:1 default, 9.43:1 github-light — NOT
+ * --v2-accent-cyan-bright over the badge bg: not a theme-tuned pair,
+ * 2.98:1 on github-light). Loaded via `import './scope-capsule.css'` from
+ * ScopeFlatKey.svelte and SpectrumToolbar.svelte. The names
+ * `scope-flat-key`/`scope-step-key` are historical (PR1) and kept: the
+ * Standard-face override sheets exclude exactly those names.
  */
 
 .scope-flat-key {

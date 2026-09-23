@@ -793,7 +793,7 @@ describe('source and enforcement boundary', () => {
     // surface container owns every band); the hosted strip ground becomes
     // the --v2-bg-panel token; the host grows so the row's own spacer
     // pushes its right end; STEP's More copy shows at the derived 335px.
-    expect(cssHash).toBe('0de6bc67fdf4fa13de07f28cf86cffa868ef93dd8802e3193ea4e07c8b466248');
+    expect(cssHash).toBe('2ec37a94d90b8322f074d1e1faa6094b3183294cb623deb2af62d186e923af3e');
   });
 });
 
@@ -932,9 +932,8 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
     expect(TOOLBAR_SOURCE).not.toMatch(/data-overflow="(?!step|quick)[a-z]+"/);
   });
 
-  // MOR-2545 PR3: one visual family — no bezel `toolbar-btn` class in the
-  // row tail / More screen group; the shared capsule sheet carries no
-  // bezel chrome and no literal colour (MOR-977).
+  // MOR-2545 PR3: no bezel `toolbar-btn` in the row tail / screen group;
+  // the capsule sheet carries no bezel chrome, no literal colour (MOR-977).
   it('the row tail and the More screen group use only capsule classes, never toolbar-btn', () => {
     const snippetBody = (name: string) => {
       const open = TOOLBAR_SOURCE.indexOf(`{#snippet ${name}(`);
@@ -952,8 +951,7 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
 
   it('the shared capsule stylesheet is chrome-free and token-only', () => {
     const cssRaw = readFileSync('src/components/spectrum/scope-capsule.css', 'utf8');
-    // Comments may NAME the banned properties while explaining them; the
-    // rules themselves may not carry them.
+    // Comments may NAME the banned properties; the rules may not carry them.
     const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, '');
     expect(css).not.toContain('box-shadow');
     expect(css).not.toContain('text-shadow');

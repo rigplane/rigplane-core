@@ -161,9 +161,8 @@
   let edgeApplicable = $derived(isEdgeApplicable(modeKnown));
 
   /** The [MORE ▾] More panel — UI-local open flag (never radio state).
-   *  MOR-2545 PR3: ⋯ became a labelled key; the visible label comes from
-   *  the i18n system (`core.spectrum.more`), uppercased with its ▾ marker
-   *  by the capsule family's text-transform. */
+   *  MOR-2545 PR3: the label comes from the i18n system
+   *  (`core.spectrum.more`), uppercased + ▾ by the capsule family. */
   let moreOpen = $state(false);
   let moreKeyEl = $state<HTMLElement | null>(null);
   let moreLabel = $derived(`${t('core.spectrum.more')} ▾`);
@@ -540,9 +539,8 @@
 
   .scope-key-group { display: inline-flex; flex: none; align-items: center; }
 
-  /* The finite (external renderer) hosts' labels keep PR1's flat look —
-     LCD kits are out of MOR-2545 PR3 scope; the native capsule row's labels
-     are styled globally by scope-capsule.css. */
+  /* Finite (external renderer) hosts keep PR1's flat label look (LCD kits
+     are out of PR3 scope); the native row's labels are global (capsule css). */
   .scope-finite-name {
     flex: none;
     padding: 0 3px;
