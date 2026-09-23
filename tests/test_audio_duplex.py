@@ -326,11 +326,21 @@ class TestUsbDriverDuplex:
 
     @pytest.mark.asyncio()
     async def test_two_stream_path_unchanged_for_separate_devices(self) -> None:
-        """start_rx/start_tx keep using two separate streams (additive)."""
+        """start_rx/start_tx keep using two separate streams (additive).
+
+        Genuinely separate RX/TX devices (distinct indices; BlackHole is a
+        virtual loopback anyway), so the duplex policy is "full" on every
+        platform — the exclusive same-device path is the MOR-546 handoff
+        covered below.
+        """
         from rigplane.audio.usb_driver import UsbAudioDriver
 
-        backend = FakeAudioBackend(devices=[DUPLEX_DEVICE])
-        driver = UsbAudioDriver(backend=backend)
+        backend = FakeAudioBackend(devices=[DUPLEX_DEVICE, SEPARATE_RX_DEVICE])
+        driver = UsbAudioDriver(
+            rx_device="USB Audio CODEC",
+            tx_device="BlackHole 2ch",
+            backend=backend,
+        )
         await driver.start_rx(lambda _pcm: None)
         await driver.start_tx()
         # Legacy two-stream path: NO duplex stream is opened.
