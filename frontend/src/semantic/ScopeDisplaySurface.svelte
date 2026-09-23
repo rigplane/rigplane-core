@@ -157,10 +157,7 @@
     color: var(--dl-vfo-unlit-text, var(--v2-text-secondary, inherit));
   }
   /* Tone dot — `data-tone` stays machine-readable for tests. Colour comes
-     from the theme accent vars (defined per theme in
-     `components-v2/theme/themes/*.css`); this surface's own stylesheet
-     stays free of literal colours (MOR-977), degrading to currentColor
-     when no theme defines them. */
+     from the `--v2-accent-*` theme tokens. */
   .scope-display-indicator::before {
     content: '';
     width: 6px;

@@ -731,7 +731,7 @@
       goes after SPAN in PR1's hide order; BANDS, ⋯ and fullscreen never
       hide). The band is measured by the independent reviewer on PR #3598:
       with the status slot unshrinkable, the row overflows at a 440 px
-      toolbar = 424 px content box. */
+      toolbar (desktop-v2) = 424 px content box. */
   .spectrum-toolbar.hosted { container-type: inline-size; container-name: spectrum-toolbar-row; }
 
   .toolbar-step-copy { display: none; }
