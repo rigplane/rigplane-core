@@ -207,7 +207,11 @@ async def test_set_tone_freq_sub_receiver() -> None:
 async def test_set_tone_freq_missing_capability() -> None:
     srv, _ = _server()
     h = _handler(radio=_incapable_radio(), server=srv)
-    with pytest.raises(CommandUnsupportedError, match="set_tone_freq"):
+    # Pin the capability-gate message specifically: without it the test
+    # cannot tell the tag gate from the supports_command gate (MOR-2111).
+    with pytest.raises(
+        CommandUnsupportedError, match="missing capability: repeater_tone"
+    ):
         await h._enqueue_command("set_tone_freq", {"freq": 8800})
 
 
@@ -239,7 +243,7 @@ async def test_set_tsql_freq_sub_receiver() -> None:
 async def test_set_tsql_freq_missing_capability() -> None:
     srv, _ = _server()
     h = _handler(radio=_incapable_radio(), server=srv)
-    with pytest.raises(CommandUnsupportedError, match="set_tsql_freq"):
+    with pytest.raises(CommandUnsupportedError, match="missing capability: tsql"):
         await h._enqueue_command("set_tsql_freq", {"freq": 9700})
 
 
@@ -542,7 +546,9 @@ async def test_set_repeater_tone_sub_receiver() -> None:
 async def test_set_repeater_tone_missing_capability() -> None:
     srv, _ = _server()
     h = _handler(radio=_incapable_radio(), server=srv)
-    with pytest.raises(CommandUnsupportedError, match="set_repeater_tone"):
+    with pytest.raises(
+        CommandUnsupportedError, match="missing capability: repeater_tone"
+    ):
         await h._enqueue_command("set_repeater_tone", {"on": True})
 
 
@@ -574,7 +580,7 @@ async def test_set_repeater_tsql_sub_receiver() -> None:
 async def test_set_repeater_tsql_missing_capability() -> None:
     srv, _ = _server()
     h = _handler(radio=_incapable_radio(), server=srv)
-    with pytest.raises(CommandUnsupportedError, match="set_repeater_tsql"):
+    with pytest.raises(CommandUnsupportedError, match="missing capability: tsql"):
         await h._enqueue_command("set_repeater_tsql", {"on": True})
 
 
