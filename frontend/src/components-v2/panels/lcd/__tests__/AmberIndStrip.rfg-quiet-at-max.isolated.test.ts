@@ -14,6 +14,7 @@
  * `AmberIndStrip` renderer; only the runtime/adapter seams and the
  * state-dependent `panel-props` slice are mocked.
  */
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ServerState } from '$lib/types/state';
@@ -226,8 +227,8 @@ describe('RFG chip lights only while RF gain is reduced (MOR-2546)', () => {
     ['AmberCockpit', mountCockpit],
   ] as const)('keeps the RFG slot in flow at the maximum on %s', (_name, mountFace) => {
     // The chip is never dropped: the reduced state and the maximum state
-    // render the same number of chips, with the quiet chip sitting exactly
-    // where the lit RFG chip sat — so no neighbour changes position.
+    // render the same number of chips, and the chip at the lit RFG index
+    // is the quiet one (aria-hidden, no text).
     const lit = chips(mountFace(stateWithRfGain(0.6)));
     const rfgIndex = lit.findIndex((el) => el.textContent?.trim() === 'RFG');
     expect(rfgIndex).toBeGreaterThanOrEqual(0);
@@ -245,5 +246,56 @@ describe('RFG chip lights only while RF gain is reduced (MOR-2546)', () => {
     const target = mountFace(stateWithRfGain(0.6), (name) => name !== 'rf_gain');
     expect(litChip(target)).toBeUndefined();
     expect(quietChip(target)).toBeUndefined();
+  });
+});
+
+// ── Reserved-slot pins (round-2 review, MOR-2546) ───────────────────────────
+//
+// The behaviour tests above observe only the rendered DOM, so they all stayed
+// green when `reserveSlot: true` was deleted from both faces together with
+// both layout rules. Following the #3591 precedent (`VfoIndicatorRow.test.ts`,
+// `readFileSync` of the component + a regex on its `<style>`), pin the
+// mechanism itself: the `slot-reserved` class that only the faces'
+// `reserveSlot: true` flag produces on each rendered chip, and the strip's
+// CSS rules read from source.
+
+describe('RFG reserved-slot pins (round-2 review, MOR-2546)', () => {
+  const stripSource = readFileSync(
+    'src/components-v2/panels/lcd/AmberIndStrip.svelte',
+    'utf8',
+  );
+
+  it('pins .lcd-ind.slot-reserved to a fixed 4ch content box', () => {
+    expect(stripSource).toMatch(
+      /\.lcd-ind\.slot-reserved\s*\{[^}]*min-inline-size:\s*4ch/,
+    );
+    expect(stripSource).toMatch(
+      /\.lcd-ind\.slot-reserved\s*\{[^}]*box-sizing:\s*content-box/,
+    );
+  });
+
+  it('pins .lcd-ind.ind-empty to a transparent border', () => {
+    expect(stripSource).toMatch(
+      /\.lcd-ind\.ind-empty\s*\{[^}]*border-color:\s*transparent/,
+    );
+  });
+
+  it.each([
+    ['AmberScope', mountScope],
+    ['AmberCockpit', mountCockpit],
+  ] as const)('classes lit and quiet RFG chips slot-reserved on %s', (_name, mountFace) => {
+    const lit = litChip(mountFace(stateWithRfGain(0.6)));
+    expect(lit?.classList.contains('slot-reserved')).toBe(true);
+
+    const quiet = quietChip(mountFace(stateWithRfGain(1)));
+    expect(quiet?.classList.contains('slot-reserved')).toBe(true);
+  });
+
+  it.each([
+    ['AmberScope', mountScope],
+    ['AmberCockpit', mountCockpit],
+  ] as const)('classes the quiet RFG chip ind-empty on %s', (_name, mountFace) => {
+    const quiet = quietChip(mountFace(stateWithRfGain(1)));
+    expect(quiet?.classList.contains('ind-empty')).toBe(true);
   });
 });

@@ -143,7 +143,7 @@
   /* Owner ruling 2026-09-23 (MOR-2546, extends #3591): a reserving token
      (RFG) keeps one fixed slot width whether lit, unlit, or emptied — the
      4ch reservation is wider than the widest text it prints ('RFG'), so a
-     gain change between reduced / full / unread never moves a neighbour.
+     gain change between reduced / full never moves a neighbour.
      Emptied: nothing is drawn — no text, transparent border, hidden from
      assistive tech — mirroring the VFO deck (`VfoIndicatorRow`'s
      min-inline-size reservation, `VfoPanel`'s fixed [data-chip='rfg'] lamp). */

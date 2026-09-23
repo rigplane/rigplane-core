@@ -63,7 +63,7 @@
   // displayed percentage — the same `levelFormatsBelowMax` rounding the VFO
   // deck applies, over the same 0..1 fraction domain (`RF_FRONT_END_LEVELS[0]`;
   // the snapshot path normalizes `rfGain` to [0, 1]). At a displayed 100%,
-  // and while the reading is unknown, the chip prints no text, keeps its
+  // and while the value is null, the chip prints no text, keeps its
   // reserved slot (`reserveSlot` → AmberIndStrip), and is aria-hidden.
   function rfgLabelFor(rfGain: number | null | undefined): string {
     return rfGain != null
