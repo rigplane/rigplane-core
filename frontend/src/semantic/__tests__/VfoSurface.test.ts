@@ -326,13 +326,11 @@ describe('receiver-addressed indicator composition (MOR-2299 slice 1)', () => {
     ['current', 0, '0%'],
     ['current', 0.4823529411764706, '48%'],
     ['current', 0.5333333333333333, '53%'],
-    ['current', 1, '100%'],
     ['stale', 0, '0%'],
     ['stale', 0.4823529411764706, '48%'],
     ['stale', 0.5333333333333333, '53%'],
-    ['stale', 1, '100%'],
   ] as const)(
-    'MOR-2425/R41: the Standard %s RFG badge formats %s as %s without a dagger cue',
+    'MOR-2425/R41: the Standard %s RFG badge formats a reduced gain %s as %s without a dagger cue',
     (displayState, rfGainValue, expected) => {
       const base = withReceiverIndicators('1/single');
       const indicator = base.receiverIndicators![0];
@@ -353,6 +351,34 @@ describe('receiver-addressed indicator composition (MOR-2299 slice 1)', () => {
       expect(badge.textContent).not.toContain('†');
       expect(badge.textContent).toContain(`RFG ${expected}`);
       expect(badge.textContent).not.toBe(`RFG ${rfGainValue}`);
+    },
+  );
+
+  // Owner ruling 2026-09-23: at the control's maximum the operator sees no
+  // RFG label at all — but the lamp keeps its reserved slot, unlit and
+  // aria-hidden, so the deck never shifts when the gain changes.
+  it.each(['current', 'stale'] as const)(
+    'the Standard RFG badge prints nothing at the domain maximum (%s), keeping its reserved slot',
+    (displayState) => {
+      const base = withReceiverIndicators('1/single');
+      const indicator = base.receiverIndicators![0];
+      const viewModel = validateRadioViewModel({
+        ...base,
+        receiverIndicators: [{
+          ...indicator,
+          rfGain: {
+            ...indicator.rfGain,
+            reading: { status: 'known' as const, value: 1 },
+            display: { state: displayState, value: 1 },
+          },
+        }],
+      });
+      const target = mountSurface({ viewModel, appearance: 'standard' });
+      const badge = target.querySelector('[data-indicator-fact="rfg"]')!;
+      expect(badge, 'the slot stays in the flow').not.toBeNull();
+      expect(badge.textContent).toBe('');
+      expect(badge.getAttribute('aria-hidden')).toBe('true');
+      expect(badge.getAttribute('data-lit')).toBe('false');
     },
   );
 

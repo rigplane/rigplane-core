@@ -612,12 +612,18 @@
           indicator.rfGain.display,
           indicator.rfGain.reading.status === 'known' ? indicator.rfGain.reading.value : null,
         );
+        // Owner ruling 2026-09-23: RFG appears only while RF gain is REDUCED
+        // (known and below the declared domain max — the same meaning the LCD
+        // faces draw with `(rfGain ?? 1) < 1`). At the max, and while the
+        // reading is unknown, the lamp keeps its fixed slot with no text at
+        // all; the deck reserves the width by chip key, so nothing moves.
+        const reduced = shown !== null && shown < RF_FRONT_END_LEVELS[0][3];
         sections.annunciators.push({
           key: 'rfg', group: 'rfg', family: 'brown',
-          text: shown === null
-            ? 'RFG'
-            : `RFG ${formatKnownLevel(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3])}`,
-          lit: shown !== null,
+          text: reduced
+            ? `RFG ${formatKnownLevel(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3])}`
+            : '',
+          lit: reduced,
         });
       }
 

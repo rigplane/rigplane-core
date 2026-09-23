@@ -238,14 +238,15 @@ describe('MOR-2342 addressed meter appearance', () => {
 
 describe('RF gain display observation', () => {
   // MOR-2425/R41: no `◷`, and one accessible name for both provenances.
+  // Owner ruling 2026-09-23: a reduced gain formats as a percentage.
   it.each(['semantic', 'standard', 'sdr'] as const)('keeps the same text, accessible name and DOM footprint through current/stale/current for %s', (appearance) => {
     const current = indicator({ rfGain: { ...known(0.75), display: { state: 'current', value: 0.75 } } });
     const state = new SvelteMap([['indicator', current]]);
     render({ appearance, get indicator() { return state.get('indicator'); } });
     const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
     const text = node.textContent;
-    expect(text).toContain('RFG 0.75');
-    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
+    expect(text).toContain('RFG 75%');
+    expect(target.querySelector('[role="img"][aria-label="RF gain 75%"]')).toBe(node);
     expect(node.hasAttribute('tabindex')).toBe(false);
     expect(node.querySelector('.stale-cue')).toBeNull();
     flushSync(() => state.set('indicator', indicator({ rfGain: {
@@ -256,24 +257,50 @@ describe('RF gain display observation', () => {
     expect(node.textContent).toBe(text);
     expect(node.getAttribute('data-state')).toBe('unknown');
     expect(node.getAttribute('data-display-state')).toBe('stale');
-    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
+    expect(target.querySelector('[role="img"][aria-label="RF gain 75%"]')).toBe(node);
     expect(target.querySelector('[role="img"][aria-label*="stale"]')).toBeNull();
     expect(target.querySelector('[aria-live], button, input')).toBeNull();
     flushSync(() => state.set('indicator', current));
     expect(node.textContent).toBe(text);
     expect(node.getAttribute('data-display-state')).toBe('current');
-    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
+    expect(target.querySelector('[role="img"][aria-label="RF gain 75%"]')).toBe(node);
   });
   it('does not display a strict fallback default when explicit observation is unknown', () => {
     render({ indicator: indicator({ rfGain: {
       ...known(0), display: { state: 'unknown', reason: 'not-observed' },
     } }) });
     const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
-    expect(node.textContent).toContain('RFG —');
-    expect(node.textContent).not.toContain('RFG 0');
+    // Owner ruling 2026-09-23: unknown shows nothing — the slot stays
+    // reserved, empty and aria-hidden, never a placeholder value.
+    expect(node).not.toBeNull();
+    expect(node.textContent).toBe('');
+    expect(node.textContent).not.toContain('—');
+    expect(node.getAttribute('aria-hidden')).toBe('true');
+    expect(node.getAttribute('aria-label')).toBeNull();
   });
   it('keeps a display-unsupported RFgain absent', () => {
     render({ indicator: indicator({ rfGain: { ...known(0), display: { state: 'unsupported' } } }) });
     expect(target.querySelector('[data-indicator-fact="rf-gain"]')).toBeNull();
+  });
+
+  // Owner ruling 2026-09-23: RFG exists only while RF gain is reduced.
+  it.each([
+    ['a reduced gain (0.6) prints its percentage', 0.6, 'RFG 60%', 'false'],
+    ['the maximum (1) prints nothing', 1, '', 'true'],
+  ] as const)('%s', (_name, value, expectedText, ariaHidden) => {
+    render({ indicator: indicator({ rfGain: known(value) }) });
+    const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
+    expect(node, 'the slot stays in the flow').not.toBeNull();
+    expect(node.textContent).toBe(expectedText);
+    expect(node.getAttribute('aria-hidden')).toBe(ariaHidden);
+    expect(node.textContent).not.toContain('—');
+    expect(node.textContent).not.toContain('?');
+  });
+
+  it('reserves the widest lit text (RFG 100%) in the fact slot', () => {
+    const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
+    expect(source).toMatch(
+      /\.fact\[data-indicator-fact='rf-gain'\]\s*\{[^}]*min-inline-size:\s*8ch/,
+    );
   });
 });
