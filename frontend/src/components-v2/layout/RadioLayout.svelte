@@ -1121,6 +1121,11 @@
   .desktop-control-face :global(.desktop-controls-right) { grid-area: 4 / 3 / 5 / 4; }
   .desktop-control-face :global(.desktop-controls-left),
   .desktop-control-face :global(.desktop-controls-right) {
+    /* Positioned so absolutely positioned descendants (visually hidden
+       `.sr-only` text) anchor to the column, not to `.radio-layout`: on a
+       static column their boxes bypassed this scroll box and extended the
+       layout grid's scrollable overflow, scrolling the whole face. */
+    position: relative;
     overflow-y: auto; min-height: 0;
     /* Scrollable sidebars must not contribute their full content height. */
     contain: size;

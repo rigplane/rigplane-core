@@ -733,6 +733,47 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     }
   });
 
+  // The side columns are scroll containers, but while they stayed
+  // `position: static` their absolutely positioned descendants (visually
+  // hidden `.sr-only` text) took `.radio-layout` as their containing
+  // block, bypassed the columns' scroll boxes and extended the grid's
+  // scrollable overflow: on the live stand the layout scrolled by 291px
+  // at 2000×1157 (scrollHeight 1448 vs 1157) and 570px at 1440×900
+  // (1470 vs 900) with empty space below the station meters. Positioning
+  // the columns anchors those descendants to the column, so only the
+  // columns scroll. 1280×720 is deliberately not asserted; the Standard
+  // template documents that short viewports scroll instead of overlapping
+  // the meters dock.
+  for (const [width, height] of [[2000, 1157], [1440, 900]] as const) {
+    test(`standard ${width}x${height} contains its side columns; the layout does not scroll`, async ({ page }) => {
+      await boot(page, 'standard', width, true, 'studioline', false, undefined, { height });
+      const overflow = await page.evaluate(() => {
+        const layout = document.querySelector('.radio-layout.desktop-control-face.standard-face')!;
+        return {
+          layout: layout.scrollHeight - layout.clientHeight,
+          document: document.documentElement.scrollHeight - window.innerHeight,
+        };
+      });
+      expect(overflow.layout, `${width}x${height}: the layout grid fits without scrolling`)
+        .toBeLessThanOrEqual(1);
+      expect(overflow.document, `${width}x${height}: the document does not scroll`)
+        .toBeLessThanOrEqual(1);
+    });
+  }
+
+  // The containment half of the fix: a positioned column must still scroll
+  // its own taller content. Only the right column is asserted, and only at
+  // 1440×900.
+  test('standard 1440x900 side column still scrolls its own content', async ({ page }) => {
+    await boot(page, 'standard', 1440, true, 'studioline', false, undefined, { height: 900 });
+    const rail = page.locator('.desktop-control-face.standard-face .desktop-controls-right');
+    const scrollTop = await rail.evaluate(element => {
+      element.scrollTop = Math.min(element.scrollHeight - element.clientHeight, element.scrollTop + 40);
+      return element.scrollTop;
+    });
+    expect(scrollTop, 'the right column scrolls its own content').toBeGreaterThan(0);
+  });
+
   test('crosses the 1200 and 1024 Standard thresholds without changing routes', async ({ page }) => {
     await boot(page, 'standard', 1201, true, 'studioline', false, 'topology-1-single');
     const root = page.locator('.desktop-control-face.standard-face');
