@@ -1143,10 +1143,15 @@ class RigctldHandler:
         )
 
     def _func_path(self, func: str, *, receiver: int) -> FieldPath:
+        # TONE/TSQL live in the store under the radio-concept names the
+        # state pipeline publishes (``repeater_tone`` / ``repeater_tsql``).
+        name = {"TONE": "repeater_tone", "TSQL": "repeater_tsql"}.get(
+            func, func.lower()
+        )
         return FieldPath.receiver(
             self._receiver_id(receiver),
             "operator_toggles",
-            func.lower(),
+            name,
         )
 
     def _project_fields(self, paths: Sequence[FieldPath]) -> _RigctldProjection:

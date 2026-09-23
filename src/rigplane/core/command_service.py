@@ -1539,10 +1539,17 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
     if name == "set_level":
         return _level_target(params, receiver)
     if name == "set_func":
+        # TONE/TSQL project from the radio-concept fields the state
+        # pipeline publishes; the pending value must land there too.
+        func_name = str(params["func"]).upper()
+        toggle = {
+            "TONE": "repeater_tone",
+            "TSQL": "repeater_tsql",
+        }.get(func_name, func_name.lower())
         return FieldPath.receiver(
             receiver,
             "operator_toggles",
-            str(params["func"]).lower(),
+            toggle,
         )
     if name == "set_split_vfo":
         return FieldPath.global_("tx_state", "split")
