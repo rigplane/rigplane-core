@@ -918,6 +918,156 @@ class TestLifecycle:
 
         assert store.provider_generation == 0
 
+    async def test_seat_services_on_a_non_protocol_radio_are_reused_not_replaced(
+        self, cfg: RigctldConfig
+    ) -> None:
+        """MOR-2557: rigctld must not overwrite a web seat's services.
+
+        ``WebServer._bootstrap_state_acquisition`` attaches ``_state_store``,
+        ``state_model_service``, ``_acquisition_scheduler``,
+        ``_state_freshness_service`` and a meter coalescer onto a radio that
+        is neither ``StateStoreCapable`` nor ``StateModelCapable`` (the
+        YaesuCATRadio shape). A ``RigctldServer`` started over the same radio
+        must adopt that exact set: at v3.0.0b4 it instead built a fallback
+        ``StateStore`` and overwrote the attributes, so the Yaesu adapter
+        resolved ``available_when`` against the empty fallback and silently
+        withheld the conditional ATT / manual-notch-frequency reads while
+        the web startup gate — resolving the same clauses against the web
+        store — waited on them forever.
+        """
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        profile = _acquisition_profile(freq)
+        radio = _ProfiledStandaloneRadio(
+            profile=type("Profile", (), {"state_acquisition": profile})()
+        )
+        # The web seat's attachment over a non-protocol radio, mirroring
+        # web/server.py: WebServer._bootstrap_state_acquisition.
+        web_store = StateStore()
+        web_scheduler = AcquisitionScheduler(profile=profile)
+        web_model_service = RadioStateModelService(
+            store=web_store, scheduler=web_scheduler
+        )
+        web_freshness_service = StateFreshnessService(
+            store=web_store, scheduler=web_scheduler
+        )
+        web_coalescer = MeterObservationCoalescer()
+        radio._state_store = web_store
+        radio._acquisition_scheduler = web_scheduler
+        radio.state_model_service = web_model_service
+        radio._state_freshness_service = web_freshness_service
+        radio._meter_observation_coalescer = web_coalescer
+        fake_server = _FakeAsyncServer()
+
+        with (
+            patch(
+                "rigplane.rigctld.server.asyncio.start_server",
+                new=AsyncMock(return_value=fake_server),
+            ),
+            patch("rigplane.rigctld.handler.RigctldHandler") as handler_cls,
+        ):
+            srv = RigctldServer(radio, cfg)
+            await srv.start()
+            try:
+                assert srv._state_store is web_store
+                assert srv._uses_fallback_state_store is False
+                assert srv._state_model_service is web_model_service
+                assert srv._state_freshness_service is web_freshness_service
+                assert srv._acquisition_scheduler is web_scheduler
+                # Identity on the radio is preserved: nothing was replaced.
+                assert radio._state_store is web_store
+                assert radio.state_model_service is web_model_service
+                assert radio._acquisition_scheduler is web_scheduler
+                assert radio._state_freshness_service is web_freshness_service
+                assert radio._meter_observation_coalescer is web_coalescer
+            finally:
+                await srv.stop()
+
+        # stop() advanced no provider generation on the web seat's store.
+        assert web_store.provider_generation == 0
+        assert srv._state_store is web_store
+        handler_cls.assert_called_once_with(
+            radio,
+            cfg,
+            state_store=web_store,
+            state_model_service=web_model_service,
+            managed_tx_authority=None,
+            command_queue=None,
+            command_service=None,
+        )
+
+    async def test_standalone_rigctld_without_a_prior_seat_attaches_its_own(
+        self, cfg: RigctldConfig
+    ) -> None:
+        """No seat, no protocol: the standalone fallback is unchanged.
+
+        The same non-protocol radio shape as the MOR-2557 test above, but
+        with nothing attached ahead of the server: rigctld still creates and
+        attaches its own fallback store, scheduler and services, and still
+        advances that store's provider generation exactly once per lifecycle
+        transition.
+        """
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        profile = _acquisition_profile(freq)
+        radio = _ProfiledStandaloneRadio(
+            profile=type("Profile", (), {"state_acquisition": profile})()
+        )
+        fake_server = _FakeAsyncServer()
+
+        with (
+            patch(
+                "rigplane.rigctld.server.asyncio.start_server",
+                new=AsyncMock(return_value=fake_server),
+            ),
+            patch("rigplane.rigctld.handler.RigctldHandler"),
+        ):
+            srv = RigctldServer(radio, cfg)
+            await srv.start()
+            try:
+                assert srv._uses_fallback_state_store is True
+                assert isinstance(srv._state_store, StateStore)
+                assert radio._state_store is srv._state_store
+                assert isinstance(radio.state_model_service, RadioStateModelService)
+                assert radio._acquisition_scheduler is srv._acquisition_scheduler
+                assert radio._state_freshness_service is srv._state_freshness_service
+                assert srv._state_store.provider_generation == 1
+            finally:
+                await srv.stop()
+
+        assert srv._state_store.provider_generation == 2
+
+    async def test_protocol_capable_radio_still_resolves_via_the_capability(
+        self, cfg: RigctldConfig
+    ) -> None:
+        """MOR-2557 regression guard: the protocol path is unchanged.
+
+        A ``StateStoreCapable`` / ``StateModelCapable`` radio resolves
+        through its own capability properties even when a seat also left a
+        different store under ``_state_store``; the duck-typed reuse path is
+        strictly a non-protocol fallback.
+        """
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        profile = _acquisition_profile(freq)
+        radio = _ProfiledStandaloneRadio(
+            profile=type("Profile", (), {"state_acquisition": profile})()
+        )
+        own_store = StateStore()
+        own_scheduler = AcquisitionScheduler(profile=profile)
+        own_model_service = RadioStateModelService(
+            store=own_store, scheduler=own_scheduler
+        )
+        radio.state_store = own_store
+        radio.state_model_service = own_model_service
+        # A seat also attached a different store; the capability wins.
+        radio._state_store = StateStore()
+
+        srv = RigctldServer(radio, cfg)
+        srv._bootstrap_state_acquisition()
+
+        assert srv._state_store is own_store
+        assert srv._uses_fallback_state_store is False
+        assert srv._state_model_service is own_model_service
+        assert srv._acquisition_scheduler is own_scheduler
+
     async def test_standalone_stop_rejects_delayed_handler_readback_without_mutation(
         self, cfg: RigctldConfig
     ) -> None:

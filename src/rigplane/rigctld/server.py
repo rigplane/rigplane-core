@@ -401,16 +401,27 @@ class RigctldServer:
         return cast(RadioAcquisitionProfile, acquisition_profile)
 
     def _radio_state_store(self) -> StateStore | None:
-        if not isinstance(self._radio, StateStoreCapable):
-            return None
-        store = self._radio.state_store
-        return store if isinstance(store, StateStore) else None
+        if isinstance(self._radio, StateStoreCapable):
+            store = self._radio.state_store
+            return store if isinstance(store, StateStore) else None
+        # MOR-2557: a non-protocol radio can still carry a StateStore another
+        # seat (the web server) attached as ``_state_store``. Reuse it: an
+        # attaching seat must never replace — or displace via a fresh
+        # fallback — acquisition services a first seat already attached.
+        attached = getattr(self._radio, "_state_store", None)
+        return attached if isinstance(attached, StateStore) else None
 
     def _radio_state_model_service(self) -> StateModelService | None:
-        if not isinstance(self._radio, StateModelCapable):
-            return None
-        service = self._radio.state_model_service
-        return service if isinstance(service, StateModelService) else None
+        if isinstance(self._radio, StateModelCapable):
+            service = self._radio.state_model_service
+            return service if isinstance(service, StateModelService) else None
+        # MOR-2557: seats attach the model service as a plain attribute on
+        # non-protocol radios, so resolve it the same duck-typed way the
+        # freshness service below already is. Found here, the bootstrap
+        # takes its reuse branch and never calls
+        # ``_attach_state_acquisition_services`` over the first seat's set.
+        attached = getattr(self._radio, "state_model_service", None)
+        return attached if isinstance(attached, StateModelService) else None
 
     def _radio_state_freshness_service(self) -> StateFreshnessService | None:
         service = getattr(self._radio, "_state_freshness_service", None)
@@ -475,7 +486,14 @@ class RigctldServer:
                 )
 
     def _bootstrap_state_acquisition(self) -> None:
-        """Prepare StateStore-backed acquisition services for standalone rigctld."""
+        """Prepare StateStore-backed acquisition services for this server.
+
+        Services another seat already attached to the radio — via the
+        ``StateStoreCapable`` / ``StateModelCapable`` protocols or as plain
+        attributes (the web seat's shape on non-protocol radios, MOR-2557) —
+        are reused, never replaced. Only a radio carrying no store at all
+        gets this server's own fallback.
+        """
         self._state_store = self._radio_state_store()
         self._uses_fallback_state_store = self._state_store is None
         if self._state_store is None:
