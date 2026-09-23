@@ -14,8 +14,8 @@
 
   /** One fixed slot: `text` is the lit label; unlit keeps the slot with its
    *  own label and width, so no sibling ever moves. An empty `text` is an
-   *  owner-mandated quiet state (RFG at/above full gain): the slot stays in
-   *  the flow, hidden from assistive tech, at its reserved width. */
+   *  owner-mandated quiet state (RFG at a displayed full gain): the slot
+   *  stays in the flow, hidden from assistive tech, at its reserved width. */
   export interface VfoPanelSlot {
     key: string;
     text: string;

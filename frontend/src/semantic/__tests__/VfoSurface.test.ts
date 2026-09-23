@@ -326,6 +326,7 @@ describe('receiver-addressed indicator composition (MOR-2299 slice 1)', () => {
     ['current', 0, '0%'],
     ['current', 0.4823529411764706, '48%'],
     ['current', 0.5333333333333333, '53%'],
+    ['current', 253 / 255, '99%'],
     ['stale', 0, '0%'],
     ['stale', 0.4823529411764706, '48%'],
     ['stale', 0.5333333333333333, '53%'],
@@ -357,9 +358,17 @@ describe('receiver-addressed indicator composition (MOR-2299 slice 1)', () => {
   // Owner ruling 2026-09-23: at the control's maximum the operator sees no
   // RFG label at all — but the lamp keeps its reserved slot, unlit and
   // aria-hidden, so the deck never shifts when the gain changes.
-  it.each(['current', 'stale'] as const)(
-    'the Standard RFG badge prints nothing at the domain maximum (%s), keeping its reserved slot',
-    (displayState) => {
+  // Coordinator decision, same day: "the maximum" is the DISPLAYED maximum —
+  // a raw 254 of 255 is strictly below 1 yet formats as 100%, so it prints
+  // nothing too.
+  it.each([
+    ['current', 1],
+    ['stale', 1],
+    ['current', 254 / 255],
+    ['stale', 254 / 255],
+  ] as const)(
+    'the Standard RFG badge prints nothing when the gain displays as the maximum (%s, gain %s), keeping its reserved slot',
+    (displayState, gainValue) => {
       const base = withReceiverIndicators('1/single');
       const indicator = base.receiverIndicators![0];
       const viewModel = validateRadioViewModel({
@@ -368,8 +377,8 @@ describe('receiver-addressed indicator composition (MOR-2299 slice 1)', () => {
           ...indicator,
           rfGain: {
             ...indicator.rfGain,
-            reading: { status: 'known' as const, value: 1 },
-            display: { state: displayState, value: 1 },
+            reading: { status: 'known' as const, value: gainValue },
+            display: { state: displayState, value: gainValue },
           },
         }],
       });

@@ -7,7 +7,7 @@
   import type { Snippet } from 'svelte';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
-  import { formatKnownLevel } from './format-level';
+  import { formatKnownLevel, levelFormatsBelowMax } from './format-level';
   import { RF_FRONT_END_LEVELS } from './rf-front-end-instruments';
   import type {
     DisplayObservedField, RadioWideIndicatorsViewModel, ReceiverIndicatorField,
@@ -48,16 +48,19 @@
   }
 
   /**
-   * Owner ruling 2026-09-23: RFG appears only while RF gain is REDUCED —
-   * known and below the declared domain max, the same meaning the LCD faces
-   * draw with `(rfGain ?? 1) < 1`. At the max, and while the reading is
-   * unknown, this renders an empty string: the fact keeps its reserved slot
-   * (min-inline-size below) but prints no label, number, or placeholder, and
-   * is aria-hidden while empty.
+   * Owner ruling 2026-09-23: RFG appears only while RF gain is REDUCED.
+   * Coordinator decision, same day: "reduced" is what the operator reads —
+   * the formatted percentage, the same rounding `formatKnownLevel` applies —
+   * so a raw 254 of 255, strictly below 1 yet displaying as 100%, shows
+   * nothing. At a displayed 100%, and while the reading is unknown, this
+   * renders an empty string: the fact keeps its reserved slot
+   * (min-inline-size below) but prints no label, number, or placeholder,
+   * draws no frame, and is aria-hidden while empty.
    */
   function rfGainText(field: DisplayObservedField<number>): string {
     const shown = rfGainShown(field);
-    return shown !== null && shown < RF_FRONT_END_LEVELS[0][3]
+    return shown !== null
+      && levelFormatsBelowMax(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3])
       ? formatKnownLevel(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3])
       : '';
   }
@@ -185,6 +188,7 @@
         data-display-state={indicator.rfGain.display?.state ?? (indicator.rfGain.reading.status === 'known' ? 'current' : 'unknown')}
         aria-label={gainText ? `RF gain ${gainText}` : undefined}
         aria-hidden={gainText ? undefined : 'true'}
+        data-empty={gainText ? undefined : 'true'}
       >{gainText ? `RFG ${gainText}` : ''}</span>
     {/if}
   </div>
@@ -257,10 +261,18 @@
   .fact[data-state='on'], .fact[data-state='known'] { color: var(--v2-text-primary, #e8e8e8); }
   .fact[data-state='off'], .fact[data-state='unknown'] { color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
   /* Owner ruling 2026-09-23: the RFG fact keeps its slot whether or not it
-     prints — reserved at the widest lit text, `RFG 100%` (8 characters in
-     this mono face) — so the neighbouring facts never move when the gain
-     changes between reduced, full and unknown. */
+     prints. The widest lit text is `RFG 99%` (7 characters in this mono
+     face); the 8ch reservation stays deliberately wider than that, so the
+     neighbouring facts never move when the gain changes between reduced,
+     full and unknown. */
   .fact[data-indicator-fact='rf-gain'] { min-inline-size: 8ch; box-sizing: content-box; }
+  /* Empty (a displayed 100%, or unread): the slot stays reserved at the same
+     size and 1px geometry, but nothing is drawn — a transparent border and
+     background instead of an empty frame. */
+  .fact[data-indicator-fact='rf-gain'][data-empty='true'] {
+    border-color: transparent;
+    background: transparent;
+  }
   .s-meter { min-width: 0; overflow: hidden; }
   .s-meter-unknown {
     display: grid;

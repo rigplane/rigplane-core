@@ -238,7 +238,6 @@ describe('MOR-2342 addressed meter appearance', () => {
 
 describe('RF gain display observation', () => {
   // MOR-2425/R41: no `◷`, and one accessible name for both provenances.
-  // Owner ruling 2026-09-23: a reduced gain formats as a percentage.
   it.each(['semantic', 'standard', 'sdr'] as const)('keeps the same text, accessible name and DOM footprint through current/stale/current for %s', (appearance) => {
     const current = indicator({ rfGain: { ...known(0.75), display: { state: 'current', value: 0.75 } } });
     const state = new SvelteMap([['indicator', current]]);
@@ -284,8 +283,13 @@ describe('RF gain display observation', () => {
   });
 
   // Owner ruling 2026-09-23: RFG exists only while RF gain is reduced.
+  // Coordinator decision, same day: "reduced" is decided on the formatted
+  // percentage — a raw 254 of 255 is strictly below 1 yet displays as 100%,
+  // so nothing is shown (the component sets no aria-hidden while lit).
   it.each([
-    ['a reduced gain (0.6) prints its percentage', 0.6, 'RFG 60%', 'false'],
+    ['a reduced gain (0.6) prints its percentage', 0.6, 'RFG 60%', null],
+    ['a gain that rounds to 99 (raw 253 of 255) is lit', 253 / 255, 'RFG 99%', null],
+    ['raw 254 of 255 is below 1 yet displays as 100 — nothing shown', 254 / 255, '', 'true'],
     ['the maximum (1) prints nothing', 1, '', 'true'],
   ] as const)('%s', (_name, value, expectedText, ariaHidden) => {
     render({ indicator: indicator({ rfGain: known(value) }) });
@@ -293,14 +297,29 @@ describe('RF gain display observation', () => {
     expect(node, 'the slot stays in the flow').not.toBeNull();
     expect(node.textContent).toBe(expectedText);
     expect(node.getAttribute('aria-hidden')).toBe(ariaHidden);
+    expect(node.getAttribute('data-empty')).toBe(expectedText ? null : 'true');
     expect(node.textContent).not.toContain('—');
     expect(node.textContent).not.toContain('?');
   });
 
-  it('reserves the widest lit text (RFG 100%) in the fact slot', () => {
+  it('reserves wider than the widest lit text (RFG 99%) in the fact slot', () => {
     const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
     expect(source).toMatch(
       /\.fact\[data-indicator-fact='rf-gain'\]\s*\{[^}]*min-inline-size:\s*8ch/,
     );
+  });
+
+  it('an empty RFG fact draws no visible frame while keeping the reserved slot', () => {
+    render({ indicator: indicator({ rfGain: known(1) }) });
+    const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
+    expect(node.textContent).toBe('');
+    expect(node.getAttribute('data-empty')).toBe('true');
+    // The CSS the attribute keys on: the frame goes transparent while the
+    // reserved width (min-inline-size) stays — never an empty bordered box.
+    const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
+    expect(source).toMatch(
+      /\.fact\[data-indicator-fact='rf-gain'\]\[data-empty='true'\]\s*\{[^}]*border-color:\s*transparent/,
+    );
+    expect(source).toMatch(/\.fact\[data-indicator-fact='rf-gain'\]\s*\{[^}]*min-inline-size:\s*8ch/);
   });
 });

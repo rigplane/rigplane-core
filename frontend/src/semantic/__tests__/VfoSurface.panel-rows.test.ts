@@ -370,10 +370,11 @@ describe('standard annunciator lamps (2/main_sub)', () => {
 });
 
 // Owner ruling 2026-09-23: the RFG lamp appears only while RF gain is
-// reduced — below the control's declared maximum. At the maximum and while
-// the reading is unknown the lamp stays in the flow as an empty reserved
-// slot (fixed width by chip key), so the deck never shifts when the gain
-// changes.
+// reduced. Coordinator decision, same day: "reduced" is decided on the
+// formatted percentage — a raw 254 of 255 is strictly below 1 yet displays
+// as 100, so it shows nothing. At the maximum and while the reading is
+// unknown the lamp stays in the flow as an empty reserved slot (fixed
+// width by chip key), so the deck never shifts when the gain changes.
 describe('standard RFG lamp appears only when RF gain is reduced (2/main_sub)', () => {
   const fixtureWithRfGain = (rfGain: number | 'unknown') => {
     const base = standardFixture('2/main_sub');
@@ -399,8 +400,16 @@ describe('standard RFG lamp appears only when RF gain is reduced (2/main_sub)', 
     expect(lamp.getAttribute('aria-hidden')).toBeNull();
   });
 
+  it('a gain that rounds to 99 (raw 253 of 255) is lit', () => {
+    const lamp = rfgLamp(fixtureWithRfGain(253 / 255));
+    expect(lamp.textContent?.trim()).toBe('RFG 99%');
+    expect(lamp.getAttribute('data-lit')).toBe('true');
+    expect(lamp.getAttribute('aria-hidden')).toBeNull();
+  });
+
   it.each([
     ['at the maximum', 1],
+    ['at a raw 254 of 255 — below 1 yet displaying as 100', 254 / 255],
     ['with an unknown reading', 'unknown'],
   ] as const)('%s the lamp is an empty reserved slot, unlit and aria-hidden', (_name, rfGain) => {
     const lamp = rfgLamp(fixtureWithRfGain(rfGain));
@@ -412,7 +421,7 @@ describe('standard RFG lamp appears only when RF gain is reduced (2/main_sub)', 
   });
 
   it('the lamp inventory is identical across reduced, maximum and unknown gains', () => {
-    for (const rfGain of [0.6, 1, 'unknown'] as const) {
+    for (const rfGain of [0.6, 253 / 255, 254 / 255, 1, 'unknown'] as const) {
       const root = mountSurface({ viewModel: fixtureWithRfGain(rfGain), appearance: 'standard' });
       const mainPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
       const keys = Array.from(row(mainPanel, 'receiver').querySelectorAll('.lamp'))
