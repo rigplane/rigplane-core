@@ -25,6 +25,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.core.radio_protocol import Radio
 from rigplane.core.types import AgcMode
@@ -811,3 +813,92 @@ async def test_mode_set_readback_parse_error_is_not_rejected():
     assert check.status is CheckStatus.FAIL
     assert "outcome" not in check.evidence
     assert check.evidence["restored"] is True
+
+
+# ---------------------------------------------------------------------------
+# MOR-2111 — repeater_tone.set / tsql.set named RMVR handlers
+# ---------------------------------------------------------------------------
+
+
+def _stateful_repeater_mock(*, tone: bool, tsql: bool):
+    """FTX-1-shaped repeater pair over one CT-like register.
+
+    Mirrors the Yaesu backend's mapping — (F,F)=off, (T,F)=TONE, (T,T)=TSQL —
+    including its refusal: any request that would produce (tone off, tsql on)
+    raises ValueError exactly like the real backend. A handler that ever
+    requests the non-representable pair therefore FAILs here instead of
+    passing quietly.
+    """
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "FTX-1"
+    radio.capabilities = {"repeater_tone", "tsql"}
+    store = {"tone": tone, "tsql": tsql}
+
+    async def _get_tone(receiver: int = 0) -> bool:
+        return store["tone"]
+
+    async def _get_tsql(receiver: int = 0) -> bool:
+        return store["tsql"]
+
+    async def _set_tone(on: bool, receiver: int = 0) -> None:
+        if not on and store["tsql"]:
+            raise ValueError(
+                "tone squelch cannot stay on while the repeater tone is off"
+            )
+        store["tone"] = bool(on)
+
+    async def _set_tsql(on: bool, receiver: int = 0) -> None:
+        if on and not store["tone"]:
+            raise ValueError("tone squelch cannot be on while the repeater tone is off")
+        store["tsql"] = bool(on)
+
+    radio.get_repeater_tone = AsyncMock(side_effect=_get_tone)
+    radio.get_repeater_tsql = AsyncMock(side_effect=_get_tsql)
+    radio.set_repeater_tone = AsyncMock(side_effect=_set_tone)
+    radio.set_repeater_tsql = AsyncMock(side_effect=_set_tsql)
+    return radio, store
+
+
+@pytest.mark.parametrize("start", [(False, False), (True, False), (True, True)])
+async def test_repeater_tone_set_restores_the_start_pair(start):
+    """repeater_tone.set toggles from a normalized (F,F) start and restores
+    the pair the radio started in — from every representable start."""
+    radio, store = _stateful_repeater_mock(tone=start[0], tsql=start[1])
+    check = await _run(radio, check_id="repeater_tone.set", capability="repeater_tone")
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["original"] is False  # normalized start
+    assert check.evidence["changed"] is True
+    assert check.evidence["readback"] is True
+    assert check.evidence["restored"] is True
+    assert check.evidence["start_tone"] is start[0]
+    assert check.evidence["start_tsql"] is start[1]
+    assert check.evidence["restored_to_start"] is True
+    assert (store["tone"], store["tsql"]) == start
+
+
+@pytest.mark.parametrize("start", [(False, False), (True, False), (True, True)])
+async def test_tsql_set_restores_the_start_pair(start):
+    """tsql.set turns encode on before decode (never requests (F,T)) and
+    restores the pair the radio started in."""
+    radio, store = _stateful_repeater_mock(tone=start[0], tsql=start[1])
+    check = await _run(radio, check_id="tsql.set", capability="tsql")
+    assert check.status is CheckStatus.PASS
+    assert check.evidence["original"] is False  # normalized start
+    assert check.evidence["changed"] is True
+    assert check.evidence["readback"] is True
+    assert check.evidence["restored"] is True
+    assert check.evidence["restored_to_start"] is True
+    assert (store["tone"], store["tsql"]) == start
+
+
+async def test_tsql_set_never_requests_unrepresentable_pair():
+    """Pin the leg order: the mock raises on any (F,T) request, so a naive
+    tsql-on-first cycle from (F,F) FAILs here instead of passing."""
+    radio, store = _stateful_repeater_mock(tone=False, tsql=False)
+    check = await _run(radio, check_id="tsql.set", capability="tsql")
+    assert check.status is CheckStatus.PASS
+    # The checked write went through TONE first: encode was seen on.
+    assert store == {"tone": False, "tsql": False}
+    writes = [c.args[0] for c in radio.set_repeater_tsql.call_args_list]
+    assert True in writes and False in writes
