@@ -10,7 +10,7 @@
  * `panel-commands.ts` dispatches (i.e. every `dispatchRadioIntent({ name:
  * '<literal>', ... })` call site) falls in exactly one of the two sets.
  * The 4 `modInputCommand(...)`-derived names are real emissions outside
- * this 88-name literal universe — see `./waived.ts`'s header and the
+ * this 85-name literal universe — see `./waived.ts`'s header and the
  * meta-test's "dynamic mod-input call site" block for how those are
  * tracked instead.
  *
@@ -123,15 +123,15 @@
  * intent and stays claimed via C10, not this walk).
  *
  * Plus MOR-1566's (C12) scope-remainder/VFO-topology family walk
- * (`../mor1566-scope-vfo-family-conformance.isolated.test.ts`) — 12 intents:
+ * (`../mor1566-scope-vfo-family-conformance.isolated.test.ts`) — 10 intents:
  * `set_scope_mode`, `set_scope_edge`, `set_scope_dual`, `set_scope_during_tx`,
  * `set_scope_center_type`, `set_scope_vbw`, `set_scope_rbw`,
- * `switch_scope_receiver`, `set_dual_watch`, `set_main_sub_tracking`,
- * `quick_dualwatch`, `quick_split`. UNLIKE C6/C7/C10/C11, NOT skewed toward
- * refusal: 7 of the 12 genuinely DISPATCH on the real IC-7300 fixture (every
+ * `switch_scope_receiver`, `set_dual_watch`, `set_main_sub_tracking`. UNLIKE
+ * C6/C7/C10/C11, NOT skewed toward refusal: 6 of the 10 genuinely DISPATCH
+ * on the real IC-7300 fixture (every
  * `scopeControls.*` leaf this family reads is observed except `rbw`, and the
  * fixture's own current values fall inside every handler's declared domain).
- * The 5 refusals are all STRUCTURAL gates (`hasPhysicalSub` failing on this
+ * The 4 refusals are all STRUCTURAL gates (`hasPhysicalSub` failing on this
  * single-receiver, no-`dual_rx` profile, or `caps.receivers < 2`
  * short-circuiting before any field check) except `set_scope_rbw`, the one
  * genuinely-unobserved field-status leaf in this family (discrimination-case
@@ -152,28 +152,26 @@
  * claim and C12 extension coverage.
  *
  * Plus MOR-1567's (C13) remainder-sweeper family walk — the CLOSING walk of
- * the MOR-1426 Tier-2 program, `WAIVED_INTENTS` now empty — 17 intents:
+ * the MOR-1426 Tier-2 program, `WAIVED_INTENTS` now empty — 16 intents:
  * `scan_start`/`scan_stop`/`scan_set_df_span`/`scan_set_resume`,
- * `set_dial_lock`/`set_powerstat`/`speak`,
+ * `set_dial_lock`/`set_powerstat`,
  * `set_antenna_1`/`set_antenna_2`/`set_rx_antenna_ant1`/`set_rx_antenna_ant2`,
  * `set_digisel`/`set_ip_plus`, `memory_clear`, and the 3 orphaned RIT/XIT
  * intents `waived.ts`'s history documents as a genuine gap in MOR-1426's
  * per-family prose — `set_rit_status`/`set_rit_tx_status`/
- * `set_rit_frequency`. Seven dispatch: the 4 scan intents, `speak` when its
- * independent `speech` capability is declared, `set_powerstat` on its
+ * `set_rit_frequency`. Six dispatch: the 4 scan intents, `set_powerstat` on its
  * `power_control` capability gate, and `memory_clear` through its resolved
  * snapshot. The other 10 refuse: 6 on an unobserved field this fixture never
  * confirmed, and the 4 antenna intents
  * refuse on a STRUCTURAL gate (`caps.antennas===1<2`, fires before the
  * also-unobserved field check — `set_rx_antenna_ant1`/`set_rx_antenna_ant2`
- * additionally share ONE call site, `onToggleRxAnt`). `speak` is independently
- * capability-gated and neither requires nor implies either VFO primitive.
+ * additionally share ONE call site, `onToggleRxAnt`).
  * MOR-1574 is cited (not re-derived) as CONTRAST, now historical: the
  * READ-path `toRitXitProps` (MOR-1562/C8) HAD no fieldStatus gate on
  * `ritOn`/`ritFreq`/`ritTx` at all — closed by MOR-1574/PR #2488, which
  * brought it in line with the WRITE-path handlers walked here, which
  * always DID gate on those same three unobserved leaves. Also adds
- * ADDITIVE (uncounted, outside the 88-name universe) coverage of the
+ * ADDITIVE (uncounted, outside the 85-name universe) coverage of the
  * dynamic mod-input dispatch across all 4 DATA groups on this fixture —
  * see that file's own header.
  */
@@ -250,8 +248,6 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'switch_scope_receiver',
   'set_dual_watch',
   'set_main_sub_tracking',
-  'quick_dualwatch',
-  'quick_split',
   // C12 synthetic declared-tag probes own these positive claims.
   'vfo_swap',
   'vfo_equalize',
@@ -262,7 +258,6 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'scan_set_resume',
   'set_dial_lock',
   'set_powerstat',
-  'speak',
   'set_antenna_1',
   'set_antenna_2',
   'set_rx_antenna_ant1',
@@ -282,7 +277,7 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
 ]);
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const CLAIMED_INTENTS_COUNT = 88;
+export const CLAIMED_INTENTS_COUNT = 85;
 
 /**
  * `dispatchKeyboardRadioAction` case labels claimed by a conformance case.

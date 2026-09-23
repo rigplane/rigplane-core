@@ -506,7 +506,7 @@ const RADIO_WIDE_CAPS = caps({
   antennas: 1,
   capabilities: [
     ...DUAL, 'tuner', 'rit', 'xit', 'split', 'dual_watch', 'dial_lock',
-    'vfo_equalize', 'vfo_swap', 'speech',
+    'vfo_equalize', 'vfo_swap',
   ],
 });
 
@@ -589,16 +589,13 @@ describe('radio-wide indicators and DUAL actions are singleton contract facts (M
     expect(shared.ritOffset.availability.operational).toBe(false);
   });
 
-  it('publishes exact primitive action availability and fails composite Quick actions closed', () => {
+  it('publishes exact primitive action availability', () => {
     const actions = model(radioWideState(), RADIO_WIDE_CAPS).radioWideIndicators!.actions;
     expect(actions).toEqual({
       main: { structural: true, operational: true },
       sub: { structural: true, operational: true },
       equalize: { structural: true, operational: true },
       swap: { structural: true, operational: true },
-      quickSplit: { structural: false, operational: false },
-      quickDualWatch: { structural: false, operational: false },
-      speak: { structural: true, operational: true },
     });
 
     const unavailableSub = model(
@@ -607,13 +604,11 @@ describe('radio-wide indicators and DUAL actions are singleton contract facts (M
     ).radioWideIndicators!.actions;
     expect(unavailableSub.main).toEqual({ structural: true, operational: true });
     expect(unavailableSub.sub).toEqual({ structural: true, operational: false });
-    expect(unavailableSub.quickDualWatch).toEqual({ structural: false, operational: false });
   });
 
   it.each([
     ['vfo_equalize', 'equalize'],
     ['vfo_swap', 'swap'],
-    ['speech', 'speak'],
   ] as const)('removing %s removes only the %s action', (capability, action) => {
     const actions = model(radioWideState(), {
       ...RADIO_WIDE_CAPS,
@@ -621,15 +616,12 @@ describe('radio-wide indicators and DUAL actions are singleton contract facts (M
     }).radioWideIndicators!.actions;
     expect(actions[action]).toEqual({ structural: false, operational: false });
     const expectedPresent = {
-      equalize: action !== 'equalize', swap: action !== 'swap', speak: action !== 'speak',
+      equalize: action !== 'equalize', swap: action !== 'swap',
     } as const;
     expect(actions.equalize).toEqual({ structural: expectedPresent.equalize, operational: expectedPresent.equalize });
     expect(actions.swap).toEqual({ structural: expectedPresent.swap, operational: expectedPresent.swap });
-    expect(actions.speak).toEqual({ structural: expectedPresent.speak, operational: expectedPresent.speak });
     expect(actions.main).toEqual({ structural: true, operational: true });
     expect(actions.sub).toEqual({ structural: true, operational: true });
-    expect(actions.quickSplit).toEqual({ structural: false, operational: false });
-    expect(actions.quickDualWatch).toEqual({ structural: false, operational: false });
   });
 
   it('publishes an exact per-action absence matrix for unsupported controls', () => {
@@ -642,9 +634,6 @@ describe('radio-wide indicators and DUAL actions are singleton contract facts (M
       sub: { structural: false, operational: false },
       equalize: { structural: false, operational: false },
       swap: { structural: false, operational: false },
-      quickSplit: { structural: false, operational: false },
-      quickDualWatch: { structural: false, operational: false },
-      speak: { structural: false, operational: false },
     });
   });
 
@@ -1402,9 +1391,10 @@ describe('RF gain additive display observation', () => {
     // default target to slot null.
     // MOR-2509: re-read after the radio-wide group gained `dialLock`.
     // MOR-2537: In "preserves legacy strict model members", the digest moved because the fixture now carries the `agcModes` catalog the server always emits; the readings it guards are asserted unchanged alongside.
+    // MOR-2538: re-read after `radioWideIndicators.actions` dropped the quickSplit/quickDualWatch/speak members (backend-only commands now).
     expect(view.dsp?.agcMode.reading).toEqual({ status: 'known', value: 0 });
     expect(view.receiverIndicators?.[0].agcMode.reading).toEqual({ status: 'known', value: 0 });
-    expect(digest).toBe('ab3833b0f2752e2540040ffa7d0a368e2f30cb35f4c5a001e6230af0f8366cf3');
+    expect(digest).toBe('07367ecd2b10b46eaef261f2bdcc7d6f0f3dda757d72585a1878cf9852641346');
   });
   it.each([false, true])('projects the explicit display and HOLDS RF gain, stale=%s', (stale) => {
     const view = model(displayState(stale), displayCaps, RECEIVING);

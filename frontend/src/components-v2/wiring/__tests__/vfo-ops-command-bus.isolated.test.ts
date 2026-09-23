@@ -1,5 +1,5 @@
 /**
- * MOR-2309 — the nine radio-wide intents bind once to the real frontend facades.
+ * MOR-2309 — the six radio-wide intents bind once to the real frontend facades.
  *
  * `SemanticRadioSurfaces` binds one canonical N1 callback record and supplies
  * that input to both legitimate radio-wide `VfoSurface` mounts. Its component test mocks
@@ -8,13 +8,6 @@
  * `tx-aux-command-bus.isolated.test.ts` does — load the real module, read the
  * names off the real wiring source, and assert each one exists AND emits the
  * command the radio expects.
- *
- * The pair that matters most is `onQuickSplit` / `onQuickDw`: they name the
- * frontend composite intents (epic #774). This proves dispatch into the
- * typed intent facade only, not provider consumption. A
- * silent rename would leave the deck's quick buttons wired to `undefined` —
- * or, worse, to a neighbouring VFO command that moves a frequency the
- * operator did not ask to move.
  *
  * Each test's doc line names the mutation it exists to kill.
  */
@@ -51,7 +44,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
     receivers: 2, vfoScheme: 'main_sub',
     capabilities: [
       'dual_rx', 'dual_watch', 'split', 'main_sub_tracking',
-      'vfo_swap', 'vfo_equalize', 'speech',
+      'vfo_swap', 'vfo_equalize',
     ],
   })),
   capabilitiesMatchGeneration: vi.fn(() => true),
@@ -67,9 +60,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import { audioManager } from '$lib/audio/audio-manager';
-import {
-  makeSystemHandlers, makeVfoHandlers,
-} from '$lib/runtime/commands/panel-commands';
+import { makeVfoHandlers } from '$lib/runtime/commands/panel-commands';
 
 const wiringSource = readFileSync('src/components-v2/wiring/SemanticRadioSurfaces.svelte', 'utf8');
 const commandSource = readFileSync('src/lib/runtime/commands/panel-commands.ts', 'utf8')
@@ -77,7 +68,7 @@ const commandSource = readFileSync('src/lib/runtime/commands/panel-commands.ts',
   .replace(/\/\/.*$/gm, '');
 
 /**
- * The nine surface props and the exact frontend intent tuple each facade
+ * The six surface props and the exact frontend intent tuple each facade
  * receives. Read as pairs so a cross-wiring fails on the command, not merely
  * on "something was called".
  */
@@ -88,9 +79,6 @@ const OPS = [
   { prop: 'onSelectSubReceiver', binding: 'vfo.onSubVfoClick', handler: 'onSubVfoClick', command: ['set_vfo', { vfo: 'SUB' }], focus: 'sub' },
   { prop: 'onEqualizeVfos', binding: 'vfo.onEqual', handler: 'onEqual', command: ['vfo_equalize', {}] },
   { prop: 'onSwapVfos', binding: 'vfo.onSwap', handler: 'onSwap', command: ['vfo_swap', {}] },
-  { prop: 'onQuickSplit', binding: 'vfo.onQuickSplit', handler: 'onQuickSplit', command: ['quick_split', {}] },
-  { prop: 'onQuickDualWatch', binding: 'vfo.onQuickDw', handler: 'onQuickDw', command: ['quick_dualwatch', {}] },
-  { prop: 'onSpeak', binding: 'systemIntents.onSpeak', handler: 'onSpeak', command: ['speak', { mode: 0 }] },
 ] as const;
 
 type OpHandlerName = (typeof OPS)[number]['handler'];
@@ -104,9 +92,6 @@ function handlerFor(handler: OpHandlerName): () => void {
     case 'onSubVfoClick': return vfo.onSubVfoClick;
     case 'onEqual': return vfo.onEqual;
     case 'onSwap': return vfo.onSwap;
-    case 'onQuickSplit': return vfo.onQuickSplit;
-    case 'onQuickDw': return vfo.onQuickDw;
-    case 'onSpeak': return makeSystemHandlers().onSpeak;
   }
 }
 
@@ -131,8 +116,7 @@ describe('the wiring binds every VFO op to a handler the real command bus provid
   });
 
   // Kills: cross-wiring. Each handler must emit ITS command and no other —
-  // "quick split fired something" is not the claim; "quick split fired
-  // quick_split" is.
+  // receiving a call is not enough; each handler must emit its own command.
   it.each(OPS)('$owner.$handler emits exactly $command.0 once with no side-channel mutation', ({ handler, command, ...entry }) => {
     handlerFor(handler)();
     expect(vi.mocked(sendCommand).mock.calls).toEqual([[command[0], command[1]]]);
@@ -145,7 +129,7 @@ describe('the wiring binds every VFO op to a handler the real command bus provid
     expect(command[0]).not.toMatch(/ptt|key|start_tx|stop_tx|tune/i);
   });
 
-  // R9. None of the nine may touch a key path: the transmitter is keyed only
+  // R9. None of the six may touch a key path: the transmitter is keyed only
   // through the App TX controller, never from a VFO action.
   it('no VFO op emits a TX key/unkey command', () => {
     for (const { handler } of OPS) {

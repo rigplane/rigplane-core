@@ -1842,9 +1842,6 @@
     onSelectSubReceiver: vfo.onSubVfoClick,
     onEqualizeVfos: vfo.onEqual,
     onSwapVfos: vfo.onSwap,
-    onQuickSplit: vfo.onQuickSplit,
-    onQuickDualWatch: vfo.onQuickDw,
-    onSpeak: systemIntents.onSpeak,
   }) satisfies VfoOperationCallbacks;
   let vfoOperationInput: VfoOperationProjectionInput | null = $derived(view === null ? null : {
     hasVfoPair: view.vfos.length > 1,

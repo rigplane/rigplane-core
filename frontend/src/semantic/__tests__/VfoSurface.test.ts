@@ -315,7 +315,6 @@ describe('receiver-addressed indicator composition (MOR-2299 slice 1)', () => {
     const target = mountSurface({
       viewModel: withReceiverIndicators('2/main_sub'),
       onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
-      onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(),
     });
     expect(target.querySelectorAll('[data-testid="vfo-ops"]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-vfo-split]')).toHaveLength(1);
@@ -392,7 +391,6 @@ function withRadioWide(
       xitActive: indicatorField(true), xitOffset: indicatorField(0),
       actions: {
         main: available, sub: available, equalize: available, swap: available,
-        quickSplit: available, quickDualWatch: available, speak: available,
         ...actionOverrides,
       },
     },
@@ -400,7 +398,7 @@ function withRadioWide(
 }
 
 describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', () => {
-  it('renders one shared row and one seven-action block only in the radio-wide mount', () => {
+  it('renders one shared row and one four-action block only in the radio-wide mount', () => {
     const viewModel = withRadioWide();
     const strip = mountSurface({ viewModel, showRadioWideFacts: false, indicatorReceiver: 'MAIN' });
     const global = mountSurface({ viewModel, showVfoList: false });
@@ -408,14 +406,13 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
     expect(strip.querySelector('[data-dual-action-block]')).toBeNull();
     expect(global.querySelectorAll('[data-testid="vfo-shared-indicators"]')).toHaveLength(1);
     expect(global.querySelectorAll('[data-dual-action-block]')).toHaveLength(1);
-    expect(global.querySelectorAll('[data-dual-action]')).toHaveLength(7);
+    expect(global.querySelectorAll('[data-dual-action]')).toHaveLength(4);
   });
 
   it('keeps exact action order, accessible names, tab order, and one-to-one callbacks', () => {
     const callbacks = {
       onSelectMainReceiver: vi.fn(), onSelectSubReceiver: vi.fn(),
       onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
-      onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(), onSpeak: vi.fn(),
     };
     const target = mountSurface({ viewModel: withRadioWide(), ...callbacks });
     const cases = [
@@ -423,15 +420,12 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
       ['sub', 'SUB', 'onSelectSubReceiver'],
       ['equalize', 'M=S', 'onEqualizeVfos'],
       ['swap', 'M⇄S', 'onSwapVfos'],
-      ['quick-split', 'Quick split', 'onQuickSplit'],
-      ['quick-dual-watch', 'Quick dual watch', 'onQuickDualWatch'],
-      ['speak', 'SPEAK', 'onSpeak'],
     ] as const;
     const buttons = [...target.querySelectorAll<HTMLButtonElement>('[data-dual-action]')];
     expect(buttons.map((button) => button.dataset.dualAction)).toEqual(cases.map(([id]) => id));
     expect(buttons.map((button) => button.getAttribute('aria-label') ?? button.textContent?.trim()))
       .toEqual(cases.map(([, label]) => label));
-    expect(buttons.map((button) => button.tabIndex)).toEqual([0, -1, 0, 0, 0, 0, 0]);
+    expect(buttons.map((button) => button.tabIndex)).toEqual([0, -1, 0, 0]);
     for (const [action, , selected] of cases) {
       for (const callback of Object.values(callbacks)) callback.mockClear();
       target.querySelector<HTMLButtonElement>(`[data-dual-action="${action}"]`)!.click();
@@ -447,26 +441,19 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
       const callbacks = {
         onSelectMainReceiver: vi.fn(), onSelectSubReceiver: vi.fn(),
         onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
-        onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(), onSpeak: vi.fn(),
         onToggleSplit: vi.fn(), onToggleDualWatch: vi.fn(),
       };
       const target = mountSurface({ viewModel: withRadioWide(), appearance, ...callbacks });
       for (const action of [
-        'main', 'sub', 'equalize', 'swap', 'quick-split', 'quick-dual-watch', 'speak',
+        'main', 'sub', 'equalize', 'swap',
       ]) {
         const button = target.querySelector<HTMLButtonElement>(`[data-dual-action="${action}"]`);
-        if (appearance === 'standard' && ['quick-split', 'quick-dual-watch', 'speak'].includes(action)) {
-          expect(button).toBeNull();
-        } else {
-          button!.click();
-        }
+        button!.click();
       }
       target.querySelector<HTMLButtonElement>('[data-vfo-split]')!.click();
       target.querySelector<HTMLButtonElement>('[data-vfo-dual-watch]')!.click();
       for (const [name, callback] of Object.entries(callbacks)) {
-        const omitted = appearance === 'standard'
-          && ['onQuickSplit', 'onQuickDualWatch', 'onSpeak'].includes(name);
-        expect(callback).toHaveBeenCalledTimes(omitted ? 0 : 1);
+        expect(callback).toHaveBeenCalledOnce();
       }
     },
   );
@@ -478,7 +465,6 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
         sub: { structural: false, operational: false },
       }),
       onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
-      onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(), onSpeak: vi.fn(),
     });
     expect(target.querySelector('[data-dual-action="main"]')).toBeNull();
     expect(target.querySelector('[data-dual-action="sub"]')).toBeNull();
@@ -491,13 +477,11 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
     const target = mountSurface({
       viewModel: withRadioWide('2/main_sub', {
         sub: { structural: true, operational: false },
-        speak: { structural: false, operational: false },
       }),
       onSelectSubReceiver,
     });
     const sub = target.querySelector<HTMLButtonElement>('[data-dual-action="sub"]')!;
     expect(sub.disabled).toBe(true);
-    expect(target.querySelector('[data-dual-action="speak"]')).toBeNull();
     sub.disabled = false;
     sub.click();
     expect(onSelectSubReceiver).not.toHaveBeenCalled();
@@ -507,14 +491,10 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
     const callbacks = {
       onSelectMainReceiver: vi.fn(), onSelectSubReceiver: vi.fn(),
       onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
-      onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(), onSpeak: vi.fn(),
     };
     const actionMap = [
       ['main', 'main', 'onSelectMainReceiver'], ['sub', 'sub', 'onSelectSubReceiver'],
       ['equalize', 'equalize', 'onEqualizeVfos'], ['swap', 'swap', 'onSwapVfos'],
-      ['quick-split', 'quickSplit', 'onQuickSplit'],
-      ['quick-dual-watch', 'quickDualWatch', 'onQuickDualWatch'],
-      ['speak', 'speak', 'onSpeak'],
     ] as const;
     for (const [dom, key, handler] of actionMap) {
       const absent = mountSurface({
@@ -537,20 +517,6 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
     }
   });
 
-  it('rechecks current facts before a stale enabled operation can invoke', () => {
-    const state = writable(withRadioWide());
-    const live = fromStore(state);
-    const onQuickSplit = vi.fn();
-    const target = mountSurface({ get viewModel() { return live.current; }, onQuickSplit });
-    const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!;
-    expect(button.disabled).toBe(false);
-    state.set(validateRadioViewModel({ ...withRadioWide(), split: { status: 'unknown' } }));
-    expect(button.disabled).toBe(false);
-    button.click();
-    expect(onQuickSplit).not.toHaveBeenCalled();
-    flushSync();
-    expect(button.disabled).toBe(true);
-  });
 });
 
 /** Normalized rendered-DOM summary — only VFO-surface-owned facts. */
@@ -814,7 +780,6 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
       .map((radio) => radio.getAttribute('data-dual-action'))).toEqual(['main', 'sub']);
     expect(group.querySelector('[data-vfo-equalize]')).toBeNull();
     expect(group.querySelector('[data-vfo-swap]')).toBeNull();
-    expect(group.querySelector('[data-vfo-quick-split]')).toBeNull();
     expect(target.querySelectorAll('[role="radiogroup"]')).toHaveLength(1);
   });
 
@@ -1095,7 +1060,7 @@ describe('accessibility basics', () => {
     });
     const focusable = Array.from(target.querySelectorAll<HTMLButtonElement>('button:not([disabled])'));
     // MAIN is active (no select button); expect the SUB select, then the
-    // split and dualWatch toggles, then MOR-1321's four ops — facts
+    // split and dualWatch toggles, then MOR-1321's two ops — facts
     // before actions, in that DOM order. The classifier NAMES each op rather
     // than letting an unrecognised button fall through to 'dualWatch', which is
     // what made this test read four phantom dualWatch entries when the ops row
@@ -1241,8 +1206,8 @@ describe('groupLabel (MOR-1068) — distinct accessible names per mounted surfac
 
 // ── MOR-1321 (S3a): the VFO ops row and the split RX/TX digest ──────────────
 //
-// Receiver-deck parity for the four VFO-scoped ACTIONS the legacy `VfoOps`
-// bridge carried (A=B, A↔B, Quick Split, Quick DW) and the `RX … TX …` digest
+// Receiver-deck parity for the two VFO-scoped actions the legacy `VfoOps`
+// bridge carried (A=B, A↔B) and the `RX … TX …` digest
 // that sat under them, restated on facts. Every test's doc line names the
 // mutation it exists to kill.
 
@@ -1259,11 +1224,11 @@ describe('VFO ops (MOR-1321) — structural gating', () => {
   // The non-vacuous half: the same assertions must NOT hold for a multi-VFO
   // radio, or "absent" above would be passing for the trivial reason.
   it.each(['1/ab', '2/ab_shared', '2/main_sub'] as const)(
-    'renders the explicitly admitted seven-action block on the %s topology', (id) => {
+    'renders the explicitly admitted four-action block on the %s topology', (id) => {
       const target = mountSurface({ viewModel: withRadioWide(id) });
       expect(target.querySelector('[data-testid="vfo-ops"]')).not.toBeNull();
       for (const action of [
-        'main', 'sub', 'equalize', 'swap', 'quick-split', 'quick-dual-watch', 'speak',
+        'main', 'sub', 'equalize', 'swap',
       ]) {
         expect(target.querySelector(`[data-dual-action="${action}"]`), action).not.toBeNull();
       }
@@ -1281,8 +1246,6 @@ describe('VFO ops (MOR-1321) — structural gating', () => {
     expect(mountSurface({ viewModel: sliced }).querySelector('[data-testid="vfo-ops"]')).toBeNull();
     const fallback = mountSurface({ viewModel: sliced, selectionPoolSize: 2 });
     expect(fallback.querySelector('[data-testid="vfo-ops"]')).not.toBeNull();
-    expect(fallback.querySelector('[data-vfo-quick-split]')).toBeNull();
-    expect(fallback.querySelector('[data-vfo-quick-dual-watch]')).toBeNull();
   });
 
   // Kills: emitting the ops from a per-receiver strip. They are radio-wide
@@ -1299,11 +1262,9 @@ describe('VFO ops (MOR-1321) — structural gating', () => {
 describe('VFO ops (MOR-1321) — intents', () => {
   it.each([
     ['equalize', 'onEqualizeVfos'], ['swap', 'onSwapVfos'],
-    ['quick-split', 'onQuickSplit'], ['quick-dual-watch', 'onQuickDualWatch'],
   ] as const)('%s emits exactly its own intent, once', (op, prop) => {
     const spies = {
       onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
-      onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(),
     };
     const target = mountSurface({ viewModel: withRadioWide(), ...spies });
     target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!.click();
@@ -1315,91 +1276,19 @@ describe('VFO ops (MOR-1321) — intents', () => {
     }
   });
 
-  // R9. The ops surface must not grow a key path: none of these seven intents
+  // R9. The ops surface must not grow a key path: none of these four intents
   // is a TX action, and the surface carries no key/unkey affordance at all.
   it('R9: the ops row emits no TX intent and mounts no key affordance', () => {
     const target = mountSurface({ viewModel: withRadioWide() });
     expect(target.querySelector('[data-testid="rx-tx-surface"]')).toBeNull();
     const ops = target.querySelector<HTMLElement>('[data-testid="vfo-ops"]')!;
-    expect(ops.querySelectorAll('[data-dual-action]')).toHaveLength(7);
+    expect(ops.querySelectorAll('[data-dual-action]')).toHaveLength(4);
     // Actions, not facts: no switch semantics on any of them.
     expect(ops.querySelectorAll('[role="switch"]')).toHaveLength(0);
   });
 });
 
-describe('VFO ops (MOR-1321) — unknown honesty on the quick triggers', () => {
-  // Kills: dropping the `disabled` gate on quick-split. The composite trigger
-  // ends with SPLIT ON — firing it while split is unobserved asks for a state
-  // this surface cannot see reached. Same gate its fact toggle carries.
-  it('quick split is disabled, and inert, while split is unknown', () => {
-    const model = validateRadioViewModel({ ...withRadioWide(), split: { status: 'unknown' } });
-    const onQuickSplit = vi.fn();
-    const target = mountSurface({ viewModel: model, onQuickSplit });
-    const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!;
-    expect(button.disabled).toBe(true);
-    // MUTATION KILL: the handler's own guard, independent of the attribute —
-    // deleting either one alone must fail here.
-    button.click();
-    flushSync();
-    expect(onQuickSplit).not.toHaveBeenCalled();
-  });
-
-  it('quick dual watch is disabled, and inert, while dualWatch is unknown', () => {
-    const model = validateRadioViewModel({ ...withRadioWide(), dualWatch: { status: 'unknown' } });
-    const onQuickDualWatch = vi.fn();
-    const target = mountSurface({ viewModel: model, onQuickDualWatch });
-    const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-dual-watch]')!;
-    expect(button.disabled).toBe(true);
-    button.click();
-    flushSync();
-    expect(onQuickDualWatch).not.toHaveBeenCalled();
-  });
-
-  /**
-   * MOR-1321 fix round (verifier B2) — the DISCRIMINATING half of the two tests
-   * above, and the house pattern this file already applies twice to
-   * `toggleSplit` / `toggleDualWatch` ("even if the native disabled gate is
-   * bypassed").
-   *
-   * A native `disabled` button refuses to dispatch `click` in jsdom and in real
-   * browsers alike, so the click assertions above are satisfied by the ATTRIBUTE
-   * alone and prove nothing about the component's own guard: an independent
-   * verifier's mutant, which deleted the guard line and kept the attribute,
-   * survived all 5075 tests. Forcing the button enabled first separates the two
-   * mechanisms, so deleting EITHER one alone now fails.
-   */
-  it.each([
-    ['quick-split', 'split', 'onQuickSplit'],
-    ['quick-dual-watch', 'dualWatch', 'onQuickDualWatch'],
-  ] as const)(
-    'MUTATION KILL: %s never emits its intent while %s is unknown, ' +
-    'even if the native disabled gate is bypassed',
-    (op, fact, prop) => {
-      const spy = vi.fn();
-      const model = validateRadioViewModel({ ...withRadioWide(), [fact]: { status: 'unknown' } });
-      const target = mountSurface({ viewModel: model, [prop]: spy });
-      const button = target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!;
-      button.disabled = false;
-      button.click();
-      flushSync();
-      expect(spy).not.toHaveBeenCalled();
-    },
-  );
-
-  // The non-vacuous companion: with the fact KNOWN, the same click DOES emit —
-  // so the two assertions above cannot be passing merely because the button was
-  // never wired to anything.
-  it.each([
-    ['quick-split', 'onQuickSplit'],
-    ['quick-dual-watch', 'onQuickDualWatch'],
-  ] as const)('%s emits normally once its fact is known', (op, prop) => {
-    const spy = vi.fn();
-    const target = mountSurface({ viewModel: withRadioWide(), [prop]: spy });
-    target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!.click();
-    flushSync();
-    expect(spy).toHaveBeenCalledOnce();
-  });
-
+describe('VFO ops (MOR-1321) — fact independence', () => {
   // Kills: gating equalize/swap on an unrelated unknown. Neither reads split or
   // dual-watch, so an unobserved fact must not make them inert — that would
   // invent a dependency the radio does not have.
@@ -1437,16 +1326,15 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
     const target = mountSurface({
       viewModel: withRadioWide(),
       onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
-      onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(),
     });
-    for (const op of ['equalize', 'swap', 'quick-split', 'quick-dual-watch'] as const) {
+    for (const op of ['equalize', 'swap'] as const) {
       const button = target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!;
       expect(button.title, op).toBe('');
       expect(button.hasAttribute('aria-describedby'), op).toBe(false);
     }
   });
 
-  it('keeps quick operations identity-gated while caller-admitted equalize and swap remain live', () => {
+  it('keeps caller-admitted equalize and swap live while the group reports unresolved identity', () => {
     const admitted = withRadioWide('1/ab');
     const model: RadioViewModel = validateRadioViewModel({
       ...admitted,
@@ -1460,37 +1348,17 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
     });
     const onEqualizeVfos = vi.fn();
     const onSwapVfos = vi.fn();
-    const target = mountSurface({
-      viewModel: model, onEqualizeVfos, onSwapVfos,
-      onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(),
-    });
-    // MOR-1481 rework (R2): the ops row is not a resolver button — no button
-    // here "selects a VFO", so its reason must NOT be the resolver buttons'
-    // `relativeSelectionHelp` literal (false here: it is a different claim,
-    // and that literal is also not in the i18n catalog). This is the honest
-    // catalog text instead.
-    const falseResolverLiteral = 'Current A/B identity is unknown. Selecting this VFO will change the radio selection and establish identity.';
-    const expected = 'The radio has not confirmed which VFO is A and which is B yet — press Select VFO A or Select VFO B first.';
+    const target = mountSurface({ viewModel: model, onEqualizeVfos, onSwapVfos });
     for (const op of ['equalize', 'swap'] as const) {
       const button = target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!;
       expect(button.disabled, op).toBe(false);
       expect(button.title, op).toBe('');
-      expect(button.hasAttribute('aria-describedby'), op).toBe(false);
       button.click();
     }
     expect(onEqualizeVfos).toHaveBeenCalledOnce();
     expect(onSwapVfos).toHaveBeenCalledOnce();
-    for (const op of ['quick-split', 'quick-dual-watch'] as const) {
-      const button = target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!;
-      expect(button.disabled, op).toBe(true);
-      expect(button.title, op).toBe(expected);
-      expect(button.title, op).not.toBe(falseResolverLiteral);
-      expect(describedText(target, button), op).toBe(expected);
-    }
-    // R3: the ops-row CONTAINER's hover title must carry the same honest
-    // catalog text, not the resolver literal (its gaps are hoverable).
-    const opsRow = target.querySelector('[data-testid="vfo-ops"]')!;
-    expect(opsRow.getAttribute('title')).toBe(expected);
+    const expected = 'The radio has not confirmed which VFO is A and which is B yet — press Select VFO A or Select VFO B first.';
+    expect(target.querySelector('[data-testid="vfo-ops"]')!.getAttribute('title')).toBe(expected);
   });
 
   it('refuses equalize and swap when the caller has not admitted the matching primitive', () => {
@@ -1500,15 +1368,9 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
       expect(button.disabled, op).toBe(true);
       button.click();
     }
-    expect(target.querySelector('[data-vfo-quick-split]')).toBeNull();
-    expect(target.querySelector('[data-vfo-quick-dual-watch]')).toBeNull();
   });
 
-  // MOR-1481 rework (R2): the catalog key resolves per-locale, not just an
-  // honest-in-English literal — pin ru-RU directly so a future regression
-  // back to a hardcoded (English-only) string is caught even if it happens
-  // to read as plausible prose in English.
-  it('resolves the ops-row identity reason from the i18n catalog and renders Russian under ru-RU', () => {
+  it('localizes the ops-row identity reason under ru-RU', () => {
     const admitted = withRadioWide('1/ab');
     const model: RadioViewModel = validateRadioViewModel({
       ...admitted,
@@ -1522,39 +1384,27 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
     });
     setLocale('ru-RU');
     try {
-      const target = mountSurface({ viewModel: model, onQuickSplit: vi.fn() });
-      const expectedRu = 'Радио ещё не подтвердило, какой VFO — A, а какой — B. Сначала нажмите Select VFO A или Select VFO B.';
-      const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!;
-      expect(button.title).toBe(expectedRu);
-      expect(describedText(target, button)).toBe(expectedRu);
+      const target = mountSurface({ viewModel: model });
+      const expected = 'Радио ещё не подтвердило, какой VFO — A, а какой — B. Сначала нажмите Select VFO A или Select VFO B.';
+      expect(target.querySelector('[data-testid="vfo-ops"]')!.getAttribute('title')).toBe(expected);
     } finally {
       _resetLocale();
     }
   });
 
-  it('puts a split-specific reason on quick split (and the split fact-toggle) while identity is known but split is unknown', () => {
+  it('puts a split-specific reason on the split fact-toggle while split is unknown', () => {
     const model = validateRadioViewModel({ ...withRadioWide(), split: { status: 'unknown' } });
-    const target = mountSurface({ viewModel: model, onQuickSplit: vi.fn() });
-    const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!;
-    expect(button.disabled).toBe(true);
-    expect(button.title).toBe('The radio has not confirmed the split state yet.');
-    expect(describedText(target, button)).toBe('The radio has not confirmed the split state yet.');
+    const target = mountSurface({ viewModel: model });
     // Neither equalize nor swap depends on split — neither carries this reason.
     expect(target.querySelector<HTMLButtonElement>('[data-vfo-equalize]')!.title).toBe('');
-    // R3: identity is known here — the ops-row container carries no title.
-    expect(target.querySelector('[data-testid="vfo-ops"]')!.getAttribute('title')).toBeNull();
     const toggle = target.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
     expect(toggle.title).toBe('The radio has not confirmed the split state yet.');
     expect(describedText(target, toggle)).toBe('The radio has not confirmed the split state yet.');
   });
 
-  it('puts a dual-watch-specific reason on quick dual watch (and the dual-watch fact-toggle) while identity is known but dualWatch is unknown', () => {
+  it('puts a dual-watch-specific reason on the fact-toggle while dualWatch is unknown', () => {
     const model = validateRadioViewModel({ ...withRadioWide(), dualWatch: { status: 'unknown' } });
-    const target = mountSurface({ viewModel: model, onQuickDualWatch: vi.fn() });
-    const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-dual-watch]')!;
-    expect(button.disabled).toBe(true);
-    expect(button.title).toBe('The radio has not confirmed the dual watch state yet.');
-    expect(describedText(target, button)).toBe('The radio has not confirmed the dual watch state yet.');
+    const target = mountSurface({ viewModel: model });
     const toggle = target.querySelector<HTMLButtonElement>('[data-vfo-dual-watch]')!;
     expect(toggle.title).toBe('The radio has not confirmed the dual watch state yet.');
     expect(describedText(target, toggle)).toBe('The radio has not confirmed the dual watch state yet.');
@@ -1652,21 +1502,13 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
   // Two independently mounted surfaces (the dual-receiver cockpit's real
   // shape) must not collide on `aria-describedby` target ids.
   it('reason ids stay unique across two mounted surfaces', () => {
-    const admitted = withRadioWide('1/ab');
-    const model: RadioViewModel = validateRadioViewModel({
-      ...admitted,
-      vfos: admitted.vfos.map((vfo, index) => ({
-        ...vfo,
-        slot: { kind: 'relative', role: index === 0 ? 'selected' : 'unselected' },
-        label: index === 0 ? 'Selected VFO' : 'Unselected VFO',
-        isActive: index === 0,
-        isActiveSlot: index === 0,
-      })),
+    const model = validateRadioViewModel({
+      ...withRadioWide('1/ab'), split: { status: 'unknown' },
     });
     const targetA = mountSurface({ viewModel: model });
     const targetB = mountSurface({ viewModel: model });
-    const idA = targetA.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!.getAttribute('aria-describedby');
-    const idB = targetB.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!.getAttribute('aria-describedby');
+    const idA = targetA.querySelector<HTMLButtonElement>('[data-vfo-split]')!.getAttribute('aria-describedby');
+    const idB = targetB.querySelector<HTMLButtonElement>('[data-vfo-split]')!.getAttribute('aria-describedby');
     expect(idA).not.toBeNull();
     expect(idB).not.toBeNull();
     expect(idA).not.toBe(idB);

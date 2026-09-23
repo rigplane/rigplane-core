@@ -185,24 +185,12 @@
     /**
      * MOR-1321 (v3-rework slice S3a) — the VFO-scoped ACTIONS the legacy
      * `VfoOps` bridge carried and the semantic deck lost at MOR-1313: equalize
-     * (copy one VFO onto the other), swap, and the two composite "quick"
-     * frontend intents (`quick_split` / `quick_dualwatch`, epic #774).
-     * A semantic availability declaration admits the callback; this surface
-     * does not infer backend/provider consumption from primitive fact caps.
-     *
-     * INTENTS, like every other callback here: this surface names what the
-     * operator asked for and knows nothing about how it is sent. None is a TX
-     * path — the quick triggers move receive/transmit FREQUENCY assignment and
-     * never key the transmitter (R9: the sole key/unkey authority is the
-     * sibling RX/TX surface).
+     * (copy one VFO onto the other) and swap.
      */
     onEqualizeVfos?: () => void;
     onSwapVfos?: () => void;
-    onQuickSplit?: () => void;
-    onQuickDualWatch?: () => void;
     onSelectMainReceiver?: () => void;
     onSelectSubReceiver?: () => void;
-    onSpeak?: () => void;
     /**
      * MOR-2509 bridge radio functions — the same intents the TX panel's
      * TUNER/VOX controls and the dial-lock key dispatch (`set_tuner_status`,
@@ -241,11 +229,8 @@
     receiverInstruments,
     onEqualizeVfos,
     onSwapVfos,
-    onQuickSplit,
-    onQuickDualWatch,
     onSelectMainReceiver,
     onSelectSubReceiver,
-    onSpeak,
     onToggleTuner,
     onToggleVox,
     onToggleDialLock,
@@ -298,10 +283,9 @@
   /** MOR-1481 rework (R2): this is the OPS ROW's own reason — no button here
    *  "selects a VFO" (that is what `relativeSelectionHelp` describes, and it
    *  is correct on the Select VFO A/B resolver buttons below, which DO). On
-   *  equalize/swap/quick-split/quick-dual-watch the operator has not
-   *  selected anything; the honest claim is that identity itself is
-   *  unresolved, so this draws from its own catalog key instead of
-   *  reusing the resolver buttons' English-only literal. */
+   *  equalize/swap the operator has not selected anything; the honest claim
+   *  is that identity itself is unresolved, so this draws from its own catalog
+   *  key instead of reusing the resolver buttons' English-only literal. */
   function identityOnlyReasonText(): string | undefined {
     return relativeIdentityUnknown ? t('core.vfo.ops.identityUnknownReason') : undefined;
   }
@@ -332,9 +316,6 @@
         onSelectSubReceiver,
         onEqualizeVfos,
         onSwapVfos,
-        onQuickSplit,
-        onQuickDualWatch,
-        onSpeak,
       },
       reasons: {
         receiverUnavailable: t('core.vfo.select.receiverUnavailableReason'),

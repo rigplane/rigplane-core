@@ -228,8 +228,6 @@
 
   "core.vfo.ops.equalize": "Уравнять VFO",
   "core.vfo.ops.swap": "Поменять VFO местами",
-  "core.vfo.ops.quickSplit": "Быстрый split",
-  "core.vfo.ops.quickDualWatch": "Быстрый dual watch",
   "core.vfo.splitDigest.rx": "RX {frequency}",
   "core.vfo.splitDigest.tx": "TX {frequency}",
   "core.vfo.select.unknownSlotReason": "Радио ещё не подтвердило идентичность (A/B) этого VFO, поэтому его нельзя выбрать.",

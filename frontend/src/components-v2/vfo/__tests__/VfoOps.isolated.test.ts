@@ -17,6 +17,10 @@ describe('vfoSwapLabel', () => {
     expect(vfoSwapLabel('main_sub')).toBe('M⇄S');
   });
 
+  it('returns M⇄S for ab_shared scheme (FTX-1: receiver-level MAIN/SUB swap)', () => {
+    expect(vfoSwapLabel('ab_shared')).toBe('M⇄S');
+  });
+
   it('defaults to A↔B for unknown scheme', () => {
     expect(vfoSwapLabel('unknown')).toBe('A↔B');
   });
@@ -30,6 +34,10 @@ describe('vfoCopyLabel', () => {
   it('returns M→S for main_sub scheme', () => {
     expect(vfoCopyLabel('main_sub')).toBe('M→S');
   });
+
+  it('returns M→S for ab_shared scheme', () => {
+    expect(vfoCopyLabel('ab_shared')).toBe('M→S');
+  });
 });
 
 describe('vfoEqualLabel', () => {
@@ -41,6 +49,10 @@ describe('vfoEqualLabel', () => {
 
   it('returns M=S for main_sub scheme', () => {
     expect(vfoEqualLabel('main_sub')).toBe('M=S');
+  });
+
+  it('returns M=S for ab_shared scheme', () => {
+    expect(vfoEqualLabel('ab_shared')).toBe('M=S');
   });
 });
 
@@ -59,6 +71,11 @@ describe('vfoTxLabel', () => {
 
   it('returns TX→S for sub slot in main_sub scheme', () => {
     expect(vfoTxLabel('main_sub', 'sub')).toBe('TX→S');
+  });
+
+  it('returns TX→M / TX→S for ab_shared scheme', () => {
+    expect(vfoTxLabel('ab_shared', 'main')).toBe('TX→M');
+    expect(vfoTxLabel('ab_shared', 'sub')).toBe('TX→S');
   });
 });
 
@@ -92,9 +109,7 @@ const baseProps: ComponentProps<typeof VfoOps> = {
   onSwap: vi.fn(),
   onEqual: vi.fn(),
   onSplitToggle: vi.fn(),
-  onQuickSplit: vi.fn(),
   onDualWatchToggle: vi.fn(),
-  onQuickDw: vi.fn(),
 };
 
 beforeEach(() => {
@@ -152,6 +167,30 @@ describe('always-visible buttons (main_sub scheme)', () => {
   it('does NOT render the removed M=S duplicate', () => {
     const t = mountComponent(baseProps);
     expect(getButtonLabels(t)).not.toContain('M=S');
+  });
+});
+
+describe('always-visible buttons (ab_shared scheme, dual receiver)', () => {
+  beforeEach(() => {
+    vi.mocked(getVfoScheme).mockReturnValue('ab_shared');
+    vi.mocked(hasDualReceiver).mockReturnValue(true);
+  });
+
+  it('renders M⇄S swap and M→S copy buttons and no A/B labels', () => {
+    const t = mountComponent(baseProps);
+    const labels = getButtonLabels(t);
+    expect(labels).toContain('M⇄S');
+    expect(labels).toContain('M→S');
+    expect(labels).not.toContain('A↔B');
+    expect(labels).not.toContain('A→B');
+    expect(labels).not.toContain('A=B');
+  });
+
+  it('renders the TX indicator with TX→M / TX→S labels', () => {
+    let t = mountComponent(baseProps);
+    expect(t.querySelector('[data-testid="tx-indicator"]')?.textContent?.trim()).toBe('TX→M');
+    t = mountComponent({ ...baseProps, txVfo: 'sub' });
+    expect(t.querySelector('[data-testid="tx-indicator"]')?.textContent?.trim()).toBe('TX→S');
   });
 });
 
@@ -216,15 +255,7 @@ describe('TX indicator (dual receiver, read-only)', () => {
   });
 });
 
-describe('single-click callbacks', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
+describe('click callbacks', () => {
   it('calls onSwap when swap button is clicked', () => {
     const onSwap = vi.fn();
     const t = mountComponent({ ...baseProps, onSwap });
@@ -245,73 +276,24 @@ describe('single-click callbacks', () => {
     expect(onEqual).toHaveBeenCalledOnce();
   });
 
-  it('SPLIT single-click fires onSplitToggle after the double-click window closes', () => {
+  it('SPLIT click fires onSplitToggle', () => {
     const onSplitToggle = vi.fn();
-    const onQuickSplit = vi.fn();
-    const t = mountComponent({ ...baseProps, onSplitToggle, onQuickSplit });
+    const t = mountComponent({ ...baseProps, onSplitToggle });
     const btn = Array.from(t.querySelectorAll('.bridge-button')).find(
       (el) => el.textContent?.trim() === 'SPLIT',
     ) as HTMLElement | undefined;
     btn?.click();
-    expect(onSplitToggle).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(300);
     expect(onSplitToggle).toHaveBeenCalledOnce();
-    expect(onQuickSplit).not.toHaveBeenCalled();
   });
 
-  it('DW single-click fires onDualWatchToggle after the double-click window closes', () => {
+  it('DW click fires onDualWatchToggle', () => {
     vi.mocked(hasDualReceiver).mockReturnValue(true);
     const onDualWatchToggle = vi.fn();
-    const onQuickDw = vi.fn();
-    const t = mountComponent({ ...baseProps, onDualWatchToggle, onQuickDw });
+    const t = mountComponent({ ...baseProps, onDualWatchToggle });
     const btn = Array.from(t.querySelectorAll('.bridge-button')).find(
       (el) => el.textContent?.trim() === 'DW',
     ) as HTMLElement | undefined;
     btn?.click();
-    expect(onDualWatchToggle).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(300);
     expect(onDualWatchToggle).toHaveBeenCalledOnce();
-    expect(onQuickDw).not.toHaveBeenCalled();
-  });
-});
-
-describe('double-click callbacks', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('SPLIT double-click fires onQuickSplit (not onSplitToggle)', () => {
-    const onSplitToggle = vi.fn();
-    const onQuickSplit = vi.fn();
-    const t = mountComponent({ ...baseProps, onSplitToggle, onQuickSplit });
-    const btn = Array.from(t.querySelectorAll('.bridge-button')).find(
-      (el) => el.textContent?.trim() === 'SPLIT',
-    ) as HTMLElement | undefined;
-    btn?.click();
-    vi.advanceTimersByTime(100);
-    btn?.click();
-    expect(onQuickSplit).toHaveBeenCalledOnce();
-    vi.advanceTimersByTime(500);
-    expect(onSplitToggle).not.toHaveBeenCalled();
-  });
-
-  it('DW double-click fires onQuickDw (not onDualWatchToggle)', () => {
-    vi.mocked(hasDualReceiver).mockReturnValue(true);
-    const onDualWatchToggle = vi.fn();
-    const onQuickDw = vi.fn();
-    const t = mountComponent({ ...baseProps, onDualWatchToggle, onQuickDw });
-    const btn = Array.from(t.querySelectorAll('.bridge-button')).find(
-      (el) => el.textContent?.trim() === 'DW',
-    ) as HTMLElement | undefined;
-    btn?.click();
-    vi.advanceTimersByTime(100);
-    btn?.click();
-    expect(onQuickDw).toHaveBeenCalledOnce();
-    vi.advanceTimersByTime(500);
-    expect(onDualWatchToggle).not.toHaveBeenCalled();
   });
 });

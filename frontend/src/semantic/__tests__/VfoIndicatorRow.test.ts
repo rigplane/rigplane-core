@@ -147,7 +147,6 @@ function shared(): RadioWideIndicatorsViewModel {
     xitActive: known(true), xitOffset: known(0),
     actions: {
       main: AVAILABLE, sub: AVAILABLE, equalize: AVAILABLE, swap: AVAILABLE,
-      quickSplit: AVAILABLE, quickDualWatch: AVAILABLE, speak: AVAILABLE,
     },
   };
 }

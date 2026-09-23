@@ -8,7 +8,7 @@ type FieldSpec = FieldKind | `${FieldKind}?`;
 type IntentSpec = { names: readonly string[]; params: Readonly<Record<string, FieldSpec>> };
 
 const intentSpecs = [
-  { names: ['cw_auto_tune', 'memory_write', 'quick_dualwatch', 'quick_split', 'scan_stop', 'vfo_equalize', 'vfo_swap'], params: {} },
+  { names: ['cw_auto_tune', 'memory_write', 'scan_stop', 'vfo_equalize', 'vfo_swap'], params: {} },
   { names: ['memory_clear', 'memory_to_vfo', 'set_memory_mode'], params: { channel: 'integer' } },
   { names: [
     'set_antenna_1', 'set_antenna_2', 'set_compressor', 'set_dial_lock', 'set_dual_watch',
@@ -27,7 +27,7 @@ const intentSpecs = [
   { names: ['set_agc_time_constant', 'set_manual_notch_width', 'set_notch_filter', 'set_pbt_inner', 'set_pbt_outer'], params: { value: 'integer', receiver: 'receiver' } },
   { names: ['set_agc', 'set_apf', 'set_data_mode'], params: { mode: 'integer', receiver: 'receiver' } },
   { names: ['set_data_off_mod_input', 'set_data1_mod_input', 'set_data2_mod_input', 'set_data3_mod_input'], params: { source: 'integer' } },
-  { names: ['set_break_in', 'scan_set_resume', 'set_scope_mode', 'speak'], params: { mode: 'integer' } },
+  { names: ['set_break_in', 'scan_set_resume', 'set_scope_mode'], params: { mode: 'integer' } },
   { names: ['scan_set_df_span', 'set_scope_span'], params: { span: 'integer' } },
   { names: ['set_key_speed', 'set_scope_speed'], params: { speed: 'integer' } },
   { names: ['scan_start'], params: { type: 'integer' } },

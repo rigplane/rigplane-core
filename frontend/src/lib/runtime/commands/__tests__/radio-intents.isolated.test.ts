@@ -527,10 +527,9 @@ describe('typed non-PTT radio intents', () => {
       const invalidRit: RadioIntent = { name: 'set_rit_frequency', params: { value: 300 } };
       expect(invalidRit).toBeDefined();
     }
-    // MOR-2535 follow-up: 93 = the 92 pinned before plus `reset_filter_width`
-    // (the width row's radio-default reset), added deliberately.
-    expect(intents.RADIO_INTENT_NAMES).toHaveLength(93);
-    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(93);
+    // MOR-2538 removes three retired application intents from the prior 93.
+    expect(intents.RADIO_INTENT_NAMES).toHaveLength(90);
+    expect(new Set(intents.RADIO_INTENT_NAMES).size).toBe(90);
     expect(intents.RADIO_INTENT_NAMES).toContain('reset_filter_width');
     expect(intents.RADIO_INTENT_NAMES).toContain('set_vfo_freq');
     expect(intents.RADIO_INTENT_NAMES).toContain('set_data3_mod_input');

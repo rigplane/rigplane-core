@@ -3,31 +3,31 @@
  * walk, over the same profile-parameterized harness MOR-1428/MOR-1555
  * established (`./conformance/harness.ts`, `./conformance/profiles.ts`).
  *
- * Family (per `waived.ts`'s MOR-1566 tag, 12 intents): `set_scope_mode`,
+ * Family (per `waived.ts`'s MOR-1566 tag, 10 intents): `set_scope_mode`,
  * `set_scope_edge`, `set_scope_dual`, `set_scope_during_tx`,
  * `set_scope_center_type`, `set_scope_vbw`, `set_scope_rbw`,
  * `switch_scope_receiver` — all from `makeScopeControlsHandlers()`
  * (`panel-commands.ts:1257-1321`); plus `set_dual_watch`,
- * `set_main_sub_tracking`, `quick_dualwatch`, `quick_split` — all from
- * `makeVfoHandlers()` (`panel-commands.ts:1075-1206`). All 12 are wired to
+ * `set_main_sub_tracking` — both from `makeVfoHandlers()`
+ * (`panel-commands.ts:1075-1206`). All 10 are wired to
  * real UI (never dead controls): the 8 scope intents through
  * `SemanticRadioSurfaces.svelte`'s `SCOPE_CHOICE_INTENT`/`SCOPE_TOGGLE_INTENT`
  * tables (`:355-363`) into `ScopeControlsSurface.svelte`'s toolbar/popover;
- * the 4 VFO-topology intents through `RadioLayout.svelte`/
+ * the 2 VFO-topology intents through `RadioLayout.svelte`/
  * `MobileRadioLayout.svelte`'s dual-watch/tracking/split controls.
  *
- * NOT SKEWED TOWARD REFUSAL like C6/C7/C10/C11's walks: 7 of the 12
+ * NOT SKEWED TOWARD REFUSAL like C6/C7/C10/C11's walks: 6 of the 10
  * genuinely DISPATCH on the real IC-7300 bench fixture — every
  * `scopeControls.*` leaf this family reads is OBSERVED (`fieldStatus`) except
  * `rbw`, and the fixture's own current values (`mode=0`, `edge=1`,
  * `centerType=2`, `duringTx=true`, `vbwNarrow=false`) all fall inside the
- * handler's declared domain. 5 refuse, each an honest STRUCTURAL gate (never
+ * handler's declared domain. 4 refuse, each an honest STRUCTURAL gate (never
  * an unobserved-field gate the way C6/C7/C10/C11 mostly were):
  * `set_scope_dual` and `switch_scope_receiver(receiver=1)` fail
  * `hasPhysicalSub` (`panel-commands.ts:1234-1237`: `caps.receivers===2 &&
  * dual_rx && state.sub` — this fixture has `receivers=1`, no `dual_rx`,
- * `state.sub=null`); `set_dual_watch`/`set_main_sub_tracking`/
- * `quick_dualwatch` all short-circuit on `context.caps.receivers < 2` before
+ * `state.sub=null`); `set_dual_watch`/`set_main_sub_tracking` both
+ * short-circuit on `context.caps.receivers < 2` before
  * ever reaching a capability or field-observation check; `set_scope_rbw` is
  * the ONE genuinely-unobserved field-status leaf in this family
  * (`fieldStatus['scopeControls.rbw'].observed === false`) — discrimination
@@ -61,18 +61,6 @@
  * applicability is UI-only, gated on the current MODE value ... that is a
  * rendering decision, not a fact-availability distinction" — so the handler
  * deliberately has no business reason to mirror a pure-presentation gate.
- *
- * RED-FIRST EVIDENCE (MOR-1566 build process, not part of this diff, first
- * as a deliberately wrong claim, then fixed): the `quick_split` dispatch case
- * below was first authored as `expectFrames(() =>
- * makeVfoHandlers().onQuickSplit(), [['quick_split', { on: true }]])` — a
- * fabricated non-empty params object (the real intent takes no params, per
- * `panel-commands.ts:1195`'s own `dispatchRadioIntent({ name: 'quick_split',
- * params: {} })`). `vitest run` on that version failed with (verbatim vitest
- * 4 output): `AssertionError: expected [ [ 'quick_split', {} ] ] to deeply
- * equal [ Array(1) ]` followed by a diff showing `- { "on": true }` / `+ {}`
- * for the params object (RED). Replacing the claim with `{}` turned it
- * GREEN — see that case below.
  *
  * DISCRIMINATION EVIDENCE (MOR-1566 build process, not part of this diff): to
  * prove the `set_scope_rbw` refusal below isn't vacuous, its gate was
@@ -236,18 +224,6 @@ describe('IC-7300 fixture — scope-remainder/VFO-topology family conformance (M
   it('set_main_sub_tracking: REFUSES — same caps.receivers < 2 structural gate as set_dual_watch', () => {
     expect(IC7300_CAPABILITIES.receivers).toBeLessThan(2);
     expectRefusal(() => makeVfoHandlers().onTrackingToggle(true));
-  });
-
-  it('quick_dualwatch: REFUSES — same caps.receivers < 2 structural gate', () => {
-    expect(IC7300_CAPABILITIES.receivers).toBeLessThan(2);
-    expectRefusal(() => makeVfoHandlers().onQuickDw());
-  });
-
-  it('quick_split: DISPATCHES with an empty params object — vfoScheme !== "single", split capability declared, top-level split field observed (RED-FIRST target, see file header)', () => {
-    expect(IC7300_CAPABILITIES.vfoScheme).not.toBe('single');
-    expect(IC7300_CAPABILITIES.capabilities).toContain('split');
-    expect(IC7300_STATE.fieldStatus?.split?.observed).toBe(true);
-    expectFrames(() => makeVfoHandlers().onQuickSplit(), [['quick_split', {}]]);
   });
 
   describe('EXTENSION — declared VFO primitive direct-handler probes (see file header)', () => {

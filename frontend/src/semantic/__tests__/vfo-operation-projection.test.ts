@@ -23,16 +23,12 @@ const noCallbacks = (): VfoOperationCallbacks => ({
   onSelectSubReceiver: undefined,
   onEqualizeVfos: undefined,
   onSwapVfos: undefined,
-  onQuickSplit: undefined,
-  onQuickDualWatch: undefined,
-  onSpeak: undefined,
 });
 
 const spyCallbacks = () => ({
   onToggleSplit: vi.fn(), onToggleDualWatch: vi.fn(),
   onSelectMainReceiver: vi.fn(), onSelectSubReceiver: vi.fn(),
   onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
-  onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(), onSpeak: vi.fn(),
 }) satisfies VfoOperationCallbacks;
 
 const availableActions = (): DualActionBlockViewModel => ({
@@ -40,9 +36,6 @@ const availableActions = (): DualActionBlockViewModel => ({
   sub: { structural: true, operational: true },
   equalize: { structural: true, operational: true },
   swap: { structural: true, operational: true },
-  quickSplit: { structural: true, operational: true },
-  quickDualWatch: { structural: true, operational: true },
-  speak: { structural: true, operational: true },
 });
 
 function input(
@@ -67,11 +60,11 @@ function input(
 }
 
 describe('projectVfoOperations', () => {
-  it('keeps the exact eight named operations and excludes unrelated mechanisms', () => {
+  it('keeps the exact five named operation groups and excludes unrelated mechanisms', () => {
     const projected = projectVfoOperations(input());
     expect(Object.keys(projected)).toEqual([
       'split', 'dualWatch', 'activeReceiver', 'equalize', 'swap',
-      'quickSplit', 'quickDualWatch', 'speak', 'radioFunctions', 'groupReason',
+      'radioFunctions', 'groupReason',
     ]);
     for (const key of ['digest', 'frequency', 'slot', 'ptt', 'tune', 'context', 'lease', 'feedback']) {
       expect(projected).not.toHaveProperty(key);
@@ -79,18 +72,17 @@ describe('projectVfoOperations', () => {
     expect(projected.activeReceiver.options.map(({ value }) => value)).toEqual(['MAIN', 'SUB']);
   });
 
-  it('preserves the no-action-block fallback without making quick or receiver actions live', () => {
+  it('preserves the no-action-block fallback without making receiver actions live', () => {
     const projected = projectVfoOperations(input({
       actions: undefined,
-      callbacks: { onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(), onQuickSplit: vi.fn() },
+      callbacks: { onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn() },
     }));
     expect(projected.equalize.availability).toMatchObject({ structural: true, operational: true });
     expect(projected.swap.availability).toMatchObject({ structural: true, operational: true });
-    expect(projected.quickSplit.availability).toMatchObject({ structural: false, operational: false });
     expect(projected.activeReceiver.availability).toMatchObject({ structural: false, operational: false });
   });
 
-  it('keeps unknown facts honest and gives identity priority only to quick actions', () => {
+  it('keeps unknown facts honest and reports unresolved identity at group level', () => {
     const callbacks = spyCallbacks();
     const projected = projectVfoOperations(input({
       relativeIdentityUnknown: true,
@@ -104,8 +96,6 @@ describe('projectVfoOperations', () => {
       availability: { structural: true, operational: false, reason: REASONS.splitUnknown },
     });
     expect(projected.dualWatch.availability).toMatchObject({ operational: false, reason: REASONS.dualWatchUnknown });
-    expect(projected.quickSplit.availability).toMatchObject({ operational: false, reason: REASONS.identityUnknown });
-    expect(projected.quickDualWatch.availability).toMatchObject({ operational: false, reason: REASONS.identityUnknown });
     expect(projected.equalize.availability.operational).toBe(true);
     expect(projected.swap.availability.operational).toBe(true);
     expect(projected.groupReason).toBe(REASONS.identityUnknown);
@@ -147,7 +137,7 @@ describe('projectVfoOperations', () => {
 });
 
 describe('invokeVfoOperation', () => {
-  it('maps all nine intents one-to-one', () => {
+  it('maps all six intents one-to-one', () => {
     const callbacks = spyCallbacks();
     const cases: readonly [VfoOperationIntent, keyof VfoOperationCallbacks][] = [
       [{ kind: 'toggle-split' }, 'onToggleSplit'],
@@ -156,9 +146,6 @@ describe('invokeVfoOperation', () => {
       [{ kind: 'select-receiver', receiver: 'SUB' }, 'onSelectSubReceiver'],
       [{ kind: 'equalize' }, 'onEqualizeVfos'],
       [{ kind: 'swap' }, 'onSwapVfos'],
-      [{ kind: 'quick-split' }, 'onQuickSplit'],
-      [{ kind: 'quick-dual-watch' }, 'onQuickDualWatch'],
-      [{ kind: 'speak' }, 'onSpeak'],
     ];
     const current = input({ callbacks });
 
@@ -172,7 +159,7 @@ describe('invokeVfoOperation', () => {
   });
 
   type GateChange = Partial<Pick<VfoOperationProjectionInput,
-    'split' | 'dualWatch' | 'hasDualReceiver' | 'relativeIdentityUnknown'>> & {
+    'split' | 'dualWatch' | 'hasDualReceiver'>> & {
       action?: keyof DualActionBlockViewModel; structural?: boolean; operational?: boolean;
     };
   const rejected: readonly [string, VfoOperationIntent, keyof VfoOperationCallbacks, GateChange][] = [
@@ -182,9 +169,6 @@ describe('invokeVfoOperation', () => {
     ['SUB disabled', { kind: 'select-receiver', receiver: 'SUB' }, 'onSelectSubReceiver', { action: 'sub', operational: false }],
     ['equalize absent', { kind: 'equalize' }, 'onEqualizeVfos', { action: 'equalize', structural: false }],
     ['swap disabled', { kind: 'swap' }, 'onSwapVfos', { action: 'swap', operational: false }],
-    ['quick split identity unknown', { kind: 'quick-split' }, 'onQuickSplit', { relativeIdentityUnknown: true }],
-    ['quick DW fact unknown', { kind: 'quick-dual-watch' }, 'onQuickDualWatch', { dualWatch: { status: 'unknown' } }],
-    ['speak disabled', { kind: 'speak' }, 'onSpeak', { action: 'speak', operational: false }],
   ];
   it.each(rejected)('rejects %s even when invocation is forced', (_name, intent, callbackName, change) => {
     const callback = vi.fn();
@@ -198,8 +182,6 @@ describe('invokeVfoOperation', () => {
       ...('split' in change ? { split: change.split } : {}),
       ...('dualWatch' in change ? { dualWatch: change.dualWatch } : {}),
       ...('hasDualReceiver' in change ? { hasDualReceiver: change.hasDualReceiver } : {}),
-      ...('relativeIdentityUnknown' in change
-        ? { relativeIdentityUnknown: change.relativeIdentityUnknown } : {}),
       callbacks: { [callbackName]: callback },
     });
     invokeVfoOperation(() => current, intent);

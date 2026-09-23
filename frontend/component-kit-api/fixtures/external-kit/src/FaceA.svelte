@@ -23,9 +23,6 @@
       {#if operations.activeReceiver}{@render operations.activeReceiver()}{/if}
       {#if operations.equalize}{@render operations.equalize()}{/if}
       {#if operations.swap}{@render operations.swap()}{/if}
-      {#if operations.quickSplit}{@render operations.quickSplit()}{/if}
-      {#if operations.quickDualWatch}{@render operations.quickDualWatch()}{/if}
-      {#if operations.speak}{@render operations.speak()}{/if}
     </section>
   {/if}
 

@@ -151,7 +151,6 @@ async function assertHostedFaceSources() {
   const sources = await Promise.all(faceFiles.map((file) => readFile(file, 'utf8')));
   const operations = [
     'split', 'dualWatch', 'activeReceiver', 'equalize', 'swap',
-    'quickSplit', 'quickDualWatch', 'speak',
   ];
   const txSeats = [
     'rfPower', 'micGain', 'driveGain', 'voxGain', 'antiVoxGain',
@@ -352,9 +351,6 @@ try {
     { name: 'activeReceiver', optional: false },
     { name: 'equalize', optional: false },
     { name: 'swap', optional: false },
-    { name: 'quickSplit', optional: false },
-    { name: 'quickDualWatch', optional: false },
-    { name: 'speak', optional: false },
   ]);
   assert.deepEqual(interfaceMembers(apiDeclarationSource, 'TxAuxScalarPresentationV1'), [
     { name: 'form', optional: true },
@@ -550,7 +546,7 @@ function inspectHostedFace(props: HostedFacePropsV1): void {
   const txAux = props.instruments.txAux;
   const stationMeters = props.instruments.stationMeters;
   if (receiver !== null) void [receiver.mainFrequency, receiver.subFrequency, receiver.mainSMeter];
-  if (operations !== null) void [operations.split, operations.equalize, operations.speak];
+  if (operations !== null) void [operations.split, operations.equalize, operations.swap];
   if (txAux !== null) void [txAux.rfPower, txAux.voxDelay, txAux.monitorLevel];
   if (stationMeters !== null) void [
     stationMeters.signal, stationMeters.power, stationMeters.swr, stationMeters.alc,
@@ -680,12 +676,12 @@ const undefinedReceiver: HostedInstrumentFamiliesV1 = { receiver: undefined, vfo
 const missingStationFamily: HostedInstrumentFamiliesV1 = { receiver: null, vfoOperations: null, txAux: null };
 // @ts-expect-error family absence is null, never undefined
 const undefinedStationFamily: HostedInstrumentFamiliesV1 = { receiver: null, vfoOperations: null, txAux: null, stationMeters: undefined };
-// @ts-expect-error all eight named VFO operation seats are required when admitted
-const operationsWithoutSpeak: VfoOperationInstrumentFamilyV1 = { split: operation, dualWatch: operation, activeReceiver: operation, equalize: operation, swap: operation, quickSplit: operation, quickDualWatch: operation };
+// @ts-expect-error all five named VFO operation seats are required when admitted
+const operationsWithoutSwap: VfoOperationInstrumentFamilyV1 = { split: operation, dualWatch: operation, activeReceiver: operation, equalize: operation };
 // @ts-expect-error operation-seat absence is null, never undefined
-const undefinedOperation: VfoOperationInstrumentFamilyV1 = { split: undefined, dualWatch: null, activeReceiver: null, equalize: null, swap: null, quickSplit: null, quickDualWatch: null, speak: null };
+const undefinedOperation: VfoOperationInstrumentFamilyV1 = { split: undefined, dualWatch: null, activeReceiver: null, equalize: null, swap: null };
 // @ts-expect-error unoffered aggregate members are not admitted operation seats
-const operationsWithAggregate = { split: null, dualWatch: null, activeReceiver: null, equalize: null, swap: null, quickSplit: null, quickDualWatch: null, speak: null, standard: operation } satisfies VfoOperationInstrumentFamilyV1;
+const operationsWithAggregate = { split: null, dualWatch: null, activeReceiver: null, equalize: null, swap: null, standard: operation } satisfies VfoOperationInstrumentFamilyV1;
 declare const oldAggregateOperation: Snippet<[appearance: 'semantic' | 'sdr' | 'standard']>;
 // @ts-expect-error old aggregate appearance vocabulary is not an opaque operation seat
 const publicOperation: VfoOperationHandleV1 = oldAggregateOperation;
@@ -730,7 +726,7 @@ export type PrivateRootMustStayUnavailable = [
 ];
 void [wrongHostMode, privateFrequencyHook, discreteTxControl, invocationAppearance, missingHostMode];
 void [receiverWithRawValue, receiverWithoutSub, propsWithoutOperations, undefinedReceiver, missingStationFamily, undefinedStationFamily];
-void [operationsWithoutSpeak, undefinedOperation, operationsWithAggregate, publicOperation, txWithoutMonitor];
+void [operationsWithoutSwap, undefinedOperation, operationsWithAggregate, publicOperation, txWithoutMonitor];
 void [stationWithoutCompression, undefinedStationSignal, stationWithAggregate, publicStationHandle, publicResetStationHandle];
 void [missingLayout, missingResources, missingScalarAppearance, missingFrequencyAppearance];
 void [missingFiniteAppearance, missingMeterAppearance, missingLoader];
@@ -1025,9 +1021,6 @@ mount(App, { target: document.querySelector('#app')! });
 {#snippet activeReceiver()}<button data-seat="activeReceiver">Active receiver</button>{/snippet}
 {#snippet equalize()}<button data-seat="equalize" onclick={() => operationInvocations += 1}>Equalize</button>{/snippet}
 {#snippet swap()}<button data-seat="swap">Swap</button>{/snippet}
-{#snippet quickSplit()}<button data-seat="quickSplit">Quick split</button>{/snippet}
-{#snippet quickDualWatch()}<button data-seat="quickDualWatch">Quick dual watch</button>{/snippet}
-{#snippet speak()}<button data-seat="speak">Speak</button>{/snippet}
 {#snippet rfPower(p = {})}<span data-seat="rfPower" data-form={p.form}>RF power</span>{/snippet}
 {#snippet micGain(p = {})}<span data-seat="micGain" data-form={p.form}>Mic gain</span>{/snippet}
 {#snippet driveGain(p = {})}<span data-seat="driveGain" data-form={p.form}>Drive</span>{/snippet}
@@ -1057,9 +1050,6 @@ mount(App, { target: document.querySelector('#app')! });
       activeReceiver: hiddenOperation === 'activeReceiver' ? null : activeReceiver,
       equalize: hiddenOperation === 'equalize' ? null : equalize,
       swap: hiddenOperation === 'swap' ? null : swap,
-      quickSplit: hiddenOperation === 'quickSplit' ? null : quickSplit,
-      quickDualWatch: hiddenOperation === 'quickDualWatch' ? null : quickDualWatch,
-      speak: hiddenOperation === 'speak' ? null : speak,
     } : null,
     txAux: txPresent ? {
       rfPower, micGain, driveGain, voxGain, antiVoxGain,
@@ -1134,7 +1124,6 @@ mount(App, { target: document.querySelector('#app')! });
       await page.goto(origin, { waitUntil: 'networkidle' });
       const operationNames = [
         'split', 'dualWatch', 'activeReceiver', 'equalize', 'swap',
-        'quickSplit', 'quickDualWatch', 'speak',
       ];
       const seatNames = [
         'mainFrequency', 'subFrequency', 'mainSMeter', 'subSMeter',
@@ -1184,7 +1173,7 @@ mount(App, { target: document.querySelector('#app')! });
       assert.equal((await page.evaluate(() => globalThis.__finiteStats())).disposals, 0);
 
       assert.equal(await page.locator('[data-external-face="a"]').count(), 1);
-      assert.equal(await page.locator('[data-seat]').count(), 20);
+      assert.equal(await page.locator('[data-seat]').count(), 17);
       assert.deepEqual(
         await page.locator('[data-family="stationMeters"] [data-station-meter]').evaluateAll((nodes) =>
           nodes.map((node) => node.getAttribute('data-station-meter'))),
@@ -1199,7 +1188,7 @@ mount(App, { target: document.querySelector('#app')! });
         globalThis.__setFace('b');
       });
       await page.locator('[data-external-face="b"]').waitFor();
-      assert.equal(await page.locator('[data-seat]').count(), 20);
+      assert.equal(await page.locator('[data-seat]').count(), 17);
       assert.deepEqual(
         await page.locator('[data-family="stationMeters"] [data-station-meter]').evaluateAll((nodes) =>
           nodes.map((node) => node.getAttribute('data-station-meter'))),
@@ -1218,11 +1207,11 @@ mount(App, { target: document.querySelector('#app')! });
       await page.evaluate(() => globalThis.__setSub(false));
       await page.locator('[data-seat="subFrequency"]').waitFor({ state: 'detached' });
       assert.equal(await page.locator('[data-seat="subSMeter"]').count(), 0);
-      assert.equal(await page.locator('[data-seat]').count(), 18);
+      assert.equal(await page.locator('[data-seat]').count(), 15);
       for (const hidden of operationNames) {
         await page.evaluate((name) => globalThis.__hideOperation(name), hidden);
         await page.locator(`[data-seat="${hidden}"]`).waitFor({ state: 'detached' });
-        assert.equal(await page.locator('[data-family="vfoOperations"] [data-seat]').count(), 7);
+        assert.equal(await page.locator('[data-family="vfoOperations"] [data-seat]').count(), 4);
         for (const visible of operationNames.filter((name) => name !== hidden)) {
           assert.equal(await page.locator(`[data-seat="${visible}"]`).count(), 1);
         }
@@ -1252,8 +1241,8 @@ mount(App, { target: document.querySelector('#app')! });
         globalThis.__hideOperation(null);
       });
       await page.locator('[data-seat="subFrequency"]').waitFor();
-      await page.locator('[data-seat="speak"]').waitFor();
-      assert.equal(await page.locator('[data-seat]').count(), 20);
+      await page.locator('[data-seat="swap"]').waitFor();
+      assert.equal(await page.locator('[data-seat]').count(), 17);
       assert.equal(await page.locator('[data-station-meter]').count(), 7);
       const signals = page.locator('[data-fixture-signal]');
       const levels = page.locator('[data-fixture-level]');

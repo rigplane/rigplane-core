@@ -102,7 +102,7 @@ describe('finite renderer leases', () => {
     const readAvailability = vi.fn(() => ({ structural: true, operational: true }));
     const invoke = vi.fn();
     const seat = createActionRendererSeat(() => ({
-      context, label: 'Speak', get availability() { return readAvailability(); }, invoke,
+      context, label: 'Run', get availability() { return readAvailability(); }, invoke,
     }));
     const absent = seat.attachRenderer();
     expect(absent.view).toBeUndefined();

@@ -29,7 +29,6 @@ const h = vi.hoisted(() => ({
   scalarSeats: [] as ScalarRendererSeat[], scalarLeases: [] as ScalarRendererLease[],
   finiteLeases: [] as FiniteRendererLease<unknown>[],
   subscribeCount: 0, unsubscribeCount: 0,
-  omitSpeak: false,
 }));
 const call = (name: string) => {
   let fn = h.calls.get(name);
@@ -76,18 +75,6 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   capabilitiesMatchGeneration: () => true, getControlRange: () => null,
   getSmeterCalibration: () => (h.caps as Capabilities | null)?.meterCalibrations?.s_meter,
 }));
-vi.mock('$lib/runtime/adapters/radio-view-model-adapter', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/runtime/adapters/radio-view-model-adapter')>();
-  return { ...actual, toRadioViewModel(...args: Parameters<typeof actual.toRadioViewModel>) {
-    const view = actual.toRadioViewModel(...args);
-    if (view === null) return null;
-    return { ...view, radioWideIndicators: { ...view.radioWideIndicators,
-      actions: { ...view.radioWideIndicators?.actions,
-        quickSplit: { structural: true, operational: true },
-        quickDualWatch: { structural: true, operational: true },
-        ...(h.omitSpeak ? { speak: { structural: false, operational: false } } : {}) } } };
-  } };
-});
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }),
   getModInputTxGuardHandlers: () => ({ onSetLan: vi.fn(), onDismiss: vi.fn() }),
@@ -166,8 +153,7 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
   return {
   ...(await importOriginal<typeof import('$lib/runtime/commands/panel-commands')>()),
   makeVfoHandlers: () => mockedMethods('onVfoSelect', 'onMainFreqChange', 'onSubFreqChange', 'onSplitToggle', 'onDualWatchToggle',
-    'onMainVfoClick', 'onSubVfoClick', 'onEqual', 'onSwap', 'onQuickSplit', 'onQuickDw'),
-  makeSystemHandlers: () => mockedMethods('onSpeak'),
+    'onMainVfoClick', 'onSubVfoClick', 'onEqual', 'onSwap'),
   makeVoxHandlers: () => mockedMethods('onVoxToggle', 'onVoxGainChange', 'onAntiVoxGainChange', 'onVoxDelayChange'),
   makeTxHandlers: () => mockedMethods('onRfPowerChange', 'onMicGainChange', 'onDriveGainChange',
     'onAtuToggle', 'onAtuTune', 'onCompToggle', 'onCompLevelChange', 'onMonToggle', 'onMonLevelChange'),
@@ -233,7 +219,7 @@ function state(receivers = 2): ServerState {
 }
 function caps(receivers = 2): Capabilities {
   return { stateContractVersion: 1, providerGeneration: 1, model: 'fixture', scope: false, audio: false, tx: true,
-    capabilities: ['tx', 'split', 'dual_watch', 'vfo_equalize', 'vfo_swap', 'speech', 'vox',
+    capabilities: ['tx', 'split', 'dual_watch', 'vfo_equalize', 'vfo_swap', 'vox',
       'compressor', 'monitor', 'tuner', 'drive_gain', ...(receivers === 2 ? ['dual_rx'] : [])],
     receivers, vfoScheme: receivers === 2 ? 'main_sub' : 'single', freqRanges: [], modes: [], filters: [],
     audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },
@@ -306,7 +292,7 @@ function expectOnly(name: string): void {
 beforeEach(() => { h.state = proxy(state()); h.caps = proxy(caps()); h.session = { state: 'connected', epoch: 7 };
   h.calls.forEach((fn) => fn.mockClear()); h.subscribers.clear(); h.radioListeners.clear();
   h.subscribeCount = 0; h.unsubscribeCount = 0;
-  h.omitSpeak = false; h.meterAppearance = appearances.meter;
+  h.meterAppearance = appearances.meter;
   h.frequencyOwners.length = 0; h.frequencyLeases.length = 0; h.meterOwners.length = 0;
   h.barMeterOwners.length = 0;
   h.scalarOwners.length = 0; h.finiteSeats.length = 0;
@@ -314,7 +300,7 @@ beforeEach(() => { h.state = proxy(state()); h.caps = proxy(caps()); h.session =
 afterEach(() => { if (mounted) unmount(mounted); mounted = null; document.body.replaceChildren(); });
 
 describe('external hosted face chain', () => {
-  it('mounts the accepted faces through the exact 4+8+8 mapping and retires old occurrence commands', async () => {
+  it('mounts the accepted faces through the exact 4+5+8 mapping and retires old occurrence commands', async () => {
     const current = { value: {} };
     const loadedA = await loadedRecord('a', FaceA);
     const appearancesB = { ...appearances, scalar: { name: 'fixture-b',
@@ -328,12 +314,12 @@ describe('external hosted face chain', () => {
     expect(target.querySelector('[data-external-face="a"]')).not.toBeNull();
     expect(target.querySelectorAll('[data-fixture-frequency]')).toHaveLength(2);
     expect(target.querySelectorAll('[data-fixture-signal]')).toHaveLength(3);
-    expect(target.querySelectorAll('[data-fixture-toggle],[data-fixture-choice],[data-fixture-action]')).toHaveLength(8);
+    expect(target.querySelectorAll('[data-fixture-toggle],[data-fixture-choice],[data-fixture-action]')).toHaveLength(5);
     expect(target.querySelectorAll('[data-fixture-scalar]')).toHaveLength(8);
     expect(h.frequencyOwners).toHaveLength(2); expect(h.frequencyLeases).toHaveLength(2);
     expect(h.meterOwners.length).toBeGreaterThanOrEqual(2);
     const receiverOwners = [...h.frequencyOwners, ...h.meterOwners.slice(-2)];
-    const finiteSeats = [...h.finiteSeats]; expect(finiteSeats.length).toBeGreaterThanOrEqual(8);
+    const finiteSeats = [...h.finiteSeats]; expect(finiteSeats.length).toBeGreaterThanOrEqual(5);
     const txOwners = h.scalarOwners.slice(-8); expect(txOwners).toHaveLength(8);
     expect(h.scalarSeats).toHaveLength(8); expect(h.scalarLeases).toHaveLength(8);
     const oldScalarSeat = h.scalarSeats[0]; const automaticScalarLease = h.scalarLeases[0];
@@ -353,7 +339,7 @@ describe('external hosted face chain', () => {
         clearCalls(); button.click(); expectOnly(names[index]);
       });
     operate('[data-fixture-toggle]', ['onSplitToggle', 'onDualWatchToggle']);
-    operate('[data-fixture-action]', ['onEqual', 'onSwap', 'onQuickSplit', 'onQuickDw', 'onSpeak']);
+    operate('[data-fixture-action]', ['onEqual', 'onSwap']);
     clearCalls(); target.querySelectorAll<HTMLButtonElement>('[data-fixture-choice] button')[1].click();
     expectOnly('onSubVfoClick');
     const scalarCalls = ['onRfPowerChange', 'onMicGainChange', 'onDriveGainChange', 'onVoxGainChange',
@@ -469,13 +455,13 @@ describe('external hosted face chain', () => {
     expect(target.querySelector('[data-family="vfoOperations"]')).not.toBeNull();
     expect(target.querySelector('[data-family="txAux"]')).not.toBeNull();
 
-    unmount(mounted!); mounted = null; h.omitSpeak = true; h.session = { state: 'connected', epoch: 7 };
+    unmount(mounted!); mounted = null; h.session = { state: 'connected', epoch: 7 };
     h.state = proxy(state()); h.caps = proxy({ ...caps(),
-      capabilities: caps().capabilities.filter((tag) => tag !== 'speech' && tag !== 'monitor') });
+      capabilities: caps().capabilities.filter((tag) => tag !== 'monitor') });
     plan.set(fullPlan()); mounted = mount(SemanticRadioSurfaces, { target, props,
       context: new Map([[SURFACE_PLAN_CONTEXT_KEY, () => livePlan.current]]) }); flushSync();
     expect(target.querySelector('[data-family="vfoOperations"]')).not.toBeNull();
-    expect(target.querySelectorAll('[data-fixture-toggle],[data-fixture-choice],[data-fixture-action]')).toHaveLength(7);
+    expect(target.querySelectorAll('[data-fixture-toggle],[data-fixture-choice],[data-fixture-action]')).toHaveLength(5);
     expect(target.querySelector('[data-family="txAux"]')).not.toBeNull();
     expect(target.querySelectorAll('[data-fixture-scalar]')).toHaveLength(7);
     expect(h.subscribers.size).toBe(subscriptions);
@@ -493,7 +479,7 @@ describe('external hosted face chain', () => {
     const face = target.querySelector<HTMLElement>('[data-external-face="probe"]')!;
     expect(face.dataset.topLevelKeys).toBe('receiver,stationMeters,txAux,vfoOperations');
     expect(face.dataset.receiverKeys).toBe('mainFrequency,mainSMeter,subFrequency,subSMeter');
-    expect(face.dataset.vfoKeys).toBe('activeReceiver,dualWatch,equalize,quickDualWatch,quickSplit,speak,split,swap');
+    expect(face.dataset.vfoKeys).toBe('activeReceiver,dualWatch,equalize,split,swap');
     expect(face.dataset.txKeys).toBe('antiVoxGain,compressorLevel,driveGain,micGain,monitorLevel,rfPower,voxDelay,voxGain');
     expect(target.querySelector('[data-probe="form-hbar"] [data-fixture-scalar]')).not.toBeNull();
     const knob = target.querySelector<HTMLElement>('[data-probe="form-knob"] [data-external-scalar-renderer]')!;

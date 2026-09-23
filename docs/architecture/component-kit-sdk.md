@@ -122,12 +122,12 @@ layout geometry, only the boolean-derived family objects below.
 | Family | Type | Handles |
 |---|---|---|
 | `receiver` | `ReceiverInstrumentFamilyV1` | `mainFrequency`, `subFrequency`, `mainSMeter`, `subSMeter` (4) |
-| `vfoOperations` | `VfoOperationInstrumentFamilyV1` | `split`, `dualWatch`, `activeReceiver`, `equalize`, `swap`, `quickSplit`, `quickDualWatch`, `speak` (8) |
+| `vfoOperations` | `VfoOperationInstrumentFamilyV1` | `split`, `dualWatch`, `activeReceiver`, `equalize`, `swap` (5) |
 | `txAux` | `TxAuxInstrumentFamilyV1` | `rfPower`, `micGain`, `driveGain`, `voxGain`, `antiVoxGain`, `voxDelay`, `compressorLevel`, `monitorLevel` (8) |
 | `stationMeters` | `StationMeterInstrumentFamilyV1` | `signal`, `power`, `swr`, `alc`, `drainCurrent`, `drainVoltage`, `compression` (7) |
 
 (all from `component-kit-api/src/index.ts`; test title covering the first
-three: "mounts the accepted faces through the exact 4+8+8 mapping and
+three: "mounts the accepted faces through the exact 4+5+8 mapping and
 retires old occurrence commands",
 `frontend/src/__tests__/external-hosted-face.component.test.ts`.)
 
@@ -139,7 +139,7 @@ likewise for the other three). Within an admitted family it varies: in
 `receiver`, `mainFrequency`/`mainSMeter` are always present but
 `subFrequency`/`subSMeter` are independently nullable, driven by whether the
 radio has a SUB receiver (`subReceiverAdmitted`, same file); every one of
-`vfoOperations`'s eight handles is individually nullable in its own type
+`vfoOperations`'s five handles is individually nullable in its own type
 (`VfoOperationInstrumentFamilyV1`); none of `txAux`'s eight or
 `stationMeters`'s seven handles are nullable — all required once their
 family is non-null (`TxAuxInstrumentFamilyV1`, `StationMeterInstrumentFamilyV1`,
