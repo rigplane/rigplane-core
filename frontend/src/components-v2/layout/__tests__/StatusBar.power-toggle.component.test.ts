@@ -250,7 +250,7 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
 
     await vi.waitFor(() =>
       expect(host.querySelector('[data-testid="confirm-dialog-error"]')?.textContent).toBe(
-        'Failed to turn off radio: boom',
+        'Failed to turn off radio: Error: boom',
       ),
     );
     // The dialog stays open with the error in place of the old native

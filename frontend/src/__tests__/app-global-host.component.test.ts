@@ -212,7 +212,7 @@ describe('AppGlobalHost — standalone, with no layout mounted', () => {
     // The failure text renders in-page via ConfirmDialog's error state.
     await vi.waitFor(() =>
       expect(document.querySelector('[data-testid="confirm-dialog-error"]')?.textContent).toBe(
-        'core.overlay.poweredOff.failedPowerOn: boom',
+        'core.overlay.poweredOff.failedPowerOn: Error: boom',
       ),
     );
     expect(document.querySelector('[data-testid="confirm-dialog-confirm"]')).toBeNull();
