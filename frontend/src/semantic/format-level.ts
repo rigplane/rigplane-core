@@ -19,3 +19,15 @@ export function formatKnownLevel(value: number, min: number, max: number): strin
   }
   return String(value);
 }
+
+/**
+ * Whether a KNOWN level FORMATS below its domain maximum — decided on what
+ * the operator reads, not on the raw wire value. On a 0..1 fraction domain
+ * a raw 254 of 255 is strictly below 1, yet `formatKnownLevel` rounds it to
+ * "100%"; for a reduced-gain annunciator a reading that formats as the
+ * maximum IS the maximum, so this compares the two formatted strings
+ * (single rounding, no second copy of the rule) instead of the raw numbers.
+ */
+export function levelFormatsBelowMax(value: number, min: number, max: number): boolean {
+  return formatKnownLevel(value, min, max) !== formatKnownLevel(max, min, max);
+}

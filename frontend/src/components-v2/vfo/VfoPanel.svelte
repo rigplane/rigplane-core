@@ -13,7 +13,9 @@
   } from '../../primitives/meters/meter-ballistics.svelte';
 
   /** One fixed slot: `text` is the lit label; unlit keeps the slot with its
-   *  own label and width, so no sibling ever moves. */
+   *  own label and width, so no sibling ever moves. An empty `text` is an
+   *  owner-mandated quiet state (RFG at a displayed full gain): the slot
+   *  stays in the flow, hidden from assistive tech, at its reserved width. */
   export interface VfoPanelSlot {
     key: string;
     text: string;
@@ -223,6 +225,7 @@
       {#each sections.annunciators as ann, i (ann.key)}
         {#if i > 0 && ann.group !== sections.annunciators[i - 1].group}<i class="ann-sep"></i>{/if}
         <span class="lamp" data-family={ann.family} data-chip={ann.key} data-lit={ann.lit}
+          aria-hidden={ann.text ? undefined : 'true'}
           style={ann.color ? `--vfo-lamp-color: ${legacyLampColor(ann.color)}` : undefined}
           {...(ann.key === 'rfg' ? { 'data-indicator-fact': 'rfg' } : {})}>{ann.text}</span>
       {/each}

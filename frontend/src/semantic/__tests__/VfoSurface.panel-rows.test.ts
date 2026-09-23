@@ -342,13 +342,16 @@ describe('standard annunciator lamps (2/main_sub)', () => {
     const mainPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
     const lamps = row(mainPanel, 'receiver').querySelectorAll('.lamp');
     expect(lamps.length).toBe(6);
+    // Owner ruling 2026-09-23: with the gain unread, RFG shows nothing at
+    // all — an empty reserved slot — while the other lamps keep their labels.
     const expected: Record<string, string> = {
-      agc: 'AGC', preamp: 'P.AMP', att: 'ATT', 'ip-plus': 'IP+', 'digi-sel': 'DIGI-SEL', rfg: 'RFG',
+      agc: 'AGC', preamp: 'P.AMP', att: 'ATT', 'ip-plus': 'IP+', 'digi-sel': 'DIGI-SEL', rfg: '',
     };
     for (const lamp of lamps) {
       expect(lamp.getAttribute('data-lit')).toBe('false');
       expect(lamp.textContent?.trim()).toBe(expected[lamp.getAttribute('data-chip')!]);
     }
+    expect(row(mainPanel, 'receiver').querySelector('[data-chip="rfg"]')?.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('a radio without a front-end field draws no lamp for it (ftx1: no IP+, no DIGI-SEL)', () => {
@@ -363,6 +366,69 @@ describe('standard annunciator lamps (2/main_sub)', () => {
     expect(mainPanel.querySelector('[data-chip="ip-plus"]')).toBeNull();
     expect(mainPanel.querySelector('[data-chip="digi-sel"]')).toBeNull();
     expect(mainPanel.querySelector('[data-chip="agc"]')).not.toBeNull();
+  });
+});
+
+// Owner ruling 2026-09-23: the RFG lamp appears only while RF gain is
+// reduced. Coordinator decision, same day: "reduced" is decided on the
+// formatted percentage — a raw 254 of 255 is strictly below 1 yet displays
+// as 100, so it shows nothing. At the maximum and while the reading is
+// unknown the lamp stays in the flow as an empty reserved slot (fixed
+// width by chip key), so the deck never shifts when the gain changes.
+describe('standard RFG lamp appears only when RF gain is reduced (2/main_sub)', () => {
+  const fixtureWithRfGain = (rfGain: number | 'unknown') => {
+    const base = standardFixture('2/main_sub');
+    const indicator = base.receiverIndicators![0];
+    return validateRadioViewModel({
+      ...base,
+      receiverIndicators: [{
+        ...indicator,
+        rfGain: rfGain === 'unknown' ? unknownField<number>() : indicatorField(rfGain),
+      }],
+    });
+  };
+  const rfgLamp = (viewModel: RadioViewModel): HTMLElement => {
+    const root = mountSurface({ viewModel, appearance: 'standard' });
+    const mainPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
+    return row(mainPanel, 'receiver').querySelector<HTMLElement>('[data-chip="rfg"]')!;
+  };
+
+  it('a reduced gain (0.6) is lit with its percentage', () => {
+    const lamp = rfgLamp(fixtureWithRfGain(0.6));
+    expect(lamp.textContent?.trim()).toBe('RFG 60%');
+    expect(lamp.getAttribute('data-lit')).toBe('true');
+    expect(lamp.getAttribute('aria-hidden')).toBeNull();
+  });
+
+  it('a gain that rounds to 99 (raw 253 of 255) is lit', () => {
+    const lamp = rfgLamp(fixtureWithRfGain(253 / 255));
+    expect(lamp.textContent?.trim()).toBe('RFG 99%');
+    expect(lamp.getAttribute('data-lit')).toBe('true');
+    expect(lamp.getAttribute('aria-hidden')).toBeNull();
+  });
+
+  it.each([
+    ['at the maximum', 1],
+    ['at a raw 254 of 255 — below 1 yet displaying as 100', 254 / 255],
+    ['with an unknown reading', 'unknown'],
+  ] as const)('%s the lamp is an empty reserved slot, unlit and aria-hidden', (_name, rfGain) => {
+    const lamp = rfgLamp(fixtureWithRfGain(rfGain));
+    expect(lamp, 'the slot stays in the flow').not.toBeNull();
+    expect(lamp.textContent).toBe('');
+    expect(lamp.getAttribute('data-lit')).toBe('false');
+    expect(lamp.getAttribute('aria-hidden')).toBe('true');
+    expect(lamp.getAttribute('data-indicator-fact')).toBe('rfg');
+  });
+
+  it('the lamp inventory is identical across reduced, maximum and unknown gains', () => {
+    for (const rfGain of [0.6, 253 / 255, 254 / 255, 1, 'unknown'] as const) {
+      const root = mountSurface({ viewModel: fixtureWithRfGain(rfGain), appearance: 'standard' });
+      const mainPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
+      const keys = Array.from(row(mainPanel, 'receiver').querySelectorAll('.lamp'))
+        .map((lamp) => lamp.getAttribute('data-chip'));
+      expect(keys, 'same lamp slots whatever the gain says').toEqual(
+        ['agc', 'preamp', 'att', 'ip-plus', 'digi-sel', 'rfg']);
+    }
   });
 });
 
@@ -584,7 +650,10 @@ describe('the live FTX-1 payload (many null leaves) prints no placeholder', () =
           expect(text, `chip ${chip.getAttribute('data-chip') ?? chip.getAttribute('data-tray-tab')} must not print ${forbidden}`)
             .not.toContain(forbidden);
         }
-        if (chip.getAttribute('data-lit') === 'false') {
+        // Owner ruling 2026-09-23: the captured radio reports RF gain at the
+        // maximum, so its RFG lamp is deliberately an empty reserved slot —
+        // the one unlit chip allowed to print nothing.
+        if (chip.getAttribute('data-lit') === 'false' && chip.getAttribute('data-chip') !== 'rfg') {
           expect(chip.textContent?.trim(), 'an unlit chip keeps its label, never an empty frame')
             .not.toBe('');
         }

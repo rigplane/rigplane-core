@@ -19,7 +19,7 @@
  * declares as a 0..1 fraction is percent-formatted.
  */
 import { describe, expect, it } from 'vitest';
-import { formatKnownLevel } from '../format-level';
+import { formatKnownLevel, levelFormatsBelowMax } from '../format-level';
 
 describe('formatKnownLevel (MOR-1447)', () => {
   it('formats a 0..1 fraction as a rounded percent — the MOR-1447 repro value', () => {
@@ -46,5 +46,28 @@ describe('formatKnownLevel (MOR-1447)', () => {
 
   it('leaves a non-zero-based 0..1-width domain as the plain number (not treated as a fraction)', () => {
     expect(formatKnownLevel(1.5, 1, 2)).toBe('1.5');
+  });
+});
+
+describe('levelFormatsBelowMax (reduced-gain annunciators)', () => {
+  it('a raw 254 of 255 is strictly below 1 yet formats as the maximum', () => {
+    expect(formatKnownLevel(254 / 255, 0, 1)).toBe('100%');
+    expect(levelFormatsBelowMax(254 / 255, 0, 1)).toBe(false);
+  });
+
+  it('a raw 253 of 255 formats below the maximum', () => {
+    expect(formatKnownLevel(253 / 255, 0, 1)).toBe('99%');
+    expect(levelFormatsBelowMax(253 / 255, 0, 1)).toBe(true);
+  });
+
+  it('brackets the rounding boundary and the exact endpoints', () => {
+    expect(levelFormatsBelowMax(1, 0, 1)).toBe(false);
+    expect(levelFormatsBelowMax(0.6, 0, 1)).toBe(true);
+    expect(levelFormatsBelowMax(0, 0, 1)).toBe(true);
+  });
+
+  it('compares the native numbers on a non-fractional domain', () => {
+    expect(levelFormatsBelowMax(128, 0, 255)).toBe(true);
+    expect(levelFormatsBelowMax(255, 0, 255)).toBe(false);
   });
 });

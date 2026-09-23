@@ -7,6 +7,8 @@
   import type { Snippet } from 'svelte';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
+  import { formatKnownLevel, levelFormatsBelowMax } from './format-level';
+  import { RF_FRONT_END_LEVELS } from './rf-front-end-instruments';
   import type {
     DisplayObservedField, RadioWideIndicatorsViewModel, ReceiverIndicatorField,
     ReceiverIndicatorViewModel, TxAuxField,
@@ -35,10 +37,32 @@
     return field.reading.status === 'known' ? String(field.reading.value) : '—';
   }
 
-  function rfGainNumber(field: DisplayObservedField<number>): string {
-    if (!field.display) return numeric(field);
-    return field.display.state === 'current' || field.display.state === 'stale'
-      ? String(field.display.value) : '—';
+  /** The RF gain the display shows, independent of provenance: the observed
+   *  display value when one exists, otherwise the strict reading. */
+  function rfGainShown(field: DisplayObservedField<number>): number | null {
+    if (field.display) {
+      return field.display.state === 'current' || field.display.state === 'stale'
+        ? field.display.value : null;
+    }
+    return field.reading.status === 'known' ? field.reading.value : null;
+  }
+
+  /**
+   * Owner ruling 2026-09-23: RFG appears only while RF gain is REDUCED.
+   * Coordinator decision, same day: "reduced" is what the operator reads —
+   * the formatted percentage, the same rounding `formatKnownLevel` applies —
+   * so a raw 254 of 255, strictly below 1 yet displaying as 100%, shows
+   * nothing. At a displayed 100%, and while the reading is unknown, this
+   * renders an empty string: the fact keeps its reserved slot
+   * (min-inline-size below) but prints no label, number, or placeholder,
+   * draws no frame, and is aria-hidden while empty.
+   */
+  function rfGainText(field: DisplayObservedField<number>): string {
+    const shown = rfGainShown(field);
+    return shown !== null
+      && levelFormatsBelowMax(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3])
+      ? formatKnownLevel(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3])
+      : '';
   }
 
   function agc(field: ReceiverIndicatorViewModel['agcMode']): string {
@@ -155,14 +179,17 @@
       </span>
     {/if}
     {#if indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported'}
+      {@const gainText = rfGainText(indicator.rfGain)}
       <span
         class="fact"
         data-indicator-fact="rf-gain"
         role="img"
         data-state={indicator.rfGain.reading.status}
         data-display-state={indicator.rfGain.display?.state ?? (indicator.rfGain.reading.status === 'known' ? 'current' : 'unknown')}
-        aria-label={`RF gain ${rfGainNumber(indicator.rfGain)}`}
-      >RFG {rfGainNumber(indicator.rfGain)}</span>
+        aria-label={gainText ? `RF gain ${gainText}` : undefined}
+        aria-hidden={gainText ? undefined : 'true'}
+        data-empty={gainText ? undefined : 'true'}
+      >{gainText ? `RFG ${gainText}` : ''}</span>
     {/if}
   </div>
 </section>
@@ -233,6 +260,19 @@
   .rf-lamp.tx { color: var(--v2-accent-red, #ff4545); border-color: currentColor; }
   .fact[data-state='on'], .fact[data-state='known'] { color: var(--v2-text-primary, #e8e8e8); }
   .fact[data-state='off'], .fact[data-state='unknown'] { color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
+  /* Owner ruling 2026-09-23: the RFG fact keeps its slot whether or not it
+     prints. The widest lit text is `RFG 99%` (7 characters in this mono
+     face); the 8ch reservation stays deliberately wider than that, so the
+     neighbouring facts never move when the gain changes between reduced,
+     full and unknown. */
+  .fact[data-indicator-fact='rf-gain'] { min-inline-size: 8ch; box-sizing: content-box; }
+  /* Empty (a displayed 100%, or unread): the slot stays reserved at the same
+     size and 1px geometry, but nothing is drawn — a transparent border and
+     background instead of an empty frame. */
+  .fact[data-indicator-fact='rf-gain'][data-empty='true'] {
+    border-color: transparent;
+    background: transparent;
+  }
   .s-meter { min-width: 0; overflow: hidden; }
   .s-meter-unknown {
     display: grid;

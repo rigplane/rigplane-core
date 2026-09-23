@@ -46,7 +46,7 @@
   import { HardwareButton } from '$lib/Button';
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import VfoOperationGroup from './VfoOperationGroup.svelte';
-  import { formatKnownLevel } from './format-level';
+  import { formatKnownLevel, levelFormatsBelowMax } from './format-level';
   import { RF_FRONT_END_LEVELS } from './rf-front-end-instruments';
   import {
     invokeVfoOperation,
@@ -612,12 +612,21 @@
           indicator.rfGain.display,
           indicator.rfGain.reading.status === 'known' ? indicator.rfGain.reading.value : null,
         );
+        // Owner ruling 2026-09-23: RFG appears only while RF gain is REDUCED.
+        // Coordinator decision, same day: "reduced" is what the operator
+        // reads — the formatted percentage, the rounding `formatKnownLevel`
+        // applies — so a raw 254 of 255, strictly below 1 yet displaying as
+        // 100%, shows nothing. At a displayed 100%, and while the reading is
+        // unknown, the lamp keeps its fixed slot with no text at all; the
+        // deck reserves the width by chip key, so nothing moves.
+        const reduced = shown !== null
+          && levelFormatsBelowMax(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3]);
         sections.annunciators.push({
           key: 'rfg', group: 'rfg', family: 'brown',
-          text: shown === null
-            ? 'RFG'
-            : `RFG ${formatKnownLevel(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3])}`,
-          lit: shown !== null,
+          text: reduced
+            ? `RFG ${formatKnownLevel(shown, RF_FRONT_END_LEVELS[0][2], RF_FRONT_END_LEVELS[0][3])}`
+            : '',
+          lit: reduced,
         });
       }
 

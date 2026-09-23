@@ -244,8 +244,8 @@ describe('RF gain display observation', () => {
     render({ appearance, get indicator() { return state.get('indicator'); } });
     const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
     const text = node.textContent;
-    expect(text).toContain('RFG 0.75');
-    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
+    expect(text).toContain('RFG 75%');
+    expect(target.querySelector('[role="img"][aria-label="RF gain 75%"]')).toBe(node);
     expect(node.hasAttribute('tabindex')).toBe(false);
     expect(node.querySelector('.stale-cue')).toBeNull();
     flushSync(() => state.set('indicator', indicator({ rfGain: {
@@ -256,24 +256,70 @@ describe('RF gain display observation', () => {
     expect(node.textContent).toBe(text);
     expect(node.getAttribute('data-state')).toBe('unknown');
     expect(node.getAttribute('data-display-state')).toBe('stale');
-    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
+    expect(target.querySelector('[role="img"][aria-label="RF gain 75%"]')).toBe(node);
     expect(target.querySelector('[role="img"][aria-label*="stale"]')).toBeNull();
     expect(target.querySelector('[aria-live], button, input')).toBeNull();
     flushSync(() => state.set('indicator', current));
     expect(node.textContent).toBe(text);
     expect(node.getAttribute('data-display-state')).toBe('current');
-    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
+    expect(target.querySelector('[role="img"][aria-label="RF gain 75%"]')).toBe(node);
   });
   it('does not display a strict fallback default when explicit observation is unknown', () => {
     render({ indicator: indicator({ rfGain: {
       ...known(0), display: { state: 'unknown', reason: 'not-observed' },
     } }) });
     const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
-    expect(node.textContent).toContain('RFG —');
-    expect(node.textContent).not.toContain('RFG 0');
+    // Owner ruling 2026-09-23: unknown shows nothing — the slot stays
+    // reserved, empty and aria-hidden, never a placeholder value.
+    expect(node).not.toBeNull();
+    expect(node.textContent).toBe('');
+    expect(node.textContent).not.toContain('—');
+    expect(node.getAttribute('aria-hidden')).toBe('true');
+    expect(node.getAttribute('aria-label')).toBeNull();
   });
   it('keeps a display-unsupported RFgain absent', () => {
     render({ indicator: indicator({ rfGain: { ...known(0), display: { state: 'unsupported' } } }) });
     expect(target.querySelector('[data-indicator-fact="rf-gain"]')).toBeNull();
+  });
+
+  // Owner ruling 2026-09-23: RFG exists only while RF gain is reduced.
+  // Coordinator decision, same day: "reduced" is decided on the formatted
+  // percentage — a raw 254 of 255 is strictly below 1 yet displays as 100%,
+  // so nothing is shown (the component sets no aria-hidden while lit).
+  it.each([
+    ['a reduced gain (0.6) prints its percentage', 0.6, 'RFG 60%', null],
+    ['a gain that rounds to 99 (raw 253 of 255) is lit', 253 / 255, 'RFG 99%', null],
+    ['raw 254 of 255 is below 1 yet displays as 100 — nothing shown', 254 / 255, '', 'true'],
+    ['the maximum (1) prints nothing', 1, '', 'true'],
+  ] as const)('%s', (_name, value, expectedText, ariaHidden) => {
+    render({ indicator: indicator({ rfGain: known(value) }) });
+    const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
+    expect(node, 'the slot stays in the flow').not.toBeNull();
+    expect(node.textContent).toBe(expectedText);
+    expect(node.getAttribute('aria-hidden')).toBe(ariaHidden);
+    expect(node.getAttribute('data-empty')).toBe(expectedText ? null : 'true');
+    expect(node.textContent).not.toContain('—');
+    expect(node.textContent).not.toContain('?');
+  });
+
+  it('reserves wider than the widest lit text (RFG 99%) in the fact slot', () => {
+    const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
+    expect(source).toMatch(
+      /\.fact\[data-indicator-fact='rf-gain'\]\s*\{[^}]*min-inline-size:\s*8ch/,
+    );
+  });
+
+  it('an empty RFG fact draws no visible frame while keeping the reserved slot', () => {
+    render({ indicator: indicator({ rfGain: known(1) }) });
+    const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
+    expect(node.textContent).toBe('');
+    expect(node.getAttribute('data-empty')).toBe('true');
+    // The CSS the attribute keys on: the frame goes transparent while the
+    // reserved width (min-inline-size) stays — never an empty bordered box.
+    const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
+    expect(source).toMatch(
+      /\.fact\[data-indicator-fact='rf-gain'\]\[data-empty='true'\]\s*\{[^}]*border-color:\s*transparent/,
+    );
+    expect(source).toMatch(/\.fact\[data-indicator-fact='rf-gain'\]\s*\{[^}]*min-inline-size:\s*8ch/);
   });
 });
