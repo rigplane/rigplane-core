@@ -352,12 +352,6 @@
     min-height: 14px;
   }
 
-  /* The class is doubled on purpose — a one-step specificity raise kept
-   * from when a language-level :focus-visible contract could tie this rule
-   * and bring the frame back (that contract no longer exists; MOR-2522).
-   * The guard in focus-ring-token-wiring.test.ts accepts the renderer ring
-   * shadow on exactly this doubled selector shape and no other.
-   */
   .vc-track-container.vc-track-container:focus-visible {
     /* MOR-2522: keyboard focus lights the control (owner ruling: no frame).
      * This block declares no geometry — the size/position pin in

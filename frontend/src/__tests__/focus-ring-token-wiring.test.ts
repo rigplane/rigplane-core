@@ -12,10 +12,6 @@
  *     including its `--range-track-chrome` layer contract;
  *   - forced-colors system outlines (e.g. Highlight) inside
  *     `@media (forced-colors: active)`.
- * Everything else that changes appearance only because an element has focus
- * is gone; the first describe keeps it gone, borders and backgrounds
- * included — a re-added `border: 2px solid cyan` under `:focus-visible`
- * fails it.
  *
  * The remaining describes are the round-2 restore: the protection for the
  * KEPT illumination that the guard rewrite had deleted. They pin the
@@ -231,9 +227,10 @@ describe('MOR-2522: no focus frames', () => {
         }
         // No kept owner paints a border or a background under a focus
         // selector — the renderer, app.css and semantic-controls focus rules
-        // declare outline/box-shadow only — so no exemption exists: a
-        // re-added focus border or background fill fails here whatever file
-        // it lands in. `border-radius`/`border-*-width` are geometry, not
+        // declare outline/box-shadow only — so this check carries no
+        // exemption: under a focus selector it rejects exactly `border`,
+        // `border-color`, `background` and `background-color`, whatever file
+        // they land in. `border-radius`/`border-*-width` are geometry, not
         // paint, and do not match.
         const paint = rule.body.match(/(?:^|[;\n])\s*(border(?:-color)?|background(?:-color)?)\s*:/);
         if (paint) {
