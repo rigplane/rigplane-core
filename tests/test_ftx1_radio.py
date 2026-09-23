@@ -4178,7 +4178,7 @@ class TestToneDescriptorFrames:
 
     @pytest.mark.asyncio
     async def test_set_repeater_tone_main_writes_ct01(self, connected_radio):
-        connected_radio._transport.query = AsyncMock(return_value="CT00;")
+        connected_radio._transport.query = AsyncMock(return_value="CT00")
         connected_radio._transport.write = AsyncMock()
         intent = prepare_command_intent(
             connected_radio, "set_repeater_tone", {"on": True}, source="http"
@@ -4189,7 +4189,7 @@ class TestToneDescriptorFrames:
 
     @pytest.mark.asyncio
     async def test_set_repeater_tone_sub_writes_ct11(self, connected_radio):
-        connected_radio._transport.query = AsyncMock(return_value="CT10;")
+        connected_radio._transport.query = AsyncMock(return_value="CT10")
         connected_radio._transport.write = AsyncMock()
         intent = prepare_command_intent(
             connected_radio,
@@ -4203,7 +4203,7 @@ class TestToneDescriptorFrames:
 
     @pytest.mark.asyncio
     async def test_set_repeater_tsql_from_tone_writes_ct02(self, connected_radio):
-        connected_radio._transport.query = AsyncMock(return_value="CT01;")
+        connected_radio._transport.query = AsyncMock(return_value="CT01")
         connected_radio._transport.write = AsyncMock()
         intent = prepare_command_intent(
             connected_radio, "set_repeater_tsql", {"on": True}, source="http"
@@ -4238,7 +4238,7 @@ class TestToneDescriptorFrames:
         self, connected_radio
     ):
         """(tone off, tsql on) has no CT code: ValueError, no frame written."""
-        connected_radio._transport.query = AsyncMock(return_value="CT00;")
+        connected_radio._transport.query = AsyncMock(return_value="CT00")
         connected_radio._transport.write = AsyncMock()
         intent = prepare_command_intent(
             connected_radio, "set_repeater_tsql", {"on": True}, source="http"
