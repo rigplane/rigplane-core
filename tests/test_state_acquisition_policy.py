@@ -1843,6 +1843,73 @@ def test_ic7300_declares_the_transmit_meters_absent_outside_transmit() -> None:
     assert acquisition.policy_for(ptt).available_when == ()
 
 
+#: The four 0x15 TX-only meter paths MOR-2540 gates on the canonical PTT.
+_TX_ONLY_METER_PATHS = (
+    FieldPath.global_("meters", "alc"),
+    FieldPath.global_("meters", "comp"),
+    FieldPath.global_("meters", "power"),
+    FieldPath.global_("meters", "swr"),
+)
+
+#: (model, path) pairs deliberately left ungated. X6100 has no backend at
+#: all (``backends/factory.py`` refuses the model -- only the rigctld client
+#: reaches the radio) and neither X6100 nor X6200 declares a pollable or
+#: observable ``global.tx_state.ptt`` capability, so ``tx_only`` would fail
+#: closed (``acquisition_scheduler.derive_tx_active`` returns False for an
+#: unobserved PTT) and the power meter would never poll again. X6200 also
+#: declares swr/alc ``unknown`` and comp not at all, so power is its only
+#: declared transmit meter.
+_TX_METER_GATE_EXEMPTIONS = {
+    ("X6100", "global.meters.power"),
+    ("X6200", "global.meters.power"),
+}
+
+
+def test_every_declared_transmit_meter_is_gated_on_ptt() -> None:
+    """MOR-2540: every profile that declares a Po/SWR/ALC/COMP meter gates it.
+
+    The gate is the IC-7300/FTX-1 shape the IC-7610 was missing: ``tx_only =
+    true`` so AcquisitionScheduler skips the cadence group while PTT reads
+    false, plus the ``available_when`` ptt clause so StateFreshnessService.tick
+    discards the last TX values on dekey. The exempted pairs above are pinned
+    ungated, with the reason, so a future profile cannot silently join them.
+    """
+
+    ptt = FieldPath.global_("tx_state", "ptt")
+    clause = AvailabilityClause(field=ptt, operator="equals", value=True)
+    gated: set[tuple[str, str]] = set()
+    ungated: set[tuple[str, str]] = set()
+    for model, rig in sorted(discover_rigs(RIGS_DIR).items()):
+        acquisition = rig.to_profile().state_acquisition
+        if acquisition is None:
+            continue
+        for path in _TX_ONLY_METER_PATHS:
+            capability = acquisition.capability_for(path)
+            if not (capability.can_poll or path in acquisition.field_policies):
+                continue
+            policy = acquisition.policy_for(path)
+            if policy.tx_only and policy.available_when == (clause,):
+                gated.add((model, str(path)))
+                # The condition source is itself polled, or nothing would
+                # ever resolve it.
+                assert acquisition.capability_for(ptt).can_poll, (model, path)
+                assert acquisition.policy_for(ptt).available_when == (), (
+                    model,
+                    path,
+                )
+            else:
+                # An exemption is a deliberate non-gate: neither half of the
+                # shape may be present.
+                assert policy.tx_only is False, (model, path)
+                assert policy.available_when == (), (model, path)
+                ungated.add((model, str(path)))
+
+    assert ungated == _TX_METER_GATE_EXEMPTIONS
+    # The MOR-2540 regression subject must be in the gated set.
+    for name in ("power", "swr", "alc", "comp"):
+        assert ("IC-7610", f"global.meters.{name}") in gated
+
+
 def test_ftx1_gates_nothing_on_dual_receive() -> None:
     """Bench 2026-09-18 (MOR-2511): every SUB-side read answers SUB's own
     value in single receive, so no SUB path is gated on dual receive."""
