@@ -4498,24 +4498,14 @@ def _vfo_func_cmd(long_cmd: str, vfo_arg: str | None, *args: str) -> RigctldComm
 
 
 @pytest.mark.asyncio
-async def test_yaesu_set_func_tone_vfob_writes_sub_receiver() -> None:
-    """U VFOB TONE 1 writes the SUB receiver's CT select, not MAIN's."""
-    radio, _ct, writes = _real_ftx1_ct_radio()
-    handler = RigctldHandler(radio, RigctldConfig())
-    resp = await handler.execute(_vfo_func_cmd("set_func", "VFOB", "TONE", "1"))
-    assert resp.ok
-    assert writes == ["CT11;"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("vfo_arg", [None, "VFOA"])
-async def test_yaesu_set_func_tone_main_receiver(vfo_arg) -> None:
-    """No VFO label / VFOA keep TONE on MAIN (CT01;)."""
-    radio, _ct, writes = _real_ftx1_ct_radio()
-    handler = RigctldHandler(radio, RigctldConfig())
-    resp = await handler.execute(_vfo_func_cmd("set_func", vfo_arg, "TONE", "1"))
-    assert resp.ok
-    assert writes == ["CT01;"]
+async def test_yaesu_set_func_tone_receiver_routing() -> None:
+    """U VFOB TONE 1 writes the SUB CT select; no-VFO/VFOA write MAIN's."""
+    for vfo_arg, frame in ((None, "CT01;"), ("VFOA", "CT01;"), ("VFOB", "CT11;")):
+        radio, _ct, writes = _real_ftx1_ct_radio()
+        handler = RigctldHandler(radio, RigctldConfig())
+        resp = await handler.execute(_vfo_func_cmd("set_func", vfo_arg, "TONE", "1"))
+        assert resp.ok
+        assert writes == [frame], vfo_arg
 
 
 @pytest.mark.asyncio
