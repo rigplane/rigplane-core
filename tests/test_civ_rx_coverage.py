@@ -5668,14 +5668,18 @@ async def _acked_power_command(radio: IcomRadio, on: bool) -> None:
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("model", "receiver_count"),
     [("IC-7610", 2), ("IC-7300", 1)],
-    ids=["lan-ic7610", "serial-ic7300"],
+    ids=["lan-ic7610", "ic7300-profile"],
 )
 async def test_power_cycle_through_public_payload_and_field_status(
     radio: IcomRadio,
     model: str,
     receiver_count: int,
 ) -> None:
-    """MOR-2544 full cycle, LAN-shaped (IC-7610) and serial-shaped (IC-7300):
+    """MOR-2544 full cycle, IC-7610 (the LAN fixture) and IC-7300 profile:
+
+    both parametrisations run the LAN IC-7610 fixture with only
+    ``_profile`` swapped (no serial transport is exercised — the IC-7300
+    leg varies the profile, not the link shape).
 
     answers → ``powerOn: true``; ACKed power-off → ``false``; repeated
     ``advance_generation`` (watchdog / soft reconnect) with no answers →
@@ -5819,3 +5823,74 @@ async def test_profile_with_power_status_query_skips_inference(
 
     with pytest.raises(KeyError):
         radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("model", "receiver_count"),
+    [("X6100", 1), ("X6200", 1)],
+)
+async def test_rf_power_level_profiles_never_infer_power_on(
+    radio: IcomRadio,
+    model: str,
+    receiver_count: int,
+) -> None:
+    """MOR-2544 (f): Xiegu X6100/X6200 declare ``power_control`` for the
+    0x14 0x0A RF-power level only — no bound ``power_on``/``power_off``,
+    ``global.tx_state.power_on`` declared unsupported — so liveness must
+    not publish ``powerOn`` behind a power button whose command refuses.
+
+    RED at 003e71d4: the predicate matched on ``power_control`` alone,
+    so one meter frame after a connect published ``powerOn: true``.
+    """
+    profile = resolve_radio_profile(model=model)
+    assert profile.supports_capability("power_control")
+    assert not profile.supports_command("power_off")
+    assert profile.infers_power_on_from_liveness is False
+    radio._profile = profile  # noqa: SLF001
+
+    radio._civ_runtime.advance_generation("connect")  # noqa: SLF001
+    assert radio._state_store.provider_generation >= 1  # noqa: SLF001
+
+    await _route_frame_at(radio, _make_frame(cmd=0x15, sub=0x02, data=_bcd2(42)), 100.0)
+
+    payload = _public_power_payload(radio, receiver_count=receiver_count)
+    assert payload["powerOn"] is None
+    assert payload["fieldStatus"]["powerOn"]["observed"] is False
+
+
+@pytest.mark.asyncio
+async def test_power_readback_overrides_liveness_and_clears_retained_command(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2544 (g): a ``0x18 00`` readback is explicit truth, not liveness.
+
+    At store generation ≥ 1 on the IC-7610 profile: a meter frame infers
+    ``power_on=True``; an ACKed power-off retains ``False``; the ``0x18
+    00`` readback then publishes ``power_on=False`` (the liveness
+    inference must not re-stamp True over the readback) and clears the
+    retained last-commanded power state.
+
+    Reviewer mutations at 003e71d4 — M4 (inference applied to 0x18) and
+    M6 (no clear on 0x18) — both stayed green against the existing
+    suite; this pins both.
+    """
+    radio._civ_runtime.advance_generation("connect")  # noqa: SLF001
+    assert radio._state_store.provider_generation >= 1  # noqa: SLF001
+
+    await _route_frame_at(radio, _make_frame(cmd=0x15, sub=0x02, data=_bcd2(42)), 100.0)
+    assert (
+        radio._state_store.snapshot().field(_POWER_ON_PATH).value  # noqa: SLF001
+        is True
+    )
+
+    await _acked_power_command(radio, False)
+    assert radio._last_commanded_powerstat is False  # noqa: SLF001
+
+    await _route_frame_at(radio, _make_frame(cmd=0x18, data=b"\x00"), 105.0)
+
+    assert (
+        radio._state_store.snapshot().field(_POWER_ON_PATH).value  # noqa: SLF001
+        is False
+    )
+    assert radio._last_commanded_powerstat is None  # noqa: SLF001

@@ -564,8 +564,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # (watchdog timeout, reconnect attempts, soft reconnects — all clear
         # the store). Set in ``set_powerstat`` on an accepted command only
         # (which also observes ``power_on`` into the store from the ACK);
-        # cleared when the radio answers again or a 0x18 readback arrives
-        # (``runtime/_civ_rx.py``). The web fallback that republishes this
+        # cleared when a routed response reaches the state path or a 0x18
+        # readback arrives (``runtime/_civ_rx.py``) — not by relative-VFO
+        # readbacks (0x00/0x01/0x03/0x04/0x25/0x26 on
+        # ``selected_unselected`` profiles such as IC-7300/IC-705), which
+        # return before that point and clear nothing. The web fallback that
+        # republishes this
         # attribute while the store is silent never republishes ``True``
         # from it — only fresh answers prove power on. A process restart
         # loses it, which reads as an honest unknown.
