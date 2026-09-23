@@ -11,6 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b3] — 2026-09-22
+
+### Breaking changes
+
+- **The component-kit `vfoOperations` family has five handles instead of
+  eight (MOR-2538).** The `quickSplit`, `quickDualWatch` and `speak` handles
+  are removed with the SPEAK, QUICK SPLIT and QUICK DW actions; a kit face
+  that renders them must drop them.
+
+### Removed
+
+- **SPEAK, QUICK SPLIT and QUICK DW are gone from the web UI (MOR-2538).**
+  SPLIT and DW are single-click toggles; the backend WebSocket `speak`,
+  `quick_split` and `quick_dualwatch` commands and the `get_/set_quick_*`
+  menu toggles remain.
+
+### Changed
+
+- **Keyboard focus draws no frame (MOR-2522).** The focus outlines, rings
+  and focus-only border or background recolours are removed; value controls
+  and range sliders keep their focus illumination, and forced-colors mode
+  keeps the system outline.
+
 ## [3.0.0b2] — 2026-09-22
 
 ### Breaking changes
@@ -2594,7 +2617,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b2...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b3...HEAD
+[3.0.0b3]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b2...v3.0.0b3
 [3.0.0b2]: https://github.com/rigplane/rigplane-core/compare/v2.11.1...v3.0.0b2
 [3.0.0b1]: https://github.com/rigplane/rigplane-core/compare/v2.11.1...v3.0.0b1
 [2.10.2]: https://github.com/rigplane/rigplane-core/compare/v2.10.1...v2.10.2
