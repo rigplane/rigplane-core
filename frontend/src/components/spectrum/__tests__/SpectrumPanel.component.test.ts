@@ -2740,3 +2740,68 @@ describe('center panorama motion (MOR-2464)', () => {
     });
   });
 });
+
+describe('SpectrumPanel scope handle hover-intent CSS (MOR-2562)', () => {
+  const style = spectrumPanelSource.slice(spectrumPanelSource.indexOf('<style>'));
+
+  it('draws the passband handle only on hover intent and drag', () => {
+    // At rest the handle's ::before is not visible: opacity 0 over the full
+    // zone height — the hit zone and cursor live on the element itself.
+    expect(style).toMatch(
+      /\.passband-resize-zone::before\s*\{[^}]*top:\s*0;[^}]*bottom:\s*0;[^}]*width:\s*1px;[^}]*opacity:\s*0;/,
+    );
+    // Hover lights the 1 px translucent line only after the ~200 ms intent
+    // delay; the delay sits on the hover state so leaving is immediate.
+    expect(style).toMatch(
+      /\.passband-resize-zone:hover::before\s*\{[^}]*opacity:\s*0\.45;[^}]*transition-delay:\s*200ms;/,
+    );
+    // The drag state is the 2 px line at 80 % with no delay.
+    expect(style).toMatch(
+      /\.passband-resize-zone\.active::before\s*\{[^}]*width:\s*2px;[^}]*opacity:\s*0\.8;[^}]*transition-delay:\s*0s;/,
+    );
+    // The old always-on handle decorations are gone: no dark outline, no
+    // brightness filter, no partial-height grip.
+    expect(style).not.toMatch(/brightness\(/);
+    expect(style).not.toMatch(/\.passband-resize-zone[^{]*::before\s*\{[^}]*box-shadow/);
+    expect(style).not.toMatch(/\.passband-resize-zone::before\s*\{[^}]*top:\s*18%/);
+  });
+
+  it('fades the split separator through a hover-intent accent line, not the solid bar', () => {
+    // The faint 2 px structural rest stripe stays on the element itself.
+    expect(style).toMatch(
+      /\.spectrum-split-separator\s*\{[^}]*var\(--panel-border\) 3px,\s*var\(--panel-border\) 5px,/,
+    );
+    // The overlay line is invisible at rest and centred on the stripe.
+    expect(style).toMatch(
+      /\.spectrum-split-separator::after\s*\{[^}]*height:\s*1px;[^}]*background:\s*var\(--accent, var\(--panel-border\)\);[^}]*opacity:\s*0;/,
+    );
+    expect(style).toMatch(
+      /\.spectrum-split-separator:hover::after\s*\{[^}]*opacity:\s*0\.45;[^}]*transition-delay:\s*200ms;/,
+    );
+    expect(style).toMatch(
+      /\.spectrum-split-separator\.active::after\s*\{[^}]*height:\s*2px;[^}]*opacity:\s*0\.8;[^}]*transition-delay:\s*0s;/,
+    );
+    // The old solid 4 px accent bar (shared :hover/.active background) is gone.
+    expect(style).not.toMatch(
+      /\.spectrum-split-separator:hover,\s*\.spectrum-split-separator\.active\s*\{/,
+    );
+  });
+
+  it('drops every handle transition under prefers-reduced-motion', () => {
+    const reduced = style.match(
+      /@media \(prefers-reduced-motion: reduce\)\s*\{([\s\S]*?)\n  \}/,
+    );
+    expect(reduced).not.toBeNull();
+    // The override must beat the hover rules' transition-delay in the
+    // cascade, so the hover selectors themselves are restated inside.
+    for (const selector of [
+      '.passband-resize-zone::before',
+      '.passband-resize-zone:hover::before',
+      '.spectrum-split-separator::after',
+      '.spectrum-split-separator:hover::after',
+    ]) {
+      expect(reduced![1]).toContain(selector);
+    }
+    expect(reduced![1]).toContain('transition: none');
+  });
+});

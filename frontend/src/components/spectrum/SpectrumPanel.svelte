@@ -1202,15 +1202,33 @@
     user-select: none;
   }
 
-  .spectrum-split-separator:hover,
-  .spectrum-split-separator.active {
-    background: linear-gradient(
-      to bottom,
-      transparent 2px,
-      var(--accent, var(--panel-border)) 2px,
-      var(--accent, var(--panel-border)) 6px,
-      transparent 6px
-    );
+  /* MOR-2562: hover-intent overlay. A thin translucent accent line appears
+     only after the pointer rests on the divider (~200 ms) and brightens
+     instantly while dragging. The delay lives on the hover state only, so
+     entering waits and leaving is immediate. The faint rest stripe above
+     stays as the structural boundary. */
+  .spectrum-split-separator::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 1px;
+    transform: translateY(-50%);
+    background: var(--accent, var(--panel-border));
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+
+  .spectrum-split-separator:hover::after {
+    opacity: 0.45;
+    transition-delay: 200ms;
+  }
+
+  .spectrum-split-separator.active::after {
+    height: 2px;
+    opacity: 0.8;
+    transition-delay: 0s;
   }
 
   .freq-axis .tick {
@@ -1298,23 +1316,43 @@
     background: transparent;
   }
 
+  /* MOR-2562: nothing drawn at rest — the passband overlay's dashed edges
+     already mark the filter edge. The 14 px hit zone and the ew-resize
+     cursor stay; the line lights only after hover intent (~200 ms) and
+     while dragging. No outline, glow or brightness filter. */
   .passband-resize-zone::before {
     content: '';
     position: absolute;
-    top: 18%;
-    bottom: 18%;
+    top: 0;
+    bottom: 0;
     left: 50%;
-    width: 3px;
+    width: 1px;
     transform: translateX(-50%);
-    border-radius: 2px;
     background: var(--scope-passband-edge, rgba(59, 130, 246, 0.75));
-    box-shadow: 0 0 0 1px rgba(5, 10, 18, 0.72);
+    opacity: 0;
+    transition: opacity 0.15s ease;
   }
 
-  .passband-resize-zone:hover::before,
+  .passband-resize-zone:hover::before {
+    opacity: 0.45;
+    transition-delay: 200ms;
+  }
+
   .passband-resize-zone.active::before {
-    width: 5px;
-    filter: brightness(1.3);
+    width: 2px;
+    opacity: 0.8;
+    transition-delay: 0s;
+  }
+
+  /* MOR-2562: hover intent is motion; with reduced motion there is no
+     transition at all — states snap, and the drag state stays delay-free. */
+  @media (prefers-reduced-motion: reduce) {
+    .passband-resize-zone::before,
+    .passband-resize-zone:hover::before,
+    .spectrum-split-separator::after,
+    .spectrum-split-separator:hover::after {
+      transition: none;
+    }
   }
 
   .scope-disconnected-overlay {
