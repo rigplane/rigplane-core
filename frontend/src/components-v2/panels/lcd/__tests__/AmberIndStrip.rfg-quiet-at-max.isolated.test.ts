@@ -5,7 +5,7 @@
  * The RFG chip lights only while RF gain is REDUCED, judged on the displayed
  * percentage the VFO deck applies (`levelFormatsBelowMax`, 0..1 fraction
  * domain). At a displayed 100% (including a raw 254/255), and while the
- * reading is unknown, the chip prints no text, keeps its slot (chip count and
+ * value is null, the chip prints no text, keeps its slot (chip count and
  * position are unchanged), and is aria-hidden. A radio without the rf_gain
  * capability draws no RFG chip at all.
  *
