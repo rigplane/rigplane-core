@@ -72,11 +72,12 @@ type Handlers = {
 
 function render(view: RadioViewModel, handlers: Handlers = {}, props: { rowTail?: boolean } = {}) {
   // MOR-2545 PR3: a tail probe standing in for the toolbar's rowTail.
+  // createRawSnippet must return ONE element, hence the wrapper div.
   const rowTail = props.rowTail
     ? createRawSnippet(() => ({
         render: () =>
-          '<span data-overflow="step" data-testid="row-tail-step"></span>'
-          + '<button data-overflow="quick" data-testid="row-tail-quick">AVG</button>',
+          '<div data-testid="row-tail"><span data-overflow="step" data-testid="row-tail-step"></span>'
+          + '<button data-overflow="quick" data-testid="row-tail-quick">AVG</button></div>',
       }))
     : undefined;
   const component = mount(ScopeControlsSurface, { target, props: { view, ...handlers, rowTail } });
@@ -354,10 +355,13 @@ describe('narrow widths: lower-priority keys overflow into More (MOR-2545)', () 
 
   // MOR-2545 PR3: with the host's rowTail present, the hooked order is the
   // FULL hide order — the quick keys (AVG/PEAK) hide FIRST, STEP hides LAST.
+  // DOM order over the whole row (the More panel is closed, so no overflow
+  // copies exist yet); the real hide rules key on direct children, but the
+  // probe wraps its two hooks in one div.
   it('the full hide order with the rowTail present: quick → receiver → hold → ref → span → step', () => {
     const r = render(withSc({ mode: known(0) }), {}, { rowTail: true });
     const row = r.el('scope-controls-row')!;
-    const hooked = [...row.children].map((c) => c.getAttribute('data-overflow')).filter(Boolean);
+    const hooked = [...row.querySelectorAll('[data-overflow]')].map((c) => c.getAttribute('data-overflow'));
     expect(hooked).toEqual(['span', 'ref', 'hold', 'receiver', 'step', 'quick']);
     r.dispose();
   });

@@ -352,7 +352,7 @@
     </span>
   </div>
   <div class="toolbar-group">
-    <button type="button" class="scope-flat-key" data-lit={scopeDemandOn} aria-pressed={scopeDemandOn}
+    <button type="button" class="scope-flat-key scope-demand-toggle" data-lit={scopeDemandOn} aria-pressed={scopeDemandOn}
       onclick={() => onScopeDemandChange(!scopeDemandOn)} title="Request scope viewer data">VIEW</button>
     <!-- MOR-1486 ruling B gate survives the move: AUTO renders only where a
          layout-supplied driver can actually honour mode-follow. -->

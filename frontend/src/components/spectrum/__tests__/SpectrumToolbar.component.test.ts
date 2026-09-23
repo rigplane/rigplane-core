@@ -951,7 +951,10 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
   });
 
   it('the shared capsule stylesheet is chrome-free and token-only', () => {
-    const css = readFileSync('src/components/spectrum/scope-capsule.css', 'utf8');
+    const cssRaw = readFileSync('src/components/spectrum/scope-capsule.css', 'utf8');
+    // Comments may NAME the banned properties while explaining them; the
+    // rules themselves may not carry them.
+    const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, '');
     expect(css).not.toContain('box-shadow');
     expect(css).not.toContain('text-shadow');
     expect(css).not.toContain('linear-gradient');
@@ -963,7 +966,7 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
     expect(bezel).toContain('.scope-flat-key, .scope-step-key');
     // One family everywhere: the STEP band and the quick-keys band live in
     // the capsule sheet with the derivation comment.
-    expect(css).toMatch(/THE BANDS ARE DERIVED, NOT MEASURED/);
+    expect(cssRaw).toContain('THE BANDS ARE DERIVED, NOT MEASURED');
     expect(css).toMatch(/@container scope-controls \(max-width: 823px\)/);
   });
 
