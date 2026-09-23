@@ -153,7 +153,16 @@ export function toVfoProps(
     'NOTCH': rx.manualNotch ?? false,
     'ATT': (rx.att ?? 0) > 0,
     'PRE': (rx.preamp ?? 0) > 0,
-    'RFG': (rx.rfGain ?? 1) < 1,
+    // Owner ruling 2026-09-23 (MOR-2546, extends #3591): RFG lights only
+    // while RF gain is REDUCED, judged on the displayed percentage exactly
+    // like the VFO deck's `levelFormatsBelowMax` (semantic/format-level.ts):
+    // a raw 254/255 rounds to 100% and counts as maximum. This runtime-props
+    // file must not import semantic/ (eslint lib/runtime isolation), so the
+    // single-rounding comparison is inlined over the same snapshot-normalized
+    // 0..1 fraction. `true` keeps the lit 'RFG' lamp; `''` empties it —
+    // VfoPanel keeps the fixed-width lamp slot and hides an empty lamp from
+    // assistive tech.
+    'RFG': rx.rfGain != null && Math.round(rx.rfGain * 100) < 100 ? true : '',
     'SQL': (rx.squelch ?? 0) > 0,
     'ATU': (state.tunerStatus ?? 0) > 0,
   };

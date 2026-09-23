@@ -1441,3 +1441,24 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
     });
   });
 });
+
+describe('toVfoProps RFG badge (MOR-2546, owner ruling 2026-09-23)', () => {
+  // Same rule the VFO deck applies via `levelFormatsBelowMax`
+  // (semantic/format-level.ts): lit only when the reading is known and its
+  // displayed percentage is below 100 — a raw 254/255 rounds to 100% and
+  // counts as maximum. `true` keeps the lit lamp; `''` empties it (VfoPanel
+  // keeps the fixed-width slot, aria-hidden).
+  const stateWithRfGain = (rfGain: number | null) =>
+    makeState({ main: { ...makeState().main, rfGain } });
+
+  it('lights the badge when the reading is reduced', () => {
+    expect(toVfoProps(stateWithRfGain(0.6), 'main').badges['RFG']).toBe(true);
+    expect(toVfoProps(stateWithRfGain(253 / 255), 'main').badges['RFG']).toBe(true);
+  });
+
+  it('empties the badge at the displayed maximum and while unread', () => {
+    expect(toVfoProps(stateWithRfGain(1), 'main').badges['RFG']).toBe('');
+    expect(toVfoProps(stateWithRfGain(254 / 255), 'main').badges['RFG']).toBe('');
+    expect(toVfoProps(stateWithRfGain(null), 'main').badges['RFG']).toBe('');
+  });
+});
