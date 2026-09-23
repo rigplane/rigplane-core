@@ -1182,17 +1182,17 @@ def test_ftx1_dual_rx_reports_stub_and_absent_methods(
     assert finding.relation is _DeclarationRelation.PARTIAL
     assert finding.reachability is _ExecutionReachability.NOT_APPLICABLE
     assert not finding.fully_complete
+    # MOR-2531 implemented swap_main_sub/equalize_main_sub (SV;/AB;); the
+    # main_sub_tracking pair remains a stub.
     assert finding.method_statuses == (
-        ("equalize_main_sub", _MethodStatus.ABSENT),
+        ("equalize_main_sub", _MethodStatus.IMPLEMENTED),
         ("get_main_sub_tracking", _MethodStatus.STUB),
         ("set_main_sub_tracking", _MethodStatus.STUB),
-        ("swap_main_sub", _MethodStatus.ABSENT),
+        ("swap_main_sub", _MethodStatus.IMPLEMENTED),
     )
     assert finding.diagnostics == (
-        "yaesu_ftx1 capability dual_rx: missing method equalize_main_sub",
         "yaesu_ftx1 capability dual_rx: stub method get_main_sub_tracking",
         "yaesu_ftx1 capability dual_rx: stub method set_main_sub_tracking",
-        "yaesu_ftx1 capability dual_rx: missing method swap_main_sub",
     )
 
 
@@ -1357,6 +1357,6 @@ def test_future_activation_api_returns_full_deterministic_gap_list(
     assert gaps == tuple(sorted(gaps, key=_finding_sort_key))
     assert all(not gap.fully_complete for gap in gaps)
     assert (
-        "yaesu_ftx1 capability dual_rx: missing method swap_main_sub"
+        "yaesu_ftx1 capability dual_rx: stub method set_main_sub_tracking"
         in implementation_report.render_gaps()
     )

@@ -669,10 +669,12 @@ def projected_vfo_capability_tags(
     being true:
 
     - A resolved :class:`~rigplane.profiles.RadioProfile` on ``radio.profile``
-      is used as-is, and each tag is included only when its profile field
-      (``swap_ab_code``/``equal_ab_code`` for ``vfo_scheme == "ab"``,
-      ``swap_main_sub_code``/``equal_main_sub_code`` for
-      ``vfo_scheme == "main_sub"``) is not ``None`` — pinned by
+      is used as-is, and each tag is included only when its profile
+      declaration is present: ``swap_ab_code``/``equal_ab_code`` for
+      ``vfo_scheme == "ab"``, ``swap_main_sub_code``/``equal_main_sub_code``
+      for ``vfo_scheme == "main_sub"``, or the ``vfo_swap``/``vfo_equalize``
+      CAT command entries for ``vfo_scheme == "ab_shared"`` (the Yaesu CAT
+      family declares these as commands, not opcode bytes) — pinned by
       ``test_vfo_tags_match_across_consumers_for_real_profiles`` and
       ``test_vfo_tags_keep_partial_and_mismatched_schemes_in_parity``.
     - Otherwise exactly one candidate model string is tried: ``radio.model``
@@ -713,14 +715,24 @@ def projected_vfo_capability_tags(
             ("vfo_swap", profile.swap_ab_code),
             ("vfo_equalize", profile.equal_ab_code),
         )
+        tags = {tag for tag, primitive in primitives if primitive is not None}
     elif profile.vfo_scheme == "main_sub":
         primitives = (
             ("vfo_swap", profile.swap_main_sub_code),
             ("vfo_equalize", profile.equal_main_sub_code),
         )
+        tags = {tag for tag, primitive in primitives if primitive is not None}
+    elif profile.vfo_scheme == "ab_shared":
+        # Yaesu dual-RX CAT rigs (FTX-1, MOR-2531): the MAIN↔SUB swap and
+        # equalize are native CAT commands declared in the profile's
+        # [commands] table (SV; / AB;, OM 2508-C), not CI-V opcode bytes,
+        # so the declared command is the authority here — pinned by
+        # ``test_vfo_tags_match_across_consumers_for_real_profiles``.
+        tags = {
+            tag for tag in ("vfo_swap", "vfo_equalize") if profile.supports_command(tag)
+        }
     else:
-        primitives = ()
-    tags = {tag for tag, primitive in primitives if primitive is not None}
+        tags = set()
     from ..core.radio_protocol import CivCommandCapable
 
     cmd_map = profile.command_map

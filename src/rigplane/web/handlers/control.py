@@ -2606,21 +2606,27 @@ class ControlHandler:
                         )
                     except KeyError:
                         profile = None
-                declared_code = None
+                declared = False
                 if isinstance(profile, RadioProfile):
                     if profile.vfo_scheme == "ab":
-                        declared_code = (
+                        declared = (
                             profile.swap_ab_code
                             if name == "vfo_swap"
                             else profile.equal_ab_code
-                        )
+                        ) is not None
                     elif profile.vfo_scheme == "main_sub":
-                        declared_code = (
+                        declared = (
                             profile.swap_main_sub_code
                             if name == "vfo_swap"
                             else profile.equal_main_sub_code
-                        )
-                if declared_code is None:
+                        ) is not None
+                    elif profile.vfo_scheme == "ab_shared":
+                        # Yaesu dual-RX CAT rigs (FTX-1, MOR-2531) declare
+                        # the MAIN↔SUB primitives as native CAT commands
+                        # (vfo_swap = SV;, vfo_equalize = AB;, OM 2508-C),
+                        # not CI-V opcode bytes.
+                        declared = profile.supports_command(name)
+                if not declared:
                     raise ValueError(
                         f"command {name!r} is not supported by active profile"
                     )

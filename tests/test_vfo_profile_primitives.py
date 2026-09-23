@@ -30,11 +30,16 @@ _SUPPORTED = (
     ("IC-9700", "main_sub"),
 )
 _UNSUPPORTED = (
-    ("FTX-1", "ab_shared"),
     ("TX-500", "ab"),
     ("X6100", "ab"),
     ("X6200", "ab"),
 )
+# FTX-1 (MOR-2531): the ``ab_shared`` scheme declares the MAIN↔SUB
+# primitives as native CAT commands (``vfo_swap`` = SV;, ``vfo_equalize`` =
+# AB;, OM 2508-C) instead of CI-V opcode fields. The web handler admits the
+# intents and ``YaesuCatPoller`` dispatches them; ``RadioPoller`` (the CI-V
+# dispatcher) never serves an ab_shared profile and still refuses.
+_CAT_DECLARED = (("FTX-1", "ab_shared"),)
 
 
 def _radio(model: str) -> SimpleNamespace:
@@ -63,7 +68,7 @@ def _handler(radio: SimpleNamespace, queue: CommandQueue) -> ControlHandler:
     )
 
 
-@pytest.mark.parametrize(("model", "family"), _SUPPORTED + _UNSUPPORTED)
+@pytest.mark.parametrize(("model", "family"), _SUPPORTED + _UNSUPPORTED + _CAT_DECLARED)
 def test_shipped_profiles_pin_exact_vfo_primitive_families(
     model: str,
     family: str,
@@ -82,6 +87,16 @@ def test_shipped_profiles_pin_exact_vfo_primitive_families(
             assert profile.equal_main_sub_code is not None
             assert profile.swap_ab_code is None
             assert profile.equal_ab_code is None
+    elif (model, family) in _CAT_DECLARED:
+        # ab_shared declares no CI-V opcode fields; the primitives are the
+        # native CAT commands and the capability tags ride the profile.
+        assert profile.swap_ab_code is None
+        assert profile.equal_ab_code is None
+        assert profile.swap_main_sub_code is None
+        assert profile.equal_main_sub_code is None
+        assert profile.supports_command("vfo_swap")
+        assert profile.supports_command("vfo_equalize")
+        assert {"vfo_swap", "vfo_equalize"} <= profile.capabilities
     else:
         assert profile.swap_ab_code is None
         assert profile.equal_ab_code is None
@@ -165,6 +180,46 @@ async def test_absent_vfo_primitive_direct_poller_command_fails_closed(
     model: str,
     queued_command: VfoSwap | VfoEqualize,
 ) -> None:
+    radio = _radio(model)
+    poller = RadioPoller(radio, CommandQueue())
+
+    with pytest.raises(NotImplementedError, match="profile declares no matching"):
+        await poller._execute(queued_command)  # noqa: SLF001
+
+    radio.swap_vfo_ab.assert_not_awaited()
+    radio.equalize_vfo_ab.assert_not_awaited()
+    radio.swap_main_sub.assert_not_awaited()
+    radio.equalize_main_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", [model for model, _family in _CAT_DECLARED])
+async def test_cat_declared_vfo_primitives_admit_at_the_handler(model: str) -> None:
+    """ab_shared profiles admit via their declared CAT commands (MOR-2531)."""
+    radio = _radio(model)
+    queue = CommandQueue()
+    handler = _handler(radio, queue)
+
+    assert await handler._enqueue_command("vfo_swap", {}) == {}  # noqa: SLF001
+    assert await handler._enqueue_command("vfo_equalize", {}) == {}  # noqa: SLF001
+    entries = queue.drain_entries()
+    assert [type(entry.command) for entry in entries] == [VfoSwap, VfoEqualize]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", [model for model, _family in _CAT_DECLARED])
+@pytest.mark.parametrize(
+    "queued_command",
+    (VfoSwap(), VfoEqualize()),
+    ids=("swap", "equalize"),
+)
+async def test_cat_declared_profiles_fail_closed_on_the_civ_poller(
+    model: str,
+    queued_command: VfoSwap | VfoEqualize,
+) -> None:
+    """RadioPoller is the CI-V dispatcher and never serves an ab_shared
+    (Yaesu CAT) profile in production — YaesuCatPoller does — so it refuses
+    the command rather than guessing a route."""
     radio = _radio(model)
     poller = RadioPoller(radio, CommandQueue())
 

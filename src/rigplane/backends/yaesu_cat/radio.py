@@ -3162,6 +3162,29 @@ class YaesuCatRadio:
     async def get_main_sub_tracking(self) -> bool:
         raise NotImplementedError("Main/Sub tracking not supported on this radio")
 
+    # -- MAIN/SUB receiver operations (dual-RX, ab_shared scheme) -------------
+
+    async def swap_main_sub(self) -> None:
+        """Swap the MAIN-side and SUB-side receiver state (FTX-1 ``SV;``).
+
+        Radio-level operation with no receiver parameter: OM 2508-C ``SV;``
+        SWAP VFO "Changes the MAIN-side and SUB-side" of the whole rig, so
+        a receiver index would be meaningless.  A profile without the
+        ``vfo_swap`` command raises :class:`~rigplane.exceptions.CommandError`
+        from :meth:`_get_spec` before anything is written.
+        """
+        await self._write("vfo_swap")
+
+    async def equalize_main_sub(self) -> None:
+        """Copy the MAIN-side state onto the SUB-side (FTX-1 ``AB;``).
+
+        Radio-level M=S equalize: OM 2508-C ``AB;`` is MAIN-side to
+        SUB-side.  A profile without the ``vfo_equalize`` command raises
+        :class:`~rigplane.exceptions.CommandError` from :meth:`_get_spec`
+        before anything is written.
+        """
+        await self._write("vfo_equalize")
+
     # -- Memory (not supported on Yaesu) ----------------------------------------
 
     async def set_memory_mode(self, channel: int) -> None:
