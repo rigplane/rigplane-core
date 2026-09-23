@@ -5,10 +5,13 @@
 
   "common.action.save": "Сохранить",
   "common.action.cancel": "Отмена",
+  "common.action.ok": "ОК",
+  "common.action.working": "Выполняется…",
   "common.action.retry": "Повторить",
   "common.action.close": "Закрыть",
   "common.action.copy": "Копировать",
   "common.action.copied": "Скопировано",
+  "common.dialog.confirmTitle": "Подтверждение",
 
   "core.app.backendError": "Ошибка сервера: {detail}",
   "core.app.serverUnreachable": "Сервер недоступен после нескольких попыток. Проверьте соединение и перезагрузите страницу вручную.",
@@ -46,7 +49,7 @@
   "core.statusbar.power.failedTurnOn": "Не удалось включить трансивер: {detail}",
   "core.statusbar.power.labelOn": "ON",
   "core.statusbar.power.labelOff": "OFF",
-  "core.statusbar.power.labelUnknown": "НЕИЗВЕСТНО",
+  "core.statusbar.power.labelUnknown": "ПИТАНИЕ",
   "core.statusbar.connection.toggleActive": "Отключиться от трансивера (управляющий канал активен)",
   "core.statusbar.connection.toggleInactive": "Подключиться к трансиверу (управляющий канал не активен)",
   "core.statusbar.connection.actionDisconnect": "Отключить",

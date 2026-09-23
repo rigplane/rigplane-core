@@ -5,10 +5,13 @@
 
   "common.action.save": "保存",
   "common.action.cancel": "キャンセル",
+  "common.action.ok": "OK",
+  "common.action.working": "処理中…",
   "common.action.retry": "再試行",
   "common.action.close": "閉じる",
   "common.action.copy": "コピー",
   "common.action.copied": "コピーしました",
+  "common.dialog.confirmTitle": "確認",
 
   "core.app.backendError": "サーバーエラー: {detail}",
   "core.app.serverUnreachable": "何度試してもサーバーに接続できません。接続を確認して手動で再読み込みしてください。",
@@ -44,7 +47,7 @@
   "core.statusbar.power.failedTurnOn": "トランシーバーの電源を入れられませんでした: {detail}",
   "core.statusbar.power.labelOn": "ON",
   "core.statusbar.power.labelOff": "OFF",
-  "core.statusbar.power.labelUnknown": "不明",
+  "core.statusbar.power.labelUnknown": "電源",
   "core.statusbar.connection.toggleActive": "トランシーバーから切断 (制御リンク有効)",
   "core.statusbar.connection.toggleInactive": "トランシーバーに接続 (制御リンク無効)",
   "core.statusbar.connection.actionDisconnect": "切断",
