@@ -1057,7 +1057,9 @@ class TestLifecycle:
         )
         radio.state_store = own_store
         radio.state_model_service = own_model_service
-        # A seat also attached a different store; the capability wins.
+        # A seat also attached a scheduler and a different store; the
+        # capability wins on both.
+        radio._acquisition_scheduler = own_scheduler
         radio._state_store = StateStore()
 
         srv = RigctldServer(radio, cfg)

@@ -40,8 +40,13 @@ _MAIN_ATT = FieldPath.receiver("main", "operator_controls", "att")
 _MAIN_NOTCH_FREQ = FieldPath.receiver("main", "operator_controls", "manual_notch_freq")
 _SUB_NOTCH_FREQ = FieldPath.receiver("sub", "operator_controls", "manual_notch_freq")
 
-# The bench answer table of test_ftx1_sub_acquisition.py already serves the
-# full FTX-1 poll set except the two commands the conditional fields issue.
+# The bench answer table of test_ftx1_sub_acquisition.py serves the FTX-1
+# slow-controls lane. The web poller also runs the tx-controls lane
+# (``poll_tx_controls``: power, mic gain, compressor, VOX, split,
+# clarifier RIT/XIT, tuner, dial lock, the CW keyer family), whose reads
+# that table never needed — a missing answer makes the radio answer ``?;``
+# against a declared path, which aborts the startup gate as a declared
+# command defect instead of letting the conditional fields be observed.
 # MAIN 14.0432 MHz USB / SUB 144.5 MHz USB keeps the profile clauses
 # permissive: freq <= 60 MHz and modes outside the FM family, so the gate
 # requires exactly the three conditional fields to be observed.
@@ -49,6 +54,20 @@ _CAT_ANSWERS = {
     **_FTX1_BENCH_ANSWERS,
     "RA0;": "RA00",
     "BP01;": "BP01035",
+    "PC;": "PC0050",
+    "MG;": "MG050",
+    "PR0;": "PR00",
+    "PL;": "PL050",
+    "VX;": "VX0",
+    "ST;": "ST0",
+    "CF000;": "CF0000000",
+    "CF001;": "CF001+0000",
+    "AC;": "AC000",
+    "LK;": "LK0",
+    "KS;": "KS020",
+    "KP;": "KP00",
+    "BI;": "BI0",
+    "SD;": "SD0100",
 }
 
 # Gate completion must beat this even under CI load; at origin/main the
