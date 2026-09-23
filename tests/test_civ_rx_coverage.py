@@ -35,7 +35,6 @@ import dataclasses
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -65,7 +64,6 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
-from rigplane.core.command_service import CommandService, command_intent_from_request
 from rigplane.core.tx_target import KnownTxTarget
 from rigplane.core.tx_observation import (
     OBSERVED_PTT_PATH,
@@ -92,7 +90,6 @@ from rigplane.core.state_store import (
 from rigplane.types import CivFrame, Mode, ScopeFixedEdge, bcd_encode
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
 from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
-from rigplane.web.server import _HttpCommandExecutor
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -5607,6 +5604,43 @@ async def test_powerstat_ack_records_last_commanded_and_answers_clear_it(
     )
 
 
+@pytest.mark.asyncio
+async def test_ambiguous_reply_and_swallowed_nak_write_no_power_on_observation(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2544: only the 0xFB ACK is power evidence for the store. An
+    ambiguous reply (neither 0xFB nor 0xFA) and a swallowed boot-time
+    power-on NAK write no ``power_on`` observation — the store field keeps
+    the value it had and the observation counter does not move.
+    """
+    with patch.object(
+        radio, "_send_civ_expect", AsyncMock(return_value=_make_frame(cmd=0xFB))
+    ):
+        await radio.set_powerstat(False)
+    before = radio._state_store.snapshot()  # noqa: SLF001
+    assert before.field(_POWER_ON_PATH).value is False  # noqa: SLF001
+
+    # An ambiguous reply is not evidence.
+    with patch.object(
+        radio,
+        "_send_civ_expect",
+        AsyncMock(return_value=_make_frame(cmd=0x03, data=b"\x12\x34")),
+    ):
+        await radio.set_powerstat(True)
+    snapshot = radio._state_store.snapshot()  # noqa: SLF001
+    assert snapshot.field(_POWER_ON_PATH).value is False  # noqa: SLF001
+    assert snapshot.observation_seq == before.observation_seq  # noqa: SLF001
+
+    # A swallowed boot-time power-on NAK is not evidence either.
+    with patch.object(
+        radio, "_send_civ_expect", AsyncMock(return_value=_make_frame(cmd=0xFA))
+    ):
+        await radio.set_powerstat(True)
+    snapshot = radio._state_store.snapshot()  # noqa: SLF001
+    assert snapshot.field(_POWER_ON_PATH).value is False  # noqa: SLF001
+    assert snapshot.observation_seq == before.observation_seq  # noqa: SLF001
+
+
 def _public_power_payload(radio: IcomRadio, *, receiver_count: int) -> dict[str, Any]:
     """The exact public payload the frontend consumes for ``powerOn``."""
     return build_public_state_payload_from_snapshot(
@@ -5616,28 +5650,18 @@ def _public_power_payload(radio: IcomRadio, *, receiver_count: int) -> dict[str,
     )
 
 
-async def _http_power_command(radio: IcomRadio, on: bool) -> None:
-    """Drive the real HTTP power seam against a radio that answers 0xFB.
+async def _acked_power_command(radio: IcomRadio, on: bool) -> None:
+    """Run the real power command against a radio that answers 0xFB.
 
-    Goes through ``CommandService.execute`` + ``_HttpCommandExecutor`` (the
-    ``/api/v1/radio/power`` path), so the ACKed power state lands in the
-    store as a generation-stamped command-response observation.
+    Calls ``IcomRadio.set_powerstat`` directly — the provider seam every
+    command surface funnels into — so the ACKed power state lands in the
+    store as a generation-stamped provider observation built by the same
+    helper the CI-V receive path uses.
     """
-    service = CommandService(
-        executor=_HttpCommandExecutor(server=SimpleNamespace(_radio=radio)),
-        state_store=radio._state_store,  # noqa: SLF001
-    )
     with patch.object(
         radio, "_send_civ_expect", AsyncMock(return_value=_make_frame(cmd=0xFB))
     ):
-        await service.execute(
-            command_intent_from_request(
-                "set_powerstat",
-                {"on": on},
-                source="http",
-                command_id=f"test-power-{'on' if on else 'off'}",
-            )
-        )
+        await radio.set_powerstat(on)
 
 
 @pytest.mark.asyncio
@@ -5659,9 +5683,9 @@ async def test_power_cycle_through_public_payload_and_field_status(
     retained True is never published (a boot-time generation clear reads
     unknown); ACKed power-on + first answer → ``true``.
 
-    RED at 3b4473cc: the executor returned a bare result and the runtime had
-    no ``_last_commanded_powerstat`` (``AttributeError``), so the ACKed
-    power-off left the stale observed True in the payload and every
+    RED at 3b4473cc: ``set_powerstat`` observed nothing from the ACK and the
+    radio had no ``_last_commanded_powerstat`` (``AttributeError``), so the
+    ACKed power-off left the stale observed True in the payload and every
     generation clear dropped ``powerOn`` back to ``None``.
     """
     radio._profile = resolve_radio_profile(model=model)  # noqa: SLF001
@@ -5681,9 +5705,9 @@ async def test_power_cycle_through_public_payload_and_field_status(
     assert payload["powerOn"] is True
     assert payload["fieldStatus"]["powerOn"]["observed"] is True
 
-    # ACKed power-off → the command response observes False; the payload
+    # ACKed power-off → the provider observes False from the ACK; the payload
     # flips immediately.
-    await _http_power_command(radio, False)
+    await _acked_power_command(radio, False)
     assert radio._last_commanded_powerstat is False  # noqa: SLF001
     payload = _public_power_payload(radio, receiver_count=receiver_count)
     assert payload["powerOn"] is False
@@ -5700,8 +5724,8 @@ async def test_power_cycle_through_public_payload_and_field_status(
     with pytest.raises(KeyError):
         radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
 
-    # ACKed power-on → the command response observes True…
-    await _http_power_command(radio, True)
+    # ACKed power-on → the provider observes True from the ACK…
+    await _acked_power_command(radio, True)
     assert radio._last_commanded_powerstat is True  # noqa: SLF001
     payload = _public_power_payload(radio, receiver_count=receiver_count)
     assert payload["powerOn"] is True

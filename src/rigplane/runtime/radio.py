@@ -18,6 +18,7 @@ import os
 import socket as _socket
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import replace as _replace_dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
 if TYPE_CHECKING:
@@ -174,6 +175,7 @@ from rigplane.commands import get_repeater_tsql as _get_repeater_tsql_cmd
 from rigplane.core.env_config import get_managed_tx_enabled
 from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.core.radio_protocol import ManagedTxSupervisor
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import (
     RADIO_READBACK_SOURCES,
@@ -560,11 +562,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # MOR-2544: last power command the radio ACKed (0xFB), retained
         # OUTSIDE the StateStore so it survives ``advance_generation``
         # (watchdog timeout, reconnect attempts, soft reconnects — all clear
-        # the store). Set in ``set_powerstat`` on an accepted command only;
+        # the store). Set in ``set_powerstat`` on an accepted command only
+        # (which also observes ``power_on`` into the store from the ACK);
         # cleared when the radio answers again or a 0x18 readback arrives
-        # (``runtime/_civ_rx.py``). Never published as ``True`` — only fresh
-        # answers prove power on. A process restart loses it, which reads as
-        # an honest unknown.
+        # (``runtime/_civ_rx.py``). The web fallback that republishes this
+        # attribute while the store is silent never republishes ``True``
+        # from it — only fresh answers prove power on. A process restart
+        # loses it, which reads as an honest unknown.
         self._last_commanded_powerstat: bool | None = None
         self._state_model_service: RadioStateModelService | None = None
         self._state_diagnostics: StateDiagnosticsRecorder | None = None
@@ -5190,10 +5194,24 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 raise CommandError("Radio rejected power off")
         if ack is True:
             # MOR-2544: the 0xFB ACK is the radio's own confirmation of the
-            # new power state. A swallowed boot NAK (ack is False) or an
-            # ambiguous reply (ack is None) is not evidence and leaves the
-            # retained state untouched.
+            # new power state, so the provider observes it directly — built
+            # with the same observation helper the CI-V receive path uses
+            # (``CivRuntime._observation``), stamped with the store's live
+            # provider generation and announced through the same change
+            # notification the receive path sends. A swallowed boot NAK
+            # (ack is False) or an ambiguous reply (ack is None) is not
+            # evidence and leaves the retained state untouched.
             self._last_commanded_powerstat = on
+            observation = _replace_dataclass(
+                self._civ_runtime._observation(
+                    FieldPath.global_("tx_state", "power_on"),
+                    on,
+                    frame=resp,
+                ),
+                provider_generation=self._state_store.provider_generation,
+            )
+            changeset = self._state_store.apply(observation)
+            self._civ_runtime._notify_state_store_changed(changeset)
 
     # --- Memory Commands ---
 

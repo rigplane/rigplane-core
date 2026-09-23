@@ -51,7 +51,6 @@ from ..core.command_service import (
     CommandExecutionResult,
     CommandService,
     command_intent_from_request,
-    command_response_observation,
 )
 from ..core.command_dispatch import (
     CommandUnsupportedError,
@@ -443,24 +442,7 @@ class _HttpCommandExecutor:
             return CommandExecutionResult(details={"transaction_result": result})
         if intent.name == "set_powerstat":
             await radio.set_powerstat(bool(params["power_on"]))  # type: ignore[attr-defined]
-            # MOR-2544: an accepted power command is confirmed by the radio's
-            # own 0xFB ACK (parsed inside ``set_powerstat`` — a rejected
-            # power-off raises before this point), so the new power state is
-            # real evidence, not optimistic bookkeeping. Return it as a
-            # command-response observation; ``CommandService.execute`` stamps
-            # the live provider generation. Same mechanism the public-API
-            # executor already uses for every targeted command
-            # (``runtime/sync.py``).
-            return CommandExecutionResult(
-                observations=(
-                    command_response_observation(
-                        intent,
-                        timestamp_monotonic=time.monotonic(),
-                        provider="icom_civ",
-                        transport="civ",
-                    ),
-                )
-            )
+            return CommandExecutionResult()
         raise ValueError(f"unsupported HTTP command intent: {intent.name!r}")
 
 
