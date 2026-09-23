@@ -315,29 +315,60 @@ freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
 
+# MOR-2540 (Po/SWR/ALC/COMP polled during RX): measured on a live IC-7610
+# over LAN (core 3.0.0b3, 2026-09-22) -- the four 0x15 TX meters were
+# cadence-polled at 0.2s while receiving, the oversubscribed scheduler (~28
+# CI-V commands/s at the 35 ms LAN pacing) flipped their freshness
+# fresh<->stale, and the Station Meters strip blinked. These meters are
+# meaningful only while transmitting, so they carry the same gating shape as
+# rigs/ic7300.toml's MOR-1485/MOR-2425 block and rigs/ftx1.toml: `tx_only =
+# true` makes AcquisitionScheduler.due_requests skip the cadence group
+# entirely while PTT reads false (zero steady-state RX cost), and the
+# `available_when` clause declares them absent while `global.tx_state.ptt`
+# reads false so StateFreshnessService.tick discards the last TX values on
+# dekey. Cadence/TTL/coalescing are unchanged (0.2s/2.0s/0.2s) -- they now
+# fire only inside a TX window. vd/id below stay unconditional supply
+# telemetry and the S-meter stays the unconditional RX meter, as on the
+# IC-7300.
 [state_acquisition.field_policies."global.meters.power"]
 cadence_seconds = 0.2
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
 
 [state_acquisition.field_policies."global.meters.swr"]
 cadence_seconds = 0.2
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
 
 [state_acquisition.field_policies."global.meters.alc"]
 cadence_seconds = 0.2
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
 
 [state_acquisition.field_policies."global.meters.comp"]
 cadence_seconds = 0.2
 freshness_ttl_seconds = 2.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.2
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
 
 [state_acquisition.field_policies."global.meters.vd"]
 cadence_seconds = 0.2

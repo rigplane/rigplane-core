@@ -113,17 +113,46 @@ _ON_DEMAND_FIELD_NAMES = frozenset(
 #: ``_inherited_default_out_of_class`` below, which walks the
 #: ``capabilities`` of every profile that declares ``field_policies`` and
 #: keeps only paths where that comparison fails. Profiles declaring no
-#: ``field_policies`` (IC-705, IC-9700, X6100) are outside this list: the
-#: same walk without that skip finds 28 more such paths there (12, 12, 4),
-#: which no test bounds.
+#: ``field_policies`` (X6100, since MOR-2540 the only one) are outside this
+#: list: the same walk without that skip finds 4 more such paths there,
+#: which no test bounds. IC-705/IC-9700 joined the walked set when MOR-2540
+#: gave their four TX meters ``field_policies`` entries.
 _INHERITED_DEFAULT_OUT_OF_CLASS: dict[str, tuple[FieldPath, ...]] = {
     "X6200": (
         # inherits default 2.0s; live bound is 1.0s
         FieldPath.active("main", "freq_mode", "freq_hz"),
     ),
+    "IC-705": (
+        # vd/id inherit default 2.0s; stream meter bound is 0.4s
+        FieldPath.global_("meters", "id"),
+        FieldPath.global_("meters", "vd"),
+        # inherits default 2.0s; live bound is 1.0s
+        FieldPath.global_("tx_state", "ptt"),
+        FieldPath.active("main", "freq_mode", "freq_hz"),
+        FieldPath.active("main", "freq_mode", "mode"),
+        # inherits default 2.0s; stream meter bound is 0.4s
+        FieldPath.receiver("main", "meters", "s_meter"),
+        # inherits default 2.0s; live bound is 1.0s
+        FieldPath.unselected("main", "freq_mode", "freq_hz"),
+        FieldPath.unselected("main", "freq_mode", "mode"),
+    ),
     "IC-7610": (
         # inherits default 2.0s; live bound is 1.0s
         FieldPath.active("main", "freq_mode", "mode"),
+        FieldPath.active("sub", "freq_mode", "mode"),
+    ),
+    "IC-9700": (
+        # vd/id inherit default 2.0s; stream meter bound is 0.4s
+        FieldPath.global_("meters", "id"),
+        FieldPath.global_("meters", "vd"),
+        # inherits default 2.0s; live bound is 1.0s
+        FieldPath.global_("tx_state", "ptt"),
+        FieldPath.active("main", "freq_mode", "freq_hz"),
+        FieldPath.active("main", "freq_mode", "mode"),
+        # inherits default 2.0s; stream meter bound is 0.4s
+        FieldPath.receiver("main", "meters", "s_meter"),
+        # inherits default 2.0s; live bound is 1.0s
+        FieldPath.active("sub", "freq_mode", "freq_hz"),
         FieldPath.active("sub", "freq_mode", "mode"),
     ),
     "IC-7300": (
@@ -832,7 +861,7 @@ def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
                 )
 
     assert not failures, f"field_policies entries outside their class: {failures}"
-    assert checked == {"FTX-1", "IC-7300", "IC-7610", "X6200"}
+    assert checked == {"FTX-1", "IC-705", "IC-7300", "IC-7610", "IC-9700", "X6200"}
 
 
 def _inherited_default_out_of_class() -> dict[str, tuple[FieldPath, ...]]:
@@ -1747,10 +1776,22 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("FTX-1", "receiver.main.operator_controls.att"),
         ("FTX-1", "receiver.main.operator_controls.manual_notch_freq"),
         ("FTX-1", "receiver.sub.operator_controls.manual_notch_freq"),
+        ("IC-705", "global.meters.alc"),
+        ("IC-705", "global.meters.comp"),
+        ("IC-705", "global.meters.power"),
+        ("IC-705", "global.meters.swr"),
         ("IC-7300", "global.meters.alc"),
         ("IC-7300", "global.meters.comp"),
         ("IC-7300", "global.meters.power"),
         ("IC-7300", "global.meters.swr"),
+        ("IC-7610", "global.meters.alc"),
+        ("IC-7610", "global.meters.comp"),
+        ("IC-7610", "global.meters.power"),
+        ("IC-7610", "global.meters.swr"),
+        ("IC-9700", "global.meters.alc"),
+        ("IC-9700", "global.meters.comp"),
+        ("IC-9700", "global.meters.power"),
+        ("IC-9700", "global.meters.swr"),
     }
 
 
