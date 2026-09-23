@@ -832,7 +832,7 @@ def _stateful_repeater_mock(*, tone: bool, tsql: bool):
     radio = MagicMock(spec=Radio)
     radio.connected = True
     radio.model = "FTX-1"
-    radio.capabilities = {"repeater_tone", "tsql"}
+    radio.capabilities = {"repeater_tone", "tsql", "sql_type"}
     store = {"tone": tone, "tsql": tsql}
 
     async def _get_tone(receiver: int = 0) -> bool:
@@ -902,3 +902,49 @@ async def test_tsql_set_never_requests_unrepresentable_pair():
     assert store == {"tone": False, "tsql": False}
     writes = [c.args[0] for c in radio.set_repeater_tsql.call_args_list]
     assert True in writes and False in writes
+
+
+def _icom_selector_mock(*, start: str):
+    """One-selector tone radio (OFF/TONE/TSQL), Icom CI-V shaped: TSQL is a
+    selector position of its own, so it reads (tone off, tsql on) — the pair
+    the coupled CT select cannot express."""
+    radio = MagicMock(spec=Radio)
+    radio.connected = True
+    radio.model = "IC-9700"
+    radio.capabilities = {"repeater_tone", "tsql", "sql_type"}
+    store = {"mode": start, "writes": []}
+
+    async def _get_tone(receiver: int = 0) -> bool:
+        return store["mode"] == "TONE"
+
+    async def _get_tsql(receiver: int = 0) -> bool:
+        return store["mode"] == "TSQL"
+
+    async def _set_tone(on: bool, receiver: int = 0) -> None:
+        store["writes"].append(("tone", on))
+        store["mode"] = "TONE" if on else "OFF"
+
+    async def _set_tsql(on: bool, receiver: int = 0) -> None:
+        store["writes"].append(("tsql", on))
+        store["mode"] = "TSQL" if on else "OFF"
+
+    radio.get_repeater_tone = AsyncMock(side_effect=_get_tone)
+    radio.get_repeater_tsql = AsyncMock(side_effect=_get_tsql)
+    radio.set_repeater_tone = AsyncMock(side_effect=_set_tone)
+    radio.set_repeater_tsql = AsyncMock(side_effect=_set_tsql)
+    return radio, store
+
+
+@pytest.mark.parametrize(
+    ("check_id", "capability"),
+    [("repeater_tone.set", "repeater_tone"), ("tsql.set", "tsql")],
+)
+async def test_selector_radio_in_tsql_skips_before_any_write(check_id, capability):
+    """A selector radio in TSQL reads (tone off, tsql on) — not
+    representable on the coupled CT select — so the check SKIPs before the
+    first write and the radio is still in TSQL afterwards."""
+    radio, store = _icom_selector_mock(start="TSQL")
+    check = await _run(radio, check_id=check_id, capability=capability)
+    assert check.status is CheckStatus.SKIP
+    assert store["writes"] == []
+    assert store["mode"] == "TSQL"
