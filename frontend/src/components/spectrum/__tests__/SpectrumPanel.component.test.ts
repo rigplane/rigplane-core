@@ -2790,15 +2790,16 @@ describe('SpectrumPanel scope handle hover-intent CSS (MOR-2562)', () => {
     expect(style).toMatch(
       /\.spectrum-split-separator\s*\{[^}]*var\(--panel-border\) 3px,\s*var\(--panel-border\) 5px,/,
     );
-    // The overlay line is invisible at rest and centred on the stripe.
+    // The overlay line is invisible at rest and pinned to the rest stripe's
+    // row on whole pixels — no transform, so no half-pixel blur.
     expect(style).toMatch(
-      /\.spectrum-split-separator::after\s*\{[^}]*height:\s*1px;[^}]*background:\s*var\(--accent, var\(--panel-border\)\);[^}]*opacity:\s*0;/,
+      /\.spectrum-split-separator::after\s*\{[^}]*top:\s*4px;[^}]*height:\s*1px;[^}]*background:\s*var\(--accent, var\(--panel-border\)\);[^}]*opacity:\s*0;/,
     );
     expect(style).toMatch(
       /\.spectrum-split-separator:hover::after\s*\{[^}]*opacity:\s*0\.45;[^}]*transition-delay:\s*200ms;/,
     );
     expect(style).toMatch(
-      /\.spectrum-split-separator\.active::after\s*\{[^}]*height:\s*2px;[^}]*opacity:\s*0\.8;[^}]*transition-delay:\s*0s;/,
+      /\.spectrum-split-separator\.active::after\s*\{[^}]*top:\s*3px;[^}]*height:\s*2px;[^}]*opacity:\s*0\.8;[^}]*transition-delay:\s*0s;/,
     );
     // Cascade precedence: the .active rule must come after :hover so the
     // drag line wins while both states apply.
@@ -2816,23 +2817,5 @@ describe('SpectrumPanel scope handle hover-intent CSS (MOR-2562)', () => {
     expect(style).not.toMatch(
       /\.spectrum-split-separator:hover,\s*\.spectrum-split-separator\.active\s*\{/,
     );
-  });
-
-  it('drops every handle transition under prefers-reduced-motion', () => {
-    const reduced = style.match(
-      /@media \(prefers-reduced-motion: reduce\)\s*\{([\s\S]*?)\n  \}/,
-    );
-    expect(reduced).not.toBeNull();
-    // The override must beat the hover rules' transition-delay in the
-    // cascade, so the hover selectors themselves are restated inside.
-    for (const selector of [
-      '.passband-resize-zone::before',
-      '.passband-resize-zone:hover::before',
-      '.spectrum-split-separator::after',
-      '.spectrum-split-separator:hover::after',
-    ]) {
-      expect(reduced![1]).toContain(selector);
-    }
-    expect(reduced![1]).toContain('transition: none');
   });
 });

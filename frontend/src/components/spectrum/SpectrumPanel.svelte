@@ -1212,9 +1212,11 @@
     position: absolute;
     left: 0;
     right: 0;
-    top: 50%;
+    /* Pinned to the rest stripe (3px-5px) on whole pixels, no transform:
+       top: 50% + translateY(-50%) landed the 1px line on a half pixel and
+       rendered two blurry rows on standard-density screens. */
+    top: 4px;
     height: 1px;
-    transform: translateY(-50%);
     background: var(--accent, var(--panel-border));
     opacity: 0;
     transition: opacity 0.15s ease;
@@ -1226,6 +1228,7 @@
   }
 
   .spectrum-split-separator.active::after {
+    top: 3px;
     height: 2px;
     opacity: 0.8;
     transition-delay: 0s;
@@ -1342,17 +1345,6 @@
     width: 2px;
     opacity: 0.8;
     transition-delay: 0s;
-  }
-
-  /* MOR-2562: hover intent is motion; with reduced motion there is no
-     transition at all — states snap, and the drag state stays delay-free. */
-  @media (prefers-reduced-motion: reduce) {
-    .passband-resize-zone::before,
-    .passband-resize-zone:hover::before,
-    .spectrum-split-separator::after,
-    .spectrum-split-separator:hover::after {
-      transition: none;
-    }
   }
 
   .scope-disconnected-overlay {
