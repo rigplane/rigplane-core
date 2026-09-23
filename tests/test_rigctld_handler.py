@@ -4202,6 +4202,94 @@ async def test_yaesu_get_func_nr(
     assert resp.values == ["1"]
 
 
+def _seed_store_current(store: StateStore, path: str, value: object) -> None:
+    """Feed an observation at a nonzero provider generation (post-connect).
+
+    Mirrors a live store after ``connect``: the generation is begun first,
+    then the observation is bound to it (``apply_current``), never applied
+    at generation 0.
+    """
+    store.begin_provider_generation()
+    store.apply_current(
+        Observation(
+            path=FieldPath.parse(path),
+            value=value,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=1.0,
+            quality=("confirmed",),
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_func_tone(
+    yaesu_handler: RigctldHandler, yaesu_radio: AsyncMock
+) -> None:
+    yaesu_radio.get_repeater_tone.return_value = True
+    resp = await yaesu_handler.execute(get_cmd("get_func", "TONE"))
+    assert resp.ok
+    assert resp.values == ["1"]
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_func_tsql(
+    yaesu_handler: RigctldHandler, yaesu_radio: AsyncMock
+) -> None:
+    yaesu_radio.get_repeater_tsql.return_value = False
+    resp = await yaesu_handler.execute(get_cmd("get_func", "TSQL"))
+    assert resp.ok
+    assert resp.values == ["0"]
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_func_tone_prefers_state_store(
+    yaesu_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    _seed_store_current(store, "receiver.main.operator_toggles.repeater_tone", True)
+    yaesu_radio.get_repeater_tone.return_value = False
+    handler = RigctldHandler(yaesu_radio, RigctldConfig(), state_store=store)
+
+    resp = await handler.execute(get_cmd("get_func", "TONE"))
+
+    assert resp.ok
+    assert resp.values == ["1"]
+    yaesu_radio.get_repeater_tone.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_func_tsql_prefers_state_store(
+    yaesu_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    _seed_store_current(store, "receiver.main.operator_toggles.repeater_tsql", True)
+    yaesu_radio.get_repeater_tsql.return_value = False
+    handler = RigctldHandler(yaesu_radio, RigctldConfig(), state_store=store)
+
+    resp = await handler.execute(get_cmd("get_func", "TSQL"))
+
+    assert resp.ok
+    assert resp.values == ["1"]
+    yaesu_radio.get_repeater_tsql.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_get_func_tone_backend_fallback_records_state_store(
+    yaesu_radio: AsyncMock,
+) -> None:
+    store = StateStore()
+    yaesu_radio.get_repeater_tone.return_value = True
+    handler = RigctldHandler(yaesu_radio, RigctldConfig(), state_store=store)
+
+    resp = await handler.execute(get_cmd("get_func", "TONE"))
+
+    assert resp.ok
+    assert resp.values == ["1"]
+    field = store.snapshot().field("receiver.main.operator_toggles.repeater_tone")
+    assert field.value is True
+    assert field.source.source == "hamlib_response"
+
+
 @pytest.mark.asyncio
 async def test_yaesu_get_func_lock(
     yaesu_handler: RigctldHandler, yaesu_radio: AsyncMock
@@ -4331,6 +4419,53 @@ async def test_yaesu_set_func_nr(
 
 
 @pytest.mark.asyncio
+async def test_yaesu_set_func_tone(
+    yaesu_handler: RigctldHandler, yaesu_radio: AsyncMock
+) -> None:
+    resp = await yaesu_handler.execute(set_cmd("set_func", "TONE", "1"))
+    assert resp.ok
+    yaesu_radio.set_repeater_tone.assert_awaited_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_func_tsql(
+    yaesu_handler: RigctldHandler, yaesu_radio: AsyncMock
+) -> None:
+    resp = await yaesu_handler.execute(set_cmd("set_func", "TSQL", "0"))
+    assert resp.ok
+    yaesu_radio.set_repeater_tsql.assert_awaited_once_with(False)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_func_tsql_refused_answers_rprt_minus_9(
+    yaesu_handler: RigctldHandler, yaesu_radio: AsyncMock
+) -> None:
+    """U TSQL 1 from OFF asks for the pair CT cannot represent (tone off,
+    tsql on); the backend refuses with ValueError and the client reads the
+    rig's rejection, RPRT -9 (ERJCTED)."""
+    yaesu_radio.set_repeater_tsql.side_effect = ValueError(
+        "tone squelch cannot be on while the repeater tone is off "
+        "(CT has no code for encode-off/decode-on)"
+    )
+    resp = await yaesu_handler.execute(set_cmd("set_func", "TSQL", "1"))
+    assert resp.error == HamlibError.ERJCTED
+
+
+@pytest.mark.asyncio
+async def test_yaesu_set_func_tone_refused_over_dcs_answers_rprt_minus_9(
+    yaesu_handler: RigctldHandler, yaesu_radio: AsyncMock
+) -> None:
+    """A toggle over CT code 3/4/5 (DCS / PR FREQ / REV TONE) is refused by
+    the backend; the client reads RPRT -9, not a success."""
+    yaesu_radio.set_repeater_tone.side_effect = ValueError(
+        "cannot express a CTCSS toggle over CT code 3 "
+        "(DCS/PR FREQ/REV TONE); refusing to overwrite it"
+    )
+    resp = await yaesu_handler.execute(set_cmd("set_func", "TONE", "1"))
+    assert resp.error == HamlibError.ERJCTED
+
+
+@pytest.mark.asyncio
 async def test_yaesu_set_func_lock(
     yaesu_handler: RigctldHandler, yaesu_radio: AsyncMock
 ) -> None:
@@ -4395,6 +4530,18 @@ async def test_yaesu_dump_state(
     resp = await yaesu_handler.execute(get_cmd("dump_state"))
     assert resp.ok
     assert resp.values[1] == "2028"  # Yaesu rig model (from TOML config)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_dump_state_declares_tone_tsql_func_bits(
+    yaesu_handler: RigctldHandler, yaesu_radio: AsyncMock
+) -> None:
+    """has_get_func / has_set_func carry RIG_FUNC_TONE(0x10) | TSQL(0x20)."""
+    yaesu_radio.hamlib_model_id = 2028
+    resp = await yaesu_handler.execute(get_cmd("dump_state"))
+    assert resp.ok
+    assert resp.values[19] == "0x00051A3E"  # has_get_func
+    assert resp.values[20] == "0x00051A3E"  # has_set_func
 
 
 async def test_yaesu_dump_state_honors_toml_model_id(

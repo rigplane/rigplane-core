@@ -215,8 +215,11 @@ _YAESU_DUMP_STATE: list[str] = [
     "0",
     "0",  # preamp
     "0",  # attenuator
-    "0x00051A0E",  # has_get_func
-    "0x00051A0E",  # has_set_func
+    # has_get_func / has_set_func: RIG_FUNC_NB(0x2) | COMP(0x4) | VOX(0x8)
+    # | TONE(0x10) | TSQL(0x20) | NR(0x200) | APF(0x800) | MON(0x1000)
+    # | LOCK(0x10000) | TUNER(0x40000) — bit values per handler.py's table.
+    "0x00051A3E",  # has_get_func
+    "0x00051A3E",  # has_set_func
     "0x540DFB3B",  # has_get_level
     "0x000DFB3B",  # has_set_level
     "0",
@@ -242,6 +245,8 @@ class YaesuRouting:
     _FUNC_PATHS: dict[str, FieldPath] = {
         "NB": FieldPath.receiver("main", "operator_toggles", "nb"),
         "NR": FieldPath.receiver("main", "operator_toggles", "nr"),
+        "TONE": FieldPath.receiver("main", "operator_toggles", "repeater_tone"),
+        "TSQL": FieldPath.receiver("main", "operator_toggles", "repeater_tsql"),
     }
 
     def __init__(self, radio: "Radio", max_power_w: float) -> None:
@@ -538,6 +543,13 @@ class YaesuRouting:
             value = await radio.get_nr_level() > 0
             self._observe(self.state_path_for_func(func), value)
             return RigctldResponse(values=[str(int(value))])
+        if func in ("TONE", "TSQL"):
+            getter = (
+                radio.get_repeater_tone if func == "TONE" else radio.get_repeater_tsql
+            )
+            value = bool(await getter())
+            self._observe(self.state_path_for_func(func), value)
+            return RigctldResponse(values=[str(int(value))])
         if func == "LOCK":
             return RigctldResponse(values=[str(int(await radio.get_dial_lock()))])
         if func == "SPLIT":
@@ -567,6 +579,20 @@ class YaesuRouting:
             return _ok()
         if func == "NR":
             await radio.set_nr(on)
+            return _ok()
+        if func in ("TONE", "TSQL"):
+            setter = (
+                radio.set_repeater_tone if func == "TONE" else radio.set_repeater_tsql
+            )
+            try:
+                await setter(on)
+            except ValueError:
+                # The FTX-1 maps TONE/TSQL onto one ``CT`` select and refuses
+                # loudly: the (tone off, tsql on) pair has no CT code, and a
+                # toggle over DCS / PR FREQ / REV TONE would destroy the
+                # radio's configuration. A refused write is the rig rejecting
+                # the command — RPRT -9, not EINVAL.
+                return _err(HamlibError.ERJCTED)
             return _ok()
         if func == "LOCK":
             await radio.set_dial_lock(on)
